@@ -20,7 +20,7 @@
 //!   (entries sorted by height descending; delta_txid = prev_txid wrapping_sub this_txid)
 //!
 //! Output index format (utxo_chunks_index.bin):
-//!   For each group: [20B script_hash] [8B start_offset u64 LE]
+//!   For each group: [20B script_hash] [4B start_offset u32 LE]
 
 use memmap2::Mmap;
 use std::collections::HashMap;
@@ -132,8 +132,7 @@ fn main() {
 
     // Pre-allocate with an estimate of unique addresses
     // (~50-80M unique ScriptPubKey hashes expected)
-    let mut map: HashMap<[u8; 20], Vec<ShortenedEntry>> =
-        HashMap::with_capacity(80_000_000);
+    let mut map: HashMap<[u8; 20], Vec<ShortenedEntry>> = HashMap::with_capacity(80_000_000);
 
     let one_percent = std::cmp::max(1, entry_count / 100);
     let mut last_pct = 0u64;
@@ -151,8 +150,7 @@ fn main() {
         let vout = u32::from_le_bytes([chunk[24], chunk[25], chunk[26], chunk[27]]);
         let height = u32::from_le_bytes([chunk[28], chunk[29], chunk[30], chunk[31]]);
         let amount = u64::from_le_bytes([
-            chunk[32], chunk[33], chunk[34], chunk[35],
-            chunk[36], chunk[37], chunk[38], chunk[39],
+            chunk[32], chunk[33], chunk[34], chunk[35], chunk[36], chunk[37], chunk[38], chunk[39],
         ]);
 
         map.entry(script_hash)
@@ -217,7 +215,10 @@ fn main() {
     println!();
 
     // ── Step 4: Process groups, write compact output ───────────────────
-    println!("[4] Processing {} groups and writing output...", unique_keys);
+    println!(
+        "[4] Processing {} groups and writing output...",
+        unique_keys
+    );
     let step4_start = Instant::now();
 
     let mut current_offset: u64 = 0; // tracks byte position in utxo_chunks.bin
@@ -256,7 +257,7 @@ fn main() {
                 current_offset += 4;
             } else {
                 // Subsequent entries: write VarInt(prev_txid wrapping_sub this_txid)
-                let delta = prev_txid.wrapping_sub(entry.txid) as u64;
+                let delta = (prev_txid.checked_sub(entry.txid).unwrap()) as u64;
                 let n = write_varint(&mut chunks_writer, delta).unwrap_or_else(|e| {
                     eprintln!("✗ Failed to write txid delta: {}", e);
                     std::process::exit(1);
@@ -283,7 +284,10 @@ fn main() {
         }
 
         if start_offset > u32::MAX as u64 {
-            eprintln!("✗ Start offset {} exceeds u32 max value, cannot be stored in index", start_offset);
+            eprintln!(
+                "✗ Start offset {} exceeds u32 max value, cannot be stored in index",
+                start_offset
+            );
             std::process::exit(1);
         }
 
@@ -375,10 +379,7 @@ fn main() {
         "Compact size:         {:.2} MB (chunks + index)",
         compact_size / (1024.0 * 1024.0)
     );
-    println!(
-        "Compression ratio:    {:.2}x",
-        original_size / compact_size
-    );
+    println!("Compression ratio:    {:.2}x", original_size / compact_size);
     println!();
     println!("HashMap build time:   {:.2?}", step2_elapsed);
     println!("Write time:           {:.2?}", step4_elapsed);

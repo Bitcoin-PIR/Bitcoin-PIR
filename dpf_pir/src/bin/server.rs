@@ -6,18 +6,28 @@
 //! to include in the XOR computation, then either:
 //! - Streams through the data file with BufReader and computes XOR (memory-efficient)
 //! - Loads data into memory at startup and computes XOR (faster for repeated queries)
+//!
+//! ## Database Registration
+//!
+//! Databases are registered in `dpf_pir/src/server_config.rs`.
+//! Modify the `load_configuration()` function to add your databases.
+//!
+//! No command-line arguments are needed - the server automatically loads all
+//! registered databases from the configuration.
 
-use dpf_pir::{Request, Response, ServerConfig};
+use dpf_pir::{DatabaseRegistry, Request, Response, load_configuration};
 use libdpf::{Dpf, DpfKey};
 use log::{error, info, warn};
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// In-memory data storage (optional)
+/// In-memory data storage for a single database
 struct DataStore {
     /// The loaded data (if load_to_memory is true)
     data: Option<Vec<u8>>,
@@ -31,17 +41,17 @@ struct DataStore {
 
 impl DataStore {
     /// Create a new data store
-    fn new(config: &ServerConfig) -> std::io::Result<Self> {
-        let bucket_bytes = config.bucket_size * config.entry_size;
+    fn new(path: &str, num_buckets: usize, entry_size: usize, bucket_size: usize, load_to_memory: bool) -> std::io::Result<Self> {
+        let bucket_bytes = bucket_size * entry_size;
         
         let mut store = Self {
             data: None,
-            path: config.data_path.clone(),
-            num_buckets: config.num_buckets,
+            path: path.to_string(),
+            num_buckets,
             bucket_bytes,
         };
         
-        if config.load_to_memory {
+        if load_to_memory {
             store.load_data()?;
         }
         
@@ -77,45 +87,45 @@ impl DataStore {
     }
     
     /// Compute XOR of buckets indicated by the bitmap (in-memory version)
+    /// Streams through ALL buckets in order, using bitmap to decide whether to XOR each bucket
     fn xor_buckets_memory(&self, bitmap: &[u8]) -> Result<Vec<u8>, String> {
         let data = self.data.as_ref().ok_or("Data not loaded into memory")?;
         
         // Initialize result with zeros
         let mut result = vec![0u8; self.bucket_bytes];
         
-        // Number of bits in bitmap
-        let num_bits = bitmap.len() * 8;
-        let buckets_to_process = num_bits.min(self.num_buckets);
-        
         let mut buckets_included = 0usize;
         
-        // Iterate through each bit in the bitmap
-        for bucket_idx in 0..buckets_to_process {
-            // Get the byte and bit position
+        // Stream through ALL buckets sequentially
+        for bucket_idx in 0..self.num_buckets {
+            // Get the byte and bit position in the bitmap
             let byte_idx = bucket_idx / 8;
             let bit_idx = bucket_idx % 8;
             
-            // Check if this bit is set
-            if (bitmap[byte_idx] >> bit_idx) & 1 == 1 {
-                // Compute offset for this bucket
-                let offset = bucket_idx * self.bucket_bytes;
-                
-                // Check bounds
-                if offset + self.bucket_bytes <= data.len() {
-                    // XOR with result
-                    for i in 0..self.bucket_bytes {
-                        result[i] ^= data[offset + i];
-                    }
-                    buckets_included += 1;
+            // Compute offset for this bucket
+            let offset = bucket_idx * self.bucket_bytes;
+            
+            // Check bounds
+            if offset + self.bucket_bytes > data.len() {
+                break;
+            }
+            
+            // Check if this bit is set in the bitmap - if so, XOR the bucket
+            if byte_idx < bitmap.len() && (bitmap[byte_idx] >> bit_idx) & 1 == 1 {
+                // XOR with result
+                for i in 0..self.bucket_bytes {
+                    result[i] ^= data[offset + i];
                 }
+                buckets_included += 1;
             }
         }
         
-        info!("XORed {} buckets (from memory)", buckets_included);
+        info!("XORed {} buckets (from memory, streamed {} buckets)", buckets_included, self.num_buckets);
         Ok(result)
     }
     
     /// Compute XOR of buckets indicated by the bitmap (streaming version)
+    /// Streams through ALL buckets in order from disk, using bitmap to decide whether to XOR each bucket
     fn xor_buckets_streaming(&self, bitmap: &[u8]) -> Result<Vec<u8>, String> {
         let file = File::open(&self.path)
             .map_err(|e| format!("Failed to open data file: {}", e))?;
@@ -124,39 +134,29 @@ impl DataStore {
         // Initialize result with zeros
         let mut result = vec![0u8; self.bucket_bytes];
         
-        // Number of bits in bitmap
-        let num_bits = bitmap.len() * 8;
-        let buckets_to_process = num_bits.min(self.num_buckets);
-        
         let mut buckets_included = 0usize;
-        let mut current_offset: u64 = 0;
         
         // Buffer for reading a single bucket
         let mut bucket_buf = vec![0u8; self.bucket_bytes];
         
-        // Iterate through each bit in the bitmap
-        for bucket_idx in 0..buckets_to_process {
-            // Get the byte and bit position
+        // Stream through ALL buckets sequentially - no seeking needed
+        for bucket_idx in 0..self.num_buckets {
+            // Get the byte and bit position in the bitmap
             let byte_idx = bucket_idx / 8;
             let bit_idx = bucket_idx % 8;
             
-            // Check if this bit is set
-            if (bitmap[byte_idx] >> bit_idx) & 1 == 1 {
-                // Compute offset for this bucket
-                let target_offset = (bucket_idx * self.bucket_bytes) as u64;
-                
-                // Seek if needed
-                if current_offset != target_offset {
-                    reader.seek(SeekFrom::Start(target_offset))
-                        .map_err(|e| format!("Failed to seek: {}", e))?;
-                    current_offset = target_offset;
+            // Read the bucket (always read, no seeking)
+            match reader.read_exact(&mut bucket_buf) {
+                Ok(()) => {},
+                Err(e) => {
+                    // End of file or read error
+                    warn!("Stopped reading at bucket {}: {}", bucket_idx, e);
+                    break;
                 }
-                
-                // Read the bucket
-                reader.read_exact(&mut bucket_buf)
-                    .map_err(|e| format!("Failed to read bucket {}: {}", bucket_idx, e))?;
-                current_offset += self.bucket_bytes as u64;
-                
+            }
+            
+            // Check if this bit is set in the bitmap - if so, XOR the bucket
+            if byte_idx < bitmap.len() && (bitmap[byte_idx] >> bit_idx) & 1 == 1 {
                 // XOR with result
                 for i in 0..self.bucket_bytes {
                     result[i] ^= bucket_buf[i];
@@ -165,7 +165,7 @@ impl DataStore {
             }
         }
         
-        info!("XORed {} buckets (streaming from disk)", buckets_included);
+        info!("XORed {} buckets (streaming from disk, read {} buckets)", buckets_included, self.num_buckets);
         Ok(result)
     }
     
@@ -176,6 +176,27 @@ impl DataStore {
         } else {
             self.xor_buckets_streaming(bitmap)
         }
+    }
+}
+
+/// Data store manager that holds all database data stores
+struct DataStoreManager {
+    stores: HashMap<String, DataStore>,
+}
+
+impl DataStoreManager {
+    fn new() -> Self {
+        Self {
+            stores: HashMap::new(),
+        }
+    }
+
+    fn add(&mut self, id: String, store: DataStore) {
+        self.stores.insert(id, store);
+    }
+
+    fn get(&self, id: &str) -> Option<&DataStore> {
+        self.stores.get(id)
     }
 }
 
@@ -247,7 +268,11 @@ fn dpf_results_to_bitmap(results: &[libdpf::Block], num_buckets: usize) -> Vec<u
 }
 
 /// Handle a single client connection
-async fn handle_connection(mut stream: TcpStream, config: &ServerConfig, data_store: &DataStore) {
+async fn handle_connection(
+    mut stream: TcpStream,
+    store_manager: &DataStoreManager,
+    registry: &DatabaseRegistry,
+) {
     let addr = stream.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     info!("New connection from {}", addr);
 
@@ -282,11 +307,52 @@ async fn handle_connection(mut stream: TcpStream, config: &ServerConfig, data_st
     // Handle the request
     let response = match request {
         Request::Ping => Response::Pong,
-        Request::Query { bucket_index, dpf_key } => {
-            handle_query(bucket_index, dpf_key, config, data_store).await
+        
+        Request::ListDatabases => {
+            Response::DatabaseList {
+                databases: registry.list_info(),
+            }
         }
-        Request::QueryTwoLocations { loc1, dpf_key1, loc2, dpf_key2 } => {
-            handle_query_two_locations(loc1, dpf_key1, loc2, dpf_key2, config, data_store).await
+        
+        Request::GetDatabaseInfo { database_id } => {
+            match registry.get(&database_id) {
+                Some(db) => Response::DatabaseInfo {
+                    info: dpf_pir::DatabaseInfo::from(db.as_ref()),
+                },
+                None => Response::Error {
+                    message: format!("Database '{}' not found", database_id),
+                },
+            }
+        }
+        
+        Request::Query { bucket_index: _, dpf_key } => {
+            // Legacy single query - use first database with single location
+            let first_db_id = registry.list().first().map(|s| s.to_string());
+            match first_db_id {
+                Some(id) => handle_database_query_single(id, dpf_key, store_manager).await,
+                None => Response::Error {
+                    message: "No databases registered".to_string(),
+                },
+            }
+        }
+        
+        Request::QueryTwoLocations { dpf_key1, dpf_key2 } => {
+            // Legacy two-location query - use first database
+            let first_db_id = registry.list().first().map(|s| s.to_string());
+            match first_db_id {
+                Some(id) => handle_database_query_two_locations(id, dpf_key1, dpf_key2, store_manager).await,
+                None => Response::Error {
+                    message: "No databases registered".to_string(),
+                },
+            }
+        }
+        
+        Request::QueryDatabase { database_id, dpf_key1, dpf_key2 } => {
+            handle_database_query_two_locations(database_id, dpf_key1, dpf_key2, store_manager).await
+        }
+        
+        Request::QueryDatabaseSingle { database_id, dpf_key } => {
+            handle_database_query_single(database_id, dpf_key, store_manager).await
         }
     };
 
@@ -295,78 +361,29 @@ async fn handle_connection(mut stream: TcpStream, config: &ServerConfig, data_st
     info!("Connection from {} closed", addr);
 }
 
-/// Handle a PIR query request
-async fn handle_query(
-    bucket_index: u64,
-    dpf_key: Vec<u8>,
-    config: &ServerConfig,
-    data_store: &DataStore,
+/// Handle a database query for two locations
+async fn handle_database_query_two_locations(
+    database_id: String,
+    dpf_key1: Vec<u8>,
+    dpf_key2: Vec<u8>,
+    store_manager: &DataStoreManager,
 ) -> Response {
+    let start_time = Instant::now();
+    
     info!(
-        "Received query for bucket {}, DPF key length: {}",
-        bucket_index,
-        dpf_key.len()
+        "Received database query for '{}': key1_len={}, key2_len={}",
+        database_id, dpf_key1.len(), dpf_key2.len()
     );
 
-    // Parse the DPF key
-    let key = match DpfKey::from_bytes(&dpf_key) {
-        Ok(k) => k,
-        Err(e) => {
+    // Get the data store for this database
+    let store = match store_manager.get(&database_id) {
+        Some(s) => s,
+        None => {
             return Response::Error {
-                message: format!("Invalid DPF key: {}", e),
+                message: format!("Database '{}' not found", database_id),
             };
         }
     };
-
-    info!("DPF key parsed: n={}, domain=2^{}", key.n, key.n);
-
-    // Create DPF evaluator
-    let dpf = Dpf::with_default_key();
-
-    // Evaluate DPF at all points in the domain
-    // The result is a vector of 2^(n-7) blocks
-    let results = dpf.eval_full(&key);
-    
-    info!("DPF evaluation complete: {} blocks", results.len());
-
-    // Convert DPF results to a bitmap
-    // Each block is 128 bits, each bit indicates whether to include that bucket
-    let bitmap = dpf_results_to_bitmap(&results, config.num_buckets);
-    
-    info!("Bitmap created: {} bytes ({} buckets)", bitmap.len(), config.num_buckets);
-
-    // Count set bits for logging
-    let set_bits: usize = bitmap.iter().map(|b| b.count_ones() as usize).sum();
-    info!("Bitmap has {} bits set", set_bits);
-
-    // Compute XOR of buckets indicated by the bitmap
-    match data_store.xor_buckets(&bitmap) {
-        Ok(data) => {
-            info!("Query result: {} bytes", data.len());
-            Response::QueryResult { data }
-        }
-        Err(e) => {
-            error!("Failed to compute XOR: {}", e);
-            Response::Error {
-                message: format!("Failed to compute result: {}", e),
-            }
-        }
-    }
-}
-
-/// Handle a query for two locations (cuckoo hash has two possible positions)
-async fn handle_query_two_locations(
-    loc1: u64,
-    dpf_key1: Vec<u8>,
-    loc2: u64,
-    dpf_key2: Vec<u8>,
-    config: &ServerConfig,
-    data_store: &DataStore,
-) -> Response {
-    info!(
-        "Received two-location query: loc1={}, key1_len={}, loc2={}, key2_len={}",
-        loc1, dpf_key1.len(), loc2, dpf_key2.len()
-    );
 
     // Parse both DPF keys
     let key1 = match DpfKey::from_bytes(&dpf_key1) {
@@ -392,39 +409,104 @@ async fn handle_query_two_locations(
     // Create DPF evaluator
     let dpf = Dpf::with_default_key();
 
-    // Evaluate both DPFs
+    // Evaluate both DPFs independently
     let results1 = dpf.eval_full(&key1);
     let results2 = dpf.eval_full(&key2);
 
     info!("DPF evaluations complete: {} blocks each", results1.len());
 
-    // Convert both results to bitmaps
-    let bitmap1 = dpf_results_to_bitmap(&results1, config.num_buckets);
-    let bitmap2 = dpf_results_to_bitmap(&results2, config.num_buckets);
-    
-    // XOR the two bitmaps together (since we need combined result from both locations)
-    let combined_bitmap: Vec<u8> = bitmap1.iter()
-        .zip(bitmap2.iter())
-        .map(|(b1, b2)| b1 ^ b2)
-        .collect();
+    // Convert both results to bitmaps independently
+    let bitmap1 = dpf_results_to_bitmap(&results1, store.num_buckets);
+    let bitmap2 = dpf_results_to_bitmap(&results2, store.num_buckets);
 
-    // Count set bits for logging
-    let set_bits: usize = combined_bitmap.iter().map(|b| b.count_ones() as usize).sum();
-    info!("Combined bitmap has {} bits set", set_bits);
-
-    // Compute XOR of buckets indicated by the combined bitmap
-    match data_store.xor_buckets(&combined_bitmap) {
-        Ok(data) => {
-            info!("Two-location query result: {} bytes", data.len());
-            Response::QueryResult { data }
-        }
+    // Compute XOR of buckets for each bitmap
+    let result1 = match store.xor_buckets(&bitmap1) {
+        Ok(data) => data,
         Err(e) => {
-            error!("Failed to compute XOR: {}", e);
-            Response::Error {
-                message: format!("Failed to compute result: {}", e),
-            }
+            return Response::Error {
+                message: format!("Failed to compute result for query1: {}", e),
+            };
         }
+    };
+
+    let result2 = match store.xor_buckets(&bitmap2) {
+        Ok(data) => data,
+        Err(e) => {
+            return Response::Error {
+                message: format!("Failed to compute result for query2: {}", e),
+            };
+        }
+    };
+
+    let elapsed = start_time.elapsed();
+    info!("Database '{}' query results: data1={} bytes, data2={} bytes", database_id, result1.len(), result2.len());
+    info!("Query completed in {:?}", elapsed);
+    Response::QueryTwoResults {
+        data1: result1,
+        data2: result2,
     }
+}
+
+/// Handle a database query for a single location
+async fn handle_database_query_single(
+    database_id: String,
+    dpf_key: Vec<u8>,
+    store_manager: &DataStoreManager,
+) -> Response {
+    let start_time = Instant::now();
+    
+    info!(
+        "Received single-location database query for '{}': key_len={}",
+        database_id, dpf_key.len()
+    );
+
+    // Get the data store for this database
+    let store = match store_manager.get(&database_id) {
+        Some(s) => s,
+        None => {
+            return Response::Error {
+                message: format!("Database '{}' not found", database_id),
+            };
+        }
+    };
+
+    // Parse the DPF key
+    let key = match DpfKey::from_bytes(&dpf_key) {
+        Ok(k) => k,
+        Err(e) => {
+            return Response::Error {
+                message: format!("Invalid DPF key: {}", e),
+            };
+        }
+    };
+
+    info!("DPF key parsed: n={}, domain=2^{}", key.n, key.n);
+
+    // Create DPF evaluator
+    let dpf = Dpf::with_default_key();
+
+    // Evaluate DPF at all points in the domain
+    let results = dpf.eval_full(&key);
+
+    info!("DPF evaluation complete: {} blocks", results.len());
+
+    // Convert DPF results to a bitmap
+    let bitmap = dpf_results_to_bitmap(&results, store.num_buckets);
+
+    // Compute XOR of buckets
+    let result = match store.xor_buckets(&bitmap) {
+        Ok(data) => data,
+        Err(e) => {
+            return Response::Error {
+                message: format!("Failed to compute result: {}", e),
+            };
+        }
+    };
+
+    let elapsed = start_time.elapsed();
+    info!("Database '{}' query result: {} bytes", database_id, result.len());
+    info!("Query completed in {:?}", elapsed);
+    Response::QueryResult { data: result }
 }
 
 /// Send a response to the client
@@ -457,28 +539,82 @@ async fn main() {
         .filter_level(log::LevelFilter::Info)
         .init();
 
-    // Parse command line arguments
+    // Parse command line arguments for port
     let args: Vec<String> = std::env::args().collect();
-    let config = parse_args(&args);
-
-    info!("Starting DPF-PIR server on port {}", config.port);
-    info!("Data path: {}", config.data_path);
-    info!("Number of buckets: {}", config.num_buckets);
-    info!("Entry size: {} bytes", config.entry_size);
-    info!("Bucket size: {} entries ({} bytes)", config.bucket_size, config.bucket_size * config.entry_size);
-    info!("Load to memory: {}", config.load_to_memory);
-
-    // Initialize data store
-    let data_store = match DataStore::new(&config) {
-        Ok(store) => Arc::new(store),
-        Err(e) => {
-            error!("Failed to initialize data store: {}", e);
-            std::process::exit(1);
+    let mut port = None;
+    
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" | "-p" => {
+                if i + 1 < args.len() {
+                    port = args[i + 1].parse::<u16>().ok();
+                    i += 1;
+                }
+            }
+            "--help" | "-h" => {
+                println!("DPF-PIR Server");
+                println!("Usage: {} [OPTIONS]", args[0]);
+                println!();
+                println!("Options:");
+                println!("  --port, -p <PORT>  Port to listen on (default: from config)");
+                println!("  --help, -h         Show this help message");
+                return;
+            }
+            _ => {}
         }
-    };
+        i += 1;
+    }
+
+    // Load configuration (databases are registered in server_config.rs)
+    let mut server_config = load_configuration();
+    
+    // Override port if specified on command line
+    if let Some(p) = port {
+        server_config.port = p;
+    }
+
+    info!("Starting DPF-PIR server on port {}", server_config.port);
+    info!("Load to memory: {}", server_config.load_to_memory);
+
+    // Create data store manager
+    let mut store_manager = DataStoreManager::new();
+
+    // Initialize data stores for each registered database
+    for db_id in server_config.registry.list() {
+        if let Some(db) = server_config.registry.get(db_id) {
+            info!("Initializing data store for database '{}':", db_id);
+            info!("  Path: {}", db.data_path());
+            info!("  Buckets: {}", db.num_buckets());
+            info!("  Entry size: {} bytes", db.entry_size());
+            info!("  Bucket size: {} entries", db.bucket_size());
+            info!("  Locations: {}", db.num_locations());
+
+            let store = DataStore::new(
+                db.data_path(),
+                db.num_buckets(),
+                db.entry_size(),
+                db.bucket_size(),
+                server_config.load_to_memory,
+            ).unwrap_or_else(|e| {
+                error!("Failed to create data store for '{}': {}", db_id, e);
+                std::process::exit(1);
+            });
+
+            store_manager.add(db_id.to_string(), store);
+        }
+    }
+
+    info!("Registered {} database(s)", server_config.registry.len());
+
+    // Check if any databases are registered
+    if server_config.registry.is_empty() {
+        error!("No databases registered. Edit dpf_pir/src/server_config.rs to add databases.");
+        std::process::exit(1);
+    }
 
     // Bind to the port
-    let addr: SocketAddr = format!("0.0.0.0:{}", config.port)
+    let addr: SocketAddr = format!("0.0.0.0:{}", server_config.port)
         .parse()
         .expect("Invalid address");
 
@@ -491,6 +627,11 @@ async fn main() {
     };
 
     info!("Server listening on {}", addr);
+    info!("Use --list-databases on client to see available databases");
+
+    // Wrap in Arc for sharing across tasks
+    let store_manager = Arc::new(store_manager);
+    let registry = Arc::new(server_config.registry);
 
     // Accept connections loop
     loop {
@@ -502,73 +643,10 @@ async fn main() {
             }
         };
 
-        let config = config.clone();
-        let data_store = Arc::clone(&data_store);
+        let store_manager = Arc::clone(&store_manager);
+        let registry = Arc::clone(&registry);
         tokio::spawn(async move {
-            handle_connection(stream, &config, &data_store).await;
+            handle_connection(stream, &store_manager, &registry).await;
         });
     }
-}
-
-/// Parse command line arguments
-fn parse_args(args: &[String]) -> ServerConfig {
-    let mut config = ServerConfig::default();
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--port" | "-p" => {
-                if i + 1 < args.len() {
-                    config.port = args[i + 1].parse().unwrap_or(config.port);
-                    i += 1;
-                }
-            }
-            "--data" | "-d" => {
-                if i + 1 < args.len() {
-                    config.data_path = args[i + 1].clone();
-                    i += 1;
-                }
-            }
-            "--buckets" | "-b" => {
-                if i + 1 < args.len() {
-                    config.num_buckets = args[i + 1].parse().unwrap_or(config.num_buckets);
-                    i += 1;
-                }
-            }
-            "--entry-size" | "-e" => {
-                if i + 1 < args.len() {
-                    config.entry_size = args[i + 1].parse().unwrap_or(config.entry_size);
-                    i += 1;
-                }
-            }
-            "--bucket-size" | "-s" => {
-                if i + 1 < args.len() {
-                    config.bucket_size = args[i + 1].parse().unwrap_or(config.bucket_size);
-                    i += 1;
-                }
-            }
-            "--load-memory" | "-m" => {
-                config.load_to_memory = true;
-            }
-            "--help" | "-h" => {
-                println!("DPF-PIR Server");
-                println!("Usage: {} [OPTIONS]", args[0]);
-                println!("Options:");
-                println!("  --port, -p <PORT>         Port to listen on (default: {})", config.port);
-                println!("  --data, -d <PATH>         Path to data file (default: {})", config.data_path);
-                println!("  --buckets, -b <NUM>       Number of buckets (default: {})", config.num_buckets);
-                println!("  --entry-size, -e <SIZE>   Size of each entry in bytes (default: {})", config.entry_size);
-                println!("  --bucket-size, -s <NUM>   Number of entries per bucket (default: {})", config.bucket_size);
-                println!("  --load-memory, -m         Load data into memory at startup");
-                println!("  --help, -h                Show this help message");
-                std::process::exit(0);
-            }
-            _ => {
-                warn!("Unknown argument: {}", args[i]);
-            }
-        }
-        i += 1;
-    }
-
-    config
 }

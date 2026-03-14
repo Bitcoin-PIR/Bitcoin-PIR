@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
+// Re-export DatabaseInfo from database module
+pub use crate::database::DatabaseInfo;
+
 /// Re-export KEY_SIZE from hash module
 pub use crate::hash::KEY_SIZE;
 
@@ -15,26 +18,49 @@ pub type ScriptHash = [u8; KEY_SIZE];
 pub const SERVER1_PORT: u16 = 8081;
 pub const SERVER2_PORT: u16 = 8082;
 
+/// Default database ID for UTXO chunks
+pub const DEFAULT_DATABASE_ID: &str = "utxo_chunks";
+
 /// Request from client to server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
-    /// Query for a script hash at a specific bucket location
+    /// Query for a script hash at a specific bucket location (legacy)
     Query {
         /// The bucket index to query
         bucket_index: u64,
         /// DPF key for the query (serialized)
         dpf_key: Vec<u8>,
     },
-    /// Query for both cuckoo hash locations in one request
+    /// Query for both cuckoo hash locations in one request (legacy)
+    /// The location is encoded in the DPF key, so we don't send it separately
     QueryTwoLocations {
-        /// First bucket index
-        loc1: u64,
         /// DPF key for first location (serialized)
         dpf_key1: Vec<u8>,
-        /// Second bucket index
-        loc2: u64,
         /// DPF key for second location (serialized)
         dpf_key2: Vec<u8>,
+    },
+    /// Query a specific database at two cuckoo hash locations (new)
+    QueryDatabase {
+        /// Database ID to query
+        database_id: String,
+        /// DPF key for first location (serialized)
+        dpf_key1: Vec<u8>,
+        /// DPF key for second location (serialized)
+        dpf_key2: Vec<u8>,
+    },
+    /// Query a single-location database (new)
+    QueryDatabaseSingle {
+        /// Database ID to query
+        database_id: String,
+        /// DPF key for the query (serialized)
+        dpf_key: Vec<u8>,
+    },
+    /// List available databases on the server
+    ListDatabases,
+    /// Get information about a specific database
+    GetDatabaseInfo {
+        /// Database ID to query
+        database_id: String,
     },
     /// Health check
     Ping,
@@ -47,6 +73,23 @@ pub enum Response {
     QueryResult {
         /// The result data (encrypted/encoded)
         data: Vec<u8>,
+    },
+    /// Query result for two-location query (two independent results)
+    QueryTwoResults {
+        /// Result for first DPF key query
+        data1: Vec<u8>,
+        /// Result for second DPF key query
+        data2: Vec<u8>,
+    },
+    /// List of available databases
+    DatabaseList {
+        /// List of database information
+        databases: Vec<DatabaseInfo>,
+    },
+    /// Information about a specific database
+    DatabaseInfo {
+        /// Database information
+        info: DatabaseInfo,
     },
     /// Error response
     Error {

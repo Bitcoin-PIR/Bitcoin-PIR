@@ -1,14 +1,14 @@
 //! Test file for brk_reader crate
-//! 
+//!
 //! This demonstrates how to use brk_reader to read blocks directly from
 //! Bitcoin Core's blk*.dat files, which is much faster than using RPC.
 //!
 //! Usage: cargo run --bin test_brk_reader -- <bitcoin_datadir>
 //! Example: cargo run --bin test_brk_reader -- /Volumes/Bitcoin/bitcoin
 
-use std::{env, time::Duration};
 use std::path::PathBuf;
 use std::time::Instant;
+use std::{env, time::Duration};
 
 use bitcoin::hashes::Hash;
 use brk_reader::Reader;
@@ -24,7 +24,7 @@ fn main() {
     }
 
     let bitcoin_dir = PathBuf::from(&args[1]);
-    
+
     // Check if the directory exists
     if !bitcoin_dir.exists() {
         eprintln!("Error: Bitcoin directory does not exist: {:?}", bitcoin_dir);
@@ -47,7 +47,7 @@ fn main() {
     // 1. Getting the current block height
     // 2. Handling recent blocks that may not be in blk files yet
     let cookie_path = bitcoin_dir.join(".cookie");
-    
+
     if !cookie_path.exists() {
         eprintln!("Error: Cookie file does not exist: {:?}", cookie_path);
         eprintln!("Make sure Bitcoin Core is running.");
@@ -57,7 +57,12 @@ fn main() {
     println!("Using cookie file: {:?}", cookie_path);
 
     // Create the RPC client
-    let client = match Client::new_with("http://127.0.0.1:8332", Auth::CookieFile(cookie_path), 10, Duration::from_secs(5)) {
+    let client = match Client::new_with(
+        "http://127.0.0.1:8332",
+        Auth::CookieFile(cookie_path),
+        10,
+        Duration::from_secs(5),
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error creating RPC client: {:?}", e);
@@ -84,17 +89,17 @@ fn main() {
     let start = Instant::now();
     let mut block_count_test = 0u64;
     let mut total_txs = 0u64;
-    
+
     // Read blocks from height 0 to 9
     let receiver = reader.read(Some(0u32.into()), Some(10u32.into()));
-    
+
     for block in receiver.iter() {
         let height = block.height();
         let hash = block.hash();
         let tx_count = block.txdata.len();
-        
+
         println!("Block {}: {} ({} transactions)", height, hash, tx_count);
-        
+
         // Show transaction IDs for the first block (genesis block)
         if height == 0u64 {
             println!("  Genesis block transactions:");
@@ -103,11 +108,11 @@ fn main() {
                 println!("    TX {}: {}", i, txid);
             }
         }
-        
+
         block_count_test += 1;
         total_txs += tx_count as u64;
     }
-    
+
     println!("Read {} blocks in {:?}", block_count_test, start.elapsed());
     println!("Total transactions: {}", total_txs);
     println!();
@@ -116,14 +121,14 @@ fn main() {
     println!("--- Test 2: Reading blocks 100000-100009 ---");
     let start = Instant::now();
     let receiver = reader.read(Some(100000u32.into()), Some(100010u32.into()));
-    
+
     for block in receiver.iter() {
         let height = block.height();
         let hash = block.hash();
         let tx_count = block.txdata.len();
         println!("Block {}: {} ({} transactions)", height, hash, tx_count);
     }
-    
+
     println!("Completed in {:?}", start.elapsed());
     println!();
 
@@ -131,16 +136,20 @@ fn main() {
     println!("--- Test 3: Extracting transaction IDs from block 100000 ---");
     let start = Instant::now();
     let receiver = reader.read(Some(100000u32.into()), Some(100001u32.into()));
-    
+
     for block in receiver.iter() {
         let txdata = &block.txdata;
-        println!("Block {} has {} transactions:", block.height(), txdata.len());
-        
+        println!(
+            "Block {} has {} transactions:",
+            block.height(),
+            txdata.len()
+        );
+
         for (i, tx) in txdata.iter().enumerate() {
             let txid = tx.compute_txid();
             // Convert txid to bytes (internal byte order, not display order)
             let txid_bytes: [u8; 32] = txid.to_byte_array();
-            
+
             if i < 5 || i >= txdata.len() - 2 {
                 println!("  TX[{}]: {} (bytes: {})", i, txid, hex::encode(txid_bytes));
             } else if i == 5 {
@@ -148,7 +157,7 @@ fn main() {
             }
         }
     }
-    
+
     println!("Completed in {:?}", start.elapsed());
     println!();
 

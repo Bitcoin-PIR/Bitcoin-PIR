@@ -24,10 +24,10 @@ const TXID_SIZE: usize = 32;
 const LOCATION_SIZE: usize = 4; // 4 bytes per location (u32)
 
 /// Number of txids to process per invocation
-const TXIDS_PER_BATCH: u64 = 100_000_000;
+const TXIDS_PER_BATCH: u64 = 500_000_000;
 
 /// Total number of entries in the location index
-const TOTAL_ENTRIES: u64 = 2 * 1267151381;
+const TOTAL_ENTRIES: u64 = 2 * 1322660118;
 
 /// Total size of the location index file in bytes
 const LOCATION_FILE_SIZE: usize = (TOTAL_ENTRIES * LOCATION_SIZE as u64) as usize;
@@ -35,18 +35,14 @@ const LOCATION_FILE_SIZE: usize = (TOTAL_ENTRIES * LOCATION_SIZE as u64) as usiz
 /// Txids to skip (these caused issues during MPHF construction)
 /// 68b45f58b674e94eb881cd67b04c2cba07fe5552dbf1d5385637b0d4073dbfe3
 const SKIP_TXID_1: [u8; 32] = [
-    0x68, 0xb4, 0x5f, 0x58, 0xb6, 0x74, 0xe9, 0x4e,
-    0xb8, 0x81, 0xcd, 0x67, 0xb0, 0x4c, 0x2c, 0xba,
-    0x07, 0xfe, 0x55, 0x52, 0xdb, 0xf1, 0xd5, 0x38,
-    0x56, 0x37, 0xb0, 0xd4, 0x07, 0x3d, 0xbf, 0xe3,
+    0x68, 0xb4, 0x5f, 0x58, 0xb6, 0x74, 0xe9, 0x4e, 0xb8, 0x81, 0xcd, 0x67, 0xb0, 0x4c, 0x2c, 0xba,
+    0x07, 0xfe, 0x55, 0x52, 0xdb, 0xf1, 0xd5, 0x38, 0x56, 0x37, 0xb0, 0xd4, 0x07, 0x3d, 0xbf, 0xe3,
 ];
 
 /// 9985d82954e10f2233a08905dc7b490eb444660c8759e324c7dfa3d28779d2d5
 const SKIP_TXID_2: [u8; 32] = [
-    0x99, 0x85, 0xd8, 0x29, 0x54, 0xe1, 0x0f, 0x22,
-    0x33, 0xa0, 0x89, 0x05, 0xdc, 0x7b, 0x49, 0x0e,
-    0xb4, 0x44, 0x66, 0x0c, 0x87, 0x59, 0xe3, 0x24,
-    0xc7, 0xdf, 0xa3, 0xd2, 0x87, 0x79, 0xd2, 0xd5,
+    0x99, 0x85, 0xd8, 0x29, 0x54, 0xe1, 0x0f, 0x22, 0x33, 0xa0, 0x89, 0x05, 0xdc, 0x7b, 0x49, 0x0e,
+    0xb4, 0x44, 0x66, 0x0c, 0x87, 0x59, 0xe3, 0x24, 0xc7, 0xdf, 0xa3, 0xd2, 0x87, 0x79, 0xd2, 0xd5,
 ];
 
 /// Check if a txid should be skipped
@@ -101,7 +97,11 @@ fn load_mphf(path: &Path) -> io::Result<Mphf<[u8; 32]>> {
 
     let file = File::open(path)?;
     let metadata = file.metadata()?;
-    println!("MPHF file size: {} bytes ({:.2} GB)", metadata.len(), metadata.len() as f64 / 1e9);
+    println!(
+        "MPHF file size: {} bytes ({:.2} GB)",
+        metadata.len(),
+        metadata.len() as f64 / 1e9
+    );
 
     let mphf: Mphf<[u8; 32]> = bincode::deserialize_from(file).map_err(|e| {
         io::Error::new(
@@ -131,22 +131,30 @@ fn build_location_index_batch(
     count: u64,
 ) -> io::Result<u64> {
     println!("\n=== Building Location Index ===");
-    println!("Processing txids {} to {} ({} txids)", start_index, start_index + count - 1, count);
+    println!(
+        "Processing txids {} to {} ({} txids)",
+        start_index,
+        start_index + count - 1,
+        count
+    );
 
     // Open the location file for memory mapping
-    let location_file = File::options()
-        .read(true)
-        .write(true)
-        .open(location_path)?;
+    let location_file = File::options().read(true).write(true).open(location_path)?;
 
     // Verify file size
     let file_size = location_file.metadata()?.len() as usize;
     if file_size != LOCATION_FILE_SIZE {
-        eprintln!("Warning: Location file size {} != expected {}", file_size, LOCATION_FILE_SIZE);
+        eprintln!(
+            "Warning: Location file size {} != expected {}",
+            file_size, LOCATION_FILE_SIZE
+        );
     }
 
-    println!("Memory-mapping location file ({:.2} GB)...", LOCATION_FILE_SIZE as f64 / 1e9);
-    
+    println!(
+        "Memory-mapping location file ({:.2} GB)...",
+        LOCATION_FILE_SIZE as f64 / 1e9
+    );
+
     // Create mutable memory map
     let mut mmap = unsafe { MmapMut::map_mut(&location_file)? };
     println!("Memory mapping created successfully!");
@@ -184,8 +192,10 @@ fn build_location_index_batch(
 
         // Check for potential hash overflow (hash should be < TOTAL_ENTRIES)
         if hash >= TOTAL_ENTRIES {
-            eprintln!("\nWarning: Hash {} exceeds total entries {} for txid at index {}", 
-                      hash, TOTAL_ENTRIES, txid_index);
+            eprintln!(
+                "\nWarning: Hash {} exceeds total entries {} for txid at index {}",
+                hash, TOTAL_ENTRIES, txid_index
+            );
             processed += 1;
             continue;
         }
@@ -200,7 +210,10 @@ fn build_location_index_batch(
         processed += 1;
 
         // Print progress every 100ms or every 100,000 txids
-        if last_progress_update.elapsed().as_millis() >= 100 || processed % 100_000 == 0 || processed == count {
+        if last_progress_update.elapsed().as_millis() >= 100
+            || processed % 100_000 == 0
+            || processed == count
+        {
             print_progress(processed, count, txid_index, start.elapsed());
             last_progress_update = std::time::Instant::now();
         }
@@ -211,7 +224,7 @@ fn build_location_index_batch(
     println!();
     println!();
     println!("=== Flushing changes to disk ===");
-    
+
     // Flush the memory map to disk
     mmap.flush()?;
 
@@ -222,14 +235,21 @@ fn build_location_index_batch(
     println!("Txids processed: {}", processed);
     println!("Time elapsed: {:?}", duration);
     if duration.as_secs() > 0 {
-        println!("Processing rate: {:.0} txids/sec", processed as f64 / duration.as_secs_f64());
+        println!(
+            "Processing rate: {:.0} txids/sec",
+            processed as f64 / duration.as_secs_f64()
+        );
     }
 
     Ok(processed)
 }
 
 /// Verify the location index by sampling some entries
-fn verify_location_index(mphf: &Mphf<[u8; 32]>, txid_path: &Path, location_path: &Path) -> io::Result<()> {
+fn verify_location_index(
+    mphf: &Mphf<[u8; 32]>,
+    txid_path: &Path,
+    location_path: &Path,
+) -> io::Result<()> {
     println!("\n=== Verifying Location Index ===");
 
     // Open files for verification
@@ -267,7 +287,10 @@ fn verify_location_index(mphf: &Mphf<[u8; 32]>, txid_path: &Path, location_path:
 
         // Skip if this is a skipped txid
         if should_skip(&txid_buf) {
-            println!("⊗ Txid index: {} (skipped - not in MPHF)", sample_txid_index);
+            println!(
+                "⊗ Txid index: {} (skipped - not in MPHF)",
+                sample_txid_index
+            );
             continue;
         }
 
@@ -276,7 +299,12 @@ fn verify_location_index(mphf: &Mphf<[u8; 32]>, txid_path: &Path, location_path:
 
         // Read the location at this hash position
         let offset = (hash * LOCATION_SIZE as u64) as usize;
-        let stored_index = u32::from_le_bytes([mmap[offset], mmap[offset+1], mmap[offset+2], mmap[offset+3]]);
+        let stored_index = u32::from_le_bytes([
+            mmap[offset],
+            mmap[offset + 1],
+            mmap[offset + 2],
+            mmap[offset + 3],
+        ]);
 
         let status = if stored_index as u64 == sample_txid_index {
             "✓"
@@ -284,8 +312,10 @@ fn verify_location_index(mphf: &Mphf<[u8; 32]>, txid_path: &Path, location_path:
             "✗"
         };
 
-        println!("{} Txid index: {}, MPHF hash: {}, Stored index: {}",
-                 status, sample_txid_index, hash, stored_index);
+        println!(
+            "{} Txid index: {}, MPHF hash: {}, Stored index: {}",
+            status, sample_txid_index, hash, stored_index
+        );
     }
 
     Ok(())
@@ -343,7 +373,12 @@ fn main() {
     let end_index = std::cmp::min(start_index + TXIDS_PER_BATCH, total_txids);
     let count = end_index - start_index;
 
-    println!("Will process {} txids (from index {} to {})", count, start_index, end_index - 1);
+    println!(
+        "Will process {} txids (from index {} to {})",
+        count,
+        start_index,
+        end_index - 1
+    );
     println!();
 
     // Step 1: Load MPHF
@@ -356,13 +391,14 @@ fn main() {
     };
 
     // Step 2: Build location index for this batch
-    let processed = match build_location_index_batch(&mphf, txid_path, location_path, start_index, count) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("✗ Error building location index: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let processed =
+        match build_location_index_batch(&mphf, txid_path, location_path, start_index, count) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("✗ Error building location index: {}", e);
+                std::process::exit(1);
+            }
+        };
 
     // Save final progress (after mmap flush)
     save_progress(start_index + processed);
@@ -377,11 +413,15 @@ fn main() {
     println!();
     println!("=== Done ===");
     println!("Progress saved to: {}", PROGRESS_FILE);
-    
+
     let new_progress = start_index + processed;
     if new_progress < total_txids {
         let remaining = total_txids - new_progress;
-        println!("Remaining txids: {} (run {} more times)", remaining, (remaining + TXIDS_PER_BATCH - 1) / TXIDS_PER_BATCH);
+        println!(
+            "Remaining txids: {} (run {} more times)",
+            remaining,
+            (remaining + TXIDS_PER_BATCH - 1) / TXIDS_PER_BATCH
+        );
         println!();
         println!("Run this tool again to continue from where you left off!");
     } else {

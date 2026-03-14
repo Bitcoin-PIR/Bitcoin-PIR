@@ -1,9 +1,9 @@
 //! Generate txid.bin file by reading blocks directly from blk*.dat files
-//! 
+//!
 //! This version uses brk_reader for much faster block reading compared to RPC.
 //!
-//! Usage: cargo run --bin generate_txid_file -- <bitcoin_datadir>
-//! Example: cargo run --bin generate_txid_file -- /Volumes/Bitcoin/bitcoin
+//! Usage: cargo run --bin gen_txid_file -- <bitcoin_datadir>
+//! Example: cargo run --bin gen_txid_file -- /Volumes/Bitcoin/bitcoin
 
 use std::env;
 use std::fs::OpenOptions;
@@ -17,7 +17,6 @@ use brk_rpc::{Auth, Client};
 
 const TXID_FILE: &str = "/Volumes/Bitcoin/data/txid.bin";
 const PROGRESS_FILE: &str = "/Volumes/Bitcoin/data/txid_progress.txt";
-const BLOCK_TX_COUNTS_FILE: &str = "/Volumes/Bitcoin/data/block_tx_counts.bin";
 
 const BLOCKS_TO_PROCESS: u64 = 100000;
 
@@ -36,17 +35,14 @@ fn save_progress(block_number: u64) {
     }
 }
 
-/// Get the number of indexed blocks from block_tx_counts.bin
-/// Each block uses 2 bytes in the file (u16 for transaction count)
-fn get_indexed_block_count() -> u64 {
-    match std::fs::metadata(BLOCK_TX_COUNTS_FILE) {
-        Ok(metadata) => metadata.len() / 2,
-        Err(_) => 0,
-    }
-}
-
 /// Print a progress bar
-fn print_progress(current: u64, total: u64, block_number: u64, tx_count: usize, elapsed: std::time::Duration) {
+fn print_progress(
+    current: u64,
+    total: u64,
+    block_number: u64,
+    tx_count: usize,
+    elapsed: std::time::Duration,
+) {
     let percent = (current * 100) / total;
     let filled = (current * 50) / total;
     let empty = 50 - filled;
@@ -79,14 +75,17 @@ fn main() {
         eprintln!("Example: {} /Volumes/Bitcoin/bitcoin", args[0]);
         eprintln!("\nThis tool will:");
         eprintln!("1. Read progress from {}", PROGRESS_FILE);
-        eprintln!("2. Fetch transaction IDs for next {} blocks using brk_reader", BLOCKS_TO_PROCESS);
+        eprintln!(
+            "2. Fetch transaction IDs for next {} blocks using brk_reader",
+            BLOCKS_TO_PROCESS
+        );
         eprintln!("3. Append 32-byte binary transaction IDs to {}", TXID_FILE);
         eprintln!("\nOutput file will be ~{} bytes per transaction", 32);
         std::process::exit(1);
     }
 
     let bitcoin_dir = PathBuf::from(&args[1]);
-    
+
     // Check if the directory exists
     if !bitcoin_dir.exists() {
         eprintln!("Error: Bitcoin directory does not exist: {:?}", bitcoin_dir);
@@ -117,7 +116,7 @@ fn main() {
     // Create RPC client
     let rpc_url = "http://127.0.0.1:8332";
     println!("Connecting to RPC at: {}", rpc_url);
-    
+
     let client = match Client::new(rpc_url, Auth::CookieFile(cookie_path)) {
         Ok(c) => c,
         Err(e) => {
@@ -141,13 +140,6 @@ fn main() {
     let start_block = get_progress();
     println!("✓ Starting from block: {}", start_block);
 
-    // Get the number of indexed blocks from block_tx_counts.bin
-    let indexed_block_count = get_indexed_block_count();
-    println!(
-        "✓ Indexed blocks in {}: {}",
-        BLOCK_TX_COUNTS_FILE, indexed_block_count
-    );
-
     // Check current output file size
     let current_file_size = match std::fs::metadata(TXID_FILE) {
         Ok(m) => m.len(),
@@ -164,15 +156,12 @@ fn main() {
 
     println!();
 
-    // Calculate end block
-    let end_block = std::cmp::min(
-        start_block + BLOCKS_TO_PROCESS,
-        indexed_block_count
-    );
+    // Calculate end block (use blockchain height + 1 since we process up to height inclusive)
+    let end_block = std::cmp::min(start_block + BLOCKS_TO_PROCESS, blockchain_height + 1);
 
-    if start_block >= indexed_block_count {
-        println!("✓ All indexed blocks have been processed.");
-        println!("✓ Run again after indexing more blocks.");
+    if start_block > blockchain_height {
+        println!("✓ All blocks have been processed.");
+        println!("✓ Blockchain height: {}", blockchain_height);
         return;
     }
 
@@ -202,20 +191,20 @@ fn main() {
     // Read blocks from start_block to end_block
     let receiver = reader.read(
         Some((start_block as u32).into()),
-        Some((end_block as u32).into())
+        Some((end_block as u32).into()),
     );
 
     for block in receiver.iter() {
         let height = block.height();
         let height_u64: u64 = height.into();
-        
+
         // Extract transaction IDs and write to file
         let tx_count = block.txdata.len();
-        
+
         for tx in &block.txdata {
             let txid = tx.compute_txid();
             let txid_bytes: [u8; 32] = txid.to_byte_array();
-            
+
             if let Err(e) = writer.write_all(&txid_bytes) {
                 eprintln!("\n✗ Failed to write to file: {}", e);
                 std::process::exit(1);
@@ -226,13 +215,16 @@ fn main() {
         processed += 1;
 
         // Print progress every 1000 blocks or 1 second
-        if last_progress_update.elapsed().as_millis() >= 1000 || processed % 1000 == 0 || height_u64 == end_block - 1 {
+        if last_progress_update.elapsed().as_millis() >= 1000
+            || processed % 1000 == 0
+            || height_u64 == end_block - 1
+        {
             print_progress(
                 processed,
                 end_block - start_block,
                 height_u64,
                 tx_count,
-                start_time.elapsed()
+                start_time.elapsed(),
             );
 
             // Save progress
@@ -243,7 +235,7 @@ fn main() {
                 eprintln!("\n✗ Failed to flush buffer: {}", e);
                 std::process::exit(1);
             }
-            
+
             last_progress_update = Instant::now();
         }
     }

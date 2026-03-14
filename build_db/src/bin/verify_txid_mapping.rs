@@ -26,11 +26,10 @@ fn load_mphf(path: &Path) -> Result<Mphf<[u8; 32]>, String> {
     println!("Loading MPHF from {}...", path.display());
     let start = Instant::now();
 
-    let data = std::fs::read(path)
-        .map_err(|e| format!("Failed to read MPHF file: {}", e))?;
+    let data = std::fs::read(path).map_err(|e| format!("Failed to read MPHF file: {}", e))?;
 
-    let mphf: Mphf<[u8; 32]> = bincode::deserialize(&data)
-        .map_err(|e| format!("Failed to deserialize MPHF: {}", e))?;
+    let mphf: Mphf<[u8; 32]> =
+        bincode::deserialize(&data).map_err(|e| format!("Failed to deserialize MPHF: {}", e))?;
 
     println!(
         "MPHF loaded successfully ({} bytes) in {:.2?}",
@@ -122,7 +121,10 @@ fn main() {
                 if hash_u32 != x {
                     eprintln!(
                         "✗ MISMATCH at entry {}: expected x={}, got MPHF(z)={}, z={}",
-                        count, x, hash_u32, bin2hex(&z)
+                        count,
+                        x,
+                        hash_u32,
+                        bin2hex(&z)
                     );
                     errors += 1;
                 }
@@ -130,7 +132,9 @@ fn main() {
             None => {
                 eprintln!(
                     "✗ MPHF returned None for entry {}: x={}, z={}",
-                    count, x, bin2hex(&z)
+                    count,
+                    x,
+                    bin2hex(&z)
                 );
                 errors += 1;
             }
@@ -174,10 +178,16 @@ fn main() {
 
     if errors == 0 {
         println!();
-        println!("✓ All {} entries verified successfully! Every MPHF(z) == x.", count);
+        println!(
+            "✓ All {} entries verified successfully! Every MPHF(z) == x.",
+            count
+        );
     } else {
         println!();
-        eprintln!("✗ Verification FAILED: {} errors out of {} entries.", errors, count);
+        eprintln!(
+            "✗ Verification FAILED: {} errors out of {} entries.",
+            errors, count
+        );
         std::process::exit(1);
     }
 }

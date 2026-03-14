@@ -1,14 +1,14 @@
+use bitcoinpir::mpfh::bitvector::BitVector;
+use bitcoinpir::mpfh::Mphf;
+use log::error;
 use std::fs::File;
+use std::hash::Hash;
+use std::hash::Hasher;
+use std::io::stdout;
 use std::io::{self, BufReader, Read, Write};
 use std::iter::ExactSizeIterator;
 use std::marker::PhantomData;
 use std::path::Path;
-use std::hash::Hash;
-use std::hash::Hasher;
-use bitcoinpir::mpfh::bitvector::BitVector;
-use bitcoinpir::mpfh::Mphf;
-use log::error;
-use std::io::stdout;
 
 const TXID_FILE: &str = "/Volumes/Bitcoin/data/txid.bin";
 const MPHF_FILE: &str = "/Volumes/Bitcoin/data/txid_mphf.bin";
@@ -119,12 +119,12 @@ fn format_duration(secs: f64) -> String {
     if secs.is_infinite() || secs.is_nan() {
         return "calculating...".to_string();
     }
-    
+
     let total_secs = secs as u64;
     let hours = total_secs / 3600;
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
-    
+
     if hours > 0 {
         format!("{}h {}m {}s", hours, minutes, seconds)
     } else if minutes > 0 {
@@ -185,14 +185,20 @@ pub fn construct_mpdf_direct(gamma: f64, path: &Path, n: u64) -> Mphf<[u8; 32]> 
 
         // Check if remaining keys are at or below threshold - finish early
         if keys_remaining <= REMAINING_THRESHOLD {
-            println!("\n=== Only {} keys remaining (threshold: {}) ===", keys_remaining, REMAINING_THRESHOLD);
+            println!(
+                "\n=== Only {} keys remaining (threshold: {}) ===",
+                keys_remaining, REMAINING_THRESHOLD
+            );
             println!("Writing remaining txids to {}...", REMAINING_FILE);
-            
+
             // Collect and write remaining txids to file
             if let Err(e) = write_remaining_txids(path, &done_keys, n) {
                 error!("Failed to write remaining txids: {}", e);
             } else {
-                println!("Successfully wrote remaining {} txids to {}", keys_remaining, REMAINING_FILE);
+                println!(
+                    "Successfully wrote remaining {} txids to {}",
+                    keys_remaining, REMAINING_FILE
+                );
             }
             break;
         }
@@ -204,7 +210,10 @@ pub fn construct_mpdf_direct(gamma: f64, path: &Path, n: u64) -> Mphf<[u8; 32]> 
 
         let seed = iter;
 
-        println!("\n=== Iteration {} (keys remaining: {}) ===", iter, keys_remaining);
+        println!(
+            "\n=== Iteration {} (keys remaining: {}) ===",
+            iter, keys_remaining
+        );
 
         let mut object_iter = TxidIterator::new(path).unwrap().into_iter();
 
@@ -234,7 +243,11 @@ pub fn construct_mpdf_direct(gamma: f64, path: &Path, n: u64) -> Mphf<[u8; 32]> 
                     0.0
                 };
                 let eta_str = format_duration(eta_secs);
-                print!("\rPass 1 (collision detection): {:.1}% | ETA: {}", current_permille as f64 / 10.0, eta_str);
+                print!(
+                    "\rPass 1 (collision detection): {:.1}% | ETA: {}",
+                    current_permille as f64 / 10.0,
+                    eta_str
+                );
                 stdout().flush().ok();
                 last_reported_permille = current_permille;
             }
@@ -288,7 +301,11 @@ pub fn construct_mpdf_direct(gamma: f64, path: &Path, n: u64) -> Mphf<[u8; 32]> 
                     0.0
                 };
                 let eta_str = format_duration(eta_secs);
-                print!("\rPass 2 (key assignment): {:.1}% | ETA: {}", current_permille as f64 / 10.0, eta_str);
+                print!(
+                    "\rPass 2 (key assignment): {:.1}% | ETA: {}",
+                    current_permille as f64 / 10.0,
+                    eta_str
+                );
                 stdout().flush().ok();
                 last_reported_permille = current_permille;
             }
@@ -346,17 +363,20 @@ fn save_mphf(mphf: &Mphf<[u8; 32]>, path: &Path) -> io::Result<()> {
 /// Each txid is written as a hex string on a separate line
 fn write_remaining_txids(path: &Path, done_keys: &BitVector, total: u64) -> io::Result<()> {
     let mut file = File::create(REMAINING_FILE)?;
-    
+
     // Write header with count
     let remaining_count = total - done_keys.len() as u64;
-    writeln!(file, "# Remaining txids that could not be assigned unique hashes")?;
+    writeln!(
+        file,
+        "# Remaining txids that could not be assigned unique hashes"
+    )?;
     writeln!(file, "# Count: {}", remaining_count)?;
     writeln!(file, "# Format: index<TAB>txid_hex")?;
     writeln!(file)?;
-    
+
     let mut object_iter = TxidIterator::new(path)?;
     let mut object_pos = 0;
-    
+
     for index in 0..total {
         if !done_keys.contains(index) {
             // Fast-forward to the needed item
@@ -365,13 +385,13 @@ fn write_remaining_txids(path: &Path, done_keys: &BitVector, total: u64) -> io::
                 None => break,
             };
             object_pos = index + 1;
-            
+
             // Convert to hex string
             let hex_str: String = key.iter().map(|b| format!("{:02x}", b)).collect();
             writeln!(file, "{}\t{}", index, hex_str)?;
         }
     }
-    
+
     Ok(())
 }
 

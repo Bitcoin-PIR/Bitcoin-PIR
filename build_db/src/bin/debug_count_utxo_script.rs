@@ -1,34 +1,27 @@
-//! Debug tool to find a script pubkey by its RIPEMD160 hash in Bitcoin chainstate
+//! Count UTXOs for a specific script pubkey in Bitcoin chainstate
 //!
-//! This script reads the Bitcoin chainstate database and searches for a UTXO
+//! This script reads the Bitcoin chainstate database and counts all UTXOs
 //! whose script's RIPEMD160 hash matches the target value.
 //!
 //! Usage:
-//!   find_script_by_hash [datadir] [chainstate_dir]
+//!   count_utxo_by_script [script_hex] [datadir]
 //!
 //! Example:
-//!   find_script_by_hash /Volumes/Bitcoin/bitcoin /Volumes/Bitcoin/bitcoin/chainstate
+//!   count_utxo_by_script 76a914b64513c1f1b889a556463243cca9c26ee626b9a088ac /Volumes/Bitcoin/bitcoin
 
 use bitcoin::hashes::{ripemd160, Hash};
 use nix::fcntl::{Flock, FlockArg};
-use rusty_leveldb::{DB, LdbIterator, Options};
+use rusty_leveldb::{LdbIterator, Options, DB};
+use secp256k1::PublicKey;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::Command;
-
-/// Target RIPEMD160 hash to search for (20 bytes)
-/// First 20 bytes of: 00000000000000000000000000000000b13bd8fd61128983
-const TARGET_HASH: [u8; 20] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xb1, 0x3b, 0xd8, 0xfd,
-];
+use std::time::Instant;
 
 /// Check if bitcoind process is running
-/// Returns true if bitcoind process is found
 fn is_bitcoind_running() -> Result<bool, String> {
     let output = Command::new("ps")
         .args(["aux"])
@@ -77,17 +70,13 @@ fn acquire_datadir_lock(datadir: &Path) -> Result<Flock<std::fs::File>, String> 
 
     match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
         Ok(flock) => Ok(flock),
-        Err((_file, e)) => {
-            match e {
-                nix::errno::Errno::EAGAIN => {
-                    Err(format!(
-                        "Cannot acquire lock on .lock file: another process holds the lock ({})",
-                        lock_path.display()
-                    ))
-                }
-                _ => Err(format!("Failed to acquire file lock: {}", e)),
-            }
-        }
+        Err((_file, e)) => match e {
+            nix::errno::Errno::EAGAIN => Err(format!(
+                "Cannot acquire lock on .lock file: another process holds the lock ({})",
+                lock_path.display()
+            )),
+            _ => Err(format!("Failed to acquire file lock: {}", e)),
+        },
     }
 }
 
@@ -164,7 +153,6 @@ pub fn decode_vint(data: &Vec<u8>) -> u64 {
     n
 }
 
-
 pub fn convert_amount(input: u64) -> u64 {
     // Check for zero
     if input == 0 {
@@ -191,10 +179,24 @@ pub fn convert_amount(input: u64) -> u64 {
     amount as u64
 }
 
-
 /// Convert bytes to hex string
 fn bin2hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Convert hex string to bytes
+fn hex2bin(hex: &str) -> Result<Vec<u8>, String> {
+    let hex = hex.trim();
+    if hex.len() % 2 != 0 {
+        return Err("Hex string must have even length".to_string());
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| format!("Invalid hex character: {}", e))
+        })
+        .collect()
 }
 
 /// Format duration in seconds to a human-readable string
@@ -202,12 +204,12 @@ fn format_duration(secs: f64) -> String {
     if secs.is_infinite() || secs.is_nan() {
         return "calculating...".to_string();
     }
-    
+
     let total_secs = secs as u64;
     let hours = total_secs / 3600;
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
-    
+
     if hours > 0 {
         format!("{}h {}m {}s", hours, minutes, seconds)
     } else if minutes > 0 {
@@ -217,12 +219,12 @@ fn format_duration(secs: f64) -> String {
     }
 }
 
-/// Process the chainstate database and search for the target hash
-fn process_chainstate(chainstate_dir: &Path) -> Result<(), String> {
+/// Process the chainstate database and count UTXOs for target hash
+fn process_chainstate(chainstate_dir: &Path, target_hash: &[u8; 20]) -> Result<(u64, u64), String> {
     println!();
     println!("[3] Opening chainstate database...");
     println!("    Chainstate path: {}", chainstate_dir.display());
-    println!("    Target RIPEMD160 hash: {}", bin2hex(&TARGET_HASH));
+    println!("    Target RIPEMD160 hash: {}", bin2hex(target_hash));
 
     if !chainstate_dir.exists() {
         return Err(format!(
@@ -234,7 +236,8 @@ fn process_chainstate(chainstate_dir: &Path) -> Result<(), String> {
     let options = Options {
         create_if_missing: false,
         reuse_logs: false,
-        reuse_manifest: false,
+        reuse_manifest: false,        
+        compressor: 1, // Use Snappy compression for reading (Bitcoin Core uses Snappy)
         ..Default::default()
     };
 
@@ -250,7 +253,9 @@ fn process_chainstate(chainstate_dir: &Path) -> Result<(), String> {
     let mut obfuscate_key: Vec<u8> = Vec::new();
     let mut entry_count: u64 = 0;
     let mut utxo_count: u64 = 0;
-    let start_time = std::time::Instant::now();
+    let mut match_count: u64 = 0;
+    let mut total_amount: u64 = 0;
+    let start_time = Instant::now();
 
     // Create iterator
     let mut iter = match db.new_iter() {
@@ -282,8 +287,15 @@ fn process_chainstate(chainstate_dir: &Path) -> Result<(), String> {
                 0.0
             };
             let eta_str = format_duration(eta_secs);
-            print!("\rProgress: {:.1}% | ETA: {} | Entries: {} | UTXOs: {} | Found: 0", 
-                   current_permille as f64 / 10.0, eta_str, entry_count, utxo_count);
+            print!(
+                "\rProgress: {:.1}% | ETA: {} | Entries: {} | UTXOs: {} | Found: {} ({:.4} BTC)",
+                current_permille as f64 / 10.0,
+                eta_str,
+                entry_count,
+                utxo_count,
+                match_count,
+                total_amount as f64 / 100_000_000.0
+            );
             io::stdout().flush().ok();
             last_reported_permille = current_permille;
         }
@@ -303,101 +315,106 @@ fn process_chainstate(chainstate_dir: &Path) -> Result<(), String> {
             // UTXO entry ('C' = 0x43 = 67)
             67 => {
                 let value = deobfuscate(&obfuscate_key, &v);
-                let (txid, vout) = decode_utxo_key(&k);
+                let (_txid, _vout) = decode_utxo_key(&k);
 
                 // Read first chunk (block height and coinbase)
                 let (first_chunk, offset) = read_chunk(&value, 0);
-                let height = first_chunk >> 1;
+                let _height = first_chunk >> 1;
                 let _coinbase = (first_chunk & 1) == 1;
-
-                if height >= 922_511 {
-                    continue; // Skip entries with blockheight >= 922,511 (our TXID map is up to 922510 block)
-                }
 
                 // Get second chunk and amount
                 let (second_chunk, offset) = read_chunk(&value, offset);
                 let amount = convert_amount(second_chunk);
 
                 // Get third chunk (script type)
-                let (script_type, mut offset) = read_chunk(&value, offset);
+                let (script_type, offset) = read_chunk(&value, offset);
 
-                // Adjust offset for certain script types
-                if script_type > 1 && script_type < 6 {
-                    offset = offset.saturating_sub(1);
-                }
+                // Get remaining bytes (script)
+                let script = match script_type {
+                    0 => {
+                        // P2PKH
+                        let hash = &value[offset..offset + 20];
+                        let mut script = Vec::with_capacity(25);
+                        script.extend_from_slice(&[0x76, 0xa9, 0x14]);
+                        script.extend_from_slice(hash);
+                        script.extend_from_slice(&[0x88, 0xac]);
 
-                // Get script bytes
-                let script: &[u8] = if offset < value.len() {
-                    &value[offset..]
-                } else {
-                    &[]
+                        script
+                    }
+
+                    1 => {
+                        // P2SH
+                        let hash = &value[offset..offset + 20];
+                        let mut script = Vec::with_capacity(23);
+                        script.extend_from_slice(&[0xa9, 0x14]);
+                        script.extend_from_slice(hash);
+                        script.push(0x87);
+
+                        script
+                    }
+
+                    2 | 3 => {
+                        // compressed P2PK
+                        let x = &value[offset..offset + 32];
+                        let prefix = if script_type == 2 { 0x02 } else { 0x03 };
+
+                        let mut script = Vec::with_capacity(35);
+                        script.push(33); // pushdata
+                        script.push(prefix);
+                        script.extend_from_slice(x);
+                        script.push(0xac); // OP_CHECKSIG
+
+                        script
+                    }
+
+                    4 | 5 => {
+                        // uncompressed P2PK (Bitcoin Core reconstructs pubkey from compressed form)
+                        let x = &value[offset..offset + 32];
+                        let prefix = if script_type == 4 { 0x02 } else { 0x03 };
+
+                        // Build compressed pubkey: prefix (1 byte) + X (32 bytes) = 33 bytes
+                        let mut compressed_pubkey_bytes = [0u8; 33];
+                        compressed_pubkey_bytes[0] = prefix;
+                        compressed_pubkey_bytes[1..33].copy_from_slice(x);
+
+                        // Parse compressed pubkey and decompress to uncompressed form
+                        let compressed_pubkey = match PublicKey::from_slice(&compressed_pubkey_bytes) {
+                            Ok(pk) => pk,
+                            Err(_e) => {
+                                continue; // Skip this UTXO entry
+                            }
+                        };
+
+                        // Decompress to get the full 65-byte uncompressed pubkey
+                        let uncompressed_pubkey = compressed_pubkey.serialize_uncompressed();
+
+                        // Build script: PUSHDATA(65 bytes) + pubkey (65 bytes) + OP_CHECKSIG
+                        let mut script = Vec::with_capacity(67);
+                        script.push(65); // PUSHDATA: push 65 bytes
+                        script.extend_from_slice(&uncompressed_pubkey);
+                        script.push(0xac); // OP_CHECKSIG
+
+                        script
+                    }
+
+                    n => {
+                        // raw script
+                        let len = (n - 6) as usize;
+
+                        let script = value[offset..offset + len].to_vec();
+
+                        script
+                    }
                 };
 
                 // Compute RIPEMD-160 hash of the script
-                let script_hash = ripemd160::Hash::hash(script);
+                let script_hash = ripemd160::Hash::hash(&script);
                 let script_hash_array: [u8; 20] = script_hash.to_byte_array();
 
                 // Check if this matches our target
-                if script_hash_array == TARGET_HASH {
-                    println!();
-                    println!();
-                    println!("========== FOUND MATCH! ==========");
-                    println!();
-                    println!("TXID (little-endian): {}", bin2hex(&txid));
-                    
-                    // Also show reversed (big-endian) format which is more common
-                    let mut txid_reversed = txid.clone();
-                    txid_reversed.reverse();
-                    println!("TXID (big-endian):    {}", bin2hex(&txid_reversed));
-                    
-                    println!("Vout:                 {}", vout);
-                    println!("Block Height:         {}", height);
-                    println!("Amount:               {} satoshis ({} BTC)", amount, amount as f64 / 100_000_000.0);
-                    println!("Script hex:           {}", bin2hex(script));
-                    println!("Script len:           {} bytes", script.len());
-                    println!("Script type:          {}", script_type);
-                    println!("RIPEMD160 hash:       {}", bin2hex(&script_hash_array));
-                    println!();
-                    
-                    // Try to decode the script type
-                    if script.is_empty() {
-                        println!("Script type:          Empty script");
-                    } else if script.len() == 25 
-                        && script[0] == 0x76 
-                        && script[1] == 0xa9 
-                        && script[2] == 0x14 
-                        && script[23] == 0x88 
-                        && script[24] == 0xac {
-                        // P2PKH: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
-                        println!("Script type:          P2PKH (Pay to Public Key Hash)");
-                        println!("Public Key Hash:      {}", bin2hex(&script[3..23]));
-                    } else if script.len() == 23 
-                        && script[0] == 0xa9 
-                        && script[1] == 0x14 
-                        && script[22] == 0x87 {
-                        // P2SH: OP_HASH160 <20 bytes> OP_EQUAL
-                        println!("Script type:          P2SH (Pay to Script Hash)");
-                        println!("Script Hash:          {}", bin2hex(&script[2..22]));
-                    } else if script.len() == 22 
-                        && script[0] == 0x00 
-                        && script[1] == 0x14 {
-                        // P2WPKH: OP_0 <20 bytes>
-                        println!("Script type:          P2WPKH (Pay to Witness Public Key Hash)");
-                        println!("Witness Program:      {}", bin2hex(&script[2..22]));
-                    } else if script.len() == 34 
-                        && script[0] == 0x00 
-                        && script[1] == 0x20 {
-                        // P2WSH: OP_0 <32 bytes>
-                        println!("Script type:          P2WSH (Pay to Witness Script Hash)");
-                        println!("Witness Program:      {}", bin2hex(&script[2..34]));
-                    } else {
-                        println!("Script type:          Unknown/non-standard");
-                    }
-                    
-                    println!();
-                    println!("==================================");
-                    
-                    // Continue searching for more matches (there might be multiple UTXOs with same script)
+                if script_hash_array == *target_hash {
+                    match_count += 1;
+                    total_amount += amount;
                 }
 
                 utxo_count += 1;
@@ -409,16 +426,24 @@ fn process_chainstate(chainstate_dir: &Path) -> Result<(), String> {
     let elapsed = start_time.elapsed();
 
     println!();
-    println!("\rProgress: 100.0% | Complete | Entries: {} | UTXOs: {}", entry_count, utxo_count);
+    println!(
+        "\rProgress: 100.0% | Complete | Entries: {} | UTXOs: {} | Found: {} ({:.8} BTC)",
+        entry_count, utxo_count, match_count, total_amount as f64 / 100_000_000.0
+    );
     println!();
     println!("=== Summary ===");
     println!("Total entries scanned: {}", entry_count);
     println!("Total UTXOs scanned: {}", utxo_count);
-    println!("Target hash: {}", bin2hex(&TARGET_HASH));
+    println!("Target hash: {}", bin2hex(target_hash));
+    println!("Matching UTXOs: {}", match_count);
+    println!("Total amount: {} satoshis ({:.8} BTC)", total_amount, total_amount as f64 / 100_000_000.0);
     println!("Time elapsed: {:.2?}", elapsed);
-    println!("Entries per second: {:.0}", entry_count as f64 / elapsed.as_secs_f64());
+    println!(
+        "Entries per second: {:.0}",
+        entry_count as f64 / elapsed.as_secs_f64()
+    );
 
-    Ok(())
+    Ok((match_count, total_amount))
 }
 
 /// Default Bitcoin data directory
@@ -427,24 +452,43 @@ const DEFAULT_BITCOIN_DATADIR: &str = "/Volumes/Bitcoin/bitcoin";
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let (datadir, chainstate_dir) = if args.len() < 2 {
-        let datadir = Path::new(DEFAULT_BITCOIN_DATADIR);
-        let chainstate_dir = datadir.join("chainstate");
-        (datadir.to_path_buf(), chainstate_dir)
+    if args.len() < 2 {
+        eprintln!("Usage: {} <script_hex> [datadir]", args[0]);
+        eprintln!();
+        eprintln!("Arguments:");
+        eprintln!("  script_hex  Script pubkey in hex format");
+        eprintln!("  datadir     Bitcoin data directory (default: {})", DEFAULT_BITCOIN_DATADIR);
+        eprintln!();
+        eprintln!("Example:");
+        eprintln!("  {} 76a914b64513c1f1b889a556463243cca9c26ee626b9a088ac", args[0]);
+        std::process::exit(1);
+    }
+
+    let script_hex = &args[1];
+    let datadir = if args.len() >= 3 {
+        Path::new(&args[2]).to_path_buf()
     } else {
-        let datadir = Path::new(&args[1]);
-        let chainstate_dir = if args.len() >= 3 {
-            Path::new(&args[2]).to_path_buf()
-        } else {
-            datadir.join("chainstate")
-        };
-        (datadir.to_path_buf(), chainstate_dir)
+        Path::new(DEFAULT_BITCOIN_DATADIR).to_path_buf()
     };
 
-    println!("=== Find Script by RIPEMD160 Hash ===");
-    println!("datadir: {}", datadir.display());
-    println!("chainstate: {}", chainstate_dir.display());
-    println!("target hash: {}", bin2hex(&TARGET_HASH));
+    // Parse script hex
+    let script = match hex2bin(script_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error parsing script hex: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Compute RIPEMD160 hash
+    let script_hash = ripemd160::Hash::hash(&script);
+    let target_hash: [u8; 20] = script_hash.to_byte_array();
+
+    println!("=== Count UTXO by Script ===");
+    println!("Script hex:   {}", script_hex);
+    println!("Script bytes: {} bytes", script.len());
+    println!("RIPEMD160:    {}", bin2hex(&target_hash));
+    println!("Datadir:      {}", datadir.display());
     println!();
 
     // Step 1: Check if bitcoind process is running
@@ -481,7 +525,8 @@ fn main() {
     };
 
     // Step 3: Process chainstate database
-    if let Err(e) = process_chainstate(&chainstate_dir) {
+    let chainstate_dir = datadir.join("chainstate");
+    if let Err(e) = process_chainstate(&chainstate_dir, &target_hash) {
         eprintln!("✗ {}", e);
         std::process::exit(1);
     }

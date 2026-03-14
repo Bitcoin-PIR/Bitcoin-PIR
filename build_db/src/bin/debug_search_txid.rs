@@ -43,7 +43,10 @@ fn main() {
         eprintln!("  <txid>    Transaction ID (64 hex characters)");
         eprintln!();
         eprintln!("Example:");
-        eprintln!("  {} 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", args[0]);
+        eprintln!(
+            "  {} 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            args[0]
+        );
         eprintln!();
         eprintln!("The TXID can be in either normal or reversed byte order.");
         std::process::exit(1);
@@ -143,9 +146,12 @@ fn main() {
     println!("=== Results ===");
     println!("Transactions checked: {}", txs_checked);
     println!("Time elapsed: {:.2} seconds", elapsed.as_secs_f64());
-    
+
     if txs_checked > 0 {
-        println!("Search speed: {:.1} tx/s", txs_checked as f64 / elapsed.as_secs_f64());
+        println!(
+            "Search speed: {:.1} tx/s",
+            txs_checked as f64 / elapsed.as_secs_f64()
+        );
     }
     println!();
 

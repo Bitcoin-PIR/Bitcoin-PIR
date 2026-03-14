@@ -4,13 +4,13 @@
 //! 1. Check if bitcoind process is running via `ps aux`
 //! 2. Create .lock file in the given datadir and acquire Advisory Lock
 //! 3. Open and iterate over the chainstate LevelDB database
-//! 4. Map 32-byte TXID to 4-byte TXID using MPHF
+//! 4. Map 32-byte TXID to 4-byte TXID using MPHF + txid_locations.bin lookup
 //! 5. Compute RIPEMD-160 hash of script
 //! 6. Write remapped UTXO entries to output file
 //!
 //! Output format per UTXO (40 bytes):
 //! - 20 bytes: RIPEMD-160 hash of script
-//! - 4 bytes: TXID (mapped from 32 bytes using MPHF)
+//! - 4 bytes: TXID (looked up from txid_locations.bin using MPHF hash as index)
 //! - 4 bytes: vout (u32)
 //! - 4 bytes: block height (u32)
 //! - 8 bytes: amount (u64)
@@ -23,8 +23,10 @@
 
 use bitcoin::hashes::{ripemd160, Hash};
 use bitcoinpir::mpfh::Mphf;
+use memmap2::Mmap;
+use secp256k1::PublicKey;
 use nix::fcntl::{Flock, FlockArg};
-use rusty_leveldb::{DB, LdbIterator, Options};
+use rusty_leveldb::{LdbIterator, Options, DB};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
@@ -36,24 +38,23 @@ use std::time::Instant;
 /// Path to the MPHF file for TXID mapping
 const MPHF_FILE: &str = "/Volumes/Bitcoin/data/txid_mphf.bin";
 
+/// Path to the txid_locations.bin file (MPHF hash -> txid_index mapping)
+const TXID_LOCATIONS_FILE: &str = "/Volumes/Bitcoin/data/txid_locations.bin";
+
 /// Output file for remapped UTXO set
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/remapped_utxo_set.bin";
 
 /// Txids to skip (these caused issues during MPHF construction)
 /// 68b45f58b674e94eb881cd67b04c2cba07fe5552dbf1d5385637b0d4073dbfe3
 const SKIP_TXID_1: [u8; 32] = [
-    0x68, 0xb4, 0x5f, 0x58, 0xb6, 0x74, 0xe9, 0x4e,
-    0xb8, 0x81, 0xcd, 0x67, 0xb0, 0x4c, 0x2c, 0xba,
-    0x07, 0xfe, 0x55, 0x52, 0xdb, 0xf1, 0xd5, 0x38,
-    0x56, 0x37, 0xb0, 0xd4, 0x07, 0x3d, 0xbf, 0xe3,
+    0x68, 0xb4, 0x5f, 0x58, 0xb6, 0x74, 0xe9, 0x4e, 0xb8, 0x81, 0xcd, 0x67, 0xb0, 0x4c, 0x2c, 0xba,
+    0x07, 0xfe, 0x55, 0x52, 0xdb, 0xf1, 0xd5, 0x38, 0x56, 0x37, 0xb0, 0xd4, 0x07, 0x3d, 0xbf, 0xe3,
 ];
 
 /// 9985d82954e10f2233a08905dc7b490eb444660c8759e324c7dfa3d28779d2d5
 const SKIP_TXID_2: [u8; 32] = [
-    0x99, 0x85, 0xd8, 0x29, 0x54, 0xe1, 0x0f, 0x22,
-    0x33, 0xa0, 0x89, 0x05, 0xdc, 0x7b, 0x49, 0x0e,
-    0xb4, 0x44, 0x66, 0x0c, 0x87, 0x59, 0xe3, 0x24,
-    0xc7, 0xdf, 0xa3, 0xd2, 0x87, 0x79, 0xd2, 0xd5,
+    0x99, 0x85, 0xd8, 0x29, 0x54, 0xe1, 0x0f, 0x22, 0x33, 0xa0, 0x89, 0x05, 0xdc, 0x7b, 0x49, 0x0e,
+    0xb4, 0x44, 0x66, 0x0c, 0x87, 0x59, 0xe3, 0x24, 0xc7, 0xdf, 0xa3, 0xd2, 0x87, 0x79, 0xd2, 0xd5,
 ];
 
 /// UTXO information extracted from chainstate
@@ -96,7 +97,7 @@ fn is_bitcoind_running() -> Result<bool, String> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 11 {
             let command = parts[10]; // COMMAND column
-            // Check if command is bitcoind or path ends with /bitcoind
+                                     // Check if command is bitcoind or path ends with /bitcoind
             if command == "bitcoind" || command.ends_with("/bitcoind") {
                 return Ok(true);
             }
@@ -129,32 +130,62 @@ fn acquire_datadir_lock(datadir: &Path) -> Result<Flock<std::fs::File>, String> 
     // Use non-blocking mode; return error immediately if lock cannot be acquired
     match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
         Ok(flock) => Ok(flock),
-        Err((_file, e)) => {
-            match e {
-                nix::errno::Errno::EAGAIN => {
-                    Err(format!(
-                        "Cannot acquire lock on .lock file: another process holds the lock ({})",
-                        lock_path.display()
-                    ))
-                }
-                _ => Err(format!("Failed to acquire file lock: {}", e)),
-            }
-        }
+        Err((_file, e)) => match e {
+            nix::errno::Errno::EAGAIN => Err(format!(
+                "Cannot acquire lock on .lock file: another process holds the lock ({})",
+                lock_path.display()
+            )),
+            _ => Err(format!("Failed to acquire file lock: {}", e)),
+        },
     }
 }
 
 /// Load MPHF from file
 fn load_mphf(path: &Path) -> Result<Mphf<[u8; 32]>, String> {
     println!("Loading MPHF from {}...", path.display());
-    
-    let data = std::fs::read(path)
-        .map_err(|e| format!("Failed to read MPHF file: {}", e))?;
-    
-    let mphf: Mphf<[u8; 32]> = bincode::deserialize(&data)
-        .map_err(|e| format!("Failed to deserialize MPHF: {}", e))?;
-    
+
+    let data = std::fs::read(path).map_err(|e| format!("Failed to read MPHF file: {}", e))?;
+
+    let mphf: Mphf<[u8; 32]> =
+        bincode::deserialize(&data).map_err(|e| format!("Failed to deserialize MPHF: {}", e))?;
+
     println!("MPHF loaded successfully ({} bytes)", data.len());
     Ok(mphf)
+}
+
+/// Load txid_locations.bin as a memory-mapped file
+/// This file maps MPHF hash -> txid_index (position in txid.bin)
+/// Each entry is 4 bytes (u32), so for MPHF hash x, the txid_index is at offset 4*x
+fn load_txid_locations(path: &Path) -> Result<Mmap, String> {
+    println!("Loading txid_locations from {}...", path.display());
+
+    let file = File::open(path).map_err(|e| format!("Failed to open txid_locations file: {}", e))?;
+
+    let metadata = file.metadata().map_err(|e| format!("Failed to get file metadata: {}", e))?;
+    println!(
+        "txid_locations file size: {} bytes ({:.2} GB)",
+        metadata.len(),
+        metadata.len() as f64 / 1e9
+    );
+
+    let mmap = unsafe { Mmap::map(&file) }
+        .map_err(|e| format!("Failed to memory-map txid_locations file: {}", e))?;
+
+    println!("txid_locations memory-mapped successfully");
+    Ok(mmap)
+}
+
+/// Look up the actual 4-byte TXID from txid_locations.bin
+/// Given the MPHF hash, read 4 bytes at offset 4*hash to get the txid_index
+#[inline]
+fn lookup_txid_4b(locations: &Mmap, mphf_hash: u64) -> u32 {
+    let offset = (mphf_hash * 4) as usize;
+    u32::from_le_bytes([
+        locations[offset],
+        locations[offset + 1],
+        locations[offset + 2],
+        locations[offset + 3],
+    ])
 }
 
 /// Deobfuscate a value using the obfuscate key
@@ -211,7 +242,6 @@ fn read_chunk(data: &Vec<u8>, offset: usize) -> (u64, usize) {
 
     (chunk, new_offset)
 }
-
 
 pub fn get_vint(data: &Vec<u8>, offset: &usize) -> Vec<u8> {
     // Initialize
@@ -282,12 +312,12 @@ fn format_duration(secs: f64) -> String {
     if secs.is_infinite() || secs.is_nan() {
         return "calculating...".to_string();
     }
-    
+
     let total_secs = secs as u64;
     let hours = total_secs / 3600;
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
-    
+
     if hours > 0 {
         format!("{}h {}m {}s", hours, minutes, seconds)
     } else if minutes > 0 {
@@ -309,24 +339,58 @@ fn write_remapped_utxo(
 ) -> io::Result<()> {
     // Write script hash (20 bytes - RIPEMD-160)
     writer.write_all(script_hash)?;
-    
+
     // Write 4-byte TXID (little-endian)
     writer.write_all(&txid_4b.to_le_bytes())?;
-    
+
     // Write vout (4 bytes, little-endian)
     writer.write_all(&vout.to_le_bytes())?;
-    
+
     // Write block height (4 bytes, little-endian)
     writer.write_all(&height.to_le_bytes())?;
-    
+
     // Write amount (8 bytes, little-endian)
     writer.write_all(&amount.to_le_bytes())?;
-    
+
     Ok(())
 }
 
+/// Count total entries in the chainstate database (Pass 1)
+fn count_chainstate_entries(chainstate_dir: &Path) -> Result<u64, String> {
+    let options = Options {
+        create_if_missing: false,
+        reuse_logs: false,
+        reuse_manifest: false,
+        compressor: 1, // Use Snappy compression for reading (Bitcoin Core uses Snappy)
+        ..Default::default()
+    };
+
+    let mut db = match DB::open(chainstate_dir, options) {
+        Ok(db) => db,
+        Err(e) => return Err(format!("Unable to open LevelDB, error: {:?}", e)),
+    };
+
+    let mut iter = match db.new_iter() {
+        Ok(iter) => iter,
+        Err(e) => return Err(format!("Failed to create iterator: {:?}", e)),
+    };
+
+    let mut count: u64 = 0;
+    while iter.advance() {
+        if iter.current().is_some() {
+            count += 1;
+        }
+    }
+
+    Ok(count)
+}
+
 /// Process the chainstate database and write remapped UTXOs
-fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<(), String> {
+fn process_chainstate(
+    chainstate_dir: &Path,
+    mphf: &Mphf<[u8; 32]>,
+    txid_locations: &Mmap,
+) -> Result<(), String> {
     println!();
     println!("[3] Opening chainstate database...");
     println!("    Chainstate path: {}", chainstate_dir.display());
@@ -342,14 +406,15 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
     // First pass: count total entries for progress bar
     println!();
     println!("[4] Counting entries (Pass 1/2)...");
-    let total_entries = 164957265;
-    // USE A FIXED NUMBER. DO NOT CHANGE THIS
+    let count_start = Instant::now();
+    let total_entries = count_chainstate_entries(chainstate_dir)?;
+    println!("    Found {} entries in {:.2}s", total_entries, count_start.elapsed().as_secs_f64());
 
     // Open output file for writing remapped UTXOs
     println!();
     println!("[5] Opening output file: {}", OUTPUT_FILE);
-    let output_file = File::create(OUTPUT_FILE)
-        .map_err(|e| format!("Failed to create output file: {}", e))?;
+    let output_file =
+        File::create(OUTPUT_FILE).map_err(|e| format!("Failed to create output file: {}", e))?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, output_file); // 1MB buffer
 
     // Configure LevelDB options with read-only safeguards:
@@ -360,6 +425,7 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
         create_if_missing: false,
         reuse_logs: false,
         reuse_manifest: false,
+        compressor: 1, // Use Snappy compression for reading (Bitcoin Core uses Snappy)
         ..Default::default()
     };
 
@@ -417,8 +483,15 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
                 0.0
             };
             let eta_str = format_duration(eta_secs);
-            print!("\rProcessing: {:.1}% | ETA: {} | Entries: {}/{} | UTXOs: {} | Cache hits: {}", 
-                   current_permille as f64 / 10.0, eta_str, entry_count, total_entries, total_utxos, txid_cache_hits);
+            print!(
+                "\rProcessing: {:.1}% | ETA: {} | Entries: {}/{} | UTXOs: {} | Cache hits: {}",
+                current_permille as f64 / 10.0,
+                eta_str,
+                entry_count,
+                total_entries,
+                total_utxos,
+                txid_cache_hits
+            );
             io::stdout().flush().ok();
             last_reported_permille = current_permille;
         }
@@ -465,27 +538,96 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
                     continue; // Skip entries with blockheight >= 922,511 (our TXID map is up to 922510 block)
                 }
 
-
                 // Get second chunk and amount
                 let (second_chunk, offset) = read_chunk(&value, offset);
                 let amount = convert_amount(second_chunk);
 
                 // Get third chunk (script type)
-                let (script_type, mut offset) = read_chunk(&value, offset);
-
-                // Subtract 1 from offset if needed (for certain script types)
-                if script_type > 1 && script_type < 6 {
-                    offset = offset.saturating_sub(1);
-                }
+                let (script_type, offset) = read_chunk(&value, offset);
 
                 // Get remaining bytes (script)
-                let script: &[u8] = if offset < value.len() {
-                    &value[offset..]
-                } else {
-                    &[]
+                let script = match script_type {
+                    0 => {
+                        // P2PKH
+                        let hash = &value[offset..offset + 20];
+                        let mut script = Vec::with_capacity(25);
+                        script.extend_from_slice(&[0x76, 0xa9, 0x14]);
+                        script.extend_from_slice(hash);
+                        script.extend_from_slice(&[0x88, 0xac]);
+
+                        script
+                    }
+
+                    1 => {
+                        // P2SH
+                        let hash = &value[offset..offset + 20];
+                        let mut script = Vec::with_capacity(23);
+                        script.extend_from_slice(&[0xa9, 0x14]);
+                        script.extend_from_slice(hash);
+                        script.push(0x87);
+
+                        script
+                    }
+
+                    2 | 3 => {
+                        // compressed P2PK
+                        let x = &value[offset..offset + 32];
+                        let prefix = if script_type == 2 { 0x02 } else { 0x03 };
+
+                        let mut script = Vec::with_capacity(35);
+                        script.push(33); // pushdata
+                        script.push(prefix);
+                        script.extend_from_slice(x);
+                        script.push(0xac); // OP_CHECKSIG
+
+                        script
+                    }
+
+                    4 | 5 => {
+                        // uncompressed P2PK (Bitcoin Core reconstructs pubkey from compressed form)
+                        // The stored 32 bytes is the X coordinate
+                        // script_type 4 -> prefix 0x02 (even Y)
+                        // script_type 5 -> prefix 0x03 (odd Y)
+                        let x = &value[offset..offset + 32];
+                        let prefix = if script_type == 4 { 0x02 } else { 0x03 };
+
+                        // Build compressed pubkey: prefix (1 byte) + X (32 bytes) = 33 bytes
+                        let mut compressed_pubkey_bytes = [0u8; 33];
+                        compressed_pubkey_bytes[0] = prefix;
+                        compressed_pubkey_bytes[1..33].copy_from_slice(x);
+
+                        // Parse compressed pubkey and decompress to uncompressed form
+                        let compressed_pubkey = match PublicKey::from_slice(&compressed_pubkey_bytes) {
+                            Ok(pk) => pk,
+                            Err(e) => {
+                                return Err(format!("Failed to parse compressed pubkey: {:?}", e));
+                            }
+                        };
+
+                        // Decompress to get the full 65-byte uncompressed pubkey
+                        let uncompressed_pubkey = compressed_pubkey.serialize_uncompressed();
+
+                        // Build script: PUSHDATA(65 bytes) + pubkey (65 bytes) + OP_CHECKSIG
+                        // Total: 1 + 65 + 1 = 67 bytes
+                        let mut script = Vec::with_capacity(67);
+                        script.push(65); // PUSHDATA: push 65 bytes
+                        script.extend_from_slice(&uncompressed_pubkey);
+                        script.push(0xac); // OP_CHECKSIG
+
+                        script
+                    }
+
+                    n => {
+                        // raw script
+                        let len = (n - 6) as usize;
+
+                        let script = value[offset..offset + len].to_vec();
+
+                        script
+                    }
                 };
 
-                // Map TXID to 4-byte using MPHF with local cache
+                // Map TXID to 4-byte using MPHF + txid_locations.bin lookup with local cache
                 let txid_4b = if cached_txid == Some(txid_array) {
                     // Cache hit - use cached 4B TXID
                     txid_cache_hits += 1;
@@ -494,33 +636,41 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
                     // Cache miss - lookup in MPHF using try_hash
                     txid_mphf_lookups += 1;
                     match mphf.try_hash(&txid_array) {
-                        Some(hash) => {
-                            let hash = hash as u32;
-                            
+                        Some(mphf_hash) => {
+                            // MPHF found - now lookup the actual 4-byte TXID from txid_locations.bin
+                            // The MPHF hash is the index into txid_locations.bin (at offset 4*mphf_hash)
+                            let actual_txid_4b = lookup_txid_4b(txid_locations, mphf_hash);
+
                             // Successfully mapped - increment counter
                             txid_mappings_successful += 1;
-                            
+
                             // Update cache
                             cached_txid = Some(txid_array);
-                            cached_txid_4b = Some(hash);
-                            
-                            hash
+                            cached_txid_4b = Some(actual_txid_4b);
+
+                            actual_txid_4b
                         }
                         None => {
                             // TXID not found in MPHF - try reversed version for debugging
                             let mut reversed_txid = txid_array;
                             reversed_txid.reverse();
-                            
+
                             match mphf.try_hash(&reversed_txid) {
                                 Some(hash) => {
                                     // Reversed version found - this indicates byte order issue
                                     eprintln!("!!! DEBUG: TXID not found in MPHF");
                                     eprintln!("    Original:           {}", bin2hex(&txid_array));
-                                    eprintln!("    Reversed:           {}", bin2hex(&reversed_txid));
+                                    eprintln!(
+                                        "    Reversed:           {}",
+                                        bin2hex(&reversed_txid)
+                                    );
                                     eprintln!("    Reversed version found with hash: {}", hash);
                                     eprintln!("    Its height:         {}", height);
                                     eprintln!("    Its script hex:     {}", bin2hex(&script));
-                                    eprintln!("    Successfully mapped TXIDs before this error: {}", txid_mappings_successful);
+                                    eprintln!(
+                                        "    Successfully mapped TXIDs before this error: {}",
+                                        txid_mappings_successful
+                                    );
                                     return Err(format!(
                                         "TXID found only in reversed byte order: {} (reversed: {})",
                                         bin2hex(&txid_array),
@@ -530,8 +680,10 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
                                 None => {
                                     // Neither original nor reversed found
                                     eprintln!("Warning: TXID not found in MPHF (neither original nor reversed): {}", bin2hex(&txid_array));
-                                    eprintln!("    Successfully mapped TXIDs before this warning: {}", txid_mappings_successful);
-                                    continue; // Skip this UTXO entry
+                                    return Err(format!(
+                                        "TXID not found in MPHF (neither original nor reversed): {}",
+                                        bin2hex(&txid_array)
+                                    ));
                                 }
                             }
                         }
@@ -539,11 +691,18 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
                 };
 
                 // Compute RIPEMD-160 hash of the script
-                let script_hash = ripemd160::Hash::hash(script);
+                let script_hash = ripemd160::Hash::hash(&script);
                 let script_hash_array: [u8; 20] = script_hash.to_byte_array();
 
                 // Write remapped UTXO entry to output file
-                if let Err(e) = write_remapped_utxo(&mut writer, &script_hash_array, txid_4b, vout, height as u32, amount) {
+                if let Err(e) = write_remapped_utxo(
+                    &mut writer,
+                    &script_hash_array,
+                    txid_4b,
+                    vout,
+                    height as u32,
+                    amount,
+                ) {
                     return Err(format!("Failed to write UTXO: {}", e));
                 }
 
@@ -564,27 +723,44 @@ fn process_chainstate(chainstate_dir: &Path, mphf: &Mphf<[u8; 32]>) -> Result<()
 
     let elapsed = start_time.elapsed();
 
-    println!("\rProcessing: 100.0% | Complete | Entries: {}/{} | UTXOs: {} | Cache hits: {}", 
-             entry_count, total_entries, total_utxos, txid_cache_hits);
+    println!(
+        "\rProcessing: 100.0% | Complete | Entries: {}/{} | UTXOs: {} | Cache hits: {}",
+        entry_count, total_entries, total_utxos, txid_cache_hits
+    );
     println!();
     println!("=== Summary ===");
     println!("Total entries: {}", entry_count);
     println!("Total UTXOs: {}", total_utxos);
     println!("Total amount: {} BTC", total_amount as f64 / 100_000_000.0);
-    println!("TXID cache hits: {} ({:.1}%)", txid_cache_hits, 
-             100.0 * txid_cache_hits as f64 / (txid_cache_hits + txid_mphf_lookups) as f64);
+    println!(
+        "TXID cache hits: {} ({:.1}%)",
+        txid_cache_hits,
+        100.0 * txid_cache_hits as f64 / (txid_cache_hits + txid_mphf_lookups) as f64
+    );
     println!("TXID MPHF lookups: {}", txid_mphf_lookups);
     println!("Successfully mapped TXIDs: {}", txid_mappings_successful);
     println!("Output file: {}", OUTPUT_FILE);
     println!("Time elapsed: {:.2?}", elapsed);
-    println!("Entries per second: {:.0}", entry_count as f64 / elapsed.as_secs_f64());
-    println!("UTXOs per second: {:.0}", total_utxos as f64 / elapsed.as_secs_f64());
+    println!(
+        "Entries per second: {:.0}",
+        entry_count as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "UTXOs per second: {:.0}",
+        total_utxos as f64 / elapsed.as_secs_f64()
+    );
 
     // Get output file size
     if let Ok(metadata) = std::fs::metadata(OUTPUT_FILE) {
-        println!("Output file size: {} bytes ({:.2} MB)", 
-                 metadata.len(), metadata.len() as f64 / (1024.0 * 1024.0));
-        println!("Average UTXO entry size: {} bytes", metadata.len() / total_utxos.max(1));
+        println!(
+            "Output file size: {} bytes ({:.2} MB)",
+            metadata.len(),
+            metadata.len() as f64 / (1024.0 * 1024.0)
+        );
+        println!(
+            "Average UTXO entry size: {} bytes",
+            metadata.len() / total_utxos.max(1)
+        );
     }
 
     Ok(())
@@ -658,7 +834,7 @@ fn main() {
         eprintln!("  Please run build_mphf first to create the MPHF file.");
         std::process::exit(1);
     }
-    
+
     let mphf = match load_mphf(mphf_path) {
         Ok(mphf) => {
             println!("✓ MPHF loaded successfully");
@@ -670,8 +846,29 @@ fn main() {
         }
     };
 
+    // Step 2.6: Load txid_locations.bin for TXID mapping
+    println!();
+    println!("[2.6] Loading txid_locations.bin for TXID index lookup...");
+    let txid_locations_path = Path::new(TXID_LOCATIONS_FILE);
+    if !txid_locations_path.exists() {
+        eprintln!("✗ txid_locations file not found: {}", TXID_LOCATIONS_FILE);
+        eprintln!("  Please run build_location_index first to create the locations file.");
+        std::process::exit(1);
+    }
+
+    let txid_locations = match load_txid_locations(txid_locations_path) {
+        Ok(locations) => {
+            println!("✓ txid_locations loaded successfully");
+            locations
+        }
+        Err(e) => {
+            eprintln!("✗ {}", e);
+            std::process::exit(1);
+        }
+    };
+
     // Step 3 & 4: Process chainstate database
-    if let Err(e) = process_chainstate(&chainstate_dir, &mphf) {
+    if let Err(e) = process_chainstate(&chainstate_dir, &mphf, &txid_locations) {
         eprintln!("✗ {}", e);
         std::process::exit(1);
     }

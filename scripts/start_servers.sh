@@ -1,42 +1,36 @@
 #!/bin/bash
 # Start two DPF-PIR servers for PIR queries
 #
-# Configuration:
-# - Bucket size: 4 entries
-# - Number of buckets: 14008287
-# - Entry size: 24 bytes
-# - Bucket bytes: 24 * 4 = 96 bytes
-# - Data file: /Volumes/Bitcoin/pir/utxo_chunks_cuckoo.bin
+# Database Configuration:
+# Databases are now registered in dpf_pir/src/server_config.rs
+# Edit that file to add/modify databases, then rebuild.
+#
+# No command-line arguments needed - the server automatically
+# loads all registered databases from the configuration.
 
 set -e
 
-# Configuration
-DATA_FILE="/Volumes/Bitcoin/pir/utxo_chunks_cuckoo.bin"
-BUCKETS=14008287
-ENTRY_SIZE=24
-BUCKET_SIZE=4
+# Ports for the two servers (must match what client expects)
 SERVER1_PORT=8081
 SERVER2_PORT=8082
-
-# Optional: load data into memory for faster queries
-# Uncomment the -m flag below if you have enough RAM
-LOAD_MEMORY_FLAG=""
-# LOAD_MEMORY_FLAG="-m"
 
 # Build the server first
 echo "Building server..."
 cd "$(dirname "$0")/.."
 cargo build --release --bin server
 
+echo ""
+echo "========================================"
+echo "DPF-PIR Server Startup"
+echo "========================================"
+echo ""
+echo "Note: Databases are configured in dpf_pir/src/server_config.rs"
+echo "Edit that file to add/modify databases, then rebuild."
+echo ""
+
 # Start Server 1 in background
 echo "Starting Server 1 on port $SERVER1_PORT..."
-RUST_LOG=info ./target/release/server \
-    --port $SERVER1_PORT \
-    --data "$DATA_FILE" \
-    --buckets $BUCKETS \
-    --entry-size $ENTRY_SIZE \
-    --bucket-size $BUCKET_SIZE \
-    $LOAD_MEMORY_FLAG &
+RUST_LOG=info ./target/release/server &
 SERVER1_PID=$!
 echo "Server 1 PID: $SERVER1_PID"
 
@@ -45,13 +39,7 @@ sleep 1
 
 # Start Server 2 in background
 echo "Starting Server 2 on port $SERVER2_PORT..."
-RUST_LOG=info ./target/release/server \
-    --port $SERVER2_PORT \
-    --data "$DATA_FILE" \
-    --buckets $BUCKETS \
-    --entry-size $ENTRY_SIZE \
-    --bucket-size $BUCKET_SIZE \
-    $LOAD_MEMORY_FLAG &
+RUST_LOG=info ./target/release/server &
 SERVER2_PID=$!
 echo "Server 2 PID: $SERVER2_PID"
 
@@ -62,6 +50,7 @@ echo "Server 1: localhost:$SERVER1_PORT (PID: $SERVER1_PID)"
 echo "Server 2: localhost:$SERVER2_PORT (PID: $SERVER2_PID)"
 echo "========================================"
 echo ""
+echo "Use './scripts/run_client.sh --list-databases' to see available databases"
 echo "Press Ctrl+C to stop both servers..."
 
 # Trap Ctrl+C to kill both servers

@@ -2,6 +2,15 @@
 //!
 //! These hash functions are used to compute the two possible bucket locations
 //! for a 20-byte script hash in the cuckoo hash table.
+//!
+//! This module provides backward-compatible functions that use default seeds,
+//! as well as re-exports from the database module for configurable hashing.
+
+// Re-export configurable hash functions from database module
+pub use crate::database::{
+    cuckoo_hash1, cuckoo_hash2, cuckoo_locations_default,
+    DEFAULT_HASH1_PRIME, DEFAULT_HASH1_SEED, DEFAULT_HASH2_PRIME, DEFAULT_HASH2_SEED,
+};
 
 /// Size of the key in bytes (20 bytes for script hash)
 pub const KEY_SIZE: usize = 20;
@@ -15,33 +24,18 @@ pub const NUM_BUCKETS: usize = 14_008_287;
 
 /// Hash function 1 for 20-byte script hash.
 /// Uses FNV-1a style mixing over the key bytes.
+/// This is a backward-compatible wrapper around the configurable version.
 #[inline(always)]
 pub fn hash1(key: &[u8; KEY_SIZE], num_buckets: usize) -> usize {
-    let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
-    for i in 0..KEY_SIZE {
-        h ^= key[i] as u64;
-        h = h.wrapping_mul(0x100000001b3); // FNV prime
-    }
-    // Extra mixing
-    h ^= h >> 33;
-    h = h.wrapping_mul(0xff51afd7ed558ccd);
-    h ^= h >> 33;
-    (h as usize) % num_buckets
+    cuckoo_hash1(key, num_buckets, DEFAULT_HASH1_SEED, DEFAULT_HASH1_PRIME)
 }
 
 /// Hash function 2 for 20-byte script hash.
 /// Different seed/constants.
+/// This is a backward-compatible wrapper around the configurable version.
 #[inline(always)]
 pub fn hash2(key: &[u8; KEY_SIZE], num_buckets: usize) -> usize {
-    let mut h: u64 = 0x517cc1b727220a95; // Different seed
-    for i in 0..KEY_SIZE {
-        h ^= key[i] as u64;
-        h = h.wrapping_mul(0x9e3779b97f4a7c15); // Different prime
-    }
-    h ^= h >> 32;
-    h = h.wrapping_mul(0xbf58476d1ce4e5b9);
-    h ^= h >> 32;
-    (h as usize) % num_buckets
+    cuckoo_hash2(key, num_buckets, DEFAULT_HASH2_SEED, DEFAULT_HASH2_PRIME)
 }
 
 /// Hash function 1 variant that works with a byte slice (for mmap compatibility).
@@ -49,16 +43,8 @@ pub fn hash2(key: &[u8; KEY_SIZE], num_buckets: usize) -> usize {
 #[inline(always)]
 pub fn hash1_slice(mmap: &[u8], entry_idx: u32, num_buckets: usize) -> usize {
     let offset = entry_idx as usize * ENTRY_SIZE;
-    let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
-    for i in 0..KEY_SIZE {
-        h ^= mmap[offset + i] as u64;
-        h = h.wrapping_mul(0x100000001b3); // FNV prime
-    }
-    // Extra mixing
-    h ^= h >> 33;
-    h = h.wrapping_mul(0xff51afd7ed558ccd);
-    h ^= h >> 33;
-    (h as usize) % num_buckets
+    let key = &mmap[offset..offset + KEY_SIZE];
+    cuckoo_hash1(key, num_buckets, DEFAULT_HASH1_SEED, DEFAULT_HASH1_PRIME)
 }
 
 /// Hash function 2 variant that works with a byte slice (for mmap compatibility).
@@ -66,15 +52,8 @@ pub fn hash1_slice(mmap: &[u8], entry_idx: u32, num_buckets: usize) -> usize {
 #[inline(always)]
 pub fn hash2_slice(mmap: &[u8], entry_idx: u32, num_buckets: usize) -> usize {
     let offset = entry_idx as usize * ENTRY_SIZE;
-    let mut h: u64 = 0x517cc1b727220a95; // Different seed
-    for i in 0..KEY_SIZE {
-        h ^= mmap[offset + i] as u64;
-        h = h.wrapping_mul(0x9e3779b97f4a7c15); // Different prime
-    }
-    h ^= h >> 32;
-    h = h.wrapping_mul(0xbf58476d1ce4e5b9);
-    h ^= h >> 32;
-    (h as usize) % num_buckets
+    let key = &mmap[offset..offset + KEY_SIZE];
+    cuckoo_hash2(key, num_buckets, DEFAULT_HASH2_SEED, DEFAULT_HASH2_PRIME)
 }
 
 /// Compute both cuckoo hash locations for a script hash.
@@ -114,5 +93,21 @@ mod tests {
         assert!(loc1 < NUM_BUCKETS);
         assert!(loc2 < NUM_BUCKETS);
         assert_ne!(loc1, loc2);
+    }
+
+    #[test]
+    fn test_configurable_hash_matches_default() {
+        let key = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+                   0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                   0x99, 0xAA, 0xBB, 0xCC];
+        
+        // Test that configurable hash with default seeds matches legacy hash
+        let h1_legacy = hash1(&key, NUM_BUCKETS);
+        let h1_config = cuckoo_hash1(&key, NUM_BUCKETS, DEFAULT_HASH1_SEED, DEFAULT_HASH1_PRIME);
+        assert_eq!(h1_legacy, h1_config);
+
+        let h2_legacy = hash2(&key, NUM_BUCKETS);
+        let h2_config = cuckoo_hash2(&key, NUM_BUCKETS, DEFAULT_HASH2_SEED, DEFAULT_HASH2_PRIME);
+        assert_eq!(h2_legacy, h2_config);
     }
 }
