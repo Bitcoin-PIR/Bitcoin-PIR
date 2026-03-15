@@ -1,15 +1,14 @@
 //! Tool to count unique 4-byte TXIDs in the remapped UTXO set
 //!
 //! This reads the remapped_utxo_set.bin file and extracts the 4-byte TXID
-//! from each 40-byte entry, storing them in a HashSet to count unique TXIDs.
+//! from each 36-byte entry, storing them in a HashSet to count unique TXIDs.
 //! Then maps each 4-byte TXID to its 32-byte TXID by reading txid.bin.
 //!
-//! Entry format (40 bytes):
+//! Entry format (36 bytes):
 //! - Bytes 0-19: RIPEMD-160 hash of script (20 bytes)
 //! - Bytes 20-23: 4-byte TXID (4 bytes) <-- We extract this (it's the txid_index in txid.bin)
 //! - Bytes 24-27: vout (4 bytes)
-//! - Bytes 28-31: block height (4 bytes)
-//! - Bytes 32-39: amount (8 bytes)
+//! - Bytes 28-35: amount (8 bytes)
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -26,7 +25,7 @@ const TXID_FILE: &str = "/Volumes/Bitcoin/data/txid.bin";
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/utxo_4b_to_32b.bin";
 
 /// Size of each entry in bytes
-const ENTRY_SIZE: usize = 40;
+const ENTRY_SIZE: usize = 36;
 
 /// Offset of the 4-byte TXID within each entry
 const TXID_OFFSET: usize = 20;

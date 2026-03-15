@@ -70,26 +70,90 @@ Correctness verification and performance measurement.
 
 ---
 
+## Web Client
+
+A JavaScript/TypeScript client library for querying the PIR servers from browsers and Node.js.
+
+**Status**: ✅ Implementation complete
+
+**Features**:
+- 🌐 Works in browsers and Node.js
+- 🔒 Privacy-preserving queries using DPF
+- 🔐 WebSocket-based communication
+- ⚡ Real-time bidirectional communication
+- 📦 Full TypeScript support
+
+**Quick Start**:
+```bash
+cd web_client
+npm install
+npm run build
+# See web_client/README.md for full documentation
+```
+
+**Demo**: Open `web_client/example.html` in a browser (requires running PIR servers)
+
+**Documentation**: See [web_client/README.md](web_client/README.md) for API reference and usage examples
+
 ## Directory Structure
 
 ```
 BitcoinPIR/
+├── dpf_pir/                          # Rust PIR server implementation
+│   ├── Cargo.toml                    # Rust project configuration
+│   └── src/
+│       ├── protocol.rs                 # Request/Response types
+│       ├── database.rs                 # Database implementations
+│       ├── hash.rs                    # Cuckoo hash functions
+│       ├── websocket.rs                # WebSocket protocol handler
+│       └── bin/
+│           ├── server.rs               # WebSocket server binary
+│           ├── lookup_pir.rs          # WebSocket client binary
+│           └── servers.rs             # Multi-server management
+├── build_db/                          # Database generation tools
+│   └── src/bin/
+│       ├── gen_1_txid_file.rs        # Generate TXID file
+│       ├── gen_2_mphf.rs            # Generate minimal perfect hash
+│       ├── gen_3_location_index.rs   # Generate location index
+│       ├── gen_4_utxo_remapped.rs   # Generate remapped UTXO
+│       ├── gen_5_utxo_chunks_from_remapped.rs  # Generate UTXO chunks
+│       ├── gen_6_utxo_4b_to_32b.rs  # Generate TXID mapping
+│       ├── gen_7_cuckoo_chunks.rs   # Generate cuckoo index
+│       └── gen_8_cuckoo_txid.rs   # Generate cuckoo TXID index
+├── web_client/                        # JavaScript/TypeScript web client (NEW)
+│   ├── src/
+│   │   ├── index.ts                # Main library entry point
+│   │   ├── client.ts               # WebSocket client
+│   │   ├── bincode.ts             # Binary serialization
+│   │   ├── dpf.ts                 # DPF wrapper
+│   │   ├── hash.ts                # Hash functions
+│   │   ├── constants.ts            # System constants
+│   │   └── test/
+│   │       └── example.test.ts     # Unit tests
+│   ├── example.html                # Browser demo
+│   ├── package.json               # NPM configuration
+│   ├── tsconfig.json             # TypeScript configuration
+│   ├── README.md                # Client documentation
+│   └── USAGE_GUIDE.md           # Detailed usage guide
 ├── doc/
+│   ├── WEB.md                        # Web client implementation plan
 │   ├── PLAN.md                         # Detailed implementation plan
 │   ├── NODE.md                        # Bitcoin node setup guide
 │   ├── INDEX.md                       # Data processing plan (TXID/SPK indexing)
 │   ├── BIP158.md                       # BIP158 compact block filters
 │   ├── RUST_BIP158.md                # Rust BIP158 implementation guide
 │   ├── BIP158_IMPLEMENTATION.md        # BIP158 implementation plan for BitcoinPIR
-│   ├── LIGHT_CLIENT_DATA.md            # Privacy analysis & data requirements
-│   └── README.md                    # Documentation overview
+│   └── LIGHT_CLIENT_DATA.md            # Privacy analysis & data requirements
 ├── scripts/
+│   ├── start_pir_servers.sh          # Start PIR WebSocket servers
+│   ├── test_lookup_pir.sh          # Test PIR lookup
+│   ├── run_client.sh               # Run client script
 │   ├── fetch_blocks.py.broken       # Deprecated: blockchain.info API fetcher
 │   ├── fetch_blocks_v2.py           # Deprecated: BlockCypher API fetcher (rate limited)
 │   ├── continue_fetch.py            # Deprecated: API-based continuation
 │   ├── index_blocks.py             # Phase 1.5: Original indexing (Python)
-│   └── query_index.py              # Query the generated indices
-├── pir/                              # BIP158 Rust implementation (NEW)
+│   └── query_index.py              # Query generated indices
+├── pir/                              # BIP158 Rust implementation (LEGACY)
 │   ├── Cargo.toml                    # Rust project configuration
 │   └── src/
 │       └── lib.rs                 # BlockIndexer with BIP158 support
@@ -100,10 +164,6 @@ BitcoinPIR/
 │   ├── spk_global_index.bin         # ScriptPubKey index (original approach)
 │   ├── spk_global_lookup.bin        # ScriptPubKey hash → ID lookup (original approach)
 │   └── index_meta.json             # Index metadata (original approach)
-├── pir/                        # PIR implementations (to be created)
-│   ├── single_server/         # Single-server PIR
-│   └── two_server/           # Two-server PIR
-├── tests/                      # Unit tests (to be created)
 └── requirements.txt            # Python dependencies
 ```
 

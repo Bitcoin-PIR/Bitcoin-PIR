@@ -124,7 +124,7 @@ where
         }
     }
 
-    pub fn iter(&self) -> BoomIterator<K, D> {
+    pub fn iter(&self) -> BoomIterator<'_, K, D> {
         BoomIterator {
             hash: self,
             index: 0,
@@ -377,7 +377,7 @@ where
     }
 
     // Return iterator over key-values pairs
-    pub fn iter(&self) -> Boom2Iterator<K, D1, D2> {
+    pub fn iter(&self) -> Boom2Iterator<'_, K, D1, D2> {
         Boom2Iterator {
             hash: self,
             index: 0,

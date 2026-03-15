@@ -59,14 +59,6 @@ fn hash2(mmap: &[u8], entry_idx: u32, num_buckets: usize) -> usize {
     (h as usize) % num_buckets
 }
 
-/// Check if two entries have the same 20-byte key
-#[inline(always)]
-fn keys_equal(mmap: &[u8], idx_a: u32, idx_b: u32) -> bool {
-    let off_a = idx_a as usize * ENTRY_SIZE;
-    let off_b = idx_b as usize * ENTRY_SIZE;
-    mmap[off_a..off_a + KEY_SIZE] == mmap[off_b..off_b + KEY_SIZE]
-}
-
 /// Find a free slot in a bucket
 #[inline]
 fn find_free_slot(table: &[u32], bucket: usize) -> Option<usize> {

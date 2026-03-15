@@ -8,7 +8,7 @@
 //! Modify the `load_configuration()` function to register your databases.
 //! See the examples in the `load_configuration()` function documentation.
 
-use crate::{Database, DatabaseRegistry, SERVER1_PORT, CuckooDatabase, DatabaseConfig, SingleLocationDatabase};
+use crate::{Database, DatabaseRegistry, SERVER1_PORT, CuckooDatabase, DatabaseConfig, SingleLocationDatabase, TxidMappingDatabase};
 use std::sync::Arc;
 
 /// Server configuration containing all registered databases
@@ -118,7 +118,7 @@ pub fn load_configuration() -> ServerConfiguration {
         "/Volumes/Bitcoin/pir/utxo_chunks_cuckoo.bin", // data_path
         24,    // entry_size (20-byte key + 4-byte offset)
         4,     // bucket_size
-        14_008_355, // num_buckets
+        15_385_139, // num_buckets
         2,     // num_locations (cuckoo hashing)
     );
 
@@ -137,9 +137,9 @@ pub fn load_configuration() -> ServerConfiguration {
     let chunks_config = DatabaseConfig::new(
         "utxo_chunks_data",           // id
         "/Volumes/Bitcoin/pir/utxo_chunks.bin", // data_path
-        32 * 1024,  // entry_size (32KB per chunk)
+        32768,  // entry_size (32KB per chunk)
         1,     // bucket_size
-        37_758, // num_buckets (37758 chunks)
+        33_032, // num_buckets (33,032 chunks)
         1,     // num_locations (direct index)
     );
 
@@ -149,6 +149,23 @@ pub fn load_configuration() -> ServerConfiguration {
             config.register_database(Arc::new(db));
         }
         Err(e) => log::warn!("Failed to register utxo_chunks_data: {}", e),
+    }
+
+    // Database 3: TXID Mapping (4-byte to 32-byte TXID)
+    // - Two-location cuckoo hashing with DIFFERENT hash functions (murmurhash3-style)
+    // - Entry: 4-byte key (4b TXID) + 32-byte value (32b TXID) = 36 bytes
+    // - Bucket: 4 entries per bucket
+    // - Total buckets: 30,097,234
+    match TxidMappingDatabase::new(
+        "utxo_4b_to_32b",             // id
+        "/Volumes/Bitcoin/pir/utxo_4b_to_32b_cuckoo.bin", // data_path
+        30_097_234,                   // num_buckets
+    ) {
+        Ok(db) => {
+            log::info!("Registered utxo_4b_to_32b database");
+            config.register_database(Arc::new(db));
+        }
+        Err(e) => log::warn!("Failed to register utxo_4b_to_32b: {}", e),
     }
 
     // ============================================================

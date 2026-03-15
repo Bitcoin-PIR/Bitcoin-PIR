@@ -26,12 +26,6 @@ const LOCATION_SIZE: usize = 4; // 4 bytes per location (u32)
 /// Number of txids to process per invocation
 const TXIDS_PER_BATCH: u64 = 500_000_000;
 
-/// Total number of entries in the location index
-const TOTAL_ENTRIES: u64 = 2 * 1322660118;
-
-/// Total size of the location index file in bytes
-const LOCATION_FILE_SIZE: usize = (TOTAL_ENTRIES * LOCATION_SIZE as u64) as usize;
-
 /// Txids to skip (these caused issues during MPHF construction)
 /// 68b45f58b674e94eb881cd67b04c2cba07fe5552dbf1d5385637b0d4073dbfe3
 const SKIP_TXID_1: [u8; 32] = [
@@ -129,6 +123,8 @@ fn build_location_index_batch(
     location_path: &Path,
     start_index: u64,
     count: u64,
+    total_entries: u64,
+    location_file_size: usize,
 ) -> io::Result<u64> {
     println!("\n=== Building Location Index ===");
     println!(
@@ -143,16 +139,16 @@ fn build_location_index_batch(
 
     // Verify file size
     let file_size = location_file.metadata()?.len() as usize;
-    if file_size != LOCATION_FILE_SIZE {
+    if file_size != location_file_size {
         eprintln!(
             "Warning: Location file size {} != expected {}",
-            file_size, LOCATION_FILE_SIZE
+            file_size, location_file_size
         );
     }
 
     println!(
         "Memory-mapping location file ({:.2} GB)...",
-        LOCATION_FILE_SIZE as f64 / 1e9
+        location_file_size as f64 / 1e9
     );
 
     // Create mutable memory map
@@ -190,11 +186,11 @@ fn build_location_index_batch(
         // Get the MPHF hash for this txid
         let hash = mphf.hash(&txid_buf);
 
-        // Check for potential hash overflow (hash should be < TOTAL_ENTRIES)
-        if hash >= TOTAL_ENTRIES {
+        // Check for potential hash overflow (hash should be < total_entries)
+        if hash >= total_entries {
             eprintln!(
                 "\nWarning: Hash {} exceeds total entries {} for txid at index {}",
-                hash, TOTAL_ENTRIES, txid_index
+                hash, total_entries, txid_index
             );
             processed += 1;
             continue;
@@ -338,6 +334,19 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Infer TOTAL_ENTRIES from TXID_FILE size
+    // TOTAL_ENTRIES = (file_size / 32) * 2
+    let txid_file_size = std::fs::metadata(txid_path).unwrap().len();
+    let total_entries = (txid_file_size / TXID_SIZE as u64) * 2;
+    let location_file_size = (total_entries * LOCATION_SIZE as u64) as usize;
+
+    println!("=== Inferred Parameters ===");
+    println!("TXID file size: {} bytes ({:.2} GB)", txid_file_size, txid_file_size as f64 / 1e9);
+    println!("Number of txids: {}", txid_file_size / TXID_SIZE as u64);
+    println!("TOTAL_ENTRIES (inferred): {}", total_entries);
+    println!("LOCATION_FILE_SIZE (inferred): {} bytes ({:.2} GB)", location_file_size, location_file_size as f64 / 1e9);
+    println!();
+
     if !mphf_path.exists() {
         eprintln!("✗ Error: MPHF file '{}' not found!", MPHF_FILE);
         eprintln!("  Please run build_mphf first to create the MPHF file.");
@@ -347,15 +356,12 @@ fn main() {
     if !location_path.exists() {
         eprintln!("✗ Error: location file '{}' not found!", LOCATION_FILE);
         eprintln!("  Please create the sparse file first:");
-        eprintln!("  truncate -s {} {}", LOCATION_FILE_SIZE, LOCATION_FILE);
+        eprintln!("  truncate -s {} {}", location_file_size, LOCATION_FILE);
         std::process::exit(1);
     }
 
     // Get total txid count
-    let total_txids = match std::fs::metadata(txid_path) {
-        Ok(m) => m.len() / TXID_SIZE as u64,
-        Err(_) => 0,
-    };
+    let total_txids = txid_file_size / TXID_SIZE as u64;
     println!("Total txids in file: {}", total_txids);
 
     // Check current progress
@@ -392,7 +398,7 @@ fn main() {
 
     // Step 2: Build location index for this batch
     let processed =
-        match build_location_index_batch(&mphf, txid_path, location_path, start_index, count) {
+        match build_location_index_batch(&mphf, txid_path, location_path, start_index, count, total_entries, location_file_size) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("✗ Error building location index: {}", e);

@@ -93,7 +93,6 @@ fn main() {
 
     // Step 1: Memory-map the input file
     println!("[1] Opening input file: {}", INPUT_FILE);
-    let start = Instant::now();
 
     let file = File::open(INPUT_FILE).expect("Failed to open input file");
     let file_len = file.metadata().unwrap().len() as usize;
@@ -184,7 +183,7 @@ fn main() {
         } else {
             // Need eviction chain
             let mut current_idx = idx;
-            let mut current_key = key;
+            let mut current_key;
             // Pick a random bucket to start evicting from
             let mut current_bucket = if xorshift() & 1 == 0 { b1 } else { b2 };
             let mut placed = false;

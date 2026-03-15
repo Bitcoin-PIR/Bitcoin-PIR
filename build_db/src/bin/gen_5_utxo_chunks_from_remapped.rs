@@ -1,15 +1,14 @@
 //! Build UTXO chunks from the remapped UTXO set
 //!
-//! Reads `/Volumes/Bitcoin/data/remapped_utxo_set.bin` (40-byte entries),
+//! Reads `/Volumes/Bitcoin/data/remapped_utxo_set.bin` (36-byte entries),
 //! groups entries by ScriptPubKey hash, and writes compact output to:
 //! - `/Volumes/Bitcoin/data/utxo_chunks.bin`      — compact UTXO data by address
 //! - `/Volumes/Bitcoin/data/utxo_chunks_index.bin` — index (script_hash → offset)
 //!
-//! Input entry format (40 bytes each):
+//! Input entry format (36 bytes each):
 //!   [0..20)  ScriptPubKey hash (RIPEMD-160)
 //!   [20..24) TXID  (u32 LE, mapped via MPHF)
 //!   [24..28) vout  (u32 LE)
-//!   [28..32) height (u32 LE)
 //!   [32..40) amount (u64 LE)
 //!
 //! Output chunk format (utxo_chunks.bin):
@@ -36,7 +35,7 @@ const CHUNKS_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks.bin";
 const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index.bin";
 
 /// Size of each input entry in bytes
-const ENTRY_SIZE: usize = 40;
+const ENTRY_SIZE: usize = 36;
 
 /// Size of the ScriptPubKey hash
 const SCRIPT_HASH_SIZE: usize = 20;
@@ -46,7 +45,6 @@ const SCRIPT_HASH_SIZE: usize = 20;
 struct ShortenedEntry {
     txid: u32,
     vout: u32,
-    height: u32,
     amount: u64,
 }
 
@@ -145,12 +143,11 @@ fn main() {
         let mut script_hash = [0u8; 20];
         script_hash.copy_from_slice(&chunk[..SCRIPT_HASH_SIZE]);
 
-        // Parse shortened entry (bytes 20..40)
+        // Parse shortened entry (bytes 20..36)
         let txid = u32::from_le_bytes([chunk[20], chunk[21], chunk[22], chunk[23]]);
         let vout = u32::from_le_bytes([chunk[24], chunk[25], chunk[26], chunk[27]]);
-        let height = u32::from_le_bytes([chunk[28], chunk[29], chunk[30], chunk[31]]);
         let amount = u64::from_le_bytes([
-            chunk[32], chunk[33], chunk[34], chunk[35], chunk[36], chunk[37], chunk[38], chunk[39],
+            chunk[28], chunk[29], chunk[30], chunk[31], chunk[32], chunk[33], chunk[34], chunk[35],
         ]);
 
         map.entry(script_hash)
@@ -158,7 +155,6 @@ fn main() {
             .push(ShortenedEntry {
                 txid,
                 vout,
-                height,
                 amount,
             });
 
@@ -229,8 +225,8 @@ fn main() {
 
     // drain() consumes entries from the HashMap, freeing memory progressively
     for (script_hash, mut entries) in map.drain() {
-        // 4a. Sort entries by height descending (higher heights first)
-        entries.sort_unstable_by(|a, b| b.height.cmp(&a.height));
+        // 4a. Sort entries by txid descending (higher txids first)
+        entries.sort_unstable_by(|a, b| b.txid.cmp(&a.txid));
 
         // 4b. Record start offset for the index
         let start_offset = current_offset;

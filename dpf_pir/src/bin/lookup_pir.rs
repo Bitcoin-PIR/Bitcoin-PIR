@@ -1,27 +1,27 @@
-//! Two-Phase DPF-PIR Client for UTXO Lookup
+//! Two-Phase DPF-PIR Client for UTXO Lookup (WebSocket Version)
 //!
-//! This client performs private UTXO lookups using two servers:
+//! This client performs private UTXO lookups using two WebSocket servers:
 //! - Phase 1: Query cuckoo index to get chunk offset
 //! - Phase 2: Query chunks database to get UTXO data
 //!
 //! Usage:
-//!   cargo run --bin lookup_pir -- <script_hex_or_hash> [--hash]
+//!   cargo run --bin lookup_pir_ws -- <script_hex_or_hash> [--hash]
 //!
 //! Example:
-//!   cargo run --bin lookup_pir -- 76a914e4986f7364f238102f1889ef9d24d80e2d2d7a4488ac
-//!   cargo run --bin lookup_pir -- 09d9fb5e2c298cdf69a06fdc188334305e9cb20d --hash
+//!   cargo run --bin lookup_pir_ws -- 76a914e4986f7364f238102f1889ef9d24d80e2d2d7a4488ac
+//!   cargo run --bin lookup_pir_ws -- 09d9fb5e2c298cdf69a06fdc188334305e9cb20d --hash
 
 use dpf_pir::{
-    ClientConfig, cuckoo_locations_default,
-    Request, Response, ScriptHash, KEY_SIZE,
-    SERVER1_PORT, SERVER2_PORT,
+    cuckoo_locations_default, txid_mapping_locations,
+    PirRequest as Request, PirResponse as Response, ScriptHash, KEY_SIZE,
 };
 use libdpf::Dpf;
 use log::{debug, error, info};
+use rand::seq::SliceRandom;
 use ripemd::{Digest, Ripemd160};
 use std::env;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use futures_util::{SinkExt, StreamExt};
 
 // ============================================================================
 // CONSTANTS
@@ -34,10 +34,10 @@ const CUCKOO_DB_ID: &str = "utxo_cuckoo_index";
 const CHUNKS_DB_ID: &str = "utxo_chunks_data";
 
 /// Number of buckets in the cuckoo index
-const CUCKOO_NUM_BUCKETS: usize = 14_008_355;
+const CUCKOO_NUM_BUCKETS: usize = 15_385_139;
 
 /// Number of entries in the chunks database
-const CHUNKS_NUM_ENTRIES: usize = 37_758;
+const CHUNKS_NUM_ENTRIES: usize = 33_032;
 
 /// Chunk size in bytes (32KB)
 const CHUNK_SIZE: usize = 32 * 1024;
@@ -48,66 +48,83 @@ const CUCKOO_ENTRY_SIZE: usize = 24;
 /// Bucket size in cuckoo index
 const CUCKOO_BUCKET_SIZE: usize = 4;
 
+/// Database ID for the TXID mapping database
+const TXID_MAPPING_DB_ID: &str = "utxo_4b_to_32b";
+
+/// Number of buckets in the TXID mapping database
+const TXID_MAPPING_NUM_BUCKETS: usize = 30_097_234;
+
+/// Entry size in TXID mapping (4-byte key + 32-byte TXID)
+const TXID_MAPPING_ENTRY_SIZE: usize = 36;
+
+/// Bucket size in TXID mapping
+const TXID_MAPPING_BUCKET_SIZE: usize = 4;
+
+/// Default WebSocket ports
+const WS_SERVER1_PORT: u16 = 8091;
+const WS_SERVER2_PORT: u16 = 8092;
+
 // ============================================================================
-// PIR CLIENT
+// WEBSOCKET CLIENT
 // ============================================================================
 
-/// PIR Client for two-phase UTXO lookup
-struct PIRClient {
-    /// Client configuration
-    config: ClientConfig,
+/// WebSocket-based PIR Client for two-phase UTXO lookup
+struct PIRClientWs {
+    /// Server 1 WebSocket URL
+    server1_url: String,
+    /// Server 2 WebSocket URL
+    server2_url: String,
 }
 
-impl PIRClient {
-    /// Create a new PIR client
-    fn new(config: ClientConfig) -> Self {
-        Self { config }
+impl PIRClientWs {
+    /// Create a new WebSocket PIR client
+    fn new(server1_url: String, server2_url: String) -> Self {
+        Self { server1_url, server2_url }
     }
 
     /// Phase 1: Query cuckoo index to get chunk offset for a script hash
-    /// 
-    /// Returns Some(offset) if found, None if not found
     async fn query_cuckoo_index(&self, script_hash: &ScriptHash) -> Result<Option<u32>, String> {
         info!("Phase 1: Querying cuckoo index for script hash");
 
-        // Compute cuckoo hash locations directly using the hash function
         let (loc1, loc2) = cuckoo_locations_default(script_hash, CUCKOO_NUM_BUCKETS);
         info!("Cuckoo locations: loc1={}, loc2={}", loc1, loc2);
 
-        // Calculate DPF domain size
         let n = (CUCKOO_NUM_BUCKETS as f64).log2().ceil() as u8;
         let dpf = Dpf::with_default_key();
 
-        // Generate DPF keys for both locations
         let (k0_loc1, k1_loc1) = dpf.gen(loc1 as u64, n);
         let (k0_loc2, k1_loc2) = dpf.gen(loc2 as u64, n);
 
         info!("DPF keys generated: domain=2^{}", n);
 
-        // Query Server 1
-        let result1 = self.query_server_two_keys(
-            &self.config.server1_addr,
-            CUCKOO_DB_ID,
-            &k0_loc1.to_bytes(),
-            &k0_loc2.to_bytes(),
-        ).await?;
+        // Store key bytes in variables to avoid temporary value issues
+        let k0_loc1_bytes = k0_loc1.to_bytes();
+        let k0_loc2_bytes = k0_loc2.to_bytes();
+        let k1_loc1_bytes = k1_loc1.to_bytes();
+        let k1_loc2_bytes = k1_loc2.to_bytes();
 
-        // Query Server 2
-        let result2 = self.query_server_two_keys(
-            &self.config.server2_addr,
+        // Query both servers concurrently
+        let server1_future = self.query_server_two_keys(
+            &self.server1_url,
             CUCKOO_DB_ID,
-            &k1_loc1.to_bytes(),
-            &k1_loc2.to_bytes(),
-        ).await?;
+            &k0_loc1_bytes,
+            &k0_loc2_bytes,
+        );
+        let server2_future = self.query_server_two_keys(
+            &self.server2_url,
+            CUCKOO_DB_ID,
+            &k1_loc1_bytes,
+            &k1_loc2_bytes,
+        );
 
-        // XOR results from both servers
+        let (result1, result2) = tokio::try_join!(server1_future, server2_future)?;
+
         let combined_loc1 = xor_bytes(&result1.0, &result2.0);
         let combined_loc2 = xor_bytes(&result1.1, &result2.1);
 
         info!("Combined results: loc1={} bytes, loc2={} bytes", 
               combined_loc1.len(), combined_loc2.len());
 
-        // Search for matching key in both bucket results
         for (bucket_data, loc_name) in [(&combined_loc1, "loc1"), (&combined_loc2, "loc2")] {
             for i in 0..CUCKOO_BUCKET_SIZE {
                 let offset = i * CUCKOO_ENTRY_SIZE;
@@ -117,12 +134,10 @@ impl PIRClient {
                 
                 let key = &bucket_data[offset..offset + KEY_SIZE];
                 
-                // Skip empty entries
                 if key.iter().all(|&b| b == 0) {
                     continue;
                 }
                 
-                // Check if this is our key
                 if key == script_hash.as_slice() {
                     let value = u32::from_le_bytes([
                         bucket_data[offset + KEY_SIZE],
@@ -144,46 +159,48 @@ impl PIRClient {
     async fn query_chunk(&self, chunk_index: usize) -> Result<Vec<u8>, String> {
         debug!("Querying chunks database for chunk {}", chunk_index);
 
-        // Calculate DPF domain size
         let n = (CHUNKS_NUM_ENTRIES as f64).log2().ceil() as u8;
         let dpf = Dpf::with_default_key();
 
-        // Generate DPF key for single location
         let (k0, k1) = dpf.gen(chunk_index as u64, n);
 
-        // Query Server 1
-        let result1 = self.query_server_single(
-            &self.config.server1_addr,
-            CHUNKS_DB_ID,
-            &k0.to_bytes(),
-        ).await?;
+        // Store key bytes in variables
+        let k0_bytes = k0.to_bytes();
+        let k1_bytes = k1.to_bytes();
 
-        // Query Server 2
-        let result2 = self.query_server_single(
-            &self.config.server2_addr,
+        let server1_future = self.query_server_single(
+            &self.server1_url,
             CHUNKS_DB_ID,
-            &k1.to_bytes(),
-        ).await?;
+            &k0_bytes,
+        );
+        let server2_future = self.query_server_single(
+            &self.server2_url,
+            CHUNKS_DB_ID,
+            &k1_bytes,
+        );
 
-        // XOR results
+        let (result1, result2) = tokio::try_join!(server1_future, server2_future)?;
+
         let combined = xor_bytes(&result1, &result2);
         debug!("Chunk data retrieved: {} bytes", combined.len());
 
         Ok(combined)
     }
 
-    /// Query a server with two DPF keys (cuckoo index)
+    /// Query a WebSocket server with two DPF keys
     async fn query_server_two_keys(
         &self,
-        addr: &str,
+        url: &str,
         db_id: &str,
         key1: &[u8],
         key2: &[u8],
     ) -> Result<(Vec<u8>, Vec<u8>), String> {
-        info!("Connecting to {} for database '{}' query", addr, db_id);
+        info!("Connecting to {} for database '{}' query", url, db_id);
 
-        let mut stream = TcpStream::connect(addr).await
-            .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+        let (ws_stream, _) = connect_async(url).await
+            .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
+
+        let (mut write, mut read) = ws_stream.split();
 
         let request = Request::QueryDatabase {
             database_id: db_id.to_string(),
@@ -191,13 +208,20 @@ impl PIRClient {
             dpf_key2: key2.to_vec(),
         };
 
-        send_request(&mut stream, &request).await?;
-        let response = receive_response(&mut stream).await?;
+        // Send request using SBP protocol
+        let request_bytes = request.encode();
+        write
+            .send(Message::Binary(request_bytes))
+            .await
+            .map_err(|e| format!("Failed to send WebSocket message: {}", e))?;
+
+        // Receive response
+        let response = receive_ws_response(&mut read).await?;
 
         match response {
             Response::QueryTwoResults { data1, data2 } => {
                 info!("Received results from {}: data1={} bytes, data2={} bytes", 
-                      addr, data1.len(), data2.len());
+                      url, data1.len(), data2.len());
                 Ok((data1, data2))
             }
             Response::Error { message } => Err(format!("Server error: {}", message)),
@@ -205,29 +229,38 @@ impl PIRClient {
         }
     }
 
-    /// Query a server with a single DPF key (chunks database)
+    /// Query a WebSocket server with a single DPF key
     async fn query_server_single(
         &self,
-        addr: &str,
+        url: &str,
         db_id: &str,
         key: &[u8],
     ) -> Result<Vec<u8>, String> {
-        debug!("Connecting to {} for database '{}' single query", addr, db_id);
+        debug!("Connecting to {} for database '{}' single query", url, db_id);
 
-        let mut stream = TcpStream::connect(addr).await
-            .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+        let (ws_stream, _) = connect_async(url).await
+            .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
+
+        let (mut write, mut read) = ws_stream.split();
 
         let request = Request::QueryDatabaseSingle {
             database_id: db_id.to_string(),
             dpf_key: key.to_vec(),
         };
 
-        send_request(&mut stream, &request).await?;
-        let response = receive_response(&mut stream).await?;
+        // Send request using SBP protocol
+        let request_bytes = request.encode();
+        write
+            .send(Message::Binary(request_bytes))
+            .await
+            .map_err(|e| format!("Failed to send WebSocket message: {}", e))?;
+
+        // Receive response
+        let response = receive_ws_response(&mut read).await?;
 
         match response {
             Response::QueryResult { data } => {
-                debug!("Received result from {}: {} bytes", addr, data.len());
+                debug!("Received result from {}: {} bytes", url, data.len());
                 Ok(data)
             }
             Response::Error { message } => Err(format!("Server error: {}", message)),
@@ -235,16 +268,83 @@ impl PIRClient {
         }
     }
 
+    /// Phase 3: Query TXID mapping database
+    async fn query_txid_mapping(&self, txid_4b: u32) -> Result<Option<[u8; 32]>, String> {
+        info!("Phase 3: Querying TXID mapping for 4B TXID: {}", txid_4b);
+
+        let (loc1, loc2) = txid_mapping_locations(txid_4b, TXID_MAPPING_NUM_BUCKETS);
+        info!("TXID mapping locations: loc1={}, loc2={}", loc1, loc2);
+
+        let n = (TXID_MAPPING_NUM_BUCKETS as f64).log2().ceil() as u8;
+        let dpf = Dpf::with_default_key();
+
+        let (k0_loc1, k1_loc1) = dpf.gen(loc1 as u64, n);
+        let (k0_loc2, k1_loc2) = dpf.gen(loc2 as u64, n);
+
+        info!("DPF keys generated: domain=2^{}", n);
+
+        // Store key bytes in variables
+        let k0_loc1_bytes = k0_loc1.to_bytes();
+        let k0_loc2_bytes = k0_loc2.to_bytes();
+        let k1_loc1_bytes = k1_loc1.to_bytes();
+        let k1_loc2_bytes = k1_loc2.to_bytes();
+
+        let server1_future = self.query_server_two_keys(
+            &self.server1_url,
+            TXID_MAPPING_DB_ID,
+            &k0_loc1_bytes,
+            &k0_loc2_bytes,
+        );
+        let server2_future = self.query_server_two_keys(
+            &self.server2_url,
+            TXID_MAPPING_DB_ID,
+            &k1_loc1_bytes,
+            &k1_loc2_bytes,
+        );
+
+        let (result1, result2) = tokio::try_join!(server1_future, server2_future)?;
+
+        let combined_loc1 = xor_bytes(&result1.0, &result2.0);
+        let combined_loc2 = xor_bytes(&result1.1, &result2.1);
+
+        info!("Combined results: loc1={} bytes, loc2={} bytes", 
+              combined_loc1.len(), combined_loc2.len());
+
+        let txid_4b_bytes = txid_4b.to_le_bytes();
+
+        for (bucket_data, loc_name) in [(&combined_loc1, "loc1"), (&combined_loc2, "loc2")] {
+            for i in 0..TXID_MAPPING_BUCKET_SIZE {
+                let offset = i * TXID_MAPPING_ENTRY_SIZE;
+                if offset + TXID_MAPPING_ENTRY_SIZE > bucket_data.len() {
+                    continue;
+                }
+                
+                let key = &bucket_data[offset..offset + 4];
+                
+                if key.iter().all(|&b| b == 0) {
+                    continue;
+                }
+                
+                if key == txid_4b_bytes {
+                    let mut txid_32b = [0u8; 32];
+                    txid_32b.copy_from_slice(&bucket_data[offset + 4..offset + 36]);
+                    info!("Found matching key at {} with 32B TXID", loc_name);
+                    return Ok(Some(txid_32b));
+                }
+            }
+        }
+
+        info!("4B TXID not found in TXID mapping");
+        Ok(None)
+    }
+
     /// Full two-phase lookup for a script hash
-    /// Returns the offset in the chunks database if found
     async fn lookup_utxo(&self, script_hash: &ScriptHash) -> Result<Option<u32>, String> {
-        // Phase 1: Get offset from cuckoo index
         let offset = match self.query_cuckoo_index(script_hash).await? {
             Some(o) => o,
             None => return Ok(None),
         };
 
-        // Calculate chunk index from offset
         let chunk_index = offset as usize / CHUNK_SIZE;
         let local_offset = offset as usize % CHUNK_SIZE;
         info!("Offset {} -> chunk_index={}, local_offset={}", offset, chunk_index, local_offset);
@@ -267,47 +367,24 @@ fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
     result
 }
 
-/// Send a request to the server
-async fn send_request(stream: &mut TcpStream, request: &Request) -> Result<(), String> {
-    let request_bytes = bincode::serialize(request)
-        .map_err(|e| format!("Failed to serialize request: {}", e))?;
-
-    // Send request length (4 bytes, big-endian)
-    let len = request_bytes.len() as u32;
-    stream
-        .write_all(&len.to_be_bytes())
+/// Receive a WebSocket response
+async fn receive_ws_response<R>(read: &mut R) -> Result<Response, String>
+where
+    R: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    let msg = read
+        .next()
         .await
-        .map_err(|e| format!("Failed to write request length: {}", e))?;
+        .ok_or("No response received from server")?
+        .map_err(|e| format!("WebSocket error: {}", e))?;
 
-    // Send request body
-    stream
-        .write_all(&request_bytes)
-        .await
-        .map_err(|e| format!("Failed to write request body: {}", e))?;
+    if !msg.is_binary() {
+        return Err(format!("Expected binary message, got: {:?}", msg));
+    }
 
-    Ok(())
-}
-
-/// Receive a response from the server
-async fn receive_response(stream: &mut TcpStream) -> Result<Response, String> {
-    // Read response length (4 bytes, big-endian)
-    let mut len_buf = [0u8; 4];
-    stream
-        .read_exact(&mut len_buf)
-        .await
-        .map_err(|e| format!("Failed to read response length: {}", e))?;
-    let resp_len = u32::from_be_bytes(len_buf) as usize;
-
-    // Read response body
-    let mut resp_buf = vec![0u8; resp_len];
-    stream
-        .read_exact(&mut resp_buf)
-        .await
-        .map_err(|e| format!("Failed to read response body: {}", e))?;
-
-    // Deserialize the response
-    bincode::deserialize(&resp_buf)
-        .map_err(|e| format!("Failed to deserialize response: {}", e))
+    let data = msg.into_data();
+    Response::decode(&data)
+        .map_err(|e| format!("Failed to decode response: {}", e))
 }
 
 /// Convert script hex to RIPEMD160 hash
@@ -343,6 +420,11 @@ fn bin2hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Convert bytes to hex string in reverse order (for Bitcoin TXID display)
+fn bin2hex_reversed(bytes: &[u8]) -> String {
+    bytes.iter().rev().map(|b| format!("{:02x}", b)).collect()
+}
+
 // ============================================================================
 // UTXO PARSING
 // ============================================================================
@@ -358,35 +440,24 @@ struct UtxoEntry {
 /// Statistics for PIR queries
 #[derive(Debug, Clone, Default)]
 struct QueryStats {
-    /// Number of chunk queries made
     chunk_queries: usize,
-    /// Total bytes received from PIR queries
     total_bytes_received: usize,
-    /// Starting chunk index
     start_chunk_index: usize,
-    /// Ending chunk index
     end_chunk_index: usize,
-    /// Bytes read from the chunks (actual data consumed)
     bytes_read: usize,
 }
 
-/// Streaming reader for UTXO chunks that handles multi-chunk data
-/// Fetches subsequent chunks from PIR servers when needed
-struct ChunkReader<'a> {
-    /// Reference to PIR client for fetching chunks
-    client: &'a PIRClient,
-    /// Current chunk index
+/// Streaming reader for UTXO chunks
+struct ChunkReaderWs<'a> {
+    client: &'a PIRClientWs,
     chunk_index: usize,
-    /// Current position within the chunk
     chunk_pos: usize,
-    /// Current chunk data
     chunk: Vec<u8>,
-    /// Query statistics
     stats: QueryStats,
 }
 
-impl<'a> ChunkReader<'a> {
-    async fn new(client: &'a PIRClient, start_offset: usize) -> Result<Self, String> {
+impl<'a> ChunkReaderWs<'a> {
+    async fn new(client: &'a PIRClientWs, start_offset: usize) -> Result<Self, String> {
         let chunk_index = start_offset / CHUNK_SIZE;
         let chunk_pos = start_offset % CHUNK_SIZE;
         
@@ -408,10 +479,8 @@ impl<'a> ChunkReader<'a> {
         })
     }
     
-    /// Read a single byte, fetching next chunk from PIR servers if needed
     async fn read_byte(&mut self) -> Result<u8, String> {
         if self.chunk_pos >= self.chunk.len() {
-            // Need to fetch next chunk from PIR servers
             self.chunk_index += 1;
             if self.chunk_index >= CHUNKS_NUM_ENTRIES {
                 return Err("End of database reached".to_string());
@@ -419,7 +488,6 @@ impl<'a> ChunkReader<'a> {
             self.chunk = self.client.query_chunk(self.chunk_index).await?;
             self.chunk_pos = 0;
             
-            // Update statistics
             self.stats.chunk_queries += 1;
             self.stats.total_bytes_received += self.chunk.len();
             self.stats.end_chunk_index = self.chunk_index;
@@ -431,12 +499,10 @@ impl<'a> ChunkReader<'a> {
         Ok(byte)
     }
     
-    /// Get query statistics
     fn get_stats(&self) -> &QueryStats {
         &self.stats
     }
     
-    /// Read a varint (LEB128 encoded), handling multi-chunk spanning
     async fn read_varint(&mut self) -> Result<u64, String> {
         let mut result: u64 = 0;
         let mut shift = 0;
@@ -458,25 +524,12 @@ impl<'a> ChunkReader<'a> {
         Ok(result)
     }
     
-    /// Read 4 bytes as little-endian u32
     async fn read_u32_le(&mut self) -> Result<u32, String> {
         let b0 = self.read_byte().await?;
         let b1 = self.read_byte().await?;
         let b2 = self.read_byte().await?;
         let b3 = self.read_byte().await?;
         Ok(u32::from_le_bytes([b0, b1, b2, b3]))
-    }
-    
-    /// Get current chunk index
-    #[allow(dead_code)]
-    fn current_chunk_index(&self) -> usize {
-        self.chunk_index
-    }
-    
-    /// Get current position within chunk
-    #[allow(dead_code)]
-    fn chunk_position(&self) -> usize {
-        self.chunk_pos
     }
 }
 
@@ -497,17 +550,14 @@ fn print_progress(current: usize, total: usize, width: usize) {
 
 /// Result of parsing UTXO entries
 struct ParseResult {
-    /// Parsed UTXO entries
     entries: Vec<UtxoEntry>,
-    /// Query statistics
     stats: QueryStats,
 }
 
-/// Parse UTXO entries starting at the given offset, fetching chunks via PIR as needed
-async fn parse_utxo_entries(client: &PIRClient, start_offset: usize) -> Result<ParseResult, String> {
-    let mut reader = ChunkReader::new(client, start_offset).await?;
+/// Parse UTXO entries starting at the given offset
+async fn parse_utxo_entries(client: &PIRClientWs, start_offset: usize) -> Result<ParseResult, String> {
+    let mut reader = ChunkReaderWs::new(client, start_offset).await?;
     
-    // Read entry count (varint)
     let entry_count = reader.read_varint().await? as usize;
     
     if entry_count == 0 {
@@ -518,15 +568,13 @@ async fn parse_utxo_entries(client: &PIRClient, start_offset: usize) -> Result<P
         });
     }
     
-    // Show progress for large entry counts
     let show_progress = entry_count > 100;
     if show_progress {
         eprintln!("  Fetching {} UTXO entries...", entry_count);
     }
     
-    let mut entries = Vec::with_capacity(entry_count.min(10000)); // Cap preallocation
+    let mut entries = Vec::with_capacity(entry_count.min(10000));
     
-    // Read first entry: [4B txid LE] [varint vout] [varint amount]
     let txid = reader.read_u32_le().await?;
     let vout = reader.read_varint().await? as u32;
     let amount = reader.read_varint().await?;
@@ -537,12 +585,7 @@ async fn parse_utxo_entries(client: &PIRClient, start_offset: usize) -> Result<P
         print_progress(1, entry_count, 30);
     }
     
-    // Read remaining entries: [varint delta_txid] [varint vout] [varint amount]
-    // delta_txid = prev_txid wrapping_sub this_txid
-    // So: this_txid = prev_txid wrapping_sub delta_txid
     let mut prev_txid = txid;
-    
-    // Progress update interval (update every 1% or at least every 100 entries)
     let progress_interval = ((entry_count / 100).max(100)).min(1000);
     
     for i in 1..entry_count {
@@ -554,7 +597,6 @@ async fn parse_utxo_entries(client: &PIRClient, start_offset: usize) -> Result<P
         entries.push(UtxoEntry { txid, vout, amount });
         prev_txid = txid;
         
-        // Update progress periodically
         if show_progress && (i % progress_interval == 0 || i == entry_count - 1) {
             print_progress(i + 1, entry_count, 30);
         }
@@ -564,45 +606,13 @@ async fn parse_utxo_entries(client: &PIRClient, start_offset: usize) -> Result<P
     Ok(ParseResult { entries, stats })
 }
 
-/// Count UTXO entries and compute total amount without storing all entries
-/// This is memory-efficient for scripts with huge numbers of UTXOs
-#[allow(dead_code)]
-async fn count_utxo_entries(client: &PIRClient, start_offset: usize) -> Result<(usize, u64), String> {
-    let mut reader = ChunkReader::new(client, start_offset).await?;
-    
-    // Read entry count (varint)
-    let entry_count = reader.read_varint().await? as usize;
-    
-    if entry_count == 0 {
-        return Ok((0, 0));
-    }
-    
-    let mut total_amount: u64 = 0;
-    
-    // Read first entry
-    let _txid = reader.read_u32_le().await?;
-    let _vout = reader.read_varint().await? as u32;
-    let amount = reader.read_varint().await?;
-    total_amount += amount;
-    
-    // Read remaining entries
-    for _ in 1..entry_count {
-        let _delta = reader.read_varint().await?;
-        let _vout = reader.read_varint().await?;
-        let amount = reader.read_varint().await?;
-        total_amount += amount;
-    }
-    
-    Ok((entry_count, total_amount))
-}
-
 // ============================================================================
 // COMMAND LINE PARSING
 // ============================================================================
 
-/// Parse command line arguments
-fn parse_args(args: &[String]) -> (ClientConfig, Option<String>, bool) {
-    let mut config = ClientConfig::default();
+fn parse_args(args: &[String]) -> (String, String, Option<String>, bool) {
+    let mut server1_url = format!("ws://127.0.0.1:{}", WS_SERVER1_PORT);
+    let mut server2_url = format!("ws://127.0.0.1:{}", WS_SERVER2_PORT);
     let mut script_input: Option<String> = None;
     let mut use_hash = false;
 
@@ -611,13 +621,13 @@ fn parse_args(args: &[String]) -> (ClientConfig, Option<String>, bool) {
         match args[i].as_str() {
             "--server1" | "-s1" => {
                 if i + 1 < args.len() {
-                    config.server1_addr = args[i + 1].clone();
+                    server1_url = args[i + 1].clone();
                     i += 1;
                 }
             }
             "--server2" | "-s2" => {
                 if i + 1 < args.len() {
-                    config.server2_addr = args[i + 1].clone();
+                    server2_url = args[i + 1].clone();
                     i += 1;
                 }
             }
@@ -637,11 +647,11 @@ fn parse_args(args: &[String]) -> (ClientConfig, Option<String>, bool) {
         i += 1;
     }
 
-    (config, script_input, use_hash)
+    (server1_url, server2_url, script_input, use_hash)
 }
 
 fn print_help(program: &str) {
-    println!("Two-Phase DPF-PIR Client for UTXO Lookup");
+    println!("Two-Phase DPF-PIR Client for UTXO Lookup (WebSocket Version)");
     println!();
     println!("Usage:");
     println!("  {} [OPTIONS] <SCRIPT_HEX_OR_HASH>", program);
@@ -650,10 +660,10 @@ fn print_help(program: &str) {
     println!("  <SCRIPT_HEX_OR_HASH>  Script pubkey hex or RIPEMD160 hash");
     println!();
     println!("Options:");
-    println!("  --server1, -s1 <ADDR>  Server 1 address (default: 127.0.0.1:{})", SERVER1_PORT);
-    println!("  --server2, -s2 <ADDR>  Server 2 address (default: 127.0.0.1:{})", SERVER2_PORT);
-    println!("  --hash                 Treat input as RIPEMD160 hash (40 hex chars)");
-    println!("  --help, -h             Show this help message");
+    println!("  --server1, -s1 <URL>  Server 1 WebSocket URL (default: ws://127.0.0.1:{})", WS_SERVER1_PORT);
+    println!("  --server2, -s2 <URL>  Server 2 WebSocket URL (default: ws://127.0.0.1:{})", WS_SERVER2_PORT);
+    println!("  --hash                Treat input as RIPEMD160 hash (40 hex chars)");
+    println!("  --help, -h            Show this help message");
     println!();
     println!("Examples:");
     println!("  # Single query with script pubkey:");
@@ -669,18 +679,15 @@ fn print_help(program: &str) {
 
 #[tokio::main]
 async fn main() {
-    // Initialize logger
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .init();
 
     let args: Vec<String> = env::args().collect();
-    let (config, script_input, use_hash) = parse_args(&args);
+    let (server1_url, server2_url, script_input, use_hash) = parse_args(&args);
 
-    // Create client
-    let client = PIRClient::new(config);
+    let client = PIRClientWs::new(server1_url.clone(), server2_url.clone());
 
-    // Get script hex
     let script_hex = match script_input {
         Some(s) => s,
         None => {
@@ -689,9 +696,7 @@ async fn main() {
         }
     };
 
-    // Compute script hash
     let script_hash = if use_hash {
-        // Input is already a RIPEMD160 hash
         let hash_bytes = match hex2bin(&script_hex) {
             Ok(h) => h,
             Err(e) => {
@@ -708,7 +713,6 @@ async fn main() {
         hash.copy_from_slice(&hash_bytes);
         hash
     } else {
-        // Input is a script pubkey hex
         match script_to_hash(&script_hex) {
             Ok(h) => h,
             Err(e) => {
@@ -719,14 +723,16 @@ async fn main() {
     };
 
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              Two-Phase DPF-PIR UTXO Lookup                   ║");
+    println!("║         Two-Phase DPF-PIR UTXO Lookup (WebSocket)           ║");
+    println!("╠══════════════════════════════════════════════════════════════╣");
+    println!("║ Server 1:     {:<46}║", server1_url);
+    println!("║ Server 2:     {:<46}║", server2_url);
     println!("╠══════════════════════════════════════════════════════════════╣");
     println!("║ Script input: {:<46}║", &script_hex[..std::cmp::min(script_hex.len(), 46)]);
     println!("║ RIPEMD160:    {:<46}║", bin2hex(&script_hash));
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
 
-    // Perform two-phase lookup
     match client.lookup_utxo(&script_hash).await {
         Ok(Some(offset)) => {
             let local_offset = offset as usize % CHUNK_SIZE;
@@ -736,7 +742,6 @@ async fn main() {
             println!("  Local offset: {}", local_offset);
             println!();
 
-            // Parse UTXO entries (fetches chunks via PIR as needed)
             match parse_utxo_entries(&client, offset as usize).await {
                 Ok(result) => {
                     let total_amount: u64 = result.entries.iter().map(|e| e.amount).sum();
@@ -762,7 +767,6 @@ async fn main() {
                     println!("╚══════════════════════════════════════════════════════════════╝");
                     println!();
 
-                    // Display UTXO entries (limit to first 20 for display)
                     let display_count = result.entries.len().min(20);
                     if result.entries.len() > 20 {
                         println!("Showing first 20 of {} UTXOs:", result.entries.len());
@@ -783,6 +787,50 @@ async fn main() {
                         println!();
                         println!("  ... and {} more UTXOs", result.entries.len() - 20);
                     }
+
+                    // Phase 3: TXID Mapping
+                    println!();
+                    println!("╔══════════════════════════════════════════════════════════════╗");
+                    println!("║           Phase 3: TXID Mapping Query (Random 10)           ║");
+                    println!("╚══════════════════════════════════════════════════════════════╝");
+                    println!();
+
+                    let num_samples = std::cmp::min(10, result.entries.len());
+                    let mut rng = rand::thread_rng();
+                    let mut sampled_entries: Vec<&UtxoEntry> = result.entries.iter().collect();
+                    sampled_entries.shuffle(&mut rng);
+                    let sampled_entries: Vec<&UtxoEntry> = sampled_entries.into_iter().take(num_samples).collect();
+
+                    println!("Querying {} random UTXO(s) for TXID mapping...", num_samples);
+
+                    let mut txid_results: Vec<(u32, Option<[u8; 32]>)> = Vec::new();
+                    
+                    for entry in sampled_entries.iter() {
+                        let result = client.query_txid_mapping(entry.txid).await;
+                        match result {
+                            Ok(txid_32b) => txid_results.push((entry.txid, txid_32b)),
+                            Err(_) => txid_results.push((entry.txid, None)),
+                        }
+                        
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    }
+
+                    println!();
+                    println!("TXID Mapping Results:");
+                    println!("────────────────────────────────────────────────────────────────");
+                    for (txid_4b, txid_32b_opt) in txid_results {
+                        match txid_32b_opt {
+                            Some(txid_32b) => {
+                                println!("  {:10} -> {}", txid_4b, bin2hex_reversed(&txid_32b));
+                            }
+                            None => {
+                                println!("  {:10} -> NOT FOUND", txid_4b);
+                            }
+                        }
+                    }
+                    println!("────────────────────────────────────────────────────────────────");
+                    println!();
+                    println!("Phase 3 TXID mapping queries completed.");
                 }
                 Err(e) => {
                     error!("Failed to parse UTXO entries: {}", e);

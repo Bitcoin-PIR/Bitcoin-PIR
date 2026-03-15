@@ -36,10 +36,10 @@ const KEY_SIZE: usize = 20;
 const BUCKET_SIZE: usize = 4;
 
 /// Chunk size in bytes
-const CHUNK_SIZE: usize = 1024;
+const CHUNK_SIZE: usize = 32768;
 
 /// Number of entries in the chunks database
-const NUM_ENTRIES: usize = 1_208_236;
+const NUM_ENTRIES: usize = 33_032;
 
 /// A parsed UTXO entry
 #[derive(Debug)]
@@ -365,9 +365,7 @@ fn main() {
         // Step 2: Compute RIPEMD160 hash
         println!();
         println!("=== Step 2: Compute RIPEMD160 Hash ===");
-        let mut hasher = Ripemd160::new();
-        hasher.update(&script);
-        let result = hasher.finalize();
+        let result = Ripemd160::digest(&script);
         script_hash = result.try_into().unwrap();
         println!("RIPEMD160:    {}", bin2hex(&script_hash));
     }

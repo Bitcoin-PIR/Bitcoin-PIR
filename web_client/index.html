@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bitcoin PIR Web Client Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #f7931a;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #666;
+            margin-top: 30px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        button {
+            background-color: #f7931a;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #e0820e;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        input[type="text"] {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 300px;
+        }
+        label {
+            display: block;
+            margin: 10px 0 5px 0;
+            font-weight: bold;
+        }
+        .result {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .step {
+            margin: 20px 0;
+            padding: 15px;
+            border-left: 4px solid #f7931a;
+            background-color: #fff8f0;
+        }
+        .step-number {
+            font-weight: bold;
+            color: #f7931a;
+        }
+        .log {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 5px 0;
+        }
+        .log-entry.error {
+            color: #f48771;
+        }
+        .log-entry.success {
+            color: #89d185;
+        }
+        .log-entry.info {
+            color: #4fc1ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Bitcoin PIR Web Client Demo</h1>
+        <p>
+            This demo shows how to query the Bitcoin UTXO set using Private Information Retrieval (PIR).
+            Your queries are private - the server learns nothing about which address you're looking up.
+        </p>
+
+        <div id="status" class="status disconnected">
+            Status: Disconnected
+        </div>
+
+        <div class="step">
+            <span class="step-number">Step 1:</span> Connect to PIR Servers
+            <br><br>
+            <button id="connectBtn">Connect</button>
+            <button id="disconnectBtn" disabled>Disconnect</button>
+        </div>
+
+        <div class="step">
+            <span class="step-number">Step 2:</span> Test Connection
+            <br><br>
+            <button id="pingBtn" disabled>Send Ping</button>
+            <button id="listBtn" disabled>List Databases</button>
+        </div>
+
+        <div class="step">
+            <span class="step-number">Step 3:</span> Query by Script Pubkey
+            <br><br>
+            <label for="scriptPubkey">Script Pubkey (hex):</label>
+            <input type="text" id="scriptPubkey" placeholder="e.g., 76a914b64513c1f1b889a556463243cca9c26ee626b9a088ac" value="76a914b64513c1f1b889a556463243cca9c26ee626b9a088ac">
+            <br>
+            <button id="queryCuckooBtn" disabled>Query Cuckoo Index</button>
+        </div>
+
+        <h2>Results</h2>
+        <div id="result" class="result">
+            No results yet. Connect to servers and run a query.
+        </div>
+
+        <h2>Log</h2>
+        <div id="log" class="log">
+            <div class="log-entry info">Waiting for connection...</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { createPirClient, hexToBytes, bytesToHex, cuckooHash1, cuckooHash2, CUCKOO_NUM_BUCKETS, scriptHash } from './src/index.js';
+
+        let client = null;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function setStatus(message, isConnected) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = `Status: ${message}`;
+            statusDiv.className = `status ${isConnected ? 'connected' : 'disconnected'}`;
+        }
+
+        function setButtons(connected) {
+            document.getElementById('connectBtn').disabled = connected;
+            document.getElementById('disconnectBtn').disabled = !connected;
+            document.getElementById('pingBtn').disabled = !connected;
+            document.getElementById('listBtn').disabled = !connected;
+            document.getElementById('queryCuckooBtn').disabled = !connected;
+        }
+
+        function setResult(message) {
+            document.getElementById('result').textContent = message;
+        }
+
+        async function connect() {
+            try {
+                log('[DEBUG] Starting connection process...');
+                log('[DEBUG] Creating PIR client with URLs:');
+                log('[DEBUG]   Server 1: ws://localhost:8091');
+                log('[DEBUG]   Server 2: ws://localhost:8092');
+                
+                client = createPirClient('ws://localhost:8091', 'ws://localhost:8092');
+                log('[DEBUG] Client object created, initiating connect() call...');
+                
+                await client.connect();
+                log('[DEBUG] client.connect() completed successfully!');
+                log('Successfully connected to both servers!', 'success');
+                setStatus('Connected', true);
+                setButtons(true);
+            } catch (error) {
+                log(`[DEBUG] Connection failed with error:`, 'error');
+                log(`[DEBUG] Error type: ${error.constructor.name}`, 'error');
+                log(`[DEBUG] Error message: ${error.message}`, 'error');
+                log(`[DEBUG] Error stack: ${error.stack}`, 'error');
+                log(`Connection failed: ${error.message}`, 'error');
+                setStatus('Connection Failed', false);
+            }
+        }
+
+        function disconnect() {
+            if (client) {
+                client.disconnect();
+                client = null;
+                log('Disconnected from servers', 'info');
+                setStatus('Disconnected', false);
+                setButtons(false);
+            }
+        }
+
+        async function ping() {
+            if (!client) return;
+
+            try {
+                log('Sending ping to both servers...');
+                const { pong1, pong2 } = await client.ping();
+                log('Received pong from server 1: ' + JSON.stringify(pong1), 'success');
+                log('Received pong from server 2: ' + JSON.stringify(pong2), 'success');
+                setResult(`Ping successful!\nServer 1: ${JSON.stringify(pong1, null, 2)}\nServer 2: ${JSON.stringify(pong2, null, 2)}`);
+            } catch (error) {
+                log(`Ping failed: ${error.message}`, 'error');
+                setResult(`Error: ${error.message}`);
+            }
+        }
+
+        async function listDatabases() {
+            if (!client) return;
+
+            try {
+                log('Listing databases on server 1...');
+                const dbList1 = await client.listDatabases(1);
+                log('Database list from server 1: ' + JSON.stringify(dbList1, null, 2), 'success');
+                setResult(JSON.stringify(dbList1, null, 2));
+            } catch (error) {
+                log(`Failed to list databases: ${error.message}`, 'error');
+                setResult(`Error: ${error.message}`);
+            }
+        }
+
+        async function queryCuckoo() {
+            if (!client) return;
+
+            const scriptPubkeyHex = document.getElementById('scriptPubkey').value.trim();
+            if (!scriptPubkeyHex) {
+                log('Please enter a script pubkey', 'error');
+                return;
+            }
+
+            try {
+                // Convert script pubkey hex to bytes
+                const scriptPubkey = hexToBytes(scriptPubkeyHex);
+                log(`Script Pubkey: ${scriptPubkeyHex}`, 'info');
+                log(`Script Pubkey length: ${scriptPubkey.length} bytes`, 'info');
+                
+                // Compute RIPEMD160 hash of the script pubkey
+                // Note: Bitcoin uses SHA256 then RIPEMD160
+                const scriptHashBytes = await scriptHash(scriptPubkey);
+                const scriptHashHex = bytesToHex(scriptHashBytes);
+                
+                log(`Computed RIPEMD160 hash: ${scriptHashHex}`, 'info');
+                
+                // Compute cuckoo locations
+                const loc1 = cuckooHash1(scriptHashBytes, CUCKOO_NUM_BUCKETS);
+                const loc2 = cuckooHash2(scriptHashBytes, CUCKOO_NUM_BUCKETS);
+                
+                log(`Cuckoo location 1: ${loc1}`, 'info');
+                log(`Cuckoo location 2: ${loc2}`, 'info');
+                log('Performing PIR query with DPF keys...', 'info');
+                
+                // Perform the actual PIR query
+                const { response1, response2 } = await client.queryCuckooIndex(scriptHashBytes);
+                
+                log(`Received response from server 1: ${JSON.stringify(response1)}`, 'info');
+                log(`Received response from server 2: ${JSON.stringify(response2)}`, 'info');
+                
+                // Check if we got results
+                if ('QueryTwoResults' in response1 && 'QueryTwoResults' in response2) {
+                    const data1Len = response1.QueryTwoResults.data1.length;
+                    const data2Len = response1.QueryTwoResults.data2.length;
+                    log(`Server 1 returned: data1=${data1Len} bytes, data2=${data2Len} bytes`, 'success');
+                    
+                    // XOR the results from both servers to get the actual bucket data
+                    const bucketData1 = xorBuffers(response1.QueryTwoResults.data1, response2.QueryTwoResults.data1);
+                    const bucketData2 = xorBuffers(response1.QueryTwoResults.data2, response2.QueryTwoResults.data2);
+                    
+                    log(`Combined bucket data: loc1=${bucketData1.length} bytes, loc2=${bucketData2.length} bytes`, 'info');
+                    
+                    // Parse bucket data to find matching key
+                    // Each entry: 20-byte key + 4-byte offset = 24 bytes
+                    // Bucket size: 4 entries
+                    const KEY_SIZE = 20;
+                    const ENTRY_SIZE = 24;
+                    const BUCKET_SIZE = 4;
+                    
+                    let foundOffset = null;
+                    let foundLocation = null;
+                    
+                    // Check both buckets (loc1 and loc2)
+                    for (const [bucketData, locName] of [[bucketData1, 'loc1'], [bucketData2, 'loc2']]) {
+                        for (let i = 0; i < BUCKET_SIZE; i++) {
+                            const offset = i * ENTRY_SIZE;
+                            if (offset + ENTRY_SIZE > bucketData.length) continue;
+                            
+                            // Read the key (first 20 bytes)
+                            const key = bucketData.slice(offset, offset + KEY_SIZE);
+                            
+                            // Check if this slot is empty (all zeros)
+                            if (key.every(b => b === 0)) continue;
+                            
+                            // Check if the key matches our script hash
+                            if (arraysEqual(key, scriptHashBytes)) {
+                                // Read the offset (4 bytes after the key, little-endian)
+                                const offsetBytes = bucketData.slice(offset + KEY_SIZE, offset + ENTRY_SIZE);
+                                const chunkOffset = new DataView(offsetBytes.buffer, offsetBytes.byteOffset).getUint32(0, true);
+                                foundOffset = chunkOffset;
+                                foundLocation = locName;
+                                break;
+                            }
+                        }
+                        if (foundOffset !== null) break;
+                    }
+                    
+                    // XOR helper function
+                    function xorBuffers(a, b) {
+                        const result = new Uint8Array(Math.max(a.length, b.length));
+                        for (let i = 0; i < result.length; i++) {
+                            result[i] = (a[i] || 0) ^ (b[i] || 0);
+                        }
+                        return result;
+                    }
+                    
+                    // Array equality helper
+                    function arraysEqual(a, b) {
+                        if (a.length !== b.length) return false;
+                        for (let i = 0; i < a.length; i++) {
+                            if (a[i] !== b[i]) return false;
+                        }
+                        return true;
+                    }
+                    
+                    if (foundOffset !== null) {
+                        const CHUNK_SIZE = 32768;
+                        const chunkIndex = Math.floor(foundOffset / CHUNK_SIZE);
+                        const localOffset = foundOffset % CHUNK_SIZE;
+                        
+                        log(`Found matching key at ${foundLocation}!`, 'success');
+                        log(`Chunk offset: ${foundOffset}`, 'success');
+                        log(`Chunk index: ${chunkIndex}, Local offset: ${localOffset}`, 'info');
+                        
+                        setResult(
+                            `Script Pubkey: ${scriptPubkeyHex}\n\n` +
+                            `RIPEMD160 Hash: ${scriptHashHex}\n\n` +
+                            `Cuckoo Hash Locations:\n` +
+                            `  Location 1: ${loc1}\n` +
+                            `  Location 2: ${loc2}\n\n` +
+                            `PIR Query Results:\n` +
+                            `  Found at: ${foundLocation}\n` +
+                            `  Chunk offset: ${foundOffset}\n` +
+                            `  Chunk index: ${chunkIndex}\n` +
+                            `  Local offset: ${localOffset}\n\n` +
+                            `PIR query completed successfully!`
+                        );
+                    } else {
+                        log(`Script hash not found in cuckoo index`, 'error');
+                        setResult(
+                            `Script Pubkey: ${scriptPubkeyHex}\n\n` +
+                            `RIPEMD160 Hash: ${scriptHashHex}\n\n` +
+                            `Cuckoo Hash Locations:\n` +
+                            `  Location 1: ${loc1}\n` +
+                            `  Location 2: ${loc2}\n\n` +
+                            `Result: Script hash not found in database.\n` +
+                            `This address has no UTXOs.`
+                        );
+                    }
+                } else if ('Error' in response1) {
+                    throw new Error(`Server 1 error: ${response1.Error.message}`);
+                } else if ('Error' in response2) {
+                    throw new Error(`Server 2 error: ${response2.Error.message}`);
+                } else {
+                    log(`Unexpected response type`, 'error');
+                    setResult(
+                        `Script Pubkey: ${scriptPubkeyHex}\n\n` +
+                        `RIPEMD160 Hash: ${scriptHashHex}\n\n` +
+                        `Cuckoo Hash Locations:\n` +
+                        `  Location 1: ${loc1}\n` +
+                        `  Location 2: ${loc2}\n\n` +
+                        `Unexpected response:\n${JSON.stringify(response1, null, 2)}`
+                    );
+                }
+                
+                log('Query completed', 'success');
+            } catch (error) {
+                log(`Query failed: ${error.message}`, 'error');
+                setResult(`Error: ${error.message}`);
+            }
+        }
+
+        // Add event listeners
+        document.getElementById('connectBtn').addEventListener('click', connect);
+        document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+        document.getElementById('pingBtn').addEventListener('click', ping);
+        document.getElementById('listBtn').addEventListener('click', listDatabases);
+        document.getElementById('queryCuckooBtn').addEventListener('click', queryCuckoo);
+
+        // Initialize with default button states
+        setButtons(false);
+    </script>
+</body>
+</html>

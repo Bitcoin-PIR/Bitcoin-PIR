@@ -12,8 +12,8 @@ use dpf_pir::{Database, UtxoChunkDatabase};
 use std::env;
 
 const DATA_PATH: &str = "/Volumes/Bitcoin/pir/utxo_chunks.bin";
-const NUM_ENTRIES: usize = 1_208_236;
-const ENTRY_SIZE: usize = 1024;
+const NUM_ENTRIES: usize = 33_032;
+const ENTRY_SIZE: usize = 32768;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -24,8 +24,8 @@ fn main() {
         eprintln!();
         eprintln!("Examples:");
         eprintln!("  {} 0        # First entry", args[0]);
-        eprintln!("  {} 1208235  # Last entry", args[0]);
-        eprintln!("  {} 999999   # Entry at index 999999", args[0]);
+        eprintln!("  {} 33031    # Last entry", args[0]);
+        eprintln!("  {} 9999     # Entry at index 9999", args[0]);
         std::process::exit(1);
     }
 
