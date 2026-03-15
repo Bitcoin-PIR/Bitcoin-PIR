@@ -54,6 +54,8 @@ export {
   createPirClient,
   PirClient,
   type PirClientConfig,
+  type ReconnectConfig,
+  type ConnectionState,
   type Request,
   type Response,
 } from './client.js';

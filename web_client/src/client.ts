@@ -43,12 +43,49 @@ export interface UtxoPaginationState {
 }
 
 /**
+ * Connection state enum
+ */
+export type ConnectionState = 
+  | 'disconnected' 
+  | 'connecting' 
+  | 'connected' 
+  | 'reconnecting';
+
+/**
+ * Reconnection configuration
+ */
+export interface ReconnectConfig {
+  enabled: boolean;           // Enable auto-reconnection
+  maxAttempts: number;        // Max reconnection attempts (0 = infinite)
+  initialDelay: number;       // Initial delay in ms
+  maxDelay: number;           // Max delay in ms
+  backoffFactor: number;      // Backoff multiplier
+  heartbeatInterval: number;  // Heartbeat ping interval in ms (0 = disabled)
+  heartbeatTimeout: number;   // Time to wait for pong response in ms
+}
+
+/**
  * PIR client configuration
  */
 export interface PirClientConfig {
   server1Url: string;
   server2Url: string;
+  reconnect?: Partial<ReconnectConfig>;
+  onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
 }
+
+/**
+ * Default reconnection configuration
+ */
+const DEFAULT_RECONNECT_CONFIG: ReconnectConfig = {
+  enabled: true,
+  maxAttempts: 0,           // 0 = infinite
+  initialDelay: 1000,       // 1 second
+  maxDelay: 30000,          // 30 seconds
+  backoffFactor: 2,         // Double the delay each time
+  heartbeatInterval: 30000, // 30 seconds
+  heartbeatTimeout: 10000,  // 10 seconds
+};
 
 /**
  * PIR WebSocket client
@@ -57,19 +94,52 @@ export class PirClient {
   private ws1: WebSocket | null = null;
   private ws2: WebSocket | null = null;
   private config: PirClientConfig;
+  private reconnectConfig: ReconnectConfig;
   private dpf = createDpf();
   private pendingRequests: Map<number, (response: Response) => void> =
     new Map();
   private requestCounter = 0;
 
+  // Reconnection state
+  private connectionState: ConnectionState = 'disconnected';
+  private reconnectAttempts = 0;
+  private reconnectTimers: Map<1 | 2, ReturnType<typeof setTimeout>> = new Map();
+  private isIntentionalDisconnect = false;
+  
+  // Heartbeat state
+  private heartbeatTimers: Map<1 | 2, ReturnType<typeof setInterval>> = new Map();
+  private heartbeatTimeoutTimers: Map<1 | 2, ReturnType<typeof setTimeout>> = new Map();
+  private lastPongTime: Map<1 | 2, number> = new Map();
+
   constructor(config: PirClientConfig) {
     this.config = config;
+    this.reconnectConfig = { ...DEFAULT_RECONNECT_CONFIG, ...config.reconnect };
+  }
+
+  /**
+   * Get current connection state
+   */
+  getConnectionState(): ConnectionState {
+    return this.connectionState;
+  }
+
+  /**
+   * Update connection state and notify callback
+   */
+  private setConnectionState(state: ConnectionState, message?: string): void {
+    this.connectionState = state;
+    if (this.config.onConnectionStateChange) {
+      this.config.onConnectionStateChange(state, message);
+    }
   }
 
   /**
    * Connect to both servers
    */
   async connect(): Promise<void> {
+    this.isIntentionalDisconnect = false;
+    this.setConnectionState('connecting', 'Connecting to servers...');
+    
     console.log(`[DEBUG] Main connect(): Starting parallel connection to both servers`);
     try {
       await Promise.all([
@@ -77,8 +147,19 @@ export class PirClient {
         this.connectToServer(2),
       ]);
       console.log(`[DEBUG] Main connect(): Both connections completed successfully`);
+      
+      // Reset reconnect attempts on successful connection
+      this.reconnectAttempts = 0;
+      this.setConnectionState('connected', 'Connected to both servers');
+      
+      // Start heartbeat if enabled
+      if (this.reconnectConfig.heartbeatInterval > 0) {
+        this.startHeartbeat(1);
+        this.startHeartbeat(2);
+      }
     } catch (error) {
       console.log(`[DEBUG] Main connect(): Connection failed with error:`, error);
+      this.setConnectionState('disconnected', `Connection failed: ${error}`);
       throw error;
     }
   }
@@ -111,6 +192,8 @@ export class PirClient {
           } else {
             this.ws2 = ws;
           }
+          // Record the time of last pong (connection established)
+          this.lastPongTime.set(serverNum, Date.now());
           console.log(`[DEBUG] [SERVER ${serverNum}] Step 6: Resolving connection promise`);
           resolve();
         };
@@ -134,10 +217,22 @@ export class PirClient {
         ws.onclose = (event: CloseEvent) => {
           console.log(`[DEBUG] [SERVER ${serverNum}] Step CLOSE: onclose fired (connection closed)`);
           console.log(`[DEBUG] [SERVER ${serverNum}] Close code: ${event.code}, reason: ${event.reason || 'none'}, wasClean: ${event.wasClean}`);
+          
           if (serverNum === 1) {
             this.ws1 = null;
           } else {
             this.ws2 = null;
+          }
+          
+          // Stop heartbeat for this server
+          this.stopHeartbeat(serverNum);
+          
+          // Attempt reconnection if enabled and not intentional disconnect
+          if (this.reconnectConfig.enabled && !this.isIntentionalDisconnect) {
+            this.attemptReconnect(serverNum);
+          } else if (!this.isIntentionalDisconnect) {
+            // Update state if connection was lost unexpectedly and reconnection is disabled
+            this.setConnectionState('disconnected', `Server ${serverNum} disconnected`);
           }
         };
 
@@ -150,13 +245,174 @@ export class PirClient {
   }
 
   /**
+   * Attempt to reconnect to a specific server with exponential backoff
+   */
+  private attemptReconnect(serverNum: 1 | 2): void {
+    // Clear any existing reconnect timer
+    const existingTimer = this.reconnectTimers.get(serverNum);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    // Check if we've exceeded max attempts (0 means infinite)
+    if (this.reconnectConfig.maxAttempts > 0 && this.reconnectAttempts >= this.reconnectConfig.maxAttempts) {
+      console.log(`[RECONNECT] Max reconnection attempts (${this.reconnectConfig.maxAttempts}) reached for server ${serverNum}`);
+      this.setConnectionState('disconnected', `Max reconnection attempts reached for server ${serverNum}`);
+      return;
+    }
+
+    // Calculate delay with exponential backoff
+    const delay = Math.min(
+      this.reconnectConfig.initialDelay * Math.pow(this.reconnectConfig.backoffFactor, this.reconnectAttempts),
+      this.reconnectConfig.maxDelay
+    );
+    
+    this.reconnectAttempts++;
+    this.setConnectionState('reconnecting', `Reconnecting to server ${serverNum} (attempt ${this.reconnectAttempts})...`);
+    
+    console.log(`[RECONNECT] Scheduling reconnection to server ${serverNum} in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    
+    const timer = setTimeout(async () => {
+      console.log(`[RECONNECT] Attempting to reconnect to server ${serverNum}...`);
+      
+      try {
+        await this.connectToServer(serverNum);
+        console.log(`[RECONNECT] Successfully reconnected to server ${serverNum}`);
+        
+        // Check if both servers are now connected
+        if (this.isConnected()) {
+          this.reconnectAttempts = 0;
+          this.setConnectionState('connected', 'Reconnected to both servers');
+          
+          // Restart heartbeats
+          if (this.reconnectConfig.heartbeatInterval > 0) {
+            this.startHeartbeat(1);
+            this.startHeartbeat(2);
+          }
+        }
+      } catch (error) {
+        console.log(`[RECONNECT] Reconnection to server ${serverNum} failed:`, error);
+        // Schedule another attempt
+        this.attemptReconnect(serverNum);
+      }
+    }, delay);
+    
+    this.reconnectTimers.set(serverNum, timer);
+  }
+
+  /**
+   * Start heartbeat for a specific server
+   */
+  private startHeartbeat(serverNum: 1 | 2): void {
+    // Clear any existing heartbeat
+    this.stopHeartbeat(serverNum);
+    
+    if (this.reconnectConfig.heartbeatInterval <= 0) {
+      return;
+    }
+    
+    console.log(`[HEARTBEAT] Starting heartbeat for server ${serverNum} (interval: ${this.reconnectConfig.heartbeatInterval}ms)`);
+    
+    const timer = setInterval(async () => {
+      const ws = serverNum === 1 ? this.ws1 : this.ws2;
+      
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      
+      try {
+        // Send a ping request
+        const request: Request = { Ping: {} };
+        const encoded = encodeRequest(request);
+        
+        // Set up timeout for pong response
+        const timeoutTimer = setTimeout(() => {
+          console.log(`[HEARTBEAT] Server ${serverNum} pong timeout - connection may be stale`);
+          // Close the connection to trigger reconnection
+          const wsToClose = serverNum === 1 ? this.ws1 : this.ws2;
+          if (wsToClose) {
+            wsToClose.close();
+          }
+        }, this.reconnectConfig.heartbeatTimeout);
+        
+        this.heartbeatTimeoutTimers.set(serverNum, timeoutTimer);
+        
+        // Send ping
+        ws.send(encoded);
+        
+        // Set up one-time message handler for pong
+        const originalOnMessage = ws.onmessage;
+        ws.onmessage = (event) => {
+          try {
+            const response = decodeResponse(new Uint8Array(event.data));
+            // Check if it's a Pong response
+            if ('Pong' in response) {
+              clearTimeout(this.heartbeatTimeoutTimers.get(serverNum));
+              this.heartbeatTimeoutTimers.delete(serverNum);
+              this.lastPongTime.set(serverNum, Date.now());
+              console.log(`[HEARTBEAT] Server ${serverNum} pong received`);
+            }
+            // Call original handler if exists
+            if (originalOnMessage) {
+              originalOnMessage.call(ws, event);
+            }
+          } catch (error) {
+            console.error(`[HEARTBEAT] Error processing response:`, error);
+            if (originalOnMessage) {
+              originalOnMessage.call(ws, event);
+            }
+          }
+        };
+      } catch (error) {
+        console.error(`[HEARTBEAT] Error sending ping to server ${serverNum}:`, error);
+      }
+    }, this.reconnectConfig.heartbeatInterval);
+    
+    this.heartbeatTimers.set(serverNum, timer);
+  }
+
+  /**
+   * Stop heartbeat for a specific server
+   */
+  private stopHeartbeat(serverNum: 1 | 2): void {
+    const timer = this.heartbeatTimers.get(serverNum);
+    if (timer) {
+      clearInterval(timer);
+      this.heartbeatTimers.delete(serverNum);
+    }
+    
+    const timeoutTimer = this.heartbeatTimeoutTimers.get(serverNum);
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      this.heartbeatTimeoutTimers.delete(serverNum);
+    }
+  }
+
+  /**
    * Disconnect from servers
    */
   disconnect(): void {
+    this.isIntentionalDisconnect = true;
+    
+    // Clear all timers
+    for (const serverNum of [1, 2] as const) {
+      this.stopHeartbeat(serverNum);
+      const reconnectTimer = this.reconnectTimers.get(serverNum);
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        this.reconnectTimers.delete(serverNum);
+      }
+    }
+    
+    // Close connections
     this.ws1?.close();
     this.ws2?.close();
     this.ws1 = null;
     this.ws2 = null;
+    
+    // Reset state
+    this.reconnectAttempts = 0;
+    this.setConnectionState('disconnected', 'Disconnected');
   }
 
   /**

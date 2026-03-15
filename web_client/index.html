@@ -42,6 +42,19 @@
             background-color: #f8d7da;
             color: #721c24;
         }
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .status.reconnecting {
+            background-color: #ffeaa7;
+            color: #856404;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
         button {
             background-color: #f7931a;
             color: white;
@@ -495,17 +508,48 @@
                 log(`  Server 1: ${server1Url}`);
                 log(`  Server 2: ${server2Url}`);
                 
+                // Create client with connection state callback for auto-reconnection
                 client = createPirClient(server1Url, server2Url);
+                client = new (await import('./src/index.js')).PirClient({
+                    server1Url,
+                    server2Url,
+                    reconnect: {
+                        enabled: true,
+                        maxAttempts: 0,  // Infinite retries
+                        initialDelay: 1000,
+                        maxDelay: 30000,
+                        backoffFactor: 2,
+                        heartbeatInterval: 30000,  // 30 second heartbeat
+                        heartbeatTimeout: 10000,   // 10 second pong timeout
+                    },
+                    onConnectionStateChange: (state, message) => {
+                        log(`Connection state: ${state}${message ? ' - ' + message : ''}`, 
+                            state === 'connected' ? 'success' : 
+                            state === 'disconnected' ? 'error' : 'info');
+                        
+                        // Update UI based on connection state
+                        const statusDiv = document.getElementById('status');
+                        statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
+                        statusDiv.className = `status ${state}`;
+                        
+                        // Update buttons based on state
+                        if (state === 'connected') {
+                            setButtons(true);
+                            lastConnectedUrls = { server1: server1Url, server2: server2Url };
+                        } else if (state === 'disconnected') {
+                            setButtons(false);
+                        } else if (state === 'connecting' || state === 'reconnecting') {
+                            document.getElementById('connectBtn').disabled = true;
+                            document.getElementById('disconnectBtn').disabled = false;
+                        }
+                    }
+                });
+                
                 await client.connect();
                 
-                lastConnectedUrls = { server1: server1Url, server2: server2Url };
-                
                 log('Successfully connected to both servers!', 'success');
-                setStatus(`Connected to ${server1Url} & ${server2Url}`, true);
-                setButtons(true);
             } catch (error) {
                 log(`Connection failed: ${error.message}`, 'error');
-                setStatus('Connection Failed', false);
                 client = null;
             }
         }
