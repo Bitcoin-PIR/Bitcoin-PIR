@@ -39,7 +39,7 @@ const BUCKET_SIZE: usize = 4;
 const CHUNK_SIZE: usize = 32768;
 
 /// Number of entries in the chunks database
-const NUM_ENTRIES: usize = 33_032;
+const NUM_ENTRIES: usize = 33_038;
 
 /// A parsed UTXO entry
 #[derive(Debug)]

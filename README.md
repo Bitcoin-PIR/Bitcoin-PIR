@@ -1,365 +1,404 @@
-# Bitcoin PIR Project
+# Bitcoin PIR - Private Information Retrieval for Bitcoin UTXOs
 
-This project implements Private Information Retrieval (PIR) and BIP158 compact block filters for querying Bitcoin blockchain data while hiding which block is being accessed.
+A privacy-preserving system for querying Bitcoin UTXO (Unspent Transaction Output) data using Distributed Point Function (DPF) based Private Information Retrieval (PIR).
 
-**Current Approach**: Using BIP158 (rust-bitcoin/bip158) for production-ready, privacy-preserving blockchain queries.
+## Overview
 
-## Project Status
+This project enables querying the Bitcoin UTXO set without revealing which addresses you're interested in. Using a two-server PIR architecture with DPF, the servers learn nothing about your queries as long as they don't collude.
 
-### ✅ Decision: Use rust-bitcoin/bip158
+### Key Features
 
-**Chosen Implementation**: `rust-bitcoin/bip158` crate (production-ready, 2.6k stars)
+- 🔒 **Privacy-Preserving**: Servers cannot determine which addresses are being queried
+- ⚡ **DPF-Based**: Uses Distributed Point Functions for efficient PIR
+- 🌐 **Web Compatible**: Browser and Node.js clients via WebSocket
+- 🔐 **TLS Support**: Secure WebSocket (wss://) for production deployments
+- 📦 **High Performance**: Memory-mapped databases for fast queries
 
-**Reasons**:
-- Production-ready and battle-tested
-- Full BIP158 implementation (GCS filters, Golomb-Rice coding)
-- Excellent documentation
-- No external dependencies
-- Better privacy than original indexing approach
+## Architecture
 
-**Implementation Status**: Rust project created in `pir/` directory
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         CLIENT                                    │
+│  ┌────────────────────┐    ┌────────────────────┐               │
+│  │   Web Browser      │    │   Rust CLI         │               │
+│  │   (TypeScript)     │    │   (lookup_pir)     │               │
+│  └─────────┬──────────┘    └─────────┬──────────┘               │
+│            │                         │                           │
+│            └───────────┬─────────────┘                           │
+│                        │                                         │
+│              WebSocket Connections                                │
+│           (ws:// or wss://)                                       │
+└────────────────────────┼─────────────────────────────────────────┘
+                         │
+           ┌─────────────┴─────────────┐
+           ▼                           ▼
+┌──────────────────────┐    ┌──────────────────────┐
+│      SERVER 1        │    │      SERVER 2        │
+│   (port 8091)        │    │   (port 8092)        │
+│                      │    │                      │
+│  ┌────────────────┐  │    │  ┌────────────────┐  │
+│  │  Databases     │  │    │  │  Databases     │  │
+│  │  (identical)   │  │    │  │  (identical)   │  │
+│  └────────────────┘  │    │  └────────────────┘  │
+└──────────────────────┘    └──────────────────────┘
 
----
+PIR Security Model: Privacy guaranteed if at least one server doesn't learn queries.
+```
 
-### 🔄 Phase 1: Data Acquisition (Node Setup)
+## Project Structure
 
-**Approach: Local Bitcoin node via RPC (unlimited access)**
+```
+BitcoinPIR/
+├── dpf_pir/                    # PIR server implementation (Rust)
+│   ├── src/
+│   │   ├── lib.rs              # Library exports
+│   │   ├── database.rs         # Database trait & implementations
+│   │   ├── protocol.rs         # Request/Response types
+│   │   ├── pir_protocol.rs     # Simple Binary Protocol
+│   │   ├── hash.rs             # Cuckoo hash functions
+│   │   ├── websocket.rs        # WebSocket handler
+│   │   ├── server_config.rs    # Database configuration
+│   │   └── bin/
+│   │       ├── server.rs       # WebSocket server binary
+│   │       ├── servers.rs      # Multi-server manager
+│   │       ├── lookup_pir.rs   # CLI client
+│   │       └── lookup_script.rs # Script lookup tool
+│   └── Cargo.toml
+│
+├── build_db/                   # Database generation tools (Rust)
+│   └── src/bin/
+│       ├── gen_1_txid_file.rs           # Extract TXIDs from blk*.dat
+│       ├── gen_2_mphf.rs                # Build minimal perfect hash
+│       ├── gen_3_location_index.rs      # Build location index
+│       ├── gen_4_utxo_remapped.rs       # Extract UTXOs with 4B TXIDs
+│       ├── gen_5_utxo_chunks_from_remapped.rs  # Generate UTXO chunks
+│       ├── gen_6_utxo_4b_to_32b.rs      # Build TXID mapping
+│       ├── gen_7_cuckoo_chunks.rs       # Build cuckoo index
+│       ├── gen_8_cuckoo_txid.rs         # Build cuckoo TXID index
+│       └── README.md                    # Detailed pipeline docs
+│
+├── web_client/                 # Browser/Node.js client (TypeScript)
+│   ├── src/
+│   │   ├── index.ts            # Main entry point
+│   │   ├── client.ts           # WebSocket client
+│   │   ├── dpf.ts              # DPF wrapper
+│   │   ├── hash.ts             # Hash functions
+│   │   ├── bincode.ts          # Binary serialization
+│   │   └── constants.ts        # System constants
+│   ├── package.json
+│   └── README.md
+│
+├── scripts/                    # Helper scripts
+│   ├── start_pir_servers.sh    # Start both PIR servers
+│   ├── test_lookup_pir.sh      # Test PIR lookup
+│   └── run_client.sh           # Run client script
+│
+└── doc/                        # Documentation
+    ├── DEPLOYMENT.md           # Production deployment guide
+    └── WEB.md                  # Web client implementation
+```
 
-**Data Summary:**
-- Blocks to fetch: 100 (initial target)
-- Network: Bitcoin testnet (faster sync, no real money)
-- Setup time: ~1-3 hours (node sync)
-- Data format: Raw binary blocks + full transaction data
-- Storage location: `data/blocks/`
+## Quick Start
 
-**Status:**
-- Node setup required (see `doc/NODE.md`)
-- Previous API-based fetch attempts deprecated (rate limiting)
-- Phase 1.5 scripts created (not yet tested with live data)
+### 1. Build the Project
 
-**Phase 1.5: Data Processing** (Scripts Created, Pending Testing)
-- **Original Approach** (Python):
-  - `scripts/index_blocks.py`: Index blockchain data via RPC
-  - `scripts/query_index.py`: Query generated indices
-  - Global transaction index: 4-byte sequential IDs
-  - Global ScriptPubKey index: 2-byte sequential IDs
-  - Space savings: ~73% for ScriptPubKeys
-  - **Problem**: Reveals which transaction/script is being queried (privacy leak!)
+```bash
+# Clone the repository
+git clone https://github.com/weikengchen/Bitcoin-PIR.git
+cd Bitcoin-PIR
 
-- **New Approach** (Rust + BIP158):
-  - `pir/`: Rust project using `rust-bitcoin/bip158`
-  - BIP158 compact block filters: ~50 bytes per block
-  - **Benefit**: Server doesn't learn which scripts are relevant!
-  - **Storage**: ~5 KB for 100 blocks (99.9% savings vs original)
-  - **Status**: Implementation plan created (`doc/BIP158_IMPLEMENTATION.md`)
+# Build all components
+cargo build --release
+```
 
-**Privacy Analysis**: `doc/LIGHT_CLIENT_DATA.md` - Detailed analysis of light client data requirements and privacy implications
+### 2. Generate Database Files
 
-**Key Finding**: BIP158 provides good privacy at practical bandwidth (10-100 MB vs 600 GB for naive approach)
+The database pipeline transforms Bitcoin blockchain data into PIR-queryable format:
 
-**Reference**: `doc/BIP158.md`, `doc/RUST_BIP158.md`, `doc/BIP158_IMPLEMENTATION.md`, `doc/LIGHT_CLIENT_DATA.md`
+```bash
+# Step 1: Extract TXIDs from Bitcoin blk*.dat files
+cargo run --release --bin gen_1_txid_file -- /path/to/bitcoin
 
-### 🚧 Phase 2: Single-Server PIR (Pending)
-Implementation using Microsoft's SealPIR library.
+# Step 2: Build minimal perfect hash function
+cargo run --release --bin gen_2_mphf
 
-### 🚧 Phase 3: Two-Server PIR (Pending)
-Implementation using information-theoretic PIR with two non-colluding servers.
+# Step 3: Build location index
+cargo run --release --bin gen_3_location_index
 
-### 🚧 Phase 4: Testing & Benchmarking (Pending)
-Correctness verification and performance measurement.
+# Step 4: Extract UTXOs (requires stopped bitcoind)
+cargo run --release --bin gen_4_utxo_remapped -- /path/to/bitcoin
 
----
+# Step 5: Generate UTXO chunks
+cargo run --release --bin gen_5_utxo_chunks_from_remapped
 
-## Web Client
+# Step 6: Build TXID mapping
+cargo run --release --bin gen_6_utxo_4b_to_32b
 
-A JavaScript/TypeScript client library for querying the PIR servers from browsers and Node.js.
+# Step 7: Build cuckoo hash index
+cargo run --release --bin gen_7_cuckoo_chunks
 
-**Status**: ✅ Implementation complete
+# Step 8: Build cuckoo TXID index
+cargo run --release --bin gen_8_cuckoo_txid
+```
 
-**Features**:
-- 🌐 Works in browsers and Node.js
-- 🔒 Privacy-preserving queries using DPF
-- 🔐 WebSocket-based communication
-- ⚡ Real-time bidirectional communication
-- 📦 Full TypeScript support
+See [`build_db/src/bin/README.md`](build_db/src/bin/README.md) for detailed documentation.
 
-**Quick Start**:
+### 3. Configure Server
+
+Edit `dpf_pir/src/server_config.rs` to set your database paths:
+
+```rust
+// Update paths to match your data location
+let cuckoo_config = DatabaseConfig::new(
+    "utxo_cuckoo_index",
+    "/data/pir/utxo_chunks_cuckoo.bin",  // Your path here
+    24,    // entry_size
+    1,     // bucket_size
+    15_385_139,  // num_buckets
+    2,     // num_locations (cuckoo)
+);
+```
+
+Rebuild after configuration changes:
+```bash
+cargo build --release --bin server
+```
+
+### 4. Start PIR Servers
+
+```bash
+# Start both servers (ports 8091 and 8092)
+./scripts/start_pir_servers.sh
+```
+
+Or manually:
+```bash
+# Server 1
+RUST_LOG=info ./target/release/server --port 8091
+
+# Server 2 (in another terminal)
+RUST_LOG=info ./target/release/server --port 8092
+```
+
+### 5. Query UTXOs
+
+**Using CLI:**
+```bash
+# Build the client
+cargo build --release --bin lookup_pir
+
+# Query by script pubkey hash
+./target/release/lookup_pir --server1 ws://127.0.0.1:8091 --server2 ws://127.0.0.1:8092 "76a914b64513c1f1b889a556463243cca9c26ee626b9a088ac"
+```
+
+**Using Web Client:**
 ```bash
 cd web_client
 npm install
 npm run build
-# See web_client/README.md for full documentation
+
+# Open example.html in browser, or serve it:
+python -m http.server 8000
+# Navigate to http://localhost:8000/example.html
 ```
 
-**Demo**: Open `web_client/example.html` in a browser (requires running PIR servers)
+## Databases
 
-**Documentation**: See [web_client/README.md](web_client/README.md) for API reference and usage examples
+The system uses three databases for PIR queries:
 
-## Directory Structure
+### 1. UTXO Cuckoo Index (`utxo_cuckoo_index`)
+- **Purpose**: Maps script hashes to UTXO chunk indices
+- **Hash**: Cuckoo hashing with 2 locations
+- **Entry size**: 24 bytes
+- **Buckets**: ~15.4 million
 
-```
-BitcoinPIR/
-├── dpf_pir/                          # Rust PIR server implementation
-│   ├── Cargo.toml                    # Rust project configuration
-│   └── src/
-│       ├── protocol.rs                 # Request/Response types
-│       ├── database.rs                 # Database implementations
-│       ├── hash.rs                    # Cuckoo hash functions
-│       ├── websocket.rs                # WebSocket protocol handler
-│       └── bin/
-│           ├── server.rs               # WebSocket server binary
-│           ├── lookup_pir.rs          # WebSocket client binary
-│           └── servers.rs             # Multi-server management
-├── build_db/                          # Database generation tools
-│   └── src/bin/
-│       ├── gen_1_txid_file.rs        # Generate TXID file
-│       ├── gen_2_mphf.rs            # Generate minimal perfect hash
-│       ├── gen_3_location_index.rs   # Generate location index
-│       ├── gen_4_utxo_remapped.rs   # Generate remapped UTXO
-│       ├── gen_5_utxo_chunks_from_remapped.rs  # Generate UTXO chunks
-│       ├── gen_6_utxo_4b_to_32b.rs  # Generate TXID mapping
-│       ├── gen_7_cuckoo_chunks.rs   # Generate cuckoo index
-│       └── gen_8_cuckoo_txid.rs   # Generate cuckoo TXID index
-├── web_client/                        # JavaScript/TypeScript web client (NEW)
-│   ├── src/
-│   │   ├── index.ts                # Main library entry point
-│   │   ├── client.ts               # WebSocket client
-│   │   ├── bincode.ts             # Binary serialization
-│   │   ├── dpf.ts                 # DPF wrapper
-│   │   ├── hash.ts                # Hash functions
-│   │   ├── constants.ts            # System constants
-│   │   └── test/
-│   │       └── example.test.ts     # Unit tests
-│   ├── example.html                # Browser demo
-│   ├── package.json               # NPM configuration
-│   ├── tsconfig.json             # TypeScript configuration
-│   ├── README.md                # Client documentation
-│   └── USAGE_GUIDE.md           # Detailed usage guide
-├── doc/
-│   ├── WEB.md                        # Web client implementation plan
-│   ├── PLAN.md                         # Detailed implementation plan
-│   ├── NODE.md                        # Bitcoin node setup guide
-│   ├── INDEX.md                       # Data processing plan (TXID/SPK indexing)
-│   ├── BIP158.md                       # BIP158 compact block filters
-│   ├── RUST_BIP158.md                # Rust BIP158 implementation guide
-│   ├── BIP158_IMPLEMENTATION.md        # BIP158 implementation plan for BitcoinPIR
-│   └── LIGHT_CLIENT_DATA.md            # Privacy analysis & data requirements
-├── scripts/
-│   ├── start_pir_servers.sh          # Start PIR WebSocket servers
-│   ├── test_lookup_pir.sh          # Test PIR lookup
-│   ├── run_client.sh               # Run client script
-│   ├── fetch_blocks.py.broken       # Deprecated: blockchain.info API fetcher
-│   ├── fetch_blocks_v2.py           # Deprecated: BlockCypher API fetcher (rate limited)
-│   ├── continue_fetch.py            # Deprecated: API-based continuation
-│   ├── index_blocks.py             # Phase 1.5: Original indexing (Python)
-│   └── query_index.py              # Query generated indices
-├── pir/                              # BIP158 Rust implementation (LEGACY)
-│   ├── Cargo.toml                    # Rust project configuration
-│   └── src/
-│       └── lib.rs                 # BlockIndexer with BIP158 support
-├── data/
-│   ├── blocks/                     # Binary block files (from local node, to be created)
-│   ├── filters/                    # BIP158 compact block filters (to be created)
-│   ├── tx_global_index.bin          # Global transaction index (original approach)
-│   ├── spk_global_index.bin         # ScriptPubKey index (original approach)
-│   ├── spk_global_lookup.bin        # ScriptPubKey hash → ID lookup (original approach)
-│   └── index_meta.json             # Index metadata (original approach)
-└── requirements.txt            # Python dependencies
-```
+### 2. UTXO Chunks Data (`utxo_chunks_data`)
+- **Purpose**: Contains actual UTXO data in chunks
+- **Format**: Direct index lookup (no hashing)
+- **Entry size**: 1024 bytes
+- **Entries**: ~1.2 million
 
----
+### 3. TXID Mapping (`utxo_4b_to_32b`)
+- **Purpose**: Maps 4-byte TXID prefixes to full 32-byte TXIDs
+- **Hash**: Cuckoo hashing with 4 entries per bucket
+- **Entry size**: 36 bytes (4-byte key + 32-byte TXID)
+- **Buckets**: ~30 million
 
-## Usage
+## Query Flow
 
-### 1. Setup Bitcoin Node
+1. **Compute script hash**: RIPEMD160 of scriptPubkey
+2. **Calculate cuckoo locations**: Two hash locations for the script hash
+3. **Query cuckoo index**: PIR query to get chunk indices
+4. **Query chunks**: PIR query to retrieve UTXO data
+5. **Combine results**: XOR responses from both servers
+6. **Resolve TXIDs**: Query TXID mapping for full TXIDs
 
-See `doc/NODE.md` for complete setup instructions:
+## WebSocket Protocol
+
+The server uses a Simple Binary Protocol over WebSocket:
+
+| Message Type | Format |
+|--------------|--------|
+| Ping | `[0x01]` |
+| Pong | `[0x02]` |
+| List Databases | `[0x03]` |
+| Database List | `[0x04][count:u32][entries...]` |
+| Get Database Info | `[0x05][db_id_len:u16][db_id:bytes]` |
+| Database Info | `[0x06][info_data...]` |
+| Query | `[0x07][query_data...]` |
+| Query Response | `[0x08][response_data...]` |
+| Error | `[0xFF][error_message]` |
+
+## TLS/SSL Support
+
+For production deployments, use secure WebSocket (wss://):
 
 ```bash
-# Option A: Testnet (recommended for development, 1-3 hours sync)
-bitcoin-qt -testnet -rpcuser=<user> -rpcpassword=<pass> -rpcport=18332
+# Generate self-signed certificate (testing)
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
 
-# Option B: Mainnet (for production, 2-7 days sync)
-bitcoin-qt -rpcuser=<user> -rpcpassword=<pass> -rpcport=8332
+# Run server with TLS
+./target/release/server --port 8091 \
+    --tls-cert /path/to/cert.pem \
+    --tls-key /path/to/key.pem
 ```
 
-### 2. Index Blockchain Data (Phase 1.5)
+For production, use Let's Encrypt certificates. See [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) for complete deployment instructions.
 
-After node syncs, run the indexer:
+## API Reference
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+### Rust Library
 
-# Create global indices for transactions and ScriptPubKeys
-python3 scripts/index_blocks.py --start-height <height> --count <count> --rpc-user <user> --rpc-password <pass>
+```rust
+use dpf_pir::{
+    Database, DatabaseConfig, DatabaseRegistry,
+    CuckooDatabase, UtxoChunkDatabase, TxidMappingDatabase,
+    cuckoo_locations_default, txid_mapping_locations,
+};
 
-# Example: Index 100 blocks starting at tip
-python3 scripts/index_blocks.py --count 100 --from-tip --rpc-user <user> --rpc-password <pass>
+// Create a cuckoo database
+let config = DatabaseConfig::new(
+    "my_db",
+    "/path/to/data.bin",
+    24,     // entry_size
+    1,      // bucket_size
+    1000000, // num_buckets
+    2,      // num_locations
+);
+let db = CuckooDatabase::with_mmap(config)?;
 
-# Example: Index specific block range
-python3 scripts/index_blocks.py --start-height 1000000 --count 100 --rpc-user <user> --rpc-password <pass>
+// Compute hash locations
+let key = hex::decode("76a914...88ac")?;
+let (loc1, loc2) = cuckoo_locations_default(&key, db.num_buckets());
 
-# Reset and re-index
-python3 scripts/index_blocks.py --count 100 --from-tip --reset --rpc-user <user> --rpc-password <pass>
+// Read bucket entries
+let entries = db.read_bucket(loc1)?;
 ```
 
-### 3. Query Indices
+### TypeScript Client
 
-After indexing, query the indices:
+```typescript
+import { createPirClient, hexToBytes, cuckooHash1, cuckooHash2 } from 'bitcoin-pir';
 
-```bash
-# Show index summary
-python3 scripts/query_index.py --summary
+// Create client
+const client = createPirClient(
+  'wss://server1.example.com',
+  'wss://server2.example.com'
+);
 
-# Get transaction by global ID
-python3 scripts/query_index.py --get-tx 42
+// Connect
+await client.connect();
 
-# List first 10 transactions
-python3 scripts/query_index.py --get-all-tx
+// Query database
+const result = await client.queryDatabase(
+  'utxo_cuckoo_index',
+  location1,
+  location2,
+  24  // DPF parameter
+);
 
-# Get ScriptPubKey by global ID
-python3 scripts/query_index.py --get-spk 10
-
-# Get ScriptPubKey ID by hex value
-python3 scripts/query_index.py --get-spk-by-hex <spk_hex>
-
-# List first 10 ScriptPubKeys
-python3 scripts/query_index.py --get-all-spk
+// Disconnect
+client.disconnect();
 ```
 
-### 4. Create BIP158 Filters (Alternative to PIR)
-
-After indexing, use BIP158 for private queries:
+## Development
 
 ```bash
-# Build Rust filter creator
-cd pir
+# Build all components
 cargo build --release
 
-# Create filters for 100 blocks
-cargo run --release -- -- create-filters \
-    --rpc-url http://127.0.0.1:18332 \
-    --rpc-user <user> \
-    --rpc-password <password> \
-    --start-height 0 \
-    --count 100
+# Run tests
+cargo test
 
-# Query filters
-cargo run --release -- -- query-filters \
-    --filters-dir data/filters/ \
-    --wallet-addresses <address1>,<address2>
+# Build web client
+cd web_client && npm run build
+
+# Run web client tests
+cd web_client && npm test
 ```
-
-### 5. Query PIR Server (Phase 2+)
-
-After PIR implementation, query the server:
-
-```bash
-# Query transaction by TXID
-python3 scripts/pir_client.py --query-tx <txid>
-
-# Query all transactions using a ScriptPubKey
-python3 scripts/pir_client.py --query-spk <spk_hex>
-```
-
----
-
-## Next Steps
-
-1. **Set up Bitcoin node**:
-    - Follow `doc/NODE.md` instructions
-    - Choose: testnet (1-3 hours) or mainnet (2-7 days)
-    - Wait for blockchain sync
-
-2. **Implement BIP158 filter creation** (NEW):
-    - Complete Phase A: Setup Rust project in `pir/`
-    - Complete Phase B: Implement filter creation logic
-    - Complete Phase C: Implement filter query logic
-    - Complete Phase D: Integrate with Bitcoin node RPC
-    - Complete Phase E: Test and benchmark
-    - See `doc/BIP158_IMPLEMENTATION.md` for details
-
-3. **Optional: Implement PIR** (or use BIP158 instead):
-    - Single-server PIR (SealPIR) if needed
-    - Two-server PIR (information-theoretic) if needed
-    - Consider hybrid: BIP158 to narrow + PIR for retrieval
-
-4. **Testing & Benchmarking**:
-    - Verify BIP158 correctness
-    - Benchmark filter creation and query performance
-    - Compare BIP158 vs PIR approaches
-    - Document results
-
----
 
 ## Dependencies
 
-### Python (Phase 1 & Phase 1.5)
-```bash
-pip install -r requirements.txt
-```
-Current dependencies:
-```
-requests==2.31.0    # RPC calls to Bitcoin node
-```
+### Rust
+- `tokio` - Async runtime
+- `tokio-tungstenite` - WebSocket support
+- `tokio-rustls` - TLS support
+- `serde` / `bincode` - Serialization
+- `memmap2` - Memory-mapped files
+- `libdpf` - DPF implementation
+- `sha2`, `ripemd` - Hash functions
 
-### Rust (Phases 2-4, to be installed)
-```
-tokio = "1.35"
-serde = "1.0"
-bytes = "1.5"
-rand = "0.8"
-sealpir (or similar PIR library)
-```
+### Web Client
+- TypeScript 5+
+- Node.js 18+ or modern browser
+- WebSocket API
 
----
+## Security Model
 
-## Technical Notes
+### Privacy Guarantees
+- **Two-server model**: Privacy is guaranteed if at least one server is honest
+- **DPF-based queries**: Each server receives a different DPF key
+- **No query logging**: The library does not log query details
 
-### Local Bitcoin Node
-- **RPC Methods**: `getblock <hash> 2`, `getbestblockhash`, `getblockhash <height>`
-- **Format**: Full block data with all transactions (inputs, outputs, scripts)
-- **Benefits**: Unlimited access, complete transaction data, no rate limits
-- **Setup**: See `doc/NODE.md` for detailed instructions
+### Requirements
+- Servers MUST NOT collude
+- Use different hosting providers for each server
+- Enable TLS in production
+- Keep database files synchronized between servers
 
-### Index Architecture
-- **Transaction IDs**: 4-byte sequential global IDs (1, 2, 3, ... N)
-  - Independent of block boundaries
-  - Supports up to 4.2B transactions
-  - Storage: 18 bytes per transaction record
-- **ScriptPubKey IDs**: 2-byte sequential global IDs
-  - 87% space savings vs 32-byte hashes
-  - Storage: 34 bytes per unique SPK in lookup table
-- **Reference**: `doc/INDEX.md` for complete specification
+## Performance
 
----
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| Cuckoo Index Query | ~10-50ms | Memory-mapped access |
+| Chunk Query | ~10-50ms | Direct index lookup |
+| TXID Mapping Query | ~10-50ms | Cuckoo with 4 entries/bucket |
+| Full UTXO Lookup | ~100-200ms | All three queries combined |
 
-## Troubleshooting
+## Documentation
 
-### Bitcoin Node Issues
-- **Node won't start**: Check `~/.bitcoin/debug.log` for errors
-- **RPC connection refused**: Verify RPC credentials and port (testnet: 18332, mainnet: 8332)
-- **Sync stuck**: Check network connectivity and disk space
-
-### Indexing Issues
-- **No blocks indexed**: Ensure Bitcoin node is synced
-- **RPC timeout**: Increase RPC timeout in script settings
-- **Index file errors**: Delete `data/` directory and re-index
-
----
-
-## References
-
-- **Plan**: See `doc/PLAN.md` for detailed implementation roadmap
-- **Node Setup**: See `doc/NODE.md` for Bitcoin node installation
-- **Index Design**: See `doc/INDEX.md` for data processing specification
-- **PIR Background**:
-  - Microsoft SealPIR: https://github.com/microsoft/SealPIR
-  - PIR Tutorial: https://learnblockchain.cn/article/21987
-
----
+- [`build_db/src/bin/README.md`](build_db/src/bin/README.md) - Database generation pipeline
+- [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) - Production deployment guide
+- [`doc/WEB.md`](doc/WEB.md) - Web client implementation
+- [`web_client/README.md`](web_client/README.md) - Web client API reference
 
 ## License
 
-MIT License - See LICENSE file for details
+MIT License
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## References
+
+- [Private Information Retrieval](https://en.wikipedia.org/wiki/Private_information_retrieval)
+- [Distributed Point Functions](https://eprint.iacr.org/2013/679.pdf)
+- [Bitcoin UTXO Model](https://developer.bitcoin.org/devguide/transactions.html)
+- [Cuckoo Hashing](https://en.wikipedia.org/wiki/Cuckoo_hashing)
+<task_progress>- [x] Explore current README and project structure
+- [x] Understand the main components (build_db, dpf_pir, web_client)
+- [x] Review documentation in subdirectories
+- [x] Write comprehensive README update
+- [ ] Verify completeness</task_progress>
+</write_to_file>

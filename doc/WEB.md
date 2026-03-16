@@ -147,7 +147,7 @@ const CHUNKS_DB_ID = "utxo_chunks_data";
 const TXID_MAPPING_DB_ID = "utxo_4b_to_32b";
 
 const CUCKOO_NUM_BUCKETS = 15_385_139;
-const CHUNKS_NUM_ENTRIES = 33_032;
+const CHUNKS_NUM_ENTRIES = 33_038;
 const CHUNK_SIZE = 32 * 1024;
 const TXID_MAPPING_NUM_BUCKETS = 30_097_234;
 ```

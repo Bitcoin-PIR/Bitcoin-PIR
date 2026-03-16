@@ -23,6 +23,7 @@
 
 use bitcoin::hashes::{ripemd160, Hash};
 use bitcoinpir::mpfh::Mphf;
+use bitcoinpir::utils;
 use memmap2::Mmap;
 use std::env;
 use std::fs::File;
@@ -40,31 +41,6 @@ const TXID_LOCATIONS_FILE: &str = "/Volumes/Bitcoin/data/txid_locations.bin";
 /// Output file for remapped UTXO set
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/remapped_utxo_set.bin";
 
-/// Txids to skip (these caused issues during MPHF construction)
-/// 68b45f58b674e94eb881cd67b04c2cba07fe5552dbf1d5385637b0d4073dbfe3
-const SKIP_TXID_1: [u8; 32] = [
-    0x68, 0xb4, 0x5f, 0x58, 0xb6, 0x74, 0xe9, 0x4e, 0xb8, 0x81, 0xcd, 0x67, 0xb0, 0x4c, 0x2c, 0xba,
-    0x07, 0xfe, 0x55, 0x52, 0xdb, 0xf1, 0xd5, 0x38, 0x56, 0x37, 0xb0, 0xd4, 0x07, 0x3d, 0xbf, 0xe3,
-];
-
-/// 9985d82954e10f2233a08905dc7b490eb444660c8759e324c7dfa3d28779d2d5
-const SKIP_TXID_2: [u8; 32] = [
-    0x99, 0x85, 0xd8, 0x29, 0x54, 0xe1, 0x0f, 0x22, 0x33, 0xa0, 0x89, 0x05, 0xdc, 0x7b, 0x49, 0x0e,
-    0xb4, 0x44, 0x66, 0x0c, 0x87, 0x59, 0xe3, 0x24, 0xc7, 0xdf, 0xa3, 0xd2, 0x87, 0x79, 0xd2, 0xd5,
-];
-
-/// Load MPHF from file
-fn load_mphf(path: &Path) -> Result<Mphf<[u8; 32]>, String> {
-    println!("Loading MPHF from {}...", path.display());
-
-    let data = std::fs::read(path).map_err(|e| format!("Failed to read MPHF file: {}", e))?;
-
-    let mphf: Mphf<[u8; 32]> =
-        bincode::deserialize(&data).map_err(|e| format!("Failed to deserialize MPHF: {}", e))?;
-
-    println!("MPHF loaded successfully ({} bytes)", data.len());
-    Ok(mphf)
-}
 
 /// Load txid_locations.bin as a memory-mapped file
 /// This file maps MPHF hash -> txid_index (position in txid.bin)
@@ -104,26 +80,6 @@ fn lookup_txid_4b(locations: &Mmap, mphf_hash: u64) -> u32 {
 /// Convert bytes to hex string
 fn bin2hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// Format duration in seconds to a human-readable string (e.g., "2h 15m 30s")
-fn format_duration(secs: f64) -> String {
-    if secs.is_infinite() || secs.is_nan() {
-        return "calculating...".to_string();
-    }
-
-    let total_secs = secs as u64;
-    let hours = total_secs / 3600;
-    let minutes = (total_secs % 3600) / 60;
-    let seconds = total_secs % 60;
-
-    if hours > 0 {
-        format!("{}h {}m {}s", hours, minutes, seconds)
-    } else if minutes > 0 {
-        format!("{}m {}s", minutes, seconds)
-    } else {
-        format!("{}s", seconds)
-    }
 }
 
 /// Write a remapped UTXO entry to the output file
@@ -221,7 +177,7 @@ fn process_utxo_snapshot(
             } else {
                 0.0
             };
-            let eta_str = format_duration(eta_secs);
+            let eta_str = utils::format_duration(eta_secs);
             print!(
                 "\rProcessing: {:.1}% | ETA: {} | Entries: {}/{} | UTXOs: {} | Cache hits: {}",
                 current_permille as f64 / 10.0,
@@ -239,7 +195,7 @@ fn process_utxo_snapshot(
         let txid_bytes = txout.out_point.txid.to_byte_array();
 
         // Skip TXIDs that caused issues during MPHF construction
-        if txid_bytes == SKIP_TXID_1 || txid_bytes == SKIP_TXID_2 {
+        if utils::should_skip(&txid_bytes) {
             continue;
         }
 
@@ -411,7 +367,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mphf = match load_mphf(mphf_path) {
+    let mphf = match utils::load_mphf(mphf_path) {
         Ok(mphf) => {
             println!("✓ MPHF loaded successfully");
             mphf

@@ -28,32 +28,32 @@ pub enum Request {
     Query {
         /// The bucket index to query
         bucket_index: u64,
-        /// DPF key for the query (serialized)
-        dpf_key: Vec<u8>,
+        /// PIR query for the query (serialized)
+        pir_query: Vec<u8>,
     },
     /// Query for both cuckoo hash locations in one request (legacy)
-    /// The location is encoded in the DPF key, so we don't send it separately
+    /// The location is encoded in the PIR query, so we don't send it separately
     QueryTwoLocations {
-        /// DPF key for first location (serialized)
-        dpf_key1: Vec<u8>,
-        /// DPF key for second location (serialized)
-        dpf_key2: Vec<u8>,
+        /// PIR query for first location (serialized)
+        pir_query1: Vec<u8>,
+        /// PIR query for second location (serialized)
+        pir_query2: Vec<u8>,
     },
     /// Query a specific database at two cuckoo hash locations (new)
     QueryDatabase {
         /// Database ID to query
         database_id: String,
-        /// DPF key for first location (serialized)
-        dpf_key1: Vec<u8>,
-        /// DPF key for second location (serialized)
-        dpf_key2: Vec<u8>,
+        /// PIR query for first location (serialized)
+        pir_query1: Vec<u8>,
+        /// PIR query for second location (serialized)
+        pir_query2: Vec<u8>,
     },
     /// Query a single-location database (new)
     QueryDatabaseSingle {
         /// Database ID to query
         database_id: String,
-        /// DPF key for the query (serialized)
-        dpf_key: Vec<u8>,
+        /// PIR query for the query (serialized)
+        pir_query: Vec<u8>,
     },
     /// List available databases on the server
     ListDatabases,
@@ -76,9 +76,9 @@ pub enum Response {
     },
     /// Query result for two-location query (two independent results)
     QueryTwoResults {
-        /// Result for first DPF key query
+        /// Result for first PIR query query
         data1: Vec<u8>,
-        /// Result for second DPF key query
+        /// Result for second PIR query query
         data2: Vec<u8>,
     },
     /// List of available databases

@@ -1,10 +1,13 @@
 //! WebSocket protocol handler for PIR server
-//! 
+//!
 //! Handles WebSocket connections with binary message support.
 //! Uses the Simple Binary Protocol (SBP) for reliable communication.
+//!
+//! The actual PIR query processing is delegated to a `PirBackend`
+//! implementation, making this module protocol-agnostic.
 
 use crate::{PirRequest as Request, PirResponse as Response, DatabaseRegistry};
-use libdpf::{Dpf, DpfKey};
+use crate::pir_backend::PirBackend;
 use tokio_tungstenite::WebSocketStream;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
@@ -31,35 +34,35 @@ impl DataStore {
     /// Create a new data store
     pub fn new(path: &str, num_buckets: usize, entry_size: usize, bucket_size: usize, load_to_memory: bool) -> std::io::Result<Self> {
         let bucket_bytes = bucket_size * entry_size;
-        
+
         let mut store = Self {
             data: None,
             path: path.to_string(),
             num_buckets,
             bucket_bytes,
         };
-        
+
         if load_to_memory {
             store.load_data()?;
         }
-        
+
         Ok(store)
     }
-    
+
     /// Load data into memory
     fn load_data(&mut self) -> std::io::Result<()> {
         info!("Loading data into memory from {}...", self.path);
-        
+
         let file = File::open(&self.path)?;
         let metadata = file.metadata()?;
         let file_size = metadata.len() as usize;
-        
+
         info!("File size: {} bytes", file_size);
-        
+
         let mut data = Vec::with_capacity(file_size);
         let mut reader = BufReader::new(file);
         reader.read_to_end(&mut data)?;
-        
+
         let expected_size = self.num_buckets * self.bucket_bytes;
         if data.len() < expected_size {
             warn!(
@@ -67,29 +70,29 @@ impl DataStore {
                 data.len(), expected_size, self.num_buckets, self.bucket_bytes
             );
         }
-        
+
         self.data = Some(data);
         info!("Data loaded: {} bytes", self.data.as_ref().unwrap().len());
-        
+
         Ok(())
     }
-    
+
     /// Compute XOR of buckets indicated by the bitmap (in-memory version)
     fn xor_buckets_memory(&self, bitmap: &[u8]) -> Result<Vec<u8>, String> {
         let data = self.data.as_ref().ok_or("Data not loaded into memory")?;
-        
+
         let mut result = vec![0u8; self.bucket_bytes];
         let mut buckets_included = 0usize;
-        
+
         for bucket_idx in 0..self.num_buckets {
             let byte_idx = bucket_idx / 8;
             let bit_idx = bucket_idx % 8;
             let offset = bucket_idx * self.bucket_bytes;
-            
+
             if offset + self.bucket_bytes > data.len() {
                 break;
             }
-            
+
             if byte_idx < bitmap.len() && (bitmap[byte_idx] >> bit_idx) & 1 == 1 {
                 for i in 0..self.bucket_bytes {
                     result[i] ^= data[offset + i];
@@ -97,25 +100,25 @@ impl DataStore {
                 buckets_included += 1;
             }
         }
-        
+
         info!("XORed {} buckets (from memory)", buckets_included);
         Ok(result)
     }
-    
+
     /// Compute XOR of buckets indicated by the bitmap (streaming version)
     fn xor_buckets_streaming(&self, bitmap: &[u8]) -> Result<Vec<u8>, String> {
         let file = File::open(&self.path)
             .map_err(|e| format!("Failed to open data file: {}", e))?;
         let mut reader = BufReader::new(file);
-        
+
         let mut result = vec![0u8; self.bucket_bytes];
         let mut buckets_included = 0usize;
         let mut bucket_buf = vec![0u8; self.bucket_bytes];
-        
+
         for bucket_idx in 0..self.num_buckets {
             let byte_idx = bucket_idx / 8;
             let bit_idx = bucket_idx % 8;
-            
+
             match reader.read_exact(&mut bucket_buf) {
                 Ok(()) => {},
                 Err(e) => {
@@ -123,7 +126,7 @@ impl DataStore {
                     break;
                 }
             }
-            
+
             if byte_idx < bitmap.len() && (bitmap[byte_idx] >> bit_idx) & 1 == 1 {
                 for i in 0..self.bucket_bytes {
                     result[i] ^= bucket_buf[i];
@@ -131,11 +134,11 @@ impl DataStore {
                 buckets_included += 1;
             }
         }
-        
+
         info!("XORed {} buckets (streaming from disk)", buckets_included);
         Ok(result)
     }
-    
+
     /// Compute XOR of buckets indicated by the bitmap
     pub fn xor_buckets(&self, bitmap: &[u8]) -> Result<Vec<u8>, String> {
         if self.data.is_some() {
@@ -144,10 +147,25 @@ impl DataStore {
             self.xor_buckets_streaming(bitmap)
         }
     }
-    
+
     /// Get number of buckets
     pub fn num_buckets(&self) -> usize {
         self.num_buckets
+    }
+
+    /// Get the size of each bucket in bytes
+    pub fn bucket_bytes(&self) -> usize {
+        self.bucket_bytes
+    }
+
+    /// Get a reference to the raw data (if loaded into memory)
+    pub fn data(&self) -> Option<&[u8]> {
+        self.data.as_deref()
+    }
+
+    /// Get the path to the data file
+    pub fn path(&self) -> &str {
+        &self.path
     }
 }
 
@@ -172,77 +190,25 @@ impl DataStoreManager {
     }
 }
 
-/// Convert DPF evaluation results (Vec<Block>) to a bitmap
-fn dpf_results_to_bitmap(results: &[libdpf::Block], num_buckets: usize) -> Vec<u8> {
-    let bitmap_size = (num_buckets + 7) / 8;
-    let mut bitmap = vec![0u8; bitmap_size];
-    
-    for (block_idx, block) in results.iter().enumerate() {
-        let block_bytes = block.to_bytes();
-        
-        for (byte_idx, &byte) in block_bytes.iter().enumerate() {
-            let bucket_base = block_idx * 128 + byte_idx * 8;
-            if bucket_base >= num_buckets {
-                break;
-            }
-            
-            let bitmap_byte_idx = bucket_base / 8;
-            let bits_to_copy = if bucket_base + 8 <= num_buckets {
-                8
-            } else {
-                num_buckets - bucket_base
-            };
-            
-            if byte_idx == 0 && block_idx * 128 % 8 == 0 {
-                if bitmap_byte_idx < bitmap.len() {
-                    let valid_mask = if bits_to_copy < 8 {
-                        (1u8 << bits_to_copy) - 1
-                    } else {
-                        0xFF
-                    };
-                    bitmap[bitmap_byte_idx] = byte & valid_mask;
-                }
-            } else {
-                for bit_idx in 0..bits_to_copy {
-                    let bucket_idx = bucket_base + bit_idx;
-                    if bucket_idx >= num_buckets {
-                        break;
-                    }
-                    
-                    if (byte >> bit_idx) & 1 == 1 {
-                        let bitmap_byte = bucket_idx / 8;
-                        let bitmap_bit = bucket_idx % 8;
-                        if bitmap_byte < bitmap.len() {
-                            bitmap[bitmap_byte] |= 1 << bitmap_bit;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    bitmap
-}
-
 /// Handle a WebSocket connection
 pub async fn handle_websocket_connection<S>(
     ws_stream: WebSocketStream<S>,
     store_manager: Arc<DataStoreManager>,
     registry: Arc<DatabaseRegistry>,
+    backend: Arc<dyn PirBackend>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let addr = "websocket_client";
-    info!("New WebSocket connection from {}", addr);
-    
+    info!("New WebSocket connection (backend: {})", backend.name());
+
     let mut ws_stream = ws_stream;
-    
+
     while let Some(msg_result) = ws_stream.next().await {
         match msg_result {
             Ok(msg) => {
                 if msg.is_binary() {
                     let data = msg.into_data();
-                    
+
                     let request: Request = match Request::decode(&data) {
                         Ok(r) => r,
                         Err(e) => {
@@ -254,14 +220,13 @@ pub async fn handle_websocket_connection<S>(
                             continue;
                         }
                     };
-                    
-                    let response = handle_request(request, &store_manager, &registry).await;
+
+                    let response = handle_request(request, &store_manager, &registry, &*backend).await;
                     send_ws_response(&mut ws_stream, response).await;
                 } else if msg.is_close() {
                     info!("WebSocket connection closed by client");
                     break;
                 } else if msg.is_ping() {
-                    // Respond with pong
                     let _ = ws_stream.send(Message::Pong(vec![])).await;
                 }
             }
@@ -271,7 +236,7 @@ pub async fn handle_websocket_connection<S>(
             }
         }
     }
-    
+
     info!("WebSocket connection ended");
 }
 
@@ -280,16 +245,17 @@ async fn handle_request(
     request: Request,
     store_manager: &DataStoreManager,
     registry: &DatabaseRegistry,
+    backend: &dyn PirBackend,
 ) -> Response {
     match request {
         Request::Ping => Response::Pong,
-        
+
         Request::ListDatabases => {
             Response::DatabaseList {
                 databases: registry.list_info(),
             }
         }
-        
+
         Request::GetDatabaseInfo { database_id } => {
             match registry.get(&database_id) {
                 Some(db) => Response::DatabaseInfo {
@@ -300,49 +266,50 @@ async fn handle_request(
                 },
             }
         }
-        
-        Request::Query { bucket_index: _, dpf_key } => {
+
+        Request::Query { bucket_index: _, pir_query } => {
             let first_db_id = registry.list().first().map(|s| s.to_string());
             match first_db_id {
-                Some(id) => handle_database_query_single(id, dpf_key, store_manager).await,
+                Some(id) => process_single_query(id, pir_query, store_manager, backend).await,
                 None => Response::Error {
                     message: "No databases registered".to_string(),
                 },
             }
         }
-        
-        Request::QueryTwoLocations { dpf_key1, dpf_key2 } => {
+
+        Request::QueryTwoLocations { pir_query1, pir_query2 } => {
             let first_db_id = registry.list().first().map(|s| s.to_string());
             match first_db_id {
-                Some(id) => handle_database_query_two_locations(id, dpf_key1, dpf_key2, store_manager).await,
+                Some(id) => process_two_queries(id, pir_query1, pir_query2, store_manager, backend).await,
                 None => Response::Error {
                     message: "No databases registered".to_string(),
                 },
             }
         }
-        
-        Request::QueryDatabase { database_id, dpf_key1, dpf_key2 } => {
-            handle_database_query_two_locations(database_id, dpf_key1, dpf_key2, store_manager).await
+
+        Request::QueryDatabase { database_id, pir_query1, pir_query2 } => {
+            process_two_queries(database_id, pir_query1, pir_query2, store_manager, backend).await
         }
-        
-        Request::QueryDatabaseSingle { database_id, dpf_key } => {
-            handle_database_query_single(database_id, dpf_key, store_manager).await
+
+        Request::QueryDatabaseSingle { database_id, pir_query } => {
+            process_single_query(database_id, pir_query, store_manager, backend).await
         }
     }
 }
 
-/// Handle a database query for two locations
-async fn handle_database_query_two_locations(
+/// Process two PIR queries against a database (e.g., for two cuckoo hash locations)
+async fn process_two_queries(
     database_id: String,
-    dpf_key1: Vec<u8>,
-    dpf_key2: Vec<u8>,
+    query1: Vec<u8>,
+    query2: Vec<u8>,
     store_manager: &DataStoreManager,
+    backend: &dyn PirBackend,
 ) -> Response {
     let start_time = Instant::now();
-    
+
     info!(
-        "Received database query for '{}': key1_len={}, key2_len={}",
-        database_id, dpf_key1.len(), dpf_key2.len()
+        "Received two-query request for '{}': q1_len={}, q2_len={} (backend: {})",
+        database_id, query1.len(), query2.len(), backend.name()
     );
 
     let store = match store_manager.get(&database_id) {
@@ -354,50 +321,20 @@ async fn handle_database_query_two_locations(
         }
     };
 
-    let key1 = match DpfKey::from_bytes(&dpf_key1) {
-        Ok(k) => k,
-        Err(e) => {
-            return Response::Error {
-                message: format!("Invalid DPF key1: {}", e),
-            };
-        }
-    };
-
-    let key2 = match DpfKey::from_bytes(&dpf_key2) {
-        Ok(k) => k,
-        Err(e) => {
-            return Response::Error {
-                message: format!("Invalid DPF key2: {}", e),
-            };
-        }
-    };
-
-    info!("DPF keys parsed: key1.n={}, key2.n={}", key1.n, key2.n);
-
-    let dpf = Dpf::with_default_key();
-
-    let results1 = dpf.eval_full(&key1);
-    let results2 = dpf.eval_full(&key2);
-
-    info!("DPF evaluations complete: {} blocks each", results1.len());
-
-    let bitmap1 = dpf_results_to_bitmap(&results1, store.num_buckets());
-    let bitmap2 = dpf_results_to_bitmap(&results2, store.num_buckets());
-
-    let result1 = match store.xor_buckets(&bitmap1) {
+    let result1 = match backend.process_query(&query1, store) {
         Ok(data) => data,
         Err(e) => {
             return Response::Error {
-                message: format!("Failed to compute result for query1: {}", e),
+                message: format!("Failed to process query1: {}", e),
             };
         }
     };
 
-    let result2 = match store.xor_buckets(&bitmap2) {
+    let result2 = match backend.process_query(&query2, store) {
         Ok(data) => data,
         Err(e) => {
             return Response::Error {
-                message: format!("Failed to compute result for query2: {}", e),
+                message: format!("Failed to process query2: {}", e),
             };
         }
     };
@@ -405,24 +342,25 @@ async fn handle_database_query_two_locations(
     let elapsed = start_time.elapsed();
     info!("Database '{}' query results: data1={} bytes, data2={} bytes", database_id, result1.len(), result2.len());
     info!("Query completed in {:?}", elapsed);
-    
+
     Response::QueryTwoResults {
         data1: result1,
         data2: result2,
     }
 }
 
-/// Handle a database query for a single location
-async fn handle_database_query_single(
+/// Process a single PIR query against a database
+async fn process_single_query(
     database_id: String,
-    dpf_key: Vec<u8>,
+    query: Vec<u8>,
     store_manager: &DataStoreManager,
+    backend: &dyn PirBackend,
 ) -> Response {
     let start_time = Instant::now();
-    
+
     info!(
-        "Received single-location database query for '{}': key_len={}",
-        database_id, dpf_key.len()
+        "Received single query for '{}': q_len={} (backend: {})",
+        database_id, query.len(), backend.name()
     );
 
     let store = match store_manager.get(&database_id) {
@@ -434,30 +372,11 @@ async fn handle_database_query_single(
         }
     };
 
-    let key = match DpfKey::from_bytes(&dpf_key) {
-        Ok(k) => k,
-        Err(e) => {
-            return Response::Error {
-                message: format!("Invalid DPF key: {}", e),
-            };
-        }
-    };
-
-    info!("DPF key parsed: n={}, domain=2^{}", key.n, key.n);
-
-    let dpf = Dpf::with_default_key();
-
-    let results = dpf.eval_full(&key);
-
-    info!("DPF evaluation complete: {} blocks", results.len());
-
-    let bitmap = dpf_results_to_bitmap(&results, store.num_buckets());
-
-    let result = match store.xor_buckets(&bitmap) {
+    let result = match backend.process_query(&query, store) {
         Ok(data) => data,
         Err(e) => {
             return Response::Error {
-                message: format!("Failed to compute result: {}", e),
+                message: format!("Failed to process query: {}", e),
             };
         }
     };
@@ -465,7 +384,7 @@ async fn handle_database_query_single(
     let elapsed = start_time.elapsed();
     info!("Database '{}' query result: {} bytes", database_id, result.len());
     info!("Query completed in {:?}", elapsed);
-    
+
     Response::QueryResult { data: result }
 }
 
@@ -477,7 +396,7 @@ async fn send_ws_response<S>(
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let response_bytes = response.encode();
-    
+
     if let Err(e) = ws_stream.send(Message::Binary(response_bytes)).await {
         error!("Failed to send WebSocket response: {}", e);
     }

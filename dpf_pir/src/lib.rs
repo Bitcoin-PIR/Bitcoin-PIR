@@ -14,6 +14,7 @@
 pub mod database;
 pub mod protocol;
 pub mod pir_protocol;
+pub mod pir_backend;
 pub mod hash;
 pub mod server_config;
 pub mod websocket;
@@ -32,3 +33,4 @@ pub use database::{
     DEFAULT_HASH1_PRIME, DEFAULT_HASH2_PRIME,
 };
 pub use server_config::{ServerConfiguration, load_configuration};
+pub use pir_backend::{PirBackend, DpfPirBackend};

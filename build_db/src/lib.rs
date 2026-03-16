@@ -11,6 +11,7 @@ use std::path::Path;
 extern crate quickcheck;
 
 pub mod mpfh;
+pub mod utils;
 
 pub struct BlockIndexer {
     utxo_set: HashMap<bitcoin::OutPoint, bitcoin::ScriptBuf>,

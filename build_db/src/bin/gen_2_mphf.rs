@@ -1,5 +1,6 @@
 use bitcoinpir::mpfh::bitvector::BitVector;
 use bitcoinpir::mpfh::Mphf;
+use bitcoinpir::utils;
 use log::error;
 use std::fs::File;
 use std::hash::Hash;
@@ -114,26 +115,6 @@ fn fold(v: u64) -> u32 {
     ((v & 0xFFFFFFFF) as u32) ^ ((v >> 32) as u32)
 }
 
-/// Format duration in seconds to a human-readable string (e.g., "2h 15m 30s")
-fn format_duration(secs: f64) -> String {
-    if secs.is_infinite() || secs.is_nan() {
-        return "calculating...".to_string();
-    }
-
-    let total_secs = secs as u64;
-    let hours = total_secs / 3600;
-    let minutes = (total_secs % 3600) / 60;
-    let seconds = total_secs % 60;
-
-    if hours > 0 {
-        format!("{}h {}m {}s", hours, minutes, seconds)
-    } else if minutes > 0 {
-        format!("{}m {}s", minutes, seconds)
-    } else {
-        format!("{}s", seconds)
-    }
-}
-
 #[inline]
 fn hash_with_seed<T: Hash + ?Sized>(iter: u64, v: &T) -> u64 {
     let mut state = wyhash::WyHash::with_seed(1 << (iter + iter));
@@ -242,7 +223,7 @@ pub fn construct_mpdf_direct(gamma: f64, path: &Path, n: u64) -> Mphf<[u8; 32]> 
                 } else {
                     0.0
                 };
-                let eta_str = format_duration(eta_secs);
+                let eta_str = utils::format_duration(eta_secs);
                 print!(
                     "\rPass 1 (collision detection): {:.1}% | ETA: {}",
                     current_permille as f64 / 10.0,
@@ -300,7 +281,7 @@ pub fn construct_mpdf_direct(gamma: f64, path: &Path, n: u64) -> Mphf<[u8; 32]> 
                 } else {
                     0.0
                 };
-                let eta_str = format_duration(eta_secs);
+                let eta_str = utils::format_duration(eta_secs);
                 print!(
                     "\rPass 2 (key assignment): {:.1}% | ETA: {}",
                     current_permille as f64 / 10.0,

@@ -204,8 +204,8 @@ impl PIRClientWs {
 
         let request = Request::QueryDatabase {
             database_id: db_id.to_string(),
-            dpf_key1: key1.to_vec(),
-            dpf_key2: key2.to_vec(),
+            pir_query1: key1.to_vec(),
+            pir_query2: key2.to_vec(),
         };
 
         // Send request using SBP protocol
@@ -245,7 +245,7 @@ impl PIRClientWs {
 
         let request = Request::QueryDatabaseSingle {
             database_id: db_id.to_string(),
-            dpf_key: key.to_vec(),
+            pir_query: key.to_vec(),
         };
 
         // Send request using SBP protocol

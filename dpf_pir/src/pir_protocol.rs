@@ -43,23 +43,23 @@ pub enum Request {
     /// Query for a script hash at a specific bucket location (legacy)
     Query {
         bucket_index: u64,
-        dpf_key: Vec<u8>,
+        pir_query: Vec<u8>,
     },
     /// Query for both cuckoo hash locations in one request (legacy)
     QueryTwoLocations {
-        dpf_key1: Vec<u8>,
-        dpf_key2: Vec<u8>,
+        pir_query1: Vec<u8>,
+        pir_query2: Vec<u8>,
     },
     /// Query a specific database at two cuckoo hash locations
     QueryDatabase {
         database_id: String,
-        dpf_key1: Vec<u8>,
-        dpf_key2: Vec<u8>,
+        pir_query1: Vec<u8>,
+        pir_query2: Vec<u8>,
     },
     /// Query a single-location database
     QueryDatabaseSingle {
         database_id: String,
-        dpf_key: Vec<u8>,
+        pir_query: Vec<u8>,
     },
     /// List available databases on the server
     ListDatabases,
@@ -82,26 +82,26 @@ impl Request {
     /// Encode this request to a writer using SBP format
     pub fn encode_to<W: Write>(&self, mut w: W) -> io::Result<()> {
         match self {
-            Request::Query { bucket_index, dpf_key } => {
+            Request::Query { bucket_index, pir_query } => {
                 w.write_all(&[RequestVariant::Query as u8])?;
                 w.write_all(&bucket_index.to_le_bytes())?;
-                encode_bytes(&mut w, dpf_key)?;
+                encode_bytes(&mut w, pir_query)?;
             }
-            Request::QueryTwoLocations { dpf_key1, dpf_key2 } => {
+            Request::QueryTwoLocations { pir_query1, pir_query2 } => {
                 w.write_all(&[RequestVariant::QueryTwoLocations as u8])?;
-                encode_bytes(&mut w, dpf_key1)?;
-                encode_bytes(&mut w, dpf_key2)?;
+                encode_bytes(&mut w, pir_query1)?;
+                encode_bytes(&mut w, pir_query2)?;
             }
-            Request::QueryDatabase { database_id, dpf_key1, dpf_key2 } => {
+            Request::QueryDatabase { database_id, pir_query1, pir_query2 } => {
                 w.write_all(&[RequestVariant::QueryDatabase as u8])?;
                 encode_string(&mut w, database_id)?;
-                encode_bytes(&mut w, dpf_key1)?;
-                encode_bytes(&mut w, dpf_key2)?;
+                encode_bytes(&mut w, pir_query1)?;
+                encode_bytes(&mut w, pir_query2)?;
             }
-            Request::QueryDatabaseSingle { database_id, dpf_key } => {
+            Request::QueryDatabaseSingle { database_id, pir_query } => {
                 w.write_all(&[RequestVariant::QueryDatabaseSingle as u8])?;
                 encode_string(&mut w, database_id)?;
-                encode_bytes(&mut w, dpf_key)?;
+                encode_bytes(&mut w, pir_query)?;
             }
             Request::ListDatabases => {
                 w.write_all(&[RequestVariant::ListDatabases as u8])?;
@@ -135,24 +135,24 @@ impl Request {
         match variant {
             v if v == RequestVariant::Query as u8 => {
                 let bucket_index = decode_u64(data, cursor)?;
-                let dpf_key = decode_bytes(data, cursor)?;
-                Ok(Request::Query { bucket_index, dpf_key })
+                let pir_query = decode_bytes(data, cursor)?;
+                Ok(Request::Query { bucket_index, pir_query })
             }
             v if v == RequestVariant::QueryTwoLocations as u8 => {
-                let dpf_key1 = decode_bytes(data, cursor)?;
-                let dpf_key2 = decode_bytes(data, cursor)?;
-                Ok(Request::QueryTwoLocations { dpf_key1, dpf_key2 })
+                let pir_query1 = decode_bytes(data, cursor)?;
+                let pir_query2 = decode_bytes(data, cursor)?;
+                Ok(Request::QueryTwoLocations { pir_query1, pir_query2 })
             }
             v if v == RequestVariant::QueryDatabase as u8 => {
                 let database_id = decode_string(data, cursor)?;
-                let dpf_key1 = decode_bytes(data, cursor)?;
-                let dpf_key2 = decode_bytes(data, cursor)?;
-                Ok(Request::QueryDatabase { database_id, dpf_key1, dpf_key2 })
+                let pir_query1 = decode_bytes(data, cursor)?;
+                let pir_query2 = decode_bytes(data, cursor)?;
+                Ok(Request::QueryDatabase { database_id, pir_query1, pir_query2 })
             }
             v if v == RequestVariant::QueryDatabaseSingle as u8 => {
                 let database_id = decode_string(data, cursor)?;
-                let dpf_key = decode_bytes(data, cursor)?;
-                Ok(Request::QueryDatabaseSingle { database_id, dpf_key })
+                let pir_query = decode_bytes(data, cursor)?;
+                Ok(Request::QueryDatabaseSingle { database_id, pir_query })
             }
             v if v == RequestVariant::ListDatabases as u8 => {
                 Ok(Request::ListDatabases)
@@ -481,20 +481,20 @@ mod tests {
     fn test_query_database() {
         let request = Request::QueryDatabase {
             database_id: "utxo_chunks".to_string(),
-            dpf_key1: vec![1, 2, 3, 4],
-            dpf_key2: vec![5, 6, 7, 8],
+            pir_query1: vec![1, 2, 3, 4],
+            pir_query2: vec![5, 6, 7, 8],
         };
         let encoded = request.encode();
-        
+
         // Verify structure: [variant:1][db_id_len:4][db_id:N][key1_len:4][key1:N][key2_len:4][key2:N]
         assert_eq!(encoded[0], RequestVariant::QueryDatabase as u8);
-        
+
         let decoded = Request::decode(&encoded).unwrap();
         match decoded {
-            Request::QueryDatabase { database_id, dpf_key1, dpf_key2 } => {
+            Request::QueryDatabase { database_id, pir_query1, pir_query2 } => {
                 assert_eq!(database_id, "utxo_chunks");
-                assert_eq!(dpf_key1, vec![1, 2, 3, 4]);
-                assert_eq!(dpf_key2, vec![5, 6, 7, 8]);
+                assert_eq!(pir_query1, vec![1, 2, 3, 4]);
+                assert_eq!(pir_query2, vec![5, 6, 7, 8]);
             }
             _ => panic!("Expected QueryDatabase variant"),
         }

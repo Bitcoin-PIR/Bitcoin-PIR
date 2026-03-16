@@ -14,6 +14,7 @@ use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use bitcoinpir::mpfh::Mphf;
+use bitcoinpir::utils;
 use memmap2::MmapMut;
 
 const TXID_FILE: &str = "/Volumes/Bitcoin/data/txid.bin";
@@ -25,40 +26,6 @@ const LOCATION_SIZE: usize = 4; // 4 bytes per location (u32)
 
 /// Number of txids to process per invocation
 const TXIDS_PER_BATCH: u64 = 500_000_000;
-
-/// Txids to skip (these caused issues during MPHF construction)
-/// 68b45f58b674e94eb881cd67b04c2cba07fe5552dbf1d5385637b0d4073dbfe3
-const SKIP_TXID_1: [u8; 32] = [
-    0x68, 0xb4, 0x5f, 0x58, 0xb6, 0x74, 0xe9, 0x4e, 0xb8, 0x81, 0xcd, 0x67, 0xb0, 0x4c, 0x2c, 0xba,
-    0x07, 0xfe, 0x55, 0x52, 0xdb, 0xf1, 0xd5, 0x38, 0x56, 0x37, 0xb0, 0xd4, 0x07, 0x3d, 0xbf, 0xe3,
-];
-
-/// 9985d82954e10f2233a08905dc7b490eb444660c8759e324c7dfa3d28779d2d5
-const SKIP_TXID_2: [u8; 32] = [
-    0x99, 0x85, 0xd8, 0x29, 0x54, 0xe1, 0x0f, 0x22, 0x33, 0xa0, 0x89, 0x05, 0xdc, 0x7b, 0x49, 0x0e,
-    0xb4, 0x44, 0x66, 0x0c, 0x87, 0x59, 0xe3, 0x24, 0xc7, 0xdf, 0xa3, 0xd2, 0x87, 0x79, 0xd2, 0xd5,
-];
-
-/// Check if a txid should be skipped
-#[inline]
-fn should_skip(txid: &[u8; 32]) -> bool {
-    txid == &SKIP_TXID_1 || txid == &SKIP_TXID_2
-}
-
-/// Get current progress (txid index) from progress file
-fn get_progress() -> u64 {
-    match std::fs::read_to_string(PROGRESS_FILE) {
-        Ok(s) => s.trim().parse().unwrap_or(0),
-        Err(_) => 0,
-    }
-}
-
-/// Save current progress
-fn save_progress(txid_index: u64) {
-    if let Err(e) = std::fs::write(PROGRESS_FILE, txid_index.to_string()) {
-        eprintln!("Warning: Failed to save progress: {}", e);
-    }
-}
 
 /// Print a progress bar similar to generate_txid_file.rs
 fn print_progress(current: u64, total: u64, txid_index: u64, elapsed: std::time::Duration) {
@@ -83,29 +50,6 @@ fn print_progress(current: u64, total: u64, txid_index: u64, elapsed: std::time:
 
     print!("\r{}", bar);
     std::io::stdout().flush().unwrap();
-}
-
-/// Load MPHF from file using bincode deserialization
-fn load_mphf(path: &Path) -> io::Result<Mphf<[u8; 32]>> {
-    println!("Loading MPHF from {}...", path.display());
-
-    let file = File::open(path)?;
-    let metadata = file.metadata()?;
-    println!(
-        "MPHF file size: {} bytes ({:.2} GB)",
-        metadata.len(),
-        metadata.len() as f64 / 1e9
-    );
-
-    let mphf: Mphf<[u8; 32]> = bincode::deserialize_from(file).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Failed to deserialize MPHF: {}", e),
-        )
-    })?;
-
-    println!("MPHF loaded successfully!");
-    Ok(mphf)
 }
 
 /// Write a u32 value at a specific position in the mmap
@@ -178,7 +122,7 @@ fn build_location_index_batch(
         let txid_index = start_index + i;
 
         // Skip problematic txids that couldn't be assigned unique hashes during MPHF construction
-        if should_skip(&txid_buf) {
+        if utils::should_skip(&txid_buf) {
             processed += 1;
             continue;
         }
@@ -282,7 +226,7 @@ fn verify_location_index(
         txid_file.read_exact(&mut txid_buf)?;
 
         // Skip if this is a skipped txid
-        if should_skip(&txid_buf) {
+        if utils::should_skip(&txid_buf) {
             println!(
                 "⊗ Txid index: {} (skipped - not in MPHF)",
                 sample_txid_index
@@ -365,7 +309,7 @@ fn main() {
     println!("Total txids in file: {}", total_txids);
 
     // Check current progress
-    let start_index = get_progress();
+    let start_index = utils::get_progress(PROGRESS_FILE);
     println!("✓ Starting from txid index: {}", start_index);
 
     if start_index >= total_txids {
@@ -388,7 +332,7 @@ fn main() {
     println!();
 
     // Step 1: Load MPHF
-    let mphf = match load_mphf(mphf_path) {
+    let mphf = match utils::load_mphf(mphf_path) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("✗ Error loading MPHF: {}", e);
@@ -407,7 +351,7 @@ fn main() {
         };
 
     // Save final progress (after mmap flush)
-    save_progress(start_index + processed);
+    utils::save_progress(PROGRESS_FILE, start_index + processed);
 
     // Step 3: Verify the index (optional, can skip for speed)
     if std::env::var("SKIP_VERIFY").is_err() {

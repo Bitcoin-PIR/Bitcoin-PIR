@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use bitcoin::hashes::Hash;
+use bitcoinpir::utils;
 use brk_reader::Reader;
 use brk_rpc::{Auth, Client};
 
@@ -19,21 +20,6 @@ const TXID_FILE: &str = "/Volumes/Bitcoin/data/txid.bin";
 const PROGRESS_FILE: &str = "/Volumes/Bitcoin/data/txid_progress.txt";
 
 const BLOCKS_TO_PROCESS: u64 = 100000;
-
-/// Get current progress (block number) from progress file
-fn get_progress() -> u64 {
-    match std::fs::read_to_string(PROGRESS_FILE) {
-        Ok(s) => s.trim().parse().unwrap_or(0),
-        Err(_) => 0,
-    }
-}
-
-/// Save current progress
-fn save_progress(block_number: u64) {
-    if let Err(e) = std::fs::write(PROGRESS_FILE, block_number.to_string()) {
-        eprintln!("Warning: Failed to save progress: {}", e);
-    }
-}
 
 /// Print a progress bar
 fn print_progress(
@@ -137,7 +123,7 @@ fn main() {
     println!();
 
     // Check current progress
-    let start_block = get_progress();
+    let start_block = utils::get_progress(PROGRESS_FILE);
     println!("✓ Starting from block: {}", start_block);
 
     // Check current output file size
@@ -228,7 +214,7 @@ fn main() {
             );
 
             // Save progress
-            save_progress(height_u64 + 1);
+            utils::save_progress(PROGRESS_FILE, height_u64 + 1);
 
             // Flush buffer periodically
             if let Err(e) = writer.flush() {

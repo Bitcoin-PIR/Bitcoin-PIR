@@ -8,21 +8,20 @@ This directory contains binary utilities for building and verifying the Bitcoin 
 
 | File | Purpose | Category |
 |------|---------|----------|
-| `gen_txid_file.rs` | Extract TXIDs from blk*.dat files | Generation |
-| `gen_mphf.rs` | Build Minimal Perfect Hash Function | Generation |
-| `gen_location_index.rs` | Build MPHF hash → txid position mapping | Generation |
-| `gen_remapped_utxo.rs` | Extract UTXOs with 4-byte TXIDs | Generation |
-| `gen_txid_mapping.rs` | Build 4B→32B TXID mapping | Generation |
-| `gen_utxo_chunks.rs` | Build compact UTXO chunks by address | Generation |
-| `gen_cuckoo_txid.rs` | Build cuckoo hash for TXID mapping | Generation |
-| `gen_cuckoo_chunks.rs` | Build cuckoo hash for chunks index | Generation |
+| `gen_1_txid_file.rs` | Extract TXIDs from blk*.dat files | Generation |
+| `gen_2_mphf.rs` | Build Minimal Perfect Hash Function | Generation |
+| `gen_3_location_index.rs` | Build MPHF hash → txid position mapping | Generation |
+| `gen_4_utxo_remapped.rs` | Extract UTXOs with 4-byte TXIDs | Generation |
+| `gen_5_utxo_chunks_from_remapped.rs` | Build compact UTXO chunks by address | Generation |
+| `gen_6_utxo_4b_to_32b.rs` | Build 4B→32B TXID mapping | Generation |
+| `gen_7_cuckoo_chunks.rs` | Build cuckoo hash for chunks index | Generation |
+| `gen_8_cuckoo_txid.rs` | Build cuckoo hash for TXID mapping | Generation |
 | `calc_total_tx_count.rs` | Sum transaction counts | Analysis |
 | `calc_biggest_utxo.rs` | Find largest UTXO chunk | Analysis |
 | `debug_count_utxo_script.rs` | Count UTXOs for a script | Debug |
 | `debug_find_script.rs` | Find script by RIPEMD160 hash | Debug |
 | `debug_search_txid.rs` | Search TXID in txid.bin | Debug |
 | `debug_parse_block.rs` | Parse and display block contents | Debug |
-| `test_brk_reader.rs` | Test brk_reader crate | Test |
 | `verify_txid_mapping.rs` | Verify TXID mapping file | Verification |
 
 ---
@@ -35,13 +34,12 @@ Files follow a prefix-based naming convention:
 - **`calc_*.rs`** - Tools that calculate/analyze without writing files
 - **`verify_*.rs`** - Tools that verify data integrity
 - **`debug_*.rs`** - Debug/inspection tools
-- **`test_*.rs`** - Test utilities
 
 ---
 
 ## Data Generation Tools
 
-### `gen_txid_file.rs`
+### `gen_1_txid_file.rs`
 
 **Purpose:** Extracts all transaction IDs from Bitcoin's blk*.dat files using high-performance `brk_reader`.
 
@@ -51,7 +49,7 @@ Files follow a prefix-based naming convention:
 
 **Usage:**
 ```bash
-cargo run --bin gen_txid_file -- /Volumes/Bitcoin/bitcoin
+cargo run --bin gen_1_txid_file -- /Volumes/Bitcoin/bitcoin
 ```
 
 **Notes:**
@@ -62,7 +60,7 @@ cargo run --bin gen_txid_file -- /Volumes/Bitcoin/bitcoin
 
 ---
 
-### `gen_mphf.rs`
+### `gen_2_mphf.rs`
 
 **Purpose:** Builds a Minimal Perfect Hash Function (MPHF) for O(1) TXID lookups.
 
@@ -72,7 +70,7 @@ cargo run --bin gen_txid_file -- /Volumes/Bitcoin/bitcoin
 
 **Usage:**
 ```bash
-cargo run --bin gen_mphf
+cargo run --bin gen_2_mphf
 ```
 
 **Notes:**
@@ -82,7 +80,7 @@ cargo run --bin gen_mphf
 
 ---
 
-### `gen_location_index.rs`
+### `gen_3_location_index.rs`
 
 **Purpose:** Builds the reverse mapping from MPHF hash to TXID position in txid.bin.
 
@@ -95,7 +93,7 @@ cargo run --bin gen_mphf
 # First create sparse file:
 truncate -s <size> /Volumes/Bitcoin/data/txid_locations.bin
 
-cargo run --bin gen_location_index
+cargo run --bin gen_3_location_index
 ```
 
 **Notes:**
@@ -105,36 +103,34 @@ cargo run --bin gen_location_index
 
 ---
 
-### `gen_remapped_utxo.rs`
+### `gen_4_utxo_remapped.rs`
 
-**Purpose:** Reads Bitcoin chainstate LevelDB and extracts UTXOs with 4-byte TXID references.
+**Purpose:** Reads a Bitcoin UTXO snapshot (`bitcoin-cli dumptxoutset`) and extracts UTXOs with 4-byte TXID references.
 
 **Input:**
-- Bitcoin chainstate LevelDB
+- UTXO snapshot file (from `bitcoin-cli dumptxoutset`)
 - `txid_mphf.bin`
 - `txid_locations.bin`
 
 **Output:** `/Volumes/Bitcoin/data/remapped_utxo_set.bin`
-- Format: 40 bytes per UTXO
+- Format: 36 bytes per UTXO
   - 20 bytes: RIPEMD-160 hash of script
   - 4 bytes: TXID (mapped via MPHF)
   - 4 bytes: vout
-  - 4 bytes: block height
   - 8 bytes: amount
 
 **Usage:**
 ```bash
-cargo run --bin gen_remapped_utxo -- /Volumes/Bitcoin/bitcoin
+cargo run --bin gen_4_utxo_remapped -- /path/to/utxo_snapshot.dat
 ```
 
 **Notes:**
-- **Must stop bitcoind first** - requires exclusive lock on chainstate
-- Uses advisory lock for safety
+- Uses `txoutset` crate to parse the snapshot
 - Skips UTXOs above certain block height
 
 ---
 
-### `gen_txid_mapping.rs`
+### `gen_6_utxo_4b_to_32b.rs`
 
 **Purpose:** Counts unique 4-byte TXIDs in remapped UTXO set and builds mapping to 32-byte TXIDs.
 
@@ -149,7 +145,7 @@ cargo run --bin gen_remapped_utxo -- /Volumes/Bitcoin/bitcoin
 
 **Usage:**
 ```bash
-cargo run --bin gen_txid_mapping
+cargo run --bin gen_6_utxo_4b_to_32b
 ```
 
 **Notes:**
@@ -158,34 +154,34 @@ cargo run --bin gen_txid_mapping
 
 ---
 
-### `gen_utxo_chunks.rs`
+### `gen_5_utxo_chunks_from_remapped.rs`
 
-**Purpose:** Groups UTXOs by script hash and creates compact storage format.
+**Purpose:** Groups UTXOs by script hash and creates compact storage format with bin-packing.
 
 **Input:** `remapped_utxo_set.bin`
 
 **Output:**
-- `/Volumes/Bitcoin/data/utxo_chunks.bin` - Compact UTXO data
+- `/Volumes/Bitcoin/data/utxo_chunks.bin` - Compact UTXO data packed into fixed-size blocks
 - `/Volumes/Bitcoin/data/utxo_chunks_index.bin` - Index (script_hash → offset)
 
 **Format:**
 - Index: 24 bytes per entry (20B script_hash + 4B offset)
-- Chunks: VarInt-encoded entries with delta compression
+- Chunks: VarInt-encoded entries with delta compression, bin-packed into blocks
 
 **Usage:**
 ```bash
-cargo run --bin gen_utxo_chunks
+cargo run --bin gen_5_utxo_chunks_from_remapped        # Default: 32KB blocks
+cargo run --bin gen_5_utxo_chunks_from_remapped -- 64  # 64KB blocks
 ```
 
 **Notes:**
 - Groups UTXOs by address (script hash)
-- Sorts by height (newest first)
-- Uses delta encoding for TXIDs
-- Achieves significant compression
+- Sorts by txid descending; uses delta encoding
+- Bin-packs groups into fixed-size blocks for PIR
 
 ---
 
-### `gen_cuckoo_txid.rs`
+### `gen_8_cuckoo_txid.rs`
 
 **Purpose:** Builds bucketed cuckoo hash table for 4B→32B TXID mapping.
 
@@ -200,7 +196,7 @@ cargo run --bin gen_utxo_chunks
 
 **Usage:**
 ```bash
-cargo run --bin gen_cuckoo_txid
+cargo run --bin gen_8_cuckoo_txid
 ```
 
 **Notes:**
@@ -210,7 +206,7 @@ cargo run --bin gen_cuckoo_txid
 
 ---
 
-### `gen_cuckoo_chunks.rs`
+### `gen_7_cuckoo_chunks.rs`
 
 **Purpose:** Builds bucketed cuckoo hash table for UTXO chunks index.
 
@@ -220,7 +216,7 @@ cargo run --bin gen_cuckoo_txid
 
 **Usage:**
 ```bash
-cargo run --bin gen_cuckoo_chunks
+cargo run --bin gen_7_cuckoo_chunks
 ```
 
 **Notes:**
@@ -350,36 +346,19 @@ cargo run --bin debug_parse_block -- <datadir> <block_number>
 
 ---
 
-## Test Tools
-
-### `test_brk_reader.rs`
-
-**Purpose:** Tests the `brk_reader` crate functionality.
-
-**Usage:**
-```bash
-cargo run --bin test_brk_reader -- /Volumes/Bitcoin/bitcoin
-```
-
-**Notes:**
-- Requires Bitcoin Core running
-- Tests reading from various block ranges
-- Demonstrates TXID extraction
-
----
-
 ## Typical Build Pipeline
 
 The tools should be run in this order:
 
 ```
-1. gen_txid_file.rs            # Extract all TXIDs
-2. gen_mphf.rs                 # Build MPHF for TXIDs
-3. gen_location_index.rs       # Build reverse index
-4. gen_remapped_utxo.rs        # Extract UTXOs with 4B TXIDs
-5. gen_txid_mapping.rs         # Build 4B→32B mapping
-6. gen_utxo_chunks.rs          # Build compact UTXO storage
-7. gen_cuckoo_chunks.rs        # Build cuckoo hash index (optional)
+1. gen_1_txid_file.rs                  # Extract all TXIDs
+2. gen_2_mphf.rs                       # Build MPHF for TXIDs
+3. gen_3_location_index.rs             # Build reverse index
+4. gen_4_utxo_remapped.rs              # Extract UTXOs with 4B TXIDs
+5. gen_5_utxo_chunks_from_remapped.rs  # Build compact UTXO storage
+6. gen_6_utxo_4b_to_32b.rs            # Build 4B→32B mapping
+7. gen_7_cuckoo_chunks.rs              # Build cuckoo hash for chunks index (optional)
+8. gen_8_cuckoo_txid.rs               # Build cuckoo hash for TXID mapping (optional)
 ```
 
 ---
@@ -387,16 +366,17 @@ The tools should be run in this order:
 ## File Dependencies
 
 ```
-txid.bin ← gen_txid_file.rs
+txid.bin ← gen_1_txid_file.rs
        ↓
-txid_mphf.bin ← gen_mphf.rs
+txid_mphf.bin ← gen_2_mphf.rs
        ↓
-txid_locations.bin ← gen_location_index.rs
+txid_locations.bin ← gen_3_location_index.rs
        ↓
-remapped_utxo_set.bin ← gen_remapped_utxo.rs
+remapped_utxo_set.bin ← gen_4_utxo_remapped.rs
        ↓
-utxo_4b_to_32b.bin ← gen_txid_mapping.rs
-utxo_chunks.bin + utxo_chunks_index.bin ← gen_utxo_chunks.rs
+utxo_chunks.bin + utxo_chunks_index.bin ← gen_5_utxo_chunks_from_remapped.rs
+utxo_4b_to_32b.bin ← gen_6_utxo_4b_to_32b.rs
        ↓
-utxo_chunks_cuckoo.bin ← gen_cuckoo_chunks.rs
+utxo_chunks_cuckoo.bin ← gen_7_cuckoo_chunks.rs
+utxo_4b_to_32b_cuckoo.bin ← gen_8_cuckoo_txid.rs
 ```

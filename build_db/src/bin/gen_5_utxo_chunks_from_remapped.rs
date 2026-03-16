@@ -34,6 +34,7 @@
 //!   cargo run --bin gen_5_utxo_chunks_from_remapped -- 32  # 32KB blocks
 //!   cargo run --bin gen_5_utxo_chunks_from_remapped -- 64  # 64KB blocks
 
+use bitcoinpir::utils;
 use memmap2::Mmap;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
@@ -121,42 +122,6 @@ fn serialize_group(entries: &mut [ShortenedEntry]) -> Vec<u8> {
     data
 }
 
-/// Format a duration in seconds to a human-readable string
-fn format_duration(secs: f64) -> String {
-    if secs.is_infinite() || secs.is_nan() {
-        return "calculating...".to_string();
-    }
-    let total_secs = secs as u64;
-    let hours = total_secs / 3600;
-    let minutes = (total_secs % 3600) / 60;
-    let seconds = total_secs % 60;
-    if hours > 0 {
-        format!("{}h {}m {}s", hours, minutes, seconds)
-    } else if minutes > 0 {
-        format!("{}m {}s", minutes, seconds)
-    } else {
-        format!("{}s", seconds)
-    }
-}
-
-/// Format bytes to human-readable string
-fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.2} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.2} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.2} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
 fn main() {
     println!("=== Build UTXO Chunks (Bin-Packing) ===");
     println!();
@@ -211,7 +176,7 @@ fn main() {
     let entry_count = file_size / ENTRY_SIZE;
     println!(
         "✓ Mapped {} ({} entries)",
-        format_bytes(file_size as u64),
+        utils::format_bytes(file_size as u64),
         entry_count
     );
     println!();
@@ -263,7 +228,7 @@ fn main() {
             print!(
                 "\r    Building: {}% | ETA: {} | Entries: {}/{} | Unique keys: {}",
                 current_pct,
-                format_duration(eta),
+                utils::format_duration(eta),
                 i + 1,
                 entry_count,
                 map.len()
@@ -331,10 +296,10 @@ fn main() {
             print!(
                 "\r    Serializing: {}% | ETA: {} | Groups: {}/{} | Total bytes: {}",
                 current_pct,
-                format_duration(eta),
+                utils::format_duration(eta),
                 groups_serialized,
                 unique_keys,
-                format_bytes(total_serialized_bytes)
+                utils::format_bytes(total_serialized_bytes)
             );
             io::stdout().flush().ok();
             last_group_pct = current_pct;
@@ -350,7 +315,7 @@ fn main() {
         "✓ Serialized {} groups in {:.2?} — {} total bytes",
         groups_serialized,
         step3_elapsed,
-        format_bytes(total_serialized_bytes)
+        utils::format_bytes(total_serialized_bytes)
     );
     println!("✓ Released HashMap memory");
     println!();
@@ -408,12 +373,12 @@ fn main() {
             print!(
                 "\r    Packing: {}% | ETA: {} | Bytes: {}/{} | Groups: {} | Blocks: {} | Padding: {}",
                 current_pct,
-                format_duration(eta),
-                format_bytes(actual_bytes_written),
-                format_bytes(total),
+                utils::format_duration(eta),
+                utils::format_bytes(actual_bytes_written),
+                utils::format_bytes(total),
                 groups,
                 blocks,
-                format_bytes(padding)
+                utils::format_bytes(padding)
             );
             io::stdout().flush().ok();
             *pct = current_pct;
@@ -530,7 +495,7 @@ fn main() {
     );
     println!(
         "  Padding bytes:        {} ({:.2}% of total)",
-        format_bytes(padding_bytes),
+        utils::format_bytes(padding_bytes),
         padding_bytes as f64 / current_offset as f64 * 100.0
     );
     println!();
@@ -587,19 +552,19 @@ fn main() {
     println!("Blocks written:       {}", blocks_written);
     println!(
         "Chunks file size:     {} ({} blocks × {}KB)",
-        format_bytes(current_offset),
+        utils::format_bytes(current_offset),
         blocks_written,
         block_size_kb
     );
     let index_size = groups_written * 24;
     println!(
         "Index file size:      {} ({} entries × 24 bytes)",
-        format_bytes(index_size),
+        utils::format_bytes(index_size),
         groups_written
     );
     println!(
         "Padding overhead:     {} ({:.2}%)",
-        format_bytes(padding_bytes),
+        utils::format_bytes(padding_bytes),
         padding_bytes as f64 / current_offset as f64 * 100.0
     );
     println!();
@@ -609,11 +574,11 @@ fn main() {
     let compact_size = current_offset as f64 + index_size as f64;
     println!(
         "Original size:        {}",
-        format_bytes(original_size as u64)
+        utils::format_bytes(original_size as u64)
     );
     println!(
         "Compact size:         {} (chunks + index)",
-        format_bytes(compact_size as u64)
+        utils::format_bytes(compact_size as u64)
     );
     println!("Compression ratio:    {:.2}x", original_size / compact_size);
     println!();

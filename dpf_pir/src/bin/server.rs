@@ -19,6 +19,8 @@
 //! using the same binary protocol as the TCP server.
 
 use dpf_pir::load_configuration;
+use dpf_pir::pir_backend::PirBackend;
+use dpf_pir::DpfPirBackend;
 use dpf_pir::websocket::{DataStore, DataStoreManager};
 use log::{error, info};
 use std::net::SocketAddr;
@@ -221,6 +223,10 @@ async fn main() {
         info!("Connect from browser using: ws://localhost:{}", port);
     }
 
+    // Create PIR backend (DPF-PIR by default, can be swapped for other protocols)
+    let backend: Arc<dyn PirBackend> = Arc::new(DpfPirBackend::new());
+    info!("Using PIR backend: {}", backend.name());
+
     // Wrap in Arc for sharing across tasks
     let store_manager = Arc::new(store_manager);
     let registry = Arc::new(server_config.registry);
@@ -244,10 +250,11 @@ async fn main() {
         let store_manager = Arc::clone(&store_manager);
         let registry = Arc::clone(&registry);
         let tls_acceptor = Arc::clone(&tls_acceptor);
-        
+        let backend = Arc::clone(&backend);
+
         tokio::spawn(async move {
             info!("[SERVER] Step 3: Starting connection handling for {}", peer_addr);
-            
+
             // Handle TLS if configured
             if let Some(acceptor) = tls_acceptor.as_ref() {
                 info!("[SERVER] Step 3a: Performing TLS handshake for {}", peer_addr);
@@ -261,12 +268,12 @@ async fn main() {
                         return;
                     }
                 };
-                
+
                 // WebSocket handshake over TLS stream
-                handle_websocket_connection(tls_stream, peer_addr, store_manager, registry).await;
+                handle_websocket_connection(tls_stream, peer_addr, store_manager, registry, backend).await;
             } else {
                 // Plain WebSocket (no TLS)
-                handle_websocket_connection(stream, peer_addr, store_manager, registry).await;
+                handle_websocket_connection(stream, peer_addr, store_manager, registry, backend).await;
             }
         });
     }
@@ -278,6 +285,7 @@ async fn handle_websocket_connection<S>(
     peer_addr: SocketAddr,
     store_manager: Arc<DataStoreManager>,
     registry: Arc<dpf_pir::DatabaseRegistry>,
+    backend: Arc<dyn PirBackend>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -312,7 +320,7 @@ async fn handle_websocket_connection<S>(
             info!("[SERVER] Step 8: WebSocket handshake SUCCESS for {}", peer_addr);
             info!("[SERVER] Step 9: Starting WebSocket message handler for {}", peer_addr);
             dpf_pir::websocket::handle_websocket_connection(
-                ws_stream, store_manager, registry
+                ws_stream, store_manager, registry, backend
             ).await;
             info!("[SERVER] Step 10: WebSocket handler completed for {}", peer_addr);
         }
