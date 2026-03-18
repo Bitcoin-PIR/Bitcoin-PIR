@@ -321,7 +321,7 @@
     </div>
 
     <script type="module">
-        import { createPirClient, hexToBytes, bytesToHex, cuckooHash1, cuckooHash2, CUCKOO_NUM_BUCKETS, scriptHash } from './dist/index.js';
+        import { createPirClient, hexToBytes, bytesToHex, cuckooHash1, cuckooHash2, CUCKOO_NUM_BUCKETS, scriptHash } from './src/index.ts';
 
         let client = null;
         let paginationState = null;
@@ -449,7 +449,7 @@
 
                 // Create client with connection state callback for auto-reconnection
                 client = createPirClient(server1Url, server2Url);
-                client = new (await import('./dist/index.js')).PirClient({
+                client = new (await import('./src/index.ts')).PirClient({
                     server1Url,
                     server2Url,
                     reconnect: {
