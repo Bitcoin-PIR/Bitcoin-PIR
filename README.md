@@ -127,14 +127,14 @@ cargo run --release -p build --bin gen_7_build_chunk_cuckoo
 ### 3. Start PIR Servers
 
 ```bash
-# Start both servers (ports 8093 and 8094)
+# Start both servers (ports 8091 and 8092)
 ./scripts/start_pir_servers.sh
 ```
 
 Or manually:
 ```bash
-./target/release/server --port 8093
-./target/release/server --port 8094  # in another terminal
+./target/release/server --port 8091
+./target/release/server --port 8092  # in another terminal
 ```
 
 ### 4. Query UTXOs
@@ -143,8 +143,8 @@ Or manually:
 ```bash
 # Query by script hash hex
 ./target/release/client \
-    --server0 ws://127.0.0.1:8093 \
-    --server1 ws://127.0.0.1:8094 \
+    --server0 ws://127.0.0.1:8091 \
+    --server1 ws://127.0.0.1:8092 \
     --hash <40-char-hex-script-hash>
 ```
 

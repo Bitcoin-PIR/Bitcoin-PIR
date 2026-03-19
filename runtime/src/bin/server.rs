@@ -5,7 +5,7 @@
 //! in parallel and returns XOR-accumulated results.
 //!
 //! Usage:
-//!   cargo run --release -p runtime --bin server -- --port 8093
+//!   cargo run --release -p runtime --bin server -- --port 8091
 
 use runtime::eval;
 use runtime::protocol::{BatchQuery, BatchResult, Request, Response, ServerInfo};
@@ -133,11 +133,11 @@ impl ServerData {
 
 fn parse_port() -> u16 {
     let args: Vec<String> = std::env::args().collect();
-    let mut port = 8093u16;
+    let mut port = 8091u16;
     let mut i = 1;
     while i < args.len() {
         if (args[i] == "--port" || args[i] == "-p") && i + 1 < args.len() {
-            port = args[i + 1].parse().unwrap_or(8093);
+            port = args[i + 1].parse().unwrap_or(8091);
             i += 1;
         }
         i += 1;

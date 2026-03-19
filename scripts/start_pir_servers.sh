@@ -2,8 +2,8 @@
 # Start Batch PIR WebSocket servers for UTXO lookups
 #
 # This script starts two WebSocket servers:
-#   - Server 1 on port 8093
-#   - Server 2 on port 8094
+#   - Server 1 on port 8091
+#   - Server 2 on port 8092
 #
 # Usage:
 #   ./scripts/start_pir_servers.sh
@@ -11,8 +11,8 @@
 set -e
 
 # WebSocket Ports
-SERVER1_PORT=8093
-SERVER2_PORT=8094
+SERVER1_PORT=8091
+SERVER2_PORT=8092
 
 # Get the script directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

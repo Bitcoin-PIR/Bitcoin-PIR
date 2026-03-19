@@ -24,8 +24,8 @@ echo "Two-Level Batch PIR Client Test"
 echo "========================================"
 echo ""
 
-SERVER0="ws://127.0.0.1:8093"
-SERVER1="ws://127.0.0.1:8094"
+SERVER0="ws://127.0.0.1:8091"
+SERVER1="ws://127.0.0.1:8092"
 
 # Use argument or default whale address
 HASH="${1:-20d920103ecb721638eb43f3e7a27c7b8ed3925b}"

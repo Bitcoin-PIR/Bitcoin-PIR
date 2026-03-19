@@ -6,7 +6,7 @@
 //!
 //! Usage:
 //!   cargo run --release -p runtime --bin client -- \
-//!     --server0 ws://localhost:8093 --server1 ws://localhost:8094 \
+//!     --server0 ws://localhost:8091 --server1 ws://localhost:8092 \
 //!     --hash <40-char hex script hash>
 
 use runtime::eval::{self, DPF_N};
@@ -28,8 +28,8 @@ struct Args {
 
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
-    let mut server0 = "ws://localhost:8093".to_string();
-    let mut server1 = "ws://localhost:8094".to_string();
+    let mut server0 = "ws://localhost:8091".to_string();
+    let mut server1 = "ws://localhost:8092".to_string();
     let mut hash_hex = String::new();
 
     let mut i = 1;
