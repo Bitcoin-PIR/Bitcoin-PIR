@@ -221,17 +221,31 @@
             <span class="step-number">Step 2:</span> Query by ScriptPubKey(s)
             <br><br>
             <label for="scriptPubkeys">ScriptPubKey(s) — hex, one per line:</label>
-            <textarea id="scriptPubkeys" rows="5" placeholder="Enter one or more scriptPubKey hex values, one per line...">76a914a29bf2fc34b535edb02b96f063455b8e8078080588ac
-0014c6bc6c8d37de54b7c1d0fec69955f3dd73a3c5e5</textarea>
+            <textarea id="scriptPubkeys" rows="5" placeholder="Enter one or more scriptPubKey hex values, one per line...">76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac
+0014528aa6fb623acd8f574abc89508e0a42cde57b8b</textarea>
             <br>
             <div class="examples">
-                <span class="example-label">Quick examples (click to load single):</span>
-                <button class="example-btn" data-spk="76a914a29bf2fc34b535edb02b96f063455b8e8078080588ac">P2PKH</button>
-                <button class="example-btn" data-spk="00144522913e82e993d58b43dad11509c7efad5c2807">P2WPKH</button>
-                <button class="example-btn" data-spk="a9149829c4fd3fa5964ac2bdddea5317739039f3f9c487">P2SH</button>
-                <button class="example-btn" data-spk="5120fbf447d976a801008e0d2481cc8e21e34e401eca5ef65562a87263c1e25ae902">P2TR</button>
-                <button class="example-btn" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae">Bare Multisig</button>
-                <br><br>
+                <span class="example-label">Known in dataset (click to load single):</span>
+                <button class="example-btn" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH</button>
+                <button class="example-btn" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b" style="background:#fff3cd; border-color:#ffc107;">P2WPKH</button>
+                <button class="example-btn" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87" style="background:#fff3cd; border-color:#ffc107;">P2SH</button>
+                <button class="example-btn" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a" style="background:#fff3cd; border-color:#ffc107;">P2TR</button>
+                <button class="example-btn" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e" style="background:#fff3cd; border-color:#ffc107;">P2WSH</button>
+                <button class="example-btn" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae" style="background:#fff3cd; border-color:#ffc107;">1-of-3 Multisig</button>
+                <button class="example-btn" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae" style="background:#fff3cd; border-color:#ffc107;">1-of-2 Multisig</button>
+                <button class="example-btn" id="loadDiverseBtn" style="background:#fff3cd; border-color:#ffc107;">Mix</button>
+                <br>
+                <span class="example-label">Top whales in dataset (most UTXOs, click to load single):</span>
+                <button class="example-btn" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH whale</button>
+                <button class="example-btn" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH whale 2</button>
+                <button class="example-btn" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH whale 3</button>
+                <button class="example-btn" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH whale</button>
+                <button class="example-btn" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH whale 2</button>
+                <button class="example-btn" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087" style="background:#fde2e2; border-color:#e74c3c;">P2SH whale</button>
+                <button class="example-btn" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487" style="background:#fde2e2; border-color:#e74c3c;">P2SH whale 2</button>
+                <button class="example-btn" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012" style="background:#fde2e2; border-color:#e74c3c;">P2WSH whale</button>
+                <button class="example-btn" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69" style="background:#fde2e2; border-color:#e74c3c;">P2WSH whale 2</button>
+                <br>
                 <span class="example-label">Batch test (from 1000 known scriptPubKeys):</span>
                 <button class="example-btn" id="pickRandom100Btn" style="background-color: #d4edda; border-color: #28a745; padding: 6px 14px; font-size: 13px;">Pick 100 random</button>
                 <button class="example-btn" id="pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
@@ -585,6 +599,21 @@
             btn.addEventListener('click', () => {
                 document.getElementById('scriptPubkeys').value = btn.dataset.spk;
             });
+        });
+
+        // Diverse batch: all P2WSH + some P2SH + P2TR + bare multisig from dataset
+        document.getElementById('loadDiverseBtn').addEventListener('click', () => {
+            const p2wsh = EXAMPLE_SPKS.filter(s => s.startsWith('0020') && s.length === 68);
+            const p2sh = EXAMPLE_SPKS.filter(s => s.startsWith('a914') && s.endsWith('87'));
+            const p2tr = EXAMPLE_SPKS.filter(s => s.startsWith('5120') && s.length === 68);
+            const multisig = EXAMPLE_SPKS.filter(s => s.endsWith('ae') && s.startsWith('51'));
+            const diverse = [
+                ...p2wsh,                         // all 15 P2WSH (likely custody/multisig)
+                ...pickRandom(p2sh, 5),            // 5 random P2SH
+                ...pickRandom(p2tr, 5),            // 5 random P2TR
+                ...pickRandom(multisig, 5),        // 5 random bare multisig
+            ];
+            document.getElementById('scriptPubkeys').value = diverse.join('\n');
         });
 
         document.getElementById('pickRandom100Btn').addEventListener('click', () => {
