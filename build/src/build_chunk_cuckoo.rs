@@ -36,7 +36,8 @@ const K: usize = 80;
 const NUM_HASHES: usize = 3;
 
 /// Cuckoo hash table parameters
-const CUCKOO_BUCKET_SIZE: usize = 4;
+const CUCKOO_BUCKET_SIZE: usize = 2;
+const CUCKOO_NUM_HASHES: usize = 3;
 const CUCKOO_LOAD_FACTOR: f64 = 0.95;
 const CUCKOO_MAX_KICKS: usize = 2000;
 const EMPTY: u32 = u32::MAX;
@@ -148,13 +149,15 @@ fn build_cuckoo_for_bucket(
     let table_slots = num_bins * CUCKOO_BUCKET_SIZE;
     let mut table = vec![EMPTY; table_slots];
 
-    let key0 = derive_cuckoo_key(bucket_id, 0);
-    let key1 = derive_cuckoo_key(bucket_id, 1);
+    let mut keys = [0u64; CUCKOO_NUM_HASHES];
+    for h in 0..CUCKOO_NUM_HASHES {
+        keys[h] = derive_cuckoo_key(bucket_id, h);
+    }
 
     let mut success = true;
 
     for &chunk_id in entries {
-        if !cuckoo_insert(&mut table, chunk_id, key0, key1, num_bins) {
+        if !cuckoo_insert(&mut table, chunk_id, &keys, num_bins) {
             success = false;
             break;
         }
@@ -175,37 +178,39 @@ fn build_cuckoo_for_bucket(
     )
 }
 
-/// Cuckoo insert with eviction chain.
+/// Compute all cuckoo bin positions for a chunk_id.
+#[inline]
+fn compute_bins(chunk_id: u32, keys: &[u64; CUCKOO_NUM_HASHES], num_bins: usize) -> [usize; CUCKOO_NUM_HASHES] {
+    let mut bins = [0usize; CUCKOO_NUM_HASHES];
+    for h in 0..CUCKOO_NUM_HASHES {
+        bins[h] = cuckoo_hash_int(chunk_id, keys[h], num_bins);
+    }
+    bins
+}
+
+/// Cuckoo insert with eviction chain (supports N hash functions).
 fn cuckoo_insert(
     table: &mut [u32],
     chunk_id: u32,
-    key0: u64,
-    key1: u64,
+    keys: &[u64; CUCKOO_NUM_HASHES],
     num_bins: usize,
 ) -> bool {
-    // Try bin 0
-    let bin0 = cuckoo_hash_int(chunk_id, key0, num_bins);
-    let base0 = bin0 * CUCKOO_BUCKET_SIZE;
-    for s in 0..CUCKOO_BUCKET_SIZE {
-        if table[base0 + s] == EMPTY {
-            table[base0 + s] = chunk_id;
-            return true;
-        }
-    }
+    let bins = compute_bins(chunk_id, keys, num_bins);
 
-    // Try bin 1
-    let bin1 = cuckoo_hash_int(chunk_id, key1, num_bins);
-    let base1 = bin1 * CUCKOO_BUCKET_SIZE;
-    for s in 0..CUCKOO_BUCKET_SIZE {
-        if table[base1 + s] == EMPTY {
-            table[base1 + s] = chunk_id;
-            return true;
+    // Try all bins for an empty slot
+    for h in 0..CUCKOO_NUM_HASHES {
+        let base = bins[h] * CUCKOO_BUCKET_SIZE;
+        for s in 0..CUCKOO_BUCKET_SIZE {
+            if table[base + s] == EMPTY {
+                table[base + s] = chunk_id;
+                return true;
+            }
         }
     }
 
     // Eviction loop
     let mut current_id = chunk_id;
-    let mut current_bin = bin0;
+    let mut current_bin = bins[0];
 
     for kick in 0..CUCKOO_MAX_KICKS {
         let base = current_bin * CUCKOO_BUCKET_SIZE;
@@ -213,27 +218,32 @@ fn cuckoo_insert(
         let evicted_id = table[base + slot];
         table[base + slot] = current_id;
 
-        // Find the alternative bin for the evicted chunk
-        let ev_bin0 = cuckoo_hash_int(evicted_id, key0, num_bins);
-        let ev_bin1 = cuckoo_hash_int(evicted_id, key1, num_bins);
-        let alt_bin = if ev_bin0 == current_bin { ev_bin1 } else { ev_bin0 };
+        let ev_bins = compute_bins(evicted_id, keys, num_bins);
 
-        // Try to place evicted entry in its alternative bin
-        let alt_base = alt_bin * CUCKOO_BUCKET_SIZE;
+        // Try all alternative bins for empty slots
         let mut placed = false;
-        for s in 0..CUCKOO_BUCKET_SIZE {
-            if table[alt_base + s] == EMPTY {
-                table[alt_base + s] = evicted_id;
-                placed = true;
-                break;
+        let mut first_alt = current_bin;
+        for &b in &ev_bins {
+            if b == current_bin { continue; }
+            if first_alt == current_bin { first_alt = b; }
+            let alt_base = b * CUCKOO_BUCKET_SIZE;
+            for s in 0..CUCKOO_BUCKET_SIZE {
+                if table[alt_base + s] == EMPTY {
+                    table[alt_base + s] = evicted_id;
+                    placed = true;
+                    break;
+                }
             }
+            if placed { break; }
         }
 
         if placed {
             return true;
         }
 
-        // Continue evicting from alt_bin
+        // Continue evicting — rotate through alternatives
+        let alts: Vec<usize> = ev_bins.iter().filter(|&&b| b != current_bin).copied().collect();
+        let alt_bin = if alts.is_empty() { current_bin } else { alts[kick % alts.len()] };
         current_id = evicted_id;
         current_bin = alt_bin;
     }
@@ -326,7 +336,8 @@ fn main() {
         ((max_load as f64) / (CUCKOO_BUCKET_SIZE as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
 
     println!(
-        "[3] Building Cuckoo tables (2 hash fns, bucket_size={}, load={}, uniform bins={})...",
+        "[3] Building Cuckoo tables ({} hash fns, bucket_size={}, load={}, uniform bins={})...",
+        CUCKOO_NUM_HASHES,
         CUCKOO_BUCKET_SIZE, CUCKOO_LOAD_FACTOR, bins_per_table
     );
     let cuckoo_start = Instant::now();

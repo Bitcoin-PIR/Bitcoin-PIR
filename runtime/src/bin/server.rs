@@ -44,8 +44,8 @@ impl ServerData {
         let index_cuckoo = fs::read(CUCKOO_FILE).expect("read index cuckoo");
         let index_bins_per_table = read_cuckoo_header(&index_cuckoo);
         let index_table_byte_size = index_bins_per_table * CUCKOO_BUCKET_SIZE * 4;
-        println!("  bins_per_table = {}, table_size = {:.1} MB",
-            index_bins_per_table,
+        println!("  bins_per_table = {}, bucket_size = {}, table_size = {:.1} MB",
+            index_bins_per_table, CUCKOO_BUCKET_SIZE,
             index_table_byte_size as f64 / (1024.0 * 1024.0));
 
         println!("[2] Loading index data: {}", INDEX_FILE);
@@ -58,9 +58,9 @@ impl ServerData {
         println!("[3] Loading chunk cuckoo: {}", CHUNK_CUCKOO_FILE);
         let chunk_cuckoo = fs::read(CHUNK_CUCKOO_FILE).expect("read chunk cuckoo");
         let chunk_bins_per_table = read_chunk_cuckoo_header(&chunk_cuckoo);
-        let chunk_table_byte_size = chunk_bins_per_table * CUCKOO_BUCKET_SIZE * 4;
-        println!("  bins_per_table = {}, table_size = {:.1} MB",
-            chunk_bins_per_table,
+        let chunk_table_byte_size = chunk_bins_per_table * CHUNK_CUCKOO_BUCKET_SIZE * 4;
+        println!("  bins_per_table = {}, bucket_size = {}, table_size = {:.1} MB",
+            chunk_bins_per_table, CHUNK_CUCKOO_BUCKET_SIZE,
             chunk_table_byte_size as f64 / (1024.0 * 1024.0));
 
         println!("[4] Loading chunks data: {}", CHUNKS_DATA_FILE);
@@ -82,18 +82,21 @@ impl ServerData {
 
     fn process_index_batch(&self, query: &BatchQuery) -> BatchResult {
         let num_buckets = query.keys.len().min(K);
-        let results: Vec<(Vec<u8>, Vec<u8>)> = (0..num_buckets)
+        let results: Vec<Vec<Vec<u8>>> = (0..num_buckets)
             .into_par_iter()
             .map(|b| {
-                let key_q0 = DpfKey::from_bytes(&query.keys[b].0).expect("bad dpf key q0");
-                let key_q1 = DpfKey::from_bytes(&query.keys[b].1).expect("bad dpf key q1");
+                let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
+                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
+                    .collect();
+                let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_offset = HEADER_SIZE + b * self.index_table_byte_size;
                 let table_bytes = &self.index_cuckoo[table_offset..table_offset + self.index_table_byte_size];
-                eval::process_index_bucket(
-                    &key_q0, &key_q1,
+                let (r0, r1) = eval::process_index_bucket(
+                    &key_refs[0], &key_refs[1],
                     table_bytes, &self.index_data,
                     self.index_bins_per_table,
-                )
+                );
+                vec![r0, r1]
             })
             .collect();
 
@@ -106,15 +109,17 @@ impl ServerData {
 
     fn process_chunk_batch(&self, query: &BatchQuery) -> BatchResult {
         let num_buckets = query.keys.len().min(K_CHUNK);
-        let results: Vec<(Vec<u8>, Vec<u8>)> = (0..num_buckets)
+        let results: Vec<Vec<Vec<u8>>> = (0..num_buckets)
             .into_par_iter()
             .map(|b| {
-                let key_q0 = DpfKey::from_bytes(&query.keys[b].0).expect("bad dpf key q0");
-                let key_q1 = DpfKey::from_bytes(&query.keys[b].1).expect("bad dpf key q1");
+                let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
+                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
+                    .collect();
+                let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_offset = HEADER_SIZE + b * self.chunk_table_byte_size;
                 let table_bytes = &self.chunk_cuckoo[table_offset..table_offset + self.chunk_table_byte_size];
                 eval::process_chunk_bucket(
-                    &key_q0, &key_q1,
+                    &key_refs,
                     table_bytes, &self.chunks_data,
                     self.chunk_bins_per_table,
                 )
@@ -163,9 +168,10 @@ async fn main() {
     let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().unwrap();
     let listener = TcpListener::bind(addr).await.expect("bind");
     println!("Listening on ws://{}", addr);
-    println!("  Index: K={}, bins_per_table={}", K, data.index_bins_per_table);
-    println!("  Chunk: K={}, bins_per_table={}, CHUNKS_PER_UNIT={}",
-        K_CHUNK, data.chunk_bins_per_table, CHUNKS_PER_UNIT);
+    println!("  Index: K={}, bins_per_table={}, cuckoo={}-hash bs={}",
+        K, data.index_bins_per_table, INDEX_CUCKOO_NUM_HASHES, CUCKOO_BUCKET_SIZE);
+    println!("  Chunk: K={}, bins_per_table={}, cuckoo={}-hash bs={}",
+        K_CHUNK, data.chunk_bins_per_table, CHUNK_CUCKOO_NUM_HASHES, CHUNK_CUCKOO_BUCKET_SIZE);
     println!();
 
     loop {

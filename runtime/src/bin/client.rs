@@ -9,7 +9,7 @@
 //!     --server0 ws://localhost:8091 --server1 ws://localhost:8092 \
 //!     --hash <40-char hex script hash>
 
-use runtime::eval::{self, DPF_N};
+use runtime::eval::{self, DPF_N, CHUNK_DPF_N};
 use runtime::protocol::{BatchQuery, Request, Response};
 use build::common::*;
 use futures_util::{SinkExt, StreamExt};
@@ -268,29 +268,35 @@ async fn main() {
     let my_buckets = derive_buckets(&args.script_hash);
     let assigned_bucket = my_buckets[0]; // single query, just use first
 
-    // Compute cuckoo hash locations in the assigned bucket
-    let key0 = derive_cuckoo_key(assigned_bucket, 0);
-    let key1 = derive_cuckoo_key(assigned_bucket, 1);
-    let loc0 = cuckoo_hash(&args.script_hash, key0, index_bins) as u64;
-    let loc1 = cuckoo_hash(&args.script_hash, key1, index_bins) as u64;
+    // Compute cuckoo hash locations in the assigned bucket (INDEX_CUCKOO_NUM_HASHES = 2)
+    let mut my_locs = Vec::new();
+    for h in 0..INDEX_CUCKOO_NUM_HASHES {
+        let key = derive_cuckoo_key(assigned_bucket, h);
+        my_locs.push(cuckoo_hash(&args.script_hash, key, index_bins) as u64);
+    }
 
     println!("  Assigned bucket: {}", assigned_bucket);
-    println!("  loc0={}, loc1={}", loc0, loc1);
+    println!("  locs: {:?}", my_locs);
 
-    // Generate DPF keys for all K buckets
-    let mut s0_keys: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(K);
-    let mut s1_keys: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(K);
+    // Generate DPF keys for all K buckets (INDEX_CUCKOO_NUM_HASHES keys per bucket)
+    let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K);
+    let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K);
 
     for b in 0..K {
-        let (alpha0, alpha1) = if b == assigned_bucket {
-            (loc0, loc1)
-        } else {
-            (rng.next_u64() % index_bins as u64, rng.next_u64() % index_bins as u64)
-        };
-        let (k0_q0, k1_q0) = dpf.gen(alpha0, DPF_N);
-        let (k0_q1, k1_q1) = dpf.gen(alpha1, DPF_N);
-        s0_keys.push((k0_q0.to_bytes(), k0_q1.to_bytes()));
-        s1_keys.push((k1_q0.to_bytes(), k1_q1.to_bytes()));
+        let mut s0_bucket = Vec::new();
+        let mut s1_bucket = Vec::new();
+        for h in 0..INDEX_CUCKOO_NUM_HASHES {
+            let alpha = if b == assigned_bucket {
+                my_locs[h]
+            } else {
+                rng.next_u64() % index_bins as u64
+            };
+            let (k0, k1) = dpf.gen(alpha, DPF_N);
+            s0_bucket.push(k0.to_bytes());
+            s1_bucket.push(k1.to_bytes());
+        }
+        s0_keys.push(s0_bucket);
+        s1_keys.push(s1_bucket);
     }
 
     // Send to both servers concurrently
@@ -312,17 +318,20 @@ async fn main() {
         _ => { eprintln!("Unexpected response type for index batch"); return; }
     };
 
-    // XOR results for the assigned bucket
+    // XOR results for the assigned bucket (each cuckoo hash gives one result)
     let b = assigned_bucket;
-    let mut result_q0 = r0.results[b].0.clone();
-    eval::xor_into(&mut result_q0, &r1.results[b].0);
-    let mut result_q1 = r0.results[b].1.clone();
-    eval::xor_into(&mut result_q1, &r1.results[b].1);
+    let mut found_entry: Option<(u32, u32)> = None;
+    for h in 0..INDEX_CUCKOO_NUM_HASHES {
+        let mut result = r0.results[b][h].clone();
+        eval::xor_into(&mut result, &r1.results[b][h]);
+        if let Some(entry) = eval::find_entry_in_index_result(&result, &args.script_hash) {
+            found_entry = Some(entry);
+            break;
+        }
+    }
 
     // Find our entry
-    let (offset_half, num_chunks) =
-        eval::find_entry_in_index_result(&result_q0, &args.script_hash)
-        .or_else(|| eval::find_entry_in_index_result(&result_q1, &args.script_hash))
+    let (offset_half, num_chunks) = found_entry
         .unwrap_or_else(|| {
             eprintln!("ERROR: script hash not found in index PIR result!");
             std::process::exit(1);
@@ -356,30 +365,37 @@ async fn main() {
         std::collections::HashMap::new();
 
     for (ri, round_plan) in rounds.iter().enumerate() {
-        // Build target map: bucket → (loc0, loc1)
-        let mut bucket_targets: Vec<Option<(u64, u64)>> = vec![None; K_CHUNK];
+        // Build target map: bucket → list of cuckoo locations
+        let mut bucket_targets: Vec<Option<Vec<u64>>> = vec![None; K_CHUNK];
         for &(chunk_id, bucket_id) in round_plan {
             let b = bucket_id as usize;
-            let ck0 = derive_chunk_cuckoo_key(b, 0);
-            let ck1 = derive_chunk_cuckoo_key(b, 1);
-            let l0 = cuckoo_hash_int(chunk_id, ck0, chunk_bins) as u64;
-            let l1 = cuckoo_hash_int(chunk_id, ck1, chunk_bins) as u64;
-            bucket_targets[b] = Some((l0, l1));
+            let locs: Vec<u64> = (0..CHUNK_CUCKOO_NUM_HASHES)
+                .map(|h| {
+                    let key = derive_chunk_cuckoo_key(b, h);
+                    cuckoo_hash_int(chunk_id, key, chunk_bins) as u64
+                })
+                .collect();
+            bucket_targets[b] = Some(locs);
         }
 
-        // Generate DPF keys for all K_CHUNK buckets
-        let mut s0_keys: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(K_CHUNK);
-        let mut s1_keys: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(K_CHUNK);
+        // Generate DPF keys for all K_CHUNK buckets (CHUNK_CUCKOO_NUM_HASHES keys per bucket)
+        let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K_CHUNK);
+        let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K_CHUNK);
 
         for b in 0..K_CHUNK {
-            let (alpha0, alpha1) = match bucket_targets[b] {
-                Some(t) => t,
-                None => (rng.next_u64() % chunk_bins as u64, rng.next_u64() % chunk_bins as u64),
-            };
-            let (k0_q0, k1_q0) = dpf.gen(alpha0, DPF_N);
-            let (k0_q1, k1_q1) = dpf.gen(alpha1, DPF_N);
-            s0_keys.push((k0_q0.to_bytes(), k0_q1.to_bytes()));
-            s1_keys.push((k1_q0.to_bytes(), k1_q1.to_bytes()));
+            let mut s0_bucket = Vec::new();
+            let mut s1_bucket = Vec::new();
+            for h in 0..CHUNK_CUCKOO_NUM_HASHES {
+                let alpha = match &bucket_targets[b] {
+                    Some(locs) => locs[h],
+                    None => rng.next_u64() % chunk_bins as u64,
+                };
+                let (k0, k1) = dpf.gen(alpha, CHUNK_DPF_N);
+                s0_bucket.push(k0.to_bytes());
+                s1_bucket.push(k1.to_bytes());
+            }
+            s0_keys.push(s0_bucket);
+            s1_keys.push(s1_bucket);
         }
 
         // Send to both servers
@@ -400,21 +416,23 @@ async fn main() {
             _ => { eprintln!("Unexpected response for chunk batch"); return; }
         };
 
-        // XOR and extract
+        // XOR and extract — check each cuckoo hash result
         for &(chunk_id, bucket_id) in round_plan {
             let b = bucket_id as usize;
+            let mut found = false;
 
-            let mut rq0 = cr0.results[b].0.clone();
-            eval::xor_into(&mut rq0, &cr1.results[b].0);
-            let mut rq1 = cr0.results[b].1.clone();
-            eval::xor_into(&mut rq1, &cr1.results[b].1);
+            for h in 0..CHUNK_CUCKOO_NUM_HASHES {
+                let mut result = cr0.results[b][h].clone();
+                eval::xor_into(&mut result, &cr1.results[b][h]);
 
-            let data = eval::find_chunk_in_result(&rq0, chunk_id)
-                .or_else(|| eval::find_chunk_in_result(&rq1, chunk_id));
+                if let Some(d) = eval::find_chunk_in_result(&result, chunk_id) {
+                    recovered_chunks.insert(chunk_id, d.to_vec());
+                    found = true;
+                    break;
+                }
+            }
 
-            if let Some(d) = data {
-                recovered_chunks.insert(chunk_id, d.to_vec());
-            } else {
+            if !found {
                 eprintln!("  WARNING: chunk {} not found in round {} bucket {}", chunk_id, ri, b);
             }
         }

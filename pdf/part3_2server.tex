@@ -1,0 +1,93 @@
+\section{2-Server Stateless PIR via DPF}
+\label{sec:2server}
+
+This section describes the 2-server stateless PIR instantiation of our system, based on Distributed Point Functions (DPF). The client requires no persistent state or hints---only the DPF keys generated fresh for each query session. Combined with the batch PIR framework from Section~\ref{sec:batching}, this yields a complete system for private UTXO lookups.
+
+\subsection{Distributed Point Functions (DPF)}
+\label{sec:dpf}
+
+A Distributed Point Function (DPF) \cite{gilboa2014dpf,boyle2015fss,boyle2016fss} is a cryptographic primitive that enables efficient 2-server PIR. A \emph{point function} $f_{\alpha,\beta}$ evaluates to $\beta$ at input $\alpha$ and to $0$ everywhere else. A DPF splits this point function into two keys $(k_0, k_1)$ such that:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Correctness:} $\text{Eval}(k_0, x) \oplus \text{Eval}(k_1, x) = f_{\alpha,\beta}(x)$ for all $x$.
+    \item \textbf{Security:} Each individual key $k_b$ is computationally indistinguishable from a key for any other point function.
+\end{itemize}
+
+Each key has size $O(\lambda \log N)$ where $\lambda$ is the security parameter and $N$ is the domain size. To perform PIR on a database of $N$ entries indexed by $[N]$:
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item The client generates DPF keys $(k_0, k_1)$ for the point function $f_{i, 1}$ where $i$ is the target index.
+    \item Server $b$ expands $k_b$ to obtain a vector of $N$ field elements and computes $r_b = \bigoplus_{x=0}^{N-1} \text{Eval}(k_b, x) \cdot D[x]$.
+    \item The client recovers $D[i] = r_0 \oplus r_1$.
+\end{enumerate}
+
+The server computation is $O(NB)$ but consists of simple XOR operations over the database, making it extremely fast in practice---often close to the speed of a single linear pass over the data in memory.
+
+\subsection{Implementation}
+\label{sec:implementation}
+
+We have implemented a complete system based on the 2-server DPF-PIR approach with Probabilistic Batch Codes (PBC), as described in Section~\ref{sec:batching}. The implementation consists of database generation tools (Rust), two PIR servers (Rust with \texttt{tokio}), and client libraries (Rust CLI and TypeScript/Web). The two-level architecture from Figure~\ref{fig:two-maps} eliminates the TXID resolution step of earlier designs by storing full 32-byte TXIDs directly in the UTXO chunks.
+
+\subsubsection{System Architecture}
+
+Each server maintains identical copies of the index and chunk databases, loaded via memory-mapped files (\texttt{memmap2}). The client connects to both servers over WebSocket and distributes DPF key shares, so neither server learns the query target unless they collude. Communication uses a compact binary protocol supporting database discovery, batch PIR queries, and connection health checks.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=1.5cm and 2cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=1.2cm, align=center, font=\small},
+    db/.style={cylinder, draw, shape border rotate=90, aspect=0.25, minimum height=1.5cm, minimum width=1.2cm, fill=blue!10, font=\footnotesize},
+    arrow/.style={-{Stealth[length=2.5mm]}, thick},
+    label/.style={font=\scriptsize, text=gray!70!black}
+]
+
+\node[box, fill=green!20] (client) {Client\\{\scriptsize (Rust CLI / Web)}};
+\node[box, fill=orange!20, below left=1.5cm and 1cm of client] (server1) {Server 1};
+\node[box, fill=orange!20, below right=1.5cm and 1cm of client] (server2) {Server 2};
+\node[db, below=0.5cm of server1] (db1) {Index + Chunks};
+\node[db, below=0.5cm of server2] (db2) {Index + Chunks};
+
+\draw[arrow] (client) -- (server1) node[midway, above, sloped, label] {$K$ DPF keys $\{k_1^{(i)}\}$};
+\draw[arrow] (client) -- (server2) node[midway, above, sloped, label] {$K$ DPF keys $\{k_2^{(i)}\}$};
+\draw[arrow, dashed, gray] (server1) -- (db1);
+\draw[arrow, dashed, gray] (server2) -- (db2);
+
+\draw[arrow, blue!60!black] (server1.north east) -- ++(0.3, 0.5) node[right, font=\scriptsize] {$\{r_1^{(i)}\}$};
+\draw[arrow, blue!60!black] (server2.north west) -- ++(-0.3, 0.5) node[left, font=\scriptsize] {$\{r_2^{(i)}\}$};
+
+\node[above=1.8cm of client, font=\small, text=blue!60!black] (xor) {Results: $r_1^{(i)} \oplus r_2^{(i)}$ for $i \in [K]$};
+\draw[arrow, blue!60!black, dashed] ($(server1.north east)+(0.3, 0.5)$) -- (xor);
+\draw[arrow, blue!60!black, dashed] ($(server2.north west)+(-0.3, 0.5)$) -- (xor);
+
+\end{tikzpicture}
+\caption{Two-server batch DPF-PIR architecture. The client generates $K$ DPF key pairs (one per PBC bucket) and sends the shares to each server. Each server computes $K$ XOR sums in parallel; the client combines responses to recover all queried entries.}
+\label{fig:architecture}
+\end{figure}
+
+\subsubsection{Database Generation}
+
+The offline pipeline transforms raw Bitcoin blockchain data into two PIR-queryable databases. Each stage is a separate Rust binary in \texttt{build\_db/src/bin}.
+
+\textbf{Pipeline overview:}
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item \textbf{UTXO extraction:} Parse the UTXO snapshot (\texttt{dumptxoutset}) to extract ScriptPubKey hashes, full 32-byte TXIDs, vout indices, and amounts.
+    \item \textbf{Chunk generation:} Group UTXOs by ScriptPubKey, serialize with VarInt encoding, and bin-pack into fixed-size chunks (default 256 bytes). Each chunk stores complete records including full TXIDs.
+    \item \textbf{Index construction:} Build an index mapping each ScriptPubKey hash (20 bytes) to its chunk location and data length.
+    \item \textbf{Cuckoo hashing:} Organize both the index and chunk databases into cuckoo hash tables (bucket size 4, 3 hash functions) for PBC-compatible batch retrieval.
+    \item \textbf{Verification:} Validate that all entries are retrievable from the cuckoo tables.
+\end{enumerate}
+
+\textbf{Dual role of cuckoo hashing.} Cuckoo hashing serves two purposes in our system. First, it provides PIR-by-keyword: given a ScriptPubKey, the client computes candidate bucket indices to locate data without scanning. Second, it implements PBC for batch PIR: when querying $m$ entries, each query maps to 3 candidate buckets; the client places queries into $K$ total buckets via cuckoo insertion, and all $K$ DPF queries execute in parallel.
+
+\subsubsection{Query Protocol}
+
+A complete UTXO lookup requires two rounds of batch PIR:
+
+\textbf{Level 1: Index lookup.} The client computes RIPEMD-160 hashes of all queried ScriptPubKeys, derives 3 candidate buckets per query via cuckoo hash functions (\texttt{splitmix64}-based), and places them into $K{=}75$ PBC buckets. For each bucket, the client generates a DPF key pair targeting the assigned row in the index table and sends one share to each server. The servers expand all $K$ DPF keys and return $K$ XOR sums. The client combines responses to recover index entries containing chunk IDs and data lengths.
+
+\textbf{Level 2: Chunk retrieval.} Using the chunk locations from Level~1, the client repeats the process with $K_\text{chunk}{=}80$ PBC buckets over the chunk database. The recovered chunks contain full UTXO records: 32-byte TXIDs, vout indices, and amounts in satoshis---everything needed to construct a spending transaction.
+
+\subsubsection{Client Implementations}
+
+\textbf{Rust CLI (\texttt{lookup\_pir}).} Command-line tool that takes ScriptPubKeys as hex, performs the two-level batch PIR protocol, and outputs decoded UTXO data.
+
+\textbf{Web client (TypeScript).} Browser-compatible library using WebSocket connections. Implements DPF key generation, cuckoo hashing, and PBC placement in pure TypeScript. Supports Bitcoin address input (P2PKH, P2SH, P2WPKH, P2WSH, P2TR) with automatic conversion to ScriptPubKey. The web interface provides a self-contained demo at \texttt{batch\_web\_client/}.

@@ -4,8 +4,8 @@
 /// Path to the UTXO chunks index file (nodust, 80-byte blocks)
 pub const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
 
-/// Size of each index entry: 20B script_hash + 4B offset_half + 4B num_chunks
-pub const INDEX_ENTRY_SIZE: usize = 28;
+/// Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags
+pub const INDEX_ENTRY_SIZE: usize = 26;
 
 /// Size of the script hash portion
 pub const SCRIPT_HASH_SIZE: usize = 20;
@@ -19,8 +19,17 @@ pub const NUM_HASHES: usize = 3;
 /// Master PRG seed for deriving per-bucket cuckoo hash function keys
 pub const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
 
-/// Cuckoo hash table bucket size (slots per bin)
-pub const CUCKOO_BUCKET_SIZE: usize = 4;
+/// Cuckoo hash table bucket size for INDEX level (slots per bin)
+pub const CUCKOO_BUCKET_SIZE: usize = 3;
+
+/// Number of cuckoo hash functions for INDEX level
+pub const INDEX_CUCKOO_NUM_HASHES: usize = 2;
+
+/// Cuckoo hash table bucket size for CHUNK level (slots per bin)
+pub const CHUNK_CUCKOO_BUCKET_SIZE: usize = 2;
+
+/// Number of cuckoo hash functions for CHUNK level
+pub const CHUNK_CUCKOO_NUM_HASHES: usize = 3;
 
 /// File format magic number for the batch_pir_cuckoo.bin file
 pub const MAGIC: u64 = 0xBA7C_C000_C000_0001;
@@ -155,7 +164,7 @@ pub const CHUNK_CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_cuckoo.bin"
 /// Path to the UTXO chunks data file
 pub const CHUNKS_DATA_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_nodust.bin";
 
-/// Path to the first-level PIR results (50 × 28 bytes)
+/// Path to the first-level PIR results (50 × 26 bytes)
 pub const BATCH_PIR_RESULTS_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_results.bin";
 
 // ─── Chunk-level hash utilities ──────────────────────────────────────────────

@@ -24,11 +24,11 @@ use std::time::Instant;
 const QUERIES_FILE: &str = "/Volumes/Bitcoin/data/test_queries_50.bin";
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_results.bin";
 
-/// Each cuckoo bin has 4 slots, each referencing a 28-byte index entry.
-/// Result per DPF query = 4 * 28 = 112 bytes.
-const ENTRY_SIZE: usize = INDEX_ENTRY_SIZE; // 28
-const SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
-const RESULT_SIZE: usize = SLOTS * ENTRY_SIZE; // 112
+/// Each cuckoo bin has 3 slots, each referencing a 26-byte index entry.
+/// Result per DPF query = 3 * 26 = 78 bytes.
+const ENTRY_SIZE: usize = INDEX_ENTRY_SIZE; // 26
+const SLOTS: usize = CUCKOO_BUCKET_SIZE; // 3
+const RESULT_SIZE: usize = SLOTS * ENTRY_SIZE; // 78
 
 /// We need 2^n >= bins_per_table. bins_per_table ≈ 616423, so n = 20 (2^20 = 1048576).
 const DPF_N: u8 = 20;
@@ -141,12 +141,15 @@ fn fetch_bin_entries(
 /// XOR `src` into `dst` in-place, using u64 chunks for speed.
 #[inline]
 fn xor_into(dst: &mut [u8; RESULT_SIZE], src: &[u8; RESULT_SIZE]) {
-    // RESULT_SIZE = 112 = 14 * 8, so we can work in u64 chunks
+    // RESULT_SIZE = 78 = 9 * 8 + 6, so handle remainder
     const N: usize = RESULT_SIZE / 8;
     let d = unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u64, N) };
     let s = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u64, N) };
     for i in 0..N {
         d[i] ^= s[i];
+    }
+    for i in (N * 8)..RESULT_SIZE {
+        dst[i] ^= src[i];
     }
 }
 
@@ -353,9 +356,9 @@ fn main() {
     let mut found = 0;
     let mut not_found = 0;
 
-    // For each query: (script_hash[20], offset_half[4], num_chunks[4])
-    // Output file: num_queries entries of [20B script_hash | 4B offset_half | 4B num_chunks]
-    let mut output_entries: Vec<(Vec<u8>, [u8; 4], [u8; 4])> = Vec::with_capacity(num_queries);
+    // For each query: (script_hash[20], offset_half[4], num_chunks[1], flags[1])
+    // Output file: num_queries entries of [20B script_hash | 4B offset_half | 1B num_chunks | 1B flags]
+    let mut output_entries: Vec<(Vec<u8>, [u8; 4], u8, u8)> = Vec::with_capacity(num_queries);
 
     for qi in 0..num_queries {
         let b = query_bucket[qi];
@@ -370,11 +373,11 @@ fn main() {
         let mut result_q1 = server0_results[b].1;
         xor_into(&mut result_q1, &server1_results[b].1);
 
-        // Check if our script_hash appears in either result; extract offset_half + num_chunks
+        // Check if our script_hash appears in either result; extract offset_half + num_chunks + flags
         let mut matched = false;
         for result in [&result_q0, &result_q1] {
-            if let Some((offset_half, num_chunks)) = find_entry_in_result(result, sh) {
-                output_entries.push((sh.to_vec(), offset_half, num_chunks));
+            if let Some((offset_half, num_chunks, flags)) = find_entry_in_result(result, sh) {
+                output_entries.push((sh.to_vec(), offset_half, num_chunks, flags));
                 matched = true;
                 found += 1;
                 break;
@@ -383,7 +386,7 @@ fn main() {
 
         if !matched {
             not_found += 1;
-            output_entries.push((sh.to_vec(), [0u8; 4], [0u8; 4]));
+            output_entries.push((sh.to_vec(), [0u8; 4], 0u8, 0u8));
             let hex: String = sh.iter().map(|x| format!("{:02x}", x)).collect();
             println!(
                 "  MISS: query {} bucket {} loc0={} loc1={} hash={}",
@@ -406,16 +409,17 @@ fn main() {
     println!();
     println!("[7] Writing results to: {}", OUTPUT_FILE);
 
-    // File format: for each query, 28 bytes = [20B script_hash | 4B offset_half | 4B num_chunks]
+    // File format: for each query, 26 bytes = [20B script_hash | 4B offset_half | 1B num_chunks | 1B flags]
     let mut out_file = File::create(OUTPUT_FILE).expect("create output");
-    for (sh, offset_half, num_chunks) in &output_entries {
+    for (sh, offset_half, num_chunks, flags) in &output_entries {
         out_file.write_all(sh).unwrap();
         out_file.write_all(offset_half).unwrap();
-        out_file.write_all(num_chunks).unwrap();
+        out_file.write_all(&[*num_chunks]).unwrap();
+        out_file.write_all(&[*flags]).unwrap();
     }
     println!(
-        "  Written {} bytes ({} queries x 28 bytes)",
-        num_queries * 28,
+        "  Written {} bytes ({} queries x 26 bytes)",
+        num_queries * 26,
         num_queries
     );
 
@@ -433,29 +437,28 @@ fn main() {
         "-".repeat(12),
         "-".repeat(10)
     );
-    for (qi, (sh, offset_half, num_chunks)) in output_entries.iter().enumerate() {
+    for (qi, (sh, offset_half, num_chunks, _flags)) in output_entries.iter().enumerate() {
         let hex: String = sh.iter().map(|x| format!("{:02x}", x)).collect();
         let offset = u32::from_le_bytes(*offset_half);
-        let chunks = u32::from_le_bytes(*num_chunks);
-        println!("  {:>4}  {}  {:>12}  {:>10}", qi, hex, offset, chunks);
+        println!("  {:>4}  {}  {:>12}  {:>10}", qi, hex, offset, *num_chunks);
     }
 
     println!();
     println!("  Total time: {:.2?}", start.elapsed());
 }
 
-/// Find the script_hash in the result's 4 slots and return (offset_half, num_chunks).
-/// Index entry layout: [20B script_hash][4B offset_half][4B num_chunks]
-fn find_entry_in_result(result: &[u8; RESULT_SIZE], script_hash: &[u8]) -> Option<([u8; 4], [u8; 4])> {
+/// Find the script_hash in the result's slots and return (offset_half, num_chunks, flags).
+/// Index entry layout: [20B script_hash][4B offset_half][1B num_chunks][1B flags]
+fn find_entry_in_result(result: &[u8; RESULT_SIZE], script_hash: &[u8]) -> Option<([u8; 4], u8, u8)> {
     for slot in 0..SLOTS {
         let base = slot * ENTRY_SIZE;
         let entry_sh = &result[base..base + SCRIPT_HASH_SIZE];
         if entry_sh == script_hash {
             let mut offset_half = [0u8; 4];
             offset_half.copy_from_slice(&result[base + 20..base + 24]);
-            let mut num_chunks = [0u8; 4];
-            num_chunks.copy_from_slice(&result[base + 24..base + 28]);
-            return Some((offset_half, num_chunks));
+            let num_chunks = result[base + 24];
+            let flags = result[base + 25];
+            return Some((offset_half, num_chunks, flags));
         }
     }
     None

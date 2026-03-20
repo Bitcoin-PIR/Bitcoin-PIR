@@ -1,0 +1,74 @@
+\section{Batch PIR}
+\label{sec:batching}
+
+A light client typically needs to look up multiple ScriptPubKeys simultaneously. This section describes how we use Probabilistic Batch Codes (PBC) to amortize the cost of multiple PIR queries, and how the two-level architecture (index map then chunk map) composes with batching. The batch PIR framework described here is PIR-variant-agnostic: it works with any underlying single-query PIR scheme, including the 2-server DPF-PIR instantiation in Section~\ref{sec:2server}.
+
+\subsection{Batch PIR and Probabilistic Batch Codes}
+
+\textbf{Batch PIR} \cite{IKOS04} addresses the problem of retrieving $m$ entries simultaneously. The naive approach---issuing $m$ independent PIR queries---costs $m$ times the single-query cost. Batch PIR aims to reduce this by amortizing work across queries.
+
+\textbf{Probabilistic Batch Codes (PBC)} achieve batch PIR by distributing $m$ queries across $K$ ``buckets'' (with $K > m$) such that each bucket contains at most one real query. The construction uses cuckoo hashing:
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item For each of the $m$ queries, compute $h$ candidate buckets using cuckoo hash functions.
+    \item Place queries into buckets via cuckoo insertion with eviction chains.
+    \item Pad all empty buckets with random dummy queries.
+    \item Issue $K$ independent PIR queries in parallel---one per bucket.
+\end{enumerate}
+
+Since each bucket holds at most one real query, the server processes $K$ single-entry PIR queries. For DPF-PIR, this means generating $K$ DPF key pairs and having each server perform $K$ XOR-sum computations. The effective cost per query drops from $O(NB)$ to $O(NB \cdot K/m)$ when the server can share work across the $K$ evaluations.
+
+\subsection{Two-Level Query Architecture}
+
+Our system uses a two-level architecture: an \emph{index map} that locates data, and a \emph{chunk map} that stores the actual UTXO data (see Section~\ref{sec:data} for the data layout). A complete UTXO lookup requires two rounds of batch PIR:
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm and 1.8cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=2.5cm, minimum height=1cm, align=center, font=\small},
+    data/.style={rectangle, draw, fill=blue!10, minimum width=1.8cm, minimum height=0.7cm, align=center, font=\footnotesize},
+    arrow/.style={-{Stealth[length=2.5mm]}, thick},
+    label/.style={font=\scriptsize, text=gray!70!black},
+    pirlabel/.style={font=\scriptsize\bfseries, text=blue!60!black}
+]
+
+\node[data, fill=green!15] (user) {User's\\ScriptPubKey(s)};
+\node[box, fill=orange!20, right=2.5cm of user] (map1) {Index Map\\{\tiny ($K{=}75$ batch PIR)}};
+\node[data, fill=yellow!20, right=of map1] (chunkinfo) {Chunk ID\\+ Data Length};
+\node[box, fill=orange!20, below=1cm of map1] (map2) {Chunk Map\\{\tiny ($K_\text{chunk}{=}80$ batch PIR)}};
+\node[data, fill=yellow!20, right=of map2] (utxo) {UTXO Data\\{\tiny (32B TXID, vout, amount)}};
+
+\draw[arrow] (user) -- (map1) node[midway, above, pirlabel] {PBC + Cuckoo};
+\draw[arrow] (map1) -- (chunkinfo) node[midway, above, label] {$K$ PIR queries};
+\draw[arrow] (chunkinfo.south) -- ++(0,-0.3) -| (map2.north);
+\draw[arrow] (map2) -- (utxo) node[midway, above, label] {$K_\text{chunk}$ PIR queries};
+
+\begin{scope}[on background layer]
+    \node[fit=(map1)(chunkinfo), draw=gray!50, dashed, rounded corners, inner sep=8pt, label={[font=\tiny\itshape, text=gray]above:Level 1}] {};
+    \node[fit=(map2)(utxo), draw=gray!50, dashed, rounded corners, inner sep=8pt, label={[font=\tiny\itshape, text=gray]left:Level 2}] {};
+\end{scope}
+
+\end{tikzpicture}
+\caption{Two-level batch PIR architecture. The client issues $K$ parallel PIR queries per level, using Probabilistic Batch Codes to pack multiple lookups into a single round.}
+\label{fig:two-maps}
+\end{figure}
+
+\textbf{Level 1: Index lookup.} The client computes RIPEMD-160 hashes of all queried ScriptPubKeys, derives $h$ candidate buckets per query via cuckoo hash functions, and places them into $K$ PBC buckets. For each bucket, the client generates a PIR query targeting the assigned row in the index table and sends it to the server(s). The responses are combined to recover index entries containing chunk IDs and data lengths.
+
+\textbf{Level 2: Chunk retrieval.} Using the chunk locations from Level~1, the client repeats the process with $K_\text{chunk}$ PBC buckets over the chunk database. The recovered chunks contain full UTXO records: 32-byte TXIDs, vout indices, and amounts in satoshis---everything needed to construct a spending transaction.
+
+\textbf{Distributional PIR.} We can apply distributional PIR \cite{lehmkuhl25} to optimize for the common case: most light clients hold few UTXOs under common script types, while whale addresses with thousands of UTXOs likely run full nodes. By tuning the PIR parameters for the more likely queries, the average server cost decreases without eliminating the ability to query less common entries.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Database} & \textbf{Entry Size} & \textbf{Buckets ($K$)} & \textbf{PIR domain ($N$)} \\
+\hline
+Index (Level 1) & 28 B & 75 & $2^{20}$ \\
+Chunks (Level 2) & 256 B & 80 & $2^{20}$ \\
+\hline
+\end{tabular}
+\caption{Batch PIR parameters. Each level uses $K$ parallel PIR queries over tables of $N$ entries.}
+\label{tab:databases}
+\end{table}

@@ -15,16 +15,25 @@ export const NUM_HASHES = 3;
 /** Master PRG seed for deriving per-bucket cuckoo hash function keys */
 export const MASTER_SEED = 0x71a2ef38b4c90d15n;
 
-/** Cuckoo hash table bucket size (slots per bin) */
-export const CUCKOO_BUCKET_SIZE = 4;
+/** Cuckoo hash table bucket size for INDEX level (slots per bin) */
+export const CUCKOO_BUCKET_SIZE = 3;
+
+/** Number of cuckoo hash functions for INDEX level */
+export const INDEX_CUCKOO_NUM_HASHES = 2;
+
+/** Cuckoo hash table bucket size for CHUNK level (slots per bin) */
+export const CHUNK_CUCKOO_BUCKET_SIZE = 2;
+
+/** Number of cuckoo hash functions for CHUNK level */
+export const CHUNK_CUCKOO_NUM_HASHES = 3;
 
 /** Script hash size in bytes */
 export const SCRIPT_HASH_SIZE = 20;
 
-/** Size of each index entry: 20B script_hash + 4B offset_half + 4B num_chunks */
-export const INDEX_ENTRY_SIZE = 28;
+/** Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags */
+export const INDEX_ENTRY_SIZE = 26;
 
-/** Index result size: 4 slots * 28 bytes = 112 bytes */
+/** Index result size: 3 slots * 26 bytes = 78 bytes */
 export const INDEX_RESULT_SIZE = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
 
 // ─── Chunk-level constants ─────────────────────────────────────────────────
@@ -47,13 +56,16 @@ export const UNIT_DATA_SIZE = CHUNKS_PER_UNIT * CHUNK_SIZE;
 /** Each chunk slot: 4B chunk_id + UNIT_DATA_SIZE data */
 export const CHUNK_SLOT_SIZE = 4 + UNIT_DATA_SIZE;
 
-/** Chunk result size: 4 slots * slot_size */
-export const CHUNK_RESULT_SIZE = CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE;
+/** Chunk result size: 2 slots * slot_size */
+export const CHUNK_RESULT_SIZE = CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE;
 
 // ─── DPF ───────────────────────────────────────────────────────────────────
 
-/** DPF domain: 2^20 = 1,048,576 */
+/** DPF domain for index level: 2^20 = 1,048,576 */
 export const DPF_N = 20;
+
+/** DPF domain for chunk level: 2^21 = 2,097,152 */
+export const CHUNK_DPF_N = 21;
 
 // ─── Protocol constants ────────────────────────────────────────────────────
 

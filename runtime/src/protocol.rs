@@ -25,15 +25,16 @@ pub const RESP_ERROR: u8 = 0xFF;
 // ─── Request types ──────────────────────────────────────────────────────────
 
 /// A batch of DPF keys for one level.
-/// Each bucket has two DPF keys (for the two cuckoo hash locations).
+/// Each bucket has N DPF keys (one per cuckoo hash function).
 #[derive(Clone, Debug)]
 pub struct BatchQuery {
     /// 0 for index, 1 for chunk
     pub level: u8,
     /// Round ID (only meaningful for chunk level; 0 for index)
     pub round_id: u16,
-    /// Per-bucket: (dpf_key_q0, dpf_key_q1). Length = K (75) or K_CHUNK (80).
-    pub keys: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Per-bucket: list of DPF keys. Length = K (75) or K_CHUNK (80).
+    /// Inner Vec length = number of cuckoo hash functions (2 for index, 3 for chunks).
+    pub keys: Vec<Vec<Vec<u8>>>,
 }
 
 pub enum Request {
@@ -57,8 +58,8 @@ pub struct ServerInfo {
 pub struct BatchResult {
     pub level: u8,
     pub round_id: u16,
-    /// Per-bucket: (result_q0, result_q1). Same length as the request keys.
-    pub results: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Per-bucket: list of results. Same structure as request keys.
+    pub results: Vec<Vec<Vec<u8>>>,
 }
 
 pub enum Response {
@@ -194,54 +195,54 @@ impl Response {
 
 // ─── Batch encoding helpers ─────────────────────────────────────────────────
 
+/// Wire format:
+///   [2B round_id][1B num_buckets][1B keys_per_bucket]
+///   For each bucket:
+///     For each key (keys_per_bucket times):
+///       [2B key_len][key_data]
 fn encode_batch_query(buf: &mut Vec<u8>, q: &BatchQuery) {
     buf.extend_from_slice(&q.round_id.to_le_bytes());
     buf.push(q.keys.len() as u8);
-    for (k0, k1) in &q.keys {
-        buf.extend_from_slice(&(k0.len() as u16).to_le_bytes());
-        buf.extend_from_slice(k0);
-        buf.extend_from_slice(&(k1.len() as u16).to_le_bytes());
-        buf.extend_from_slice(k1);
+    let keys_per_bucket = q.keys.first().map_or(0, |k| k.len()) as u8;
+    buf.push(keys_per_bucket);
+    for bucket_keys in &q.keys {
+        for k in bucket_keys {
+            buf.extend_from_slice(&(k.len() as u16).to_le_bytes());
+            buf.extend_from_slice(k);
+        }
     }
 }
 
 fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
     let mut pos = 0;
-    if data.len() < 3 {
+    if data.len() < 4 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "batch query too short"));
     }
     let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
     pos += 2;
-    let count = data[pos] as usize;
+    let num_buckets = data[pos] as usize;
     pos += 1;
-    let mut keys = Vec::with_capacity(count);
-    for _ in 0..count {
-        if pos + 2 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key"));
+    let keys_per_bucket = data[pos] as usize;
+    pos += 1;
+    let mut keys = Vec::with_capacity(num_buckets);
+    for _ in 0..num_buckets {
+        let mut bucket_keys = Vec::with_capacity(keys_per_bucket);
+        for _ in 0..keys_per_bucket {
+            if pos + 2 > data.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key"));
+            }
+            let len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+            pos += 2;
+            if pos + len > data.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key data"));
+            }
+            bucket_keys.push(data[pos..pos + len].to_vec());
+            pos += len;
         }
-        let len0 = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-        pos += 2;
-        if pos + len0 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key data"));
-        }
-        let k0 = data[pos..pos + len0].to_vec();
-        pos += len0;
-
-        if pos + 2 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key"));
-        }
-        let len1 = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-        pos += 2;
-        if pos + len1 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key data"));
-        }
-        let k1 = data[pos..pos + len1].to_vec();
-        pos += len1;
-
-        keys.push((k0, k1));
+        keys.push(bucket_keys);
     }
     Ok(BatchQuery {
-        level: 0, // set by caller based on variant
+        level: 0,
         round_id,
         keys,
     })
@@ -250,42 +251,43 @@ fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
 fn encode_batch_result(buf: &mut Vec<u8>, r: &BatchResult) {
     buf.extend_from_slice(&r.round_id.to_le_bytes());
     buf.push(r.results.len() as u8);
-    for (r0, r1) in &r.results {
-        buf.extend_from_slice(&(r0.len() as u16).to_le_bytes());
-        buf.extend_from_slice(r0);
-        buf.extend_from_slice(&(r1.len() as u16).to_le_bytes());
-        buf.extend_from_slice(r1);
+    let results_per_bucket = r.results.first().map_or(0, |r| r.len()) as u8;
+    buf.push(results_per_bucket);
+    for bucket_results in &r.results {
+        for res in bucket_results {
+            buf.extend_from_slice(&(res.len() as u16).to_le_bytes());
+            buf.extend_from_slice(res);
+        }
     }
 }
 
 fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
     let mut pos = 0;
-    if data.len() < 3 {
+    if data.len() < 4 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "batch result too short"));
     }
     let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
     pos += 2;
-    let count = data[pos] as usize;
+    let num_buckets = data[pos] as usize;
     pos += 1;
-    let mut results = Vec::with_capacity(count);
-    for _ in 0..count {
-        if pos + 2 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result"));
+    let results_per_bucket = data[pos] as usize;
+    pos += 1;
+    let mut results = Vec::with_capacity(num_buckets);
+    for _ in 0..num_buckets {
+        let mut bucket_results = Vec::with_capacity(results_per_bucket);
+        for _ in 0..results_per_bucket {
+            if pos + 2 > data.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result"));
+            }
+            let len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+            pos += 2;
+            if pos + len > data.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result data"));
+            }
+            bucket_results.push(data[pos..pos + len].to_vec());
+            pos += len;
         }
-        let len0 = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-        pos += 2;
-        let r0 = data[pos..pos + len0].to_vec();
-        pos += len0;
-
-        if pos + 2 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result"));
-        }
-        let len1 = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-        pos += 2;
-        let r1 = data[pos..pos + len1].to_vec();
-        pos += len1;
-
-        results.push((r0, r1));
+        results.push(bucket_results);
     }
     Ok(BatchResult {
         level: 0,

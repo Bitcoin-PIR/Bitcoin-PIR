@@ -3,61 +3,70 @@ name = "build"
 version = "0.1.0"
 edition = "2021"
 
+# ─── Essential pipeline (required for server/client) ─────────────────────────
+# Run in order: gen_0 → gen_1 → gen_2 → gen_3
+
 [[bin]]
 name = "gen_0_extract_utxo_set"
 path = "src/gen_0_utxo_set.rs"
-
-[[bin]]
-name = "gen_0a_utxo_stats"
-path = "src/utxo_stats.rs"
-
-[[bin]]
-name = "gen_0b_index_stats"
-path = "src/index_stats.rs"
 
 [[bin]]
 name = "gen_1_build_utxo_chunks"
 path = "src/build_utxo_chunks.rs"
 
 [[bin]]
-name = "gen_2_build_index_cuckoo"
-path = "src/main.rs"
-
-[[bin]]
-name = "gen_3_verify_index_cuckoo"
-path = "src/verify.rs"
-
-[[bin]]
-name = "gen_4_extract_test_queries"
-path = "src/extract_test_queries.rs"
-
-[[bin]]
-name = "gen_5_assign_queries"
-path = "src/assign_queries.rs"
-
-[[bin]]
-name = "gen_6_test_index_pir"
-path = "src/test_batch_pir.rs"
-
-[[bin]]
-name = "gen_7_build_chunk_cuckoo"
+name = "gen_2_build_chunk_cuckoo"
 path = "src/build_chunk_cuckoo.rs"
 
 [[bin]]
-name = "gen_8_verify_chunk_cuckoo"
+name = "gen_3_build_index_cuckoo"
+path = "src/main.rs"
+
+# ─── Test/diagnostic tools (not required for operation) ──────────────────────
+# test_0*: stats tools (no dependencies beyond gen_1 output)
+# test_1-2: verification (run after gen_2/gen_3 respectively)
+# test_3 → test_4 → test_5 → test_6 → test_7: end-to-end PIR test chain
+# test_8: diagnostic (depends on test_5 output)
+
+[[bin]]
+name = "test_0a_utxo_stats"
+path = "src/utxo_stats.rs"
+
+[[bin]]
+name = "test_0b_index_stats"
+path = "src/index_stats.rs"
+
+[[bin]]
+name = "test_1_verify_chunk_cuckoo"
 path = "src/verify_chunk_cuckoo.rs"
 
 [[bin]]
-name = "gen_9_plan_chunk_rounds"
+name = "test_2_verify_index_cuckoo"
+path = "src/verify.rs"
+
+[[bin]]
+name = "test_3_extract_test_queries"
+path = "src/extract_test_queries.rs"
+
+[[bin]]
+name = "test_4_assign_queries"
+path = "src/assign_queries.rs"
+
+[[bin]]
+name = "test_5_test_index_pir"
+path = "src/test_batch_pir.rs"
+
+[[bin]]
+name = "test_6_plan_chunk_rounds"
 path = "src/plan_chunk_rounds.rs"
 
 [[bin]]
-name = "gen_9b_assign_chunk_queries"
-path = "src/assign_chunk_queries.rs"
+name = "test_7_test_chunk_pir"
+path = "src/test_chunk_pir_batched.rs"
 
 [[bin]]
-name = "gen_10_test_chunk_pir"
-path = "src/test_chunk_pir_batched.rs"
+name = "test_8_assign_chunk_queries"
+path = "src/assign_chunk_queries.rs"
 
 [[bin]]
 name = "cuckoo4_experiment"

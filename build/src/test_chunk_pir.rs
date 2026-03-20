@@ -296,9 +296,7 @@ fn main() {
         let offset_half = u32::from_le_bytes(
             results_data[base + 20..base + 24].try_into().unwrap(),
         );
-        let num_chunks = u32::from_le_bytes(
-            results_data[base + 24..base + 28].try_into().unwrap(),
-        );
+        let num_chunks = results_data[base + 24] as u32;
 
         if offset_half == 0 && num_chunks == 0 {
             query_ranges.push((0, 0));

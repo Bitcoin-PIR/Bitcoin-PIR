@@ -1,6 +1,6 @@
 //! Scan the UTXO chunks index and report addresses with the most chunks.
 //!
-//! Reads utxo_chunks_index_nodust.bin (28-byte entries) and prints the top N
+//! Reads utxo_chunks_index_nodust.bin (26-byte entries) and prints the top N
 //! entries by num_chunks, along with overall statistics.
 //!
 //! Usage:
@@ -53,9 +53,7 @@ fn main() {
 
     for i in 0..n {
         let base = i * INDEX_ENTRY_SIZE;
-        let num_chunks = u32::from_le_bytes(
-            mmap[base + 24..base + 28].try_into().unwrap(),
-        );
+        let num_chunks = mmap[base + 24] as u32;
 
         total_chunks += num_chunks as u64;
         *chunk_dist.entry(num_chunks).or_insert(0) += 1;

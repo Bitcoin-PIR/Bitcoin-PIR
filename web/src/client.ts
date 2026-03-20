@@ -8,11 +8,11 @@
 
 import {
   K, K_CHUNK, NUM_HASHES,
-  SCRIPT_HASH_SIZE, INDEX_ENTRY_SIZE, INDEX_RESULT_SIZE,
+  SCRIPT_HASH_SIZE, INDEX_ENTRY_SIZE,
   CHUNK_SIZE, CHUNKS_PER_UNIT, UNIT_DATA_SIZE,
-  CHUNK_SLOT_SIZE, CHUNK_RESULT_SIZE,
-  CUCKOO_BUCKET_SIZE,
-  DPF_N,
+  CHUNK_SLOT_SIZE,
+  CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
+  CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
 } from './constants.js';
 
 import {
@@ -21,7 +21,7 @@ import {
   splitmix64,
 } from './hash.js';
 
-import { genDpfKeys } from './dpf.js';
+import { genDpfKeys, genChunkDpfKeys } from './dpf.js';
 
 import {
   encodeRequest, decodeResponse,
@@ -314,7 +314,7 @@ export class BatchPirClient {
       if (match) {
         const dv = new DataView(result.buffer, result.byteOffset + base, INDEX_ENTRY_SIZE);
         const offsetHalf = dv.getUint32(20, true);
-        const numChunks = dv.getUint32(24, true);
+        const numChunks = result[base + 24];
         return { offsetHalf, numChunks };
       }
     }
@@ -327,7 +327,7 @@ export class BatchPirClient {
     const target = new Uint8Array(4);
     new DataView(target.buffer).setUint32(0, chunkId, true);
 
-    for (let slot = 0; slot < CUCKOO_BUCKET_SIZE; slot++) {
+    for (let slot = 0; slot < CHUNK_CUCKOO_BUCKET_SIZE; slot++) {
       const base = slot * CHUNK_SLOT_SIZE;
       if (
         result[base] === target[0] &&
@@ -560,32 +560,32 @@ export class BatchPirClient {
         bucketToQuery.set(bucketId, queryIdx);
       }
 
-      // Generate DPF keys for all K buckets
+      // Generate DPF keys for all K buckets (INDEX_CUCKOO_NUM_HASHES keys per bucket)
       progress('Level 1', `Round ${ir + 1}: generating DPF keys...`);
-      const s0Keys: [Uint8Array, Uint8Array][] = [];
-      const s1Keys: [Uint8Array, Uint8Array][] = [];
+      const s0Keys: Uint8Array[][] = [];
+      const s1Keys: Uint8Array[][] = [];
 
       for (let b = 0; b < K; b++) {
         const qi = bucketToQuery.get(b);
-        let alpha0: number, alpha1: number;
+        const s0Bucket: Uint8Array[] = [];
+        const s1Bucket: Uint8Array[] = [];
 
-        if (qi !== undefined) {
-          // Real query in this bucket
-          const sh = scriptHashes[qi];
-          const ck0 = deriveCuckooKey(b, 0);
-          const ck1 = deriveCuckooKey(b, 1);
-          alpha0 = cuckooHash(sh, ck0, this.indexBins);
-          alpha1 = cuckooHash(sh, ck1, this.indexBins);
-        } else {
-          // Dummy — random targets for privacy
-          alpha0 = Number(this.rng.nextU64() % BigInt(this.indexBins));
-          alpha1 = Number(this.rng.nextU64() % BigInt(this.indexBins));
+        for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
+          let alpha: number;
+          if (qi !== undefined) {
+            const sh = scriptHashes[qi];
+            const ck = deriveCuckooKey(b, h);
+            alpha = cuckooHash(sh, ck, this.indexBins);
+          } else {
+            alpha = Number(this.rng.nextU64() % BigInt(this.indexBins));
+          }
+          const keys = await genDpfKeys(alpha);
+          s0Bucket.push(keys.key0);
+          s1Bucket.push(keys.key1);
         }
 
-        const keys0 = await genDpfKeys(alpha0);
-        const keys1 = await genDpfKeys(alpha1);
-        s0Keys.push([keys0.key0, keys1.key0]);
-        s1Keys.push([keys0.key1, keys1.key1]);
+        s0Keys.push(s0Bucket);
+        s1Keys.push(s1Bucket);
       }
 
       // Send to both servers
@@ -606,11 +606,12 @@ export class BatchPirClient {
         const r0 = resp0.result.results[bucketId];
         const r1 = resp1.result.results[bucketId];
 
-        const resultQ0 = this.xorBuffers(r0[0], r1[0]);
-        const resultQ1 = this.xorBuffers(r0[1], r1[1]);
-
-        const found = this.findEntryInIndexResult(resultQ0, scriptHashes[queryIdx])
-          || this.findEntryInIndexResult(resultQ1, scriptHashes[queryIdx]);
+        let found: { offsetHalf: number; numChunks: number } | null = null;
+        for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
+          const result = this.xorBuffers(r0[h], r1[h]);
+          found = this.findEntryInIndexResult(result, scriptHashes[queryIdx]);
+          if (found) break;
+        }
 
         if (found) {
           indexResults.set(queryIdx, found);
@@ -663,35 +664,38 @@ export class BatchPirClient {
       const roundPlan = chunkRounds[ri];
       progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (${roundPlan.length} chunks)...`);
 
-      // Build target map: bucket → (loc0, loc1)
-      const bucketTargets: Map<number, [number, number]> = new Map();
+      // Build target map: bucket → list of cuckoo locations
+      const bucketTargets: Map<number, number[]> = new Map();
       for (const [chunkListIdx, bucketId] of roundPlan) {
         const chunkId = allChunkIds[chunkListIdx];
-        const ck0 = deriveChunkCuckooKey(bucketId, 0);
-        const ck1 = deriveChunkCuckooKey(bucketId, 1);
-        const l0 = cuckooHashInt(chunkId, ck0, this.chunkBins);
-        const l1 = cuckooHashInt(chunkId, ck1, this.chunkBins);
-        bucketTargets.set(bucketId, [l0, l1]);
+        const locs: number[] = [];
+        for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+          const ck = deriveChunkCuckooKey(bucketId, h);
+          locs.push(cuckooHashInt(chunkId, ck, this.chunkBins));
+        }
+        bucketTargets.set(bucketId, locs);
       }
 
-      // Generate DPF keys for all K_CHUNK buckets
-      const s0Keys: [Uint8Array, Uint8Array][] = [];
-      const s1Keys: [Uint8Array, Uint8Array][] = [];
+      // Generate DPF keys for all K_CHUNK buckets (CHUNK_CUCKOO_NUM_HASHES keys per bucket)
+      const s0Keys: Uint8Array[][] = [];
+      const s1Keys: Uint8Array[][] = [];
 
       for (let b = 0; b < K_CHUNK; b++) {
         const target = bucketTargets.get(b);
-        let alpha0: number, alpha1: number;
-        if (target) {
-          [alpha0, alpha1] = target;
-        } else {
-          alpha0 = Number(this.rng.nextU64() % BigInt(this.chunkBins));
-          alpha1 = Number(this.rng.nextU64() % BigInt(this.chunkBins));
+        const s0Bucket: Uint8Array[] = [];
+        const s1Bucket: Uint8Array[] = [];
+
+        for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+          const alpha = target
+            ? target[h]
+            : Number(this.rng.nextU64() % BigInt(this.chunkBins));
+          const keys = await genChunkDpfKeys(alpha);
+          s0Bucket.push(keys.key0);
+          s1Bucket.push(keys.key1);
         }
 
-        const keys0 = await genDpfKeys(alpha0);
-        const keys1 = await genDpfKeys(alpha1);
-        s0Keys.push([keys0.key0, keys1.key0]);
-        s1Keys.push([keys0.key1, keys1.key1]);
+        s0Keys.push(s0Bucket);
+        s1Keys.push(s1Bucket);
       }
 
       // Send
@@ -706,17 +710,18 @@ export class BatchPirClient {
         throw new Error(`Unexpected chunk response: ${cresp0.type}, ${cresp1.type}`);
       }
 
-      // XOR and extract
+      // XOR and extract — check each cuckoo hash result
       for (const [chunkListIdx, bucketId] of roundPlan) {
         const chunkId = allChunkIds[chunkListIdx];
         const cr0 = cresp0.result.results[bucketId];
         const cr1 = cresp1.result.results[bucketId];
 
-        const rq0 = this.xorBuffers(cr0[0], cr1[0]);
-        const rq1 = this.xorBuffers(cr0[1], cr1[1]);
-
-        const data = this.findChunkInResult(rq0, chunkId)
-          || this.findChunkInResult(rq1, chunkId);
+        let data: Uint8Array | null = null;
+        for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+          const result = this.xorBuffers(cr0[h], cr1[h]);
+          data = this.findChunkInResult(result, chunkId);
+          if (data) break;
+        }
 
         if (data) {
           recoveredChunks.set(chunkId, data);

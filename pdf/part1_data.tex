@@ -1,0 +1,47 @@
+\section{Data Representation}
+\label{sec:data}
+
+\subsection{Bitcoin UTXO Model}
+
+Bitcoin uses an Unspent Transaction Output (UTXO) model. Each transaction consumes previous outputs (inputs) and creates new outputs. The set of all outputs that have not yet been spent forms the \emph{UTXO set}, which represents the current state of all spendable coins.
+
+Each UTXO is uniquely identified by a pair (TXID, vout), where TXID is the 32-byte hash of the creating transaction and vout is the output index within that transaction. Each UTXO carries an \emph{amount} (in satoshis) and a \emph{ScriptPubKey}---a locking script that specifies the conditions under which the output can be spent.
+
+Common ScriptPubKey types include:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{P2PKH} (Pay-to-Public-Key-Hash): Legacy addresses starting with \texttt{1}
+    \item \textbf{P2SH} (Pay-to-Script-Hash): Script hash addresses starting with \texttt{3}
+    \item \textbf{P2WPKH / P2WSH} (Pay-to-Witness-*): SegWit addresses starting with \texttt{bc1q}
+    \item \textbf{P2TR} (Pay-to-Taproot): Taproot addresses starting with \texttt{bc1p}
+\end{itemize}
+
+A \emph{light client} knows its own private keys (and thus its addresses and ScriptPubKeys) but does not maintain a full copy of the blockchain. To spend its coins, the light client needs to discover which UTXOs are locked to its ScriptPubKeys and retrieve the corresponding (TXID, vout, amount) tuples. PIR enables this discovery without revealing the client's addresses to the server.
+
+\subsection{Data Organization}
+
+\textbf{Sort and group.} The server sorts UTXOs by ScriptPubKey hash, then groups them into fixed-size chunks. Each chunk stores complete UTXO records including full 32-byte TXIDs, vout indices, and amounts. Multiple ScriptPubKeys may share a chunk via bin-packing.
+
+\textbf{Index map.} Maps each ScriptPubKey (via its RIPEMD-160 hash) to the chunk location and data length. This is organized as a cuckoo hash table for $O(1)$ keyword-to-index lookup \cite{PR01}. Each index entry contains: the 20-byte script hash (for verification that the query hit a real entry), a chunk identifier, and the byte length of the UTXO data within that chunk.
+
+\textbf{Chunk map.} Stores the actual UTXO data in fixed-size entries (default 256 bytes). Full 32-byte TXIDs are stored directly in the chunks, eliminating a separate TXID resolution step. The chunk map is also organized as a cuckoo hash table for PIR-compatible retrieval.
+
+\subsection{Cuckoo Hashing for Keyword Lookup}
+
+Cuckoo hashing \cite{PR01} is a hashing scheme that provides worst-case $O(1)$ lookup time. To store $n$ items, we maintain a table of $T$ slots organized into $\lceil T/s \rceil$ buckets of size $s$, with $h$ independent hash functions $H_1, \ldots, H_h$.
+
+Each item $x$ can reside in any of its $h$ candidate buckets $H_1(x), \ldots, H_h(x)$. To insert $x$: if any candidate bucket has a free slot, place $x$ there. Otherwise, evict a random existing item from one candidate bucket, insert $x$, and re-insert the evicted item recursively. With $h \geq 3$ hash functions and bucket size $s \geq 4$, load factors above 95\% are achievable.
+
+\textbf{PIR by keyword.} Cuckoo hashing enables PIR by keyword (as opposed to PIR by index). Given a keyword $w$, the client computes its $h$ candidate bucket indices and issues PIR queries for those buckets. Upon retrieving the bucket contents, the client checks which slot (if any) contains an entry matching $w$. This transforms the problem of searching an unordered key-value store into a constant number of PIR-by-index queries.
+
+\subsection{Reducing the UTXO Set}
+\label{sec:extension}
+
+Since the PIR service is designed for light clients who do not frequently run the Bitcoin node for synchronization or for newly imported wallet addresses from a regular user, we can realistically expect that the user only makes a few transactions, keeps only a few UTXOs in the chain, and has no intention to create large number of dust outputs (a typical pattern of some Bitcoin layer-2 protocols). Therefore, taking this in mind, we can reduce the UTXO set by filtering out scriptPubKeys that show different user patterns, or, if not filtering out the entire scriptPubKey, we can selectively filter out certain transactions or certain UTXOs that match some profiles.
+
+For example, a scriptPubKey that has been involved in a significantly above average number of UTXOs is likely not a regular user and probably should run its own full node to have the full security and privacy.
+
+Another example is that we can filter out UTXOs that are of dust amount. It is possible that a honest user has dust UTXOs and may want to use them in the future, but given that each dust UTXO is worth probably like $0.4$ USD, we can say that they are of a lower prioirity, and a user who sincerely wants to use them should first try to avoid generating dust UTXOs as it should not occur naturally, and if the user sincerely wants to recover from the dust amount, the user is recommended to use an RPC server (maybe through Tor), or if strict privacy is a concern, run a full node---honestly speaking, if the user wants to consolidate these dust UTXOs, the other full nodes are going to learn it sooner or later anyway because they can wait for the consolidation transaction.
+
+If we worry that the dust amount filtering might be excessive, we can also target certain protocols that are known to generate a large number of dust UTXOs, such as the Omnilayer, by looking into the \textrm{OP\_RETURN} output next to the dust UTXO and checking if it starts with ``omni''.
+
+We can also make a list of known exchange wallet addresses and filter them out given that these crypto exchange is definitely not running a light client. There are some services for this purpose, such as Arkham, that provides a list of identified addresses of notable market paricipants (who are unlikely using this light client).

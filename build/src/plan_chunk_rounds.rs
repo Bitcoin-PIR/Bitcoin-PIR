@@ -203,8 +203,7 @@ fn main() {
         sh.copy_from_slice(&results_data[base..base + SCRIPT_HASH_SIZE]);
         let offset_half =
             u32::from_le_bytes(results_data[base + 20..base + 24].try_into().unwrap());
-        let num_chunks =
-            u32::from_le_bytes(results_data[base + 24..base + 28].try_into().unwrap());
+        let num_chunks = results_data[base + 24] as u32;
 
         if num_chunks == 0 {
             continue;
@@ -235,8 +234,7 @@ fn main() {
         if index_data[base..base + SCRIPT_HASH_SIZE] == whale_sh {
             let offset_half =
                 u32::from_le_bytes(index_data[base + 20..base + 24].try_into().unwrap());
-            let num_chunks =
-                u32::from_le_bytes(index_data[base + 24..base + 28].try_into().unwrap());
+            let num_chunks = index_data[base + 24] as u32;
             let byte_offset = offset_half as u64 * 2;
             let start_chunk = (byte_offset / CHUNK_SIZE as u64) as u32;
 

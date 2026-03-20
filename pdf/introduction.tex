@@ -1,0 +1,88 @@
+\section{Introduction}
+
+We are interested in using Private Information Retrieval (PIR) to help Bitcoin light clients synchronize with the Bitcoin network privately. A light client that knows its own keys needs to discover which unspent transaction outputs (UTXOs) it can spend, without revealing its addresses to the servers it queries. PIR enables this by allowing the client to retrieve specific database entries without the server learning which entries were accessed.
+
+\subsection{Private Information Retrieval}
+
+Private Information Retrieval (PIR) allows a client to retrieve an entry from a database held by one or more servers without revealing which entry is being accessed. Formally, consider a database $D$ of $N$ entries, each of $B$ bits. The client holds an index $i \in [N]$ and wishes to retrieve $D[i]$.
+
+The trivial solution is for the client to download the entire database, achieving perfect privacy at $O(NB)$ communication cost. The goal of PIR is to achieve sublinear communication while preserving privacy.
+
+\textbf{Single-server (computational) PIR.} A single server holds $D$. The client's query must be computationally indistinguishable from a query for any other index under some hardness assumption. The server performs computation over the query and the database to produce a response, from which the client can extract $D[i]$. The server's computation is at least $\Omega(NB)$ in the worst case (otherwise the server trivially learns that certain entries were not queried), though preprocessing and client-side hints can reduce the \emph{online} computation.
+
+\textbf{Multi-server (information-theoretic) PIR.} The database is replicated across $t \geq 2$ non-colluding servers. Privacy holds information-theoretically: no single server (or coalition below the threshold) gains any information about $i$. The simplest 2-server scheme uses additive secret sharing of a selection vector, achieving $O(N)$ communication per server---already non-trivial compared to $O(NB)$ when $B$ is large.
+
+\subsection{PIR Protocol Landscape}
+\label{sec:landscape}
+
+We survey practical PIR constructions across two axes: the number of servers and the amount of client-side state. We consider four settings:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Single-server:}
+    \smallskip
+    \begin{itemize}[nolistsep,leftmargin=*]
+        \item Almost no client storage: YPIR-over-SimplePIR \cite{ypir2024}
+
+        \item Sublinear client storage without a linear pass: SimplePIR or DoublePIR \cite{henz23}
+
+        \item Sublinear client storage after a linear pass: Plinko \cite{plinko2024}, RMS24 \cite{rms24}, or Piano \cite{piano2024}
+    \end{itemize}
+
+    \smallskip
+    \item \textbf{2-server:}
+    \smallskip
+    \begin{itemize}[nolistsep,leftmargin=*]
+        \item Almost no client storage: DPF-PIR \cite{gilboa2014dpf,boyle2015fss,boyle2016fss}
+
+        \item Sublinear client storage: Plinko, RMS24, or Piano but moving the hint generation to a hint server
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Single-Server PIR}
+
+We focus on single-server PIR without per-client storage on the server and allow server to preprocess the database. For protocols that do not require client storage (or if the client storage is just for some data-independent parameters), YPIR-over-SimplePIR has achieved best performance and throughput for larger blocks, in comparison to Hintless PIR \cite{li24}, Tiptoe \cite{tiptoe23}, and Spiral \cite{spiral22}.
+
+If we allow the client to make data-dependent but sublinear storage for ``hints'', then we get better results with SimplePIR or DoublePIR, where the client downloads the hints before making any query. Note that DoublePIR is most suitable for single-bit or few-bit entries, and does not perform well when the entry size exceeds several tens of bits. This is because: (1) while the client hint is independent of the database size, it scales linearly with the entry size; and (2) this linear scaling has a very large multiplicative constant factor. This makes DoublePIR suitable for certain PIR use cases, but not the other. When using SimplePIR or DoublePIR, the server time appears to improve around $2$ times to an order of magnitudes with the sublinear hints over those that don't require hints.
+
+If we do one step further and allow the client to download and make a linear pass over the database to generate sublinear hints (the client downloads and performs the linear pass in the streaming manner with only sublinear storage needed), then we can get much better performance with Plinko, RMS24, or Piano. The server time can be reduced by potentially two orders of magnitude. This setting works well for many devices with access to home internet or WiFi network where the network is not metered, but not all.
+
+\subsubsection{Two-Server PIR}
+
+We now consider PIR that assumes two servers that are non-colluding and non-communicating, meaning that the two servers do not need to know each other, and it is only the user who engages with both servers. In fact, any two trustworthy servers that have the database can be selected by the user to run this protocol. This setting is especially relevant to Bitcoin peer-to-peer (P2P) network as a user can discover two full nodes that provide this capability and use their help. The caveat is that the user needs to trust that these two servers do not collude with each other. If not, the two colluding servers can immediately learn the user's query.
+
+The easiest way to achieve 2-server PIR is to use DPF-PIR, which is based on distributed point functions (DPF) \cite{gilboa2014dpf,boyle2015fss,boyle2016fss}. Given a share of DPF keys of size $O(logN)$, each server can expand it to $N$ bits that look random, where the two servers' bits differ exactly on the location that the user queries. Each server retrieves the entries with bit $1$ and computes an XOR sum of them. The user finally performs an XOR over the two XOR sums from the two servers and obtains the desired query result. It requires $O(NB)$ server compute time with $B$ being the entry size, but the computation is extremely lightweight. Usually, the compute can answer a PIR query close to the time that it takes to do a linear pass of the database in the storage medium (which usually is the main memory).
+
+If we allow hint generation, as is the case in the single-server setting, we know that the server can answer the PIR queries in sublinear time, which is extremely efficient that seems to ``surpass the memory speed.'' Previously in the single-server setting, a significant downside is that the client needs to download the entire database (in a streaming manner) to generate the hint locally. Now, in the 2-server setting, the user can outsource the hint generation to one of the servers (``hint server''), and the hint can be used to query any server other than the hint server. This avoids the need for the user to download the database, and the user can directly download the hint, though it still requires sublinear client storage.
+
+\subsubsection{Query Volume Considerations}
+
+When we compare these different solutions, it is important to understand how many queries a user would make. For example, if a user only makes one query, then all the compute and communication costs for the hint generation may not be worthwhile if it is single-use. The overhead is not just about the client, but also the server. For single-server protocols that require a linear pass, a server needs to serve the entire database to this user. For 2-server protocols with outsourced hint generation, the hint server bears the computation cost for doing that linear pass over its local copy of the database.
+
+This is especially relevant to Bitcoin light client synchronization because a light client may maintain a small wallet that only cares about UTXOs that the wallet can spend. In this situation, the light client knows exactly how many queries it needs to make, and after those queries, the light client has no need to access this database anymore as it has been synced up to the state that is current to the database. In this case, the client may only make one or a few queries to the database, and therefore the overhead for hint generation may not be worthwhile. An example of such a use case is when a light client imports a seed phrase or a private key, in which case it needs to identify all the UTXOs associated with the imported wallets, but this is a one-time thing.
+
+Despite this concern, PIR is still superior than asking the light client to download the compact block filters for all the blocks since the imported key is first used (if known) and fetch a  number of blocks. First, the compact block filters for the entire Bitcoin history can still be a few gigabytes. Second, the usual way to fetch relevant blocks is to request these blocks directly from a full node by giving the block height, which leaks a little bit of privacy (which blocks this new wallet has a UTXO for). Whether this privacy leakage is acceptable depends on the situation and the user. Our goal building the PIR solution is to help those users who want to avoid this privacy leakage (which, as we will show, it is easy to avoid).
+
+\subsubsection{Integrity and Verifiability}
+
+Modern PIR naturally achieves privacy even against malicious servers, so we only need to focus on integrity. There are many ways to achieve integrity, some of which offer integrity against selective failure attacks \cite{kilian88,naor99,dwork99,camenisch07,lindell11,kiraz06}, while some do not. Whether it is okay to ignore selective failure attacks depends on the user and the use case. For example, a user who receives a potentially selectively failed response can continue to finish the rest of the protocol using random queries, pretending to have received a valid response, and then fetch the data from other servers.
+
+If we ignore selective failure attacks, the most practical solution for single-server and 2-server solutions appears to be KZG polynomial commitment \cite{kzg10}, where the opening proofs are generated using the Feist-Khovratovich batch technique \cite{fk23}. An important limitation is that it uses elliptic curves, and therefore is not post-quantum. The KZG opening proof would add about 16 bytes to each entry. To reduce the PIR compute overhead caused by the additional opening proof, we can merge a few entries into one larger entry, and still only one opening proof is needed for the larger entry. With the same setup parameters of KZG, all the nodes in the network should have the same KZG polynomial commitment.
+
+This solution, however, fails to address selective failure attacks. Selective failure attacks refer to the case when a malicious server manipulates a subset $S$ of the database entries such that if the user is reading an entry in $S$, it would fail, and if the user is reading an entry outside of $S$, it would succeed. The concern is that such a selective failure, which may be realized by the malicious server through a change of the user's subsequent actions, can leak if the user is reading an entry in $S$.
+
+To address selective failure attacks, we can choose protocols with this additional verifiability guarantee against selective failure attacks. For single-server protocols without a linear pass, RLP26 \cite{rlp26} is a good candidate, which improves over VeriSimplePIR \cite{cl24} and significantly reduces the client hint using some one-time computation.
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Single-server:}
+    \smallskip
+    \begin{itemize}[nolistsep,leftmargin=*]
+        \item Almost no client storage: RLP26 \cite{rlp26}
+
+        \item Sublinear client storage after a linear pass: Plinko, RMS24, or Piano with Merkle proofs, or verifiable BALANCED-PIR \cite{ar26}
+    \end{itemize}
+
+    \smallskip
+    \item \textbf{2-server:} Plinko, RMS24, or Piano with Merkle proofs, or verifiable BALANCED-PIR with outsourced hint generation
+\end{itemize}
+
+\subsection{Paper Organization}
+
+This paper presents a complete system for private UTXO lookups. Section~\ref{sec:data} describes the Bitcoin UTXO model, our data representation, and techniques for reducing the UTXO set size. Section~\ref{sec:batching} presents the batch PIR framework using Probabilistic Batch Codes, which is PIR-variant-agnostic and applies across all protocol choices. Section~\ref{sec:2server} details the 2-server stateless DPF-PIR instantiation, including background on distributed point functions and our complete implementation.

@@ -1,6 +1,6 @@
 //! Batch PIR bucket assignment + per-bucket Cuckoo hashing over UTXO chunks index.
 //!
-//! 1. Reads the UTXO chunks index (`utxo_chunks_index.bin`): N entries of 24 bytes.
+//! 1. Reads the UTXO chunks index (`utxo_chunks_index.bin`): N entries of 26 bytes.
 //! 2. Assigns each entry to 3 distinct buckets out of k=75 (by hashing script_hash).
 //! 3. Within each bucket, builds a Cuckoo hash table (2 hash functions, bucket size 4,
 //!    load factor 0.95). Hash function parameters are derived from a master PRG seed.
@@ -35,8 +35,8 @@ const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
 /// Output file for the serialized Batch PIR cuckoo tables
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";
 
-/// Size of each index entry: 20B script_hash + 4B offset_half + 4B num_chunks
-const INDEX_ENTRY_SIZE: usize = 28;
+/// Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags
+const INDEX_ENTRY_SIZE: usize = 26;
 
 /// Size of the script hash portion
 const SCRIPT_HASH_SIZE: usize = 20;
@@ -48,7 +48,7 @@ const K: usize = 75;
 const NUM_HASHES: usize = 3;
 
 /// Cuckoo hash table parameters
-const CUCKOO_BUCKET_SIZE: usize = 4;
+const CUCKOO_BUCKET_SIZE: usize = 3;
 const CUCKOO_LOAD_FACTOR: f64 = 0.95;
 const CUCKOO_MAX_KICKS: usize = 2000;
 const EMPTY: u32 = u32::MAX;

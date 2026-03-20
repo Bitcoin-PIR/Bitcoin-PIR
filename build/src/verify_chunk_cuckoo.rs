@@ -51,36 +51,24 @@ fn lookup_in_bucket(
     bucket_id: usize,
     chunk_id: u32,
     bins_per_table: usize,
+    cuckoo_bucket_size: usize,
+    num_cuckoo_hashes: usize,
 ) -> bool {
-    let slots_per_table = bins_per_table * CUCKOO_BUCKET_SIZE;
+    let slots_per_table = bins_per_table * cuckoo_bucket_size;
     let table_offset = HEADER_SIZE + bucket_id * slots_per_table * 4;
 
-    let key0 = derive_chunk_cuckoo_key(bucket_id, 0);
-    let key1 = derive_chunk_cuckoo_key(bucket_id, 1);
-
-    // Check bin 0
-    let bin0 = cuckoo_hash_int(chunk_id, key0, bins_per_table);
-    let base0 = table_offset + bin0 * CUCKOO_BUCKET_SIZE * 4;
-    for s in 0..CUCKOO_BUCKET_SIZE {
-        let val = read_u32(cuckoo_data, base0 + s * 4);
-        if val == chunk_id {
-            return true;
-        }
-        if val == EMPTY {
-            break;
-        }
-    }
-
-    // Check bin 1
-    let bin1 = cuckoo_hash_int(chunk_id, key1, bins_per_table);
-    let base1 = table_offset + bin1 * CUCKOO_BUCKET_SIZE * 4;
-    for s in 0..CUCKOO_BUCKET_SIZE {
-        let val = read_u32(cuckoo_data, base1 + s * 4);
-        if val == chunk_id {
-            return true;
-        }
-        if val == EMPTY {
-            break;
+    for h in 0..num_cuckoo_hashes {
+        let key = derive_chunk_cuckoo_key(bucket_id, h);
+        let bin = cuckoo_hash_int(chunk_id, key, bins_per_table);
+        let base = table_offset + bin * cuckoo_bucket_size * 4;
+        for s in 0..cuckoo_bucket_size {
+            let val = read_u32(cuckoo_data, base + s * 4);
+            if val == chunk_id {
+                return true;
+            }
+            if val == EMPTY {
+                break;
+            }
         }
     }
 
@@ -217,7 +205,7 @@ fn main() {
 
         let mut entry_found = false;
         for &bucket_id in &assigned {
-            if lookup_in_bucket(&cuckoo_mmap, bucket_id, chunk_id, bins_per_table) {
+            if lookup_in_bucket(&cuckoo_mmap, bucket_id, chunk_id, bins_per_table, cuckoo_bucket_size, num_hashes) {
                 entry_found = true;
                 break;
             }
@@ -268,7 +256,7 @@ fn main() {
 
         let mut entry_found = false;
         for &bucket_id in &assigned {
-            if lookup_in_bucket(&cuckoo_mmap, bucket_id, chunk_id, bins_per_table) {
+            if lookup_in_bucket(&cuckoo_mmap, bucket_id, chunk_id, bins_per_table, cuckoo_bucket_size, num_hashes) {
                 entry_found = true;
                 break;
             }

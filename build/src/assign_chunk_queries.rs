@@ -1,6 +1,6 @@
 //! Assign chunk queries to 80 Batch PIR buckets using Cuckoo hashing.
 //!
-//! 1. Reads batch_pir_results.bin (50 × 28 bytes from the first-level PIR).
+//! 1. Reads batch_pir_results.bin (50 × 26 bytes from the first-level PIR).
 //! 2. Computes all needed chunk_ids from (offset_half, num_chunks), deduplicates.
 //! 3. Cuckoo-assigns each unique chunk query to one of 80 buckets.
 //! 4. Displays the assignment with per-bucket cuckoo locations (loc0, loc1).
@@ -44,9 +44,7 @@ fn main() {
         let offset_half = u32::from_le_bytes(
             data[base + 20..base + 24].try_into().unwrap(),
         );
-        let num_chunks = u32::from_le_bytes(
-            data[base + 24..base + 28].try_into().unwrap(),
-        );
+        let num_chunks = data[base + 24] as u32;
 
         if offset_half == 0 && num_chunks == 0 {
             // MISS from first-level PIR — skip

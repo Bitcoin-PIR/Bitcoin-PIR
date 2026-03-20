@@ -5,20 +5,23 @@
 use build::common::*;
 use libdpf::{Block, Dpf, DpfKey};
 
-/// DPF domain: 2^20 = 1,048,576 >= bins_per_table for both levels.
+/// DPF domain for index level: 2^20 = 1,048,576 >= 753,707 index bins.
 pub const DPF_N: u8 = 20;
+
+/// DPF domain for chunk level: 2^21 = 2,097,152 >= 1,286,191 chunk bins.
+pub const CHUNK_DPF_N: u8 = 21;
 
 // ─── Index-level constants ──────────────────────────────────────────────────
 
-/// Each cuckoo bin has 4 slots, each referencing a 28-byte index entry.
-pub const INDEX_SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
-pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_ENTRY_SIZE; // 4 * 28 = 112
+/// Each cuckoo bin has CUCKOO_BUCKET_SIZE (3) slots, each referencing a 26-byte index entry.
+pub const INDEX_SLOTS: usize = CUCKOO_BUCKET_SIZE; // 3
+pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_ENTRY_SIZE; // 3 * 26 = 78
 
 // ─── Chunk-level constants ──────────────────────────────────────────────────
 
 /// Each slot: [4B chunk_id LE | UNIT_DATA_SIZE data]
 pub const CHUNK_SLOT_SIZE: usize = 4 + UNIT_DATA_SIZE;
-pub const CHUNK_SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
+pub const CHUNK_SLOTS: usize = CHUNK_CUCKOO_BUCKET_SIZE; // 2
 pub const CHUNK_RESULT_SIZE: usize = CHUNK_SLOTS * CHUNK_SLOT_SIZE;
 
 const EMPTY: u32 = u32::MAX;
@@ -50,9 +53,68 @@ pub fn xor_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
+// ─── Generic DPF evaluation (supports N queries) ──────────────────────────
+
+/// Evaluate N DPF keys over a table, XOR-accumulating results.
+/// Returns Vec of N accumulators, each `result_size` bytes.
+fn process_bucket_generic(
+    keys: &[&DpfKey],
+    table_bytes: &[u8],
+    bins_per_table: usize,
+    result_size: usize,
+    fetch_bin: &dyn Fn(&[u8], usize, &mut [u8]),
+) -> Vec<Vec<u8>> {
+    let dpf = Dpf::with_default_key();
+    let num_keys = keys.len();
+
+    let evals: Vec<Vec<Block>> = keys.iter().map(|k| dpf.eval_partial(k, bins_per_table as u64)).collect();
+    let num_blocks = evals[0].len();
+
+    let mut accs: Vec<Vec<u8>> = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
+    let mut bin_buf = vec![0u8; result_size];
+
+    for block_idx in 0..num_blocks {
+        // Skip if all blocks are zero
+        let all_zero = (0..num_keys).all(|i| evals[i][block_idx].is_equal(&Block::zero()));
+        if all_zero {
+            continue;
+        }
+
+        let base_bin = block_idx * 128;
+        let end_bin = (base_bin + 128).min(bins_per_table);
+
+        for bin in base_bin..end_bin {
+            let bit_within = bin - base_bin;
+
+            // Check which keys have bit set
+            let mut any_set = false;
+            let mut bits = [false; 8]; // max 8 keys
+            for i in 0..num_keys {
+                bits[i] = get_dpf_bit(&evals[i][block_idx], bit_within);
+                if bits[i] { any_set = true; }
+            }
+
+            if !any_set {
+                continue;
+            }
+
+            for v in bin_buf.iter_mut() { *v = 0; }
+            fetch_bin(table_bytes, bin, &mut bin_buf);
+
+            for i in 0..num_keys {
+                if bits[i] {
+                    xor_into(&mut accs[i], &bin_buf);
+                }
+            }
+        }
+    }
+
+    accs
+}
+
 // ─── Index-level evaluation ─────────────────────────────────────────────────
 
-/// Fetch 4 index entries at `bin`, resolving u32 refs through the index data.
+/// Fetch INDEX_SLOTS index entries at `bin`, resolving u32 refs through the index data.
 #[inline]
 fn fetch_index_bin(table_bytes: &[u8], bin: usize, index_data: &[u8], out: &mut [u8]) {
     for slot in 0..INDEX_SLOTS {
@@ -70,7 +132,6 @@ fn fetch_index_bin(table_bytes: &[u8], bin: usize, index_data: &[u8], out: &mut 
 }
 
 /// Process one index-level bucket: evaluate two DPF keys, XOR-accumulate.
-///
 /// Returns (result_q0, result_q1), each INDEX_RESULT_SIZE bytes.
 pub fn process_index_bucket(
     key_q0: &DpfKey,
@@ -79,55 +140,20 @@ pub fn process_index_bucket(
     index_data: &[u8],
     bins_per_table: usize,
 ) -> (Vec<u8>, Vec<u8>) {
-    let dpf = Dpf::with_default_key();
-    let eval0 = dpf.eval_full(key_q0);
-    let eval1 = dpf.eval_full(key_q1);
-
-    let num_blocks = eval0.len();
-    let mut acc0 = vec![0u8; INDEX_RESULT_SIZE];
-    let mut acc1 = vec![0u8; INDEX_RESULT_SIZE];
-    let mut bin_buf = vec![0u8; INDEX_RESULT_SIZE];
-
-    for block_idx in 0..num_blocks {
-        let blk0 = &eval0[block_idx];
-        let blk1 = &eval1[block_idx];
-
-        if blk0.is_equal(&Block::zero()) && blk1.is_equal(&Block::zero()) {
-            continue;
-        }
-
-        let base_bin = block_idx * 128;
-        let end_bin = (base_bin + 128).min(bins_per_table);
-
-        for bin in base_bin..end_bin {
-            let bit_within = bin - base_bin;
-            let b0 = get_dpf_bit(blk0, bit_within);
-            let b1 = get_dpf_bit(blk1, bit_within);
-
-            if !b0 && !b1 {
-                continue;
-            }
-
-            for v in bin_buf.iter_mut() {
-                *v = 0;
-            }
-            fetch_index_bin(table_bytes, bin, index_data, &mut bin_buf);
-
-            if b0 {
-                xor_into(&mut acc0, &bin_buf);
-            }
-            if b1 {
-                xor_into(&mut acc1, &bin_buf);
-            }
-        }
-    }
-
-    (acc0, acc1)
+    let index_data_ref = index_data;
+    let results = process_bucket_generic(
+        &[key_q0, key_q1],
+        table_bytes,
+        bins_per_table,
+        INDEX_RESULT_SIZE,
+        &|tbl, bin, out| fetch_index_bin(tbl, bin, index_data_ref, out),
+    );
+    (results[0].clone(), results[1].clone())
 }
 
 // ─── Chunk-level evaluation ─────────────────────────────────────────────────
 
-/// Fetch 4 slots at `bin`, dereferencing chunk_ids to [4B id | UNIT_DATA_SIZE data].
+/// Fetch CHUNK_SLOTS slots at `bin`, dereferencing chunk_ids to [4B id | UNIT_DATA_SIZE data].
 #[inline]
 fn fetch_chunk_bin(table_bytes: &[u8], bin: usize, chunks_data: &[u8], out: &mut [u8]) {
     let data_len = chunks_data.len();
@@ -149,65 +175,27 @@ fn fetch_chunk_bin(table_bytes: &[u8], bin: usize, chunks_data: &[u8], out: &mut
     }
 }
 
-/// Process one chunk-level bucket: evaluate two DPF keys, XOR-accumulate.
-///
-/// Returns (result_q0, result_q1), each CHUNK_RESULT_SIZE bytes.
+/// Process one chunk-level bucket: evaluate CHUNK_CUCKOO_NUM_HASHES (3) DPF keys, XOR-accumulate.
+/// Returns Vec of 3 results, each CHUNK_RESULT_SIZE bytes.
 pub fn process_chunk_bucket(
-    key_q0: &DpfKey,
-    key_q1: &DpfKey,
+    keys: &[&DpfKey],
     table_bytes: &[u8],
     chunks_data: &[u8],
     bins_per_table: usize,
-) -> (Vec<u8>, Vec<u8>) {
-    let dpf = Dpf::with_default_key();
-    let eval0 = dpf.eval_full(key_q0);
-    let eval1 = dpf.eval_full(key_q1);
-
-    let num_blocks = eval0.len();
-    let mut acc0 = vec![0u8; CHUNK_RESULT_SIZE];
-    let mut acc1 = vec![0u8; CHUNK_RESULT_SIZE];
-    let mut bin_buf = vec![0u8; CHUNK_RESULT_SIZE];
-
-    for block_idx in 0..num_blocks {
-        let blk0 = &eval0[block_idx];
-        let blk1 = &eval1[block_idx];
-
-        if blk0.is_equal(&Block::zero()) && blk1.is_equal(&Block::zero()) {
-            continue;
-        }
-
-        let base_bin = block_idx * 128;
-        let end_bin = (base_bin + 128).min(bins_per_table);
-
-        for bin in base_bin..end_bin {
-            let bit_within = bin - base_bin;
-            let b0 = get_dpf_bit(blk0, bit_within);
-            let b1 = get_dpf_bit(blk1, bit_within);
-
-            if !b0 && !b1 {
-                continue;
-            }
-
-            for v in bin_buf.iter_mut() {
-                *v = 0;
-            }
-            fetch_chunk_bin(table_bytes, bin, chunks_data, &mut bin_buf);
-
-            if b0 {
-                xor_into(&mut acc0, &bin_buf);
-            }
-            if b1 {
-                xor_into(&mut acc1, &bin_buf);
-            }
-        }
-    }
-
-    (acc0, acc1)
+) -> Vec<Vec<u8>> {
+    let chunks_data_ref = chunks_data;
+    process_bucket_generic(
+        keys,
+        table_bytes,
+        bins_per_table,
+        CHUNK_RESULT_SIZE,
+        &|tbl, bin, out| fetch_chunk_bin(tbl, bin, chunks_data_ref, out),
+    )
 }
 
 // ─── Result parsing helpers (client-side) ───────────────────────────────────
 
-/// Find a script_hash in an index-level result's 4 slots.
+/// Find a script_hash in an index-level result's slots.
 /// Returns (offset_half, num_chunks) if found.
 pub fn find_entry_in_index_result(result: &[u8], script_hash: &[u8]) -> Option<(u32, u32)> {
     for slot in 0..INDEX_SLOTS {
@@ -216,16 +204,14 @@ pub fn find_entry_in_index_result(result: &[u8], script_hash: &[u8]) -> Option<(
             let offset_half = u32::from_le_bytes(
                 result[base + 20..base + 24].try_into().unwrap(),
             );
-            let num_chunks = u32::from_le_bytes(
-                result[base + 24..base + 28].try_into().unwrap(),
-            );
+            let num_chunks = result[base + 24] as u32;
             return Some((offset_half, num_chunks));
         }
     }
     None
 }
 
-/// Find a chunk_id in a chunk-level result's 4 slots.
+/// Find a chunk_id in a chunk-level result's slots.
 /// Returns the UNIT_DATA_SIZE data if found.
 pub fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
     let target = chunk_id.to_le_bytes();

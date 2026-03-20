@@ -33,7 +33,7 @@ const DEFAULT_PARTITIONS: usize = 4;
 const DUST_THRESHOLD: u64 = 576; // sats
 const MAX_UTXOS_PER_SPK: usize = 100; // skip script pubkeys with more than this many UTXOs
 const TOP_N: usize = 100;
-const INDEX_ENTRY_SIZE: usize = 20 + 4 + 4; // script_hash + offset_half + num_chunks
+const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1 + 1; // script_hash + offset_half + num_chunks(u8) + flags(u8)
 
 /// Zero buffer for padding (max padding = BLOCK_SIZE - 1 = 79 bytes)
 const ZERO_PAD: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
@@ -270,11 +270,13 @@ fn main() {
             let padded_len = num_chunks * BLOCK_SIZE;
             let padding = padded_len - data_len;
 
-            // Write index entry: [20B script_hash][4B offset_half LE][4B num_chunks LE]
+            // Write index entry: [20B script_hash][4B offset_half LE][1B num_chunks][1B flags]
             let offset_half = (current_offset / 2) as u32;
+            assert!(num_chunks <= 255, "num_chunks {} exceeds u8 max", num_chunks);
             index_writer.write_all(&script_hash).unwrap();
             index_writer.write_all(&offset_half.to_le_bytes()).unwrap();
-            index_writer.write_all(&(num_chunks as u32).to_le_bytes()).unwrap();
+            index_writer.write_all(&[num_chunks as u8]).unwrap();
+            index_writer.write_all(&[0u8]).unwrap(); // flags (reserved)
 
             // Write data
             chunks_writer.write_all(&data).unwrap();
