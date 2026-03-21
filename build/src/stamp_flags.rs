@@ -69,7 +69,7 @@ fn main() {
     for i in 0..n {
         let base = i * INDEX_ENTRY_SIZE;
 
-        let offset_half = u32::from_le_bytes(
+        let start_chunk_id = u32::from_le_bytes(
             index_mmap[base + 20..base + 24].try_into().unwrap(),
         );
         let num_chunks = index_mmap[base + 24];
@@ -79,7 +79,7 @@ fn main() {
             continue;
         }
 
-        let first_chunk_id = (offset_half as u64 * 2 / CHUNK_SIZE as u64) as u32;
+        let first_chunk_id = start_chunk_id;
         let groups = derive_chunk_buckets(first_chunk_id);
 
         let mut encoded: u8 = 0;
@@ -137,7 +137,7 @@ fn main() {
                     .map(|b| format!("{:02x}", b))
                     .collect();
                 eprintln!("  WARNING: chunk {} not found in cuckoo for entry {} ({})",
-                    (offset_half as u64 * 2 / CHUNK_SIZE as u64), i, sh);
+                    start_chunk_id, i, sh);
             }
         }
 

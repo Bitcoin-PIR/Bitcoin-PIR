@@ -331,17 +331,16 @@ async fn main() {
     }
 
     // Find our entry
-    let (offset_half, num_chunks, flags) = found_entry
+    let (start_chunk, num_chunks, flags) = found_entry
         .unwrap_or_else(|| {
             eprintln!("ERROR: script hash not found in index PIR result!");
             std::process::exit(1);
         });
 
-    let start_chunk = (offset_half as u64 * 2 / CHUNK_SIZE as u64) as u32;
     let num_units = (num_chunks as usize + CHUNKS_PER_UNIT - 1) / CHUNKS_PER_UNIT;
     let placement = eval::decode_placement(flags);
 
-    println!("  Found: offset_half={}, num_chunks={}, start_chunk={}, flags=0x{:02x}", offset_half, num_chunks, start_chunk, flags);
+    println!("  Found: start_chunk={}, num_chunks={}, flags=0x{:02x}", start_chunk, num_chunks, flags);
     if let Some(ref p) = placement {
         println!("  Placement bits: h={:?} (first chunk optimized)", p);
     }

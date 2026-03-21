@@ -194,7 +194,7 @@ fn main() {
     for (rank, &(nc, idx)) in top.iter().enumerate() {
         let base = idx * INDEX_ENTRY_SIZE;
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
-        let offset_half = u32::from_le_bytes(
+        let start_chunk_id = u32::from_le_bytes(
             mmap[base + 20..base + 24].try_into().unwrap(),
         );
         let hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
@@ -205,7 +205,7 @@ fn main() {
             rank + 1,
             nc,
             data_bytes,
-            offset_half,
+            start_chunk_id,
             hex
         );
     }

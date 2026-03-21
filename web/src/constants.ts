@@ -30,7 +30,7 @@ export const CHUNK_CUCKOO_NUM_HASHES = 3;
 /** Script hash size in bytes */
 export const SCRIPT_HASH_SIZE = 20;
 
-/** Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags */
+/** Size of each index entry: 20B script_hash + 4B start_chunk_id + 1B num_chunks + 1B flags */
 export const INDEX_ENTRY_SIZE = 26;
 
 /** Flags byte bit 6: address excluded from database due to too many UTXOs ("whale") */
@@ -48,7 +48,7 @@ export const K_CHUNK = 80;
 export const CHUNK_MASTER_SEED = 0xa3f7c2d918e4b065n;
 
 /** Size of one chunk in bytes */
-export const CHUNK_SIZE = 80;
+export const CHUNK_SIZE = 40;
 
 /** Number of consecutive chunks grouped into one PIR query unit */
 export const CHUNKS_PER_UNIT = 1;

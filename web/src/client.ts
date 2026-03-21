@@ -40,7 +40,7 @@ export interface UtxoEntry {
 export interface QueryResult {
   entries: UtxoEntry[];
   totalSats: bigint;
-  offsetHalf: number;
+  startChunkId: number;
   numChunks: number;
   numRounds: number;
   /** True if this address was excluded from the database due to too many UTXOs */
@@ -304,7 +304,7 @@ export class BatchPirClient {
   private findEntryInIndexResult(
     result: Uint8Array,
     scriptHash: Uint8Array,
-  ): { offsetHalf: number; numChunks: number; flags: number } | null {
+  ): { startChunkId: number; numChunks: number; flags: number } | null {
     for (let slot = 0; slot < CUCKOO_BUCKET_SIZE; slot++) {
       const base = slot * INDEX_ENTRY_SIZE;
       let match = true;
@@ -316,10 +316,10 @@ export class BatchPirClient {
       }
       if (match) {
         const dv = new DataView(result.buffer, result.byteOffset + base, INDEX_ENTRY_SIZE);
-        const offsetHalf = dv.getUint32(20, true);
+        const startChunkId = dv.getUint32(20, true);
         const numChunks = result[base + 24];
         const flags = result[base + 25];
-        return { offsetHalf, numChunks, flags };
+        return { startChunkId, numChunks, flags };
       }
     }
     return null;
@@ -558,8 +558,8 @@ export class BatchPirClient {
     const indexRounds = this.planRounds(indexCandBuckets, K);
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index round(s)`);
 
-    // Per-query results from Level 1: query index → { offsetHalf, numChunks }
-    const indexResults: Map<number, { offsetHalf: number; numChunks: number; flags: number }> = new Map();
+    // Per-query results from Level 1: query index → { startChunkId, numChunks }
+    const indexResults: Map<number, { startChunkId: number; numChunks: number; flags: number }> = new Map();
 
     for (let ir = 0; ir < indexRounds.length; ir++) {
       const round = indexRounds[ir];
@@ -618,7 +618,7 @@ export class BatchPirClient {
         const r0 = resp0.result.results[bucketId];
         const r1 = resp1.result.results[bucketId];
 
-        let found: { offsetHalf: number; numChunks: number; flags: number } | null = null;
+        let found: { startChunkId: number; numChunks: number; flags: number } | null = null;
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
           const result = this.xorBuffers(r0[h], r1[h]);
           found = this.findEntryInIndexResult(result, scriptHashes[queryIdx]);
@@ -642,7 +642,7 @@ export class BatchPirClient {
 
     // Build a global list of unique chunk IDs needed, and track which
     // query needs which chunks
-    const queryChunkInfo: Map<number, { startChunk: number; numUnits: number; offsetHalf: number; numChunks: number; flags: number }> = new Map();
+    const queryChunkInfo: Map<number, { startChunk: number; numUnits: number; startChunkId: number; numChunks: number; flags: number }> = new Map();
     const allChunkIdsSet = new Set<number>();
 
     // Track whale-excluded queries separately
@@ -656,7 +656,7 @@ export class BatchPirClient {
         continue;
       }
 
-      const startChunk = Math.floor((info.offsetHalf * 2) / CHUNK_SIZE);
+      const startChunk = info.startChunkId;
       const numUnits = Math.ceil(info.numChunks / CHUNKS_PER_UNIT);
       const chunkIds: number[] = [];
       for (let u = 0; u < numUnits; u++) {
@@ -664,7 +664,7 @@ export class BatchPirClient {
         chunkIds.push(cid);
         allChunkIdsSet.add(cid);
       }
-      queryChunkInfo.set(qi, { startChunk, numUnits, offsetHalf: info.offsetHalf, numChunks: info.numChunks, flags: info.flags });
+      queryChunkInfo.set(qi, { startChunk, numUnits, startChunkId: info.startChunkId, numChunks: info.numChunks, flags: info.flags });
     }
 
     const allChunkIds = Array.from(allChunkIdsSet).sort((a, b) => a - b);
@@ -795,7 +795,7 @@ export class BatchPirClient {
         results[qi] = {
           entries: [],
           totalSats: 0n,
-          offsetHalf: 0,
+          startChunkId: 0,
           numChunks: 0,
           numRounds: 0,
           isWhale: true,
@@ -809,7 +809,7 @@ export class BatchPirClient {
         continue;
       }
 
-      const { startChunk, numUnits, offsetHalf, numChunks } = info;
+      const { startChunk, numUnits, startChunkId, numChunks } = info;
       const fullData = new Uint8Array(numUnits * UNIT_DATA_SIZE);
       let missing = 0;
 
@@ -831,7 +831,7 @@ export class BatchPirClient {
       results[qi] = {
         entries,
         totalSats,
-        offsetHalf,
+        startChunkId,
         numChunks,
         numRounds: totalChunkRounds,
         isWhale: false,

@@ -130,7 +130,7 @@ fn main() {
 
         for (script_hash, _count) in &new_whales {
             writer.write_all(script_hash).unwrap();          // 20B script_hash
-            writer.write_all(&0u32.to_le_bytes()).unwrap();   // 4B offset_half = 0
+            writer.write_all(&0u32.to_le_bytes()).unwrap();   // 4B start_chunk_id = 0
             writer.write_all(&[0u8]).unwrap();                // 1B num_chunks = 0
             writer.write_all(&[FLAG_WHALE]).unwrap();         // 1B flags = whale marker
         }

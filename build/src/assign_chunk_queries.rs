@@ -1,7 +1,7 @@
 //! Assign chunk queries to 80 Batch PIR buckets using Cuckoo hashing.
 //!
 //! 1. Reads batch_pir_results.bin (50 × 26 bytes from the first-level PIR).
-//! 2. Computes all needed chunk_ids from (offset_half, num_chunks), deduplicates.
+//! 2. Computes all needed chunk_ids from (start_chunk_id, num_chunks), deduplicates.
 //! 3. Cuckoo-assigns each unique chunk query to one of 80 buckets.
 //! 4. Displays the assignment with per-bucket cuckoo locations (loc0, loc1).
 //!
@@ -33,7 +33,7 @@ fn main() {
     println!("  {} first-level query results loaded", num_queries);
 
     // ── 2. Compute all needed chunk_ids ──────────────────────────────────
-    println!("[2] Computing chunk_ids from (offset_half, num_chunks)...");
+    println!("[2] Computing chunk_ids from (start_chunk_id, num_chunks)...");
 
     // Collect per-query chunk ranges and all unique chunk_ids
     let mut all_chunk_ids = BTreeSet::new();
@@ -41,7 +41,7 @@ fn main() {
 
     for i in 0..num_queries {
         let base = i * INDEX_ENTRY_SIZE;
-        let offset_half = u32::from_le_bytes(
+        let start_chunk = u32::from_le_bytes(
             data[base + 20..base + 24].try_into().unwrap(),
         );
         let num_chunks = data[base + 24] as u32;
@@ -52,9 +52,6 @@ fn main() {
             query_ranges.push((0, 0, flags));
             continue;
         }
-
-        let byte_offset = offset_half as u64 * 2;
-        let start_chunk = (byte_offset / CHUNK_SIZE as u64) as u32;
 
         query_ranges.push((start_chunk, num_chunks, flags));
 

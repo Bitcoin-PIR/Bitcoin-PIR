@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 //! Shared constants and hash utilities for Batch PIR tools.
 
-/// Path to the UTXO chunks index file (nodust, 80-byte blocks)
+/// Path to the UTXO chunks index file (nodust, 40-byte blocks)
 pub const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
 
-/// Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags
+/// Size of each index entry: 20B script_hash + 4B start_chunk_id + 1B num_chunks + 1B flags
 pub const INDEX_ENTRY_SIZE: usize = 26;
 
 /// Flags byte bit 6: address excluded from database due to too many UTXOs ("whale")
@@ -159,7 +159,7 @@ pub const CHUNK_MASTER_SEED: u64 = 0xa3f7c2d918e4b065;
 pub const CHUNK_MAGIC: u64 = 0xBA7C_C000_C000_0002;
 
 /// Size of one chunk in bytes
-pub const CHUNK_SIZE: usize = 80;
+pub const CHUNK_SIZE: usize = 40;
 
 /// Path to the chunk-level cuckoo tables
 pub const CHUNK_CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_cuckoo.bin";
@@ -243,8 +243,8 @@ pub const PLAN_MAGIC: u64 = 0xBA7C_01A0_0000_0001;
 /// Number of rounds to batch together for server processing
 pub const ROUNDS_PER_BATCH: usize = 5;
 
-/// Number of consecutive 80-byte chunks grouped into one PIR query unit.
-/// Set to 1 for original per-chunk behaviour, 10 for 800-byte units, etc.
+/// Number of consecutive 40-byte chunks grouped into one PIR query unit.
+/// Set to 1 for original per-chunk behaviour, 10 for 400-byte units, etc.
 /// The cuckoo table (gen_7) is always built at chunk granularity; this
 /// constant only affects planning (gen_9) and retrieval (gen_10b).
 pub const CHUNKS_PER_UNIT: usize = 1;

@@ -293,7 +293,7 @@ fn main() {
 
     for i in 0..num_first_queries {
         let base = i * INDEX_ENTRY_SIZE;
-        let offset_half = u32::from_le_bytes(
+        let start_chunk = u32::from_le_bytes(
             results_data[base + 20..base + 24].try_into().unwrap(),
         );
         let num_chunks = results_data[base + 24] as u32;
@@ -303,9 +303,6 @@ fn main() {
             query_ranges.push((0, 0, flags));
             continue;
         }
-
-        let byte_offset = offset_half as u64 * 2;
-        let start_chunk = (byte_offset / CHUNK_SIZE as u64) as u32;
         query_ranges.push((start_chunk, num_chunks, flags));
 
         for c in 0..num_chunks {

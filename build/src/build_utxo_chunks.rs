@@ -28,12 +28,12 @@ const TOP_FILE: &str = "/Volumes/Bitcoin/data/top100_addresses.bin";
 const ENTRY_SIZE: usize = 68;
 const SCRIPT_HASH_SIZE: usize = 20;
 const TXID_SIZE: usize = 32;
-const BLOCK_SIZE: usize = 80;
+const BLOCK_SIZE: usize = 40;
 const DEFAULT_PARTITIONS: usize = 4;
 const DUST_THRESHOLD: u64 = 576; // sats
 const MAX_UTXOS_PER_SPK: usize = 100; // skip script pubkeys with more than this many UTXOs
 const TOP_N: usize = 100;
-const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1 + 1; // script_hash + offset_half + num_chunks(u8) + flags(u8)
+const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1 + 1; // script_hash + start_chunk_id(u32) + num_chunks(u8) + flags(u8)
 const FLAG_WHALE: u8 = 0x40; // bit 6: excluded whale address
 const WHALES_FILE: &str = "/Volumes/Bitcoin/data/whale_addresses.txt";
 
@@ -248,7 +248,7 @@ fn main() {
             if entries.len() > MAX_UTXOS_PER_SPK {
                 // Write a sentinel index entry: num_chunks=0, flags=FLAG_WHALE
                 index_writer.write_all(&script_hash).unwrap();
-                index_writer.write_all(&0u32.to_le_bytes()).unwrap(); // offset_half = 0
+                index_writer.write_all(&0u32.to_le_bytes()).unwrap(); // start_chunk_id = 0
                 index_writer.write_all(&[0u8]).unwrap();             // num_chunks = 0
                 index_writer.write_all(&[FLAG_WHALE]).unwrap();      // flags = whale marker
                 whale_entries.push((script_hash, entries.len()));
@@ -275,17 +275,15 @@ fn main() {
             }
 
             // ── Write to chunks file ────────────────────────────────────
-            // current_offset is always a multiple of BLOCK_SIZE (80), which is even,
-            // so the /2 trick works without extra alignment padding.
             let num_chunks = (data_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
             let padded_len = num_chunks * BLOCK_SIZE;
             let padding = padded_len - data_len;
 
-            // Write index entry: [20B script_hash][4B offset_half LE][1B num_chunks][1B flags]
-            let offset_half = (current_offset / 2) as u32;
+            // Write index entry: [20B script_hash][4B start_chunk_id LE][1B num_chunks][1B flags]
+            let start_chunk_id = (current_offset / BLOCK_SIZE as u64) as u32;
             assert!(num_chunks <= 255, "num_chunks {} exceeds u8 max", num_chunks);
             index_writer.write_all(&script_hash).unwrap();
-            index_writer.write_all(&offset_half.to_le_bytes()).unwrap();
+            index_writer.write_all(&start_chunk_id.to_le_bytes()).unwrap();
             index_writer.write_all(&[num_chunks as u8]).unwrap();
             index_writer.write_all(&[0u8]).unwrap(); // flags (reserved)
 
@@ -457,16 +455,16 @@ fn main() {
         total_blocks_written as f64 / total_groups_written as f64
     );
 
-    // Verify offset doesn't overflow u32 offset_half
-    let max_offset_half = current_offset / 2;
-    if max_offset_half > u32::MAX as u64 {
-        println!("WARNING: offset_half overflows u32! Max offset_half = {} > {}", max_offset_half, u32::MAX);
+    // Verify chunk_id doesn't overflow u32
+    let max_chunk_id = current_offset / BLOCK_SIZE as u64;
+    if max_chunk_id > u32::MAX as u64 {
+        println!("WARNING: chunk_id overflows u32! Max chunk_id = {} > {}", max_chunk_id, u32::MAX);
     } else {
         println!(
-            "Max offset_half:      {} / {} ({:.1}% of u32 range)",
-            max_offset_half,
+            "Max chunk_id:         {} / {} ({:.1}% of u32 range)",
+            max_chunk_id,
             u32::MAX,
-            max_offset_half as f64 / u32::MAX as f64 * 100.0
+            max_chunk_id as f64 / u32::MAX as f64 * 100.0
         );
     }
 

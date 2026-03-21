@@ -77,6 +77,10 @@ name = "append_whale_sentinels"
 path = "src/append_whale_sentinels.rs"
 
 [[bin]]
+name = "chunk_size_analysis"
+path = "src/chunk_size_analysis.rs"
+
+[[bin]]
 name = "find_whale_spks"
 path = "src/find_whale_spks.rs"
 

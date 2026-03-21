@@ -27,7 +27,7 @@ const CHUNKS_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_nodust.bin";
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_cuckoo.bin";
 
 /// Size of one chunk in bytes
-const CHUNK_SIZE: usize = 80;
+const CHUNK_SIZE: usize = 40;
 
 /// Number of Batch PIR buckets for chunks
 const K: usize = 80;

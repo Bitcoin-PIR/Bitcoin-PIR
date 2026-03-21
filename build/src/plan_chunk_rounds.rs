@@ -201,7 +201,7 @@ fn main() {
         let base = i * INDEX_ENTRY_SIZE;
         let mut sh = [0u8; SCRIPT_HASH_SIZE];
         sh.copy_from_slice(&results_data[base..base + SCRIPT_HASH_SIZE]);
-        let offset_half =
+        let start_chunk =
             u32::from_le_bytes(results_data[base + 20..base + 24].try_into().unwrap());
         let num_chunks = results_data[base + 24] as u32;
         let flags = results_data[base + 25];
@@ -213,9 +213,6 @@ fn main() {
             }
             continue;
         }
-
-        let byte_offset = offset_half as u64 * 2;
-        let start_chunk = (byte_offset / CHUNK_SIZE as u64) as u32;
 
         spks.push(SpkState::new(sh, start_chunk, num_chunks));
     }
@@ -237,11 +234,9 @@ fn main() {
     for i in 0..num_index {
         let base = i * INDEX_ENTRY_SIZE;
         if index_data[base..base + SCRIPT_HASH_SIZE] == whale_sh {
-            let offset_half =
+            let start_chunk =
                 u32::from_le_bytes(index_data[base + 20..base + 24].try_into().unwrap());
             let num_chunks = index_data[base + 24] as u32;
-            let byte_offset = offset_half as u64 * 2;
-            let start_chunk = (byte_offset / CHUNK_SIZE as u64) as u32;
 
             let already = spks.iter().any(|s| s.script_hash == whale_sh);
             if already {
