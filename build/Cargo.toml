@@ -73,6 +73,14 @@ name = "test_8_assign_chunk_queries"
 path = "src/assign_chunk_queries.rs"
 
 [[bin]]
+name = "append_whale_sentinels"
+path = "src/append_whale_sentinels.rs"
+
+[[bin]]
+name = "find_whale_spks"
+path = "src/find_whale_spks.rs"
+
+[[bin]]
 name = "cuckoo4_experiment"
 path = "src/cuckoo4_experiment.rs"
 

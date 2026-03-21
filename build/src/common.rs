@@ -7,6 +7,9 @@ pub const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin
 /// Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags
 pub const INDEX_ENTRY_SIZE: usize = 26;
 
+/// Flags byte bit 6: address excluded from database due to too many UTXOs ("whale")
+pub const FLAG_WHALE: u8 = 0x40;
+
 /// Size of the script hash portion
 pub const SCRIPT_HASH_SIZE: usize = 20;
 

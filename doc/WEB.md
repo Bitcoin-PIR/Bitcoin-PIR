@@ -151,7 +151,16 @@ The web client sends periodic Ping messages to keep connections alive. Pong resp
 
 ### Whale Address Detection
 
-If `entry_count == 0` (varint 0), the address is a "whale" excluded from the `--small` database variant. The client displays a notification instead of UTXO data.
+Addresses with more than 100 UTXOs are excluded from the PIR database during
+generation (`gen_1`). Instead of being omitted entirely, a sentinel index entry
+is written with `num_chunks = 0` and `flags = 0x40` (bit 6 = `FLAG_WHALE`).
+
+After the index PIR lookup, the client checks for this sentinel:
+- `numChunks == 0` **and** `(flags & 0x40) != 0` → whale address, excluded
+- Entry not found at all → address not in database (no UTXOs / unknown)
+
+The client displays a notification explaining that the address was excluded due
+to having too many UTXOs, rather than a generic "Not Found" message.
 
 ## Key Constants
 

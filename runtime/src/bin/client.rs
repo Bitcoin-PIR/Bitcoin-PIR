@@ -349,6 +349,17 @@ async fn main() {
     println!("  Level 1 time: {:.2?}", l1_start.elapsed());
     println!();
 
+    // ── Whale address detection ─────────────────────────────────────────
+    if num_chunks == 0 && (flags & FLAG_WHALE) != 0 {
+        println!("=== WHALE ADDRESS (EXCLUDED) ===");
+        println!("  This address has too many UTXOs (>100) and was excluded");
+        println!("  from the PIR database. Use a full node or block explorer.");
+        println!();
+        println!("  Script hash: {}", hash_hex);
+        println!("  Total time: {:.2?}", total_start.elapsed());
+        return;
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // LEVEL 2: Chunk PIR (multi-round)
     // ══════════════════════════════════════════════════════════════════════

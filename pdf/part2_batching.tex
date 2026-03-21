@@ -61,14 +61,14 @@ Our system uses a two-level architecture: an \emph{index map} that locates data,
 
 \begin{table}[htbp]
 \centering
-\begin{tabular}{|l|c|c|c|}
+\begin{tabular}{|l|c|c|c|c|c|}
 \hline
-\textbf{Database} & \textbf{Entry Size} & \textbf{Buckets ($K$)} & \textbf{PIR domain ($N$)} \\
+\textbf{Database} & \textbf{Entry Size} & \textbf{Buckets ($K$)} & \textbf{Cuckoo} & \textbf{DPF queries/bucket} & \textbf{PIR domain} \\
 \hline
-Index (Level 1) & 28 B & 75 & $2^{20}$ \\
-Chunks (Level 2) & 256 B & 80 & $2^{20}$ \\
+Index (Level 1) & 26 B & 75 & 2-hash, bs=3 & 2 & $2^{20}$ \\
+Chunks (Level 2) & 80 B & 80 & 3-hash, bs=2 & 3 (or 1$^*$) & $2^{21}$ \\
 \hline
 \end{tabular}
-\caption{Batch PIR parameters. Each level uses $K$ parallel PIR queries over tables of $N$ entries.}
+\caption{Batch PIR parameters. Each level uses $K$ parallel PIR queries over cuckoo hash tables. ($^*$For single-chunk addresses, the placement optimization in Section~\ref{sec:placement} reduces chunk DPF queries from 3 to 1 per bucket.)}
 \label{tab:databases}
 \end{table}

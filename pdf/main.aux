@@ -1,7 +1,6 @@
 \relax 
 \providecommand\hyper@newdestlabel[2]{}
-\providecommand\HyField@AuxAddToFields[1]{}
-\providecommand\HyField@AuxAddToCoFields[2]{}
+\providecommand*\HyPL@Entry[1]{}
 \bibstyle{alpha}
 \citation{ypir2024}
 \citation{henz23}
@@ -14,6 +13,7 @@
 \citation{li24}
 \citation{tiptoe23}
 \citation{spiral22}
+\HyPL@Entry{0<</S/D>>}
 \@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Private Information Retrieval}{1}{subsection.1.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {1.2}PIR Protocol Landscape}{1}{subsection.1.2}\protected@file@percent }
@@ -55,8 +55,8 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Two-Level Query Architecture}{7}{subsection.3.2}\protected@file@percent }
 \@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Two-level batch PIR architecture. The client issues $K$ parallel PIR queries per level, using Probabilistic Batch Codes to pack multiple lookups into a single round.}}{7}{figure.1}\protected@file@percent }
 \newlabel{fig:two-maps}{{1}{7}{Two-level batch PIR architecture. The client issues $K$ parallel PIR queries per level, using Probabilistic Batch Codes to pack multiple lookups into a single round}{figure.1}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Batch PIR parameters. Each level uses $K$ parallel PIR queries over tables of $N$ entries.}}{8}{table.1}\protected@file@percent }
-\newlabel{tab:databases}{{1}{8}{Batch PIR parameters. Each level uses $K$ parallel PIR queries over tables of $N$ entries}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Batch PIR parameters. Each level uses $K$ parallel PIR queries over cuckoo hash tables. ($^*$For single-chunk addresses, the placement optimization in Section~\ref {sec:placement} reduces chunk DPF queries from 3 to 1 per bucket.)}}{8}{table.1}\protected@file@percent }
+\newlabel{tab:databases}{{1}{8}{Batch PIR parameters. Each level uses $K$ parallel PIR queries over cuckoo hash tables. ($^*$For single-chunk addresses, the placement optimization in Section~\ref {sec:placement} reduces chunk DPF queries from 3 to 1 per bucket.)}{table.1}{}}
 \citation{gilboa2014dpf}
 \citation{boyle2015fss}
 \citation{boyle2016fss}
@@ -71,7 +71,9 @@
 \@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Two-server batch DPF-PIR architecture. The client generates $K$ DPF key pairs (one per PBC bucket) and sends the shares to each server. Each server computes $K$ XOR sums in parallel; the client combines responses to recover all queried entries.}}{10}{figure.2}\protected@file@percent }
 \newlabel{fig:architecture}{{2}{10}{Two-server batch DPF-PIR architecture. The client generates $K$ DPF key pairs (one per PBC bucket) and sends the shares to each server. Each server computes $K$ XOR sums in parallel; the client combines responses to recover all queried entries}{figure.2}{}}
 \@writefile{toc}{\contentsline {subsubsection}{\numberline {4.2.3}Query Protocol}{10}{subsubsection.4.2.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.2.4}Client Implementations}{10}{subsubsection.4.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.2.4}Placement Optimization}{11}{subsubsection.4.2.4}\protected@file@percent }
+\newlabel{sec:placement}{{4.2.4}{11}{Placement Optimization}{subsubsection.4.2.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.2.5}Client Implementations}{11}{subsubsection.4.2.5}\protected@file@percent }
 \bibdata{refs}
 \bibcite{ar26}{AR26}
 \bibcite{boyle2015fss}{BGI15}

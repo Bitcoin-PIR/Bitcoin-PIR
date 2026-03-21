@@ -13,6 +13,7 @@ import {
   CHUNK_SLOT_SIZE,
   CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
   CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
+  FLAG_WHALE,
 } from './constants.js';
 
 import {
@@ -42,6 +43,8 @@ export interface QueryResult {
   offsetHalf: number;
   numChunks: number;
   numRounds: number;
+  /** True if this address was excluded from the database due to too many UTXOs */
+  isWhale: boolean;
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -642,7 +645,17 @@ export class BatchPirClient {
     const queryChunkInfo: Map<number, { startChunk: number; numUnits: number; offsetHalf: number; numChunks: number; flags: number }> = new Map();
     const allChunkIdsSet = new Set<number>();
 
+    // Track whale-excluded queries separately
+    const whaleQueries = new Set<number>();
+
     for (const [qi, info] of indexResults) {
+      // Detect whale: num_chunks == 0 with whale flag set
+      if (info.numChunks === 0 && (info.flags & FLAG_WHALE) !== 0) {
+        whaleQueries.add(qi);
+        this.log(`  Query ${qi}: whale address (excluded, too many UTXOs)`);
+        continue;
+      }
+
       const startChunk = Math.floor((info.offsetHalf * 2) / CHUNK_SIZE);
       const numUnits = Math.ceil(info.numChunks / CHUNKS_PER_UNIT);
       const chunkIds: number[] = [];
@@ -777,6 +790,19 @@ export class BatchPirClient {
     const results: (QueryResult | null)[] = new Array(N).fill(null);
 
     for (let qi = 0; qi < N; qi++) {
+      // Return a whale result if this address was excluded
+      if (whaleQueries.has(qi)) {
+        results[qi] = {
+          entries: [],
+          totalSats: 0n,
+          offsetHalf: 0,
+          numChunks: 0,
+          numRounds: 0,
+          isWhale: true,
+        };
+        continue;
+      }
+
       const info = queryChunkInfo.get(qi);
       if (!info) {
         // Not found in index
@@ -808,6 +834,7 @@ export class BatchPirClient {
         offsetHalf,
         numChunks,
         numRounds: totalChunkRounds,
+        isWhale: false,
       };
     }
 

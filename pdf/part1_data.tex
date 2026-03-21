@@ -21,15 +21,15 @@ A \emph{light client} knows its own private keys (and thus its addresses and Scr
 
 \textbf{Sort and group.} The server sorts UTXOs by ScriptPubKey hash, then groups them into fixed-size chunks. Each chunk stores complete UTXO records including full 32-byte TXIDs, vout indices, and amounts. Multiple ScriptPubKeys may share a chunk via bin-packing.
 
-\textbf{Index map.} Maps each ScriptPubKey (via its RIPEMD-160 hash) to the chunk location and data length. This is organized as a cuckoo hash table for $O(1)$ keyword-to-index lookup \cite{PR01}. Each index entry contains: the 20-byte script hash (for verification that the query hit a real entry), a chunk identifier, and the byte length of the UTXO data within that chunk.
+\textbf{Index map.} Maps each ScriptPubKey (via its RIPEMD-160 hash) to the chunk location and data length. This is organized as a cuckoo hash table for $O(1)$ keyword-to-index lookup \cite{PR01}. Each index entry is 26 bytes: the 20-byte script hash (for verification), a 4-byte chunk offset, a 1-byte chunk count, and a 1-byte flags field (used for the placement optimization described in Section~\ref{sec:placement}).
 
-\textbf{Chunk map.} Stores the actual UTXO data in fixed-size entries (default 256 bytes). Full 32-byte TXIDs are stored directly in the chunks, eliminating a separate TXID resolution step. The chunk map is also organized as a cuckoo hash table for PIR-compatible retrieval.
+\textbf{Chunk map.} Stores the actual UTXO data in fixed-size 80-byte blocks. Full 32-byte TXIDs are stored directly in the chunks, eliminating a separate TXID resolution step. The chunk map is also organized as a cuckoo hash table for PIR-compatible retrieval.
 
 \subsection{Cuckoo Hashing for Keyword Lookup}
 
 Cuckoo hashing \cite{PR01} is a hashing scheme that provides worst-case $O(1)$ lookup time. To store $n$ items, we maintain a table of $T$ slots organized into $\lceil T/s \rceil$ buckets of size $s$, with $h$ independent hash functions $H_1, \ldots, H_h$.
 
-Each item $x$ can reside in any of its $h$ candidate buckets $H_1(x), \ldots, H_h(x)$. To insert $x$: if any candidate bucket has a free slot, place $x$ there. Otherwise, evict a random existing item from one candidate bucket, insert $x$, and re-insert the evicted item recursively. With $h \geq 3$ hash functions and bucket size $s \geq 4$, load factors above 95\% are achievable.
+Each item $x$ can reside in any of its $h$ candidate buckets $H_1(x), \ldots, H_h(x)$. To insert $x$: if any candidate bucket has a free slot, place $x$ there. Otherwise, evict a random existing item from one candidate bucket, insert $x$, and re-insert the evicted item recursively. With appropriate choices of $h$ and $s$ (e.g., $h{=}2, s{=}3$ or $h{=}3, s{=}2$), load factors above 95\% are achievable.
 
 \textbf{PIR by keyword.} Cuckoo hashing enables PIR by keyword (as opposed to PIR by index). Given a keyword $w$, the client computes its $h$ candidate bucket indices and issues PIR queries for those buckets. Upon retrieving the bucket contents, the client checks which slot (if any) contains an entry matching $w$. This transforms the problem of searching an unordered key-value store into a constant number of PIR-by-index queries.
 

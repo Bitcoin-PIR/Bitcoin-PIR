@@ -34,6 +34,8 @@ const DUST_THRESHOLD: u64 = 576; // sats
 const MAX_UTXOS_PER_SPK: usize = 100; // skip script pubkeys with more than this many UTXOs
 const TOP_N: usize = 100;
 const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1 + 1; // script_hash + offset_half + num_chunks(u8) + flags(u8)
+const FLAG_WHALE: u8 = 0x40; // bit 6: excluded whale address
+const WHALES_FILE: &str = "/Volumes/Bitcoin/data/whale_addresses.txt";
 
 /// Zero buffer for padding (max padding = BLOCK_SIZE - 1 = 79 bytes)
 const ZERO_PAD: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
@@ -156,6 +158,9 @@ fn main() {
     let mut total_data_bytes: u64 = 0;
     let mut total_whale_skipped: u64 = 0;
 
+    // Collect whale script hashes (with UTXO count) for testing
+    let mut whale_entries: Vec<([u8; SCRIPT_HASH_SIZE], usize)> = Vec::new();
+
     // Min-heap of top 100 largest groups (by data_len)
     let mut top_heap: BinaryHeap<Reverse<TopEntry>> = BinaryHeap::new();
 
@@ -241,6 +246,12 @@ fn main() {
 
         for (script_hash, mut entries) in map.drain() {
             if entries.len() > MAX_UTXOS_PER_SPK {
+                // Write a sentinel index entry: num_chunks=0, flags=FLAG_WHALE
+                index_writer.write_all(&script_hash).unwrap();
+                index_writer.write_all(&0u32.to_le_bytes()).unwrap(); // offset_half = 0
+                index_writer.write_all(&[0u8]).unwrap();             // num_chunks = 0
+                index_writer.write_all(&[FLAG_WHALE]).unwrap();      // flags = whale marker
+                whale_entries.push((script_hash, entries.len()));
                 partition_whale_skipped += 1;
                 continue;
             }
@@ -362,6 +373,38 @@ fn main() {
         let hash_hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();
         println!("  {:>4}  {:>12}  {:>8}  {}", i + 1, data_len, num_chunks, hash_hex);
     }
+    // ── 6. Write whale addresses file ─────────────────────────────────
+    println!();
+    println!("[6] Writing excluded whale addresses to {}...", WHALES_FILE);
+
+    // Sort whales by UTXO count descending
+    whale_entries.sort_by(|a, b| b.1.cmp(&a.1));
+
+    {
+        let whale_file = File::create(WHALES_FILE).expect("create whale addresses file");
+        let mut whale_writer = BufWriter::new(whale_file);
+        writeln!(whale_writer, "# Excluded whale addresses (>{} UTXOs per scriptPubKey)", MAX_UTXOS_PER_SPK).unwrap();
+        writeln!(whale_writer, "# Format: script_hash_hex  utxo_count").unwrap();
+        for (script_hash, count) in &whale_entries {
+            let hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();
+            writeln!(whale_writer, "{}  {}", hex, count).unwrap();
+        }
+        whale_writer.flush().unwrap();
+    }
+
+    println!("  Written {} whale entries", whale_entries.len());
+
+    // Print a few for testing
+    if !whale_entries.is_empty() {
+        println!();
+        println!("  Sample excluded whale addresses (for testing):");
+        println!("  {:>4}  {:>8}  script_hash (hex)", "#", "UTXOs");
+        for (i, (script_hash, count)) in whale_entries.iter().take(10).enumerate() {
+            let hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();
+            println!("  {:>4}  {:>8}  {}", i + 1, count, hex);
+        }
+    }
+
     println!();
 
     // ── Summary ────────────────────────────────────────────────────────
@@ -370,7 +413,7 @@ fn main() {
     println!("=== Summary ===");
     println!("Input entries:        {}", entry_count);
     println!("Dust UTXOs skipped:   {} (amount <= {} sats)", total_dust_skipped, DUST_THRESHOLD);
-    println!("Whale SPKs skipped:   {} (>{} UTXOs)", total_whale_skipped, MAX_UTXOS_PER_SPK);
+    println!("Whale SPKs excluded:  {} (>{} UTXOs, sentinel index entries written)", total_whale_skipped, MAX_UTXOS_PER_SPK);
     println!("Groups written:       {}", total_groups_written);
     println!();
     println!("Block size:           {} bytes", BLOCK_SIZE);
@@ -382,12 +425,14 @@ fn main() {
         total_blocks_written,
         BLOCK_SIZE
     );
-    let index_size = total_groups_written * INDEX_ENTRY_SIZE as u64;
+    let total_index_entries = total_groups_written + total_whale_skipped;
+    let index_size = total_index_entries * INDEX_ENTRY_SIZE as u64;
     println!(
-        "Index file size:      {} ({} entries x {} bytes)",
+        "Index file size:      {} ({} entries x {} bytes, incl. {} whale sentinels)",
         format_bytes(index_size),
-        total_groups_written,
-        INDEX_ENTRY_SIZE
+        total_index_entries,
+        INDEX_ENTRY_SIZE,
+        total_whale_skipped
     );
     println!(
         "Actual data:          {} ({:.2}% of chunks file)",

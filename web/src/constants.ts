@@ -33,6 +33,9 @@ export const SCRIPT_HASH_SIZE = 20;
 /** Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags */
 export const INDEX_ENTRY_SIZE = 26;
 
+/** Flags byte bit 6: address excluded from database due to too many UTXOs ("whale") */
+export const FLAG_WHALE = 0x40;
+
 /** Index result size: 3 slots * 26 bytes = 78 bytes */
 export const INDEX_RESULT_SIZE = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
 
