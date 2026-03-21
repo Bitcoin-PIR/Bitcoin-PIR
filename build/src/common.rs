@@ -137,6 +137,12 @@ pub fn cuckoo_hash(script_hash: &[u8], key: u64, num_bins: usize) -> usize {
     (h % num_bins as u64) as usize
 }
 
+/// Size of one inlined index slot (= INDEX_ENTRY_SIZE = 26 bytes)
+pub const INDEX_SLOT_SIZE: usize = INDEX_ENTRY_SIZE;
+
+/// Size of one inlined chunk slot: 4B chunk_id + CHUNK_SIZE data
+pub const CHUNK_SLOT_SIZE: usize = 4 + CHUNK_SIZE; // 44
+
 /// Read bins_per_table from a batch_pir_cuckoo.bin header.
 /// Returns bins_per_table (the uniform number of cuckoo bins per bucket table).
 pub fn read_cuckoo_header(data: &[u8]) -> usize {

@@ -4,6 +4,24 @@
 
 use build::common::*;
 use libdpf::{Block, Dpf, DpfKey};
+use std::time::{Duration, Instant};
+
+// ─── Software prefetch intrinsics ────────────────────────────────────────────
+
+/// Prefetch a memory address into the CPU cache for reading.
+/// Uses `_mm_prefetch` on x86_64, no-op on other architectures.
+#[inline(always)]
+fn prefetch_read(ptr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = ptr;
+    }
+}
 
 /// DPF domain for index level: 2^20 = 1,048,576 >= 753,707 index bins.
 pub const DPF_N: u8 = 20;
@@ -23,8 +41,6 @@ pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_ENTRY_SIZE; // 3 * 26 =
 pub const CHUNK_SLOT_SIZE: usize = 4 + UNIT_DATA_SIZE;
 pub const CHUNK_SLOTS: usize = CHUNK_CUCKOO_BUCKET_SIZE; // 2
 pub const CHUNK_RESULT_SIZE: usize = CHUNK_SLOTS * CHUNK_SLOT_SIZE;
-
-const EMPTY: u32 = u32::MAX;
 
 // ─── DPF bit extraction ────────────────────────────────────────────────────
 
@@ -55,21 +71,37 @@ pub fn xor_into(dst: &mut [u8], src: &[u8]) {
 
 // ─── Generic DPF evaluation (supports N queries) ──────────────────────────
 
+/// Lookahead distance for software prefetching (in bins).
+/// Issue prefetch for bin N+LOOKAHEAD while processing bin N.
+const PREFETCH_LOOKAHEAD: usize = 4;
+
+/// Per-bucket timing breakdown.
+pub struct BucketTiming {
+    pub dpf_eval: Duration,
+    pub fetch_xor: Duration,
+}
+
 /// Evaluate N DPF keys over a table, XOR-accumulating results.
-/// Returns Vec of N accumulators, each `result_size` bytes.
+/// Returns Vec of N accumulators, each `result_size` bytes, plus timing.
+/// `prefetch_bin` is an optional callback to prefetch data for an upcoming bin.
 fn process_bucket_generic(
     keys: &[&DpfKey],
     table_bytes: &[u8],
     bins_per_table: usize,
     result_size: usize,
     fetch_bin: &dyn Fn(&[u8], usize, &mut [u8]),
-) -> Vec<Vec<u8>> {
+    prefetch_bin: Option<&dyn Fn(&[u8], usize)>,
+) -> (Vec<Vec<u8>>, BucketTiming) {
     let dpf = Dpf::with_default_key();
     let num_keys = keys.len();
 
+    let t_dpf = Instant::now();
     let evals: Vec<Vec<Block>> = keys.iter().map(|k| dpf.eval_partial(k, bins_per_table as u64)).collect();
+    let dpf_eval = t_dpf.elapsed();
+
     let num_blocks = evals[0].len();
 
+    let t_fetch = Instant::now();
     let mut accs: Vec<Vec<u8>> = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
     let mut bin_buf = vec![0u8; result_size];
 
@@ -85,6 +117,14 @@ fn process_bucket_generic(
 
         for bin in base_bin..end_bin {
             let bit_within = bin - base_bin;
+
+            // Software prefetch: issue read for a future bin's data
+            if let Some(pf) = prefetch_bin {
+                let ahead = bin + PREFETCH_LOOKAHEAD;
+                if ahead < end_bin {
+                    pf(table_bytes, ahead);
+                }
+            }
 
             // Check which keys have bit set
             let mut any_set = false;
@@ -108,88 +148,73 @@ fn process_bucket_generic(
             }
         }
     }
+    let fetch_xor = t_fetch.elapsed();
 
-    accs
+    (accs, BucketTiming { dpf_eval, fetch_xor })
 }
 
-// ─── Index-level evaluation ─────────────────────────────────────────────────
+// ─── Index-level evaluation (inlined cuckoo tables) ─────────────────────────
 
-/// Fetch INDEX_SLOTS index entries at `bin`, resolving u32 refs through the index data.
+/// Fetch INDEX_SLOTS inlined index entries at `bin` directly from the table.
+/// Each slot is INDEX_ENTRY_SIZE (26) bytes, stored contiguously.
 #[inline]
-fn fetch_index_bin(table_bytes: &[u8], bin: usize, index_data: &[u8], out: &mut [u8]) {
-    for slot in 0..INDEX_SLOTS {
-        let slot_offset = (bin * INDEX_SLOTS + slot) * 4;
-        let ref_u32 = u32::from_le_bytes(
-            table_bytes[slot_offset..slot_offset + 4].try_into().unwrap(),
-        );
-        if ref_u32 != EMPTY {
-            let entry_offset = ref_u32 as usize * INDEX_ENTRY_SIZE;
-            let dst = slot * INDEX_ENTRY_SIZE;
-            out[dst..dst + INDEX_ENTRY_SIZE]
-                .copy_from_slice(&index_data[entry_offset..entry_offset + INDEX_ENTRY_SIZE]);
-        }
-    }
+fn fetch_index_bin(table_bytes: &[u8], bin: usize, out: &mut [u8]) {
+    let src_offset = bin * INDEX_RESULT_SIZE;
+    out.copy_from_slice(&table_bytes[src_offset..src_offset + INDEX_RESULT_SIZE]);
 }
 
 /// Process one index-level bucket: evaluate two DPF keys, XOR-accumulate.
-/// Returns (result_q0, result_q1), each INDEX_RESULT_SIZE bytes.
+/// Returns (result_q0, result_q1, timing).
 pub fn process_index_bucket(
     key_q0: &DpfKey,
     key_q1: &DpfKey,
     table_bytes: &[u8],
-    index_data: &[u8],
     bins_per_table: usize,
-) -> (Vec<u8>, Vec<u8>) {
-    let index_data_ref = index_data;
-    let results = process_bucket_generic(
+) -> (Vec<u8>, Vec<u8>, BucketTiming) {
+    let (results, timing) = process_bucket_generic(
         &[key_q0, key_q1],
         table_bytes,
         bins_per_table,
         INDEX_RESULT_SIZE,
-        &|tbl, bin, out| fetch_index_bin(tbl, bin, index_data_ref, out),
+        &|tbl, bin, out| fetch_index_bin(tbl, bin, out),
+        None,
     );
-    (results[0].clone(), results[1].clone())
+    (results[0].clone(), results[1].clone(), timing)
 }
 
-// ─── Chunk-level evaluation ─────────────────────────────────────────────────
+// ─── Chunk-level evaluation (inlined cuckoo tables) ─────────────────────────
 
-/// Fetch CHUNK_SLOTS slots at `bin`, dereferencing chunk_ids to [4B id | UNIT_DATA_SIZE data].
+/// Prefetch inlined chunk data for a future bin so it's in cache when we need it.
 #[inline]
-fn fetch_chunk_bin(table_bytes: &[u8], bin: usize, chunks_data: &[u8], out: &mut [u8]) {
-    let data_len = chunks_data.len();
-    for slot in 0..CHUNK_SLOTS {
-        let slot_offset = (bin * CHUNK_SLOTS + slot) * 4;
-        let chunk_id = u32::from_le_bytes(
-            table_bytes[slot_offset..slot_offset + 4].try_into().unwrap(),
-        );
-        if chunk_id != EMPTY {
-            let dst = slot * CHUNK_SLOT_SIZE;
-            out[dst..dst + 4].copy_from_slice(&chunk_id.to_le_bytes());
-            let data_offset = chunk_id as usize * CHUNK_SIZE;
-            let avail = data_len.saturating_sub(data_offset).min(UNIT_DATA_SIZE);
-            if avail > 0 {
-                out[dst + 4..dst + 4 + avail]
-                    .copy_from_slice(&chunks_data[data_offset..data_offset + avail]);
-            }
-        }
+fn prefetch_chunk_bin(table_bytes: &[u8], bin: usize) {
+    let src_offset = bin * CHUNK_RESULT_SIZE;
+    if src_offset < table_bytes.len() {
+        prefetch_read(table_bytes[src_offset..].as_ptr());
     }
 }
 
+/// Fetch CHUNK_SLOTS inlined slots at `bin` directly from the table.
+/// Each slot is CHUNK_SLOT_SIZE (44) bytes: [4B chunk_id | 40B data], stored contiguously.
+#[inline]
+fn fetch_chunk_bin(table_bytes: &[u8], bin: usize, out: &mut [u8]) {
+    let src_offset = bin * CHUNK_RESULT_SIZE;
+    out.copy_from_slice(&table_bytes[src_offset..src_offset + CHUNK_RESULT_SIZE]);
+}
+
 /// Process one chunk-level bucket: evaluate CHUNK_CUCKOO_NUM_HASHES (3) DPF keys, XOR-accumulate.
-/// Returns Vec of 3 results, each CHUNK_RESULT_SIZE bytes.
+/// Returns Vec of 3 results, each CHUNK_RESULT_SIZE bytes, plus timing.
 pub fn process_chunk_bucket(
     keys: &[&DpfKey],
     table_bytes: &[u8],
-    chunks_data: &[u8],
     bins_per_table: usize,
-) -> Vec<Vec<u8>> {
-    let chunks_data_ref = chunks_data;
+) -> (Vec<Vec<u8>>, BucketTiming) {
     process_bucket_generic(
         keys,
         table_bytes,
         bins_per_table,
         CHUNK_RESULT_SIZE,
-        &|tbl, bin, out| fetch_chunk_bin(tbl, bin, chunks_data_ref, out),
+        &|tbl, bin, out| fetch_chunk_bin(tbl, bin, out),
+        Some(&|tbl, bin| prefetch_chunk_bin(tbl, bin)),
     )
 }
 

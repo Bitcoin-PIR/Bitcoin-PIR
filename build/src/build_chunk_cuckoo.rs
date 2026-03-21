@@ -1,19 +1,17 @@
-//! Build Batch-PIR cuckoo tables over the 80-byte UTXO chunks.
+//! Build Batch-PIR cuckoo tables over the 40-byte UTXO chunks (inlined).
 //!
-//! 1. Reads the chunks file, computes N = file_size / 80.
+//! 1. Reads the chunks file, computes N = file_size / 40.
 //! 2. Assigns each chunk_id (0..N) to 3 distinct buckets out of K_CHUNK=80.
-//! 3. Within each bucket, builds a cuckoo hash table (2 hash fns, bucket size 4,
-//!    load factor 0.95).  Each slot stores a u32 chunk_id.
-//! 4. Serialises all 80 tables to `chunk_pir_cuckoo.bin` with a uniform
-//!    bins_per_table (padded to the max across buckets).
-//!
-//! At query time the server dereferences each u32 to produce
-//! [4B chunk_id LE | 80B chunk_data] = 84 bytes per slot,
-//! so the DPF result per bin is 4 × 84 = 336 bytes.
+//! 3. Within each bucket, builds a cuckoo hash table (3 hash fns, bucket size 2,
+//!    load factor 0.95).  Each slot stores a u32 chunk_id internally.
+//! 4. Serialises all 80 tables to `chunk_pir_cuckoo.bin` with inlined data:
+//!    each slot is [4B chunk_id LE | 40B chunk_data] = 44 bytes.
+//!    Empty slots are all-zero.
 //!
 //! Usage:
 //!   cargo run --release -p build --bin build_chunk_cuckoo
 
+use memmap2::Mmap;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -393,7 +391,8 @@ fn main() {
     } else {
         0.0
     };
-    let body_bytes = K * slots_per_table * 4;
+    let slot_bytes = 4 + CHUNK_SIZE; // 44 bytes: 4B chunk_id + 40B data
+    let body_bytes = K * slots_per_table * slot_bytes;
     let total_file_bytes = HEADER_SIZE + body_bytes;
 
     println!("  Buckets:               {}", K);
@@ -421,8 +420,16 @@ fn main() {
     println!("  Failed buckets:        {}", failures);
     println!();
 
-    // ── Step 5: Serialize to disk ─────────────────────────────────────────
-    println!("[5] Writing output file: {}", OUTPUT_FILE);
+    // ── Step 5: Mmap chunks data for inlining ──────────────────────────────
+    println!("[5] Memory-mapping chunks data for inlining...");
+    let chunks_file = File::open(CHUNKS_FILE).unwrap_or_else(|e| {
+        eprintln!("Failed to open chunks file: {}", e);
+        std::process::exit(1);
+    });
+    let chunks_mmap = unsafe { Mmap::map(&chunks_file) }.expect("mmap chunks");
+
+    // ── Step 6: Serialize to disk (inlined) ─────────────────────────────────
+    println!("[6] Writing output file: {}", OUTPUT_FILE);
     let write_start = Instant::now();
 
     let out_file = File::create(OUTPUT_FILE).unwrap_or_else(|e| {
@@ -445,14 +452,22 @@ fn main() {
         .unwrap();
     writer.write_all(&MASTER_SEED.to_le_bytes()).unwrap();
 
-    // Write body: K tables in order, each exactly slots_per_table u32s.
+    // Write body: K tables with inlined chunk data (slot_bytes per slot).
+    // Each slot: [4B chunk_id LE | 40B chunk_data], or all zeros for EMPTY.
     let mut sorted: Vec<&(Vec<u32>, CuckooResult)> = results.iter().collect();
     sorted.sort_by_key(|(_, res)| res.bucket_id);
 
+    let empty_slot = [0u8; 44]; // 4 + CHUNK_SIZE
     for (table, _) in &sorted {
         assert_eq!(table.len(), slots_per_table);
         for &slot in table.iter() {
-            writer.write_all(&slot.to_le_bytes()).unwrap();
+            if slot == EMPTY {
+                writer.write_all(&empty_slot).unwrap();
+            } else {
+                writer.write_all(&slot.to_le_bytes()).unwrap();
+                let data_offset = slot as usize * CHUNK_SIZE;
+                writer.write_all(&chunks_mmap[data_offset..data_offset + CHUNK_SIZE]).unwrap();
+            }
         }
     }
 
@@ -460,8 +475,9 @@ fn main() {
 
     println!("  Done in {:.2?}", write_start.elapsed());
     println!(
-        "  Written {:.2} MB",
-        total_file_bytes as f64 / (1024.0 * 1024.0)
+        "  Written {:.2} MB ({:.2} GB)",
+        total_file_bytes as f64 / (1024.0 * 1024.0),
+        total_file_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
     );
     println!();
     println!("  Total time: {:.2?}", start.elapsed());

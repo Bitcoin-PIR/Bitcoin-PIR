@@ -309,7 +309,7 @@ fn main() {
     } else {
         0.0
     };
-    let body_bytes = K * slots_per_table * 4;
+    let body_bytes = K * slots_per_table * INDEX_ENTRY_SIZE;
     let total_file_bytes = HEADER_SIZE + body_bytes;
 
     println!("  Buckets:               {}", K);
@@ -361,15 +361,21 @@ fn main() {
         .unwrap();
     writer.write_all(&MASTER_SEED.to_le_bytes()).unwrap();
 
-    // Write body: K tables, each exactly slots_per_table u32s (uniform size).
+    // Write body: K tables with inlined index entries (INDEX_ENTRY_SIZE per slot).
     // Sort results by bucket_id so tables are in order 0..K-1.
     let mut sorted: Vec<&(Vec<u32>, CuckooResult)> = results.iter().collect();
     sorted.sort_by_key(|(_, res)| res.bucket_id);
 
+    let empty_slot = [0u8; INDEX_ENTRY_SIZE];
     for (table, _) in &sorted {
         assert_eq!(table.len(), slots_per_table);
         for &slot in table.iter() {
-            writer.write_all(&slot.to_le_bytes()).unwrap();
+            if slot == EMPTY {
+                writer.write_all(&empty_slot).unwrap();
+            } else {
+                let offset = slot as usize * INDEX_ENTRY_SIZE;
+                writer.write_all(&mmap[offset..offset + INDEX_ENTRY_SIZE]).unwrap();
+            }
         }
     }
 

@@ -7,17 +7,17 @@
 //! Usage:
 //!   cargo run --release -p runtime --bin server -- --port 8091
 
-use runtime::eval;
+use runtime::eval::{self, BucketTiming};
 use runtime::protocol::{BatchQuery, BatchResult, Request, Response, ServerInfo};
 use build::common::*;
 use futures_util::{SinkExt, StreamExt};
 use libdpf::DpfKey;
 use memmap2::Mmap;
 use rayon::prelude::*;
-use std::fs::{self, File};
+use std::fs::File;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -25,64 +25,81 @@ use tokio_tungstenite::tungstenite::Message;
 // ─── Server data ────────────────────────────────────────────────────────────
 
 struct ServerData {
-    // Level 1 (Index)
-    index_cuckoo: Vec<u8>,
-    index_data: Mmap,
+    // Level 1 (Index) — inlined cuckoo table
+    index_cuckoo: Mmap,
     index_bins_per_table: usize,
     index_table_byte_size: usize,
 
-    // Level 2 (Chunk)
-    chunk_cuckoo: Vec<u8>,
-    chunks_data: Mmap,
+    // Level 2 (Chunk) — inlined cuckoo table
+    chunk_cuckoo: Mmap,
     chunk_bins_per_table: usize,
     chunk_table_byte_size: usize,
 }
 
 impl ServerData {
     fn load() -> Self {
-        println!("[1] Loading index cuckoo: {}", CUCKOO_FILE);
-        let index_cuckoo = fs::read(CUCKOO_FILE).expect("read index cuckoo");
+        println!("[1] Loading inlined index cuckoo: {}", CUCKOO_FILE);
+        let index_cuckoo_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
+        let index_cuckoo = unsafe { Mmap::map(&index_cuckoo_file) }.expect("mmap index cuckoo");
         let index_bins_per_table = read_cuckoo_header(&index_cuckoo);
-        let index_table_byte_size = index_bins_per_table * CUCKOO_BUCKET_SIZE * 4;
-        println!("  bins_per_table = {}, bucket_size = {}, table_size = {:.1} MB",
-            index_bins_per_table, CUCKOO_BUCKET_SIZE,
+        // Inlined: each bin has CUCKOO_BUCKET_SIZE slots × INDEX_ENTRY_SIZE bytes
+        let index_table_byte_size = index_bins_per_table * CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
+        println!("  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
+            index_bins_per_table, INDEX_ENTRY_SIZE,
             index_table_byte_size as f64 / (1024.0 * 1024.0));
+        println!("  total file = {:.2} GB", index_cuckoo.len() as f64 / (1024.0 * 1024.0 * 1024.0));
 
-        println!("[2] Loading index data: {}", INDEX_FILE);
-        let index_file = File::open(INDEX_FILE).expect("open index");
-        let index_data = unsafe { Mmap::map(&index_file) }.expect("mmap index");
-        println!("  {} entries ({:.1} MB)",
-            index_data.len() / INDEX_ENTRY_SIZE,
-            index_data.len() as f64 / (1024.0 * 1024.0));
+        // Advise sequential access for the inlined table
+        #[cfg(unix)]
+        {
+            use libc::{madvise, MADV_SEQUENTIAL};
+            unsafe {
+                madvise(
+                    index_cuckoo.as_ptr() as *mut libc::c_void,
+                    index_cuckoo.len(),
+                    MADV_SEQUENTIAL,
+                );
+            }
+        }
 
-        println!("[3] Loading chunk cuckoo: {}", CHUNK_CUCKOO_FILE);
-        let chunk_cuckoo = fs::read(CHUNK_CUCKOO_FILE).expect("read chunk cuckoo");
+        println!("[2] Loading inlined chunk cuckoo: {}", CHUNK_CUCKOO_FILE);
+        let chunk_cuckoo_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
+        let chunk_cuckoo = unsafe { Mmap::map(&chunk_cuckoo_file) }.expect("mmap chunk cuckoo");
         let chunk_bins_per_table = read_chunk_cuckoo_header(&chunk_cuckoo);
-        let chunk_table_byte_size = chunk_bins_per_table * CHUNK_CUCKOO_BUCKET_SIZE * 4;
-        println!("  bins_per_table = {}, bucket_size = {}, table_size = {:.1} MB",
-            chunk_bins_per_table, CHUNK_CUCKOO_BUCKET_SIZE,
+        // Inlined: each bin has CHUNK_CUCKOO_BUCKET_SIZE slots × CHUNK_SLOT_SIZE bytes
+        let chunk_slot_size = 4 + CHUNK_SIZE; // 44 bytes
+        let chunk_table_byte_size = chunk_bins_per_table * CHUNK_CUCKOO_BUCKET_SIZE * chunk_slot_size;
+        println!("  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
+            chunk_bins_per_table, chunk_slot_size,
             chunk_table_byte_size as f64 / (1024.0 * 1024.0));
+        println!("  total file = {:.2} GB", chunk_cuckoo.len() as f64 / (1024.0 * 1024.0 * 1024.0));
 
-        println!("[4] Loading chunks data: {}", CHUNKS_DATA_FILE);
-        let chunks_file = File::open(CHUNKS_DATA_FILE).expect("open chunks");
-        let chunks_data = unsafe { Mmap::map(&chunks_file) }.expect("mmap chunks");
-        println!("  {:.2} GB", chunks_data.len() as f64 / (1024.0 * 1024.0 * 1024.0));
+        // Advise sequential access for the inlined table
+        #[cfg(unix)]
+        {
+            use libc::{madvise, MADV_SEQUENTIAL};
+            unsafe {
+                madvise(
+                    chunk_cuckoo.as_ptr() as *mut libc::c_void,
+                    chunk_cuckoo.len(),
+                    MADV_SEQUENTIAL,
+                );
+            }
+        }
 
         ServerData {
             index_cuckoo,
-            index_data,
             index_bins_per_table,
             index_table_byte_size,
             chunk_cuckoo,
-            chunks_data,
             chunk_bins_per_table,
             chunk_table_byte_size,
         }
     }
 
-    fn process_index_batch(&self, query: &BatchQuery) -> BatchResult {
+    fn process_index_batch(&self, query: &BatchQuery) -> (BatchResult, Duration, Duration) {
         let num_buckets = query.keys.len().min(K);
-        let results: Vec<Vec<Vec<u8>>> = (0..num_buckets)
+        let bucket_results: Vec<(Vec<Vec<u8>>, BucketTiming)> = (0..num_buckets)
             .into_par_iter()
             .map(|b| {
                 let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
@@ -91,25 +108,30 @@ impl ServerData {
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_offset = HEADER_SIZE + b * self.index_table_byte_size;
                 let table_bytes = &self.index_cuckoo[table_offset..table_offset + self.index_table_byte_size];
-                let (r0, r1) = eval::process_index_bucket(
+                let (r0, r1, timing) = eval::process_index_bucket(
                     &key_refs[0], &key_refs[1],
-                    table_bytes, &self.index_data,
+                    table_bytes,
                     self.index_bins_per_table,
                 );
-                vec![r0, r1]
+                (vec![r0, r1], timing)
             })
             .collect();
 
-        BatchResult {
-            level: 0,
-            round_id: 0,
-            results,
+        let mut total_dpf = Duration::ZERO;
+        let mut total_fetch = Duration::ZERO;
+        let mut results = Vec::with_capacity(num_buckets);
+        for (r, t) in bucket_results {
+            total_dpf += t.dpf_eval;
+            total_fetch += t.fetch_xor;
+            results.push(r);
         }
+
+        (BatchResult { level: 0, round_id: 0, results }, total_dpf, total_fetch)
     }
 
-    fn process_chunk_batch(&self, query: &BatchQuery) -> BatchResult {
+    fn process_chunk_batch(&self, query: &BatchQuery) -> (BatchResult, Duration, Duration) {
         let num_buckets = query.keys.len().min(K_CHUNK);
-        let results: Vec<Vec<Vec<u8>>> = (0..num_buckets)
+        let bucket_results: Vec<(Vec<Vec<u8>>, BucketTiming)> = (0..num_buckets)
             .into_par_iter()
             .map(|b| {
                 let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
@@ -118,19 +140,25 @@ impl ServerData {
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_offset = HEADER_SIZE + b * self.chunk_table_byte_size;
                 let table_bytes = &self.chunk_cuckoo[table_offset..table_offset + self.chunk_table_byte_size];
-                eval::process_chunk_bucket(
+                let (r, timing) = eval::process_chunk_bucket(
                     &key_refs,
-                    table_bytes, &self.chunks_data,
+                    table_bytes,
                     self.chunk_bins_per_table,
-                )
+                );
+                (r, timing)
             })
             .collect();
 
-        BatchResult {
-            level: 1,
-            round_id: query.round_id,
-            results,
+        let mut total_dpf = Duration::ZERO;
+        let mut total_fetch = Duration::ZERO;
+        let mut results = Vec::with_capacity(num_buckets);
+        for (r, t) in bucket_results {
+            total_dpf += t.dpf_eval;
+            total_fetch += t.fetch_xor;
+            results.push(r);
         }
+
+        (BatchResult { level: 1, round_id: query.round_id, results }, total_dpf, total_fetch)
     }
 }
 
@@ -243,16 +271,24 @@ async fn main() {
                         }),
                         Request::IndexBatch(q) => {
                             let t = Instant::now();
-                            let r = data_ref.process_index_batch(&q);
-                            println!("[index] {} buckets in {:.2?}", q.keys.len(), t.elapsed());
-                            Response::IndexBatch(r)
+                            let n = q.keys.len();
+                            let (batch, dpf_sum, fetch_sum) = data_ref.process_index_batch(&q);
+                            let wall = t.elapsed();
+                            println!("[index] {} buckets {:.2?} wall | sum: dpf {:.2?} fetch+xor {:.2?} | avg: dpf {:.1?} fetch+xor {:.1?}",
+                                n, wall, dpf_sum, fetch_sum,
+                                dpf_sum / n as u32, fetch_sum / n as u32);
+                            Response::IndexBatch(batch)
                         }
                         Request::ChunkBatch(q) => {
                             let t = Instant::now();
                             let round = q.round_id;
-                            let r = data_ref.process_chunk_batch(&q);
-                            println!("[chunk] round {} {} buckets in {:.2?}", round, q.keys.len(), t.elapsed());
-                            Response::ChunkBatch(r)
+                            let n = q.keys.len();
+                            let (batch, dpf_sum, fetch_sum) = data_ref.process_chunk_batch(&q);
+                            let wall = t.elapsed();
+                            println!("[chunk] r{} {} buckets {:.2?} wall | sum: dpf {:.2?} fetch+xor {:.2?} | avg: dpf {:.1?} fetch+xor {:.1?}",
+                                round, n, wall, dpf_sum, fetch_sum,
+                                dpf_sum / n as u32, fetch_sum / n as u32);
+                            Response::ChunkBatch(batch)
                         }
                     }
                 }).await.unwrap();

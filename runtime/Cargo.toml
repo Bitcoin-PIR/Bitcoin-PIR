@@ -14,6 +14,7 @@ path = "src/bin/client.rs"
 [dependencies]
 build = { path = "../build" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
+libc = "0.2"
 memmap2 = "0.9"
 rayon = "1.10"
 tokio = { version = "1", features = ["full"] }
