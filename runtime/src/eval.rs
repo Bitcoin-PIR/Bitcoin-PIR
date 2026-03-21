@@ -196,8 +196,8 @@ pub fn process_chunk_bucket(
 // ─── Result parsing helpers (client-side) ───────────────────────────────────
 
 /// Find a script_hash in an index-level result's slots.
-/// Returns (offset_half, num_chunks) if found.
-pub fn find_entry_in_index_result(result: &[u8], script_hash: &[u8]) -> Option<(u32, u32)> {
+/// Returns (offset_half, num_chunks, flags) if found.
+pub fn find_entry_in_index_result(result: &[u8], script_hash: &[u8]) -> Option<(u32, u32, u8)> {
     for slot in 0..INDEX_SLOTS {
         let base = slot * INDEX_ENTRY_SIZE;
         if result[base..base + SCRIPT_HASH_SIZE] == *script_hash {
@@ -205,10 +205,22 @@ pub fn find_entry_in_index_result(result: &[u8], script_hash: &[u8]) -> Option<(
                 result[base + 20..base + 24].try_into().unwrap(),
             );
             let num_chunks = result[base + 24] as u32;
-            return Some((offset_half, num_chunks));
+            let flags = result[base + 25];
+            return Some((offset_half, num_chunks, flags));
         }
     }
     None
+}
+
+/// Decode chunk placement bits from the flags byte.
+/// Returns None if flags are not valid, or Some([h0, h1, h2]) where each h is the
+/// cuckoo hash function index (0-2) for the corresponding group.
+pub fn decode_placement(flags: u8) -> Option<[usize; 3]> {
+    if (flags >> 5) & 1 != 1 {
+        return None;
+    }
+    let encoded = (flags & 0x1F) as usize;
+    Some([encoded % 3, (encoded / 3) % 3, (encoded / 9) % 3])
 }
 
 /// Find a chunk_id in a chunk-level result's slots.

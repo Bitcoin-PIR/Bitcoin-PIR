@@ -320,7 +320,7 @@ async fn main() {
 
     // XOR results for the assigned bucket (each cuckoo hash gives one result)
     let b = assigned_bucket;
-    let mut found_entry: Option<(u32, u32)> = None;
+    let mut found_entry: Option<(u32, u32, u8)> = None;
     for h in 0..INDEX_CUCKOO_NUM_HASHES {
         let mut result = r0.results[b][h].clone();
         eval::xor_into(&mut result, &r1.results[b][h]);
@@ -331,7 +331,7 @@ async fn main() {
     }
 
     // Find our entry
-    let (offset_half, num_chunks) = found_entry
+    let (offset_half, num_chunks, flags) = found_entry
         .unwrap_or_else(|| {
             eprintln!("ERROR: script hash not found in index PIR result!");
             std::process::exit(1);
@@ -339,8 +339,12 @@ async fn main() {
 
     let start_chunk = (offset_half as u64 * 2 / CHUNK_SIZE as u64) as u32;
     let num_units = (num_chunks as usize + CHUNKS_PER_UNIT - 1) / CHUNKS_PER_UNIT;
+    let placement = eval::decode_placement(flags);
 
-    println!("  Found: offset_half={}, num_chunks={}, start_chunk={}", offset_half, num_chunks, start_chunk);
+    println!("  Found: offset_half={}, num_chunks={}, start_chunk={}, flags=0x{:02x}", offset_half, num_chunks, start_chunk, flags);
+    if let Some(ref p) = placement {
+        println!("  Placement bits: h={:?} (first chunk optimized)", p);
+    }
     println!("  Units to fetch: {} (CHUNKS_PER_UNIT={})", num_units, CHUNKS_PER_UNIT);
     println!("  Level 1 time: {:.2?}", l1_start.elapsed());
     println!();
@@ -364,28 +368,49 @@ async fn main() {
     let mut recovered_chunks: std::collections::HashMap<u32, Vec<u8>> =
         std::collections::HashMap::new();
 
+    // Precompute: for each chunk, can we use placement optimization?
+    // Only the first chunk (start_chunk) has known placement from flags.
+    let first_chunk_groups = derive_chunk_buckets(start_chunk);
+
     for (ri, round_plan) in rounds.iter().enumerate() {
-        // Build target map: bucket → list of cuckoo locations
+        // Determine if ALL real queries in this round have known placement.
+        // A chunk has known placement if it == start_chunk AND we have valid placement bits.
+        let all_optimized = placement.is_some() && round_plan.iter().all(|&(cid, _)| cid == start_chunk);
+
+        let keys_per_bucket = if all_optimized { 1 } else { CHUNK_CUCKOO_NUM_HASHES };
+
+        // For each real query bucket, compute target cuckoo locations
+        // With optimization: 1 location (the known hash function)
+        // Without: all CHUNK_CUCKOO_NUM_HASHES locations
         let mut bucket_targets: Vec<Option<Vec<u64>>> = vec![None; K_CHUNK];
         for &(chunk_id, bucket_id) in round_plan {
             let b = bucket_id as usize;
-            let locs: Vec<u64> = (0..CHUNK_CUCKOO_NUM_HASHES)
-                .map(|h| {
-                    let key = derive_chunk_cuckoo_key(b, h);
-                    cuckoo_hash_int(chunk_id, key, chunk_bins) as u64
-                })
-                .collect();
-            bucket_targets[b] = Some(locs);
+            if all_optimized {
+                // Find which group index this bucket corresponds to
+                let group_idx = first_chunk_groups.iter().position(|&g| g == b)
+                    .expect("bucket_id must be one of the chunk's groups");
+                let h = placement.unwrap()[group_idx];
+                let key = derive_chunk_cuckoo_key(b, h);
+                bucket_targets[b] = Some(vec![cuckoo_hash_int(chunk_id, key, chunk_bins) as u64]);
+            } else {
+                let locs: Vec<u64> = (0..CHUNK_CUCKOO_NUM_HASHES)
+                    .map(|h| {
+                        let key = derive_chunk_cuckoo_key(b, h);
+                        cuckoo_hash_int(chunk_id, key, chunk_bins) as u64
+                    })
+                    .collect();
+                bucket_targets[b] = Some(locs);
+            }
         }
 
-        // Generate DPF keys for all K_CHUNK buckets (CHUNK_CUCKOO_NUM_HASHES keys per bucket)
+        // Generate DPF keys
         let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K_CHUNK);
         let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K_CHUNK);
 
         for b in 0..K_CHUNK {
             let mut s0_bucket = Vec::new();
             let mut s1_bucket = Vec::new();
-            for h in 0..CHUNK_CUCKOO_NUM_HASHES {
+            for h in 0..keys_per_bucket {
                 let alpha = match &bucket_targets[b] {
                     Some(locs) => locs[h],
                     None => rng.next_u64() % chunk_bins as u64,
@@ -416,12 +441,13 @@ async fn main() {
             _ => { eprintln!("Unexpected response for chunk batch"); return; }
         };
 
-        // XOR and extract — check each cuckoo hash result
+        // XOR and extract
         for &(chunk_id, bucket_id) in round_plan {
             let b = bucket_id as usize;
             let mut found = false;
 
-            for h in 0..CHUNK_CUCKOO_NUM_HASHES {
+            let num_results = cr0.results[b].len();
+            for h in 0..num_results {
                 let mut result = cr0.results[b][h].clone();
                 eval::xor_into(&mut result, &cr1.results[b][h]);
 

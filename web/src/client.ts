@@ -301,7 +301,7 @@ export class BatchPirClient {
   private findEntryInIndexResult(
     result: Uint8Array,
     scriptHash: Uint8Array,
-  ): { offsetHalf: number; numChunks: number } | null {
+  ): { offsetHalf: number; numChunks: number; flags: number } | null {
     for (let slot = 0; slot < CUCKOO_BUCKET_SIZE; slot++) {
       const base = slot * INDEX_ENTRY_SIZE;
       let match = true;
@@ -315,10 +315,19 @@ export class BatchPirClient {
         const dv = new DataView(result.buffer, result.byteOffset + base, INDEX_ENTRY_SIZE);
         const offsetHalf = dv.getUint32(20, true);
         const numChunks = result[base + 24];
-        return { offsetHalf, numChunks };
+        const flags = result[base + 25];
+        return { offsetHalf, numChunks, flags };
       }
     }
     return null;
+  }
+
+  /** Decode chunk placement bits from flags byte.
+   *  Returns null if invalid, or [h0, h1, h2] for the 3 groups. */
+  private decodePlacement(flags: number): [number, number, number] | null {
+    if (((flags >> 5) & 1) !== 1) return null;
+    const encoded = flags & 0x1F;
+    return [encoded % 3, Math.floor(encoded / 3) % 3, Math.floor(encoded / 9) % 3];
   }
 
   // ─── Chunk result parsing ─────────────────────────────────────────────
@@ -547,7 +556,7 @@ export class BatchPirClient {
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index round(s)`);
 
     // Per-query results from Level 1: query index → { offsetHalf, numChunks }
-    const indexResults: Map<number, { offsetHalf: number; numChunks: number }> = new Map();
+    const indexResults: Map<number, { offsetHalf: number; numChunks: number; flags: number }> = new Map();
 
     for (let ir = 0; ir < indexRounds.length; ir++) {
       const round = indexRounds[ir];
@@ -606,7 +615,7 @@ export class BatchPirClient {
         const r0 = resp0.result.results[bucketId];
         const r1 = resp1.result.results[bucketId];
 
-        let found: { offsetHalf: number; numChunks: number } | null = null;
+        let found: { offsetHalf: number; numChunks: number; flags: number } | null = null;
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
           const result = this.xorBuffers(r0[h], r1[h]);
           found = this.findEntryInIndexResult(result, scriptHashes[queryIdx]);
@@ -630,7 +639,7 @@ export class BatchPirClient {
 
     // Build a global list of unique chunk IDs needed, and track which
     // query needs which chunks
-    const queryChunkInfo: Map<number, { startChunk: number; numUnits: number; offsetHalf: number; numChunks: number }> = new Map();
+    const queryChunkInfo: Map<number, { startChunk: number; numUnits: number; offsetHalf: number; numChunks: number; flags: number }> = new Map();
     const allChunkIdsSet = new Set<number>();
 
     for (const [qi, info] of indexResults) {
@@ -642,7 +651,7 @@ export class BatchPirClient {
         chunkIds.push(cid);
         allChunkIdsSet.add(cid);
       }
-      queryChunkInfo.set(qi, { startChunk, numUnits, offsetHalf: info.offsetHalf, numChunks: info.numChunks });
+      queryChunkInfo.set(qi, { startChunk, numUnits, offsetHalf: info.offsetHalf, numChunks: info.numChunks, flags: info.flags });
     }
 
     const allChunkIds = Array.from(allChunkIdsSet).sort((a, b) => a - b);
@@ -657,6 +666,15 @@ export class BatchPirClient {
     // chunkRounds[r][i] = [chunkListIndex, bucketId]
     this.log(`  ${allChunkIds.length} chunks → ${chunkRounds.length} chunk round(s)`);
 
+    // Build a map from first_chunk_id → placement for optimization
+    const firstChunkPlacements = new Map<number, [number, number, number]>();
+    for (const [, info] of queryChunkInfo) {
+      const placement = this.decodePlacement(info.flags);
+      if (placement) {
+        firstChunkPlacements.set(info.startChunk, placement);
+      }
+    }
+
     // Execute chunk rounds
     const recoveredChunks = new Map<number, Uint8Array>();
 
@@ -664,19 +682,35 @@ export class BatchPirClient {
       const roundPlan = chunkRounds[ri];
       progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (${roundPlan.length} chunks)...`);
 
+      // Determine if ALL chunks in this round have known placement (first chunks)
+      const allOptimized = roundPlan.every(([chunkListIdx]) =>
+        firstChunkPlacements.has(allChunkIds[chunkListIdx])
+      );
+      const keysPerBucket = allOptimized ? 1 : CHUNK_CUCKOO_NUM_HASHES;
+
       // Build target map: bucket → list of cuckoo locations
       const bucketTargets: Map<number, number[]> = new Map();
       for (const [chunkListIdx, bucketId] of roundPlan) {
         const chunkId = allChunkIds[chunkListIdx];
-        const locs: number[] = [];
-        for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+        if (allOptimized) {
+          // Use known placement: find which group index this bucket corresponds to
+          const groups = deriveChunkBuckets(chunkId);
+          const groupIdx = groups.indexOf(bucketId);
+          const placement = firstChunkPlacements.get(chunkId)!;
+          const h = placement[groupIdx];
           const ck = deriveChunkCuckooKey(bucketId, h);
-          locs.push(cuckooHashInt(chunkId, ck, this.chunkBins));
+          bucketTargets.set(bucketId, [cuckooHashInt(chunkId, ck, this.chunkBins)]);
+        } else {
+          const locs: number[] = [];
+          for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+            const ck = deriveChunkCuckooKey(bucketId, h);
+            locs.push(cuckooHashInt(chunkId, ck, this.chunkBins));
+          }
+          bucketTargets.set(bucketId, locs);
         }
-        bucketTargets.set(bucketId, locs);
       }
 
-      // Generate DPF keys for all K_CHUNK buckets (CHUNK_CUCKOO_NUM_HASHES keys per bucket)
+      // Generate DPF keys
       const s0Keys: Uint8Array[][] = [];
       const s1Keys: Uint8Array[][] = [];
 
@@ -685,7 +719,7 @@ export class BatchPirClient {
         const s0Bucket: Uint8Array[] = [];
         const s1Bucket: Uint8Array[] = [];
 
-        for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+        for (let h = 0; h < keysPerBucket; h++) {
           const alpha = target
             ? target[h]
             : Number(this.rng.nextU64() % BigInt(this.chunkBins));
@@ -710,14 +744,15 @@ export class BatchPirClient {
         throw new Error(`Unexpected chunk response: ${cresp0.type}, ${cresp1.type}`);
       }
 
-      // XOR and extract — check each cuckoo hash result
+      // XOR and extract
       for (const [chunkListIdx, bucketId] of roundPlan) {
         const chunkId = allChunkIds[chunkListIdx];
         const cr0 = cresp0.result.results[bucketId];
         const cr1 = cresp1.result.results[bucketId];
 
         let data: Uint8Array | null = null;
-        for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+        const numResults = cr0.length;
+        for (let h = 0; h < numResults; h++) {
           const result = this.xorBuffers(cr0[h], cr1[h]);
           data = this.findChunkInResult(result, chunkId);
           if (data) break;
