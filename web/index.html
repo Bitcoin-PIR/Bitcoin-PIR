@@ -348,10 +348,38 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <button class="example-btn op-example" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b" style="background:#fff3cd; border-color:#ffc107;">P2WPKH</button>
                     <button class="example-btn op-example" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87" style="background:#fff3cd; border-color:#ffc107;">P2SH</button>
                     <button class="example-btn op-example" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a" style="background:#fff3cd; border-color:#ffc107;">P2TR</button>
+                    <button class="example-btn op-example" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e" style="background:#fff3cd; border-color:#ffc107;">P2WSH</button>
+                    <button class="example-btn op-example" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae" style="background:#fff3cd; border-color:#ffc107;">1-of-3 Multisig</button>
+                    <button class="example-btn op-example" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae" style="background:#fff3cd; border-color:#ffc107;">1-of-2 Multisig</button>
+                    <button class="example-btn" id="op-loadDiverseBtn" style="background:#fff3cd; border-color:#ffc107;">Mix</button>
                     <br>
-                    <span class="example-label">Batch test:</span>
-                    <button class="example-btn" id="op-pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
+                    <span class="example-label">Top whales (most UTXOs, in dataset):</span>
+                    <button class="example-btn op-example" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale</button>
+                    <button class="example-btn op-example" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 2</button>
+                    <button class="example-btn op-example" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 3</button>
+                    <button class="example-btn op-example" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale</button>
+                    <button class="example-btn op-example" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale 2</button>
+                    <button class="example-btn op-example" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087" style="background:#fff3cd; border-color:#ffc107;">P2SH whale</button>
+                    <button class="example-btn op-example" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487" style="background:#fff3cd; border-color:#ffc107;">P2SH whale 2</button>
+                    <button class="example-btn op-example" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale</button>
+                    <button class="example-btn op-example" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale 2</button>
+                    <br>
+                    <span class="example-label">Excluded whales (&gt;100 UTXOs):</span>
+                    <button class="example-btn op-example" data-spk="76a914000000000000000000000000000000000000000088ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 376k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="76a914fa0692278afe508514b5ffee8fe5e97732ce066988ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 161k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="76a9149f21a07a0c7c3cf65a51f586051395762267cdaf88ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 117k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="0014c015c65276d5f38d599d445c4cb03aa7aa0dc365" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 128k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="001409e4581b5a796feffc1c4f0669206e801cb7a9eb" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 338k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="a914ea6b832a05c6ca578baa3836f3f25553d41068a587" style="background:#fde2e2; border-color:#e74c3c;">P2SH 215k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="a9140c42e8868812fccabb2c364390539106cd5fa8d987" style="background:#fde2e2; border-color:#e74c3c;">P2SH 51k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="a91456483d546400fc354bab9fc373238ee94002cc2b87" style="background:#fde2e2; border-color:#e74c3c;">P2SH 45k UTXOs</button>
+                    <button class="example-btn op-example" data-spk="5120a669250ad7137b88ec550d446d8d34e4b1fa13067274c3627469e885e90743e4" style="background:#fde2e2; border-color:#e74c3c;">P2TR 35k UTXOs</button>
+                    <br>
+                    <span class="example-label">Batch test (1000 known scriptPubKeys):</span>
+                    <button class="example-btn" id="op-pickRandom100Btn" style="background-color: #d4edda; border-color: #28a745; padding: 6px 14px; font-size: 13px;">Pick 100 random</button>
+                    <button class="example-btn" id="op-pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
                     <button class="example-btn" id="op-pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
+                    <button class="example-btn" id="op-pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
                 </div>
             </details>
             <br>
@@ -934,11 +962,26 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             });
         });
 
-        document.getElementById('op-pickRandom5Btn').addEventListener('click', () => {
-            document.getElementById('op-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 5).join('\n');
+        document.getElementById('op-loadDiverseBtn').addEventListener('click', () => {
+            const p2wsh = EXAMPLE_SPKS.filter(s => s.startsWith('0020') && s.length === 68);
+            const p2sh = EXAMPLE_SPKS.filter(s => s.startsWith('a914') && s.endsWith('87'));
+            const p2tr = EXAMPLE_SPKS.filter(s => s.startsWith('5120') && s.length === 68);
+            const multisig = EXAMPLE_SPKS.filter(s => s.endsWith('ae') && s.startsWith('51'));
+            const diverse = [...p2wsh, ...pickRandom(p2sh, 5), ...pickRandom(p2tr, 5), ...pickRandom(multisig, 5)];
+            document.getElementById('op-scriptPubkeys').value = diverse.join('\n');
+        });
+
+        document.getElementById('op-pickRandom100Btn').addEventListener('click', () => {
+            document.getElementById('op-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 100).join('\n');
+        });
+        document.getElementById('op-pickRandomBtn').addEventListener('click', () => {
+            document.getElementById('op-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 50).join('\n');
         });
         document.getElementById('op-pickRandom10Btn').addEventListener('click', () => {
             document.getElementById('op-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 10).join('\n');
+        });
+        document.getElementById('op-pickRandom5Btn').addEventListener('click', () => {
+            document.getElementById('op-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 5).join('\n');
         });
 
         // OnionPIR buttons
