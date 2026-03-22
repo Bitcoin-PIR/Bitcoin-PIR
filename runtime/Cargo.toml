@@ -11,9 +11,30 @@ path = "src/bin/server.rs"
 name = "client"
 path = "src/bin/client.rs"
 
+[[bin]]
+name = "onionpir_server"
+path = "src/bin/onionpir_server.rs"
+
+[[bin]]
+name = "onionpir_client"
+path = "src/bin/onionpir_client.rs"
+
+[[bin]]
+name = "onionpir_bench"
+path = "src/bin/onionpir_bench.rs"
+
+[[bin]]
+name = "onionpir2_server"
+path = "src/bin/onionpir2_server.rs"
+
+[[bin]]
+name = "onionpir2_client"
+path = "src/bin/onionpir2_client.rs"
+
 [dependencies]
 build = { path = "../build" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
+onionpir = { git = "https://github.com/weikengchen/OnionPIRv2-fork.git" }
 libc = "0.2"
 memmap2 = "0.9"
 rayon = "1.10"

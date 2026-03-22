@@ -88,9 +88,26 @@ path = "src/find_whale_spks.rs"
 name = "cuckoo4_experiment"
 path = "src/cuckoo4_experiment.rs"
 
+[[bin]]
+name = "test_onion_cuckoo"
+path = "src/test_onion_cuckoo.rs"
+
+[[bin]]
+name = "gen_1_onion"
+path = "src/gen_1_onion.rs"
+
+[[bin]]
+name = "gen_2_onion"
+path = "src/gen_2_onion.rs"
+
+[[bin]]
+name = "gen_3_onion"
+path = "src/gen_3_onion.rs"
+
 [dependencies]
 bitcoin = "0.32.7"
 txoutset = "0.4"
 memmap2 = "0.9"
 rayon = "1.10"
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
+onionpir = { git = "https://github.com/weikengchen/OnionPIRv2-fork.git" }

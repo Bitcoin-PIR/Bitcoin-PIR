@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2-Server DPF-PIR + PBC</title>
+    <title>Bitcoin PIR</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -182,12 +182,26 @@
         .script-box .spk-label { color: #6c7086; display: block; margin-bottom: 4px; font-size: 11px; }
         .script-box .spk-hex { color: #9399b2; word-break: break-all; }
         .script-box .separator { border-top: 1px solid #313244; margin: 6px 0; }
+
+        /* Tab styles */
+        .tab-bar { display: flex; gap: 0; margin-bottom: 0; }
+        .tab-btn {
+            padding: 10px 24px; border: 2px solid #ddd; border-bottom: none;
+            background: #f0f0f0; color: #666; cursor: pointer; font-size: 14px;
+            font-weight: bold; border-radius: 8px 8px 0 0; margin-right: -1px;
+            transition: background 0.15s, color 0.15s;
+        }
+        .tab-btn:hover { background: #e8e8e8; }
+        .tab-btn.active { background: white; color: #333; border-color: #f7931a; border-bottom: 2px solid white; position: relative; z-index: 1; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
     </style>
+    <script src="/wasm/onionpir_client.js"></script>
 </head>
 <body>
     <div class="container">
         <div style="display: flex; align-items: baseline; gap: 14px; border-bottom: 3px solid #f7931a; padding-bottom: 10px; margin-bottom: 0;">
-            <h1 style="border-bottom: none; padding-bottom: 0; margin: 0;">2-Server DPF-PIR + PBC</h1>
+            <h1 style="border-bottom: none; padding-bottom: 0; margin: 0;">Bitcoin PIR</h1>
             <a href="https://github.com/weikengchen/Bitcoin-PIR" target="_blank" rel="noopener"
                style="display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #555; text-decoration: none; padding: 3px 9px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; white-space: nowrap; transition: background 0.15s, border-color 0.15s;"
                onmouseover="this.style.background='#eef1f5';this.style.borderColor='#adb5bd';"
@@ -202,6 +216,15 @@
             Note: UTXOs with &le; 576 sats (dust) are excluded from the database.
             ScriptPubKeys with more than 100 UTXOs are also excluded.
         </p>
+
+        <!-- Tab bar -->
+        <div class="tab-bar" style="margin-top: 12px;">
+            <button class="tab-btn active" data-tab="dpf">2-Server DPF-PIR</button>
+            <button class="tab-btn" data-tab="onionpir">1-Server OnionPIR</button>
+        </div>
+
+        <!-- ═══ DPF Tab ═══ -->
+        <div id="tab-dpf" class="tab-content active" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
 
         <div style="display: flex; align-items: center; gap: 12px; margin: 10px 0;">
             <div id="status" class="status disconnected" style="margin: 0; flex: 1;">
@@ -288,6 +311,66 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         <!-- Results container — one per queried scriptPubKey -->
         <div id="resultsContainer"></div>
 
+        </div><!-- end tab-dpf -->
+
+        <!-- ═══ OnionPIR Tab ═══ -->
+        <div id="tab-onionpir" class="tab-content" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
+
+        <div style="display: flex; align-items: center; gap: 12px; margin: 10px 0;">
+            <div id="op-status" class="status disconnected" style="margin: 0; flex: 1;">
+                Status: Disconnected
+            </div>
+            <button id="op-connectBtn" class="small">Connect</button>
+            <button id="op-disconnectBtn" class="small secondary" disabled>Disconnect</button>
+        </div>
+
+        <details style="margin-bottom: 10px;">
+            <summary style="cursor: pointer; font-size: 13px; color: #888;">Server configuration</summary>
+            <div style="margin-top: 8px;">
+                <div class="server-row">
+                    <span class="server-label">Server:</span>
+                    <input type="text" id="op-serverUrl" class="small" value="wss://onionpirv2.chenweikeng.com">
+                </div>
+            </div>
+        </details>
+
+        <div class="step">
+            <label for="op-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex — one per line:</label>
+            <textarea id="op-scriptPubkeys" rows="4" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
+bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
+            <div id="op-conversionNote" style="font-size: 12px; color: #28a745; margin: 2px 0 6px 5px; display: none;"></div>
+
+            <details style="margin-top: 6px;">
+                <summary style="cursor: pointer; font-size: 13px; color: #666;">Load examples</summary>
+                <div class="examples" style="margin-top: 8px;">
+                    <span class="example-label">Known in dataset:</span>
+                    <button class="example-btn op-example" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH</button>
+                    <button class="example-btn op-example" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b" style="background:#fff3cd; border-color:#ffc107;">P2WPKH</button>
+                    <button class="example-btn op-example" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87" style="background:#fff3cd; border-color:#ffc107;">P2SH</button>
+                    <button class="example-btn op-example" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a" style="background:#fff3cd; border-color:#ffc107;">P2TR</button>
+                    <br>
+                    <span class="example-label">Batch test:</span>
+                    <button class="example-btn" id="op-pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
+                    <button class="example-btn" id="op-pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
+                </div>
+            </details>
+            <br>
+            <button id="op-queryBtn" style="width: 100%; font-size: 16px; padding: 12px;">Query UTXOs</button>
+        </div>
+
+        <!-- Progress -->
+        <div id="op-progressContainer" class="progress-container">
+            <div class="progress-bar">
+                <div id="op-progressFill" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div id="op-progressLabel" class="progress-label"></div>
+        </div>
+
+        <!-- Results -->
+        <div id="op-resultsContainer"></div>
+
+        </div><!-- end tab-onionpir -->
+
         <details>
             <summary style="cursor: pointer; font-size: 18px; color: #666; font-weight: bold; margin-top: 10px;">Log</summary>
             <div id="log" class="log" style="margin-top: 8px;">
@@ -297,7 +380,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </div>
 
     <script type="module">
-        import { BatchPirClient, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript } from './src/index.ts';
+        import { BatchPirClient, OnionPirWebClient, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript } from './src/index.ts';
 
         /**
          * Detect well-known script patterns and return a label, or null.
@@ -697,12 +780,172 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 5).join('\n');
         });
 
-        // ─── Main buttons ────────────────────────────────────────────────
+        // ─── Main buttons (DPF) ────────────────────────────────────────
         document.getElementById('connectBtn').addEventListener('click', connect);
         document.getElementById('disconnectBtn').addEventListener('click', disconnect);
         document.getElementById('queryBtn').addEventListener('click', queryUtxos);
 
         setButtons(false);
+
+        // ═══════════════════════════════════════════════════════════════
+        // Tab switching
+        // ═══════════════════════════════════════════════════════════════
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+            });
+        });
+
+        // ═══════════════════════════════════════════════════════════════
+        // OnionPIR tab logic
+        // ═══════════════════════════════════════════════════════════════
+        let opClient = null;
+
+        function opSetButtons(connected) {
+            document.getElementById('op-connectBtn').disabled = connected;
+            document.getElementById('op-disconnectBtn').disabled = !connected;
+        }
+
+        function opSetProgress(percent, label) {
+            const container = document.getElementById('op-progressContainer');
+            const fill = document.getElementById('op-progressFill');
+            const lbl = document.getElementById('op-progressLabel');
+            container.classList.add('active');
+            fill.style.width = `${percent}%`;
+            fill.textContent = percent > 10 ? `${Math.round(percent)}%` : '';
+            lbl.textContent = label;
+        }
+
+        function opHideProgress() {
+            document.getElementById('op-progressContainer').classList.remove('active');
+        }
+
+        async function opConnect() {
+            const serverUrl = document.getElementById('op-serverUrl').value.trim();
+            if (!serverUrl) { log('Please enter a server URL', 'error'); return; }
+
+            try {
+                log('OnionPIR: Connecting...');
+                opClient = new OnionPirWebClient({
+                    serverUrl,
+                    onConnectionStateChange: (state, message) => {
+                        log(`OnionPIR: ${state}${message ? ' - ' + message : ''}`,
+                            state === 'connected' ? 'success' : state === 'disconnected' ? 'error' : 'info');
+                        const statusDiv = document.getElementById('op-status');
+                        statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
+                        statusDiv.className = `status ${state}`;
+                        if (state === 'connected') opSetButtons(true);
+                        else if (state === 'disconnected') opSetButtons(false);
+                    },
+                    onLog: (msg, level) => log(msg, level),
+                });
+                await opClient.connect();
+            } catch (error) {
+                log(`OnionPIR connection failed: ${error.message}`, 'error');
+                opClient = null;
+            }
+        }
+
+        function opDisconnect() {
+            if (opClient) { opClient.disconnect(); opClient = null; }
+            document.getElementById('op-resultsContainer').innerHTML = '';
+            opSetButtons(false);
+        }
+
+        async function opQueryUtxos() {
+            if (!opClient || !opClient.isConnected()) {
+                log('OnionPIR: Not connected. Connecting first...', 'info');
+                await opConnect();
+                if (!opClient) return;
+            }
+
+            const textarea = document.getElementById('op-scriptPubkeys');
+            const rawLines = textarea.value.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            if (rawLines.length === 0) { log('Please enter at least one address', 'error'); return; }
+
+            const lines = [];
+            let converted = 0;
+            const convNote = document.getElementById('op-conversionNote');
+            for (const raw of rawLines) {
+                if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
+                    lines.push(raw.toLowerCase());
+                } else {
+                    const spk = addressToScriptPubKey(raw);
+                    if (spk) { lines.push(spk); converted++; }
+                    else { log(`Unrecognized input: ${raw}`, 'error'); }
+                }
+            }
+            if (converted > 0) {
+                convNote.textContent = `Converted ${converted} address${converted > 1 ? 'es' : ''} to scriptPubKey hex`;
+                convNote.style.display = 'block';
+                setTimeout(() => { convNote.style.display = 'none'; }, 5000);
+            }
+            if (lines.length === 0) { log('No valid inputs', 'error'); return; }
+
+            const resultsContainer = document.getElementById('op-resultsContainer');
+            resultsContainer.innerHTML = '';
+            document.getElementById('op-queryBtn').disabled = true;
+
+            const N = lines.length;
+            log(`OnionPIR: Starting query for ${N} addresses...`, 'info');
+
+            try {
+                const scriptHashes = lines.map(spkHex => scriptHash(hexToBytes(spkHex)));
+                opSetProgress(5, `Batching ${N} queries...`);
+
+                const results = await opClient.queryBatch(scriptHashes, (step, detail) => {
+                    let pct = 5;
+                    if (step === 'Setup') pct = 10;
+                    else if (step === 'Level 1') pct = 25;
+                    else if (step === 'Level 2') pct = 55;
+                    else if (step === 'Decode') pct = 90;
+                    opSetProgress(pct, `${step}: ${detail}`);
+                });
+
+                let found = 0;
+                for (let qi = 0; qi < N; qi++) {
+                    const spkHex = lines[qi];
+                    const hashHex = bytesToHex(scriptHashes[qi]);
+                    const result = results[qi];
+                    if (result) found++;
+                    renderResult(resultsContainer, spkHex, hashHex, result);
+                }
+
+                opSetProgress(100, `Done! ${found}/${N} addresses found`);
+                setTimeout(opHideProgress, 2000);
+                log(`OnionPIR batch complete: ${found}/${N} found`, 'success');
+            } catch (error) {
+                log(`OnionPIR error: ${error.message}`, 'error');
+                console.error(error);
+                opSetProgress(0, '');
+                opHideProgress();
+            }
+
+            document.getElementById('op-queryBtn').disabled = false;
+        }
+
+        // OnionPIR example buttons
+        document.querySelectorAll('.op-example[data-spk]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.getElementById('op-scriptPubkeys').value = btn.dataset.spk;
+            });
+        });
+
+        document.getElementById('op-pickRandom5Btn').addEventListener('click', () => {
+            document.getElementById('op-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 5).join('\n');
+        });
+        document.getElementById('op-pickRandom10Btn').addEventListener('click', () => {
+            document.getElementById('op-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 10).join('\n');
+        });
+
+        // OnionPIR buttons
+        document.getElementById('op-connectBtn').addEventListener('click', opConnect);
+        document.getElementById('op-disconnectBtn').addEventListener('click', opDisconnect);
+        document.getElementById('op-queryBtn').addEventListener('click', opQueryUtxos);
+        opSetButtons(false);
     </script>
 </body>
 </html>

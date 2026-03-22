@@ -84,3 +84,9 @@ export {
   DEFAULT_SERVER0_URL,
   DEFAULT_SERVER1_URL,
 } from './constants.js';
+
+export {
+  OnionPirWebClient,
+  createOnionPirWebClient,
+  type OnionPirClientConfig,
+} from './onionpir_client.js';
