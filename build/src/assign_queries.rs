@@ -51,7 +51,7 @@ fn main() {
         eprintln!("Failed to read cuckoo file: {}", e);
         std::process::exit(1);
     });
-    let bins_per_table = read_cuckoo_header(&cuckoo_data);
+    let (bins_per_table, _tag_seed) = read_cuckoo_header(&cuckoo_data);
     println!("  bins_per_table = {}", bins_per_table);
     println!();
 

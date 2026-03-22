@@ -25,6 +25,7 @@ export interface ServerInfo {
   chunkBinsPerTable: number;
   indexK: number;
   chunkK: number;
+  tagSeed: bigint;
 }
 
 export interface BatchResult {
@@ -136,7 +137,7 @@ export function decodeResponse(data: Uint8Array): Response {
       return { type: 'Pong' };
 
     case RESP_INFO: {
-      if (data.length < 11) throw new Error('Info response too short');
+      if (data.length < 19) throw new Error('Info response too short');
       const dv = new DataView(data.buffer, data.byteOffset, data.length);
       return {
         type: 'Info',
@@ -145,6 +146,7 @@ export function decodeResponse(data: Uint8Array): Response {
           chunkBinsPerTable: dv.getUint32(5, true),
           indexK: data[9],
           chunkK: data[10],
+          tagSeed: dv.getBigUint64(11, true),
         },
       };
     }

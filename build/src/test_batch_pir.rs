@@ -1,12 +1,12 @@
-//! End-to-end test for the Batch PIR protocol.
+//! End-to-end test for the Batch PIR protocol (v2: inlined 14-byte tagged entries).
 //!
-//! 1. Loads the cuckoo tables (batch_pir_cuckoo.bin) and the index (utxo_chunks_index.bin).
+//! 1. Loads the cuckoo tables (batch_pir_cuckoo.bin) with inlined tagged entries.
 //! 2. Loads the 50 test queries and runs cuckoo assignment (query → bucket, loc0, loc1).
 //! 3. For each of the 75 buckets, generates DPF keys for both servers.
 //!    - Occupied buckets: DPF keys target loc0 and loc1 of the assigned query.
 //!    - Empty buckets: DPF keys target position 0 (dummy).
 //! 4. Calls the server processing function TWICE (once per server).
-//! 5. XORs the two servers' results and verifies correctness.
+//! 5. XORs the two servers' results and verifies correctness by tag matching.
 //!
 //! Usage:
 //!   cargo run --release -p build --bin test_batch_pir
@@ -15,25 +15,22 @@ mod common;
 
 use common::*;
 use libdpf::{Block, Dpf, DpfKey};
-use memmap2::Mmap;
-use rayon::prelude::*;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::time::Instant;
+use rayon::prelude::*;
 
 const QUERIES_FILE: &str = "/Volumes/Bitcoin/data/test_queries_50.bin";
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_results.bin";
 
-/// Each cuckoo bin has 3 slots, each referencing a 26-byte index entry.
-/// Result per DPF query = 3 * 26 = 78 bytes.
-const ENTRY_SIZE: usize = INDEX_ENTRY_SIZE; // 26
-const SLOTS: usize = CUCKOO_BUCKET_SIZE; // 3
-const RESULT_SIZE: usize = SLOTS * ENTRY_SIZE; // 78
+/// Each cuckoo bin has 3 slots, each a 14-byte inlined tagged entry.
+/// Result per DPF query = 3 * 14 = 42 bytes.
+const SLOT_SIZE: usize = INDEX_SLOT_SIZE; // 14
+const SLOTS: usize = CUCKOO_BUCKET_SIZE;  // 3
+const RESULT_SIZE: usize = SLOTS * SLOT_SIZE; // 42
 
 /// We need 2^n >= bins_per_table. bins_per_table ≈ 616423, so n = 20 (2^20 = 1048576).
 const DPF_N: u8 = 20;
-
-const EMPTY: u32 = u32::MAX;
 
 // ─── DPF bit extraction ─────────────────────────────────────────────────────
 
@@ -50,15 +47,14 @@ fn get_dpf_bit(block: &Block, bit_within_block: usize) -> bool {
 // ─── Server processing ──────────────────────────────────────────────────────
 
 /// Process one bucket: evaluate two DPF keys and produce two XOR-accumulated
-/// results by scanning the cuckoo table and looking up index entries.
+/// results by scanning the inlined cuckoo table.
 ///
 /// The scan is parallelized across 128-bin blocks; each thread maintains its
 /// own pair of accumulators which are reduced at the end.
 fn process_bucket(
     dpf_result_0: &[Block], // eval_full of DPF key for query 0
     dpf_result_1: &[Block], // eval_full of DPF key for query 1
-    table_bytes: &[u8],     // this bucket's cuckoo table raw bytes
-    index_data: &[u8],      // the full utxo_chunks_index
+    table_bytes: &[u8],     // this bucket's inlined cuckoo table
     bins_per_table: usize,
 ) -> ([u8; RESULT_SIZE], [u8; RESULT_SIZE]) {
     let num_blocks = dpf_result_0.len();
@@ -85,17 +81,18 @@ fn process_bucket(
                     let b1 = get_dpf_bit(blk1, bit_within);
 
                     if !b0 && !b1 {
-                        continue; // neither query needs this bin → skip fetch
+                        continue;
                     }
 
-                    // Fetch the 4 entries at this bin
-                    let bin_entries = fetch_bin_entries(table_bytes, bin, index_data);
+                    // Fetch the inlined bin: SLOTS * SLOT_SIZE bytes
+                    let bin_offset = bin * RESULT_SIZE;
+                    let bin_data: &[u8] = &table_bytes[bin_offset..bin_offset + RESULT_SIZE];
 
                     if b0 {
-                        xor_into(&mut acc0, &bin_entries);
+                        xor_into(&mut acc0, bin_data);
                     }
                     if b1 {
-                        xor_into(&mut acc1, &bin_entries);
+                        xor_into(&mut acc1, bin_data);
                     }
                 }
 
@@ -112,36 +109,10 @@ fn process_bucket(
         )
 }
 
-/// Fetch the 4 entries at `bin` from the cuckoo table, resolving u32 refs
-/// through the index. EMPTY slots contribute 24 zero bytes.
-#[inline]
-fn fetch_bin_entries(
-    table_bytes: &[u8],
-    bin: usize,
-    index_data: &[u8],
-) -> [u8; RESULT_SIZE] {
-    let mut out = [0u8; RESULT_SIZE];
-    for slot in 0..SLOTS {
-        let slot_offset = (bin * SLOTS + slot) * 4;
-        let ref_u32 = u32::from_le_bytes(
-            table_bytes[slot_offset..slot_offset + 4]
-                .try_into()
-                .unwrap(),
-        );
-        if ref_u32 != EMPTY {
-            let entry_offset = ref_u32 as usize * ENTRY_SIZE;
-            let dst = slot * ENTRY_SIZE;
-            out[dst..dst + ENTRY_SIZE]
-                .copy_from_slice(&index_data[entry_offset..entry_offset + ENTRY_SIZE]);
-        }
-    }
-    out
-}
-
 /// XOR `src` into `dst` in-place, using u64 chunks for speed.
 #[inline]
-fn xor_into(dst: &mut [u8; RESULT_SIZE], src: &[u8; RESULT_SIZE]) {
-    // RESULT_SIZE = 78 = 9 * 8 + 6, so handle remainder
+fn xor_into(dst: &mut [u8; RESULT_SIZE], src: &[u8]) {
+    // RESULT_SIZE = 42 = 5 * 8 + 2, so handle remainder
     const N: usize = RESULT_SIZE / 8;
     let d = unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u64, N) };
     let s = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u64, N) };
@@ -161,12 +132,10 @@ fn xor_into(dst: &mut [u8; RESULT_SIZE], src: &[u8; RESULT_SIZE]) {
 fn server_process(
     dpf_keys: &[(DpfKey, DpfKey)],
     cuckoo_data: &[u8],
-    index_data: &[u8],
     bins_per_table: usize,
 ) -> Vec<([u8; RESULT_SIZE], [u8; RESULT_SIZE])> {
     let dpf = Dpf::with_default_key();
-    let slots_per_table = bins_per_table * SLOTS;
-    let table_byte_size = slots_per_table * 4;
+    let table_byte_size = bins_per_table * SLOTS * SLOT_SIZE;
 
     let mut results = Vec::with_capacity(K);
 
@@ -178,7 +147,7 @@ fn server_process(
         let eval0 = dpf.eval_full(&dpf_keys[b].0);
         let eval1 = dpf.eval_full(&dpf_keys[b].1);
 
-        let (r0, r1) = process_bucket(&eval0, &eval1, table_bytes, index_data, bins_per_table);
+        let (r0, r1) = process_bucket(&eval0, &eval1, table_bytes, bins_per_table);
         results.push((r0, r1));
 
         eprint!("\r  Bucket {}/{}", b + 1, K);
@@ -254,21 +223,18 @@ fn cuckoo_place(
 // ─── Main test ───────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== Batch PIR End-to-End Test ===");
+    println!("=== Batch PIR End-to-End Test (v2: inlined tagged entries) ===");
     println!();
     let start = Instant::now();
 
     // ── 1. Load data ─────────────────────────────────────────────────────
     println!("[1] Loading data files...");
 
-    let index_file = File::open(INDEX_FILE).expect("open index");
-    let index_mmap = unsafe { Mmap::map(&index_file) }.expect("mmap index");
-    let n_entries = index_mmap.len() / INDEX_ENTRY_SIZE;
-    println!("  Index: {} entries ({:.1} MB)", n_entries, index_mmap.len() as f64 / 1e6);
-
     let cuckoo_data = fs::read(CUCKOO_FILE).expect("read cuckoo file");
-    let bins_per_table = read_cuckoo_header(&cuckoo_data);
-    println!("  Cuckoo: bins_per_table = {}", bins_per_table);
+    let (bins_per_table, tag_seed) = read_cuckoo_header(&cuckoo_data);
+    let table_byte_size = bins_per_table * SLOTS * SLOT_SIZE;
+    println!("  Cuckoo: bins_per_table = {}, tag_seed = 0x{:016x}", bins_per_table, tag_seed);
+    println!("  Table size per bucket: {:.2} MB", table_byte_size as f64 / (1024.0 * 1024.0));
 
     let query_data = fs::read(QUERIES_FILE).expect("read queries");
     let num_queries = query_data.len() / SCRIPT_HASH_SIZE;
@@ -314,8 +280,6 @@ fn main() {
     let dpf = Dpf::with_default_key();
     let gen_start = Instant::now();
 
-    // For each bucket: (key_for_server0_q0, key_for_server0_q1)
-    //                  (key_for_server1_q0, key_for_server1_q1)
     let mut server0_keys: Vec<(DpfKey, DpfKey)> = Vec::with_capacity(K);
     let mut server1_keys: Vec<(DpfKey, DpfKey)> = Vec::with_capacity(K);
 
@@ -339,30 +303,28 @@ fn main() {
     // ── 4. Server 0 processing ───────────────────────────────────────────
     println!("[4] Server 0 processing...");
     let s0_start = Instant::now();
-    let server0_results =
-        server_process(&server0_keys, &cuckoo_data, &index_mmap, bins_per_table);
+    let server0_results = server_process(&server0_keys, &cuckoo_data, bins_per_table);
     println!("  Done in {:.2?}", s0_start.elapsed());
 
     // ── 5. Server 1 processing ───────────────────────────────────────────
     println!("[5] Server 1 processing...");
     let s1_start = Instant::now();
-    let server1_results =
-        server_process(&server1_keys, &cuckoo_data, &index_mmap, bins_per_table);
+    let server1_results = server_process(&server1_keys, &cuckoo_data, bins_per_table);
     println!("  Done in {:.2?}", s1_start.elapsed());
     println!();
 
-    // ── 6. Client: XOR, verify, and extract chunk offsets ───────────────
-    println!("[6] Client: XOR server results, verify, and extract chunk offsets...");
+    // ── 6. Client: XOR, verify by tag, and extract chunk offsets ─────────
+    println!("[6] Client: XOR server results, verify by tag, and extract chunk offsets...");
     let mut found = 0;
     let mut not_found = 0;
 
-    // For each query: (script_hash[20], start_chunk_id[4], num_chunks[1], flags[1])
-    // Output file: num_queries entries of [20B script_hash | 4B start_chunk_id | 1B num_chunks | 1B flags]
+    // Output: (script_hash[20], start_chunk_id[4], num_chunks[1], flags[1])
     let mut output_entries: Vec<(Vec<u8>, [u8; 4], u8, u8)> = Vec::with_capacity(num_queries);
 
     for qi in 0..num_queries {
         let b = query_bucket[qi];
         let sh = &query_data[qi * SCRIPT_HASH_SIZE..(qi + 1) * SCRIPT_HASH_SIZE];
+        let expected_tag = compute_tag(tag_seed, sh);
         let (loc0, loc1) = query_locs[qi];
 
         // XOR server0 and server1 results for query q0 (loc0)
@@ -373,10 +335,12 @@ fn main() {
         let mut result_q1 = server0_results[b].1;
         xor_into(&mut result_q1, &server1_results[b].1);
 
-        // Check if our script_hash appears in either result; extract start_chunk_id + num_chunks + flags
+        // Check if our tag appears in either result
         let mut matched = false;
         for result in [&result_q0, &result_q1] {
-            if let Some((start_chunk_id, num_chunks, flags)) = find_entry_in_result(result, sh) {
+            if let Some((start_chunk_id, num_chunks, flags)) =
+                find_entry_in_result(result, expected_tag)
+            {
                 output_entries.push((sh.to_vec(), start_chunk_id, num_chunks, flags));
                 matched = true;
                 found += 1;
@@ -400,9 +364,9 @@ fn main() {
     println!("  Found:     {} / {}", found, num_queries);
     println!("  Not found: {} / {}", not_found, num_queries);
     if not_found == 0 {
-        println!("  ✓ All {} queries recovered correctly!", num_queries);
+        println!("  All {} queries recovered correctly!", num_queries);
     } else {
-        println!("  ✗ {} queries failed", not_found);
+        println!("  {} queries failed", not_found);
     }
 
     // ── 7. Write results to file ─────────────────────────────────────────
@@ -410,7 +374,7 @@ fn main() {
     println!("[7] Writing results to: {}", OUTPUT_FILE);
 
     // File format: for each query, 26 bytes = [20B script_hash | 4B start_chunk_id | 1B num_chunks | 1B flags]
-    let mut out_file = File::create(OUTPUT_FILE).expect("create output");
+    let mut out_file = std::fs::File::create(OUTPUT_FILE).expect("create output");
     for (sh, start_chunk_id, num_chunks, flags) in &output_entries {
         out_file.write_all(sh).unwrap();
         out_file.write_all(start_chunk_id).unwrap();
@@ -447,17 +411,20 @@ fn main() {
     println!("  Total time: {:.2?}", start.elapsed());
 }
 
-/// Find the script_hash in the result's slots and return (start_chunk_id, num_chunks, flags).
-/// Index entry layout: [20B script_hash][4B start_chunk_id][1B num_chunks][1B flags]
-fn find_entry_in_result(result: &[u8; RESULT_SIZE], script_hash: &[u8]) -> Option<([u8; 4], u8, u8)> {
+/// Find the expected tag in the result's slots and return (start_chunk_id bytes, num_chunks, flags).
+/// Slot layout: [8B tag | 4B start_chunk_id | 1B num_chunks | 1B flags]
+fn find_entry_in_result(
+    result: &[u8; RESULT_SIZE],
+    expected_tag: u64,
+) -> Option<([u8; 4], u8, u8)> {
     for slot in 0..SLOTS {
-        let base = slot * ENTRY_SIZE;
-        let entry_sh = &result[base..base + SCRIPT_HASH_SIZE];
-        if entry_sh == script_hash {
+        let base = slot * SLOT_SIZE;
+        let slot_tag = u64::from_le_bytes(result[base..base + TAG_SIZE].try_into().unwrap());
+        if slot_tag == expected_tag {
             let mut start_chunk_id = [0u8; 4];
-            start_chunk_id.copy_from_slice(&result[base + 20..base + 24]);
-            let num_chunks = result[base + 24];
-            let flags = result[base + 25];
+            start_chunk_id.copy_from_slice(&result[base + TAG_SIZE..base + TAG_SIZE + 4]);
+            let num_chunks = result[base + TAG_SIZE + 4];
+            let flags = result[base + TAG_SIZE + 5];
             return Some((start_chunk_id, num_chunks, flags));
         }
     }

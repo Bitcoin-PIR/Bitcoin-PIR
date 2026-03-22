@@ -8,7 +8,7 @@
 
 import {
   K, K_CHUNK, NUM_HASHES,
-  SCRIPT_HASH_SIZE, INDEX_ENTRY_SIZE,
+  SCRIPT_HASH_SIZE, TAG_SIZE, INDEX_ENTRY_SIZE,
   CHUNK_SIZE, CHUNKS_PER_UNIT, UNIT_DATA_SIZE,
   CHUNK_SLOT_SIZE,
   CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
@@ -19,7 +19,7 @@ import {
 import {
   deriveBuckets, deriveCuckooKey, cuckooHash,
   deriveChunkBuckets, deriveChunkCuckooKey, cuckooHashInt,
-  splitmix64,
+  splitmix64, computeTag,
 } from './hash.js';
 
 import { genDpfKeys, genChunkDpfKeys } from './dpf.js';
@@ -83,6 +83,7 @@ export class BatchPirClient {
   // Server info (fetched on connect)
   private indexBins = 0;
   private chunkBins = 0;
+  private tagSeed = 0n;
 
   // Pending response queues (FIFO)
   private pending0: Array<(data: Uint8Array) => void> = [];
@@ -280,7 +281,8 @@ export class BatchPirClient {
     }
     this.indexBins = resp.info.indexBinsPerTable;
     this.chunkBins = resp.info.chunkBinsPerTable;
-    this.log(`Server info: index_bins=${this.indexBins}, chunk_bins=${this.chunkBins}, index_K=${resp.info.indexK}, chunk_K=${resp.info.chunkK}`);
+    this.tagSeed = resp.info.tagSeed;
+    this.log(`Server info: index_bins=${this.indexBins}, chunk_bins=${this.chunkBins}, index_K=${resp.info.indexK}, chunk_K=${resp.info.chunkK}, tag_seed=0x${this.tagSeed.toString(16)}`);
 
     await this.sendRequest(1, { type: 'GetInfo' });
   }
@@ -303,22 +305,16 @@ export class BatchPirClient {
 
   private findEntryInIndexResult(
     result: Uint8Array,
-    scriptHash: Uint8Array,
+    expectedTag: bigint,
   ): { startChunkId: number; numChunks: number; flags: number } | null {
     for (let slot = 0; slot < CUCKOO_BUCKET_SIZE; slot++) {
       const base = slot * INDEX_ENTRY_SIZE;
-      let match = true;
-      for (let j = 0; j < SCRIPT_HASH_SIZE; j++) {
-        if (result[base + j] !== scriptHash[j]) {
-          match = false;
-          break;
-        }
-      }
-      if (match) {
-        const dv = new DataView(result.buffer, result.byteOffset + base, INDEX_ENTRY_SIZE);
-        const startChunkId = dv.getUint32(20, true);
-        const numChunks = result[base + 24];
-        const flags = result[base + 25];
+      const dv = new DataView(result.buffer, result.byteOffset + base, INDEX_ENTRY_SIZE);
+      const slotTag = dv.getBigUint64(0, true);
+      if (slotTag === expectedTag) {
+        const startChunkId = dv.getUint32(TAG_SIZE, true);
+        const numChunks = result[base + TAG_SIZE + 4];
+        const flags = result[base + TAG_SIZE + 5];
         return { startChunkId, numChunks, flags };
       }
     }
@@ -619,9 +615,10 @@ export class BatchPirClient {
         const r1 = resp1.result.results[bucketId];
 
         let found: { startChunkId: number; numChunks: number; flags: number } | null = null;
+        const expectedTag = computeTag(this.tagSeed, scriptHashes[queryIdx]);
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
           const result = this.xorBuffers(r0[h], r1[h]);
-          found = this.findEntryInIndexResult(result, scriptHashes[queryIdx]);
+          found = this.findEntryInIndexResult(result, expectedTag);
           if (found) break;
         }
 

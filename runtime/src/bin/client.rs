@@ -251,8 +251,10 @@ async fn main() {
 
     let index_bins = info.index_bins_per_table as usize;
     let chunk_bins = info.chunk_bins_per_table as usize;
+    let tag_seed = info.tag_seed;
     println!("  Index: K={}, bins_per_table={}", info.index_k, index_bins);
     println!("  Chunk: K={}, bins_per_table={}", info.chunk_k, chunk_bins);
+    println!("  tag_seed: 0x{:016x}", tag_seed);
     println!();
 
     // ══════════════════════════════════════════════════════════════════════
@@ -318,13 +320,16 @@ async fn main() {
         _ => { eprintln!("Unexpected response type for index batch"); return; }
     };
 
+    // Compute fingerprint tag for our script hash
+    let my_tag = compute_tag(tag_seed, &args.script_hash);
+
     // XOR results for the assigned bucket (each cuckoo hash gives one result)
     let b = assigned_bucket;
     let mut found_entry: Option<(u32, u32, u8)> = None;
     for h in 0..INDEX_CUCKOO_NUM_HASHES {
         let mut result = r0.results[b][h].clone();
         eval::xor_into(&mut result, &r1.results[b][h]);
-        if let Some(entry) = eval::find_entry_in_index_result(&result, &args.script_hash) {
+        if let Some(entry) = eval::find_entry_in_index_result(&result, my_tag) {
             found_entry = Some(entry);
             break;
         }

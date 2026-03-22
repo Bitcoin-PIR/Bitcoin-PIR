@@ -31,9 +31,9 @@ pub const CHUNK_DPF_N: u8 = 21;
 
 // ─── Index-level constants ──────────────────────────────────────────────────
 
-/// Each cuckoo bin has CUCKOO_BUCKET_SIZE (3) slots, each referencing a 26-byte index entry.
+/// Each cuckoo bin has CUCKOO_BUCKET_SIZE (3) slots, each INDEX_SLOT_SIZE (14) bytes.
 pub const INDEX_SLOTS: usize = CUCKOO_BUCKET_SIZE; // 3
-pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_ENTRY_SIZE; // 3 * 26 = 78
+pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_SLOT_SIZE; // 3 * 14 = 42
 
 // ─── Chunk-level constants ──────────────────────────────────────────────────
 
@@ -156,7 +156,7 @@ fn process_bucket_generic(
 // ─── Index-level evaluation (inlined cuckoo tables) ─────────────────────────
 
 /// Fetch INDEX_SLOTS inlined index entries at `bin` directly from the table.
-/// Each slot is INDEX_ENTRY_SIZE (26) bytes, stored contiguously.
+/// Each slot is INDEX_SLOT_SIZE (14) bytes, stored contiguously.
 #[inline]
 fn fetch_index_bin(table_bytes: &[u8], bin: usize, out: &mut [u8]) {
     let src_offset = bin * INDEX_RESULT_SIZE;
@@ -220,17 +220,19 @@ pub fn process_chunk_bucket(
 
 // ─── Result parsing helpers (client-side) ───────────────────────────────────
 
-/// Find a script_hash in an index-level result's slots.
+/// Find a matching tag in an index-level result's slots.
+/// `expected_tag` is the 8-byte fingerprint computed by the client.
 /// Returns (start_chunk_id, num_chunks, flags) if found.
-pub fn find_entry_in_index_result(result: &[u8], script_hash: &[u8]) -> Option<(u32, u32, u8)> {
+pub fn find_entry_in_index_result(result: &[u8], expected_tag: u64) -> Option<(u32, u32, u8)> {
     for slot in 0..INDEX_SLOTS {
-        let base = slot * INDEX_ENTRY_SIZE;
-        if result[base..base + SCRIPT_HASH_SIZE] == *script_hash {
+        let base = slot * INDEX_SLOT_SIZE;
+        let slot_tag = u64::from_le_bytes(result[base..base + TAG_SIZE].try_into().unwrap());
+        if slot_tag == expected_tag {
             let start_chunk_id = u32::from_le_bytes(
-                result[base + 20..base + 24].try_into().unwrap(),
+                result[base + TAG_SIZE..base + TAG_SIZE + 4].try_into().unwrap(),
             );
-            let num_chunks = result[base + 24] as u32;
-            let flags = result[base + 25];
+            let num_chunks = result[base + TAG_SIZE + 4] as u32;
+            let flags = result[base + TAG_SIZE + 5];
             return Some((start_chunk_id, num_chunks, flags));
         }
     }

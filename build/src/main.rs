@@ -2,22 +2,27 @@
 //!
 //! 1. Reads the UTXO chunks index (`utxo_chunks_index.bin`): N entries of 26 bytes.
 //! 2. Assigns each entry to 3 distinct buckets out of k=75 (by hashing script_hash).
-//! 3. Within each bucket, builds a Cuckoo hash table (2 hash functions, bucket size 4,
+//! 3. Within each bucket, builds a Cuckoo hash table (2 hash functions, bucket size 3,
 //!    load factor 0.95). Hash function parameters are derived from a master PRG seed.
 //! 4. Serializes all 75 cuckoo tables into a single flat binary file, with every table
 //!    padded to the same size (max num_bins across buckets).
 //!
+//! Each slot in the output stores a 14-byte tagged entry:
+//!   [8B fingerprint tag | 4B start_chunk_id | 1B num_chunks | 1B flags]
+//! The tag is computed as: splitmix64(sh_a ^ tag_seed ^ sh_b ^ sh_c).
+//!
 //! Output file layout:
-//!   [Header: 32 bytes]
-//!     magic:             u64   (0xBA7C_C000_C000_0001)
+//!   [Header: 40 bytes]
+//!     magic:             u64   (0xBA7C_C000_C000_0003)
 //!     k:                 u32   (75)
-//!     cuckoo_bucket_size:u32   (4)
+//!     cuckoo_bucket_size:u32   (3)
 //!     bins_per_table:    u32   (max num_bins, all tables padded to this)
 //!     num_hashes:        u32   (3 — Batch PIR hashes per entry)
 //!     master_seed:       u64   (PRG seed for cuckoo key derivation)
-//!   [Body: k * bins_per_table * cuckoo_bucket_size * 4 bytes]
-//!     table[0], table[1], ..., table[k-1]   (each bins_per_table * bucket_size u32s)
-//!     Unused slots are EMPTY (u32::MAX).
+//!     tag_seed:          u64   (seed for fingerprint tag computation)
+//!   [Body: k * bins_per_table * cuckoo_bucket_size * 14 bytes]
+//!     table[0], table[1], ..., table[k-1]
+//!     Unused slots are zero-filled.
 //!
 //! Usage:
 //!   cargo run --release -p build --bin build_batchdb
@@ -35,11 +40,17 @@ const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
 /// Output file for the serialized Batch PIR cuckoo tables
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";
 
-/// Size of each index entry: 20B script_hash + 4B offset_half + 1B num_chunks + 1B flags
+/// Size of each index entry in the intermediate file: 20B script_hash + 4B start_chunk_id + 1B num_chunks + 1B flags
 const INDEX_ENTRY_SIZE: usize = 26;
 
-/// Size of the script hash portion
+/// Size of the script hash portion (in intermediate file, used for bucket/cuckoo derivation)
 const SCRIPT_HASH_SIZE: usize = 20;
+
+/// Size of the fingerprint tag in the final cuckoo table
+const TAG_SIZE: usize = 8;
+
+/// Size of each tagged entry in the final cuckoo table: 8B tag + 4B + 1B + 1B
+const TAGGED_ENTRY_SIZE: usize = TAG_SIZE + 4 + 1 + 1; // 14
 
 /// Number of Batch PIR buckets
 const K: usize = 75;
@@ -56,11 +67,14 @@ const EMPTY: u32 = u32::MAX;
 /// Master PRG seed for deriving per-bucket hash function keys
 const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
 
-/// File format magic number
-const MAGIC: u64 = 0xBA7C_C000_C000_0001;
+/// File format magic number (v2: 8-byte fingerprint tags)
+const MAGIC: u64 = 0xBA7C_C000_C000_0003;
 
-/// Header size in bytes
-const HEADER_SIZE: usize = 32;
+/// Header size in bytes (includes tag_seed)
+const HEADER_SIZE: usize = 40;
+
+/// Seed for fingerprint tag computation (generated at build time, reproducible)
+const TAG_SEED: u64 = 0xd4e5f6a7b8c91023;
 
 // ─── Hash utilities ──────────────────────────────────────────────────────────
 
@@ -137,6 +151,14 @@ fn derive_buckets(script_hash: &[u8]) -> [usize; NUM_HASHES] {
     }
 
     buckets
+}
+
+/// Compute an 8-byte fingerprint tag for a script_hash using a keyed hash.
+#[inline]
+fn compute_tag(tag_seed: u64, script_hash: &[u8]) -> u64 {
+    let mut h = sh_a(script_hash) ^ tag_seed;
+    h ^= sh_b(script_hash);
+    splitmix64(h ^ sh_c(script_hash))
 }
 
 // ─── Per-bucket Cuckoo hashing ───────────────────────────────────────────────
@@ -309,7 +331,7 @@ fn main() {
     } else {
         0.0
     };
-    let body_bytes = K * slots_per_table * INDEX_ENTRY_SIZE;
+    let body_bytes = K * slots_per_table * TAGGED_ENTRY_SIZE;
     let total_file_bytes = HEADER_SIZE + body_bytes;
 
     println!("  Buckets:               {}", K);
@@ -347,7 +369,7 @@ fn main() {
     });
     let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
-    // Write header (32 bytes)
+    // Write header (40 bytes)
     writer.write_all(&MAGIC.to_le_bytes()).unwrap();
     writer.write_all(&(K as u32).to_le_bytes()).unwrap();
     writer
@@ -360,13 +382,17 @@ fn main() {
         .write_all(&(NUM_HASHES as u32).to_le_bytes())
         .unwrap();
     writer.write_all(&MASTER_SEED.to_le_bytes()).unwrap();
+    writer.write_all(&TAG_SEED.to_le_bytes()).unwrap();
 
-    // Write body: K tables with inlined index entries (INDEX_ENTRY_SIZE per slot).
-    // Sort results by bucket_id so tables are in order 0..K-1.
+    println!("  tag_seed = 0x{:016x}", TAG_SEED);
+
+    // Write body: K tables with tagged entries (TAGGED_ENTRY_SIZE per slot).
+    // Each slot: [8B tag | 4B start_chunk_id | 1B num_chunks | 1B flags]
+    // Tag is computed from the 20-byte script_hash in the intermediate index file.
     let mut sorted: Vec<&(Vec<u32>, CuckooResult)> = results.iter().collect();
     sorted.sort_by_key(|(_, res)| res.bucket_id);
 
-    let empty_slot = [0u8; INDEX_ENTRY_SIZE];
+    let empty_slot = [0u8; TAGGED_ENTRY_SIZE];
     for (table, _) in &sorted {
         assert_eq!(table.len(), slots_per_table);
         for &slot in table.iter() {
@@ -374,7 +400,11 @@ fn main() {
                 writer.write_all(&empty_slot).unwrap();
             } else {
                 let offset = slot as usize * INDEX_ENTRY_SIZE;
-                writer.write_all(&mmap[offset..offset + INDEX_ENTRY_SIZE]).unwrap();
+                let script_hash = &mmap[offset..offset + SCRIPT_HASH_SIZE];
+                let tag = compute_tag(TAG_SEED, script_hash);
+                writer.write_all(&tag.to_le_bytes()).unwrap();
+                // start_chunk_id (4B) + num_chunks (1B) + flags (1B)
+                writer.write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_ENTRY_SIZE]).unwrap();
             }
         }
     }

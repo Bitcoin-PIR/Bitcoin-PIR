@@ -52,6 +52,7 @@ pub struct ServerInfo {
     pub chunk_bins_per_table: u32,
     pub index_k: u8,
     pub chunk_k: u8,
+    pub tag_seed: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -133,6 +134,7 @@ impl Response {
                 payload.extend_from_slice(&info.chunk_bins_per_table.to_le_bytes());
                 payload.push(info.index_k);
                 payload.push(info.chunk_k);
+                payload.extend_from_slice(&info.tag_seed.to_le_bytes());
             }
             Response::IndexBatch(r) => {
                 payload.push(RESP_INDEX_BATCH);
@@ -162,7 +164,7 @@ impl Response {
         match data[0] {
             RESP_PONG => Ok(Response::Pong),
             RESP_INFO => {
-                if data.len() < 11 {
+                if data.len() < 19 {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "info too short"));
                 }
                 Ok(Response::Info(ServerInfo {
@@ -170,6 +172,7 @@ impl Response {
                     chunk_bins_per_table: u32::from_le_bytes(data[5..9].try_into().unwrap()),
                     index_k: data[9],
                     chunk_k: data[10],
+                    tag_seed: u64::from_le_bytes(data[11..19].try_into().unwrap()),
                 }))
             }
             RESP_INDEX_BATCH => {

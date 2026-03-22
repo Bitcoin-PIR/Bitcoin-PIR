@@ -29,6 +29,7 @@ struct ServerData {
     index_cuckoo: Mmap,
     index_bins_per_table: usize,
     index_table_byte_size: usize,
+    tag_seed: u64,
 
     // Level 2 (Chunk) — inlined cuckoo table
     chunk_cuckoo: Mmap,
@@ -41,12 +42,13 @@ impl ServerData {
         println!("[1] Loading inlined index cuckoo: {}", CUCKOO_FILE);
         let index_cuckoo_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
         let index_cuckoo = unsafe { Mmap::map(&index_cuckoo_file) }.expect("mmap index cuckoo");
-        let index_bins_per_table = read_cuckoo_header(&index_cuckoo);
-        // Inlined: each bin has CUCKOO_BUCKET_SIZE slots × INDEX_ENTRY_SIZE bytes
-        let index_table_byte_size = index_bins_per_table * CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
+        let (index_bins_per_table, tag_seed) = read_cuckoo_header(&index_cuckoo);
+        // Inlined: each bin has CUCKOO_BUCKET_SIZE slots × INDEX_SLOT_SIZE bytes
+        let index_table_byte_size = index_bins_per_table * CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE;
         println!("  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
-            index_bins_per_table, INDEX_ENTRY_SIZE,
+            index_bins_per_table, INDEX_SLOT_SIZE,
             index_table_byte_size as f64 / (1024.0 * 1024.0));
+        println!("  tag_seed = 0x{:016x}", tag_seed);
         println!("  total file = {:.2} GB", index_cuckoo.len() as f64 / (1024.0 * 1024.0 * 1024.0));
 
         // Advise sequential access for the inlined table
@@ -91,6 +93,7 @@ impl ServerData {
             index_cuckoo,
             index_bins_per_table,
             index_table_byte_size,
+            tag_seed,
             chunk_cuckoo,
             chunk_bins_per_table,
             chunk_table_byte_size,
@@ -268,6 +271,7 @@ async fn main() {
                             chunk_bins_per_table: data_ref.chunk_bins_per_table as u32,
                             index_k: K as u8,
                             chunk_k: K_CHUNK as u8,
+                            tag_seed: data_ref.tag_seed,
                         }),
                         Request::IndexBatch(q) => {
                             let t = Instant::now();

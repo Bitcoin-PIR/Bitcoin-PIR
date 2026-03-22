@@ -27,11 +27,14 @@ export const CHUNK_CUCKOO_BUCKET_SIZE = 2;
 /** Number of cuckoo hash functions for CHUNK level */
 export const CHUNK_CUCKOO_NUM_HASHES = 3;
 
-/** Script hash size in bytes */
+/** Script hash size in bytes (used for computing script_hash and bucket derivation) */
 export const SCRIPT_HASH_SIZE = 20;
 
-/** Size of each index entry: 20B script_hash + 4B start_chunk_id + 1B num_chunks + 1B flags */
-export const INDEX_ENTRY_SIZE = 26;
+/** Size of the fingerprint tag in the final cuckoo table */
+export const TAG_SIZE = 8;
+
+/** Size of each tagged index entry: 8B tag + 4B start_chunk_id + 1B num_chunks + 1B flags */
+export const INDEX_ENTRY_SIZE = 14;
 
 /** Flags byte bit 6: address excluded from database due to too many UTXOs ("whale") */
 export const FLAG_WHALE = 0x40;

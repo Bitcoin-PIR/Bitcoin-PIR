@@ -4,14 +4,17 @@
 /// Path to the UTXO chunks index file (nodust, 40-byte blocks)
 pub const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
 
-/// Size of each index entry: 20B script_hash + 4B start_chunk_id + 1B num_chunks + 1B flags
+/// Size of each index entry in the intermediate file: 20B script_hash + 4B start_chunk_id + 1B num_chunks + 1B flags
 pub const INDEX_ENTRY_SIZE: usize = 26;
 
 /// Flags byte bit 6: address excluded from database due to too many UTXOs ("whale")
 pub const FLAG_WHALE: u8 = 0x40;
 
-/// Size of the script hash portion
+/// Size of the script hash portion (in intermediate file and for bucket/cuckoo derivation)
 pub const SCRIPT_HASH_SIZE: usize = 20;
+
+/// Size of the fingerprint tag stored in the final cuckoo table
+pub const TAG_SIZE: usize = 8;
 
 /// Number of Batch PIR buckets
 pub const K: usize = 75;
@@ -34,11 +37,11 @@ pub const CHUNK_CUCKOO_BUCKET_SIZE: usize = 2;
 /// Number of cuckoo hash functions for CHUNK level
 pub const CHUNK_CUCKOO_NUM_HASHES: usize = 3;
 
-/// File format magic number for the batch_pir_cuckoo.bin file
-pub const MAGIC: u64 = 0xBA7C_C000_C000_0001;
+/// File format magic number for the batch_pir_cuckoo.bin file (v2: 8-byte fingerprint tags)
+pub const MAGIC: u64 = 0xBA7C_C000_C000_0003;
 
-/// Header size in bytes for the batch_pir_cuckoo.bin file
-pub const HEADER_SIZE: usize = 32;
+/// Header size in bytes for the batch_pir_cuckoo.bin file (v2: includes tag_seed)
+pub const HEADER_SIZE: usize = 40;
 
 /// Path to the serialized Batch PIR cuckoo tables
 pub const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";
@@ -137,20 +140,30 @@ pub fn cuckoo_hash(script_hash: &[u8], key: u64, num_bins: usize) -> usize {
     (h % num_bins as u64) as usize
 }
 
-/// Size of one inlined index slot (= INDEX_ENTRY_SIZE = 26 bytes)
-pub const INDEX_SLOT_SIZE: usize = INDEX_ENTRY_SIZE;
+/// Size of one inlined index slot in the final cuckoo table: 8B tag + 4B + 1B + 1B = 14 bytes
+pub const INDEX_SLOT_SIZE: usize = TAG_SIZE + 4 + 1 + 1;
 
 /// Size of one inlined chunk slot: 4B chunk_id + CHUNK_SIZE data
 pub const CHUNK_SLOT_SIZE: usize = 4 + CHUNK_SIZE; // 44
 
-/// Read bins_per_table from a batch_pir_cuckoo.bin header.
-/// Returns bins_per_table (the uniform number of cuckoo bins per bucket table).
-pub fn read_cuckoo_header(data: &[u8]) -> usize {
+/// Read bins_per_table and tag_seed from a batch_pir_cuckoo.bin header.
+/// Returns (bins_per_table, tag_seed).
+pub fn read_cuckoo_header(data: &[u8]) -> (usize, u64) {
     assert!(data.len() >= HEADER_SIZE, "File too small for header");
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
     assert_eq!(magic, MAGIC, "Bad magic number");
     let bins_per_table = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
-    bins_per_table
+    let tag_seed = u64::from_le_bytes(data[32..40].try_into().unwrap());
+    (bins_per_table, tag_seed)
+}
+
+/// Compute an 8-byte fingerprint tag for a script_hash using a keyed hash.
+/// Uses splitmix64 mixing with an independent seed for collision resistance.
+#[inline]
+pub fn compute_tag(tag_seed: u64, script_hash: &[u8]) -> u64 {
+    let mut h = sh_a(script_hash) ^ tag_seed;
+    h ^= sh_b(script_hash);
+    splitmix64(h ^ sh_c(script_hash))
 }
 
 // ─── Chunk-level Batch PIR constants ─────────────────────────────────────────

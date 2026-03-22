@@ -54,6 +54,7 @@ export {
 
 export {
   splitmix64,
+  computeTag,
   deriveBuckets,
   deriveCuckooKey,
   cuckooHash,
@@ -75,7 +76,7 @@ export {
 
 export {
   K, K_CHUNK, NUM_HASHES,
-  SCRIPT_HASH_SIZE, INDEX_ENTRY_SIZE,
+  SCRIPT_HASH_SIZE, TAG_SIZE, INDEX_ENTRY_SIZE,
   CHUNK_SIZE, CHUNKS_PER_UNIT, UNIT_DATA_SIZE,
   CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
   CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,

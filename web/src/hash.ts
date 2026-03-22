@@ -43,6 +43,16 @@ function shC(data: Uint8Array): bigint {
   return BigInt(dv.getUint32(0, true));
 }
 
+// ─── Fingerprint tag computation ────────────────────────────────────────────
+
+/** Compute an 8-byte fingerprint tag for a script_hash using a keyed hash */
+export function computeTag(tagSeed: bigint, scriptHash: Uint8Array): bigint {
+  let h = (shA(scriptHash) ^ tagSeed) & MASK64;
+  h = (h ^ shB(scriptHash)) & MASK64;
+  h = splitmix64((h ^ shC(scriptHash)) & MASK64);
+  return h;
+}
+
 // ─── Index-level bucket assignment ─────────────────────────────────────────
 
 /** Hash script_hash with a nonce for bucket assignment */
