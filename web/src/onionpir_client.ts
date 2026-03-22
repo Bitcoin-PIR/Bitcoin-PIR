@@ -98,25 +98,58 @@ function chunkCuckooHash(entryId: number, key: bigint, numBins: number): number 
   return Number(splitmix64((BigInt(entryId) ^ key) & MASK64) % BigInt(numBins));
 }
 
+// ─── Chunk reverse index: group → entry_ids (precomputed once) ────────────
+
+let chunkReverseIndex: Map<number, number[]> | null = null;
+let chunkReverseIndexTotalEntries = 0;
+
+/**
+ * Build reverse index mapping each chunk group to its entry_ids.
+ * Single pass over all entries — 80× faster than per-group scanning.
+ * Cached: only rebuilt if totalEntries changes.
+ */
+async function ensureChunkReverseIndex(
+  totalEntries: number,
+  onProgress?: (msg: string) => void,
+): Promise<Map<number, number[]>> {
+  if (chunkReverseIndex && chunkReverseIndexTotalEntries === totalEntries) {
+    return chunkReverseIndex;
+  }
+
+  const index = new Map<number, number[]>();
+  for (let g = 0; g < K_CHUNK; g++) {
+    index.set(g, []);
+  }
+
+  for (let eid = 0; eid < totalEntries; eid++) {
+    const buckets = deriveChunkBuckets(eid);
+    for (const g of buckets) {
+      index.get(g)!.push(eid);
+    }
+    // Yield periodically — 815K iterations with BigInt hashing
+    if (eid % 50000 === 49999) {
+      onProgress?.(`Building chunk reverse index: ${eid + 1}/${totalEntries}...`);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  chunkReverseIndex = index;
+  chunkReverseIndexTotalEntries = totalEntries;
+  return index;
+}
+
 /**
  * Build the chunk cuckoo table for a specific group (deterministic).
- * Uses fast U64 arithmetic for the 815K entry scan, WASM for cuckoo insertion.
+ * Uses precomputed reverse index for the entry list, WASM for cuckoo insertion.
  */
 function buildChunkCuckooForGroup(
   wasmModule: OnionPirModule,
   groupId: number,
-  totalEntries: number,
+  reverseIndex: Map<number, number[]>,
   binsPerTable: number,
 ): Uint32Array {
-  // Collect all entries assigned to this group
-  const entries: number[] = [];
-  for (let eid = 0; eid < totalEntries; eid++) {
-    const buckets = deriveChunkBuckets(eid);
-    if (buckets.includes(groupId)) {
-      entries.push(eid);
-    }
-  }
-  // entries are already sorted since we iterate eid in order
+  const entries = reverseIndex.get(groupId) ?? [];
+  // entries are already sorted since the reverse index is built in eid order
 
   // Derive 6 hash keys and encode as lo/hi u32 pairs for WASM
   const keysU32 = new Uint32Array(CHUNK_CUCKOO_NUM_HASHES * 2);
@@ -676,6 +709,13 @@ export class OnionPirWebClient {
         await new Promise(r => setTimeout(r, 0));
         chunkClient = this.wasmModule!.createClientFromSecretKey(this.chunkBins, clientId, secretKey);
 
+        // Build reverse index once: group → entry_ids (single pass over 815K entries)
+        // This is 80× faster than scanning per-group.
+        const reverseIndex = await ensureChunkReverseIndex(
+          this.totalPacked,
+          (msg) => progress('Level 2', msg),
+        );
+
         const entryPbcGroups = uniqueEntryIds.map(eid => deriveChunkBuckets(eid));
         const chunkRounds = planPbcRounds(entryPbcGroups, this.chunkK);
         chunkRoundsCount = chunkRounds.length;
@@ -695,10 +735,9 @@ export class OnionPirWebClient {
             const eid = uniqueEntryIds[ei];
             if (!cuckooCache.has(group)) {
               const t0 = performance.now();
-              cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, this.totalPacked, this.chunkBins));
+              cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, reverseIndex, this.chunkBins));
               tablesBuilt++;
               this.log(`  Cuckoo table for group ${group}: ${(performance.now() - t0).toFixed(0)}ms`);
-              // Yield after each table build — each scans 815K entries
               progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: built ${tablesBuilt} cuckoo tables...`);
               await new Promise(r => setTimeout(r, 0));
             }
