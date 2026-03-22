@@ -601,26 +601,16 @@ async fn main() {
     println!("[5] Level 2: Chunk PIR...");
     let l2_start = Instant::now();
 
-    // Register chunk keys
-    println!("  Registering chunk keys...");
-    let chunk_galois = chunk_client.generate_galois_keys();
-    let chunk_gsw = chunk_client.generate_gsw_keys();
-    let reg_msg2 = RegisterKeysMsg {
-        galois_keys: chunk_galois,
-        gsw_keys: chunk_gsw,
-    };
-    sink.send(Message::Binary(reg_msg2.encode().into())).await.expect("send chunk keys");
-    let ack2 = recv_binary(&mut stream, &mut sink).await;
-    assert_eq!(ack2[4], RESP_KEYS_ACK);
-    println!("  Chunk keys registered.");
-
-    // Collect all unique entry_ids needed across all addresses
+    // Collect all unique entry_ids needed BEFORE registering chunk keys
     let mut unique_entry_ids: Vec<u32> = Vec::new();
-    let mut entry_id_set: HashMap<u32, usize> = HashMap::new(); // entry_id → index
+    let mut entry_id_set: HashMap<u32, usize> = HashMap::new();
 
     for ir in &index_results {
         if let Some(ir) = ir {
-            if ir.num_entries == FLAG_WHALE { continue; }
+            if ir.num_entries == FLAG_WHALE {
+                println!("  (whale address excluded)");
+                continue;
+            }
             for i in 0..ir.num_entries as u32 {
                 let eid = ir.entry_id + i;
                 if !entry_id_set.contains_key(&eid) {
@@ -632,9 +622,25 @@ async fn main() {
         }
     }
 
+    // Decrypted entry data: entry_id → raw bytes
+    let mut decrypted_entries: HashMap<u32, Vec<u8>> = HashMap::new();
+    let mut chunk_rounds_count = 0usize;
+
     if unique_entry_ids.is_empty() {
-        println!("  No entries to fetch (all whale or not found).");
-    }
+        println!("  No entries to fetch — skipping chunk phase.");
+    } else {
+        // Register chunk keys only if there are entries to fetch
+        println!("  Registering chunk keys...");
+        let chunk_galois = chunk_client.generate_galois_keys();
+        let chunk_gsw = chunk_client.generate_gsw_keys();
+        let reg_msg2 = RegisterKeysMsg {
+            galois_keys: chunk_galois,
+            gsw_keys: chunk_gsw,
+        };
+        sink.send(Message::Binary(reg_msg2.encode().into())).await.expect("send chunk keys");
+        let ack2 = recv_binary(&mut stream, &mut sink).await;
+        assert_eq!(ack2[4], RESP_KEYS_ACK);
+        println!("  Chunk keys registered.");
 
     // PBC place entries into chunk groups
     let entry_pbc_groups: Vec<[usize; NUM_HASHES]> = unique_entry_ids.iter()
@@ -648,9 +654,6 @@ async fn main() {
 
     // Cuckoo table cache (group_id → table)
     let mut cuckoo_cache: HashMap<usize, Vec<u32>> = HashMap::new();
-
-    // Decrypted entry data: entry_id → raw bytes
-    let mut decrypted_entries: HashMap<u32, Vec<u8>> = HashMap::new();
 
     for (ri, round) in chunk_rounds.iter().enumerate() {
         // For each entry in this round, build cuckoo table if needed and find bin
@@ -722,7 +725,10 @@ async fn main() {
         }
     }
 
-    println!("  Level 2: {} rounds in {:.2?}", chunk_rounds.len(), l2_start.elapsed());
+    chunk_rounds_count = chunk_rounds.len();
+    } // end if unique_entry_ids not empty
+
+    println!("  Level 2: {} rounds in {:.2?}", chunk_rounds_count, l2_start.elapsed());
     println!();
 
     // ══════════════════════════════════════════════════════════════════════
@@ -798,7 +804,7 @@ async fn main() {
     // ── Summary ─────────────────────────────────────────────────────────
     println!("=== Done ===");
     println!("  {} addresses, {} index rounds, {} chunk rounds",
-        num_addresses, total_index_rounds, chunk_rounds.len());
+        num_addresses, total_index_rounds, chunk_rounds_count);
     println!("  Total time: {:.2?}", total_start.elapsed());
 
     let _ = sink.send(Message::Close(None)).await;

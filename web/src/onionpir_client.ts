@@ -639,17 +639,8 @@ export class OnionPirWebClient {
       // ════════════════════════════════════════════════════════════════
       // LEVEL 2: Chunk PIR
       // ════════════════════════════════════════════════════════════════
-      progress('Level 2', 'Registering chunk keys...');
 
-      // Register chunk keys
-      const chunkGalois = chunkClient.generateGaloisKeys();
-      const chunkGsw = chunkClient.generateGswKeys();
-      const regMsg2 = encodeRegisterKeys(chunkGalois, chunkGsw);
-      const ack2 = await this.sendRaw(regMsg2);
-      if (ack2[4] !== RESP_KEYS_ACK) throw new Error('Chunk key registration failed');
-      this.log('Chunk keys registered');
-
-      // Collect unique entry_ids
+      // Collect unique entry_ids and detect whales BEFORE registering chunk keys
       const uniqueEntryIds: number[] = [];
       const entryIdSet = new Map<number, number>();
       const whaleQueries = new Set<number>();
@@ -667,70 +658,87 @@ export class OnionPirWebClient {
         }
       }
 
+      if (whaleQueries.size > 0) {
+        this.log(`${whaleQueries.size} whale address(es) excluded`);
+      }
+
       if (uniqueEntryIds.length === 0) {
-        this.log('No entries to fetch');
+        this.log('No entries to fetch — skipping chunk phase');
       }
 
-      const entryPbcGroups = uniqueEntryIds.map(eid => deriveChunkBuckets(eid));
-      const chunkRounds = planPbcRounds(entryPbcGroups, this.chunkK);
-      this.log(`Level 2: ${uniqueEntryIds.length} entries → ${chunkRounds.length} round(s)`);
-
-      const cuckooCache = new Map<number, Uint32Array>();
       const decryptedEntries = new Map<number, Uint8Array>();
+      let chunkRoundsCount = 0;
 
-      for (let ri = 0; ri < chunkRounds.length; ri++) {
-        const round = chunkRounds[ri];
-        progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (building cuckoo tables)...`);
+      if (uniqueEntryIds.length > 0) {
+        // Only register chunk keys and query if there are entries to fetch
+        progress('Level 2', 'Registering chunk keys...');
+        const chunkGalois = chunkClient.generateGaloisKeys();
+        const chunkGsw = chunkClient.generateGswKeys();
+        const regMsg2 = encodeRegisterKeys(chunkGalois, chunkGsw);
+        const ack2 = await this.sendRaw(regMsg2);
+        if (ack2[4] !== RESP_KEYS_ACK) throw new Error('Chunk key registration failed');
+        this.log('Chunk keys registered');
 
-        // Build cuckoo tables and find bins
-        const queryInfos: { entryId: number; group: number; bin: number }[] = [];
-        const groupToQi = new Map<number, number>();
+        const entryPbcGroups = uniqueEntryIds.map(eid => deriveChunkBuckets(eid));
+        const chunkRounds = planPbcRounds(entryPbcGroups, this.chunkK);
+        chunkRoundsCount = chunkRounds.length;
+        this.log(`Level 2: ${uniqueEntryIds.length} entries → ${chunkRounds.length} round(s)`);
 
-        for (const [ei, group] of round) {
-          const eid = uniqueEntryIds[ei];
-          if (!cuckooCache.has(group)) {
-            const t0 = performance.now();
-            cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, this.totalPacked, this.chunkBins));
-            this.log(`  Cuckoo table for group ${group}: ${(performance.now() - t0).toFixed(0)}ms`);
+        const cuckooCache = new Map<number, Uint32Array>();
+
+        for (let ri = 0; ri < chunkRounds.length; ri++) {
+          const round = chunkRounds[ri];
+          progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (building cuckoo tables)...`);
+
+          const queryInfos: { entryId: number; group: number; bin: number }[] = [];
+          const groupToQi = new Map<number, number>();
+
+          for (const [ei, group] of round) {
+            const eid = uniqueEntryIds[ei];
+            if (!cuckooCache.has(group)) {
+              const t0 = performance.now();
+              cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, this.totalPacked, this.chunkBins));
+              this.log(`  Cuckoo table for group ${group}: ${(performance.now() - t0).toFixed(0)}ms`);
+            }
+
+            const keys: bigint[] = [];
+            for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+              keys.push(chunkDeriveCuckooKey(group, h));
+            }
+            const bin = findEntryInCuckoo(cuckooCache.get(group)!, eid, keys, this.chunkBins);
+            if (bin === null) throw new Error(`Entry ${eid} not in cuckoo table for group ${group}`);
+
+            const qi = queryInfos.length;
+            queryInfos.push({ entryId: eid, group, bin });
+            groupToQi.set(group, qi);
           }
 
-          const keys: bigint[] = [];
-          for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
-            keys.push(chunkDeriveCuckooKey(group, h));
+          progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (querying)...`);
+
+          const queries: Uint8Array[] = [];
+          for (let g = 0; g < this.chunkK; g++) {
+            const qi = groupToQi.get(g);
+            const idx = qi !== undefined
+              ? queryInfos[qi].bin
+              : Number(this.rng.nextU64() % BigInt(this.chunkBins));
+            queries.push(chunkClient.generateQuery(idx));
           }
-          const bin = findEntryInCuckoo(cuckooCache.get(group)!, eid, keys, this.chunkBins);
-          if (bin === null) throw new Error(`Entry ${eid} not in cuckoo table for group ${group}`);
 
-          const qi = queryInfos.length;
-          queryInfos.push({ entryId: eid, group, bin });
-          groupToQi.set(group, qi);
-        }
+          const batchMsg = encodeBatchQuery(REQ_ONIONPIR_CHUNK_QUERY, ri, queries);
+          const respRaw = await this.sendRaw(batchMsg);
 
-        progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (querying)...`);
+          const respPayload = respRaw.slice(4);
+          if (respPayload[0] !== RESP_ONIONPIR_CHUNK_RESULT) throw new Error('Unexpected chunk response');
+          const { results } = decodeBatchResult(respPayload, 1);
 
-        const queries: Uint8Array[] = [];
-        for (let g = 0; g < this.chunkK; g++) {
-          const qi = groupToQi.get(g);
-          const idx = qi !== undefined
-            ? queryInfos[qi].bin
-            : Number(this.rng.nextU64() % BigInt(this.chunkBins));
-          queries.push(chunkClient.generateQuery(idx));
-        }
-
-        const batchMsg = encodeBatchQuery(REQ_ONIONPIR_CHUNK_QUERY, ri, queries);
-        const respRaw = await this.sendRaw(batchMsg);
-
-        const respPayload = respRaw.slice(4);
-        if (respPayload[0] !== RESP_ONIONPIR_CHUNK_RESULT) throw new Error('Unexpected chunk response');
-        const { results } = decodeBatchResult(respPayload, 1);
-
-        for (const qi of queryInfos) {
-          const entryBytes = chunkClient.decryptResponse(qi.bin, results[qi.group]);
-          decryptedEntries.set(qi.entryId, entryBytes.slice(0, PACKED_ENTRY_SIZE));
+          for (const qi of queryInfos) {
+            const entryBytes = chunkClient.decryptResponse(qi.bin, results[qi.group]);
+            decryptedEntries.set(qi.entryId, entryBytes.slice(0, PACKED_ENTRY_SIZE));
+          }
         }
       }
 
-      this.log(`Level 2 complete: ${decryptedEntries.size} entries recovered`);
+      this.log(`Level 2 complete: ${decryptedEntries.size} entries recovered in ${chunkRoundsCount} rounds`);
 
       // ════════════════════════════════════════════════════════════════
       // Reassemble results
@@ -770,7 +778,7 @@ export class OnionPirWebClient {
           totalSats,
           startChunkId: ir.entryId,
           numChunks: ir.numEntries,
-          numRounds: chunkRounds.length,
+          numRounds: chunkRoundsCount,
           isWhale: false,
         };
       }

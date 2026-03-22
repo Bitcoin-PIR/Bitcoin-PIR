@@ -390,7 +390,7 @@ async fn main() {
                     REQ_REGISTER_KEYS => {
                         match RegisterKeysMsg::decode(body) {
                             Ok(keys_msg) => {
-                                let level = key_reg_count.min(1);
+                                let level = key_reg_count % 2;
                                 key_reg_count += 1;
                                 let (tx, rx) = oneshot::channel();
                                 let _ = pir_tx.send(PirCommand::RegisterKeys {
