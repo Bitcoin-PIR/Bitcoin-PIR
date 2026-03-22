@@ -481,23 +481,26 @@ async fn main() {
     let mut rng = DummyRng::new();
     let mut total_index_rounds = 0u16;
 
-    // PBC place all addresses and query hash0
+    // PBC place all addresses — group assignments reused for hash1 retry
     let all_groups: Vec<[usize; NUM_HASHES]> = addr_infos.iter().map(|a| a.groups).collect();
     let index_rounds = plan_pbc_rounds(&all_groups, index_k);
     println!("  PBC placement: {} addresses → {} round{}",
         num_addresses, index_rounds.len(),
         if index_rounds.len() == 1 { "" } else { "s" });
 
+    // Track group assignment per address for hash1 retry (must use same group)
+    let mut addr_group_assignment: HashMap<usize, usize> = HashMap::new();
+
+    // Hash0 pass
     for round in &index_rounds {
-        // Map group → (addr_idx, target_bin_for_hash0)
         let mut group_map: HashMap<usize, (usize, usize)> = HashMap::new();
         for &(addr_idx, group) in round {
+            addr_group_assignment.insert(addr_idx, group);
             let key0 = derive_cuckoo_key(group, 0);
             let bin0 = cuckoo_hash(&args.script_hashes[addr_idx], key0, index_bins);
             group_map.insert(group, (addr_idx, bin0));
         }
 
-        // Generate queries
         let mut queries = Vec::with_capacity(index_k);
         for g in 0..index_k {
             let idx = if let Some(&(_, bin)) = group_map.get(&g) {
@@ -517,7 +520,6 @@ async fn main() {
         assert_eq!(resp_payload[0], RESP_ONIONPIR_INDEX_RESULT);
         let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode");
 
-        // Decrypt and scan for each address in this round
         for &(addr_idx, group) in round {
             let (_, bin) = group_map[&group];
             let entry_bytes = index_client.decrypt_response(
@@ -530,57 +532,51 @@ async fn main() {
         }
     }
 
-    // Retry hash1 for missed addresses
+    // Hash1 retry — reuse SAME group assignments from hash0
     let missed_h0: Vec<usize> = (0..num_addresses)
         .filter(|&i| index_results[i].is_none())
         .collect();
 
     if !missed_h0.is_empty() {
-        println!("  {} missed hash0, retrying hash1...", missed_h0.len());
+        println!("  {} missed hash0, retrying hash1 (same groups)...", missed_h0.len());
 
-        let missed_groups: Vec<[usize; NUM_HASHES]> = missed_h0.iter()
-            .map(|&i| addr_infos[i].groups)
-            .collect();
-        let retry_rounds = plan_pbc_rounds(&missed_groups, index_k);
+        // All missed addresses have non-colliding group assignments from hash0
+        let mut group_map: HashMap<usize, (usize, usize)> = HashMap::new();
+        for &addr_idx in &missed_h0 {
+            let group = addr_group_assignment[&addr_idx];
+            let key1 = derive_cuckoo_key(group, 1);
+            let bin1 = cuckoo_hash(&args.script_hashes[addr_idx], key1, index_bins);
+            group_map.insert(group, (addr_idx, bin1));
+        }
 
-        for round in &retry_rounds {
-            let mut group_map: HashMap<usize, (usize, usize)> = HashMap::new();
-            for &(mi, group) in round {
-                let addr_idx = missed_h0[mi];
-                let key1 = derive_cuckoo_key(group, 1);
-                let bin1 = cuckoo_hash(&args.script_hashes[addr_idx], key1, index_bins);
-                group_map.insert(group, (addr_idx, bin1));
-            }
+        let mut queries = Vec::with_capacity(index_k);
+        for g in 0..index_k {
+            let idx = if let Some(&(_, bin)) = group_map.get(&g) {
+                bin as u64
+            } else {
+                rng.next_u64() % index_bins as u64
+            };
+            queries.push(index_client.generate_query(idx));
+        }
 
-            let mut queries = Vec::with_capacity(index_k);
-            for g in 0..index_k {
-                let idx = if let Some(&(_, bin)) = group_map.get(&g) {
-                    bin as u64
-                } else {
-                    rng.next_u64() % index_bins as u64
-                };
-                queries.push(index_client.generate_query(idx));
-            }
+        let batch = OnionPirBatchQuery { round_id: total_index_rounds, queries };
+        sink.send(Message::Binary(batch.encode(REQ_ONIONPIR_INDEX_QUERY).into())).await.expect("send");
+        total_index_rounds += 1;
 
-            let batch = OnionPirBatchQuery { round_id: total_index_rounds, queries };
-            sink.send(Message::Binary(batch.encode(REQ_ONIONPIR_INDEX_QUERY).into())).await.expect("send");
-            total_index_rounds += 1;
+        let resp_bytes = recv_binary(&mut stream, &mut sink).await;
+        let resp_payload = &resp_bytes[4..];
+        assert_eq!(resp_payload[0], RESP_ONIONPIR_INDEX_RESULT);
+        let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode");
 
-            let resp_bytes = recv_binary(&mut stream, &mut sink).await;
-            let resp_payload = &resp_bytes[4..];
-            assert_eq!(resp_payload[0], RESP_ONIONPIR_INDEX_RESULT);
-            let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode");
-
-            for &(mi, group) in round {
-                let addr_idx = missed_h0[mi];
-                let (_, bin) = group_map[&group];
-                let entry_bytes = index_client.decrypt_response(
-                    bin as u64,
-                    &result_batch.results[group],
-                );
-                if let Some(ir) = scan_index_bin(&entry_bytes, addr_infos[addr_idx].tag, index_bucket_size, index_slot_size) {
-                    index_results[addr_idx] = Some(ir);
-                }
+        for &addr_idx in &missed_h0 {
+            let group = addr_group_assignment[&addr_idx];
+            let (_, bin) = group_map[&group];
+            let entry_bytes = index_client.decrypt_response(
+                bin as u64,
+                &result_batch.results[group],
+            );
+            if let Some(ir) = scan_index_bin(&entry_bytes, addr_infos[addr_idx].tag, index_bucket_size, index_slot_size) {
+                index_results[addr_idx] = Some(ir);
             }
         }
     }
