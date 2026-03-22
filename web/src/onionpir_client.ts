@@ -614,12 +614,10 @@ export class OnionPirWebClient {
         const { results } = decodeBatchResult(respPayload, 1);
 
         // Decrypt both hash results and scan for tag
-        progress('Level 1', `Round ${roundNum}/${totalRounds}: decrypting ${round.length * 2} results...`);
         let decrypted = 0;
         for (const [addrIdx, group] of round) {
           for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
             const qi = group * 2 + h;
-            if (results[qi].length === 0) continue; // empty response (dummy group)
             const bin = queryBins[qi];
             const entryBytes = indexClient.decryptResponse(bin, results[qi]);
             decrypted++;
@@ -629,8 +627,9 @@ export class OnionPirWebClient {
               break;
             }
           }
-          // Yield during decryption
-          if (decrypted > 0 && decrypted % 20 === 0) {
+          // Yield frequently during decryption to prevent UI freeze
+          if (decrypted % 5 === 0) {
+            progress('Level 1', `Round ${roundNum}/${totalRounds}: decrypted ${decrypted}/${round.length * 2}...`);
             await new Promise(r => setTimeout(r, 0));
           }
         }
@@ -734,10 +733,15 @@ export class OnionPirWebClient {
           if (respPayload[0] !== RESP_ONIONPIR_CHUNK_RESULT) throw new Error('Unexpected chunk response');
           const { results } = decodeBatchResult(respPayload, 1);
 
-          progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: decrypting...`);
+          let chunkDecrypted = 0;
           for (const qi of queryInfos) {
             const entryBytes = chunkClient!.decryptResponse(qi.bin, results[qi.group]);
             decryptedEntries.set(qi.entryId, entryBytes.slice(0, PACKED_ENTRY_SIZE));
+            chunkDecrypted++;
+            if (chunkDecrypted % 5 === 0) {
+              progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: decrypted ${chunkDecrypted}/${queryInfos.length}...`);
+              await new Promise(r => setTimeout(r, 0));
+            }
           }
         }
       }
