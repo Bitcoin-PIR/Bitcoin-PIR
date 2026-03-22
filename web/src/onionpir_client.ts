@@ -567,9 +567,12 @@ export class OnionPirWebClient {
       const indexRounds = planPbcRounds(allGroups, this.indexK);
       this.log(`Level 1: ${N} queries → ${indexRounds.length} round(s)`);
 
-      // Each round: 2 queries per group (hash0 + hash1 bins), matching DPF approach
+      // Each round: 2 queries per group (hash0 + hash1 bins), matching DPF approach.
+      // Groups without a real address send empty queries (server skips them).
       for (const round of indexRounds) {
-        progress('Level 1', `Index round ${totalIndexRounds + 1}/${indexRounds.length}...`);
+        const roundNum = totalIndexRounds + 1;
+        const totalRounds = indexRounds.length;
+        progress('Level 1', `Round ${roundNum}/${totalRounds}: generating ${round.length * 2} FHE queries...`);
 
         const groupMap = new Map<number, number>(); // group → addrIdx
         for (const [addrIdx, group] of round) {
@@ -577,12 +580,14 @@ export class OnionPirWebClient {
         }
 
         // Generate 2*K queries: [g0_h0, g0_h1, g1_h0, g1_h1, ...]
+        // ALL groups get real FHE queries (dummy groups use random bins)
+        // so the server cannot distinguish real from dummy.
         const queries: Uint8Array[] = [];
         const queryBins: number[] = [];
         for (let g = 0; g < this.indexK; g++) {
+          const addrIdx = groupMap.get(g);
           for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
             let bin: number;
-            const addrIdx = groupMap.get(g);
             if (addrIdx !== undefined) {
               const key = deriveCuckooKey(g, h);
               bin = cuckooHash(scriptHashes[addrIdx], key, this.indexBins);
@@ -592,8 +597,14 @@ export class OnionPirWebClient {
             queries.push(indexClient.generateQuery(bin));
             queryBins.push(bin);
           }
+          // Yield to event loop periodically to prevent UI freeze
+          if (g % 10 === 9) {
+            progress('Level 1', `Round ${roundNum}/${totalRounds}: ${(g + 1) * 2}/${this.indexK * 2} queries...`);
+            await new Promise(r => setTimeout(r, 0));
+          }
         }
 
+        progress('Level 1', `Round ${roundNum}/${totalRounds}: querying server (${queries.length} FHE queries)...`);
         const batchMsg = encodeBatchQuery(REQ_ONIONPIR_INDEX_QUERY, totalIndexRounds, queries);
         const respRaw = await this.sendRaw(batchMsg);
         totalIndexRounds++;
@@ -603,16 +614,24 @@ export class OnionPirWebClient {
         const { results } = decodeBatchResult(respPayload, 1);
 
         // Decrypt both hash results and scan for tag
+        progress('Level 1', `Round ${roundNum}/${totalRounds}: decrypting ${round.length * 2} results...`);
+        let decrypted = 0;
         for (const [addrIdx, group] of round) {
           for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
             const qi = group * 2 + h;
+            if (results[qi].length === 0) continue; // empty response (dummy group)
             const bin = queryBins[qi];
             const entryBytes = indexClient.decryptResponse(bin, results[qi]);
+            decrypted++;
             const found = this.scanIndexBin(entryBytes, addrInfos[addrIdx].tag);
             if (found) {
               indexResults[addrIdx] = found;
               break;
             }
+          }
+          // Yield during decryption
+          if (decrypted > 0 && decrypted % 20 === 0) {
+            await new Promise(r => setTimeout(r, 0));
           }
         }
       }
@@ -691,7 +710,7 @@ export class OnionPirWebClient {
             groupToQi.set(group, qi);
           }
 
-          progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (querying)...`);
+          progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: generating ${this.chunkK} FHE queries...`);
 
           const queries: Uint8Array[] = [];
           for (let g = 0; g < this.chunkK; g++) {
@@ -700,8 +719,14 @@ export class OnionPirWebClient {
               ? queryInfos[qi].bin
               : Number(this.rng.nextU64() % BigInt(this.chunkBins));
             queries.push(chunkClient!.generateQuery(idx));
+            // Yield periodically
+            if (g % 10 === 9) {
+              progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: ${g + 1}/${this.chunkK} queries...`);
+              await new Promise(r => setTimeout(r, 0));
+            }
           }
 
+          progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: querying server...`);
           const batchMsg = encodeBatchQuery(REQ_ONIONPIR_CHUNK_QUERY, ri, queries);
           const respRaw = await this.sendRaw(batchMsg);
 
@@ -709,6 +734,7 @@ export class OnionPirWebClient {
           if (respPayload[0] !== RESP_ONIONPIR_CHUNK_RESULT) throw new Error('Unexpected chunk response');
           const { results } = decodeBatchResult(respPayload, 1);
 
+          progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: decrypting...`);
           for (const qi of queryInfos) {
             const entryBytes = chunkClient!.decryptResponse(qi.bin, results[qi.group]);
             decryptedEntries.set(qi.entryId, entryBytes.slice(0, PACKED_ENTRY_SIZE));
