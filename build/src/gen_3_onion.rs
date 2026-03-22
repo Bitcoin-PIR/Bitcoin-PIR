@@ -306,17 +306,15 @@ fn main() {
     println!("\n[2] Assigning entries to {} PBC groups...", K);
     let t_assign = Instant::now();
 
-    let expected_per_group = (non_whale * NUM_HASHES) / K + 1;
+    let expected_per_group = (n * NUM_HASHES) / K + 1;
     let mut groups: Vec<Vec<u32>> = (0..K)
         .map(|_| Vec::with_capacity(expected_per_group))
         .collect();
 
+    // Include whale entries — they must be findable in the index so clients
+    // can detect them and skip the chunk phase.
     for i in 0..n {
         let base = i * ONION_INDEX_ENTRY_SIZE;
-        // Skip whale entries
-        if mmap[base + 26] == FLAG_WHALE {
-            continue;
-        }
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
         let buckets = derive_buckets(sh);
         for &b in &buckets {
