@@ -7,7 +7,7 @@
 Both levels (index and main DB) use the same 3840-byte OnionPIR entry size.
 One OnionPIR database per PBC group (75 + 80 = 155 total).
 
-**OnionPIR crate:** https://github.com/weikengchen/OnionPIRv2-fork
+**OnionPIR crate:** https://github.com/Bitcoin-PIR/OnionPIRv2-fork
 
 ---
 

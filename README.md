@@ -100,7 +100,7 @@ BitcoinPIR/
 ### 1. Build the Project
 
 ```bash
-git clone https://github.com/weikengchen/Bitcoin-PIR.git
+git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git
 cd Bitcoin-PIR
 
 # Build all components

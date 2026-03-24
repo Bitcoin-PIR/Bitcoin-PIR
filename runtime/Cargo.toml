@@ -34,7 +34,7 @@ path = "src/bin/onionpir2_client.rs"
 [dependencies]
 build = { path = "../build" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
-onionpir = { git = "https://github.com/weikengchen/OnionPIRv2-fork.git" }
+onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git" }
 libc = "0.2"
 memmap2 = "0.9"
 rayon = "1.10"
