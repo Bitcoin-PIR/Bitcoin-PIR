@@ -109,6 +109,16 @@ export class HarmonyPirClient {
   // Actual hint bytes received during download.
   private totalHintBytes = 0;
 
+  // Cache of serialized hint state per PRP backend.
+  private hintCache: Map<number, {
+    prpKey: Uint8Array;
+    buckets: Map<number, Uint8Array>;
+    totalHintBytes: number;
+  }> = new Map();
+
+  // Whether hints have been loaded for the current PRP backend.
+  hintsLoaded = false;
+
   // Pending response callbacks
   private pendingCallbacks: Map<string, (data: Uint8Array) => void> = new Map();
   private callbackId = 0;
@@ -137,7 +147,7 @@ export class HarmonyPirClient {
 
   /** Load the HarmonyPIR WASM module + worker pool. */
   async loadWasm(): Promise<void> {
-    if (this.pool) return; // already loaded
+    if (this.pool && this.wasm) return; // already loaded
     const backend = this.config.prpBackend ?? 0;
     const backendName = ['Hoang', 'FastPRP', 'ALF'][backend] ?? 'Hoang';
     // Resolve to fully-qualified URLs so blob-URL workers can fetch them.
@@ -279,6 +289,7 @@ export class HarmonyPirClient {
     this.log(`  CHUNK hints: ${K_CHUNK} buckets in ${((performance.now() - tChk) / 1000).toFixed(1)}s`);
 
     hintWs.close();
+    this.hintsLoaded = true;
     const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
     this.log(`Hints downloaded successfully (${totalSec}s, ~${this.estimateHintSize()} MB)`);
   }
@@ -394,7 +405,12 @@ export class HarmonyPirClient {
   }
 
   /** Send a request to Query Server and wait for the response. */
-  private sendQueryRequest(payload: Uint8Array): Promise<Uint8Array> {
+  private async sendQueryRequest(payload: Uint8Array): Promise<Uint8Array> {
+    // Auto-reconnect if WebSocket is closed.
+    if (!this.queryWs || this.queryWs.readyState !== WebSocket.OPEN) {
+      this.log('Query server disconnected, reconnecting...');
+      await this.reconnectQueryServer();
+    }
     return new Promise((resolve, reject) => {
       if (!this.queryWs || this.queryWs.readyState !== WebSocket.OPEN) {
         return reject(new Error('Query Server not connected'));
@@ -539,6 +555,15 @@ export class HarmonyPirClient {
     const N = addresses.length;
     const results = new Map<number, HarmonyQueryResult>();
     this.log(`Starting batch query for ${N} addresses...`);
+
+    // ── Pre-flight: check hint budget ──
+    const remaining = await this.getMinQueriesRemaining();
+    if (remaining === 0) {
+      this.log('Hints exhausted — re-downloading...');
+      await this.refreshHints();
+    } else if (remaining < 4) {
+      this.log(`Warning: only ${remaining} queries remaining per bucket`);
+    }
 
     // ── Prepare script hashes (accept both addresses and hex scriptPubKeys) ──
     const scriptHashes: Uint8Array[] = [];
@@ -1036,7 +1061,37 @@ export class HarmonyPirClient {
     }
   }
 
-  /** Disconnect and free resources. */
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Connection management
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Close query server WebSocket only, preserving workers and hints. */
+  disconnectQueryServer(): void {
+    this.queryWs?.close();
+    this.queryWs = null;
+  }
+
+  /** Check if the query server WebSocket is open. */
+  isQueryServerConnected(): boolean {
+    return this.queryWs?.readyState === WebSocket.OPEN;
+  }
+
+  /** Set a callback for when the query server WebSocket closes. */
+  onQueryServerClose(callback: () => void): void {
+    if (this.queryWs) {
+      this.queryWs.onclose = callback;
+    }
+  }
+
+  /** Reconnect to the query server without re-downloading hints. */
+  async reconnectQueryServer(): Promise<void> {
+    this.disconnectQueryServer();
+    await this.connectQueryServer();
+    await this.fetchServerInfo();
+    this.log('Reconnected to Query Server (hints preserved)');
+  }
+
+  /** Disconnect and free all resources (full teardown). */
   disconnect(): void {
     this.queryWs?.close();
     this.hintWs?.close();
@@ -1049,6 +1104,83 @@ export class HarmonyPirClient {
     this.indexBuckets.clear();
     this.chunkBuckets.clear();
     this.wasm = null;
+    this.hintsLoaded = false;
+  }
+
+  /** Terminate worker pool only (for PRP switch), preserving hint cache. */
+  terminatePool(): void {
+    if (this.pool) {
+      this.pool.terminate();
+      this.pool = null;
+    }
+    for (const [_, b] of this.indexBuckets) b.free();
+    for (const [_, b] of this.chunkBuckets) b.free();
+    this.indexBuckets.clear();
+    this.chunkBuckets.clear();
+    this.wasm = null;
+    this.hintsLoaded = false;
+  }
+
+  /** Update the PRP backend. Call before loadWasm() on PRP switch. */
+  updatePrpBackend(backend: number): void {
+    (this.config as any).prpBackend = backend;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRP hint caching
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Save current hint state to cache for the current PRP backend. */
+  async saveHintsToCache(): Promise<void> {
+    if (!this.pool || !this.hintsLoaded) return;
+    const backend = this.config.prpBackend ?? 0;
+    const serialized = await this.pool.serializeAll();
+    this.hintCache.set(backend, {
+      prpKey: new Uint8Array(this.prpKey),
+      buckets: serialized,
+      totalHintBytes: this.totalHintBytes,
+    });
+    this.log(`Cached hints for PRP backend ${backend} (${serialized.size} buckets)`);
+  }
+
+  /** Try to restore hints from cache for a given PRP backend. Returns true on cache hit. */
+  async restoreHintsFromCache(backend: number): Promise<boolean> {
+    const cached = this.hintCache.get(backend);
+    if (!cached || !this.pool) return false;
+    this.prpKey = new Uint8Array(cached.prpKey);
+    this.totalHintBytes = cached.totalHintBytes;
+    await this.pool.deserializeAll(cached.buckets, this.prpKey);
+    this.hintsLoaded = true;
+    this.log(`Restored ${cached.buckets.size} buckets from cache`);
+    return true;
+  }
+
+  /** Check if cached hints exist for a given PRP backend. */
+  hasCachedHints(backend: number): boolean {
+    return this.hintCache.has(backend);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Hint exhaustion detection
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Get the minimum queries remaining across all buckets. */
+  async getMinQueriesRemaining(): Promise<number> {
+    if (this.pool) {
+      return this.pool.getMinQueriesRemaining();
+    }
+    // Single-threaded fallback.
+    let min = Infinity;
+    for (const [_, b] of this.indexBuckets) min = Math.min(min, b.queries_remaining());
+    for (const [_, b] of this.chunkBuckets) min = Math.min(min, b.queries_remaining());
+    return min;
+  }
+
+  /** Re-initialize buckets and re-download hints (resets query budget). */
+  async refreshHints(): Promise<void> {
+    this.log('Refreshing hints (re-running offline phase)...');
+    await this.initBuckets();
+    await this.fetchHints();
   }
 }
 

@@ -218,6 +218,78 @@ export class HarmonyWorkerPool {
     await Promise.all(promises);
   }
 
+  /**
+   * Serialize all bucket state from all workers.
+   * Returns a map of bucketId → serialized bytes.
+   */
+  async serializeAll(): Promise<Map<number, Uint8Array>> {
+    const allResults = new Map<number, Uint8Array>();
+    const promises: Promise<void>[] = [];
+
+    for (let i = 0; i < this.numWorkers; i++) {
+      const reqId = this.requestId++;
+      promises.push(new Promise<void>((resolve) => {
+        this.pendingRequests.set(reqId, (data) => {
+          for (const r of data.results) {
+            allResults.set(r.bucketId, r.data);
+          }
+          resolve();
+        });
+      }));
+      this.workers[i].postMessage({ type: 'serializeAll', requestId: reqId });
+    }
+
+    await Promise.all(promises);
+    return allResults;
+  }
+
+  /**
+   * Deserialize bucket state into workers from a map of bucketId → serialized bytes.
+   */
+  async deserializeAll(buckets: Map<number, Uint8Array>, prpKey: Uint8Array): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const [bucketId, data] of buckets) {
+      const workerId = this.ownerOf(bucketId);
+      const reqId = this.requestId++;
+      promises.push(new Promise<void>((resolve, reject) => {
+        this.pendingRequests.set(reqId, (resp) => {
+          if (resp.error) reject(new Error(resp.error));
+          else resolve();
+        });
+      }));
+      // Copy data for transfer.
+      const copy = new Uint8Array(data);
+      const keyCopy = new Uint8Array(prpKey);
+      this.workers[workerId].postMessage(
+        { type: 'deserializeBucket', requestId: reqId, bucketId, data: copy, prpKey: keyCopy },
+        [copy.buffer],
+      );
+    }
+    await Promise.all(promises);
+  }
+
+  /**
+   * Get the minimum queries_remaining across all buckets in all workers.
+   */
+  async getMinQueriesRemaining(): Promise<number> {
+    let globalMin = Infinity;
+    const promises: Promise<void>[] = [];
+
+    for (let i = 0; i < this.numWorkers; i++) {
+      const reqId = this.requestId++;
+      promises.push(new Promise<void>((resolve) => {
+        this.pendingRequests.set(reqId, (data) => {
+          if (data.minRemaining < globalMin) globalMin = data.minRemaining;
+          resolve();
+        });
+      }));
+      this.workers[i].postMessage({ type: 'queryRemaining', requestId: reqId });
+    }
+
+    await Promise.all(promises);
+    return globalMin === Infinity ? 0 : globalMin;
+  }
+
   /** Terminate all workers. */
   terminate(): void {
     for (const w of this.workers) {
@@ -234,7 +306,9 @@ export class HarmonyWorkerPool {
   // ─── Internal ──────────────────────────────────────────────────────────────
 
   private handleMessage(workerId: number, data: any): void {
-    if (data.type === 'buildBatchResult' || data.type === 'processBatchResult' || data.type === 'relocationDone') {
+    if (data.type === 'buildBatchResult' || data.type === 'processBatchResult'
+        || data.type === 'relocationDone' || data.type === 'serializeResult'
+        || data.type === 'bucketDeserialized' || data.type === 'queryRemainingResult') {
       const cb = this.pendingRequests.get(data.requestId);
       if (cb) {
         this.pendingRequests.delete(data.requestId);
@@ -337,6 +411,36 @@ self.onmessage = async (ev) => {
         if (bucket) bucket.finish_relocation();
       }
       self.postMessage({ type: 'relocationDone', requestId: msg.requestId });
+      break;
+    }
+    case 'serializeAll': {
+      const results = [];
+      const transferables = [];
+      for (const [bucketId, bucket] of buckets) {
+        const data = new Uint8Array(bucket.serialize());
+        results.push({ bucketId, data });
+        transferables.push(data.buffer);
+      }
+      self.postMessage({ type: 'serializeResult', requestId: msg.requestId, results }, transferables);
+      break;
+    }
+    case 'deserializeBucket': {
+      try {
+        const bucket = wasm.HarmonyBucket.deserialize(msg.data, msg.prpKey, msg.bucketId);
+        buckets.set(msg.bucketId, bucket);
+        self.postMessage({ type: 'bucketDeserialized', requestId: msg.requestId, bucketId: msg.bucketId });
+      } catch (e) {
+        self.postMessage({ type: 'bucketDeserialized', requestId: msg.requestId, error: e.message });
+      }
+      break;
+    }
+    case 'queryRemaining': {
+      let minRemaining = Infinity;
+      for (const [, bucket] of buckets) {
+        const r = bucket.queries_remaining();
+        if (r < minRemaining) minRemaining = r;
+      }
+      self.postMessage({ type: 'queryRemainingResult', requestId: msg.requestId, minRemaining });
       break;
     }
   }

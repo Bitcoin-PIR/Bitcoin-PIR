@@ -1196,7 +1196,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 offlineStatus.textContent = 'Hints loaded';
                 offlineFill.style.width = '100%';
                 offlineFill.style.backgroundColor = '#28a745';
-                offlineLabel.textContent = 'Hints loaded (~' + hpClient.estimateHintSize() + ' MB). Ready for queries.';
+                const remaining = await hpClient.getMinQueriesRemaining();
+                offlineLabel.textContent = 'Hints loaded (~' + hpClient.estimateHintSize() + ' MB, ' + remaining + ' queries available). Ready.';
                 log('HarmonyPIR: Hints downloaded successfully', 'success');
             } catch (error) {
                 offlineStatus.textContent = 'Failed';
@@ -1214,6 +1215,28 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log('HarmonyPIR: Please enter both server URLs', 'error');
                 return;
             }
+
+            // Fast reconnect: if client exists with hints, just reconnect query server.
+            if (hpClient && hpHintsLoaded) {
+                const statusDiv = document.getElementById('hp-status');
+                try {
+                    statusDiv.textContent = 'Status: Reconnecting...';
+                    statusDiv.className = 'status connecting';
+                    await hpClient.reconnectQueryServer();
+                    statusDiv.textContent = 'Status: Ready';
+                    statusDiv.className = 'status connected';
+                    hpSetButtons(true);
+                    document.getElementById('hp-connectBtn').disabled = false;
+                    log('HarmonyPIR: Reconnected (hints preserved)', 'success');
+                } catch (error) {
+                    log(`HarmonyPIR reconnect failed: ${error.message}`, 'error');
+                    statusDiv.textContent = 'Status: Disconnected (hints preserved)';
+                    statusDiv.className = 'status disconnected';
+                    document.getElementById('hp-connectBtn').disabled = false;
+                }
+                return;
+            }
+
             hpConnecting = true;
             document.getElementById('hp-connectBtn').disabled = true;
             try {
@@ -1261,6 +1284,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (hpHintsLoaded) {
                     statusDiv.textContent = 'Status: Ready';
                 }
+
+                // Update UI when query server disconnects (e.g. idle timeout).
+                hpClient.onQueryServerClose(() => {
+                    statusDiv.textContent = 'Status: Disconnected (hints preserved)';
+                    statusDiv.className = 'status disconnected';
+                    document.getElementById('hp-connectBtn').disabled = false;
+                });
             } catch (error) {
                 log(`HarmonyPIR connection failed: ${error.message}`, 'error');
                 const statusDiv = document.getElementById('hp-status');
@@ -1276,18 +1306,26 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
-        function hpDisconnect() {
-            if (hpClient) {
+        function hpDisconnect(full = false) {
+            if (!hpClient) return;
+            if (full || !hpHintsLoaded) {
+                // Full teardown: destroy everything.
                 hpClient.disconnect();
                 hpClient = null;
+                hpHintsLoaded = false;
+                document.getElementById('hp-offlineContainer').style.display = 'none';
+            } else {
+                // Soft disconnect: keep hints alive.
+                hpClient.disconnectQueryServer();
             }
-            hpHintsLoaded = false;
             document.getElementById('hp-resultsContainer').innerHTML = '';
-            document.getElementById('hp-offlineContainer').style.display = 'none';
             const statusDiv = document.getElementById('hp-status');
-            statusDiv.textContent = 'Status: Disconnected';
+            statusDiv.textContent = hpHintsLoaded
+                ? 'Status: Disconnected (hints preserved)'
+                : 'Status: Disconnected';
             statusDiv.className = 'status disconnected';
             hpSetButtons(false);
+            document.getElementById('hp-connectBtn').disabled = false;
             hpHideProgress();
         }
 
@@ -1372,13 +1410,63 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('hp-prpSelect').addEventListener('change', async (e) => {
             const newPrp = parseInt(e.target.value);
             if (newPrp === hpCurrentPrp) return;
+            const oldPrp = hpCurrentPrp;
             hpCurrentPrp = newPrp;
-            hpHintsLoaded = false;
             const names = ['Hoang', 'FastPRP', 'ALF'];
-            log(`HarmonyPIR: PRP changed to ${names[newPrp]}. Reconnecting...`, 'info');
-            if (hpClient) {
-                hpDisconnect();
-                await hpConnect();
+            log(`HarmonyPIR: PRP changed to ${names[newPrp]}.`, 'info');
+
+            if (!hpClient) return;
+
+            const statusDiv = document.getElementById('hp-status');
+            try {
+                // Save current hints to cache before switching.
+                if (hpHintsLoaded) {
+                    statusDiv.textContent = 'Status: Saving hints...';
+                    await hpClient.saveHintsToCache();
+                }
+
+                // Tear down old pool (different WASM binary needed).
+                hpClient.disconnectQueryServer();
+                hpClient.terminatePool();
+                hpHintsLoaded = false;
+
+                // Load new WASM + reconnect.
+                statusDiv.textContent = 'Status: Loading ' + names[newPrp] + '...';
+                statusDiv.className = 'status connecting';
+                hpClient.updatePrpBackend(newPrp);
+                await hpClient.loadWasm();
+                await hpClient.connectQueryServer();
+                await hpClient.fetchServerInfo();
+
+                // Try restoring cached hints for the new backend.
+                if (await hpClient.restoreHintsFromCache(newPrp)) {
+                    hpHintsLoaded = true;
+                    statusDiv.textContent = 'Status: Ready';
+                    statusDiv.className = 'status connected';
+                    hpSetButtons(true);
+                    const offlineLabel = document.getElementById('hp-offlineLabel');
+                    if (offlineLabel) {
+                        offlineLabel.textContent = 'Hints restored from cache (~' + hpClient.estimateHintSize() + ' MB). Ready for queries.';
+                    }
+                    log(`HarmonyPIR: Restored cached ${names[newPrp]} hints`, 'success');
+                } else {
+                    // No cache — download fresh hints.
+                    await hpClient.initBuckets();
+                    document.getElementById('hp-offlineContainer').style.display = 'block';
+                    statusDiv.textContent = 'Status: Connected (downloading hints...)';
+                    statusDiv.className = 'status connected';
+                    hpSetButtons(true);
+                    await hpFetchHints();
+                    if (hpHintsLoaded) {
+                        statusDiv.textContent = 'Status: Ready';
+                    }
+                }
+            } catch (error) {
+                log(`HarmonyPIR PRP switch failed: ${error.message}`, 'error');
+                statusDiv.textContent = 'Status: Disconnected';
+                statusDiv.className = 'status disconnected';
+                hpClient = null;
+                hpHintsLoaded = false;
             }
         });
 
