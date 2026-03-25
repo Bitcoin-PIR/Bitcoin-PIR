@@ -1,10 +1,12 @@
 #!/bin/bash
 # Start PIR WebSocket servers for UTXO lookups
 #
-# This script starts three WebSocket servers:
+# This script starts five WebSocket servers:
 #   - DPF Server 1 on port 8091
 #   - DPF Server 2 on port 8092
 #   - OnionPIR Server on port 8093
+#   - HarmonyPIR Hint Server on port 8094
+#   - HarmonyPIR Query Server on port 8095
 #
 # Usage:
 #   ./scripts/start_pir_servers.sh
@@ -15,6 +17,8 @@ set -e
 DPF_SERVER1_PORT=8091
 DPF_SERVER2_PORT=8092
 ONIONPIR_PORT=8093
+HARMONY_HINT_PORT=8094
+HARMONY_QUERY_PORT=8095
 
 # Get the script directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,7 +28,7 @@ cd "$PROJECT_DIR"
 
 # Build the servers first
 echo "Building PIR WebSocket servers..."
-cargo build --release -p runtime --bin server --bin onionpir2_server
+cargo build --release -p runtime --bin server --bin onionpir_server --bin harmonypir_hint_server
 
 echo ""
 echo "========================================"
@@ -36,7 +40,9 @@ echo ""
 echo "Checking for existing servers..."
 pkill -f "server --port $DPF_SERVER1_PORT" 2>/dev/null || true
 pkill -f "server --port $DPF_SERVER2_PORT" 2>/dev/null || true
-pkill -f "onionpir2_server --port $ONIONPIR_PORT" 2>/dev/null || true
+pkill -f "onionpir_server --port $ONIONPIR_PORT" 2>/dev/null || true
+pkill -f "harmonypir_hint_server --port $HARMONY_HINT_PORT" 2>/dev/null || true
+pkill -f "server --port $HARMONY_QUERY_PORT" 2>/dev/null || true
 sleep 1
 
 # Start DPF Server 1 in background
@@ -53,9 +59,21 @@ echo "DPF Server 2 PID: $DPF2_PID"
 
 # Start OnionPIR Server in background
 echo "Starting OnionPIR Server on port $ONIONPIR_PORT..."
-./target/release/onionpir2_server --port $ONIONPIR_PORT > /tmp/pir_onionpir.log 2>&1 &
+./target/release/onionpir_server --port $ONIONPIR_PORT > /tmp/pir_onionpir.log 2>&1 &
 ONION_PID=$!
 echo "OnionPIR Server PID: $ONION_PID"
+
+# Start HarmonyPIR Hint Server in background
+echo "Starting HarmonyPIR Hint Server on port $HARMONY_HINT_PORT..."
+./target/release/harmonypir_hint_server --port $HARMONY_HINT_PORT > /tmp/pir_harmony_hint.log 2>&1 &
+HARMONY_HINT_PID=$!
+echo "HarmonyPIR Hint Server PID: $HARMONY_HINT_PID"
+
+# Start HarmonyPIR Query Server in background (reuses the same server binary as DPF)
+echo "Starting HarmonyPIR Query Server on port $HARMONY_QUERY_PORT..."
+./target/release/server --port $HARMONY_QUERY_PORT > /tmp/pir_harmony_query.log 2>&1 &
+HARMONY_QUERY_PID=$!
+echo "HarmonyPIR Query Server PID: $HARMONY_QUERY_PID"
 
 # Wait for servers to initialize
 sleep 2
@@ -72,19 +90,25 @@ echo ""
 echo "OnionPIR Server (1-server PIR):"
 echo "  Server:   ws://localhost:$ONIONPIR_PORT (PID: $ONION_PID)"
 echo ""
+echo "HarmonyPIR Servers (2-server stateful PIR):"
+echo "  Hint Server:  ws://localhost:$HARMONY_HINT_PORT (PID: $HARMONY_HINT_PID)"
+echo "  Query Server: ws://localhost:$HARMONY_QUERY_PORT (PID: $HARMONY_QUERY_PID)"
+echo ""
 echo "Logs:"
-echo "  DPF Server 1:  /tmp/pir_server1.log"
-echo "  DPF Server 2:  /tmp/pir_server2.log"
-echo "  OnionPIR:      /tmp/pir_onionpir.log"
+echo "  DPF Server 1:         /tmp/pir_server1.log"
+echo "  DPF Server 2:         /tmp/pir_server2.log"
+echo "  OnionPIR:             /tmp/pir_onionpir.log"
+echo "  HarmonyPIR Hint:      /tmp/pir_harmony_hint.log"
+echo "  HarmonyPIR Query:     /tmp/pir_harmony_query.log"
 echo ""
 echo "To test with CLI client:"
 echo "  DPF:      ./target/release/client --hash <script_hash_hex>"
-echo "  OnionPIR: ./target/release/onionpir2_client --hash <hex> --server ws://localhost:$ONIONPIR_PORT"
+echo "  OnionPIR: ./target/release/onionpir_client --hash <hex> --server ws://localhost:$ONIONPIR_PORT"
 echo ""
 echo "Press Ctrl+C to stop all servers..."
 
 # Trap Ctrl+C to kill all servers
-trap "echo ''; echo 'Stopping servers...'; kill $DPF1_PID $DPF2_PID $ONION_PID 2>/dev/null; exit 0" SIGINT SIGTERM
+trap "echo ''; echo 'Stopping servers...'; kill $DPF1_PID $DPF2_PID $ONION_PID $HARMONY_HINT_PID $HARMONY_QUERY_PID 2>/dev/null; exit 0" SIGINT SIGTERM
 
 # Wait for servers
 wait
