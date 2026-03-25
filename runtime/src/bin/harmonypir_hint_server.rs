@@ -23,8 +23,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 use harmonypir::params::Params;
 use harmonypir::prp::hoang::HoangPrp;
-use harmonypir::prp::Prp;
-use harmonypir::relocation::RelocationDS;
 use harmonypir_wasm; // for find_best_t, pad_n_for_t, compute_rounds
 
 // ─── Server data ────────────────────────────────────────────────────────────
@@ -108,24 +106,28 @@ impl HintServerData {
         let domain = 2 * pn;
         let r = harmonypir_wasm::compute_rounds(padded_n);
 
-        let prp: Box<dyn Prp> = Box::new(HoangPrp::new(domain, r, &derived_key));
-        let ds = RelocationDS::new(pn, t, prp).expect("DS init");
+        // Use batch_forward() for fast PRP evaluation.
+        // At hint generation time there's no relocation history, so
+        // locate(k) == prp.forward(k). batch_forward() is much faster
+        // than sequential locate() — uses 4-way AES (Hoang), radix-sort
+        // (FastPRP), or SIMD (ALF) internally.
+        let prp = HoangPrp::new(domain, r, &derived_key);
+        use harmonypir::prp::BatchPrp;
+        let cell_of = prp.batch_forward();
 
-        // Compute hint parities.
+        // Compute hint parities via scatter-XOR.
         // Values 0..real_n are real DB rows; real_n..padded_n are virtual zeros.
         let mut hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w]).collect();
 
         let table_offset = header_size + bucket_id as usize * bins_per_table * entry_size;
         for k in 0..pn {
-            let cell = ds.locate(k).expect("locate during hint computation");
-            let segment = cell / t;
+            let segment = cell_of[k] / t;
 
             if k < real_n {
                 let entry_offset = table_offset + k * entry_size;
                 let entry = &table_bytes[entry_offset..entry_offset + entry_size];
                 xor_into(&mut hints[segment], entry);
             }
-            // k >= real_n → virtual row, XOR with zeros = no-op
         }
 
         // Flatten hints.
