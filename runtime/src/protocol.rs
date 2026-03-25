@@ -53,10 +53,11 @@ pub struct BatchQuery {
 
 /// HarmonyPIR hint request: client asks Hint Server to compute hints.
 ///
-/// Wire: [16B prp_key][1B level (0=index,1=chunk)][1B num_buckets][per bucket: 1B id]
+/// Wire: [16B prp_key][1B prp_backend][1B level][1B num_buckets][per bucket: 1B id]
 #[derive(Clone, Debug)]
 pub struct HarmonyHintRequest {
     pub prp_key: [u8; 16],
+    pub prp_backend: u8,
     pub level: u8,
     pub bucket_ids: Vec<u8>,
 }
@@ -193,6 +194,7 @@ impl Request {
             Request::HarmonyHints(h) => {
                 payload.push(REQ_HARMONY_HINTS);
                 payload.extend_from_slice(&h.prp_key);
+                payload.push(h.prp_backend);
                 payload.push(h.level);
                 payload.push(h.bucket_ids.len() as u8);
                 payload.extend_from_slice(&h.bucket_ids);
@@ -479,20 +481,22 @@ fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
 // ─── HarmonyPIR encoding helpers ────────────────────────────────────────────
 
 fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
-    // [16B prp_key][1B level][1B num_buckets][per bucket: 1B id]
-    if data.len() < 18 {
+    // [16B prp_key][1B prp_backend][1B level][1B num_buckets][per bucket: 1B id]
+    if data.len() < 19 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony hint request too short"));
     }
     let mut prp_key = [0u8; 16];
     prp_key.copy_from_slice(&data[0..16]);
-    let level = data[16];
-    let num_buckets = data[17] as usize;
-    if data.len() < 18 + num_buckets {
+    let prp_backend = data[16];
+    let level = data[17];
+    let num_buckets = data[18] as usize;
+    if data.len() < 19 + num_buckets {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated bucket list"));
     }
-    let bucket_ids = data[18..18 + num_buckets].to_vec();
+    let bucket_ids = data[19..19 + num_buckets].to_vec();
     Ok(HarmonyHintRequest {
         prp_key,
+        prp_backend,
         level,
         bucket_ids,
     })

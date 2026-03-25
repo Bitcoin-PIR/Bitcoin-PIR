@@ -65,6 +65,7 @@ impl HintServerData {
     fn compute_hints_for_bucket(
         &self,
         prp_key: &[u8; 16],
+        prp_backend: u8,
         level: u8,
         bucket_id: u8,
     ) -> (u8, u32, u32, u32, Vec<u8>) {
@@ -109,11 +110,27 @@ impl HintServerData {
         // Use batch_forward() for fast PRP evaluation.
         // At hint generation time there's no relocation history, so
         // locate(k) == prp.forward(k). batch_forward() is much faster
-        // than sequential locate() — uses 4-way AES (Hoang), radix-sort
-        // (FastPRP), or SIMD (ALF) internally.
-        let prp = HoangPrp::new(domain, r, &derived_key);
+        // than sequential locate().
         use harmonypir::prp::BatchPrp;
-        let cell_of = prp.batch_forward();
+        let cell_of: Vec<usize> = match prp_backend {
+            #[cfg(feature = "fastprp")]
+            harmonypir_wasm::PRP_FASTPRP => {
+                use harmonypir::prp::fast::FastPrpWrapper;
+                let prp = FastPrpWrapper::new(&derived_key, domain);
+                prp.batch_forward()
+            }
+            #[cfg(feature = "alf")]
+            harmonypir_wasm::PRP_ALF => {
+                use harmonypir::prp::alf::AlfPrp;
+                let prp = AlfPrp::new(&derived_key, domain, &derived_key, 0x4250_4952);
+                prp.batch_forward()
+            }
+            _ => {
+                // Default: Hoang PRP
+                let prp = HoangPrp::new(domain, r, &derived_key);
+                prp.batch_forward()
+            }
+        };
 
         // Compute hint parities via scatter-XOR.
         // Values 0..real_n are real DB rows; real_n..padded_n are virtual zeros.
@@ -254,7 +271,14 @@ async fn main() {
                         let t_start = Instant::now();
                         let level = hint_req.level;
                         let num = hint_req.bucket_ids.len();
-                        println!("[{}] Hint request: level={} buckets={}", peer, level, num);
+                        let prp_backend = hint_req.prp_backend;
+                        let backend_name = match prp_backend {
+                            1 => "FastPRP",
+                            2 => "ALF",
+                            _ => "Hoang",
+                        };
+                        println!("[{}] Hint request: level={} buckets={} prp={}",
+                            peer, level, num, backend_name);
 
                         // Stream hints as they complete.
                         // Use a channel: rayon workers produce hints, tokio sends them.
@@ -267,7 +291,7 @@ async fn main() {
                         // Spawn blocking rayon work that sends each hint as it's computed.
                         tokio::task::spawn_blocking(move || {
                             bucket_ids.par_iter().for_each_with(tx, |tx, &bid| {
-                                let result = data_ref.compute_hints_for_bucket(&prp_key, level, bid);
+                                let result = data_ref.compute_hints_for_bucket(&prp_key, prp_backend, level, bid);
                                 let _ = tx.blocking_send(result);
                             });
                         });

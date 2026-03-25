@@ -422,13 +422,16 @@ export class HarmonyPirClient {
   ): Promise<void> {
     // Build hint request.
     const bucketIds = Array.from({ length: numBuckets }, (_, i) => i);
-    const msg = new Uint8Array(1 + 16 + 1 + 1 + numBuckets);
+    // Wire: [1B variant][16B prp_key][1B prp_backend][1B level][1B num_buckets][per bucket: 1B id]
+    const backend = this.config.prpBackend ?? 0;
+    const msg = new Uint8Array(1 + 16 + 1 + 1 + 1 + numBuckets);
     msg[0] = REQ_HARMONY_HINTS;
     msg.set(this.prpKey, 1);
-    msg[17] = level;
-    msg[18] = numBuckets;
+    msg[17] = backend;
+    msg[18] = level;
+    msg[19] = numBuckets;
     for (let i = 0; i < numBuckets; i++) {
-      msg[19 + i] = bucketIds[i];
+      msg[20 + i] = bucketIds[i];
     }
 
     // Length-prefix and send.
