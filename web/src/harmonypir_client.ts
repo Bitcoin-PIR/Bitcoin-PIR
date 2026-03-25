@@ -15,8 +15,9 @@ import {
   CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
   INDEX_ENTRY_SIZE, CHUNK_SLOT_SIZE, CHUNK_SIZE, TAG_SIZE,
   HARMONY_INDEX_W, HARMONY_CHUNK_W, HARMONY_EMPTY,
-  REQ_HARMONY_GET_INFO, REQ_HARMONY_HINTS, REQ_HARMONY_QUERY,
-  RESP_HARMONY_INFO, RESP_HARMONY_HINTS, RESP_HARMONY_QUERY, RESP_ERROR,
+  REQ_HARMONY_GET_INFO, REQ_HARMONY_HINTS,
+  REQ_HARMONY_BATCH_QUERY, RESP_HARMONY_BATCH_QUERY,
+  RESP_HARMONY_INFO, RESP_HARMONY_HINTS, RESP_ERROR,
 } from './constants.js';
 
 import {
@@ -60,9 +61,11 @@ interface HarmonyWasmModule {
 interface HarmonyBucketWasm {
   load_hints(hintsData: Uint8Array): void;
   build_request(q: number): HarmonyRequestWasm;
+  build_synthetic_dummy(): Uint8Array;
   process_response(response: Uint8Array): Uint8Array;
   queries_remaining(): number;
   queries_used(): number;
+  real_n(): number;
   n(): number;
   w(): number;
   t(): number;
@@ -197,118 +200,14 @@ export class HarmonyPirClient {
 
   /**
    * Query a single Bitcoin address via HarmonyPIR.
-   * Returns UTXO data.
+   * Delegates to queryBatch with a single address.
    */
   async query(address: string): Promise<HarmonyQueryResult> {
-    const scriptPubKey = addressToScriptPubKey(address);
-    if (!scriptPubKey) throw new Error(`Invalid address: ${address}`);
-    const sh = computeScriptHash(hexToBytes(scriptPubKey));
-    const shHex = bytesToHex(sh);
-
-    // Level 1: Index query — find which chunks hold this address's UTXOs.
-    const candidateBuckets = deriveBuckets(sh);
-    let indexEntry: { startChunkId: number; numChunks: number } | null = null;
-
-    for (const bucketId of candidateBuckets) {
-      if (indexEntry) break;
-      const bucket = this.indexBuckets.get(bucketId);
-      if (!bucket || bucket.queries_remaining() === 0) continue;
-
-      // Try each cuckoo hash position.
-      for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
-        if (indexEntry) break;
-        const cuckooKey = deriveCuckooKey(bucketId, h);
-        const binIndex = cuckooHash(sh, cuckooKey, this.indexBinsPerTable);
-
-        // Query this bin via HarmonyPIR.
-        const binData = await this.queryBucket(bucket, binIndex, 0, bucketId);
-
-        // Scan all slots in the bin for a matching tag.
-        indexEntry = this.findTagInBin(binData, sh, HARMONY_INDEX_W);
-      }
-    }
-
-    if (!indexEntry) {
-      return { address, scriptHash: shHex, utxos: [], whale: false };
-    }
-
-    const whale = indexEntry.numChunks === 0;
-    if (whale) {
-      return { address, scriptHash: shHex, utxos: [], whale: true };
-    }
-
-    // Level 2: Chunk queries — fetch actual UTXO data.
-    const chunks: Uint8Array[] = [];
-    for (let ci = 0; ci < indexEntry.numChunks; ci++) {
-      const chunkId = indexEntry.startChunkId + ci;
-      const chunkData = await this.fetchChunk(chunkId);
-      if (chunkData) chunks.push(chunkData);
-    }
-
-    // Decode UTXOs from chunk data.
-    const utxos = this.decodeUtxos(chunks);
-
-    return { address, scriptHash: shHex, utxos, whale: false };
+    const results = await this.queryBatch([address]);
+    return results.get(0) ?? { address, scriptHash: '', utxos: [], whale: false };
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────
-
-  /** Query a single bin from a HarmonyBucket and get the response via Query Server. */
-  private async queryBucket(
-    bucket: HarmonyBucketWasm,
-    binIndex: number,
-    level: number,
-    bucketId: number,
-  ): Promise<Uint8Array> {
-    // Build request in WASM — returns only sorted non-empty indices (no EMPTY, no dummy).
-    const req = bucket.build_request(binIndex);
-    const requestBytes = req.request;
-    req.free();
-
-    // Encode wire message: [1B variant][1B level][1B bucket_id][2B round_id][4B count][indices]
-    const count = requestBytes.length / 4;
-    const msg = new Uint8Array(1 + 1 + 1 + 2 + 4 + requestBytes.length);
-    const view = new DataView(msg.buffer);
-    msg[0] = REQ_HARMONY_QUERY;
-    msg[1] = level;
-    msg[2] = bucketId;
-    view.setUint16(3, 0, true); // round_id
-    view.setUint32(5, count, true); // count (only non-empty entries)
-    msg.set(requestBytes, 9);
-
-    // Send to Query Server and wait for response.
-    const respData = await this.sendQueryRequest(msg);
-
-    // Parse response: skip [1B variant][1B bucket_id][2B round_id], rest is count × w bytes.
-    const responseEntries = respData.slice(4);
-
-    // Process response in WASM (compute answer + relocation).
-    const answer = bucket.process_response(responseEntries);
-    return answer;
-  }
-
-  /** Fetch a single chunk by chunk_id via HarmonyPIR. */
-  private async fetchChunk(chunkId: number): Promise<Uint8Array | null> {
-    const candidateBuckets = deriveChunkBuckets(chunkId);
-
-    for (const bucketId of candidateBuckets) {
-      const bucket = this.chunkBuckets.get(bucketId);
-      if (!bucket || bucket.queries_remaining() === 0) continue;
-
-      for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
-        const cuckooKey = deriveChunkCuckooKey(bucketId, h);
-        const binIndex = cuckooHashInt(chunkId, cuckooKey, this.chunkBinsPerTable);
-
-        const binData = await this.queryBucket(bucket, binIndex, 1, bucketId);
-
-        // Scan slots for matching chunk_id.
-        const chunkData = this.findChunkInBin(binData, chunkId);
-        if (chunkData) return chunkData;
-      }
-    }
-
-    return null;
-  }
 
   /** Scan a bin (w bytes) for a matching tag and extract index entry metadata. */
   private findTagInBin(
@@ -500,6 +399,414 @@ export class HarmonyPirClient {
       total += bucket.m() * bucket.w();
     }
     return (total / (1024 * 1024)).toFixed(1);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Batch query — full Batch PIR flow matching DPF-PIR structure
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Query a batch of Bitcoin addresses in one go.
+   *
+   * Protocol flow (matching the Rust harmonypir_batch_trace):
+   *
+   * INDEX:
+   *   For each placement round:
+   *     For h = 0 .. INDEX_CUCKOO_NUM_HASHES-1:
+   *       - Real query (build_request) for buckets whose tag is NOT yet found
+   *       - Fake query (build_synthetic_dummy) for buckets whose tag WAS found
+   *       - Synthetic dummy for unassigned buckets
+   *       → 1 batch message with K buckets × 1 sub-query each
+   *       → Server responds, client calls process_response for real queries
+   *
+   * CHUNK:
+   *   Same structure with K_CHUNK buckets and CHUNK_CUCKOO_NUM_HASHES rounds.
+   */
+  async queryBatch(
+    addresses: string[],
+    progress?: (phase: string, detail: string) => void,
+  ): Promise<Map<number, HarmonyQueryResult>> {
+    const N = addresses.length;
+    const results = new Map<number, HarmonyQueryResult>();
+
+    // ── Prepare script hashes ──
+    const scriptHashes: Uint8Array[] = [];
+    const shHexes: string[] = [];
+    for (let i = 0; i < N; i++) {
+      const spk = addressToScriptPubKey(addresses[i]);
+      if (!spk) { this.log(`Invalid address ${i}: ${addresses[i]}`); continue; }
+      const sh = computeScriptHash(hexToBytes(spk));
+      scriptHashes.push(sh);
+      shHexes.push(bytesToHex(sh));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // PHASE 1: INDEX — batch queries
+    // ══════════════════════════════════════════════════════════════════
+    progress?.('Level 1', 'Planning index rounds...');
+
+    const indexCandBuckets = scriptHashes.map(sh => deriveBuckets(sh));
+    const indexRounds = this.planRounds(indexCandBuckets, K);
+    this.log(`Level 1: ${N} queries → ${indexRounds.length} index placement round(s) × ${INDEX_CUCKOO_NUM_HASHES} hash-fn rounds`);
+
+    const indexResults = new Map<number, { startChunkId: number; numChunks: number }>();
+    const whaleQueries = new Set<number>();
+
+    for (let ir = 0; ir < indexRounds.length; ir++) {
+      const round = indexRounds[ir];
+      const bucketToQuery = new Map<number, number>();
+      for (const [qi, bucketId] of round) {
+        bucketToQuery.set(bucketId, qi);
+      }
+
+      const foundThisPlacement = new Set<number>(); // qi already found in this placement round
+
+      for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
+        progress?.('Level 1', `Index placement ${ir + 1}/${indexRounds.length}, h=${h}...`);
+
+        const batchItems: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }> = [];
+        // Track which buckets have real queries (need process_response).
+        const realBuckets = new Map<number, number>(); // bucketId → qi
+
+        for (let b = 0; b < K; b++) {
+          const bucket = this.indexBuckets.get(b)!;
+          const qi = bucketToQuery.get(b);
+
+          if (qi !== undefined) {
+            if (foundThisPlacement.has(qi) || indexResults.has(qi) || whaleQueries.has(qi)) {
+              // Already found — send fake to keep traffic uniform.
+              const dummy = new Uint8Array(bucket.build_synthetic_dummy());
+              batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
+            } else {
+              // Real query with hash function h.
+              const ck = deriveCuckooKey(b, h);
+              const binIndex = cuckooHash(scriptHashes[qi], ck, this.indexBinsPerTable);
+              const req = bucket.build_request(binIndex);
+              const reqBytes = new Uint8Array(req.request);
+              req.free();
+              realBuckets.set(b, qi);
+              batchItems.push({ bucketId: b, subQueryBytes: [reqBytes] });
+            }
+          } else {
+            // Unassigned bucket — dummy.
+            const dummy = new Uint8Array(bucket.build_synthetic_dummy());
+            batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
+          }
+        }
+
+        // Send batch and get response.
+        const roundId = ir * INDEX_CUCKOO_NUM_HASHES + h;
+        const reqMsg = this.encodeHarmonyBatchRequest(0, roundId, 1, batchItems);
+        const respData = await this.sendQueryRequest(reqMsg);
+        const batchResp = this.decodeHarmonyBatchResponse(respData);
+
+        // Process real responses only (fake/dummy have no state to consume).
+        for (const [bucketId, qi] of realBuckets) {
+          const bucket = this.indexBuckets.get(bucketId)!;
+          const respItem = batchResp.get(bucketId);
+          if (!respItem || respItem.length === 0) continue;
+
+          const answer = bucket.process_response(respItem[0]);
+          const found = this.findTagInBin(answer, scriptHashes[qi], HARMONY_INDEX_W);
+          if (found) {
+            if (found.numChunks === 0) {
+              whaleQueries.add(qi);
+            } else {
+              indexResults.set(qi, found);
+            }
+            foundThisPlacement.add(qi);
+          }
+        }
+      }
+    }
+
+    this.log(`Level 1 done: ${indexResults.size} found, ${whaleQueries.size} whales`);
+
+    // ══════════════════════════════════════════════════════════════════
+    // PHASE 2: CHUNK — global batch across all queries
+    // ══════════════════════════════════════════════════════════════════
+    progress?.('Level 2', 'Collecting chunk IDs...');
+
+    const queryChunkInfo = new Map<number, { startChunk: number; numChunks: number }>();
+    const allChunkIdsSet = new Set<number>();
+
+    for (const [qi, info] of indexResults) {
+      for (let ci = 0; ci < info.numChunks; ci++) {
+        allChunkIdsSet.add(info.startChunkId + ci);
+      }
+      queryChunkInfo.set(qi, { startChunk: info.startChunkId, numChunks: info.numChunks });
+    }
+
+    const allChunkIds = Array.from(allChunkIdsSet).sort((a, b) => a - b);
+    this.log(`Level 2: ${allChunkIds.length} unique chunks to fetch`);
+
+    const recoveredChunks = new Map<number, Uint8Array>();
+
+    if (allChunkIds.length > 0) {
+      const chunkCandBuckets = allChunkIds.map(cid => deriveChunkBuckets(cid));
+      const chunkRounds = this.planRounds(chunkCandBuckets, K_CHUNK);
+      this.log(`  ${allChunkIds.length} chunks → ${chunkRounds.length} chunk placement round(s) × ${CHUNK_CUCKOO_NUM_HASHES} hash-fn rounds`);
+
+      for (let ri = 0; ri < chunkRounds.length; ri++) {
+        const roundPlan = chunkRounds[ri];
+        const bucketToChunk = new Map<number, number>(); // bucketId → chunkListIdx
+        for (const [chunkListIdx, bucketId] of roundPlan) {
+          bucketToChunk.set(bucketId, chunkListIdx);
+        }
+
+        const foundThisPlacement = new Set<number>(); // chunk_ids found in this placement round
+
+        for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
+          progress?.('Level 2', `Chunk placement ${ri + 1}/${chunkRounds.length}, h=${h}...`);
+
+          const batchItems: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }> = [];
+          const realBuckets = new Map<number, { chunkListIdx: number; chunkId: number }>();
+
+          for (let b = 0; b < K_CHUNK; b++) {
+            const bucket = this.chunkBuckets.get(b)!;
+            const chunkListIdx = bucketToChunk.get(b);
+
+            if (chunkListIdx !== undefined) {
+              const chunkId = allChunkIds[chunkListIdx];
+              if (foundThisPlacement.has(chunkId) || recoveredChunks.has(chunkId)) {
+                // Already found — send fake.
+                const dummy = new Uint8Array(bucket.build_synthetic_dummy());
+                batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
+              } else {
+                // Real query with hash function h.
+                const ck = deriveChunkCuckooKey(b, h);
+                const binIndex = cuckooHashInt(chunkId, ck, this.chunkBinsPerTable);
+                const req = bucket.build_request(binIndex);
+                const reqBytes = new Uint8Array(req.request);
+                req.free();
+                realBuckets.set(b, { chunkListIdx, chunkId });
+                batchItems.push({ bucketId: b, subQueryBytes: [reqBytes] });
+              }
+            } else {
+              // Unassigned — dummy.
+              const dummy = new Uint8Array(bucket.build_synthetic_dummy());
+              batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
+            }
+          }
+
+          const roundId = ri * CHUNK_CUCKOO_NUM_HASHES + h;
+          const reqMsg = this.encodeHarmonyBatchRequest(1, roundId, 1, batchItems);
+          const respData = await this.sendQueryRequest(reqMsg);
+          const batchResp = this.decodeHarmonyBatchResponse(respData);
+
+          // Process real responses.
+          for (const [bucketId, { chunkId }] of realBuckets) {
+            const bucket = this.chunkBuckets.get(bucketId)!;
+            const respItem = batchResp.get(bucketId);
+            if (!respItem || respItem.length === 0) continue;
+
+            const answer = bucket.process_response(respItem[0]);
+            const found = this.findChunkInBin(answer, chunkId);
+            if (found) {
+              recoveredChunks.set(chunkId, found);
+              foundThisPlacement.add(chunkId);
+            }
+          }
+        }
+      }
+    }
+
+    this.log(`Level 2 done: ${recoveredChunks.size}/${allChunkIds.length} chunks recovered`);
+
+    // ══════════════════════════════════════════════════════════════════
+    // PHASE 3: Reassemble per-query results
+    // ══════════════════════════════════════════════════════════════════
+    progress?.('Reassemble', 'Decoding UTXO data...');
+
+    for (let qi = 0; qi < N; qi++) {
+      if (whaleQueries.has(qi)) {
+        results.set(qi, { address: addresses[qi], scriptHash: shHexes[qi], utxos: [], whale: true });
+        continue;
+      }
+      const info = queryChunkInfo.get(qi);
+      if (!info) {
+        results.set(qi, { address: addresses[qi], scriptHash: shHexes[qi], utxos: [], whale: false });
+        continue;
+      }
+      const chunks: Uint8Array[] = [];
+      for (let ci = 0; ci < info.numChunks; ci++) {
+        const d = recoveredChunks.get(info.startChunk + ci);
+        if (d) chunks.push(d);
+      }
+      const utxos = this.decodeUtxos(chunks);
+      results.set(qi, { address: addresses[qi], scriptHash: shHexes[qi], utxos, whale: false });
+    }
+
+    return results;
+  }
+
+  // ─── Cuckoo placement (from DPF-PIR client.ts) ────────────────────────────
+
+  /**
+   * Cuckoo-place item qi into one of its candidate buckets.
+   * Returns true if placed, false if maxKicks exceeded.
+   */
+  private cuckooPlace(
+    candBuckets: number[][],
+    buckets: (number | null)[],
+    qi: number,
+    maxKicks: number,
+  ): boolean {
+    const cands = candBuckets[qi];
+
+    // Try direct placement.
+    for (const c of cands) {
+      if (buckets[c] === null) {
+        buckets[c] = qi;
+        return true;
+      }
+    }
+
+    // Eviction loop.
+    let currentQi = qi;
+    let currentBucket = candBuckets[currentQi][0];
+
+    for (let kick = 0; kick < maxKicks; kick++) {
+      const evictedQi = buckets[currentBucket]!;
+      buckets[currentBucket] = currentQi;
+      const evCands = candBuckets[evictedQi];
+
+      for (let offset = 0; offset < NUM_HASHES; offset++) {
+        const c = evCands[(kick + offset) % NUM_HASHES];
+        if (c === currentBucket) continue;
+        if (buckets[c] === null) {
+          buckets[c] = evictedQi;
+          return true;
+        }
+      }
+
+      let nextBucket = evCands[0];
+      for (let offset = 0; offset < NUM_HASHES; offset++) {
+        const c = evCands[(kick + offset) % NUM_HASHES];
+        if (c !== currentBucket) {
+          nextBucket = c;
+          break;
+        }
+      }
+      currentQi = evictedQi;
+      currentBucket = nextBucket;
+    }
+
+    return false;
+  }
+
+  /**
+   * Plan multi-round placement for items with NUM_HASHES candidate buckets.
+   * Returns rounds, each round = [[itemIndex, bucketId], ...].
+   */
+  private planRounds(
+    itemBuckets: number[][],
+    numBuckets: number,
+  ): [number, number][][] {
+    let remaining = itemBuckets.map((_, i) => i);
+    const rounds: [number, number][][] = [];
+
+    while (remaining.length > 0) {
+      const candBuckets = remaining.map(i => itemBuckets[i]);
+      const bucketOwner: (number | null)[] = new Array(numBuckets).fill(null);
+      const placedLocal: number[] = [];
+
+      for (let li = 0; li < candBuckets.length; li++) {
+        if (placedLocal.length >= numBuckets) break;
+        const savedBuckets = [...bucketOwner];
+        if (this.cuckooPlace(candBuckets, bucketOwner, li, 500)) {
+          placedLocal.push(li);
+        } else {
+          for (let b = 0; b < numBuckets; b++) bucketOwner[b] = savedBuckets[b];
+        }
+      }
+
+      const roundEntries: [number, number][] = [];
+      for (let b = 0; b < numBuckets; b++) {
+        const localIdx = bucketOwner[b];
+        if (localIdx !== null) {
+          roundEntries.push([remaining[localIdx], b]);
+        }
+      }
+
+      if (roundEntries.length === 0) {
+        this.log(`ERROR: could not place any items, ${remaining.length} remaining`);
+        break;
+      }
+
+      const placedOrigIdx = new Set(placedLocal.map(li => remaining[li]));
+      remaining = remaining.filter(i => !placedOrigIdx.has(i));
+      rounds.push(roundEntries);
+    }
+
+    return rounds;
+  }
+
+  // ─── Batch wire protocol ───────────────────────────────────────────────────
+
+  /** Encode a HarmonyBatchQuery message (excluding the 4B length prefix). */
+  private encodeHarmonyBatchRequest(
+    level: number,
+    roundId: number,
+    subQueriesPerBucket: number,
+    items: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }>,
+  ): Uint8Array {
+    // Compute total size.
+    let size = 1 + 1 + 2 + 2 + 1; // variant + level + round_id + num_buckets + subQ
+    for (const item of items) {
+      size += 1; // bucket_id
+      for (const sq of item.subQueryBytes) {
+        size += 4 + sq.length; // count + indices
+      }
+    }
+
+    const buf = new Uint8Array(size);
+    const view = new DataView(buf.buffer);
+    let pos = 0;
+
+    buf[pos++] = REQ_HARMONY_BATCH_QUERY;
+    buf[pos++] = level;
+    view.setUint16(pos, roundId, true); pos += 2;
+    view.setUint16(pos, items.length, true); pos += 2;
+    buf[pos++] = subQueriesPerBucket;
+
+    for (const item of items) {
+      buf[pos++] = item.bucketId;
+      for (const sq of item.subQueryBytes) {
+        const count = sq.length / 4;
+        view.setUint32(pos, count, true); pos += 4;
+        buf.set(sq, pos); pos += sq.length;
+      }
+    }
+
+    return buf;
+  }
+
+  /** Decode a HarmonyBatchResult response payload. */
+  private decodeHarmonyBatchResponse(
+    data: Uint8Array,
+  ): Map<number, Uint8Array[]> {
+    // data = [1B variant][1B level][2B round_id][2B num_buckets][1B subResultsPerBucket]
+    //        per bucket: [1B bucket_id] per sub_result: [4B data_len][data]
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    let pos = 1; // skip variant
+    /* const level = */ data[pos++];
+    /* const roundId = */ view.getUint16(pos, true); pos += 2;
+    const numBuckets = view.getUint16(pos, true); pos += 2;
+    const subResultsPerBucket = data[pos++];
+
+    const result = new Map<number, Uint8Array[]>();
+    for (let i = 0; i < numBuckets; i++) {
+      const bucketId = data[pos++];
+      const subResults: Uint8Array[] = [];
+      for (let s = 0; s < subResultsPerBucket; s++) {
+        const len = view.getUint32(pos, true); pos += 4;
+        subResults.push(data.slice(pos, pos + len));
+        pos += len;
+      }
+      result.set(bucketId, subResults);
+    }
+    return result;
   }
 
   /** Disconnect and free resources. */

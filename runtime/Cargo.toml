@@ -24,17 +24,52 @@ name = "onionpir_bench"
 path = "src/bin/onionpir_bench.rs"
 
 [[bin]]
-name = "onionpir2_server"
-path = "src/bin/onionpir2_server.rs"
+name = "harmonypir_hint_server"
+path = "src/bin/harmonypir_hint_server.rs"
 
 [[bin]]
-name = "onionpir2_client"
-path = "src/bin/onionpir2_client.rs"
+name = "harmonypir_e2e_test"
+path = "src/bin/harmonypir_e2e_test.rs"
+
+[[bin]]
+name = "harmonypir_gen_hints"
+path = "src/bin/harmonypir_gen_hints.rs"
+
+[[bin]]
+name = "harmonypir_real_test"
+path = "src/bin/harmonypir_real_test.rs"
+
+[[bin]]
+name = "harmonypir_hint_bench"
+path = "src/bin/harmonypir_hint_bench.rs"
+
+[[bin]]
+name = "harmonypir_index_to_chunk_e2e"
+path = "src/bin/harmonypir_index_to_chunk_e2e.rs"
+
+[[bin]]
+name = "harmonypir_full_e2e"
+path = "src/bin/harmonypir_full_e2e.rs"
+
+[[bin]]
+name = "harmonypir_batch_e2e"
+path = "src/bin/harmonypir_batch_e2e.rs"
+
+[[bin]]
+name = "harmonypir_batch_trace"
+path = "src/bin/harmonypir_batch_trace.rs"
+
+[features]
+default = []
+fastprp = ["harmonypir/fastprp-prp", "harmonypir-wasm/fastprp"]
+alf = ["harmonypir/alf", "harmonypir-wasm/alf"]
 
 [dependencies]
 build = { path = "../build" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git" }
+harmonypir = { path = "../../bitcoin-pir/harmonypir", default-features = false }
+harmonypir-wasm = { path = "../harmonypir-wasm" }
 libc = "0.2"
 memmap2 = "0.9"
 rayon = "1.10"

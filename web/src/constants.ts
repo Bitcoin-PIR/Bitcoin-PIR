@@ -99,10 +99,12 @@ export const HARMONY_EMPTY = 0xFFFFFFFF;
 export const REQ_HARMONY_GET_INFO = 0x40;
 export const REQ_HARMONY_HINTS = 0x41;
 export const REQ_HARMONY_QUERY = 0x42;
+export const REQ_HARMONY_BATCH_QUERY = 0x43;
 
 export const RESP_HARMONY_INFO = 0x40;
 export const RESP_HARMONY_HINTS = 0x41;
 export const RESP_HARMONY_QUERY = 0x42;
+export const RESP_HARMONY_BATCH_QUERY = 0x43;
 
 // ─── Default server URLs ───────────────────────────────────────────────────
 

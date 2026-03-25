@@ -163,6 +163,120 @@ impl ServerData {
 
         (BatchResult { level: 1, round_id: query.round_id, results }, total_dpf, total_fetch)
     }
+
+    /// Handle a HarmonyPIR query: simple indexed lookup into cuckoo tables.
+    ///
+    /// The client sends sorted non-empty DB indices (no EMPTY markers, no dummy).
+    /// Returns RESP_HARMONY_QUERY with count × w bytes of individual entries.
+    fn handle_harmony_batch_query(
+        &self,
+        query: &runtime::protocol::HarmonyBatchQuery,
+    ) -> Response {
+        let (table_bytes, bins_per_table, entry_size, header_size) = match query.level {
+            0 => (
+                &self.index_cuckoo[..],
+                self.index_bins_per_table,
+                CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE,
+                HEADER_SIZE,
+            ),
+            1 => (
+                &self.chunk_cuckoo[..],
+                self.chunk_bins_per_table,
+                CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE),
+                CHUNK_HEADER_SIZE,
+            ),
+            _ => return Response::Error("invalid level".into()),
+        };
+
+        // Process all buckets in parallel.
+        let result_items: Vec<runtime::protocol::HarmonyBatchResultItem> = query
+            .items
+            .par_iter()
+            .map(|item| {
+                let bucket_id = item.bucket_id as usize;
+                let table_offset = header_size + bucket_id * bins_per_table * entry_size;
+
+                let sub_results: Vec<Vec<u8>> = item
+                    .sub_queries
+                    .iter()
+                    .map(|indices| {
+                        let mut data = Vec::with_capacity(indices.len() * entry_size);
+                        for &idx in indices {
+                            let idx_usize = idx as usize;
+                            if idx_usize < bins_per_table {
+                                let off = table_offset + idx_usize * entry_size;
+                                let end = off + entry_size;
+                                if end <= table_bytes.len() {
+                                    data.extend_from_slice(&table_bytes[off..end]);
+                                } else {
+                                    data.extend(std::iter::repeat(0u8).take(entry_size));
+                                }
+                            } else {
+                                // Virtual padded row — return zeros.
+                                data.extend(std::iter::repeat(0u8).take(entry_size));
+                            }
+                        }
+                        data
+                    })
+                    .collect();
+
+                runtime::protocol::HarmonyBatchResultItem {
+                    bucket_id: item.bucket_id,
+                    sub_results,
+                }
+            })
+            .collect();
+
+        Response::HarmonyBatchResult(runtime::protocol::HarmonyBatchResult {
+            level: query.level,
+            round_id: query.round_id,
+            sub_results_per_bucket: query.sub_queries_per_bucket,
+            items: result_items,
+        })
+    }
+
+    fn handle_harmony_query(&self, query: &runtime::protocol::HarmonyQuery) -> Response {
+        let (table_bytes, bins_per_table, entry_size, header_size) = match query.level {
+            0 => (
+                &self.index_cuckoo[..],
+                self.index_bins_per_table,
+                CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE,
+                HEADER_SIZE,
+            ),
+            1 => (
+                &self.chunk_cuckoo[..],
+                self.chunk_bins_per_table,
+                CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE),
+                CHUNK_HEADER_SIZE,
+            ),
+            _ => return Response::Error("invalid level".into()),
+        };
+
+        let bucket_id = query.bucket_id as usize;
+        let table_offset = header_size + bucket_id * bins_per_table * entry_size;
+
+        let mut data = Vec::with_capacity(query.indices.len() * entry_size);
+        for &idx in &query.indices {
+            let idx_usize = idx as usize;
+            if idx_usize >= bins_per_table {
+                return Response::Error(format!(
+                    "index {} out of range (bins_per_table={})", idx, bins_per_table
+                ));
+            }
+            let offset = table_offset + idx_usize * entry_size;
+            let end = offset + entry_size;
+            if end > table_bytes.len() {
+                return Response::Error("table read out of bounds".into());
+            }
+            data.extend_from_slice(&table_bytes[offset..end]);
+        }
+
+        Response::HarmonyQueryResult(runtime::protocol::HarmonyQueryResult {
+            bucket_id: query.bucket_id,
+            round_id: query.round_id,
+            data,
+        })
+    }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -293,6 +407,35 @@ async fn main() {
                                 round, n, wall, dpf_sum, fetch_sum,
                                 dpf_sum / n as u32, fetch_sum / n as u32);
                             Response::ChunkBatch(batch)
+                        }
+                        Request::HarmonyGetInfo => Response::HarmonyInfo(ServerInfo {
+                            index_bins_per_table: data_ref.index_bins_per_table as u32,
+                            chunk_bins_per_table: data_ref.chunk_bins_per_table as u32,
+                            index_k: K as u8,
+                            chunk_k: K_CHUNK as u8,
+                            tag_seed: data_ref.tag_seed,
+                        }),
+                        Request::HarmonyQuery(q) => {
+                            let t = Instant::now();
+                            let result = data_ref.handle_harmony_query(&q);
+                            let wall = t.elapsed();
+                            println!("[harmony] L{} B{} {} indices {:.2?}",
+                                q.level, q.bucket_id, q.indices.len(), wall);
+                            result
+                        }
+                        Request::HarmonyBatchQuery(q) => {
+                            let t = Instant::now();
+                            let n = q.items.len();
+                            let result = data_ref.handle_harmony_batch_query(&q);
+                            let wall = t.elapsed();
+                            println!("[harmony-batch] L{} {} buckets × {} sub-q {:.2?}",
+                                q.level, n, q.sub_queries_per_bucket, wall);
+                            result
+                        }
+                        Request::HarmonyHints(_) => {
+                            // Hint generation is handled by the dedicated Hint Server,
+                            // not the Query Server.
+                            Response::Error("hint requests not supported on query server".into())
                         }
                     }
                 }).await.unwrap();

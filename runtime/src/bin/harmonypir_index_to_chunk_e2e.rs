@@ -197,7 +197,7 @@ fn main() {
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap");
     let chunk_bins = read_chunk_cuckoo_header(&chunk_mmap);
-    let chunk_w = CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE); // 2 × 44 = 88
+    let chunk_w = CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE); // 3 × 44 = 132
 
     println!("  INDEX cuckoo: {} bins × {}B = {:.2} GB",
         index_bins, index_w, idx_mmap.len() as f64 / (1024.0*1024.0*1024.0));
@@ -205,7 +205,7 @@ fn main() {
     println!("    tag_seed = 0x{:016x}", tag_seed);
     println!("  CHUNK cuckoo: {} bins × {}B = {:.2} GB",
         chunk_bins, chunk_w, chunk_mmap.len() as f64 / (1024.0*1024.0*1024.0));
-    println!("    Slot layout: [4B chunk_id][40B data] × 2 slots");
+    println!("    Slot layout: [4B chunk_id][40B data] × 3 slots");
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
@@ -425,7 +425,7 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     println!("━━━ STEP 6: ONLINE PHASE — Query CHUNK bin {} via HarmonyPIR ━━━\n", target_chunk_bin);
 
-    println!("  [Client] Querying CHUNK bin {} to retrieve 88-byte entry (2 × 44B slots)", target_chunk_bin);
+    println!("  [Client] Querying CHUNK bin {} to retrieve {}-byte entry ({} × 44B slots)", target_chunk_bin, chunk_w, CHUNK_CUCKOO_BUCKET_SIZE);
     println!("  [Client] Step 6a — Locate bin {} in DS'", target_chunk_bin);
 
     let req = chunk_bucket.build_request(target_chunk_bin as u32).unwrap();
