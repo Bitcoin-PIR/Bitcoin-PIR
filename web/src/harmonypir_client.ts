@@ -106,6 +106,9 @@ export class HarmonyPirClient {
   private tagSeed = 0n;
   private prpKey: Uint8Array;
 
+  // Actual hint bytes received during download.
+  private totalHintBytes = 0;
+
   // Pending response callbacks
   private pendingCallbacks: Map<string, (data: Uint8Array) => void> = new Map();
   private callbackId = 0;
@@ -250,6 +253,7 @@ export class HarmonyPirClient {
    */
   async fetchHints(): Promise<void> {
     const t0 = performance.now();
+    this.totalHintBytes = 0;
     this.log('Fetching hints from Hint Server...');
 
     const total = K + K_CHUNK; // 75 + 80 = 155 buckets total
@@ -477,6 +481,7 @@ export class HarmonyPirClient {
         if (payload[0] === RESP_HARMONY_HINTS) {
           const bucketId = payload[1];
           const hintsData = payload.slice(14);
+          this.totalHintBytes += hintsData.length;
 
           if (this.pool) {
             // Forward hints to worker (global bucket ID = offset + local).
@@ -502,22 +507,7 @@ export class HarmonyPirClient {
   }
 
   estimateHintSize(): string {
-    let total = 0;
-    if (this.indexBuckets.size > 0) {
-      // Single-threaded: read from WASM bucket instances.
-      for (const [_, bucket] of this.indexBuckets) {
-        total += bucket.m() * bucket.w();
-      }
-      for (const [_, bucket] of this.chunkBuckets) {
-        total += bucket.m() * bucket.w();
-      }
-    } else {
-      // Worker mode: compute from known params.
-      // Each bucket stores m = n hints, each of w bytes.
-      total += K * this.indexBinsPerTable * HARMONY_INDEX_W;
-      total += K_CHUNK * this.chunkBinsPerTable * HARMONY_CHUNK_W;
-    }
-    return (total / (1024 * 1024)).toFixed(1);
+    return (this.totalHintBytes / (1024 * 1024)).toFixed(1);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
