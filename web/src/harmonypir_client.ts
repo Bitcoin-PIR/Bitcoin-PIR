@@ -503,11 +503,19 @@ export class HarmonyPirClient {
 
   estimateHintSize(): string {
     let total = 0;
-    for (const [_, bucket] of this.indexBuckets) {
-      total += bucket.m() * bucket.w();
-    }
-    for (const [_, bucket] of this.chunkBuckets) {
-      total += bucket.m() * bucket.w();
+    if (this.indexBuckets.size > 0) {
+      // Single-threaded: read from WASM bucket instances.
+      for (const [_, bucket] of this.indexBuckets) {
+        total += bucket.m() * bucket.w();
+      }
+      for (const [_, bucket] of this.chunkBuckets) {
+        total += bucket.m() * bucket.w();
+      }
+    } else {
+      // Worker mode: compute from known params.
+      // Each bucket stores m = n hints, each of w bytes.
+      total += K * this.indexBinsPerTable * HARMONY_INDEX_W;
+      total += K_CHUNK * this.chunkBinsPerTable * HARMONY_CHUNK_W;
     }
     return (total / (1024 * 1024)).toFixed(1);
   }
