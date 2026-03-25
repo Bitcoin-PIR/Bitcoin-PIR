@@ -224,6 +224,7 @@ export class HarmonyPirClient {
    * This is the offline phase — typically done once per session.
    */
   async fetchHints(): Promise<void> {
+    const t0 = performance.now();
     this.log('Fetching hints from Hint Server...');
 
     const total = K + K_CHUNK; // 75 + 80 = 155 buckets total
@@ -239,13 +240,18 @@ export class HarmonyPirClient {
     const hintWs = await this.connectHintServer();
 
     // Request index hints (75 buckets).
+    const tIdx = performance.now();
     await this.requestHints(hintWs, 0, K, this.indexBuckets, HARMONY_INDEX_W, onBucketDone);
+    this.log(`  INDEX hints: ${K} buckets in ${((performance.now() - tIdx) / 1000).toFixed(1)}s`);
 
     // Request chunk hints (80 buckets).
+    const tChk = performance.now();
     await this.requestHints(hintWs, 1, K_CHUNK, this.chunkBuckets, HARMONY_CHUNK_W, onBucketDone);
+    this.log(`  CHUNK hints: ${K_CHUNK} buckets in ${((performance.now() - tChk) / 1000).toFixed(1)}s`);
 
     hintWs.close();
-    this.log('Hints downloaded successfully');
+    const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
+    this.log(`Hints downloaded successfully (${totalSec}s, ~${this.estimateHintSize()} MB)`);
   }
 
   /**
@@ -501,8 +507,10 @@ export class HarmonyPirClient {
     addresses: string[],
     progress?: (phase: string, detail: string) => void,
   ): Promise<Map<number, HarmonyQueryResult>> {
+    const tBatchStart = performance.now();
     const N = addresses.length;
     const results = new Map<number, HarmonyQueryResult>();
+    this.log(`Starting batch query for ${N} addresses...`);
 
     // ── Prepare script hashes (accept both addresses and hex scriptPubKeys) ──
     const scriptHashes: Uint8Array[] = [];
@@ -527,6 +535,7 @@ export class HarmonyPirClient {
     // ══════════════════════════════════════════════════════════════════
     progress?.('Level 1', 'Planning index rounds...');
 
+    const tL1Start = performance.now();
     const indexCandBuckets = scriptHashes.map(sh => deriveBuckets(sh));
     const indexRounds = this.planRounds(indexCandBuckets, K);
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index placement round(s) × ${INDEX_CUCKOO_NUM_HASHES} hash-fn rounds`);
@@ -545,11 +554,13 @@ export class HarmonyPirClient {
 
       for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
         progress?.('Level 1', `Index placement ${ir + 1}/${indexRounds.length}, h=${h}...`);
+        const tRound = performance.now();
 
         const batchItems: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }> = [];
         // Track which buckets have real queries (need process_response).
         const realBuckets = new Map<number, number>(); // bucketId → qi
 
+        const tBuild = performance.now();
         for (let b = 0; b < K; b++) {
           const bucket = this.indexBuckets.get(b)!;
           const qi = bucketToQuery.get(b);
@@ -575,14 +586,18 @@ export class HarmonyPirClient {
             batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
           }
         }
+        const buildMs = performance.now() - tBuild;
 
         // Send batch and get response.
         const roundId = ir * INDEX_CUCKOO_NUM_HASHES + h;
         const reqMsg = this.encodeHarmonyBatchRequest(0, roundId, 1, batchItems);
+        const tNet = performance.now();
         const respData = await this.sendQueryRequest(reqMsg);
+        const netMs = performance.now() - tNet;
         const batchResp = this.decodeHarmonyBatchResponse(respData);
 
         // Process real responses only (fake/dummy have no state to consume).
+        const tProc = performance.now();
         for (const [bucketId, qi] of realBuckets) {
           const bucket = this.indexBuckets.get(bucketId)!;
           const respItem = batchResp.get(bucketId);
@@ -599,10 +614,13 @@ export class HarmonyPirClient {
             foundThisPlacement.add(qi);
           }
         }
+        const procMs = performance.now() - tProc;
+        this.log(`  INDEX r${ir}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms (${realBuckets.size} real / ${K} total)`);
       }
     }
 
-    this.log(`Level 1 done: ${indexResults.size} found, ${whaleQueries.size} whales`);
+    const l1Ms = performance.now() - tL1Start;
+    this.log(`Level 1 done: ${indexResults.size} found, ${whaleQueries.size} whales (${(l1Ms / 1000).toFixed(1)}s)`);
 
     // ══════════════════════════════════════════════════════════════════
     // PHASE 2: CHUNK — global batch across all queries
@@ -621,6 +639,7 @@ export class HarmonyPirClient {
 
     const allChunkIds = Array.from(allChunkIdsSet).sort((a, b) => a - b);
     this.log(`Level 2: ${allChunkIds.length} unique chunks to fetch`);
+    const tL2Start = performance.now();
 
     const recoveredChunks = new Map<number, Uint8Array>();
 
@@ -644,6 +663,7 @@ export class HarmonyPirClient {
           const batchItems: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }> = [];
           const realBuckets = new Map<number, { chunkListIdx: number; chunkId: number }>();
 
+          const tBuild = performance.now();
           for (let b = 0; b < K_CHUNK; b++) {
             const bucket = this.chunkBuckets.get(b)!;
             const chunkListIdx = bucketToChunk.get(b);
@@ -670,13 +690,17 @@ export class HarmonyPirClient {
               batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
             }
           }
+          const buildMs = performance.now() - tBuild;
 
           const roundId = ri * CHUNK_CUCKOO_NUM_HASHES + h;
           const reqMsg = this.encodeHarmonyBatchRequest(1, roundId, 1, batchItems);
+          const tNet = performance.now();
           const respData = await this.sendQueryRequest(reqMsg);
+          const netMs = performance.now() - tNet;
           const batchResp = this.decodeHarmonyBatchResponse(respData);
 
           // Process real responses.
+          const tProc = performance.now();
           for (const [bucketId, { chunkId }] of realBuckets) {
             const bucket = this.chunkBuckets.get(bucketId)!;
             const respItem = batchResp.get(bucketId);
@@ -689,11 +713,14 @@ export class HarmonyPirClient {
               foundThisPlacement.add(chunkId);
             }
           }
+          const procMs = performance.now() - tProc;
+          this.log(`  CHUNK r${ri}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms (${realBuckets.size} real / ${K_CHUNK} total)`);
         }
       }
     }
 
-    this.log(`Level 2 done: ${recoveredChunks.size}/${allChunkIds.length} chunks recovered`);
+    const l2Ms = performance.now() - tL2Start;
+    this.log(`Level 2 done: ${recoveredChunks.size}/${allChunkIds.length} chunks recovered (${(l2Ms / 1000).toFixed(1)}s)`);
 
     // ══════════════════════════════════════════════════════════════════
     // PHASE 3: Reassemble per-query results
@@ -718,6 +745,9 @@ export class HarmonyPirClient {
       const utxos = this.decodeUtxos(chunks);
       results.set(qi, { address: addresses[qi], scriptHash: shHexes[qi], utxos, whale: false });
     }
+
+    const totalMs = performance.now() - tBatchStart;
+    this.log(`Batch complete: ${N} queries in ${(totalMs / 1000).toFixed(1)}s`);
 
     return results;
   }
