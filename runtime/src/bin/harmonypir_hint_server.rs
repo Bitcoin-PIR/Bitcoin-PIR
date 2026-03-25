@@ -112,16 +112,14 @@ impl HintServerData {
         // locate(k) == prp.forward(k). batch_forward() is much faster
         // than sequential locate().
         use harmonypir::prp::BatchPrp;
+        use harmonypir::prp::fast::FastPrpWrapper;
+        use harmonypir::prp::alf::AlfPrp;
         let cell_of: Vec<usize> = match prp_backend {
-            #[cfg(feature = "fastprp")]
             harmonypir_wasm::PRP_FASTPRP => {
-                use harmonypir::prp::fast::FastPrpWrapper;
                 let prp = FastPrpWrapper::new(&derived_key, domain);
                 prp.batch_forward()
             }
-            #[cfg(feature = "alf")]
             harmonypir_wasm::PRP_ALF => {
-                use harmonypir::prp::alf::AlfPrp;
                 let prp = AlfPrp::new(&derived_key, domain, &derived_key, 0x4250_4952);
                 prp.batch_forward()
             }

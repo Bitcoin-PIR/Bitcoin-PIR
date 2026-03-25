@@ -60,7 +60,7 @@ name = "harmonypir_batch_trace"
 path = "src/bin/harmonypir_batch_trace.rs"
 
 [features]
-default = []
+default = ["fastprp", "alf"]
 fastprp = ["harmonypir/fastprp-prp", "harmonypir-wasm/fastprp"]
 alf = ["harmonypir/alf", "harmonypir-wasm/alf"]
 
