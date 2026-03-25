@@ -21,7 +21,7 @@ implementations must be identical.
 
 ## Reference Rust implementation
 
-From `runtime/src/bin/onionpir2_client.rs`, the function `build_chunk_cuckoo_for_group`:
+From `runtime/src/bin/onionpir_client.rs`, the function `build_chunk_cuckoo_for_group`:
 
 ```rust
 /// Chunk cuckoo: 6 hash functions, bucket_size=1
