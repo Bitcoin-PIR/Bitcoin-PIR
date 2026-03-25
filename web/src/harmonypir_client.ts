@@ -134,15 +134,28 @@ export class HarmonyPirClient {
     // Remove any previously loaded wasm_bindgen script to avoid conflicts.
     const oldScript = document.getElementById('harmonypir-wasm-script');
     if (oldScript) oldScript.remove();
-    (globalThis as any).wasm_bindgen = undefined;
 
     // Dynamically load the WASM JS file.
+    // wasm-pack --target no-modules produces `let wasm_bindgen = ...` which
+    // doesn't become a window property.  We patch it to use `var` so it's
+    // accessible as `window.wasm_bindgen` after dynamic <script> injection.
+    const resp = await fetch(jsUrl);
+    if (!resp.ok) throw new Error(`Failed to fetch WASM JS from ${jsUrl}: ${resp.status}`);
+    let jsText = await resp.text();
+    // Replace the leading `let wasm_bindgen` with `var wasm_bindgen` so it
+    // becomes a true global (accessible via globalThis.wasm_bindgen).
+    if (jsText.startsWith('let wasm_bindgen')) {
+      jsText = 'var wasm_bindgen' + jsText.slice('let wasm_bindgen'.length);
+    }
+    const blob = new Blob([jsText], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+
     await new Promise<void>((resolve, reject) => {
       const script = document.createElement('script');
       script.id = 'harmonypir-wasm-script';
-      script.src = jsUrl;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error(`Failed to load WASM from ${jsUrl}`));
+      script.src = blobUrl;
+      script.onload = () => { URL.revokeObjectURL(blobUrl); resolve(); };
+      script.onerror = () => { URL.revokeObjectURL(blobUrl); reject(new Error(`Failed to load WASM from ${jsUrl}`)); };
       document.head.appendChild(script);
     });
 

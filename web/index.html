@@ -1247,8 +1247,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function hpQueryUtxos() {
             if (!hpClient || !hpHintsLoaded) {
-                log('HarmonyPIR: Not ready. Connect and wait for hints first.', 'error');
-                return;
+                log('HarmonyPIR: Auto-connecting...', 'info');
+                await hpConnect();
+                if (!hpClient || !hpHintsLoaded) {
+                    log('HarmonyPIR: Connection or hint download failed.', 'error');
+                    return;
+                }
             }
 
             const textarea = document.getElementById('hp-scriptPubkeys');
