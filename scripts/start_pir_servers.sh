@@ -28,7 +28,7 @@ cd "$PROJECT_DIR"
 
 # Build the servers first
 echo "Building PIR WebSocket servers..."
-cargo build --release -p runtime --bin server --bin onionpir_server --bin harmonypir_hint_server
+cargo build --release -p runtime --bin server --bin onionpir_server --bin harmonypir_hint_server --features "fastprp,alf"
 
 echo ""
 echo "========================================"
