@@ -195,6 +195,9 @@ pub struct HarmonyBucket {
     /// Maps each entry in the sorted request → its position in the segment.
     /// Used by process_response() to reconstruct per-position entries for relocation.
     last_position_map: Vec<usize>,
+    /// Stashed state for deferred relocation (set by process_response_xor_only).
+    deferred_entries: Option<Vec<Vec<u8>>>,
+    deferred_answer: Option<Vec<u8>>,
 }
 
 #[wasm_bindgen]
@@ -254,6 +257,8 @@ impl HarmonyBucket {
             last_position: 0,
             last_query: 0,
             last_position_map: Vec::new(),
+            deferred_entries: None,
+            deferred_answer: None,
         })
     }
 
@@ -462,6 +467,52 @@ impl HarmonyBucket {
         Ok(answer)
     }
 
+    /// Fast path: recover the answer via XOR only, deferring relocation.
+    ///
+    /// Call `finish_relocation()` before the next query on this bucket.
+    pub fn process_response_xor_only(&mut self, response: &[u8]) -> Result<Vec<u8>, JsError> {
+        let w = self.params.w;
+        let count = self.last_position_map.len();
+        let expected = count * w;
+        if response.len() != expected {
+            return Err(JsError::new(&format!(
+                "expected {} bytes response ({} entries × {}B), got {}",
+                expected, count, w, response.len()
+            )));
+        }
+
+        // Split response into owned entries.
+        let entries: Vec<Vec<u8>> = (0..count)
+            .map(|i| response[i * w..(i + 1) * w].to_vec())
+            .collect();
+
+        // answer = H[s] ⊕ all entries
+        let mut answer = self.hints[self.last_segment].clone();
+        for entry in &entries {
+            xor_into(&mut answer, entry);
+        }
+
+        // Stash for deferred relocation.
+        self.deferred_entries = Some(entries);
+        self.deferred_answer = Some(answer.clone());
+        Ok(answer)
+    }
+
+    /// Complete the deferred relocation from a prior `process_response_xor_only` call.
+    pub fn finish_relocation(&mut self) -> Result<(), JsError> {
+        let entries = self.deferred_entries.take()
+            .ok_or_else(|| JsError::new("finish_relocation called with no deferred state"))?;
+        let answer = self.deferred_answer.take()
+            .ok_or_else(|| JsError::new("finish_relocation: missing deferred answer"))?;
+
+        let s = self.last_segment;
+        let r = self.last_position;
+        let entry_refs: Vec<&[u8]> = entries.iter().map(|e| e.as_slice()).collect();
+        self.relocate_and_update_hints(s, r, &entry_refs, &answer)?;
+        self.query_count += 1;
+        Ok(())
+    }
+
     // ─── Serialization ──────────────────────────────────────────────────
 
     /// Serialize this bucket's full mutable state to bytes.
@@ -602,6 +653,8 @@ impl HarmonyBucket {
             last_position: 0,
             last_query: 0,
             last_position_map: Vec::new(),
+            deferred_entries: None,
+            deferred_answer: None,
         })
     }
 

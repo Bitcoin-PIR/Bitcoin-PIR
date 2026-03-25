@@ -190,6 +190,34 @@ export class HarmonyWorkerPool {
     return allResults;
   }
 
+  /**
+   * Complete deferred relocation for buckets that had process_response_xor_only called.
+   * Must be called before the next query on these buckets.
+   */
+  async finishRelocation(bucketIds: number[]): Promise<void> {
+    // Group by owning worker.
+    const byWorker = new Map<number, number[]>();
+    for (const id of bucketIds) {
+      const w = this.ownerOf(id);
+      if (!byWorker.has(w)) byWorker.set(w, []);
+      byWorker.get(w)!.push(id);
+    }
+
+    const promises: Promise<void>[] = [];
+    for (const [workerId, ids] of byWorker) {
+      const reqId = this.requestId++;
+      promises.push(new Promise<void>((resolve) => {
+        this.pendingRequests.set(reqId, () => resolve());
+      }));
+      this.workers[workerId].postMessage({
+        type: 'finishRelocation',
+        requestId: reqId,
+        bucketIds: ids,
+      });
+    }
+    await Promise.all(promises);
+  }
+
   /** Terminate all workers. */
   terminate(): void {
     for (const w of this.workers) {
@@ -206,7 +234,7 @@ export class HarmonyWorkerPool {
   // ─── Internal ──────────────────────────────────────────────────────────────
 
   private handleMessage(workerId: number, data: any): void {
-    if (data.type === 'buildBatchResult' || data.type === 'processBatchResult') {
+    if (data.type === 'buildBatchResult' || data.type === 'processBatchResult' || data.type === 'relocationDone') {
       const cb = this.pendingRequests.get(data.requestId);
       if (cb) {
         this.pendingRequests.delete(data.requestId);
@@ -296,11 +324,19 @@ self.onmessage = async (ev) => {
       for (const item of msg.items) {
         const bucket = buckets.get(item.bucketId);
         if (!bucket) continue;
-        const answer = bucket.process_response(item.response);
+        const answer = bucket.process_response_xor_only(item.response);
         results.push({ bucketId: item.bucketId, answer });
         transferables.push(answer.buffer);
       }
       self.postMessage({ type: 'processBatchResult', requestId: msg.requestId, results }, transferables);
+      break;
+    }
+    case 'finishRelocation': {
+      for (const bucketId of msg.bucketIds) {
+        const bucket = buckets.get(bucketId);
+        if (bucket) bucket.finish_relocation();
+      }
+      self.postMessage({ type: 'relocationDone', requestId: msg.requestId });
       break;
     }
   }

@@ -120,6 +120,15 @@ let wasm_bindgen = (function(exports) {
             return HarmonyBucket.__wrap(ret[0]);
         }
         /**
+         * Complete the deferred relocation from a prior `process_response_xor_only` call.
+         */
+        finish_relocation() {
+            const ret = wasm.harmonybucket_finish_relocation(this.__wbg_ptr);
+            if (ret[1]) {
+                throw takeFromExternrefTable0(ret[0]);
+            }
+        }
+        /**
          * Load pre-computed hint parities (M × w bytes, flat).
          * @param {Uint8Array} hints_data
          */
@@ -207,6 +216,24 @@ let wasm_bindgen = (function(exports) {
             const ptr0 = passArray8ToWasm0(response, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
             const ret = wasm.harmonybucket_process_response(this.__wbg_ptr, ptr0, len0);
+            if (ret[3]) {
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+            return v2;
+        }
+        /**
+         * Fast path: recover the answer via XOR only, deferring relocation.
+         *
+         * Call `finish_relocation()` before the next query on this bucket.
+         * @param {Uint8Array} response
+         * @returns {Uint8Array}
+         */
+        process_response_xor_only(response) {
+            const ptr0 = passArray8ToWasm0(response, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.harmonybucket_process_response_xor_only(this.__wbg_ptr, ptr0, len0);
             if (ret[3]) {
                 throw takeFromExternrefTable0(ret[2]);
             }

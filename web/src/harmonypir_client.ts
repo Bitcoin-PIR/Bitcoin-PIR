@@ -652,7 +652,12 @@ export class HarmonyPirClient {
             foundThisPlacement.add(qi);
           }
         }
-        this.log(`  INDEX r${ir}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms (${realBuckets.size} real / ${K} total)`);
+
+        // Deferred relocation (expensive PRP work, after results are available).
+        const tReloc = performance.now();
+        await this.doFinishRelocation(processItems.map(i => i.bucketId), 'index');
+        const relocMs = performance.now() - tReloc;
+        this.log(`  INDEX r${ir}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realBuckets.size} real / ${K} total)`);
       }
     }
 
@@ -752,7 +757,12 @@ export class HarmonyPirClient {
               foundThisPlacement.add(chunkId);
             }
           }
-          this.log(`  CHUNK r${ri}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms (${realBuckets.size} real / ${K_CHUNK} total)`);
+
+          // Deferred relocation (expensive PRP work, after results are available).
+          const tReloc = performance.now();
+          await this.doFinishRelocation(processItems.map(i => i.bucketId), 'chunk');
+          const relocMs = performance.now() - tReloc;
+          this.log(`  CHUNK r${ri}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realBuckets.size} real / ${K_CHUNK} total)`);
         }
       }
     }
@@ -1001,20 +1011,39 @@ export class HarmonyPirClient {
     level: 'index' | 'chunk',
   ): Promise<Map<number, Uint8Array>> {
     if (this.pool) {
+      // Workers use process_response_xor_only (fast, no relocation).
       return this.pool.processBatchResponses(items);
     }
 
-    // Single-threaded fallback.
+    // Single-threaded fallback: also use xor-only path for consistent timing.
     const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
     const result = new Map<number, Uint8Array>();
     for (const item of items) {
       const localId = level === 'index' ? item.bucketId : item.bucketId - K;
       const bucket = bucketMap.get(localId);
       if (!bucket) continue;
-      const answer = bucket.process_response(item.response);
+      const answer = bucket.process_response_xor_only(item.response);
       result.set(item.bucketId, answer);
     }
     return result;
+  }
+
+  /** Complete deferred relocation for buckets that had xor-only processing. */
+  private async doFinishRelocation(
+    bucketIds: number[],
+    level: 'index' | 'chunk',
+  ): Promise<void> {
+    if (this.pool) {
+      return this.pool.finishRelocation(bucketIds);
+    }
+
+    // Single-threaded fallback.
+    const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
+    for (const id of bucketIds) {
+      const localId = level === 'index' ? id : id - K;
+      const bucket = bucketMap.get(localId);
+      if (bucket) bucket.finish_relocation();
+    }
   }
 
   /** Disconnect and free resources. */
