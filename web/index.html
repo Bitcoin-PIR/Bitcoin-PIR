@@ -1246,7 +1246,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 await hpClient.connectQueryServer();
                 await hpClient.fetchServerInfo();
-                hpClient.initBuckets();
+                await hpClient.initBuckets();
 
                 statusDiv.textContent = 'Status: Connected (downloading hints...)';
                 statusDiv.className = 'status connected';

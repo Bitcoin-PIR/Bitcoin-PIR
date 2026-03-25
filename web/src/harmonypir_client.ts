@@ -27,6 +27,8 @@ import {
   hexToBytes, bytesToHex,
 } from './hash.js';
 
+import { HarmonyWorkerPool, BuildItem, ProcessItem } from './harmonypir_worker_pool.js';
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface HarmonyPirClientConfig {
@@ -92,8 +94,9 @@ export class HarmonyPirClient {
   private wasm: HarmonyWasmModule | null = null;
   private queryWs: WebSocket | null = null;
   private hintWs: WebSocket | null = null;
+  private pool: HarmonyWorkerPool | null = null;
 
-  // Per-bucket WASM state
+  // Per-bucket WASM state (used in single-threaded fallback only)
   private indexBuckets: Map<number, HarmonyBucketWasm> = new Map();
   private chunkBuckets: Map<number, HarmonyBucketWasm> = new Map();
 
@@ -118,33 +121,32 @@ export class HarmonyPirClient {
     this.config.onProgress?.(msg);
   }
 
-  /** Load the HarmonyPIR WASM module for the selected PRP backend. */
-  async loadWasm(): Promise<void> {
-    if (this.wasm) return;
+  /** Resolve the WASM directory for the selected PRP backend. */
+  private get wasmDir(): string {
     const backend = this.config.prpBackend ?? 0;
-
-    // Each PRP backend has its own WASM build in a separate directory.
-    const wasmDirs: Record<number, string> = {
-      0: '/wasm/harmonypir',          // Hoang (default)
-      1: '/wasm/harmonypir-fastprp',  // FastPRP
-      2: '/wasm/harmonypir-alf',      // ALF
+    const dirs: Record<number, string> = {
+      0: '/wasm/harmonypir',
+      1: '/wasm/harmonypir-fastprp',
+      2: '/wasm/harmonypir-alf',
     };
-    const wasmDir = wasmDirs[backend] ?? wasmDirs[0];
-    const jsUrl = `${wasmDir}/harmonypir_wasm.js`;
+    return dirs[backend] ?? dirs[0];
+  }
 
-    // Remove any previously loaded wasm_bindgen script to avoid conflicts.
+  /** Load the HarmonyPIR WASM module + worker pool. */
+  async loadWasm(): Promise<void> {
+    if (this.pool) return; // already loaded
+    const backend = this.config.prpBackend ?? 0;
+    const backendName = ['Hoang', 'FastPRP', 'ALF'][backend] ?? 'Hoang';
+    const jsUrl = `${this.wasmDir}/harmonypir_wasm.js`;
+    const binaryUrl = `${this.wasmDir}/harmonypir_wasm_bg.wasm`;
+
+    // Also load WASM on main thread (for planning helpers like computeTag).
     const oldScript = document.getElementById('harmonypir-wasm-script');
     if (oldScript) oldScript.remove();
 
-    // Dynamically load the WASM JS file.
-    // wasm-pack --target no-modules produces `let wasm_bindgen = ...` which
-    // doesn't become a window property.  We patch it to use `var` so it's
-    // accessible as `window.wasm_bindgen` after dynamic <script> injection.
     const resp = await fetch(jsUrl);
     if (!resp.ok) throw new Error(`Failed to fetch WASM JS from ${jsUrl}: ${resp.status}`);
     let jsText = await resp.text();
-    // Replace the leading `let wasm_bindgen` with `var wasm_bindgen` so it
-    // becomes a true global (accessible via globalThis.wasm_bindgen).
     if (jsText.startsWith('let wasm_bindgen')) {
       jsText = 'var wasm_bindgen' + jsText.slice('let wasm_bindgen'.length);
     }
@@ -161,13 +163,19 @@ export class HarmonyPirClient {
     });
 
     const wb = (globalThis as any).wasm_bindgen;
-    if (!wb) {
-      throw new Error(`HarmonyPIR WASM did not initialize from ${jsUrl}`);
-    }
-    // Initialize the WASM module (loads .wasm from the same directory).
-    await wb(`${wasmDir}/harmonypir_wasm_bg.wasm`);
+    if (!wb) throw new Error(`HarmonyPIR WASM did not initialize from ${jsUrl}`);
+    await wb(binaryUrl);
     this.wasm = wb as any;
-    this.log(`WASM loaded: ${['Hoang', 'FastPRP', 'ALF'][backend]} (${jsUrl})`);
+
+    // Initialize worker pool.
+    const useWorkers = typeof Worker !== 'undefined';
+    if (useWorkers) {
+      this.pool = new HarmonyWorkerPool();
+      await this.pool.init(jsUrl, binaryUrl);
+      this.log(`WASM loaded: ${backendName} + ${this.pool.size} workers`);
+    } else {
+      this.log(`WASM loaded: ${backendName} (no Worker support, single-threaded)`);
+    }
   }
 
   /** Connect to the Query Server via WebSocket. */
@@ -199,27 +207,40 @@ export class HarmonyPirClient {
     this.log(`Server info: indexBins=${this.indexBinsPerTable}, chunkBins=${this.chunkBinsPerTable}`);
   }
 
-  /** Initialize WASM bucket instances for all PBC groups. */
-  initBuckets(): void {
+  /** Initialize WASM bucket instances on workers (or main thread fallback). */
+  async initBuckets(): Promise<void> {
     if (!this.wasm) throw new Error('WASM not loaded');
     const backend = this.config.prpBackend ?? 0;
     const backendName = ['Hoang', 'FastPRP', 'ALF'][backend] ?? 'Hoang';
 
-    for (let b = 0; b < K; b++) {
-      const bucket = this.wasm.HarmonyBucket.new_with_backend(
-        this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, b, backend
-      );
-      this.indexBuckets.set(b, bucket);
+    if (this.pool) {
+      // Create buckets on workers.
+      const promises: Promise<void>[] = [];
+      for (let b = 0; b < K; b++) {
+        promises.push(this.pool.createBucket(b, this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, backend));
+      }
+      for (let b = 0; b < K_CHUNK; b++) {
+        // Chunk buckets use IDs K..K+K_CHUNK-1 for PRP derivation.
+        promises.push(this.pool.createBucket(K + b, this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, backend));
+      }
+      await Promise.all(promises);
+    } else {
+      // Single-threaded fallback.
+      for (let b = 0; b < K; b++) {
+        const bucket = this.wasm.HarmonyBucket.new_with_backend(
+          this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, b, backend
+        );
+        this.indexBuckets.set(b, bucket);
+      }
+      for (let b = 0; b < K_CHUNK; b++) {
+        const bucket = this.wasm.HarmonyBucket.new_with_backend(
+          this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, K + b, backend
+        );
+        this.chunkBuckets.set(b, bucket);
+      }
     }
 
-    for (let b = 0; b < K_CHUNK; b++) {
-      const bucket = this.wasm.HarmonyBucket.new_with_backend(
-        this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, K + b, backend
-      );
-      this.chunkBuckets.set(b, bucket);
-    }
-
-    this.log(`Initialized ${K} index + ${K_CHUNK} chunk buckets (PRP: ${backendName})`);
+    this.log(`Initialized ${K} index + ${K_CHUNK} chunk buckets (PRP: ${backendName}${this.pool ? `, ${this.pool.size} workers` : ''})`);
   }
 
   /**
@@ -242,14 +263,14 @@ export class HarmonyPirClient {
     // Connect to Hint Server.
     const hintWs = await this.connectHintServer();
 
-    // Request index hints (75 buckets).
+    // Request index hints (75 buckets). Offset=0 for INDEX.
     const tIdx = performance.now();
-    await this.requestHints(hintWs, 0, K, this.indexBuckets, HARMONY_INDEX_W, onBucketDone);
+    await this.requestHints(hintWs, 0, K, 0, this.indexBuckets, HARMONY_INDEX_W, onBucketDone);
     this.log(`  INDEX hints: ${K} buckets in ${((performance.now() - tIdx) / 1000).toFixed(1)}s`);
 
-    // Request chunk hints (80 buckets).
+    // Request chunk hints (80 buckets). Offset=K for CHUNK.
     const tChk = performance.now();
-    await this.requestHints(hintWs, 1, K_CHUNK, this.chunkBuckets, HARMONY_CHUNK_W, onBucketDone);
+    await this.requestHints(hintWs, 1, K_CHUNK, K, this.chunkBuckets, HARMONY_CHUNK_W, onBucketDone);
     this.log(`  CHUNK hints: ${K_CHUNK} buckets in ${((performance.now() - tChk) / 1000).toFixed(1)}s`);
 
     hintWs.close();
@@ -414,11 +435,13 @@ export class HarmonyPirClient {
     });
   }
 
-  /** Request hints from the Hint Server for a set of buckets at one level. */
+  /** Request hints from the Hint Server for a set of buckets at one level.
+   *  bucketIdOffset: 0 for INDEX, K for CHUNK (maps local 0-based ID to global bucket ID for pool). */
   private async requestHints(
     ws: WebSocket,
     level: number,
     numBuckets: number,
+    bucketIdOffset: number,
     buckets: Map<number, HarmonyBucketWasm>,
     w: number,
     onBucketDone?: () => void,
@@ -452,15 +475,15 @@ export class HarmonyPirClient {
 
         if (payload[0] === RESP_HARMONY_HINTS) {
           const bucketId = payload[1];
-          const view = new DataView(payload.buffer, payload.byteOffset);
-          const n = view.getUint32(2, true);
-          const t = view.getUint32(6, true);
-          const m = view.getUint32(10, true);
           const hintsData = payload.slice(14);
 
-          const bucket = buckets.get(bucketId);
-          if (bucket) {
-            bucket.load_hints(hintsData);
+          if (this.pool) {
+            // Forward hints to worker (global bucket ID = offset + local).
+            this.pool.loadHints(bucketIdOffset + bucketId, hintsData);
+          } else {
+            // Single-threaded fallback: load directly.
+            const bucket = buckets.get(bucketId);
+            if (bucket) bucket.load_hints(hintsData);
           }
 
           received++;
@@ -560,41 +583,33 @@ export class HarmonyPirClient {
 
       for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
         progress?.('Level 1', `Index placement ${ir + 1}/${indexRounds.length}, h=${h}...`);
-        const tRound = performance.now();
 
-        const batchItems: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }> = [];
-        // Track which buckets have real queries (need process_response).
+        // Determine which buckets get real vs dummy queries.
         const realBuckets = new Map<number, number>(); // bucketId → qi
+        const buildItems: BuildItem[] = [];
 
-        const tBuild = performance.now();
         for (let b = 0; b < K; b++) {
-          const bucket = this.indexBuckets.get(b)!;
           const qi = bucketToQuery.get(b);
-
-          if (qi !== undefined) {
-            if (foundThisPlacement.has(qi) || indexResults.has(qi) || whaleQueries.has(qi)) {
-              // Already found — send fake to keep traffic uniform.
-              const dummy = new Uint8Array(bucket.build_synthetic_dummy());
-              batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
-            } else {
-              // Real query with hash function h.
-              const ck = deriveCuckooKey(b, h);
-              const binIndex = cuckooHash(scriptHashes[qi], ck, this.indexBinsPerTable);
-              const req = bucket.build_request(binIndex);
-              const reqBytes = new Uint8Array(req.request);
-              req.free();
-              realBuckets.set(b, qi);
-              batchItems.push({ bucketId: b, subQueryBytes: [reqBytes] });
-            }
+          if (qi !== undefined && !foundThisPlacement.has(qi) && !indexResults.has(qi) && !whaleQueries.has(qi)) {
+            const ck = deriveCuckooKey(b, h);
+            const binIndex = cuckooHash(scriptHashes[qi], ck, this.indexBinsPerTable);
+            buildItems.push({ bucketId: b, binIndex });
+            realBuckets.set(b, qi);
           } else {
-            // Unassigned bucket — dummy.
-            const dummy = new Uint8Array(bucket.build_synthetic_dummy());
-            batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
+            buildItems.push({ bucketId: b }); // dummy (binIndex undefined)
           }
         }
+
+        // Build requests (parallel via workers or single-threaded fallback).
+        const tBuild = performance.now();
+        const reqBytesMap = await this.doBuildBatch(buildItems, 'index');
         const buildMs = performance.now() - tBuild;
 
-        // Send batch and get response.
+        // Encode and send batch.
+        const batchItems = buildItems.map(item => ({
+          bucketId: item.bucketId,
+          subQueryBytes: [reqBytesMap.get(item.bucketId) ?? new Uint8Array(0)],
+        }));
         const roundId = ir * INDEX_CUCKOO_NUM_HASHES + h;
         const reqMsg = this.encodeHarmonyBatchRequest(0, roundId, 1, batchItems);
         const tNet = performance.now();
@@ -602,14 +617,22 @@ export class HarmonyPirClient {
         const netMs = performance.now() - tNet;
         const batchResp = this.decodeHarmonyBatchResponse(respData);
 
-        // Process real responses only (fake/dummy have no state to consume).
-        const tProc = performance.now();
-        for (const [bucketId, qi] of realBuckets) {
-          const bucket = this.indexBuckets.get(bucketId)!;
+        // Process real responses (parallel via workers or single-threaded fallback).
+        const processItems: ProcessItem[] = [];
+        for (const [bucketId] of realBuckets) {
           const respItem = batchResp.get(bucketId);
-          if (!respItem || respItem.length === 0) continue;
+          if (respItem && respItem.length > 0) {
+            processItems.push({ bucketId, response: respItem[0] });
+          }
+        }
+        const tProc = performance.now();
+        const answers = await this.doProcessBatch(processItems, 'index');
+        const procMs = performance.now() - tProc;
 
-          const answer = bucket.process_response(respItem[0]);
+        // Match answers against expected tags.
+        for (const [bucketId, qi] of realBuckets) {
+          const answer = answers.get(bucketId);
+          if (!answer) continue;
           const found = this.findTagInBin(answer, scriptHashes[qi], HARMONY_INDEX_W);
           if (found) {
             if (found.numChunks === 0) {
@@ -620,7 +643,6 @@ export class HarmonyPirClient {
             foundThisPlacement.add(qi);
           }
         }
-        const procMs = performance.now() - tProc;
         this.log(`  INDEX r${ir}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms (${realBuckets.size} real / ${K} total)`);
       }
     }
@@ -666,38 +688,34 @@ export class HarmonyPirClient {
         for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
           progress?.('Level 2', `Chunk placement ${ri + 1}/${chunkRounds.length}, h=${h}...`);
 
-          const batchItems: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }> = [];
           const realBuckets = new Map<number, { chunkListIdx: number; chunkId: number }>();
+          const buildItems: BuildItem[] = [];
 
-          const tBuild = performance.now();
           for (let b = 0; b < K_CHUNK; b++) {
-            const bucket = this.chunkBuckets.get(b)!;
             const chunkListIdx = bucketToChunk.get(b);
-
             if (chunkListIdx !== undefined) {
               const chunkId = allChunkIds[chunkListIdx];
-              if (foundThisPlacement.has(chunkId) || recoveredChunks.has(chunkId)) {
-                // Already found — send fake.
-                const dummy = new Uint8Array(bucket.build_synthetic_dummy());
-                batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
-              } else {
-                // Real query with hash function h.
+              if (!foundThisPlacement.has(chunkId) && !recoveredChunks.has(chunkId)) {
                 const ck = deriveChunkCuckooKey(b, h);
                 const binIndex = cuckooHashInt(chunkId, ck, this.chunkBinsPerTable);
-                const req = bucket.build_request(binIndex);
-                const reqBytes = new Uint8Array(req.request);
-                req.free();
+                buildItems.push({ bucketId: K + b, binIndex }); // global ID = K + b
                 realBuckets.set(b, { chunkListIdx, chunkId });
-                batchItems.push({ bucketId: b, subQueryBytes: [reqBytes] });
+              } else {
+                buildItems.push({ bucketId: K + b }); // dummy
               }
             } else {
-              // Unassigned — dummy.
-              const dummy = new Uint8Array(bucket.build_synthetic_dummy());
-              batchItems.push({ bucketId: b, subQueryBytes: [dummy] });
+              buildItems.push({ bucketId: K + b }); // dummy
             }
           }
+
+          const tBuild = performance.now();
+          const reqBytesMap = await this.doBuildBatch(buildItems, 'chunk');
           const buildMs = performance.now() - tBuild;
 
+          const batchItems = buildItems.map(item => ({
+            bucketId: item.bucketId - K, // local bucket ID for wire protocol
+            subQueryBytes: [reqBytesMap.get(item.bucketId) ?? new Uint8Array(0)],
+          }));
           const roundId = ri * CHUNK_CUCKOO_NUM_HASHES + h;
           const reqMsg = this.encodeHarmonyBatchRequest(1, roundId, 1, batchItems);
           const tNet = performance.now();
@@ -705,21 +723,26 @@ export class HarmonyPirClient {
           const netMs = performance.now() - tNet;
           const batchResp = this.decodeHarmonyBatchResponse(respData);
 
-          // Process real responses.
+          const processItems: ProcessItem[] = [];
+          for (const [localB] of realBuckets) {
+            const respItem = batchResp.get(localB);
+            if (respItem && respItem.length > 0) {
+              processItems.push({ bucketId: K + localB, response: respItem[0] }); // global ID
+            }
+          }
           const tProc = performance.now();
-          for (const [bucketId, { chunkId }] of realBuckets) {
-            const bucket = this.chunkBuckets.get(bucketId)!;
-            const respItem = batchResp.get(bucketId);
-            if (!respItem || respItem.length === 0) continue;
+          const answers = await this.doProcessBatch(processItems, 'chunk');
+          const procMs = performance.now() - tProc;
 
-            const answer = bucket.process_response(respItem[0]);
+          for (const [localB, { chunkId }] of realBuckets) {
+            const answer = answers.get(K + localB); // global ID
+            if (!answer) continue;
             const found = this.findChunkInBin(answer, chunkId);
             if (found) {
               recoveredChunks.set(chunkId, found);
               foundThisPlacement.add(chunkId);
             }
           }
-          const procMs = performance.now() - tProc;
           this.log(`  CHUNK r${ri}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms (${realBuckets.size} real / ${K_CHUNK} total)`);
         }
       }
@@ -927,15 +950,76 @@ export class HarmonyPirClient {
     return result;
   }
 
+  // ─── Worker/fallback dispatch helpers ────────────────────────────────────
+
+  /**
+   * Build requests for a batch of buckets.
+   * Uses worker pool if available, otherwise direct WASM calls.
+   * @param level 'index' or 'chunk' — determines which bucket map to use for fallback.
+   */
+  private async doBuildBatch(
+    items: BuildItem[],
+    level: 'index' | 'chunk',
+  ): Promise<Map<number, Uint8Array>> {
+    if (this.pool) {
+      return this.pool.buildBatchRequests(items);
+    }
+
+    // Single-threaded fallback.
+    const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
+    const result = new Map<number, Uint8Array>();
+    for (const item of items) {
+      const localId = level === 'index' ? item.bucketId : item.bucketId - K;
+      const bucket = bucketMap.get(localId);
+      if (!bucket) continue;
+      if (item.binIndex !== undefined) {
+        const req = bucket.build_request(item.binIndex);
+        result.set(item.bucketId, new Uint8Array(req.request));
+        req.free();
+      } else {
+        result.set(item.bucketId, new Uint8Array(bucket.build_synthetic_dummy()));
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Process responses for a batch of buckets.
+   * Uses worker pool if available, otherwise direct WASM calls.
+   */
+  private async doProcessBatch(
+    items: ProcessItem[],
+    level: 'index' | 'chunk',
+  ): Promise<Map<number, Uint8Array>> {
+    if (this.pool) {
+      return this.pool.processBatchResponses(items);
+    }
+
+    // Single-threaded fallback.
+    const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
+    const result = new Map<number, Uint8Array>();
+    for (const item of items) {
+      const localId = level === 'index' ? item.bucketId : item.bucketId - K;
+      const bucket = bucketMap.get(localId);
+      if (!bucket) continue;
+      const answer = bucket.process_response(item.response);
+      result.set(item.bucketId, answer);
+    }
+    return result;
+  }
+
   /** Disconnect and free resources. */
   disconnect(): void {
     this.queryWs?.close();
     this.hintWs?.close();
+    if (this.pool) {
+      this.pool.terminate();
+      this.pool = null;
+    }
     for (const [_, b] of this.indexBuckets) b.free();
     for (const [_, b] of this.chunkBuckets) b.free();
     this.indexBuckets.clear();
     this.chunkBuckets.clear();
-    // Reset WASM so loadWasm() reloads the correct backend on reconnect.
     this.wasm = null;
   }
 }
