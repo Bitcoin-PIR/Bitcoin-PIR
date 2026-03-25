@@ -55,6 +55,7 @@ export interface HarmonyQueryResult {
 interface HarmonyWasmModule {
   HarmonyBucket: {
     new(n: number, w: number, t: number, prpKey: Uint8Array, bucketId: number): HarmonyBucketWasm;
+    new_with_backend(n: number, w: number, t: number, prpKey: Uint8Array, bucketId: number, prpBackend: number): HarmonyBucketWasm;
   };
   compute_balanced_t(n: number): number;
   verify_protocol(n: number, w: number): boolean;
@@ -201,22 +202,24 @@ export class HarmonyPirClient {
   /** Initialize WASM bucket instances for all PBC groups. */
   initBuckets(): void {
     if (!this.wasm) throw new Error('WASM not loaded');
+    const backend = this.config.prpBackend ?? 0;
+    const backendName = ['Hoang', 'FastPRP', 'ALF'][backend] ?? 'Hoang';
 
     for (let b = 0; b < K; b++) {
-      const bucket = new this.wasm.HarmonyBucket(
-        this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, b
+      const bucket = this.wasm.HarmonyBucket.new_with_backend(
+        this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, b, backend
       );
       this.indexBuckets.set(b, bucket);
     }
 
     for (let b = 0; b < K_CHUNK; b++) {
-      const bucket = new this.wasm.HarmonyBucket(
-        this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, K + b
+      const bucket = this.wasm.HarmonyBucket.new_with_backend(
+        this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, K + b, backend
       );
       this.chunkBuckets.set(b, bucket);
     }
 
-    this.log(`Initialized ${K} index + ${K_CHUNK} chunk HarmonyPIR buckets`);
+    this.log(`Initialized ${K} index + ${K_CHUNK} chunk buckets (PRP: ${backendName})`);
   }
 
   /**
