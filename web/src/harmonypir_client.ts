@@ -760,7 +760,7 @@ export class HarmonyPirClient {
                 qd.startChunkId = found.startChunkId;
                 qd.numChunks = found.numChunks;
                 // Compute tag hex for display.
-                qd.tagHex = bytesToHex(computeTag(scriptHashes[qi], this.tagSeed));
+                qd.tagHex = bytesToHex(computeTag(this.tagSeed, scriptHashes[qi]));
               }
             }
             foundThisPlacement.add(qi);
