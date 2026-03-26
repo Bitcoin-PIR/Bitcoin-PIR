@@ -27,7 +27,7 @@ import {
   hexToBytes, bytesToHex,
 } from './hash.js';
 
-import { HarmonyWorkerPool, BuildItem, ProcessItem } from './harmonypir_worker_pool.js';
+import { HarmonyWorkerPool, BuildItem, BuildResult, ProcessItem } from './harmonypir_worker_pool.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -87,6 +87,49 @@ interface HarmonyRequestWasm {
   free(): void;
 }
 
+// ─── Query Inspector types ──────────────────────────────────────────────────
+
+export interface RoundTimingData {
+  phase: 'index' | 'chunk';
+  roundIdx: number;
+  hashIdx: number;
+  realCount: number;
+  totalCount: number;
+  buildMs: number;
+  netMs: number;
+  procMs: number;
+  relocMs: number;
+}
+
+export interface QueryInspectorData {
+  address: string;
+  scriptPubKeyHex: string;
+  scriptHashHex: string;
+  candidateIndexBuckets: number[];
+  assignedIndexBucket: number;
+  indexPlacementRound: number;
+  // INDEX details
+  indexBinIndex?: number;
+  indexHashRound?: number;
+  indexSegment?: number;
+  indexPosition?: number;
+  indexSegmentSize?: number;   // T (segment size parameter)
+  tagHex?: string;
+  startChunkId?: number;
+  numChunks?: number;
+  isWhale: boolean;
+  // CHUNK details (per chunk)
+  chunkDetails?: Array<{
+    chunkId: number;
+    bucketId: number;
+    segment?: number;
+    position?: number;
+  }>;
+  // Timing (all rounds, shared across queries in same batch)
+  roundTimings: RoundTimingData[];
+  totalMs: number;
+}
+
 // ─── Client class ───────────────────────────────────────────────────────────
 
 export class HarmonyPirClient {
@@ -118,6 +161,9 @@ export class HarmonyPirClient {
 
   // Whether hints have been loaded for the current PRP backend.
   hintsLoaded = false;
+
+  // Inspector data from the last queryBatch call.
+  lastInspectorData: Map<number, QueryInspectorData> | null = null;
 
   // Pending response callbacks
   private pendingCallbacks: Map<string, (data: Uint8Array) => void> = new Map();
@@ -583,6 +629,10 @@ export class HarmonyPirClient {
       shHexes.push(bytesToHex(sh));
     }
 
+    // ── Initialize inspector data ──
+    const inspectorMap = new Map<number, QueryInspectorData>();
+    const roundTimings: RoundTimingData[] = [];
+
     // ══════════════════════════════════════════════════════════════════
     // PHASE 1: INDEX — batch queries
     // ══════════════════════════════════════════════════════════════════
@@ -593,6 +643,22 @@ export class HarmonyPirClient {
     const indexRounds = this.planRounds(indexCandBuckets, K);
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index placement round(s) × ${INDEX_CUCKOO_NUM_HASHES} hash-fn rounds`);
 
+    // Pre-populate inspector data for each query.
+    for (let qi = 0; qi < N; qi++) {
+      inspectorMap.set(qi, {
+        address: addresses[qi],
+        scriptPubKeyHex: (/^[0-9a-fA-F]+$/.test(addresses[qi]) && addresses[qi].length % 2 === 0)
+          ? addresses[qi].toLowerCase() : (addressToScriptPubKey(addresses[qi]) ?? ''),
+        scriptHashHex: shHexes[qi],
+        candidateIndexBuckets: indexCandBuckets[qi],
+        assignedIndexBucket: -1,
+        indexPlacementRound: -1,
+        isWhale: false,
+        roundTimings,
+        totalMs: 0,
+      });
+    }
+
     const indexResults = new Map<number, { startChunkId: number; numChunks: number }>();
     const whaleQueries = new Set<number>();
 
@@ -601,6 +667,12 @@ export class HarmonyPirClient {
       const bucketToQuery = new Map<number, number>();
       for (const [qi, bucketId] of round) {
         bucketToQuery.set(bucketId, qi);
+        // Inspector: record which bucket each query is assigned to.
+        const qd = inspectorMap.get(qi);
+        if (qd && qd.assignedIndexBucket < 0) {
+          qd.assignedIndexBucket = bucketId;
+          qd.indexPlacementRound = ir;
+        }
       }
 
       const foundThisPlacement = new Set<number>(); // qi already found in this placement round
@@ -619,6 +691,11 @@ export class HarmonyPirClient {
             const binIndex = cuckooHash(scriptHashes[qi], ck, this.indexBinsPerTable);
             buildItems.push({ bucketId: b, binIndex });
             realBuckets.set(b, qi);
+            // Inspector: record which binIndex this query used.
+            const qd = inspectorMap.get(qi);
+            if (qd && qd.indexBinIndex === undefined) {
+              qd.indexBinIndex = binIndex;
+            }
           } else {
             buildItems.push({ bucketId: b }); // dummy (binIndex undefined)
           }
@@ -629,10 +706,21 @@ export class HarmonyPirClient {
         const reqBytesMap = await this.doBuildBatch(buildItems, 'index');
         const buildMs = performance.now() - tBuild;
 
+        // Inspector: capture segment/position from build results.
+        for (const [bucketId, qi] of realBuckets) {
+          const br = reqBytesMap.get(bucketId);
+          const qd = inspectorMap.get(qi);
+          if (br && qd && qd.indexSegment === undefined) {
+            qd.indexSegment = br.segment;
+            qd.indexPosition = br.position;
+            qd.indexSegmentSize = br.bytes.length / 4; // T_eff (each index is 4 bytes u32 LE)
+          }
+        }
+
         // Encode and send batch.
         const batchItems = buildItems.map(item => ({
           bucketId: item.bucketId,
-          subQueryBytes: [reqBytesMap.get(item.bucketId) ?? new Uint8Array(0)],
+          subQueryBytes: [(reqBytesMap.get(item.bucketId)?.bytes) ?? new Uint8Array(0)],
         }));
         const roundId = ir * INDEX_CUCKOO_NUM_HASHES + h;
         const reqMsg = this.encodeHarmonyBatchRequest(0, roundId, 1, batchItems);
@@ -661,8 +749,19 @@ export class HarmonyPirClient {
           if (found) {
             if (found.numChunks === 0) {
               whaleQueries.add(qi);
+              const qd = inspectorMap.get(qi);
+              if (qd) qd.isWhale = true;
             } else {
               indexResults.set(qi, found);
+              // Inspector: record tag match details.
+              const qd = inspectorMap.get(qi);
+              if (qd) {
+                qd.indexHashRound = h;
+                qd.startChunkId = found.startChunkId;
+                qd.numChunks = found.numChunks;
+                // Compute tag hex for display.
+                qd.tagHex = bytesToHex(computeTag(scriptHashes[qi], this.tagSeed));
+              }
             }
             foundThisPlacement.add(qi);
           }
@@ -672,6 +771,13 @@ export class HarmonyPirClient {
         const tReloc = performance.now();
         await this.doFinishRelocation(processItems.map(i => i.bucketId), 'index');
         const relocMs = performance.now() - tReloc;
+
+        // Inspector: record round timing.
+        roundTimings.push({
+          phase: 'index', roundIdx: ir, hashIdx: h,
+          realCount: realBuckets.size, totalCount: K,
+          buildMs, netMs, procMs, relocMs,
+        });
         this.log(`  INDEX r${ir}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realBuckets.size} real / ${K} total)`);
       }
     }
@@ -743,7 +849,7 @@ export class HarmonyPirClient {
 
           const batchItems = buildItems.map(item => ({
             bucketId: item.bucketId - K, // local bucket ID for wire protocol
-            subQueryBytes: [reqBytesMap.get(item.bucketId) ?? new Uint8Array(0)],
+            subQueryBytes: [(reqBytesMap.get(item.bucketId)?.bytes) ?? new Uint8Array(0)],
           }));
           const roundId = ri * CHUNK_CUCKOO_NUM_HASHES + h;
           const reqMsg = this.encodeHarmonyBatchRequest(1, roundId, 1, batchItems);
@@ -770,6 +876,21 @@ export class HarmonyPirClient {
             if (found) {
               recoveredChunks.set(chunkId, found);
               foundThisPlacement.add(chunkId);
+              // Inspector: record chunk recovery details.
+              const br = reqBytesMap.get(K + localB);
+              for (const [qi, info] of queryChunkInfo) {
+                const qd = inspectorMap.get(qi);
+                if (!qd) continue;
+                if (chunkId >= info.startChunk && chunkId < info.startChunk + info.numChunks) {
+                  if (!qd.chunkDetails) qd.chunkDetails = [];
+                  qd.chunkDetails.push({
+                    chunkId,
+                    bucketId: localB,
+                    segment: br?.segment,
+                    position: br?.position,
+                  });
+                }
+              }
             }
           }
 
@@ -777,6 +898,13 @@ export class HarmonyPirClient {
           const tReloc = performance.now();
           await this.doFinishRelocation(processItems.map(i => i.bucketId), 'chunk');
           const relocMs = performance.now() - tReloc;
+
+          // Inspector: record chunk round timing.
+          roundTimings.push({
+            phase: 'chunk', roundIdx: ri, hashIdx: h,
+            realCount: realBuckets.size, totalCount: K_CHUNK,
+            buildMs, netMs, procMs, relocMs,
+          });
           this.log(`  CHUNK r${ri}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realBuckets.size} real / ${K_CHUNK} total)`);
         }
       }
@@ -811,6 +939,10 @@ export class HarmonyPirClient {
 
     const totalMs = performance.now() - tBatchStart;
     this.log(`Batch complete: ${N} queries in ${(totalMs / 1000).toFixed(1)}s`);
+
+    // Store inspector data for the UI.
+    for (const [qi, qd] of inspectorMap) { qd.totalMs = totalMs; }
+    this.lastInspectorData = inspectorMap;
 
     return results;
   }
@@ -994,24 +1126,29 @@ export class HarmonyPirClient {
   private async doBuildBatch(
     items: BuildItem[],
     level: 'index' | 'chunk',
-  ): Promise<Map<number, Uint8Array>> {
+  ): Promise<Map<number, BuildResult>> {
     if (this.pool) {
       return this.pool.buildBatchRequests(items);
     }
 
     // Single-threaded fallback.
     const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
-    const result = new Map<number, Uint8Array>();
+    const result = new Map<number, BuildResult>();
     for (const item of items) {
       const localId = level === 'index' ? item.bucketId : item.bucketId - K;
       const bucket = bucketMap.get(localId);
       if (!bucket) continue;
       if (item.binIndex !== undefined) {
         const req = bucket.build_request(item.binIndex);
-        result.set(item.bucketId, new Uint8Array(req.request));
+        const br: BuildResult = {
+          bytes: new Uint8Array(req.request),
+          segment: req.segment,
+          position: req.position,
+        };
         req.free();
+        result.set(item.bucketId, br);
       } else {
-        result.set(item.bucketId, new Uint8Array(bucket.build_synthetic_dummy()));
+        result.set(item.bucketId, { bytes: new Uint8Array(bucket.build_synthetic_dummy()) });
       }
     }
     return result;

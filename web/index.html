@@ -195,6 +195,46 @@
         .tab-btn.active { background: white; color: #333; border-color: #f7931a; border-bottom: 2px solid white; position: relative; z-index: 1; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
+
+        /* Query Inspector Modal */
+        .qi-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; display: flex; align-items: flex-start; justify-content: center; padding-top: 3vh; }
+        .qi-modal.hidden { display: none; }
+        .qi-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .qi-content { position: relative; width: 92%; max-width: 820px; max-height: 92vh; overflow-y: auto; background: white; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); z-index: 1; }
+        .qi-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 3px solid #f7931a; }
+        .qi-header h2 { margin: 0; font-size: 18px; color: #333; }
+        .qi-close { background: none; border: none; font-size: 28px; cursor: pointer; color: #999; line-height: 1; }
+        .qi-close:hover { color: #333; }
+        .qi-stepper { display: flex; gap: 4px; padding: 14px 24px; background: #f8f9fa; }
+        .qi-dot { flex: 1; height: 5px; border-radius: 3px; background: #ddd; transition: background 0.3s; cursor: pointer; }
+        .qi-dot.active { background: #f7931a; }
+        .qi-dot.done { background: #28a745; }
+        .qi-body { padding: 24px; min-height: 280px; }
+        .qi-footer { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-top: 1px solid #eee; }
+        .qi-footer button { padding: 8px 20px; border: 1px solid #ddd; border-radius: 6px; background: #f8f9fa; cursor: pointer; font-size: 13px; }
+        .qi-footer button:hover { background: #e8e8e8; }
+        .qi-footer button:disabled { opacity: 0.4; cursor: default; }
+        .qi-step-title { font-size: 15px; font-weight: 600; color: #333; margin: 0 0 16px 0; }
+        .qi-flow { display: flex; flex-direction: column; gap: 0; }
+        .qi-flow-item { display: flex; align-items: flex-start; gap: 12px; }
+        .qi-flow-line { display: flex; flex-direction: column; align-items: center; width: 24px; flex-shrink: 0; }
+        .qi-flow-circle { width: 10px; height: 10px; border-radius: 50%; background: #f7931a; border: 2px solid #e88a10; flex-shrink: 0; }
+        .qi-flow-connector { width: 2px; min-height: 20px; background: #ddd; flex-grow: 1; }
+        .qi-flow-content { flex: 1; padding-bottom: 12px; }
+        .qi-flow-label { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+        .qi-flow-value { font-family: 'SF Mono', 'Menlo', monospace; font-size: 13px; color: #333; word-break: break-all; }
+        .qi-code { font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; background: #f4f4f4; padding: 10px 14px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; line-height: 1.6; }
+        .qi-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .qi-badge-green { background: #d4edda; color: #155724; }
+        .qi-badge-orange { background: #fff3cd; color: #856404; }
+        .qi-badge-blue { background: #d1ecf1; color: #0c5460; }
+        .qi-timing-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+        .qi-timing-label { width: 100px; font-family: monospace; color: #666; flex-shrink: 0; }
+        .qi-timing-bar { flex: 1; height: 18px; display: flex; border-radius: 3px; overflow: hidden; }
+        .qi-timing-bar > div { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 9px; color: white; min-width: 1px; }
+        .qi-timing-total { width: 55px; text-align: right; font-family: monospace; color: #333; flex-shrink: 0; }
+        .qi-inspect-btn { display: inline-block; padding: 2px 8px; font-size: 11px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; color: #666; margin-left: 8px; vertical-align: middle; }
+        .qi-inspect-btn:hover { background: #e8e8e8; color: #333; }
     </style>
     <script src="/wasm/onionpir_client.js"></script>
     <!-- HarmonyPIR WASM loaded dynamically in loadWasm() based on PRP selection -->
@@ -623,7 +663,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         /**
          * Render a single query result into the results container.
          */
-        function renderResult(container, spkHex, hashHex, result) {
+        function renderResult(container, spkHex, hashHex, result, inspectorQi) {
             const section = document.createElement('div');
             section.className = 'container';
             section.style.marginTop = '15px';
@@ -633,14 +673,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const ops = decompileScript(spkHex);
             const opsHtml = renderOpsHtml(ops);
 
+            // Inspect button (only for HarmonyPIR queries with inspector data)
+            const inspectBtn = (inspectorQi !== undefined && hpInspectorDataMap?.has(inspectorQi))
+                ? `<button class="qi-inspect-btn" onclick="openQueryInspector(${inspectorQi})">&#128269; Inspect</button>`
+                : '';
+
             // Title line: address link or script label
             let titleHtml;
             if (address) {
                 const labelBadge = scriptLabel ? `<span style="font-size: 11px; color: #fff; background: #6c757d; padding: 1px 6px; border-radius: 3px; margin-left: 8px; vertical-align: middle;">${scriptLabel}</span>` : '';
-                titleHtml = `<a href="https://mempool.space/address/${address}" target="_blank" style="color: #0066cc; text-decoration: none; font-family: monospace;">${address}</a>${labelBadge}`;
+                titleHtml = `<a href="https://mempool.space/address/${address}" target="_blank" style="color: #0066cc; text-decoration: none; font-family: monospace;">${address}</a>${labelBadge}${inspectBtn}`;
             } else {
                 const label = scriptLabel || 'Non-standard Script';
-                titleHtml = `<span style="font-family: monospace; font-size: 14px; color: #555; font-weight: bold;">${label}</span>`;
+                titleHtml = `<span style="font-family: monospace; font-size: 14px; color: #555; font-weight: bold;">${label}</span>${inspectBtn}`;
             }
 
             // Script box: raw hex + highlighted opcodes
@@ -1383,6 +1428,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     hpSetProgress(pct, `${phase}: ${detail}`);
                 });
 
+                // Store inspector data for the Inspect button.
+                hpInspectorDataMap = hpClient.lastInspectorData;
+
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
@@ -1390,7 +1438,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const hResult = results.get(qi);
                     const result = harmonyResultToRenderFormat(hResult);
                     if (result && result.entries.length > 0) found++;
-                    renderResult(resultsContainer, spkHex, hashHex, result);
+                    renderResult(resultsContainer, spkHex, hashHex, result, qi);
                 }
 
                 hpSetProgress(100, `Done! ${found}/${N} addresses found`);
@@ -1504,6 +1552,272 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('hp-disconnectBtn').addEventListener('click', hpDisconnect);
         document.getElementById('hp-queryBtn').addEventListener('click', hpQueryUtxos);
         hpSetButtons(false);
+    </script>
+
+    <!-- Query Inspector Modal -->
+    <div id="qi-modal" class="qi-modal hidden">
+        <div class="qi-overlay" onclick="closeQueryInspector()"></div>
+        <div class="qi-content">
+            <div class="qi-header">
+                <h2 id="qi-title">Query Inspector</h2>
+                <button class="qi-close" onclick="closeQueryInspector()">&times;</button>
+            </div>
+            <div class="qi-stepper" id="qi-stepper"></div>
+            <div class="qi-body" id="qi-body"></div>
+            <div class="qi-footer">
+                <button id="qi-prev" onclick="qiPrevStep()">&#8592; Previous</button>
+                <span id="qi-step-label" style="font-size:13px;color:#666;"></span>
+                <button id="qi-next" onclick="qiNextStep()">Next &#8594;</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════════════
+        // Query Inspector
+        // ═══════════════════════════════════════════════════════════════════
+        let hpInspectorDataMap = null;
+        let qiStep = 0;
+        let qiData = null;
+        const QI_STEPS = [
+            'Address Mapping',
+            'INDEX Query',
+            'CHUNK Retrieval',
+            'Segment Relocation',
+            'Performance',
+        ];
+
+        function openQueryInspector(qi) {
+            qiData = hpInspectorDataMap?.get(qi);
+            if (!qiData) return;
+            qiStep = 0;
+            renderQiStepper();
+            renderQiBody();
+            document.getElementById('qi-modal').classList.remove('hidden');
+        }
+
+        function closeQueryInspector() {
+            document.getElementById('qi-modal').classList.add('hidden');
+        }
+
+        function qiPrevStep() {
+            if (qiStep > 0) { qiStep--; renderQiStepper(); renderQiBody(); }
+        }
+
+        function qiNextStep() {
+            if (qiStep < QI_STEPS.length - 1) { qiStep++; renderQiStepper(); renderQiBody(); }
+        }
+
+        function renderQiStepper() {
+            const el = document.getElementById('qi-stepper');
+            el.innerHTML = QI_STEPS.map((_, i) =>
+                `<div class="qi-dot ${i < qiStep ? 'done' : i === qiStep ? 'active' : ''}" onclick="qiStep=${i};renderQiStepper();renderQiBody()"></div>`
+            ).join('');
+            document.getElementById('qi-step-label').textContent = `Step ${qiStep + 1} of ${QI_STEPS.length}`;
+            document.getElementById('qi-prev').disabled = qiStep === 0;
+            const nextBtn = document.getElementById('qi-next');
+            if (qiStep === QI_STEPS.length - 1) {
+                nextBtn.textContent = 'Close';
+                nextBtn.onclick = closeQueryInspector;
+            } else {
+                nextBtn.textContent = 'Next \u2192';
+                nextBtn.onclick = qiNextStep;
+            }
+        }
+
+        function renderQiBody() {
+            const d = qiData;
+            const body = document.getElementById('qi-body');
+            document.getElementById('qi-title').textContent = `Query Inspector \u2014 ${QI_STEPS[qiStep]}`;
+            const renderers = [renderQiStep1, renderQiStep2, renderQiStep3, renderQiStep4, renderQiStep5];
+            body.innerHTML = renderers[qiStep](d);
+        }
+
+        function qiFlowItem(label, value, isLast) {
+            return `<div class="qi-flow-item">
+                <div class="qi-flow-line"><div class="qi-flow-circle"></div>${isLast ? '' : '<div class="qi-flow-connector"></div>'}</div>
+                <div class="qi-flow-content"><div class="qi-flow-label">${label}</div><div class="qi-flow-value">${value}</div></div>
+            </div>`;
+        }
+
+        function truncHex(hex, n) {
+            if (!hex || hex.length <= n * 2) return hex || '?';
+            return hex.slice(0, n) + '\u2026' + hex.slice(-n);
+        }
+
+        // ── Step 1: Address Mapping ──
+        function renderQiStep1(d) {
+            const addr = d.address;
+            const isHex = /^[0-9a-fA-F]+$/.test(addr) && addr.length % 2 === 0;
+            let items = '';
+            if (!isHex) {
+                items += qiFlowItem('Input Address', `<code>${addr}</code>`, false);
+                items += qiFlowItem('addressToScriptPubKey()', `<code>${truncHex(d.scriptPubKeyHex, 20)}</code>`, false);
+            } else {
+                items += qiFlowItem('Input scriptPubKey', `<code>${truncHex(d.scriptPubKeyHex, 20)}</code>`, false);
+            }
+            items += qiFlowItem('SHA256(scriptPubKey)', `<code>${truncHex(d.scriptHashHex, 20)}</code>`, false);
+            items += qiFlowItem('deriveBuckets(scriptHash)',
+                `Candidate INDEX buckets: <strong>[${d.candidateIndexBuckets.join(', ')}]</strong>`, false);
+            items += qiFlowItem(`Cuckoo placement (round ${d.indexPlacementRound})`,
+                `Assigned to INDEX bucket: <strong>${d.assignedIndexBucket}</strong>`, true);
+            return `<p class="qi-step-title">How the address is mapped to a PIR bucket</p>
+                <p style="font-size:13px;color:#666;margin-bottom:16px;">HarmonyPIR uses cuckoo hashing to assign each address to one of ${d.candidateIndexBuckets.length} candidate Private Batch Cuckoo (PBC) buckets. Each bucket is an independent PIR instance.</p>
+                <div class="qi-flow">${items}</div>`;
+        }
+
+        // ── Step 2: INDEX Query ──
+        function renderQiStep2(d) {
+            if (d.indexSegment === undefined) {
+                return `<p class="qi-step-title">INDEX phase</p><p style="color:#999;">No INDEX query data available (address may not have been found).</p>`;
+            }
+            const t = d.indexSegmentSize || '?';
+            const s = d.indexSegment;
+            const r = d.indexPosition;
+            const h = d.indexHashRound ?? 0;
+            const bucket = d.assignedIndexBucket;
+
+            let result = '';
+            if (d.isWhale) {
+                result = `<div style="margin-top:12px;"><span class="qi-badge qi-badge-orange">Whale address (excluded)</span></div>`;
+            } else if (d.tagHex) {
+                result = `<div style="margin-top:12px;"><span class="qi-badge qi-badge-green">Tag matched (h=${h})</span>
+                    <span style="font-size:12px;color:#666;margin-left:8px;">tag = <code>${truncHex(d.tagHex, 8)}</code></span></div>
+                    <div class="qi-code" style="margin-top:8px;">Found: startChunkId = ${d.startChunkId}, numChunks = ${d.numChunks}</div>`;
+            } else {
+                result = `<div style="margin-top:12px;"><span class="qi-badge" style="background:#f8d7da;color:#721c24;">Not found in INDEX</span></div>`;
+            }
+
+            return `<p class="qi-step-title">How the PIR query is built and answered</p>
+                <p style="font-size:13px;color:#666;margin-bottom:12px;">The client uses a PRP (pseudorandom permutation) to map the cuckoo bin index to a cell in a virtual data structure, then queries the segment containing that cell.</p>
+                <div class="qi-code">Bucket ${bucket}, hash function h=${h}:
+  binIndex = cuckooHash(scriptHash, key, binsPerTable) = <strong>${d.indexBinIndex}</strong>
+
+build_request(${d.indexBinIndex}):
+  PRP maps binIndex \u2192 cell c
+  segment S = c / T = <strong>${s}</strong>
+  position R = c % T = <strong>${r}</strong>
+
+Request: <strong>${t}</strong> indices from segment ${s}
+  Positions 0\u2026${t - 1} (except R=${r}): real DS' values
+  Position ${r}: random dummy (for privacy)
+
+Server returns: ${t} \u00d7 ${39}-byte entries
+
+XOR Recovery:
+  answer = hint[${s}] \u2295 resp[0] \u2295 resp[1] \u2295 \u2026 \u2295 resp[${t - 1}]
+  (excluding position ${r} \u2014 that\u2019s the dummy)</div>
+                ${result}`;
+        }
+
+        // ── Step 3: CHUNK Retrieval ──
+        function renderQiStep3(d) {
+            if (!d.chunkDetails || d.chunkDetails.length === 0) {
+                if (d.isWhale) {
+                    return `<p class="qi-step-title">CHUNK retrieval</p><p style="color:#999;">Whale address \u2014 no chunk retrieval needed.</p>`;
+                }
+                if (!d.tagHex) {
+                    return `<p class="qi-step-title">CHUNK retrieval</p><p style="color:#999;">Address not found in INDEX \u2014 no chunks to retrieve.</p>`;
+                }
+                return `<p class="qi-step-title">CHUNK retrieval</p><p style="color:#999;">No chunk details captured.</p>`;
+            }
+            const chunks = d.chunkDetails;
+            const chunkIds = chunks.map(c => c.chunkId);
+            let html = `<p class="qi-step-title">How UTXO data chunks are retrieved</p>
+                <p style="font-size:13px;color:#666;margin-bottom:12px;">The INDEX entry tells us which chunks hold this address's UTXO data. Each chunk is retrieved via its own PIR query on a separate set of ${80} CHUNK PBC buckets.</p>
+                <div style="margin-bottom:12px;">Chunks needed: <strong>[${chunkIds.join(', ')}]</strong></div>`;
+
+            for (const c of chunks) {
+                const seg = c.segment !== undefined ? c.segment : '?';
+                const pos = c.position !== undefined ? c.position : '?';
+                html += `<div style="background:#f8f9fa;border:1px solid #eee;border-radius:6px;padding:10px 14px;margin-bottom:8px;">
+                    <strong>Chunk ${c.chunkId}</strong><br>
+                    <span style="font-size:12px;color:#666;">CHUNK bucket ${c.bucketId} &bull; Segment S=${seg}, Position R=${pos}</span><br>
+                    <span class="qi-badge qi-badge-green">Retrieved</span>
+                </div>`;
+            }
+            return html;
+        }
+
+        // ── Step 4: Segment Relocation ──
+        function renderQiStep4(d) {
+            const s = d.indexSegment ?? '?';
+            const t = d.indexSegmentSize || '?';
+            const r = d.indexPosition ?? '?';
+
+            return `<p class="qi-step-title">How privacy is maintained after a query</p>
+                <p style="font-size:13px;color:#666;margin-bottom:12px;">After each query, the queried segment is <em>relocated</em> to empty virtual cells. This ensures the same segment is never queried twice \u2014 the server cannot link queries to the same address.</p>
+                <div class="qi-code" style="margin-bottom:16px;">After querying segment S = ${s}:
+
+Segment ${s} has T = ${t} cells: [cell\u2080, cell\u2081, \u2026, cell\u2082${typeof t === 'number' ? t - 1 : '?'}]
+  \u2193  relocate to empty virtual cells
+Empty cells: [n + m\u00b7T + 0, n + m\u00b7T + 1, \u2026, n + m\u00b7T + ${typeof t === 'number' ? t - 1 : '?'}]
+
+For each relocated cell i:
+  dest_segment = PRP(n + m\u00b7T + i) / T
+  hint[dest_segment] \u2295= response[i]
+
+Cell at position R = ${r}:
+  hint[dest_segment] \u2295= answer  (the recovered DB entry)</div>
+                <div style="background:#d4edda;border:1px solid #c3e6cb;border-radius:8px;padding:14px;font-size:13px;">
+                    <strong>Why this matters:</strong>
+                    <ul style="margin:8px 0 0 0;padding-left:20px;">
+                        <li>Segment ${s} is never queried again (relocated to empty space)</li>
+                        <li>Hints stay consistent for future queries via XOR updates</li>
+                        <li>The server sees T random-looking indices \u2014 it cannot tell which one was the real query</li>
+                        <li>After M/2 queries, all empty space is used up \u2192 hints must be refreshed</li>
+                    </ul>
+                </div>`;
+        }
+
+        // ── Step 5: Performance ──
+        function renderQiStep5(d) {
+            const timings = d.roundTimings || [];
+            if (timings.length === 0) {
+                return `<p class="qi-step-title">Timing breakdown</p><p style="color:#999;">No timing data.</p>`;
+            }
+            const maxTime = Math.max(...timings.map(t => t.buildMs + t.netMs + t.procMs + t.relocMs), 1);
+            const colors = { build: '#007bff', net: '#28a745', proc: '#ffc107', reloc: '#dc3545' };
+
+            let rows = '';
+            let indexTotal = 0, chunkTotal = 0;
+            for (const t of timings) {
+                const total = t.buildMs + t.netMs + t.procMs + t.relocMs;
+                if (t.phase === 'index') indexTotal += total; else chunkTotal += total;
+                const pct = (v) => Math.max((v / maxTime) * 100, 0.5);
+                const label = `${t.phase === 'index' ? 'INDEX' : 'CHUNK'} r${t.roundIdx}h${t.hashIdx}`;
+                rows += `<div class="qi-timing-row">
+                    <div class="qi-timing-label">${label}</div>
+                    <div class="qi-timing-bar">
+                        <div style="width:${pct(t.buildMs)}%;background:${colors.build}" title="build ${t.buildMs.toFixed(0)}ms">${t.buildMs >= 10 ? t.buildMs.toFixed(0) : ''}</div>
+                        <div style="width:${pct(t.netMs)}%;background:${colors.net}" title="net ${t.netMs.toFixed(0)}ms">${t.netMs >= 10 ? t.netMs.toFixed(0) : ''}</div>
+                        <div style="width:${pct(t.procMs)}%;background:${colors.proc}" title="proc ${t.procMs.toFixed(0)}ms">${t.procMs >= 10 ? t.procMs.toFixed(0) : ''}</div>
+                        <div style="width:${pct(t.relocMs)}%;background:${colors.reloc}" title="reloc ${t.relocMs.toFixed(0)}ms">${t.relocMs >= 10 ? t.relocMs.toFixed(0) : ''}</div>
+                    </div>
+                    <div class="qi-timing-total">${total.toFixed(0)}ms</div>
+                </div>`;
+            }
+
+            const legend = `<div style="display:flex;gap:16px;margin-bottom:14px;font-size:11px;">
+                <span><span style="display:inline-block;width:10px;height:10px;background:${colors.build};border-radius:2px;"></span> build</span>
+                <span><span style="display:inline-block;width:10px;height:10px;background:${colors.net};border-radius:2px;"></span> network</span>
+                <span><span style="display:inline-block;width:10px;height:10px;background:${colors.proc};border-radius:2px;"></span> process (XOR)</span>
+                <span><span style="display:inline-block;width:10px;height:10px;background:${colors.reloc};border-radius:2px;"></span> relocation</span>
+            </div>`;
+
+            return `<p class="qi-step-title">Where time is spent</p>
+                <p style="font-size:13px;color:#666;margin-bottom:12px;">Each round involves building PIR requests (PRP computation), sending them over WebSocket, processing server responses (XOR recovery), and relocating queried segments.</p>
+                ${legend}${rows}
+                <div style="margin-top:14px;padding:10px 14px;background:#f8f9fa;border-radius:6px;font-size:13px;">
+                    <strong>Total: ${d.totalMs.toFixed(0)}ms</strong>
+                    <span style="color:#666;margin-left:12px;">INDEX: ${indexTotal.toFixed(0)}ms &bull; CHUNK: ${chunkTotal.toFixed(0)}ms</span>
+                </div>`;
+        }
+
+        // Close on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeQueryInspector();
+        });
     </script>
 </body>
 </html>

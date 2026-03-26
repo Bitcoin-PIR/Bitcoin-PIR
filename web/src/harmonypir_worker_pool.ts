@@ -11,6 +11,12 @@ export interface BuildItem {
   binIndex?: number;  // undefined = dummy
 }
 
+export interface BuildResult {
+  bytes: Uint8Array;
+  segment?: number;   // PRP segment (undefined for dummies)
+  position?: number;  // Position within segment (undefined for dummies)
+}
+
 export interface ProcessItem {
   bucketId: number;
   response: Uint8Array;
@@ -113,7 +119,7 @@ export class HarmonyWorkerPool {
    * Build requests for a batch of buckets in parallel across workers.
    * Returns a map of bucketId → request bytes.
    */
-  async buildBatchRequests(items: BuildItem[]): Promise<Map<number, Uint8Array>> {
+  async buildBatchRequests(items: BuildItem[]): Promise<Map<number, BuildResult>> {
     // Group items by owning worker.
     const byWorker = new Map<number, BuildItem[]>();
     for (const item of items) {
@@ -123,7 +129,7 @@ export class HarmonyWorkerPool {
     }
 
     // Send to each worker in parallel, collect results.
-    const allResults = new Map<number, Uint8Array>();
+    const allResults = new Map<number, BuildResult>();
     const promises: Promise<void>[] = [];
 
     for (const [workerId, workerItems] of byWorker) {
@@ -131,7 +137,11 @@ export class HarmonyWorkerPool {
       promises.push(new Promise<void>((resolve) => {
         this.pendingRequests.set(reqId, (data) => {
           for (const r of data.results) {
-            allResults.set(r.bucketId, r.bytes);
+            allResults.set(r.bucketId, {
+              bytes: r.bytes,
+              segment: r.segment,
+              position: r.position,
+            });
           }
           resolve();
         });
@@ -378,15 +388,17 @@ self.onmessage = async (ev) => {
       for (const item of msg.items) {
         const bucket = buckets.get(item.bucketId);
         if (!bucket) continue;
-        let bytes;
+        let bytes, segment, position;
         if (item.binIndex !== undefined) {
           const req = bucket.build_request(item.binIndex);
           bytes = new Uint8Array(req.request);
+          segment = req.segment;
+          position = req.position;
           req.free();
         } else {
           bytes = new Uint8Array(bucket.build_synthetic_dummy());
         }
-        results.push({ bucketId: item.bucketId, bytes });
+        results.push({ bucketId: item.bucketId, bytes, segment, position });
         transferables.push(bytes.buffer);
       }
       self.postMessage({ type: 'buildBatchResult', requestId: msg.requestId, results }, transferables);
