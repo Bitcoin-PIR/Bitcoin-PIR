@@ -20,7 +20,7 @@ We survey practical PIR constructions across two axes: the number of servers and
     \item \textbf{Single-server:}
     \smallskip
     \begin{itemize}[nolistsep,leftmargin=*]
-        \item Almost no client storage: YPIR-over-SimplePIR \cite{ypir2024}
+        \item Almost no client storage: YPIR-over-SimplePIR \cite{ypir2024}, or FHE-based schemes such as OnionPIR \cite{onionpir21} and SealPIR \cite{sealpir18}
 
         \item Sublinear client storage without a linear pass: SimplePIR or DoublePIR \cite{henz23}
 
@@ -33,7 +33,7 @@ We survey practical PIR constructions across two axes: the number of servers and
     \begin{itemize}[nolistsep,leftmargin=*]
         \item Almost no client storage: DPF-PIR \cite{gilboa2014dpf,boyle2015fss,boyle2016fss}
 
-        \item Sublinear client storage: Plinko, RMS24, or Piano but moving the hint generation to a hint server
+        \item Sublinear client storage with outsourced hints: Plinko, RMS24, or Piano with hint generation delegated to a second server; or stateful PIR via pseudorandom permutations \cite{ar26fpe,checklist21}
     \end{itemize}
 \end{itemize}
 
@@ -83,6 +83,19 @@ To address selective failure attacks, we can choose protocols with this addition
     \item \textbf{2-server:} Plinko, RMS24, or Piano with Merkle proofs, or verifiable BALANCED-PIR with outsourced hint generation
 \end{itemize}
 
+\subsection{Our Contributions}
+
+We implement three distinct PIR protocols for Bitcoin UTXO lookups, each offering different trade-offs between trust assumptions, communication cost, and server computation:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{DPF-PIR} (Section~\ref{sec:2server}): A 2-server stateless protocol based on Distributed Point Functions. Requires no client state and minimal communication, but assumes two non-colluding servers.
+    \item \textbf{HarmonyPIR} (Section~\ref{sec:harmonypir}): A 2-server stateful protocol \cite{ar26fpe} that trades a one-time offline hint download for dramatically cheaper online queries. The hint server and query server can be different nodes.
+    \item \textbf{OnionPIR} (Section~\ref{sec:onionpir}): A single-server protocol based on fully homomorphic encryption \cite{onionpir21,onionpirv2}. Eliminates the non-colluding assumption entirely at the cost of higher computation and communication.
+\end{itemize}
+
+All three protocols share the same data representation (Section~\ref{sec:data}) and batch PIR framework (Section~\ref{sec:batching}), enabling a unified system where clients can choose the protocol best suited to their threat model and network conditions.
+
+We also provide a practical deployment (Section~\ref{sec:deployment}) including browser-based clients via WebAssembly \cite{wasm} and an Electrum wallet plugin \cite{electrum} with all three backends.
+
 \subsection{Paper Organization}
 
-This paper presents a complete system for private UTXO lookups. Section~\ref{sec:data} describes the Bitcoin UTXO model, our data representation, and techniques for reducing the UTXO set size. Section~\ref{sec:batching} presents the batch PIR framework using Probabilistic Batch Codes, which is PIR-variant-agnostic and applies across all protocol choices. Section~\ref{sec:2server} details the 2-server stateless DPF-PIR instantiation, including background on distributed point functions and our complete implementation.
+Section~\ref{sec:data} describes the Bitcoin UTXO model, our data representation, and techniques for reducing the UTXO set size. Section~\ref{sec:batching} presents the PIR-variant-agnostic batch PIR framework using Probabilistic Batch Codes. Sections~\ref{sec:2server},~\ref{sec:harmonypir}, and~\ref{sec:onionpir} detail the three protocol instantiations: DPF-PIR, HarmonyPIR, and OnionPIR, respectively. Section~\ref{sec:comparison} compares the three protocols across multiple dimensions. Section~\ref{sec:deployment} describes the implementation and deployment, including browser and wallet integration.

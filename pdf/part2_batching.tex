@@ -55,7 +55,7 @@ Our system uses a two-level architecture: an \emph{index map} that locates data,
 
 \textbf{Level 1: Index lookup.} The client computes RIPEMD-160 hashes of all queried ScriptPubKeys, derives $h$ candidate buckets per query via cuckoo hash functions, and places them into $K$ PBC buckets. For each bucket, the client generates a PIR query targeting the assigned row in the index table and sends it to the server(s). The responses are combined to recover index entries containing chunk IDs and data lengths.
 
-\textbf{Level 2: Chunk retrieval.} Using the chunk locations from Level~1, the client repeats the process with $K_\text{chunk}$ PBC buckets over the chunk database. The recovered chunks contain full UTXO records: 32-byte TXIDs, vout indices, and amounts in satoshis---everything needed to construct a spending transaction.
+\textbf{Level 2: Chunk retrieval.} Using the chunk locations from Level~1, the client repeats the process with $K_\text{chunk}$ PBC buckets over the chunk database. The recovered chunks contain full UTXO records: 32-byte TXIDs, vout indices, and amounts in satoshis---everything needed to construct a spending transaction. Each chunk is 40 bytes; each slot in the chunk cuckoo table is 44 bytes (4-byte chunk identifier plus 40-byte payload).
 
 \textbf{Distributional PIR.} We can apply distributional PIR \cite{lehmkuhl25} to optimize for the common case: most light clients hold few UTXOs under common script types, while whale addresses with thousands of UTXOs likely run full nodes. By tuning the PIR parameters for the more likely queries, the average server cost decreases without eliminating the ability to query less common entries.
 
@@ -63,12 +63,12 @@ Our system uses a two-level architecture: an \emph{index map} that locates data,
 \centering
 \begin{tabular}{|l|c|c|c|c|c|}
 \hline
-\textbf{Database} & \textbf{Entry Size} & \textbf{Buckets ($K$)} & \textbf{Cuckoo} & \textbf{DPF queries/bucket} & \textbf{PIR domain} \\
+\textbf{Database} & \textbf{Slot Size} & \textbf{Buckets ($K$)} & \textbf{Cuckoo} & \textbf{DPF queries/bucket} & \textbf{PIR domain} \\
 \hline
-Index (Level 1) & 26 B & 75 & 2-hash, bs=3 & 2 & $2^{20}$ \\
-Chunks (Level 2) & 80 B & 80 & 3-hash, bs=2 & 3 (or 1$^*$) & $2^{21}$ \\
+Index (Level 1) & 13 B & 75 & 2-hash, bs=3 & 2 & $2^{20}$ \\
+Chunks (Level 2) & 44 B & 80 & 2-hash, bs=3 & 2 & $2^{21}$ \\
 \hline
 \end{tabular}
-\caption{Batch PIR parameters. Each level uses $K$ parallel PIR queries over cuckoo hash tables. ($^*$For single-chunk addresses, the placement optimization in Section~\ref{sec:placement} reduces chunk DPF queries from 3 to 1 per bucket.)}
+\caption{Batch PIR parameters. Each level uses $K$ parallel PIR queries over cuckoo hash tables. Each DPF query retrieves one cuckoo bin: 3 slots $\times$ 13 B = 39 B for the index level, and 3 slots $\times$ 44 B = 132 B for the chunk level.}
 \label{tab:databases}
 \end{table}

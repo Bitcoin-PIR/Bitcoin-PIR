@@ -1,0 +1,112 @@
+\section{2-Server Stateful PIR via HarmonyPIR}
+\label{sec:harmonypir}
+
+This section describes the 2-server \emph{stateful} PIR instantiation based on HarmonyPIR \cite{ar26fpe}, which uses pseudorandom permutations (PRPs) to organize hints that enable sublinear online queries. Unlike DPF-PIR, HarmonyPIR requires a one-time offline phase where the client downloads precomputed hints, but in return achieves dramatically lower per-query communication and server computation.
+
+\subsection{Overview}
+
+HarmonyPIR is a stateful PIR protocol in the offline/online model, following the line of work initiated by Checklist \cite{checklist21}. The system involves two servers with distinct roles:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Hint server} (offline): Computes and streams PRP-based hint parities to the client. This is a one-time operation per session.
+    \item \textbf{Query server} (online): Answers indexed lookups by returning the XOR of requested database entries. Each query requires only $O(\sqrt{N})$ server work.
+\end{itemize}
+
+The key trade-off is: HarmonyPIR incurs a large offline download (hundreds of megabytes of hints) but achieves per-query online communication and server computation that is \emph{sublinear} in the database size. This makes it well-suited for clients that will issue many queries---such as a light client synchronizing multiple wallet addresses.
+
+The client maintains a limited \emph{query budget} of approximately $M = N/T$ queries per hint set, where $N$ is the database size and $T = \lfloor\sqrt{2N}\rceil$. Once the budget is exhausted, the client must re-download hints.
+
+\subsection{Offline Phase: Hint Generation}
+\label{sec:harmony-offline}
+
+In the offline phase, the hint server computes a compact representation of the database that allows the client to later recover individual entries using only $O(\sqrt{N})$ work per query.
+
+\textbf{Setup.} Let $\mathsf{DB}[0], \ldots, \mathsf{DB}[N{-}1]$ denote the database entries, each of $w$ bytes. Let $P: [N'] \to [N']$ be a pseudorandom permutation over a padded domain of size $N' \geq N$ (chosen so that $2N' \bmod T = 0$). Define the parameters:
+\begin{align*}
+    T &= \lfloor\sqrt{2N}\rceil, \\
+    M &= N'/T \quad \text{(number of segments)}.
+\end{align*}
+
+\textbf{Hint computation.} The server computes $M$ hint values, each of $w$ bytes, via a scatter-XOR operation:
+$$H[s] = \bigoplus_{\substack{k \in [N] \\ \lfloor P(k)/T \rfloor = s}} \mathsf{DB}[k], \quad s \in [M].$$
+That is, each database row $k$ is assigned to segment $s = \lfloor P(k)/T \rfloor$ by the PRP, and the hint for segment $s$ is the XOR of all rows assigned to it. Rows in the range $[N, N')$ are virtual zero-rows and do not affect the XOR. The total hint size is $M \times w$ bytes per bucket.
+
+\textbf{Per-bucket hints.} The system maintains 155 independent HarmonyPIR instances---one per PBC bucket (75 index-level + 80 chunk-level). Each instance uses a distinct PRP key derived from a shared master key by XORing the bucket identifier into bytes 12--15 of the key. The hint server computes and streams hints for all 155 buckets, using batch parallelism for efficiency.
+
+\subsection{Online Phase: Querying}
+\label{sec:harmony-online}
+
+To query for a database entry at index $q$, the client proceeds as follows:
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item \textbf{Locate via PRP:} Compute the cell $c = P(q)$. Determine the segment $s = \lfloor c/T \rfloor$ and position $r = c \bmod T$.
+
+    \item \textbf{Build request:} Construct the set of indices to request from the query server---namely, all database rows that the PRP maps into segment $s$, \emph{except} for the target row $q$ itself. Formally, the request set is:
+    $$R = \{P^{-1}(s \cdot T + j) : j \in [T], j \neq r\} \cap [N].$$
+    The client sends $R$ (as sorted $\mathsf{u32}$ indices) to the query server.
+
+    \item \textbf{Server response:} The query server returns the XOR of the requested entries: $\bigoplus_{i \in R} \mathsf{DB}[i]$.
+
+    \item \textbf{Recover answer:} The client XORs the server's response with the stored hint $H[s]$:
+    $$\mathsf{DB}[q] = H[s] \oplus \bigoplus_{i \in R} \mathsf{DB}[i].$$
+    This works because $H[s]$ is the XOR of \emph{all} rows in segment $s$ (including $\mathsf{DB}[q]$), and the server returned the XOR of all rows \emph{except} $\mathsf{DB}[q]$.
+
+    \item \textbf{State update (relocation):} After recovering $\mathsf{DB}[q]$, the client updates its local data structure so that future queries remain correct. This involves ``relocating'' row $q$ within the hint structure so that the same segment is not queried twice for the same position.
+\end{enumerate}
+
+Each online query involves sending $O(T) = O(\sqrt{N})$ indices and receiving $w$ bytes back. The query server's work is also $O(T \cdot w)$---a linear scan over roughly $\sqrt{N}$ entries---which is sublinear in the database size $N$.
+
+\subsection{Dummy Queries}
+\label{sec:harmony-dummies}
+
+To prevent the server from distinguishing real queries from padding, the client generates \emph{synthetic dummy} queries for PBC buckets that do not hold a real query in a given round.
+
+A synthetic dummy is constructed by sampling a count $c \sim \text{Binomial}(T, 0.5)$ and then choosing $c$ indices uniformly at random from $[N]$. The resulting request has the same format as a real query but does not modify the client's hint state. This ensures that the distribution of request sizes and content is statistically indistinguishable from real queries to the server.
+
+\subsection{Integration with Batch PIR}
+\label{sec:harmony-batch}
+
+HarmonyPIR plugs into the same PBC framework described in Section~\ref{sec:batching}. The client maintains 155 independent HarmonyPIR bucket instances:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Index level:} $K{=}75$ buckets, each with entry size $w = 39$ bytes (3 cuckoo slots $\times$ 13 bytes per index entry).
+    \item \textbf{Chunk level:} $K_\text{chunk}{=}80$ buckets, each with entry size $w = 132$ bytes (3 cuckoo slots $\times$ 44 bytes per chunk slot).
+\end{itemize}
+
+The query protocol proceeds in rounds, analogous to DPF-PIR:
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item The client places $m$ ScriptPubKey queries into $K$ PBC buckets via cuckoo hashing (same as Section~\ref{sec:batching}).
+    \item For each of the 2 cuckoo hash function rounds at the index level:
+    \begin{itemize}[nolistsep,leftmargin=*]
+        \item Buckets with a real query generate a HarmonyPIR request targeting the assigned cuckoo bin.
+        \item Buckets without a real query generate a synthetic dummy.
+    \end{itemize}
+    \item All $K$ requests are sent to the query server in a single batch. The server responds with $K$ XOR results.
+    \item The client processes responses: real queries recover index entries via the hint XOR; dummy responses are discarded.
+    \item The process repeats for the chunk level with $K_\text{chunk}$ buckets.
+\end{enumerate}
+
+\subsection{PRP Backend Selection}
+\label{sec:prp-backends}
+
+The PRP $P$ must be a permutation over a domain of size $N'$ (typically $\sim 10^6$), which is far smaller than the $2^{128}$ domain of standard block ciphers like AES. Several small-domain PRP constructions are available, each with different performance characteristics:
+
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Hoang (swap-or-not) \cite{hoang12}:} A Feistel-like construction based on card shuffles. Uses AES round functions with 4-way pipelining. This is the default backend and serves as the baseline.
+
+    \item \textbf{FastPRP:} A radix-sort-based PRP with $O(N \log N)$ batch evaluation. Precomputes the entire permutation table, trading memory for speed. Achieves $2$--$4\times$ speedup over Hoang.
+
+    \item \textbf{ALF \cite{alf25}:} An AES-NI-based format-preserving encryption scheme optimized for SIMD execution. Achieves the best performance: $4$--$8\times$ faster than Hoang. Requires hardware AES-NI support (available on modern x86 and ARM processors, and via WASM SIMD128 in browsers).
+\end{itemize}
+
+The PRP backend is selected at session initialization and must be consistent between the hint server and client. Server-side benchmarks on a 24-thread machine show ALF computing all 75 index hints in $\sim$711~ms, compared to $\sim$1.05~s for FastPRP and $\sim$7.24~s for Hoang.
+
+\subsection{Hint Caching and Query Budget}
+\label{sec:harmony-caching}
+
+Each HarmonyPIR bucket instance supports approximately $M \approx N/T \approx \sqrt{N/2}$ queries before its hints are exhausted. For a typical bucket with $N \approx 755{,}000$ rows, this gives $M \approx 616$ queries per bucket.
+
+To avoid re-downloading hints unnecessarily, the client caches hint state:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{State serialization:} Each bucket's full state (hints, PRP key, relocation structure, query counter) can be serialized and stored in the browser's \texttt{localStorage} or on disk.
+    \item \textbf{Exhaustion detection:} Before each batch query, the client checks the minimum remaining query budget across all active buckets. If any bucket is exhausted, the client triggers a hint refresh from the hint server.
+    \item \textbf{Resilient reconnection:} If the WebSocket connection drops mid-session, the client reconnects with exponential backoff and resumes using cached state, avoiding a full hint re-download.
+\end{itemize}

@@ -1,0 +1,117 @@
+\section{1-Server PIR via OnionPIR}
+\label{sec:onionpir}
+
+This section describes the single-server PIR instantiation based on OnionPIR \cite{onionpir21} and its successor OnionPIRv2 \cite{onionpirv2}, a fully homomorphic encryption (FHE) based protocol. Unlike DPF-PIR and HarmonyPIR, OnionPIR requires only \emph{one} server and provides computational privacy under lattice hardness assumptions, eliminating the need for a non-colluding server pair. The trade-off is higher communication cost and server computation per query.
+
+\subsection{Overview}
+
+OnionPIR uses the composition of two somewhat homomorphic encryption (SHE) schemes---BFV-style encryption and GSW-style encryption---to achieve compact responses. The client encrypts its query index under an FHE scheme, the server homomorphically evaluates a selection function over the encrypted query and the database, and the client decrypts the result to obtain the desired entry.
+
+The protocol is \emph{stateless}: the client generates fresh encryption keys per session and requires no hints or prior database knowledge. The FHE parameters used in our instantiation are:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item Polynomial degree: $d = 2048$
+    \item Plaintext modulus: $p = 32{,}771$ (a 15-bit prime)
+    \item Entry size: $d \times 15 / 8 = 3840$ bytes (fixed by the FHE parameters)
+\end{itemize}
+
+The fixed 3840-byte entry size is a fundamental constraint of OnionPIR's encoding: each database entry occupies exactly one RLWE plaintext polynomial, with 15 usable bits per coefficient across 2048 coefficients.
+
+\subsection{Database Layout}
+\label{sec:onion-layout}
+
+Because OnionPIR's entry size (3840 bytes) is much larger than the DPF/HarmonyPIR entry sizes (39 or 132 bytes), we use a different database layout that packs multiple logical records into each 3840-byte OnionPIR entry.
+
+\subsubsection{Index Level (75 Groups)}
+
+Each PBC group's index database is organized as a cuckoo hash table where each bin is packed with up to 256 index slots, fitting exactly into one 3840-byte entry:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Slot format:} 15 bytes per slot---8-byte fingerprint tag, 4-byte entry identifier (pointing into the main database), 2-byte byte offset within the entry, and 1-byte entry count.
+    \item \textbf{Bin packing:} $256 \times 15 = 3840$ bytes per bin, matching one OnionPIR entry.
+    \item \textbf{Cuckoo design:} 2 hash functions over $\sim$8,840 bins per group.
+\end{itemize}
+
+The client computes both candidate bin indices, issues one OnionPIR query per candidate, and scans the returned 256 slots for a matching fingerprint tag.
+
+\subsubsection{Main Database (80 Groups)}
+
+UTXO data is greedily packed into 3840-byte entries:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item Multiple addresses share a single entry via greedy bin-packing. If an address's serialized UTXO data does not fit in the remaining space of the current entry, padding is inserted and a new entry begins.
+    \item From approximately 53.6 million addresses, the packing produces $\sim$815,000 unique entries with $\sim$95.9\% packing efficiency.
+    \item Each entry is assigned to 3 of the 80 PBC groups (triplication for batch PIR).
+    \item Within each group, entries are placed into a cuckoo hash table with 6 hash functions, bucket size 1, and $\sim$32,000 bins per group.
+\end{itemize}
+
+The client computes the 6 candidate bin indices in each assigned group and determines which bin holds its target entry by performing client-side cuckoo table reconstruction.
+
+\subsection{NTT Preprocessing and Storage}
+\label{sec:onion-ntt}
+
+The server preprocesses each database into Number Theoretic Transform (NTT) form for efficient FHE evaluation. This is a one-time offline step.
+
+\textbf{Expansion factor.} Each 3840-byte logical entry expands to 16,384 bytes in NTT form, a $4.27\times$ expansion.
+
+\textbf{Shared NTT store.} Since the same packed entry appears in multiple PBC groups (triplication), we avoid redundant storage by maintaining a single shared NTT store indexed by entry identifier, plus per-group indirection tables that map cuckoo bins to entries in the shared store. This reduces total storage:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Without deduplication:} $\sim$51~GB (all groups store independent NTT copies).
+    \item \textbf{With shared store:} $\sim$24~GB---comprising $\sim$13~GB for the shared main-database NTT store, $\sim$10.7~GB for per-group index NTT databases (no deduplication possible since each group's bins are unique), and $\sim$13~MB for indirection tables.
+\end{itemize}
+
+\textbf{Level-major layout.} The shared NTT store uses a level-major memory layout: all entries' coefficients for NTT level $\ell$ are stored contiguously, so that a single query reads within a $\sim$6.5~MB contiguous slab. This provides good cache and TLB behavior compared to the entry-major alternative, which would cause 16,384-byte strides and severe cache thrashing.
+
+All NTT data is memory-mapped via \texttt{memmap2} for fast server startup without loading the entire dataset into RAM.
+
+\subsection{Query Protocol}
+\label{sec:onion-query}
+
+A complete OnionPIR session proceeds as follows:
+
+\textbf{Key exchange.} The client generates FHE keys and registers them with the server:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item Galois keys: $\sim$274~KB (for automorphism operations).
+    \item GSW keys: $\sim$324~KB (for homomorphic multiplication).
+    \item Total key material: $\sim$598~KB, registered once per session.
+\end{itemize}
+
+The server deserializes keys into a shared key store, enabling reuse across all 155 OnionPIR instances (75 index + 80 chunk) without redundant deserialization.
+
+\textbf{Index queries.} For each of the 75 PBC groups, the client generates up to 2 FHE-encrypted queries (one per cuckoo hash function), targeting specific bins in the group's index table. Each query ciphertext is $\sim$16~KB (seed-compressed). The server homomorphically evaluates the selection function and returns a $\sim$14~KB encrypted response containing one 3840-byte entry. The client decrypts and scans the 256 index slots for a matching fingerprint.
+
+\textbf{Chunk queries.} Using the entry identifiers from the index phase, the client issues one FHE query per PBC group over the main database. The server evaluates using the shared NTT store with indirection and returns encrypted 3840-byte entries. The client decrypts and extracts UTXO data at the known byte offset.
+
+\textbf{Communication summary:}
+\begin{center}
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Phase} & \textbf{Upload} & \textbf{Download} & \textbf{Queries} \\
+\hline
+Key exchange & 598 KB & --- & 1 \\
+Index & $75 \times 2 \times 16$ KB $\approx$ 2.4 MB & $75 \times 2 \times 14$ KB $\approx$ 2.1 MB & $\leq 150$ \\
+Chunks & $80 \times 16$ KB $\approx$ 1.3 MB & $80 \times 14$ KB $\approx$ 1.1 MB & 80 \\
+\hline
+\textbf{Total} & $\sim$4.3 MB & $\sim$3.2 MB & $\leq 231$ \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Database Generation Pipeline}
+\label{sec:onion-dbgen}
+
+The OnionPIR database generation is a three-stage pipeline, separate from the DPF/HarmonyPIR pipeline due to the different entry sizes:
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item \textbf{UTXO packing} (\texttt{gen\_1\_onion}): Groups UTXOs by ScriptPubKey, serializes each group with VarInt encoding, and greedily packs them into 3840-byte entries. Produces the packed entry file and a 27-byte-per-address index file (20-byte script hash, 4-byte entry ID, 2-byte byte offset, 1-byte entry count).
+
+    \item \textbf{Chunk database construction} (\texttt{gen\_2\_onion}): For each of the 80 PBC groups, builds a 6-hash cuckoo table mapping entry IDs to bins, populates an OnionPIR server instance, and preprocesses into NTT form. The shared NTT store is written in level-major layout. This is the most expensive step ($\sim$81 seconds on a modern machine).
+
+    \item \textbf{Index database construction} (\texttt{gen\_3\_onion}): For each of the 75 PBC groups, builds a 2-hash cuckoo table where each bin packs 256 index slots into one 3840-byte entry, preprocesses into NTT form, and saves to disk ($\sim$14 seconds total).
+\end{enumerate}
+
+\subsection{Performance}
+\label{sec:onion-perf}
+
+\textbf{Server computation.} On a multi-core machine, each OnionPIR query evaluation takes $\sim$12~ms for index-level queries (8,256 padded entries per group) and $\sim$20~ms for chunk-level queries (43,264 padded entries per group). A full batch requires evaluating 150 index queries and 80 chunk queries sequentially, for a total server compute time of $\sim$2.5 seconds per batch.
+
+\textbf{Noise budget.} After decryption, the remaining noise budget is 4 bits for index-level queries and only 2 bits for chunk-level queries. The chunk-level budget is tight and warrants monitoring as the UTXO set grows, as larger databases may require adjusting the FHE parameters.
+
+\textbf{End-to-end latency.} At 50~Mbps broadband, a complete UTXO lookup (key exchange + index + chunk phases) takes approximately 3.5 seconds, dominated by server computation rather than network transfer.

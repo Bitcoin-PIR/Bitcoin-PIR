@@ -362,13 +362,15 @@ public class HarmonyPirClient implements PirClient {
             chunkHintData[hint.bucketId()] = hint;
         }
 
-        // Create chunk buckets using server's (padded_n, t) values
+        // Create chunk buckets using server's (padded_n, t) values.
+        // IMPORTANT: chunk-level buckets use global bucket_id = K + b
+        // for PRP key derivation (matching the hint server's k_offset).
         chunkBuckets = new HarmonyBucket[PirConstants.K_CHUNK];
         for (int b = 0; b < PirConstants.K_CHUNK; b++) {
             HintData hint = chunkHintData[b];
             chunkBuckets[b] = new HarmonyBucket(
                     hint.n(), PirConstants.HARMONY_CHUNK_W, hint.t(),
-                    prpKey, b, prpBackend);
+                    prpKey, PirConstants.K + b, prpBackend);
             chunkBuckets[b].loadHints(hint.hintBytes());
         }
 

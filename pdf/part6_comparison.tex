@@ -1,0 +1,76 @@
+\section{Protocol Comparison}
+\label{sec:comparison}
+
+We compare the three PIR instantiations across five dimensions: trust model, communication cost, server computation, client requirements, and suitability for different usage patterns.
+
+\subsection{Trust Models}
+
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{DPF-PIR} requires two servers that do not collude. Privacy is \emph{information-theoretic}: if the servers do not communicate, neither learns anything about the query, regardless of computational power. However, if the two servers collude, the client's query is immediately revealed.
+
+    \item \textbf{HarmonyPIR} also requires two non-colluding servers (a hint server and a query server), providing the same information-theoretic privacy guarantee. The hint server and query server need not be the same pair of servers---any two servers that hold the database and do not collude can be used.
+
+    \item \textbf{OnionPIR} requires only a single server. Privacy is \emph{computational}: the query is encrypted under a lattice-based FHE scheme, and the server cannot distinguish queries even with unlimited time, assuming the hardness of the Ring Learning with Errors (RLWE) problem. This eliminates the non-colluding assumption entirely.
+\end{itemize}
+
+\subsection{Communication Costs}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Metric} & \textbf{DPF-PIR} & \textbf{HarmonyPIR} & \textbf{OnionPIR} \\
+\hline
+Trust model & 2-server (IT) & 2-server (IT) & 1-server (comp.) \\
+Offline download & 0 & 600 MB--2 GB & 598 KB (keys) \\
+Online upload & $\sim$75 KB & $\sim$10 KB & $\sim$4.3 MB \\
+Online download & $\sim$25 KB & $\sim$10 KB & $\sim$3.2 MB \\
+\hline
+\end{tabular}
+\caption{Communication costs per batch query for a typical session querying multiple addresses. DPF-PIR and HarmonyPIR costs are per-server (the client communicates with two servers). OnionPIR costs are for the single server. HarmonyPIR offline cost is a one-time download per session, amortized across all subsequent queries.}
+\label{tab:comparison-comm}
+\end{table}
+
+DPF-PIR has the smallest per-query communication because DPF keys are compact ($O(\lambda \log N)$ bits). HarmonyPIR achieves even lower online communication at the cost of the large offline hint download. OnionPIR has the highest per-query communication due to FHE ciphertext overhead, but requires no offline phase and no second server.
+
+\subsection{Server Computation}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Metric} & \textbf{DPF-PIR} & \textbf{HarmonyPIR} & \textbf{OnionPIR} \\
+\hline
+Per-query complexity & $O(NB)$ & $O(\sqrt{N} \cdot w)$ & $O(NB)$ (FHE) \\
+Per-query type & XOR scan & Index lookup & FHE evaluation \\
+Batch time (est.) & $\sim$0.5 s & $\sim$0.1 s (online) & $\sim$2.5 s \\
+Offline server cost & 0 & $\sim$1--7 s (hints) & 0 \\
+\hline
+\end{tabular}
+\caption{Server computation comparison. $N$ is the number of database entries, $B$ the entry size, and $w$ the HarmonyPIR entry width. DPF-PIR's $O(NB)$ consists of lightweight XOR operations; OnionPIR's $O(NB)$ involves FHE polynomial arithmetic, which is orders of magnitude more expensive per operation.}
+\label{tab:comparison-compute}
+\end{table}
+
+DPF-PIR's server work is a simple XOR scan over the database, making it the fastest in wall-clock time per query despite its linear complexity. HarmonyPIR achieves \emph{sublinear} server work per online query ($O(\sqrt{N})$), at the cost of the offline hint computation. OnionPIR's server work is dominated by FHE polynomial multiplication, making it the slowest per query.
+
+\subsection{Client Requirements}
+
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{DPF-PIR:} Stateless. The client only needs to generate DPF keys (a few hundred bytes each) and XOR the two server responses. Minimal compute, no persistent state, no WASM dependency.
+
+    \item \textbf{HarmonyPIR:} Stateful. The client must store hint data ($M \times w$ bytes per bucket, totaling hundreds of megabytes) and maintain the relocation data structure across queries. Requires a PRP implementation, provided via WebAssembly in the browser. Supports three PRP backends with varying performance.
+
+    \item \textbf{OnionPIR:} Stateless per session (keys are generated fresh), but requires an FHE library for encryption and decryption. The WASM module is $\sim$516~KB. The client must also reconstruct cuckoo hash tables locally to determine which bins to query.
+\end{itemize}
+
+\subsection{When to Use Which Protocol}
+
+The choice of protocol depends on the client's threat model, query volume, and network conditions:
+
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{One-time lookups} (e.g., importing a seed phrase with a few addresses): \textbf{DPF-PIR} is ideal. No offline cost, minimal communication, and the two-server assumption is reasonable when the client can freely choose two Bitcoin full nodes from the P2P network.
+
+    \item \textbf{Repeated queries} (e.g., a wallet that periodically syncs): \textbf{HarmonyPIR} excels once the offline hint download is amortized. Each subsequent query costs only $\sim$10~KB of communication and $O(\sqrt{N})$ server work. The hint budget of $\sim$600 queries per bucket is more than sufficient for typical wallet usage.
+
+    \item \textbf{Maximum privacy} (e.g., the client cannot trust any two servers to not collude): \textbf{OnionPIR} is the only option. It requires a single server and provides computational privacy under standard lattice assumptions. The higher communication and computation costs are the price of eliminating the non-colluding assumption.
+\end{itemize}

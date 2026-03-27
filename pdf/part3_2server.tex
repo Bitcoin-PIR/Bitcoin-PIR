@@ -70,36 +70,26 @@ The offline pipeline transforms raw Bitcoin blockchain data into two PIR-queryab
 \textbf{Pipeline overview:}
 \begin{enumerate}[nolistsep,leftmargin=*]
     \item \textbf{UTXO extraction:} Parse the UTXO snapshot (\texttt{dumptxoutset}) to extract ScriptPubKey hashes, full 32-byte TXIDs, vout indices, and amounts.
-    \item \textbf{Chunk generation:} Group UTXOs by ScriptPubKey, serialize with VarInt encoding, and pack into fixed-size 80-byte blocks. Each block stores complete records including full TXIDs.
-    \item \textbf{Index construction:} Build an index mapping each ScriptPubKey hash (20 bytes) to its chunk location and count. Each index entry is 26 bytes: 20B script hash + 4B offset + 1B chunk count + 1B flags.
-    \item \textbf{Cuckoo hashing:} Organize both databases into cuckoo hash tables for PBC-compatible batch retrieval. The index uses 2-hash cuckoo with bucket size 3; the chunk database uses 3-hash cuckoo with bucket size 2. Both achieve $>$95\% load factor with zero stash.
-    \item \textbf{Placement stamping:} For each index entry, determine which cuckoo hash function placed its first chunk in each of the 3 assigned groups, and encode this placement information into the 1-byte flags field (see Section~\ref{sec:placement}).
+    \item \textbf{Chunk generation:} Group UTXOs by ScriptPubKey, serialize with VarInt encoding, and pack into fixed-size 40-byte blocks. Each block stores complete records including full TXIDs.
+    \item \textbf{Index construction:} Build an index mapping each ScriptPubKey hash to its chunk location and count. Each index entry is 13 bytes: an 8-byte fingerprint tag (derived from the script hash) + 4-byte chunk offset + 1-byte chunk count.
+    \item \textbf{Cuckoo hashing:} Organize both databases into cuckoo hash tables for PBC-compatible batch retrieval. Both the index and chunk databases use 2-hash cuckoo with bucket size 3, achieving $>$95\% load factor with zero stash.
     \item \textbf{Verification:} Validate that all entries are retrievable from the cuckoo tables.
 \end{enumerate}
 
-\textbf{Dual role of cuckoo hashing.} Cuckoo hashing serves two purposes in our system. First, it provides PIR-by-keyword: given a ScriptPubKey, the client computes candidate bucket indices to locate data without scanning. Second, it implements PBC for batch PIR: when querying $m$ entries, each query maps to 3 candidate buckets; the client places queries into $K$ total buckets via cuckoo insertion, and all $K$ DPF queries execute in parallel. The index level uses 2 cuckoo hash functions with bucket size 3 (each DPF query returns 3 slots $\times$ 26~bytes = 78~bytes), while the chunk level uses 3 cuckoo hash functions with bucket size 2 (each DPF query returns 2 slots $\times$ 84~bytes = 168~bytes).
+\textbf{Dual role of cuckoo hashing.} Cuckoo hashing serves two purposes in our system. First, it provides PIR-by-keyword: given a ScriptPubKey, the client computes candidate bucket indices to locate data without scanning. Second, it implements PBC for batch PIR: when querying $m$ entries, each query maps to 3 candidate buckets; the client places queries into $K$ total buckets via cuckoo insertion, and all $K$ DPF queries execute in parallel. Both the index and chunk levels use 2 cuckoo hash functions with bucket size 3. Each DPF query returns one cuckoo bin: 3 slots $\times$ 13~bytes = 39~bytes for the index level, and 3 slots $\times$ 44~bytes = 132~bytes for the chunk level.
 
 \subsubsection{Query Protocol}
 
 A complete UTXO lookup requires two rounds of batch PIR:
 
-\textbf{Level 1: Index lookup.} The client computes RIPEMD-160 hashes of all queried ScriptPubKeys, derives 3 candidate buckets per query via cuckoo hash functions (\texttt{splitmix64}-based), and places them into $K{=}75$ PBC buckets. For each bucket, the client generates 2 DPF key pairs (one per cuckoo hash function in the 2-hash index cuckoo) and sends one share of each to each server. The servers expand all DPF keys and return XOR sums. The client combines responses to recover 26-byte index entries containing chunk offsets, chunk counts, and placement flags.
+\textbf{Level 1: Index lookup.} The client computes RIPEMD-160 hashes of all queried ScriptPubKeys, derives 3 candidate buckets per query via cuckoo hash functions (\texttt{splitmix64}-based), and places them into $K{=}75$ PBC buckets. For each bucket, the client generates 2 DPF key pairs (one per cuckoo hash function in the 2-hash index cuckoo) and sends one share of each to each server. The servers expand all DPF keys and return XOR sums. The client combines responses to recover 13-byte index entries containing fingerprint tags, chunk offsets, and chunk counts. The client matches the recovered tag against the expected tag for its ScriptPubKey to identify the correct slot within the 3-slot cuckoo bin.
 
-\textbf{Level 2: Chunk retrieval.} Using the chunk locations from Level~1, the client repeats the process with $K_\text{chunk}{=}80$ PBC buckets over the chunk database. The chunk cuckoo uses 3 hash functions with bucket size 2, so the client generates 3 DPF key pairs per bucket. However, for single-chunk addresses (93.9\% of all entries), the placement optimization (Section~\ref{sec:placement}) reduces this to 1 DPF key pair per bucket. The recovered chunks contain full UTXO records: 32-byte TXIDs, vout indices, and amounts in satoshis---everything needed to construct a spending transaction.
-
-\subsubsection{Placement Optimization}
-\label{sec:placement}
-
-For the chunk-level cuckoo table (3 hash functions, bucket size 2), each chunk can reside in one of $3 \times 3 = 9$ positions per group (3 hash functions $\times$ 2 slots is narrowed to which hash function placed it, so 3 possibilities per group). Across its 3 assigned groups, this gives $3^3 = 27$ possible placements, encodable in 5 bits.
-
-During database construction, the build pipeline determines the actual placement of each entry's \emph{first chunk} and encodes it in the flags byte of the corresponding index entry:
-$$\texttt{flags} = (1 \ll 5) \mid (h_0 + 3 \cdot h_1 + 9 \cdot h_2)$$
-where $h_i \in \{0, 1, 2\}$ is the cuckoo hash function that placed the first chunk in group $i$. Bit 5 serves as a validity indicator.
-
-At query time, the client decodes the placement bits from the recovered index entry. When issuing Level~2 queries for the first chunk, the client knows exactly which cuckoo hash function to target, reducing the DPF keys per bucket from 3 to 1. Since 93.9\% of addresses have exactly 1 chunk, this optimization applies to the vast majority of queries, yielding approximately a 67\% reduction in chunk-level communication and a 50\% reduction in server computation for those queries.
+\textbf{Level 2: Chunk retrieval.} Using the chunk locations from Level~1, the client repeats the process with $K_\text{chunk}{=}80$ PBC buckets over the chunk database. The chunk cuckoo also uses 2 hash functions with bucket size 3, so the client generates 2 DPF key pairs per bucket. The recovered 132-byte results (3 slots $\times$ 44 bytes each) contain chunk identifiers and full UTXO records: 32-byte TXIDs, vout indices, and amounts in satoshis---everything needed to construct a spending transaction.
 
 \subsubsection{Client Implementations}
 
-\textbf{Rust CLI (\texttt{lookup\_pir}).} Command-line tool that takes ScriptPubKeys as hex, performs the two-level batch PIR protocol, and outputs decoded UTXO data.
+\textbf{Rust CLI.} Command-line tool that takes ScriptPubKeys as hex, performs the two-level batch PIR protocol, and outputs decoded UTXO data.
 
-\textbf{Web client (TypeScript).} Browser-compatible library using WebSocket connections. Implements DPF key generation, cuckoo hashing, and PBC placement in pure TypeScript. Supports Bitcoin address input (P2PKH, P2SH, P2WPKH, P2WSH, P2TR) with automatic conversion to ScriptPubKey. The web interface provides a self-contained demo at \texttt{batch\_web\_client/}.
+\textbf{Web client (TypeScript).} Browser-compatible library using WebSocket connections. Implements DPF key generation, cuckoo hashing, and PBC placement in pure TypeScript. Supports Bitcoin address input (P2PKH, P2SH, P2WPKH, P2WSH, P2TR) with automatic conversion to ScriptPubKey.
+
+\textbf{Electrum plugin (Python).} Integration with the Electrum Bitcoin wallet \cite{electrum} that replaces its native synchronizer with PIR-based UTXO discovery. See Section~\ref{sec:deployment} for details on all client implementations.

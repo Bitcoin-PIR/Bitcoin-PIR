@@ -56,6 +56,39 @@ public final class ProtocolCodec {
         return new ServerInfo(indexBins, chunkBins, indexK, chunkK, tagSeed);
     }
 
+    // ── OnionPIR GetInfo ───────────────────────────────────────────────────
+
+    /** Parsed OnionPIR server info response (v2 format with additional fields). */
+    public record OnionPirServerInfo(
+        int indexK, int chunkK,
+        int indexBins, int chunkBins,
+        long tagSeed,
+        int totalPackedEntries,
+        int indexCuckooBucketSize,
+        int indexSlotSize
+    ) {}
+
+    /**
+     * Decode an OnionPIR v2 ServerInfo response payload.
+     *
+     * Wire format (after length prefix):
+     *   [1B variant=0x01][1B index_k][1B chunk_k][4B index_bins LE][4B chunk_bins LE]
+     *   [8B tag_seed LE][4B total_packed LE][2B bucket_size LE][1B slot_size]
+     */
+    public static OnionPirServerInfo decodeOnionPirServerInfo(byte[] payload) {
+        ByteBuffer bb = ByteBuffer.wrap(payload, 1, payload.length - 1).order(ByteOrder.LITTLE_ENDIAN);
+        int indexK = bb.get() & 0xFF;
+        int chunkK = bb.get() & 0xFF;
+        int indexBins = bb.getInt();
+        int chunkBins = bb.getInt();
+        long tagSeed = bb.getLong();
+        int totalPackedEntries = bb.getInt();
+        int indexCuckooBucketSize = bb.getShort() & 0xFFFF;
+        int indexSlotSize = bb.get() & 0xFF;
+        return new OnionPirServerInfo(indexK, chunkK, indexBins, chunkBins, tagSeed,
+                totalPackedEntries, indexCuckooBucketSize, indexSlotSize);
+    }
+
     // ── Ping ─────────────────────────────────────────────────────────────────
 
     /** Encode a Ping request. */

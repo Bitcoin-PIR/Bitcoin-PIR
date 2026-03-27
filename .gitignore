@@ -30,5 +30,11 @@ __pycache__/
 *.pyo
 *.dylib
 
+# Java / Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+*.class
+
 # Claude Code
 .claude/

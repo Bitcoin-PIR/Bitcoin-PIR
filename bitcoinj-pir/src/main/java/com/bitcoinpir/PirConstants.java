@@ -130,6 +130,23 @@ public final class PirConstants {
     public static final byte RESP_ONIONPIR_INDEX_RESULT    = 0x31;
     public static final byte RESP_ONIONPIR_CHUNK_RESULT    = 0x32;
 
+    // ── OnionPIR constants ─────────────────────────────────────────────────
+
+    /** OnionPIR chunk-level cuckoo hash functions (6, unlike DPF/Harmony's 2). */
+    public static final int ONION_CHUNK_CUCKOO_NUM_HASHES = 6;
+
+    /** OnionPIR chunk-level cuckoo max kicks before failure. */
+    public static final int ONION_CHUNK_CUCKOO_MAX_KICKS = 10000;
+
+    /** Size of one OnionPIR packed entry in bytes. */
+    public static final int ONION_PACKED_ENTRY_SIZE = 3840;
+
+    /** OnionPIR GetInfo request variant (same as DPF). */
+    public static final byte REQ_ONIONPIR_GET_INFO = REQ_GET_INFO;
+
+    /** Empty sentinel for cuckoo tables (u32::MAX). */
+    public static final int EMPTY_U32 = 0xFFFFFFFF;
+
     // ── Default server URLs ─────────────────────────────────────────────────
 
     public static final String DEFAULT_DPF_SERVER0_URL = "wss://dpf1.chenweikeng.com";

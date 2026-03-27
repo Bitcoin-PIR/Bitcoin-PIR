@@ -21,9 +21,9 @@ A \emph{light client} knows its own private keys (and thus its addresses and Scr
 
 \textbf{Sort and group.} The server sorts UTXOs by ScriptPubKey hash, then groups them into fixed-size chunks. Each chunk stores complete UTXO records including full 32-byte TXIDs, vout indices, and amounts. Multiple ScriptPubKeys may share a chunk via bin-packing.
 
-\textbf{Index map.} Maps each ScriptPubKey (via its RIPEMD-160 hash) to the chunk location and data length. This is organized as a cuckoo hash table for $O(1)$ keyword-to-index lookup \cite{PR01}. Each index entry is 26 bytes: the 20-byte script hash (for verification), a 4-byte chunk offset, a 1-byte chunk count, and a 1-byte flags field (used for the placement optimization described in Section~\ref{sec:placement}).
+\textbf{Index map.} Maps each ScriptPubKey (via its RIPEMD-160 hash) to the chunk location and data length. This is organized as a cuckoo hash table for $O(1)$ keyword-to-index lookup \cite{PR01}. Each index entry is 13 bytes: an 8-byte fingerprint tag (derived from the script hash, used for verification), a 4-byte chunk offset, and a 1-byte chunk count.
 
-\textbf{Chunk map.} Stores the actual UTXO data in fixed-size 80-byte blocks. Full 32-byte TXIDs are stored directly in the chunks, eliminating a separate TXID resolution step. The chunk map is also organized as a cuckoo hash table for PIR-compatible retrieval.
+\textbf{Chunk map.} Stores the actual UTXO data in fixed-size 40-byte blocks. Full 32-byte TXIDs are stored directly in the chunks, eliminating a separate TXID resolution step. Each chunk slot is 44 bytes: a 4-byte chunk identifier followed by 40 bytes of UTXO data. The chunk map is also organized as a cuckoo hash table for PIR-compatible retrieval.
 
 \subsection{Cuckoo Hashing for Keyword Lookup}
 

@@ -1,0 +1,92 @@
+\section{Implementation and Deployment}
+\label{sec:deployment}
+
+We have implemented a complete, unified system supporting all three PIR protocols. The codebase consists of server-side components in Rust, browser clients in TypeScript with WebAssembly modules, and a Python plugin for the Electrum Bitcoin wallet. All three protocols share a common data representation, batch PIR framework, and wire protocol.
+
+\subsection{System Architecture}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=0.8cm and 1.2cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm, align=center, font=\footnotesize},
+    arrow/.style={-{Stealth[length=2mm]}, thick},
+    label/.style={font=\scriptsize, text=gray!70!black}
+]
+
+\node[box, fill=green!15] (webclient) {Browser Client\\{\tiny TypeScript + WASM}};
+\node[box, fill=green!15, right=1.5cm of webclient] (electrum) {Electrum Plugin\\{\tiny Python + FFI}};
+\node[box, fill=green!15, left=1.5cm of webclient] (cli) {Rust CLI};
+
+\node[box, fill=orange!15, below=1.5cm of cli] (dpfserver) {DPF / Harmony\\Query Server};
+\node[box, fill=orange!15, below=1.5cm of webclient] (hintserver) {HarmonyPIR\\Hint Server};
+\node[box, fill=orange!15, below=1.5cm of electrum] (onionserver) {OnionPIR\\Server};
+
+\draw[arrow] (cli) -- (dpfserver);
+\draw[arrow] (webclient) -- (dpfserver);
+\draw[arrow] (webclient) -- (hintserver);
+\draw[arrow] (webclient) -- (onionserver);
+\draw[arrow] (electrum) -- (dpfserver);
+\draw[arrow] (electrum) -- (hintserver);
+\draw[arrow] (electrum) -- (onionserver);
+
+\end{tikzpicture}
+\caption{System architecture. Three client implementations connect to three server types. The DPF/HarmonyPIR query server handles both DPF and HarmonyPIR online queries via protocol dispatch on request type codes.}
+\label{fig:deployment}
+\end{figure}
+
+\textbf{Unified wire protocol.} All communication uses WebSocket with a compact binary protocol. Each request begins with a 1-byte type code that determines the protocol variant: DPF batch queries (\texttt{0x11}, \texttt{0x21}), HarmonyPIR hint/query requests (\texttt{0x40}--\texttt{0x43}), and OnionPIR key registration/queries (\texttt{0x30}--\texttt{0x32}). This allows the DPF and HarmonyPIR query server to share a single binary, dispatching based on the request type.
+
+\textbf{Server binaries.} Three Rust server binaries handle different protocol roles:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{DPF/HarmonyPIR query server:} Handles DPF batch queries (expanding DPF keys and computing XOR sums) and HarmonyPIR online queries (returning XOR of requested indices). Databases are memory-mapped via \texttt{memmap2}. Runs as two instances (one per server in the 2-server model).
+    \item \textbf{HarmonyPIR hint server:} Computes PRP-based hints using the selected backend (Hoang, FastPRP, or ALF) with \texttt{rayon} for batch parallelism. Streams hints to the client via WebSocket.
+    \item \textbf{OnionPIR server:} Manages 155 OnionPIR instances (75 index + 80 chunk) with a shared key store and shared NTT data. FHE evaluation uses the SEAL library \cite{seal} via Rust FFI.
+\end{itemize}
+
+\subsection{Browser Deployment via WebAssembly}
+
+The browser client supports all three protocols through WebAssembly \cite{wasm} modules compiled from Rust:
+
+\textbf{HarmonyPIR WASM.} Three independent WASM builds provide the PRP backends:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \texttt{harmonypir/}: Hoang (swap-or-not) backend---smallest binary, no SIMD requirement.
+    \item \texttt{harmonypir-fastprp/}: FastPRP backend---precomputed permutation tables.
+    \item \texttt{harmonypir-alf/}: ALF backend with WASM SIMD128---fastest in browsers with SIMD support ($4$--$8\times$ over Hoang).
+\end{itemize}
+
+Each WASM module exports a \texttt{HarmonyBucket} class with methods for hint loading, request building, response processing, and state serialization.
+
+\textbf{OnionPIR WASM.} A $\sim$516~KB WASM module provides FHE key generation, query encryption, and response decryption. The client's secret key can be exported and reused across different OnionPIR instances with different database sizes, avoiding redundant key generation.
+
+\textbf{Web Workers.} For HarmonyPIR, the client distributes the 155 bucket instances across 4 Web Workers, each running its own WASM instance. This parallelizes the request-building and response-processing phases, providing up to $4\times$ speedup on multi-core devices. Workers communicate via \texttt{Transferable} \texttt{ArrayBuffer}s to avoid serialization overhead.
+
+\textbf{DPF-PIR in the browser.} DPF key generation and cuckoo hashing are implemented in pure TypeScript without WASM, as the operations (AES-based PRG expansion and XOR accumulation) are lightweight enough for JavaScript.
+
+\subsection{Electrum Wallet Integration}
+
+We provide a plugin for the Electrum Bitcoin wallet \cite{electrum} that replaces its native synchronization mechanism with PIR-based UTXO discovery.
+
+\textbf{Plugin architecture.} The plugin hooks into Electrum's wallet lifecycle:
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item On wallet open, the plugin creates a \texttt{PirSynchronizer} that replaces Electrum's default \texttt{Synchronizer} (which sends script hashes to an Electrum server in the clear).
+    \item The synchronizer collects all wallet addresses, converts them to RIPEMD-160 script hashes, and performs batch PIR queries to discover UTXOs.
+    \item Discovered UTXOs are written back to the wallet's internal state, enabling normal spending operations.
+\end{enumerate}
+
+\textbf{Protocol selection.} Users choose between the three PIR backends via a Qt settings dialog:
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item ``DPF 2-Server'': Pure Python DPF implementation with WebSocket transport.
+    \item ``HarmonyPIR 2-Server'': Uses PyO3 FFI bindings to call the Rust HarmonyPIR library natively, providing near-Rust performance for PRP evaluation and state management.
+    \item ``OnionPIRv2 1-Server'': Uses \texttt{ctypes} FFI to a pre-built native library (\texttt{libonionpir}) for FHE operations.
+\end{itemize}
+
+\textbf{Shared utilities.} All three backends share Python implementations of cuckoo hashing, PBC bucket derivation, VarInt decoding, and UTXO data parsing---mirroring the Rust and TypeScript implementations to ensure cross-platform consistency.
+
+\subsection{Practical Considerations}
+
+\textbf{Server deployment.} Production servers are deployed behind reverse proxies (e.g., nginx) with TLS termination via Cloudflare Tunnel, providing WSS (WebSocket Secure) transport without exposing server IP addresses.
+
+\textbf{Database updates.} When the Bitcoin UTXO set changes (approximately every 10 minutes with each new block), the server operator re-runs the database generation pipeline. For DPF-PIR and HarmonyPIR, the update only affects the cuckoo hash tables. For OnionPIR, the NTT preprocessing must also be recomputed, which takes approximately 95 seconds. Clients automatically detect database version changes via the \texttt{GET\_INFO} handshake.
+
+\textbf{Dust filtering.} UTXOs below 576 satoshis and addresses with more than 100 UTXOs are filtered during database generation. This removes dust outputs and whale addresses (who should run full nodes), reducing the database size and improving PIR efficiency for typical light-client queries. See Section~\ref{sec:extension} for the rationale.
