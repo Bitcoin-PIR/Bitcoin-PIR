@@ -41,6 +41,7 @@ class PirPrivacyPlugin(BasePlugin):
         self.server0_url = self.config.get('pir_server0_url', DEFAULT_SERVER0_URL)
         self.server1_url = self.config.get('pir_server1_url', DEFAULT_SERVER1_URL)
         self.sync_interval = self.config.get('pir_sync_interval', 30)  # seconds
+        self.prp_backend = self.config.get('pir_prp_backend', 0)  # 0=Hoang, 1=FastPRP, 2=ALF
 
         # PIR client (shared across wallets)
         self._pir_client: Optional[BatchPirClient] = None
@@ -55,7 +56,8 @@ class PirPrivacyPlugin(BasePlugin):
         if self.pir_protocol == 'dpf':
             return BatchPirClient(self.server0_url, self.server1_url)
         elif self.pir_protocol == 'harmony':
-            return HarmonyPirClient(self.server0_url, self.server1_url)
+            return HarmonyPirClient(self.server0_url, self.server1_url,
+                                    prp_backend=self.prp_backend)
         elif self.pir_protocol == 'onionpir':
             return OnionPirClient(self.server0_url)
         else:
@@ -148,6 +150,7 @@ class PirPrivacyPlugin(BasePlugin):
             'server0_url': self.server0_url,
             'server1_url': self.server1_url,
             'sync_interval': self.sync_interval,
+            'prp_backend': self.prp_backend,
         }
 
     def update_settings(self, settings: dict):
@@ -167,6 +170,10 @@ class PirPrivacyPlugin(BasePlugin):
         if 'sync_interval' in settings:
             self.sync_interval = settings['sync_interval']
             self.config.set_key('pir_sync_interval', self.sync_interval)
+
+        if 'prp_backend' in settings:
+            self.prp_backend = settings['prp_backend']
+            self.config.set_key('pir_prp_backend', self.prp_backend)
 
         # Reconnect with new settings if needed
         if self._pir_client:

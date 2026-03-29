@@ -65,8 +65,8 @@ RESP_HARMONY_BATCH_QUERY = 0x43
 
 # ── Default server URLs ───────────────────────────────────────────────────
 
-DEFAULT_SERVER0_URL = 'wss://dpf1.chenweikeng.com'
-DEFAULT_SERVER1_URL = 'wss://dpf2.chenweikeng.com'
+DEFAULT_SERVER0_URL = 'ws://localhost:8091'
+DEFAULT_SERVER1_URL = 'ws://localhost:8092'
 
 # ── 64-bit mask ────────────────────────────────────────────────────────────
 

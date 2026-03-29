@@ -32,8 +32,8 @@ async function testPirUtxoProvider() {
   const provider = new PirUtxoProvider({
     backend: {
       type: 'dpf',
-      server0Url: 'wss://dpf1.chenweikeng.com',
-      server1Url: 'wss://dpf2.chenweikeng.com',
+      server0Url: 'ws://127.0.0.1:8091',
+      server1Url: 'ws://127.0.0.1:8092',
     },
     onLog: (msg) => console.log(`  ${msg}`),
   });
@@ -57,8 +57,8 @@ async function testPirExplorer() {
   const explorer = new PirExplorer({
     backend: {
       type: 'dpf',
-      server0Url: 'wss://dpf1.chenweikeng.com',
-      server1Url: 'wss://dpf2.chenweikeng.com',
+      server0Url: 'ws://127.0.0.1:8091',
+      server1Url: 'ws://127.0.0.1:8092',
     },
     onLog: (msg) => console.log(`  ${msg}`),
   });

@@ -392,13 +392,35 @@ fn main() {
         }
 
         // ── Decode INDEX → find CHUNK bucket + bin ──
-        // Try all hash functions to find the chunk (no placement optimization)
         let chunk_groups = derive_chunk_buckets(start_chunk);
         let g = 0; // use first group
         let cb = chunk_groups[g];
-        let ch = 0; // try first hash function
-        let ckey = derive_chunk_cuckoo_key(cb, ch);
-        let target_chunk_bin = cuckoo_hash_int(start_chunk, ckey, chunk_bins);
+        let chk_table_offset = CHUNK_HEADER_SIZE + cb * chunk_bins * chunk_w;
+
+        // Scan all hash functions to find which bin holds start_chunk
+        let mut target_chunk_bin = None;
+        for ch in 0..CHUNK_CUCKOO_NUM_HASHES {
+            let ckey = derive_chunk_cuckoo_key(cb, ch);
+            let bin = cuckoo_hash_int(start_chunk, ckey, chunk_bins);
+            let bin_off = chk_table_offset + bin * chunk_w;
+            for slot in 0..CHUNK_CUCKOO_BUCKET_SIZE {
+                let s = bin_off + slot * (4 + CHUNK_SIZE);
+                let cid = u32::from_le_bytes(chunk_mmap[s..s+4].try_into().unwrap());
+                if cid == start_chunk {
+                    target_chunk_bin = Some(bin);
+                    break;
+                }
+            }
+            if target_chunk_bin.is_some() { break; }
+        }
+
+        if target_chunk_bin.is_none() {
+            println!("  INDEX[{:>2}] bin={:>6} → tag=0x{:016x} chunk={} n={} → CHUNK[{:>2}] NOT FOUND in any hash fn ✗",
+                ib, target_bin, target_tag, start_chunk, num_chunks, cb);
+            all_pass = false;
+            continue;
+        }
+        let target_chunk_bin = target_chunk_bin.unwrap();
 
         chunk_buckets_touched[cb] = true;
 
@@ -406,8 +428,6 @@ fn main() {
         let chk_req = chunk_buckets[cb].build_request(target_chunk_bin as u32).unwrap();
         let chk_req_bytes = chk_req.request();
         let _chk_count = chk_req_bytes.len() / 4;
-
-        let chk_table_offset = CHUNK_HEADER_SIZE + cb * chunk_bins * chunk_w;
         let chk_response = simulate_query_server(
             &chk_req_bytes, &chunk_mmap[..], chk_table_offset, chunk_bins, chunk_w,
         );

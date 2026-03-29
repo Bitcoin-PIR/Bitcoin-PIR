@@ -30,6 +30,10 @@ __pycache__/
 *.pyo
 *.dylib
 
+# Electrum plugin build artifacts
+pir_privacy-*.zip
+electrum_plugin/pir_privacy/_vendor/
+
 # Java / Gradle
 .gradle/
 build/

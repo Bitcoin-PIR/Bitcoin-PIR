@@ -124,9 +124,9 @@ async def test_harmonypir(script_hash_hex: str):
     try:
         from pir_privacy.pir_harmony_client import HarmonyPirClient
 
-        # Check if harmony servers are running (same hosts as DPF)
-        harmony_hint = DEFAULT_SERVER0_URL   # Hint server
-        harmony_query = DEFAULT_SERVER1_URL  # Query server
+        # HarmonyPIR servers run on dedicated ports
+        harmony_hint = 'ws://localhost:8094'   # Hint server
+        harmony_query = 'ws://localhost:8095'  # Query server
 
         harmony = HarmonyPirClient(harmony_hint, harmony_query)
         await harmony.connect()

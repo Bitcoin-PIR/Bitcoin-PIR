@@ -7,12 +7,12 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QComboBox, QSpinBox, QPushButton,
     QGroupBox, QFrame,
 )
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 
 from electrum.i18n import _
 from electrum.gui.qt.util import WindowModalDialog, Buttons, OkButton, CancelButton
@@ -22,6 +22,28 @@ from .pir_plugin import PirPrivacyPlugin
 if TYPE_CHECKING:
     from electrum.gui.qt.main_window import ElectrumWindow
 
+# Default server URLs per protocol
+_PROTOCOL_DEFAULTS = {
+    0: {  # DPF
+        'label0': _('Server 0 URL:'),
+        'label1': _('Server 1 URL:'),
+        'url0': 'ws://localhost:8091',
+        'url1': 'ws://localhost:8092',
+    },
+    1: {  # HarmonyPIR
+        'label0': _('Hint Server URL:'),
+        'label1': _('Query Server URL:'),
+        'url0': 'ws://localhost:8094',
+        'url1': 'ws://localhost:8095',
+    },
+    2: {  # OnionPIR
+        'label0': _('Server URL:'),
+        'label1': '',
+        'url0': 'ws://localhost:8093',
+        'url1': '',
+    },
+}
+
 
 class Plugin(PirPrivacyPlugin):
     """Qt-specific plugin class with settings UI."""
@@ -29,25 +51,37 @@ class Plugin(PirPrivacyPlugin):
     def requires_settings(self) -> bool:
         return True
 
-    def settings_widget(self, window: 'ElectrumWindow') -> QWidget:
-        """Return settings widget for the plugin settings tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+    def settings_dialog(self, window, wallet):
+        """Show settings dialog (Electrum 4.7 plugin API)."""
+        d = WindowModalDialog(window, _('PIR Privacy Settings'))
+        layout = QVBoxLayout(d)
 
         # ── Protocol selection ─────────────────────────────────────────
         protocol_group = QGroupBox(_('PIR Protocol'))
         protocol_layout = QGridLayout()
 
         protocol_layout.addWidget(QLabel(_('Protocol:')), 0, 0)
-        self._protocol_combo = QComboBox()
-        self._protocol_combo.addItems([
+        protocol_combo = QComboBox()
+        protocol_combo.addItems([
             'DPF 2-Server (recommended)',
             'HarmonyPIR 2-Server',
             'OnionPIRv2 1-Server',
         ])
         protocol_map = {'dpf': 0, 'harmony': 1, 'onionpir': 2}
-        self._protocol_combo.setCurrentIndex(protocol_map.get(self.pir_protocol, 0))
-        protocol_layout.addWidget(self._protocol_combo, 0, 1)
+        protocol_combo.setCurrentIndex(protocol_map.get(self.pir_protocol, 0))
+        protocol_layout.addWidget(protocol_combo, 0, 1)
+
+        # HarmonyPIR PRP backend (only visible when HarmonyPIR selected)
+        prp_label = QLabel(_('PRP Backend:'))
+        protocol_layout.addWidget(prp_label, 1, 0)
+        prp_combo = QComboBox()
+        prp_combo.addItems([
+            'Hoang (default)',
+            'FastPRP',
+            'ALF',
+        ])
+        prp_combo.setCurrentIndex(self.prp_backend)
+        protocol_layout.addWidget(prp_combo, 1, 1)
 
         protocol_group.setLayout(protocol_layout)
         layout.addWidget(protocol_group)
@@ -56,15 +90,32 @@ class Plugin(PirPrivacyPlugin):
         server_group = QGroupBox(_('Server Configuration'))
         server_layout = QGridLayout()
 
-        server_layout.addWidget(QLabel(_('Server 0 URL:')), 0, 0)
-        self._server0_input = QLineEdit(self.server0_url)
-        self._server0_input.setPlaceholderText('wss://dpf1.example.com')
-        server_layout.addWidget(self._server0_input, 0, 1)
+        server0_label = QLabel()
+        server_layout.addWidget(server0_label, 0, 0)
+        server0_input = QLineEdit()
+        server_layout.addWidget(server0_input, 0, 1)
 
-        server_layout.addWidget(QLabel(_('Server 1 URL:')), 1, 0)
-        self._server1_input = QLineEdit(self.server1_url)
-        self._server1_input.setPlaceholderText('wss://dpf2.example.com')
-        server_layout.addWidget(self._server1_input, 1, 1)
+        server1_label = QLabel()
+        server_layout.addWidget(server1_label, 1, 0)
+        server1_input = QLineEdit()
+        server_layout.addWidget(server1_input, 1, 1)
+
+        def _on_protocol_changed(idx):
+            defaults = _PROTOCOL_DEFAULTS.get(idx, _PROTOCOL_DEFAULTS[0])
+            server0_label.setText(defaults['label0'])
+            server0_input.setText(defaults['url0'])
+            server1_label.setText(defaults['label1'])
+            server1_input.setText(defaults['url1'])
+            server1_label.setVisible(bool(defaults['label1']))
+            server1_input.setVisible(bool(defaults['url1']))
+            # PRP backend only relevant for HarmonyPIR
+            is_harmony = (idx == 1)
+            prp_label.setVisible(is_harmony)
+            prp_combo.setVisible(is_harmony)
+
+        protocol_combo.currentIndexChanged.connect(_on_protocol_changed)
+        # Initialize with current selection
+        _on_protocol_changed(protocol_combo.currentIndex())
 
         server_group.setLayout(server_layout)
         layout.addWidget(server_group)
@@ -74,10 +125,10 @@ class Plugin(PirPrivacyPlugin):
         sync_layout = QGridLayout()
 
         sync_layout.addWidget(QLabel(_('Poll interval (seconds):')), 0, 0)
-        self._interval_spin = QSpinBox()
-        self._interval_spin.setRange(5, 300)
-        self._interval_spin.setValue(self.sync_interval)
-        sync_layout.addWidget(self._interval_spin, 0, 1)
+        interval_spin = QSpinBox()
+        interval_spin.setRange(5, 300)
+        interval_spin.setValue(self.sync_interval)
+        sync_layout.addWidget(interval_spin, 0, 1)
 
         sync_group.setLayout(sync_layout)
         layout.addWidget(sync_group)
@@ -96,25 +147,22 @@ class Plugin(PirPrivacyPlugin):
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
 
-        # ── Apply button ───────────────────────────────────────────────
-        apply_btn = QPushButton(_('Apply Settings'))
-        apply_btn.clicked.connect(self._apply_settings)
-        layout.addWidget(apply_btn)
+        # ── Dialog buttons ────────────────────────────────────────────
+        layout.addLayout(Buttons(OkButton(d), CancelButton(d)))
 
-        layout.addStretch()
         self._update_status_display()
-        return widget
 
-    def _apply_settings(self):
-        """Apply settings from the UI inputs."""
-        protocol_idx = self._protocol_combo.currentIndex()
-        protocol_map = {0: 'dpf', 1: 'harmony', 2: 'onionpir'}
+        if not d.exec():
+            return
 
+        # Apply settings on OK
+        idx_to_proto = {0: 'dpf', 1: 'harmony', 2: 'onionpir'}
         self.update_settings({
-            'protocol': protocol_map.get(protocol_idx, 'dpf'),
-            'server0_url': self._server0_input.text().strip(),
-            'server1_url': self._server1_input.text().strip(),
-            'sync_interval': self._interval_spin.value(),
+            'protocol': idx_to_proto.get(protocol_combo.currentIndex(), 'dpf'),
+            'server0_url': server0_input.text().strip(),
+            'server1_url': server1_input.text().strip(),
+            'sync_interval': interval_spin.value(),
+            'prp_backend': prp_combo.currentIndex(),
         })
 
     def _update_status_display(self):
