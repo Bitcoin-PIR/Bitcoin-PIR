@@ -155,7 +155,7 @@ Relevant constants from `PirConstants`:
 ```java
 PirConstants.K              = 75    // index buckets
 PirConstants.K_CHUNK        = 80    // chunk buckets
-PirConstants.HARMONY_INDEX_W = 39   // index entry size
+PirConstants.HARMONY_INDEX_W = 52   // index entry size
 PirConstants.HARMONY_CHUNK_W = 132  // chunk entry size
 PirConstants.HARMONY_EMPTY  = 0xFFFFFFFF  // empty sentinel
 ```
@@ -284,7 +284,7 @@ for (int b = 0; b < K; b++) {
     byte[] respData = extractBucketResponse(batchResp, b);
     if (isReal[b]) {
         byte[] entry = indexBuckets[b].processResponse(respData);
-        // entry is 39 bytes: scan 3 slots of (8B tag, 4B startChunkId, 1B numChunks)
+        // entry is 52 bytes: scan 4 slots of (8B tag, 4B startChunkId, 1B numChunks)
         scanForMatchingTag(entry, targetTag);
     } else {
         // Dummy — still call processResponse to keep relocation state consistent

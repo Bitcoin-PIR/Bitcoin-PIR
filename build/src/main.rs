@@ -2,7 +2,7 @@
 //!
 //! 1. Reads the UTXO chunks index (`utxo_chunks_index.bin`): N entries of 26 bytes.
 //! 2. Assigns each entry to 3 distinct buckets out of k=75 (by hashing script_hash).
-//! 3. Within each bucket, builds a Cuckoo hash table (2 hash functions, bucket size 3,
+//! 3. Within each bucket, builds a Cuckoo hash table (2 hash functions, bucket size 4,
 //!    load factor 0.95). Hash function parameters are derived from a master PRG seed.
 //! 4. Serializes all 75 cuckoo tables into a single flat binary file, with every table
 //!    padded to the same size (max num_bins across buckets).
@@ -13,9 +13,9 @@
 //!
 //! Output file layout:
 //!   [Header: 40 bytes]
-//!     magic:             u64   (0xBA7C_C000_C000_0003)
+//!     magic:             u64   (0xBA7C_C000_C000_0004)
 //!     k:                 u32   (75)
-//!     cuckoo_bucket_size:u32   (3)
+//!     cuckoo_bucket_size:u32   (4)
 //!     bins_per_table:    u32   (max num_bins, all tables padded to this)
 //!     num_hashes:        u32   (3 — Batch PIR hashes per entry)
 //!     master_seed:       u64   (PRG seed for cuckoo key derivation)
@@ -59,7 +59,7 @@ const K: usize = 75;
 const NUM_HASHES: usize = 3;
 
 /// Cuckoo hash table parameters
-const CUCKOO_BUCKET_SIZE: usize = 3;
+const CUCKOO_BUCKET_SIZE: usize = 4;
 const CUCKOO_LOAD_FACTOR: f64 = 0.95;
 const CUCKOO_MAX_KICKS: usize = 2000;
 const EMPTY: u32 = u32::MAX;
@@ -67,8 +67,8 @@ const EMPTY: u32 = u32::MAX;
 /// Master PRG seed for deriving per-bucket hash function keys
 const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
 
-/// File format magic number (v2: 8-byte fingerprint tags)
-const MAGIC: u64 = 0xBA7C_C000_C000_0003;
+/// File format magic number (v3: bucket_size=4)
+const MAGIC: u64 = 0xBA7C_C000_C000_0004;
 
 /// Header size in bytes (includes tag_seed)
 const HEADER_SIZE: usize = 40;

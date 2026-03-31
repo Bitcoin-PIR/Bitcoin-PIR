@@ -1,0 +1,19 @@
+[package]
+name = "block_reader"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "block_stats"
+path = "src/block_stats.rs"
+
+[[bin]]
+name = "utxo_delta"
+path = "src/utxo_delta.rs"
+
+[dependencies]
+bitcoin = "0.32.7"
+brk_reader = "0.2"
+brk_rpc = "0.2"

@@ -65,10 +65,10 @@ Our system uses a two-level architecture: an \emph{index map} that locates data,
 \hline
 \textbf{Database} & \textbf{Slot Size} & \textbf{Buckets ($K$)} & \textbf{Cuckoo} & \textbf{DPF queries/bucket} & \textbf{PIR domain} \\
 \hline
-Index (Level 1) & 13 B & 75 & 2-hash, bs=3 & 2 & $2^{20}$ \\
+Index (Level 1) & 13 B & 75 & 2-hash, bs=4 & 2 & $2^{20}$ \\
 Chunks (Level 2) & 44 B & 80 & 2-hash, bs=3 & 2 & $2^{21}$ \\
 \hline
 \end{tabular}
-\caption{Batch PIR parameters. Each level uses $K$ parallel PIR queries over cuckoo hash tables. Each DPF query retrieves one cuckoo bin: 3 slots $\times$ 13 B = 39 B for the index level, and 3 slots $\times$ 44 B = 132 B for the chunk level.}
+\caption{Batch PIR parameters. Each level uses $K$ parallel PIR queries over cuckoo hash tables. Each DPF query retrieves one cuckoo bin: 4 slots $\times$ 13 B = 52 B for the index level, and 3 slots $\times$ 44 B = 132 B for the chunk level.}
 \label{tab:databases}
 \end{table}

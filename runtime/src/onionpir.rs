@@ -33,8 +33,8 @@ pub const RESP_ONIONPIR_CHUNK_RESULT: u8 = 0x32;
 ///   Length must be `bins_per_table * bin_byte_size`.
 /// `bins_per_table`: number of cuckoo bins in this bucket.
 /// `bin_byte_size`: byte size of one cuckoo bin (all slots concatenated).
-///   - Index level: CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE = 3 * 14 = 42
-///   - Chunk level: CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE = 2 * 44 = 88
+///   - Index level: CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE = 4 * 13 = 52
+///   - Chunk level: CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE = 3 * 44 = 132
 ///
 /// Each cuckoo bin becomes one OnionPIR entry at the same index.
 /// If `entry_size > bin_byte_size`, the entry is zero-padded.

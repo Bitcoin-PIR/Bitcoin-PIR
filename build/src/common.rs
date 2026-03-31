@@ -23,7 +23,7 @@ pub const NUM_HASHES: usize = 3;
 pub const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
 
 /// Cuckoo hash table bucket size for INDEX level (slots per bin)
-pub const CUCKOO_BUCKET_SIZE: usize = 3;
+pub const CUCKOO_BUCKET_SIZE: usize = 4;
 
 /// Number of cuckoo hash functions for INDEX level
 pub const INDEX_CUCKOO_NUM_HASHES: usize = 2;
@@ -34,8 +34,8 @@ pub const CHUNK_CUCKOO_BUCKET_SIZE: usize = 3;
 /// Number of cuckoo hash functions for CHUNK level
 pub const CHUNK_CUCKOO_NUM_HASHES: usize = 2;
 
-/// File format magic number for the batch_pir_cuckoo.bin file (v2: 8-byte fingerprint tags)
-pub const MAGIC: u64 = 0xBA7C_C000_C000_0003;
+/// File format magic number for the batch_pir_cuckoo.bin file (v3: bucket_size=4)
+pub const MAGIC: u64 = 0xBA7C_C000_C000_0004;
 
 /// Header size in bytes for the batch_pir_cuckoo.bin file (v2: includes tag_seed)
 pub const HEADER_SIZE: usize = 40;

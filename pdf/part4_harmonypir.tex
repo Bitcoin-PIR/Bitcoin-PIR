@@ -67,7 +67,7 @@ A synthetic dummy is constructed by sampling a count $c \sim \text{Binomial}(T, 
 
 HarmonyPIR plugs into the same PBC framework described in Section~\ref{sec:batching}. The client maintains 155 independent HarmonyPIR bucket instances:
 \begin{itemize}[nolistsep,leftmargin=*]
-    \item \textbf{Index level:} $K{=}75$ buckets, each with entry size $w = 39$ bytes (3 cuckoo slots $\times$ 13 bytes per index entry).
+    \item \textbf{Index level:} $K{=}75$ buckets, each with entry size $w = 52$ bytes (4 cuckoo slots $\times$ 13 bytes per index entry).
     \item \textbf{Chunk level:} $K_\text{chunk}{=}80$ buckets, each with entry size $w = 132$ bytes (3 cuckoo slots $\times$ 44 bytes per chunk slot).
 \end{itemize}
 

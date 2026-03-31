@@ -54,7 +54,7 @@ public final class UtxoDecoder {
     }
 
     /**
-     * Scan an index-level result (39 bytes = 3 slots × 13 bytes) for a matching tag.
+     * Scan an index-level result (52 bytes = 4 slots × 13 bytes) for a matching tag.
      *
      * @return int[2] = {startChunkId, numChunks}, or null if not found
      */

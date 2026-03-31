@@ -192,7 +192,7 @@ fn main() {
     let idx_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
     let idx_mmap = unsafe { Mmap::map(&idx_file) }.expect("mmap");
     let (index_bins, tag_seed) = read_cuckoo_header(&idx_mmap);
-    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 3 × 13 = 39
+    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 4 × 13 = 52
 
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap");
@@ -201,11 +201,11 @@ fn main() {
 
     println!("  INDEX cuckoo: {} bins × {}B = {:.2} GB",
         index_bins, index_w, idx_mmap.len() as f64 / (1024.0*1024.0*1024.0));
-    println!("    Slot layout: [8B tag][4B start_chunk_id][1B num_chunks] × 3 slots");
+    println!("    Slot layout: [8B tag][4B start_chunk_id][1B num_chunks] × {} slots", CUCKOO_BUCKET_SIZE);
     println!("    tag_seed = 0x{:016x}", tag_seed);
     println!("  CHUNK cuckoo: {} bins × {}B = {:.2} GB",
         chunk_bins, chunk_w, chunk_mmap.len() as f64 / (1024.0*1024.0*1024.0));
-    println!("    Slot layout: [4B chunk_id][40B data] × 3 slots");
+    println!("    Slot layout: [4B chunk_id][40B data] × {} slots", CHUNK_CUCKOO_BUCKET_SIZE);
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
@@ -248,7 +248,7 @@ fn main() {
     println!("      start_chunk_id = {}", target_start_chunk);
     println!("      num_chunks     = {}", target_num_chunks);
 
-    // Show all 3 slots in the bin for context.
+    // Show all slots in the bin for context.
     println!("\n    Full bin {} contents (ground truth):", target_bin);
     let bin_data_start = index_table_offset + target_bin * index_w;
     let bin_data = &idx_mmap[bin_data_start..bin_data_start + index_w];

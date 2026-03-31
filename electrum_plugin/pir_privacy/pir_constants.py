@@ -9,13 +9,13 @@ Must match web/src/constants.ts and build/src/common.rs exactly.
 K = 75                          # Number of Batch PIR buckets (index level)
 NUM_HASHES = 3                  # Number of bucket assignments per entry
 MASTER_SEED = 0x71a2ef38b4c90d15  # Master PRG seed for per-bucket cuckoo keys
-CUCKOO_BUCKET_SIZE = 3          # Slots per cuckoo bin (index level)
+CUCKOO_BUCKET_SIZE = 4          # Slots per cuckoo bin (index level)
 INDEX_CUCKOO_NUM_HASHES = 2     # Number of cuckoo hash functions (index level)
 
 SCRIPT_HASH_SIZE = 20           # bytes
 TAG_SIZE = 8                    # Fingerprint tag size in bytes
 INDEX_ENTRY_SIZE = 13           # 8B tag + 4B start_chunk_id + 1B num_chunks
-INDEX_RESULT_SIZE = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE  # 39
+INDEX_RESULT_SIZE = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE  # 52
 
 # ── Chunk-level constants ──────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ RESP_ERROR = 0xFF
 
 # ── HarmonyPIR constants ──────────────────────────────────────────────────
 
-HARMONY_INDEX_W = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE   # 39
+HARMONY_INDEX_W = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE   # 52
 HARMONY_CHUNK_W = CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE  # 132
 HARMONY_EMPTY = 0xFFFFFFFF
 

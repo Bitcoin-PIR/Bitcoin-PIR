@@ -19,7 +19,7 @@ public final class PirConstants {
     public static final long MASTER_SEED = 0x71a2ef38b4c90d15L;
 
     /** Cuckoo hash table bucket size for INDEX level (slots per bin). */
-    public static final int CUCKOO_BUCKET_SIZE = 3;
+    public static final int CUCKOO_BUCKET_SIZE = 4;
 
     /** Number of cuckoo hash functions for INDEX level. */
     public static final int INDEX_CUCKOO_NUM_HASHES = 2;
@@ -39,7 +39,7 @@ public final class PirConstants {
     /** Size of each tagged index entry: 8B tag + 4B start_chunk_id + 1B num_chunks. */
     public static final int INDEX_ENTRY_SIZE = 13;
 
-    /** Index result size: 3 slots * 13 bytes = 39 bytes. */
+    /** Index result size: 4 slots * 13 bytes = 52 bytes. */
     public static final int INDEX_RESULT_SIZE = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
 
     // ── Chunk-level constants ───────────────────────────────────────────────
@@ -99,7 +99,7 @@ public final class PirConstants {
 
     // ── HarmonyPIR constants ────────────────────────────────────────────────
 
-    /** HarmonyPIR entry size for index level: CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE = 39. */
+    /** HarmonyPIR entry size for index level: CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE = 52. */
     public static final int HARMONY_INDEX_W = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
 
     /** HarmonyPIR entry size for chunk level: CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE = 132. */

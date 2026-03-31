@@ -166,7 +166,7 @@ class HarmonyPirClientIntegrationTest {
                 assertEquals(PirConstants.HARMONY_INDEX_W, entry.length,
                         "recovered entry should be w bytes");
 
-                System.out.printf("Recovered entry: %d bytes (3 slots × 13)%n", entry.length);
+                System.out.printf("Recovered entry: %d bytes (%d slots × 13)%n", entry.length, PirConstants.CUCKOO_BUCKET_SIZE);
                 System.out.printf("  Slot 0: tag=%016x%n",
                         java.nio.ByteBuffer.wrap(entry, 0, 8)
                                 .order(java.nio.ByteOrder.LITTLE_ENDIAN).getLong());

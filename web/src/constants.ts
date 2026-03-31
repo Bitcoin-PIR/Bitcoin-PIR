@@ -16,7 +16,7 @@ export const NUM_HASHES = 3;
 export const MASTER_SEED = 0x71a2ef38b4c90d15n;
 
 /** Cuckoo hash table bucket size for INDEX level (slots per bin) */
-export const CUCKOO_BUCKET_SIZE = 3;
+export const CUCKOO_BUCKET_SIZE = 4;
 
 /** Number of cuckoo hash functions for INDEX level */
 export const INDEX_CUCKOO_NUM_HASHES = 2;
@@ -36,7 +36,7 @@ export const TAG_SIZE = 8;
 /** Size of each tagged index entry: 8B tag + 4B start_chunk_id + 1B num_chunks */
 export const INDEX_ENTRY_SIZE = 13;
 
-/** Index result size: 3 slots * 13 bytes = 39 bytes */
+/** Index result size: 4 slots * 13 bytes = 52 bytes */
 export const INDEX_RESULT_SIZE = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
 
 // ─── Chunk-level constants ─────────────────────────────────────────────────
@@ -86,7 +86,7 @@ export const RESP_ERROR = 0xFF;
 // ─── HarmonyPIR constants ─────────────────────────────────────────────────
 
 /** HarmonyPIR entry size for index level: one cuckoo bin = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE */
-export const HARMONY_INDEX_W = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE; // 39
+export const HARMONY_INDEX_W = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE; // 52
 
 /** HarmonyPIR entry size for chunk level: one cuckoo bin = CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE */
 export const HARMONY_CHUNK_W = CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE; // 132

@@ -31,9 +31,9 @@ pub const CHUNK_DPF_N: u8 = 21;
 
 // ─── Index-level constants ──────────────────────────────────────────────────
 
-/// Each cuckoo bin has CUCKOO_BUCKET_SIZE (3) slots, each INDEX_SLOT_SIZE (13) bytes.
-pub const INDEX_SLOTS: usize = CUCKOO_BUCKET_SIZE; // 3
-pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_SLOT_SIZE; // 3 * 13 = 39
+/// Each cuckoo bin has CUCKOO_BUCKET_SIZE (4) slots, each INDEX_SLOT_SIZE (13) bytes.
+pub const INDEX_SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
+pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_SLOT_SIZE; // 4 * 13 = 52
 
 // ─── Chunk-level constants ──────────────────────────────────────────────────
 

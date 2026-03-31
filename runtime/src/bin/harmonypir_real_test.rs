@@ -81,7 +81,7 @@ fn main() {
     let idx_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
     let idx_mmap = unsafe { Mmap::map(&idx_file) }.expect("mmap");
     let (index_bins, tag_seed) = read_cuckoo_header(&idx_mmap);
-    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 3 × 13 = 39
+    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 4 × 13 = 52
 
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap");

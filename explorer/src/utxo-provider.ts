@@ -59,7 +59,10 @@ class PirClientWrapper {
           prpBackend: this.backend.prpBackend,
           onProgress: this.onLog,
         });
+        await this.harmonyClient.loadWasm();
         await this.harmonyClient.connectQueryServer();
+        await this.harmonyClient.fetchServerInfo();
+        await this.harmonyClient.initBuckets();
         await this.harmonyClient.fetchHints();
         break;
       }
