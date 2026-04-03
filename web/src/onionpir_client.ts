@@ -37,6 +37,7 @@ const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
 const REQ_PING    = 0x00;
 const REQ_GET_INFO = 0x01;
+const REQ_ONIONPIR_GET_INFO = 0x33;
 const RESP_INFO   = 0x01;
 const RESP_PONG   = 0x00;
 
@@ -374,21 +375,37 @@ export class OnionPirWebClient {
   private async fetchServerInfo(): Promise<void> {
     const req = new Uint8Array(5);
     new DataView(req.buffer).setUint32(0, 1, true);
-    req[4] = REQ_GET_INFO;
+    req[4] = REQ_ONIONPIR_GET_INFO;
     const raw = await this.sendRaw(req);
     const payload = raw.slice(4); // skip length prefix
     if (payload[0] !== RESP_INFO) throw new Error('Expected Info response');
     const body = payload.slice(1);
     const dv = new DataView(body.buffer, body.byteOffset, body.length);
 
-    this.indexK = body[0];
-    this.chunkK = body[1];
-    this.indexBins = dv.getUint32(2, true);
-    this.chunkBins = dv.getUint32(6, true);
-    this.tagSeed = dv.getBigUint64(10, true);
-    this.totalPacked = dv.getUint32(18, true);
-    this.indexBucketSize = dv.getUint16(22, true);
-    this.indexSlotSize = body[24];
+    if (body.length >= 25) {
+      // OnionPIR ServerInfoV2 format (from dedicated or unified OnionPIR server):
+      // [1B index_k][1B chunk_k][4B index_bins][4B chunk_bins][8B tag_seed][4B total_packed][2B bucket_size][1B slot_size]
+      this.indexK = body[0];
+      this.chunkK = body[1];
+      this.indexBins = dv.getUint32(2, true);
+      this.chunkBins = dv.getUint32(6, true);
+      this.tagSeed = dv.getBigUint64(10, true);
+      this.totalPacked = dv.getUint32(18, true);
+      this.indexBucketSize = dv.getUint16(22, true);
+      this.indexSlotSize = body[24];
+    } else {
+      // Standard ServerInfo format (from unified server without OnionPIR data):
+      // [4B index_bins][4B chunk_bins][1B index_k][1B chunk_k][8B tag_seed]
+      this.indexBins = dv.getUint32(0, true);
+      this.chunkBins = dv.getUint32(4, true);
+      this.indexK = body[8];
+      this.chunkK = body[9];
+      this.tagSeed = dv.getBigUint64(10, true);
+      // Use defaults for OnionPIR-specific fields
+      this.totalPacked = 0;
+      this.indexBucketSize = 4; // CUCKOO_BUCKET_SIZE
+      this.indexSlotSize = 13; // INDEX_SLOT_SIZE
+    }
 
     this.log(`Server: index K=${this.indexK} bins=${this.indexBins} bucket_size=${this.indexBucketSize}, chunk K=${this.chunkK} bins=${this.chunkBins}, total_packed=${this.totalPacked}`);
   }

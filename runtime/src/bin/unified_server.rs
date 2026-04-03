@@ -255,6 +255,34 @@ impl UnifiedServerData {
         }
     }
 
+    /// Encode server info in the format expected by the OnionPIR web client.
+    ///
+    /// This is the ServerInfoV2 format which includes extra fields
+    /// (total_packed_entries, index_cuckoo_bucket_size, index_slot_size)
+    /// needed by the OnionPIR client. Falls back to standard ServerInfo
+    /// encoding if OnionPIR is not available.
+    fn encode_info_response(&self) -> Vec<u8> {
+        if let Some(ref opi) = self.onionpir_info {
+            // ServerInfoV2 format (matches onionpir_server.rs)
+            let payload_len: usize = 1 + 1 + 1 + 4 + 4 + 8 + 4 + 2 + 1; // 26
+            let mut buf = Vec::with_capacity(4 + payload_len);
+            buf.extend_from_slice(&(payload_len as u32).to_le_bytes());
+            buf.push(RESP_INFO);
+            buf.push(self.db.index.params.k as u8);
+            buf.push(self.db.chunk.params.k as u8);
+            buf.extend_from_slice(&opi.index_bins_per_table.to_le_bytes());
+            buf.extend_from_slice(&opi.chunk_bins_per_table.to_le_bytes());
+            buf.extend_from_slice(&self.db.index.tag_seed.to_le_bytes());
+            buf.extend_from_slice(&opi.total_packed_entries.to_le_bytes());
+            buf.extend_from_slice(&(self.db.index.params.cuckoo_bucket_size as u16).to_le_bytes());
+            buf.push(self.db.index.params.slot_size as u8);
+            buf
+        } else {
+            // Standard ServerInfo for DPF/HarmonyPIR clients
+            Response::Info(self.server_info()).encode()
+        }
+    }
+
     /// Build a JSON server info string covering all protocols.
     fn server_info_json(&self) -> String {
         let mut json = format!(
@@ -687,6 +715,9 @@ async fn main() {
                     }
                     REQ_GET_INFO => {
                         let _ = sink.send(Message::Binary(Response::Info(server.server_info()).encode().into())).await;
+                    }
+                    0x33 /* REQ_ONIONPIR_GET_INFO */ if server.onionpir_info.is_some() => {
+                        let _ = sink.send(Message::Binary(server.encode_info_response().into())).await;
                     }
                     REQ_GET_DB_CATALOG => {
                         let _ = sink.send(Message::Binary(Response::DbCatalog(server.build_catalog()).encode().into())).await;

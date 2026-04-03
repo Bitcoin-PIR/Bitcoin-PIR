@@ -60,8 +60,8 @@ export async function initWasm(): Promise<boolean> {
       const mod = await import('pir-core-wasm');
       // wasm-pack generates an init() default export for web targets;
       // call it if present.
-      if (typeof mod.default === 'function') {
-        await mod.default();
+      if (typeof (mod as any).default === 'function') {
+        await (mod as any).default();
       }
       wasmModule = mod as unknown as PirCoreWasm;
       console.log('[PIR-WASM] WASM module loaded successfully');
