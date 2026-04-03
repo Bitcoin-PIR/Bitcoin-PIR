@@ -22,11 +22,13 @@
     "aes-js": "^3.1.2",
     "buffer": "^6.0.3",
     "hash.js": "^1.1.7",
-    "libdpf": "github:weikengchen/libdpf"
+    "libdpf": "github:weikengchen/libdpf",
+    "pir-core-wasm": "file:../pir-core-wasm/pkg"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0",
-    "vite": "^8.0.0"
+    "vite": "^8.0.0",
+    "vite-plugin-wasm": "^3.6.0"
   }
 }
