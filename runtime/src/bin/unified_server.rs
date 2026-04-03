@@ -289,14 +289,14 @@ impl UnifiedServerData {
     }
 
     /// Encode a JSON info response as a length-prefixed binary message.
-    fn encode_info_json_response(&self) -> Vec<u8> {
+    fn encode_info_json_response(&self, variant: u8) -> Vec<u8> {
         let json = self.server_info_json();
         let json_bytes = json.as_bytes();
-        // Wire: [4B length LE][1B RESP_INFO][json bytes]
+        // Wire: [4B length LE][1B variant][json bytes]
         let payload_len = 1 + json_bytes.len();
         let mut msg = Vec::with_capacity(4 + payload_len);
         msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
-        msg.push(RESP_INFO);
+        msg.push(variant);
         msg.extend_from_slice(json_bytes);
         msg
     }
@@ -686,8 +686,7 @@ async fn main() {
                         let _ = sink.send(Message::Binary(Response::Pong.encode().into())).await;
                     }
                     REQ_GET_INFO => {
-                        // Send JSON info — covers DPF, OnionPIR, and HarmonyPIR clients
-                        let _ = sink.send(Message::Binary(server.encode_info_json_response().into())).await;
+                        let _ = sink.send(Message::Binary(server.encode_info_json_response(RESP_INFO).into())).await;
                     }
                     REQ_GET_DB_CATALOG => {
                         let _ = sink.send(Message::Binary(Response::DbCatalog(server.build_catalog()).encode().into())).await;
@@ -729,8 +728,7 @@ async fn main() {
                     // Secondary = hint server (REQ_HARMONY_HINTS)
                     // Both respond to REQ_HARMONY_GET_INFO
                     REQ_HARMONY_GET_INFO => {
-                        // HarmonyPIR uses same JSON info format
-                        let _ = sink.send(Message::Binary(server.encode_info_json_response().into())).await;
+                        let _ = sink.send(Message::Binary(server.encode_info_json_response(RESP_HARMONY_INFO).into())).await;
                     }
                     REQ_HARMONY_HINTS if server.role == ServerRole::Secondary => {
                         if let Ok(Request::HarmonyHints(hint_req)) = Request::decode(payload) {
