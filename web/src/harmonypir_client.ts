@@ -174,6 +174,9 @@ export class HarmonyPirClient {
   private pendingCallbacks: Map<string, (data: Uint8Array) => void> = new Map();
   private callbackId = 0;
 
+  // Generation counter to abort stale hint fetches.
+  private hintFetchGen = 0;
+
   constructor(config: HarmonyPirClientConfig) {
     this.config = config;
     // Generate random PRP key.
@@ -313,6 +316,13 @@ export class HarmonyPirClient {
    * This is the offline phase — typically done once per session.
    */
   async fetchHints(): Promise<void> {
+    // Abort any in-progress hint fetch.
+    const gen = ++this.hintFetchGen;
+    if (this.hintWs) {
+      this.hintWs.close();
+      this.hintWs = null;
+    }
+
     const t0 = performance.now();
     this.totalHintBytes = 0;
     this.log('Fetching hints from Hint Server...');
@@ -321,6 +331,7 @@ export class HarmonyPirClient {
     let globalReceived = 0;
 
     const onBucketDone = () => {
+      if (gen !== this.hintFetchGen) return; // stale fetch
       globalReceived++;
       const pct = Math.round((globalReceived / total) * 100);
       this.log(`  Hints: ${globalReceived}/${total} (${pct}%)`);
@@ -328,18 +339,22 @@ export class HarmonyPirClient {
 
     // Connect to Hint Server.
     const hintWs = await this.connectHintServer();
+    this.hintWs = hintWs;
 
     // Request index hints (75 buckets). Offset=0 for INDEX.
     const tIdx = performance.now();
     await this.requestHints(hintWs, 0, K, 0, this.indexBuckets, HARMONY_INDEX_W, onBucketDone);
+    if (gen !== this.hintFetchGen) { hintWs.close(); return; }
     this.log(`  INDEX hints: ${K} buckets in ${((performance.now() - tIdx) / 1000).toFixed(1)}s`);
 
     // Request chunk hints (80 buckets). Offset=K for CHUNK.
     const tChk = performance.now();
     await this.requestHints(hintWs, 1, K_CHUNK, K, this.chunkBuckets, HARMONY_CHUNK_W, onBucketDone);
+    if (gen !== this.hintFetchGen) { hintWs.close(); return; }
     this.log(`  CHUNK hints: ${K_CHUNK} buckets in ${((performance.now() - tChk) / 1000).toFixed(1)}s`);
 
     hintWs.close();
+    this.hintWs = null;
     this.hintsLoaded = true;
     const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
     this.log(`Hints downloaded successfully (${totalSec}s, ~${this.estimateHintSize()} MB)`);
@@ -1106,8 +1121,10 @@ export class HarmonyPirClient {
 
   /** Disconnect and free all resources (full teardown). */
   disconnect(): void {
+    this.hintFetchGen++; // abort any in-progress hint fetch
     this.queryWs?.close();
     this.hintWs?.close();
+    this.hintWs = null;
     if (this.pool) {
       this.pool.terminate();
       this.pool = null;
@@ -1122,6 +1139,8 @@ export class HarmonyPirClient {
 
   /** Terminate worker pool only (for PRP switch), preserving hint cache. */
   terminatePool(): void {
+    this.hintFetchGen++; // abort any in-progress hint fetch
+    if (this.hintWs) { this.hintWs.close(); this.hintWs = null; }
     if (this.pool) {
       this.pool.terminate();
       this.pool = null;
