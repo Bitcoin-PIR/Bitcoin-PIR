@@ -29,7 +29,7 @@ use std::time::Instant;
 
 /// Each slot: [4B chunk_id LE | UNIT_DATA_SIZE data]
 const SLOT_SIZE: usize = 4 + UNIT_DATA_SIZE;
-const SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
+const SLOTS: usize = CHUNK_CUCKOO_BUCKET_SIZE; // 3
 const RESULT_SIZE: usize = SLOTS * SLOT_SIZE;
 
 // DPF_N is computed from bins_per_table at runtime via pir_core::params::compute_dpf_n
@@ -118,29 +118,16 @@ fn get_dpf_bit(block: &Block, bit_within_block: usize) -> bool {
 
 // ─── Server processing ─────────────────────────────────────────────────────
 
-/// Fetch 4 slots at `bin`, dereferencing chunk_ids to [4B id | UNIT_DATA_SIZE data].
+/// Fetch SLOTS inlined slots at `bin` directly from the cuckoo table.
+/// Each slot is SLOT_SIZE (44) bytes: [4B chunk_id LE | 40B data], stored contiguously.
+/// The cuckoo file stores data inline — no separate chunks file needed.
 #[inline]
-fn fetch_bin_entries(table_bytes: &[u8], bin: usize, chunks_data: &[u8], out: &mut [u8]) {
-    let data_len = chunks_data.len();
-    for slot in 0..SLOTS {
-        let slot_offset = (bin * SLOTS + slot) * 4;
-        let chunk_id = u32::from_le_bytes(
-            table_bytes[slot_offset..slot_offset + 4].try_into().unwrap(),
-        );
-        if chunk_id != EMPTY {
-            let dst = slot * SLOT_SIZE;
-            out[dst..dst + 4].copy_from_slice(&chunk_id.to_le_bytes());
-            let data_offset = chunk_id as usize * CHUNK_SIZE;
-            let avail = data_len.saturating_sub(data_offset).min(UNIT_DATA_SIZE);
-            if avail > 0 {
-                out[dst + 4..dst + 4 + avail]
-                    .copy_from_slice(&chunks_data[data_offset..data_offset + avail]);
-            }
-        }
-    }
+fn fetch_bin_entries(table_bytes: &[u8], bin: usize, _chunks_data: &[u8], out: &mut [u8]) {
+    let src_offset = bin * RESULT_SIZE;
+    out.copy_from_slice(&table_bytes[src_offset..src_offset + RESULT_SIZE]);
 }
 
-/// XOR src into dst using u64 chunks.
+/// XOR src into dst using u64 chunks, with byte-level remainder.
 #[inline]
 fn xor_into(dst: &mut [u8], src: &[u8]) {
     debug_assert_eq!(dst.len(), src.len());
@@ -149,6 +136,10 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
     let s = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u64, n) };
     for i in 0..n {
         d[i] ^= s[i];
+    }
+    // Handle remaining bytes (e.g. 132 % 8 = 4 bytes)
+    for i in (n * 8)..dst.len() {
+        dst[i] ^= src[i];
     }
 }
 
@@ -161,8 +152,8 @@ fn process_one_bucket_round(
     bins_per_table: usize,
 ) -> (Vec<u8>, Vec<u8>) {
     let dpf = Dpf::with_default_key();
-    let eval0 = dpf.eval_full(key_q0);
-    let eval1 = dpf.eval_full(key_q1);
+    let eval0 = dpf.eval_partial(key_q0, bins_per_table as u64);
+    let eval1 = dpf.eval_partial(key_q1, bins_per_table as u64);
 
     let num_blocks = eval0.len();
     let mut acc0 = vec![0u8; RESULT_SIZE];
@@ -342,7 +333,7 @@ fn main() {
 
     // ── 4. Server processing: bucket-major over sample rounds ────────────
     let slots_per_table = bins_per_table * SLOTS;
-    let table_byte_size = slots_per_table * 4;
+    let table_byte_size = bins_per_table * RESULT_SIZE; // bins × SLOTS × SLOT_SIZE
 
     println!("[4] Both servers: {} buckets × {} rounds (bucket-major, concurrent)...", K_CHUNK, sample_rounds);
     let servers_start = Instant::now();
@@ -435,10 +426,19 @@ fn main() {
                         total_found += 1;
                     } else {
                         total_mismatch += 1;
-                        eprintln!(
-                            "  DATA MISMATCH: unit chunk {} round {} bucket {}",
-                            chunk_id, ri + 1, b
-                        );
+                        if total_mismatch <= 3 {
+                            // Find first differing byte
+                            let first_diff = data[..avail].iter().zip(actual.iter())
+                                .position(|(a, b)| a != b)
+                                .unwrap_or(avail);
+                            eprintln!(
+                                "  DATA MISMATCH: chunk {} round {} bucket {} | first diff at byte {} of {} | got[{}..]=={:02x?} exp[{}..]=={:02x?}",
+                                chunk_id, ri + 1, b,
+                                first_diff, avail,
+                                first_diff, &data[first_diff..avail.min(first_diff+8)],
+                                first_diff, &actual[first_diff..avail.min(first_diff+8)],
+                            );
+                        }
                     }
                     matched = true;
                     break;
