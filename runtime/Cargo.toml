@@ -8,6 +8,10 @@ name = "server"
 path = "src/bin/server.rs"
 
 [[bin]]
+name = "unified_server"
+path = "src/bin/unified_server.rs"
+
+[[bin]]
 name = "client"
 path = "src/bin/client.rs"
 
