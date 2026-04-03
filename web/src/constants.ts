@@ -108,5 +108,5 @@ export const RESP_HARMONY_BATCH_QUERY = 0x43;
 
 // ─── Default server URLs ───────────────────────────────────────────────────
 
-export const DEFAULT_SERVER0_URL = 'wss://dpf1.chenweikeng.com';
-export const DEFAULT_SERVER1_URL = 'wss://dpf2.chenweikeng.com';
+export const DEFAULT_SERVER0_URL = 'wss://pir1.chenweikeng.com';
+export const DEFAULT_SERVER1_URL = 'wss://pir2.chenweikeng.com';

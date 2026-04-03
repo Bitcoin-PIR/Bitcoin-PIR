@@ -648,8 +648,8 @@ export class BatchPirClient {
  * Create a Batch PIR client
  */
 export function createBatchPirClient(
-  server0Url: string = 'wss://dpf1.chenweikeng.com',
-  server1Url: string = 'wss://dpf2.chenweikeng.com',
+  server0Url: string = 'wss://pir1.chenweikeng.com',
+  server1Url: string = 'wss://pir2.chenweikeng.com',
 ): BatchPirClient {
   return new BatchPirClient({ server0Url, server1Url });
 }

@@ -242,6 +242,11 @@ struct OnionPirInfo {
     total_packed_entries: u32,
     index_bins_per_table: u32,
     chunk_bins_per_table: u32,
+    index_k: u8,
+    chunk_k: u8,
+    tag_seed: u64,
+    index_cuckoo_bucket_size: u16,
+    index_slot_size: u8,
 }
 
 impl UnifiedServerData {
@@ -268,14 +273,14 @@ impl UnifiedServerData {
             let mut buf = Vec::with_capacity(4 + payload_len);
             buf.extend_from_slice(&(payload_len as u32).to_le_bytes());
             buf.push(RESP_INFO);
-            buf.push(self.db.index.params.k as u8);
-            buf.push(self.db.chunk.params.k as u8);
+            buf.push(opi.index_k);
+            buf.push(opi.chunk_k);
             buf.extend_from_slice(&opi.index_bins_per_table.to_le_bytes());
             buf.extend_from_slice(&opi.chunk_bins_per_table.to_le_bytes());
-            buf.extend_from_slice(&self.db.index.tag_seed.to_le_bytes());
+            buf.extend_from_slice(&opi.tag_seed.to_le_bytes());
             buf.extend_from_slice(&opi.total_packed_entries.to_le_bytes());
-            buf.extend_from_slice(&(self.db.index.params.cuckoo_bucket_size as u16).to_le_bytes());
-            buf.push(self.db.index.params.slot_size as u8);
+            buf.extend_from_slice(&opi.index_cuckoo_bucket_size.to_le_bytes());
+            buf.push(opi.index_slot_size);
             buf
         } else {
             // Standard ServerInfo for DPF/HarmonyPIR clients
@@ -527,6 +532,11 @@ async fn main() {
             total_packed_entries: ch.num_packed_entries as u32,
             index_bins_per_table: im.bins_per_table as u32,
             chunk_bins_per_table: ch.bins_per_table as u32,
+            index_k: im.k as u8,
+            chunk_k: ch.k_chunk as u8,
+            tag_seed: im.tag_seed,
+            index_cuckoo_bucket_size: im.cuckoo_bucket_size as u16,
+            index_slot_size: im.slot_size as u8,
         });
 
         // Parse chunk cuckoo tables

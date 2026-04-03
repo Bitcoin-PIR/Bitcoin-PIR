@@ -284,11 +284,11 @@
             <div style="margin-top: 8px;">
                 <div class="server-row">
                     <span class="server-label">Server 0:</span>
-                    <input type="text" id="server0Url" class="small" value="wss://dpf1.chenweikeng.com">
+                    <input type="text" id="server0Url" class="small" value="wss://pir1.chenweikeng.com">
                 </div>
                 <div class="server-row">
                     <span class="server-label">Server 1:</span>
-                    <input type="text" id="server1Url" class="small" value="wss://dpf2.chenweikeng.com">
+                    <input type="text" id="server1Url" class="small" value="wss://pir2.chenweikeng.com">
                 </div>
             </div>
         </details>
@@ -374,7 +374,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             <div style="margin-top: 8px;">
                 <div class="server-row">
                     <span class="server-label">Server:</span>
-                    <input type="text" id="op-serverUrl" class="small" value="wss://onionpirv2.chenweikeng.com">
+                    <input type="text" id="op-serverUrl" class="small" value="wss://pir1.chenweikeng.com">
                 </div>
             </div>
         </details>
@@ -462,11 +462,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             <div style="margin-top: 8px;">
                 <div class="server-row">
                     <span class="server-label">Hint Server:</span>
-                    <input type="text" id="hp-hintServerUrl" class="small" value="wss://harmonyhint.chenweikeng.com">
+                    <input type="text" id="hp-hintServerUrl" class="small" value="wss://pir2.chenweikeng.com">
                 </div>
                 <div class="server-row">
                     <span class="server-label">Query Server:</span>
-                    <input type="text" id="hp-queryServerUrl" class="small" value="wss://harmonydata.chenweikeng.com">
+                    <input type="text" id="hp-queryServerUrl" class="small" value="wss://pir1.chenweikeng.com">
                 </div>
                 <div style="margin: 8px 0;">
                     <label style="display: inline; font-weight: bold; font-size: 13px;">PRP Backend:</label>
@@ -997,18 +997,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ═══════════════════════════════════════════════════════════════
         const serverPresets = {
             remote: {
-                'server0Url':       'wss://dpf1.chenweikeng.com',
-                'server1Url':       'wss://dpf2.chenweikeng.com',
-                'op-serverUrl':     'wss://onionpirv2.chenweikeng.com',
-                'hp-hintServerUrl': 'wss://harmonyhint.chenweikeng.com',
-                'hp-queryServerUrl':'wss://harmonydata.chenweikeng.com',
+                'server0Url':       'wss://pir1.chenweikeng.com',
+                'server1Url':       'wss://pir2.chenweikeng.com',
+                'op-serverUrl':     'wss://pir1.chenweikeng.com',
+                'hp-hintServerUrl': 'wss://pir2.chenweikeng.com',
+                'hp-queryServerUrl':'wss://pir1.chenweikeng.com',
             },
             local: {
                 'server0Url':       'ws://localhost:8091',
                 'server1Url':       'ws://localhost:8092',
-                'op-serverUrl':     'ws://localhost:8093',
-                'hp-hintServerUrl': 'ws://localhost:8094',
-                'hp-queryServerUrl':'ws://localhost:8095',
+                'op-serverUrl':     'ws://localhost:8091',
+                'hp-hintServerUrl': 'ws://localhost:8092',
+                'hp-queryServerUrl':'ws://localhost:8091',
             },
         };
         let useLocalhost = false;

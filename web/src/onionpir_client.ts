@@ -748,7 +748,7 @@ export class OnionPirWebClient {
 }
 
 export function createOnionPirWebClient(
-  serverUrl: string = 'wss://onionpirv2.chenweikeng.com',
+  serverUrl: string = 'wss://pir1.chenweikeng.com',
 ): OnionPirWebClient {
   return new OnionPirWebClient({ serverUrl });
 }
