@@ -62,7 +62,7 @@ echo "Starting primary server on port $PRIMARY_PORT..."
 PRIMARY_PID=$!
 echo "Primary server PID: $PRIMARY_PID"
 
-# Start secondary server (DPF only)
+# Start secondary server (DPF + HarmonyPIR hint)
 echo "Starting secondary server on port $SECONDARY_PORT..."
 ./target/release/unified_server --port $SECONDARY_PORT --role secondary --data-dir "$DATA_DIR" > /tmp/pir_secondary.log 2>&1 &
 SECONDARY_PID=$!
@@ -87,9 +87,9 @@ echo "  Primary:   /tmp/pir_primary.log"
 echo "  Secondary: /tmp/pir_secondary.log"
 echo ""
 echo "To test:"
-echo "  DPF:      ./target/release/client --server0 ws://localhost:$PRIMARY_PORT --server1 ws://localhost:$SECONDARY_PORT --hash <hex>"
-echo "  OnionPIR: ./target/release/onionpir_client --server ws://localhost:$PRIMARY_PORT --hash <hex>"
-echo "  Web:      http://localhost:3001 → connect to ws://localhost:$PRIMARY_PORT + ws://localhost:$SECONDARY_PORT"
+echo "  DPF:       ./target/release/client --server0 ws://localhost:$PRIMARY_PORT --server1 ws://localhost:$SECONDARY_PORT --hash <hex>"
+echo "  OnionPIR:  ./target/release/onionpir_client --server ws://localhost:$PRIMARY_PORT --hash <hex>"
+echo "  Web:       cd web && npx vite  → http://localhost:5173 (toggle Localhost mode)"
 echo ""
 echo "Press Ctrl+C to stop all servers..."
 
