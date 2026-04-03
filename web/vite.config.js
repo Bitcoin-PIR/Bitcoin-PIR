@@ -10,9 +10,6 @@ export default defineConfig({
   build: {
     outDir: 'dist-web',
     sourcemap: true,
-    rollupOptions: {
-      external: ['pir-core-wasm'],
-    },
   },
   define: {
     global: 'globalThis',
