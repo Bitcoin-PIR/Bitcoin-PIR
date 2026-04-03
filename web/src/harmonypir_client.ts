@@ -29,6 +29,7 @@ import {
 
 import { cuckooPlace, planRounds } from './pbc.js';
 import { readVarint, decodeUtxoData } from './codec.js';
+import { initWasm } from './wasm-bridge.js';
 
 import { HarmonyWorkerPool, BuildItem, BuildResult, ProcessItem } from './harmonypir_worker_pool.js';
 
@@ -196,8 +197,10 @@ export class HarmonyPirClient {
     return dirs[backend] ?? dirs[0];
   }
 
-  /** Load the HarmonyPIR WASM module + worker pool. */
+  /** Load the HarmonyPIR WASM module + pir-core WASM + worker pool. */
   async loadWasm(): Promise<void> {
+    // Ensure pir-core WASM is loaded (required for hash functions)
+    await initWasm();
     if (this.pool && this.wasm) return; // already loaded
     const backend = this.config.prpBackend ?? 0;
     const backendName = ['Hoang', 'FastPRP', 'ALF'][backend] ?? 'Hoang';

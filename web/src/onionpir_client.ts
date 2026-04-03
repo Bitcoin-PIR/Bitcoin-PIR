@@ -19,6 +19,7 @@ import {
 
 import { cuckooPlace, planRounds } from './pbc.js';
 import { readVarint, decodeUtxoData, DummyRng } from './codec.js';
+import { initWasm } from './wasm-bridge.js';
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './client.js';
 
@@ -288,7 +289,10 @@ export class OnionPirWebClient {
   async connect(): Promise<void> {
     this.setState('connecting', 'Loading WASM + connecting...');
 
-    // Load WASM module (cached after first load)
+    // Ensure pir-core WASM is loaded (required for hash functions)
+    await initWasm();
+
+    // Load OnionPIR WASM module (cached after first load)
     this.wasmModule = await loadWasmModule();
     this.log('WASM module loaded');
 
