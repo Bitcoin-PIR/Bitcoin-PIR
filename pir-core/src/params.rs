@@ -46,6 +46,23 @@ impl TableParams {
     }
 }
 
+/// Compute the minimum DPF domain exponent such that 2^n >= bins_per_table.
+///
+/// This should be used instead of hardcoding DPF_N, since different databases
+/// (main UTXO, delta, Merkle siblings) have very different sizes.
+pub fn compute_dpf_n(bins_per_table: usize) -> u8 {
+    if bins_per_table <= 1 {
+        return 1;
+    }
+    let mut n = 0u8;
+    let mut v = 1usize;
+    while v < bins_per_table {
+        v <<= 1;
+        n += 1;
+    }
+    n
+}
+
 // ─── Known configurations ───────────────────────────────────────────────────
 
 /// Size of a script hash (HASH160 output).
@@ -144,3 +161,39 @@ pub const CHUNK_CUCKOO_BUCKET_SIZE: usize = CHUNK_PARAMS.cuckoo_bucket_size;
 pub const CHUNK_CUCKOO_NUM_HASHES: usize = CHUNK_PARAMS.cuckoo_num_hashes;
 pub const CHUNK_MAGIC: u64 = CHUNK_PARAMS.magic;
 pub const CHUNK_HEADER_SIZE: usize = CHUNK_PARAMS.header_size;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_dpf_n() {
+        assert_eq!(compute_dpf_n(0), 1);
+        assert_eq!(compute_dpf_n(1), 1);
+        assert_eq!(compute_dpf_n(2), 1);
+        assert_eq!(compute_dpf_n(3), 2);
+        assert_eq!(compute_dpf_n(4), 2);
+        assert_eq!(compute_dpf_n(5), 3);
+        assert_eq!(compute_dpf_n(1024), 10);
+        assert_eq!(compute_dpf_n(1025), 11);
+        // Main UTXO database INDEX: ~565K bins → dpf_n=20
+        assert_eq!(compute_dpf_n(565684), 20);
+        // Main UTXO database CHUNK: ~1.06M bins → dpf_n=21
+        assert_eq!(compute_dpf_n(1064454), 21);
+        // A small delta database: ~10K bins → dpf_n=14
+        assert_eq!(compute_dpf_n(10000), 14);
+        // Merkle sibling level 15: ~1K nodes → dpf_n=10
+        assert_eq!(compute_dpf_n(1000), 10);
+    }
+
+    #[test]
+    fn test_dpf_n_covers_bins() {
+        for bins in [1, 2, 100, 1000, 565684, 1064454, 2_000_000] {
+            let n = compute_dpf_n(bins);
+            assert!((1usize << n) >= bins, "2^{} = {} < {}", n, 1usize << n, bins);
+            if n > 1 {
+                assert!((1usize << (n - 1)) < bins, "2^{} = {} >= {}", n - 1, 1usize << (n - 1), bins);
+            }
+        }
+    }
+}

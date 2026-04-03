@@ -32,8 +32,7 @@ const SLOT_SIZE: usize = 4 + UNIT_DATA_SIZE;
 const SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
 const RESULT_SIZE: usize = SLOTS * SLOT_SIZE;
 
-/// DPF domain: 2^20 = 1,048,576 >= bins_per_table
-const DPF_N: u8 = 20;
+// DPF_N is computed from bins_per_table at runtime via pir_core::params::compute_dpf_n
 
 const EMPTY: u32 = u32::MAX;
 
@@ -260,7 +259,8 @@ fn main() {
     println!("[2] Loading data files...");
     let cuckoo_data = fs::read(CHUNK_CUCKOO_FILE).expect("read chunk cuckoo");
     let bins_per_table = read_chunk_cuckoo_header(&cuckoo_data);
-    println!("  Chunk cuckoo: bins_per_table = {}", bins_per_table);
+    let dpf_n = pir_core::params::compute_dpf_n(bins_per_table);
+    println!("  Chunk cuckoo: bins_per_table = {}, dpf_n = {}", bins_per_table, dpf_n);
 
     let chunks_file = File::open(CHUNKS_DATA_FILE).expect("open chunks");
     let chunks_mmap = unsafe { Mmap::map(&chunks_file) }.expect("mmap chunks");
@@ -324,8 +324,8 @@ fn main() {
                     (r0, r1)
                 }
             };
-            let (k0_q0, k1_q0) = dpf.gen(alpha0, DPF_N);
-            let (k0_q1, k1_q1) = dpf.gen(alpha1, DPF_N);
+            let (k0_q0, k1_q0) = dpf.gen(alpha0, dpf_n);
+            let (k0_q1, k1_q1) = dpf.gen(alpha1, dpf_n);
             s0_round.push((k0_q0, k0_q1));
             s1_round.push((k1_q0, k1_q1));
         }
@@ -334,7 +334,7 @@ fn main() {
         keys_s1.push(s1_round);
     }
 
-    let dpf_key_wire_size = (DPF_N as usize + 2) * 16 + (DPF_N as usize + 7) / 8;
+    let dpf_key_wire_size = (dpf_n as usize + 2) * 16 + (dpf_n as usize + 7) / 8;
     let keygen_elapsed = keygen_start.elapsed();
     println!("  Key generation: {:.2?}", keygen_elapsed);
     println!("  DPF key wire size (est.): {} bytes", dpf_key_wire_size);
@@ -505,7 +505,7 @@ fn main() {
 
     println!();
     println!("=== Communication Cost (chunk-level PIR, all {} rounds) ===", num_rounds);
-    println!("  DPF key size (est.):           {} bytes (n={})", dpf_key_wire_size, DPF_N);
+    println!("  DPF key size (est.):           {} bytes (n={})", dpf_key_wire_size, dpf_n);
     println!("  Result size per bucket:        {} bytes ({}×{}B slots)", RESULT_SIZE, SLOTS, SLOT_SIZE);
     println!("  Buckets per round:             {}", K_CHUNK);
     println!("  Queries per bucket per round:  2 (q0, q1)");

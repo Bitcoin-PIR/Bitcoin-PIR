@@ -23,10 +23,12 @@ fn prefetch_read(ptr: *const u8) {
     }
 }
 
-/// DPF domain for index level: 2^20 = 1,048,576 >= 753,707 index bins.
+/// DPF domain for index level (legacy constant for the main UTXO database).
+/// New code should use `pir_core::params::compute_dpf_n(bins_per_table)` instead.
 pub const DPF_N: u8 = 20;
 
-/// DPF domain for chunk level: 2^21 = 2,097,152 >= 1,286,191 chunk bins.
+/// DPF domain for chunk level (legacy constant for the main UTXO database).
+/// New code should use `pir_core::params::compute_dpf_n(bins_per_table)` instead.
 pub const CHUNK_DPF_N: u8 = 21;
 
 // ─── Index-level constants ──────────────────────────────────────────────────

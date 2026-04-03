@@ -9,9 +9,10 @@
 //!     --server0 ws://localhost:8091 --server1 ws://localhost:8092 \
 //!     --hash <40-char hex script hash>
 
-use runtime::eval::{self, DPF_N, CHUNK_DPF_N};
+use runtime::eval;
 use runtime::protocol::{BatchQuery, Request, Response};
 use build::common::*;
+use pir_core::params::compute_dpf_n;
 use futures_util::{SinkExt, StreamExt};
 use libdpf::Dpf;
 use std::time::Instant;
@@ -177,8 +178,10 @@ async fn main() {
     let index_bins = info.index_bins_per_table as usize;
     let chunk_bins = info.chunk_bins_per_table as usize;
     let tag_seed = info.tag_seed;
-    println!("  Index: K={}, bins_per_table={}", info.index_k, index_bins);
-    println!("  Chunk: K={}, bins_per_table={}", info.chunk_k, chunk_bins);
+    let index_dpf_n = compute_dpf_n(index_bins);
+    let chunk_dpf_n = compute_dpf_n(chunk_bins);
+    println!("  Index: K={}, bins_per_table={}, dpf_n={}", info.index_k, index_bins, index_dpf_n);
+    println!("  Chunk: K={}, bins_per_table={}, dpf_n={}", info.chunk_k, chunk_bins, chunk_dpf_n);
     println!("  tag_seed: 0x{:016x}", tag_seed);
     println!();
 
@@ -218,7 +221,7 @@ async fn main() {
             } else {
                 rng.next_u64() % index_bins as u64
             };
-            let (k0, k1) = dpf.gen(alpha, DPF_N);
+            let (k0, k1) = dpf.gen(alpha, index_dpf_n);
             s0_bucket.push(k0.to_bytes());
             s1_bucket.push(k1.to_bytes());
         }
@@ -330,7 +333,7 @@ async fn main() {
                     Some(locs) => locs[h],
                     None => rng.next_u64() % chunk_bins as u64,
                 };
-                let (k0, k1) = dpf.gen(alpha, CHUNK_DPF_N);
+                let (k0, k1) = dpf.gen(alpha, chunk_dpf_n);
                 s0_bucket.push(k0.to_bytes());
                 s1_bucket.push(k1.to_bytes());
             }

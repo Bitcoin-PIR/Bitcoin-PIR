@@ -29,8 +29,7 @@ const SLOT_SIZE: usize = INDEX_SLOT_SIZE; // 13
 const SLOTS: usize = CUCKOO_BUCKET_SIZE;  // 3
 const RESULT_SIZE: usize = SLOTS * SLOT_SIZE; // 42
 
-/// We need 2^n >= bins_per_table. bins_per_table ≈ 616423, so n = 20 (2^20 = 1048576).
-const DPF_N: u8 = 20;
+// dpf_n is computed from bins_per_table at runtime via pir_core::params::compute_dpf_n
 
 // ─── DPF bit extraction ─────────────────────────────────────────────────────
 
@@ -187,8 +186,9 @@ fn main() {
 
     let cuckoo_data = fs::read(CUCKOO_FILE).expect("read cuckoo file");
     let (bins_per_table, tag_seed) = read_cuckoo_header(&cuckoo_data);
+    let dpf_n = pir_core::params::compute_dpf_n(bins_per_table);
     let table_byte_size = bins_per_table * SLOTS * SLOT_SIZE;
-    println!("  Cuckoo: bins_per_table = {}, tag_seed = 0x{:016x}", bins_per_table, tag_seed);
+    println!("  Cuckoo: bins_per_table = {}, dpf_n = {}, tag_seed = 0x{:016x}", bins_per_table, dpf_n, tag_seed);
     println!("  Table size per bucket: {:.2} MB", table_byte_size as f64 / (1024.0 * 1024.0));
 
     let query_data = fs::read(QUERIES_FILE).expect("read queries");
@@ -231,7 +231,7 @@ fn main() {
     println!();
 
     // ── 3. Generate DPF keys ─────────────────────────────────────────────
-    println!("[3] Generating DPF keys (n={}, domain=2^{} = {})...", DPF_N, DPF_N, 1u64 << DPF_N);
+    println!("[3] Generating DPF keys (n={}, domain=2^{} = {})...", dpf_n, dpf_n, 1u64 << dpf_n);
     let dpf = Dpf::with_default_key();
     let gen_start = Instant::now();
 
@@ -245,8 +245,8 @@ fn main() {
             (0u64, 0u64) // dummy for empty buckets
         };
 
-        let (k0_q0, k1_q0) = dpf.gen(alpha_q0, DPF_N);
-        let (k0_q1, k1_q1) = dpf.gen(alpha_q1, DPF_N);
+        let (k0_q0, k1_q0) = dpf.gen(alpha_q0, dpf_n);
+        let (k0_q1, k1_q1) = dpf.gen(alpha_q1, dpf_n);
 
         server0_keys.push((k0_q0, k0_q1));
         server1_keys.push((k1_q0, k1_q1));
