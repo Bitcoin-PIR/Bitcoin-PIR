@@ -46,7 +46,6 @@ export {
 
 export {
   genDpfKeys,
-  genChunkDpfKeys,
   type DpfKeyPair,
 } from './dpf.js';
 
@@ -78,7 +77,6 @@ export {
   CHUNK_SIZE, CHUNKS_PER_UNIT, UNIT_DATA_SIZE,
   CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
   CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
-  DPF_N, CHUNK_DPF_N,
   HARMONY_INDEX_W, HARMONY_CHUNK_W, HARMONY_EMPTY,
   DEFAULT_SERVER0_URL,
   DEFAULT_SERVER1_URL,
@@ -101,6 +99,7 @@ export {
 export {
   initWasm,
   isWasmReady,
+  computeDpfN,
 } from './wasm-bridge.js';
 
 export {

@@ -87,14 +87,17 @@ export function decodeUtxoData(
 
 /** Splitmix64-based PRNG for generating deterministic dummy query data. */
 export class DummyRng {
-  private state: bigint;
+  private state: bigint | null = null;
 
-  constructor() {
-    this.state = splitmix64(BigInt(Date.now()));
+  private ensureInit(): bigint {
+    if (this.state === null) {
+      this.state = splitmix64(BigInt(Date.now()));
+    }
+    return this.state;
   }
 
   nextU64(): bigint {
-    this.state = (this.state + 0x9e3779b97f4a7c15n) & 0xFFFFFFFFFFFFFFFFn;
+    this.state = (this.ensureInit() + 0x9e3779b97f4a7c15n) & 0xFFFFFFFFFFFFFFFFn;
     return splitmix64(this.state);
   }
 }

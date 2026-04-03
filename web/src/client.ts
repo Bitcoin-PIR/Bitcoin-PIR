@@ -21,7 +21,8 @@ import {
   computeTag,
 } from './hash.js';
 
-import { genDpfKeys, genChunkDpfKeys } from './dpf.js';
+import { genDpfKeys } from './dpf.js';
+import { initWasm, computeDpfN } from './wasm-bridge.js';
 
 import {
   encodeRequest, decodeResponse,
@@ -70,6 +71,8 @@ export class BatchPirClient {
   // Server info (fetched on connect)
   private indexBins = 0;
   private chunkBins = 0;
+  private indexDpfN = 0;
+  private chunkDpfN = 0;
   private tagSeed = 0n;
 
   // Pending response queues (FIFO)
@@ -113,6 +116,9 @@ export class BatchPirClient {
     this.setConnectionState('connecting', 'Connecting to servers...');
 
     try {
+      // Initialize WASM (required for hash functions)
+      await initWasm();
+
       await Promise.all([
         this.connectToServer(0),
         this.connectToServer(1),
@@ -268,8 +274,10 @@ export class BatchPirClient {
     }
     this.indexBins = resp.info.indexBinsPerTable;
     this.chunkBins = resp.info.chunkBinsPerTable;
+    this.indexDpfN = computeDpfN(this.indexBins);
+    this.chunkDpfN = computeDpfN(this.chunkBins);
     this.tagSeed = resp.info.tagSeed;
-    this.log(`Server info: index_bins=${this.indexBins}, chunk_bins=${this.chunkBins}, index_K=${resp.info.indexK}, chunk_K=${resp.info.chunkK}, tag_seed=0x${this.tagSeed.toString(16)}`);
+    this.log(`Server info: index_bins=${this.indexBins} (dpf_n=${this.indexDpfN}), chunk_bins=${this.chunkBins} (dpf_n=${this.chunkDpfN}), index_K=${resp.info.indexK}, chunk_K=${resp.info.chunkK}, tag_seed=0x${this.tagSeed.toString(16)}`);
 
     await this.sendRequest(1, { type: 'GetInfo' });
   }
@@ -412,7 +420,7 @@ export class BatchPirClient {
           } else {
             alpha = Number(this.rng.nextU64() % BigInt(this.indexBins));
           }
-          const keys = await genDpfKeys(alpha);
+          const keys = await genDpfKeys(alpha, this.indexDpfN);
           s0Bucket.push(keys.key0);
           s1Bucket.push(keys.key1);
         }
@@ -535,7 +543,7 @@ export class BatchPirClient {
           const alpha = target
             ? target[h]
             : Number(this.rng.nextU64() % BigInt(this.chunkBins));
-          const keys = await genChunkDpfKeys(alpha);
+          const keys = await genDpfKeys(alpha, this.chunkDpfN);
           s0Bucket.push(keys.key0);
           s1Bucket.push(keys.key1);
         }

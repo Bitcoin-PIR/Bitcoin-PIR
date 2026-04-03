@@ -1,15 +1,12 @@
 /**
  * WASM bridge for pir-core-wasm.
  *
- * Provides lazy initialization and TypeScript-friendly wrappers around the
- * WASM module's (hi, lo) u32-pair API, converting to/from BigInt to match
- * the existing hash.ts signatures.
- *
- * If WASM is not loaded, all functions return `undefined` so callers can
- * fall back to the pure-TS implementation.
+ * Provides TypeScript-friendly wrappers around the WASM module's (hi, lo)
+ * u32-pair API, converting to/from BigInt. WASM is initialized eagerly
+ * and is required — there is no pure-TS fallback.
  */
 
-// ─── WASM module type (subset we use) ─────────────────────────────────────
+// ─── WASM module type ────────────────────────────────────────────────────
 
 interface PirCoreWasm {
   splitmix64(x_hi: number, x_lo: number): Uint8Array;
@@ -22,12 +19,17 @@ interface PirCoreWasm {
   cuckoo_hash_int(chunk_id: number, key_hi: number, key_lo: number, num_bins: number): number;
 }
 
-// ─── State ────────────────────────────────────────────────────────────────
+// ─── State ───────────────────────────────────────────────────────────────
 
 let wasmModule: PirCoreWasm | null = null;
-let wasmInitPromise: Promise<boolean> | null = null;
+let wasmInitPromise: Promise<void> | null = null;
 
-// ─── Conversion helpers ───────────────────────────────────────────────────
+function wasm(): PirCoreWasm {
+  if (!wasmModule) throw new Error('WASM not initialized — call initWasm() first');
+  return wasmModule;
+}
+
+// ─── Conversion helpers ─────────────────────────────────────────────────
 
 function bigintToHiLo(v: bigint): [number, number] {
   const lo = Number(v & 0xFFFFFFFFn);
@@ -41,35 +43,25 @@ function leBytes8ToBigint(bytes: Uint8Array): bigint {
   return result;
 }
 
-// ─── Initialization ──────────────────────────────────────────────────────
+// ─── Initialization ─────────────────────────────────────────────────────
 
 /**
- * Attempt to load and initialize the WASM module.
- * Returns true if WASM is now available, false otherwise.
- * Safe to call multiple times; only the first call triggers loading.
+ * Load and initialize the WASM module. Must be called (and awaited)
+ * before using any hash functions. Safe to call multiple times.
  */
-export async function initWasm(): Promise<boolean> {
-  if (wasmModule) return true;
+export async function initWasm(): Promise<void> {
+  if (wasmModule) return;
   if (wasmInitPromise) return wasmInitPromise;
 
   wasmInitPromise = (async () => {
-    try {
-      // Dynamic import — the bundler resolves the WASM package.
-      // The pir-core-wasm pkg/ directory should be available as a dependency
-      // or via a path alias in the bundler config.
-      const mod = await import('pir-core-wasm');
-      // wasm-pack generates an init() default export for web targets;
-      // call it if present.
-      if (typeof mod.default === 'function') {
-        await mod.default();
-      }
-      wasmModule = mod as unknown as PirCoreWasm;
-      console.log('[PIR-WASM] WASM module loaded successfully');
-      return true;
-    } catch (e) {
-      console.warn('[PIR-WASM] Failed to load WASM module, using pure-TS fallback:', e);
-      return false;
+    const mod = await import('pir-core-wasm');
+    // For bundler target, vite-plugin-wasm handles WASM instantiation.
+    // For web target, call init() if present.
+    if (typeof (mod as any).default === 'function') {
+      await (mod as any).default();
     }
+    wasmModule = mod as unknown as PirCoreWasm;
+    console.log('[PIR-WASM] WASM module loaded');
   })();
 
   return wasmInitPromise;
@@ -80,75 +72,53 @@ export function isWasmReady(): boolean {
   return wasmModule !== null;
 }
 
-// ─── WASM-accelerated functions ──────────────────────────────────────────
-//
-// Each function returns `undefined` when WASM is not loaded, signalling the
-// caller to use its own TS implementation.
+// ─── WASM functions ─────────────────────────────────────────────────────
 
-export function wasmSplitmix64(x: bigint): bigint | undefined {
-  if (!wasmModule) return undefined;
+export function wasmSplitmix64(x: bigint): bigint {
   const [hi, lo] = bigintToHiLo(x);
-  const result = wasmModule.splitmix64(hi, lo);
-  return leBytes8ToBigint(result);
+  return leBytes8ToBigint(wasm().splitmix64(hi, lo));
 }
 
-export function wasmComputeTag(tagSeed: bigint, scriptHash: Uint8Array): bigint | undefined {
-  if (!wasmModule) return undefined;
+export function wasmComputeTag(tagSeed: bigint, scriptHash: Uint8Array): bigint {
   const [hi, lo] = bigintToHiLo(tagSeed);
-  const result = wasmModule.compute_tag(hi, lo, scriptHash);
-  return leBytes8ToBigint(result);
+  return leBytes8ToBigint(wasm().compute_tag(hi, lo, scriptHash));
 }
 
-export function wasmDeriveBuckets(scriptHash: Uint8Array, k: number): number[] | undefined {
-  if (!wasmModule) return undefined;
-  const result = wasmModule.derive_buckets(scriptHash, k);
-  return Array.from(result);
+export function wasmDeriveBuckets(scriptHash: Uint8Array, k: number): number[] {
+  return Array.from(wasm().derive_buckets(scriptHash, k));
 }
 
-export function wasmDeriveCuckooKey(
-  masterSeed: bigint,
-  bucketId: number,
-  hashFn: number,
-): bigint | undefined {
-  if (!wasmModule) return undefined;
+export function wasmDeriveCuckooKey(masterSeed: bigint, bucketId: number, hashFn: number): bigint {
   const [hi, lo] = bigintToHiLo(masterSeed);
-  const result = wasmModule.derive_cuckoo_key(hi, lo, bucketId, hashFn);
-  return leBytes8ToBigint(result);
+  return leBytes8ToBigint(wasm().derive_cuckoo_key(hi, lo, bucketId, hashFn));
 }
 
-export function wasmCuckooHash(
-  scriptHash: Uint8Array,
-  key: bigint,
-  numBins: number,
-): number | undefined {
-  if (!wasmModule) return undefined;
+export function wasmCuckooHash(scriptHash: Uint8Array, key: bigint, numBins: number): number {
   const [hi, lo] = bigintToHiLo(key);
-  return wasmModule.cuckoo_hash(scriptHash, hi, lo, numBins);
+  return wasm().cuckoo_hash(scriptHash, hi, lo, numBins);
 }
 
-export function wasmDeriveChunkBuckets(chunkId: number, k: number): number[] | undefined {
-  if (!wasmModule) return undefined;
-  const result = wasmModule.derive_chunk_buckets(chunkId, k);
-  return Array.from(result);
+export function wasmDeriveChunkBuckets(chunkId: number, k: number): number[] {
+  return Array.from(wasm().derive_chunk_buckets(chunkId, k));
 }
 
-export function wasmDeriveChunkCuckooKey(
-  masterSeed: bigint,
-  bucketId: number,
-  hashFn: number,
-): bigint | undefined {
-  if (!wasmModule) return undefined;
+export function wasmDeriveChunkCuckooKey(masterSeed: bigint, bucketId: number, hashFn: number): bigint {
   const [hi, lo] = bigintToHiLo(masterSeed);
-  const result = wasmModule.derive_chunk_cuckoo_key(hi, lo, bucketId, hashFn);
-  return leBytes8ToBigint(result);
+  return leBytes8ToBigint(wasm().derive_chunk_cuckoo_key(hi, lo, bucketId, hashFn));
 }
 
-export function wasmCuckooHashInt(
-  chunkId: number,
-  key: bigint,
-  numBins: number,
-): number | undefined {
-  if (!wasmModule) return undefined;
+export function wasmCuckooHashInt(chunkId: number, key: bigint, numBins: number): number {
   const [hi, lo] = bigintToHiLo(key);
-  return wasmModule.cuckoo_hash_int(chunkId, hi, lo, numBins);
+  return wasm().cuckoo_hash_int(chunkId, hi, lo, numBins);
+}
+
+// ─── Utility ────────────────────────────────────────────────────────────
+
+/** Compute minimum DPF domain exponent such that 2^n >= bins_per_table. */
+export function computeDpfN(binsPerTable: number): number {
+  if (binsPerTable <= 1) return 1;
+  let n = 0;
+  let v = 1;
+  while (v < binsPerTable) { v <<= 1; n++; }
+  return n;
 }
