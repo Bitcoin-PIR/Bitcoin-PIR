@@ -9,11 +9,14 @@
 
 use runtime::eval::{self, BucketTiming};
 use runtime::protocol::{BatchQuery, BatchResult, Request, Response, ServerInfo};
+use runtime::protocol::{DatabaseCatalog, DatabaseCatalogEntry};
 use build::common::*;
 use futures_util::{SinkExt, StreamExt};
 use libdpf::DpfKey;
+use pir_core::params::{INDEX_PARAMS, CHUNK_PARAMS};
 use rayon::prelude::*;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
@@ -22,16 +25,57 @@ use tokio_tungstenite::tungstenite::Message;
 
 // ─── Server data ────────────────────────────────────────────────────────────
 
-use runtime::table::CuckooTablePair;
+use runtime::table::{CuckooTablePair, MappedDatabase, DatabaseDescriptor, ServerState};
 
 struct ServerData {
     tables: CuckooTablePair,
+    /// Multi-database state (empty if using legacy single-DB mode).
+    multi_db: Option<ServerState>,
 }
 
 impl ServerData {
     fn load() -> Self {
         ServerData {
             tables: CuckooTablePair::load(),
+            multi_db: None,
+        }
+    }
+
+    /// Build a database catalog from the loaded state.
+    fn build_catalog(&self) -> DatabaseCatalog {
+        if let Some(ref state) = self.multi_db {
+            DatabaseCatalog {
+                databases: state.databases.iter().enumerate().map(|(i, db)| {
+                    DatabaseCatalogEntry {
+                        db_id: i as u8,
+                        name: db.descriptor.name.clone(),
+                        height: db.descriptor.height,
+                        index_bins_per_table: db.index.bins_per_table as u32,
+                        chunk_bins_per_table: db.chunk.bins_per_table as u32,
+                        index_k: db.index.params.k as u8,
+                        chunk_k: db.chunk.params.k as u8,
+                        tag_seed: db.index.tag_seed,
+                        dpf_n_index: db.index.params.dpf_n,
+                        dpf_n_chunk: db.chunk.params.dpf_n,
+                    }
+                }).collect(),
+            }
+        } else {
+            // Legacy single-DB mode
+            DatabaseCatalog {
+                databases: vec![DatabaseCatalogEntry {
+                    db_id: 0,
+                    name: "main".to_string(),
+                    height: 0,
+                    index_bins_per_table: self.tables.index_bins_per_table as u32,
+                    chunk_bins_per_table: self.tables.chunk_bins_per_table as u32,
+                    index_k: K as u8,
+                    chunk_k: K_CHUNK as u8,
+                    tag_seed: self.tables.tag_seed,
+                    dpf_n_index: 20,
+                    dpf_n_chunk: 21,
+                }],
+            }
         }
     }
 
@@ -315,6 +359,9 @@ async fn main() {
                 let response = tokio::task::spawn_blocking(move || {
                     match request {
                         Request::Ping => Response::Pong,
+                        Request::GetDbCatalog => {
+                            Response::DbCatalog(data_ref.build_catalog())
+                        }
                         Request::GetInfo => Response::Info(ServerInfo {
                             index_bins_per_table: data_ref.tables.index_bins_per_table as u32,
                             chunk_bins_per_table: data_ref.tables.chunk_bins_per_table as u32,

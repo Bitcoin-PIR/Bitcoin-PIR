@@ -227,8 +227,8 @@ async fn main() {
     }
 
     // Send to both servers concurrently
-    let req0 = Request::IndexBatch(BatchQuery { level: 0, round_id: 0, keys: s0_keys });
-    let req1 = Request::IndexBatch(BatchQuery { level: 0, round_id: 0, keys: s1_keys });
+    let req0 = Request::IndexBatch(BatchQuery { level: 0, round_id: 0, db_id: 0, keys: s0_keys });
+    let req1 = Request::IndexBatch(BatchQuery { level: 0, round_id: 0, db_id: 0, keys: s1_keys });
 
     let enc0 = req0.encode();
     let enc1 = req1.encode();
@@ -339,8 +339,8 @@ async fn main() {
         }
 
         // Send to both servers
-        let req0 = Request::ChunkBatch(BatchQuery { level: 1, round_id: ri as u16, keys: s0_keys });
-        let req1 = Request::ChunkBatch(BatchQuery { level: 1, round_id: ri as u16, keys: s1_keys });
+        let req0 = Request::ChunkBatch(BatchQuery { level: 1, round_id: ri as u16, db_id: 0, keys: s0_keys });
+        let req1 = Request::ChunkBatch(BatchQuery { level: 1, round_id: ri as u16, db_id: 0, keys: s1_keys });
 
         let enc0 = req0.encode();
         let enc1 = req1.encode();

@@ -21,10 +21,15 @@ pub const REQ_HARMONY_HINTS: u8 = 0x41;
 pub const REQ_HARMONY_QUERY: u8 = 0x42;
 pub const REQ_HARMONY_BATCH_QUERY: u8 = 0x43;
 
+// ─── Extended request variants (multi-database) ────────────────────────────
+
+pub const REQ_GET_DB_CATALOG: u8 = 0x02;
+
 // ─── Response variants ──────────────────────────────────────────────────────
 
 pub const RESP_PONG: u8 = 0x00;
 pub const RESP_INFO: u8 = 0x01;
+pub const RESP_DB_CATALOG: u8 = 0x02;
 pub const RESP_INDEX_BATCH: u8 = 0x11;
 pub const RESP_CHUNK_BATCH: u8 = 0x21;
 pub const RESP_ERROR: u8 = 0xFF;
@@ -46,6 +51,9 @@ pub struct BatchQuery {
     pub level: u8,
     /// Round ID (only meaningful for chunk level; 0 for index)
     pub round_id: u16,
+    /// Database ID (0 = main UTXO, 1+ = delta databases).
+    /// Defaults to 0 for backward compatibility.
+    pub db_id: u8,
     /// Per-bucket: list of DPF keys. Length = K (75) or K_CHUNK (80).
     /// Inner Vec length = number of cuckoo hash functions (2 for index, 3 for chunks).
     pub keys: Vec<Vec<Vec<u8>>>,
@@ -130,6 +138,7 @@ pub struct HarmonyBatchResultItem {
 pub enum Request {
     Ping,
     GetInfo,
+    GetDbCatalog,
     IndexBatch(BatchQuery),
     ChunkBatch(BatchQuery),
     HarmonyGetInfo,
@@ -149,6 +158,37 @@ pub struct ServerInfo {
     pub tag_seed: u64,
 }
 
+/// Info about a single database in the server's catalog.
+#[derive(Clone, Debug)]
+pub struct DatabaseCatalogEntry {
+    /// Database ID (index into the server's database list).
+    pub db_id: u8,
+    /// Human-readable name (e.g. "main", "delta_938612_940612").
+    pub name: String,
+    /// Block height this database represents.
+    pub height: u32,
+    /// INDEX-level bins_per_table.
+    pub index_bins_per_table: u32,
+    /// CHUNK-level bins_per_table.
+    pub chunk_bins_per_table: u32,
+    /// INDEX-level bucket count.
+    pub index_k: u8,
+    /// CHUNK-level bucket count.
+    pub chunk_k: u8,
+    /// Tag seed for INDEX-level fingerprints.
+    pub tag_seed: u64,
+    /// DPF domain exponent for INDEX level.
+    pub dpf_n_index: u8,
+    /// DPF domain exponent for CHUNK level.
+    pub dpf_n_chunk: u8,
+}
+
+/// Server's database catalog listing all available databases.
+#[derive(Clone, Debug)]
+pub struct DatabaseCatalog {
+    pub databases: Vec<DatabaseCatalogEntry>,
+}
+
 #[derive(Clone, Debug)]
 pub struct BatchResult {
     pub level: u8,
@@ -160,6 +200,7 @@ pub struct BatchResult {
 pub enum Response {
     Pong,
     Info(ServerInfo),
+    DbCatalog(DatabaseCatalog),
     IndexBatch(BatchResult),
     ChunkBatch(BatchResult),
     Error(String),
@@ -179,6 +220,9 @@ impl Request {
             }
             Request::GetInfo => {
                 payload.push(REQ_GET_INFO);
+            }
+            Request::GetDbCatalog => {
+                payload.push(REQ_GET_DB_CATALOG);
             }
             Request::IndexBatch(q) => {
                 payload.push(REQ_INDEX_BATCH);
@@ -227,6 +271,7 @@ impl Request {
         match data[0] {
             REQ_PING => Ok(Request::Ping),
             REQ_GET_INFO => Ok(Request::GetInfo),
+            REQ_GET_DB_CATALOG => Ok(Request::GetDbCatalog),
             REQ_INDEX_BATCH => {
                 let q = decode_batch_query(&data[1..])?;
                 Ok(Request::IndexBatch(q))
@@ -270,6 +315,10 @@ impl Response {
                 payload.push(info.index_k);
                 payload.push(info.chunk_k);
                 payload.extend_from_slice(&info.tag_seed.to_le_bytes());
+            }
+            Response::DbCatalog(cat) => {
+                payload.push(RESP_DB_CATALOG);
+                encode_db_catalog(&mut payload, cat);
             }
             Response::IndexBatch(r) => {
                 payload.push(RESP_INDEX_BATCH);
@@ -327,6 +376,10 @@ impl Response {
                     chunk_k: data[10],
                     tag_seed: u64::from_le_bytes(data[11..19].try_into().unwrap()),
                 }))
+            }
+            RESP_DB_CATALOG => {
+                let cat = decode_db_catalog(&data[1..])?;
+                Ok(Response::DbCatalog(cat))
             }
             RESP_INDEX_BATCH => {
                 let r = decode_batch_result(&data[1..])?;
@@ -426,6 +479,7 @@ fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
     Ok(BatchQuery {
         level: 0,
         round_id,
+        db_id: 0,
         keys,
     })
 }
@@ -605,6 +659,87 @@ fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
         items.push(HarmonyBatchResultItem { bucket_id, sub_results });
     }
     Ok(HarmonyBatchResult { level, round_id, sub_results_per_bucket, items })
+}
+
+// ─── Database catalog encoding helpers ─────────────────────────────────────
+
+/// Wire format:
+///   [1B num_databases]
+///   Per database:
+///     [1B db_id][1B name_len][name bytes][4B height]
+///     [4B index_bins][4B chunk_bins][1B index_k][1B chunk_k]
+///     [8B tag_seed][1B dpf_n_index][1B dpf_n_chunk]
+fn encode_db_catalog(buf: &mut Vec<u8>, cat: &DatabaseCatalog) {
+    buf.push(cat.databases.len() as u8);
+    for entry in &cat.databases {
+        buf.push(entry.db_id);
+        let name_bytes = entry.name.as_bytes();
+        buf.push(name_bytes.len() as u8);
+        buf.extend_from_slice(name_bytes);
+        buf.extend_from_slice(&entry.height.to_le_bytes());
+        buf.extend_from_slice(&entry.index_bins_per_table.to_le_bytes());
+        buf.extend_from_slice(&entry.chunk_bins_per_table.to_le_bytes());
+        buf.push(entry.index_k);
+        buf.push(entry.chunk_k);
+        buf.extend_from_slice(&entry.tag_seed.to_le_bytes());
+        buf.push(entry.dpf_n_index);
+        buf.push(entry.dpf_n_chunk);
+    }
+}
+
+fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
+    if data.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "catalog too short"));
+    }
+    let num_dbs = data[0] as usize;
+    let mut pos = 1;
+    let mut databases = Vec::with_capacity(num_dbs);
+    for _ in 0..num_dbs {
+        if pos + 2 > data.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated catalog entry"));
+        }
+        let db_id = data[pos];
+        pos += 1;
+        let name_len = data[pos] as usize;
+        pos += 1;
+        if pos + name_len > data.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated catalog name"));
+        }
+        let name = String::from_utf8_lossy(&data[pos..pos + name_len]).to_string();
+        pos += name_len;
+        if pos + 22 > data.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated catalog fields"));
+        }
+        let height = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        let index_bins_per_table = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        let chunk_bins_per_table = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        let index_k = data[pos];
+        pos += 1;
+        let chunk_k = data[pos];
+        pos += 1;
+        let tag_seed = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+        let dpf_n_index = data[pos];
+        pos += 1;
+        let dpf_n_chunk = data[pos];
+        pos += 1;
+        databases.push(DatabaseCatalogEntry {
+            db_id,
+            name,
+            height,
+            index_bins_per_table,
+            chunk_bins_per_table,
+            index_k,
+            chunk_k,
+            tag_seed,
+            dpf_n_index,
+            dpf_n_chunk,
+        });
+    }
+    Ok(DatabaseCatalog { databases })
 }
 
 fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {

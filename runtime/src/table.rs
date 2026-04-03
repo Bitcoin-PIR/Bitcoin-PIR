@@ -1,14 +1,136 @@
 //! Shared cuckoo table loading for PIR servers.
 //!
-//! Both the DPF query server and HarmonyPIR hint server load the same
-//! pair of memory-mapped cuckoo table files. This module provides a
-//! shared struct and loading function to avoid duplication.
+//! Provides both the legacy `CuckooTablePair` (loads exactly two files)
+//! and the new `MappedSubTable` / `MappedDatabase` types that support
+//! multiple databases with different parameters.
 
 use build::common::*;
 use memmap2::Mmap;
+use pir_core::params::TableParams;
 use std::fs::File;
+use std::path::Path;
+
+// ─── New generic types ─────────────────────────────────────────────────────
+
+/// A single memory-mapped cuckoo sub-table with its parameters.
+pub struct MappedSubTable {
+    /// Memory-mapped file contents.
+    pub mmap: Mmap,
+    /// Parameters that describe this table's layout.
+    pub params: TableParams,
+    /// Number of cuckoo bins per Batch PIR bucket (read from header).
+    pub bins_per_table: usize,
+    /// Byte size of one bucket's sub-table (bins × bucket_size × slot_size).
+    pub table_byte_size: usize,
+    /// Tag seed from header (0 if the table has no tag seed).
+    pub tag_seed: u64,
+}
+
+impl MappedSubTable {
+    /// Load and memory-map a cuckoo table file.
+    pub fn load(path: &Path, params: TableParams) -> Self {
+        println!("  Loading sub-table: {}", path.display());
+        let f = File::open(path).unwrap_or_else(|e| panic!("open {}: {}", path.display(), e));
+        let mmap = unsafe { Mmap::map(&f) }.unwrap_or_else(|e| panic!("mmap {}: {}", path.display(), e));
+
+        let (bins_per_table, tag_seed) = pir_core::hash::read_cuckoo_header(
+            &mmap,
+            params.magic,
+            params.header_size,
+            params.has_tag_seed,
+        );
+        let table_byte_size = params.table_byte_size(bins_per_table);
+
+        println!(
+            "    bins_per_table={}, slot={}B, table={:.1}MB, file={:.2}GB",
+            bins_per_table,
+            params.slot_size,
+            table_byte_size as f64 / (1024.0 * 1024.0),
+            mmap.len() as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+        if params.has_tag_seed {
+            println!("    tag_seed=0x{:016x}", tag_seed);
+        }
+
+        #[cfg(unix)]
+        {
+            use libc::{madvise, MADV_SEQUENTIAL};
+            unsafe {
+                madvise(mmap.as_ptr() as *mut libc::c_void, mmap.len(), MADV_SEQUENTIAL);
+            }
+        }
+
+        MappedSubTable { mmap, params, bins_per_table, table_byte_size, tag_seed }
+    }
+
+    /// Get the byte slice for a specific bucket's sub-table.
+    pub fn bucket_bytes(&self, bucket_id: usize) -> &[u8] {
+        let offset = self.params.header_size + bucket_id * self.table_byte_size;
+        &self.mmap[offset..offset + self.table_byte_size]
+    }
+}
+
+/// Describes a complete PIR database (INDEX + CHUNK + optional Merkle sub-tables).
+pub struct DatabaseDescriptor {
+    /// Human-readable name (e.g. "main", "delta_938612_940612").
+    pub name: String,
+    /// Snapshot or end height.
+    pub height: u32,
+    /// Parameters for the INDEX-level sub-table.
+    pub index_params: TableParams,
+    /// Parameters for the CHUNK-level sub-table.
+    pub chunk_params: TableParams,
+    // Future: merkle_data_params, merkle_sibling_params, etc.
+}
+
+/// A fully loaded database with all sub-tables memory-mapped.
+pub struct MappedDatabase {
+    /// Descriptor for this database.
+    pub descriptor: DatabaseDescriptor,
+    /// INDEX-level cuckoo table.
+    pub index: MappedSubTable,
+    /// CHUNK-level cuckoo table.
+    pub chunk: MappedSubTable,
+    // Future: merkle_siblings, merkle_tree_top, etc.
+}
+
+impl MappedDatabase {
+    /// Load a database from a directory containing `batch_pir_cuckoo.bin` and `chunk_pir_cuckoo.bin`.
+    pub fn load(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
+        println!("[DB:{}] Loading from {}", descriptor.name, base_dir.display());
+
+        let index = MappedSubTable::load(
+            &base_dir.join("batch_pir_cuckoo.bin"),
+            descriptor.index_params.clone(),
+        );
+        let chunk = MappedSubTable::load(
+            &base_dir.join("chunk_pir_cuckoo.bin"),
+            descriptor.chunk_params.clone(),
+        );
+
+        MappedDatabase { descriptor, index, chunk }
+    }
+}
+
+/// Server state holding multiple databases.
+pub struct ServerState {
+    /// All loaded databases. Index 0 is typically the main UTXO database.
+    pub databases: Vec<MappedDatabase>,
+}
+
+impl ServerState {
+    /// Get a database by index. Returns None if db_id is out of range.
+    pub fn get_db(&self, db_id: u8) -> Option<&MappedDatabase> {
+        self.databases.get(db_id as usize)
+    }
+}
+
+// ─── Legacy CuckooTablePair (backward compatible) ──────────────────────────
 
 /// A pair of memory-mapped cuckoo tables (index + chunk).
+///
+/// This is the legacy loading interface. New code should use
+/// `MappedDatabase` instead.
 pub struct CuckooTablePair {
     /// Memory-mapped index cuckoo table.
     pub index_cuckoo: Mmap,

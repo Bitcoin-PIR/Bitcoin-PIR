@@ -65,6 +65,7 @@ fastprp = ["harmonypir/fastprp-prp", "harmonypir-wasm/fastprp"]
 alf = ["harmonypir/alf", "harmonypir-wasm/alf"]
 
 [dependencies]
+pir-core = { path = "../pir-core" }
 build = { path = "../build" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git" }

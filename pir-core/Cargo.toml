@@ -1,0 +1,7 @@
+[package]
+name = "pir-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core PIR hash functions, parameters, codec, and cuckoo utilities"
+
+[dependencies]

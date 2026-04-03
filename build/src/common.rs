@@ -1,397 +1,60 @@
 #![allow(dead_code)]
 //! Shared constants and hash utilities for Batch PIR tools.
+//!
+//! This module re-exports everything from `pir-core` and provides backward-
+//! compatible wrapper functions that use the legacy constant values. Existing
+//! build binaries importing `use common::*;` continue to compile unchanged.
 
-/// Path to the UTXO chunks index file (nodust, 40-byte blocks)
-pub const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
+// Re-export all constants and types from pir-core
+pub use pir_core::params::*;
+pub use pir_core::codec::*;
+pub use pir_core::pbc::*;
 
-/// Size of each index entry in the intermediate file: 20B script_hash + 4B start_chunk_id + 1B num_chunks
-pub const INDEX_ENTRY_SIZE: usize = 25;
+// Re-export primitive hashing functions directly (same signature)
+pub use pir_core::hash::{
+    splitmix64, sh_a, sh_b, sh_c,
+    hash_for_bucket, cuckoo_hash, cuckoo_hash_int, compute_tag,
+    hash_int_for_bucket,
+};
 
-/// Size of the script hash portion (in intermediate file and for bucket/cuckoo derivation)
-pub const SCRIPT_HASH_SIZE: usize = 20;
+// ─── Backward-compatible wrappers ──────────────────────────────────────────
+// These match the original signatures that take no seed/k parameters,
+// using the hardcoded INDEX or CHUNK constants.
 
-/// Size of the fingerprint tag stored in the final cuckoo table
-pub const TAG_SIZE: usize = 8;
-
-/// Number of Batch PIR buckets
-pub const K: usize = 75;
-
-/// Number of bucket assignments per entry
-pub const NUM_HASHES: usize = 3;
-
-/// Master PRG seed for deriving per-bucket cuckoo hash function keys
-pub const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
-
-/// Cuckoo hash table bucket size for INDEX level (slots per bin)
-pub const CUCKOO_BUCKET_SIZE: usize = 4;
-
-/// Number of cuckoo hash functions for INDEX level
-pub const INDEX_CUCKOO_NUM_HASHES: usize = 2;
-
-/// Cuckoo hash table bucket size for CHUNK level (slots per bin)
-pub const CHUNK_CUCKOO_BUCKET_SIZE: usize = 3;
-
-/// Number of cuckoo hash functions for CHUNK level
-pub const CHUNK_CUCKOO_NUM_HASHES: usize = 2;
-
-/// File format magic number for the batch_pir_cuckoo.bin file (v3: bucket_size=4)
-pub const MAGIC: u64 = 0xBA7C_C000_C000_0004;
-
-/// Header size in bytes for the batch_pir_cuckoo.bin file (v2: includes tag_seed)
-pub const HEADER_SIZE: usize = 40;
-
-/// Path to the serialized Batch PIR cuckoo tables
-pub const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";
-
-/// Splitmix64 finalizer — used to derive keys and as a general mixer.
-#[inline]
-pub fn splitmix64(mut x: u64) -> u64 {
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xbf58476d1ce4e5b9);
-    x ^= x >> 27;
-    x = x.wrapping_mul(0x94d049bb133111eb);
-    x ^= x >> 31;
-    x
-}
-
-/// Read first 8 bytes of a script_hash as u64 (LE).
-#[inline]
-pub fn sh_a(script_hash: &[u8]) -> u64 {
-    u64::from_le_bytes([
-        script_hash[0], script_hash[1], script_hash[2], script_hash[3],
-        script_hash[4], script_hash[5], script_hash[6], script_hash[7],
-    ])
-}
-
-/// Read bytes 8..16 of a script_hash as u64 (LE).
-#[inline]
-pub fn sh_b(script_hash: &[u8]) -> u64 {
-    u64::from_le_bytes([
-        script_hash[8], script_hash[9], script_hash[10], script_hash[11],
-        script_hash[12], script_hash[13], script_hash[14], script_hash[15],
-    ])
-}
-
-/// Read bytes 16..20 of a script_hash as u32 (LE), zero-extended to u64.
-#[inline]
-pub fn sh_c(script_hash: &[u8]) -> u64 {
-    u32::from_le_bytes([
-        script_hash[16], script_hash[17], script_hash[18], script_hash[19],
-    ]) as u64
-}
-
-/// Hash script_hash with a nonce for Batch PIR bucket assignment.
-#[inline]
-pub fn hash_for_bucket(script_hash: &[u8], nonce: u64) -> u64 {
-    let mut h = sh_a(script_hash).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15));
-    h ^= sh_b(script_hash);
-    h = splitmix64(h ^ sh_c(script_hash));
-    h
-}
-
-/// Derive `NUM_HASHES` (3) distinct Batch PIR bucket indices for a script_hash.
+/// Derive 3 distinct INDEX-level bucket indices for a script_hash (K=75).
 pub fn derive_buckets(script_hash: &[u8]) -> [usize; NUM_HASHES] {
-    let mut buckets = [0usize; NUM_HASHES];
-    let mut nonce: u64 = 0;
-    let mut count = 0;
-
-    while count < NUM_HASHES {
-        let h = hash_for_bucket(script_hash, nonce);
-        let bucket = (h % K as u64) as usize;
-        nonce += 1;
-
-        let mut dup = false;
-        for i in 0..count {
-            if buckets[i] == bucket {
-                dup = true;
-                break;
-            }
-        }
-        if dup {
-            continue;
-        }
-
-        buckets[count] = bucket;
-        count += 1;
-    }
-
-    buckets
+    pir_core::hash::derive_buckets_3(script_hash, K)
 }
 
-/// Derive a hash function key for a given (batch-PIR bucket, cuckoo hash fn index).
+/// Derive a cuckoo hash function key for INDEX level (uses MASTER_SEED).
 #[inline]
 pub fn derive_cuckoo_key(bucket_id: usize, hash_fn: usize) -> u64 {
-    splitmix64(
-        MASTER_SEED
-            .wrapping_add((bucket_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
-            .wrapping_add((hash_fn as u64).wrapping_mul(0x517cc1b727220a95)),
-    )
+    pir_core::hash::derive_cuckoo_key(MASTER_SEED, bucket_id, hash_fn)
 }
 
-/// Cuckoo hash: hash a script_hash with a derived key, return a bin index.
-#[inline]
-pub fn cuckoo_hash(script_hash: &[u8], key: u64, num_bins: usize) -> usize {
-    let mut h = sh_a(script_hash) ^ key;
-    h ^= sh_b(script_hash);
-    h = splitmix64(h ^ sh_c(script_hash));
-    (h % num_bins as u64) as usize
-}
-
-/// Size of one inlined index slot in the final cuckoo table: 8B tag + 4B + 1B = 13 bytes
-pub const INDEX_SLOT_SIZE: usize = TAG_SIZE + 4 + 1;
-
-/// Size of one inlined chunk slot: 4B chunk_id + CHUNK_SIZE data
-pub const CHUNK_SLOT_SIZE: usize = 4 + CHUNK_SIZE; // 44
-
-/// Read bins_per_table and tag_seed from a batch_pir_cuckoo.bin header.
-/// Returns (bins_per_table, tag_seed).
-pub fn read_cuckoo_header(data: &[u8]) -> (usize, u64) {
-    assert!(data.len() >= HEADER_SIZE, "File too small for header");
-    let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    assert_eq!(magic, MAGIC, "Bad magic number");
-    let bins_per_table = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
-    let tag_seed = u64::from_le_bytes(data[32..40].try_into().unwrap());
-    (bins_per_table, tag_seed)
-}
-
-/// Compute an 8-byte fingerprint tag for a script_hash using a keyed hash.
-/// Uses splitmix64 mixing with an independent seed for collision resistance.
-#[inline]
-pub fn compute_tag(tag_seed: u64, script_hash: &[u8]) -> u64 {
-    let mut h = sh_a(script_hash) ^ tag_seed;
-    h ^= sh_b(script_hash);
-    splitmix64(h ^ sh_c(script_hash))
-}
-
-// ─── Chunk-level Batch PIR constants ─────────────────────────────────────────
-
-/// Number of Batch PIR buckets for chunks
-pub const K_CHUNK: usize = 80;
-
-/// Master PRG seed for chunk-level cuckoo key derivation (distinct from first-level)
-pub const CHUNK_MASTER_SEED: u64 = 0xa3f7c2d918e4b065;
-
-/// File format magic for chunk_pir_cuckoo.bin
-pub const CHUNK_MAGIC: u64 = 0xBA7C_C000_C000_0002;
-
-/// Header size in bytes for chunk_pir_cuckoo.bin (no tag_seed field)
-pub const CHUNK_HEADER_SIZE: usize = 32;
-
-/// Size of one chunk in bytes
-pub const CHUNK_SIZE: usize = 40;
-
-/// Path to the chunk-level cuckoo tables
-pub const CHUNK_CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_cuckoo.bin";
-
-/// Path to the UTXO chunks data file
-pub const CHUNKS_DATA_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_nodust.bin";
-
-/// Path to the first-level PIR results (50 × 26 bytes)
-pub const BATCH_PIR_RESULTS_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_results.bin";
-
-// ─── Chunk-level hash utilities ──────────────────────────────────────────────
-
-/// Hash a chunk_id with a nonce for chunk-level bucket assignment.
+/// Hash a chunk_id with a nonce for CHUNK-level bucket assignment.
 #[inline]
 pub fn hash_chunk_for_bucket(chunk_id: u32, nonce: u64) -> u64 {
-    splitmix64((chunk_id as u64).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15)))
+    pir_core::hash::hash_int_for_bucket(chunk_id, nonce)
 }
 
-/// Derive 3 distinct chunk-level bucket indices for a chunk_id.
+/// Derive 3 distinct CHUNK-level bucket indices (K_CHUNK=80).
 pub fn derive_chunk_buckets(chunk_id: u32) -> [usize; NUM_HASHES] {
-    let mut buckets = [0usize; NUM_HASHES];
-    let mut nonce: u64 = 0;
-    let mut count = 0;
-
-    while count < NUM_HASHES {
-        let h = hash_chunk_for_bucket(chunk_id, nonce);
-        let bucket = (h % K_CHUNK as u64) as usize;
-        nonce += 1;
-
-        let mut dup = false;
-        for i in 0..count {
-            if buckets[i] == bucket {
-                dup = true;
-                break;
-            }
-        }
-        if dup {
-            continue;
-        }
-
-        buckets[count] = bucket;
-        count += 1;
-    }
-
-    buckets
+    pir_core::hash::derive_int_buckets_3(chunk_id, K_CHUNK)
 }
 
-/// Derive a cuckoo hash function key for a chunk-level (bucket, hash_fn).
+/// Derive a cuckoo hash function key for CHUNK level (uses CHUNK_MASTER_SEED).
 #[inline]
 pub fn derive_chunk_cuckoo_key(bucket_id: usize, hash_fn: usize) -> u64 {
-    splitmix64(
-        CHUNK_MASTER_SEED
-            .wrapping_add((bucket_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
-            .wrapping_add((hash_fn as u64).wrapping_mul(0x517cc1b727220a95)),
-    )
+    pir_core::hash::derive_cuckoo_key(CHUNK_MASTER_SEED, bucket_id, hash_fn)
 }
 
-/// Cuckoo hash for chunk_ids: map a chunk_id to a bin index using a derived key.
-#[inline]
-pub fn cuckoo_hash_int(chunk_id: u32, key: u64, num_bins: usize) -> usize {
-    (splitmix64((chunk_id as u64) ^ key) % num_bins as u64) as usize
+/// Read bins_per_table and tag_seed from an INDEX-level cuckoo header.
+pub fn read_cuckoo_header(data: &[u8]) -> (usize, u64) {
+    pir_core::hash::read_cuckoo_header(data, MAGIC, HEADER_SIZE, true)
 }
 
-/// Read bins_per_table from a chunk_pir_cuckoo.bin header.
+/// Read bins_per_table from a CHUNK-level cuckoo header.
 pub fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
-    assert!(data.len() >= CHUNK_HEADER_SIZE, "File too small for header");
-    let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    assert_eq!(magic, CHUNK_MAGIC, "Bad chunk cuckoo magic number");
-    let bins_per_table = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
-    bins_per_table
-}
-
-// ─── Plan file constants ─────────────────────────────────────────────────────
-
-/// Path to the chunk PIR execution plan
-pub const CHUNK_PIR_PLAN_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_plan.bin";
-
-/// Magic number for plan files
-pub const PLAN_MAGIC: u64 = 0xBA7C_01A0_0000_0001;
-
-/// Number of rounds to batch together for server processing
-pub const ROUNDS_PER_BATCH: usize = 5;
-
-/// Number of consecutive 40-byte chunks grouped into one PIR query unit.
-/// Set to 1 for original per-chunk behaviour, 10 for 400-byte units, etc.
-/// The cuckoo table (gen_7) is always built at chunk granularity; this
-/// constant only affects planning (gen_9) and retrieval (gen_10b).
-pub const CHUNKS_PER_UNIT: usize = 1;
-
-/// Byte size of one unit's payload: CHUNKS_PER_UNIT × CHUNK_SIZE.
-pub const UNIT_DATA_SIZE: usize = CHUNKS_PER_UNIT * CHUNK_SIZE;
-
-// ─── PBC cuckoo placement and round planning ─────────────────────────────────
-
-/// Cuckoo-place item `qi` into one of its candidate buckets with eviction.
-/// Returns true if placed, false if `max_kicks` exceeded.
-///
-/// `cand_buckets[qi]` must yield the candidate bucket indices for item `qi`.
-pub fn pbc_cuckoo_place<C: AsRef<[usize]>>(
-    cand_buckets: &[C],
-    buckets: &mut [Option<usize>],
-    qi: usize,
-    max_kicks: usize,
-    num_hashes: usize,
-) -> bool {
-    let cands = cand_buckets[qi].as_ref();
-    for &c in cands {
-        if buckets[c].is_none() {
-            buckets[c] = Some(qi);
-            return true;
-        }
-    }
-
-    let mut current_qi = qi;
-    let mut current_bucket = cands[0];
-
-    for kick in 0..max_kicks {
-        let evicted_qi = buckets[current_bucket].unwrap();
-        buckets[current_bucket] = Some(current_qi);
-        let ev_cands = cand_buckets[evicted_qi].as_ref();
-
-        for offset in 0..num_hashes {
-            let c = ev_cands[(kick + offset) % num_hashes];
-            if c == current_bucket {
-                continue;
-            }
-            if buckets[c].is_none() {
-                buckets[c] = Some(evicted_qi);
-                return true;
-            }
-        }
-
-        let mut next_bucket = ev_cands[0];
-        for offset in 0..num_hashes {
-            let c = ev_cands[(kick + offset) % num_hashes];
-            if c != current_bucket {
-                next_bucket = c;
-                break;
-            }
-        }
-        current_qi = evicted_qi;
-        current_bucket = next_bucket;
-    }
-
-    false
-}
-
-/// Plan multi-round PBC placement for items with candidate buckets.
-/// Returns rounds, each round is a `Vec<(item_index, bucket_id)>`.
-pub fn pbc_plan_rounds<C: AsRef<[usize]> + Clone>(
-    item_buckets: &[C],
-    num_buckets: usize,
-    num_hashes: usize,
-    max_kicks: usize,
-) -> Vec<Vec<(usize, usize)>> {
-    let mut remaining: Vec<usize> = (0..item_buckets.len()).collect();
-    let mut rounds = Vec::new();
-
-    while !remaining.is_empty() {
-        let round_cands: Vec<C> = remaining.iter().map(|&i| item_buckets[i].clone()).collect();
-        let mut bucket_owner: Vec<Option<usize>> = vec![None; num_buckets];
-        let mut placed_local = Vec::new();
-
-        for li in 0..round_cands.len() {
-            if placed_local.len() >= num_buckets {
-                break;
-            }
-            let saved = bucket_owner.clone();
-            if pbc_cuckoo_place(&round_cands, &mut bucket_owner, li, max_kicks, num_hashes) {
-                placed_local.push(li);
-            } else {
-                bucket_owner = saved;
-            }
-        }
-
-        let mut round_entries = Vec::new();
-        for b in 0..num_buckets {
-            if let Some(local_idx) = bucket_owner[b] {
-                round_entries.push((remaining[local_idx], b));
-            }
-        }
-
-        if round_entries.is_empty() {
-            eprintln!(
-                "PBC placement: could not place any items, {} remaining",
-                remaining.len()
-            );
-            break;
-        }
-
-        let placed_orig: Vec<usize> = placed_local.iter().map(|&li| remaining[li]).collect();
-        remaining.retain(|idx| !placed_orig.contains(idx));
-        rounds.push(round_entries);
-    }
-
-    rounds
-}
-
-// ─── Varint decoder ──────────────────────────────────────────────────────────
-
-/// Read a LEB128 unsigned varint from `data`. Returns (value, bytes_consumed).
-pub fn read_varint(data: &[u8]) -> (u64, usize) {
-    let mut result: u64 = 0;
-    let mut shift = 0u32;
-    for (i, &byte) in data.iter().enumerate() {
-        result |= ((byte & 0x7F) as u64) << shift;
-        if byte & 0x80 == 0 {
-            return (result, i + 1);
-        }
-        shift += 7;
-        if shift >= 64 {
-            panic!("VarInt too large");
-        }
-    }
-    panic!("Unexpected end of data while reading varint");
+    pir_core::hash::read_chunk_cuckoo_header(data)
 }

@@ -1,8 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["build",
+members = ["pir-core",
+    "build",
     "runtime",
     "harmonypir-wasm",
+    "block_reader",
+    "pir-core-wasm",
 ]
 exclude = ["electrum_plugin/harmonypir-python"]
 
