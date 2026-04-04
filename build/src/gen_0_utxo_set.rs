@@ -52,7 +52,7 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 /// Output file path for the flat UTXO set
-const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/utxo_set.bin";
+const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_set.bin";
 
 /// Size of each output entry in bytes
 const ENTRY_SIZE: u64 = 68;

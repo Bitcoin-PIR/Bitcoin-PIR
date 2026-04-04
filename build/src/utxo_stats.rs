@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::time::Instant;
 
-const INPUT_FILE: &str = "/Volumes/Bitcoin/data/utxo_set.bin";
+const INPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_set.bin";
 
 const ENTRY_SIZE: usize = 68;
 const SCRIPT_HASH_SIZE: usize = 20;

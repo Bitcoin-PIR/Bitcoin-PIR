@@ -25,7 +25,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::time::Instant;
 
-const DATA_DIR: &str = "/Volumes/Bitcoin/data";
+const DATA_DIR: &str = "/Volumes/Bitcoin/data/intermediate";
 const BLOCK_SIZE: usize = 40;
 const SCRIPT_HASH_SIZE: usize = 20;
 const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1; // 25

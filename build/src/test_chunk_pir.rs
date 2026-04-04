@@ -35,7 +35,7 @@ const DPF_N: u8 = 20;
 
 const EMPTY: u32 = u32::MAX;
 
-const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_results.bin";
+const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/chunk_pir_results.bin";
 
 // ─── DPF bit extraction ─────────────────────────────────────────────────────
 

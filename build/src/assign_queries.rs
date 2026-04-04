@@ -18,7 +18,7 @@ use common::*;
 
 use std::fs;
 
-const QUERIES_FILE: &str = "/Volumes/Bitcoin/data/test_queries_50.bin";
+const QUERIES_FILE: &str = "/Volumes/Bitcoin/data/intermediate/test_queries_50.bin";
 const MAX_KICKS: usize = 1000;
 
 /// Represents a query's bucket assignment.

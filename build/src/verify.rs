@@ -12,7 +12,7 @@ use std::fs::File;
 use std::time::Instant;
 
 /// Path to the UTXO chunks index file (nodust, 80-byte blocks)
-const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
+const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_index_nodust.bin";
 
 /// Path to the serialized Batch PIR cuckoo tables
 const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";

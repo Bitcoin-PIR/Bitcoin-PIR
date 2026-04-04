@@ -19,8 +19,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
-const UTXO_FILE: &str = "/Volumes/Bitcoin/data/utxo_set.bin";
-const WHALES_FILE: &str = "/Volumes/Bitcoin/data/whale_addresses.txt";
+const UTXO_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_set.bin";
+const WHALES_FILE: &str = "/Volumes/Bitcoin/data/intermediate/whale_addresses.txt";
 
 const ENTRY_SIZE: usize = 68;
 const DUST_THRESHOLD: u64 = 576;

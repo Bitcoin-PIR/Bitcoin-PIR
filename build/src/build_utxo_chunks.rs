@@ -1,10 +1,10 @@
 //! Build UTXO chunks database, skipping dust UTXOs (amount ≤ 576 sats).
 //!
-//! Reads `/Volumes/Bitcoin/data/utxo_set.bin` (68-byte entries),
+//! Reads `/Volumes/Bitcoin/data/intermediate/utxo_set.bin` (68-byte entries),
 //! groups entries by HASH160 script hash (excluding dust), and writes:
-//! - `/Volumes/Bitcoin/data/utxo_chunks_nodust.bin`       — compact UTXO data in 80-byte blocks
-//! - `/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin`  — index (script_hash → offset, num_chunks)
-//! - `/Volumes/Bitcoin/data/top100_addresses.bin`          — top 100 largest groups
+//! - `/Volumes/Bitcoin/data/intermediate/utxo_chunks_nodust.bin`       — compact UTXO data in 80-byte blocks
+//! - `/Volumes/Bitcoin/data/intermediate/utxo_chunks_index_nodust.bin`  — index (script_hash → offset, num_chunks)
+//! - `/Volumes/Bitcoin/data/intermediate/top100_addresses.bin`          — top 100 largest groups
 //!
 //! Each group occupies ceil(data_len / 80) contiguous 80-byte blocks, padded with zeros.
 //! Index stores offset/2 as u32 (2-byte alignment guaranteed by 80-byte blocks).
@@ -20,10 +20,10 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
-const INPUT_FILE: &str = "/Volumes/Bitcoin/data/utxo_set.bin";
-const CHUNKS_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_nodust.bin";
-const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
-const TOP_FILE: &str = "/Volumes/Bitcoin/data/top100_addresses.bin";
+const INPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_set.bin";
+const CHUNKS_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_nodust.bin";
+const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_index_nodust.bin";
+const TOP_FILE: &str = "/Volumes/Bitcoin/data/intermediate/top100_addresses.bin";
 
 const ENTRY_SIZE: usize = 68;
 const SCRIPT_HASH_SIZE: usize = 20;
@@ -34,7 +34,7 @@ const DUST_THRESHOLD: u64 = 576; // sats
 const MAX_UTXOS_PER_SPK: usize = 100; // skip script pubkeys with more than this many UTXOs
 const TOP_N: usize = 100;
 const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1; // script_hash + start_chunk_id(u32) + num_chunks(u8)
-const WHALES_FILE: &str = "/Volumes/Bitcoin/data/whale_addresses.txt";
+const WHALES_FILE: &str = "/Volumes/Bitcoin/data/intermediate/whale_addresses.txt";
 
 /// Zero buffer for padding (max padding = BLOCK_SIZE - 1 = 79 bytes)
 const ZERO_PAD: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];

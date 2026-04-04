@@ -20,8 +20,8 @@ use std::io::Write;
 use std::time::Instant;
 use rayon::prelude::*;
 
-const QUERIES_FILE: &str = "/Volumes/Bitcoin/data/test_queries_50.bin";
-const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_results.bin";
+const QUERIES_FILE: &str = "/Volumes/Bitcoin/data/intermediate/test_queries_50.bin";
+const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/batch_pir_results.bin";
 
 /// Each cuckoo bin has 3 slots, each a 13-byte inlined tagged entry.
 /// Result per DPF query = 3 * 13 = 39 bytes.

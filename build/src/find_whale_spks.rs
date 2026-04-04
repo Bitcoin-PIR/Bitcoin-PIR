@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use txoutset::Dump;
 
-const SNAPSHOT_FILE: &str = "/Volumes/Bitcoin/data/txoutset.dat";
-const WHALE_FILE: &str = "/Volumes/Bitcoin/data/whale_addresses.txt";
+const SNAPSHOT_FILE: &str = "/Volumes/Bitcoin/data/archive/txoutset.dat";
+const WHALE_FILE: &str = "/Volumes/Bitcoin/data/intermediate/whale_addresses.txt";
 
 fn main() {
     println!("=== Find Whale ScriptPubKeys ===");

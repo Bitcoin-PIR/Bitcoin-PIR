@@ -19,7 +19,7 @@ use std::time::Instant;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const PACKED_FILE: &str = "/Volumes/Bitcoin/data/onion_packed_entries.bin";
+const PACKED_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin";
 const NTT_STORE_FILE: &str = "/Volumes/Bitcoin/data/onion_shared_ntt.bin";
 const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/onion_chunk_cuckoo.bin";
 

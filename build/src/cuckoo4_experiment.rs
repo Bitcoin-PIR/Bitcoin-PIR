@@ -12,7 +12,7 @@ use std::fs::File;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-const INDEX_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_index_nodust.bin";
+const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_index_nodust.bin";
 const INDEX_ENTRY_SIZE: usize = 28;
 const SCRIPT_HASH_SIZE: usize = 20;
 

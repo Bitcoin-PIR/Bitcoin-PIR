@@ -28,7 +28,7 @@ use std::time::Instant;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const INDEX_FILE: &str = "/Volumes/Bitcoin/data/onion_index.bin";
+const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_index.bin";
 const OUTPUT_DIR: &str = "/Volumes/Bitcoin/data/onion_index_pir";
 const META_FILE: &str = "/Volumes/Bitcoin/data/onion_index_meta.bin";
 

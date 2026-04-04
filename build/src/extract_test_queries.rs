@@ -14,7 +14,7 @@ use std::fs::File;
 use std::io::Write;
 
 const NUM_QUERIES: usize = 50;
-const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/test_queries_50.bin";
+const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/test_queries_50.bin";
 
 fn main() {
     println!("=== Extract {} Random Test Queries ===", NUM_QUERIES);

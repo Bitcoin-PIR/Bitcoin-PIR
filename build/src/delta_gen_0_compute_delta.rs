@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use txoutset::Dump;
 
-const OUTPUT_DIR: &str = "/Volumes/Bitcoin/data";
+const OUTPUT_DIR: &str = "/Volumes/Bitcoin/data/intermediate";
 const DUST_THRESHOLD: u64 = 576;
 
 /// Write a LEB128 varint to a BufWriter.

@@ -13,7 +13,7 @@
 //! Usage:
 //!   gen_4_build_merkle [--data-dir <dir>]
 //!
-//! By default reads from /Volumes/Bitcoin/data/ and writes to the same dir.
+//! By default reads intermediates from /Volumes/Bitcoin/data/intermediate/ and writes server files to /Volumes/Bitcoin/data/.
 //! With --data-dir, reads/writes from a database directory.
 
 use memmap2::Mmap;
@@ -94,8 +94,8 @@ fn main() {
         i += 1;
     }
 
-    let index_file = format!("{}/utxo_chunks_index_nodust.bin", data_dir);
-    let chunks_file = format!("{}/utxo_chunks_nodust.bin", data_dir);
+    let index_file = format!("{}/intermediate/utxo_chunks_index_nodust.bin", data_dir);
+    let chunks_file = format!("{}/intermediate/utxo_chunks_nodust.bin", data_dir);
 
     println!("=== Gen 4: Build Merkle Tree ===");
     println!("Data dir: {}", data_dir);

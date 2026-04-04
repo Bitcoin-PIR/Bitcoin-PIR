@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 /// Path to the UTXO chunks data file (80-byte blocks, no dust)
-const CHUNKS_FILE: &str = "/Volumes/Bitcoin/data/utxo_chunks_nodust.bin";
+const CHUNKS_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_nodust.bin";
 
 /// Output file for the chunk-level cuckoo tables
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_cuckoo.bin";

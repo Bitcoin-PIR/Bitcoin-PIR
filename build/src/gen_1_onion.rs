@@ -1,6 +1,6 @@
 //! Pack UTXO data into 3840-byte OnionPIR entries + build new-format index.
 //!
-//! Reads `/Volumes/Bitcoin/data/utxo_set.bin` (68-byte raw UTXO entries),
+//! Reads `/Volumes/Bitcoin/data/intermediate/utxo_set.bin` (68-byte raw UTXO entries),
 //! groups by script hash, serializes with varint encoding, and greedily packs
 //! into 3840-byte entries (one OnionPIR plaintext = 2048 coefficients × 15 bits).
 //!
@@ -24,9 +24,9 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
-const INPUT_FILE: &str = "/Volumes/Bitcoin/data/utxo_set.bin";
-const PACKED_FILE: &str = "/Volumes/Bitcoin/data/onion_packed_entries.bin";
-const INDEX_FILE: &str = "/Volumes/Bitcoin/data/onion_index.bin";
+const INPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_set.bin";
+const PACKED_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin";
+const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_index.bin";
 
 const ENTRY_SIZE_RAW: usize = 68; // raw UTXO entry from utxo_set.bin
 const SCRIPT_HASH_SIZE: usize = 20;
