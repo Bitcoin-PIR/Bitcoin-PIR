@@ -15,9 +15,9 @@ import {
   CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
   INDEX_ENTRY_SIZE, CHUNK_SLOT_SIZE, CHUNK_SIZE, TAG_SIZE,
   HARMONY_INDEX_W, HARMONY_CHUNK_W, HARMONY_EMPTY,
-  REQ_HARMONY_GET_INFO, REQ_HARMONY_HINTS,
+  REQ_HARMONY_HINTS,
   REQ_HARMONY_BATCH_QUERY, RESP_HARMONY_BATCH_QUERY,
-  RESP_HARMONY_INFO, RESP_HARMONY_HINTS, RESP_ERROR,
+  RESP_HARMONY_HINTS, RESP_ERROR,
 } from './constants.js';
 
 import {
@@ -29,6 +29,9 @@ import {
 
 import { cuckooPlace, planRounds } from './pbc.js';
 import { readVarint, decodeUtxoData } from './codec.js';
+import { findEntryInIndexResult, findChunkInResult } from './scan.js';
+import { ManagedWebSocket } from './ws.js';
+import { fetchServerInfoJson } from './server-info.js';
 
 import { HarmonyWorkerPool, BuildItem, BuildResult, ProcessItem } from './harmonypir_worker_pool.js';
 
@@ -140,7 +143,7 @@ export interface QueryInspectorData {
 export class HarmonyPirClient {
   private config: HarmonyPirClientConfig;
   private wasm: HarmonyWasmModule | null = null;
-  private queryWs: WebSocket | null = null;
+  private queryWs: ManagedWebSocket | null = null;
   private hintWs: WebSocket | null = null;
   private pool: HarmonyWorkerPool | null = null;
 
@@ -169,10 +172,6 @@ export class HarmonyPirClient {
 
   // Inspector data from the last queryBatch call.
   lastInspectorData: Map<number, QueryInspectorData> | null = null;
-
-  // Pending response callbacks
-  private pendingCallbacks: Map<string, (data: Uint8Array) => void> = new Map();
-  private callbackId = 0;
 
   // Generation counter to abort stale hint fetches.
   private hintFetchGen = 0;
@@ -246,33 +245,28 @@ export class HarmonyPirClient {
     }
   }
 
-  /** Connect to the Query Server via WebSocket. */
+  /** Connect to the Query Server via WebSocket (delegates to shared ws.ts). */
   async connectQueryServer(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.queryWs = new WebSocket(this.config.queryServerUrl);
-      this.queryWs.binaryType = 'arraybuffer';
-      this.queryWs.onopen = () => {
-        this.log('Connected to Query Server');
-        resolve();
-      };
-      this.queryWs.onerror = (e) => reject(e);
-      this.queryWs.onmessage = (ev) => this.handleQueryResponse(ev);
+    this.queryWs = new ManagedWebSocket({
+      url: this.config.queryServerUrl,
+      label: 'harmony-query',
+      onLog: (msg) => this.log(msg),
+      onClose: () => {
+        this.queryWs = null;
+        this._externalCloseCallback?.();
+      },
     });
+    await this.queryWs.connect();
+    this.log('Connected to Query Server');
   }
 
-  /** Fetch server info (bins_per_table, tag_seed) from Query Server. */
+  /** Fetch server info (bins_per_table, tag_seed) from Query Server via JSON. */
   async fetchServerInfo(): Promise<void> {
-    const info = await this.sendQueryRequest(
-      new Uint8Array([REQ_HARMONY_GET_INFO])
-    );
-    if (info[0] === RESP_ERROR) {
-      throw new Error('Server returned error for HarmonyGetInfo');
-    }
-    const view = new DataView(info.buffer, info.byteOffset);
-    this.indexBinsPerTable = view.getUint32(1, true);
-    this.chunkBinsPerTable = view.getUint32(5, true);
-    this.tagSeed = view.getBigUint64(11, true);
-    this.log(`Server info: indexBins=${this.indexBinsPerTable}, chunkBins=${this.chunkBinsPerTable}`);
+    const info = await fetchServerInfoJson(this.queryWs!);
+    this.indexBinsPerTable = info.index_bins_per_table;
+    this.chunkBinsPerTable = info.chunk_bins_per_table;
+    this.tagSeed = info.tag_seed;
+    this.log(`Server info (JSON): indexBins=${this.indexBinsPerTable}, chunkBins=${this.chunkBinsPerTable}`);
   }
 
   /** Initialize WASM bucket instances on workers (or main thread fallback). */
@@ -371,48 +365,7 @@ export class HarmonyPirClient {
 
   // ─── Private helpers ────────────────────────────────────────────────────
 
-  /** Scan a bin (w bytes) for a matching tag and extract index entry metadata. */
-  private findTagInBin(
-    binData: Uint8Array,
-    scriptHashBytes: Uint8Array,
-    w: number,
-  ): { startChunkId: number; numChunks: number } | null {
-    const expectedTag = computeTag(this.tagSeed, scriptHashBytes);
-    const view = new DataView(binData.buffer, binData.byteOffset, binData.byteLength);
-
-    const numSlots = w / INDEX_ENTRY_SIZE;
-    for (let slot = 0; slot < numSlots; slot++) {
-      const offset = slot * INDEX_ENTRY_SIZE;
-      if (offset + INDEX_ENTRY_SIZE > binData.length) break;
-
-      const tag = view.getBigUint64(offset, true);
-      if (tag === expectedTag) {
-        const startChunkId = view.getUint32(offset + TAG_SIZE, true);
-        const numChunks = binData[offset + TAG_SIZE + 4];
-        return { startChunkId, numChunks };
-      }
-    }
-
-    return null;
-  }
-
-  /** Scan a chunk bin for matching chunk_id and extract the chunk data. */
-  private findChunkInBin(binData: Uint8Array, targetChunkId: number): Uint8Array | null {
-    const view = new DataView(binData.buffer, binData.byteOffset, binData.byteLength);
-    const numSlots = binData.length / CHUNK_SLOT_SIZE;
-
-    for (let slot = 0; slot < numSlots; slot++) {
-      const offset = slot * CHUNK_SLOT_SIZE;
-      if (offset + CHUNK_SLOT_SIZE > binData.length) break;
-
-      const chunkId = view.getUint32(offset, true);
-      if (chunkId === targetChunkId) {
-        return binData.slice(offset + 4, offset + 4 + CHUNK_SIZE);
-      }
-    }
-
-    return null;
-  }
+  // Index/chunk bin scanning delegates to shared scan.ts
 
   /** Decode UTXOs from chunk data. Uses shared codec, converts to HarmonyUtxoEntry format. */
   private decodeUtxos(chunks: Uint8Array[]): HarmonyUtxoEntry[] {
@@ -435,44 +388,25 @@ export class HarmonyPirClient {
     }));
   }
 
-  /** Send a request to Query Server and wait for the response. */
+  /** Send a request to Query Server and wait for the response.
+   *  Prepends 4-byte LE length prefix, strips it from response.
+   *  Returns the payload (after length prefix). */
   private async sendQueryRequest(payload: Uint8Array): Promise<Uint8Array> {
     // Auto-reconnect if WebSocket is closed.
-    if (!this.queryWs || this.queryWs.readyState !== WebSocket.OPEN) {
+    if (!this.queryWs || !this.queryWs.isOpen()) {
       this.log('Query server disconnected, reconnecting...');
       await this.reconnectQueryServer();
     }
-    return new Promise((resolve, reject) => {
-      if (!this.queryWs || this.queryWs.readyState !== WebSocket.OPEN) {
-        return reject(new Error('Query Server not connected'));
-      }
+    if (!this.queryWs) throw new Error('Query Server not connected');
 
-      // Length-prefix the payload.
-      const msg = new Uint8Array(4 + payload.length);
-      new DataView(msg.buffer).setUint32(0, payload.length, true);
-      msg.set(payload, 4);
+    // Length-prefix the payload.
+    const msg = new Uint8Array(4 + payload.length);
+    new DataView(msg.buffer).setUint32(0, payload.length, true);
+    msg.set(payload, 4);
 
-      const id = String(this.callbackId++);
-      this.pendingCallbacks.set(id, resolve);
-
-      // For simplicity, treat the next response as this request's answer.
-      // (Production would use round_id for multiplexing.)
-      this.queryWs.send(msg);
-    });
-  }
-
-  private handleQueryResponse(ev: MessageEvent) {
-    const data = new Uint8Array(ev.data as ArrayBuffer);
-    if (data.length < 4) return;
-    const payload = data.slice(4); // skip length prefix
-
-    // Route to first pending callback (FIFO).
-    const firstKey = this.pendingCallbacks.keys().next().value;
-    if (firstKey !== undefined) {
-      const cb = this.pendingCallbacks.get(firstKey)!;
-      this.pendingCallbacks.delete(firstKey);
-      cb(payload);
-    }
+    const raw = await this.queryWs.sendRaw(msg);
+    // Strip length prefix from response (callers expect payload only).
+    return raw.slice(4);
   }
 
   private connectHintServer(): Promise<WebSocket> {
@@ -730,7 +664,8 @@ export class HarmonyPirClient {
         for (const [bucketId, qi] of realBuckets) {
           const answer = answers.get(bucketId);
           if (!answer) continue;
-          const found = this.findTagInBin(answer, scriptHashes[qi], HARMONY_INDEX_W);
+          const expectedTag = computeTag(this.tagSeed, scriptHashes[qi]);
+          const found = findEntryInIndexResult(answer, expectedTag, HARMONY_INDEX_W / INDEX_ENTRY_SIZE, INDEX_ENTRY_SIZE);
           if (found) {
             if (found.numChunks === 0) {
               whaleQueries.add(qi);
@@ -863,7 +798,7 @@ export class HarmonyPirClient {
           for (const [localB, { chunkId }] of realBuckets) {
             const answer = answers.get(K + localB); // global ID
             if (!answer) continue;
-            const found = this.findChunkInBin(answer, chunkId);
+            const found = findChunkInResult(answer, chunkId, answer.length / CHUNK_SLOT_SIZE, CHUNK_SLOT_SIZE);
             if (found) {
               recoveredChunks.set(chunkId, found);
               foundThisPlacement.add(chunkId);
@@ -1095,21 +1030,24 @@ export class HarmonyPirClient {
 
   /** Close query server WebSocket only, preserving workers and hints. */
   disconnectQueryServer(): void {
-    this.queryWs?.close();
+    this.queryWs?.disconnect();
     this.queryWs = null;
   }
 
   /** Check if the query server WebSocket is open. */
   isQueryServerConnected(): boolean {
-    return this.queryWs?.readyState === WebSocket.OPEN;
+    return this.queryWs?.isOpen() ?? false;
   }
 
-  /** Set a callback for when the query server WebSocket closes. */
+  /** Set a callback for when the query server WebSocket closes.
+   *  With ManagedWebSocket the onClose is set at construction time,
+   *  so this registers an additional external callback. */
   onQueryServerClose(callback: () => void): void {
-    if (this.queryWs) {
-      this.queryWs.onclose = callback;
-    }
+    // Store a reference; the ManagedWebSocket onClose already nulls queryWs.
+    // We wrap by re-creating with the callback if needed.
+    this._externalCloseCallback = callback;
   }
+  private _externalCloseCallback: (() => void) | null = null;
 
   /** Reconnect to the query server without re-downloading hints. */
   async reconnectQueryServer(): Promise<void> {
@@ -1122,7 +1060,7 @@ export class HarmonyPirClient {
   /** Disconnect and free all resources (full teardown). */
   disconnect(): void {
     this.hintFetchGen++; // abort any in-progress hint fetch
-    this.queryWs?.close();
+    this.queryWs?.disconnect();
     this.hintWs?.close();
     this.hintWs = null;
     if (this.pool) {

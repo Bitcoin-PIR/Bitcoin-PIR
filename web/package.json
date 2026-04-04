@@ -7,7 +7,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "vite",
-    "build-web": "vite build"
+    "build-web": "vite build",
+    "test": "vitest run"
   },
   "keywords": [
     "bitcoin",
@@ -29,6 +30,7 @@
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0",
     "vite": "^8.0.0",
-    "vite-plugin-wasm": "^3.6.0"
+    "vite-plugin-wasm": "^3.6.0",
+    "vitest": "^3.2.4"
   }
 }

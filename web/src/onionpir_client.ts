@@ -19,6 +19,9 @@ import {
 
 import { cuckooPlace, planRounds } from './pbc.js';
 import { readVarint, decodeUtxoData, DummyRng } from './codec.js';
+import { findEntryInOnionPirIndexResult } from './scan.js';
+import { ManagedWebSocket } from './ws.js';
+import { fetchServerInfoJson } from './server-info.js';
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './client.js';
 
@@ -35,11 +38,8 @@ const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
 // ─── OnionPIR wire protocol constants ─────────────────────────────────────
 
-const REQ_PING    = 0x00;
-const REQ_GET_INFO = 0x01;
-const REQ_ONIONPIR_GET_INFO = 0x33;
-const RESP_INFO   = 0x01;
-const RESP_PONG   = 0x00;
+// Protocol constants still used for OnionPIR-specific requests
+// (Ping/pong/info handled by ManagedWebSocket + fetchServerInfoJson)
 
 const REQ_REGISTER_KEYS         = 0x30;
 const REQ_ONIONPIR_INDEX_QUERY  = 0x31;
@@ -247,14 +247,12 @@ export interface OnionPirClientConfig {
 // ─── Client class ─────────────────────────────────────────────────────────
 
 export class OnionPirWebClient {
-  private ws: WebSocket | null = null;
+  private ws: ManagedWebSocket | null = null;
   private config: OnionPirClientConfig;
   private connectionState: ConnectionState = 'disconnected';
   private rng = new DummyRng();
-  private pending: Array<(data: Uint8Array) => void> = [];
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
-  // Server info
+  // Server info (fetched via JSON)
   private indexK = 0;
   private chunkK = 0;
   private indexBins = 0;
@@ -282,9 +280,9 @@ export class OnionPirWebClient {
   }
 
   getConnectionState(): ConnectionState { return this.connectionState; }
-  isConnected(): boolean { return this.ws !== null && this.ws.readyState === WebSocket.OPEN; }
+  isConnected(): boolean { return this.ws?.isOpen() ?? false; }
 
-  // ─── Connection ───────────────────────────────────────────────────────
+  // ─── Connection (delegates to shared ws.ts) ───────────────────────────
 
   async connect(): Promise<void> {
     this.setState('connecting', 'Loading WASM + connecting...');
@@ -294,143 +292,69 @@ export class OnionPirWebClient {
     this.log('WASM module loaded');
 
     // Connect WebSocket
-    const url = this.config.serverUrl;
-    this.log(`Connecting to ${url}`);
-
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(url);
-      ws.binaryType = 'arraybuffer';
-      ws.onopen = () => {
-        this.ws = ws;
-        this.pending = [];
-        resolve();
-      };
-      ws.onerror = () => reject(new Error(`Failed to connect to ${url}`));
-      ws.onmessage = (event) => {
-        const data = new Uint8Array(event.data as ArrayBuffer);
-        // Skip pong responses
-        if (data.length >= 5) {
-          const len = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
-          if (len === 1 && data[4] === RESP_PONG) return;
-        }
-        const cb = this.pending.shift();
-        if (cb) cb(data);
-      };
-      ws.onclose = () => {
+    this.ws = new ManagedWebSocket({
+      url: this.config.serverUrl,
+      label: 'onionpir',
+      onLog: (msg, level) => this.log(msg, level),
+      onClose: () => {
         this.ws = null;
-        this.stopHeartbeat();
         this.setState('disconnected');
-      };
+      },
     });
+    await this.ws.connect();
 
     this.setState('connected', 'Connected');
     this.log('Connected to server', 'success');
 
     // Fetch server info
     await this.fetchServerInfo();
-
-    // Start heartbeat
-    this.heartbeatTimer = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        const ping = new Uint8Array(5);
-        new DataView(ping.buffer).setUint32(0, 1, true);
-        ping[4] = REQ_PING;
-        this.ws.send(ping);
-      }
-    }, 30000);
   }
 
   disconnect(): void {
-    this.stopHeartbeat();
-    this.ws?.close();
+    this.ws?.disconnect();
     this.ws = null;
-    this.pending = [];
     this.setState('disconnected', 'Disconnected');
   }
 
-  private stopHeartbeat(): void {
-    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
-  }
-
-  // ─── Raw send/receive ─────────────────────────────────────────────────
+  // ─── Raw send/receive (delegates to shared ws.ts) ─────────────────────
 
   private sendRaw(msg: Uint8Array): Promise<Uint8Array> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('Not connected');
-    }
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        const idx = this.pending.indexOf(cb);
-        if (idx !== -1) this.pending.splice(idx, 1);
-        reject(new Error('Request timed out'));
-      }, 120000);
-      const cb = (data: Uint8Array) => { clearTimeout(timeout); resolve(data); };
-      this.pending.push(cb);
-      this.ws!.send(msg);
-    });
+    if (!this.ws) throw new Error('Not connected');
+    return this.ws.sendRaw(msg);
   }
 
-  // ─── Server info ──────────────────────────────────────────────────────
+  // ─── Server info (delegates to shared server-info.ts) ──────────────────
 
   private async fetchServerInfo(): Promise<void> {
-    const req = new Uint8Array(5);
-    new DataView(req.buffer).setUint32(0, 1, true);
-    req[4] = REQ_ONIONPIR_GET_INFO;
-    const raw = await this.sendRaw(req);
-    const payload = raw.slice(4); // skip length prefix
-    if (payload[0] !== RESP_INFO) throw new Error('Expected Info response');
-    const body = payload.slice(1);
-    const dv = new DataView(body.buffer, body.byteOffset, body.length);
+    const info = await fetchServerInfoJson(this.ws!);
 
-    if (body.length >= 25) {
-      // OnionPIR ServerInfoV2 format (from dedicated or unified OnionPIR server):
-      // [1B index_k][1B chunk_k][4B index_bins][4B chunk_bins][8B tag_seed][4B total_packed][2B bucket_size][1B slot_size]
-      this.indexK = body[0];
-      this.chunkK = body[1];
-      this.indexBins = dv.getUint32(2, true);
-      this.chunkBins = dv.getUint32(6, true);
-      this.tagSeed = dv.getBigUint64(10, true);
-      this.totalPacked = dv.getUint32(18, true);
-      this.indexBucketSize = dv.getUint16(22, true);
-      this.indexSlotSize = body[24];
+    if (info.onionpir) {
+      // Use OnionPIR-specific parameters
+      const opi = info.onionpir;
+      this.indexK = opi.index_k;
+      this.chunkK = opi.chunk_k;
+      this.indexBins = opi.index_bins_per_table;
+      this.chunkBins = opi.chunk_bins_per_table;
+      this.tagSeed = opi.tag_seed;
+      this.totalPacked = opi.total_packed_entries;
+      this.indexBucketSize = opi.index_cuckoo_bucket_size;
+      this.indexSlotSize = opi.index_slot_size;
     } else {
-      // Standard ServerInfo format (from unified server without OnionPIR data):
-      // [4B index_bins][4B chunk_bins][1B index_k][1B chunk_k][8B tag_seed]
-      this.indexBins = dv.getUint32(0, true);
-      this.chunkBins = dv.getUint32(4, true);
-      this.indexK = body[8];
-      this.chunkK = body[9];
-      this.tagSeed = dv.getBigUint64(10, true);
-      // Use defaults for OnionPIR-specific fields
+      // Fallback to top-level DPF params (server without OnionPIR data)
+      this.indexK = info.index_k;
+      this.chunkK = info.chunk_k;
+      this.indexBins = info.index_bins_per_table;
+      this.chunkBins = info.chunk_bins_per_table;
+      this.tagSeed = info.tag_seed;
       this.totalPacked = 0;
-      this.indexBucketSize = 4; // CUCKOO_BUCKET_SIZE
-      this.indexSlotSize = 13; // INDEX_SLOT_SIZE
+      this.indexBucketSize = info.index_cuckoo_bucket_size;
+      this.indexSlotSize = info.index_slot_size;
     }
 
-    this.log(`Server: index K=${this.indexK} bins=${this.indexBins} bucket_size=${this.indexBucketSize}, chunk K=${this.chunkK} bins=${this.chunkBins}, total_packed=${this.totalPacked}`);
+    this.log(`Server (JSON): index K=${this.indexK} bins=${this.indexBins} bucket_size=${this.indexBucketSize}, chunk K=${this.chunkK} bins=${this.chunkBins}, total_packed=${this.totalPacked}`);
   }
 
-  // ─── Index bin scanning ───────────────────────────────────────────────
-
-  private scanIndexBin(
-    entryBytes: Uint8Array,
-    tag: bigint,
-  ): { entryId: number; byteOffset: number; numEntries: number } | null {
-    const dv = new DataView(entryBytes.buffer, entryBytes.byteOffset, entryBytes.length);
-    for (let slot = 0; slot < this.indexBucketSize; slot++) {
-      const off = slot * this.indexSlotSize;
-      if (off + this.indexSlotSize > entryBytes.length) break;
-      const slotTag = dv.getBigUint64(off, true);
-      if (slotTag === tag && slotTag !== 0n) {
-        return {
-          entryId: dv.getUint32(off + 8, true),
-          byteOffset: dv.getUint16(off + 12, true),
-          numEntries: entryBytes[off + 14],
-        };
-      }
-    }
-    return null;
-  }
+  // ─── Index bin scanning (delegates to shared scan.ts) ────────────────────
 
   // ─── UTXO decoder (delegates to shared codec.ts) ────────────────────────
 
@@ -556,7 +480,7 @@ export class OnionPirWebClient {
             const bin = queryBins[qi];
             const entryBytes = indexClient.decryptResponse(bin, results[qi]);
             decrypted++;
-            const found = this.scanIndexBin(entryBytes, addrInfos[addrIdx].tag);
+            const found = findEntryInOnionPirIndexResult(entryBytes, addrInfos[addrIdx].tag, this.indexBucketSize, this.indexSlotSize);
             if (found) {
               indexResults[addrIdx] = found;
               break;

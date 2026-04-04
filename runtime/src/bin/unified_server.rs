@@ -308,8 +308,11 @@ impl UnifiedServerData {
 
         if let Some(ref opi) = self.onionpir_info {
             json.push_str(&format!(
-                r#","onionpir":{{"total_packed_entries":{},"index_bins_per_table":{},"chunk_bins_per_table":{}}}"#,
+                r#","onionpir":{{"total_packed_entries":{},"index_bins_per_table":{},"chunk_bins_per_table":{},"tag_seed":"0x{:016x}","index_k":{},"chunk_k":{},"index_cuckoo_bucket_size":{},"index_slot_size":{},"chunk_cuckoo_bucket_size":1,"chunk_slot_size":{}}}"#,
                 opi.total_packed_entries, opi.index_bins_per_table, opi.chunk_bins_per_table,
+                opi.tag_seed, opi.index_k, opi.chunk_k,
+                opi.index_cuckoo_bucket_size, opi.index_slot_size,
+                3840, // PACKED_ENTRY_SIZE = 3.75KB fixed bin size for OnionPIR chunks
             ));
         }
 
@@ -725,6 +728,9 @@ async fn main() {
                     }
                     REQ_GET_INFO => {
                         let _ = sink.send(Message::Binary(Response::Info(server.server_info()).encode().into())).await;
+                    }
+                    0x03 /* REQ_GET_INFO_JSON */ => {
+                        let _ = sink.send(Message::Binary(server.encode_info_json_response(0x03).into())).await;
                     }
                     0x33 /* REQ_ONIONPIR_GET_INFO */ if server.onionpir_info.is_some() => {
                         let _ = sink.send(Message::Binary(server.encode_info_response().into())).await;

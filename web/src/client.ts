@@ -8,11 +8,9 @@
 
 import {
   K, K_CHUNK, NUM_HASHES,
-  SCRIPT_HASH_SIZE, TAG_SIZE, INDEX_ENTRY_SIZE,
-  CHUNK_SIZE, CHUNKS_PER_UNIT, UNIT_DATA_SIZE,
-  CHUNK_SLOT_SIZE,
-  CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
-  CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
+  CHUNKS_PER_UNIT, UNIT_DATA_SIZE,
+  INDEX_CUCKOO_NUM_HASHES,
+  CHUNK_CUCKOO_NUM_HASHES,
 } from './constants.js';
 
 import {
@@ -30,6 +28,9 @@ import {
 
 import { cuckooPlace, planRounds } from './pbc.js';
 import { readVarint, decodeUtxoData, DummyRng } from './codec.js';
+import { findEntryInIndexResult, findChunkInResult } from './scan.js';
+import { ManagedWebSocket } from './ws.js';
+import { fetchServerInfoJson, type ServerInfoJson } from './server-info.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -61,23 +62,17 @@ export interface BatchPirClientConfig {
 // ─── Client ────────────────────────────────────────────────────────────────
 
 export class BatchPirClient {
-  private ws0: WebSocket | null = null;
-  private ws1: WebSocket | null = null;
+  private ws0: ManagedWebSocket | null = null;
+  private ws1: ManagedWebSocket | null = null;
   private config: BatchPirClientConfig;
   private connectionState: ConnectionState = 'disconnected';
   private rng = new DummyRng();
 
-  // Server info (fetched on connect)
+  // Server info (fetched on connect via JSON)
+  private serverInfo: ServerInfoJson | null = null;
   private indexBins = 0;
   private chunkBins = 0;
   private tagSeed = 0n;
-
-  // Pending response queues (FIFO)
-  private pending0: Array<(data: Uint8Array) => void> = [];
-  private pending1: Array<(data: Uint8Array) => void> = [];
-
-  // Heartbeat
-  private heartbeatTimers: Map<0 | 1, ReturnType<typeof setInterval>> = new Map();
 
   constructor(config: BatchPirClientConfig) {
     this.config = config;
@@ -100,146 +95,61 @@ export class BatchPirClient {
   }
 
   isConnected(): boolean {
-    return (
-      this.ws0 !== null && this.ws1 !== null &&
-      this.ws0.readyState === WebSocket.OPEN &&
-      this.ws1.readyState === WebSocket.OPEN
-    );
+    return (this.ws0?.isOpen() ?? false) && (this.ws1?.isOpen() ?? false);
   }
 
-  // ─── Connection ────────────────────────────────────────────────────────
+  // ─── Connection (delegates to shared ws.ts) ────────────────────────────
 
   async connect(): Promise<void> {
     this.setConnectionState('connecting', 'Connecting to servers...');
 
     try {
-      await Promise.all([
-        this.connectToServer(0),
-        this.connectToServer(1),
-      ]);
+      this.ws0 = new ManagedWebSocket({
+        url: this.config.server0Url,
+        label: 'server0',
+        onLog: (msg, level) => this.log(msg, level),
+        onClose: () => {
+          this.ws0 = null;
+          this.setConnectionState('disconnected', 'Server 0 closed');
+        },
+      });
+      this.ws1 = new ManagedWebSocket({
+        url: this.config.server1Url,
+        label: 'server1',
+        onLog: (msg, level) => this.log(msg, level),
+        onClose: () => {
+          this.ws1 = null;
+          this.setConnectionState('disconnected', 'Server 1 closed');
+        },
+      });
+
+      await Promise.all([this.ws0.connect(), this.ws1.connect()]);
 
       this.setConnectionState('connected', 'Connected to both servers');
       this.log('Connected to both servers', 'success');
 
       // Fetch server info
       await this.fetchServerInfo();
-
-      // Start heartbeats
-      this.startHeartbeat(0);
-      this.startHeartbeat(1);
     } catch (error) {
       this.setConnectionState('disconnected', `Connection failed: ${error}`);
       throw error;
     }
   }
 
-  private connectToServer(serverNum: 0 | 1): Promise<void> {
-    const url = serverNum === 0 ? this.config.server0Url : this.config.server1Url;
-    this.log(`Connecting to server ${serverNum}: ${url}`);
-
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
-      ws.binaryType = 'arraybuffer';
-
-      ws.onopen = () => {
-        if (serverNum === 0) {
-          this.ws0 = ws;
-          this.pending0 = [];
-        } else {
-          this.ws1 = ws;
-          this.pending1 = [];
-        }
-        resolve();
-      };
-
-      ws.onerror = (event) => {
-        reject(new Error(`Failed to connect to server ${serverNum}`));
-      };
-
-      ws.onmessage = (event) => {
-        const data = new Uint8Array(event.data as ArrayBuffer);
-
-        // Skip Pong responses from our heartbeat Ping requests.
-        // Protocol: [4B len LE][1B variant] — Pong variant is 0x00 with len=1.
-        // Without this check, Pong responses steal query callbacks from the
-        // pending queue, corrupting in-flight queries.
-        if (data.length >= 5) {
-          const len = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
-          if (len === 1 && data[4] === 0x00) {
-            return; // Pong — silently discard
-          }
-        }
-
-        const queue = serverNum === 0 ? this.pending0 : this.pending1;
-        const cb = queue.shift();
-        if (cb) cb(data);
-      };
-
-      ws.onclose = () => {
-        if (serverNum === 0) this.ws0 = null;
-        else this.ws1 = null;
-        this.stopHeartbeat(serverNum);
-      };
-    });
-  }
-
   disconnect(): void {
-    this.stopHeartbeat(0);
-    this.stopHeartbeat(1);
-    this.ws0?.close();
-    this.ws1?.close();
+    this.ws0?.disconnect();
+    this.ws1?.disconnect();
     this.ws0 = null;
     this.ws1 = null;
-    this.pending0 = [];
-    this.pending1 = [];
     this.setConnectionState('disconnected', 'Disconnected');
-  }
-
-  private startHeartbeat(serverNum: 0 | 1): void {
-    this.stopHeartbeat(serverNum);
-    const timer = setInterval(() => {
-      const ws = serverNum === 0 ? this.ws0 : this.ws1;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        const pingMsg = encodeRequest({ type: 'Ping' });
-        ws.send(pingMsg);
-      }
-    }, 30000);
-    this.heartbeatTimers.set(serverNum, timer);
-  }
-
-  private stopHeartbeat(serverNum: 0 | 1): void {
-    const timer = this.heartbeatTimers.get(serverNum);
-    if (timer) {
-      clearInterval(timer);
-      this.heartbeatTimers.delete(serverNum);
-    }
   }
 
   // ─── Raw WebSocket send/receive ────────────────────────────────────────
 
   private sendRaw(serverNum: 0 | 1, encoded: Uint8Array): Promise<Uint8Array> {
     const ws = serverNum === 0 ? this.ws0 : this.ws1;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new Error(`Not connected to server ${serverNum}`);
-    }
-
-    const queue = serverNum === 0 ? this.pending0 : this.pending1;
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        const idx = queue.indexOf(cb);
-        if (idx !== -1) queue.splice(idx, 1);
-        reject(new Error(`Request to server ${serverNum} timed out`));
-      }, 120000);
-
-      const cb = (data: Uint8Array) => {
-        clearTimeout(timeout);
-        resolve(data);
-      };
-
-      queue.push(cb);
-      ws.send(encoded);
-    });
+    if (!ws) throw new Error(`Not connected to server ${serverNum}`);
+    return ws.sendRaw(encoded);
   }
 
   private async sendRequest(serverNum: 0 | 1, request: Request): Promise<Response> {
@@ -262,16 +172,15 @@ export class BatchPirClient {
   // ─── Server info ───────────────────────────────────────────────────────
 
   private async fetchServerInfo(): Promise<void> {
-    const resp = await this.sendRequest(0, { type: 'GetInfo' });
-    if (resp.type !== 'Info') {
-      throw new Error(`Unexpected response for GetInfo: ${resp.type}`);
-    }
-    this.indexBins = resp.info.indexBinsPerTable;
-    this.chunkBins = resp.info.chunkBinsPerTable;
-    this.tagSeed = resp.info.tagSeed;
-    this.log(`Server info: index_bins=${this.indexBins}, chunk_bins=${this.chunkBins}, index_K=${resp.info.indexK}, chunk_K=${resp.info.chunkK}, tag_seed=0x${this.tagSeed.toString(16)}`);
+    const info = await fetchServerInfoJson(this.ws0!);
+    this.serverInfo = info;
+    this.indexBins = info.index_bins_per_table;
+    this.chunkBins = info.chunk_bins_per_table;
+    this.tagSeed = info.tag_seed;
+    this.log(`Server info (JSON): index_bins=${this.indexBins}, chunk_bins=${this.chunkBins}, index_K=${info.index_k}, chunk_K=${info.chunk_k}, tag_seed=0x${this.tagSeed.toString(16)}`);
 
-    await this.sendRequest(1, { type: 'GetInfo' });
+    // Also fetch from server 1 to keep connection in sync
+    await fetchServerInfoJson(this.ws1!);
   }
 
   getServerInfo(): { indexBins: number; chunkBins: number } {
@@ -290,42 +199,7 @@ export class BatchPirClient {
 
   // ─── Index result parsing ─────────────────────────────────────────────
 
-  private findEntryInIndexResult(
-    result: Uint8Array,
-    expectedTag: bigint,
-  ): { startChunkId: number; numChunks: number } | null {
-    for (let slot = 0; slot < CUCKOO_BUCKET_SIZE; slot++) {
-      const base = slot * INDEX_ENTRY_SIZE;
-      const dv = new DataView(result.buffer, result.byteOffset + base, INDEX_ENTRY_SIZE);
-      const slotTag = dv.getBigUint64(0, true);
-      if (slotTag === expectedTag) {
-        const startChunkId = dv.getUint32(TAG_SIZE, true);
-        const numChunks = result[base + TAG_SIZE + 4];
-        return { startChunkId, numChunks };
-      }
-    }
-    return null;
-  }
-
-  // ─── Chunk result parsing ─────────────────────────────────────────────
-
-  private findChunkInResult(result: Uint8Array, chunkId: number): Uint8Array | null {
-    const target = new Uint8Array(4);
-    new DataView(target.buffer).setUint32(0, chunkId, true);
-
-    for (let slot = 0; slot < CHUNK_CUCKOO_BUCKET_SIZE; slot++) {
-      const base = slot * CHUNK_SLOT_SIZE;
-      if (
-        result[base] === target[0] &&
-        result[base + 1] === target[1] &&
-        result[base + 2] === target[2] &&
-        result[base + 3] === target[3]
-      ) {
-        return result.slice(base + 4, base + CHUNK_SLOT_SIZE);
-      }
-    }
-    return null;
-  }
+  // ─── Index/chunk result parsing (delegates to shared scan.ts) ──────────
 
   // ─── Cuckoo placement and round planning (delegates to shared pbc.ts) ──
 
@@ -443,7 +317,7 @@ export class BatchPirClient {
         const expectedTag = computeTag(this.tagSeed, scriptHashes[queryIdx]);
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
           const result = this.xorBuffers(r0[h], r1[h]);
-          found = this.findEntryInIndexResult(result, expectedTag);
+          found = findEntryInIndexResult(result, expectedTag, this.serverInfo!.index_cuckoo_bucket_size, this.serverInfo!.index_slot_size);
           if (found) break;
         }
 
@@ -566,7 +440,7 @@ export class BatchPirClient {
         const numResults = cr0.length;
         for (let h = 0; h < numResults; h++) {
           const result = this.xorBuffers(cr0[h], cr1[h]);
-          data = this.findChunkInResult(result, chunkId);
+          data = findChunkInResult(result, chunkId, this.serverInfo!.chunk_cuckoo_bucket_size, this.serverInfo!.chunk_slot_size);
           if (data) break;
         }
 
