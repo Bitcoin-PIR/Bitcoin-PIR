@@ -306,12 +306,13 @@ fn main() {
         0
     };
 
-    // L0 siblings are embedded in MERKLE_DATA, so sibling tables start at L1
-    let actual_sibling_levels = if num_sibling_levels > 0 { num_sibling_levels - 1 } else { 0 };
+    // L0 siblings are embedded in MERKLE_DATA, so sibling tables cover L1..L(num_sibling_levels).
+    // After that, tree-top cache covers the remaining levels up to root.
+    // num_sibling_levels = depth - cache_from_level (e.g. 26-10=16).
     println!("[6] Building {} sibling cuckoo tables (L1..L{}, L0 in MERKLE_DATA)...",
-        actual_sibling_levels, num_sibling_levels.saturating_sub(1));
+        num_sibling_levels - 1, num_sibling_levels);
 
-    for level in 1..num_sibling_levels {
+    for level in 1..=num_sibling_levels {
         let t = Instant::now();
         let nodes_at_level = tree.num_leaves >> level;
         // Number of sibling pairs = nodes_at_level / 2
@@ -408,7 +409,7 @@ fn main() {
     println!("=== Summary ===");
     println!("Merkle tree:     {} leaves, depth {}", tree.num_real_leaves, tree.depth);
     println!("MERKLE_DATA:     {}", format!("{}/merkle_data_cuckoo.bin", data_dir));
-    println!("Sibling levels:  {} (L1..L{}, L0 embedded in MERKLE_DATA)", actual_sibling_levels, num_sibling_levels.saturating_sub(1));
+    println!("Sibling levels:  {} (L1..L{}, L0 embedded in MERKLE_DATA)", num_sibling_levels, num_sibling_levels);
     println!("Tree-top cache:  {} levels ({} nodes)", cache_from_level, top_cache.len());
     println!("Root:            {}", format!("{}/merkle_root.bin", data_dir));
     println!("Total time:      {:.1}s", t_total.elapsed().as_secs_f64());
