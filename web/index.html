@@ -799,7 +799,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         // ─── Shared batch Merkle verification button ──────────────────────
-        function addBatchMerkleButton(container, verifiableResults, prefix, verifyFn, getRootHex) {
+        // verifyBatchFn: (results[], onProgress) → Promise<boolean[]>  (single batch call)
+        function addBatchMerkleButton(container, verifiableResults, prefix, verifyBatchFn, getRootHex) {
             const bar = document.createElement('div');
             bar.style.cssText = 'margin: 15px 0; padding: 12px 16px; background: #f0faf0; border: 1px solid #c3e6cb; border-radius: 8px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;';
             bar.innerHTML = `
@@ -813,36 +814,36 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             btn.addEventListener('click', async () => {
                 btn.disabled = true;
-                const total = verifiableResults.length;
-                let verified = 0, failed = 0;
+                btn.textContent = `⏳ Verifying ${verifiableResults.length} proofs...`;
+                statusSpan.textContent = '';
+                statusSpan.style.color = '#888';
 
-                for (let i = 0; i < total; i++) {
-                    const result = verifiableResults[i];
-                    btn.textContent = `⏳ Verifying ${i + 1}/${total}...`;
-                    statusSpan.textContent = '';
-                    statusSpan.style.color = '#888';
-                    try {
-                        const ok = await verifyFn(result, (step, detail) => {
-                            statusSpan.textContent = `[${i + 1}/${total}] ${step}: ${detail}`;
-                        });
-                        if (ok) verified++; else failed++;
-                    } catch (err) {
-                        failed++;
-                        console.error(`Merkle verify error [${i}]:`, err);
+                try {
+                    const booleans = await verifyBatchFn(verifiableResults, (step, detail) => {
+                        statusSpan.textContent = `${step}: ${detail}`;
+                    });
+
+                    const verified = booleans.filter(Boolean).length;
+                    const failed = booleans.length - verified;
+
+                    if (failed === 0) {
+                        btn.textContent = `✅ All ${verified} Verified`;
+                        btn.style.backgroundColor = '#155724';
+                        const rootHex = getRootHex();
+                        statusSpan.textContent = rootHex ? `Root: ${rootHex.substring(0, 16)}…` : '';
+                        statusSpan.style.color = '#28a745';
+                    } else {
+                        btn.textContent = `⚠️ ${verified} verified, ${failed} failed`;
+                        btn.style.backgroundColor = failed === booleans.length ? '#dc3545' : '#e0820e';
+                        statusSpan.textContent = '';
+                        statusSpan.style.color = '#dc3545';
                     }
-                }
-
-                if (failed === 0) {
-                    btn.textContent = `✅ All ${verified} Verified`;
-                    btn.style.backgroundColor = '#155724';
-                    const rootHex = getRootHex();
-                    statusSpan.textContent = rootHex ? `Root: ${rootHex.substring(0, 16)}…` : '';
-                    statusSpan.style.color = '#28a745';
-                } else {
-                    btn.textContent = `⚠️ ${verified} verified, ${failed} failed`;
-                    btn.style.backgroundColor = failed === total ? '#dc3545' : '#e0820e';
-                    statusSpan.textContent = '';
+                } catch (err) {
+                    btn.textContent = '❌ Error';
+                    btn.style.backgroundColor = '#dc3545';
+                    statusSpan.textContent = err.message;
                     statusSpan.style.color = '#dc3545';
+                    console.error('Batch Merkle verify error:', err);
                 }
                 btn.disabled = false;
             });
@@ -982,7 +983,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const verifiable = dpfQueryResults.filter(r => r && !r.isWhale && r.treeLoc !== undefined);
                 if (verifiable.length > 0 && client.hasMerkle()) {
                     addBatchMerkleButton(resultsContainer, verifiable, 'dpf',
-                        (result, onProg) => client.verifyMerkle(result, onProg),
+                        (results, onProg) => client.verifyMerkleBatch(results, onProg),
                         () => client.getMerkleRootHex());
                 }
 
@@ -1206,7 +1207,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const opVerifiable = opQueryResults.filter(r => r && !r.isWhale && r.treeLoc !== undefined);
                 if (opVerifiable.length > 0 && opClient.hasMerkle()) {
                     addBatchMerkleButton(resultsContainer, opVerifiable, 'onionpir',
-                        (result, onProg) => opClient.verifyMerkle(result, onProg),
+                        (results, onProg) => opClient.verifyMerkleBatch(results, onProg),
                         () => opClient.getMerkleRootHex());
                 }
 
@@ -1522,7 +1523,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const hpVerifiable = hpAllHResults.filter(r => r && !r.whale && r.treeLoc !== undefined && r.rawChunkData);
                 if (hpVerifiable.length > 0 && hpClient.hasMerkle()) {
                     addBatchMerkleButton(resultsContainer, hpVerifiable, 'harmonypir',
-                        (result, onProg) => hpClient.verifyMerkle(result, onProg),
+                        (results, onProg) => hpClient.verifyMerkleBatch(results, onProg),
                         () => hpClient.getMerkleRootHex());
                 }
 

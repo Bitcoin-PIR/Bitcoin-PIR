@@ -712,26 +712,35 @@ export class OnionPirWebClient {
   }
 
   /**
-   * Verify a single query result against the OnionPIR Merkle tree.
+   * Batch-verify Merkle proofs for multiple OnionPIR query results.
    *
-   * Fetches the tree-top cache, runs FHE sibling PIR rounds per level,
-   * and walks the tree-top cache to verify the full proof to the root.
+   * Packs all addresses' sibling groupIds into PBC batches per level,
+   * deduplicating shared groupIds. Uses FHE queries for sibling tables.
    *
    * Call after queryBatch() — requires FHE keys to still be registered.
    */
-  async verifyMerkle(
-    result: QueryResult,
+  async verifyMerkleBatch(
+    results: QueryResult[],
     onProgress?: (step: string, detail: string) => void,
-  ): Promise<boolean> {
+  ): Promise<boolean[]> {
     if (!this.isConnected()) throw new Error('Not connected');
     if (!this.wasmModule) throw new Error('WASM not loaded');
     const merkle = this.serverInfo?.onionpir_merkle;
     if (!merkle || merkle.sibling_levels === 0) throw new Error('Server does not support OnionPIR Merkle');
-    if (!result.scriptHash || !result.rawChunkData || result.treeLoc === undefined) {
-      throw new Error('Result missing data for Merkle verification (scriptHash, rawChunkData, treeLoc)');
-    }
-    if (result.isWhale) throw new Error('Cannot verify whale addresses');
     if (!this.fheSecretKey) throw new Error('No FHE keys — call queryBatch() first');
+
+    // Filter verifiable results
+    const items: { scriptHash: Uint8Array; rawChunkData: Uint8Array; treeLoc: number }[] = [];
+    const itemToResult: number[] = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.isWhale || !r.scriptHash || !r.rawChunkData || r.treeLoc === undefined) continue;
+      items.push({ scriptHash: r.scriptHash, rawChunkData: r.rawChunkData, treeLoc: r.treeLoc });
+      itemToResult.push(i);
+    }
+
+    const N = items.length;
+    if (N === 0) return results.map(() => false);
 
     const progress = onProgress || (() => {});
 
@@ -740,151 +749,210 @@ export class OnionPirWebClient {
     const treeTopData = await this.fetchOnionPirTreeTopCache();
     const expectedRoot = hexToBytes(merkle.root);
 
-    // Verify tree-top cache integrity
     const treeTopHash = sha256(treeTopData.rawBytes);
     const expectedTopHash = hexToBytes(merkle.tree_top_hash);
     if (!treeTopHash.every((b, i) => b === expectedTopHash[i])) {
       this.log('Tree-top cache integrity check FAILED', 'error');
-      result.merkleVerified = false;
-      return false;
+      return results.map(() => false);
     }
     this.log('Tree-top cache integrity: OK');
 
-    // ── Compute leaf hash ────────────────────────────────────────────
-    const dataHash = computeDataHash(result.rawChunkData);
-    const leafHash = computeLeafHash(result.scriptHash, result.treeLoc, dataHash);
-    let currentHash = leafHash;
-    let nodeIdx = result.treeLoc;
+    // ── Initialize per-item state ────────────────────────────────────
+    const currentHash: Uint8Array[] = new Array(N);
+    const nodeIdx: number[] = new Array(N);
+    const failed: boolean[] = new Array(N).fill(false);
 
-    // ── Sibling PIR rounds (FHE) ─────────────────────────────────────
+    for (let i = 0; i < N; i++) {
+      const dataHash = computeDataHash(items[i].rawChunkData);
+      currentHash[i] = computeLeafHash(items[i].scriptHash, items[i].treeLoc, dataHash);
+      nodeIdx[i] = items[i].treeLoc;
+    }
+
+    // ── Sibling PIR rounds (batched FHE) ─────────────────────────────
     for (let level = 0; level < merkle.sibling_levels; level++) {
-      progress('Merkle', `Sibling level ${level + 1}/${merkle.sibling_levels}...`);
       const levelInfo = merkle.levels[level];
-      const groupId = Math.floor(nodeIdx / merkle.arity);
-      const childPos = nodeIdx % merkle.arity;
-
-      // PBC assignment (same as Rust derive_sib_pbc_buckets)
-      const myBuckets = deriveIntBuckets3(groupId, levelInfo.k);
-      const assignedBucket = myBuckets[0];
-
-      // Build reverse index: which Merkle group IDs map to this PBC bucket
-      const groupEntries: number[] = [];
-      for (let gid = 0; gid < levelInfo.num_groups; gid++) {
-        const bs = deriveIntBuckets3(gid, levelInfo.k);
-        if (bs[0] === assignedBucket || bs[1] === assignedBucket || bs[2] === assignedBucket) {
-          groupEntries.push(gid);
-        }
-      }
-
-      // Build sibling cuckoo table (6-hash, bucket_size=1) and find our bin
       const levelSeed = 0xBA7C51B1FEED0000n + BigInt(level);
-      const sibKeys: bigint[] = [];
-      for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
-        sibKeys.push(deriveCuckooKeyGeneric(levelSeed, assignedBucket, h));
+
+      // Step 1: Compute groupId per item, deduplicate
+      const groupToItems = new Map<number, number[]>();
+      for (let i = 0; i < N; i++) {
+        if (failed[i]) continue;
+        const gid = Math.floor(nodeIdx[i] / merkle.arity);
+        const arr = groupToItems.get(gid);
+        if (arr) arr.push(i);
+        else groupToItems.set(gid, [i]);
       }
-      const keysU32 = new Uint32Array(ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES * 2);
-      for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
-        keysU32[h * 2] = Number(sibKeys[h] & 0xFFFFFFFFn);
-        keysU32[h * 2 + 1] = Number(sibKeys[h] >> 32n);
-      }
-      const cuckooTable = this.wasmModule.buildCuckooBs1(
-        new Uint32Array(groupEntries), keysU32, levelInfo.bins_per_table,
-      );
+      const uniqueGroupIds = [...groupToItems.keys()];
+      if (uniqueGroupIds.length === 0) break;
 
-      // Find our group in the cuckoo table
-      let targetBin: number | null = null;
-      for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
-        const bin = cuckooHashInt(groupId, sibKeys[h], levelInfo.bins_per_table);
-        if (cuckooTable[bin] === groupId) { targetBin = bin; break; }
-      }
-      if (targetBin === null) {
-        this.log(`Merkle L${level}: group ${groupId} not in sibling cuckoo`, 'error');
-        result.merkleVerified = false;
-        return false;
-      }
+      progress('Merkle', `L${level + 1}/${merkle.sibling_levels}: ${uniqueGroupIds.length} unique groups from ${N} items...`);
 
-      // Generate K FHE queries (one per PBC bucket, ours queries targetBin)
-      const sibClient = this.wasmModule.createClientFromSecretKey(
-        levelInfo.bins_per_table, this.fheClientId, this.fheSecretKey,
-      );
-      try {
-        const queries: Uint8Array[] = [];
-        for (let b = 0; b < levelInfo.k; b++) {
-          const bin = b === assignedBucket
-            ? targetBin
-            : Number(this.rng.nextU64() % BigInt(levelInfo.bins_per_table));
-          queries.push(sibClient.generateQuery(bin));
-          if (b % 5 === 4) {
-            progress('Merkle', `L${level}: ${b + 1}/${levelInfo.k} queries...`);
-            await new Promise(r => setTimeout(r, 0));
-          }
-        }
+      // Step 2: PBC-place unique groupIds
+      const candidateBuckets = uniqueGroupIds.map(gid => deriveIntBuckets3(gid, levelInfo.k));
+      const pbcRounds = planRounds(candidateBuckets, levelInfo.k, 3);
 
-        // Send sibling batch query
-        progress('Merkle', `L${level}: querying server (${queries.length} FHE queries)...`);
-        const batchMsg = encodeBatchQuery(REQ_ONIONPIR_MERKLE_SIBLING, level, queries);
-        const respRaw = await this.sendRaw(batchMsg);
+      // Store decrypted sibling data per groupId: groupId → raw arity×32B bytes
+      const siblingData = new Map<number, Uint8Array>();
 
-        const respPayload = respRaw.slice(4);
-        if (respPayload[0] !== RESP_ONIONPIR_MERKLE_SIBLING) {
-          throw new Error(`Unexpected sibling response variant: 0x${respPayload[0].toString(16)}`);
-        }
-        const { results: sibResults } = decodeBatchResult(respPayload, 1);
+      // Step 3: Query each PBC round
+      for (let ri = 0; ri < pbcRounds.length; ri++) {
+        const round = pbcRounds[ri];
+        progress('Merkle', `L${level + 1}/${merkle.sibling_levels}: PBC round ${ri + 1}/${pbcRounds.length}...`);
 
-        // Decrypt our bucket's result → arity × 32B child hashes
-        progress('Merkle', `L${level}: decrypting...`);
-        const decrypted = sibClient.decryptResponse(targetBin, sibResults[assignedBucket]);
+        // Per real bucket: build cuckoo, find target bin
+        const bucketInfo = new Map<number, { gid: number; targetBin: number }>();
+        for (const [ugi, bucket] of round) {
+          const gid = uniqueGroupIds[ugi];
 
-        // Extract children, replace our position with currentHash
-        const children: Uint8Array[] = [];
-        for (let c = 0; c < merkle.arity; c++) {
-          if (c === childPos) {
-            children.push(currentHash);
-          } else {
-            const off = c * 32;
-            if (off + 32 <= decrypted.length) {
-              children.push(decrypted.slice(off, off + 32));
-            } else {
-              children.push(ZERO_HASH);
+          // Build reverse index for this bucket
+          const groupEntries: number[] = [];
+          for (let g = 0; g < levelInfo.num_groups; g++) {
+            const bs = deriveIntBuckets3(g, levelInfo.k);
+            if (bs[0] === bucket || bs[1] === bucket || bs[2] === bucket) {
+              groupEntries.push(g);
             }
           }
+
+          // Build cuckoo table
+          const sibKeys: bigint[] = [];
+          for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
+            sibKeys.push(deriveCuckooKeyGeneric(levelSeed, bucket, h));
+          }
+          const keysU32 = new Uint32Array(ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES * 2);
+          for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
+            keysU32[h * 2] = Number(sibKeys[h] & 0xFFFFFFFFn);
+            keysU32[h * 2 + 1] = Number(sibKeys[h] >> 32n);
+          }
+          const cuckooTable = this.wasmModule!.buildCuckooBs1(
+            new Uint32Array(groupEntries), keysU32, levelInfo.bins_per_table,
+          );
+
+          // Find target bin
+          let targetBin: number | null = null;
+          for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
+            const bin = cuckooHashInt(gid, sibKeys[h], levelInfo.bins_per_table);
+            if (cuckooTable[bin] === gid) { targetBin = bin; break; }
+          }
+          if (targetBin === null) {
+            this.log(`Merkle L${level}: group ${gid} not in sibling cuckoo`, 'error');
+            for (const ai of groupToItems.get(gid)!) failed[ai] = true;
+          } else {
+            bucketInfo.set(bucket, { gid, targetBin });
+          }
+
+          await new Promise(r => setTimeout(r, 0)); // yield for cuckoo building
         }
 
-        currentHash = computeParentN(children);
-        nodeIdx = groupId;
-        this.log(`  L${level}: group=${groupId}, bin=${targetBin}, childPos=${childPos}`);
-      } finally {
-        sibClient.delete();
+        // Generate K FHE queries
+        const sibClient = this.wasmModule!.createClientFromSecretKey(
+          levelInfo.bins_per_table, this.fheClientId, this.fheSecretKey!,
+        );
+        try {
+          const queries: Uint8Array[] = [];
+          for (let b = 0; b < levelInfo.k; b++) {
+            const info = bucketInfo.get(b);
+            const bin = info ? info.targetBin : Number(this.rng.nextU64() % BigInt(levelInfo.bins_per_table));
+            queries.push(sibClient.generateQuery(bin));
+            if (b % 5 === 4) {
+              progress('Merkle', `L${level + 1}: ${b + 1}/${levelInfo.k} queries...`);
+              await new Promise(r => setTimeout(r, 0));
+            }
+          }
+
+          // Send batch query
+          progress('Merkle', `L${level + 1}: querying server...`);
+          const batchMsg = encodeBatchQuery(REQ_ONIONPIR_MERKLE_SIBLING, level * 100 + ri, queries);
+          const respRaw = await this.sendRaw(batchMsg);
+
+          const respPayload = respRaw.slice(4);
+          if (respPayload[0] !== RESP_ONIONPIR_MERKLE_SIBLING) {
+            throw new Error(`Unexpected sibling response: 0x${respPayload[0].toString(16)}`);
+          }
+          const { results: sibResults } = decodeBatchResult(respPayload, 1);
+
+          // Decrypt real buckets
+          for (const [bucket, info] of bucketInfo) {
+            const decrypted = sibClient.decryptResponse(info.targetBin, sibResults[bucket]);
+            siblingData.set(info.gid, decrypted);
+          }
+        } finally {
+          sibClient.delete();
+        }
+      }
+
+      // Step 4: Update each item's state using decrypted sibling data
+      for (const [gid, itemIndices] of groupToItems) {
+        const decrypted = siblingData.get(gid);
+        if (!decrypted) continue; // already marked failed
+
+        for (const ai of itemIndices) {
+          if (failed[ai]) continue;
+          const childPos = nodeIdx[ai] % merkle.arity;
+
+          // Extract children, replace own position with currentHash
+          const children: Uint8Array[] = [];
+          for (let c = 0; c < merkle.arity; c++) {
+            if (c === childPos) {
+              children.push(currentHash[ai]);
+            } else {
+              const off = c * 32;
+              if (off + 32 <= decrypted.length) {
+                children.push(decrypted.slice(off, off + 32));
+              } else {
+                children.push(ZERO_HASH);
+              }
+            }
+          }
+
+          currentHash[ai] = computeParentN(children);
+          nodeIdx[ai] = gid;
+        }
       }
     }
 
-    // ── Walk tree-top cache to root ──────────────────────────────────
+    // ── Walk tree-top cache per item ─────────────────────────────────
     progress('Merkle', 'Walking tree-top cache to root...');
     const cache = treeTopData.parsed;
-    for (let ci = 0; ci < cache.levels.length - 1; ci++) {
-      const levelNodes = cache.levels[ci];
-      const parentStart = Math.floor(nodeIdx / cache.arity) * cache.arity;
-      const childHashes: Uint8Array[] = [];
-      for (let c = 0; c < cache.arity; c++) {
-        const idx = parentStart + c;
-        childHashes.push(idx < levelNodes.length ? levelNodes[idx] : ZERO_HASH);
+    const batchResults: boolean[] = new Array(N).fill(false);
+
+    for (let i = 0; i < N; i++) {
+      if (failed[i]) continue;
+
+      let hash = currentHash[i];
+      let idx = nodeIdx[i];
+
+      for (let ci = 0; ci < cache.levels.length - 1; ci++) {
+        const levelNodes = cache.levels[ci];
+        const parentStart = Math.floor(idx / cache.arity) * cache.arity;
+        const childHashes: Uint8Array[] = [];
+        for (let c = 0; c < cache.arity; c++) {
+          const childIdx = parentStart + c;
+          childHashes.push(childIdx < levelNodes.length ? levelNodes[childIdx] : ZERO_HASH);
+        }
+        hash = computeParentN(childHashes);
+        idx = Math.floor(idx / cache.arity);
       }
-      currentHash = computeParentN(childHashes);
-      nodeIdx = Math.floor(nodeIdx / cache.arity);
+
+      batchResults[i] = hash.length === expectedRoot.length &&
+        hash.every((b, j) => b === expectedRoot[j]);
     }
 
-    // ── Check root ───────────────────────────────────────────────────
-    const verified = currentHash.length === expectedRoot.length &&
-      currentHash.every((b, i) => b === expectedRoot[i]);
-    result.merkleVerified = verified;
+    // Map back to original results
+    const out: boolean[] = new Array(results.length).fill(false);
+    const verified = batchResults.filter(Boolean).length;
+    for (let j = 0; j < N; j++) {
+      const ri = itemToResult[j];
+      out[ri] = batchResults[j];
+      results[ri].merkleVerified = batchResults[j];
+    }
 
-    if (verified) {
-      this.log(`Merkle VERIFIED: proof valid to root ${merkle.root.substring(0, 16)}...`, 'success');
+    if (verified === N) {
+      this.log(`Merkle VERIFIED: all ${N} proofs valid (root=${merkle.root.substring(0, 16)}…)`, 'success');
     } else {
-      this.log('Merkle FAILED: root mismatch', 'error');
+      this.log(`Merkle: ${verified}/${N} verified, ${N - verified} failed`, verified > 0 ? 'info' : 'error');
     }
 
-    return verified;
+    return out;
   }
 
   // ─── Tree-top cache fetch (OnionPIR-specific) ───────────────────────

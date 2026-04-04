@@ -31,7 +31,7 @@ import { readVarint, decodeUtxoData, DummyRng } from './codec.js';
 import { findEntryInIndexResult, findChunkInResult } from './scan.js';
 import { ManagedWebSocket } from './ws.js';
 import { fetchServerInfoJson, type ServerInfoJson, type MerkleInfoJson } from './server-info.js';
-import { verifyMerkleDpf } from './merkle-verify-dpf.js';
+import { verifyMerkleBatchDpf } from './merkle-verify-dpf.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -561,26 +561,43 @@ export class BatchPirClient {
    *
    * Call this after query() / queryBatch() with the result you want to verify.
    */
-  async verifyMerkle(
-    result: QueryResult,
+  /**
+   * Batch-verify Merkle proofs for multiple query results.
+   * Packs all addresses' sibling groupIds into PBC batches per level.
+   */
+  async verifyMerkleBatch(
+    results: QueryResult[],
     onProgress?: (step: string, detail: string) => void,
-  ): Promise<boolean> {
+  ): Promise<boolean[]> {
     if (!this.isConnected()) throw new Error('Not connected');
     const merkle = this.serverInfo?.merkle;
     if (!merkle || merkle.sibling_levels === 0) throw new Error('Server does not support Merkle');
-    if (!result.scriptHash || !result.rawChunkData || result.treeLoc === undefined) {
-      throw new Error('Result missing data for Merkle verification (scriptHash, rawChunkData, treeLoc)');
-    }
-    if (result.isWhale) throw new Error('Cannot verify whale addresses');
 
-    const verified = await verifyMerkleDpf(
-      this.ws0!, this.ws1!, merkle,
-      result.scriptHash, result.rawChunkData, result.treeLoc,
-      onProgress,
+    // Filter verifiable results, build items array
+    const items: { scriptHash: Uint8Array; rawChunkData: Uint8Array; treeLoc: number }[] = [];
+    const itemToResult: number[] = []; // items[j] came from results[itemToResult[j]]
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.isWhale || !r.scriptHash || !r.rawChunkData || r.treeLoc === undefined) continue;
+      items.push({ scriptHash: r.scriptHash, rawChunkData: r.rawChunkData, treeLoc: r.treeLoc });
+      itemToResult.push(i);
+    }
+
+    if (items.length === 0) return results.map(() => false);
+
+    const batchResults = await verifyMerkleBatchDpf(
+      this.ws0!, this.ws1!, merkle, items, onProgress,
       (msg, level) => this.log(msg, level),
     );
-    result.merkleVerified = verified;
-    return verified;
+
+    // Map back to original results array
+    const out: boolean[] = new Array(results.length).fill(false);
+    for (let j = 0; j < batchResults.length; j++) {
+      const ri = itemToResult[j];
+      out[ri] = batchResults[j];
+      results[ri].merkleVerified = batchResults[j];
+    }
+    return out;
   }
 }
 

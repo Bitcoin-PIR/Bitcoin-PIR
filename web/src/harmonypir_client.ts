@@ -32,7 +32,7 @@ import { readVarint, decodeUtxoData } from './codec.js';
 import { findEntryInIndexResult, findChunkInResult } from './scan.js';
 import { ManagedWebSocket } from './ws.js';
 import { fetchServerInfoJson, type ServerInfoJson } from './server-info.js';
-import { verifyMerkleDpf, clearTreeTopCache } from './merkle-verify-dpf.js';
+import { verifyMerkleBatchDpf } from './merkle-verify-dpf.js';
 
 import { HarmonyWorkerPool, BuildItem, BuildResult, ProcessItem } from './harmonypir_worker_pool.js';
 
@@ -1144,23 +1144,31 @@ export class HarmonyPirClient {
   }
 
   /**
-   * Verify a HarmonyPIR query result against the DPF Merkle tree.
+   * Batch-verify Merkle proofs for multiple HarmonyPIR query results.
    *
-   * Opens a temporary ManagedWebSocket to the primary server (hint server URL)
-   * since the hint server connection is not persistent. Uses both server connections
-   * for the 2-server DPF sibling queries.
+   * Opens a ManagedWebSocket to the primary server (hint server URL)
+   * for the 2-server DPF sibling queries. Packs all addresses' groupIds
+   * into PBC batches per sibling level.
    */
-  async verifyMerkle(
-    result: HarmonyQueryResult,
+  async verifyMerkleBatch(
+    results: HarmonyQueryResult[],
     onProgress?: (step: string, detail: string) => void,
-  ): Promise<boolean> {
+  ): Promise<boolean[]> {
     const merkle = this.serverInfo?.merkle;
     if (!merkle || merkle.sibling_levels === 0) throw new Error('Server does not support Merkle');
-    if (!result.scriptHashBytes || !result.rawChunkData || result.treeLoc === undefined) {
-      throw new Error('Result missing data for Merkle verification');
-    }
-    if (result.whale) throw new Error('Cannot verify whale addresses');
     if (!this.queryWs) throw new Error('Not connected to query server');
+
+    // Build items array from verifiable results
+    const items: { scriptHash: Uint8Array; rawChunkData: Uint8Array; treeLoc: number }[] = [];
+    const itemToResult: number[] = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.whale || !r.scriptHashBytes || !r.rawChunkData || r.treeLoc === undefined) continue;
+      items.push({ scriptHash: r.scriptHashBytes, rawChunkData: r.rawChunkData, treeLoc: r.treeLoc });
+      itemToResult.push(i);
+    }
+
+    if (items.length === 0) return results.map(() => false);
 
     // queryWs → secondary (server1), primaryWs → primary (server0)
     if (!this.primaryWs) {
@@ -1173,14 +1181,18 @@ export class HarmonyPirClient {
       await this.primaryWs.connect();
     }
 
-    const verified = await verifyMerkleDpf(
-      this.primaryWs, this.queryWs, merkle,
-      result.scriptHashBytes, result.rawChunkData, result.treeLoc,
-      onProgress,
+    const batchResults = await verifyMerkleBatchDpf(
+      this.primaryWs, this.queryWs, merkle, items, onProgress,
       (msg) => this.log(msg),
     );
-    result.merkleVerified = verified;
-    return verified;
+
+    const out: boolean[] = new Array(results.length).fill(false);
+    for (let j = 0; j < batchResults.length; j++) {
+      const ri = itemToResult[j];
+      out[ri] = batchResults[j];
+      results[ri].merkleVerified = batchResults[j];
+    }
+    return out;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

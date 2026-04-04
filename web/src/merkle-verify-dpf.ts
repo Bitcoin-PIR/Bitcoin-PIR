@@ -1,8 +1,9 @@
 /**
- * Standalone DPF-based Merkle verification.
+ * Batch DPF-based Merkle verification.
  *
- * Extracted so both BatchPirClient and HarmonyPirClient can verify
- * Merkle proofs using the 2-server DPF sibling query protocol.
+ * Packs multiple addresses' sibling groupIds into PBC batches per level,
+ * reducing N×L round-trips to ~L rounds. Shared by BatchPirClient and
+ * HarmonyPirClient.
  */
 
 import {
@@ -11,6 +12,7 @@ import {
 import { genDpfKeysN } from './dpf.js';
 import { encodeRequest, decodeResponse } from './protocol.js';
 import { findGroupInSiblingResult } from './scan.js';
+import { planRounds } from './pbc.js';
 import { DummyRng } from './codec.js';
 import {
   computeDataHash, computeLeafHash, computeParentN,
@@ -67,31 +69,31 @@ export function clearTreeTopCache(): void {
   cachedTreeTop = null;
 }
 
-// ─── Main verification function ─────────────────────────────────────────────
+// ─── Batch verification ─────────────────────────────────────────────────────
+
+export interface MerkleVerifyItem {
+  scriptHash: Uint8Array;
+  rawChunkData: Uint8Array;
+  treeLoc: number;
+}
 
 /**
- * Verify a Merkle proof using 2-server DPF sibling queries.
+ * Batch-verify Merkle proofs using 2-server DPF sibling queries.
  *
- * @param ws0 - ManagedWebSocket to server 0 (primary)
- * @param ws1 - ManagedWebSocket to server 1 (secondary)
- * @param merkle - Merkle info from server JSON
- * @param scriptHash - 20-byte script hash
- * @param rawChunkData - Raw assembled chunk data
- * @param treeLoc - Leaf position in Merkle tree
- * @param onProgress - Optional progress callback
- * @param onLog - Optional log callback
- * @returns true if verified
+ * Packs all addresses' groupIds into PBC batches at each sibling level,
+ * deduplicating shared groupIds. Returns one boolean per item.
  */
-export async function verifyMerkleDpf(
+export async function verifyMerkleBatchDpf(
   ws0: ManagedWebSocket,
   ws1: ManagedWebSocket,
   merkle: MerkleInfoJson,
-  scriptHash: Uint8Array,
-  rawChunkData: Uint8Array,
-  treeLoc: number,
+  items: MerkleVerifyItem[],
   onProgress?: (step: string, detail: string) => void,
   onLog?: (msg: string, level: 'info' | 'success' | 'error') => void,
-): Promise<boolean> {
+): Promise<boolean[]> {
+  const N = items.length;
+  if (N === 0) return [];
+
   const progress = onProgress || (() => {});
   const log = onLog || (() => {});
   const rng = new DummyRng();
@@ -106,106 +108,169 @@ export async function verifyMerkleDpf(
   const expectedTopHash = hexToBytes(merkle.tree_top_hash);
   if (!treeTopHash.every((b, i) => b === expectedTopHash[i])) {
     log('Tree-top cache integrity check FAILED', 'error');
-    return false;
+    return new Array(N).fill(false);
   }
   log('Tree-top cache integrity: OK', 'success');
 
-  // ── Compute leaf hash ────────────────────────────────────────────
-  const dataHash = computeDataHash(rawChunkData);
-  const leafHash = computeLeafHash(scriptHash, treeLoc, dataHash);
-  let currentHash = leafHash;
-  let nodeIdx = treeLoc;
+  // ── Initialize per-address state ───────────────────────────────────
+  const currentHash: Uint8Array[] = new Array(N);
+  const nodeIdx: number[] = new Array(N);
+  const failed: boolean[] = new Array(N).fill(false);
 
-  // ── Sibling PIR rounds (DPF) ─────────────────────────────────────
+  for (let i = 0; i < N; i++) {
+    const dataHash = computeDataHash(items[i].rawChunkData);
+    currentHash[i] = computeLeafHash(items[i].scriptHash, items[i].treeLoc, dataHash);
+    nodeIdx[i] = items[i].treeLoc;
+  }
+
+  // ── Sibling PIR rounds (batched DPF) ───────────────────────────────
   for (let level = 0; level < merkle.sibling_levels; level++) {
-    progress('Merkle', `Sibling level ${level + 1}/${merkle.sibling_levels}...`);
     const levelInfo = merkle.levels[level];
-    const groupId = Math.floor(nodeIdx / merkle.arity);
     const levelSeed = BigInt('0xBA7C51B100000000') + BigInt(level);
 
-    const myBuckets = deriveIntBuckets3(groupId, merkle.sibling_k);
-    const assignedBucket = myBuckets[0];
-
-    const myLocs: number[] = [];
-    for (let h = 0; h < 2; h++) {
-      const ck = deriveCuckooKeyGeneric(levelSeed, assignedBucket, h);
-      myLocs.push(cuckooHashInt(groupId, ck, levelInfo.bins_per_table));
+    // Step 1: Compute groupId per address, deduplicate
+    const groupToAddrs = new Map<number, number[]>(); // groupId → addr indices
+    for (let i = 0; i < N; i++) {
+      if (failed[i]) continue;
+      const gid = Math.floor(nodeIdx[i] / merkle.arity);
+      const arr = groupToAddrs.get(gid);
+      if (arr) arr.push(i);
+      else groupToAddrs.set(gid, [i]);
     }
+    const uniqueGroupIds = [...groupToAddrs.keys()];
+    if (uniqueGroupIds.length === 0) break;
 
-    const s0Keys: Uint8Array[][] = [];
-    const s1Keys: Uint8Array[][] = [];
-    for (let b = 0; b < merkle.sibling_k; b++) {
-      const s0B: Uint8Array[] = [];
-      const s1B: Uint8Array[] = [];
-      for (let h = 0; h < 2; h++) {
-        const alpha = b === assignedBucket
-          ? myLocs[h]
-          : Number(rng.nextU64() % BigInt(levelInfo.bins_per_table));
-        const keys = await genDpfKeysN(alpha, levelInfo.dpf_n);
-        s0B.push(keys.key0);
-        s1B.push(keys.key1);
+    progress('Merkle', `L${level + 1}/${merkle.sibling_levels}: ${uniqueGroupIds.length} unique groups from ${N} addresses...`);
+
+    // Step 2: PBC-place unique groupIds
+    const candidateBuckets = uniqueGroupIds.map(gid => deriveIntBuckets3(gid, merkle.sibling_k));
+    const pbcRounds = planRounds(candidateBuckets, merkle.sibling_k, 3);
+
+    // Step 3: Query each PBC round
+    const siblingResults = new Map<number, Uint8Array[]>(); // groupId → children
+
+    for (let ri = 0; ri < pbcRounds.length; ri++) {
+      const round = pbcRounds[ri];
+      progress('Merkle', `L${level + 1}/${merkle.sibling_levels}: PBC round ${ri + 1}/${pbcRounds.length} (${round.length} groups)...`);
+
+      // Map: bucket → uniqueGroupIndex
+      const bucketToUgi = new Map<number, number>();
+      for (const [ugi, bucket] of round) {
+        bucketToUgi.set(bucket, ugi);
       }
-      s0Keys.push(s0B);
-      s1Keys.push(s1B);
+
+      // Generate K×2 DPF keys
+      const s0Keys: Uint8Array[][] = [];
+      const s1Keys: Uint8Array[][] = [];
+      for (let b = 0; b < merkle.sibling_k; b++) {
+        const s0B: Uint8Array[] = [];
+        const s1B: Uint8Array[] = [];
+        const ugi = bucketToUgi.get(b);
+        for (let h = 0; h < 2; h++) {
+          let alpha: number;
+          if (ugi !== undefined) {
+            const gid = uniqueGroupIds[ugi];
+            const ck = deriveCuckooKeyGeneric(levelSeed, b, h);
+            alpha = cuckooHashInt(gid, ck, levelInfo.bins_per_table);
+          } else {
+            alpha = Number(rng.nextU64() % BigInt(levelInfo.bins_per_table));
+          }
+          const keys = await genDpfKeysN(alpha, levelInfo.dpf_n);
+          s0B.push(keys.key0);
+          s1B.push(keys.key1);
+        }
+        s0Keys.push(s0B);
+        s1Keys.push(s1B);
+      }
+
+      // Send to both servers
+      const roundId = level * 100 + ri;
+      const mReq0 = encodeRequest({ type: 'MerkleSiblingBatch', query: { level: 2, roundId, keys: s0Keys } });
+      const mReq1 = encodeRequest({ type: 'MerkleSiblingBatch', query: { level: 2, roundId, keys: s1Keys } });
+
+      const [mraw0, mraw1] = await Promise.all([
+        ws0.sendRaw(mReq0),
+        ws1.sendRaw(mReq1),
+      ]);
+      const mresp0 = decodeResponse(mraw0.slice(4));
+      const mresp1 = decodeResponse(mraw1.slice(4));
+
+      if (mresp0.type !== 'MerkleSiblingBatch' || mresp1.type !== 'MerkleSiblingBatch') {
+        log(`Merkle L${level}: unexpected response`, 'error');
+        // Mark all addresses in this round as failed
+        for (const [ugi] of round) {
+          const gid = uniqueGroupIds[ugi];
+          for (const ai of groupToAddrs.get(gid)!) failed[ai] = true;
+        }
+        continue;
+      }
+
+      // Extract results for real buckets
+      for (const [ugi, bucket] of round) {
+        const gid = uniqueGroupIds[ugi];
+        const mr0 = mresp0.result.results[bucket];
+        const mr1 = mresp1.result.results[bucket];
+        let children: Uint8Array[] | null = null;
+        for (let h = 0; h < 2; h++) {
+          const xored = xorBuffers(mr0[h], mr1[h]);
+          children = findGroupInSiblingResult(xored, gid, merkle.arity, merkle.sibling_bucket_size, merkle.sibling_slot_size);
+          if (children) break;
+        }
+        if (children) {
+          siblingResults.set(gid, children);
+        } else {
+          log(`Merkle L${level}: group ${gid} not found in sibling result`, 'error');
+          for (const ai of groupToAddrs.get(gid)!) failed[ai] = true;
+        }
+      }
     }
 
-    const mReq0 = encodeRequest({ type: 'MerkleSiblingBatch', query: { level: 2, roundId: level, keys: s0Keys } });
-    const mReq1 = encodeRequest({ type: 'MerkleSiblingBatch', query: { level: 2, roundId: level, keys: s1Keys } });
-
-    const [mraw0, mraw1] = await Promise.all([
-      ws0.sendRaw(mReq0),
-      ws1.sendRaw(mReq1),
-    ]);
-    const mresp0 = decodeResponse(mraw0.slice(4));
-    const mresp1 = decodeResponse(mraw1.slice(4));
-
-    if (mresp0.type !== 'MerkleSiblingBatch' || mresp1.type !== 'MerkleSiblingBatch') {
-      log(`Merkle L${level}: unexpected response`, 'error');
-      return false;
+    // Step 4: Update each address's state
+    for (const [gid, addrIndices] of groupToAddrs) {
+      const children = siblingResults.get(gid);
+      if (!children) continue; // already marked failed
+      const parentHash = computeParentN(children);
+      for (const ai of addrIndices) {
+        if (failed[ai]) continue;
+        currentHash[ai] = parentHash;
+        nodeIdx[ai] = gid;
+      }
     }
-
-    const mr0 = mresp0.result.results[assignedBucket];
-    const mr1 = mresp1.result.results[assignedBucket];
-    let children: Uint8Array[] | null = null;
-    for (let h = 0; h < 2; h++) {
-      const xored = xorBuffers(mr0[h], mr1[h]);
-      children = findGroupInSiblingResult(xored, groupId, merkle.arity, merkle.sibling_bucket_size, merkle.sibling_slot_size);
-      if (children) break;
-    }
-
-    if (!children) {
-      log(`Merkle L${level}: group ${groupId} not found`, 'error');
-      return false;
-    }
-
-    currentHash = computeParentN(children);
-    nodeIdx = groupId;
   }
 
-  // ── Walk tree-top cache to root ──────────────────────────────────
+  // ── Walk tree-top cache per address ────────────────────────────────
   progress('Merkle', 'Walking tree-top cache to root...');
   const cache = treeTop.parsed;
-  for (let ci = 0; ci < cache.levels.length - 1; ci++) {
-    const levelNodes = cache.levels[ci];
-    const parentStart = Math.floor(nodeIdx / merkle.arity) * merkle.arity;
-    const childHashes: Uint8Array[] = [];
-    for (let c = 0; c < merkle.arity; c++) {
-      const idx = parentStart + c;
-      childHashes.push(idx < levelNodes.length ? levelNodes[idx] : ZERO_HASH);
+  const results: boolean[] = new Array(N).fill(false);
+
+  for (let i = 0; i < N; i++) {
+    if (failed[i]) continue;
+
+    let hash = currentHash[i];
+    let idx = nodeIdx[i];
+
+    for (let ci = 0; ci < cache.levels.length - 1; ci++) {
+      const levelNodes = cache.levels[ci];
+      const parentStart = Math.floor(idx / merkle.arity) * merkle.arity;
+      const childHashes: Uint8Array[] = [];
+      for (let c = 0; c < merkle.arity; c++) {
+        const childIdx = parentStart + c;
+        childHashes.push(childIdx < levelNodes.length ? levelNodes[childIdx] : ZERO_HASH);
+      }
+      hash = computeParentN(childHashes);
+      idx = Math.floor(idx / merkle.arity);
     }
-    currentHash = computeParentN(childHashes);
-    nodeIdx = Math.floor(nodeIdx / merkle.arity);
+
+    results[i] = hash.length === expectedRoot.length &&
+      hash.every((b, j) => b === expectedRoot[j]);
   }
 
-  // ── Check root ───────────────────────────────────────────────────
-  const verified = currentHash.length === expectedRoot.length &&
-    currentHash.every((b, i) => b === expectedRoot[i]);
-
-  if (verified) {
-    log(`Merkle VERIFIED: proof valid to root ${merkle.root.substring(0, 16)}...`, 'success');
+  const verified = results.filter(Boolean).length;
+  if (verified === N) {
+    log(`Merkle VERIFIED: all ${N} proofs valid (root=${merkle.root.substring(0, 16)}…)`, 'success');
   } else {
-    log('Merkle FAILED: root mismatch', 'error');
+    log(`Merkle: ${verified}/${N} verified, ${N - verified} failed`, verified > 0 ? 'info' : 'error');
   }
 
-  return verified;
+  return results;
 }
