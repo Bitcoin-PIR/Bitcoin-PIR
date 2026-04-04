@@ -38,6 +38,7 @@ export interface ServerInfoJson {
   role: 'primary' | 'secondary';
   onionpir?: OnionPirInfoJson;
   merkle?: MerkleInfoJson;
+  onionpir_merkle?: OnionPirMerkleInfoJson;
 }
 
 export interface MerkleLevelInfo {
@@ -52,6 +53,21 @@ export interface MerkleInfoJson {
   sibling_bucket_size: number;
   sibling_slot_size: number;
   levels: MerkleLevelInfo[];
+  root: string;             // hex (32 bytes)
+  tree_top_hash: string;   // SHA256 of tree-top cache blob (hex, 32 bytes)
+  tree_top_size: number;   // byte size of tree-top cache
+}
+
+export interface OnionPirMerkleLevelInfo {
+  k: number;
+  bins_per_table: number;
+  num_groups: number;
+}
+
+export interface OnionPirMerkleInfoJson {
+  arity: number;
+  sibling_levels: number;
+  levels: OnionPirMerkleLevelInfo[];
   root: string;             // hex (32 bytes)
   tree_top_hash: string;   // SHA256 of tree-top cache blob (hex, 32 bytes)
   tree_top_size: number;   // byte size of tree-top cache
@@ -98,6 +114,18 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
       index_slot_size: raw.onionpir.index_slot_size,
       chunk_cuckoo_bucket_size: raw.onionpir.chunk_cuckoo_bucket_size,
       chunk_slot_size: raw.onionpir.chunk_slot_size,
+    };
+  }
+
+  if (raw.onionpir_merkle && typeof raw.onionpir_merkle === 'object') {
+    const om = raw.onionpir_merkle;
+    info.onionpir_merkle = {
+      arity: om.arity,
+      sibling_levels: om.sibling_levels,
+      levels: om.levels,
+      root: om.root ?? '',
+      tree_top_hash: om.tree_top_hash ?? '',
+      tree_top_size: om.tree_top_size ?? 0,
     };
   }
 

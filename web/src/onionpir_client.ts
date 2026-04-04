@@ -9,12 +9,17 @@
 import {
   K, K_CHUNK, NUM_HASHES, INDEX_CUCKOO_NUM_HASHES,
   CHUNK_MASTER_SEED,
+  REQ_ONIONPIR_MERKLE_SIBLING, RESP_ONIONPIR_MERKLE_SIBLING,
+  REQ_ONIONPIR_MERKLE_TREE_TOP, RESP_ONIONPIR_MERKLE_TREE_TOP,
+  ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES,
 } from './constants.js';
 
 import {
   deriveBuckets, deriveCuckooKey, cuckooHash,
   deriveChunkBuckets,
   splitmix64, computeTag,
+  deriveIntBuckets3, deriveCuckooKeyGeneric, cuckooHashInt,
+  sha256,
 } from './hash.js';
 
 import { cuckooPlace, planRounds } from './pbc.js';
@@ -22,8 +27,14 @@ import { readVarint, decodeUtxoData, DummyRng } from './codec.js';
 import { findEntryInOnionPirIndexResult } from './scan.js';
 import { ManagedWebSocket } from './ws.js';
 import { fetchServerInfoJson } from './server-info.js';
+import {
+  computeDataHash, computeLeafHash, computeParentN,
+  parseTreeTopCache, ZERO_HASH,
+  type TreeTopCache,
+} from './merkle.js';
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './client.js';
+import type { OnionPirMerkleInfoJson, ServerInfoJson } from './server-info.js';
 
 // ─── Constants for OnionPIR v2 layout ─────────────────────────────────────
 
@@ -255,6 +266,7 @@ export class OnionPirWebClient {
   private rng = new DummyRng();
 
   // Server info (fetched via JSON)
+  private serverInfo: ServerInfoJson | null = null;
   private indexK = 0;
   private chunkK = 0;
   private indexBins = 0;
@@ -266,6 +278,10 @@ export class OnionPirWebClient {
 
   // WASM module
   private wasmModule: OnionPirModule | null = null;
+
+  // FHE key state (saved after queryBatch for Merkle reuse)
+  private fheClientId = 0;
+  private fheSecretKey: Uint8Array | null = null;
 
   constructor(config: OnionPirClientConfig) {
     this.config = config;
@@ -329,6 +345,7 @@ export class OnionPirWebClient {
 
   private async fetchServerInfo(): Promise<void> {
     const info = await fetchServerInfoJson(this.ws!);
+    this.serverInfo = info;
 
     if (info.onionpir) {
       // Use OnionPIR-specific parameters
@@ -391,13 +408,16 @@ export class OnionPirWebClient {
     const secretKey = keygenClient.exportSecretKey();
     keygenClient.delete();
 
+    // Save FHE state for Merkle reuse (keys stay registered on the server for connection lifetime)
+    this.fheClientId = clientId;
+    this.fheSecretKey = secretKey;
+
     const indexClient = this.wasmModule.createClientFromSecretKey(this.indexBins, clientId, secretKey);
     let chunkClient: WasmPirClient | null = null;
 
     try {
       // ── Register keys once (shared across all levels) ────────────
       progress('Setup', 'Registering keys...');
-      this.log(`Keys: ${galoisKeys.length + gswKeys.length} bytes`);
 
       const regMsg = encodeRegisterKeys(galoisKeys, gswKeys);
       const ack = await this.sendRaw(regMsg);
@@ -419,6 +439,7 @@ export class OnionPirWebClient {
         entryId: number;
         byteOffset: number;
         numEntries: number;
+        treeLoc: number;
       }
       const indexResults: (IndexResult | null)[] = new Array(N).fill(null);
       let totalIndexRounds = 0;
@@ -497,12 +518,6 @@ export class OnionPirWebClient {
 
       const foundCount = indexResults.filter(r => r !== null).length;
       this.log(`Level 1 complete: ${foundCount}/${N} found in ${totalIndexRounds} rounds`);
-      for (let i = 0; i < N; i++) {
-        const ir = indexResults[i];
-        if (ir) {
-          this.log(`  [${i}] entryId=${ir.entryId} byteOffset=${ir.byteOffset} numEntries=${ir.numEntries}`);
-        }
-      }
 
       // ════════════════════════════════════════════════════════════════
       // LEVEL 2: Chunk PIR
@@ -568,10 +583,8 @@ export class OnionPirWebClient {
           for (const [ei, group] of round) {
             const eid = uniqueEntryIds[ei];
             if (!cuckooCache.has(group)) {
-              const t0 = performance.now();
               cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, reverseIndex, this.chunkBins));
               tablesBuilt++;
-              this.log(`  Cuckoo table for group ${group}: ${(performance.now() - t0).toFixed(0)}ms`);
               progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: built ${tablesBuilt} cuckoo tables...`);
               await new Promise(r => setTimeout(r, 0));
             }
@@ -614,11 +627,7 @@ export class OnionPirWebClient {
 
           let chunkDecrypted = 0;
           for (const qi of queryInfos) {
-            this.log(`  chunk query: entryId=${qi.entryId} group=${qi.group} bin=${qi.bin}`);
             const entryBytes = chunkClient!.decryptResponse(qi.bin, results[qi.group]);
-            // Log first 16 bytes of the raw decrypted entry (before byteOffset slicing)
-            const rawPreview = Array.from(entryBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            this.log(`  raw decrypted[0..16]: ${rawPreview} (total ${entryBytes.length} bytes)`);
             decryptedEntries.set(qi.entryId, entryBytes.slice(0, PACKED_ENTRY_SIZE));
             chunkDecrypted++;
             progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: decrypted ${chunkDecrypted}/${queryInfos.length}...`);
@@ -661,11 +670,6 @@ export class OnionPirWebClient {
         let pos = 0;
         for (const p of parts) { fullData.set(p, pos); pos += p.length; }
 
-        this.log(`  [${qi}] assembled ${totalLen} bytes from ${parts.length} entries (byteOffset=${ir.byteOffset})`);
-        // Log first few bytes for debugging
-        const preview = Array.from(fullData.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        this.log(`  [${qi}] data preview: ${preview}`);
-
         const { entries, totalSats } = this.decodeUtxoData(fullData);
         results[qi] = {
           entries,
@@ -674,6 +678,10 @@ export class OnionPirWebClient {
           numChunks: ir.numEntries,
           numRounds: chunkRoundsCount,
           isWhale: false,
+          merkleRootHex: this.serverInfo?.onionpir_merkle?.root,
+          treeLoc: ir.treeLoc,
+          rawChunkData: fullData,
+          scriptHash: scriptHashes[qi],
         };
       }
 
@@ -687,6 +695,229 @@ export class OnionPirWebClient {
       if (chunkClient) chunkClient.delete();
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // MERKLE VERIFICATION
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Check if server supports OnionPIR Merkle verification */
+  hasMerkle(): boolean {
+    const om = this.serverInfo?.onionpir_merkle;
+    return !!(om && om.sibling_levels > 0);
+  }
+
+  /** Get the Merkle root hash hex (for display) */
+  getMerkleRootHex(): string | undefined {
+    return this.serverInfo?.onionpir_merkle?.root;
+  }
+
+  /**
+   * Verify a single query result against the OnionPIR Merkle tree.
+   *
+   * Fetches the tree-top cache, runs FHE sibling PIR rounds per level,
+   * and walks the tree-top cache to verify the full proof to the root.
+   *
+   * Call after queryBatch() — requires FHE keys to still be registered.
+   */
+  async verifyMerkle(
+    result: QueryResult,
+    onProgress?: (step: string, detail: string) => void,
+  ): Promise<boolean> {
+    if (!this.isConnected()) throw new Error('Not connected');
+    if (!this.wasmModule) throw new Error('WASM not loaded');
+    const merkle = this.serverInfo?.onionpir_merkle;
+    if (!merkle || merkle.sibling_levels === 0) throw new Error('Server does not support OnionPIR Merkle');
+    if (!result.scriptHash || !result.rawChunkData || result.treeLoc === undefined) {
+      throw new Error('Result missing data for Merkle verification (scriptHash, rawChunkData, treeLoc)');
+    }
+    if (result.isWhale) throw new Error('Cannot verify whale addresses');
+    if (!this.fheSecretKey) throw new Error('No FHE keys — call queryBatch() first');
+
+    const progress = onProgress || (() => {});
+
+    // ── Fetch tree-top cache ─────────────────────────────────────────
+    progress('Merkle', 'Fetching tree-top cache...');
+    const treeTopData = await this.fetchOnionPirTreeTopCache();
+    const expectedRoot = hexToBytes(merkle.root);
+
+    // Verify tree-top cache integrity
+    const treeTopHash = sha256(treeTopData.rawBytes);
+    const expectedTopHash = hexToBytes(merkle.tree_top_hash);
+    if (!treeTopHash.every((b, i) => b === expectedTopHash[i])) {
+      this.log('Tree-top cache integrity check FAILED', 'error');
+      result.merkleVerified = false;
+      return false;
+    }
+    this.log('Tree-top cache integrity: OK');
+
+    // ── Compute leaf hash ────────────────────────────────────────────
+    const dataHash = computeDataHash(result.rawChunkData);
+    const leafHash = computeLeafHash(result.scriptHash, result.treeLoc, dataHash);
+    let currentHash = leafHash;
+    let nodeIdx = result.treeLoc;
+
+    // ── Sibling PIR rounds (FHE) ─────────────────────────────────────
+    for (let level = 0; level < merkle.sibling_levels; level++) {
+      progress('Merkle', `Sibling level ${level + 1}/${merkle.sibling_levels}...`);
+      const levelInfo = merkle.levels[level];
+      const groupId = Math.floor(nodeIdx / merkle.arity);
+      const childPos = nodeIdx % merkle.arity;
+
+      // PBC assignment (same as Rust derive_sib_pbc_buckets)
+      const myBuckets = deriveIntBuckets3(groupId, levelInfo.k);
+      const assignedBucket = myBuckets[0];
+
+      // Build reverse index: which Merkle group IDs map to this PBC bucket
+      const groupEntries: number[] = [];
+      for (let gid = 0; gid < levelInfo.num_groups; gid++) {
+        const bs = deriveIntBuckets3(gid, levelInfo.k);
+        if (bs[0] === assignedBucket || bs[1] === assignedBucket || bs[2] === assignedBucket) {
+          groupEntries.push(gid);
+        }
+      }
+
+      // Build sibling cuckoo table (6-hash, bucket_size=1) and find our bin
+      const levelSeed = 0xBA7C51B1FEED0000n + BigInt(level);
+      const sibKeys: bigint[] = [];
+      for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
+        sibKeys.push(deriveCuckooKeyGeneric(levelSeed, assignedBucket, h));
+      }
+      const keysU32 = new Uint32Array(ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES * 2);
+      for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
+        keysU32[h * 2] = Number(sibKeys[h] & 0xFFFFFFFFn);
+        keysU32[h * 2 + 1] = Number(sibKeys[h] >> 32n);
+      }
+      const cuckooTable = this.wasmModule.buildCuckooBs1(
+        new Uint32Array(groupEntries), keysU32, levelInfo.bins_per_table,
+      );
+
+      // Find our group in the cuckoo table
+      let targetBin: number | null = null;
+      for (let h = 0; h < ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES; h++) {
+        const bin = cuckooHashInt(groupId, sibKeys[h], levelInfo.bins_per_table);
+        if (cuckooTable[bin] === groupId) { targetBin = bin; break; }
+      }
+      if (targetBin === null) {
+        this.log(`Merkle L${level}: group ${groupId} not in sibling cuckoo`, 'error');
+        result.merkleVerified = false;
+        return false;
+      }
+
+      // Generate K FHE queries (one per PBC bucket, ours queries targetBin)
+      const sibClient = this.wasmModule.createClientFromSecretKey(
+        levelInfo.bins_per_table, this.fheClientId, this.fheSecretKey,
+      );
+      try {
+        const queries: Uint8Array[] = [];
+        for (let b = 0; b < levelInfo.k; b++) {
+          const bin = b === assignedBucket
+            ? targetBin
+            : Number(this.rng.nextU64() % BigInt(levelInfo.bins_per_table));
+          queries.push(sibClient.generateQuery(bin));
+          if (b % 5 === 4) {
+            progress('Merkle', `L${level}: ${b + 1}/${levelInfo.k} queries...`);
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+
+        // Send sibling batch query
+        progress('Merkle', `L${level}: querying server (${queries.length} FHE queries)...`);
+        const batchMsg = encodeBatchQuery(REQ_ONIONPIR_MERKLE_SIBLING, level, queries);
+        const respRaw = await this.sendRaw(batchMsg);
+
+        const respPayload = respRaw.slice(4);
+        if (respPayload[0] !== RESP_ONIONPIR_MERKLE_SIBLING) {
+          throw new Error(`Unexpected sibling response variant: 0x${respPayload[0].toString(16)}`);
+        }
+        const { results: sibResults } = decodeBatchResult(respPayload, 1);
+
+        // Decrypt our bucket's result → arity × 32B child hashes
+        progress('Merkle', `L${level}: decrypting...`);
+        const decrypted = sibClient.decryptResponse(targetBin, sibResults[assignedBucket]);
+
+        // Extract children, replace our position with currentHash
+        const children: Uint8Array[] = [];
+        for (let c = 0; c < merkle.arity; c++) {
+          if (c === childPos) {
+            children.push(currentHash);
+          } else {
+            const off = c * 32;
+            if (off + 32 <= decrypted.length) {
+              children.push(decrypted.slice(off, off + 32));
+            } else {
+              children.push(ZERO_HASH);
+            }
+          }
+        }
+
+        currentHash = computeParentN(children);
+        nodeIdx = groupId;
+        this.log(`  L${level}: group=${groupId}, bin=${targetBin}, childPos=${childPos}`);
+      } finally {
+        sibClient.delete();
+      }
+    }
+
+    // ── Walk tree-top cache to root ──────────────────────────────────
+    progress('Merkle', 'Walking tree-top cache to root...');
+    const cache = treeTopData.parsed;
+    for (let ci = 0; ci < cache.levels.length - 1; ci++) {
+      const levelNodes = cache.levels[ci];
+      const parentStart = Math.floor(nodeIdx / cache.arity) * cache.arity;
+      const childHashes: Uint8Array[] = [];
+      for (let c = 0; c < cache.arity; c++) {
+        const idx = parentStart + c;
+        childHashes.push(idx < levelNodes.length ? levelNodes[idx] : ZERO_HASH);
+      }
+      currentHash = computeParentN(childHashes);
+      nodeIdx = Math.floor(nodeIdx / cache.arity);
+    }
+
+    // ── Check root ───────────────────────────────────────────────────
+    const verified = currentHash.length === expectedRoot.length &&
+      currentHash.every((b, i) => b === expectedRoot[i]);
+    result.merkleVerified = verified;
+
+    if (verified) {
+      this.log(`Merkle VERIFIED: proof valid to root ${merkle.root.substring(0, 16)}...`, 'success');
+    } else {
+      this.log('Merkle FAILED: root mismatch', 'error');
+    }
+
+    return verified;
+  }
+
+  // ─── Tree-top cache fetch (OnionPIR-specific) ───────────────────────
+
+  private onionPirTreeTopCache: { rawBytes: Uint8Array; parsed: TreeTopCache } | null = null;
+
+  private async fetchOnionPirTreeTopCache(): Promise<{ rawBytes: Uint8Array; parsed: TreeTopCache }> {
+    if (this.onionPirTreeTopCache) return this.onionPirTreeTopCache;
+
+    const req = new Uint8Array([1, 0, 0, 0, REQ_ONIONPIR_MERKLE_TREE_TOP]);
+    const raw = await this.sendRaw(req);
+
+    const variant = raw[4];
+    if (variant !== RESP_ONIONPIR_MERKLE_TREE_TOP) {
+      throw new Error(`Unexpected tree-top response variant: 0x${variant.toString(16)}`);
+    }
+    const treeTopBytes = raw.slice(5);
+    const parsed = parseTreeTopCache(treeTopBytes);
+
+    this.onionPirTreeTopCache = { rawBytes: treeTopBytes, parsed };
+    this.log(`Fetched OnionPIR tree-top cache: ${treeTopBytes.length} bytes, ${parsed.levels.length} levels`);
+    return this.onionPirTreeTopCache;
+  }
+}
+
+// ─── Hex helper ─────────────────────────────────────────────────────────────
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
 }
 
 export function createOnionPirWebClient(

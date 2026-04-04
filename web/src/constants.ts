@@ -115,6 +115,16 @@ export const RESP_MERKLE_SIBLING_BATCH = 0x31;
 export const REQ_MERKLE_TREE_TOP = 0x32;
 export const RESP_MERKLE_TREE_TOP = 0x32;
 
+// ─── OnionPIR Merkle sibling constants (arity=120) ──────────────────────────
+
+export const REQ_ONIONPIR_MERKLE_SIBLING = 0x53;
+export const RESP_ONIONPIR_MERKLE_SIBLING = 0x53;
+export const REQ_ONIONPIR_MERKLE_TREE_TOP = 0x54;
+export const RESP_ONIONPIR_MERKLE_TREE_TOP = 0x54;
+
+/** OnionPIR sibling cuckoo: 6 hash functions, bucket_size=1 */
+export const ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES = 6;
+
 /** Merkle tree branching factor for DPF */
 export const MERKLE_ARITY = 8;
 
