@@ -106,11 +106,20 @@ pub fn compute_data_hash(chunk_data: &[u8]) -> Hash256 {
     sha256(chunk_data)
 }
 
-/// Compute an internal node: SHA256(left || right).
+/// Compute an internal node (binary): SHA256(left || right).
 pub fn compute_parent(left: &Hash256, right: &Hash256) -> Hash256 {
     let mut preimage = [0u8; 64];
     preimage[..32].copy_from_slice(left);
     preimage[32..].copy_from_slice(right);
+    sha256(&preimage)
+}
+
+/// Compute an internal node (arity N): SHA256(child_0 || child_1 || ... || child_{N-1}).
+pub fn compute_parent_n(children: &[Hash256]) -> Hash256 {
+    let mut preimage = Vec::with_capacity(children.len() * HASH_SIZE);
+    for child in children {
+        preimage.extend_from_slice(child);
+    }
     sha256(&preimage)
 }
 
@@ -236,7 +245,165 @@ impl MerkleTree {
     }
 }
 
-// ─── Proof verification ────────────────────────────────────────────────────
+// ─── N-ary Merkle tree ────────────────────────────────────────────────────
+
+/// An N-ary Merkle tree stored level-by-level.
+///
+/// `levels[0]` = leaf hashes (padded to a multiple of arity^depth)
+/// `levels[depth]` = `[root_hash]`
+///
+/// At each level L, `levels[L+1][i] = SHA256(levels[L][i*A] || ... || levels[L][i*A + A-1])`
+pub struct MerkleTreeN {
+    /// Per-level hash arrays. levels[0] = leaves, levels[depth] = [root].
+    pub levels: Vec<Vec<Hash256>>,
+    /// Branching factor.
+    pub arity: usize,
+    /// Number of real (non-padding) leaves.
+    pub num_real_leaves: usize,
+}
+
+impl MerkleTreeN {
+    /// Build an N-ary Merkle tree from leaf hashes.
+    ///
+    /// Pads leaves to the next power of `arity` with ZERO_HASH.
+    pub fn build(leaf_hashes: &[Hash256], arity: usize) -> Self {
+        assert!(arity >= 2, "arity must be >= 2");
+        let num_real = leaf_hashes.len();
+
+        // Pad to next power of arity
+        let num_leaves = next_power_of(num_real, arity);
+
+        let mut levels: Vec<Vec<Hash256>> = Vec::new();
+
+        // Level 0: leaves
+        let mut level0 = Vec::with_capacity(num_leaves);
+        level0.extend_from_slice(leaf_hashes);
+        level0.resize(num_leaves, ZERO_HASH);
+        levels.push(level0);
+
+        // Build bottom-up
+        loop {
+            let prev = levels.last().unwrap();
+            if prev.len() <= 1 {
+                break;
+            }
+            let next_len = (prev.len() + arity - 1) / arity;
+            let mut next_level = Vec::with_capacity(next_len);
+            for i in 0..next_len {
+                let start = i * arity;
+                let end = (start + arity).min(prev.len());
+                let mut children: Vec<Hash256> = prev[start..end].to_vec();
+                // Pad if last group is incomplete
+                children.resize(arity, ZERO_HASH);
+                next_level.push(compute_parent_n(&children));
+            }
+            levels.push(next_level);
+        }
+
+        MerkleTreeN { levels, arity, num_real_leaves: num_real }
+    }
+
+    /// Number of levels (0 = leaves, depth = root).
+    pub fn depth(&self) -> usize {
+        self.levels.len() - 1
+    }
+
+    /// Number of leaves (including padding).
+    pub fn num_leaves(&self) -> usize {
+        self.levels[0].len()
+    }
+
+    /// Root hash.
+    pub fn root(&self) -> &Hash256 {
+        &self.levels[self.depth()][0]
+    }
+
+    /// Get the A-1 sibling hashes for node at `local_idx` at `level`.
+    ///
+    /// Returns the sibling hashes in order (all children of the same parent,
+    /// excluding the node itself).
+    pub fn siblings_of(&self, level: usize, local_idx: usize) -> Vec<Hash256> {
+        let a = self.arity;
+        let parent_idx = local_idx / a;
+        let first_child = parent_idx * a;
+        let level_nodes = &self.levels[level];
+
+        let mut sibs = Vec::with_capacity(a - 1);
+        for c in first_child..first_child + a {
+            if c == local_idx {
+                continue;
+            }
+            if c < level_nodes.len() {
+                sibs.push(level_nodes[c]);
+            } else {
+                sibs.push(ZERO_HASH);
+            }
+        }
+        sibs
+    }
+
+    /// Extract the tree-top cache: all hashes at levels where nodes ≤ threshold.
+    ///
+    /// Returns (cache_from_level, cached_levels) where cache_from_level is the
+    /// first level (from leaves) that is fully cached.
+    /// Each cached level is a Vec<Hash256> of all node hashes at that level.
+    pub fn tree_top_cache(&self, threshold: usize) -> (usize, Vec<Vec<Hash256>>) {
+        let mut cache_from_level = self.depth();
+        for (level_idx, level) in self.levels.iter().enumerate() {
+            if level.len() <= threshold {
+                cache_from_level = level_idx;
+                break;
+            }
+        }
+        let cached: Vec<Vec<Hash256>> = self.levels[cache_from_level..].to_vec();
+        (cache_from_level, cached)
+    }
+}
+
+/// Compute the smallest power of `base` that is >= `n`.
+fn next_power_of(n: usize, base: usize) -> usize {
+    if n <= 1 { return 1; }
+    let mut v = 1;
+    while v < n {
+        v *= base;
+    }
+    v
+}
+
+/// Verify an N-ary Merkle proof.
+///
+/// `siblings_per_level[i]` contains A-1 sibling hashes at level i (from leaves up).
+/// `child_index_per_level[i]` is the position within the parent's children at level i.
+pub fn verify_proof_n(
+    leaf_hash: &Hash256,
+    leaf_idx: usize,
+    arity: usize,
+    siblings_per_level: &[Vec<Hash256>],
+    root: &Hash256,
+) -> bool {
+    let mut current = *leaf_hash;
+    let mut idx = leaf_idx;
+
+    for level_siblings in siblings_per_level {
+        let pos_in_parent = idx % arity; // which child am I?
+        // Reconstruct all children: insert `current` at pos_in_parent
+        let mut children = Vec::with_capacity(arity);
+        let mut sib_iter = level_siblings.iter();
+        for c in 0..arity {
+            if c == pos_in_parent {
+                children.push(current);
+            } else {
+                children.push(*sib_iter.next().unwrap_or(&ZERO_HASH));
+            }
+        }
+        current = compute_parent_n(&children);
+        idx /= arity;
+    }
+
+    current == *root
+}
+
+// ─── Proof verification (binary, legacy) ──────────────────────────────────
 
 /// Verify a Merkle proof for a leaf hash.
 ///
@@ -299,11 +466,17 @@ pub fn verify_entry(
 
 // ─── MERKLE_DATA slot format ───────────────────────────────────────────────
 
-/// Size of a MERKLE_DATA slot: [8B tag][4B tree_loc][32B data_hash][32B L0_sibling] = 76 bytes.
-/// The L0 sibling hash is embedded to save one PIR round (no separate L0 sibling query).
-pub const MERKLE_DATA_SLOT_SIZE: usize = 8 + 4 + 32 + 32;
+/// Size of a MERKLE_DATA slot: [8B tag][4B tree_loc][32B data_hash] = 44 bytes.
+/// Same regardless of tree arity. Sibling hashes are in separate per-level tables.
+pub const MERKLE_DATA_SLOT_SIZE: usize = 8 + 4 + 32;
 
-/// Size of a MERKLE_SIBLING slot: [4B node_index][32B hash] = 36 bytes.
+/// Compute sibling slot size for a given arity.
+/// Layout: [4B node_index][(arity-1) × 32B sibling_hashes]
+pub fn merkle_sibling_slot_size(arity: usize) -> usize {
+    4 + (arity - 1) * HASH_SIZE
+}
+
+/// Legacy binary sibling slot size (arity=2): [4B node_index][32B hash] = 36 bytes.
 pub const MERKLE_SIBLING_SLOT_SIZE: usize = 4 + 32;
 
 #[cfg(test)]
