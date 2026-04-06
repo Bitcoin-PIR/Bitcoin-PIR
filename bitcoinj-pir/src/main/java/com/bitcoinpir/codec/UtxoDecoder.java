@@ -59,9 +59,9 @@ public final class UtxoDecoder {
      * @return int[2] = {startChunkId, numChunks}, or null if not found
      */
     public static int[] findEntryInIndexResult(byte[] result, long expectedTag) {
-        for (int slot = 0; slot < PirConstants.CUCKOO_BUCKET_SIZE; slot++) {
-            int base = slot * PirConstants.INDEX_ENTRY_SIZE;
-            ByteBuffer bb = ByteBuffer.wrap(result, base, PirConstants.INDEX_ENTRY_SIZE)
+        for (int slot = 0; slot < PirConstants.INDEX_SLOTS_PER_BIN; slot++) {
+            int base = slot * PirConstants.INDEX_SLOT_SIZE;
+            ByteBuffer bb = ByteBuffer.wrap(result, base, PirConstants.INDEX_SLOT_SIZE)
                     .order(ByteOrder.LITTLE_ENDIAN);
             long slotTag = bb.getLong();
             if (slotTag == expectedTag) {
@@ -79,7 +79,7 @@ public final class UtxoDecoder {
      * @return the 40-byte chunk data, or null if not found
      */
     public static byte[] findChunkInResult(byte[] result, int chunkId) {
-        for (int slot = 0; slot < PirConstants.CHUNK_CUCKOO_BUCKET_SIZE; slot++) {
+        for (int slot = 0; slot < PirConstants.CHUNK_SLOTS_PER_BIN; slot++) {
             int base = slot * PirConstants.CHUNK_SLOT_SIZE;
             int resultChunkId = ByteBuffer.wrap(result, base, 4)
                     .order(ByteOrder.LITTLE_ENDIAN).getInt();

@@ -73,14 +73,14 @@ async def test_harmonypir(script_hash_hex: str):
     print('=' * 60)
 
     try:
-        from harmonypir_python import PyHarmonyBucket, compute_balanced_t
+        from harmonypir_python import PyHarmonyGroup, compute_balanced_t
         print('  Native module: OK')
     except ImportError as e:
         print(f'  Native module: MISSING ({e})')
         print('  STATUS: SKIP (build with: cd harmonypir-python && maturin develop)')
         return None
 
-    # Test that we can create buckets and perform basic operations
+    # Test that we can create groups and perform basic operations
     import os
     prp_key = os.urandom(16)
 
@@ -91,32 +91,32 @@ async def test_harmonypir(script_hash_hex: str):
     t_idx = compute_balanced_t(index_bins)
     print(f'  Index: bins={index_bins}, T={t_idx}')
 
-    bucket = PyHarmonyBucket(n=index_bins, w=39, t=0, prp_key=prp_key, bucket_id=0)
-    print(f'  Bucket: n={bucket.n()}, T={bucket.t()}, M={bucket.m()}, '
-          f'max_queries={bucket.max_queries()}')
+    group = PyHarmonyGroup(n=index_bins, w=39, t=0, prp_key=prp_key, group_id=0)
+    print(f'  Group: n={group.n()}, T={group.t()}, M={group.m()}, '
+          f'max_queries={group.max_queries()}')
 
     # We can't do a full query without a hint server, but we can test
-    # the bucket operations work correctly
+    # the group operations work correctly
     try:
         # Build a dummy request (doesn't need hints)
-        dummy = bucket.build_synthetic_dummy()
+        dummy = group.build_synthetic_dummy()
         print(f'  Synthetic dummy: {len(dummy)} bytes ({len(dummy)//4} indices)')
 
         # Test build_request (will fail without hints loaded, but structure is valid)
         # Load empty hints first
-        m = bucket.m()
-        w = bucket.w()
+        m = group.m()
+        w = group.w()
         empty_hints = bytes(m * w)
-        bucket.load_hints(empty_hints)
+        group.load_hints(empty_hints)
         print(f'  Loaded empty hints: {m * w} bytes')
 
         # Build a real request
-        req_bytes, seg, pos, qi = bucket.build_request(42)
+        req_bytes, seg, pos, qi = group.build_request(42)
         print(f'  build_request(42): {len(req_bytes)} bytes, segment={seg}, position={pos}')
 
         print('  STATUS: PASS (native ops work, hint server needed for full queries)')
     except Exception as e:
-        print(f'  ERROR in bucket ops: {e}')
+        print(f'  ERROR in group ops: {e}')
         print('  STATUS: FAIL')
         return None
 

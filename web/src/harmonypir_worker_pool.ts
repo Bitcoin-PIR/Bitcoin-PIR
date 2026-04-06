@@ -1,13 +1,13 @@
 /**
  * HarmonyPIR Worker Pool
  *
- * Manages a pool of Web Workers, each owning a subset of HarmonyBucket
+ * Manages a pool of Web Workers, each owning a subset of HarmonyGroup
  * instances. Provides async methods for batch build_request/process_response
  * that distribute work across workers and collect results.
  */
 
 export interface BuildItem {
-  bucketId: number;
+  groupId: number;
   binIndex?: number;  // undefined = dummy
 }
 
@@ -18,7 +18,7 @@ export interface BuildResult {
 }
 
 export interface ProcessItem {
-  bucketId: number;
+  groupId: number;
   response: Uint8Array;
 }
 
@@ -33,9 +33,9 @@ export class HarmonyWorkerPool {
     this.numWorkers = numWorkers ?? Math.min(navigator.hardwareConcurrency || 4, 4);
   }
 
-  /** Get which worker owns a given bucketId. */
-  private ownerOf(bucketId: number): number {
-    return bucketId % this.numWorkers;
+  /** Get which worker owns a given groupId. */
+  private ownerOf(groupId: number): number {
+    return groupId % this.numWorkers;
   }
 
   /** Initialize workers: load WASM in each. Returns when all are ready. */
@@ -81,15 +81,15 @@ export class HarmonyWorkerPool {
     URL.revokeObjectURL(workerUrl);
   }
 
-  /** Create a bucket on the appropriate worker. */
-  async createBucket(
-    bucketId: number, n: number, w: number, t: number,
+  /** Create a group on the appropriate worker. */
+  async createGroup(
+    groupId: number, n: number, w: number, t: number,
     prpKey: Uint8Array, backend: number,
   ): Promise<void> {
-    const workerId = this.ownerOf(bucketId);
+    const workerId = this.ownerOf(groupId);
     return new Promise((resolve, reject) => {
       const handler = (ev: MessageEvent) => {
-        if (ev.data.type === 'bucketCreated' && ev.data.bucketId === bucketId) {
+        if (ev.data.type === 'groupCreated' && ev.data.groupId === groupId) {
           this.workers[workerId].removeEventListener('message', handler);
           resolve();
         } else if (ev.data.type === 'error') {
@@ -99,31 +99,31 @@ export class HarmonyWorkerPool {
       };
       this.workers[workerId].addEventListener('message', handler);
       this.workers[workerId].postMessage({
-        type: 'createBucket', bucketId, n, w, t, prpKey, backend,
+        type: 'createGroup', groupId, n, w, t, prpKey, backend,
       });
     });
   }
 
-  /** Load hints for a bucket on its owning worker. */
-  loadHints(bucketId: number, hints: Uint8Array): void {
-    const workerId = this.ownerOf(bucketId);
+  /** Load hints for a group on its owning worker. */
+  loadHints(groupId: number, hints: Uint8Array): void {
+    const workerId = this.ownerOf(groupId);
     // Transfer the hints buffer to avoid copy.
     const copy = new Uint8Array(hints);
     this.workers[workerId].postMessage(
-      { type: 'loadHints', bucketId, hints: copy },
+      { type: 'loadHints', groupId, hints: copy },
       [copy.buffer],
     );
   }
 
   /**
-   * Build requests for a batch of buckets in parallel across workers.
-   * Returns a map of bucketId → request bytes.
+   * Build requests for a batch of groups in parallel across workers.
+   * Returns a map of groupId -> request bytes.
    */
   async buildBatchRequests(items: BuildItem[]): Promise<Map<number, BuildResult>> {
     // Group items by owning worker.
     const byWorker = new Map<number, BuildItem[]>();
     for (const item of items) {
-      const w = this.ownerOf(item.bucketId);
+      const w = this.ownerOf(item.groupId);
       if (!byWorker.has(w)) byWorker.set(w, []);
       byWorker.get(w)!.push(item);
     }
@@ -137,7 +137,7 @@ export class HarmonyWorkerPool {
       promises.push(new Promise<void>((resolve) => {
         this.pendingRequests.set(reqId, (data) => {
           for (const r of data.results) {
-            allResults.set(r.bucketId, {
+            allResults.set(r.groupId, {
               bytes: r.bytes,
               segment: r.segment,
               position: r.position,
@@ -159,14 +159,14 @@ export class HarmonyWorkerPool {
   }
 
   /**
-   * Process responses for a batch of buckets in parallel across workers.
-   * Returns a map of bucketId → answer bytes.
+   * Process responses for a batch of groups in parallel across workers.
+   * Returns a map of groupId -> answer bytes.
    */
   async processBatchResponses(items: ProcessItem[]): Promise<Map<number, Uint8Array>> {
     // Group by owning worker.
     const byWorker = new Map<number, ProcessItem[]>();
     for (const item of items) {
-      const w = this.ownerOf(item.bucketId);
+      const w = this.ownerOf(item.groupId);
       if (!byWorker.has(w)) byWorker.set(w, []);
       byWorker.get(w)!.push(item);
     }
@@ -179,7 +179,7 @@ export class HarmonyWorkerPool {
       promises.push(new Promise<void>((resolve) => {
         this.pendingRequests.set(reqId, (data) => {
           for (const r of data.results) {
-            allResults.set(r.bucketId, r.answer);
+            allResults.set(r.groupId, r.answer);
           }
           resolve();
         });
@@ -201,13 +201,13 @@ export class HarmonyWorkerPool {
   }
 
   /**
-   * Complete deferred relocation for buckets that had process_response_xor_only called.
-   * Must be called before the next query on these buckets.
+   * Complete deferred relocation for groups that had process_response_xor_only called.
+   * Must be called before the next query on these groups.
    */
-  async finishRelocation(bucketIds: number[]): Promise<void> {
+  async finishRelocation(groupIds: number[]): Promise<void> {
     // Group by owning worker.
     const byWorker = new Map<number, number[]>();
-    for (const id of bucketIds) {
+    for (const id of groupIds) {
       const w = this.ownerOf(id);
       if (!byWorker.has(w)) byWorker.set(w, []);
       byWorker.get(w)!.push(id);
@@ -222,15 +222,15 @@ export class HarmonyWorkerPool {
       this.workers[workerId].postMessage({
         type: 'finishRelocation',
         requestId: reqId,
-        bucketIds: ids,
+        groupIds: ids,
       });
     }
     await Promise.all(promises);
   }
 
   /**
-   * Serialize all bucket state from all workers.
-   * Returns a map of bucketId → serialized bytes.
+   * Serialize all group state from all workers.
+   * Returns a map of groupId -> serialized bytes.
    */
   async serializeAll(): Promise<Map<number, Uint8Array>> {
     const allResults = new Map<number, Uint8Array>();
@@ -241,7 +241,7 @@ export class HarmonyWorkerPool {
       promises.push(new Promise<void>((resolve) => {
         this.pendingRequests.set(reqId, (data) => {
           for (const r of data.results) {
-            allResults.set(r.bucketId, r.data);
+            allResults.set(r.groupId, r.data);
           }
           resolve();
         });
@@ -254,12 +254,12 @@ export class HarmonyWorkerPool {
   }
 
   /**
-   * Deserialize bucket state into workers from a map of bucketId → serialized bytes.
+   * Deserialize group state into workers from a map of groupId -> serialized bytes.
    */
-  async deserializeAll(buckets: Map<number, Uint8Array>, prpKey: Uint8Array): Promise<void> {
+  async deserializeAll(groups: Map<number, Uint8Array>, prpKey: Uint8Array): Promise<void> {
     const promises: Promise<void>[] = [];
-    for (const [bucketId, data] of buckets) {
-      const workerId = this.ownerOf(bucketId);
+    for (const [groupId, data] of groups) {
+      const workerId = this.ownerOf(groupId);
       const reqId = this.requestId++;
       promises.push(new Promise<void>((resolve, reject) => {
         this.pendingRequests.set(reqId, (resp) => {
@@ -271,7 +271,7 @@ export class HarmonyWorkerPool {
       const copy = new Uint8Array(data);
       const keyCopy = new Uint8Array(prpKey);
       this.workers[workerId].postMessage(
-        { type: 'deserializeBucket', requestId: reqId, bucketId, data: copy, prpKey: keyCopy },
+        { type: 'deserializeGroup', requestId: reqId, groupId, data: copy, prpKey: keyCopy },
         [copy.buffer],
       );
     }
@@ -279,7 +279,7 @@ export class HarmonyWorkerPool {
   }
 
   /**
-   * Get the minimum queries_remaining across all buckets in all workers.
+   * Get the minimum queries_remaining across all groups in all workers.
    */
   async getMinQueriesRemaining(): Promise<number> {
     let globalMin = Infinity;
@@ -318,7 +318,7 @@ export class HarmonyWorkerPool {
   private handleMessage(workerId: number, data: any): void {
     if (data.type === 'buildBatchResult' || data.type === 'processBatchResult'
         || data.type === 'relocationDone' || data.type === 'serializeResult'
-        || data.type === 'bucketDeserialized' || data.type === 'queryRemainingResult') {
+        || data.type === 'groupDeserialized' || data.type === 'queryRemainingResult') {
       const cb = this.pendingRequests.get(data.requestId);
       if (cb) {
         this.pendingRequests.delete(data.requestId);
@@ -333,7 +333,7 @@ export class HarmonyWorkerPool {
     // This must stay in sync with harmonypir_worker.ts.
     return `
 'use strict';
-const buckets = new Map();
+const groups = new Map();
 let wasm = null;
 
 self.onmessage = async (ev) => {
@@ -358,27 +358,27 @@ self.onmessage = async (ev) => {
       }
       break;
     }
-    case 'createBucket': {
+    case 'createGroup': {
       if (!wasm) { self.postMessage({ type: 'error', error: 'WASM not loaded' }); return; }
       try {
-        const bucket = wasm.HarmonyBucket.new_with_backend(
-          msg.n, msg.w, msg.t, msg.prpKey, msg.bucketId, msg.backend
+        const group = wasm.HarmonyBucket.new_with_backend(
+          msg.n, msg.w, msg.t, msg.prpKey, msg.groupId, msg.backend
         );
-        buckets.set(msg.bucketId, bucket);
-        self.postMessage({ type: 'bucketCreated', bucketId: msg.bucketId });
+        groups.set(msg.groupId, group);
+        self.postMessage({ type: 'groupCreated', groupId: msg.groupId });
       } catch (e) {
-        self.postMessage({ type: 'error', error: 'createBucket(' + msg.bucketId + '): ' + e.message });
+        self.postMessage({ type: 'error', error: 'createGroup(' + msg.groupId + '): ' + e.message });
       }
       break;
     }
     case 'loadHints': {
-      const bucket = buckets.get(msg.bucketId);
-      if (!bucket) { self.postMessage({ type: 'error', error: 'bucket ' + msg.bucketId + ' not found' }); return; }
+      const group = groups.get(msg.groupId);
+      if (!group) { self.postMessage({ type: 'error', error: 'group ' + msg.groupId + ' not found' }); return; }
       try {
-        bucket.load_hints(msg.hints);
-        self.postMessage({ type: 'hintsLoaded', bucketId: msg.bucketId });
+        group.load_hints(msg.hints);
+        self.postMessage({ type: 'hintsLoaded', groupId: msg.groupId });
       } catch (e) {
-        self.postMessage({ type: 'error', error: 'loadHints(' + msg.bucketId + '): ' + e.message });
+        self.postMessage({ type: 'error', error: 'loadHints(' + msg.groupId + '): ' + e.message });
       }
       break;
     }
@@ -386,19 +386,19 @@ self.onmessage = async (ev) => {
       const results = [];
       const transferables = [];
       for (const item of msg.items) {
-        const bucket = buckets.get(item.bucketId);
-        if (!bucket) continue;
+        const group = groups.get(item.groupId);
+        if (!group) continue;
         let bytes, segment, position;
         if (item.binIndex !== undefined) {
-          const req = bucket.build_request(item.binIndex);
+          const req = group.build_request(item.binIndex);
           bytes = new Uint8Array(req.request);
           segment = req.segment;
           position = req.position;
           req.free();
         } else {
-          bytes = new Uint8Array(bucket.build_synthetic_dummy());
+          bytes = new Uint8Array(group.build_synthetic_dummy());
         }
-        results.push({ bucketId: item.bucketId, bytes, segment, position });
+        results.push({ groupId: item.groupId, bytes, segment, position });
         transferables.push(bytes.buffer);
       }
       self.postMessage({ type: 'buildBatchResult', requestId: msg.requestId, results }, transferables);
@@ -408,19 +408,19 @@ self.onmessage = async (ev) => {
       const results = [];
       const transferables = [];
       for (const item of msg.items) {
-        const bucket = buckets.get(item.bucketId);
-        if (!bucket) continue;
-        const answer = bucket.process_response_xor_only(item.response);
-        results.push({ bucketId: item.bucketId, answer });
+        const group = groups.get(item.groupId);
+        if (!group) continue;
+        const answer = group.process_response_xor_only(item.response);
+        results.push({ groupId: item.groupId, answer });
         transferables.push(answer.buffer);
       }
       self.postMessage({ type: 'processBatchResult', requestId: msg.requestId, results }, transferables);
       break;
     }
     case 'finishRelocation': {
-      for (const bucketId of msg.bucketIds) {
-        const bucket = buckets.get(bucketId);
-        if (bucket) bucket.finish_relocation();
+      for (const groupId of msg.groupIds) {
+        const group = groups.get(groupId);
+        if (group) group.finish_relocation();
       }
       self.postMessage({ type: 'relocationDone', requestId: msg.requestId });
       break;
@@ -428,28 +428,28 @@ self.onmessage = async (ev) => {
     case 'serializeAll': {
       const results = [];
       const transferables = [];
-      for (const [bucketId, bucket] of buckets) {
-        const data = new Uint8Array(bucket.serialize());
-        results.push({ bucketId, data });
+      for (const [groupId, group] of groups) {
+        const data = new Uint8Array(group.serialize());
+        results.push({ groupId, data });
         transferables.push(data.buffer);
       }
       self.postMessage({ type: 'serializeResult', requestId: msg.requestId, results }, transferables);
       break;
     }
-    case 'deserializeBucket': {
+    case 'deserializeGroup': {
       try {
-        const bucket = wasm.HarmonyBucket.deserialize(msg.data, msg.prpKey, msg.bucketId);
-        buckets.set(msg.bucketId, bucket);
-        self.postMessage({ type: 'bucketDeserialized', requestId: msg.requestId, bucketId: msg.bucketId });
+        const group = wasm.HarmonyBucket.deserialize(msg.data, msg.prpKey, msg.groupId);
+        groups.set(msg.groupId, group);
+        self.postMessage({ type: 'groupDeserialized', requestId: msg.requestId, groupId: msg.groupId });
       } catch (e) {
-        self.postMessage({ type: 'bucketDeserialized', requestId: msg.requestId, error: e.message });
+        self.postMessage({ type: 'groupDeserialized', requestId: msg.requestId, error: e.message });
       }
       break;
     }
     case 'queryRemaining': {
       let minRemaining = Infinity;
-      for (const [, bucket] of buckets) {
-        const r = bucket.queries_remaining();
+      for (const [, group] of groups) {
+        const r = group.queries_remaining();
         if (r < minRemaining) minRemaining = r;
       }
       self.postMessage({ type: 'queryRemainingResult', requestId: msg.requestId, minRemaining });

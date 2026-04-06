@@ -1,6 +1,6 @@
-//! Hash functions for Batch PIR bucket assignment, cuckoo hashing, and fingerprint tags.
+//! Hash functions for PBC group assignment, cuckoo hashing, and fingerprint tags.
 //!
-//! All functions are parameterized — they accept explicit seeds, bucket counts,
+//! All functions are parameterized — they accept explicit seeds, group counts,
 //! etc. rather than reading global constants. This allows the same code to work
 //! for INDEX, CHUNK, MERKLE, and DELTA sub-tables with different parameters.
 
@@ -51,51 +51,51 @@ pub fn sh_c(script_hash: &[u8]) -> u64 {
     ]) as u64
 }
 
-// ─── Batch PIR bucket assignment (byte-keyed, for script hashes) ────────────
+// ─── PBC group assignment (byte-keyed, for script hashes) ──────────────────
 
-/// Hash a script_hash with a nonce for Batch PIR bucket assignment.
+/// Hash a script_hash with a nonce for PBC group assignment.
 #[inline]
-pub fn hash_for_bucket(script_hash: &[u8], nonce: u64) -> u64 {
+pub fn hash_for_group(script_hash: &[u8], nonce: u64) -> u64 {
     let mut h = sh_a(script_hash).wrapping_add(nonce.wrapping_mul(GOLDEN_RATIO));
     h ^= sh_b(script_hash);
     splitmix64(h ^ sh_c(script_hash))
 }
 
-/// Derive `num_hashes` distinct Batch PIR bucket indices for a script_hash.
-pub fn derive_buckets(script_hash: &[u8], k: usize, num_hashes: usize) -> Vec<usize> {
-    let mut buckets = Vec::with_capacity(num_hashes);
+/// Derive `num_hashes` distinct PBC group indices for a script_hash.
+pub fn derive_groups(script_hash: &[u8], k: usize, num_hashes: usize) -> Vec<usize> {
+    let mut groups = Vec::with_capacity(num_hashes);
     let mut nonce: u64 = 0;
 
-    while buckets.len() < num_hashes {
-        let h = hash_for_bucket(script_hash, nonce);
-        let bucket = (h % k as u64) as usize;
+    while groups.len() < num_hashes {
+        let h = hash_for_group(script_hash, nonce);
+        let group = (h % k as u64) as usize;
         nonce += 1;
 
-        if !buckets.contains(&bucket) {
-            buckets.push(bucket);
+        if !groups.contains(&group) {
+            groups.push(group);
         }
     }
 
-    buckets
+    groups
 }
 
-/// Derive exactly 3 bucket indices into a fixed-size array (common case).
+/// Derive exactly 3 group indices into a fixed-size array (common case).
 ///
-/// This is equivalent to `derive_buckets(script_hash, k, 3)` but avoids
+/// This is equivalent to `derive_groups(script_hash, k, 3)` but avoids
 /// allocation and returns a `[usize; 3]` for backward compatibility.
-pub fn derive_buckets_3(script_hash: &[u8], k: usize) -> [usize; 3] {
-    let mut buckets = [0usize; 3];
+pub fn derive_groups_3(script_hash: &[u8], k: usize) -> [usize; 3] {
+    let mut groups = [0usize; 3];
     let mut nonce: u64 = 0;
     let mut count = 0;
 
     while count < 3 {
-        let h = hash_for_bucket(script_hash, nonce);
-        let bucket = (h % k as u64) as usize;
+        let h = hash_for_group(script_hash, nonce);
+        let group = (h % k as u64) as usize;
         nonce += 1;
 
         let mut dup = false;
         for i in 0..count {
-            if buckets[i] == bucket {
+            if groups[i] == group {
                 dup = true;
                 break;
             }
@@ -104,53 +104,53 @@ pub fn derive_buckets_3(script_hash: &[u8], k: usize) -> [usize; 3] {
             continue;
         }
 
-        buckets[count] = bucket;
+        groups[count] = group;
         count += 1;
     }
 
-    buckets
+    groups
 }
 
-// ─── Batch PIR bucket assignment (integer-keyed, for chunk IDs) ─────────────
+// ─── PBC group assignment (integer-keyed, for chunk IDs) ───────────────────
 
-/// Hash a u32 item ID with a nonce for bucket assignment.
+/// Hash a u32 item ID with a nonce for PBC group assignment.
 #[inline]
-pub fn hash_int_for_bucket(id: u32, nonce: u64) -> u64 {
+pub fn hash_int_for_group(id: u32, nonce: u64) -> u64 {
     splitmix64((id as u64).wrapping_add(nonce.wrapping_mul(GOLDEN_RATIO)))
 }
 
-/// Derive `num_hashes` distinct bucket indices for an integer ID.
-pub fn derive_int_buckets(id: u32, k: usize, num_hashes: usize) -> Vec<usize> {
-    let mut buckets = Vec::with_capacity(num_hashes);
+/// Derive `num_hashes` distinct PBC group indices for an integer ID.
+pub fn derive_int_groups(id: u32, k: usize, num_hashes: usize) -> Vec<usize> {
+    let mut groups = Vec::with_capacity(num_hashes);
     let mut nonce: u64 = 0;
 
-    while buckets.len() < num_hashes {
-        let h = hash_int_for_bucket(id, nonce);
-        let bucket = (h % k as u64) as usize;
+    while groups.len() < num_hashes {
+        let h = hash_int_for_group(id, nonce);
+        let group = (h % k as u64) as usize;
         nonce += 1;
 
-        if !buckets.contains(&bucket) {
-            buckets.push(bucket);
+        if !groups.contains(&group) {
+            groups.push(group);
         }
     }
 
-    buckets
+    groups
 }
 
-/// Derive exactly 3 bucket indices for an integer ID (common case).
-pub fn derive_int_buckets_3(id: u32, k: usize) -> [usize; 3] {
-    let mut buckets = [0usize; 3];
+/// Derive exactly 3 PBC group indices for an integer ID (common case).
+pub fn derive_int_groups_3(id: u32, k: usize) -> [usize; 3] {
+    let mut groups = [0usize; 3];
     let mut nonce: u64 = 0;
     let mut count = 0;
 
     while count < 3 {
-        let h = hash_int_for_bucket(id, nonce);
-        let bucket = (h % k as u64) as usize;
+        let h = hash_int_for_group(id, nonce);
+        let group = (h % k as u64) as usize;
         nonce += 1;
 
         let mut dup = false;
         for i in 0..count {
-            if buckets[i] == bucket {
+            if groups[i] == group {
                 dup = true;
                 break;
             }
@@ -159,21 +159,21 @@ pub fn derive_int_buckets_3(id: u32, k: usize) -> [usize; 3] {
             continue;
         }
 
-        buckets[count] = bucket;
+        groups[count] = group;
         count += 1;
     }
 
-    buckets
+    groups
 }
 
 // ─── Cuckoo hashing ────────────────────────────────────────────────────────
 
-/// Derive a cuckoo hash function key for a given (bucket_id, hash_fn) pair.
+/// Derive a cuckoo hash function key for a given (group_id, hash_fn) pair.
 #[inline]
-pub fn derive_cuckoo_key(master_seed: u64, bucket_id: usize, hash_fn: usize) -> u64 {
+pub fn derive_cuckoo_key(master_seed: u64, group_id: usize, hash_fn: usize) -> u64 {
     splitmix64(
         master_seed
-            .wrapping_add((bucket_id as u64).wrapping_mul(GOLDEN_RATIO))
+            .wrapping_add((group_id as u64).wrapping_mul(GOLDEN_RATIO))
             .wrapping_add((hash_fn as u64).wrapping_mul(CUCKOO_KEY_MIX)),
     )
 }
@@ -243,24 +243,24 @@ pub fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
 // These use the legacy global constants so existing build/runtime code
 // can import from pir_core::hash::* without changing call sites.
 
-/// Derive 3 INDEX-level bucket indices (uses K=75).
-pub fn derive_buckets_legacy(script_hash: &[u8]) -> [usize; 3] {
-    derive_buckets_3(script_hash, crate::params::K)
+/// Derive 3 INDEX-level group indices (uses K=75).
+pub fn derive_groups_legacy(script_hash: &[u8]) -> [usize; 3] {
+    derive_groups_3(script_hash, crate::params::K)
 }
 
 /// Derive INDEX-level cuckoo key (uses MASTER_SEED).
-pub fn derive_cuckoo_key_legacy(bucket_id: usize, hash_fn: usize) -> u64 {
-    derive_cuckoo_key(crate::params::MASTER_SEED, bucket_id, hash_fn)
+pub fn derive_cuckoo_key_legacy(group_id: usize, hash_fn: usize) -> u64 {
+    derive_cuckoo_key(crate::params::MASTER_SEED, group_id, hash_fn)
 }
 
-/// Derive 3 CHUNK-level bucket indices (uses K_CHUNK=80).
-pub fn derive_chunk_buckets_legacy(chunk_id: u32) -> [usize; 3] {
-    derive_int_buckets_3(chunk_id, crate::params::K_CHUNK)
+/// Derive 3 CHUNK-level group indices (uses K_CHUNK=80).
+pub fn derive_chunk_groups_legacy(chunk_id: u32) -> [usize; 3] {
+    derive_int_groups_3(chunk_id, crate::params::K_CHUNK)
 }
 
 /// Derive CHUNK-level cuckoo key (uses CHUNK_MASTER_SEED).
-pub fn derive_chunk_cuckoo_key_legacy(bucket_id: usize, hash_fn: usize) -> u64 {
-    derive_cuckoo_key(crate::params::CHUNK_MASTER_SEED, bucket_id, hash_fn)
+pub fn derive_chunk_cuckoo_key_legacy(group_id: usize, hash_fn: usize) -> u64 {
+    derive_cuckoo_key(crate::params::CHUNK_MASTER_SEED, group_id, hash_fn)
 }
 
 #[cfg(test)]
@@ -282,25 +282,25 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_buckets_3_distinct() {
+    fn test_derive_groups_3_distinct() {
         let sh = [0u8; 20];
-        let buckets = derive_buckets_3(&sh, 75);
-        assert_ne!(buckets[0], buckets[1]);
-        assert_ne!(buckets[0], buckets[2]);
-        assert_ne!(buckets[1], buckets[2]);
-        for &b in &buckets {
-            assert!(b < 75);
+        let groups = derive_groups_3(&sh, 75);
+        assert_ne!(groups[0], groups[1]);
+        assert_ne!(groups[0], groups[2]);
+        assert_ne!(groups[1], groups[2]);
+        for &g in &groups {
+            assert!(g < 75);
         }
     }
 
     #[test]
-    fn test_derive_int_buckets_3_distinct() {
-        let buckets = derive_int_buckets_3(42, 80);
-        assert_ne!(buckets[0], buckets[1]);
-        assert_ne!(buckets[0], buckets[2]);
-        assert_ne!(buckets[1], buckets[2]);
-        for &b in &buckets {
-            assert!(b < 80);
+    fn test_derive_int_groups_3_distinct() {
+        let groups = derive_int_groups_3(42, 80);
+        assert_ne!(groups[0], groups[1]);
+        assert_ne!(groups[0], groups[2]);
+        assert_ne!(groups[1], groups[2]);
+        for &g in &groups {
+            assert!(g < 80);
         }
     }
 
@@ -309,16 +309,16 @@ mod tests {
         // Legacy wrappers should produce the same results as parameterized versions
         let sh = [1u8; 20];
         assert_eq!(
-            derive_buckets_legacy(&sh),
-            derive_buckets_3(&sh, 75)
+            derive_groups_legacy(&sh),
+            derive_groups_3(&sh, 75)
         );
         assert_eq!(
             derive_cuckoo_key_legacy(5, 0),
             derive_cuckoo_key(0x71a2ef38b4c90d15, 5, 0)
         );
         assert_eq!(
-            derive_chunk_buckets_legacy(100),
-            derive_int_buckets_3(100, 80)
+            derive_chunk_groups_legacy(100),
+            derive_int_groups_3(100, 80)
         );
     }
 

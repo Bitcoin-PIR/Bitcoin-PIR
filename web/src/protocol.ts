@@ -3,7 +3,7 @@
  *
  * Matches runtime/src/protocol.rs exactly:
  *   Messages are length-prefixed: [4B total_len][1B variant][payload...]
- *   Batch queries/results: [2B round_id][1B count][1B keys_per_bucket][per-bucket: [2B len][key]...]
+ *   Batch queries/results: [2B round_id][1B count][1B keys_per_group][per-group: [2B len][key]...]
  */
 
 import {
@@ -18,7 +18,7 @@ import {
 export interface BatchQuery {
   level: number;
   roundId: number;
-  /** Per-bucket: list of DPF keys (2 for index, 3 for chunks) */
+  /** Per-group: list of DPF keys (2 for index, 3 for chunks) */
   keys: Uint8Array[][];
 }
 
@@ -33,7 +33,7 @@ export interface ServerInfo {
 export interface BatchResult {
   level: number;
   roundId: number;
-  /** Per-bucket: list of results (2 for index, 3 for chunks) */
+  /** Per-group: list of results (2 for index, 3 for chunks) */
   results: Uint8Array[][];
 }
 
@@ -59,11 +59,11 @@ function encodeBatchQuery(buf: number[], q: BatchQuery): void {
   buf.push(q.roundId & 0xFF, (q.roundId >> 8) & 0xFF);
   // count: u8
   buf.push(q.keys.length & 0xFF);
-  // keys_per_bucket: u8
-  const keysPerBucket = q.keys.length > 0 ? q.keys[0].length : 0;
-  buf.push(keysPerBucket & 0xFF);
-  for (const bucketKeys of q.keys) {
-    for (const k of bucketKeys) {
+  // keys_per_group: u8
+  const keysPerGroup = q.keys.length > 0 ? q.keys[0].length : 0;
+  buf.push(keysPerGroup & 0xFF);
+  for (const groupKeys of q.keys) {
+    for (const k of groupKeys) {
       buf.push(k.length & 0xFF, (k.length >> 8) & 0xFF);
       for (let i = 0; i < k.length; i++) buf.push(k[i]);
     }
@@ -110,20 +110,20 @@ function decodeBatchResult(data: Uint8Array, pos: number): { result: BatchResult
   pos += 2;
   const count = data[pos];
   pos += 1;
-  const resultsPerBucket = data[pos];
+  const resultsPerGroup = data[pos];
   pos += 1;
 
   const results: Uint8Array[][] = [];
   for (let i = 0; i < count; i++) {
-    const bucketResults: Uint8Array[] = [];
-    for (let j = 0; j < resultsPerBucket; j++) {
+    const groupResults: Uint8Array[] = [];
+    for (let j = 0; j < resultsPerGroup; j++) {
       const len = data[pos] | (data[pos + 1] << 8);
       pos += 2;
       const r = data.slice(pos, pos + len);
       pos += len;
-      bucketResults.push(r);
+      groupResults.push(r);
     }
-    results.push(bucketResults);
+    results.push(groupResults);
   }
 
   return {

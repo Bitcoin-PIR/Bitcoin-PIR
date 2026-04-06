@@ -7,7 +7,7 @@
 //! Usage:
 //!   cargo run --release -p runtime --bin server -- --port 8091
 
-use runtime::eval::{self, BucketTiming};
+use runtime::eval::{self, GroupTiming};
 use runtime::protocol::{BatchQuery, BatchResult, Request, Response, ServerInfo};
 use runtime::protocol::{DatabaseCatalog, DatabaseCatalogEntry};
 use build::common::*;
@@ -80,8 +80,8 @@ impl ServerData {
     }
 
     fn process_index_batch(&self, query: &BatchQuery) -> (BatchResult, Duration, Duration) {
-        let num_buckets = query.keys.len().min(K);
-        let bucket_results: Vec<(Vec<Vec<u8>>, BucketTiming)> = (0..num_buckets)
+        let num_groups = query.keys.len().min(K);
+        let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
                 let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
@@ -90,7 +90,7 @@ impl ServerData {
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_offset = HEADER_SIZE + b * self.tables.index_table_byte_size;
                 let table_bytes = &self.tables.index_cuckoo[table_offset..table_offset + self.tables.index_table_byte_size];
-                let (r0, r1, timing) = eval::process_index_bucket(
+                let (r0, r1, timing) = eval::process_index_group(
                     &key_refs[0], &key_refs[1],
                     table_bytes,
                     self.tables.index_bins_per_table,
@@ -101,8 +101,8 @@ impl ServerData {
 
         let mut total_dpf = Duration::ZERO;
         let mut total_fetch = Duration::ZERO;
-        let mut results = Vec::with_capacity(num_buckets);
-        for (r, t) in bucket_results {
+        let mut results = Vec::with_capacity(num_groups);
+        for (r, t) in group_results {
             total_dpf += t.dpf_eval;
             total_fetch += t.fetch_xor;
             results.push(r);
@@ -112,8 +112,8 @@ impl ServerData {
     }
 
     fn process_chunk_batch(&self, query: &BatchQuery) -> (BatchResult, Duration, Duration) {
-        let num_buckets = query.keys.len().min(K_CHUNK);
-        let bucket_results: Vec<(Vec<Vec<u8>>, BucketTiming)> = (0..num_buckets)
+        let num_groups = query.keys.len().min(K_CHUNK);
+        let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
                 let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
@@ -122,7 +122,7 @@ impl ServerData {
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_offset = CHUNK_HEADER_SIZE + b * self.tables.chunk_table_byte_size;
                 let table_bytes = &self.tables.chunk_cuckoo[table_offset..table_offset + self.tables.chunk_table_byte_size];
-                let (r, timing) = eval::process_chunk_bucket(
+                let (r, timing) = eval::process_chunk_group(
                     &key_refs,
                     table_bytes,
                     self.tables.chunk_bins_per_table,
@@ -133,8 +133,8 @@ impl ServerData {
 
         let mut total_dpf = Duration::ZERO;
         let mut total_fetch = Duration::ZERO;
-        let mut results = Vec::with_capacity(num_buckets);
-        for (r, t) in bucket_results {
+        let mut results = Vec::with_capacity(num_groups);
+        for (r, t) in group_results {
             total_dpf += t.dpf_eval;
             total_fetch += t.fetch_xor;
             results.push(r);
@@ -155,25 +155,25 @@ impl ServerData {
             0 => (
                 &self.tables.index_cuckoo[..],
                 self.tables.index_bins_per_table,
-                CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE,
+                INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
                 HEADER_SIZE,
             ),
             1 => (
                 &self.tables.chunk_cuckoo[..],
                 self.tables.chunk_bins_per_table,
-                CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE),
+                CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE),
                 CHUNK_HEADER_SIZE,
             ),
             _ => return Response::Error("invalid level".into()),
         };
 
-        // Process all buckets in parallel.
+        // Process all groups in parallel.
         let result_items: Vec<runtime::protocol::HarmonyBatchResultItem> = query
             .items
             .par_iter()
             .map(|item| {
-                let bucket_id = item.bucket_id as usize;
-                let table_offset = header_size + bucket_id * bins_per_table * entry_size;
+                let group_id = item.group_id as usize;
+                let table_offset = header_size + group_id * bins_per_table * entry_size;
 
                 let sub_results: Vec<Vec<u8>> = item
                     .sub_queries
@@ -200,7 +200,7 @@ impl ServerData {
                     .collect();
 
                 runtime::protocol::HarmonyBatchResultItem {
-                    bucket_id: item.bucket_id,
+                    group_id: item.group_id,
                     sub_results,
                 }
             })
@@ -209,7 +209,7 @@ impl ServerData {
         Response::HarmonyBatchResult(runtime::protocol::HarmonyBatchResult {
             level: query.level,
             round_id: query.round_id,
-            sub_results_per_bucket: query.sub_queries_per_bucket,
+            sub_results_per_group: query.sub_queries_per_group,
             items: result_items,
         })
     }
@@ -219,20 +219,20 @@ impl ServerData {
             0 => (
                 &self.tables.index_cuckoo[..],
                 self.tables.index_bins_per_table,
-                CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE,
+                INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
                 HEADER_SIZE,
             ),
             1 => (
                 &self.tables.chunk_cuckoo[..],
                 self.tables.chunk_bins_per_table,
-                CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE),
+                CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE),
                 CHUNK_HEADER_SIZE,
             ),
             _ => return Response::Error("invalid level".into()),
         };
 
-        let bucket_id = query.bucket_id as usize;
-        let table_offset = header_size + bucket_id * bins_per_table * entry_size;
+        let group_id = query.group_id as usize;
+        let table_offset = header_size + group_id * bins_per_table * entry_size;
 
         let mut data = Vec::with_capacity(query.indices.len() * entry_size);
         for &idx in &query.indices {
@@ -251,7 +251,7 @@ impl ServerData {
         }
 
         Response::HarmonyQueryResult(runtime::protocol::HarmonyQueryResult {
-            bucket_id: query.bucket_id,
+            group_id: query.group_id,
             round_id: query.round_id,
             data,
         })
@@ -293,9 +293,9 @@ async fn main() {
     let listener = TcpListener::bind(addr).await.expect("bind");
     println!("Listening on ws://{}", addr);
     println!("  Index: K={}, bins_per_table={}, cuckoo={}-hash bs={}",
-        K, data.tables.index_bins_per_table, INDEX_CUCKOO_NUM_HASHES, CUCKOO_BUCKET_SIZE);
+        K, data.tables.index_bins_per_table, INDEX_CUCKOO_NUM_HASHES, INDEX_SLOTS_PER_BIN);
     println!("  Chunk: K={}, bins_per_table={}, cuckoo={}-hash bs={}",
-        K_CHUNK, data.tables.chunk_bins_per_table, CHUNK_CUCKOO_NUM_HASHES, CHUNK_CUCKOO_BUCKET_SIZE);
+        K_CHUNK, data.tables.chunk_bins_per_table, CHUNK_CUCKOO_NUM_HASHES, CHUNK_SLOTS_PER_BIN);
     println!();
 
     loop {
@@ -374,7 +374,7 @@ async fn main() {
                             let n = q.keys.len();
                             let (batch, dpf_sum, fetch_sum) = data_ref.process_index_batch(&q);
                             let wall = t.elapsed();
-                            println!("[index] {} buckets {:.2?} wall | sum: dpf {:.2?} fetch+xor {:.2?} | avg: dpf {:.1?} fetch+xor {:.1?}",
+                            println!("[index] {} groups {:.2?} wall | sum: dpf {:.2?} fetch+xor {:.2?} | avg: dpf {:.1?} fetch+xor {:.1?}",
                                 n, wall, dpf_sum, fetch_sum,
                                 dpf_sum / n as u32, fetch_sum / n as u32);
                             Response::IndexBatch(batch)
@@ -385,7 +385,7 @@ async fn main() {
                             let n = q.keys.len();
                             let (batch, dpf_sum, fetch_sum) = data_ref.process_chunk_batch(&q);
                             let wall = t.elapsed();
-                            println!("[chunk] r{} {} buckets {:.2?} wall | sum: dpf {:.2?} fetch+xor {:.2?} | avg: dpf {:.1?} fetch+xor {:.1?}",
+                            println!("[chunk] r{} {} groups {:.2?} wall | sum: dpf {:.2?} fetch+xor {:.2?} | avg: dpf {:.1?} fetch+xor {:.1?}",
                                 round, n, wall, dpf_sum, fetch_sum,
                                 dpf_sum / n as u32, fetch_sum / n as u32);
                             Response::ChunkBatch(batch)
@@ -406,7 +406,7 @@ async fn main() {
                             let result = data_ref.handle_harmony_query(&q);
                             let wall = t.elapsed();
                             println!("[harmony] L{} B{} {} indices {:.2?}",
-                                q.level, q.bucket_id, q.indices.len(), wall);
+                                q.level, q.group_id, q.indices.len(), wall);
                             result
                         }
                         Request::HarmonyBatchQuery(q) => {
@@ -414,8 +414,8 @@ async fn main() {
                             let n = q.items.len();
                             let result = data_ref.handle_harmony_batch_query(&q);
                             let wall = t.elapsed();
-                            println!("[harmony-batch] L{} {} buckets × {} sub-q {:.2?}",
-                                q.level, n, q.sub_queries_per_bucket, wall);
+                            println!("[harmony-batch] L{} {} groups × {} sub-q {:.2?}",
+                                q.level, n, q.sub_queries_per_group, wall);
                             result
                         }
                         Request::HarmonyHints(_) => {

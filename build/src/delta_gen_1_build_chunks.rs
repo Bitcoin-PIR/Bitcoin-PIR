@@ -28,7 +28,7 @@ use std::time::Instant;
 const DATA_DIR: &str = "/Volumes/Bitcoin/data/intermediate";
 const BLOCK_SIZE: usize = 40;
 const SCRIPT_HASH_SIZE: usize = 20;
-const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1; // 25
+const INDEX_RECORD_SIZE: usize = 20 + 4 + 1; // 25
 const MAX_CHUNKS_PER_SPK: usize = 255; // u8 max
 const ZERO_PAD: [u8; BLOCK_SIZE] = [0u8; BLOCK_SIZE];
 

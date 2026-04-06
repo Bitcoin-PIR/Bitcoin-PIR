@@ -2,7 +2,7 @@
 //!
 //! Loads the same cuckoo table files as the DPF server. When a client
 //! connects and sends a PRP key, computes hint parities for each PBC
-//! bucket and streams them back.
+//! group and streams them back.
 //!
 //! Usage:
 //!   cargo run --release -p runtime --bin harmonypir_hint_server -- --port 8093
@@ -38,30 +38,30 @@ impl HintServerData {
         }
     }
 
-    /// Compute hint parities for one bucket.
+    /// Compute hint parities for one group.
     ///
-    /// Returns (bucket_id, n, t, m, flat_hints) where flat_hints is M × w bytes.
-    fn compute_hints_for_bucket(
+    /// Returns (group_id, n, t, m, flat_hints) where flat_hints is M × w bytes.
+    fn compute_hints_for_group(
         &self,
         prp_key: &[u8; 16],
         prp_backend: u8,
         level: u8,
-        bucket_id: u8,
+        group_id: u8,
     ) -> (u8, u32, u32, u32, Vec<u8>) {
         let (table_bytes, bins_per_table, entry_size, header_size, k_offset) = match level {
             0 => (
                 &self.tables.index_cuckoo[..],
                 self.tables.index_bins_per_table,
-                CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE,
+                INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
                 HEADER_SIZE,
                 0u32,
             ),
             1 => (
                 &self.tables.chunk_cuckoo[..],
                 self.tables.chunk_bins_per_table,
-                CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE),
+                CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE),
                 CHUNK_HEADER_SIZE,
-                K as u32, // Chunk buckets use offset bucket IDs for PRP derivation
+                K as u32, // Chunk groups use offset group IDs for PRP derivation
             ),
             _ => panic!("invalid level"),
         };
@@ -79,8 +79,8 @@ impl HintServerData {
         let params = Params::new(pn, w, t).expect("valid params");
         let m = params.m;
 
-        // Derive per-bucket PRP key (same derivation as WASM client).
-        let derived_key = derive_bucket_key(prp_key, k_offset + bucket_id as u32);
+        // Derive per-group PRP key (same derivation as WASM client).
+        let derived_key = derive_group_key(prp_key, k_offset + group_id as u32);
 
         // Compute PRP rounds using padded domain.
         let domain = 2 * pn;
@@ -113,7 +113,7 @@ impl HintServerData {
         // Values 0..real_n are real DB rows; real_n..padded_n are virtual zeros.
         let mut hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w]).collect();
 
-        let table_offset = header_size + bucket_id as usize * bins_per_table * entry_size;
+        let table_offset = header_size + group_id as usize * bins_per_table * entry_size;
         for k in 0..pn {
             let segment = cell_of[k] / t;
 
@@ -127,7 +127,7 @@ impl HintServerData {
         // Flatten hints.
         let flat: Vec<u8> = hints.into_iter().flat_map(|h| h.into_iter()).collect();
 
-        (bucket_id, padded_n, t_val as u32, m as u32, flat)
+        (group_id, padded_n, t_val as u32, m as u32, flat)
     }
 }
 
@@ -138,10 +138,10 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// Derive per-bucket PRP key. Must match WASM client derivation.
-fn derive_bucket_key(master_key: &[u8; 16], bucket_id: u32) -> [u8; 16] {
+/// Derive per-group PRP key. Must match WASM client derivation.
+fn derive_group_key(master_key: &[u8; 16], group_id: u32) -> [u8; 16] {
     let mut key = *master_key;
-    let id_bytes = bucket_id.to_le_bytes();
+    let id_bytes = group_id.to_le_bytes();
     for i in 0..4 {
         key[12 + i] ^= id_bytes[i];
     }
@@ -247,40 +247,40 @@ async fn main() {
                     Request::HarmonyHints(hint_req) => {
                         let t_start = Instant::now();
                         let level = hint_req.level;
-                        let num = hint_req.bucket_ids.len();
+                        let num = hint_req.group_ids.len();
                         let prp_backend = hint_req.prp_backend;
                         let backend_name = match prp_backend {
                             1 => "FastPRP",
                             2 => "ALF",
                             _ => "Hoang",
                         };
-                        println!("[{}] Hint request: level={} buckets={} prp={}",
+                        println!("[{}] Hint request: level={} groups={} prp={}",
                             peer, level, num, backend_name);
 
                         // Stream hints as they complete.
                         // Use a channel: rayon workers produce hints, tokio sends them.
                         let prp_key: [u8; 16] = hint_req.prp_key;
-                        let bucket_ids = hint_req.bucket_ids.clone();
+                        let group_ids = hint_req.group_ids.clone();
                         let data_ref = Arc::clone(&data);
 
                         let (tx, mut rx) = tokio::sync::mpsc::channel::<(u8, u32, u32, u32, Vec<u8>)>(4);
 
                         // Spawn blocking rayon work that sends each hint as it's computed.
                         tokio::task::spawn_blocking(move || {
-                            bucket_ids.par_iter().for_each_with(tx, |tx, &bid| {
-                                let result = data_ref.compute_hints_for_bucket(&prp_key, prp_backend, level, bid);
+                            group_ids.par_iter().for_each_with(tx, |tx, &bid| {
+                                let result = data_ref.compute_hints_for_group(&prp_key, prp_backend, level, bid);
                                 let _ = tx.blocking_send(result);
                             });
                         });
 
                         // Receive and stream hints to client as they arrive.
                         let mut sent = 0;
-                        while let Some((bucket_id, n, t, m, flat_hints)) = rx.recv().await {
+                        while let Some((group_id, n, t, m, flat_hints)) = rx.recv().await {
                             let hint_payload_len = 1 + 1 + 4 + 4 + 4 + flat_hints.len();
                             let mut resp = Vec::with_capacity(4 + hint_payload_len);
                             resp.extend_from_slice(&(hint_payload_len as u32).to_le_bytes());
                             resp.push(RESP_HARMONY_HINTS);
-                            resp.push(bucket_id);
+                            resp.push(group_id);
                             resp.extend_from_slice(&n.to_le_bytes());
                             resp.extend_from_slice(&t.to_le_bytes());
                             resp.extend_from_slice(&m.to_le_bytes());
@@ -293,7 +293,7 @@ async fn main() {
                             sent += 1;
                         }
 
-                        println!("[{}] Hints streamed: level={} {}/{} buckets in {:.2?}",
+                        println!("[{}] Hints streamed: level={} {}/{} groups in {:.2?}",
                             peer, level, sent, num, t_start.elapsed());
                     }
                     _ => {

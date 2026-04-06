@@ -37,8 +37,8 @@ public final class OnionChunkCuckoo {
         }
 
         for (int eid = 0; eid < totalEntries; eid++) {
-            int[] buckets = PirHash.deriveChunkBuckets(eid);
-            for (int g : buckets) {
+            int[] groups = PirHash.deriveChunkGroups(eid);
+            for (int g : groups) {
                 index.get(g).add(eid);
             }
         }

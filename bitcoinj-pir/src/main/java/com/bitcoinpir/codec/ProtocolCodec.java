@@ -73,7 +73,7 @@ public final class ProtocolCodec {
      *
      * Wire format (after length prefix):
      *   [1B variant=0x01][1B index_k][1B chunk_k][4B index_bins LE][4B chunk_bins LE]
-     *   [8B tag_seed LE][4B total_packed LE][2B bucket_size LE][1B slot_size]
+     *   [8B tag_seed LE][4B total_packed LE][2B slots_per_bin LE][1B slot_size]
      */
     public static OnionPirServerInfo decodeOnionPirServerInfo(byte[] payload) {
         ByteBuffer bb = ByteBuffer.wrap(payload, 1, payload.length - 1).order(ByteOrder.LITTLE_ENDIAN);
@@ -108,16 +108,16 @@ public final class ProtocolCodec {
      *
      * @param variant  REQ_INDEX_BATCH (0x11) or REQ_CHUNK_BATCH (0x21)
      * @param roundId  round identifier
-     * @param keys     keys[bucket][keyIndex] = DPF key bytes
+     * @param keys     keys[group][keyIndex] = DPF key bytes
      */
     public static byte[] encodeBatchRequest(byte variant, int roundId, byte[][][] keys) {
-        int numBuckets = keys.length;
-        int keysPerBucket = keys[0].length;
+        int numGroups = keys.length;
+        int keysPerGroup = keys[0].length;
 
         // Calculate total size
-        int payloadSize = 1 + 2 + 1 + 1; // variant + roundId + numBuckets + keysPerBucket
-        for (byte[][] bucketKeys : keys) {
-            for (byte[] key : bucketKeys) {
+        int payloadSize = 1 + 2 + 1 + 1; // variant + roundId + numGroups + keysPerGroup
+        for (byte[][] groupKeys : keys) {
+            for (byte[] key : groupKeys) {
                 payloadSize += 2 + key.length; // keyLen + keyData
             }
         }
@@ -126,11 +126,11 @@ public final class ProtocolCodec {
         ByteBuffer bb = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
         bb.put(variant);
         bb.putShort((short) roundId);
-        bb.put((byte) numBuckets);
-        bb.put((byte) keysPerBucket);
+        bb.put((byte) numGroups);
+        bb.put((byte) keysPerGroup);
 
-        for (byte[][] bucketKeys : keys) {
-            for (byte[] key : bucketKeys) {
+        for (byte[][] groupKeys : keys) {
+            for (byte[] key : groupKeys) {
                 bb.putShort((short) key.length);
                 bb.put(key);
             }
@@ -139,19 +139,19 @@ public final class ProtocolCodec {
         return frame(payload);
     }
 
-    /** Parsed batch result: results[bucket][resultIndex] = result bytes. */
+    /** Parsed batch result: results[group][resultIndex] = result bytes. */
     public record BatchResult(int roundId, byte[][][] results) {}
 
     /** Decode a BatchResult response payload. */
     public static BatchResult decodeBatchResult(byte[] payload) {
         ByteBuffer bb = ByteBuffer.wrap(payload, 1, payload.length - 1).order(ByteOrder.LITTLE_ENDIAN);
         int roundId = bb.getShort() & 0xFFFF;
-        int numBuckets = bb.get() & 0xFF;
-        int resultsPerBucket = bb.get() & 0xFF;
+        int numGroups = bb.get() & 0xFF;
+        int resultsPerGroup = bb.get() & 0xFF;
 
-        byte[][][] results = new byte[numBuckets][resultsPerBucket][];
-        for (int b = 0; b < numBuckets; b++) {
-            for (int r = 0; r < resultsPerBucket; r++) {
+        byte[][][] results = new byte[numGroups][resultsPerGroup][];
+        for (int b = 0; b < numGroups; b++) {
+            for (int r = 0; r < resultsPerGroup; r++) {
                 int len = bb.getShort() & 0xFFFF;
                 byte[] data = new byte[len];
                 bb.get(data);
@@ -166,44 +166,44 @@ public final class ProtocolCodec {
     /**
      * Encode a HarmonyPIR hint request.
      *
-     * Wire: [0x41][16B prpKey][1B prpBackend][1B level][1B numBuckets][per bucket: 1B id]
+     * Wire: [0x41][16B prpKey][1B prpBackend][1B level][1B numGroups][per group: 1B id]
      *
      * @param prpKey     16-byte master PRP key
      * @param prpBackend server-side PRP backend constant (0=Hoang, 1=FastPRP, 2=ALF)
      * @param level      0 = index, 1 = chunk
-     * @param bucketIds  which buckets to generate hints for
+     * @param groupIds  which groups to generate hints for
      */
     public static byte[] encodeHarmonyHintRequest(byte[] prpKey, int prpBackend,
-            int level, int[] bucketIds) {
-        int payloadSize = 1 + 16 + 1 + 1 + 1 + bucketIds.length;
+            int level, int[] groupIds) {
+        int payloadSize = 1 + 16 + 1 + 1 + 1 + groupIds.length;
         byte[] payload = new byte[payloadSize];
         ByteBuffer bb = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
         bb.put(PirConstants.REQ_HARMONY_HINTS);
         bb.put(prpKey);
         bb.put((byte) prpBackend);
         bb.put((byte) level);
-        bb.put((byte) bucketIds.length);
-        for (int id : bucketIds) bb.put((byte) id);
+        bb.put((byte) groupIds.length);
+        for (int id : groupIds) bb.put((byte) id);
         return frame(payload);
     }
 
     /** Parsed hint response from the hint server. */
-    public record HintData(int bucketId, int n, int t, int m, byte[] hintBytes) {}
+    public record HintData(int groupId, int n, int t, int m, byte[] hintBytes) {}
 
     /**
      * Decode a HarmonyPIR hint response payload.
      *
-     * Wire: [0x41][1B bucketId][4B n LE][4B t LE][4B m LE][flat hints...]
+     * Wire: [0x41][1B groupId][4B n LE][4B t LE][4B m LE][flat hints...]
      */
     public static HintData decodeHarmonyHintResponse(byte[] payload) {
         ByteBuffer bb = ByteBuffer.wrap(payload, 1, payload.length - 1).order(ByteOrder.LITTLE_ENDIAN);
-        int bucketId = bb.get() & 0xFF;
+        int groupId = bb.get() & 0xFF;
         int n = bb.getInt();
         int t = bb.getInt();
         int m = bb.getInt();
         byte[] hints = new byte[payload.length - 14];
         System.arraycopy(payload, 14, hints, 0, hints.length);
-        return new HintData(bucketId, n, t, m, hints);
+        return new HintData(groupId, n, t, m, hints);
     }
 
     // ── HarmonyPIR Batch Query ──────────────────────────────────────────────
@@ -212,26 +212,26 @@ public final class ProtocolCodec {
      * Encode a HarmonyPIR batch query request.
      *
      * Wire format:
-     *   [0x43][1B level][2B roundId LE][2B numBuckets LE][1B subQueriesPerBucket]
-     *   per bucket:
-     *     [1B bucketId]
+     *   [0x43][1B level][2B roundId LE][2B numGroups LE][1B subQueriesPerGroup]
+     *   per group:
+     *     [1B groupId]
      *     per sub-query:
      *       [4B count LE]             (number of u32 indices)
      *       [count × 4B u32 LE]       (sorted indices from buildRequest)
      *
      * @param level              0 = index, 1 = chunk
      * @param roundId            round identifier
-     * @param subQueriesPerBucket number of sub-queries per bucket (always 1)
-     * @param bucketIds          bucket identifiers
-     * @param requests           requests[i] = raw request bytes for bucket bucketIds[i]
+     * @param subQueriesPerGroup number of sub-queries per group (always 1)
+     * @param groupIds           group identifiers
+     * @param requests           requests[i] = raw request bytes for group groupIds[i]
      *                           (sequence of 4-byte LE u32 from buildRequest)
      */
     public static byte[] encodeHarmonyBatchQuery(int level, int roundId,
-            int subQueriesPerBucket, int[] bucketIds, byte[][] requests) {
+            int subQueriesPerGroup, int[] groupIds, byte[][] requests) {
         // Calculate size
-        int payloadSize = 1 + 1 + 2 + 2 + 1; // variant + level + roundId + numBuckets + subQPerBucket
+        int payloadSize = 1 + 1 + 2 + 2 + 1; // variant + level + roundId + numGroups + subQPerGroup
         for (byte[] req : requests) {
-            payloadSize += 1 + 4 + req.length; // bucketId + count(u32) + data
+            payloadSize += 1 + 4 + req.length; // groupId + count(u32) + data
         }
 
         byte[] payload = new byte[payloadSize];
@@ -239,11 +239,11 @@ public final class ProtocolCodec {
         bb.put(PirConstants.REQ_HARMONY_BATCH_QUERY);
         bb.put((byte) level);
         bb.putShort((short) roundId);
-        bb.putShort((short) bucketIds.length);
-        bb.put((byte) subQueriesPerBucket);
+        bb.putShort((short) groupIds.length);
+        bb.put((byte) subQueriesPerGroup);
 
-        for (int i = 0; i < bucketIds.length; i++) {
-            bb.put((byte) bucketIds[i]);
+        for (int i = 0; i < groupIds.length; i++) {
+            bb.put((byte) groupIds[i]);
             int indexCount = requests[i].length / 4; // number of u32 indices
             bb.putInt(indexCount);
             bb.put(requests[i]);
@@ -253,7 +253,7 @@ public final class ProtocolCodec {
     }
 
     /** Parsed HarmonyPIR batch result item. */
-    public record HarmonyBatchResultItem(int bucketId, byte[][] subResults) {}
+    public record HarmonyBatchResultItem(int groupId, byte[][] subResults) {}
 
     /** Parsed HarmonyPIR batch result. */
     public record HarmonyBatchResult(int level, int roundId, HarmonyBatchResultItem[] items) {}
@@ -262,9 +262,9 @@ public final class ProtocolCodec {
      * Decode a HarmonyPIR batch query response.
      *
      * Wire format (after length prefix):
-     *   [0x43][1B level][2B roundId LE][2B numBuckets LE][1B subResultsPerBucket]
-     *   per bucket:
-     *     [1B bucketId]
+     *   [0x43][1B level][2B roundId LE][2B numGroups LE][1B subResultsPerGroup]
+     *   per group:
+     *     [1B groupId]
      *     per sub-result:
      *       [4B dataLen LE]
      *       [dataLen bytes]
@@ -272,23 +272,23 @@ public final class ProtocolCodec {
     public static HarmonyBatchResult decodeHarmonyBatchResult(byte[] payload) {
         int level = payload[1] & 0xFF;
         int roundId = ByteBuffer.wrap(payload, 2, 2).order(ByteOrder.LITTLE_ENDIAN).getShort() & 0xFFFF;
-        int numBuckets = ByteBuffer.wrap(payload, 4, 2).order(ByteOrder.LITTLE_ENDIAN).getShort() & 0xFFFF;
-        int subResultsPerBucket = payload[6] & 0xFF;
+        int numGroups = ByteBuffer.wrap(payload, 4, 2).order(ByteOrder.LITTLE_ENDIAN).getShort() & 0xFFFF;
+        int subResultsPerGroup = payload[6] & 0xFF;
 
         int pos = 7;
-        HarmonyBatchResultItem[] items = new HarmonyBatchResultItem[numBuckets];
-        for (int b = 0; b < numBuckets; b++) {
-            int bucketId = payload[pos] & 0xFF;
+        HarmonyBatchResultItem[] items = new HarmonyBatchResultItem[numGroups];
+        for (int b = 0; b < numGroups; b++) {
+            int groupId = payload[pos] & 0xFF;
             pos++;
-            byte[][] subResults = new byte[subResultsPerBucket][];
-            for (int sr = 0; sr < subResultsPerBucket; sr++) {
+            byte[][] subResults = new byte[subResultsPerGroup][];
+            for (int sr = 0; sr < subResultsPerGroup; sr++) {
                 int dataLen = ByteBuffer.wrap(payload, pos, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
                 pos += 4;
                 subResults[sr] = new byte[dataLen];
                 System.arraycopy(payload, pos, subResults[sr], 0, dataLen);
                 pos += dataLen;
             }
-            items[b] = new HarmonyBatchResultItem(bucketId, subResults);
+            items[b] = new HarmonyBatchResultItem(groupId, subResults);
         }
         return new HarmonyBatchResult(level, roundId, items);
     }

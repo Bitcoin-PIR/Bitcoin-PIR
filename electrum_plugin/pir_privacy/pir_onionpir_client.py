@@ -27,8 +27,8 @@ from .pir_constants import (
     MASK64,
 )
 from .pir_hash import (
-    derive_buckets, derive_cuckoo_key, cuckoo_hash, compute_tag,
-    derive_chunk_buckets, splitmix64,
+    derive_groups, derive_cuckoo_key, cuckoo_hash, compute_tag,
+    derive_chunk_groups, splitmix64,
 )
 from .pir_ws_client import PirConnection
 from .pir_client import QueryResult, UtxoEntry
@@ -87,8 +87,8 @@ def _build_chunk_reverse_index(total_entries: int) -> list[list[int]]:
     """Build reverse index: group → sorted entry_ids."""
     index = [[] for _ in range(K_CHUNK)]
     for eid in range(total_entries):
-        buckets = derive_chunk_buckets(eid)
-        for g in buckets:
+        groups = derive_chunk_groups(eid)
+        for g in groups:
             index[g].append(eid)
     return index
 
@@ -195,7 +195,7 @@ class OnionPirClient:
         self.chunk_k = 0
         self.tag_seed = 0
         self.total_packed_entries = 0
-        self.index_cuckoo_bucket_size = 0
+        self.index_slots_per_bin = 0
         self.index_slot_size = 0
 
         # FHE clients (shared secret key)
@@ -240,7 +240,7 @@ class OnionPirClient:
 
         # OnionPIR v2 format:
         # [1B variant][1B index_k][1B chunk_k][4B index_bins][4B chunk_bins]
-        # [8B tag_seed][4B total_packed][2B bucket_size][1B slot_size]
+        # [8B tag_seed][4B total_packed][2B slots_per_bin][1B slot_size]
         if len(payload) < 26:
             raise ValueError(f'GetInfo response too short: {len(payload)}')
 
@@ -250,7 +250,7 @@ class OnionPirClient:
         self.chunk_bins = struct.unpack_from('<I', payload, 7)[0]
         self.tag_seed = struct.unpack_from('<Q', payload, 11)[0]
         self.total_packed_entries = struct.unpack_from('<I', payload, 19)[0]
-        self.index_cuckoo_bucket_size = struct.unpack_from('<H', payload, 23)[0]
+        self.index_slots_per_bin = struct.unpack_from('<H', payload, 23)[0]
         self.index_slot_size = payload[25]
 
     async def initialize(self) -> None:
@@ -327,7 +327,7 @@ class OnionPirClient:
         # ── LEVEL 1: Index PIR ────────────────────────────────────────
         progress('Level 1', f'Planning {N} index queries...')
         tags = [compute_tag(self.tag_seed, sh) for sh in script_hashes]
-        all_groups = [derive_buckets(sh) for sh in script_hashes]
+        all_groups = [derive_groups(sh) for sh in script_hashes]
 
         index_rounds = plan_rounds(all_groups, index_k, NUM_HASHES)
         logger.info(f'Level 1: {N} queries -> {len(index_rounds)} round(s)')
@@ -410,7 +410,7 @@ class OnionPirClient:
                 logger.info(f'Reverse index built in {time.time()-t0:.1f}s')
 
             # PBC placement of entries into chunk groups
-            entry_groups = [derive_chunk_buckets(eid) for eid in unique_entry_ids]
+            entry_groups = [derive_chunk_groups(eid) for eid in unique_entry_ids]
             chunk_rounds = plan_rounds(entry_groups, chunk_k, NUM_HASHES)
             logger.info(f'Level 2: {len(unique_entry_ids)} entries -> {len(chunk_rounds)} round(s)')
 
@@ -523,10 +523,10 @@ class OnionPirClient:
         if len(data) < 3:
             raise ValueError('Batch result too short')
         round_id = struct.unpack_from('<H', data, 0)[0]
-        num_buckets = data[2]
+        num_groups = data[2]
         pos = 3
         results = []
-        for _ in range(num_buckets):
+        for _ in range(num_groups):
             if pos + 4 > len(data):
                 raise ValueError('Truncated batch result')
             rlen = struct.unpack_from('<I', data, pos)[0]
@@ -539,9 +539,9 @@ class OnionPirClient:
         """Scan decrypted index bin for matching tag.
         Returns (entry_id, byte_offset, num_entries) or None.
         """
-        bucket_size = self.index_cuckoo_bucket_size
+        slots_per_bin = self.index_slots_per_bin
         slot_size = self.index_slot_size
-        for slot in range(bucket_size):
+        for slot in range(slots_per_bin):
             off = slot * slot_size
             if off + slot_size > len(entry_bytes):
                 break

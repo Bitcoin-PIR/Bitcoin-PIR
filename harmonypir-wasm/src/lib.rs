@@ -1,15 +1,15 @@
 //! WASM bindings for HarmonyPIR stateful PIR client.
 //!
-//! Exposes `HarmonyBucket` — a per-PBC-bucket client that manages the
+//! Exposes `HarmonyGroup` — a per-PBC-group client that manages the
 //! relocation data structure (DS'), hint parities, and query execution.
 //!
 //! Protocol flow:
-//!   1. `new(n, w, t, prp_key, bucket_id)` — create DS' with PRP
+//!   1. `new(n, w, t, prp_key, group_id)` — create DS' with PRP
 //!   2. `load_hints(data)` — load hint parities from Hint Server
 //!   3. `build_request(q)` → request bytes to send to Query Server
 //!   4. `process_response(response)` → recovered DB entry + hint update
 //!   5. `serialize()` → persist full state to bytes
-//!   6. `deserialize(data, prp_key, bucket_id, backend)` → restore from bytes
+//!   6. `deserialize(data, prp_key, group_id, backend)` → restore from bytes
 
 use wasm_bindgen::prelude::*;
 
@@ -45,12 +45,12 @@ pub fn compute_rounds(n: u32) -> usize {
     ((r_raw + BETA - 1) / BETA) * BETA
 }
 
-/// Derive per-bucket PRP key from master key + bucket_id.
-pub fn derive_bucket_key(master_key: &[u8], bucket_id: u32) -> [u8; 16] {
+/// Derive per-group PRP key from master key + group_id.
+pub fn derive_group_key(master_key: &[u8], group_id: u32) -> [u8; 16] {
     let mut key = [0u8; 16];
     let len = master_key.len().min(16);
     key[..len].copy_from_slice(&master_key[..len]);
-    let id_bytes = bucket_id.to_le_bytes();
+    let id_bytes = group_id.to_le_bytes();
     for i in 0..4 {
         key[12 + i] ^= id_bytes[i];
     }
@@ -97,7 +97,7 @@ fn build_prp(backend: u8, key: &[u8; 16], domain: usize, n: u32, _prp_cache: &[u
         }
         #[cfg(feature = "alf")]
         PRP_ALF => {
-            // ALF uses the key as both AES key and tweak (tweak varies per bucket via derive_bucket_key).
+            // ALF uses the key as both AES key and tweak (tweak varies per group via derive_group_key).
             Box::new(AlfPrp::new(key, domain, key, 0x4250_4952)) // app_id = "BPIR"
         }
         _ => {
@@ -124,11 +124,11 @@ fn save_prp_cache(backend: u8, prp_key: &[u8; 16], domain: usize, existing_cache
     Vec::new()
 }
 
-/// Make RNG seed from key + bucket_id + query_count.
-fn make_rng_seed(key: &[u8; 16], bucket_id: u32, query_count: u32) -> [u8; 32] {
+/// Make RNG seed from key + group_id + query_count.
+fn make_rng_seed(key: &[u8; 16], group_id: u32, query_count: u32) -> [u8; 32] {
     let mut seed = [0u8; 32];
     seed[..16].copy_from_slice(key);
-    seed[16..20].copy_from_slice(&bucket_id.to_le_bytes());
+    seed[16..20].copy_from_slice(&group_id.to_le_bytes());
     seed[20..24].copy_from_slice(&query_count.to_le_bytes());
     seed
 }
@@ -163,11 +163,11 @@ impl HarmonyRequest {
     }
 }
 
-// ─── HarmonyBucket ──────────────────────────────────────────────────────────
+// ─── HarmonyGroup ──────────────────────────────────────────────────────────
 
-/// Per-PBC-bucket HarmonyPIR client state.
+/// Per-PBC-group HarmonyPIR client state.
 #[wasm_bindgen]
-pub struct HarmonyBucket {
+pub struct HarmonyGroup {
     params: Params,
     ds: RelocationDS,
     hints: Vec<Vec<u8>>,
@@ -177,10 +177,10 @@ pub struct HarmonyBucket {
     prp_backend: u8,
     /// Cached PRP data (for FastPRP). Empty for Hoang.
     prp_cache: Vec<u8>,
-    /// Derived per-bucket key (needed for serialization/reconstruction).
+    /// Derived per-group key (needed for serialization/reconstruction).
     derived_key: [u8; 16],
-    /// Bucket ID (needed for serialization).
-    bucket_id: u32,
+    /// Group ID (needed for serialization).
+    group_id: u32,
     /// Original (unpadded) N — the actual number of DB rows.
     /// The PRP domain uses padded_n (>= real_n) so that 2*padded_n % T == 0.
     /// Rows in [real_n, padded_n) are virtual empty rows.
@@ -201,11 +201,11 @@ pub struct HarmonyBucket {
 }
 
 #[wasm_bindgen]
-impl HarmonyBucket {
-    /// Create a new HarmonyBucket with Hoang PRP (default).
+impl HarmonyGroup {
+    /// Create a new HarmonyGroup with Hoang PRP (default).
     #[wasm_bindgen(constructor)]
-    pub fn new(n: u32, w: u32, t: u32, prp_key: &[u8], bucket_id: u32) -> Result<HarmonyBucket, JsError> {
-        Self::new_with_backend(n, w, t, prp_key, bucket_id, PRP_HOANG)
+    pub fn new(n: u32, w: u32, t: u32, prp_key: &[u8], group_id: u32) -> Result<HarmonyGroup, JsError> {
+        Self::new_with_backend(n, w, t, prp_key, group_id, PRP_HOANG)
     }
 
     /// Create with a specific PRP backend.
@@ -215,9 +215,9 @@ impl HarmonyBucket {
     /// empty rows (the server returns zeros for them).
     pub fn new_with_backend(
         n: u32, w: u32, t: u32,
-        prp_key: &[u8], bucket_id: u32,
+        prp_key: &[u8], group_id: u32,
         prp_backend: u8,
-    ) -> Result<HarmonyBucket, JsError> {
+    ) -> Result<HarmonyGroup, JsError> {
         let w_usize = w as usize;
         let t_val = if t == 0 { find_best_t(n) } else { t };
 
@@ -229,7 +229,7 @@ impl HarmonyBucket {
         let params = Params::new(padded_n_usize, w_usize, t_usize)
             .map_err(|e| JsError::new(&format!("invalid params: {e:?}")))?;
 
-        let key = derive_bucket_key(prp_key, bucket_id);
+        let key = derive_group_key(prp_key, group_id);
         let domain = 2 * padded_n_usize;
         let prp_cache = save_prp_cache(prp_backend, &key, domain, &[]);
         let prp = build_prp(prp_backend, &key, domain, padded_n, &prp_cache);
@@ -239,9 +239,9 @@ impl HarmonyBucket {
 
         let m = params.m;
         let hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
-        let seed = make_rng_seed(&key, bucket_id, 0);
+        let seed = make_rng_seed(&key, group_id, 0);
 
-        Ok(HarmonyBucket {
+        Ok(HarmonyGroup {
             params,
             ds,
             hints,
@@ -250,7 +250,7 @@ impl HarmonyBucket {
             prp_backend,
             prp_cache,
             derived_key: key,
-            bucket_id,
+            group_id,
             real_n: n,
             relocated_segments: Vec::new(),
             last_segment: 0,
@@ -342,7 +342,7 @@ impl HarmonyBucket {
         })
     }
 
-    /// Build a dummy request for a bucket the client doesn't actually need.
+    /// Build a dummy request for a group the client doesn't actually need.
     ///
     /// Picks a random bin in `[0, real_n)` and builds a real-looking request.
     /// The client discards the server's response — **no `process_response`
@@ -469,7 +469,7 @@ impl HarmonyBucket {
 
     /// Fast path: recover the answer via XOR only, deferring relocation.
     ///
-    /// Call `finish_relocation()` before the next query on this bucket.
+    /// Call `finish_relocation()` before the next query on this group.
     pub fn process_response_xor_only(&mut self, response: &[u8]) -> Result<Vec<u8>, JsError> {
         let w = self.params.w;
         let count = self.last_position_map.len();
@@ -515,7 +515,7 @@ impl HarmonyBucket {
 
     // ─── Serialization ──────────────────────────────────────────────────
 
-    /// Serialize this bucket's full mutable state to bytes.
+    /// Serialize this group's full mutable state to bytes.
     ///
     /// Format:
     /// ```text
@@ -564,7 +564,7 @@ impl HarmonyBucket {
         buf
     }
 
-    /// Restore a bucket from serialized bytes.
+    /// Restore a group from serialized bytes.
     ///
     /// Reconstructs the PRP from key + params (+ cache for FastPRP),
     /// creates a fresh DS', then replays all relocated segments to
@@ -572,8 +572,8 @@ impl HarmonyBucket {
     pub fn deserialize(
         data: &[u8],
         prp_key: &[u8],
-        bucket_id: u32,
-    ) -> Result<HarmonyBucket, JsError> {
+        group_id: u32,
+    ) -> Result<HarmonyGroup, JsError> {
         if data.len() < 25 {
             return Err(JsError::new("serialized data too short"));
         }
@@ -608,7 +608,7 @@ impl HarmonyBucket {
         let params = Params::new(n_usize, w_usize, t_usize)
             .map_err(|e| JsError::new(&format!("invalid params: {e:?}")))?;
 
-        let key = derive_bucket_key(prp_key, bucket_id);
+        let key = derive_group_key(prp_key, group_id);
         let domain = 2 * n_usize;
         let prp = build_prp(prp_backend, &key, domain, n, &prp_cache);
 
@@ -635,9 +635,9 @@ impl HarmonyBucket {
             hints[i].copy_from_slice(&data[start..end]);
         }
 
-        let seed = make_rng_seed(&key, bucket_id, query_count as u32);
+        let seed = make_rng_seed(&key, group_id, query_count as u32);
 
-        Ok(HarmonyBucket {
+        Ok(HarmonyGroup {
             params,
             ds,
             hints,
@@ -646,7 +646,7 @@ impl HarmonyBucket {
             prp_backend,
             prp_cache,
             derived_key: key,
-            bucket_id,
+            group_id,
             real_n,
             relocated_segments,
             last_segment: 0,
@@ -693,7 +693,7 @@ impl HarmonyBucket {
 
 // ─── Private helpers ────────────────────────────────────────────────────────
 
-impl HarmonyBucket {
+impl HarmonyGroup {
     fn relocate_and_update_hints(
         &mut self,
         s: usize,
@@ -776,8 +776,8 @@ pub fn verify_protocol_impl(n: u32, w: u32, backend: u8) -> bool {
         .collect();
 
     let key = [0x42u8; 16];
-    let bucket_id: u32 = 0;
-    let derived_key = derive_bucket_key(&key, bucket_id);
+    let group_id: u32 = 0;
+    let derived_key = derive_group_key(&key, group_id);
     let domain = 2 * padded_n_usize;
 
     // Server-side: compute hints using padded_n.
@@ -805,13 +805,13 @@ pub fn verify_protocol_impl(n: u32, w: u32, backend: u8) -> bool {
         // k >= real_n: entry is zero, XOR with zero is no-op.
     }
 
-    // Client creates bucket with real_n — padding happens internally.
-    let mut bucket = match HarmonyBucket::new_with_backend(n, w, t_val, &key, bucket_id, backend) {
+    // Client creates group with real_n — padding happens internally.
+    let mut group = match HarmonyGroup::new_with_backend(n, w, t_val, &key, group_id, backend) {
         Ok(b) => b,
         Err(_) => return false,
     };
     let flat_hints: Vec<u8> = hints.iter().flat_map(|h| h.iter().copied()).collect();
-    if bucket.load_hints(&flat_hints).is_err() { return false; }
+    if group.load_hints(&flat_hints).is_err() { return false; }
 
     // Simulate server: sorted non-empty indices → individual entries.
     let simulate = |req: &HarmonyRequest, db: &[Vec<u8>], real_n: usize, w: usize, _t: usize| -> Vec<u8> {
@@ -835,27 +835,27 @@ pub fn verify_protocol_impl(n: u32, w: u32, backend: u8) -> bool {
 
     for (i, &q) in queries_phase1.iter().enumerate() {
         if i >= max_q { break; }
-        let req = match bucket.build_request(q as u32) { Ok(r) => r, Err(_) => return false };
+        let req = match group.build_request(q as u32) { Ok(r) => r, Err(_) => return false };
         let resp = simulate(&req, &db, real_n, w_usize, t);
-        let result = match bucket.process_response(&resp) { Ok(r) => r, Err(_) => return false };
+        let result = match group.process_response(&resp) { Ok(r) => r, Err(_) => return false };
         if result != db[q] { return false; }
     }
 
     // Serialize and deserialize.
-    let serialized = bucket.serialize();
-    let mut bucket = match HarmonyBucket::deserialize(&serialized, &key, bucket_id) {
+    let serialized = group.serialize();
+    let mut group = match HarmonyGroup::deserialize(&serialized, &key, group_id) {
         Ok(b) => b,
         Err(_) => return false,
     };
 
     // Verify state survived.
-    if bucket.queries_used() != queries_phase1.len() as u32 { return false; }
+    if group.queries_used() != queries_phase1.len() as u32 { return false; }
 
     for (i, &q) in queries_phase2.iter().enumerate() {
         if queries_phase1.len() + i >= max_q { break; }
-        let req = match bucket.build_request(q as u32) { Ok(r) => r, Err(_) => return false };
+        let req = match group.build_request(q as u32) { Ok(r) => r, Err(_) => return false };
         let resp = simulate(&req, &db, real_n, w_usize, t);
-        let result = match bucket.process_response(&resp) { Ok(r) => r, Err(_) => return false };
+        let result = match group.process_response(&resp) { Ok(r) => r, Err(_) => return false };
         if result != db[q] { return false; }
     }
 
@@ -889,10 +889,10 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_bucket_key() {
+    fn test_derive_group_key() {
         let key = [0xAA; 16];
-        let k0 = derive_bucket_key(&key, 0);
-        let k1 = derive_bucket_key(&key, 1);
+        let k0 = derive_group_key(&key, 0);
+        let k1 = derive_group_key(&key, 1);
         assert_ne!(k0, k1);
         assert_eq!(k0, key);
     }
@@ -915,39 +915,39 @@ mod tests {
     }
 
     #[test]
-    fn test_bucket_lifecycle() {
+    fn test_group_lifecycle() {
         let n = 64u32;
         let w = 32u32;
         let key = [0x42u8; 16];
-        let bucket_id = 5u32;
+        let group_id = 5u32;
 
-        let mut bucket = HarmonyBucket::new(n, w, 0, &key, bucket_id).unwrap();
-        assert_eq!(bucket.real_n(), n);
-        assert!(bucket.n() >= n); // padded_n >= n
-        assert_eq!(bucket.w(), w);
-        assert!(bucket.queries_remaining() > 0);
+        let mut group = HarmonyGroup::new(n, w, 0, &key, group_id).unwrap();
+        assert_eq!(group.real_n(), n);
+        assert!(group.n() >= n); // padded_n >= n
+        assert_eq!(group.w(), w);
+        assert!(group.queries_remaining() > 0);
 
-        let m = bucket.m() as usize;
+        let m = group.m() as usize;
         let hints = vec![0u8; m * w as usize];
-        bucket.load_hints(&hints).unwrap();
+        group.load_hints(&hints).unwrap();
 
-        let req = bucket.build_request(0).unwrap();
-        assert_eq!(req.request_bytes.len(), bucket.t() as usize * 4);
+        let req = group.build_request(0).unwrap();
+        assert_eq!(req.request_bytes.len(), group.t() as usize * 4);
     }
 
     #[test]
-    fn test_serialize_empty_bucket() {
+    fn test_serialize_empty_group() {
         let key = [0x42u8; 16];
-        let mut bucket = HarmonyBucket::new(64, 32, 0, &key, 0).unwrap();
-        let m = bucket.m() as usize;
-        bucket.load_hints(&vec![0u8; m * 32]).unwrap();
+        let mut group = HarmonyGroup::new(64, 32, 0, &key, 0).unwrap();
+        let m = group.m() as usize;
+        group.load_hints(&vec![0u8; m * 32]).unwrap();
 
-        let data = bucket.serialize();
-        let restored = HarmonyBucket::deserialize(&data, &key, 0).unwrap();
+        let data = group.serialize();
+        let restored = HarmonyGroup::deserialize(&data, &key, 0).unwrap();
         assert_eq!(restored.real_n(), 64);
         assert!(restored.n() >= 64); // padded
         assert_eq!(restored.w(), 32);
         assert_eq!(restored.queries_used(), 0);
-        assert_eq!(restored.queries_remaining(), bucket.queries_remaining());
+        assert_eq!(restored.queries_remaining(), group.queries_remaining());
     }
 }

@@ -33,7 +33,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    let n = mmap.len() / INDEX_ENTRY_SIZE;
+    let n = mmap.len() / INDEX_RECORD_SIZE;
     println!("  Entries: {}", n);
     println!("  File size: {:.2} MB", mmap.len() as f64 / (1024.0 * 1024.0));
     println!();
@@ -52,7 +52,7 @@ fn main() {
     let mut chunk_dist: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
 
     for i in 0..n {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         let num_chunks = mmap[base + 24] as u32;
 
         total_chunks += num_chunks as u64;
@@ -192,7 +192,7 @@ fn main() {
     );
 
     for (rank, &(nc, idx)) in top.iter().enumerate() {
-        let base = idx * INDEX_ENTRY_SIZE;
+        let base = idx * INDEX_RECORD_SIZE;
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
         let start_chunk_id = u32::from_le_bytes(
             mmap[base + 20..base + 24].try_into().unwrap(),

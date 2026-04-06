@@ -58,13 +58,13 @@ class HarmonyPirClientIntegrationTest {
 
     @Disabled("Requires live HarmonyPIR servers — enable manually for integration testing")
     @Test
-    void testHintDownloadSingleBucket() throws Exception {
+    void testHintDownloadSingleGroup() throws Exception {
         assumeNative();
 
         byte[] prpKey = new byte[16];
         new java.security.SecureRandom().nextBytes(prpKey);
 
-        // Download hint for bucket 0 first (to learn server's T and padded_n)
+        // Download hint for group 0 first (to learn server's T and padded_n)
         int serverPrp = PirConstants.SERVER_PRP_ALF;
         byte[] hintReq = ProtocolCodec.encodeHarmonyHintRequest(
                 prpKey, serverPrp, 0, new int[]{0});
@@ -77,28 +77,28 @@ class HarmonyPirClientIntegrationTest {
             hint = ProtocolCodec.decodeHarmonyHintResponse(payload);
         }
 
-        assertEquals(0, hint.bucketId(), "bucket id should match");
+        assertEquals(0, hint.groupId(), "group id should match");
         assertTrue(hint.hintBytes().length > 0, "hint data should not be empty");
-        System.out.printf("Hint for bucket 0: n=%d t=%d m=%d data=%d bytes%n",
+        System.out.printf("Hint for group 0: n=%d t=%d m=%d data=%d bytes%n",
                 hint.n(), hint.t(), hint.m(), hint.hintBytes().length);
 
-        // Create bucket using server's (padded_n, t) to ensure parameters match
-        try (var bucket = new HarmonyBucket(hint.n(), PirConstants.HARMONY_INDEX_W, hint.t(),
-                prpKey, 0, HarmonyBucket.PRP_ALF)) {
+        // Create group using server's (padded_n, t) to ensure parameters match
+        try (var group = new HarmonyGroup(hint.n(), PirConstants.HARMONY_INDEX_W, hint.t(),
+                prpKey, 0, HarmonyGroup.PRP_ALF)) {
 
-            int m = bucket.getM();
-            int w = bucket.getW();
-            System.out.printf("Bucket 0: n=%d t=%d m=%d w=%d%n", bucket.getN(), bucket.getT(), m, w);
+            int m = group.getM();
+            int w = group.getW();
+            System.out.printf("Group 0: n=%d t=%d m=%d w=%d%n", group.getN(), group.getT(), m, w);
 
             assertEquals(hint.m(), m, "m should match server's m");
             assertEquals(m * w, hint.hintBytes().length,
                     "hint size should be m*w = " + (m * w));
 
             // Load hints
-            bucket.loadHints(hint.hintBytes());
+            group.loadHints(hint.hintBytes());
 
             // Build a dummy request (verifies internal state is valid)
-            byte[] dummy = bucket.buildSyntheticDummy();
+            byte[] dummy = group.buildSyntheticDummy();
             assertNotNull(dummy, "dummy request should not be null");
             assertTrue(dummy.length > 0, "dummy request should have content");
             assertEquals(0, dummy.length % 4, "dummy request must be multiple of 4 bytes");
@@ -107,11 +107,11 @@ class HarmonyPirClientIntegrationTest {
         }
     }
 
-    // ── Single-bucket query round-trip ───────────────────────────────────
+    // ── Single-group query round-trip ────────────────────────────────────
 
     @Disabled("Requires live HarmonyPIR servers — enable manually for integration testing")
     @Test
-    void testSingleBucketQueryRoundTrip() throws Exception {
+    void testSingleGroupQueryRoundTrip() throws Exception {
         assumeNative();
 
         byte[] prpKey = new byte[16];
@@ -125,8 +125,8 @@ class HarmonyPirClientIntegrationTest {
             indexBins = info.indexBins();
         }
 
-        try (var bucket = new HarmonyBucket(indexBins, PirConstants.HARMONY_INDEX_W, 0, prpKey, 0,
-                HarmonyBucket.PRP_ALF)) {
+        try (var group = new HarmonyGroup(indexBins, PirConstants.HARMONY_INDEX_W, 0, prpKey, 0,
+                HarmonyGroup.PRP_ALF)) {
 
             // Download and load hints
             try (var hintWs = new PirWebSocket(HINT_SERVER)) {
@@ -135,17 +135,17 @@ class HarmonyPirClientIntegrationTest {
                         ProtocolCodec.encodeHarmonyHintRequest(
                                 prpKey, PirConstants.SERVER_PRP_ALF, 0, new int[]{0}), 1);
                 var hint = ProtocolCodec.decodeHarmonyHintResponse(futures.get(0).get());
-                bucket.loadHints(hint.hintBytes());
+                group.loadHints(hint.hintBytes());
             }
 
             // Build a real request for bin 0
-            byte[] request = bucket.buildRequest(0);
+            byte[] request = group.buildRequest(0);
             assertNotNull(request);
             assertTrue(request.length > 0);
             int indexCount = request.length / 4;
             System.out.printf("Request for bin 0: %d indices%n", indexCount);
 
-            // Send to query server as a batch of 1 bucket
+            // Send to query server as a batch of 1 group
             try (var queryWs = new PirWebSocket(QUERY_SERVER)) {
                 queryWs.connect();
                 byte[] batchMsg = ProtocolCodec.encodeHarmonyBatchQuery(
@@ -153,20 +153,20 @@ class HarmonyPirClientIntegrationTest {
                 byte[] batchResp = queryWs.sendSync(batchMsg);
 
                 var result = ProtocolCodec.decodeHarmonyBatchResult(batchResp);
-                assertEquals(1, result.items().length, "should have 1 bucket result");
-                assertEquals(0, result.items()[0].bucketId(), "bucket id should be 0");
+                assertEquals(1, result.items().length, "should have 1 group result");
+                assertEquals(0, result.items()[0].groupId(), "group id should be 0");
 
                 byte[] responseData = result.items()[0].subResults()[0];
                 assertEquals(indexCount * PirConstants.HARMONY_INDEX_W, responseData.length,
                         "response should be indexCount * w bytes");
 
                 // Process the response to recover the entry
-                byte[] entry = bucket.processResponse(responseData);
+                byte[] entry = group.processResponse(responseData);
                 assertNotNull(entry);
                 assertEquals(PirConstants.HARMONY_INDEX_W, entry.length,
                         "recovered entry should be w bytes");
 
-                System.out.printf("Recovered entry: %d bytes (%d slots × 13)%n", entry.length, PirConstants.CUCKOO_BUCKET_SIZE);
+                System.out.printf("Recovered entry: %d bytes (%d slots × 13)%n", entry.length, PirConstants.INDEX_SLOTS_PER_BIN);
                 System.out.printf("  Slot 0: tag=%016x%n",
                         java.nio.ByteBuffer.wrap(entry, 0, 8)
                                 .order(java.nio.ByteOrder.LITTLE_ENDIAN).getLong());
@@ -181,7 +181,7 @@ class HarmonyPirClientIntegrationTest {
     void testFullQuerySatoshiAddress() throws Exception {
         assumeNative();
 
-        try (var client = new HarmonyPirClient(HINT_SERVER, QUERY_SERVER, HarmonyBucket.PRP_ALF)) {
+        try (var client = new HarmonyPirClient(HINT_SERVER, QUERY_SERVER, HarmonyGroup.PRP_ALF)) {
             long t0 = System.currentTimeMillis();
             client.connect();
             long connectMs = System.currentTimeMillis() - t0;
@@ -216,7 +216,7 @@ class HarmonyPirClientIntegrationTest {
     void testMultiAddressQuery() throws Exception {
         assumeNative();
 
-        try (var client = new HarmonyPirClient(HINT_SERVER, QUERY_SERVER, HarmonyBucket.PRP_ALF)) {
+        try (var client = new HarmonyPirClient(HINT_SERVER, QUERY_SERVER, HarmonyGroup.PRP_ALF)) {
             client.connect();
 
             // Query a few different addresses
@@ -246,7 +246,7 @@ class HarmonyPirClientIntegrationTest {
 
     private static void assumeNative() {
         org.junit.jupiter.api.Assumptions.assumeTrue(
-                HarmonyBucket.isNativeLoaded(),
+                HarmonyGroup.isNativeLoaded(),
                 "harmonypir_jni native library not available");
     }
 }

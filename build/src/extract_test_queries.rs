@@ -31,7 +31,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    let n = mmap.len() / INDEX_ENTRY_SIZE;
+    let n = mmap.len() / INDEX_RECORD_SIZE;
     println!("  N = {} entries", n);
     println!();
 
@@ -50,21 +50,21 @@ fn main() {
 
     // Extract script_hashes and write to file
     println!("[2] Selected entries:");
-    println!("  {:>4}  {:>10}  {:>42}  {:}", "  # ", "Entry Idx", "Script Hash (hex)", "Buckets");
+    println!("  {:>4}  {:>10}  {:>42}  {:}", "  # ", "Entry Idx", "Script Hash (hex)", "Groups");
     println!("  {}  {}  {}  {}", "-".repeat(4), "-".repeat(10), "-".repeat(42), "-".repeat(16));
 
     let mut out_data = Vec::with_capacity(NUM_QUERIES * SCRIPT_HASH_SIZE);
 
     for (i, &idx) in chosen_indices.iter().enumerate() {
-        let base = idx * INDEX_ENTRY_SIZE;
+        let base = idx * INDEX_RECORD_SIZE;
         let script_hash = &mmap[base..base + SCRIPT_HASH_SIZE];
         out_data.extend_from_slice(script_hash);
 
         let hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();
-        let buckets = derive_buckets(script_hash);
+        let groups = derive_groups(script_hash);
         println!(
             "  {:>4}  {:>10}  {}  {:?}",
-            i, idx, hex, buckets
+            i, idx, hex, groups
         );
     }
 

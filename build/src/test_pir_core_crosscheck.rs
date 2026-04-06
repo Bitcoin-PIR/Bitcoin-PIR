@@ -50,7 +50,7 @@ fn main() {
 
     let f = File::open(INDEX_FILE).expect("open index file");
     let index_file = unsafe { Mmap::map(&f) }.expect("mmap index file");
-    let num_entries = index_file.len() / INDEX_ENTRY_SIZE;
+    let num_entries = index_file.len() / INDEX_RECORD_SIZE;
 
     let f = File::open(CHUNKS_DATA_FILE).expect("open chunks data");
     let chunks_data = unsafe { Mmap::map(&f) }.expect("mmap chunks data");
@@ -99,25 +99,25 @@ fn main() {
 
         for _ in 0..n {
             let idx = (prng_next(&mut rng) % num_entries as u64) as usize;
-            let offset = idx * INDEX_ENTRY_SIZE;
+            let offset = idx * INDEX_RECORD_SIZE;
             let sh = &index_file[offset..offset + SCRIPT_HASH_SIZE];
 
-            // derive_buckets
-            let legacy_b = derive_buckets(sh);
-            let pc_b = pc_hash::derive_buckets_3(sh, pc_params::K);
+            // derive_groups
+            let legacy_b = derive_groups(sh);
+            let pc_b = pc_hash::derive_groups_3(sh, pc_params::K);
             if legacy_b != pc_b {
-                println!("    FAIL: derive_buckets mismatch at entry {}", idx);
+                println!("    FAIL: derive_groups mismatch at entry {}", idx);
                 continue;
             }
 
-            // derive_cuckoo_key for each bucket
+            // derive_cuckoo_key for each group
             let mut key_ok = true;
             for &b in &legacy_b {
                 for hf in 0..INDEX_CUCKOO_NUM_HASHES {
                     let lk = derive_cuckoo_key(b, hf);
                     let pk = pc_hash::derive_cuckoo_key(pc_params::MASTER_SEED, b, hf);
                     if lk != pk {
-                        println!("    FAIL: derive_cuckoo_key mismatch at bucket {}, hf {}", b, hf);
+                        println!("    FAIL: derive_cuckoo_key mismatch at group {}, hf {}", b, hf);
                         key_ok = false;
                     }
                 }
@@ -160,11 +160,11 @@ fn main() {
         for _ in 0..n {
             let chunk_id = (prng_next(&mut rng) % num_chunks as u64) as u32;
 
-            // derive_chunk_buckets
-            let lb = derive_chunk_buckets(chunk_id);
-            let pb = pc_hash::derive_int_buckets_3(chunk_id, pc_params::K_CHUNK);
+            // derive_chunk_groups
+            let lb = derive_chunk_groups(chunk_id);
+            let pb = pc_hash::derive_int_groups_3(chunk_id, pc_params::K_CHUNK);
             if lb != pb {
-                println!("    FAIL: derive_chunk_buckets mismatch for chunk_id {}", chunk_id);
+                println!("    FAIL: derive_chunk_groups mismatch for chunk_id {}", chunk_id);
                 continue;
             }
 
@@ -202,14 +202,14 @@ fn main() {
 
     println!("[4] Cuckoo lookup via pir-core parameterized functions (100 entries)...");
     {
-        let index_table_byte_size = legacy_bins * CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE;
+        let index_table_byte_size = legacy_bins * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
         let mut rng = 0x1234_5678_ABCD_EF00u64;
         let mut lookup_pass = 0u64;
         let n = 100;
 
         for _ in 0..n {
             let idx = (prng_next(&mut rng) % num_entries as u64) as usize;
-            let offset = idx * INDEX_ENTRY_SIZE;
+            let offset = idx * INDEX_RECORD_SIZE;
             let sh = &index_file[offset..offset + SCRIPT_HASH_SIZE];
             let expected_chunk_id = u32::from_le_bytes(
                 index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4].try_into().unwrap()
@@ -223,18 +223,18 @@ fn main() {
             }
 
             let expected_tag = pc_hash::compute_tag(legacy_tag_seed, sh);
-            let buckets = pc_hash::derive_buckets_3(sh, pc_params::K);
+            let groups = pc_hash::derive_groups_3(sh, pc_params::K);
 
             let mut found = false;
-            for &bucket_id in &buckets {
-                let table_offset = HEADER_SIZE + bucket_id * index_table_byte_size;
+            for &group_id in &groups {
+                let table_offset = HEADER_SIZE + group_id * index_table_byte_size;
 
                 for hf in 0..pc_params::INDEX_PARAMS.cuckoo_num_hashes {
-                    let key = pc_hash::derive_cuckoo_key(pc_params::MASTER_SEED, bucket_id, hf);
+                    let key = pc_hash::derive_cuckoo_key(pc_params::MASTER_SEED, group_id, hf);
                     let bin = pc_hash::cuckoo_hash(sh, key, legacy_bins);
-                    let bin_offset = table_offset + bin * CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE;
+                    let bin_offset = table_offset + bin * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
 
-                    for slot in 0..CUCKOO_BUCKET_SIZE {
+                    for slot in 0..INDEX_SLOTS_PER_BIN {
                         let slot_offset = bin_offset + slot * INDEX_SLOT_SIZE;
                         let tag = u64::from_le_bytes(
                             index_cuckoo[slot_offset..slot_offset + TAG_SIZE].try_into().unwrap()
@@ -275,7 +275,7 @@ fn main() {
 
         for _ in 0..n {
             let idx = (prng_next(&mut rng) % num_entries as u64) as usize;
-            let offset = idx * INDEX_ENTRY_SIZE;
+            let offset = idx * INDEX_RECORD_SIZE;
             let start_chunk_id = u32::from_le_bytes(
                 index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4].try_into().unwrap()
             );
@@ -332,7 +332,7 @@ fn main() {
 
         for _ in 0..n {
             let idx = (prng_next(&mut rng) % num_entries as u64) as usize;
-            let offset = idx * INDEX_ENTRY_SIZE;
+            let offset = idx * INDEX_RECORD_SIZE;
             let start_chunk_id = u32::from_le_bytes(
                 index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4].try_into().unwrap()
             );
@@ -350,13 +350,13 @@ fn main() {
 
         println!("    {} unique chunk_ids from {} entries", chunk_ids.len(), n);
 
-        // Get bucket assignments
-        let item_buckets: Vec<[usize; 3]> = chunk_ids.iter()
-            .map(|&id| pc_hash::derive_int_buckets_3(id, pc_params::K_CHUNK))
+        // Get group assignments
+        let item_groups: Vec<[usize; 3]> = chunk_ids.iter()
+            .map(|&id| pc_hash::derive_int_groups_3(id, pc_params::K_CHUNK))
             .collect();
 
         let t = Instant::now();
-        let rounds = pc_pbc::pbc_plan_rounds(&item_buckets, pc_params::K_CHUNK, 3, 1000);
+        let rounds = pc_pbc::pbc_plan_rounds(&item_groups, pc_params::K_CHUNK, 3, 1000);
 
         let total_placed: usize = rounds.iter().map(|r| r.len()).sum();
         println!("    {} rounds, {} items placed in {:.2?}", rounds.len(), total_placed, t.elapsed());

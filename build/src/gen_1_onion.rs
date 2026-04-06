@@ -36,7 +36,7 @@ const TXID_SIZE: usize = 32;
 const PACKED_ENTRY_SIZE: usize = 3840;
 
 /// New index entry: 20B script_hash + 4B entry_id + 2B byte_offset + 1B num_entries
-const INDEX_ENTRY_SIZE: usize = 20 + 4 + 2 + 1; // 27
+const ONION_INDEX_RECORD_SIZE: usize = 20 + 4 + 2 + 1; // 27
 
 const DEFAULT_PARTITIONS: usize = 4;
 const DUST_THRESHOLD: u64 = 576;
@@ -249,7 +249,7 @@ fn main() {
 
     println!("Configuration:");
     println!("  OnionPIR entry size: {} bytes", PACKED_ENTRY_SIZE);
-    println!("  Index entry size:    {} bytes", INDEX_ENTRY_SIZE);
+    println!("  Index entry size:    {} bytes", ONION_INDEX_RECORD_SIZE);
     println!("  Partitions:          {}", num_partitions);
     println!("  Dust threshold:      {} sats", DUST_THRESHOLD);
     println!("  Max UTXOs/SPK:       {} (skip larger)", MAX_UTXOS_PER_SPK);
@@ -431,7 +431,7 @@ fn main() {
     // ── 5. Summary ─────────────────────────────────────────────────────
     let total_elapsed = total_start.elapsed();
     let packed_file_size = packer.entry_count * PACKED_ENTRY_SIZE as u64;
-    let index_file_size = (total_groups + total_whale) * INDEX_ENTRY_SIZE as u64;
+    let index_file_size = (total_groups + total_whale) * ONION_INDEX_RECORD_SIZE as u64;
 
     println!("=== Summary ===");
     println!("Input entries:        {}", entry_count);
@@ -443,7 +443,7 @@ fn main() {
     println!("Packed file size:     {} ({} entries × {} B)",
         format_bytes(packed_file_size), packer.entry_count, PACKED_ENTRY_SIZE);
     println!("Index file size:      {} ({} entries × {} B)",
-        format_bytes(index_file_size), total_groups + total_whale, INDEX_ENTRY_SIZE);
+        format_bytes(index_file_size), total_groups + total_whale, ONION_INDEX_RECORD_SIZE);
     println!();
     println!("Actual data:          {} ({:.2}% of packed file)",
         format_bytes(packer.total_data),

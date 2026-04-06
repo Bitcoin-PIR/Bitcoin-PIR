@@ -120,22 +120,22 @@ async fn ws_roundtrip(
 // ─── Cuckoo assignment for chunk level (multi-round) ────────────────────────
 
 /// Plan multi-round chunk retrieval for a set of chunk_ids.
-/// Returns Vec of rounds, each round is Vec of (chunk_id, bucket_id).
+/// Returns Vec of rounds, each round is Vec of (chunk_id, group_id).
 fn plan_chunk_rounds(chunk_ids: &[u32]) -> Vec<Vec<(u32, u8)>> {
-    let cand_buckets: Vec<[usize; NUM_HASHES]> = chunk_ids
+    let cand_groups: Vec<[usize; NUM_HASHES]> = chunk_ids
         .iter()
-        .map(|&cid| derive_chunk_buckets(cid))
+        .map(|&cid| derive_chunk_groups(cid))
         .collect();
 
-    let rounds = pbc_plan_rounds(&cand_buckets, K_CHUNK, NUM_HASHES, 500);
+    let rounds = pbc_plan_rounds(&cand_groups, K_CHUNK, NUM_HASHES, 500);
 
-    // Map (item_index, bucket_id) back to (chunk_id, bucket_id as u8)
+    // Map (item_index, group_id) back to (chunk_id, group_id as u8)
     rounds
         .into_iter()
         .map(|round| {
             round
                 .into_iter()
-                .map(|(item_idx, bucket)| (chunk_ids[item_idx], bucket as u8))
+                .map(|(item_idx, group)| (chunk_ids[item_idx], group as u8))
                 .collect()
         })
         .collect()
@@ -196,39 +196,39 @@ async fn main() {
     let dpf = Dpf::with_default_key();
     let mut rng = DummyRng::new();
 
-    // Compute candidate buckets for our script hash
-    let my_buckets = derive_buckets(&args.script_hash);
-    let assigned_bucket = my_buckets[0]; // single query, just use first
+    // Compute candidate groups for our script hash
+    let my_groups = derive_groups(&args.script_hash);
+    let assigned_group = my_groups[0]; // single query, just use first
 
-    // Compute cuckoo hash locations in the assigned bucket (INDEX_CUCKOO_NUM_HASHES = 2)
+    // Compute cuckoo hash locations in the assigned group (INDEX_CUCKOO_NUM_HASHES = 2)
     let mut my_locs = Vec::new();
     for h in 0..INDEX_CUCKOO_NUM_HASHES {
-        let key = derive_cuckoo_key(assigned_bucket, h);
+        let key = derive_cuckoo_key(assigned_group, h);
         my_locs.push(cuckoo_hash(&args.script_hash, key, index_bins) as u64);
     }
 
-    println!("  Assigned bucket: {}", assigned_bucket);
+    println!("  Assigned group: {}", assigned_group);
     println!("  locs: {:?}", my_locs);
 
-    // Generate DPF keys for all K buckets (INDEX_CUCKOO_NUM_HASHES keys per bucket)
+    // Generate DPF keys for all K groups (INDEX_CUCKOO_NUM_HASHES keys per group)
     let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K);
     let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K);
 
     for b in 0..K {
-        let mut s0_bucket = Vec::new();
-        let mut s1_bucket = Vec::new();
+        let mut s0_group = Vec::new();
+        let mut s1_group = Vec::new();
         for h in 0..INDEX_CUCKOO_NUM_HASHES {
-            let alpha = if b == assigned_bucket {
+            let alpha = if b == assigned_group {
                 my_locs[h]
             } else {
                 rng.next_u64() % index_bins as u64
             };
             let (k0, k1) = dpf.gen(alpha, index_dpf_n);
-            s0_bucket.push(k0.to_bytes());
-            s1_bucket.push(k1.to_bytes());
+            s0_group.push(k0.to_bytes());
+            s1_group.push(k1.to_bytes());
         }
-        s0_keys.push(s0_bucket);
-        s1_keys.push(s1_bucket);
+        s0_keys.push(s0_group);
+        s1_keys.push(s1_group);
     }
 
     // Send to both servers concurrently
@@ -253,8 +253,8 @@ async fn main() {
     // Compute fingerprint tag for our script hash
     let my_tag = compute_tag(tag_seed, &args.script_hash);
 
-    // XOR results for the assigned bucket (each cuckoo hash gives one result)
-    let b = assigned_bucket;
+    // XOR results for the assigned group (each cuckoo hash gives one result)
+    let b = assigned_group;
     let mut found_entry: Option<(u32, u32, u32)> = None;
     for h in 0..INDEX_CUCKOO_NUM_HASHES {
         let mut result = r0.results[b][h].clone();
@@ -310,17 +310,17 @@ async fn main() {
         std::collections::HashMap::new();
 
     for (ri, round_plan) in rounds.iter().enumerate() {
-        // Always send CHUNK_CUCKOO_NUM_HASHES (2) DPF keys per bucket (uniform, no placement optimization)
-        let mut bucket_targets: Vec<Option<Vec<u64>>> = vec![None; K_CHUNK];
-        for &(chunk_id, bucket_id) in round_plan {
-            let b = bucket_id as usize;
+        // Always send CHUNK_CUCKOO_NUM_HASHES (2) DPF keys per group (uniform, no placement optimization)
+        let mut group_targets: Vec<Option<Vec<u64>>> = vec![None; K_CHUNK];
+        for &(chunk_id, group_id) in round_plan {
+            let b = group_id as usize;
             let locs: Vec<u64> = (0..CHUNK_CUCKOO_NUM_HASHES)
                 .map(|h| {
                     let key = derive_chunk_cuckoo_key(b, h);
                     cuckoo_hash_int(chunk_id, key, chunk_bins) as u64
                 })
                 .collect();
-            bucket_targets[b] = Some(locs);
+            group_targets[b] = Some(locs);
         }
 
         // Generate DPF keys
@@ -328,19 +328,19 @@ async fn main() {
         let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(K_CHUNK);
 
         for b in 0..K_CHUNK {
-            let mut s0_bucket = Vec::new();
-            let mut s1_bucket = Vec::new();
+            let mut s0_group = Vec::new();
+            let mut s1_group = Vec::new();
             for h in 0..CHUNK_CUCKOO_NUM_HASHES {
-                let alpha = match &bucket_targets[b] {
+                let alpha = match &group_targets[b] {
                     Some(locs) => locs[h],
                     None => rng.next_u64() % chunk_bins as u64,
                 };
                 let (k0, k1) = dpf.gen(alpha, chunk_dpf_n);
-                s0_bucket.push(k0.to_bytes());
-                s1_bucket.push(k1.to_bytes());
+                s0_group.push(k0.to_bytes());
+                s1_group.push(k1.to_bytes());
             }
-            s0_keys.push(s0_bucket);
-            s1_keys.push(s1_bucket);
+            s0_keys.push(s0_group);
+            s1_keys.push(s1_group);
         }
 
         // Send to both servers
@@ -362,8 +362,8 @@ async fn main() {
         };
 
         // XOR and extract
-        for &(chunk_id, bucket_id) in round_plan {
-            let b = bucket_id as usize;
+        for &(chunk_id, group_id) in round_plan {
+            let b = group_id as usize;
             let mut found = false;
 
             let num_results = cr0.results[b].len();
@@ -379,7 +379,7 @@ async fn main() {
             }
 
             if !found {
-                eprintln!("  WARNING: chunk {} not found in round {} bucket {}", chunk_id, ri, b);
+                eprintln!("  WARNING: chunk {} not found in round {} group {}", chunk_id, ri, b);
             }
         }
 
@@ -447,43 +447,43 @@ async fn main() {
 
             // PBC-place: for single address this is trivial (1 group, 1 round)
             let unique_gids = vec![group_id];
-            let cand_buckets: Vec<[usize; 3]> = unique_gids.iter()
-                .map(|&gid| pir_hash::derive_int_buckets_3(gid, merkle_k))
+            let cand_groups: Vec<[usize; 3]> = unique_gids.iter()
+                .map(|&gid| pir_hash::derive_int_groups_3(gid, merkle_k))
                 .collect();
-            let pbc_rounds = pbc_plan_rounds(&cand_buckets, merkle_k, 3, 500);
+            let pbc_rounds = pbc_plan_rounds(&cand_groups, merkle_k, 3, 500);
 
             let mut found_children: Option<Vec<[u8; 32]>> = None;
 
             for (ri, pbc_round) in pbc_rounds.iter().enumerate() {
-                // Map: bucket → (gid, cuckoo_locs)
-                let mut bucket_info: Vec<Option<(u32, Vec<u64>)>> = vec![None; merkle_k];
-                for &(ugi, bucket) in pbc_round {
+                // Map: group → (gid, cuckoo_locs)
+                let mut group_info: Vec<Option<(u32, Vec<u64>)>> = vec![None; merkle_k];
+                for &(ugi, pbc_group) in pbc_round {
                     let gid = unique_gids[ugi];
                     let mut locs = Vec::new();
                     for h in 0..merkle_cuckoo_num_hashes {
-                        let key = pir_hash::derive_cuckoo_key(level_seed, bucket, h);
+                        let key = pir_hash::derive_cuckoo_key(level_seed, pbc_group, h);
                         locs.push(pir_hash::cuckoo_hash_int(gid, key, level_bins) as u64);
                     }
-                    bucket_info[bucket] = Some((gid, locs));
+                    group_info[pbc_group] = Some((gid, locs));
                 }
 
                 let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(merkle_k);
                 let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(merkle_k);
                 for b in 0..merkle_k {
-                    let mut s0_bucket = Vec::new();
-                    let mut s1_bucket = Vec::new();
+                    let mut s0_group = Vec::new();
+                    let mut s1_group = Vec::new();
                     for h in 0..merkle_cuckoo_num_hashes {
-                        let alpha = if let Some((_, ref locs)) = bucket_info[b] {
+                        let alpha = if let Some((_, ref locs)) = group_info[b] {
                             locs[h]
                         } else {
                             rng.next_u64() % level_bins as u64
                         };
                         let (k0, k1) = dpf.gen(alpha, level_dpf_n);
-                        s0_bucket.push(k0.to_bytes());
-                        s1_bucket.push(k1.to_bytes());
+                        s0_group.push(k0.to_bytes());
+                        s1_group.push(k1.to_bytes());
                     }
-                    s0_keys.push(s0_bucket);
-                    s1_keys.push(s1_bucket);
+                    s0_keys.push(s0_group);
+                    s1_keys.push(s1_group);
                 }
 
                 let round_id = (level * 100 + ri) as u16;
@@ -510,12 +510,12 @@ async fn main() {
                     _ => { println!("  Unexpected response for merkle sibling batch"); merkle_ok = false; break; }
                 };
 
-                // XOR and find group for each real bucket
-                for &(ugi, bucket) in pbc_round {
+                // XOR and find group for each real PBC group
+                for &(ugi, pbc_group) in pbc_round {
                     let gid = unique_gids[ugi];
                     for h in 0..merkle_cuckoo_num_hashes {
-                        let mut result = sr0.results[bucket][h].clone();
-                        eval::xor_into(&mut result, &sr1.results[bucket][h]);
+                        let mut result = sr0.results[pbc_group][h].clone();
+                        eval::xor_into(&mut result, &sr1.results[pbc_group][h]);
                         if let Some(children) = eval::find_group_in_sibling_result(
                             &result, gid, merkle_arity, merkle_bucket_size,
                         ) {

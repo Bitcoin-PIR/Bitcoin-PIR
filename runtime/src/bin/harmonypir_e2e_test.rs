@@ -11,10 +11,10 @@ use harmonypir::params::{Params, BETA};
 use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::{RelocationDS, EMPTY};
-use harmonypir_wasm::state::{self, BucketEntry, StateFileHeader};
+use harmonypir_wasm::state::{self, GroupEntry, StateFileHeader};
 use harmonypir_wasm::{
-    HarmonyBucket, PRP_HOANG, PRP_FASTPRP, PRP_ALF,
-    compute_rounds, derive_bucket_key, find_best_t, pad_n_for_t,
+    HarmonyGroup, PRP_HOANG, PRP_FASTPRP, PRP_ALF,
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
     verify_protocol_impl,
 };
 
@@ -88,12 +88,12 @@ fn main() {
     println!();
 
     // ─── Compute hints (Hint Server simulation) ─────────────────────────
-    println!("[2] Computing hints for bucket 0 (Hint Server simulation)...");
+    println!("[2] Computing hints for group 0 (Hint Server simulation)...");
     let t_start = Instant::now();
 
-    let derived_key_0 = derive_bucket_key(&key, 0);
+    let derived_key_0 = derive_group_key(&key, 0);
     if DEBUG {
-        println!("  derived_key[bucket=0] = {}", hex(&derived_key_0));
+        println!("  derived_key[group=0] = {}", hex(&derived_key_0));
     }
 
     let prp0: Box<dyn Prp> = Box::new(HoangPrp::new(domain, r, &derived_key_0));
@@ -152,8 +152,8 @@ fn main() {
     }
     println!("  Hints computed in {:.2?}\n", t_start.elapsed());
 
-    // Also compute hints for bucket 1.
-    let derived_key_1 = derive_bucket_key(&key, 1);
+    // Also compute hints for group 1.
+    let derived_key_1 = derive_group_key(&key, 1);
     let prp1: Box<dyn Prp> = Box::new(HoangPrp::new(domain, r, &derived_key_1));
     let ds1 = RelocationDS::new(pn, t_usize, prp1).unwrap();
     let mut hints1: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
@@ -165,15 +165,15 @@ fn main() {
         }
     }
 
-    // ─── Create buckets and serialize ───────────────────────────────────
-    println!("[3] Creating HarmonyBucket instances and writing state file...");
-    let mut bucket0 = HarmonyBucket::new_with_backend(n, w, t, &key, 0, PRP_HOANG).unwrap();
+    // ─── Create groups and serialize ───────────────────────────────────
+    println!("[3] Creating HarmonyGroup instances and writing state file...");
+    let mut group0 = HarmonyGroup::new_with_backend(n, w, t, &key, 0, PRP_HOANG).unwrap();
     let flat0: Vec<u8> = hints0.iter().flat_map(|h| h.iter().copied()).collect();
-    bucket0.load_hints(&flat0).unwrap();
+    group0.load_hints(&flat0).unwrap();
 
-    let mut bucket1 = HarmonyBucket::new_with_backend(n, w, t, &key, 1, PRP_HOANG).unwrap();
+    let mut group1 = HarmonyGroup::new_with_backend(n, w, t, &key, 1, PRP_HOANG).unwrap();
     let flat1: Vec<u8> = hints1.iter().flat_map(|h| h.iter().copied()).collect();
-    bucket1.load_hints(&flat1).unwrap();
+    group1.load_hints(&flat1).unwrap();
 
     let header = StateFileHeader {
         prp_backend: PRP_HOANG,
@@ -184,27 +184,27 @@ fn main() {
     };
 
     let entries = vec![
-        BucketEntry { bucket_id: 0, level: 0, data: bucket0.serialize() },
-        BucketEntry { bucket_id: 1, level: 0, data: bucket1.serialize() },
+        GroupEntry { group_id: 0, level: 0, data: group0.serialize() },
+        GroupEntry { group_id: 1, level: 0, data: group1.serialize() },
     ];
     let mut file_buf: Vec<u8> = Vec::new();
     state::write_state_file(&mut file_buf, &header, &entries).unwrap();
     println!("  State file: {} bytes\n", file_buf.len());
 
     // ─── Reload from file ───────────────────────────────────────────────
-    println!("[4] Loading state file and reconstructing buckets...");
+    println!("[4] Loading state file and reconstructing groups...");
     let state = state::read_state_file(&mut Cursor::new(&file_buf)).unwrap();
-    let mut buckets: Vec<HarmonyBucket> = state.buckets.iter()
-        .map(|e| HarmonyBucket::deserialize(&e.data, &key, e.bucket_id).unwrap())
+    let mut groups: Vec<HarmonyGroup> = state.groups.iter()
+        .map(|e| HarmonyGroup::deserialize(&e.data, &key, e.group_id).unwrap())
         .collect();
-    println!("  Loaded {} buckets, {} queries remaining each\n",
-        buckets.len(), buckets[0].queries_remaining());
+    println!("  Loaded {} groups, {} queries remaining each\n",
+        groups.len(), groups[0].queries_remaining());
 
     // ─── Phase 1: queries with verbose trace ────────────────────────────
     let queries = [0usize, 1, 128, 255];
     println!("[5] Phase 1: querying {:?} with verbose trace...\n", queries);
 
-    // We also need a standalone DS' for tracing (since HarmonyBucket's DS is private).
+    // We also need a standalone DS' for tracing (since HarmonyGroup's DS is private).
     let prp_trace: Box<dyn Prp> = Box::new(HoangPrp::new(domain, r, &derived_key_0));
     let mut ds_trace = RelocationDS::new(pn, t_usize, prp_trace).unwrap();
 
@@ -240,9 +240,9 @@ fn main() {
             }
         }
 
-        // Actually execute the query through HarmonyBucket.
-        let req = buckets[0].build_request(q as u32).unwrap();
-        println!("    HarmonyBucket.build_request({}) → segment={}, position={}", q, req.segment(), req.position());
+        // Actually execute the query through HarmonyGroup.
+        let req = groups[0].build_request(q as u32).unwrap();
+        println!("    HarmonyGroup.build_request({}) → segment={}, position={}", q, req.segment(), req.position());
 
         // Parse request indices for display.
         let req_bytes = req.request();
@@ -279,7 +279,7 @@ fn main() {
             println!("      answer = H[s] ⊕ Σ(R[i] for i≠r)");
         }
 
-        let result = buckets[0].process_response(&response).unwrap();
+        let result = groups[0].process_response(&response).unwrap();
         let correct = result == db[q];
         println!("    Answer:   {}", hex(&result));
         println!("    Expected: {}", hex(&db[q]));
@@ -287,10 +287,10 @@ fn main() {
 
         // Show relocation.
         if DEBUG {
-            let relocated_count = buckets[0].queries_used();
+            let relocated_count = groups[0].queries_used();
             println!("    Post-query: RelocateSegment(s={}) done", s);
             println!("    Total relocated segments: {}", relocated_count);
-            println!("    Queries remaining: {}", buckets[0].queries_remaining());
+            println!("    Queries remaining: {}", groups[0].queries_remaining());
         }
 
         // Keep trace DS in sync.
@@ -305,8 +305,8 @@ fn main() {
     // ─── Save and reload ────────────────────────────────────────────────
     println!("[6] Saving state after {} queries...", queries.len());
     let entries2 = vec![
-        BucketEntry { bucket_id: 0, level: 0, data: buckets[0].serialize() },
-        BucketEntry { bucket_id: 1, level: 0, data: buckets[1].serialize() },
+        GroupEntry { group_id: 0, level: 0, data: groups[0].serialize() },
+        GroupEntry { group_id: 1, level: 0, data: groups[1].serialize() },
     ];
     let mut file_buf2 = Vec::new();
     state::write_state_file(&mut file_buf2, &header, &entries2).unwrap();
@@ -315,11 +315,11 @@ fn main() {
 
     println!("[7] Reloading state file...");
     let state2 = state::read_state_file(&mut Cursor::new(&file_buf2)).unwrap();
-    let mut buckets2: Vec<HarmonyBucket> = state2.buckets.iter()
-        .map(|e| HarmonyBucket::deserialize(&e.data, &key, e.bucket_id).unwrap())
+    let mut groups2: Vec<HarmonyGroup> = state2.groups.iter()
+        .map(|e| HarmonyGroup::deserialize(&e.data, &key, e.group_id).unwrap())
         .collect();
     println!("  Bucket 0: {} queries used, {} remaining",
-        buckets2[0].queries_used(), buckets2[0].queries_remaining());
+        groups2[0].queries_used(), groups2[0].queries_remaining());
     if DEBUG {
         println!("  (DS' reconstructed by replaying {} segment relocations)", queries.len());
     }
@@ -330,22 +330,22 @@ fn main() {
     println!("[8] Phase 2: querying {:?} (post-reload)...\n", queries2);
 
     for &q in &queries2 {
-        let result = do_query(&mut buckets2[0], q as u32, &db);
+        let result = do_query(&mut groups2[0], q as u32, &db);
         let correct = result == db[q];
         println!("  query({:>3}) → {} {}", q, hex(&result[..8.min(result.len())]), if correct { "✓" } else { "✗" });
         assert!(correct, "Phase 2: query({}) FAILED!", q);
     }
     println!("\n  Phase 2: all {} queries correct!\n", queries2.len());
 
-    // ─── Cross-bucket test ──────────────────────────────────────────────
-    println!("[9] Cross-bucket test: bucket 1, query(42)...");
-    let result = do_query(&mut buckets2[1], 42, &db);
+    // ─── Cross-group test ──────────────────────────────────────────────
+    println!("[9] Cross-group test: group 1, query(42)...");
+    let result = do_query(&mut groups2[1], 42, &db);
     let correct = result == db[42];
     println!("  query(42) → {} {}", hex(&result[..8.min(result.len())]), if correct { "✓" } else { "✗" });
     assert!(correct);
 
     println!("\n=== PASS: end-to-end test with {} ===", backend_name);
-    println!("  Total queries: {} (phase 1) + {} (phase 2) + 1 (cross-bucket) = {}",
+    println!("  Total queries: {} (phase 1) + {} (phase 2) + 1 (cross-group) = {}",
         queries.len(), queries2.len(), queries.len() + queries2.len() + 1);
     println!("  Serialize/deserialize round-trip: verified");
 
@@ -383,10 +383,10 @@ fn main() {
 }
 
 /// Execute a single query with simulated server.
-fn do_query(bucket: &mut HarmonyBucket, q: u32, db: &[Vec<u8>]) -> Vec<u8> {
-    let req = bucket.build_request(q).unwrap();
-    let w = bucket.w() as usize;
-    let n = bucket.real_n() as usize;
+fn do_query(group: &mut HarmonyGroup, q: u32, db: &[Vec<u8>]) -> Vec<u8> {
+    let req = group.build_request(q).unwrap();
+    let w = group.w() as usize;
+    let n = group.real_n() as usize;
     let req_bytes = req.request();
     let count = req_bytes.len() / 4;
 
@@ -400,5 +400,5 @@ fn do_query(bucket: &mut HarmonyBucket, q: u32, db: &[Vec<u8>]) -> Vec<u8> {
         }
     }
 
-    bucket.process_response(&response).unwrap()
+    group.process_response(&response).unwrap()
 }

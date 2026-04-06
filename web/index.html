@@ -235,6 +235,21 @@
         .qi-timing-total { width: 55px; text-align: right; font-family: monospace; color: #333; flex-shrink: 0; }
         .qi-inspect-btn { display: inline-block; padding: 2px 8px; font-size: 11px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; color: #666; margin-left: 8px; vertical-align: middle; }
         .qi-inspect-btn:hover { background: #e8e8e8; color: #333; }
+
+        /* Residency panel */
+        .residency-panel { display: none; margin: 10px 0; padding: 12px 16px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; }
+        .residency-panel.active { display: block; }
+        .residency-server { margin-bottom: 10px; }
+        .residency-server:last-child { margin-bottom: 0; }
+        .residency-server-label { font-weight: bold; font-size: 13px; margin-bottom: 4px; }
+        .residency-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+        .residency-name { width: 220px; font-family: monospace; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+        .residency-bar-wrap { flex: 1; height: 16px; background: #e9ecef; border-radius: 3px; overflow: hidden; min-width: 100px; }
+        .residency-bar-fill { height: 100%; background: #f7931a; transition: width 0.5s; border-radius: 3px; }
+        .residency-pct { width: 48px; text-align: right; font-family: monospace; font-weight: bold; flex-shrink: 0; }
+        .residency-size { width: 90px; text-align: right; font-family: monospace; color: #888; flex-shrink: 0; }
+        .residency-total { font-weight: bold; border-top: 1px solid #ccc; padding-top: 4px; margin-top: 4px; }
+        .residency-error { color: #dc3545; font-style: italic; }
     </style>
     <script src="/wasm/onionpir_client.js"></script>
     <!-- HarmonyPIR WASM loaded dynamically in loadWasm() based on PRP selection -->
@@ -266,7 +281,9 @@
                 <button class="tab-btn" data-tab="harmonypir">2-Server HarmonyPIR</button>
             </div>
             <button id="localhostToggle" class="small secondary" style="font-size: 11px; padding: 4px 10px; white-space: nowrap;" title="Switch all server URLs between remote and localhost">🌐 Remote</button>
+            <button id="residencyBtn" class="small secondary" style="font-size: 11px; padding: 4px 10px; white-space: nowrap; margin-left: 4px;" title="Check server mmap page residency (warmup status)">Server Warmup</button>
         </div>
+        <div id="residencyPanel" class="residency-panel"></div>
 
         <!-- ═══ DPF Tab ═══ -->
         <div id="tab-dpf" class="tab-content active" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
@@ -569,6 +586,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
     <script type="module">
         import { BatchPirClient, OnionPirWebClient, HarmonyPirClient, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript } from './src/index.ts';
+        import { fetchResidency } from './src/server-info.ts';
 
         /**
          * Detect well-known script patterns and return a label, or null.
@@ -1086,6 +1104,66 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             btn.style.color = useLocalhost ? '#fff' : '';
         });
 
+        // ─── Server Warmup / Residency button ────────────────────────
+        document.getElementById('residencyBtn').addEventListener('click', async () => {
+            const panel = document.getElementById('residencyPanel');
+            // Toggle panel off if already visible
+            if (panel.classList.contains('active')) {
+                panel.classList.remove('active');
+                return;
+            }
+            // Collect all connected sockets across clients
+            const sockets = [
+                ...(client ? client.getConnectedSockets() : []),
+                ...(opClient ? opClient.getConnectedSockets() : []),
+                ...(hpClient ? hpClient.getConnectedSockets() : []),
+            ];
+            if (sockets.length === 0) {
+                panel.innerHTML = '<span class="residency-error">No servers connected. Connect to a server first.</span>';
+                panel.classList.add('active');
+                return;
+            }
+            panel.innerHTML = '<span style="color:#888;">Querying servers...</span>';
+            panel.classList.add('active');
+
+            let html = '';
+            for (const { label, ws } of sockets) {
+                try {
+                    const info = await fetchResidency(ws);
+                    html += `<div class="residency-server">`;
+                    html += `<div class="residency-server-label">${label}</div>`;
+                    for (const r of info.regions) {
+                        const sizeGB = (r.size / 1e9).toFixed(2);
+                        const resGB = (r.resident / 1e9).toFixed(2);
+                        const pct = r.pct.toFixed(1);
+                        const color = r.pct > 90 ? '#28a745' : r.pct > 50 ? '#ffc107' : '#f7931a';
+                        html += `<div class="residency-row">`;
+                        html += `<span class="residency-name" title="${r.name}">${r.name}</span>`;
+                        html += `<div class="residency-bar-wrap"><div class="residency-bar-fill" style="width:${pct}%;background:${color};"></div></div>`;
+                        html += `<span class="residency-pct">${pct}%</span>`;
+                        html += `<span class="residency-size">${resGB}/${sizeGB} GB</span>`;
+                        html += `</div>`;
+                    }
+                    // Total row
+                    const totalGB = (info.total_size / 1e9).toFixed(2);
+                    const totalResGB = (info.total_resident / 1e9).toFixed(2);
+                    const totalPct = info.total_pct.toFixed(1);
+                    const totalColor = info.total_pct > 90 ? '#28a745' : info.total_pct > 50 ? '#ffc107' : '#f7931a';
+                    html += `<div class="residency-row residency-total">`;
+                    html += `<span class="residency-name"><b>TOTAL</b></span>`;
+                    html += `<div class="residency-bar-wrap"><div class="residency-bar-fill" style="width:${totalPct}%;background:${totalColor};"></div></div>`;
+                    html += `<span class="residency-pct">${totalPct}%</span>`;
+                    html += `<span class="residency-size">${totalResGB}/${totalGB} GB</span>`;
+                    html += `</div>`;
+                    html += `</div>`;
+                } catch (e) {
+                    html += `<div class="residency-server"><div class="residency-server-label">${label}</div>`;
+                    html += `<span class="residency-error">${e.message}</span></div>`;
+                }
+            }
+            panel.innerHTML = html;
+        });
+
         // ═══════════════════════════════════════════════════════════════
         // OnionPIR tab logic
         // ═══════════════════════════════════════════════════════════════
@@ -1204,7 +1282,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 // Batch Merkle verify button
-                const opVerifiable = opQueryResults.filter(r => r && !r.isWhale && r.treeLoc !== undefined);
+                const opVerifiable = opQueryResults.filter(r => r && !r.isWhale && r.indexBinHash !== undefined);
                 if (opVerifiable.length > 0 && opClient.hasMerkle()) {
                     addBatchMerkleButton(resultsContainer, opVerifiable, 'onionpir',
                         (results, onProg) => opClient.verifyMerkleBatch(results, onProg),
@@ -1376,7 +1454,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             const fill = document.getElementById('hp-offlineFill');
                             const label = document.getElementById('hp-offlineLabel');
                             if (fill) fill.style.width = `${pct}%`;
-                            if (label) label.textContent = `${received}/${total} buckets (${pct}%)`;
+                            if (label) label.textContent = `${received}/${total} groups (${pct}%)`;
                         }
                     },
                 });
@@ -1386,7 +1464,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 await hpClient.connectQueryServer();
                 await hpClient.fetchServerInfo();
-                await hpClient.initBuckets();
+                await hpClient.initGroups();
 
                 statusDiv.textContent = 'Status: Connected (downloading hints...)';
                 statusDiv.className = 'status connected';
@@ -1587,7 +1665,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     log(`HarmonyPIR: Restored cached ${names[newPrp]} hints`, 'success');
                 } else {
                     // No cache — download fresh hints.
-                    await hpClient.initBuckets();
+                    await hpClient.initGroups();
                     document.getElementById('hp-offlineContainer').style.display = 'block';
                     statusDiv.textContent = 'Status: Connected (downloading hints...)';
                     statusDiv.className = 'status connected';
@@ -1747,12 +1825,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 items += qiFlowItem('Input scriptPubKey', `<code>${truncHex(d.scriptPubKeyHex, 20)}</code>`, false);
             }
             items += qiFlowItem('SHA256(scriptPubKey)', `<code>${truncHex(d.scriptHashHex, 20)}</code>`, false);
-            items += qiFlowItem('deriveBuckets(scriptHash)',
-                `Candidate INDEX buckets: <strong>[${d.candidateIndexBuckets.join(', ')}]</strong>`, false);
+            items += qiFlowItem('deriveGroups(scriptHash)',
+                `Candidate INDEX groups: <strong>[${d.candidateIndexGroups.join(', ')}]</strong>`, false);
             items += qiFlowItem(`Cuckoo placement (round ${d.indexPlacementRound})`,
-                `Assigned to INDEX bucket: <strong>${d.assignedIndexBucket}</strong>`, true);
-            return `<p class="qi-step-title">How the address is mapped to a PIR bucket</p>
-                <p style="font-size:13px;color:#666;margin-bottom:16px;">HarmonyPIR uses cuckoo hashing to assign each address to one of ${d.candidateIndexBuckets.length} candidate Private Batch Cuckoo (PBC) buckets. Each bucket is an independent PIR instance.</p>
+                `Assigned to INDEX group: <strong>${d.assignedIndexGroup}</strong>`, true);
+            return `<p class="qi-step-title">How the address is mapped to a PIR group</p>
+                <p style="font-size:13px;color:#666;margin-bottom:16px;">HarmonyPIR uses cuckoo hashing to assign each address to one of ${d.candidateIndexGroups.length} candidate Private Batch Cuckoo (PBC) groups. Each group is an independent PIR instance.</p>
                 <div class="qi-flow">${items}</div>`;
         }
 
@@ -1765,7 +1843,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const s = d.indexSegment;
             const r = d.indexPosition;
             const h = d.indexHashRound ?? 0;
-            const bucket = d.assignedIndexBucket;
+            const group = d.assignedIndexGroup;
 
             let result = '';
             if (d.isWhale) {
@@ -1784,7 +1862,7 @@ more than 100 UTXOs. No CHUNK queries are issued.</div>`;
 
             return `<p class="qi-step-title">How the PIR query is built and answered</p>
                 <p style="font-size:13px;color:#666;margin-bottom:12px;">The client uses a PRP (pseudorandom permutation) to map the cuckoo bin index to a cell in a virtual data structure, then queries the segment containing that cell.</p>
-                <div class="qi-code">Bucket ${bucket}, hash function h=${h}:
+                <div class="qi-code">Group ${group}, hash function h=${h}:
   binIndex = cuckooHash(scriptHash, key, binsPerTable) = <strong>${d.indexBinIndex}</strong>
 
 build_request(${d.indexBinIndex}):
@@ -1818,7 +1896,7 @@ XOR Recovery:
             const chunks = d.chunkDetails;
             const chunkIds = chunks.map(c => c.chunkId);
             let html = `<p class="qi-step-title">How UTXO data chunks are retrieved</p>
-                <p style="font-size:13px;color:#666;margin-bottom:12px;">The INDEX entry tells us which chunks hold this address's UTXO data. Each chunk is retrieved via its own PIR query on a separate set of ${80} CHUNK PBC buckets.</p>
+                <p style="font-size:13px;color:#666;margin-bottom:12px;">The INDEX entry tells us which chunks hold this address's UTXO data. Each chunk is retrieved via its own PIR query on a separate set of ${80} CHUNK PBC groups.</p>
                 <div style="margin-bottom:12px;">Chunks needed: <strong>[${chunkIds.join(', ')}]</strong></div>`;
 
             for (const c of chunks) {
@@ -1826,7 +1904,7 @@ XOR Recovery:
                 const pos = c.position !== undefined ? c.position : '?';
                 html += `<div style="background:#f8f9fa;border:1px solid #eee;border-radius:6px;padding:10px 14px;margin-bottom:8px;">
                     <strong>Chunk ${c.chunkId}</strong><br>
-                    <span style="font-size:12px;color:#666;">CHUNK bucket ${c.bucketId} &bull; Segment S=${seg}, Position R=${pos}</span><br>
+                    <span style="font-size:12px;color:#666;">CHUNK group ${c.groupId} &bull; Segment S=${seg}, Position R=${pos}</span><br>
                     <span class="qi-badge qi-badge-green">Retrieved</span>
                 </div>`;
             }

@@ -10,9 +10,9 @@ describe('parseServerInfoJson', () => {
     tag_seed: '0x71a2ef38b4c90d15',
     index_dpf_n: 20,
     chunk_dpf_n: 21,
-    index_cuckoo_bucket_size: 4,
+    index_slots_per_bin: 4,
     index_slot_size: 13,
-    chunk_cuckoo_bucket_size: 3,
+    chunk_slots_per_bin: 3,
     chunk_slot_size: 44,
     role: 'primary',
   });
@@ -26,9 +26,9 @@ describe('parseServerInfoJson', () => {
     expect(info.tag_seed).toBe(0x71a2ef38b4c90d15n);
     expect(info.index_dpf_n).toBe(20);
     expect(info.chunk_dpf_n).toBe(21);
-    expect(info.index_cuckoo_bucket_size).toBe(4);
+    expect(info.index_slots_per_bin).toBe(4);
     expect(info.index_slot_size).toBe(13);
-    expect(info.chunk_cuckoo_bucket_size).toBe(3);
+    expect(info.chunk_slots_per_bin).toBe(3);
     expect(info.chunk_slot_size).toBe(44);
     expect(info.role).toBe('primary');
     expect(info.onionpir).toBeUndefined();
@@ -50,9 +50,9 @@ describe('parseServerInfoJson', () => {
       tag_seed: '0x71a2ef38b4c90d15',
       index_dpf_n: 20,
       chunk_dpf_n: 21,
-      index_cuckoo_bucket_size: 4,
+      index_slots_per_bin: 4,
       index_slot_size: 13,
-      chunk_cuckoo_bucket_size: 3,
+      chunk_slots_per_bin: 3,
       chunk_slot_size: 44,
       role: 'primary',
       onionpir: {
@@ -62,16 +62,16 @@ describe('parseServerInfoJson', () => {
         tag_seed: '0xd4e5f6a7b8c91023',
         index_k: 75,
         chunk_k: 80,
-        index_cuckoo_bucket_size: 256,
+        index_slots_per_bin: 256,
         index_slot_size: 15,
-        chunk_cuckoo_bucket_size: 1,
+        chunk_slots_per_bin: 1,
         chunk_slot_size: 3840,
       },
       merkle: {
         arity: 8,
         sibling_levels: 4,
         sibling_k: 75,
-        sibling_bucket_size: 4,
+        sibling_slots_per_bin: 4,
         sibling_slot_size: 260,
         levels: [
           { dpf_n: 18, bins_per_table: 200000 },
@@ -91,9 +91,9 @@ describe('parseServerInfoJson', () => {
     expect(typeof info.onionpir!.tag_seed).toBe('bigint');
     expect(info.onionpir!.index_k).toBe(75);
     expect(info.onionpir!.chunk_k).toBe(80);
-    expect(info.onionpir!.index_cuckoo_bucket_size).toBe(256);
+    expect(info.onionpir!.index_slots_per_bin).toBe(256);
     expect(info.onionpir!.index_slot_size).toBe(15);
-    expect(info.onionpir!.chunk_cuckoo_bucket_size).toBe(1);
+    expect(info.onionpir!.chunk_slots_per_bin).toBe(1);
     expect(info.onionpir!.chunk_slot_size).toBe(3840);
     expect(info.merkle).toBeDefined();
     expect(info.merkle!.arity).toBe(8);

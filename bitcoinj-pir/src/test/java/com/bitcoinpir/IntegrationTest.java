@@ -2,7 +2,7 @@ package com.bitcoinpir;
 
 import com.bitcoinpir.codec.UtxoDecoder;
 import com.bitcoinpir.dpf.DpfPirClient;
-import com.bitcoinpir.harmony.HarmonyBucket;
+import com.bitcoinpir.harmony.HarmonyGroup;
 import com.bitcoinpir.harmony.HarmonyPirClient;
 import com.bitcoinpir.hash.PirHash;
 import com.bitcoinpir.onionpir.OnionPirClient;
@@ -90,21 +90,21 @@ class IntegrationTest {
     @Order(2)
     void testHarmonyAlf() throws Exception {
         assumeHarmonyNative();
-        runHarmonyTest("ALF", HarmonyBucket.PRP_ALF);
+        runHarmonyTest("ALF", HarmonyGroup.PRP_ALF);
     }
 
     @Test
     @Order(3)
     void testHarmonyHoang() throws Exception {
         assumeHarmonyNative();
-        runHarmonyTest("HOANG", HarmonyBucket.PRP_HOANG);
+        runHarmonyTest("HOANG", HarmonyGroup.PRP_HOANG);
     }
 
     @Test
     @Order(4)
     void testHarmonyFastPrp() throws Exception {
         assumeHarmonyNative();
-        runHarmonyTest("FASTPRP", HarmonyBucket.PRP_FASTPRP);
+        runHarmonyTest("FASTPRP", HarmonyGroup.PRP_FASTPRP);
     }
 
     private void runHarmonyTest(String prpName, int prpBackend) throws Exception {
@@ -185,7 +185,7 @@ class IntegrationTest {
 
         // HarmonyPIR ALF query
         List<UtxoDecoder.UtxoEntry> harmonyResults;
-        try (var harmony = new HarmonyPirClient(HARMONY_HINT_SERVER, HARMONY_QUERY_SERVER, HarmonyBucket.PRP_ALF)) {
+        try (var harmony = new HarmonyPirClient(HARMONY_HINT_SERVER, HARMONY_QUERY_SERVER, HarmonyGroup.PRP_ALF)) {
             harmony.connect();
             var results = harmony.queryBatch(List.of(hash));
             harmonyResults = results.getOrDefault(0, List.of());
@@ -297,7 +297,7 @@ class IntegrationTest {
 
     /** Skip test if HarmonyPIR JNI native library is not available. */
     private static void assumeHarmonyNative() {
-        Assumptions.assumeTrue(HarmonyBucket.isNativeLoaded(),
+        Assumptions.assumeTrue(HarmonyGroup.isNativeLoaded(),
                 "harmonypir_jni native library not available — skipping");
     }
 

@@ -57,65 +57,65 @@ public final class PirHash {
         return h;
     }
 
-    // ── Index-level bucket assignment ────────────────────────────────────────
+    // ── Index-level group assignment ────────────────────────────────────────
 
-    /** Hash script_hash with a nonce for bucket assignment. */
-    private static long hashForBucket(byte[] scriptHash, long nonce) {
+    /** Hash script_hash with a nonce for group assignment. */
+    private static long hashForGroup(byte[] scriptHash, long nonce) {
         long h = shA(scriptHash) + (nonce * 0x9e3779b97f4a7c15L);
         h ^= shB(scriptHash);
         h = splitmix64(h ^ shC(scriptHash));
         return h;
     }
 
-    /** Derive NUM_HASHES (3) distinct bucket indices for a script_hash. */
-    public static int[] deriveBuckets(byte[] scriptHash) {
-        int[] buckets = new int[PirConstants.NUM_HASHES];
+    /** Derive NUM_HASHES (3) distinct group indices for a script_hash. */
+    public static int[] deriveGroups(byte[] scriptHash) {
+        int[] groups = new int[PirConstants.NUM_HASHES];
         int count = 0;
         long nonce = 0;
 
         while (count < PirConstants.NUM_HASHES) {
-            long h = hashForBucket(scriptHash, nonce);
-            int bucket = (int) Long.remainderUnsigned(h, PirConstants.K);
+            long h = hashForGroup(scriptHash, nonce);
+            int group = (int) Long.remainderUnsigned(h, PirConstants.K);
             nonce++;
 
             boolean dup = false;
             for (int i = 0; i < count; i++) {
-                if (buckets[i] == bucket) { dup = true; break; }
+                if (groups[i] == group) { dup = true; break; }
             }
             if (!dup) {
-                buckets[count++] = bucket;
+                groups[count++] = group;
             }
         }
-        return buckets;
+        return groups;
     }
 
-    // ── Chunk-level bucket assignment ────────────────────────────────────────
+    // ── Chunk-level group assignment ────────────────────────────────────────
 
-    /** Hash a chunk_id with a nonce for chunk-level bucket assignment. */
-    private static long hashChunkForBucket(int chunkId, long nonce) {
+    /** Hash a chunk_id with a nonce for chunk-level group assignment. */
+    private static long hashChunkForGroup(int chunkId, long nonce) {
         return splitmix64(Integer.toUnsignedLong(chunkId) + (nonce * 0x9e3779b97f4a7c15L));
     }
 
-    /** Derive 3 distinct chunk-level bucket indices for a chunk_id. */
-    public static int[] deriveChunkBuckets(int chunkId) {
-        int[] buckets = new int[PirConstants.NUM_HASHES];
+    /** Derive 3 distinct chunk-level group indices for a chunk_id. */
+    public static int[] deriveChunkGroups(int chunkId) {
+        int[] groups = new int[PirConstants.NUM_HASHES];
         int count = 0;
         long nonce = 0;
 
         while (count < PirConstants.NUM_HASHES) {
-            long h = hashChunkForBucket(chunkId, nonce);
-            int bucket = (int) Long.remainderUnsigned(h, PirConstants.K_CHUNK);
+            long h = hashChunkForGroup(chunkId, nonce);
+            int group = (int) Long.remainderUnsigned(h, PirConstants.K_CHUNK);
             nonce++;
 
             boolean dup = false;
             for (int i = 0; i < count; i++) {
-                if (buckets[i] == bucket) { dup = true; break; }
+                if (groups[i] == group) { dup = true; break; }
             }
             if (!dup) {
-                buckets[count++] = bucket;
+                groups[count++] = group;
             }
         }
-        return buckets;
+        return groups;
     }
 
     // ── Script hash computation ─────────────────────────────────────────────

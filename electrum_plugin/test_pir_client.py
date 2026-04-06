@@ -21,8 +21,8 @@ import struct
 sys.path.insert(0, '.')
 
 from pir_privacy.pir_hash import (
-    splitmix64, compute_tag, derive_buckets, derive_cuckoo_key,
-    cuckoo_hash, hash160, derive_chunk_buckets,
+    splitmix64, compute_tag, derive_groups, derive_cuckoo_key,
+    cuckoo_hash, hash160, derive_chunk_groups,
 )
 from pir_privacy.pir_constants import MASK64, K, K_CHUNK, DEFAULT_SERVER0_URL, DEFAULT_SERVER1_URL
 from pir_privacy.pir_dpf import dpf_gen
@@ -49,26 +49,26 @@ def test_splitmix64():
     print('  [OK] splitmix64')
 
 
-def test_derive_buckets():
-    """Test bucket derivation produces 3 distinct values in [0, K)."""
+def test_derive_groups():
+    """Test group derivation produces 3 distinct values in [0, K)."""
     # Create a dummy 20-byte script hash
     sh = bytes(range(20))
-    buckets = derive_buckets(sh)
-    assert len(buckets) == 3, f"Expected 3 buckets, got {len(buckets)}"
-    assert len(set(buckets)) == 3, f"Buckets not distinct: {buckets}"
-    assert all(0 <= b < K for b in buckets), f"Bucket out of range: {buckets}"
-    print(f'  derive_buckets(0x{sh.hex()[:8]}...) = {buckets}')
-    print('  [OK] derive_buckets')
+    groups = derive_groups(sh)
+    assert len(groups) == 3, f"Expected 3 groups, got {len(groups)}"
+    assert len(set(groups)) == 3, f"Groups not distinct: {groups}"
+    assert all(0 <= g < K for g in groups), f"Group out of range: {groups}"
+    print(f'  derive_groups(0x{sh.hex()[:8]}...) = {groups}')
+    print('  [OK] derive_groups')
 
 
-def test_derive_chunk_buckets():
-    """Test chunk bucket derivation."""
-    buckets = derive_chunk_buckets(42)
-    assert len(buckets) == 3
-    assert len(set(buckets)) == 3
-    assert all(0 <= b < K_CHUNK for b in buckets)
-    print(f'  derive_chunk_buckets(42) = {buckets}')
-    print('  [OK] derive_chunk_buckets')
+def test_derive_chunk_groups():
+    """Test chunk group derivation."""
+    groups = derive_chunk_groups(42)
+    assert len(groups) == 3
+    assert len(set(groups)) == 3
+    assert all(0 <= g < K_CHUNK for g in groups)
+    print(f'  derive_chunk_groups(42) = {groups}')
+    print('  [OK] derive_chunk_groups')
 
 
 def test_compute_tag():
@@ -166,8 +166,8 @@ def run_unit_tests():
     """Run all unit tests."""
     print('=== Unit Tests ===')
     test_splitmix64()
-    test_derive_buckets()
-    test_derive_chunk_buckets()
+    test_derive_groups()
+    test_derive_chunk_groups()
     test_compute_tag()
     test_hash160()
     test_cuckoo_hash()

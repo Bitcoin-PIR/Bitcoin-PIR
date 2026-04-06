@@ -1,7 +1,7 @@
 //! PyO3 bindings for HarmonyPIR — standalone reimplementation.
 //!
 //! Uses harmonypir core crate (PRP, RelocationDS) directly,
-//! reimplementing the bucket logic from harmonypir-wasm/src/lib.rs.
+//! reimplementing the group logic from harmonypir-wasm/src/lib.rs.
 
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -39,22 +39,22 @@ fn pad_n_for_t(n: u32, t: u32) -> (u32, u32) {
     (padded_n, t)
 }
 
-/// XORs bucket_id into bytes 12-15 of key (matching harmonypir-wasm).
-fn derive_bucket_key(master_key: &[u8], bucket_id: u32) -> [u8; 16] {
+/// XORs group_id into bytes 12-15 of key (matching harmonypir-wasm).
+fn derive_group_key(master_key: &[u8], group_id: u32) -> [u8; 16] {
     let mut key = [0u8; 16];
     let len = master_key.len().min(16);
     key[..len].copy_from_slice(&master_key[..len]);
-    let id_bytes = bucket_id.to_le_bytes();
+    let id_bytes = group_id.to_le_bytes();
     for i in 0..4 {
         key[12 + i] ^= id_bytes[i];
     }
     key
 }
 
-fn make_rng_seed(key: &[u8; 16], bucket_id: u32, nonce: u32) -> [u8; 32] {
+fn make_rng_seed(key: &[u8; 16], group_id: u32, nonce: u32) -> [u8; 32] {
     let mut seed = [0u8; 32];
     seed[..16].copy_from_slice(key);
-    seed[16..20].copy_from_slice(&bucket_id.to_le_bytes());
+    seed[16..20].copy_from_slice(&group_id.to_le_bytes());
     seed[20..24].copy_from_slice(&nonce.to_le_bytes());
     seed
 }
@@ -68,7 +68,7 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
 // ── PyO3 wrapper ─────────────────────────────────────────────────────────
 
 #[pyclass(unsendable)]
-struct PyHarmonyBucket {
+struct PyHarmonyGroup {
     params: Params,
     ds: RelocationDS,
     hints: Vec<Vec<u8>>,
@@ -84,9 +84,9 @@ struct PyHarmonyBucket {
 }
 
 #[pymethods]
-impl PyHarmonyBucket {
+impl PyHarmonyGroup {
     #[new]
-    fn new(n: u32, w: u32, t: u32, prp_key: &[u8], bucket_id: u32) -> PyResult<Self> {
+    fn new(n: u32, w: u32, t: u32, prp_key: &[u8], group_id: u32) -> PyResult<Self> {
         let w_usize = w as usize;
         let t_val = if t == 0 { find_best_t(n) } else { t };
         let (padded_n, t_val) = pad_n_for_t(n, t_val);
@@ -96,7 +96,7 @@ impl PyHarmonyBucket {
         let params = Params::new(padded_n_usize, w_usize, t_usize)
             .map_err(|e| PyRuntimeError::new_err(format!("invalid params: {e:?}")))?;
 
-        let key = derive_bucket_key(prp_key, bucket_id);
+        let key = derive_group_key(prp_key, group_id);
         let domain = 2 * padded_n_usize;
         let r = compute_rounds(padded_n);
         let prp = Box::new(HoangPrp::new(domain, r, &key));
@@ -105,9 +105,9 @@ impl PyHarmonyBucket {
 
         let m = params.m;
         let hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
-        let seed = make_rng_seed(&key, bucket_id, 0);
+        let seed = make_rng_seed(&key, group_id, 0);
 
-        Ok(PyHarmonyBucket {
+        Ok(PyHarmonyGroup {
             params,
             ds,
             hints,
@@ -379,15 +379,15 @@ fn verify_protocol(n: u32, _w: u32) -> bool {
 }
 
 #[pyfunction]
-fn py_derive_bucket_key(master_key: &[u8], bucket_id: u32) -> Vec<u8> {
-    derive_bucket_key(master_key, bucket_id).to_vec()
+fn py_derive_group_key(master_key: &[u8], group_id: u32) -> Vec<u8> {
+    derive_group_key(master_key, group_id).to_vec()
 }
 
 #[pymodule]
 fn harmonypir_python(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyHarmonyBucket>()?;
+    m.add_class::<PyHarmonyGroup>()?;
     m.add_function(wrap_pyfunction!(compute_balanced_t, m)?)?;
     m.add_function(wrap_pyfunction!(verify_protocol, m)?)?;
-    m.add_function(wrap_pyfunction!(py_derive_bucket_key, m)?)?;
+    m.add_function(wrap_pyfunction!(py_derive_group_key, m)?)?;
     Ok(())
 }

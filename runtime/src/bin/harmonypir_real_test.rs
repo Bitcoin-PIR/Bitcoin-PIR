@@ -20,8 +20,8 @@ use harmonypir::prp::alf::AlfPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::RelocationDS;
 use harmonypir_wasm::{
-    HarmonyBucket, PRP_HOANG, PRP_FASTPRP, PRP_ALF,
-    compute_rounds, derive_bucket_key, find_best_t, pad_n_for_t,
+    HarmonyGroup, PRP_HOANG, PRP_FASTPRP, PRP_ALF,
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
 };
 
 use memmap2::Mmap;
@@ -82,21 +82,21 @@ fn main() {
     let idx_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
     let idx_mmap = unsafe { Mmap::map(&idx_file) }.expect("mmap");
     let (index_bins, tag_seed) = read_cuckoo_header(&idx_mmap);
-    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 4 × 13 = 52
+    let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE; // 4 × 13 = 52
 
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap");
     let chunk_bins = read_chunk_cuckoo_header(&chunk_mmap);
-    let chunk_w = CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE); // 3 × 44 = 132
+    let chunk_w = CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE); // 3 × 44 = 132
 
     println!("  Index cuckoo: {} ({:.2} GB)", CUCKOO_FILE,
         idx_mmap.len() as f64 / (1024.0*1024.0*1024.0));
     println!("    N={} bins, w={}B per bin ({} slots × {}B), tag_seed=0x{:016x}",
-        index_bins, index_w, CUCKOO_BUCKET_SIZE, INDEX_SLOT_SIZE, tag_seed);
+        index_bins, index_w, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, tag_seed);
     println!("  Chunk cuckoo: {} ({:.2} GB)", CHUNK_CUCKOO_FILE,
         chunk_mmap.len() as f64 / (1024.0*1024.0*1024.0));
     println!("    N={} bins, w={}B per bin ({} slots × {}B)\n",
-        chunk_bins, chunk_w, CHUNK_CUCKOO_BUCKET_SIZE, 4 + CHUNK_SIZE);
+        chunk_bins, chunk_w, CHUNK_SLOTS_PER_BIN, 4 + CHUNK_SIZE);
 
     // ═══════════════════════════════════════════════════════════════════
     // All PRP backends to test
@@ -118,7 +118,7 @@ fn main() {
         run_narrative(
             "INDEX", &key, 0,
             &idx_mmap, HEADER_SIZE, index_bins, index_w,
-            INDEX_SLOT_SIZE, CUCKOO_BUCKET_SIZE, true,
+            INDEX_SLOT_SIZE, INDEX_SLOTS_PER_BIN, true,
             backend, backend_name,
         );
 
@@ -128,7 +128,7 @@ fn main() {
         run_narrative(
             "CHUNK", &key, K as u32,
             &chunk_mmap, CHUNK_HEADER_SIZE, chunk_bins, chunk_w,
-            4 + CHUNK_SIZE, CHUNK_CUCKOO_BUCKET_SIZE, false,
+            4 + CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, false,
             backend, backend_name,
         );
     }
@@ -141,7 +141,7 @@ fn main() {
 fn run_narrative(
     label: &str,
     master_key: &[u8; 16],
-    bucket_id: u32,
+    group_id: u32,
     table_mmap: &[u8],
     header_size: usize,
     n: usize,
@@ -160,11 +160,11 @@ fn run_narrative(
     let r = compute_rounds(padded_n);
     let params = Params::new(pn, w, t).unwrap();
     let m = params.m;
-    let derived_key = derive_bucket_key(master_key, bucket_id);
-    let actual_bucket = if bucket_id >= K as u32 { (bucket_id - K as u32) as usize } else { bucket_id as usize };
-    let table_offset = header_size + actual_bucket * n * w;
+    let derived_key = derive_group_key(master_key, group_id);
+    let actual_group = if group_id >= K as u32 { (group_id - K as u32) as usize } else { group_id as usize };
+    let table_offset = header_size + actual_group * n * w;
 
-    println!("━━━ {label} BUCKET {actual_bucket}: FULL PROTOCOL NARRATIVE ━━━\n");
+    println!("━━━ {label} GROUP {actual_group}: FULL PROTOCOL NARRATIVE ━━━\n");
 
     // ═══════════════════════════════════════════════════════════════════
     // OFFLINE PHASE: HINT GENERATION
@@ -175,7 +175,7 @@ fn run_narrative(
 
     println!("  PRP:        {} (backend={})", backend_name, backend);
     println!("  Master key: {}", hex(master_key));
-    println!("  Bucket key: {} (master ⊕ bucket_id={})", hex(&derived_key), bucket_id);
+    println!("  Group key: {} (master XOR group_id={})", hex(&derived_key), group_id);
     println!("  Domain:     {} = 2 × padded_N", domain);
     println!("  Rounds:     {} = ceil(log2({})) + 40, rounded to mult of 4", r, domain);
     println!("  real_N:     {} (actual DB rows)", n);
@@ -267,23 +267,23 @@ fn run_narrative(
     println!("│  CLIENT: Receive hints, build local state, save to file    │");
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
-    let mut bucket = HarmonyBucket::new_with_backend(
-        n as u32, w as u32, t as u32, master_key, bucket_id, backend,
+    let mut group = HarmonyGroup::new_with_backend(
+        n as u32, w as u32, t as u32, master_key, group_id, backend,
     ).unwrap();
     let flat: Vec<u8> = hints.iter().flat_map(|h| h.iter().copied()).collect();
-    bucket.load_hints(&flat).unwrap();
+    group.load_hints(&flat).unwrap();
 
-    println!("  Client created HarmonyBucket:");
-    println!("    real_N={}, padded_N={}, w={}, T={}, M={}", bucket.real_n(), bucket.n(), w, t, m);
+    println!("  Client created HarmonyGroup:");
+    println!("    real_N={}, padded_N={}, w={}, T={}, M={}", group.real_n(), group.n(), w, t, m);
     println!("    Hints loaded: {} bytes", flat.len());
 
-    let state_bytes = bucket.serialize();
+    let state_bytes = group.serialize();
     println!("  State file serialized: {} bytes ({:.1} KB)", state_bytes.len(), state_bytes.len() as f64 / 1024.0);
     println!("    Contents: params + 0 relocated segments + 0 PRP cache + {} hint bytes", hints_bytes);
-    println!("    queries_remaining = {}\n", bucket.queries_remaining());
+    println!("    queries_remaining = {}\n", group.queries_remaining());
 
     // Deserialize to prove round-trip.
-    let mut bucket = HarmonyBucket::deserialize(&state_bytes, master_key, bucket_id).unwrap();
+    let mut group = HarmonyGroup::deserialize(&state_bytes, master_key, group_id).unwrap();
     println!("  State file reloaded OK (simulating client restart).\n");
 
     // ═══════════════════════════════════════════════════════════════════
@@ -354,8 +354,8 @@ fn run_narrative(
 
         // Step 2: Build request (sorted non-empty indices, no dummy).
         println!("    [Client] Step 2 — Build request Q", );
-        let hint_before = bucket.serialize(); // snapshot for comparison
-        let req = bucket.build_request(q as u32).unwrap();
+        let hint_before = group.serialize(); // snapshot for comparison
+        let req = group.build_request(q as u32).unwrap();
         let req_bytes = req.request();
         let count = req_bytes.len() / 4;
 
@@ -387,7 +387,7 @@ fn run_narrative(
         println!("      H[{}] before = {}", seg, hex_short(&hints[seg]));
 
         let t_q = Instant::now();
-        let answer = bucket.process_response(&response).unwrap();
+        let answer = group.process_response(&response).unwrap();
         let query_time = t_q.elapsed();
 
         let correct = answer.as_slice() == expected;
@@ -423,11 +423,11 @@ fn run_narrative(
         println!("      Hint parities updated for destination segments");
 
         // Compare serialized state to show growth.
-        let state_after = bucket.serialize();
+        let state_after = group.serialize();
         let delta = state_after.len() as i64 - hint_before.len() as i64;
         println!("      State delta: +{} bytes (relocated segment ID stored)", delta);
         println!("      queries_used={}, queries_remaining={}\n",
-            bucket.queries_used(), bucket.queries_remaining());
+            group.queries_used(), group.queries_remaining());
 
         ds_trace.relocate_segment(seg).unwrap();
         assert!(correct, "Query {} FAILED!", q);
@@ -440,15 +440,15 @@ fn run_narrative(
     println!("  │  Save final state (client can resume later)            │");
     println!("  └─────────────────────────────────────────────────────────┘\n");
 
-    let final_state = bucket.serialize();
+    let final_state = group.serialize();
     println!("    Final state: {} bytes ({:.1} KB)", final_state.len(), final_state.len() as f64 / 1024.0);
     println!("    queries_used = {}, queries_remaining = {}",
-        bucket.queries_used(), bucket.queries_remaining());
-    println!("    {} relocated segments stored\n", bucket.queries_used());
+        group.queries_used(), group.queries_remaining());
+    println!("    {} relocated segments stored\n", group.queries_used());
 
     // Verify reload.
-    let restored = HarmonyBucket::deserialize(&final_state, master_key, bucket_id).unwrap();
-    assert_eq!(restored.queries_used(), bucket.queries_used());
+    let restored = HarmonyGroup::deserialize(&final_state, master_key, group_id).unwrap();
+    assert_eq!(restored.queries_used(), group.queries_used());
     println!("    Reload verified: state survives serialize/deserialize ✓");
     println!("\n  [{label}] PASS ✓");
 }

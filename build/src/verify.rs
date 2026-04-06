@@ -2,7 +2,7 @@
 //!
 //! Loads the serialized `batch_pir_cuckoo.bin` file via mmap, validates the header,
 //! then picks random entries from the original UTXO chunks index and verifies that
-//! each entry can be found in the cuckoo table of at least one of its 3 assigned buckets.
+//! each entry can be found in the cuckoo table of at least one of its 3 assigned groups.
 //!
 //! Usage:
 //!   cargo run --release -p build --bin verify_batchdb
@@ -17,7 +17,7 @@ const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_index_n
 /// Path to the serialized Batch PIR cuckoo tables
 const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";
 
-const INDEX_ENTRY_SIZE: usize = 25;
+const INDEX_RECORD_SIZE: usize = 25;
 const SCRIPT_HASH_SIZE: usize = 20;
 const MAGIC: u64 = 0xBA7C_C000_C000_0004;
 const HEADER_SIZE: usize = 40; // includes tag_seed
@@ -54,34 +54,34 @@ fn sh_c(sh: &[u8]) -> u64 {
 }
 
 #[inline]
-fn hash_for_bucket(script_hash: &[u8], nonce: u64) -> u64 {
+fn hash_for_group(script_hash: &[u8], nonce: u64) -> u64 {
     let mut h = sh_a(script_hash).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15));
     h ^= sh_b(script_hash);
     h = splitmix64(h ^ sh_c(script_hash));
     h
 }
 
-fn derive_buckets(script_hash: &[u8], k: usize, num_hashes: usize) -> Vec<usize> {
-    let mut buckets = Vec::with_capacity(num_hashes);
+fn derive_groups(script_hash: &[u8], k: usize, num_hashes: usize) -> Vec<usize> {
+    let mut groups = Vec::with_capacity(num_hashes);
     let mut nonce: u64 = 0;
 
-    while buckets.len() < num_hashes {
-        let h = hash_for_bucket(script_hash, nonce);
-        let bucket = (h % k as u64) as usize;
+    while groups.len() < num_hashes {
+        let h = hash_for_group(script_hash, nonce);
+        let group = (h % k as u64) as usize;
         nonce += 1;
-        if !buckets.contains(&bucket) {
-            buckets.push(bucket);
+        if !groups.contains(&group) {
+            groups.push(group);
         }
     }
 
-    buckets
+    groups
 }
 
 #[inline]
-fn derive_cuckoo_key(master_seed: u64, bucket_id: usize, hash_fn: usize) -> u64 {
+fn derive_cuckoo_key(master_seed: u64, group_id: usize, hash_fn: usize) -> u64 {
     splitmix64(
         master_seed
-            .wrapping_add((bucket_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
+            .wrapping_add((group_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
             .wrapping_add((hash_fn as u64).wrapping_mul(0x517cc1b727220a95)),
     )
 }
@@ -128,33 +128,33 @@ fn read_u64(data: &[u8], offset: usize) -> u64 {
     ])
 }
 
-/// Look up a script_hash in a specific bucket's cuckoo table by tag match.
+/// Look up a script_hash in a specific group's cuckoo table by tag match.
 /// Slot layout: [8B tag LE][4B start_chunk_id LE][1B num_chunks][4B tree_loc LE] = 17B.
 /// Returns true if found (tag matches).
-fn lookup_in_bucket(
+fn lookup_in_group(
     cuckoo_data: &[u8],
-    bucket_id: usize,
+    group_id: usize,
     script_hash: &[u8],
     _entry_idx: u32,
     bins_per_table: usize,
-    cuckoo_bucket_size: usize,
+    slots_per_bin: usize,
     master_seed: u64,
     tag_seed: u64,
 ) -> bool {
     let slot_size = 17;
-    let slots_per_table = bins_per_table * cuckoo_bucket_size;
-    let table_offset = HEADER_SIZE + bucket_id * slots_per_table * slot_size;
+    let slots_per_table = bins_per_table * slots_per_bin;
+    let table_offset = HEADER_SIZE + group_id * slots_per_table * slot_size;
     let expected_tag = compute_tag(tag_seed, script_hash);
 
-    let key0 = derive_cuckoo_key(master_seed, bucket_id, 0);
-    let key1 = derive_cuckoo_key(master_seed, bucket_id, 1);
+    let key0 = derive_cuckoo_key(master_seed, group_id, 0);
+    let key1 = derive_cuckoo_key(master_seed, group_id, 1);
 
     for &bin in &[
         cuckoo_hash(script_hash, key0, bins_per_table),
         cuckoo_hash(script_hash, key1, bins_per_table),
     ] {
-        let base = table_offset + bin * cuckoo_bucket_size * slot_size;
-        for s in 0..cuckoo_bucket_size {
+        let base = table_offset + bin * slots_per_bin * slot_size;
+        for s in 0..slots_per_bin {
             let slot_off = base + s * slot_size;
             let tag = read_u64(cuckoo_data, slot_off);
             if tag == expected_tag && tag != 0 {
@@ -191,7 +191,7 @@ fn main() {
 
     let magic = read_u64(&cuckoo_mmap, 0);
     let k = read_u32(&cuckoo_mmap, 8) as usize;
-    let cuckoo_bucket_size = read_u32(&cuckoo_mmap, 12) as usize;
+    let slots_per_bin = read_u32(&cuckoo_mmap, 12) as usize;
     let bins_per_table = read_u32(&cuckoo_mmap, 16) as usize;
     let num_hashes = read_u32(&cuckoo_mmap, 20) as usize;
     let master_seed = read_u64(&cuckoo_mmap, 24);
@@ -206,13 +206,13 @@ fn main() {
 
     let slot_size = 17; // [8B tag][4B chunk_id][1B num_chunks][4B tree_loc]
     let tag_seed = read_u64(&cuckoo_mmap, 32);
-    let slots_per_table = bins_per_table * cuckoo_bucket_size;
+    let slots_per_table = bins_per_table * slots_per_bin;
     let expected_body = k * slots_per_table * slot_size;
     let expected_size = HEADER_SIZE + expected_body;
 
     println!("  Header OK:");
     println!("    k = {}", k);
-    println!("    cuckoo_bucket_size = {}", cuckoo_bucket_size);
+    println!("    slots_per_bin = {}", slots_per_bin);
     println!("    bins_per_table = {}", bins_per_table);
     println!("    slots_per_table = {}", slots_per_table);
     println!("    num_hashes = {}", num_hashes);
@@ -231,8 +231,8 @@ fn main() {
     println!("    Size check: OK");
     println!();
 
-    // ── Per-bucket occupancy ─────────────────────────────────────────────
-    println!("[2] Per-bucket occupancy scan:");
+    // ── Per-group occupancy ─────────────────────────────────────────────
+    println!("[2] Per-group occupancy scan:");
     let mut total_occupied = 0usize;
     let mut min_occ = usize::MAX;
     let mut max_occ = 0usize;
@@ -264,7 +264,7 @@ fn main() {
         total_occupied as f64 / total_slots as f64 * 100.0
     );
     println!(
-        "  Per-bucket occupancy: min={}, max={} (out of {} slots/table)",
+        "  Per-group occupancy: min={}, max={} (out of {} slots/table)",
         min_occ, max_occ, slots_per_table
     );
     println!();
@@ -280,7 +280,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    let n = index_mmap.len() / INDEX_ENTRY_SIZE;
+    let n = index_mmap.len() / INDEX_RECORD_SIZE;
     println!("  N = {} entries", n);
     println!();
 
@@ -301,22 +301,22 @@ fn main() {
         rng_state = splitmix64(rng_state);
         let entry_idx = (rng_state % n as u64) as u32;
 
-        let base = entry_idx as usize * INDEX_ENTRY_SIZE;
+        let base = entry_idx as usize * INDEX_RECORD_SIZE;
         let script_hash = &index_mmap[base..base + SCRIPT_HASH_SIZE];
 
-        // Determine which buckets this entry should be in
-        let assigned_buckets = derive_buckets(script_hash, k, num_hashes);
+        // Determine which groups this entry should be in
+        let assigned_groups = derive_groups(script_hash, k, num_hashes);
 
-        // Try to find it in at least one of its assigned buckets
+        // Try to find it in at least one of its assigned groups
         let mut entry_found = false;
-        for &bucket_id in &assigned_buckets {
-            if lookup_in_bucket(
+        for &group_id in &assigned_groups {
+            if lookup_in_group(
                 &cuckoo_mmap,
-                bucket_id,
+                group_id,
                 script_hash,
                 entry_idx,
                 bins_per_table,
-                cuckoo_bucket_size,
+                slots_per_bin,
                 master_seed,
                 tag_seed,
             ) {
@@ -331,8 +331,8 @@ fn main() {
             not_found += 1;
             if not_found <= 10 {
                 eprintln!(
-                    "  MISS: entry {} (buckets {:?}) at verify iteration {}",
-                    entry_idx, assigned_buckets, i
+                    "  MISS: entry {} (groups {:?}) at verify iteration {}",
+                    entry_idx, assigned_groups, i
                 );
             }
         }
@@ -366,20 +366,20 @@ fn main() {
     let mut sweep_miss = 0usize;
 
     for entry_idx in 0..n as u32 {
-        let base = entry_idx as usize * INDEX_ENTRY_SIZE;
+        let base = entry_idx as usize * INDEX_RECORD_SIZE;
         let script_hash = &index_mmap[base..base + SCRIPT_HASH_SIZE];
 
-        let assigned_buckets = derive_buckets(script_hash, k, num_hashes);
+        let assigned_groups = derive_groups(script_hash, k, num_hashes);
 
         let mut entry_found = false;
-        for &bucket_id in &assigned_buckets {
-            if lookup_in_bucket(
+        for &group_id in &assigned_groups {
+            if lookup_in_group(
                 &cuckoo_mmap,
-                bucket_id,
+                group_id,
                 script_hash,
                 entry_idx,
                 bins_per_table,
-                cuckoo_bucket_size,
+                slots_per_bin,
                 master_seed,
                 tag_seed,
             ) {
@@ -394,8 +394,8 @@ fn main() {
             sweep_miss += 1;
             if sweep_miss <= 5 {
                 eprintln!(
-                    "  FULL SWEEP MISS: entry {} (buckets {:?})",
-                    entry_idx, assigned_buckets
+                    "  FULL SWEEP MISS: entry {} (groups {:?})",
+                    entry_idx, assigned_groups
                 );
             }
         }

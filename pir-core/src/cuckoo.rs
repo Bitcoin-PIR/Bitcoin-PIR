@@ -15,21 +15,21 @@ pub const CUCKOO_LOAD_FACTOR: f64 = 0.95;
 /// An empty slot sentinel value.
 pub const EMPTY: u32 = u32::MAX;
 
-/// Compute the required number of bins per table given the max load across buckets.
-pub fn compute_bins_per_table(max_load: usize, cuckoo_bucket_size: usize) -> usize {
-    let capacity_per_bin = cuckoo_bucket_size as f64 * CUCKOO_LOAD_FACTOR;
+/// Compute the required number of bins per table given the max load across groups.
+pub fn compute_bins_per_table(max_load: usize, slots_per_bin: usize) -> usize {
+    let capacity_per_bin = slots_per_bin as f64 * CUCKOO_LOAD_FACTOR;
     (max_load as f64 / capacity_per_bin).ceil() as usize
 }
 
 /// Insert an entry into a cuckoo table with eviction.
 ///
-/// `table[bin * bucket_size + slot]` holds item indices (u32).
+/// `table[bin * slots_per_bin + slot]` holds item indices (u32).
 /// Returns true if insertion succeeded.
 ///
 /// # Arguments
-/// * `table` - Flat array of slots, length = `num_bins * bucket_size`.
+/// * `table` - Flat array of slots, length = `num_bins * slots_per_bin`.
 /// * `num_bins` - Number of bins in this table.
-/// * `bucket_size` - Slots per bin.
+/// * `slots_per_bin` - Slots per bin.
 /// * `entry_idx` - The item index to insert.
 /// * `hash_fns` - Closure that maps (entry_idx) → bin index for each hash function.
 /// * `num_hash_fns` - Number of cuckoo hash functions (typically 2).
@@ -37,7 +37,7 @@ pub fn compute_bins_per_table(max_load: usize, cuckoo_bucket_size: usize) -> usi
 pub fn cuckoo_insert<F>(
     table: &mut [u32],
     _num_bins: usize,
-    bucket_size: usize,
+    slots_per_bin: usize,
     entry_idx: u32,
     hash_fns: &F,
     num_hash_fns: usize,
@@ -49,8 +49,8 @@ where
     // Try each hash function for a free slot
     for hf in 0..num_hash_fns {
         let bin = hash_fns(entry_idx, hf);
-        let base = bin * bucket_size;
-        for s in 0..bucket_size {
+        let base = bin * slots_per_bin;
+        for s in 0..slots_per_bin {
             if table[base + s] == EMPTY {
                 table[base + s] = entry_idx;
                 return true;
@@ -63,8 +63,8 @@ where
     let mut current_bin = hash_fns(current, 0);
 
     for kick in 0..max_kicks {
-        let base = current_bin * bucket_size;
-        let evict_slot = kick % bucket_size;
+        let base = current_bin * slots_per_bin;
+        let evict_slot = kick % slots_per_bin;
         let evicted = table[base + evict_slot];
         table[base + evict_slot] = current;
 
@@ -79,9 +79,9 @@ where
         }
 
         // Try to place evicted entry in its alternative bin
-        let alt_base = alt_bin * bucket_size;
+        let alt_base = alt_bin * slots_per_bin;
         let mut placed = false;
-        for s in 0..bucket_size {
+        for s in 0..slots_per_bin {
             if table[alt_base + s] == EMPTY {
                 table[alt_base + s] = evicted;
                 placed = true;
@@ -105,22 +105,22 @@ where
 /// Returns the flat table of entry indices and the number of bins.
 ///
 /// # Arguments
-/// * `entries` - Slice of 20-byte script hashes assigned to this bucket.
-/// * `bucket_id` - Which Batch PIR bucket this table serves.
+/// * `entries` - Slice of 20-byte script hashes assigned to this group.
+/// * `group_id` - Which PBC group this table serves.
 /// * `params` - Table parameters.
 /// * `num_bins` - Pre-computed number of bins for this table.
 pub fn build_byte_keyed_table(
     entries: &[&[u8]],
-    bucket_id: usize,
+    group_id: usize,
     params: &TableParams,
     num_bins: usize,
 ) -> Vec<u32> {
-    let table_size = num_bins * params.cuckoo_bucket_size;
+    let table_size = num_bins * params.slots_per_bin;
     let mut table = vec![EMPTY; table_size];
 
-    // Derive cuckoo keys for this bucket
+    // Derive cuckoo keys for this group
     let keys: Vec<u64> = (0..params.cuckoo_num_hashes)
-        .map(|hf| hash::derive_cuckoo_key(params.master_seed, bucket_id, hf))
+        .map(|hf| hash::derive_cuckoo_key(params.master_seed, group_id, hf))
         .collect();
 
     let hash_fn = |entry_idx: u32, hf: usize| -> usize {
@@ -131,15 +131,15 @@ pub fn build_byte_keyed_table(
         if !cuckoo_insert(
             &mut table,
             num_bins,
-            params.cuckoo_bucket_size,
+            params.slots_per_bin,
             i as u32,
             &hash_fn,
             params.cuckoo_num_hashes,
             CUCKOO_MAX_KICKS,
         ) {
             panic!(
-                "Cuckoo insertion failed for entry {} in bucket {} after {} kicks",
-                i, bucket_id, CUCKOO_MAX_KICKS
+                "Cuckoo insertion failed for entry {} in group {} after {} kicks",
+                i, group_id, CUCKOO_MAX_KICKS
             );
         }
     }
@@ -152,15 +152,15 @@ pub fn build_byte_keyed_table(
 /// Returns the flat table of entry indices and the number of bins.
 pub fn build_int_keyed_table(
     ids: &[u32],
-    bucket_id: usize,
+    group_id: usize,
     params: &TableParams,
     num_bins: usize,
 ) -> Vec<u32> {
-    let table_size = num_bins * params.cuckoo_bucket_size;
+    let table_size = num_bins * params.slots_per_bin;
     let mut table = vec![EMPTY; table_size];
 
     let keys: Vec<u64> = (0..params.cuckoo_num_hashes)
-        .map(|hf| hash::derive_cuckoo_key(params.master_seed, bucket_id, hf))
+        .map(|hf| hash::derive_cuckoo_key(params.master_seed, group_id, hf))
         .collect();
 
     let hash_fn = |entry_idx: u32, hf: usize| -> usize {
@@ -171,15 +171,15 @@ pub fn build_int_keyed_table(
         if !cuckoo_insert(
             &mut table,
             num_bins,
-            params.cuckoo_bucket_size,
+            params.slots_per_bin,
             i as u32,
             &hash_fn,
             params.cuckoo_num_hashes,
             CUCKOO_MAX_KICKS,
         ) {
             panic!(
-                "Cuckoo insertion failed for chunk_id {} in bucket {} after {} kicks",
-                ids[i], bucket_id, CUCKOO_MAX_KICKS
+                "Cuckoo insertion failed for chunk_id {} in group {} after {} kicks",
+                ids[i], group_id, CUCKOO_MAX_KICKS
             );
         }
     }
@@ -192,7 +192,7 @@ pub fn build_int_keyed_table(
 /// Layout depends on `params.header_size` and `params.has_tag_seed`:
 /// - Bytes 0..8: magic (u64 LE)
 /// - Bytes 8..12: k (u32 LE)
-/// - Bytes 12..16: cuckoo_bucket_size (u32 LE)
+/// - Bytes 12..16: slots_per_bin (u32 LE)
 /// - Bytes 16..20: bins_per_table (u32 LE)
 /// - Bytes 20..24: num_hashes (u32 LE)
 /// - Bytes 24..32: master_seed (u64 LE)
@@ -201,7 +201,7 @@ pub fn write_header(params: &TableParams, bins_per_table: usize, tag_seed: u64) 
     let mut header = vec![0u8; params.header_size];
     header[0..8].copy_from_slice(&params.magic.to_le_bytes());
     header[8..12].copy_from_slice(&(params.k as u32).to_le_bytes());
-    header[12..16].copy_from_slice(&(params.cuckoo_bucket_size as u32).to_le_bytes());
+    header[12..16].copy_from_slice(&(params.slots_per_bin as u32).to_le_bytes());
     header[16..20].copy_from_slice(&(bins_per_table as u32).to_le_bytes());
     header[20..24].copy_from_slice(&(params.num_hashes as u32).to_le_bytes());
     header[24..32].copy_from_slice(&params.master_seed.to_le_bytes());

@@ -28,60 +28,62 @@ function writeU16LE(buf: Uint8Array, offset: number, val: number): void {
 // ─── findEntryInIndexResult (DPF / HarmonyPIR layout) ────────────────────────
 
 describe('findEntryInIndexResult', () => {
-  // DPF layout: 4 slots * 13 bytes = 52 bytes per bin
-  const BUCKET_SIZE = 4;
-  const SLOT_SIZE = 13; // 8B tag + 4B startChunkId + 1B numChunks
+  // DPF layout: 4 slots * 17 bytes = 68 bytes per bin
+  const SLOTS_PER_BIN = 4;
+  const SLOT_SIZE = 17; // 8B tag + 4B startChunkId + 1B numChunks + 4B treeLoc
 
   it('finds matching tag in first slot', () => {
-    const data = new Uint8Array(BUCKET_SIZE * SLOT_SIZE);
+    const data = new Uint8Array(SLOTS_PER_BIN * SLOT_SIZE);
     const tag = 0xDEADBEEFCAFEBABEn;
     writeU64LE(data, 0, tag);       // tag in slot 0
     writeU32LE(data, 8, 42);        // startChunkId = 42
     data[12] = 5;                   // numChunks = 5
+    writeU32LE(data, 13, 99);       // treeLoc = 99
 
-    const result = findEntryInIndexResult(data, tag, BUCKET_SIZE, SLOT_SIZE);
-    expect(result).toEqual({ startChunkId: 42, numChunks: 5, treeLoc: 0 });
+    const result = findEntryInIndexResult(data, tag, SLOTS_PER_BIN, SLOT_SIZE);
+    expect(result).toEqual({ startChunkId: 42, numChunks: 5, treeLoc: 99 });
   });
 
   it('finds matching tag in third slot', () => {
-    const data = new Uint8Array(BUCKET_SIZE * SLOT_SIZE);
+    const data = new Uint8Array(SLOTS_PER_BIN * SLOT_SIZE);
     const tag = 0x1234567890ABCDEFn;
-    // Write to slot 2 (offset = 2 * 13 = 26)
-    writeU64LE(data, 26, tag);
-    writeU32LE(data, 34, 1000);
-    data[38] = 3;
+    // Write to slot 2 (offset = 2 * 17 = 34)
+    writeU64LE(data, 34, tag);
+    writeU32LE(data, 42, 1000);
+    data[46] = 3;
+    writeU32LE(data, 47, 200);      // treeLoc = 200
 
-    const result = findEntryInIndexResult(data, tag, BUCKET_SIZE, SLOT_SIZE);
-    expect(result).toEqual({ startChunkId: 1000, numChunks: 3, treeLoc: 0 });
+    const result = findEntryInIndexResult(data, tag, SLOTS_PER_BIN, SLOT_SIZE);
+    expect(result).toEqual({ startChunkId: 1000, numChunks: 3, treeLoc: 200 });
   });
 
   it('returns null when tag not found', () => {
-    const data = new Uint8Array(BUCKET_SIZE * SLOT_SIZE);
+    const data = new Uint8Array(SLOTS_PER_BIN * SLOT_SIZE);
     // Fill with some other tags
     writeU64LE(data, 0, 0x1111111111111111n);
-    writeU64LE(data, 13, 0x2222222222222222n);
+    writeU64LE(data, 17, 0x2222222222222222n);
 
-    const result = findEntryInIndexResult(data, 0x9999999999999999n, BUCKET_SIZE, SLOT_SIZE);
+    const result = findEntryInIndexResult(data, 0x9999999999999999n, SLOTS_PER_BIN, SLOT_SIZE);
     expect(result).toBeNull();
   });
 
   it('returns null on empty (all-zero) bin', () => {
-    const data = new Uint8Array(BUCKET_SIZE * SLOT_SIZE);
-    const result = findEntryInIndexResult(data, 0xDEADn, BUCKET_SIZE, SLOT_SIZE);
+    const data = new Uint8Array(SLOTS_PER_BIN * SLOT_SIZE);
+    const result = findEntryInIndexResult(data, 0xDEADn, SLOTS_PER_BIN, SLOT_SIZE);
     expect(result).toBeNull();
   });
 
-  it('works with different bucket sizes (HarmonyPIR-style)', () => {
-    // HarmonyPIR: HARMONY_INDEX_W = 52, so bucketSize = 52 / 13 = 4
+  it('works with different bin sizes (HarmonyPIR-style)', () => {
+    // HarmonyPIR: HARMONY_INDEX_W = 68, so slotsPerBin = 68 / 17 = 4
     // Same as DPF in this case, but let's test with a different size
-    const bucketSize = 2;
-    const data = new Uint8Array(bucketSize * SLOT_SIZE);
+    const slotsPerBin = 2;
+    const data = new Uint8Array(slotsPerBin * SLOT_SIZE);
     const tag = 0xABCDEF0123456789n;
     writeU64LE(data, SLOT_SIZE, tag); // slot 1
     writeU32LE(data, SLOT_SIZE + 8, 777);
     data[SLOT_SIZE + 12] = 10;
 
-    const result = findEntryInIndexResult(data, tag, bucketSize, SLOT_SIZE);
+    const result = findEntryInIndexResult(data, tag, slotsPerBin, SLOT_SIZE);
     expect(result).toEqual({ startChunkId: 777, numChunks: 10, treeLoc: 0 });
   });
 });
@@ -94,7 +96,7 @@ describe('findEntryInOnionPirIndexResult', () => {
   const BUCKET_SIZE = 256;
 
   it('finds matching tag and extracts entryId, byteOffset, numEntries', () => {
-    // Use small bucket for test
+    // Use small bin for test
     const testBucketSize = 4;
     const data = new Uint8Array(testBucketSize * SLOT_SIZE);
     const tag = 0xFEDCBA9876543210n;
@@ -107,7 +109,7 @@ describe('findEntryInOnionPirIndexResult', () => {
     data[off + 14] = 7;               // numEntries
 
     const result = findEntryInOnionPirIndexResult(data, tag, testBucketSize, SLOT_SIZE);
-    expect(result).toEqual({ entryId: 12345, byteOffset: 320, numEntries: 7, treeLoc: 0 });
+    expect(result).toEqual({ entryId: 12345, byteOffset: 320, numEntries: 7 });
   });
 
   it('skips zero tags', () => {
@@ -169,7 +171,7 @@ describe('findChunkInResult', () => {
   });
 
   it('works with different slot sizes (HarmonyPIR chunk)', () => {
-    // HarmonyPIR: CHUNK_SLOT_SIZE = 44, CHUNK_CUCKOO_BUCKET_SIZE = 3
+    // HarmonyPIR: CHUNK_SLOT_SIZE = 44, CHUNK_SLOTS_PER_BIN = 3
     // HARMONY_CHUNK_W = 132 = 3 * 44
     const data = new Uint8Array(3 * 44);
     writeU32LE(data, 2 * 44, 555); // slot 2

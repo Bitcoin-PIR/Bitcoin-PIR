@@ -2,11 +2,11 @@
 //!
 //! Full protocol flow with verbose intermediate logs:
 //!   1. Scan INDEX cuckoo table for a non-empty entry with chunks
-//!   2. Generate hints for the INDEX bucket (offline phase)
-//!   3. Query the INDEX bucket → decode start_chunk_id, num_chunks
-//!   4. Determine CHUNK bucket + bin using hash function 0
-//!   5. Generate hints for the CHUNK bucket (offline phase)
-//!   6. Query the CHUNK bucket → retrieve 40-byte chunk data
+//!   2. Generate hints for the INDEX group (offline phase)
+//!   3. Query the INDEX group → decode start_chunk_id, num_chunks
+//!   4. Determine CHUNK group + bin using hash function 0
+//!   5. Generate hints for the CHUNK group (offline phase)
+//!   6. Query the CHUNK group → retrieve 40-byte chunk data
 //!
 //! Usage:
 //!   cargo run --release -p runtime --bin harmonypir_index_to_chunk_e2e --features "alf"
@@ -18,8 +18,8 @@ use harmonypir::prp::alf::AlfPrp;
 use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir_wasm::{
-    HarmonyBucket, PRP_ALF, PRP_HOANG,
-    compute_rounds, derive_bucket_key, find_best_t, pad_n_for_t,
+    HarmonyGroup, PRP_ALF, PRP_HOANG,
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
 };
 
 use memmap2::Mmap;
@@ -71,17 +71,17 @@ fn build_prp_box(backend: u8, key: &[u8; 16], domain: usize, rounds: usize) -> B
     }
 }
 
-/// Generate hints for one bucket and return a HarmonyBucket ready for queries.
+/// Generate hints for one group and return a HarmonyGroup ready for queries.
 fn generate_hints_for_bucket(
     label: &str,
     backend: u8,
     master_key: &[u8; 16],
-    bucket_id: u32,
+    group_id: u32,
     table_mmap: &[u8],
     header_size: usize,
     n: usize,
     w: usize,
-) -> HarmonyBucket {
+) -> HarmonyGroup {
     let t_val = find_best_t(n as u32);
     let (padded_n, t_val) = pad_n_for_t(n as u32, t_val);
     let pn = padded_n as usize;
@@ -90,17 +90,17 @@ fn generate_hints_for_bucket(
     let r = compute_rounds(padded_n);
     let params = Params::new(pn, w, t).unwrap();
     let m = params.m;
-    let derived_key = derive_bucket_key(master_key, bucket_id);
+    let derived_key = derive_group_key(master_key, group_id);
 
-    // Determine the actual table index (chunk buckets are offset by K).
-    let actual_bucket = if bucket_id >= K as u32 {
-        (bucket_id - K as u32) as usize
+    // Determine the actual table index (chunk groups are offset by K).
+    let actual_group = if group_id >= K as u32 {
+        (group_id - K as u32) as usize
     } else {
-        bucket_id as usize
+        group_id as usize
     };
-    let table_offset = header_size + actual_bucket * n * w;
+    let table_offset = header_size + actual_group * n * w;
 
-    println!("    [Hint Server] Generating hints for {} bucket {} (actual table index {})", label, bucket_id, actual_bucket);
+    println!("    [Hint Server] Generating hints for {} group {} (actual table index {})", label, group_id, actual_group);
     println!("      real_N={}, padded_N={}, T={}, M={} segments, domain={}", n, pn, t, m, domain);
 
     let t0 = Instant::now();
@@ -145,14 +145,14 @@ fn generate_hints_for_bucket(
     println!("      Non-empty rows: {}/{} ({:.1}%)", non_empty, n, non_empty as f64 / n as f64 * 100.0);
     println!("      Total hints: {} bytes ({:.1} KB)", hints_flat.len(), hints_flat.len() as f64 / 1024.0);
 
-    // Build HarmonyBucket and load hints.
-    let mut bucket = HarmonyBucket::new_with_backend(
-        n as u32, w as u32, t as u32, master_key, bucket_id, backend,
+    // Build HarmonyGroup and load hints.
+    let mut group = HarmonyGroup::new_with_backend(
+        n as u32, w as u32, t as u32, master_key, group_id, backend,
     ).unwrap();
-    bucket.load_hints(&hints_flat).unwrap();
-    println!("      HarmonyBucket ready: max_queries={}\n", bucket.queries_remaining());
+    group.load_hints(&hints_flat).unwrap();
+    println!("      HarmonyGroup ready: max_queries={}\n", group.queries_remaining());
 
-    bucket
+    group
 }
 
 /// Simulate query server: look up sorted non-empty indices from the table.
@@ -193,20 +193,20 @@ fn main() {
     let idx_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
     let idx_mmap = unsafe { Mmap::map(&idx_file) }.expect("mmap");
     let (index_bins, tag_seed) = read_cuckoo_header(&idx_mmap);
-    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 4 × 13 = 52
+    let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE; // 4 × 13 = 52
 
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap");
     let chunk_bins = read_chunk_cuckoo_header(&chunk_mmap);
-    let chunk_w = CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE); // 3 × 44 = 132
+    let chunk_w = CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE); // 3 × 44 = 132
 
     println!("  INDEX cuckoo: {} bins × {}B = {:.2} GB",
         index_bins, index_w, idx_mmap.len() as f64 / (1024.0*1024.0*1024.0));
-    println!("    Slot layout: [8B tag][4B start_chunk_id][1B num_chunks] × {} slots", CUCKOO_BUCKET_SIZE);
+    println!("    Slot layout: [8B tag][4B start_chunk_id][1B num_chunks] × {} slots", INDEX_SLOTS_PER_BIN);
     println!("    tag_seed = 0x{:016x}", tag_seed);
     println!("  CHUNK cuckoo: {} bins × {}B = {:.2} GB",
         chunk_bins, chunk_w, chunk_mmap.len() as f64 / (1024.0*1024.0*1024.0));
-    println!("    Slot layout: [4B chunk_id][40B data] × {} slots", CHUNK_CUCKOO_BUCKET_SIZE);
+    println!("    Slot layout: [4B chunk_id][40B data] × {} slots", CHUNK_SLOTS_PER_BIN);
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
@@ -214,9 +214,9 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     println!("━━━ STEP 1: Find a non-empty INDEX entry with chunks (not a whale) ━━━\n");
 
-    // Scan INDEX bucket 0 for a bin with a non-empty slot that has num_chunks > 0 (not a whale).
-    let index_bucket_id: u32 = 0;
-    let index_table_offset = HEADER_SIZE + (index_bucket_id as usize) * index_bins * index_w;
+    // Scan INDEX group 0 for a bin with a non-empty slot that has num_chunks > 0 (not a whale).
+    let index_group_id: u32 = 0;
+    let index_table_offset = HEADER_SIZE + (index_group_id as usize) * index_bins * index_w;
     let mut target_bin: Option<usize> = None;
     let mut target_slot_idx = 0;
     let mut target_tag: u64 = 0;
@@ -225,7 +225,7 @@ fn main() {
 
     for bin in 0..index_bins {
         let bin_start = index_table_offset + bin * index_w;
-        for slot in 0..CUCKOO_BUCKET_SIZE {
+        for slot in 0..INDEX_SLOTS_PER_BIN {
             let s = bin_start + slot * INDEX_SLOT_SIZE;
             let (tag, start_chunk, num_chunks, _tree_loc) = decode_index_slot(&idx_mmap[s..s + INDEX_SLOT_SIZE]);
             if tag != 0 && num_chunks > 0 && num_chunks < 20 {
@@ -243,7 +243,7 @@ fn main() {
 
     let target_bin = target_bin.expect("No suitable INDEX entry found!");
 
-    println!("  Found target in INDEX bucket {}, bin {}:", index_bucket_id, target_bin);
+    println!("  Found target in INDEX group {}, bin {}:", index_group_id, target_bin);
     println!("    slot[{}]:", target_slot_idx);
     println!("      tag            = 0x{:016x}", target_tag);
     println!("      start_chunk_id = {}", target_start_chunk);
@@ -253,7 +253,7 @@ fn main() {
     println!("\n    Full bin {} contents (ground truth):", target_bin);
     let bin_data_start = index_table_offset + target_bin * index_w;
     let bin_data = &idx_mmap[bin_data_start..bin_data_start + index_w];
-    for slot in 0..CUCKOO_BUCKET_SIZE {
+    for slot in 0..INDEX_SLOTS_PER_BIN {
         let s = slot * INDEX_SLOT_SIZE;
         let (tag, start_chunk, num_chunks, _tree_loc) = decode_index_slot(&bin_data[s..s + INDEX_SLOT_SIZE]);
         if tag == 0 && start_chunk == 0 && num_chunks == 0 {
@@ -271,20 +271,20 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     println!("━━━ STEP 2: OFFLINE PHASE — Generate INDEX hints ━━━\n");
 
-    let mut index_bucket = generate_hints_for_bucket(
-        "INDEX", backend, &MASTER_KEY, index_bucket_id,
+    let mut index_group = generate_hints_for_bucket(
+        "INDEX", backend, &MASTER_KEY, index_group_id,
         &idx_mmap, HEADER_SIZE, index_bins, index_w,
     );
 
     // ═══════════════════════════════════════════════════════════════════
-    // STEP 3: ONLINE PHASE — Query INDEX bucket via HarmonyPIR
+    // STEP 3: ONLINE PHASE — Query INDEX group via HarmonyPIR
     // ═══════════════════════════════════════════════════════════════════
     println!("━━━ STEP 3: ONLINE PHASE — Query INDEX bin {} via HarmonyPIR ━━━\n", target_bin);
 
     println!("  [Client] Querying INDEX bin {} to retrieve {}-byte entry", target_bin, index_w);
     println!("  [Client] Step 3a — Locate bin {} in DS'", target_bin);
 
-    let req = index_bucket.build_request(target_bin as u32).unwrap();
+    let req = index_group.build_request(target_bin as u32).unwrap();
     let req_bytes = req.request();
     let idx_count = req_bytes.len() / 4;
 
@@ -317,7 +317,7 @@ fn main() {
     println!("    Server response: {} bytes ({} entries × {}B)", response.len(), idx_count, index_w);
 
     println!("\n  [Client] Step 3d — Recover answer: A = H[s] ⊕ XOR(server entries)");
-    let answer = index_bucket.process_response(&response).unwrap();
+    let answer = index_group.process_response(&response).unwrap();
 
     // Verify against ground truth.
     let correct = answer.as_slice() == bin_data;
@@ -327,12 +327,12 @@ fn main() {
     assert!(correct, "INDEX query FAILED!");
 
     // Decode the recovered answer.
-    println!("\n  [Client] Step 3e — Decode INDEX answer ({} slots × {}B):", CUCKOO_BUCKET_SIZE, INDEX_SLOT_SIZE);
+    println!("\n  [Client] Step 3e — Decode INDEX answer ({} slots × {}B):", INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE);
     let mut found_entry = false;
     let mut decoded_start_chunk: u32 = 0;
     let mut decoded_num_chunks: u8 = 0;
 
-    for slot in 0..CUCKOO_BUCKET_SIZE {
+    for slot in 0..INDEX_SLOTS_PER_BIN {
         let s = slot * INDEX_SLOT_SIZE;
         let slot_data = &answer[s..s + INDEX_SLOT_SIZE];
         let (tag, start_chunk, num_chunks, _tree_loc) = decode_index_slot(slot_data);
@@ -357,44 +357,44 @@ fn main() {
     println!("    start_chunk_id = {}", decoded_start_chunk);
     println!("    num_chunks     = {} (chunks {}..={})", decoded_num_chunks,
         decoded_start_chunk, decoded_start_chunk + decoded_num_chunks as u32 - 1);
-    println!("    queries_remaining = {} (INDEX bucket)", index_bucket.queries_remaining());
+    println!("    queries_remaining = {} (INDEX group)", index_group.queries_remaining());
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
-    // STEP 4: Determine CHUNK bucket + bin (using hash function 0)
+    // STEP 4: Determine CHUNK group + bin (using hash function 0)
     // ═══════════════════════════════════════════════════════════════════
-    println!("━━━ STEP 4: Determine CHUNK bucket + bin ━━━\n");
+    println!("━━━ STEP 4: Determine CHUNK group + bin ━━━\n");
 
-    let chunk_buckets = derive_chunk_buckets(decoded_start_chunk);
-    println!("  [Client] derive_chunk_buckets(start_chunk={}):", decoded_start_chunk);
-    println!("    3 chunk groups: bucket[0]={}, bucket[1]={}, bucket[2]={}",
-        chunk_buckets[0], chunk_buckets[1], chunk_buckets[2]);
+    let chunk_groups = derive_chunk_groups(decoded_start_chunk);
+    println!("  [Client] derive_chunk_groups(start_chunk={}):", decoded_start_chunk);
+    println!("    3 chunk groups: group[0]={}, group[1]={}, group[2]={}",
+        chunk_groups[0], chunk_groups[1], chunk_groups[2]);
 
     // For each chunk group, show how to find the bin (always using hash function 0).
     println!("\n  [Client] For each chunk group, compute cuckoo bin using hash fn 0:");
     for g in 0..3 {
-        let bucket = chunk_buckets[g];
-        let ckey = derive_chunk_cuckoo_key(bucket, 0);
+        let pbc_group = chunk_groups[g];
+        let ckey = derive_chunk_cuckoo_key(pbc_group, 0);
         let bin = cuckoo_hash_int(decoded_start_chunk, ckey, chunk_bins);
-        println!("    group[{}]: bucket={}, hash_fn=0, cuckoo_key=0x{:016x} → bin={}",
-            g, bucket, ckey, bin);
+        println!("    group[{}]: group={}, hash_fn=0, cuckoo_key=0x{:016x} → bin={}",
+            g, pbc_group, ckey, bin);
     }
 
     // Pick the first group for the CHUNK query.
     let chunk_group = 0;
-    let target_chunk_bucket = chunk_buckets[chunk_group];
-    let target_chunk_ckey = derive_chunk_cuckoo_key(target_chunk_bucket, 0);
+    let target_chunk_group = chunk_groups[chunk_group];
+    let target_chunk_ckey = derive_chunk_cuckoo_key(target_chunk_group, 0);
     let target_chunk_bin = cuckoo_hash_int(decoded_start_chunk, target_chunk_ckey, chunk_bins);
 
-    println!("\n  → Using group[0]: CHUNK bucket={}, bin={}", target_chunk_bucket, target_chunk_bin);
+    println!("\n  → Using group[0]: CHUNK group={}, bin={}", target_chunk_group, target_chunk_bin);
 
     // Show ground truth for the target CHUNK bin.
-    let chunk_table_offset = CHUNK_HEADER_SIZE + target_chunk_bucket * chunk_bins * chunk_w;
+    let chunk_table_offset = CHUNK_HEADER_SIZE + target_chunk_group * chunk_bins * chunk_w;
     let chunk_bin_start = chunk_table_offset + target_chunk_bin * chunk_w;
     let chunk_bin_data = &chunk_mmap[chunk_bin_start..chunk_bin_start + chunk_w];
 
-    println!("\n  [Ground truth] CHUNK bin {} in bucket {} ({} bytes):", target_chunk_bin, target_chunk_bucket, chunk_w);
-    for slot in 0..CHUNK_CUCKOO_BUCKET_SIZE {
+    println!("\n  [Ground truth] CHUNK bin {} in group {} ({} bytes):", target_chunk_bin, target_chunk_group, chunk_w);
+    for slot in 0..CHUNK_SLOTS_PER_BIN {
         let s = slot * (4 + CHUNK_SIZE);
         let (chunk_id, data) = decode_chunk_slot(&chunk_bin_data[s..s + 4 + CHUNK_SIZE]);
         if chunk_id == 0 && data.iter().all(|&b| b == 0) {
@@ -413,23 +413,23 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     println!("━━━ STEP 5: OFFLINE PHASE — Generate CHUNK hints ━━━\n");
 
-    // CHUNK bucket IDs are offset by K (INDEX uses 0..K-1, CHUNK uses K..K+K_CHUNK-1).
-    let chunk_bucket_id = K as u32 + target_chunk_bucket as u32;
+    // CHUNK group IDs are offset by K (INDEX uses 0..K-1, CHUNK uses K..K+K_CHUNK-1).
+    let chunk_group_id = K as u32 + target_chunk_group as u32;
 
-    let mut chunk_bucket = generate_hints_for_bucket(
-        "CHUNK", backend, &MASTER_KEY, chunk_bucket_id,
+    let mut chunk_harmony = generate_hints_for_bucket(
+        "CHUNK", backend, &MASTER_KEY, chunk_group_id,
         &chunk_mmap, CHUNK_HEADER_SIZE, chunk_bins, chunk_w,
     );
 
     // ═══════════════════════════════════════════════════════════════════
-    // STEP 6: ONLINE PHASE — Query CHUNK bucket via HarmonyPIR
+    // STEP 6: ONLINE PHASE — Query CHUNK group via HarmonyPIR
     // ═══════════════════════════════════════════════════════════════════
     println!("━━━ STEP 6: ONLINE PHASE — Query CHUNK bin {} via HarmonyPIR ━━━\n", target_chunk_bin);
 
-    println!("  [Client] Querying CHUNK bin {} to retrieve {}-byte entry ({} × 44B slots)", target_chunk_bin, chunk_w, CHUNK_CUCKOO_BUCKET_SIZE);
+    println!("  [Client] Querying CHUNK bin {} to retrieve {}-byte entry ({} × 44B slots)", target_chunk_bin, chunk_w, CHUNK_SLOTS_PER_BIN);
     println!("  [Client] Step 6a — Locate bin {} in DS'", target_chunk_bin);
 
-    let req = chunk_bucket.build_request(target_chunk_bin as u32).unwrap();
+    let req = chunk_harmony.build_request(target_chunk_bin as u32).unwrap();
     let req_bytes = req.request();
     let chunk_count = req_bytes.len() / 4;
 
@@ -450,7 +450,7 @@ fn main() {
     println!("    Server response: {} bytes ({} entries × {}B)", response.len(), chunk_count, chunk_w);
 
     println!("\n  [Client] Step 6d — Recover answer: A = H[s] ⊕ XOR(server entries)");
-    let answer = chunk_bucket.process_response(&response).unwrap();
+    let answer = chunk_harmony.process_response(&response).unwrap();
 
     let correct = answer.as_slice() == chunk_bin_data;
     println!("    Answer  = {}", hex_short(&answer));
@@ -459,11 +459,11 @@ fn main() {
     assert!(correct, "CHUNK query FAILED!");
 
     // Decode the recovered CHUNK answer.
-    println!("\n  [Client] Step 6e — Decode CHUNK answer ({} slots × {}B):", CHUNK_CUCKOO_BUCKET_SIZE, 4 + CHUNK_SIZE);
+    println!("\n  [Client] Step 6e — Decode CHUNK answer ({} slots × {}B):", CHUNK_SLOTS_PER_BIN, 4 + CHUNK_SIZE);
     let mut found_chunk = false;
     let mut chunk_data: Vec<u8> = Vec::new();
 
-    for slot in 0..CHUNK_CUCKOO_BUCKET_SIZE {
+    for slot in 0..CHUNK_SLOTS_PER_BIN {
         let s = slot * (4 + CHUNK_SIZE);
         let (chunk_id, data) = decode_chunk_slot(&answer[s..s + 4 + CHUNK_SIZE]);
         if chunk_id == 0 && data.iter().all(|&b| b == 0) {
@@ -487,12 +487,12 @@ fn main() {
     println!("\n━━━ STEP 7: FINAL RESULT ━━━\n");
     println!("  The client wanted to look up a UTXO identified by tag 0x{:016x}.", target_tag);
     println!("  Through the INDEX → CHUNK pipeline:\n");
-    println!("  1. INDEX query (bin {}, bucket {}):", target_bin, index_bucket_id);
+    println!("  1. INDEX query (bin {}, group {}):", target_bin, index_group_id);
     println!("     → start_chunk_id={}, num_chunks={}",
         decoded_start_chunk, decoded_num_chunks);
-    println!("  2. Chunk lookup: group[0] → CHUNK bucket {}, bin {}",
-        target_chunk_bucket, target_chunk_bin);
-    println!("  3. CHUNK query (bin {}, bucket {}):", target_chunk_bin, target_chunk_bucket);
+    println!("  2. Chunk lookup: group[0] → CHUNK group {}, bin {}",
+        target_chunk_group, target_chunk_bin);
+    println!("  3. CHUNK query (bin {}, group {}):", target_chunk_bin, target_chunk_group);
     println!("     → chunk_id={}, 40 bytes of UTXO data:", decoded_start_chunk);
     println!();
     println!("     ┌──────────────────────────────────────────────────┐");

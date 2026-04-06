@@ -91,13 +91,13 @@ fn main() {
     // ── 4. Check existing index for already-present whales ──────────────
     println!("[3] Checking existing index for already-present whale entries...");
     let index_data = std::fs::read(INDEX_FILE).expect("read index file");
-    let existing_entries = index_data.len() / INDEX_ENTRY_SIZE;
+    let existing_entries = index_data.len() / INDEX_RECORD_SIZE;
 
     let mut already_present = 0usize;
     let mut existing_hashes: std::collections::HashSet<[u8; SCRIPT_HASH_SIZE]> =
         std::collections::HashSet::with_capacity(existing_entries);
     for i in 0..existing_entries {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         let mut sh = [0u8; SCRIPT_HASH_SIZE];
         sh.copy_from_slice(&index_data[base..base + SCRIPT_HASH_SIZE]);
         existing_hashes.insert(sh);
@@ -137,7 +137,7 @@ fn main() {
 
         let new_total = existing_entries + new_whales.len();
         println!("  Done. Index now has {} entries ({} bytes)",
-            new_total, new_total * INDEX_ENTRY_SIZE);
+            new_total, new_total * INDEX_RECORD_SIZE);
     }
 
     // ── 6. Write whale addresses file ───────────────────────────────────

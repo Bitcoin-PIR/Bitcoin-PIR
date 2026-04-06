@@ -7,7 +7,7 @@
  */
 
 import {
-  deriveIntBuckets3, deriveCuckooKeyGeneric, cuckooHashInt, sha256,
+  deriveIntGroups3, deriveCuckooKeyGeneric, cuckooHashInt, sha256,
 } from './hash.js';
 import { genDpfKeysN } from './dpf.js';
 import { encodeRequest, decodeResponse } from './protocol.js';
@@ -143,8 +143,8 @@ export async function verifyMerkleBatchDpf(
     progress('Merkle', `L${level + 1}/${merkle.sibling_levels}: ${uniqueGroupIds.length} unique groups from ${N} addresses...`);
 
     // Step 2: PBC-place unique groupIds
-    const candidateBuckets = uniqueGroupIds.map(gid => deriveIntBuckets3(gid, merkle.sibling_k));
-    const pbcRounds = planRounds(candidateBuckets, merkle.sibling_k, 3);
+    const candidateGroups = uniqueGroupIds.map(gid => deriveIntGroups3(gid, merkle.sibling_k));
+    const pbcRounds = planRounds(candidateGroups, merkle.sibling_k, 3);
 
     // Step 3: Query each PBC round
     const siblingResults = new Map<number, Uint8Array[]>(); // groupId → children
@@ -153,10 +153,10 @@ export async function verifyMerkleBatchDpf(
       const round = pbcRounds[ri];
       progress('Merkle', `L${level + 1}/${merkle.sibling_levels}: PBC round ${ri + 1}/${pbcRounds.length} (${round.length} groups)...`);
 
-      // Map: bucket → uniqueGroupIndex
-      const bucketToUgi = new Map<number, number>();
-      for (const [ugi, bucket] of round) {
-        bucketToUgi.set(bucket, ugi);
+      // Map: pbcGroup → uniqueGroupIndex
+      const pbcGroupToUgi = new Map<number, number>();
+      for (const [ugi, pbcGroup] of round) {
+        pbcGroupToUgi.set(pbcGroup, ugi);
       }
 
       // Generate K×2 DPF keys
@@ -165,7 +165,7 @@ export async function verifyMerkleBatchDpf(
       for (let b = 0; b < merkle.sibling_k; b++) {
         const s0B: Uint8Array[] = [];
         const s1B: Uint8Array[] = [];
-        const ugi = bucketToUgi.get(b);
+        const ugi = pbcGroupToUgi.get(b);
         for (let h = 0; h < 2; h++) {
           let alpha: number;
           if (ugi !== undefined) {
@@ -205,15 +205,15 @@ export async function verifyMerkleBatchDpf(
         continue;
       }
 
-      // Extract results for real buckets
-      for (const [ugi, bucket] of round) {
+      // Extract results for real groups
+      for (const [ugi, pbcGroup] of round) {
         const gid = uniqueGroupIds[ugi];
-        const mr0 = mresp0.result.results[bucket];
-        const mr1 = mresp1.result.results[bucket];
+        const mr0 = mresp0.result.results[pbcGroup];
+        const mr1 = mresp1.result.results[pbcGroup];
         let children: Uint8Array[] | null = null;
         for (let h = 0; h < 2; h++) {
           const xored = xorBuffers(mr0[h], mr1[h]);
-          children = findGroupInSiblingResult(xored, gid, merkle.arity, merkle.sibling_bucket_size, merkle.sibling_slot_size);
+          children = findGroupInSiblingResult(xored, gid, merkle.arity, merkle.sibling_slots_per_bin, merkle.sibling_slot_size);
           if (children) break;
         }
         if (children) {

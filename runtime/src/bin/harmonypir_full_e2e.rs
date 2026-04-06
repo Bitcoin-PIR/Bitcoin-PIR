@@ -1,8 +1,8 @@
-//! HarmonyPIR FULL E2E: all 75 INDEX + 80 CHUNK buckets on real Bitcoin UTXO data.
+//! HarmonyPIR FULL E2E: all 75 INDEX + 80 CHUNK groups on real Bitcoin UTXO data.
 //!
 //! Complete protocol pipeline:
-//!   Phase 1 (offline): Generate hints for all 155 buckets (outer rayon, ALF)
-//!   Phase 2 (online):  For each INDEX bucket, query → decode → query CHUNK → verify
+//!   Phase 1 (offline): Generate hints for all 155 groups (outer rayon, ALF)
+//!   Phase 2 (online):  For each INDEX group, query → decode → query CHUNK → verify
 //!
 //! Usage:
 //!   cargo run --release -p runtime --bin harmonypir_full_e2e --features "alf"
@@ -14,8 +14,8 @@ use harmonypir::prp::alf::AlfPrp;
 use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir_wasm::{
-    HarmonyBucket, PRP_ALF, PRP_HOANG,
-    compute_rounds, derive_bucket_key, find_best_t, pad_n_for_t,
+    HarmonyGroup, PRP_ALF, PRP_HOANG,
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
 };
 
 use memmap2::Mmap;
@@ -57,13 +57,13 @@ fn choose_backend() -> (u8, &'static str) {
     { (PRP_HOANG, "Hoang") }
 }
 
-/// Generate hints for one bucket (single-threaded, for outer rayon).
+/// Generate hints for one group (single-threaded, for outer rayon).
 fn generate_hints_for_bucket(
     backend: u8,
-    bucket_id: u32,
+    group_id: u32,
     table_mmap: &[u8],
     header_size: usize,
-    actual_bucket: usize,
+    actual_group: usize,
     n: usize,
     w: usize,
     padded_n: usize,
@@ -72,8 +72,8 @@ fn generate_hints_for_bucket(
     domain: usize,
     rounds: usize,
 ) -> Vec<u8> {
-    let derived_key = derive_bucket_key(&MASTER_KEY, bucket_id);
-    let table_offset = header_size + actual_bucket * n * w;
+    let derived_key = derive_group_key(&MASTER_KEY, group_id);
+    let table_offset = header_size + actual_group * n * w;
 
     // Build PRP and compute cell assignments (single-threaded).
     let cell_of: Vec<usize> = match backend {
@@ -136,9 +136,9 @@ fn simulate_query_server(
     response
 }
 
-/// Find first non-empty, non-whale INDEX entry in a bucket.
+/// Find first non-empty, non-whale INDEX entry in a group.
 /// Returns Some((bin, slot_idx, tag, start_chunk, num_chunks)).
-fn find_target_in_index_bucket(
+fn find_target_in_index_group(
     table_mmap: &[u8],
     table_offset: usize,
     n: usize,
@@ -146,7 +146,7 @@ fn find_target_in_index_bucket(
 ) -> Option<(usize, usize, u64, u32, u8)> {
     for bin in 0..n {
         let bin_start = table_offset + bin * w;
-        for slot in 0..CUCKOO_BUCKET_SIZE {
+        for slot in 0..INDEX_SLOTS_PER_BIN {
             let s = bin_start + slot * INDEX_SLOT_SIZE;
             let (tag, start_chunk, num_chunks, _tree_loc) = decode_index_slot(&table_mmap[s..s + INDEX_SLOT_SIZE]);
             if tag != 0 && num_chunks > 0 && num_chunks < 50 {
@@ -173,15 +173,15 @@ fn main() {
     let idx_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
     let idx_mmap = unsafe { Mmap::map(&idx_file) }.expect("mmap index");
     let (index_bins, _tag_seed) = read_cuckoo_header(&idx_mmap);
-    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 4 × 13 = 52
+    let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE; // 4 × 13 = 52
 
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap chunk");
     let chunk_bins = read_chunk_cuckoo_header(&chunk_mmap);
-    let chunk_w = CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE); // 3 × 44 = 132
+    let chunk_w = CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE); // 3 × 44 = 132
 
-    println!("  INDEX: {} bins × {}B, K={} buckets", index_bins, index_w, K);
-    println!("  CHUNK: {} bins × {}B, K={} buckets\n", chunk_bins, chunk_w, K_CHUNK);
+    println!("  INDEX: {} bins × {}B, K={} groups", index_bins, index_w, K);
+    println!("  CHUNK: {} bins × {}B, K={} groups\n", chunk_bins, chunk_w, K_CHUNK);
 
     // Precompute params for INDEX.
     let idx_t_raw = find_best_t(index_bins as u32);
@@ -215,7 +215,7 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     // PHASE 1: OFFLINE — Generate all hints (outer rayon)
     // ═══════════════════════════════════════════════════════════════════
-    println!("━━━ PHASE 1: OFFLINE — Generate hints for all {} buckets (outer rayon) ━━━\n", K + K_CHUNK);
+    println!("━━━ PHASE 1: OFFLINE — Generate hints for all {} groups (outer rayon) ━━━\n", K + K_CHUNK);
 
     // ── Warmup: touch all mmap pages to measure without cold-cache penalty ──
     println!("  [Warmup] Touching INDEX mmap ({:.2} GB)...", idx_mmap.len() as f64 / (1024.0*1024.0*1024.0));
@@ -253,7 +253,7 @@ fn main() {
         })
         .collect();
     let idx_hint_time = t0.elapsed();
-    println!("  INDEX: {} buckets in {:.2?} ({:.1?}/bucket)",
+    println!("  INDEX: {} groups in {:.2?} ({:.1?}/group)",
         K, idx_hint_time, idx_hint_time / K as u32);
 
     // CHUNK hints (run 1).
@@ -268,7 +268,7 @@ fn main() {
         })
         .collect();
     let chk_hint_time = t0.elapsed();
-    println!("  CHUNK: {} buckets in {:.2?} ({:.1?}/bucket)",
+    println!("  CHUNK: {} groups in {:.2?} ({:.1?}/group)",
         K_CHUNK, chk_hint_time, chk_hint_time / K_CHUNK as u32);
 
     // CHUNK hints (run 2 — fully warm).
@@ -283,7 +283,7 @@ fn main() {
         })
         .collect();
     let chk_hint_time_2 = t0.elapsed();
-    println!("  CHUNK (run 2, warm): {} buckets in {:.2?} ({:.1?}/bucket)",
+    println!("  CHUNK (run 2, warm): {} groups in {:.2?} ({:.1?}/group)",
         K_CHUNK, chk_hint_time_2, chk_hint_time_2 / K_CHUNK as u32);
 
     let total_hint_bytes: usize = index_hints.iter().map(|h| h.len()).sum::<usize>()
@@ -293,39 +293,39 @@ fn main() {
         total_hint_bytes as f64 / (1024.0 * 1024.0));
 
     // ═══════════════════════════════════════════════════════════════════
-    // PHASE 2: Build HarmonyBucket instances from hints
+    // PHASE 2: Build HarmonyGroup instances from hints
     // ═══════════════════════════════════════════════════════════════════
-    println!("━━━ PHASE 2: Build HarmonyBucket instances ━━━\n");
+    println!("━━━ PHASE 2: Build HarmonyGroup instances ━━━\n");
 
     let t0 = Instant::now();
-    let mut index_buckets: Vec<HarmonyBucket> = (0..K)
+    let mut index_groups: Vec<HarmonyGroup> = (0..K)
         .map(|b| {
-            let mut bucket = HarmonyBucket::new_with_backend(
+            let mut group = HarmonyGroup::new_with_backend(
                 index_bins as u32, index_w as u32, idx_t as u32,
                 &MASTER_KEY, b as u32, backend,
             ).unwrap();
-            bucket.load_hints(&index_hints[b]).unwrap();
-            bucket
+            group.load_hints(&index_hints[b]).unwrap();
+            group
         })
         .collect();
 
-    let mut chunk_buckets: Vec<HarmonyBucket> = (0..K_CHUNK)
+    let mut chunk_groups: Vec<HarmonyGroup> = (0..K_CHUNK)
         .map(|b| {
-            let mut bucket = HarmonyBucket::new_with_backend(
+            let mut group = HarmonyGroup::new_with_backend(
                 chunk_bins as u32, chunk_w as u32, chk_t as u32,
                 &MASTER_KEY, K as u32 + b as u32, backend,
             ).unwrap();
-            bucket.load_hints(&chunk_hints[b]).unwrap();
-            bucket
+            group.load_hints(&chunk_hints[b]).unwrap();
+            group
         })
         .collect();
-    let bucket_build_time = t0.elapsed();
-    println!("  {} INDEX + {} CHUNK buckets built in {:.2?}\n", K, K_CHUNK, bucket_build_time);
+    let group_build_time = t0.elapsed();
+    println!("  {} INDEX + {} CHUNK groups built in {:.2?}\n", K, K_CHUNK, group_build_time);
 
     // ═══════════════════════════════════════════════════════════════════
-    // PHASE 3: ONLINE — Full INDEX → CHUNK pipeline for every INDEX bucket
+    // PHASE 3: ONLINE — Full INDEX → CHUNK pipeline for every INDEX group
     // ═══════════════════════════════════════════════════════════════════
-    println!("━━━ PHASE 3: ONLINE — Query all {} INDEX buckets → decode → query CHUNK ━━━\n", K);
+    println!("━━━ PHASE 3: ONLINE — Query all {} INDEX groups → decode → query CHUNK ━━━\n", K);
 
     let overall_t0 = Instant::now();
     let mut total_index_queries = 0usize;
@@ -336,14 +336,14 @@ fn main() {
     let mut total_chunk_resp_bytes = 0usize;
     let mut total_index_dummy = 0usize;
     let mut total_chunk_dummy = 0usize;
-    let mut chunk_buckets_touched = vec![false; K_CHUNK];
+    let mut chunk_groups_touched = vec![false; K_CHUNK];
     let mut all_pass = true;
 
     for ib in 0..K {
         let idx_table_offset = HEADER_SIZE + ib * index_bins * index_w;
 
-        // Find a target entry in this INDEX bucket.
-        let target = find_target_in_index_bucket(
+        // Find a target entry in this INDEX group.
+        let target = find_target_in_index_group(
             &idx_mmap[..], idx_table_offset, index_bins, index_w,
         );
 
@@ -354,7 +354,7 @@ fn main() {
         let (target_bin, _slot_idx, target_tag, start_chunk, num_chunks) = target.unwrap();
 
         // ── INDEX query (real) ──
-        let req = index_buckets[ib].build_request(target_bin as u32).unwrap();
+        let req = index_groups[ib].build_request(target_bin as u32).unwrap();
         let req_bytes = req.request();
         let _idx_count = req_bytes.len() / 4;
 
@@ -362,12 +362,12 @@ fn main() {
             &req_bytes, &idx_mmap[..], idx_table_offset, index_bins, index_w,
         );
 
-        let answer = index_buckets[ib].process_response(&response).unwrap();
+        let answer = index_groups[ib].process_response(&response).unwrap();
 
-        // ── INDEX dummy queries (K-1 other buckets) ──
+        // ── INDEX dummy queries (K-1 other groups) ──
         for ob in 0..K {
             if ob == ib { continue; }
-            let dummy_req = index_buckets[ob].build_dummy_request().unwrap();
+            let dummy_req = index_groups[ob].build_dummy_request().unwrap();
             let dummy_bytes = dummy_req.request();
             let ob_table_offset = HEADER_SIZE + ob * index_bins * index_w;
             let _dummy_resp = simulate_query_server(
@@ -392,10 +392,10 @@ fn main() {
             continue;
         }
 
-        // ── Decode INDEX → find CHUNK bucket + bin ──
-        let chunk_groups = derive_chunk_buckets(start_chunk);
+        // ── Decode INDEX → find CHUNK group + bin ──
+        let chunk_pbc_groups = derive_chunk_groups(start_chunk);
         let g = 0; // use first group
-        let cb = chunk_groups[g];
+        let cb = chunk_pbc_groups[g];
         let chk_table_offset = CHUNK_HEADER_SIZE + cb * chunk_bins * chunk_w;
 
         // Scan all hash functions to find which bin holds start_chunk
@@ -404,7 +404,7 @@ fn main() {
             let ckey = derive_chunk_cuckoo_key(cb, ch);
             let bin = cuckoo_hash_int(start_chunk, ckey, chunk_bins);
             let bin_off = chk_table_offset + bin * chunk_w;
-            for slot in 0..CHUNK_CUCKOO_BUCKET_SIZE {
+            for slot in 0..CHUNK_SLOTS_PER_BIN {
                 let s = bin_off + slot * (4 + CHUNK_SIZE);
                 let cid = u32::from_le_bytes(chunk_mmap[s..s+4].try_into().unwrap());
                 if cid == start_chunk {
@@ -423,22 +423,22 @@ fn main() {
         }
         let target_chunk_bin = target_chunk_bin.unwrap();
 
-        chunk_buckets_touched[cb] = true;
+        chunk_groups_touched[cb] = true;
 
         // ── CHUNK query (real) ──
-        let chk_req = chunk_buckets[cb].build_request(target_chunk_bin as u32).unwrap();
+        let chk_req = chunk_groups[cb].build_request(target_chunk_bin as u32).unwrap();
         let chk_req_bytes = chk_req.request();
         let _chk_count = chk_req_bytes.len() / 4;
         let chk_response = simulate_query_server(
             &chk_req_bytes, &chunk_mmap[..], chk_table_offset, chunk_bins, chunk_w,
         );
 
-        let chk_answer = chunk_buckets[cb].process_response(&chk_response).unwrap();
+        let chk_answer = chunk_groups[cb].process_response(&chk_response).unwrap();
 
-        // ── CHUNK dummy queries (K_CHUNK-1 other buckets) ──
+        // ── CHUNK dummy queries (K_CHUNK-1 other groups) ──
         for ob in 0..K_CHUNK {
             if ob == cb { continue; }
-            let dummy_req = chunk_buckets[ob].build_dummy_request().unwrap();
+            let dummy_req = chunk_groups[ob].build_dummy_request().unwrap();
             let dummy_bytes = dummy_req.request();
             let ob_table_offset = CHUNK_HEADER_SIZE + ob * chunk_bins * chunk_w;
             let _dummy_resp = simulate_query_server(
@@ -455,7 +455,7 @@ fn main() {
         // Find the target chunk_id in the answer.
         let mut found_chunk = false;
         let mut chunk_data_hex = String::new();
-        for slot in 0..CHUNK_CUCKOO_BUCKET_SIZE {
+        for slot in 0..CHUNK_SLOTS_PER_BIN {
             let s = slot * (4 + CHUNK_SIZE);
             let (cid, data) = decode_chunk_slot(&chk_answer[s..s + 4 + CHUNK_SIZE]);
             if cid == start_chunk {
@@ -483,16 +483,16 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════
     // SUMMARY
     // ═══════════════════════════════════════════════════════════════════
-    let chunk_touched = chunk_buckets_touched.iter().filter(|&&b| b).count();
+    let chunk_touched = chunk_groups_touched.iter().filter(|&&b| b).count();
 
     println!("\n━━━ SUMMARY ━━━\n");
     println!("  PRP backend:         {}", backend_name);
-    println!("  INDEX buckets:       {}/{} queried ({} dummy)", total_index_queries, K, total_index_dummy);
-    println!("  CHUNK buckets:       {}/{} touched ({} real + {} dummy)", chunk_touched, K_CHUNK, total_chunk_queries, total_chunk_dummy);
+    println!("  INDEX groups:       {}/{} queried ({} dummy)", total_index_queries, K, total_index_dummy);
+    println!("  CHUNK groups:       {}/{} touched ({} real + {} dummy)", chunk_touched, K_CHUNK, total_chunk_queries, total_chunk_dummy);
 
     println!("\n  ─── Offline (Hint Generation) ───");
-    println!("    INDEX: {} buckets in {:.2?}", K, idx_hint_time);
-    println!("    CHUNK: {} buckets in {:.2?}", K_CHUNK, chk_hint_time);
+    println!("    INDEX: {} groups in {:.2?}", K, idx_hint_time);
+    println!("    CHUNK: {} groups in {:.2?}", K_CHUNK, chk_hint_time);
     println!("    Total: {:.2?}", idx_hint_time + chk_hint_time);
     println!("    Hint storage: {:.1} MB ({:.1} KB/INDEX + {:.1} KB/CHUNK)",
         total_hint_bytes as f64 / (1024.0 * 1024.0),
@@ -518,9 +518,9 @@ fn main() {
 
     // Max queries budget.
     println!("\n  ─── Query Budget ───");
-    println!("    INDEX: {} max queries per bucket ({} used → {} remaining)",
+    println!("    INDEX: {} max queries per group ({} used → {} remaining)",
         idx_params.max_queries, 1, idx_params.max_queries - 1);
-    println!("    CHUNK: {} max queries per bucket ({} used in most-touched → {} remaining)",
+    println!("    CHUNK: {} max queries per group ({} used in most-touched → {} remaining)",
         chk_params.max_queries, 1, chk_params.max_queries - 1);
 
     if all_pass {

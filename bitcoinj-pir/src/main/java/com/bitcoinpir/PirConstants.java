@@ -9,23 +9,23 @@ public final class PirConstants {
 
     // ── Index-level constants ───────────────────────────────────────────────
 
-    /** Number of Batch PIR buckets (index level). */
+    /** Number of Batch PIR groups (index level). */
     public static final int K = 75;
 
-    /** Number of bucket assignments per entry. */
+    /** Number of group assignments per entry. */
     public static final int NUM_HASHES = 3;
 
-    /** Master PRG seed for deriving per-bucket cuckoo hash function keys. */
+    /** Master PRG seed for deriving per-group cuckoo hash function keys. */
     public static final long MASTER_SEED = 0x71a2ef38b4c90d15L;
 
-    /** Cuckoo hash table bucket size for INDEX level (slots per bin). */
-    public static final int CUCKOO_BUCKET_SIZE = 4;
+    /** Cuckoo hash table slots per bin for INDEX level. */
+    public static final int INDEX_SLOTS_PER_BIN = 4;
 
     /** Number of cuckoo hash functions for INDEX level. */
     public static final int INDEX_CUCKOO_NUM_HASHES = 2;
 
-    /** Cuckoo hash table bucket size for CHUNK level (slots per bin). */
-    public static final int CHUNK_CUCKOO_BUCKET_SIZE = 3;
+    /** Cuckoo hash table slots per bin for CHUNK level. */
+    public static final int CHUNK_SLOTS_PER_BIN = 3;
 
     /** Number of cuckoo hash functions for CHUNK level. */
     public static final int CHUNK_CUCKOO_NUM_HASHES = 2;
@@ -36,15 +36,15 @@ public final class PirConstants {
     /** Size of the fingerprint tag in the cuckoo table (bytes). */
     public static final int TAG_SIZE = 8;
 
-    /** Size of each tagged index entry: 8B tag + 4B start_chunk_id + 1B num_chunks. */
-    public static final int INDEX_ENTRY_SIZE = 13;
+    /** INDEX cuckoo slot: 8B tag + 4B start_chunk_id + 1B num_chunks + 4B tree_loc. */
+    public static final int INDEX_SLOT_SIZE = 17;
 
-    /** Index result size: 4 slots * 13 bytes = 52 bytes. */
-    public static final int INDEX_RESULT_SIZE = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
+    /** Index result size: INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE bytes. */
+    public static final int INDEX_RESULT_SIZE = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
 
     // ── Chunk-level constants ───────────────────────────────────────────────
 
-    /** Number of Batch PIR buckets for chunks. */
+    /** Number of Batch PIR groups for chunks. */
     public static final int K_CHUNK = 80;
 
     /** Master PRG seed for chunk-level cuckoo key derivation. */
@@ -63,7 +63,7 @@ public final class PirConstants {
     public static final int CHUNK_SLOT_SIZE = 4 + UNIT_DATA_SIZE;
 
     /** Chunk result size: 3 slots * slot_size. */
-    public static final int CHUNK_RESULT_SIZE = CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE;
+    public static final int CHUNK_RESULT_SIZE = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
 
     // ── DPF ─────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ public final class PirConstants {
     public static final byte RESP_ERROR       = (byte) 0xFF;
 
     // ── HarmonyPIR PRP backend constants (server-side) ─────────────────────
-    // These differ from HarmonyBucket.PRP_* (JNI-side).  Use when encoding
+    // These differ from HarmonyGroup.PRP_* (JNI-side).  Use when encoding
     // hint requests for the server.
 
     /** Server-side PRP_HOANG constant. */
@@ -99,11 +99,11 @@ public final class PirConstants {
 
     // ── HarmonyPIR constants ────────────────────────────────────────────────
 
-    /** HarmonyPIR entry size for index level: CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE = 52. */
-    public static final int HARMONY_INDEX_W = CUCKOO_BUCKET_SIZE * INDEX_ENTRY_SIZE;
+    /** HarmonyPIR entry size for index level: INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE = 68. */
+    public static final int HARMONY_INDEX_W = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
 
-    /** HarmonyPIR entry size for chunk level: CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE = 132. */
-    public static final int HARMONY_CHUNK_W = CHUNK_CUCKOO_BUCKET_SIZE * CHUNK_SLOT_SIZE;
+    /** HarmonyPIR entry size for chunk level: CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE = 132. */
+    public static final int HARMONY_CHUNK_W = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
 
     /** EMPTY sentinel for HarmonyPIR requests (u32::MAX). */
     public static final int HARMONY_EMPTY = 0xFFFFFFFF;

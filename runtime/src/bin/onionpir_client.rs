@@ -28,7 +28,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 const PACKED_ENTRY_SIZE: usize = 3840;
 
-/// Chunk cuckoo: 6 hash functions, bucket_size=1
+/// Chunk cuckoo: 6 hash functions, slots_per_bin=1
 const CHUNK_CUCKOO_NUM_HASHES: usize = 6;
 const CHUNK_CUCKOO_MAX_KICKS: usize = 10000;
 const CHUNK_CUCKOO_SEED: u64 = 0xa3f7c2d918e4b065;
@@ -167,7 +167,7 @@ fn json_u64(json: &str, key: &str) -> u64 {
 /// Parse the JSON server info response. Prefers the `onionpir` sub-object if present,
 /// falling back to top-level DPF params.
 ///
-/// Returns: (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, bucket_size, slot_size)
+/// Returns: (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, slots_per_bin, slot_size)
 fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize, usize, usize) {
     // Check for OnionPIR sub-object
     if let Some(opi_start) = json.find("\"onionpir\"") {
@@ -197,7 +197,7 @@ fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize
             json_u64(opi, "chunk_bins_per_table") as usize,
             json_u64(opi, "tag_seed"),
             json_u64(opi, "total_packed_entries") as usize,
-            json_u64(opi, "index_cuckoo_bucket_size") as usize,
+            json_u64(opi, "index_slots_per_bin") as usize,
             json_u64(opi, "index_slot_size") as usize,
         )
     } else {
@@ -209,7 +209,7 @@ fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize
             json_u64(json, "chunk_bins_per_table") as usize,
             json_u64(json, "tag_seed"),
             0,
-            json_u64(json, "index_cuckoo_bucket_size") as usize,
+            json_u64(json, "index_slots_per_bin") as usize,
             json_u64(json, "index_slot_size") as usize,
         )
     }
@@ -217,33 +217,29 @@ fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize
 
 // ─── OnionPIR Merkle info parsing ───────────────────────────────────────────
 
-struct OnionMerkleInfo {
-    arity: usize,
-    levels: Vec<OnionMerkleLevelInfo>,
-    root: [u8; 32],
-}
-
 struct OnionMerkleLevelInfo {
     k: usize,
     bins_per_table: usize,
     num_groups: usize,
 }
 
-/// Parse `onionpir_merkle` section from JSON. Returns None if not present.
-fn parse_onionpir_merkle(json: &str) -> Option<OnionMerkleInfo> {
-    let start = json.find("\"onionpir_merkle\"")?;
-    let brace = json[start..].find('{')? + start;
-    let mut depth = 0;
-    let mut end = brace;
-    for (i, c) in json[brace..].char_indices() {
-        match c { '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { end = brace + i + 1; break; } } _ => {} }
-    }
-    let section = &json[brace..end];
+/// Per-bin Merkle sub-tree (INDEX or DATA).
+struct OnionMerkleSubTree {
+    levels: Vec<OnionMerkleLevelInfo>,
+    root: [u8; 32],
+}
 
-    let arity = json_u64(section, "arity") as usize;
+/// Two per-bin Merkle trees: INDEX-MERKLE and DATA-MERKLE.
+struct OnionMerkleInfo {
+    arity: usize,
+    index_tree: OnionMerkleSubTree,
+    data_tree: OnionMerkleSubTree,
+}
+
+/// Parse a sub-tree from a JSON section (e.g. the "index" or "data" sub-object).
+fn parse_sub_tree(section: &str) -> Option<OnionMerkleSubTree> {
     let num_levels = json_u64(section, "sibling_levels") as usize;
 
-    // Parse root hex
     let root_key = "\"root\":\"";
     let root_start = section.find(root_key).map(|p| p + root_key.len())?;
     let root_end = section[root_start..].find('"')? + root_start;
@@ -253,33 +249,67 @@ fn parse_onionpir_merkle(json: &str) -> Option<OnionMerkleInfo> {
         root[i] = u8::from_str_radix(&root_hex[i * 2..i * 2 + 2], 16).ok()?;
     }
 
-    // Parse levels array (simple: extract k, bins_per_table, num_groups from each object)
     let mut levels = Vec::new();
-    let levels_start = section.find("\"levels\":[")? + "\"levels\":[".len();
-    let levels_section = &section[levels_start..];
-    let mut pos = 0;
-    for _ in 0..num_levels {
-        let obj_start = levels_section[pos..].find('{')? + pos;
-        let obj_end = levels_section[obj_start..].find('}')? + obj_start + 1;
-        let obj = &levels_section[obj_start..obj_end];
-        levels.push(OnionMerkleLevelInfo {
-            k: json_u64(obj, "k") as usize,
-            bins_per_table: json_u64(obj, "bins_per_table") as usize,
-            num_groups: json_u64(obj, "num_groups") as usize,
-        });
-        pos = obj_end;
+    if let Some(levels_pos) = section.find("\"levels\":[") {
+        let levels_start = levels_pos + "\"levels\":[".len();
+        let levels_section = &section[levels_start..];
+        let mut pos = 0;
+        for _ in 0..num_levels {
+            let obj_start = match levels_section[pos..].find('{') { Some(p) => p + pos, None => break };
+            let obj_end = match levels_section[obj_start..].find('}') { Some(p) => obj_start + p + 1, None => break };
+            let obj = &levels_section[obj_start..obj_end];
+            levels.push(OnionMerkleLevelInfo {
+                k: json_u64(obj, "k") as usize,
+                bins_per_table: json_u64(obj, "bins_per_table") as usize,
+                num_groups: json_u64(obj, "num_groups") as usize,
+            });
+            pos = obj_end;
+        }
     }
 
-    Some(OnionMerkleInfo { arity, levels, root })
+    Some(OnionMerkleSubTree { levels, root })
 }
 
-// ─── Sibling cuckoo utilities (6-hash, bucket_size=1) ──────────────────────
+/// Extract a JSON sub-object by key name (finds the { ... } block after the key).
+fn extract_json_object<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{}\":", key);
+    let start = json.find(&needle)?;
+    let brace = json[start..].find('{')? + start;
+    let mut depth = 0;
+    let mut end = brace;
+    for (i, c) in json[brace..].char_indices() {
+        match c { '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { end = brace + i + 1; break; } } _ => {} }
+    }
+    Some(&json[brace..end])
+}
+
+/// Parse `onionpir_merkle` section from JSON. Returns None if not present.
+fn parse_onionpir_merkle(json: &str) -> Option<OnionMerkleInfo> {
+    let section = extract_json_object(json, "onionpir_merkle")?;
+    let arity = json_u64(section, "arity") as usize;
+
+    let index_section = extract_json_object(section, "index")?;
+    let data_section = extract_json_object(section, "data")?;
+
+    Some(OnionMerkleInfo {
+        arity,
+        index_tree: parse_sub_tree(index_section)?,
+        data_tree: parse_sub_tree(data_section)?,
+    })
+}
+
+// ─── Sibling cuckoo utilities (6-hash, slots_per_bin=1) ──────────────────────
 
 const SIB_CUCKOO_NUM_HASHES: usize = 6;
 const SIB_CUCKOO_MAX_KICKS: usize = 10000;
 
-fn sib_level_master_seed(level: usize) -> u64 {
-    0xBA7C_51B1_FEED_0000u64.wrapping_add(level as u64)
+fn sib_level_master_seed(tree_kind: &str, level: usize) -> u64 {
+    let base = match tree_kind {
+        "index" => 0xBA7C_51B1_FEED_0100u64,
+        "data"  => 0xBA7C_51B1_FEED_0200u64,
+        _ => panic!("unknown tree_kind: {}", tree_kind),
+    };
+    base.wrapping_add(level as u64)
 }
 
 fn sib_derive_cuckoo_key(master_seed: u64, group_id: usize, hash_fn: usize) -> u64 {
@@ -295,30 +325,31 @@ fn sib_cuckoo_hash(entry_id: u32, key: u64, num_bins: usize) -> usize {
 }
 
 /// Derive 3 distinct PBC group indices for an entry (sibling-level PBC).
-fn derive_sib_pbc_buckets(entry_id: u32, k: usize) -> [usize; 3] {
-    let mut buckets = [0usize; 3];
+fn derive_sib_pbc_groups(entry_id: u32, k: usize) -> [usize; 3] {
+    let mut groups = [0usize; 3];
     let mut nonce = 0u64;
     let mut count = 0;
     while count < 3 {
         let h = splitmix64((entry_id as u64).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15)));
         let b = (h % k as u64) as usize;
         nonce += 1;
-        if count == 0 || (count == 1 && b != buckets[0]) || (count == 2 && b != buckets[0] && b != buckets[1]) {
-            buckets[count] = b;
+        if count == 0 || (count == 1 && b != groups[0]) || (count == 2 && b != groups[0] && b != groups[1]) {
+            groups[count] = b;
             count += 1;
         }
     }
-    buckets
+    groups
 }
 
 /// Build the sibling cuckoo table for a single PBC group at a given level.
 fn build_sib_cuckoo_for_group(
+    tree_kind: &str,
     level: usize,
     group_id: usize,
     entries: &[u32], // sorted entry_ids in this PBC group
     bins_per_table: usize,
 ) -> Vec<u32> {
-    let master_seed = sib_level_master_seed(level);
+    let master_seed = sib_level_master_seed(tree_kind, level);
     let mut keys = [0u64; SIB_CUCKOO_NUM_HASHES];
     for h in 0..SIB_CUCKOO_NUM_HASHES {
         keys[h] = sib_derive_cuckoo_key(master_seed, group_id, h);
@@ -363,9 +394,9 @@ fn build_sib_cuckoo_for_group(
 
 /// Find entry_id's bin in a cuckoo table.
 fn find_in_sib_cuckoo(
-    table: &[u32], entry_id: u32, level: usize, group_id: usize, bins_per_table: usize,
+    table: &[u32], entry_id: u32, tree_kind: &str, level: usize, group_id: usize, bins_per_table: usize,
 ) -> Option<usize> {
-    let master_seed = sib_level_master_seed(level);
+    let master_seed = sib_level_master_seed(tree_kind, level);
     for h in 0..SIB_CUCKOO_NUM_HASHES {
         let key = sib_derive_cuckoo_key(master_seed, group_id, h);
         let bin = sib_cuckoo_hash(entry_id, key, bins_per_table);
@@ -374,7 +405,7 @@ fn find_in_sib_cuckoo(
     None
 }
 
-// ─── Chunk cuckoo hash utilities (6-hash, bucket_size=1) ────────────────────
+// ─── Chunk cuckoo hash utilities (6-hash, slots_per_bin=1) ────────────────────
 
 #[inline]
 fn chunk_derive_cuckoo_key(group_id: usize, hash_fn: usize) -> u64 {
@@ -395,8 +426,8 @@ fn chunk_cuckoo_hash(entry_id: u32, key: u64, num_bins: usize) -> usize {
 fn build_chunk_reverse_index(total_entries: usize) -> Vec<Vec<u32>> {
     let mut index: Vec<Vec<u32>> = (0..K_CHUNK).map(|_| Vec::new()).collect();
     for eid in 0..total_entries as u32 {
-        let buckets = derive_chunk_buckets(eid);
-        for &g in &buckets {
+        let groups = derive_chunk_groups(eid);
+        for &g in &groups {
             index[g].push(eid);
         }
     }
@@ -500,17 +531,16 @@ struct IndexResult {
     entry_id: u32,
     byte_offset: u16,
     num_entries: u8,
-    tree_loc: u32,
 }
 
-/// Scan a decrypted index bin (256 slots) for a matching tag.
+/// Scan a decrypted index bin (256 slots × 15B) for a matching tag.
 fn scan_index_bin(
     entry_bytes: &[u8],
     tag: u64,
-    bucket_size: usize,
+    slots_per_bin: usize,
     slot_size: usize,
 ) -> Option<IndexResult> {
-    for slot in 0..bucket_size {
+    for slot in 0..slots_per_bin {
         let off = slot * slot_size;
         if off + slot_size > entry_bytes.len() { break; }
         let slot_tag = u64::from_le_bytes(entry_bytes[off..off + 8].try_into().unwrap());
@@ -518,10 +548,7 @@ fn scan_index_bin(
             let entry_id = u32::from_le_bytes(entry_bytes[off + 8..off + 12].try_into().unwrap());
             let byte_offset = u16::from_le_bytes(entry_bytes[off + 12..off + 14].try_into().unwrap());
             let num_entries = entry_bytes[off + 14];
-            let tree_loc = if off + 19 <= entry_bytes.len() {
-                u32::from_le_bytes(entry_bytes[off + 15..off + 19].try_into().unwrap())
-            } else { 0 };
-            return Some(IndexResult { entry_id, byte_offset, num_entries, tree_loc });
+            return Some(IndexResult { entry_id, byte_offset, num_entries });
         }
     }
     None
@@ -563,11 +590,11 @@ async fn main() {
     // Response: [4B len LE][1B variant=0x03][JSON bytes...]
     let json_str = std::str::from_utf8(&info_bytes[5..]).expect("invalid UTF-8 in server info JSON");
 
-    let (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, index_bucket_size, index_slot_size) =
+    let (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, index_slots_per_bin, index_slot_size) =
         parse_server_info_json(json_str);
 
-    println!("  Index: K={}, bins={}, bucket_size={}, slot_size={}",
-        index_k, index_bins, index_bucket_size, index_slot_size);
+    println!("  Index: K={}, bins={}, slots_per_bin={}, slot_size={}",
+        index_k, index_bins, index_slots_per_bin, index_slot_size);
     println!("  Chunk: K={}, bins={}, total_packed={}", chunk_k, chunk_bins, total_packed);
     println!();
 
@@ -616,11 +643,16 @@ async fn main() {
     let addr_infos: Vec<AddrInfo> = args.script_hashes.iter().map(|sh| {
         AddrInfo {
             tag: compute_tag(tag_seed, sh),
-            groups: derive_buckets(sh),
+            groups: derive_groups(sh),
         }
     }).collect();
 
     let mut index_results: Vec<Option<IndexResult>> = (0..num_addresses).map(|_| None).collect();
+    // Per-bin Merkle: store bin hashes and leaf positions
+    let mut index_bin_hashes: Vec<Option<[u8; 32]>> = (0..num_addresses).map(|_| None).collect();
+    let mut index_leaf_positions: Vec<Option<usize>> = (0..num_addresses).map(|_| None).collect();
+    let mut data_bin_hashes: HashMap<u32, [u8; 32]> = HashMap::new(); // entry_id → hash
+    let mut data_leaf_positions: HashMap<u32, usize> = HashMap::new(); // entry_id → leaf_pos
     let mut rng = DummyRng::new();
     let mut total_index_rounds = 0u16;
 
@@ -672,7 +704,10 @@ async fn main() {
                     bin,
                     &result_batch.results[qi],
                 );
-                if let Some(ir) = scan_index_bin(&entry_bytes, addr_infos[addr_idx].tag, index_bucket_size, index_slot_size) {
+                if let Some(ir) = scan_index_bin(&entry_bytes, addr_infos[addr_idx].tag, index_slots_per_bin, index_slot_size) {
+                    // Per-bin Merkle: hash the full decrypted bin, record leaf position
+                    index_bin_hashes[addr_idx] = Some(merkle::sha256(&entry_bytes[..PACKED_ENTRY_SIZE]));
+                    index_leaf_positions[addr_idx] = Some(group * index_bins + bin as usize);
                     index_results[addr_idx] = Some(ir);
                     break;
                 }
@@ -731,7 +766,7 @@ async fn main() {
 
     // PBC place entries into chunk groups
     let entry_pbc_groups: Vec<[usize; NUM_HASHES]> = unique_entry_ids.iter()
-        .map(|&eid| derive_chunk_buckets(eid))
+        .map(|&eid| derive_chunk_groups(eid))
         .collect();
     let chunk_rounds = pbc_plan_rounds(&entry_pbc_groups, chunk_k, NUM_HASHES, 500);
 
@@ -809,6 +844,9 @@ async fn main() {
                 &result_batch.results[cq.group],
             );
             decrypted_entries.insert(cq.entry_id, entry_bytes[..PACKED_ENTRY_SIZE].to_vec());
+            // Per-bin Merkle: hash the full decrypted data bin
+            data_bin_hashes.insert(cq.entry_id, merkle::sha256(&entry_bytes[..PACKED_ENTRY_SIZE]));
+            data_leaf_positions.insert(cq.entry_id, cq.group * chunk_bins + cq.bin);
         }
     }
 
@@ -900,218 +938,203 @@ async fn main() {
 
     let merkle_info = parse_onionpir_merkle(json_str);
     if let Some(ref mi) = merkle_info {
-        println!("[7] Merkle Verification (arity={}, {} sibling levels)...\n",
-            mi.arity, mi.levels.len());
+        let index_root_hex: String = mi.index_tree.root.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        let data_root_hex: String = mi.data_tree.root.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+        println!("[7] Per-Bin Merkle Verification (arity={})...",  mi.arity);
+        println!("  INDEX tree: {} sibling levels, root={}...",
+            mi.index_tree.levels.len(), index_root_hex);
+        println!("  DATA tree:  {} sibling levels, root={}...\n",
+            mi.data_tree.levels.len(), data_root_hex);
 
-        // Fetch tree-top cache
-        {
-            let mut req = Vec::with_capacity(5);
-            req.extend_from_slice(&1u32.to_le_bytes());
-            req.push(REQ_ONIONPIR_MERKLE_TREE_TOP);
-            sink.send(Message::Binary(req.into())).await.expect("send");
-        }
-        let top_bytes = recv_binary(&mut stream, &mut sink).await;
-        let tree_top = &top_bytes[5..]; // skip [4B len][1B variant]
-        println!("  Tree-top cache: {} bytes", tree_top.len());
-
-        // Parse tree-top cache header
-        let cache_from_level = tree_top[0] as usize;
-        let cache_arity = u16::from_le_bytes(tree_top[5..7].try_into().unwrap()) as usize;
-        let num_cached_levels = tree_top[7] as usize;
-        let mut cache_offset = 8;
-        let mut cache_levels: Vec<Vec<[u8; 32]>> = Vec::new();
-        for _ in 0..num_cached_levels {
-            let num_nodes = u32::from_le_bytes(tree_top[cache_offset..cache_offset + 4].try_into().unwrap()) as usize;
-            cache_offset += 4;
-            let mut level_nodes = Vec::with_capacity(num_nodes);
-            for _ in 0..num_nodes {
-                let mut h = [0u8; 32];
-                h.copy_from_slice(&tree_top[cache_offset..cache_offset + 32]);
-                cache_offset += 32;
-                level_nodes.push(h);
+        // Collect INDEX leaves: one per address
+        let mut index_leaves: Vec<(usize, [u8; 32])> = Vec::new();
+        for addr_idx in 0..num_addresses {
+            if let (Some(hash), Some(pos)) = (index_bin_hashes[addr_idx], index_leaf_positions[addr_idx]) {
+                index_leaves.push((pos, hash));
             }
-            cache_levels.push(level_nodes);
         }
-        println!("  Cache: from_level={}, arity={}, {} cached levels",
-            cache_from_level, cache_arity, num_cached_levels);
+        // Collect DATA leaves: one per entry_id queried
+        let mut data_leaves: Vec<(usize, [u8; 32])> = Vec::new();
+        for (&eid, &hash) in &data_bin_hashes {
+            if let Some(&pos) = data_leaf_positions.get(&eid) {
+                data_leaves.push((pos, hash));
+            }
+        }
+        println!("  {} index leaves, {} data leaves to verify\n", index_leaves.len(), data_leaves.len());
 
-        // ── Initialize per-address state ─────────────────────────────
-        struct AddrState {
-            current_hash: [u8; 32],
-            node_idx: usize,
-            failed: bool,
-        }
-        let mut addrs: Vec<(usize, AddrState)> = Vec::new(); // (addr_idx, state)
-        for (addr_idx, sh) in args.script_hashes.iter().enumerate() {
-            let ir = match &index_results[addr_idx] {
-                Some(ir) if ir.num_entries > 0 => ir,
-                _ => continue,
-            };
-            let mut full_data = Vec::new();
-            for i in 0..ir.num_entries as u32 {
-                let eid = ir.entry_id + i;
-                if let Some(entry) = decrypted_entries.get(&eid) {
-                    if i == 0 { full_data.extend_from_slice(&entry[ir.byte_offset as usize..]); }
-                    else { full_data.extend_from_slice(entry); }
+        // Verify each sub-tree in sequence: (tree_kind, sub_tree, leaves, req/resp codes)
+        let trees: Vec<(&str, &OnionMerkleSubTree, &[(usize, [u8; 32])], u8, u8, u8, u8)> = vec![
+            ("index", &mi.index_tree, &index_leaves,
+             REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP, RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+             REQ_ONIONPIR_MERKLE_INDEX_SIBLING, RESP_ONIONPIR_MERKLE_INDEX_SIBLING),
+            ("data", &mi.data_tree, &data_leaves,
+             REQ_ONIONPIR_MERKLE_DATA_TREE_TOP, RESP_ONIONPIR_MERKLE_DATA_TREE_TOP,
+             REQ_ONIONPIR_MERKLE_DATA_SIBLING, RESP_ONIONPIR_MERKLE_DATA_SIBLING),
+        ];
+
+        let mut total_index_verified = 0usize;
+        let mut total_data_verified = 0usize;
+
+        for (tree_kind, sub_tree, leaves, req_top, resp_top, req_sib, resp_sib) in &trees {
+            if leaves.is_empty() { continue; }
+
+            // Fetch tree-top cache
+            {
+                let mut req = Vec::with_capacity(5);
+                req.extend_from_slice(&1u32.to_le_bytes());
+                req.push(*req_top);
+                sink.send(Message::Binary(req.into())).await.expect("send");
+            }
+            let top_bytes = recv_binary(&mut stream, &mut sink).await;
+            let tree_top = &top_bytes[5..];
+            println!("  {} tree-top cache: {} bytes", tree_kind, tree_top.len());
+
+            let cache_arity = u16::from_le_bytes(tree_top[5..7].try_into().unwrap()) as usize;
+            let num_cached_levels = tree_top[7] as usize;
+            let mut cache_offset = 8usize;
+            let mut cache_levels: Vec<Vec<[u8; 32]>> = Vec::new();
+            for _ in 0..num_cached_levels {
+                let num_nodes = u32::from_le_bytes(tree_top[cache_offset..cache_offset + 4].try_into().unwrap()) as usize;
+                cache_offset += 4;
+                let mut level_nodes = Vec::with_capacity(num_nodes);
+                for _ in 0..num_nodes {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(&tree_top[cache_offset..cache_offset + 32]);
+                    cache_offset += 32;
+                    level_nodes.push(h);
                 }
+                cache_levels.push(level_nodes);
             }
-            let data_hash = merkle::sha256(&full_data);
-            let leaf_hash = merkle::compute_leaf_hash(sh, ir.tree_loc, &data_hash);
-            addrs.push((addr_idx, AddrState {
-                current_hash: leaf_hash,
-                node_idx: ir.tree_loc as usize,
-                failed: false,
-            }));
-        }
-        let num_verifiable = addrs.len();
-        println!("  {} verifiable addresses", num_verifiable);
 
-        // ── Batch sibling PIR: for level { batch all addrs } ─────────
-        for level in 0..mi.levels.len() {
-            let li = &mi.levels[level];
+            // Deduplicate leaves
+            let mut unique_map: HashMap<usize, [u8; 32]> = HashMap::new();
+            for &(lp, hash) in leaves.iter() { unique_map.entry(lp).or_insert(hash); }
+            let leaf_pos_arr: Vec<usize> = unique_map.keys().copied().collect();
+            let n = leaf_pos_arr.len();
+            let mut current_hash: Vec<[u8; 32]> = leaf_pos_arr.iter().map(|lp| unique_map[lp]).collect();
+            let mut node_idx: Vec<usize> = leaf_pos_arr.clone();
+            let mut failed = vec![false; n];
 
-            // Compute groupId per address, deduplicate
-            let mut group_to_addrs: HashMap<u32, Vec<usize>> = HashMap::new();
-            for (ai, (_, state)) in addrs.iter().enumerate() {
-                if state.failed { continue; }
-                let gid = (state.node_idx / mi.arity) as u32;
-                group_to_addrs.entry(gid).or_default().push(ai);
-            }
-            let unique_gids: Vec<u32> = group_to_addrs.keys().copied().collect();
-            println!("  L{}: {} unique groups from {} addrs",
-                level, unique_gids.len(), num_verifiable);
+            println!("  {} unique {} leaves", n, tree_kind);
 
-            // PBC-place unique groupIds
-            let cand_buckets: Vec<[usize; 3]> = unique_gids.iter()
-                .map(|&gid| derive_sib_pbc_buckets(gid, li.k))
-                .collect();
-            let pbc_rounds = pbc_plan_rounds(&cand_buckets, li.k, 3, 500);
+            // Sibling PIR rounds
+            for level in 0..sub_tree.levels.len() {
+                let li = &sub_tree.levels[level];
 
-            // Decrypted sibling data per groupId
-            let mut sibling_data: HashMap<u32, Vec<u8>> = HashMap::new();
+                let mut group_to_items: HashMap<u32, Vec<usize>> = HashMap::new();
+                for i in 0..n {
+                    if failed[i] { continue; }
+                    let gid = (node_idx[i] / mi.arity) as u32;
+                    group_to_items.entry(gid).or_default().push(i);
+                }
+                let unique_gids: Vec<u32> = group_to_items.keys().copied().collect();
+                if unique_gids.is_empty() { break; }
 
-            for (ri, pbc_round) in pbc_rounds.iter().enumerate() {
-                // Per real bucket: build cuckoo, find target bin
-                let mut bucket_info: HashMap<usize, (u32, usize)> = HashMap::new(); // bucket → (gid, target_bin)
-                for &(ugi, bucket) in pbc_round {
-                    let gid = unique_gids[ugi];
+                let cand_groups: Vec<[usize; 3]> = unique_gids.iter()
+                    .map(|&gid| derive_sib_pbc_groups(gid, li.k))
+                    .collect();
+                let pbc_rounds = pbc_plan_rounds(&cand_groups, li.k, 3, 500);
+                let mut sibling_data: HashMap<u32, Vec<u8>> = HashMap::new();
 
-                    // Build reverse index for this bucket
-                    let mut group_entries: Vec<u32> = Vec::new();
-                    for g in 0..li.num_groups as u32 {
-                        let bs = derive_sib_pbc_buckets(g, li.k);
-                        if bs.contains(&bucket) {
-                            group_entries.push(g);
+                for (ri, pbc_round) in pbc_rounds.iter().enumerate() {
+                    let mut group_info: HashMap<usize, (u32, usize)> = HashMap::new();
+                    for &(ugi, pbc_group) in pbc_round {
+                        let gid = unique_gids[ugi];
+                        let mut group_entries: Vec<u32> = Vec::new();
+                        for g in 0..li.num_groups as u32 {
+                            let bs = derive_sib_pbc_groups(g, li.k);
+                            if bs.contains(&pbc_group) { group_entries.push(g); }
                         }
+                        let cuckoo_table = build_sib_cuckoo_for_group(tree_kind, level, pbc_group, &group_entries, li.bins_per_table);
+                        let target_bin = find_in_sib_cuckoo(&cuckoo_table, gid, tree_kind, level, pbc_group, li.bins_per_table)
+                            .unwrap_or_else(|| panic!("{} group {} not in sibling cuckoo L{} group {}", tree_kind, gid, level, pbc_group));
+                        group_info.insert(pbc_group, (gid, target_bin));
                     }
 
-                    let cuckoo_table = build_sib_cuckoo_for_group(level, bucket, &group_entries, li.bins_per_table);
-                    let target_bin = find_in_sib_cuckoo(&cuckoo_table, gid, level, bucket, li.bins_per_table)
-                        .unwrap_or_else(|| panic!("group {} not in sibling cuckoo L{} bucket {}", gid, level, bucket));
-                    bucket_info.insert(bucket, (gid, target_bin));
-                }
-
-                // Generate K FHE queries
-                let mut sib_client = PirClient::new_from_secret_key(
-                    li.bins_per_table as u64, client_id, &secret_key,
-                );
-                let mut sib_queries = Vec::with_capacity(li.k);
-                for b in 0..li.k {
-                    let bin = if let Some(&(_, target_bin)) = bucket_info.get(&b) {
-                        target_bin as u64
-                    } else {
-                        rng.next_u64() % li.bins_per_table as u64
-                    };
-                    sib_queries.push(sib_client.generate_query(bin));
-                }
-
-                let batch = OnionPirBatchQuery { round_id: (level * 100 + ri) as u16, queries: sib_queries };
-                sink.send(Message::Binary(batch.encode(REQ_ONIONPIR_MERKLE_SIBLING).into())).await.expect("send");
-
-                let resp_bytes = recv_binary(&mut stream, &mut sink).await;
-                let resp_payload = &resp_bytes[4..];
-                assert_eq!(resp_payload[0], RESP_ONIONPIR_MERKLE_SIBLING);
-                let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode sibling");
-
-                // Decrypt real buckets
-                for (&bucket, &(gid, target_bin)) in &bucket_info {
-                    let decrypted = sib_client.decrypt_response(
-                        target_bin as u64, &result_batch.results[bucket],
+                    let mut sib_client = PirClient::new_from_secret_key(
+                        li.bins_per_table as u64, client_id, &secret_key,
                     );
-                    sibling_data.insert(gid, decrypted);
-                }
-
-                println!("    L{} PBC round {}/{}: {} groups queried ✓",
-                    level, ri + 1, pbc_rounds.len(), pbc_round.len());
-            }
-
-            // Update each address's state
-            for (&gid, addr_indices) in &group_to_addrs {
-                let decrypted = match sibling_data.get(&gid) {
-                    Some(d) => d,
-                    None => { for &ai in addr_indices { addrs[ai].1.failed = true; } continue; }
-                };
-
-                for &ai in addr_indices {
-                    let state = &mut addrs[ai].1;
-                    if state.failed { continue; }
-                    let child_pos = state.node_idx % mi.arity;
-
-                    let mut children: Vec<[u8; 32]> = Vec::with_capacity(mi.arity);
-                    for c in 0..mi.arity {
-                        let off = c * 32;
-                        if c == child_pos {
-                            children.push(state.current_hash);
+                    let mut sib_queries = Vec::with_capacity(li.k);
+                    for b in 0..li.k {
+                        let bin = if let Some(&(_, target_bin)) = group_info.get(&b) {
+                            target_bin as u64
                         } else {
-                            let mut h = [0u8; 32];
-                            if off + 32 <= decrypted.len() {
-                                h.copy_from_slice(&decrypted[off..off + 32]);
+                            rng.next_u64() % li.bins_per_table as u64
+                        };
+                        sib_queries.push(sib_client.generate_query(bin));
+                    }
+
+                    let batch = OnionPirBatchQuery { round_id: (level * 100 + ri) as u16, queries: sib_queries };
+                    sink.send(Message::Binary(batch.encode(*req_sib).into())).await.expect("send");
+
+                    let resp_bytes = recv_binary(&mut stream, &mut sink).await;
+                    let resp_payload = &resp_bytes[4..];
+                    assert_eq!(resp_payload[0], *resp_sib);
+                    let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode sibling");
+
+                    for (&pbc_group, &(gid, target_bin)) in &group_info {
+                        let decrypted = sib_client.decrypt_response(
+                            target_bin as u64, &result_batch.results[pbc_group],
+                        );
+                        sibling_data.insert(gid, decrypted);
+                    }
+                    println!("    {} L{} PBC round {}/{}: {} groups ✓",
+                        tree_kind, level, ri + 1, pbc_rounds.len(), pbc_round.len());
+                }
+
+                // Update state
+                for (&gid, item_indices) in &group_to_items {
+                    let decrypted = match sibling_data.get(&gid) {
+                        Some(d) => d,
+                        None => { for &i in item_indices { failed[i] = true; } continue; }
+                    };
+                    for &i in item_indices {
+                        if failed[i] { continue; }
+                        let child_pos = node_idx[i] % mi.arity;
+                        let mut children: Vec<[u8; 32]> = Vec::with_capacity(mi.arity);
+                        for c in 0..mi.arity {
+                            if c == child_pos {
+                                children.push(current_hash[i]);
+                            } else {
+                                let off = c * 32;
+                                let mut h = [0u8; 32];
+                                if off + 32 <= decrypted.len() { h.copy_from_slice(&decrypted[off..off + 32]); }
+                                children.push(h);
                             }
-                            children.push(h);
                         }
-                    }
-
-                    state.current_hash = merkle::compute_parent_n(&children);
-                    state.node_idx = gid as usize;
-                }
-            }
-        }
-
-        // ── Walk tree-top cache + verify root per address ────────────
-        let mut verified_count = 0;
-        for (addr_idx, state) in &addrs {
-            if state.failed { continue; }
-
-            let mut current_hash = state.current_hash;
-            let mut node_idx = state.node_idx;
-
-            for ci in 0..cache_levels.len().saturating_sub(1) {
-                let level_nodes = &cache_levels[ci];
-                let parent_start = (node_idx / cache_arity) * cache_arity;
-                let mut children: Vec<[u8; 32]> = Vec::with_capacity(cache_arity);
-                for c in 0..cache_arity {
-                    let idx = parent_start + c;
-                    if idx < level_nodes.len() {
-                        children.push(level_nodes[idx]);
-                    } else {
-                        children.push([0u8; 32]);
+                        current_hash[i] = merkle::compute_parent_n(&children);
+                        node_idx[i] = gid as usize;
                     }
                 }
-                current_hash = merkle::compute_parent_n(&children);
-                node_idx /= cache_arity;
             }
 
-            if current_hash == mi.root {
-                verified_count += 1;
-                let root_hex: String = mi.root.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-                println!("  [{}] Merkle VERIFIED ✓ (root={}...)", addr_idx + 1, root_hex);
-            } else {
-                let got_hex: String = current_hash.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-                let exp_hex: String = mi.root.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-                println!("  [{}] Merkle FAILED ✗ (got={}... expected={}...)", addr_idx + 1, got_hex, exp_hex);
+            // Walk tree-top cache to root
+            let mut verified = 0usize;
+            for i in 0..n {
+                if failed[i] { continue; }
+                let mut hash = current_hash[i];
+                let mut idx = node_idx[i];
+                for ci in 0..cache_levels.len().saturating_sub(1) {
+                    let level_nodes = &cache_levels[ci];
+                    let parent_start = (idx / cache_arity) * cache_arity;
+                    let mut children: Vec<[u8; 32]> = Vec::with_capacity(cache_arity);
+                    for c in 0..cache_arity {
+                        let child_idx = parent_start + c;
+                        children.push(if child_idx < level_nodes.len() { level_nodes[child_idx] } else { [0u8; 32] });
+                    }
+                    hash = merkle::compute_parent_n(&children);
+                    idx /= cache_arity;
+                }
+                if hash == sub_tree.root { verified += 1; }
             }
+            println!("  {} tree: {}/{} leaves verified\n", tree_kind, verified, n);
+
+            if *tree_kind == "index" { total_index_verified = verified; }
+            else { total_data_verified = verified; }
         }
-        println!("\n  Batch Merkle: {}/{} verified\n", verified_count, num_verifiable);
+
+        println!("  Per-Bin Merkle: INDEX {}/{}, DATA {}/{}\n",
+            total_index_verified, index_leaves.len(), total_data_verified, data_leaves.len());
     } else {
         println!("\n[7] Merkle: not available (no onionpir_merkle in server info)");
     }

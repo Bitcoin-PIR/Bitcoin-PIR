@@ -1,7 +1,7 @@
 //! HarmonyPIR hint generation CLI.
 //!
 //! Reads cuckoo table files (same as DPF server) and generates a HarmonyPIR
-//! state file containing pre-computed hints for all PBC buckets.
+//! state file containing pre-computed hints for all PBC groups.
 //!
 //! Usage:
 //!   cargo run --release -p runtime --bin harmonypir_gen_hints -- \
@@ -13,8 +13,8 @@ use harmonypir::params::Params;
 use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::RelocationDS;
-use harmonypir_wasm::state::{self, BucketEntry, StateFileHeader};
-use harmonypir_wasm::{compute_rounds, derive_bucket_key, find_best_t, HarmonyBucket, PRP_HOANG};
+use harmonypir_wasm::state::{self, GroupEntry, StateFileHeader};
+use harmonypir_wasm::{compute_rounds, derive_group_key, find_best_t, HarmonyGroup, PRP_HOANG};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -37,7 +37,7 @@ fn main() {
     let index_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
     let index_mmap = unsafe { Mmap::map(&index_file) }.expect("mmap index cuckoo");
     let (index_bins_per_table, tag_seed) = read_cuckoo_header(&index_mmap);
-    let index_entry_size = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE;
+    let index_entry_size = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
     println!("  bins_per_table={}, entry_size={}B, tag_seed=0x{:016x}",
         index_bins_per_table, index_entry_size, tag_seed);
 
@@ -45,18 +45,18 @@ fn main() {
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap chunk cuckoo");
     let chunk_bins_per_table = read_chunk_cuckoo_header(&chunk_mmap);
-    let chunk_entry_size = CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE);
+    let chunk_entry_size = CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE);
     println!("  bins_per_table={}, entry_size={}B", chunk_bins_per_table, chunk_entry_size);
 
-    // Compute hints for index buckets.
-    println!("\n[3] Computing hints for {} index buckets (N={}, w={})...",
+    // Compute hints for index groups.
+    println!("\n[3] Computing hints for {} index groups (N={}, w={})...",
         K, index_bins_per_table, index_entry_size);
     let t_start = Instant::now();
 
-    let index_entries: Vec<BucketEntry> = (0..K as u32)
+    let index_entries: Vec<GroupEntry> = (0..K as u32)
         .into_par_iter()
         .map(|b| {
-            compute_bucket_hints(
+            compute_group_hints(
                 &prp_key, b, 0,
                 &index_mmap, HEADER_SIZE, index_bins_per_table, index_entry_size,
             )
@@ -64,15 +64,15 @@ fn main() {
         .collect();
     println!("  Done in {:.2?}", t_start.elapsed());
 
-    // Compute hints for chunk buckets.
-    println!("[4] Computing hints for {} chunk buckets (N={}, w={})...",
+    // Compute hints for chunk groups.
+    println!("[4] Computing hints for {} chunk groups (N={}, w={})...",
         K_CHUNK, chunk_bins_per_table, chunk_entry_size);
     let t_start = Instant::now();
 
-    let chunk_entries: Vec<BucketEntry> = (0..K_CHUNK as u32)
+    let chunk_entries: Vec<GroupEntry> = (0..K_CHUNK as u32)
         .into_par_iter()
         .map(|b| {
-            compute_bucket_hints(
+            compute_group_hints(
                 &prp_key, K as u32 + b, 1,
                 &chunk_mmap, CHUNK_HEADER_SIZE, chunk_bins_per_table, chunk_entry_size,
             )
@@ -81,12 +81,12 @@ fn main() {
     println!("  Done in {:.2?}", t_start.elapsed());
 
     // Write state file.
-    let all_entries: Vec<BucketEntry> = index_entries
+    let all_entries: Vec<GroupEntry> = index_entries
         .into_iter()
         .chain(chunk_entries.into_iter())
         .collect();
 
-    println!("\n[5] Writing state file ({} buckets)...", all_entries.len());
+    println!("\n[5] Writing state file ({} groups)...", all_entries.len());
     let header = StateFileHeader {
         prp_backend: PRP_HOANG,
         prp_key,
@@ -104,15 +104,15 @@ fn main() {
     println!("\n=== Done ===");
 }
 
-fn compute_bucket_hints(
+fn compute_group_hints(
     prp_key: &[u8; 16],
-    bucket_id: u32,
+    group_id: u32,
     level: u8,
     table_mmap: &[u8],
     header_size: usize,
     bins_per_table: usize,
     entry_size: usize,
-) -> BucketEntry {
+) -> GroupEntry {
     let n = bins_per_table;
     let w = entry_size;
     let t = find_best_t(n as u32) as usize;
@@ -120,7 +120,7 @@ fn compute_bucket_hints(
     let params = Params::new(n, w, t).expect("valid params");
     let m = params.m;
 
-    let derived_key = derive_bucket_key(prp_key, bucket_id);
+    let derived_key = derive_group_key(prp_key, group_id);
     let r = compute_rounds(n as u32);
     let domain = 2 * n;
     let prp: Box<dyn Prp> = Box::new(HoangPrp::new(domain, r, &derived_key));
@@ -129,11 +129,11 @@ fn compute_bucket_hints(
     // Compute hint parities.
     let mut hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w]).collect();
 
-    // The bucket's cuckoo table within the file.
-    // For level 0 (index): bucket_id is used directly.
-    // For level 1 (chunk): bucket_id has K offset, so strip it.
-    let actual_bucket = if level == 1 { bucket_id - K as u32 } else { bucket_id };
-    let table_offset = header_size + actual_bucket as usize * bins_per_table * entry_size;
+    // The group's cuckoo table within the file.
+    // For level 0 (index): group_id is used directly.
+    // For level 1 (chunk): group_id has K offset, so strip it.
+    let actual_group = if level == 1 { group_id - K as u32 } else { group_id };
+    let table_offset = header_size + actual_group as usize * bins_per_table * entry_size;
 
     for k in 0..n {
         let cell = ds.locate(k).expect("locate");
@@ -145,18 +145,18 @@ fn compute_bucket_hints(
         }
     }
 
-    // Create a HarmonyBucket, load hints, serialize.
-    let mut bucket = HarmonyBucket::new_with_backend(
-        n as u32, w as u32, t as u32, prp_key, bucket_id, PRP_HOANG,
-    ).expect("bucket creation");
+    // Create a HarmonyGroup, load hints, serialize.
+    let mut group = HarmonyGroup::new_with_backend(
+        n as u32, w as u32, t as u32, prp_key, group_id, PRP_HOANG,
+    ).expect("group creation");
 
     let flat: Vec<u8> = hints.into_iter().flat_map(|h| h.into_iter()).collect();
-    bucket.load_hints(&flat).expect("load hints");
+    group.load_hints(&flat).expect("load hints");
 
-    BucketEntry {
-        bucket_id,
+    GroupEntry {
+        group_id: group_id,
         level,
-        data: bucket.serialize(),
+        data: group.serialize(),
     }
 }
 

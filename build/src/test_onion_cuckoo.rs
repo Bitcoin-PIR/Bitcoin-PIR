@@ -1,11 +1,11 @@
 //! Test the two new cuckoo table configurations for OnionPIR integration.
 //!
-//! A) Index level: 2 hash functions, bucket_size=256, load_factor=0.95
+//! A) Index level: 2 hash functions, slots_per_bin=256, load_factor=0.95
 //!    - ~2M entries per group (matching 50M addresses × 3 / 75)
 //!    - Each bin holds 256 × 15-byte slots = 3840 bytes = one OnionPIR entry
 //!    - Client tries both bins, scans for tag match
 //!
-//! B) Chunk level: 6 hash functions, bucket_size=1, load_factor=0.95
+//! B) Chunk level: 6 hash functions, slots_per_bin=1, load_factor=0.95
 //!    - ~43K entries per group (matching 1.09M entries × 3 / 80)
 //!    - Client computes table deterministically → knows exact bin → 1 query
 //!    - Test: rebuild from scratch on "client side" → verify identical placement
@@ -46,22 +46,22 @@ fn cuckoo_hash_int(entry_id: u32, key: u64, num_bins: usize) -> usize {
 const EMPTY: u32 = u32::MAX;
 
 // ═════════════════════════════════════════════════════════════════════════════
-// A) INDEX CUCKOO: 2-hash, bucket_size=256, load=0.95
+// A) INDEX CUCKOO: 2-hash, slots_per_bin=256, load=0.95
 // ═════════════════════════════════════════════════════════════════════════════
 
 fn test_index_cuckoo() {
     const NUM_HASHES: usize = 2;
-    const BUCKET_SIZE: usize = 256;
+    const SLOTS_PER_BIN: usize = 256;
     const LOAD_FACTOR: f64 = 0.95;
     const MAX_KICKS: usize = 5000;
     const ENTRIES_PER_GROUP: usize = 2_000_000; // ~50M × 3 / 75
 
-    println!("=== A) Index Cuckoo: {}-hash, bucket_size={}, LF={} ===",
-        NUM_HASHES, BUCKET_SIZE, LOAD_FACTOR);
+    println!("=== A) Index Cuckoo: {}-hash, slots_per_bin={}, LF={} ===",
+        NUM_HASHES, SLOTS_PER_BIN, LOAD_FACTOR);
     println!("  Entries per group: {}", ENTRIES_PER_GROUP);
 
-    let num_bins = ((ENTRIES_PER_GROUP as f64) / (BUCKET_SIZE as f64 * LOAD_FACTOR)).ceil() as usize;
-    let total_capacity = num_bins * BUCKET_SIZE;
+    let num_bins = ((ENTRIES_PER_GROUP as f64) / (SLOTS_PER_BIN as f64 * LOAD_FACTOR)).ceil() as usize;
+    let total_capacity = num_bins * SLOTS_PER_BIN;
     println!("  num_bins: {}", num_bins);
     println!("  total capacity: {} (entries/capacity = {:.4})",
         total_capacity, ENTRIES_PER_GROUP as f64 / total_capacity as f64);
@@ -74,9 +74,9 @@ fn test_index_cuckoo() {
         keys[h] = derive_cuckoo_key(seed, group_id, h);
     }
 
-    // Each bin has BUCKET_SIZE slots; each slot holds an entry_id (u32).
-    // table[bin * BUCKET_SIZE + slot] = entry_id or EMPTY
-    let mut table = vec![EMPTY; num_bins * BUCKET_SIZE];
+    // Each bin has SLOTS_PER_BIN slots; each slot holds an entry_id (u32).
+    // table[bin * SLOTS_PER_BIN + slot] = entry_id or EMPTY
+    let mut table = vec![EMPTY; num_bins * SLOTS_PER_BIN];
     // Track how many slots are used per bin
     let mut bin_occupancy = vec![0u16; num_bins];
 
@@ -99,8 +99,8 @@ fn test_index_cuckoo() {
 
         for &bin in &bin_order {
             let occ = bin_occupancy[bin] as usize;
-            if occ < BUCKET_SIZE {
-                table[bin * BUCKET_SIZE + occ] = entry_id;
+            if occ < SLOTS_PER_BIN {
+                table[bin * SLOTS_PER_BIN + occ] = entry_id;
                 bin_occupancy[bin] += 1;
                 placed = true;
                 break;
@@ -117,8 +117,8 @@ fn test_index_cuckoo() {
                 // Evict the last entry from current_bin
                 let occ = bin_occupancy[current_bin] as usize;
                 let evict_slot = kick % occ; // vary slot
-                let evicted = table[current_bin * BUCKET_SIZE + evict_slot];
-                table[current_bin * BUCKET_SIZE + evict_slot] = current_id;
+                let evicted = table[current_bin * SLOTS_PER_BIN + evict_slot];
+                table[current_bin * SLOTS_PER_BIN + evict_slot] = current_id;
 
                 // Find alternative bin for evicted entry
                 let ev_bins: [usize; NUM_HASHES] = std::array::from_fn(|h| {
@@ -127,8 +127,8 @@ fn test_index_cuckoo() {
                 let alt_bin = if ev_bins[0] == current_bin { ev_bins[1] } else { ev_bins[0] };
 
                 let alt_occ = bin_occupancy[alt_bin] as usize;
-                if alt_occ < BUCKET_SIZE {
-                    table[alt_bin * BUCKET_SIZE + alt_occ] = evicted;
+                if alt_occ < SLOTS_PER_BIN {
+                    table[alt_bin * SLOTS_PER_BIN + alt_occ] = evicted;
                     bin_occupancy[alt_bin] += 1;
                     kicked = true;
                     total_kicks += kick as u64 + 1;
@@ -156,7 +156,7 @@ fn test_index_cuckoo() {
     let avg_occ = total_placed as f64 / num_bins as f64;
 
     // Occupancy distribution (sample some buckets)
-    let mut occ_histogram = vec![0u32; BUCKET_SIZE + 1];
+    let mut occ_histogram = vec![0u32; SLOTS_PER_BIN + 1];
     for &occ in &bin_occupancy {
         occ_histogram[occ as usize] += 1;
     }
@@ -175,7 +175,7 @@ fn test_index_cuckoo() {
     println!("\n    Occupancy distribution:");
     println!("      Empty bins (0 slots): {}", occ_histogram[0]);
     let low = occ_histogram.iter().enumerate()
-        .take(BUCKET_SIZE / 2)
+        .take(SLOTS_PER_BIN / 2)
         .filter(|(_, &c)| c > 0)
         .take(5);
     for (occ, &count) in low {
@@ -183,7 +183,7 @@ fn test_index_cuckoo() {
     }
     println!("      ...");
     let high_start = if avg_occ > 10.0 { avg_occ as usize - 5 } else { 0 };
-    for occ in high_start..=BUCKET_SIZE {
+    for occ in high_start..=SLOTS_PER_BIN {
         if occ_histogram[occ] > 0 {
             println!("      {} slots: {} bins", occ, occ_histogram[occ]);
         }
@@ -203,7 +203,7 @@ fn test_index_cuckoo() {
         for &bin in &bins {
             let occ = bin_occupancy[bin] as usize;
             for s in 0..occ {
-                if table[bin * BUCKET_SIZE + s] == entry_id {
+                if table[bin * SLOTS_PER_BIN + s] == entry_id {
                     entry_found = true;
                     break;
                 }
@@ -228,10 +228,10 @@ fn test_index_cuckoo() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// B) CHUNK CUCKOO: 6-hash, bucket_size=1, load=0.95
+// B) CHUNK CUCKOO: 6-hash, slots_per_bin=1, load=0.95
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// Build a cuckoo table with `num_hashes` hash functions, bucket_size=1.
+/// Build a cuckoo table with `num_hashes` hash functions, slots_per_bin=1.
 /// Returns (table, success). Table maps bin → entry_id.
 fn build_cuckoo_bs1(
     entries: &[u32],
@@ -331,7 +331,7 @@ fn test_chunk_cuckoo() {
     const MAX_KICKS: usize = 10000;
     const ENTRIES_PER_GROUP: usize = 40_900; // ~1.09M × 3 / 80
 
-    println!("\n=== B) Chunk Cuckoo: {}-hash, bucket_size=1, LF={} ===",
+    println!("\n=== B) Chunk Cuckoo: {}-hash, slots_per_bin=1, LF={} ===",
         NUM_HASHES, LOAD_FACTOR);
     println!("  Entries per group: {}", ENTRIES_PER_GROUP);
 

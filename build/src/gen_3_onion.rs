@@ -1,4 +1,4 @@
-//! Build OnionPIR index database: 75 groups with 2-hash cuckoo (bucket_size=256).
+//! Build OnionPIR index database: 75 groups with 2-hash cuckoo (slots_per_bin=256).
 //!
 //! Reads the OnionPIR index file (27-byte entries from gen_1_onion), assigns
 //! entries to 75 PBC groups, builds per-group cuckoo tables, and produces
@@ -11,7 +11,7 @@
 //!   [8B tag | 4B entry_id | 2B byte_offset | 1B num_entries]
 //!
 //! Output:
-//!   - onion_index_pir/bucket_N.bin: preprocessed OnionPIR databases (one per group)
+//!   - onion_index_pir/group_N.bin: preprocessed OnionPIR databases (one per group)
 //!   - onion_index_meta.bin: header with parameters for the server to load
 //!
 //! Usage:
@@ -29,16 +29,16 @@ use std::time::Instant;
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_index.bin";
-const TREE_LOCS_FILE: &str = "/Volumes/Bitcoin/data/intermediate/tree_locs.bin";
 const OUTPUT_DIR: &str = "/Volumes/Bitcoin/data/onion_index_pir";
 const META_FILE: &str = "/Volumes/Bitcoin/data/onion_index_meta.bin";
+const BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_index_bin_hashes.bin";
 
 /// OnionPIR index entry from gen_1_onion: 20B script_hash + 4B entry_id + 2B offset + 1B num_entries
-const ONION_INDEX_ENTRY_SIZE: usize = 27;
+const ONION_INDEX_RECORD_SIZE: usize = 27;
 const SCRIPT_HASH_SIZE: usize = 20;
 
-/// Index slot in the cuckoo table: 8B tag + 4B entry_id + 2B offset + 1B num_entries + 4B tree_loc
-const INDEX_SLOT_SIZE: usize = 19;
+/// Index slot in the cuckoo table: 8B tag + 4B entry_id + 2B offset + 1B num_entries
+const INDEX_SLOT_SIZE: usize = 15;
 
 /// PBC parameters
 const K: usize = 75;
@@ -47,7 +47,7 @@ const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
 
 /// Cuckoo parameters for index level
 const CUCKOO_NUM_HASHES: usize = 2;
-const CUCKOO_BUCKET_SIZE: usize = 202; // 202 × 19B = 3838B ≤ 3840B
+const SLOTS_PER_BIN: usize = 256; // 256 × 15B = 3840B
 const CUCKOO_LOAD_FACTOR: f64 = 0.95;
 const CUCKOO_MAX_KICKS: usize = 5000;
 const EMPTY: u32 = u32::MAX;
@@ -55,7 +55,7 @@ const EMPTY: u32 = u32::MAX;
 /// Tag seed for fingerprint computation
 const TAG_SEED: u64 = 0xd4e5f6a7b8c91023;
 
-/// OnionPIR entry size (must equal CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE)
+/// OnionPIR entry size (must equal SLOTS_PER_BIN * INDEX_SLOT_SIZE)
 const ONIONPIR_ENTRY_SIZE: usize = 3840;
 
 const FLAG_WHALE: u8 = 0x40;
@@ -88,36 +88,36 @@ fn sh_c(sh: &[u8]) -> u64 {
 }
 
 #[inline]
-fn hash_for_bucket(sh: &[u8], nonce: u64) -> u64 {
+fn hash_for_group(sh: &[u8], nonce: u64) -> u64 {
     let mut h = sh_a(sh).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15));
     h ^= sh_b(sh);
     splitmix64(h ^ sh_c(sh))
 }
 
-fn derive_buckets(sh: &[u8]) -> [usize; NUM_HASHES] {
-    let mut buckets = [0usize; NUM_HASHES];
+fn derive_groups(sh: &[u8]) -> [usize; NUM_HASHES] {
+    let mut groups = [0usize; NUM_HASHES];
     let mut nonce: u64 = 0;
     let mut count = 0;
     while count < NUM_HASHES {
-        let h = hash_for_bucket(sh, nonce);
-        let bucket = (h % K as u64) as usize;
+        let h = hash_for_group(sh, nonce);
+        let group = (h % K as u64) as usize;
         nonce += 1;
         let mut dup = false;
         for i in 0..count {
-            if buckets[i] == bucket { dup = true; break; }
+            if groups[i] == group { dup = true; break; }
         }
         if dup { continue; }
-        buckets[count] = bucket;
+        groups[count] = group;
         count += 1;
     }
-    buckets
+    groups
 }
 
 #[inline]
-fn derive_cuckoo_key(bucket_id: usize, hash_fn: usize) -> u64 {
+fn derive_cuckoo_key(group_id: usize, hash_fn: usize) -> u64 {
     splitmix64(
         MASTER_SEED
-            .wrapping_add((bucket_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
+            .wrapping_add((group_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
             .wrapping_add((hash_fn as u64).wrapping_mul(0x517cc1b727220a95)),
     )
 }
@@ -149,25 +149,25 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-// ─── Cuckoo table builder (2-hash, bucket_size=256) ─────────────────────────
+// ─── Cuckoo table builder (2-hash, slots_per_bin=256) ───────────────────────
 
-/// Build a 2-hash cuckoo table with large bucket_size.
-/// Returns (table, success). table[bin * CUCKOO_BUCKET_SIZE + slot] = entry index.
+/// Build a 2-hash cuckoo table with large slots_per_bin.
+/// Returns (table, success). table[bin * SLOTS_PER_BIN + slot] = entry index.
 fn build_index_cuckoo(
-    bucket_id: usize,
+    group_id: usize,
     entries: &[u32],
     mmap: &[u8],
     num_bins: usize,
 ) -> (Vec<u32>, bool) {
-    let total_slots = num_bins * CUCKOO_BUCKET_SIZE;
+    let total_slots = num_bins * SLOTS_PER_BIN;
     let mut table = vec![EMPTY; total_slots];
     let mut bin_occupancy = vec![0u16; num_bins];
 
-    let key0 = derive_cuckoo_key(bucket_id, 0);
-    let key1 = derive_cuckoo_key(bucket_id, 1);
+    let key0 = derive_cuckoo_key(group_id, 0);
+    let key1 = derive_cuckoo_key(group_id, 1);
 
     let get_sh = |idx: u32| -> &[u8] {
-        let base = idx as usize * ONION_INDEX_ENTRY_SIZE;
+        let base = idx as usize * ONION_INDEX_RECORD_SIZE;
         &mmap[base..base + SCRIPT_HASH_SIZE]
     };
 
@@ -186,15 +186,15 @@ fn build_index_cuckoo(
         };
 
         let occ0 = bin_occupancy[first] as usize;
-        if occ0 < CUCKOO_BUCKET_SIZE {
-            table[first * CUCKOO_BUCKET_SIZE + occ0] = idx;
+        if occ0 < SLOTS_PER_BIN {
+            table[first * SLOTS_PER_BIN + occ0] = idx;
             bin_occupancy[first] += 1;
             continue;
         }
 
         let occ1 = bin_occupancy[second] as usize;
-        if occ1 < CUCKOO_BUCKET_SIZE {
-            table[second * CUCKOO_BUCKET_SIZE + occ1] = idx;
+        if occ1 < SLOTS_PER_BIN {
+            table[second * SLOTS_PER_BIN + occ1] = idx;
             bin_occupancy[second] += 1;
             continue;
         }
@@ -207,8 +207,8 @@ fn build_index_cuckoo(
         for kick in 0..CUCKOO_MAX_KICKS {
             let occ = bin_occupancy[current_bin] as usize;
             let evict_slot = kick % occ;
-            let evicted = table[current_bin * CUCKOO_BUCKET_SIZE + evict_slot];
-            table[current_bin * CUCKOO_BUCKET_SIZE + evict_slot] = current_idx;
+            let evicted = table[current_bin * SLOTS_PER_BIN + evict_slot];
+            table[current_bin * SLOTS_PER_BIN + evict_slot] = current_idx;
 
             let ev_sh = get_sh(evicted);
             let ev_bin0 = cuckoo_hash(ev_sh, key0, num_bins);
@@ -216,8 +216,8 @@ fn build_index_cuckoo(
             let alt_bin = if ev_bin0 == current_bin { ev_bin1 } else { ev_bin0 };
 
             let alt_occ = bin_occupancy[alt_bin] as usize;
-            if alt_occ < CUCKOO_BUCKET_SIZE {
-                table[alt_bin * CUCKOO_BUCKET_SIZE + alt_occ] = evicted;
+            if alt_occ < SLOTS_PER_BIN {
+                table[alt_bin * SLOTS_PER_BIN + alt_occ] = evicted;
                 bin_occupancy[alt_bin] += 1;
                 success = true;
                 break;
@@ -236,17 +236,16 @@ fn build_index_cuckoo(
 }
 
 /// Serialize a cuckoo table into OnionPIR entries.
-/// Each bin (202 slots × 19 bytes) becomes one 3840-byte OnionPIR entry.
+/// Each bin (256 slots × 15 bytes) becomes one 3840-byte OnionPIR entry.
 fn serialize_cuckoo_bin(
     table: &[u32],
     bin: usize,
     mmap: &[u8],
-    tree_locs: &[u8],
 ) -> [u8; ONIONPIR_ENTRY_SIZE] {
     let mut entry = [0u8; ONIONPIR_ENTRY_SIZE];
-    let base = bin * CUCKOO_BUCKET_SIZE;
+    let base = bin * SLOTS_PER_BIN;
 
-    for slot in 0..CUCKOO_BUCKET_SIZE {
+    for slot in 0..SLOTS_PER_BIN {
         let idx = table[base + slot];
         let slot_offset = slot * INDEX_SLOT_SIZE;
 
@@ -255,7 +254,7 @@ fn serialize_cuckoo_bin(
             continue;
         }
 
-        let entry_base = idx as usize * ONION_INDEX_ENTRY_SIZE;
+        let entry_base = idx as usize * ONION_INDEX_RECORD_SIZE;
         let sh = &mmap[entry_base..entry_base + SCRIPT_HASH_SIZE];
 
         // Tag (8 bytes)
@@ -266,11 +265,6 @@ fn serialize_cuckoo_bin(
         // These are at bytes 20..27 of the onion index entry
         entry[slot_offset + 8..slot_offset + 15]
             .copy_from_slice(&mmap[entry_base + 20..entry_base + 27]);
-
-        // tree_loc (4 bytes) — from tree_locs.bin sidecar (indexed by onion_index position)
-        let tl_off = idx as usize * 4;
-        entry[slot_offset + 15..slot_offset + 19]
-            .copy_from_slice(&tree_locs[tl_off..tl_off + 4]);
     }
 
     entry
@@ -280,10 +274,10 @@ fn serialize_cuckoo_bin(
 
 fn main() {
     assert!(
-        CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE <= ONIONPIR_ENTRY_SIZE,
-        "bucket_size * slot_size must fit within OnionPIR entry size ({}*{}={} > {})",
-        CUCKOO_BUCKET_SIZE, INDEX_SLOT_SIZE,
-        CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE, ONIONPIR_ENTRY_SIZE,
+        SLOTS_PER_BIN * INDEX_SLOT_SIZE <= ONIONPIR_ENTRY_SIZE,
+        "slots_per_bin * slot_size must fit within OnionPIR entry size ({}*{}={} > {})",
+        SLOTS_PER_BIN, INDEX_SLOT_SIZE,
+        SLOTS_PER_BIN * INDEX_SLOT_SIZE, ONIONPIR_ENTRY_SIZE,
     );
 
     println!("=== gen_3_onion: Build OnionPIR Index Database ===\n");
@@ -293,14 +287,14 @@ fn main() {
     println!("[1] Memory-mapping index file: {}", INDEX_FILE);
     let file = File::open(INDEX_FILE).expect("open index file");
     let mmap = unsafe { Mmap::map(&file) }.expect("mmap index");
-    let n = mmap.len() / ONION_INDEX_ENTRY_SIZE;
-    assert_eq!(mmap.len() % ONION_INDEX_ENTRY_SIZE, 0, "index file not aligned");
+    let n = mmap.len() / ONION_INDEX_RECORD_SIZE;
+    assert_eq!(mmap.len() % ONION_INDEX_RECORD_SIZE, 0, "index file not aligned");
     println!("  {} entries ({})", n, format_bytes(mmap.len() as u64));
 
     // Count non-whale entries
     let mut non_whale = 0usize;
     for i in 0..n {
-        let base = i * ONION_INDEX_ENTRY_SIZE;
+        let base = i * ONION_INDEX_RECORD_SIZE;
         let num_entries_byte = mmap[base + 26]; // last byte = num_entries or FLAG_WHALE
         // Whale entries have num_entries = FLAG_WHALE (0x40) from gen_1_onion
         // Actually, gen_1_onion writes: entry_id=0, offset=0, num_entries=FLAG_WHALE
@@ -310,12 +304,6 @@ fn main() {
         }
     }
     println!("  Non-whale entries: {} (whale: {})", non_whale, n - non_whale);
-
-    // Load tree_locs sidecar (4 bytes per entry, indexed by onion_index position)
-    let tree_locs_file = File::open(TREE_LOCS_FILE).expect("open tree_locs.bin");
-    let tree_locs = unsafe { Mmap::map(&tree_locs_file) }.expect("mmap tree_locs");
-    assert_eq!(tree_locs.len(), n * 4, "tree_locs.bin size mismatch (expected {} entries)", n);
-    println!("  tree_locs.bin: {} entries loaded", n);
 
     // ── 2. Assign entries to PBC groups ─────────────────────────────────
     println!("\n[2] Assigning entries to {} PBC groups...", K);
@@ -329,10 +317,10 @@ fn main() {
     // Include whale entries — they must be findable in the index so clients
     // can detect them and skip the chunk phase.
     for i in 0..n {
-        let base = i * ONION_INDEX_ENTRY_SIZE;
+        let base = i * ONION_INDEX_RECORD_SIZE;
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
-        let buckets = derive_buckets(sh);
-        for &b in &buckets {
+        let assigned = derive_groups(sh);
+        for &b in &assigned {
             groups[b].push(i as u32);
         }
     }
@@ -346,27 +334,26 @@ fn main() {
 
     // ── 3. Build cuckoo tables in parallel ──────────────────────────────
     let bins_per_table =
-        ((max_group as f64) / (CUCKOO_BUCKET_SIZE as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
+        ((max_group as f64) / (SLOTS_PER_BIN as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
 
     println!("\n[3] Building cuckoo tables ({}-hash, bs={}, bins_per_table={})...",
-        CUCKOO_NUM_HASHES, CUCKOO_BUCKET_SIZE, bins_per_table);
+        CUCKOO_NUM_HASHES, SLOTS_PER_BIN, bins_per_table);
     let t_cuckoo = Instant::now();
 
     let mmap_slice: &[u8] = &mmap;
-    let tree_locs_slice: &[u8] = &tree_locs;
     let completed = AtomicUsize::new(0);
 
     let cuckoo_results: Vec<(usize, Vec<u32>, bool)> = groups
         .into_par_iter()
         .enumerate()
-        .map(|(bucket_id, entries)| {
-            let (table, success) = build_index_cuckoo(bucket_id, &entries, mmap_slice, bins_per_table);
+        .map(|(group_id, entries)| {
+            let (table, success) = build_index_cuckoo(group_id, &entries, mmap_slice, bins_per_table);
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             if done % 10 == 0 || done == K {
                 eprint!("\r  Progress: {}/{} groups", done, K);
                 let _ = io::stderr().flush();
             }
-            (bucket_id, table, success)
+            (group_id, table, success)
         })
         .collect();
 
@@ -399,19 +386,19 @@ fn main() {
     println!("  Total for {} groups: {:.2} GB", K, p.physical_size_mb * K as f64 / 1024.0);
 
     // Process groups sequentially (OnionPIR Server is not Send)
-    for (bucket_id, table, _) in &cuckoo_results {
-        let preproc_path = Path::new(OUTPUT_DIR).join(format!("bucket_{}.bin", bucket_id));
+    for (group_id, table, _) in &cuckoo_results {
+        let preproc_path = Path::new(OUTPUT_DIR).join(format!("group_{}.bin", group_id));
 
         // Check if already preprocessed
         let mut server = PirServer::new(bins_per_table as u64);
         if preproc_path.exists() && server.load_db(preproc_path.to_str().unwrap()) {
-            if *bucket_id == 0 {
+            if *group_id == 0 {
                 println!("  Loading existing preprocessed databases...");
             }
             continue;
         }
 
-        if *bucket_id == 0 {
+        if *group_id == 0 {
             println!("  Building new databases (this takes a while)...");
         }
 
@@ -424,7 +411,7 @@ fn main() {
             for i in 0..fst_dim {
                 let global_bin = chunk_idx * fst_dim + i;
                 if global_bin < bins_per_table {
-                    let entry_bytes = serialize_cuckoo_bin(table, global_bin, mmap_slice, tree_locs_slice);
+                    let entry_bytes = serialize_cuckoo_bin(table, global_bin, mmap_slice);
                     let offset = i * entry_size;
                     chunk_data[offset..offset + entry_size].copy_from_slice(&entry_bytes);
                 }
@@ -435,8 +422,8 @@ fn main() {
         server.preprocess();
         server.save_db(preproc_path.to_str().unwrap());
 
-        if *bucket_id % 10 == 0 || *bucket_id + 1 == K {
-            eprintln!("  Group {}/{} preprocessed in {:.2?}", bucket_id + 1, K, t_group.elapsed());
+        if *group_id % 10 == 0 || *group_id + 1 == K {
+            eprintln!("  Group {}/{} preprocessed in {:.2?}", group_id + 1, K, t_group.elapsed());
         }
     }
     println!("  All groups built in {:.2?}", t_pir.elapsed());
@@ -450,7 +437,7 @@ fn main() {
         w.write_all(&magic.to_le_bytes()).unwrap();
         w.write_all(&(K as u32).to_le_bytes()).unwrap();
         w.write_all(&(CUCKOO_NUM_HASHES as u32).to_le_bytes()).unwrap();
-        w.write_all(&(CUCKOO_BUCKET_SIZE as u32).to_le_bytes()).unwrap();
+        w.write_all(&(SLOTS_PER_BIN as u32).to_le_bytes()).unwrap();
         w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
         w.write_all(&MASTER_SEED.to_le_bytes()).unwrap();
         w.write_all(&TAG_SEED.to_le_bytes()).unwrap();
@@ -459,23 +446,52 @@ fn main() {
     }
     println!("  Done");
 
-    // ── 6. Verify with test query ───────────────────────────────────────
-    println!("\n[6] Verification: test query against group 0...");
+    // ── 6. Compute and write INDEX bin hashes (for per-bin Merkle) ─────
+    println!("\n[6] Computing INDEX bin hashes for per-bin Merkle...");
+    let t_hash = Instant::now();
+    {
+        let total_bins = K * bins_per_table;
+        let mut bin_hashes = Vec::with_capacity(total_bins * 32);
+        for (group_id, table, _) in &cuckoo_results {
+            for bin in 0..bins_per_table {
+                let entry_bytes = serialize_cuckoo_bin(table, bin, mmap_slice);
+                let hash = pir_core::merkle::sha256(&entry_bytes);
+                bin_hashes.extend_from_slice(&hash);
+            }
+            if *group_id % 10 == 0 || *group_id + 1 == K {
+                eprint!("\r  Hashing group {}/{}", group_id + 1, K);
+            }
+        }
+        eprintln!();
+
+        // Header: [4B K][4B bins_per_table]
+        let f = File::create(BIN_HASHES_FILE).expect("create bin hashes file");
+        let mut w = BufWriter::new(f);
+        w.write_all(&(K as u32).to_le_bytes()).unwrap();
+        w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
+        w.write_all(&bin_hashes).unwrap();
+        w.flush().unwrap();
+        println!("  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
+            total_bins, 8 + total_bins * 32, BIN_HASHES_FILE, t_hash.elapsed());
+    }
+
+    // ── 7. Verify with test query ───────────────────────────────────────
+    println!("\n[7] Verification: test query against group 0...");
 
     // Find a non-whale entry assigned to group 0
     let mut test_idx = None;
     for i in 0..n {
-        let base = i * ONION_INDEX_ENTRY_SIZE;
+        let base = i * ONION_INDEX_RECORD_SIZE;
         if mmap[base + 26] == FLAG_WHALE { continue; }
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
-        let buckets = derive_buckets(sh);
-        if buckets.contains(&0) {
+        let assigned = derive_groups(sh);
+        if assigned.contains(&0) {
             test_idx = Some(i);
             break;
         }
     }
     let test_idx = test_idx.expect("no entries in group 0");
-    let test_base = test_idx * ONION_INDEX_ENTRY_SIZE;
+    let test_base = test_idx * ONION_INDEX_RECORD_SIZE;
     let test_sh = &mmap[test_base..test_base + SCRIPT_HASH_SIZE];
     let test_tag = compute_tag(TAG_SEED, test_sh);
 
@@ -488,8 +504,8 @@ fn main() {
 
     let mut found_bin = None;
     for &candidate_bin in &[bin0, bin1] {
-        let base = candidate_bin * CUCKOO_BUCKET_SIZE;
-        for slot in 0..CUCKOO_BUCKET_SIZE {
+        let base = candidate_bin * SLOTS_PER_BIN;
+        for slot in 0..SLOTS_PER_BIN {
             if test_table[base + slot] == test_idx as u32 {
                 found_bin = Some(candidate_bin);
                 break;
@@ -502,9 +518,9 @@ fn main() {
     println!("  Test entry: index={}, bin={}, tag=0x{:016x}", test_idx, test_bin, test_tag);
 
     // Load the preprocessed database and query
-    let preproc_path = Path::new(OUTPUT_DIR).join("bucket_0.bin");
+    let preproc_path = Path::new(OUTPUT_DIR).join("group_0.bin");
     let mut server = PirServer::new(bins_per_table as u64);
-    assert!(server.load_db(preproc_path.to_str().unwrap()), "failed to load bucket_0.bin");
+    assert!(server.load_db(preproc_path.to_str().unwrap()), "failed to load group_0.bin");
 
     let mut client = PirClient::new(bins_per_table as u64);
     let client_id = client.id();
@@ -518,7 +534,7 @@ fn main() {
     // The decrypted data is a 3840-byte bin with 256 × 15-byte slots.
     // Scan for our tag.
     let mut tag_found = false;
-    for slot in 0..CUCKOO_BUCKET_SIZE {
+    for slot in 0..SLOTS_PER_BIN {
         let offset = slot * INDEX_SLOT_SIZE;
         if offset + 8 > decrypted.len() { break; }
         let slot_tag = u64::from_le_bytes(decrypted[offset..offset + 8].try_into().unwrap());
@@ -526,21 +542,19 @@ fn main() {
             let entry_id = u32::from_le_bytes(decrypted[offset + 8..offset + 12].try_into().unwrap());
             let byte_offset = u16::from_le_bytes(decrypted[offset + 12..offset + 14].try_into().unwrap());
             let num_entries = decrypted[offset + 14];
-            let tree_loc = u32::from_le_bytes(decrypted[offset + 15..offset + 19].try_into().unwrap());
-            println!("  Tag match at slot {}: entry_id={}, offset={}, num_entries={}, tree_loc={}",
-                slot, entry_id, byte_offset, num_entries, tree_loc);
+            println!("  Tag match at slot {}: entry_id={}, offset={}, num_entries={}",
+                slot, entry_id, byte_offset, num_entries);
 
             // Verify against original index entry
             let orig_entry_id = u32::from_le_bytes(mmap[test_base + 20..test_base + 24].try_into().unwrap());
             let orig_offset = u16::from_le_bytes(mmap[test_base + 24..test_base + 26].try_into().unwrap());
             let orig_num = mmap[test_base + 26];
-            let orig_tree_loc = u32::from_le_bytes(tree_locs[test_idx * 4..(test_idx + 1) * 4].try_into().unwrap());
 
-            if entry_id == orig_entry_id && byte_offset == orig_offset && num_entries == orig_num && tree_loc == orig_tree_loc {
+            if entry_id == orig_entry_id && byte_offset == orig_offset && num_entries == orig_num {
                 println!("  Verification: PASS (matches original index entry)");
             } else {
                 println!("  Verification: MISMATCH!");
-                println!("    Expected: entry_id={}, offset={}, num={}, tree_loc={}", orig_entry_id, orig_offset, orig_num, orig_tree_loc);
+                println!("    Expected: entry_id={}, offset={}, num={}", orig_entry_id, orig_offset, orig_num);
             }
             tag_found = true;
             break;
@@ -555,7 +569,7 @@ fn main() {
     println!("Index entries:     {} ({} non-whale)", n, non_whale);
     println!("PBC groups:        {}", K);
     println!("Bins per table:    {} ({} slots × {} bytes = {} B/bin)",
-        bins_per_table, CUCKOO_BUCKET_SIZE, INDEX_SLOT_SIZE, ONIONPIR_ENTRY_SIZE);
+        bins_per_table, SLOTS_PER_BIN, INDEX_SLOT_SIZE, ONIONPIR_ENTRY_SIZE);
     println!("OnionPIR per group: {:.2} MB (NTT-expanded)", p.physical_size_mb);
     println!("Total NTT storage: {:.2} GB", p.physical_size_mb * K as f64 / 1024.0);
     println!("Total time:        {:.2?}", total_start.elapsed());

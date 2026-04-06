@@ -2,7 +2,7 @@
 //!
 //! Takes the 50 queries from batch_pir_results.bin and simulates
 //! fetching all their chunks in rounds, each round filling up to K_CHUNK=80
-//! cuckoo-assigned bucket slots.
+//! cuckoo-assigned group slots.
 //!
 //! A "unit" is CHUNKS_PER_UNIT consecutive 80-byte chunks (e.g. 10 = 800 bytes).
 //! Each PIR query retrieves one unit.  The cuckoo table stores individual
@@ -11,7 +11,7 @@
 //! Algorithm per round:
 //!   1. Each unfinished scriptpubkey contributes its next pending unit.
 //!   2. If slots remain, scriptpubkeys with the most remaining contribute more.
-//!   3. Cuckoo-assign candidates to 80 buckets (with eviction + rollback on fail).
+//!   3. Cuckoo-assign candidates to 80 groups (with eviction + rollback on fail).
 //!   4. Successfully placed units are marked done.
 //!   5. Repeat until all units are fetched.
 //!
@@ -109,18 +109,18 @@ fn adaptive_max_kicks(remaining: usize) -> usize {
 
 // ─── Cuckoo placement with rollback ─────────────────────────────────────────
 
-/// Try to place candidate `qi`. On failure, restore buckets to their prior state.
+/// Try to place candidate `qi`. On failure, restore groups to their prior state.
 fn try_place(
-    cand_buckets: &[[usize; NUM_HASHES]],
-    buckets: &mut [Option<usize>; K_CHUNK],
+    cand_groups: &[[usize; NUM_HASHES]],
+    groups: &mut [Option<usize>; K_CHUNK],
     qi: usize,
     max_kicks: usize,
 ) -> bool {
-    let saved = *buckets;
-    if pbc_cuckoo_place(cand_buckets, &mut buckets[..], qi, max_kicks, NUM_HASHES) {
+    let saved = *groups;
+    if pbc_cuckoo_place(cand_groups, &mut groups[..], qi, max_kicks, NUM_HASHES) {
         true
     } else {
-        *buckets = saved;
+        *groups = saved;
         false
     }
 }
@@ -140,13 +140,13 @@ fn main() {
         eprintln!("Failed to read: {}", e);
         std::process::exit(1);
     });
-    let num_first = results_data.len() / INDEX_ENTRY_SIZE;
+    let num_first = results_data.len() / INDEX_RECORD_SIZE;
     println!("  {} query results loaded", num_first);
 
     let mut spks: Vec<SpkState> = Vec::new();
 
     for i in 0..num_first {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         let mut sh = [0u8; SCRIPT_HASH_SIZE];
         sh.copy_from_slice(&results_data[base..base + SCRIPT_HASH_SIZE]);
         let start_chunk =
@@ -174,10 +174,10 @@ fn main() {
 
     // Scan index file to find this address
     let index_data = std::fs::read(INDEX_FILE).expect("read index file");
-    let num_index = index_data.len() / INDEX_ENTRY_SIZE;
+    let num_index = index_data.len() / INDEX_RECORD_SIZE;
     let mut whale_found = false;
     for i in 0..num_index {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         if index_data[base..base + SCRIPT_HASH_SIZE] == whale_sh {
             let start_chunk =
                 u32::from_le_bytes(index_data[base + 20..base + 24].try_into().unwrap());
@@ -232,7 +232,7 @@ fn main() {
     println!("  Total chunks:        {}", total_chunks);
     println!("  Total units:         {}", total_units);
     println!("  Chunks per unit:     {}", CHUNKS_PER_UNIT);
-    println!("  Buckets per round:   {}", K_CHUNK);
+    println!("  Groups per round:   {}", K_CHUNK);
     println!(
         "  Theoretical min rounds: {} (ceil({}/{})) ",
         (total_units + K_CHUNK - 1) / K_CHUNK,
@@ -253,7 +253,7 @@ fn main() {
     let mut total_served = 0usize;
     let mut total_failed_placements = 0usize;
 
-    // Collect per-round plan data: Vec of (unit_start_chunk_id, bucket_id)
+    // Collect per-round plan data: Vec of (unit_start_chunk_id, group_id)
     let mut plan_rounds: Vec<Vec<(u32, u8)>> = Vec::new();
 
     loop {
@@ -312,12 +312,12 @@ fn main() {
         }
 
         // ── Cuckoo assignment with rollback ──────────────────────────
-        let cand_buckets: Vec<[usize; NUM_HASHES]> = candidates
+        let cand_groups: Vec<[usize; NUM_HASHES]> = candidates
             .iter()
-            .map(|&(_, _, cid)| derive_chunk_buckets(cid))
+            .map(|&(_, _, cid)| derive_chunk_groups(cid))
             .collect();
 
-        let mut buckets: [Option<usize>; K_CHUNK] = [None; K_CHUNK];
+        let mut groups: [Option<usize>; K_CHUNK] = [None; K_CHUNK];
         let mut placed: Vec<usize> = Vec::new();
         let mut failed = 0usize;
 
@@ -325,17 +325,17 @@ fn main() {
             if placed.len() >= K_CHUNK {
                 break;
             }
-            if try_place(&cand_buckets, &mut buckets, i, max_kicks) {
+            if try_place(&cand_groups, &mut groups, i, max_kicks) {
                 placed.push(i);
             } else {
                 failed += 1;
             }
         }
 
-        // Record this round's plan: extract (chunk_id, bucket_id) from buckets
+        // Record this round's plan: extract (chunk_id, group_id) from groups
         let mut round_entries: Vec<(u32, u8)> = Vec::new();
         for b in 0..K_CHUNK {
-            if let Some(ci) = buckets[b] {
+            if let Some(ci) = groups[b] {
                 let (_, _, chunk_id) = candidates[ci];
                 round_entries.push((chunk_id, b as u8));
             }
@@ -386,7 +386,7 @@ fn main() {
     //   [8B PLAN_MAGIC]
     //   [4B num_spks] [4B num_rounds] [4B total_units_placed]
     //   Per spk: [20B script_hash][4B start_chunk][4B num_chunks]
-    //   Per round: [1B num_placed] then num_placed × [4B chunk_id][1B bucket_id]
+    //   Per round: [1B num_placed] then num_placed × [4B chunk_id][1B group_id]
     let out_file = File::create(CHUNK_PIR_PLAN_FILE).unwrap_or_else(|e| {
         eprintln!("Failed to create plan file: {}", e);
         std::process::exit(1);
@@ -408,9 +408,9 @@ fn main() {
     // Rounds
     for round_entries in &plan_rounds {
         w.write_all(&[round_entries.len() as u8]).unwrap();
-        for &(chunk_id, bucket_id) in round_entries {
+        for &(chunk_id, group_id) in round_entries {
             w.write_all(&chunk_id.to_le_bytes()).unwrap();
-            w.write_all(&[bucket_id]).unwrap();
+            w.write_all(&[group_id]).unwrap();
         }
     }
     w.flush().unwrap();

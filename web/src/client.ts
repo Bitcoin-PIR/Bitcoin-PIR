@@ -2,7 +2,7 @@
  * Two-level Batch PIR WebSocket client.
  *
  * Supports true batching: multiple script hashes are packed into a single
- * batch of K=75 index buckets (Level 1) and K_CHUNK=80 chunk buckets
+ * batch of K=75 index groups (Level 1) and K_CHUNK=80 chunk groups
  * (Level 2) using cuckoo placement, minimizing round-trips.
  */
 
@@ -14,8 +14,8 @@ import {
 } from './constants.js';
 
 import {
-  deriveBuckets, deriveCuckooKey, cuckooHash,
-  deriveChunkBuckets, deriveChunkCuckooKey, cuckooHashInt,
+  deriveGroups, deriveCuckooKey, cuckooHash,
+  deriveChunkGroups, deriveChunkCuckooKey, cuckooHashInt,
   computeTag,
 } from './hash.js';
 
@@ -51,14 +51,27 @@ export interface QueryResult {
   isWhale: boolean;
   /** Merkle verification result (undefined if not verified yet) */
   merkleVerified?: boolean;
-  /** Merkle root hash hex (from server, for display) */
+  /** Merkle root hash hex (from server, for display — DPF) */
   merkleRootHex?: string;
-  /** tree_loc in the Merkle tree */
+  /** tree_loc in the Merkle tree (DPF per-entry Merkle) */
   treeLoc?: number;
-  /** Raw chunk data (kept for Merkle verification) */
+  /** Raw chunk data (kept for DPF Merkle verification) */
   rawChunkData?: Uint8Array;
   /** Script hash used for this query */
   scriptHash?: Uint8Array;
+  // ── Per-bin Merkle (OnionPIR) ─────────────────────────────────────
+  /** INDEX-MERKLE root hex (OnionPIR per-bin) */
+  merkleIndexRoot?: string;
+  /** DATA-MERKLE root hex (OnionPIR per-bin) */
+  merkleDataRoot?: string;
+  /** SHA256 of the decrypted INDEX bin (per-bin Merkle leaf) */
+  indexBinHash?: Uint8Array;
+  /** Leaf position in INDEX-MERKLE tree */
+  indexLeafPos?: number;
+  /** SHA256 of each decrypted DATA bin (per-bin Merkle leaves) */
+  dataBinHashes?: Uint8Array[];
+  /** Leaf positions in DATA-MERKLE tree */
+  dataLeafPositions?: number[];
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -107,6 +120,14 @@ export class BatchPirClient {
 
   isConnected(): boolean {
     return (this.ws0?.isOpen() ?? false) && (this.ws1?.isOpen() ?? false);
+  }
+
+  /** Return all open WebSocket connections (for diagnostics like residency check). */
+  getConnectedSockets(): { label: string; ws: ManagedWebSocket }[] {
+    const out: { label: string; ws: ManagedWebSocket }[] = [];
+    if (this.ws0?.isOpen()) out.push({ label: 'DPF Server 0', ws: this.ws0 });
+    if (this.ws1?.isOpen()) out.push({ label: 'DPF Server 1', ws: this.ws1 });
+    return out;
   }
 
   // ─── Connection (delegates to shared ws.ts) ────────────────────────────
@@ -241,7 +262,7 @@ export class BatchPirClient {
   /**
    * Query multiple script hashes in true batched mode.
    *
-   * Level 1: Packs multiple queries into K=75 index buckets using
+   * Level 1: Packs multiple queries into K=75 index groups using
    *   cuckoo placement. If >K queries, uses multiple index rounds.
    * Level 2: Collects ALL chunk IDs across all queries and fetches
    *   them in batched chunk rounds (K_CHUNK=80 per round).
@@ -265,11 +286,11 @@ export class BatchPirClient {
     // ════════════════════════════════════════════════════════════════════
     progress('Level 1', `Planning index batch for ${N} queries...`);
 
-    // Compute candidate index buckets for each query
-    const indexCandBuckets = scriptHashes.map(sh => deriveBuckets(sh));
+    // Compute candidate index groups for each query
+    const indexCandGroups = scriptHashes.map(sh => deriveGroups(sh));
 
     // Plan index rounds using cuckoo placement
-    const indexRounds = planRounds(indexCandBuckets, K, NUM_HASHES, (msg) => this.log(msg, 'error'));
+    const indexRounds = planRounds(indexCandGroups, K, NUM_HASHES, (msg) => this.log(msg, 'error'));
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index round(s)`);
 
     // Per-query results from Level 1
@@ -278,23 +299,23 @@ export class BatchPirClient {
     for (let ir = 0; ir < indexRounds.length; ir++) {
       const round = indexRounds[ir];
       progress('Level 1', `Index round ${ir + 1}/${indexRounds.length} (${round.length} queries)...`);
-      this.log(`  Index round ${ir + 1}: ${round.length} queries in ${K} buckets`);
+      this.log(`  Index round ${ir + 1}: ${round.length} queries in ${K} groups`);
 
-      // Build bucket → query mapping: which query goes in which bucket
-      const bucketToQuery: Map<number, number> = new Map();
-      for (const [queryIdx, bucketId] of round) {
-        bucketToQuery.set(bucketId, queryIdx);
+      // Build group → query mapping: which query goes in which group
+      const groupToQuery: Map<number, number> = new Map();
+      for (const [queryIdx, groupId] of round) {
+        groupToQuery.set(groupId, queryIdx);
       }
 
-      // Generate DPF keys for all K buckets (INDEX_CUCKOO_NUM_HASHES keys per bucket)
+      // Generate DPF keys for all K groups (INDEX_CUCKOO_NUM_HASHES keys per group)
       progress('Level 1', `Round ${ir + 1}: generating DPF keys...`);
       const s0Keys: Uint8Array[][] = [];
       const s1Keys: Uint8Array[][] = [];
 
       for (let b = 0; b < K; b++) {
-        const qi = bucketToQuery.get(b);
-        const s0Bucket: Uint8Array[] = [];
-        const s1Bucket: Uint8Array[] = [];
+        const qi = groupToQuery.get(b);
+        const s0Group: Uint8Array[] = [];
+        const s1Group: Uint8Array[] = [];
 
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
           let alpha: number;
@@ -306,12 +327,12 @@ export class BatchPirClient {
             alpha = Number(this.rng.nextU64() % BigInt(this.indexBins));
           }
           const keys = await genDpfKeys(alpha);
-          s0Bucket.push(keys.key0);
-          s1Bucket.push(keys.key1);
+          s0Group.push(keys.key0);
+          s1Group.push(keys.key1);
         }
 
-        s0Keys.push(s0Bucket);
-        s1Keys.push(s1Bucket);
+        s0Keys.push(s0Group);
+        s1Keys.push(s1Group);
       }
 
       // Send to both servers
@@ -327,16 +348,16 @@ export class BatchPirClient {
         throw new Error(`Unexpected index response: ${resp0.type}, ${resp1.type}`);
       }
 
-      // XOR and extract results for each real query bucket
-      for (const [queryIdx, bucketId] of round) {
-        const r0 = resp0.result.results[bucketId];
-        const r1 = resp1.result.results[bucketId];
+      // XOR and extract results for each real query group
+      for (const [queryIdx, groupId] of round) {
+        const r0 = resp0.result.results[groupId];
+        const r1 = resp1.result.results[groupId];
 
         let found: { startChunkId: number; numChunks: number; treeLoc: number } | null = null;
         const expectedTag = computeTag(this.tagSeed, scriptHashes[queryIdx]);
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
           const result = this.xorBuffers(r0[h], r1[h]);
-          found = findEntryInIndexResult(result, expectedTag, this.serverInfo!.index_cuckoo_bucket_size, this.serverInfo!.index_slot_size);
+          found = findEntryInIndexResult(result, expectedTag, this.serverInfo!.index_slots_per_bin, this.serverInfo!.index_slot_size);
           if (found) break;
         }
 
@@ -386,14 +407,14 @@ export class BatchPirClient {
     this.log(`Level 2: ${allChunkIds.length} unique chunks to fetch across ${indexResults.size} queries`);
 
     // Plan chunk rounds collectively
-    const chunkCandBuckets = allChunkIds.map(cid => deriveChunkBuckets(cid));
+    const chunkCandGroups = allChunkIds.map(cid => deriveChunkGroups(cid));
     const chunkRounds = planRounds(
-      chunkCandBuckets,
+      chunkCandGroups,
       K_CHUNK,
       NUM_HASHES,
       (msg) => this.log(msg, 'error'),
     );
-    // chunkRounds[r][i] = [chunkListIndex, bucketId]
+    // chunkRounds[r][i] = [chunkListIndex, groupId]
     this.log(`  ${allChunkIds.length} chunks → ${chunkRounds.length} chunk round(s)`);
 
     // Execute chunk rounds
@@ -403,16 +424,16 @@ export class BatchPirClient {
       const roundPlan = chunkRounds[ri];
       progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length} (${roundPlan.length} chunks)...`);
 
-      // Always send CHUNK_CUCKOO_NUM_HASHES (2) DPF keys per bucket (uniform, no placement optimization)
-      const bucketTargets: Map<number, number[]> = new Map();
-      for (const [chunkListIdx, bucketId] of roundPlan) {
+      // Always send CHUNK_CUCKOO_NUM_HASHES (2) DPF keys per group (uniform, no placement optimization)
+      const groupTargets: Map<number, number[]> = new Map();
+      for (const [chunkListIdx, groupId] of roundPlan) {
         const chunkId = allChunkIds[chunkListIdx];
         const locs: number[] = [];
         for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
-          const ck = deriveChunkCuckooKey(bucketId, h);
+          const ck = deriveChunkCuckooKey(groupId, h);
           locs.push(cuckooHashInt(chunkId, ck, this.chunkBins));
         }
-        bucketTargets.set(bucketId, locs);
+        groupTargets.set(groupId, locs);
       }
 
       // Generate DPF keys
@@ -420,21 +441,21 @@ export class BatchPirClient {
       const s1Keys: Uint8Array[][] = [];
 
       for (let b = 0; b < K_CHUNK; b++) {
-        const target = bucketTargets.get(b);
-        const s0Bucket: Uint8Array[] = [];
-        const s1Bucket: Uint8Array[] = [];
+        const target = groupTargets.get(b);
+        const s0Group: Uint8Array[] = [];
+        const s1Group: Uint8Array[] = [];
 
         for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
           const alpha = target
             ? target[h]
             : Number(this.rng.nextU64() % BigInt(this.chunkBins));
           const keys = await genChunkDpfKeys(alpha);
-          s0Bucket.push(keys.key0);
-          s1Bucket.push(keys.key1);
+          s0Group.push(keys.key0);
+          s1Group.push(keys.key1);
         }
 
-        s0Keys.push(s0Bucket);
-        s1Keys.push(s1Bucket);
+        s0Keys.push(s0Group);
+        s1Keys.push(s1Group);
       }
 
       // Send
@@ -450,23 +471,23 @@ export class BatchPirClient {
       }
 
       // XOR and extract
-      for (const [chunkListIdx, bucketId] of roundPlan) {
+      for (const [chunkListIdx, groupId] of roundPlan) {
         const chunkId = allChunkIds[chunkListIdx];
-        const cr0 = cresp0.result.results[bucketId];
-        const cr1 = cresp1.result.results[bucketId];
+        const cr0 = cresp0.result.results[groupId];
+        const cr1 = cresp1.result.results[groupId];
 
         let data: Uint8Array | null = null;
         const numResults = cr0.length;
         for (let h = 0; h < numResults; h++) {
           const result = this.xorBuffers(cr0[h], cr1[h]);
-          data = findChunkInResult(result, chunkId, this.serverInfo!.chunk_cuckoo_bucket_size, this.serverInfo!.chunk_slot_size);
+          data = findChunkInResult(result, chunkId, this.serverInfo!.chunk_slots_per_bin, this.serverInfo!.chunk_slot_size);
           if (data) break;
         }
 
         if (data) {
           recoveredChunks.set(chunkId, data);
         } else {
-          this.log(`  WARNING: chunk ${chunkId} not found in round ${ri} bucket ${bucketId}`, 'error');
+          this.log(`  WARNING: chunk ${chunkId} not found in round ${ri} group ${groupId}`, 'error');
         }
       }
     }

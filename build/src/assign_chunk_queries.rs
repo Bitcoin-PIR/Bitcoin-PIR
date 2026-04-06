@@ -1,9 +1,9 @@
-//! Assign chunk queries to 80 Batch PIR buckets using Cuckoo hashing.
+//! Assign chunk queries to 80 Batch PIR groups using Cuckoo hashing.
 //!
 //! 1. Reads batch_pir_results.bin (50 × 26 bytes from the first-level PIR).
 //! 2. Computes all needed chunk_ids from (start_chunk_id, num_chunks), deduplicates.
-//! 3. Cuckoo-assigns each unique chunk query to one of 80 buckets.
-//! 4. Displays the assignment with per-bucket cuckoo locations (loc0, loc1).
+//! 3. Cuckoo-assigns each unique chunk query to one of 80 groups.
+//! 4. Displays the assignment with per-group cuckoo locations (loc0, loc1).
 //!
 //! Usage:
 //!   cargo run --release -p build --bin assign_chunk_queries
@@ -18,7 +18,7 @@ use std::fs;
 const MAX_KICKS: usize = 1000;
 
 fn main() {
-    println!("=== Assign Chunk Queries to Buckets (Cuckoo Hashing) ===");
+    println!("=== Assign Chunk Queries to Groups (Cuckoo Hashing) ===");
     println!();
 
     // ── 1. Load first-level PIR results ──────────────────────────────────
@@ -28,8 +28,8 @@ fn main() {
         std::process::exit(1);
     });
 
-    let num_queries = data.len() / INDEX_ENTRY_SIZE;
-    assert_eq!(data.len() % INDEX_ENTRY_SIZE, 0);
+    let num_queries = data.len() / INDEX_RECORD_SIZE;
+    assert_eq!(data.len() % INDEX_RECORD_SIZE, 0);
     println!("  {} first-level query results loaded", num_queries);
 
     // ── 2. Compute all needed chunk_ids ──────────────────────────────────
@@ -40,7 +40,7 @@ fn main() {
     let mut query_ranges: Vec<(u32, u32)> = Vec::with_capacity(num_queries); // (start_chunk, num_chunks)
 
     for i in 0..num_queries {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         let start_chunk = u32::from_le_bytes(
             data[base + 20..base + 24].try_into().unwrap(),
         );
@@ -69,7 +69,7 @@ fn main() {
     println!("  Per-query chunk ranges:");
     for i in 0..num_queries {
         let (start, nc) = query_ranges[i];
-        let sh = &data[i * INDEX_ENTRY_SIZE..i * INDEX_ENTRY_SIZE + SCRIPT_HASH_SIZE];
+        let sh = &data[i * INDEX_RECORD_SIZE..i * INDEX_RECORD_SIZE + SCRIPT_HASH_SIZE];
         let hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
         if nc == 0 {
             println!("    q{:>3}: {} → no chunks (whale or miss)", i, hex);
@@ -92,23 +92,23 @@ fn main() {
     println!("  bins_per_table = {}", bins_per_table);
     println!();
 
-    // ── 4. Compute candidate buckets ─────────────────────────────────────
+    // ── 4. Compute candidate groups ─────────────────────────────────────
     let candidates: Vec<[usize; NUM_HASHES]> = chunk_queries
         .iter()
-        .map(|&cid| derive_chunk_buckets(cid))
+        .map(|&cid| derive_chunk_groups(cid))
         .collect();
 
     // ── 5. Cuckoo assign ─────────────────────────────────────────────────
     println!(
-        "[4] Running Cuckoo assignment ({} chunk queries → {} buckets)...",
+        "[4] Running Cuckoo assignment ({} chunk queries → {} groups)...",
         num_chunk_queries, K_CHUNK
     );
 
-    let mut buckets: [Option<usize>; K_CHUNK] = [None; K_CHUNK];
+    let mut groups: [Option<usize>; K_CHUNK] = [None; K_CHUNK];
 
     let mut success = true;
     for i in 0..num_chunk_queries {
-        if !pbc_cuckoo_place(&candidates, &mut buckets, i, MAX_KICKS, NUM_HASHES) {
+        if !pbc_cuckoo_place(&candidates, &mut groups, i, MAX_KICKS, NUM_HASHES) {
             eprintln!("  FAILED to place chunk query {} (chunk_id={}) after {} kicks",
                 i, chunk_queries[i], MAX_KICKS);
             success = false;
@@ -126,9 +126,9 @@ fn main() {
 
     // ── 6. Build reverse map ─────────────────────────────────────────────
     let mut assignment = vec![0usize; num_chunk_queries];
-    for (bucket_id, slot) in buckets.iter().enumerate() {
+    for (group_id, slot) in groups.iter().enumerate() {
         if let Some(qi) = slot {
-            assignment[*qi] = bucket_id;
+            assignment[*qi] = group_id;
         }
     }
 
@@ -136,7 +136,7 @@ fn main() {
     println!("[5] Final assignment with cuckoo locations:");
     println!(
         "  {:>6}  {:>10}  {:>6}  {:>8}  {:>8}  {:}",
-        "#", "Chunk ID", "Bucket", "loc0", "loc1", "Candidates"
+        "#", "Chunk ID", "Group", "loc0", "loc1", "Candidates"
     );
     println!(
         "  {}  {}  {}  {}  {}  {}",
@@ -149,16 +149,16 @@ fn main() {
     );
 
     for (i, &chunk_id) in chunk_queries.iter().enumerate() {
-        let assigned_bucket = assignment[i];
-        let key0 = derive_chunk_cuckoo_key(assigned_bucket, 0);
-        let key1 = derive_chunk_cuckoo_key(assigned_bucket, 1);
+        let assigned_group = assignment[i];
+        let key0 = derive_chunk_cuckoo_key(assigned_group, 0);
+        let key1 = derive_chunk_cuckoo_key(assigned_group, 1);
         let loc0 = cuckoo_hash_int(chunk_id, key0, bins_per_table);
         let loc1 = cuckoo_hash_int(chunk_id, key1, bins_per_table);
 
         let candidates_str: Vec<String> = candidates[i]
             .iter()
             .map(|&c| {
-                if c == assigned_bucket {
+                if c == assigned_group {
                     format!("[{}]", c)
                 } else {
                     format!("{}", c)
@@ -168,27 +168,27 @@ fn main() {
 
         println!(
             "  {:>6}  {:>10}  {:>6}  {:>8}  {:>8}  {}",
-            i, chunk_id, assigned_bucket, loc0, loc1, candidates_str.join(", ")
+            i, chunk_id, assigned_group, loc0, loc1, candidates_str.join(", ")
         );
     }
     println!();
 
     // ── 8. Summary ───────────────────────────────────────────────────────
-    let used: usize = buckets.iter().filter(|b| b.is_some()).count();
+    let used: usize = groups.iter().filter(|b| b.is_some()).count();
     let empty = K_CHUNK - used;
     println!("[6] Summary:");
     println!("  First-level queries:     {}", num_queries);
     println!("  Unique chunk queries:    {}", num_chunk_queries);
-    println!("  Buckets used:            {} / {}", used, K_CHUNK);
-    println!("  Buckets empty:           {}", empty);
+    println!("  Groups used:            {} / {}", used, K_CHUNK);
+    println!("  Groups empty:           {}", empty);
     println!("  Utilization:             {:.1}%", used as f64 / K_CHUNK as f64 * 100.0);
     println!("  bins_per_table:          {}", bins_per_table);
     println!();
 
-    // ── 9. Bucket map ────────────────────────────────────────────────────
-    println!("[7] Bucket map (. = empty, # = occupied):");
+    // ── 9. Group map ────────────────────────────────────────────────────
+    println!("[7] Group map (. = empty, # = occupied):");
     print!("  ");
-    for (i, slot) in buckets.iter().enumerate() {
+    for (i, slot) in groups.iter().enumerate() {
         if slot.is_some() {
             print!("#");
         } else {

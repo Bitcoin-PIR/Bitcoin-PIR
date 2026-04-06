@@ -47,24 +47,24 @@ class HarmonyDiagnosticTest {
                     indexBins, chunkBins, info.indexK(), info.chunkK(), tagSeed);
         }
 
-        // ── Step 2: Derive PBC buckets for the test address ──────────────
-        int[] candidateBuckets = PirHash.deriveBuckets(scriptHash);
-        System.out.printf("PBC candidate buckets: [%d, %d, %d]%n",
-                candidateBuckets[0], candidateBuckets[1], candidateBuckets[2]);
+        // ── Step 2: Derive PBC groups for the test address ───────────────
+        int[] candidateGroups = PirHash.deriveGroups(scriptHash);
+        System.out.printf("PBC candidate groups: [%d, %d, %d]%n",
+                candidateGroups[0], candidateGroups[1], candidateGroups[2]);
 
         long expectedTag = PirHash.computeTag(tagSeed, scriptHash);
         System.out.printf("Expected tag: 0x%016x%n", expectedTag);
 
-        // For bucket 0 candidate, compute cuckoo bin indices
-        int testBucket = candidateBuckets[0];
+        // For group 0 candidate, compute cuckoo bin indices
+        int testGroup = candidateGroups[0];
         for (int h = 0; h < PirConstants.INDEX_CUCKOO_NUM_HASHES; h++) {
-            long ck = CuckooHash.deriveCuckooKey(testBucket, h);
+            long ck = CuckooHash.deriveCuckooKey(testGroup, h);
             int binIndex = CuckooHash.cuckooHash(scriptHash, ck, indexBins);
-            System.out.printf("  bucket=%d hash_fn=%d → cuckoo_key=0x%016x → binIndex=%d (of %d)%n",
-                    testBucket, h, ck, binIndex, indexBins);
+            System.out.printf("  group=%d hash_fn=%d → cuckoo_key=0x%016x → binIndex=%d (of %d)%n",
+                    testGroup, h, ck, binIndex, indexBins);
         }
 
-        // ── Step 3: Download hint for the test bucket ────────────────────
+        // ── Step 3: Download hint for the test group ─────────────────────
         byte[] prpKey = new byte[16];
         new SecureRandom().nextBytes(prpKey);
         int serverPrp = PirConstants.SERVER_PRP_ALF;
@@ -73,55 +73,55 @@ class HarmonyDiagnosticTest {
         try (var hintWs = new PirWebSocket(HINT_SERVER)) {
             hintWs.connect();
             byte[] hintReq = ProtocolCodec.encodeHarmonyHintRequest(
-                    prpKey, serverPrp, 0, new int[]{testBucket});
+                    prpKey, serverPrp, 0, new int[]{testGroup});
             var futures = hintWs.sendExpectingN(hintReq, 1);
             hint = ProtocolCodec.decodeHarmonyHintResponse(futures.get(0).get());
         }
 
-        System.out.printf("Hint for bucket %d: n=%d t=%d m=%d hintBytes=%d%n",
-                hint.bucketId(), hint.n(), hint.t(), hint.m(), hint.hintBytes().length);
+        System.out.printf("Hint for group %d: n=%d t=%d m=%d hintBytes=%d%n",
+                hint.groupId(), hint.n(), hint.t(), hint.m(), hint.hintBytes().length);
         System.out.printf("  indexBins (from query server) = %d%n", indexBins);
         System.out.printf("  hint.n() (from hint server)   = %d%n", hint.n());
         System.out.printf("  MATCH? %s%n", (indexBins == hint.n()) ? "YES" : "NO ← POTENTIAL ISSUE");
 
-        // ── Step 4: Create bucket and do a round-trip query ──────────────
-        if (!HarmonyBucket.isNativeLoaded()) {
+        // ── Step 4: Create group and do a round-trip query ──────────────
+        if (!HarmonyGroup.isNativeLoaded()) {
             System.out.println("SKIP: harmonypir_jni not loaded");
             return;
         }
 
-        try (var bucket = new HarmonyBucket(
+        try (var group = new HarmonyGroup(
                 hint.n(), PirConstants.HARMONY_INDEX_W, hint.t(),
-                prpKey, testBucket, HarmonyBucket.PRP_ALF)) {
+                prpKey, testGroup, HarmonyGroup.PRP_ALF)) {
 
-            bucket.loadHints(hint.hintBytes());
-            System.out.printf("Bucket created: n=%d t=%d m=%d w=%d maxQ=%d%n",
-                    bucket.getN(), bucket.getT(), bucket.getM(), bucket.getW(),
-                    bucket.getMaxQueries());
+            group.loadHints(hint.hintBytes());
+            System.out.printf("Group created: n=%d t=%d m=%d w=%d maxQ=%d%n",
+                    group.getN(), group.getT(), group.getM(), group.getW(),
+                    group.getMaxQueries());
 
             // Query for each hash function
             try (var queryWs = new PirWebSocket(QUERY_SERVER)) {
                 queryWs.connect();
 
                 for (int h = 0; h < PirConstants.INDEX_CUCKOO_NUM_HASHES; h++) {
-                    long ck = CuckooHash.deriveCuckooKey(testBucket, h);
+                    long ck = CuckooHash.deriveCuckooKey(testGroup, h);
                     int binIndex = CuckooHash.cuckooHash(scriptHash, ck, indexBins);
 
                     System.out.printf("%n── Query hash_fn=%d binIndex=%d ──%n", h, binIndex);
 
-                    // Check if binIndex is within the bucket's n
-                    if (binIndex >= bucket.getN()) {
-                        System.out.printf("  WARNING: binIndex=%d >= bucket.n=%d!%n",
-                                binIndex, bucket.getN());
+                    // Check if binIndex is within the group's n
+                    if (binIndex >= group.getN()) {
+                        System.out.printf("  WARNING: binIndex=%d >= group.n=%d!%n",
+                                binIndex, group.getN());
                     }
 
-                    byte[] request = bucket.buildRequest(binIndex);
+                    byte[] request = group.buildRequest(binIndex);
                     int reqIndices = request.length / 4;
                     System.out.printf("  Request: %d indices (%d bytes)%n", reqIndices, request.length);
 
-                    // Send single-bucket batch query
+                    // Send single-group batch query
                     byte[] batchMsg = ProtocolCodec.encodeHarmonyBatchQuery(
-                            0, h, 1, new int[]{testBucket}, new byte[][]{request});
+                            0, h, 1, new int[]{testGroup}, new byte[][]{request});
                     byte[] batchResp = queryWs.sendSync(batchMsg);
 
                     var result = ProtocolCodec.decodeHarmonyBatchResult(batchResp);
@@ -131,14 +131,14 @@ class HarmonyDiagnosticTest {
                             reqIndices, PirConstants.HARMONY_INDEX_W);
 
                     // Process response
-                    byte[] entry = bucket.processResponse(respData);
+                    byte[] entry = group.processResponse(respData);
                     System.out.printf("  Recovered entry: %d bytes%n", entry.length);
 
                     // Dump the 3 slots
-                    for (int slot = 0; slot < PirConstants.CUCKOO_BUCKET_SIZE; slot++) {
-                        int base = slot * PirConstants.INDEX_ENTRY_SIZE;
-                        if (base + PirConstants.INDEX_ENTRY_SIZE > entry.length) break;
-                        ByteBuffer bb = ByteBuffer.wrap(entry, base, PirConstants.INDEX_ENTRY_SIZE)
+                    for (int slot = 0; slot < PirConstants.INDEX_SLOTS_PER_BIN; slot++) {
+                        int base = slot * PirConstants.INDEX_SLOT_SIZE;
+                        if (base + PirConstants.INDEX_SLOT_SIZE > entry.length) break;
+                        ByteBuffer bb = ByteBuffer.wrap(entry, base, PirConstants.INDEX_SLOT_SIZE)
                                 .order(ByteOrder.LITTLE_ENDIAN);
                         long slotTag = bb.getLong();
                         int startChunk = bb.getInt();

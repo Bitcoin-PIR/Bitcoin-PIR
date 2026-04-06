@@ -24,7 +24,7 @@ const CHUNK_SIZE: usize = 40;
 const NUM_TEST_ENTRIES: usize = 100;
 
 /// Read a cuckoo table file, return (bins_per_table, header_size, mmap).
-/// Header layout: [8B magic][4B k][4B bucket_size][4B bins_per_table][4B num_hashes][8B master_seed][8B tag_seed?]
+/// Header layout: [8B magic][4B k][4B slots_per_bin][4B bins_per_table][4B num_hashes][8B master_seed][8B tag_seed?]
 fn open_cuckoo_file(path: &str, header_size: usize) -> (usize, usize, Mmap) {
     let file = File::open(path).unwrap_or_else(|e| panic!("open {}: {}", path, e));
     let mmap = unsafe { Mmap::map(&file).unwrap() };
@@ -40,7 +40,7 @@ fn lookup_merkle_data(
     mmap: &[u8],
     header_size: usize,
     bins_per_table: usize,
-    bucket_size: usize,
+    slots_per_bin: usize,
     scripthash: &[u8; 20],
 ) -> Option<(u32, Hash256, Hash256)> {
     let expected_tag = hash::compute_tag(TAG_SEED, scripthash);
@@ -48,19 +48,19 @@ fn lookup_merkle_data(
     let cuckoo_num_hashes = 2;
     let master_seed: u64 = 0x71a2ef38b4c90d15;
 
-    let candidate_buckets = hash::derive_buckets_3(scripthash, k);
+    let candidate_groups = hash::derive_groups_3(scripthash, k);
 
-    for &bucket_id in &candidate_buckets {
+    for &group_id in &candidate_groups {
         let keys: Vec<u64> = (0..cuckoo_num_hashes)
-            .map(|hf| hash::derive_cuckoo_key(master_seed, bucket_id, hf))
+            .map(|hf| hash::derive_cuckoo_key(master_seed, group_id, hf))
             .collect();
 
         for hf in 0..cuckoo_num_hashes {
             let bin = hash::cuckoo_hash(scripthash, keys[hf], bins_per_table);
 
-            for slot in 0..bucket_size {
-                let global_slot = bucket_id * bins_per_table * bucket_size
-                    + bin * bucket_size + slot;
+            for slot in 0..slots_per_bin {
+                let global_slot = group_id * bins_per_table * slots_per_bin
+                    + bin * slots_per_bin + slot;
                 let offset = header_size + global_slot * MERKLE_DATA_SLOT_SIZE;
 
                 if offset + MERKLE_DATA_SLOT_SIZE > mmap.len() { continue; }
@@ -87,7 +87,7 @@ fn lookup_sibling(
     mmap: &[u8],
     header_size: usize,
     bins_per_table: usize,
-    bucket_size: usize,
+    slots_per_bin: usize,
     level: usize,
     node_local: u32,
 ) -> Option<Hash256> {
@@ -95,19 +95,19 @@ fn lookup_sibling(
     let cuckoo_num_hashes = 2;
     let master_seed = 0xBA7C_51B1_0000_0000u64.wrapping_add(level as u64);
 
-    let candidate_buckets = hash::derive_int_buckets_3(node_local, k);
+    let candidate_groups = hash::derive_int_groups_3(node_local, k);
 
-    for &bucket_id in &candidate_buckets {
+    for &group_id in &candidate_groups {
         let keys: Vec<u64> = (0..cuckoo_num_hashes)
-            .map(|hf| hash::derive_cuckoo_key(master_seed, bucket_id, hf))
+            .map(|hf| hash::derive_cuckoo_key(master_seed, group_id, hf))
             .collect();
 
         for hf in 0..cuckoo_num_hashes {
             let bin = hash::cuckoo_hash_int(node_local, keys[hf], bins_per_table);
 
-            for slot in 0..bucket_size {
-                let global_slot = bucket_id * bins_per_table * bucket_size
-                    + bin * bucket_size + slot;
+            for slot in 0..slots_per_bin {
+                let global_slot = group_id * bins_per_table * slots_per_bin
+                    + bin * slots_per_bin + slot;
                 let offset = header_size + global_slot * MERKLE_SIBLING_SLOT_SIZE;
 
                 if offset + MERKLE_SIBLING_SLOT_SIZE > mmap.len() { continue; }
@@ -136,7 +136,7 @@ fn main() {
     // Index
     let index_file = File::open(INDEX_FILE).expect("open index");
     let index_mmap = unsafe { Mmap::map(&index_file).unwrap() };
-    let num_entries = index_mmap.len() / INDEX_ENTRY_SIZE;
+    let num_entries = index_mmap.len() / INDEX_RECORD_SIZE;
     println!("  Index: {} entries", num_entries);
 
     // Chunks
@@ -167,7 +167,7 @@ fn main() {
     // MERKLE_DATA cuckoo table
     let md_path = format!("{}/merkle_data_cuckoo.bin", DATA_DIR);
     let (md_bins, md_header, md_mmap) = open_cuckoo_file(&md_path, 40);
-    let md_bucket_size = 4;
+    let md_slots_per_bin = 4;
     println!("  MERKLE_DATA: bins={}", md_bins);
 
     // Sibling cuckoo tables (L1..L16)
@@ -200,7 +200,7 @@ fn main() {
         let entry_idx = (z as usize) % num_entries;
 
         // Read index entry
-        let base = entry_idx * INDEX_ENTRY_SIZE;
+        let base = entry_idx * INDEX_RECORD_SIZE;
         let mut scripthash = [0u8; 20];
         scripthash.copy_from_slice(&index_mmap[base..base + 20]);
         let start_chunk_id = u32::from_le_bytes(
@@ -219,7 +219,7 @@ fn main() {
 
         // Step 2: Look up in MERKLE_DATA
         let md_result = lookup_merkle_data(
-            &md_mmap, md_header, md_bins, md_bucket_size, &scripthash,
+            &md_mmap, md_header, md_bins, md_slots_per_bin, &scripthash,
         );
 
         let (tree_loc, stored_data_hash, l0_sibling) = match md_result {

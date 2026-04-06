@@ -19,11 +19,11 @@ fn main() {
     let chunks_file = File::open(CHUNKS_DATA_FILE).expect("open chunks data");
     let chunks_mmap = unsafe { Mmap::map(&chunks_file) }.expect("mmap chunks");
     let index_data = std::fs::read(INDEX_FILE).expect("read index");
-    let num_entries = index_data.len() / INDEX_ENTRY_SIZE;
+    let num_entries = index_data.len() / INDEX_RECORD_SIZE;
 
     let mut data_sizes: Vec<usize> = Vec::with_capacity(num_entries);
     for i in 0..num_entries {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         let num_chunks = index_data[base + 24] as usize;
         if num_chunks == 0 { continue; }
         let offset_half = u32::from_le_bytes(index_data[base + 20..base + 24].try_into().unwrap());
@@ -94,14 +94,14 @@ fn main() {
     // ════════════════════════════════════════════════════════════════════
     // METRIC 2: Full PIR useful ratio
     //   = useful_bytes / total_PIR_bandwidth
-    //   bandwidth = rounds × bins_per_table × bucket_size × block_size
+    //   bandwidth = rounds × bins_per_table × slots_per_bin × block_size
     //   This is the end-to-end "useful bits per bit transmitted"
     // ════════════════════════════════════════════════════════════════════
     println!();
     println!("================================================================");
     println!("  METRIC 2: End-to-end PIR useful ratio");
     println!("  = useful_data / total_PIR_bandwidth");
-    println!("  bandwidth = avg_rounds × bins × bucket_size × block_size");
+    println!("  bandwidth = avg_rounds × bins × slots_per_bin × block_size");
     println!("================================================================");
     println!();
 
@@ -120,8 +120,8 @@ fn main() {
             total_rounds += n;
         }
         let bins = (total_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_CUCKOO_BUCKET_SIZE as f64 * 0.95)).ceil() as u64;
-        let bw_per_round = bins as f64 * CHUNK_CUCKOO_BUCKET_SIZE as f64 * bs as f64;
+            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
+        let bw_per_round = bins as f64 * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let avg_rounds = total_rounds as f64 / total_groups as f64;
         let avg_bw = avg_rounds * bw_per_round;
         let ratio = mean_useful / avg_bw;
@@ -168,8 +168,8 @@ fn main() {
         }
 
         let bins = (pk_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_CUCKOO_BUCKET_SIZE as f64 * 0.95)).ceil() as u64;
-        let bw_per_round = bins as f64 * CHUNK_CUCKOO_BUCKET_SIZE as f64 * bs as f64;
+            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
+        let bw_per_round = bins as f64 * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let avg_rounds = total_rounds as f64 / total_groups as f64;
         let avg_bw = avg_rounds * bw_per_round;
         let ratio = mean_useful / avg_bw;
@@ -203,9 +203,9 @@ fn main() {
             iso_blocks += ((sz + bs - 1) / bs) as u64;
         }
         let iso_bins = (iso_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_CUCKOO_BUCKET_SIZE as f64 * 0.95)).ceil() as u64;
+            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
         let iso_bw = rounds_med as f64 * iso_bins as f64
-            * CHUNK_CUCKOO_BUCKET_SIZE as f64 * bs as f64;
+            * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let iso_pct = median_useful as f64 / iso_bw * 100.0;
 
         println!("{:>5}B {:>5}  {:>6}    {:>6}B    {:>10.1}MB  {:>8}B    {:>5.2e}%",
@@ -230,9 +230,9 @@ fn main() {
         if started && cur > 0 { pk_blocks += 1; }
 
         let pk_bins = (pk_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_CUCKOO_BUCKET_SIZE as f64 * 0.95)).ceil() as u64;
+            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
         let pk_bw = rounds_med as f64 * pk_bins as f64
-            * CHUNK_CUCKOO_BUCKET_SIZE as f64 * bs as f64;
+            * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let pk_pct = median_useful as f64 / pk_bw * 100.0;
 
         println!("{:>5}B {:>5}  {:>6}    {:>6}B    {:>10.1}MB  {:>8}B    {:>5.2e}%",

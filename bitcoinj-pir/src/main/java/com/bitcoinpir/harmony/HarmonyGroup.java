@@ -1,26 +1,26 @@
 package com.bitcoinpir.harmony;
 
 /**
- * A single HarmonyPIR bucket backed by native Rust code (via JNI).
+ * A single HarmonyPIR group backed by native Rust code (via JNI).
  *
- * <p>Each bucket represents one slot in the Batch PIR scheme. The client
- * creates K buckets (one per cuckoo hash function), downloads hints for
+ * <p>Each group represents one slot in the Batch PIR scheme. The client
+ * creates K groups (one per PBC partition), downloads hints for
  * each during the offline phase, then uses them for online queries.
  *
  * <p>Lifecycle:
  * <pre>
- *   try (var bucket = new HarmonyBucket(n, w, 0, prpKey, bucketId)) {
- *       bucket.loadHints(hintBytes);           // offline phase
- *       byte[] req = bucket.buildRequest(q);   // online: build request
+ *   try (var group = new HarmonyGroup(n, w, 0, prpKey, groupId)) {
+ *       group.loadHints(hintBytes);           // offline phase
+ *       byte[] req = group.buildRequest(q);   // online: build request
  *       // ... send req to query server, receive response ...
- *       byte[] entry = bucket.processResponse(response);
+ *       byte[] entry = group.processResponse(response);
  *   }
  * </pre>
  *
- * <p>Thread safety: each bucket must be used from a single thread.
- * Multiple buckets may exist concurrently on different threads.
+ * <p>Thread safety: each group must be used from a single thread.
+ * Multiple groups may exist concurrently on different threads.
  */
-public class HarmonyBucket implements AutoCloseable {
+public class HarmonyGroup implements AutoCloseable {
 
     // ── PRP backend constants ───────────────────────────────────────────
 
@@ -60,29 +60,29 @@ public class HarmonyBucket implements AutoCloseable {
     // ── Constructors ────────────────────────────────────────────────────
 
     /**
-     * Create a new HarmonyPIR bucket using the default PRP (ALF).
+     * Create a new HarmonyPIR group using the default PRP (ALF).
      *
-     * @param n         number of database entries in this bucket's table
+     * @param n         number of database entries in this group's table
      * @param w         entry size in bytes (e.g. 39 for index level, 132 for chunk level)
      * @param t         segment size T (if 0, auto-compute as round(sqrt(2*n)))
      * @param prpKey    16-byte master PRP key
-     * @param bucketId  bucket identifier (0..K-1)
+     * @param groupId  group identifier (0..K-1)
      */
-    public HarmonyBucket(int n, int w, int t, byte[] prpKey, int bucketId) {
-        this(n, w, t, prpKey, bucketId, PRP_ALF);
+    public HarmonyGroup(int n, int w, int t, byte[] prpKey, int groupId) {
+        this(n, w, t, prpKey, groupId, PRP_ALF);
     }
 
     /**
-     * Create a new HarmonyPIR bucket with an explicit PRP backend.
+     * Create a new HarmonyPIR group with an explicit PRP backend.
      *
-     * @param n          number of database entries in this bucket's table
+     * @param n          number of database entries in this group's table
      * @param w          entry size in bytes
      * @param t          segment size T (if 0, auto-compute)
      * @param prpKey     16-byte master PRP key
-     * @param bucketId   bucket identifier (0..K-1)
+     * @param groupId   group identifier (0..K-1)
      * @param prpBackend one of {@link #PRP_ALF}, {@link #PRP_HOANG}, {@link #PRP_FASTPRP}
      */
-    public HarmonyBucket(int n, int w, int t, byte[] prpKey, int bucketId, int prpBackend) {
+    public HarmonyGroup(int n, int w, int t, byte[] prpKey, int groupId, int prpBackend) {
         if (!nativeLoaded) {
             throw new UnsatisfiedLinkError(
                 "harmonypir_jni native library not available: " + loadError);
@@ -90,7 +90,7 @@ public class HarmonyBucket implements AutoCloseable {
         if (prpKey == null || prpKey.length != 16) {
             throw new IllegalArgumentException("prpKey must be 16 bytes");
         }
-        this.nativeHandle = nativeCreate(n, w, t, prpKey, bucketId, prpBackend);
+        this.nativeHandle = nativeCreate(n, w, t, prpKey, groupId, prpBackend);
         if (this.nativeHandle == 0) {
             throw new RuntimeException("nativeCreate returned null handle");
         }
@@ -123,7 +123,7 @@ public class HarmonyBucket implements AutoCloseable {
 
     /**
      * Build a synthetic dummy request that is indistinguishable from a real one.
-     * Used to pad unused buckets in batch queries.
+     * Used to pad unused groups in batch queries.
      *
      * @return dummy request bytes (same format as {@link #buildRequest})
      */
@@ -189,7 +189,7 @@ public class HarmonyBucket implements AutoCloseable {
 
     private void checkOpen() {
         if (nativeHandle == 0) {
-            throw new IllegalStateException("HarmonyBucket is closed");
+            throw new IllegalStateException("HarmonyGroup is closed");
         }
     }
 
@@ -242,7 +242,7 @@ public class HarmonyBucket implements AutoCloseable {
     // ── Native method declarations ──────────────────────────────────────
 
     private static native long nativeCreate(int n, int w, int t,
-                                            byte[] prpKey, int bucketId, int prpBackend);
+                                            byte[] prpKey, int groupId, int prpBackend);
     private static native void nativeLoadHints(long handle, byte[] hintsData);
     private static native byte[] nativeBuildRequest(long handle, int q);
     private static native byte[] nativeBuildDummy(long handle);

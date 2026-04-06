@@ -68,32 +68,32 @@ public class DpfPirClient implements PirClient {
 
         // ── Level 1: Index PIR ──────────────────────────────────────────────
 
-        // Derive candidate buckets for each query
-        int[][] itemBuckets = new int[scriptHashes.size()][];
+        // Derive candidate groups for each query
+        int[][] itemGroups = new int[scriptHashes.size()][];
         for (int i = 0; i < scriptHashes.size(); i++) {
-            itemBuckets[i] = PirHash.deriveBuckets(scriptHashes.get(i));
+            itemGroups[i] = PirHash.deriveGroups(scriptHashes.get(i));
         }
 
         // Plan rounds
-        List<int[][]> rounds = PbcPlanner.planRounds(itemBuckets, PirConstants.K);
+        List<int[][]> rounds = PbcPlanner.planRounds(itemGroups, PirConstants.K);
 
         // Track index results: queryIndex → {startChunkId, numChunks}
         Map<Integer, int[]> indexResults = new HashMap<>();
 
         int roundId = 0;
         for (int[][] round : rounds) {
-            // Build bucket-to-query mapping for this round
-            Map<Integer, Integer> bucketToQuery = new HashMap<>();
+            // Build group-to-query mapping for this round
+            Map<Integer, Integer> groupToQuery = new HashMap<>();
             for (int[] entry : round) {
-                bucketToQuery.put(entry[1], entry[0]); // bucketId → queryIndex
+                groupToQuery.put(entry[1], entry[0]); // groupId → queryIndex
             }
 
-            // Generate DPF keys for all K buckets × INDEX_CUCKOO_NUM_HASHES
+            // Generate DPF keys for all K groups × INDEX_CUCKOO_NUM_HASHES
             byte[][][] keys0 = new byte[PirConstants.K][PirConstants.INDEX_CUCKOO_NUM_HASHES][];
             byte[][][] keys1 = new byte[PirConstants.K][PirConstants.INDEX_CUCKOO_NUM_HASHES][];
 
             for (int b = 0; b < PirConstants.K; b++) {
-                Integer qi = bucketToQuery.get(b);
+                Integer qi = groupToQuery.get(b);
                 for (int h = 0; h < PirConstants.INDEX_CUCKOO_NUM_HASHES; h++) {
                     int alpha;
                     if (qi != null) {
@@ -125,12 +125,12 @@ public class DpfPirClient implements PirClient {
             // XOR results and scan for matching tags
             for (int[] entry : round) {
                 int queryIdx = entry[0];
-                int bucketId = entry[1];
+                int groupId = entry[1];
                 long expectedTag = PirHash.computeTag(tagSeed, scriptHashes.get(queryIdx));
 
                 for (int h = 0; h < PirConstants.INDEX_CUCKOO_NUM_HASHES; h++) {
-                    byte[] r0 = br0.results()[bucketId][h];
-                    byte[] r1 = br1.results()[bucketId][h];
+                    byte[] r0 = br0.results()[groupId][h];
+                    byte[] r1 = br1.results()[groupId][h];
                     byte[] xored = xorBytes(r0, r1);
 
                     int[] found = UtxoDecoder.findEntryInIndexResult(xored, expectedTag);
@@ -169,24 +169,24 @@ public class DpfPirClient implements PirClient {
 
         if (!allChunkIds.isEmpty()) {
             List<Integer> chunkList = new ArrayList<>(allChunkIds);
-            int[][] chunkBuckets = new int[chunkList.size()][];
+            int[][] chunkGroups = new int[chunkList.size()][];
             for (int i = 0; i < chunkList.size(); i++) {
-                chunkBuckets[i] = PirHash.deriveChunkBuckets(chunkList.get(i));
+                chunkGroups[i] = PirHash.deriveChunkGroups(chunkList.get(i));
             }
 
-            List<int[][]> chunkRounds = PbcPlanner.planRounds(chunkBuckets, PirConstants.K_CHUNK);
+            List<int[][]> chunkRounds = PbcPlanner.planRounds(chunkGroups, PirConstants.K_CHUNK);
 
             for (int[][] cRound : chunkRounds) {
-                Map<Integer, Integer> bucketToChunkLocalIdx = new HashMap<>();
+                Map<Integer, Integer> groupToChunkLocalIdx = new HashMap<>();
                 for (int[] entry : cRound) {
-                    bucketToChunkLocalIdx.put(entry[1], entry[0]);
+                    groupToChunkLocalIdx.put(entry[1], entry[0]);
                 }
 
                 byte[][][] ck0 = new byte[PirConstants.K_CHUNK][PirConstants.CHUNK_CUCKOO_NUM_HASHES][];
                 byte[][][] ck1 = new byte[PirConstants.K_CHUNK][PirConstants.CHUNK_CUCKOO_NUM_HASHES][];
 
                 for (int b = 0; b < PirConstants.K_CHUNK; b++) {
-                    Integer ci = bucketToChunkLocalIdx.get(b);
+                    Integer ci = groupToChunkLocalIdx.get(b);
                     for (int h = 0; h < PirConstants.CHUNK_CUCKOO_NUM_HASHES; h++) {
                         int alpha;
                         if (ci != null) {
@@ -212,12 +212,12 @@ public class DpfPirClient implements PirClient {
 
                 for (int[] entry : cRound) {
                     int localIdx = entry[0];
-                    int bucketId = entry[1];
+                    int groupId = entry[1];
                     int chunkId = chunkList.get(localIdx);
 
                     for (int h = 0; h < PirConstants.CHUNK_CUCKOO_NUM_HASHES; h++) {
-                        byte[] cr0 = cbr0.results()[bucketId][h];
-                        byte[] cr1 = cbr1.results()[bucketId][h];
+                        byte[] cr0 = cbr0.results()[groupId][h];
+                        byte[] cr1 = cbr1.results()[groupId][h];
                         byte[] xored = xorBytes(cr0, cr1);
 
                         byte[] chunkData = UtxoDecoder.findChunkInResult(xored, chunkId);

@@ -1,18 +1,18 @@
 //! Chunk-level PIR test: executes the plan from gen_9_plan_chunk_rounds.
 //!
-//! Runs ROUNDS_PER_BATCH rounds with full DPF server simulation (bucket-major
+//! Runs ROUNDS_PER_BATCH rounds with full DPF server simulation (group-major
 //! parallelization), verifies correctness, then extrapolates the total time
 //! for all rounds.
 //!
-//! Bucket-major: for each bucket, all rounds in the batch are processed
-//! sequentially so the bucket's cuckoo table (~11MB) stays in L3 cache.
-//! Parallelism is across the 80 buckets via rayon.
+//! Group-major: for each group, all rounds in the batch are processed
+//! sequentially so the group.s cuckoo table (~11MB) stays in L3 cache.
+//! Parallelism is across the 80 groups via rayon.
 //!
 //! Each PIR query retrieves a "unit" of CHUNKS_PER_UNIT consecutive 80-byte
 //! chunks.  The cuckoo table stores individual chunk_ids; we query the first
 //! chunk_id of each unit.
 //!
-//! Buckets not occupied by a real query in a given round still send a dummy
+//! Groups not occupied by a real query in a given round still send a dummy
 //! DPF request with fresh random targets (for privacy).
 //!
 //! Usage:
@@ -29,7 +29,7 @@ use std::time::Instant;
 
 /// Each slot: [4B chunk_id LE | UNIT_DATA_SIZE data]
 const SLOT_SIZE: usize = 4 + UNIT_DATA_SIZE;
-const SLOTS: usize = CHUNK_CUCKOO_BUCKET_SIZE; // 3
+const SLOTS: usize = CHUNK_SLOTS_PER_BIN; // 3
 const RESULT_SIZE: usize = SLOTS * SLOT_SIZE;
 
 // DPF_N is computed from bins_per_table at runtime via pir_core::params::compute_dpf_n
@@ -46,7 +46,7 @@ struct SpkInfo {
 
 struct Plan {
     spks: Vec<SpkInfo>,
-    rounds: Vec<Vec<(u32, u8)>>, // per round: Vec of (unit_start_chunk_id, bucket_id)
+    rounds: Vec<Vec<(u32, u8)>>, // per round: Vec of (unit_start_chunk_id, group_id)
     total_placed: u32,
 }
 
@@ -93,9 +93,9 @@ fn read_plan(path: &str) -> Plan {
         for _ in 0..num_placed {
             let chunk_id = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
             pos += 4;
-            let bucket_id = data[pos];
+            let group_id = data[pos];
             pos += 1;
-            entries.push((chunk_id, bucket_id));
+            entries.push((chunk_id, group_id));
         }
         rounds.push(entries);
     }
@@ -143,8 +143,8 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// Process one bucket across one round: eval two DPF keys, XOR-accumulate.
-fn process_one_bucket_round(
+/// Process one group across one round: eval two DPF keys, XOR-accumulate.
+fn process_one_group_round(
     key_q0: &DpfKey,
     key_q1: &DpfKey,
     table_bytes: &[u8],
@@ -231,7 +231,7 @@ fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== Chunk PIR Test (bucket-major, sample {} rounds) ===", ROUNDS_PER_BATCH);
+    println!("=== Chunk PIR Test (group-major, sample {} rounds) ===", ROUNDS_PER_BATCH);
     println!("  CHUNKS_PER_UNIT = {} ({} bytes/unit)", CHUNKS_PER_UNIT, UNIT_DATA_SIZE);
     println!("  SLOT_SIZE = {} bytes, RESULT_SIZE = {} bytes", SLOT_SIZE, RESULT_SIZE);
     println!();
@@ -281,7 +281,7 @@ fn main() {
     println!();
 
     // ── 3. Generate DPF keys for sample rounds ───────────────────────────
-    println!("[3] Generating DPF keys for {} rounds × {} buckets...", sample_rounds, K_CHUNK);
+    println!("[3] Generating DPF keys for {} rounds × {} groups...", sample_rounds, K_CHUNK);
     let keygen_start = Instant::now();
 
     let dpf = Dpf::with_default_key();
@@ -293,21 +293,21 @@ fn main() {
     for ri in 0..sample_rounds {
         let round_plan = &plan.rounds[ri];
 
-        let mut bucket_targets: Vec<Option<(u64, u64)>> = vec![None; K_CHUNK];
-        for &(chunk_id, bucket_id) in round_plan {
-            let b = bucket_id as usize;
+        let mut group_targets: Vec<Option<(u64, u64)>> = vec![None; K_CHUNK];
+        for &(chunk_id, group_id) in round_plan {
+            let b = group_id as usize;
             let key0 = derive_chunk_cuckoo_key(b, 0);
             let key1 = derive_chunk_cuckoo_key(b, 1);
             let loc0 = cuckoo_hash_int(chunk_id, key0, bins_per_table) as u64;
             let loc1 = cuckoo_hash_int(chunk_id, key1, bins_per_table) as u64;
-            bucket_targets[b] = Some((loc0, loc1));
+            group_targets[b] = Some((loc0, loc1));
         }
 
         let mut s0_round = Vec::with_capacity(K_CHUNK);
         let mut s1_round = Vec::with_capacity(K_CHUNK);
 
         for b in 0..K_CHUNK {
-            let (alpha0, alpha1) = match bucket_targets[b] {
+            let (alpha0, alpha1) = match group_targets[b] {
                 Some(targets) => targets,
                 None => {
                     let r0 = rng.next_u64() % bins_per_table as u64;
@@ -331,11 +331,11 @@ fn main() {
     println!("  DPF key wire size (est.): {} bytes", dpf_key_wire_size);
     println!();
 
-    // ── 4. Server processing: bucket-major over sample rounds ────────────
+    // ── 4. Server processing: group-major over sample rounds ────────────
     let slots_per_table = bins_per_table * SLOTS;
     let table_byte_size = bins_per_table * RESULT_SIZE; // bins × SLOTS × SLOT_SIZE
 
-    println!("[4] Both servers: {} buckets × {} rounds (bucket-major, concurrent)...", K_CHUNK, sample_rounds);
+    println!("[4] Both servers: {} groups × {} rounds (group-major, concurrent)...", K_CHUNK, sample_rounds);
     let servers_start = Instant::now();
 
     let (results_s0, results_s1) = rayon::join(
@@ -348,7 +348,7 @@ fn main() {
 
                     (0..sample_rounds)
                         .map(|ri| {
-                            process_one_bucket_round(
+                            process_one_group_round(
                                 &keys_s0[ri][bi].0,
                                 &keys_s0[ri][bi].1,
                                 table_bytes,
@@ -369,7 +369,7 @@ fn main() {
 
                     (0..sample_rounds)
                         .map(|ri| {
-                            process_one_bucket_round(
+                            process_one_group_round(
                                 &keys_s1[ri][bi].0,
                                 &keys_s1[ri][bi].1,
                                 table_bytes,
@@ -407,8 +407,8 @@ fn main() {
     for ri in 0..sample_rounds {
         let round_plan = &plan.rounds[ri];
 
-        for &(chunk_id, bucket_id) in round_plan {
-            let b = bucket_id as usize;
+        for &(chunk_id, group_id) in round_plan {
+            let b = group_id as usize;
 
             let mut r0 = results_s0[b][ri].0.clone();
             xor_into(&mut r0, &results_s1[b][ri].0);
@@ -432,7 +432,7 @@ fn main() {
                                 .position(|(a, b)| a != b)
                                 .unwrap_or(avail);
                             eprintln!(
-                                "  DATA MISMATCH: chunk {} round {} bucket {} | first diff at byte {} of {} | got[{}..]=={:02x?} exp[{}..]=={:02x?}",
+                                "  DATA MISMATCH: chunk {} round {} group {} | first diff at byte {} of {} | got[{}..]=={:02x?} exp[{}..]=={:02x?}",
                                 chunk_id, ri + 1, b,
                                 first_diff, avail,
                                 first_diff, &data[first_diff..avail.min(first_diff+8)],
@@ -449,7 +449,7 @@ fn main() {
                 total_not_found += 1;
                 if total_not_found <= 10 {
                     eprintln!(
-                        "  MISS: unit chunk {} round {} bucket {}",
+                        "  MISS: unit chunk {} round {} group {}",
                         chunk_id, ri + 1, b
                     );
                 }
@@ -506,9 +506,9 @@ fn main() {
     println!();
     println!("=== Communication Cost (chunk-level PIR, all {} rounds) ===", num_rounds);
     println!("  DPF key size (est.):           {} bytes (n={})", dpf_key_wire_size, dpf_n);
-    println!("  Result size per bucket:        {} bytes ({}×{}B slots)", RESULT_SIZE, SLOTS, SLOT_SIZE);
-    println!("  Buckets per round:             {}", K_CHUNK);
-    println!("  Queries per bucket per round:  2 (q0, q1)");
+    println!("  Result size per group:        {} bytes ({}×{}B slots)", RESULT_SIZE, SLOTS, SLOT_SIZE);
+    println!("  Groups per round:             {}", K_CHUNK);
+    println!("  Queries per group per round:  2 (q0, q1)");
     println!();
     println!("  Per round, per server:");
     println!("    Client → server:  {} keys × {}B = {:.1} KB",

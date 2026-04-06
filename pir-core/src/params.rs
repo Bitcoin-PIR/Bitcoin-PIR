@@ -7,14 +7,14 @@
 /// Runtime-configurable parameters for a single Batch PIR cuckoo sub-table.
 #[derive(Clone, Debug)]
 pub struct TableParams {
-    /// Number of Batch PIR buckets (e.g. 75 for INDEX, 80 for CHUNK).
+    /// Number of PBC groups (e.g. 75 for INDEX, 80 for CHUNK).
     pub k: usize,
-    /// Number of bucket assignments per item (always 3).
+    /// Number of PBC group assignments per item (always 3).
     pub num_hashes: usize,
-    /// Master PRG seed for deriving per-bucket cuckoo hash function keys.
+    /// Master PRG seed for deriving per-group cuckoo hash function keys.
     pub master_seed: u64,
     /// Slots per cuckoo bin (e.g. 4 for INDEX, 3 for CHUNK).
-    pub cuckoo_bucket_size: usize,
+    pub slots_per_bin: usize,
     /// Number of cuckoo hash functions (always 2).
     pub cuckoo_num_hashes: usize,
     /// Bytes per slot in the final cuckoo table.
@@ -32,7 +32,7 @@ pub struct TableParams {
 impl TableParams {
     /// Byte size of one cuckoo bin (all slots).
     pub fn bin_size(&self) -> usize {
-        self.cuckoo_bucket_size * self.slot_size
+        self.slots_per_bin * self.slot_size
     }
 
     /// Byte size of one sub-table given the number of bins.
@@ -40,7 +40,7 @@ impl TableParams {
         bins_per_table * self.bin_size()
     }
 
-    /// Result size returned per bucket in a PIR query.
+    /// Result size returned per group in a PIR query.
     pub fn result_size(&self) -> usize {
         self.bin_size()
     }
@@ -80,15 +80,15 @@ pub const INDEX_SLOT_SIZE: usize = TAG_SIZE + 4 + 1 + 4; // 17
 /// CHUNK-level slot size: 4B chunk_id + 40B data.
 pub const CHUNK_SLOT_SIZE: usize = 4 + CHUNK_SIZE; // 44
 
-/// Size of each entry in the intermediate index file: 20B script_hash + 4B start_chunk_id + 1B num_chunks.
-pub const INDEX_ENTRY_SIZE: usize = SCRIPT_HASH_SIZE + 4 + 1; // 25
+/// Size of each record in the intermediate index file: 20B script_hash + 4B start_chunk_id + 1B num_chunks.
+pub const INDEX_RECORD_SIZE: usize = SCRIPT_HASH_SIZE + 4 + 1; // 25
 
 /// Standard INDEX-level parameters for the main UTXO database.
 pub const INDEX_PARAMS: TableParams = TableParams {
     k: 75,
     num_hashes: 3,
     master_seed: 0x71a2ef38b4c90d15,
-    cuckoo_bucket_size: 4,
+    slots_per_bin: 4,
     cuckoo_num_hashes: 2,
     slot_size: INDEX_SLOT_SIZE,
     dpf_n: 20,
@@ -102,7 +102,7 @@ pub const CHUNK_PARAMS: TableParams = TableParams {
     k: 80,
     num_hashes: 3,
     master_seed: 0xa3f7c2d918e4b065,
-    cuckoo_bucket_size: 3,
+    slots_per_bin: 3,
     cuckoo_num_hashes: 2,
     slot_size: CHUNK_SLOT_SIZE,
     dpf_n: 21,
@@ -150,14 +150,14 @@ pub const UNIT_DATA_SIZE: usize = CHUNKS_PER_UNIT * CHUNK_SIZE;
 pub const K: usize = INDEX_PARAMS.k;
 pub const NUM_HASHES: usize = INDEX_PARAMS.num_hashes;
 pub const MASTER_SEED: u64 = INDEX_PARAMS.master_seed;
-pub const CUCKOO_BUCKET_SIZE: usize = INDEX_PARAMS.cuckoo_bucket_size;
+pub const INDEX_SLOTS_PER_BIN: usize = INDEX_PARAMS.slots_per_bin;
 pub const INDEX_CUCKOO_NUM_HASHES: usize = INDEX_PARAMS.cuckoo_num_hashes;
 pub const MAGIC: u64 = INDEX_PARAMS.magic;
 pub const HEADER_SIZE: usize = INDEX_PARAMS.header_size;
 
 pub const K_CHUNK: usize = CHUNK_PARAMS.k;
 pub const CHUNK_MASTER_SEED: u64 = CHUNK_PARAMS.master_seed;
-pub const CHUNK_CUCKOO_BUCKET_SIZE: usize = CHUNK_PARAMS.cuckoo_bucket_size;
+pub const CHUNK_SLOTS_PER_BIN: usize = CHUNK_PARAMS.slots_per_bin;
 pub const CHUNK_CUCKOO_NUM_HASHES: usize = CHUNK_PARAMS.cuckoo_num_hashes;
 pub const CHUNK_MAGIC: u64 = CHUNK_PARAMS.magic;
 pub const CHUNK_HEADER_SIZE: usize = CHUNK_PARAMS.header_size;

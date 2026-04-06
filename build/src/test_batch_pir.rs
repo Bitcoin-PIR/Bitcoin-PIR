@@ -1,10 +1,10 @@
 //! End-to-end test for the Batch PIR protocol (v2: inlined 14-byte tagged entries).
 //!
 //! 1. Loads the cuckoo tables (batch_pir_cuckoo.bin) with inlined tagged entries.
-//! 2. Loads the 50 test queries and runs cuckoo assignment (query → bucket, loc0, loc1).
-//! 3. For each of the 75 buckets, generates DPF keys for both servers.
-//!    - Occupied buckets: DPF keys target loc0 and loc1 of the assigned query.
-//!    - Empty buckets: DPF keys target position 0 (dummy).
+//! 2. Loads the 50 test queries and runs cuckoo assignment (query → group, loc0, loc1).
+//! 3. For each of the 75 groups, generates DPF keys for both servers.
+//!    - Occupied groups: DPF keys target loc0 and loc1 of the assigned query.
+//!    - Empty groups: DPF keys target position 0 (dummy).
 //! 4. Calls the server processing function TWICE (once per server).
 //! 5. XORs the two servers' results and verifies correctness by tag matching.
 //!
@@ -26,7 +26,7 @@ const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/batch_pir_results.
 /// Each cuckoo bin has 3 slots, each a 13-byte inlined tagged entry.
 /// Result per DPF query = 3 * 13 = 39 bytes.
 const SLOT_SIZE: usize = INDEX_SLOT_SIZE; // 13
-const SLOTS: usize = CUCKOO_BUCKET_SIZE;  // 3
+const SLOTS: usize = INDEX_SLOTS_PER_BIN;  // 3
 const RESULT_SIZE: usize = SLOTS * SLOT_SIZE; // 42
 
 // dpf_n is computed from bins_per_table at runtime via pir_core::params::compute_dpf_n
@@ -45,15 +45,15 @@ fn get_dpf_bit(block: &Block, bit_within_block: usize) -> bool {
 
 // ─── Server processing ──────────────────────────────────────────────────────
 
-/// Process one bucket: evaluate two DPF keys and produce two XOR-accumulated
+/// Process one group: evaluate two DPF keys and produce two XOR-accumulated
 /// results by scanning the inlined cuckoo table.
 ///
 /// The scan is parallelized across 128-bin blocks; each thread maintains its
 /// own pair of accumulators which are reduced at the end.
-fn process_bucket(
+fn process_group(
     dpf_result_0: &[Block], // eval_full of DPF key for query 0
     dpf_result_1: &[Block], // eval_full of DPF key for query 1
-    table_bytes: &[u8],     // this bucket's inlined cuckoo table
+    table_bytes: &[u8],     // this group's inlined cuckoo table
     bins_per_table: usize,
 ) -> ([u8; RESULT_SIZE], [u8; RESULT_SIZE]) {
     let num_blocks = dpf_result_0.len();
@@ -123,9 +123,9 @@ fn xor_into(dst: &mut [u8; RESULT_SIZE], src: &[u8]) {
     }
 }
 
-/// Run the full server for all 75 buckets.
+/// Run the full server for all 75 groups.
 ///
-/// `dpf_keys` — one DPF key per (bucket, query), i.e. dpf_keys[b] = (key_for_q0, key_for_q1).
+/// `dpf_keys` — one DPF key per (group, query), i.e. dpf_keys[b] = (key_for_q0, key_for_q1).
 ///
 /// Returns results[b] = (result_q0, result_q1), each RESULT_SIZE bytes.
 fn server_process(
@@ -146,10 +146,10 @@ fn server_process(
         let eval0 = dpf.eval_full(&dpf_keys[b].0);
         let eval1 = dpf.eval_full(&dpf_keys[b].1);
 
-        let (r0, r1) = process_bucket(&eval0, &eval1, table_bytes, bins_per_table);
+        let (r0, r1) = process_group(&eval0, &eval1, table_bytes, bins_per_table);
         results.push((r0, r1));
 
-        eprint!("\r  Bucket {}/{}", b + 1, K);
+        eprint!("\r  Group {}/{}", b + 1, K);
     }
     eprintln!();
 
@@ -163,15 +163,15 @@ const MAX_KICKS: usize = 1000;
 fn cuckoo_assign(
     queries: &[[usize; NUM_HASHES]],
 ) -> Result<[Option<usize>; K], &'static str> {
-    let mut buckets: [Option<usize>; K] = [None; K];
+    let mut groups: [Option<usize>; K] = [None; K];
     let num = queries.len();
 
     for i in 0..num {
-        if !pbc_cuckoo_place(queries, &mut buckets, i, MAX_KICKS, NUM_HASHES) {
+        if !pbc_cuckoo_place(queries, &mut groups, i, MAX_KICKS, NUM_HASHES) {
             return Err("Cuckoo assignment failed");
         }
     }
-    Ok(buckets)
+    Ok(groups)
 }
 
 // ─── Main test ───────────────────────────────────────────────────────────────
@@ -189,38 +189,38 @@ fn main() {
     let dpf_n = pir_core::params::compute_dpf_n(bins_per_table);
     let table_byte_size = bins_per_table * SLOTS * SLOT_SIZE;
     println!("  Cuckoo: bins_per_table = {}, dpf_n = {}, tag_seed = 0x{:016x}", bins_per_table, dpf_n, tag_seed);
-    println!("  Table size per bucket: {:.2} MB", table_byte_size as f64 / (1024.0 * 1024.0));
+    println!("  Table size per group: {:.2} MB", table_byte_size as f64 / (1024.0 * 1024.0));
 
     let query_data = fs::read(QUERIES_FILE).expect("read queries");
     let num_queries = query_data.len() / SCRIPT_HASH_SIZE;
     println!("  Queries: {}", num_queries);
     println!();
 
-    // ── 2. Assign queries to buckets ─────────────────────────────────────
-    println!("[2] Cuckoo-assigning {} queries to {} buckets...", num_queries, K);
+    // ── 2. Assign queries to groups ─────────────────────────────────────
+    println!("[2] Cuckoo-assigning {} queries to {} groups...", num_queries, K);
 
-    let mut candidate_buckets: Vec<[usize; NUM_HASHES]> = Vec::with_capacity(num_queries);
+    let mut candidate_groups: Vec<[usize; NUM_HASHES]> = Vec::with_capacity(num_queries);
     for i in 0..num_queries {
         let sh = &query_data[i * SCRIPT_HASH_SIZE..(i + 1) * SCRIPT_HASH_SIZE];
-        candidate_buckets.push(derive_buckets(sh));
+        candidate_groups.push(derive_groups(sh));
     }
 
-    let bucket_assignment = cuckoo_assign(&candidate_buckets).expect("assign");
+    let group_assignment = cuckoo_assign(&candidate_groups).expect("assign");
     println!("  All queries placed.");
 
-    // Build: query_idx → assigned_bucket
-    let mut query_bucket = vec![0usize; num_queries];
-    for (b, slot) in bucket_assignment.iter().enumerate() {
+    // Build: query_idx → assigned_group
+    let mut query_group = vec![0usize; num_queries];
+    for (b, slot) in group_assignment.iter().enumerate() {
         if let Some(qi) = slot {
-            query_bucket[*qi] = b;
+            query_group[*qi] = b;
         }
     }
 
-    // Compute loc0, loc1 for each query in its assigned bucket
+    // Compute loc0, loc1 for each query in its assigned group
     let mut query_locs: Vec<(usize, usize)> = Vec::with_capacity(num_queries);
     for i in 0..num_queries {
         let sh = &query_data[i * SCRIPT_HASH_SIZE..(i + 1) * SCRIPT_HASH_SIZE];
-        let b = query_bucket[i];
+        let b = query_group[i];
         let key0 = derive_cuckoo_key(b, 0);
         let key1 = derive_cuckoo_key(b, 1);
         let loc0 = cuckoo_hash(sh, key0, bins_per_table);
@@ -239,10 +239,10 @@ fn main() {
     let mut server1_keys: Vec<(DpfKey, DpfKey)> = Vec::with_capacity(K);
 
     for b in 0..K {
-        let (alpha_q0, alpha_q1) = if let Some(qi) = bucket_assignment[b] {
+        let (alpha_q0, alpha_q1) = if let Some(qi) = group_assignment[b] {
             (query_locs[qi].0 as u64, query_locs[qi].1 as u64)
         } else {
-            (0u64, 0u64) // dummy for empty buckets
+            (0u64, 0u64) // dummy for empty groups
         };
 
         let (k0_q0, k1_q0) = dpf.gen(alpha_q0, dpf_n);
@@ -277,7 +277,7 @@ fn main() {
     let mut output_entries: Vec<(Vec<u8>, [u8; 4], u8)> = Vec::with_capacity(num_queries);
 
     for qi in 0..num_queries {
-        let b = query_bucket[qi];
+        let b = query_group[qi];
         let sh = &query_data[qi * SCRIPT_HASH_SIZE..(qi + 1) * SCRIPT_HASH_SIZE];
         let expected_tag = compute_tag(tag_seed, sh);
         let (loc0, loc1) = query_locs[qi];
@@ -308,7 +308,7 @@ fn main() {
             output_entries.push((sh.to_vec(), [0u8; 4], 0u8));
             let hex: String = sh.iter().map(|x| format!("{:02x}", x)).collect();
             println!(
-                "  MISS: query {} bucket {} loc0={} loc1={} hash={}",
+                "  MISS: query {} group {} loc0={} loc1={} hash={}",
                 qi, b, loc0, loc1, hex
             );
         }

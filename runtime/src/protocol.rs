@@ -27,6 +27,10 @@ pub const REQ_HARMONY_BATCH_QUERY: u8 = 0x43;
 
 pub const REQ_GET_DB_CATALOG: u8 = 0x02;
 
+// ─── Monitoring ────────────────────────────────────────────────────────────
+
+pub const REQ_RESIDENCY: u8 = 0x04;
+
 // ─── Response variants ──────────────────────────────────────────────────────
 
 pub const RESP_PONG: u8 = 0x00;
@@ -36,6 +40,7 @@ pub const RESP_INDEX_BATCH: u8 = 0x11;
 pub const RESP_CHUNK_BATCH: u8 = 0x21;
 pub const RESP_MERKLE_SIBLING_BATCH: u8 = 0x31;
 pub const RESP_MERKLE_TREE_TOP: u8 = 0x32;
+pub const RESP_RESIDENCY: u8 = 0x04;
 pub const RESP_ERROR: u8 = 0xFF;
 
 // ─── HarmonyPIR response variants ──────────────────────────────────────────
@@ -48,7 +53,7 @@ pub const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
 // ─── Request types ──────────────────────────────────────────────────────────
 
 /// A batch of DPF keys for one level.
-/// Each bucket has N DPF keys (one per cuckoo hash function).
+/// Each group has N DPF keys (one per cuckoo hash function).
 #[derive(Clone, Debug)]
 pub struct BatchQuery {
     /// 0 for index, 1 for chunk
@@ -58,61 +63,61 @@ pub struct BatchQuery {
     /// Database ID (0 = main UTXO, 1+ = delta databases).
     /// Defaults to 0 for backward compatibility.
     pub db_id: u8,
-    /// Per-bucket: list of DPF keys. Length = K (75) or K_CHUNK (80).
+    /// Per-group: list of DPF keys. Length = K (75) or K_CHUNK (80).
     /// Inner Vec length = number of cuckoo hash functions (2 for index, 3 for chunks).
     pub keys: Vec<Vec<Vec<u8>>>,
 }
 
 /// HarmonyPIR hint request: client asks Hint Server to compute hints.
 ///
-/// Wire: [16B prp_key][1B prp_backend][1B level][1B num_buckets][per bucket: 1B id]
+/// Wire: [16B prp_key][1B prp_backend][1B level][1B num_groups][per group: 1B id]
 #[derive(Clone, Debug)]
 pub struct HarmonyHintRequest {
     pub prp_key: [u8; 16],
     pub prp_backend: u8,
     pub level: u8,
-    pub bucket_ids: Vec<u8>,
+    pub group_ids: Vec<u8>,
 }
 
-/// HarmonyPIR query: client sends T indices for one bucket to Query Server.
+/// HarmonyPIR query: client sends T indices for one group to Query Server.
 ///
-/// Wire: [1B level][1B bucket_id][2B round_id][4B count][count × 4B u32 LE indices]
+/// Wire: [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE indices]
 #[derive(Clone, Debug)]
 pub struct HarmonyQuery {
     pub level: u8,
-    pub bucket_id: u8,
+    pub group_id: u8,
     pub round_id: u16,
     pub indices: Vec<u32>,
 }
 
-/// HarmonyPIR query result: server returns T entries for one bucket.
+/// HarmonyPIR query result: server returns T entries for one group.
 #[derive(Clone, Debug)]
 pub struct HarmonyQueryResult {
-    pub bucket_id: u8,
+    pub group_id: u8,
     pub round_id: u16,
     pub data: Vec<u8>,
 }
 
-/// HarmonyPIR batch query: client sends queries for multiple buckets in one message.
+/// HarmonyPIR batch query: client sends queries for multiple groups in one message.
 ///
 /// Wire format:
-///   [1B level][2B round_id LE][2B num_buckets LE][1B sub_queries_per_bucket]
-///   per bucket:
-///     [1B bucket_id]
-///     per sub_query (× sub_queries_per_bucket):
+///   [1B level][2B round_id LE][2B num_groups LE][1B sub_queries_per_group]
+///   per group:
+///     [1B group_id]
+///     per sub_query (× sub_queries_per_group):
 ///       [4B count LE][count × 4B u32 LE indices]
 #[derive(Clone, Debug)]
 pub struct HarmonyBatchQuery {
     pub level: u8,
     pub round_id: u16,
-    pub sub_queries_per_bucket: u8,
-    /// Per-bucket items.  Each item has `sub_queries_per_bucket` sub-queries.
+    pub sub_queries_per_group: u8,
+    /// Per-group items.  Each item has `sub_queries_per_group` sub-queries.
     pub items: Vec<HarmonyBatchItem>,
 }
 
 #[derive(Clone, Debug)]
 pub struct HarmonyBatchItem {
-    pub bucket_id: u8,
+    pub group_id: u8,
     /// Each sub-query is a Vec of sorted u32 indices.
     pub sub_queries: Vec<Vec<u32>>,
 }
@@ -120,22 +125,22 @@ pub struct HarmonyBatchItem {
 /// HarmonyPIR batch result.
 ///
 /// Wire format:
-///   [1B level][2B round_id LE][2B num_buckets LE][1B sub_results_per_bucket]
-///   per bucket:
-///     [1B bucket_id]
-///     per sub_result (× sub_results_per_bucket):
+///   [1B level][2B round_id LE][2B num_groups LE][1B sub_results_per_group]
+///   per group:
+///     [1B group_id]
+///     per sub_result (× sub_results_per_group):
 ///       [4B data_len LE][data_len bytes]
 #[derive(Clone, Debug)]
 pub struct HarmonyBatchResult {
     pub level: u8,
     pub round_id: u16,
-    pub sub_results_per_bucket: u8,
+    pub sub_results_per_group: u8,
     pub items: Vec<HarmonyBatchResultItem>,
 }
 
 #[derive(Clone, Debug)]
 pub struct HarmonyBatchResultItem {
-    pub bucket_id: u8,
+    pub group_id: u8,
     pub sub_results: Vec<Vec<u8>>,
 }
 
@@ -176,9 +181,9 @@ pub struct DatabaseCatalogEntry {
     pub index_bins_per_table: u32,
     /// CHUNK-level bins_per_table.
     pub chunk_bins_per_table: u32,
-    /// INDEX-level bucket count.
+    /// INDEX-level group count.
     pub index_k: u8,
-    /// CHUNK-level bucket count.
+    /// CHUNK-level group count.
     pub chunk_k: u8,
     /// Tag seed for INDEX-level fingerprints.
     pub tag_seed: u64,
@@ -198,7 +203,7 @@ pub struct DatabaseCatalog {
 pub struct BatchResult {
     pub level: u8,
     pub round_id: u16,
-    /// Per-bucket: list of results. Same structure as request keys.
+    /// Per-group: list of results. Same structure as request keys.
     pub results: Vec<Vec<Vec<u8>>>,
 }
 
@@ -250,13 +255,13 @@ impl Request {
                 payload.extend_from_slice(&h.prp_key);
                 payload.push(h.prp_backend);
                 payload.push(h.level);
-                payload.push(h.bucket_ids.len() as u8);
-                payload.extend_from_slice(&h.bucket_ids);
+                payload.push(h.group_ids.len() as u8);
+                payload.extend_from_slice(&h.group_ids);
             }
             Request::HarmonyQuery(q) => {
                 payload.push(REQ_HARMONY_QUERY);
                 payload.push(q.level);
-                payload.push(q.bucket_id);
+                payload.push(q.group_id);
                 payload.extend_from_slice(&q.round_id.to_le_bytes());
                 payload.extend_from_slice(&(q.indices.len() as u32).to_le_bytes());
                 for idx in &q.indices {
@@ -362,7 +367,7 @@ impl Response {
             }
             Response::HarmonyQueryResult(r) => {
                 payload.push(RESP_HARMONY_QUERY);
-                payload.push(r.bucket_id);
+                payload.push(r.group_id);
                 payload.extend_from_slice(&r.round_id.to_le_bytes());
                 payload.extend_from_slice(&r.data);
             }
@@ -433,7 +438,7 @@ impl Response {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony query result too short"));
                 }
                 Ok(Response::HarmonyQueryResult(HarmonyQueryResult {
-                    bucket_id: data[1],
+                    group_id: data[1],
                     round_id: u16::from_le_bytes(data[2..4].try_into().unwrap()),
                     data: data[4..].to_vec(),
                 }))
@@ -453,17 +458,17 @@ impl Response {
 // ─── Batch encoding helpers ─────────────────────────────────────────────────
 
 /// Wire format:
-///   [2B round_id][1B num_buckets][1B keys_per_bucket]
-///   For each bucket:
-///     For each key (keys_per_bucket times):
+///   [2B round_id][1B num_groups][1B keys_per_group]
+///   For each group:
+///     For each key (keys_per_group times):
 ///       [2B key_len][key_data]
 fn encode_batch_query(buf: &mut Vec<u8>, q: &BatchQuery) {
     buf.extend_from_slice(&q.round_id.to_le_bytes());
     buf.push(q.keys.len() as u8);
-    let keys_per_bucket = q.keys.first().map_or(0, |k| k.len()) as u8;
-    buf.push(keys_per_bucket);
-    for bucket_keys in &q.keys {
-        for k in bucket_keys {
+    let keys_per_group = q.keys.first().map_or(0, |k| k.len()) as u8;
+    buf.push(keys_per_group);
+    for group_keys in &q.keys {
+        for k in group_keys {
             buf.extend_from_slice(&(k.len() as u16).to_le_bytes());
             buf.extend_from_slice(k);
         }
@@ -477,14 +482,14 @@ fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
     }
     let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
     pos += 2;
-    let num_buckets = data[pos] as usize;
+    let num_groups = data[pos] as usize;
     pos += 1;
-    let keys_per_bucket = data[pos] as usize;
+    let keys_per_group = data[pos] as usize;
     pos += 1;
-    let mut keys = Vec::with_capacity(num_buckets);
-    for _ in 0..num_buckets {
-        let mut bucket_keys = Vec::with_capacity(keys_per_bucket);
-        for _ in 0..keys_per_bucket {
+    let mut keys = Vec::with_capacity(num_groups);
+    for _ in 0..num_groups {
+        let mut group_keys = Vec::with_capacity(keys_per_group);
+        for _ in 0..keys_per_group {
             if pos + 2 > data.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key"));
             }
@@ -493,10 +498,10 @@ fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
             if pos + len > data.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key data"));
             }
-            bucket_keys.push(data[pos..pos + len].to_vec());
+            group_keys.push(data[pos..pos + len].to_vec());
             pos += len;
         }
-        keys.push(bucket_keys);
+        keys.push(group_keys);
     }
     Ok(BatchQuery {
         level: 0,
@@ -509,10 +514,10 @@ fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
 fn encode_batch_result(buf: &mut Vec<u8>, r: &BatchResult) {
     buf.extend_from_slice(&r.round_id.to_le_bytes());
     buf.push(r.results.len() as u8);
-    let results_per_bucket = r.results.first().map_or(0, |r| r.len()) as u8;
-    buf.push(results_per_bucket);
-    for bucket_results in &r.results {
-        for res in bucket_results {
+    let results_per_group = r.results.first().map_or(0, |r| r.len()) as u8;
+    buf.push(results_per_group);
+    for group_results in &r.results {
+        for res in group_results {
             buf.extend_from_slice(&(res.len() as u16).to_le_bytes());
             buf.extend_from_slice(res);
         }
@@ -526,14 +531,14 @@ fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
     }
     let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
     pos += 2;
-    let num_buckets = data[pos] as usize;
+    let num_groups = data[pos] as usize;
     pos += 1;
-    let results_per_bucket = data[pos] as usize;
+    let results_per_group = data[pos] as usize;
     pos += 1;
-    let mut results = Vec::with_capacity(num_buckets);
-    for _ in 0..num_buckets {
-        let mut bucket_results = Vec::with_capacity(results_per_bucket);
-        for _ in 0..results_per_bucket {
+    let mut results = Vec::with_capacity(num_groups);
+    for _ in 0..num_groups {
+        let mut group_results = Vec::with_capacity(results_per_group);
+        for _ in 0..results_per_group {
             if pos + 2 > data.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result"));
             }
@@ -542,10 +547,10 @@ fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
             if pos + len > data.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result data"));
             }
-            bucket_results.push(data[pos..pos + len].to_vec());
+            group_results.push(data[pos..pos + len].to_vec());
             pos += len;
         }
-        results.push(bucket_results);
+        results.push(group_results);
     }
     Ok(BatchResult {
         level: 0,
@@ -557,7 +562,7 @@ fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
 // ─── HarmonyPIR encoding helpers ────────────────────────────────────────────
 
 fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
-    // [16B prp_key][1B prp_backend][1B level][1B num_buckets][per bucket: 1B id]
+    // [16B prp_key][1B prp_backend][1B level][1B num_groups][per group: 1B id]
     if data.len() < 19 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony hint request too short"));
     }
@@ -565,16 +570,16 @@ fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
     prp_key.copy_from_slice(&data[0..16]);
     let prp_backend = data[16];
     let level = data[17];
-    let num_buckets = data[18] as usize;
-    if data.len() < 19 + num_buckets {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated bucket list"));
+    let num_groups = data[18] as usize;
+    if data.len() < 19 + num_groups {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated group list"));
     }
-    let bucket_ids = data[19..19 + num_buckets].to_vec();
+    let group_ids = data[19..19 + num_groups].to_vec();
     Ok(HarmonyHintRequest {
         prp_key,
         prp_backend,
         level,
-        bucket_ids,
+        group_ids,
     })
 }
 
@@ -584,9 +589,9 @@ fn encode_harmony_batch_query(buf: &mut Vec<u8>, q: &HarmonyBatchQuery) {
     buf.push(q.level);
     buf.extend_from_slice(&q.round_id.to_le_bytes());
     buf.extend_from_slice(&(q.items.len() as u16).to_le_bytes());
-    buf.push(q.sub_queries_per_bucket);
+    buf.push(q.sub_queries_per_group);
     for item in &q.items {
-        buf.push(item.bucket_id);
+        buf.push(item.group_id);
         for sq in &item.sub_queries {
             buf.extend_from_slice(&(sq.len() as u32).to_le_bytes());
             for &idx in sq {
@@ -602,18 +607,18 @@ fn decode_harmony_batch_query(data: &[u8]) -> io::Result<HarmonyBatchQuery> {
     }
     let level = data[0];
     let round_id = u16::from_le_bytes(data[1..3].try_into().unwrap());
-    let num_buckets = u16::from_le_bytes(data[3..5].try_into().unwrap()) as usize;
-    let sub_queries_per_bucket = data[5];
+    let num_groups = u16::from_le_bytes(data[3..5].try_into().unwrap()) as usize;
+    let sub_queries_per_group = data[5];
     let mut pos = 6;
-    let mut items = Vec::with_capacity(num_buckets);
-    for _ in 0..num_buckets {
+    let mut items = Vec::with_capacity(num_groups);
+    for _ in 0..num_groups {
         if pos >= data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch bucket"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch group"));
         }
-        let bucket_id = data[pos];
+        let group_id = data[pos];
         pos += 1;
-        let mut sub_queries = Vec::with_capacity(sub_queries_per_bucket as usize);
-        for _ in 0..sub_queries_per_bucket {
+        let mut sub_queries = Vec::with_capacity(sub_queries_per_group as usize);
+        for _ in 0..sub_queries_per_group {
             if pos + 4 > data.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch sub-query count"));
             }
@@ -630,18 +635,18 @@ fn decode_harmony_batch_query(data: &[u8]) -> io::Result<HarmonyBatchQuery> {
             pos += count * 4;
             sub_queries.push(indices);
         }
-        items.push(HarmonyBatchItem { bucket_id, sub_queries });
+        items.push(HarmonyBatchItem { group_id, sub_queries });
     }
-    Ok(HarmonyBatchQuery { level, round_id, sub_queries_per_bucket, items })
+    Ok(HarmonyBatchQuery { level, round_id, sub_queries_per_group, items })
 }
 
 fn encode_harmony_batch_result(buf: &mut Vec<u8>, r: &HarmonyBatchResult) {
     buf.push(r.level);
     buf.extend_from_slice(&r.round_id.to_le_bytes());
     buf.extend_from_slice(&(r.items.len() as u16).to_le_bytes());
-    buf.push(r.sub_results_per_bucket);
+    buf.push(r.sub_results_per_group);
     for item in &r.items {
-        buf.push(item.bucket_id);
+        buf.push(item.group_id);
         for sr in &item.sub_results {
             buf.extend_from_slice(&(sr.len() as u32).to_le_bytes());
             buf.extend_from_slice(sr);
@@ -655,18 +660,18 @@ fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
     }
     let level = data[0];
     let round_id = u16::from_le_bytes(data[1..3].try_into().unwrap());
-    let num_buckets = u16::from_le_bytes(data[3..5].try_into().unwrap()) as usize;
-    let sub_results_per_bucket = data[5];
+    let num_groups = u16::from_le_bytes(data[3..5].try_into().unwrap()) as usize;
+    let sub_results_per_group = data[5];
     let mut pos = 6;
-    let mut items = Vec::with_capacity(num_buckets);
-    for _ in 0..num_buckets {
+    let mut items = Vec::with_capacity(num_groups);
+    for _ in 0..num_groups {
         if pos >= data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch result bucket"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch result group"));
         }
-        let bucket_id = data[pos];
+        let group_id = data[pos];
         pos += 1;
-        let mut sub_results = Vec::with_capacity(sub_results_per_bucket as usize);
-        for _ in 0..sub_results_per_bucket {
+        let mut sub_results = Vec::with_capacity(sub_results_per_group as usize);
+        for _ in 0..sub_results_per_group {
             if pos + 4 > data.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch result len"));
             }
@@ -678,9 +683,9 @@ fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
             sub_results.push(data[pos..pos + len].to_vec());
             pos += len;
         }
-        items.push(HarmonyBatchResultItem { bucket_id, sub_results });
+        items.push(HarmonyBatchResultItem { group_id, sub_results });
     }
-    Ok(HarmonyBatchResult { level, round_id, sub_results_per_bucket, items })
+    Ok(HarmonyBatchResult { level, round_id, sub_results_per_group, items })
 }
 
 // ─── Database catalog encoding helpers ─────────────────────────────────────
@@ -765,12 +770,12 @@ fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
 }
 
 fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
-    // [1B level][1B bucket_id][2B round_id][4B count][count × 4B u32 LE]
+    // [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE]
     if data.len() < 8 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony query too short"));
     }
     let level = data[0];
-    let bucket_id = data[1];
+    let group_id = data[1];
     let round_id = u16::from_le_bytes(data[2..4].try_into().unwrap());
     let count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
     let expected = 8 + count * 4;
@@ -784,7 +789,7 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
     }
     Ok(HarmonyQuery {
         level,
-        bucket_id,
+        group_id,
         round_id,
         indices,
     })

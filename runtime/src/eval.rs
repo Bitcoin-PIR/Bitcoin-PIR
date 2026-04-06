@@ -33,15 +33,15 @@ pub const CHUNK_DPF_N: u8 = 21;
 
 // ─── Index-level constants ──────────────────────────────────────────────────
 
-/// Each cuckoo bin has CUCKOO_BUCKET_SIZE (4) slots, each INDEX_SLOT_SIZE (13) bytes.
-pub const INDEX_SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
-pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_SLOT_SIZE; // 4 * 13 = 52
+/// Each cuckoo bin has INDEX_SLOTS_PER_BIN (4) slots, each INDEX_SLOT_SIZE (17) bytes.
+pub const INDEX_SLOTS: usize = INDEX_SLOTS_PER_BIN; // 4
+pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_SLOT_SIZE; // 4 * 17 = 68
 
 // ─── Chunk-level constants ──────────────────────────────────────────────────
 
 /// Each slot: [4B chunk_id LE | UNIT_DATA_SIZE data]
 pub const CHUNK_SLOT_SIZE: usize = 4 + UNIT_DATA_SIZE;
-pub const CHUNK_SLOTS: usize = CHUNK_CUCKOO_BUCKET_SIZE; // 3
+pub const CHUNK_SLOTS: usize = CHUNK_SLOTS_PER_BIN; // 3
 pub const CHUNK_RESULT_SIZE: usize = CHUNK_SLOTS * CHUNK_SLOT_SIZE;
 
 // ─── DPF bit extraction ────────────────────────────────────────────────────
@@ -77,8 +77,8 @@ pub fn xor_into(dst: &mut [u8], src: &[u8]) {
 /// Issue prefetch for bin N+LOOKAHEAD while processing bin N.
 const PREFETCH_LOOKAHEAD: usize = 4;
 
-/// Per-bucket timing breakdown.
-pub struct BucketTiming {
+/// Per-group timing breakdown.
+pub struct GroupTiming {
     pub dpf_eval: Duration,
     pub fetch_xor: Duration,
 }
@@ -86,14 +86,14 @@ pub struct BucketTiming {
 /// Evaluate N DPF keys over a table, XOR-accumulating results.
 /// Returns Vec of N accumulators, each `result_size` bytes, plus timing.
 /// `prefetch_bin` is an optional callback to prefetch data for an upcoming bin.
-fn process_bucket_generic(
+fn process_group_generic(
     keys: &[&DpfKey],
     table_bytes: &[u8],
     bins_per_table: usize,
     result_size: usize,
     fetch_bin: &dyn Fn(&[u8], usize, &mut [u8]),
     prefetch_bin: Option<&dyn Fn(&[u8], usize)>,
-) -> (Vec<Vec<u8>>, BucketTiming) {
+) -> (Vec<Vec<u8>>, GroupTiming) {
     let dpf = Dpf::with_default_key();
     let num_keys = keys.len();
 
@@ -152,28 +152,28 @@ fn process_bucket_generic(
     }
     let fetch_xor = t_fetch.elapsed();
 
-    (accs, BucketTiming { dpf_eval, fetch_xor })
+    (accs, GroupTiming { dpf_eval, fetch_xor })
 }
 
 // ─── Index-level evaluation (inlined cuckoo tables) ─────────────────────────
 
 /// Fetch INDEX_SLOTS inlined index entries at `bin` directly from the table.
-/// Each slot is INDEX_SLOT_SIZE (13) bytes, stored contiguously.
+/// Each slot is INDEX_SLOT_SIZE (17) bytes, stored contiguously.
 #[inline]
 fn fetch_index_bin(table_bytes: &[u8], bin: usize, out: &mut [u8]) {
     let src_offset = bin * INDEX_RESULT_SIZE;
     out.copy_from_slice(&table_bytes[src_offset..src_offset + INDEX_RESULT_SIZE]);
 }
 
-/// Process one index-level bucket: evaluate two DPF keys, XOR-accumulate.
+/// Process one index-level group: evaluate two DPF keys, XOR-accumulate.
 /// Returns (result_q0, result_q1, timing).
-pub fn process_index_bucket(
+pub fn process_index_group(
     key_q0: &DpfKey,
     key_q1: &DpfKey,
     table_bytes: &[u8],
     bins_per_table: usize,
-) -> (Vec<u8>, Vec<u8>, BucketTiming) {
-    let (results, timing) = process_bucket_generic(
+) -> (Vec<u8>, Vec<u8>, GroupTiming) {
+    let (results, timing) = process_group_generic(
         &[key_q0, key_q1],
         table_bytes,
         bins_per_table,
@@ -203,14 +203,14 @@ fn fetch_chunk_bin(table_bytes: &[u8], bin: usize, out: &mut [u8]) {
     out.copy_from_slice(&table_bytes[src_offset..src_offset + CHUNK_RESULT_SIZE]);
 }
 
-/// Process one chunk-level bucket: evaluate CHUNK_CUCKOO_NUM_HASHES (2) DPF keys, XOR-accumulate.
+/// Process one chunk-level group: evaluate CHUNK_CUCKOO_NUM_HASHES (2) DPF keys, XOR-accumulate.
 /// Returns Vec of 2 results, each CHUNK_RESULT_SIZE bytes, plus timing.
-pub fn process_chunk_bucket(
+pub fn process_chunk_group(
     keys: &[&DpfKey],
     table_bytes: &[u8],
     bins_per_table: usize,
-) -> (Vec<Vec<u8>>, BucketTiming) {
-    process_bucket_generic(
+) -> (Vec<Vec<u8>>, GroupTiming) {
+    process_group_generic(
         keys,
         table_bytes,
         bins_per_table,
@@ -222,15 +222,15 @@ pub fn process_chunk_bucket(
 
 // ─── Merkle sibling evaluation ────────────────────────────────────────────
 
-/// Process one Merkle sibling bucket: evaluate 2 DPF keys, XOR-accumulate.
-/// `result_size` = cuckoo_bucket_size × slot_size (e.g. 4 × 260 = 1040 for arity=8).
-pub fn process_merkle_sibling_bucket(
+/// Process one Merkle sibling group: evaluate 2 DPF keys, XOR-accumulate.
+/// `result_size` = slots_per_bin × slot_size (e.g. 4 × 260 = 1040 for arity=8).
+pub fn process_merkle_sibling_group(
     keys: &[&DpfKey],
     table_bytes: &[u8],
     bins_per_table: usize,
     result_size: usize,
-) -> (Vec<Vec<u8>>, BucketTiming) {
-    process_bucket_generic(
+) -> (Vec<Vec<u8>>, GroupTiming) {
+    process_group_generic(
         keys,
         table_bytes,
         bins_per_table,
@@ -251,11 +251,11 @@ pub fn find_group_in_sibling_result(
     result: &[u8],
     group_id: u32,
     arity: usize,
-    bucket_size: usize,
+    slots_per_bin: usize,
 ) -> Option<Vec<[u8; 32]>> {
     let slot_size = 4 + arity * 32;
     let target = group_id.to_le_bytes();
-    for slot in 0..bucket_size {
+    for slot in 0..slots_per_bin {
         let base = slot * slot_size;
         if base + 4 > result.len() { break; }
         if result[base..base + 4] == target {

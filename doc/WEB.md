@@ -172,7 +172,7 @@ CHUNKS_DB_ID = "utxo_chunks_data"
 // Database parameters
 CUCKOO_NUM_BUCKETS = 15_385_139
 CUCKOO_ENTRY_SIZE = 24        // 20B key + 4B offset
-CUCKOO_BUCKET_SIZE = 4
+CUCKOO_SLOTS_PER_BIN = 4
 CHUNK_SIZE = 32_768            // 32KB
 CHUNKS_NUM_ENTRIES = 181_833   // normal (65_294 for small)
 ```

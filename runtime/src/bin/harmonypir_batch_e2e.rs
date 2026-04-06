@@ -1,7 +1,7 @@
 //! HarmonyPIR Batch Protocol E2E Test — Rust client ↔ server.
 //!
 //! Tests the full batch wire protocol on real Bitcoin UTXO data:
-//! 1. Generate hints for a subset of INDEX + CHUNK buckets
+//! 1. Generate hints for a subset of INDEX + CHUNK groups
 //! 2. Build a batch request (real + synthetic dummy)
 //! 3. Encode → decode via wire protocol
 //! 4. Server processes the batch
@@ -18,8 +18,8 @@ use harmonypir::prp::alf::AlfPrp;
 use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir_wasm::{
-    HarmonyBucket, PRP_ALF, PRP_HOANG,
-    compute_rounds, derive_bucket_key, find_best_t, pad_n_for_t,
+    HarmonyGroup, PRP_ALF, PRP_HOANG,
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
 };
 use runtime::protocol::*;
 
@@ -54,11 +54,11 @@ fn build_prp_box(backend: u8, key: &[u8; 16], domain: usize, rounds: usize) -> B
     }
 }
 
-/// Generate hints for one bucket. Returns a ready-to-query HarmonyBucket.
-fn generate_bucket(
-    backend: u8, master_key: &[u8; 16], bucket_id: u32,
+/// Generate hints for one group. Returns a ready-to-query HarmonyGroup.
+fn generate_group(
+    backend: u8, master_key: &[u8; 16], group_id: u32,
     table_mmap: &[u8], header_size: usize, n: usize, w: usize,
-) -> HarmonyBucket {
+) -> HarmonyGroup {
     let t_val = find_best_t(n as u32);
     let (padded_n, t_val) = pad_n_for_t(n as u32, t_val);
     let pn = padded_n as usize;
@@ -67,14 +67,14 @@ fn generate_bucket(
     let r = compute_rounds(padded_n);
     let params = Params::new(pn, w, t).unwrap();
     let m = params.m;
-    let derived_key = derive_bucket_key(master_key, bucket_id);
+    let derived_key = derive_group_key(master_key, group_id);
 
-    let actual_bucket = if bucket_id >= K as u32 {
-        (bucket_id - K as u32) as usize
+    let actual_group = if group_id >= K as u32 {
+        (group_id - K as u32) as usize
     } else {
-        bucket_id as usize
+        group_id as usize
     };
-    let table_offset = header_size + actual_bucket * n * w;
+    let table_offset = header_size + actual_group * n * w;
 
     let prp = build_prp_box(backend, &derived_key, domain, r);
     let cell_of: Vec<usize> = (0..pn).map(|k| prp.forward(k)).collect();
@@ -92,11 +92,11 @@ fn generate_bucket(
         }
     }
 
-    let mut bucket = HarmonyBucket::new_with_backend(
-        n as u32, w as u32, t as u32, master_key, bucket_id, backend,
+    let mut group = HarmonyGroup::new_with_backend(
+        n as u32, w as u32, t as u32, master_key, group_id, backend,
     ).unwrap();
-    bucket.load_hints(&hints_flat).unwrap();
-    bucket
+    group.load_hints(&hints_flat).unwrap();
+    group
 }
 
 /// Simulate the server processing a HarmonyBatchQuery.
@@ -114,8 +114,8 @@ fn server_process_batch(
     };
 
     let result_items: Vec<HarmonyBatchResultItem> = query.items.iter().map(|item| {
-        let bucket_id = item.bucket_id as usize;
-        let table_offset = header_size + bucket_id * bins_per_table * entry_size;
+        let group_id = item.group_id as usize;
+        let table_offset = header_size + group_id * bins_per_table * entry_size;
 
         let sub_results: Vec<Vec<u8>> = item.sub_queries.iter().map(|indices| {
             let mut data = Vec::with_capacity(indices.len() * entry_size);
@@ -138,13 +138,13 @@ fn server_process_batch(
             data
         }).collect();
 
-        HarmonyBatchResultItem { bucket_id: item.bucket_id, sub_results }
+        HarmonyBatchResultItem { group_id: item.group_id, sub_results }
     }).collect();
 
     HarmonyBatchResult {
         level: query.level,
         round_id: query.round_id,
-        sub_results_per_bucket: query.sub_queries_per_bucket,
+        sub_results_per_group: query.sub_queries_per_group,
         items: result_items,
     }
 }
@@ -160,12 +160,12 @@ fn main() {
     let idx_file = File::open(CUCKOO_FILE).expect("open index cuckoo");
     let idx_mmap = unsafe { Mmap::map(&idx_file) }.expect("mmap");
     let (index_bins, _tag_seed) = read_cuckoo_header(&idx_mmap);
-    let index_w = CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE; // 4 × 13 = 52
+    let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE; // 4 × 13 = 52
 
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap");
     let chunk_bins = read_chunk_cuckoo_header(&chunk_mmap);
-    let chunk_w = CHUNK_CUCKOO_BUCKET_SIZE * (4 + CHUNK_SIZE); // 3 × 44 = 132
+    let chunk_w = CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE); // 3 × 44 = 132
 
     println!("  INDEX: {} bins × {}B, CHUNK: {} bins × {}B\n", index_bins, index_w, chunk_bins, chunk_w);
 
@@ -174,33 +174,33 @@ fn main() {
     // ══════════════════════════════════════════════════════════════════
     println!("━━━ Phase 1: INDEX Batch ━━━\n");
 
-    // Pick 5 real query targets from different INDEX buckets.
-    let real_index_buckets: Vec<u32> = vec![0, 10, 25, 50, 74];
-    let num_real = real_index_buckets.len();
+    // Pick 5 real query targets from different INDEX groups.
+    let real_index_groups: Vec<u32> = vec![0, 10, 25, 50, 74];
+    let num_real = real_index_groups.len();
     let num_dummy = K - num_real;
 
-    println!("  {} real queries + {} dummy = {} total INDEX buckets\n", num_real, num_dummy, K);
+    println!("  {} real queries + {} dummy = {} total INDEX groups\n", num_real, num_dummy, K);
 
-    // Generate hints for the real buckets.
+    // Generate hints for the real groups.
     let t0 = Instant::now();
-    let mut index_buckets: Vec<(u32, HarmonyBucket)> = Vec::new();
-    for &bid in &real_index_buckets {
-        let bucket = generate_bucket(backend, &MASTER_KEY, bid, &idx_mmap, HEADER_SIZE, index_bins, index_w);
-        index_buckets.push((bid, bucket));
+    let mut index_groups: Vec<(u32, HarmonyGroup)> = Vec::new();
+    for &bid in &real_index_groups {
+        let group = generate_group(backend, &MASTER_KEY, bid, &idx_mmap, HEADER_SIZE, index_bins, index_w);
+        index_groups.push((bid, group));
     }
-    // Also generate dummy buckets for the rest.
-    let mut dummy_index_buckets: Vec<(u32, HarmonyBucket)> = Vec::new();
+    // Also generate dummy groups for the rest.
+    let mut dummy_index_groups: Vec<(u32, HarmonyGroup)> = Vec::new();
     for b in 0..K as u32 {
-        if real_index_buckets.contains(&b) { continue; }
-        let bucket = generate_bucket(backend, &MASTER_KEY, b, &idx_mmap, HEADER_SIZE, index_bins, index_w);
-        dummy_index_buckets.push((b, bucket));
-        if dummy_index_buckets.len() >= 5 { break; } // only need a few for dummy generation
+        if real_index_groups.contains(&b) { continue; }
+        let group = generate_group(backend, &MASTER_KEY, b, &idx_mmap, HEADER_SIZE, index_bins, index_w);
+        dummy_index_groups.push((b, group));
+        if dummy_index_groups.len() >= 5 { break; } // only need a few for dummy generation
     }
     println!("  Hint generation: {:.2?}", t0.elapsed());
 
-    // For each real bucket, pick a non-empty bin to query.
-    let mut real_targets: Vec<(u32, usize)> = Vec::new(); // (bucket_id, bin_index)
-    for &bid in &real_index_buckets {
+    // For each real group, pick a non-empty bin to query.
+    let mut real_targets: Vec<(u32, usize)> = Vec::new(); // (group_id, bin_index)
+    for &bid in &real_index_groups {
         let table_offset = HEADER_SIZE + bid as usize * index_bins * index_w;
         let mut target_bin = 0;
         for bin in 0..index_bins {
@@ -217,50 +217,50 @@ fn main() {
     }
 
     // Build the batch request.
-    // Use 1 sub-query per bucket: build_request + process_response must be paired 1:1
-    // (HarmonyBucket is stateful — process_response reads state set by build_request).
-    // In the real system, planRounds assigns each query to a specific bucket + hash fn.
-    let sub_q_per_bucket: u8 = 1;
+    // Use 1 sub-query per group: build_request + process_response must be paired 1:1
+    // (HarmonyGroup is stateful — process_response reads state set by build_request).
+    // In the real system, planRounds assigns each query to a specific group + hash fn.
+    let sub_q_per_group: u8 = 1;
     let mut batch_items: Vec<HarmonyBatchItem> = Vec::new();
 
     // Real queries.
-    let mut real_bucket_map: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
-    for (i, (bid, bucket)) in index_buckets.iter_mut().enumerate() {
+    let mut real_group_map: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for (i, (bid, group)) in index_groups.iter_mut().enumerate() {
         let target_bin = real_targets[i].1;
-        let req = bucket.build_request(target_bin as u32).unwrap();
+        let req = group.build_request(target_bin as u32).unwrap();
         let req_bytes = req.request();
         let indices: Vec<u32> = req_bytes.chunks(4)
             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
             .collect();
-        real_bucket_map.insert(*bid, i);
-        batch_items.push(HarmonyBatchItem { bucket_id: *bid as u8, sub_queries: vec![indices] });
+        real_group_map.insert(*bid, i);
+        batch_items.push(HarmonyBatchItem { group_id: *bid as u8, sub_queries: vec![indices] });
     }
 
-    // Dummy queries for remaining buckets.
+    // Dummy queries for remaining groups.
     let mut dummy_idx = 0;
     for b in 0..K as u32 {
-        if real_index_buckets.contains(&b) { continue; }
-        if dummy_idx < dummy_index_buckets.len() {
-            let (_, ref mut dummy_bucket) = dummy_index_buckets[dummy_idx];
-            let dummy_bytes = dummy_bucket.build_synthetic_dummy();
+        if real_index_groups.contains(&b) { continue; }
+        if dummy_idx < dummy_index_groups.len() {
+            let (_, ref mut dummy_group) = dummy_index_groups[dummy_idx];
+            let dummy_bytes = dummy_group.build_synthetic_dummy();
             let indices: Vec<u32> = dummy_bytes.chunks(4)
                 .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                 .collect();
-            batch_items.push(HarmonyBatchItem { bucket_id: b as u8, sub_queries: vec![indices] });
-            dummy_idx = (dummy_idx + 1) % dummy_index_buckets.len();
+            batch_items.push(HarmonyBatchItem { group_id: b as u8, sub_queries: vec![indices] });
+            dummy_idx = (dummy_idx + 1) % dummy_index_groups.len();
         } else {
-            batch_items.push(HarmonyBatchItem { bucket_id: b as u8, sub_queries: vec![vec![]] });
+            batch_items.push(HarmonyBatchItem { group_id: b as u8, sub_queries: vec![vec![]] });
         }
     }
 
     let batch_query = HarmonyBatchQuery {
         level: 0,
         round_id: 0,
-        sub_queries_per_bucket: sub_q_per_bucket,
+        sub_queries_per_group: sub_q_per_group,
         items: batch_items,
     };
 
-    println!("  Batch request: {} buckets × {} sub-queries", batch_query.items.len(), sub_q_per_bucket);
+    println!("  Batch request: {} groups × {} sub-queries", batch_query.items.len(), sub_q_per_group);
 
     // ── Wire protocol encode/decode round-trip ──
     let t0 = Instant::now();
@@ -282,8 +282,8 @@ fn main() {
     };
 
     assert_eq!(decoded_batch.items.len(), K);
-    assert_eq!(decoded_batch.sub_queries_per_bucket, sub_q_per_bucket);
-    println!("  Decode verified: {} buckets × {} sub-q ✓\n", decoded_batch.items.len(), decoded_batch.sub_queries_per_bucket);
+    assert_eq!(decoded_batch.sub_queries_per_group, sub_q_per_group);
+    println!("  Decode verified: {} groups × {} sub-q ✓\n", decoded_batch.items.len(), decoded_batch.sub_queries_per_group);
 
     // ── Server processes the batch ──
     let t0 = Instant::now();
@@ -316,20 +316,20 @@ fn main() {
     let mut chunk_ids_to_fetch: Vec<(u32, u8)> = Vec::new(); // (start_chunk_id, num_chunks)
 
     for result_item in &result.items {
-        let bid = result_item.bucket_id as u32;
-        if let Some(&idx) = real_bucket_map.get(&bid) {
-            let (_, ref mut bucket) = index_buckets[idx];
+        let bid = result_item.group_id as u32;
+        if let Some(&idx) = real_group_map.get(&bid) {
+            let (_, ref mut group) = index_groups[idx];
             let target_bin = real_targets[idx].1;
 
             // Process first sub-query response.
             let resp_data = &result_item.sub_results[0];
             let expected_count = resp_data.len() / index_w;
-            println!("    [debug] bucket {}: resp {} bytes = {} entries × {}B, last_query was bin {}",
+            println!("    [debug] group {}: resp {} bytes = {} entries × {}B, last_query was bin {}",
                 bid, resp_data.len(), expected_count, index_w, target_bin);
-            let answer = match bucket.process_response(resp_data) {
+            let answer = match group.process_response(resp_data) {
                 Ok(a) => a,
                 Err(_) => {
-                    println!("    [ERROR] process_response failed for bucket {}", bid);
+                    println!("    [ERROR] process_response failed for group {}", bid);
                     continue;
                 }
             };
@@ -342,7 +342,7 @@ fn main() {
 
             // Decode first non-empty slot.
             let mut entry_info = String::new();
-            for slot in 0..CUCKOO_BUCKET_SIZE {
+            for slot in 0..INDEX_SLOTS_PER_BIN {
                 let s = slot * INDEX_SLOT_SIZE;
                 let tag = u64::from_le_bytes(answer[s..s + 8].try_into().unwrap());
                 let start_chunk = u32::from_le_bytes(answer[s + 8..s + 12].try_into().unwrap());
@@ -359,7 +359,7 @@ fn main() {
                 if correct { "✓" } else { "✗" },
                 hex_short(&answer[..13.min(answer.len())]),
                 entry_info);
-            assert!(correct, "INDEX bucket {} FAILED", bid);
+            assert!(correct, "INDEX group {} FAILED", bid);
             index_pass += 1;
         }
     }
@@ -387,49 +387,49 @@ fn main() {
         all_chunk_ids.sort();
         println!("  {} unique chunk IDs to fetch from {} INDEX results\n", all_chunk_ids.len(), chunk_ids_to_fetch.len());
 
-        // For simplicity, assign chunk IDs to buckets using first candidate + first hash function.
+        // For simplicity, assign chunk IDs to groups using first candidate + first hash function.
         // This mirrors the real flow where planRounds() does cuckoo placement.
-        let mut chunk_bucket_map: std::collections::HashMap<u32, (usize, u32)> = std::collections::HashMap::new(); // bucket_id → (chunk_idx, chunk_id)
-        let mut chunk_bucket_instances: std::collections::HashMap<u32, HarmonyBucket> = std::collections::HashMap::new();
+        let mut chunk_group_map: std::collections::HashMap<u32, (usize, u32)> = std::collections::HashMap::new(); // group_id → (chunk_idx, chunk_id)
+        let mut chunk_group_instances: std::collections::HashMap<u32, HarmonyGroup> = std::collections::HashMap::new();
 
         for (ci, &cid) in all_chunk_ids.iter().enumerate() {
-            let buckets = derive_chunk_buckets(cid);
-            let target_bucket = buckets[0] as u32;
-            chunk_bucket_map.insert(target_bucket, (ci, cid));
+            let groups = derive_chunk_groups(cid);
+            let target_group = groups[0] as u32;
+            chunk_group_map.insert(target_group, (ci, cid));
 
-            if !chunk_bucket_instances.contains_key(&target_bucket) {
-                let chunk_bid = K as u32 + target_bucket;
-                let bucket = generate_bucket(
+            if !chunk_group_instances.contains_key(&target_group) {
+                let chunk_bid = K as u32 + target_group;
+                let group = generate_group(
                     backend, &MASTER_KEY, chunk_bid,
                     &chunk_mmap, CHUNK_HEADER_SIZE, chunk_bins, chunk_w,
                 );
-                chunk_bucket_instances.insert(target_bucket, bucket);
+                chunk_group_instances.insert(target_group, group);
             }
         }
 
         // Build chunk batches — one batch per hash function.
-        // HarmonyBucket is stateful: build_request + process_response must be paired 1:1.
-        // So we do CHUNK_CUCKOO_NUM_HASHES separate batch rounds, each with 1 sub-query per bucket.
-        // Round h=0: build_request(bin_h0) for all real buckets → send batch → process_response for all.
-        // Round h=1: build_request(bin_h1) for all real buckets → send batch → process_response for all.
+        // HarmonyGroup is stateful: build_request + process_response must be paired 1:1.
+        // So we do CHUNK_CUCKOO_NUM_HASHES separate batch rounds, each with 1 sub-query per group.
+        // Round h=0: build_request(bin_h0) for all real groups → send batch → process_response for all.
+        // Round h=1: build_request(bin_h1) for all real groups → send batch → process_response for all.
         // This costs CHUNK_CUCKOO_NUM_HASHES hint slots per chunk, which is correct — without
         // placement info, the client must try each hash function.
 
-        // Create a few dummy buckets.
-        let mut dummy_chunk_buckets: Vec<HarmonyBucket> = Vec::new();
+        // Create a few dummy groups.
+        let mut dummy_chunk_groups: Vec<HarmonyGroup> = Vec::new();
         for b in 0..3u32 {
-            if !chunk_bucket_map.contains_key(&b) {
-                let bucket = generate_bucket(
+            if !chunk_group_map.contains_key(&b) {
+                let group = generate_group(
                     backend, &MASTER_KEY, K as u32 + b,
                     &chunk_mmap, CHUNK_HEADER_SIZE, chunk_bins, chunk_w,
                 );
-                dummy_chunk_buckets.push(bucket);
-                if dummy_chunk_buckets.len() >= 2 { break; }
+                dummy_chunk_groups.push(group);
+                if dummy_chunk_groups.len() >= 2 { break; }
             }
         }
 
         println!("  Chunk strategy: {} batch round(s) (1 per hash fn), {} real + {} dummy per round\n",
-            CHUNK_CUCKOO_NUM_HASHES, chunk_bucket_map.len(), K_CHUNK - chunk_bucket_map.len());
+            CHUNK_CUCKOO_NUM_HASHES, chunk_group_map.len(), K_CHUNK - chunk_group_map.len());
 
         let mut chunk_pass = 0;
         let mut recovered_chunks = std::collections::HashSet::new();
@@ -437,42 +437,42 @@ fn main() {
         for h in 0..CHUNK_CUCKOO_NUM_HASHES {
             let mut chunk_batch_items: Vec<HarmonyBatchItem> = Vec::new();
             let mut dummy_chunk_idx = 0;
-            let dummy_count = dummy_chunk_buckets.len();
+            let dummy_count = dummy_chunk_groups.len();
 
             for b in 0..K_CHUNK as u32 {
-                if let Some(&(_, cid)) = chunk_bucket_map.get(&b) {
+                if let Some(&(_, cid)) = chunk_group_map.get(&b) {
                     if recovered_chunks.contains(&cid) {
                         // Already found in a previous round — send a synthetic dummy
-                        // to keep the bucket active (server can't distinguish).
+                        // to keep the group active (server can't distinguish).
                         // This saves a hint slot.
-                        let bucket = chunk_bucket_instances.get_mut(&b).unwrap();
-                        let dummy_bytes = bucket.build_synthetic_dummy();
+                        let group = chunk_group_instances.get_mut(&b).unwrap();
+                        let dummy_bytes = group.build_synthetic_dummy();
                         let indices: Vec<u32> = dummy_bytes.chunks(4)
                             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                             .collect();
-                        chunk_batch_items.push(HarmonyBatchItem { bucket_id: b as u8, sub_queries: vec![indices] });
+                        chunk_batch_items.push(HarmonyBatchItem { group_id: b as u8, sub_queries: vec![indices] });
                     } else {
                         // Not yet found — real query with hash function h.
-                        let bucket = chunk_bucket_instances.get_mut(&b).unwrap();
+                        let group = chunk_group_instances.get_mut(&b).unwrap();
                         let ckey = derive_chunk_cuckoo_key(b as usize, h);
                         let bin_index = cuckoo_hash_int(cid, ckey, chunk_bins);
-                        let req = bucket.build_request(bin_index as u32).unwrap();
+                        let req = group.build_request(bin_index as u32).unwrap();
                         let indices: Vec<u32> = req.request().chunks(4)
                             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                             .collect();
-                        chunk_batch_items.push(HarmonyBatchItem { bucket_id: b as u8, sub_queries: vec![indices] });
+                        chunk_batch_items.push(HarmonyBatchItem { group_id: b as u8, sub_queries: vec![indices] });
                     }
                 } else {
                     if dummy_count > 0 {
-                        let db = &mut dummy_chunk_buckets[dummy_chunk_idx % dummy_count];
+                        let db = &mut dummy_chunk_groups[dummy_chunk_idx % dummy_count];
                         let dummy_bytes = db.build_synthetic_dummy();
                         let indices: Vec<u32> = dummy_bytes.chunks(4)
                             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                             .collect();
-                        chunk_batch_items.push(HarmonyBatchItem { bucket_id: b as u8, sub_queries: vec![indices] });
+                        chunk_batch_items.push(HarmonyBatchItem { group_id: b as u8, sub_queries: vec![indices] });
                         dummy_chunk_idx += 1;
                     } else {
-                        chunk_batch_items.push(HarmonyBatchItem { bucket_id: b as u8, sub_queries: vec![vec![]] });
+                        chunk_batch_items.push(HarmonyBatchItem { group_id: b as u8, sub_queries: vec![vec![]] });
                     }
                 }
             }
@@ -480,7 +480,7 @@ fn main() {
             let chunk_batch = HarmonyBatchQuery {
                 level: 1,
                 round_id: h as u16,
-                sub_queries_per_bucket: 1,
+                sub_queries_per_group: 1,
                 items: chunk_batch_items,
             };
 
@@ -512,22 +512,22 @@ fn main() {
             println!("  CHUNK batch h={}: req {:.1} KB, server {:.2?}, resp {:.1} KB",
                 h, encoded.len() as f64 / 1024.0, server_time, resp_encoded.len() as f64 / 1024.0);
 
-            // Process responses for buckets that had real queries this round.
+            // Process responses for groups that had real queries this round.
             // Buckets that sent dummies (already found) don't call process_response
-            // — the dummy didn't touch HarmonyBucket state.
+            // — the dummy didn't touch HarmonyGroup state.
             for result_item in &result.items {
-                let bid = result_item.bucket_id as u32;
-                if let Some(&(_, cid)) = chunk_bucket_map.get(&bid) {
+                let bid = result_item.group_id as u32;
+                if let Some(&(_, cid)) = chunk_group_map.get(&bid) {
                     if recovered_chunks.contains(&cid) {
                         // Was a dummy — ignore response, no state to update.
                         continue;
                     }
-                    let bucket = chunk_bucket_instances.get_mut(&bid).unwrap();
+                    let group = chunk_group_instances.get_mut(&bid).unwrap();
                     let resp_data = &result_item.sub_results[0];
-                    let answer = bucket.process_response(resp_data).unwrap();
+                    let answer = group.process_response(resp_data).unwrap();
 
                     let target_bytes = cid.to_le_bytes();
-                    for slot in 0..CHUNK_CUCKOO_BUCKET_SIZE {
+                    for slot in 0..CHUNK_SLOTS_PER_BIN {
                         let s = slot * (4 + CHUNK_SIZE);
                         if answer[s..s + 4] == target_bytes {
                             let data = &answer[s + 4..s + 4 + CHUNK_SIZE];
@@ -544,7 +544,7 @@ fn main() {
 
         let not_found = all_chunk_ids.len() - chunk_pass;
         if not_found > 0 {
-            for &(_, cid) in chunk_bucket_map.values() {
+            for &(_, cid) in chunk_group_map.values() {
                 if !recovered_chunks.contains(&cid) {
                     println!("    chunk_id={}: ✗ NOT FOUND after {} hash functions", cid, CHUNK_CUCKOO_NUM_HASHES);
                 }
@@ -552,15 +552,15 @@ fn main() {
         }
 
         // Hint slot accounting.
-        // Real queries in round 0: all real buckets (chunk_bucket_map.len())
+        // Real queries in round 0: all real groups (chunk_group_map.len())
         // Real queries in round 1: only unfound after round 0
         let found_at_h0 = chunk_pass.min(all_chunk_ids.len()); // approximate
-        let real_round_0 = chunk_bucket_map.len();
+        let real_round_0 = chunk_group_map.len();
         // Can't easily count found_at_h0 vs found_at_h1 from here, but the
         // print above already shows which chunks were found at which h.
         let total_hint_slots = real_round_0 * CHUNK_CUCKOO_NUM_HASHES
             - /* saved by dummies in later rounds — TODO: track exactly */ 0;
-        println!("\n  Hint slot cost: {} real buckets × {} rounds (worst case = {} slots, avg ≈ {:.1})",
+        println!("\n  Hint slot cost: {} real groups × {} rounds (worst case = {} slots, avg ≈ {:.1})",
             real_round_0, CHUNK_CUCKOO_NUM_HASHES,
             real_round_0 * CHUNK_CUCKOO_NUM_HASHES,
             real_round_0 as f64 * 1.5);

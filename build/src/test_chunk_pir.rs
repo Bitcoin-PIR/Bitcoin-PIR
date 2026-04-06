@@ -2,8 +2,8 @@
 //!
 //! 1. Loads chunk_pir_cuckoo.bin and utxo_chunks_nodust.bin.
 //! 2. Reads batch_pir_results.bin (first-level PIR output), computes the set
-//!    of unique chunk_ids needed, and cuckoo-assigns them to 80 buckets.
-//! 3. Generates DPF keys (2 per bucket: one per cuckoo hash fn).
+//!    of unique chunk_ids needed, and cuckoo-assigns them to 80 groups.
+//! 3. Generates DPF keys (2 per group: one per cuckoo hash fn).
 //! 4. Runs server processing twice (one per server).
 //! 5. XORs results, verifies each chunk matches the actual file data.
 //!
@@ -27,7 +27,7 @@ use std::time::Instant;
 
 /// Each slot: [4B chunk_id | 80B data] = 84 bytes
 const SLOT_SIZE: usize = 4 + CHUNK_SIZE; // 84
-const SLOTS: usize = CUCKOO_BUCKET_SIZE; // 4
+const SLOTS: usize = INDEX_SLOTS_PER_BIN; // 4
 const RESULT_SIZE: usize = SLOTS * SLOT_SIZE; // 336
 
 /// 2^20 = 1,048,576 >= bins_per_table (~710K)
@@ -79,9 +79,9 @@ fn fetch_bin_entries(
     out
 }
 
-/// Process one bucket: evaluate two DPF keys, scan the cuckoo table,
+/// Process one group: evaluate two DPF keys, scan the cuckoo table,
 /// XOR-accumulate results.
-fn process_bucket(
+fn process_group(
     dpf_result_0: &[Block],
     dpf_result_1: &[Block],
     table_bytes: &[u8],
@@ -149,7 +149,7 @@ fn xor_into(dst: &mut [u8; RESULT_SIZE], src: &[u8; RESULT_SIZE]) {
     }
 }
 
-/// Run the full server for all 80 buckets.
+/// Run the full server for all 80 groups.
 fn server_process(
     dpf_keys: &[(DpfKey, DpfKey)],
     cuckoo_data: &[u8],
@@ -169,10 +169,10 @@ fn server_process(
         let eval0 = dpf.eval_full(&dpf_keys[b].0);
         let eval1 = dpf.eval_full(&dpf_keys[b].1);
 
-        let (r0, r1) = process_bucket(&eval0, &eval1, table_bytes, chunks_data, bins_per_table);
+        let (r0, r1) = process_group(&eval0, &eval1, table_bytes, chunks_data, bins_per_table);
         results.push((r0, r1));
 
-        eprint!("\r  Bucket {}/{}", b + 1, K_CHUNK);
+        eprint!("\r  Group {}/{}", b + 1, K_CHUNK);
     }
     eprintln!();
 
@@ -186,15 +186,15 @@ const MAX_KICKS: usize = 1000;
 fn cuckoo_assign(
     candidates: &[[usize; NUM_HASHES]],
 ) -> Result<[Option<usize>; K_CHUNK], &'static str> {
-    let mut buckets: [Option<usize>; K_CHUNK] = [None; K_CHUNK];
+    let mut groups: [Option<usize>; K_CHUNK] = [None; K_CHUNK];
     let num = candidates.len();
 
     for i in 0..num {
-        if !pbc_cuckoo_place(candidates, &mut buckets, i, MAX_KICKS, NUM_HASHES) {
+        if !pbc_cuckoo_place(candidates, &mut groups, i, MAX_KICKS, NUM_HASHES) {
             return Err("Cuckoo assignment failed");
         }
     }
-    Ok(buckets)
+    Ok(groups)
 }
 
 // ─── Find chunk in result ───────────────────────────────────────────────────
@@ -236,7 +236,7 @@ fn main() {
     println!("  Chunk cuckoo: bins_per_table = {}", bins_per_table);
 
     let results_data = fs::read(BATCH_PIR_RESULTS_FILE).expect("read batch pir results");
-    let num_first_queries = results_data.len() / INDEX_ENTRY_SIZE;
+    let num_first_queries = results_data.len() / INDEX_RECORD_SIZE;
     println!("  First-level results: {} queries", num_first_queries);
     println!();
 
@@ -247,7 +247,7 @@ fn main() {
     let mut query_ranges: Vec<(u32, u32)> = Vec::with_capacity(num_first_queries); // (start_chunk, num_chunks)
 
     for i in 0..num_first_queries {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         let start_chunk = u32::from_le_bytes(
             results_data[base + 20..base + 24].try_into().unwrap(),
         );
@@ -269,32 +269,32 @@ fn main() {
     println!("  Unique chunk queries: {}", num_chunk_queries);
     println!();
 
-    // ── 3. Cuckoo-assign chunk queries to buckets ────────────────────────
+    // ── 3. Cuckoo-assign chunk queries to groups ────────────────────────
     println!(
-        "[3] Cuckoo-assigning {} chunk queries to {} buckets...",
+        "[3] Cuckoo-assigning {} chunk queries to {} groups...",
         num_chunk_queries, K_CHUNK
     );
 
     let candidates: Vec<[usize; NUM_HASHES]> = chunk_queries
         .iter()
-        .map(|&cid| derive_chunk_buckets(cid))
+        .map(|&cid| derive_chunk_groups(cid))
         .collect();
 
-    let bucket_assignment = cuckoo_assign(&candidates).expect("chunk cuckoo assign");
+    let group_assignment = cuckoo_assign(&candidates).expect("chunk cuckoo assign");
     println!("  All chunk queries placed.");
 
-    // Build: chunk_query_idx → assigned_bucket
-    let mut query_bucket = vec![0usize; num_chunk_queries];
-    for (b, slot) in bucket_assignment.iter().enumerate() {
+    // Build: chunk_query_idx → assigned_group
+    let mut query_group = vec![0usize; num_chunk_queries];
+    for (b, slot) in group_assignment.iter().enumerate() {
         if let Some(qi) = slot {
-            query_bucket[*qi] = b;
+            query_group[*qi] = b;
         }
     }
 
     // Compute loc0, loc1 for each chunk query
     let mut query_locs: Vec<(usize, usize)> = Vec::with_capacity(num_chunk_queries);
     for (i, &chunk_id) in chunk_queries.iter().enumerate() {
-        let b = query_bucket[i];
+        let b = query_group[i];
         let key0 = derive_chunk_cuckoo_key(b, 0);
         let key1 = derive_chunk_cuckoo_key(b, 1);
         let loc0 = cuckoo_hash_int(chunk_id, key0, bins_per_table);
@@ -315,7 +315,7 @@ fn main() {
     let mut server1_keys: Vec<(DpfKey, DpfKey)> = Vec::with_capacity(K_CHUNK);
 
     for b in 0..K_CHUNK {
-        let (alpha_q0, alpha_q1) = if let Some(qi) = bucket_assignment[b] {
+        let (alpha_q0, alpha_q1) = if let Some(qi) = group_assignment[b] {
             (query_locs[qi].0 as u64, query_locs[qi].1 as u64)
         } else {
             (0u64, 0u64)
@@ -364,7 +364,7 @@ fn main() {
         std::collections::HashMap::with_capacity(num_chunk_queries);
 
     for (qi, &chunk_id) in chunk_queries.iter().enumerate() {
-        let b = query_bucket[qi];
+        let b = query_group[qi];
         let (loc0, loc1) = query_locs[qi];
 
         // XOR server results for query q0 (loc0)
@@ -387,7 +387,7 @@ fn main() {
                 } else {
                     data_mismatch += 1;
                     eprintln!(
-                        "  DATA MISMATCH: chunk {} bucket {} loc0={} loc1={}",
+                        "  DATA MISMATCH: chunk {} group {} loc0={} loc1={}",
                         chunk_id, b, loc0, loc1
                     );
                 }
@@ -400,7 +400,7 @@ fn main() {
         if !matched {
             not_found += 1;
             eprintln!(
-                "  MISS: chunk {} bucket {} loc0={} loc1={}",
+                "  MISS: chunk {} group {} loc0={} loc1={}",
                 chunk_id, b, loc0, loc1
             );
         }
@@ -472,7 +472,7 @@ fn main() {
     );
 
     for i in 0..num_first_queries {
-        let sh = &results_data[i * INDEX_ENTRY_SIZE..i * INDEX_ENTRY_SIZE + SCRIPT_HASH_SIZE];
+        let sh = &results_data[i * INDEX_RECORD_SIZE..i * INDEX_RECORD_SIZE + SCRIPT_HASH_SIZE];
         let hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
         let (start_chunk, nc) = query_ranges[i];
 

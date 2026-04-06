@@ -3,91 +3,91 @@
 //! Used by both the build pipeline (assigning items to cuckoo tables) and
 //! clients (planning which chunk queries go in which round).
 
-/// Cuckoo-place item `qi` into one of its candidate buckets with eviction.
+/// Cuckoo-place item `qi` into one of its candidate groups with eviction.
 /// Returns true if placed, false if `max_kicks` exceeded.
 ///
-/// `cand_buckets[qi]` must yield the candidate bucket indices for item `qi`.
+/// `cand_groups[qi]` must yield the candidate group indices for item `qi`.
 pub fn pbc_cuckoo_place<C: AsRef<[usize]>>(
-    cand_buckets: &[C],
-    buckets: &mut [Option<usize>],
+    cand_groups: &[C],
+    groups: &mut [Option<usize>],
     qi: usize,
     max_kicks: usize,
     num_hashes: usize,
 ) -> bool {
-    let cands = cand_buckets[qi].as_ref();
+    let cands = cand_groups[qi].as_ref();
     for &c in cands {
-        if buckets[c].is_none() {
-            buckets[c] = Some(qi);
+        if groups[c].is_none() {
+            groups[c] = Some(qi);
             return true;
         }
     }
 
     let mut current_qi = qi;
-    let mut current_bucket = cands[0];
+    let mut current_group = cands[0];
 
     for kick in 0..max_kicks {
-        let evicted_qi = buckets[current_bucket].unwrap();
-        buckets[current_bucket] = Some(current_qi);
-        let ev_cands = cand_buckets[evicted_qi].as_ref();
+        let evicted_qi = groups[current_group].unwrap();
+        groups[current_group] = Some(current_qi);
+        let ev_cands = cand_groups[evicted_qi].as_ref();
 
         for offset in 0..num_hashes {
             let c = ev_cands[(kick + offset) % num_hashes];
-            if c == current_bucket {
+            if c == current_group {
                 continue;
             }
-            if buckets[c].is_none() {
-                buckets[c] = Some(evicted_qi);
+            if groups[c].is_none() {
+                groups[c] = Some(evicted_qi);
                 return true;
             }
         }
 
-        let mut next_bucket = ev_cands[0];
+        let mut next_group = ev_cands[0];
         for offset in 0..num_hashes {
             let c = ev_cands[(kick + offset) % num_hashes];
-            if c != current_bucket {
-                next_bucket = c;
+            if c != current_group {
+                next_group = c;
                 break;
             }
         }
         current_qi = evicted_qi;
-        current_bucket = next_bucket;
+        current_group = next_group;
     }
 
     false
 }
 
-/// Plan multi-round PBC placement for items with candidate buckets.
-/// Returns rounds, each round is a `Vec<(item_index, bucket_id)>`.
+/// Plan multi-round PBC placement for items with candidate groups.
+/// Returns rounds, each round is a `Vec<(item_index, group_id)>`.
 pub fn pbc_plan_rounds<C: AsRef<[usize]> + Clone>(
-    item_buckets: &[C],
-    num_buckets: usize,
+    item_groups: &[C],
+    num_groups: usize,
     num_hashes: usize,
     max_kicks: usize,
 ) -> Vec<Vec<(usize, usize)>> {
-    let mut remaining: Vec<usize> = (0..item_buckets.len()).collect();
+    let mut remaining: Vec<usize> = (0..item_groups.len()).collect();
     let mut rounds = Vec::new();
 
     while !remaining.is_empty() {
-        let round_cands: Vec<C> = remaining.iter().map(|&i| item_buckets[i].clone()).collect();
-        let mut bucket_owner: Vec<Option<usize>> = vec![None; num_buckets];
+        let round_cands: Vec<C> = remaining.iter().map(|&i| item_groups[i].clone()).collect();
+        let mut group_owner: Vec<Option<usize>> = vec![None; num_groups];
         let mut placed_local = Vec::new();
 
         for li in 0..round_cands.len() {
-            if placed_local.len() >= num_buckets {
+            if placed_local.len() >= num_groups {
                 break;
             }
-            let saved = bucket_owner.clone();
-            if pbc_cuckoo_place(&round_cands, &mut bucket_owner, li, max_kicks, num_hashes) {
+            let saved = group_owner.clone();
+            if pbc_cuckoo_place(&round_cands, &mut group_owner, li, max_kicks, num_hashes) {
                 placed_local.push(li);
             } else {
-                bucket_owner = saved;
+                group_owner = saved;
             }
         }
 
         let mut round_entries = Vec::new();
-        for b in 0..num_buckets {
-            if let Some(local_idx) = bucket_owner[b] {
-                round_entries.push((remaining[local_idx], b));
+        for g in 0..num_groups {
+            if let Some(local_idx) = group_owner[g] {
+                round_entries.push((remaining[local_idx], g));
             }
         }
 
@@ -113,26 +113,26 @@ mod tests {
 
     #[test]
     fn test_pbc_cuckoo_place_simple() {
-        // 3 items, 5 buckets, each item has 2 candidate buckets
+        // 3 items, 5 groups, each item has 2 candidate groups
         let cands: Vec<Vec<usize>> = vec![
             vec![0, 1],
             vec![1, 2],
             vec![2, 3],
         ];
-        let mut buckets = vec![None; 5];
+        let mut groups = vec![None; 5];
 
-        assert!(pbc_cuckoo_place(&cands, &mut buckets, 0, 100, 2));
-        assert!(pbc_cuckoo_place(&cands, &mut buckets, 1, 100, 2));
-        assert!(pbc_cuckoo_place(&cands, &mut buckets, 2, 100, 2));
+        assert!(pbc_cuckoo_place(&cands, &mut groups, 0, 100, 2));
+        assert!(pbc_cuckoo_place(&cands, &mut groups, 1, 100, 2));
+        assert!(pbc_cuckoo_place(&cands, &mut groups, 2, 100, 2));
 
         // All items placed
-        let placed: Vec<usize> = buckets.iter().filter_map(|&x| x).collect();
+        let placed: Vec<usize> = groups.iter().filter_map(|&x| x).collect();
         assert_eq!(placed.len(), 3);
     }
 
     #[test]
     fn test_pbc_plan_rounds() {
-        // 5 items, 3 buckets — needs at least 2 rounds
+        // 5 items, 3 groups — needs at least 2 rounds
         let cands: Vec<Vec<usize>> = vec![
             vec![0, 1],
             vec![1, 2],

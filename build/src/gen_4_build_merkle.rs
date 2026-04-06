@@ -38,14 +38,14 @@ const TAG_SEED: u64 = 0xd4e5f6a7b8c91023;
 /// 10 levels = 1024 nodes = 32KB of hashes.
 const TREE_TOP_CACHE_LEVELS: usize = 10;
 
-/// MERKLE_DATA table parameters: same K=75, bucket_size=4 as INDEX.
+/// MERKLE_DATA table parameters: same K=75, slots_per_bin=4 as INDEX.
 /// slot_size = 76 bytes: [8B tag][4B tree_loc][32B data_hash][32B L0_sibling]
 fn merkle_data_params() -> TableParams {
     TableParams {
         k: 75,
         num_hashes: 3,
         master_seed: 0x71a2ef38b4c90d15, // same as INDEX — same scripthash entries, same cuckoo layout
-        cuckoo_bucket_size: 4,
+        slots_per_bin: 4,
         cuckoo_num_hashes: 2,
         slot_size: MERKLE_DATA_SLOT_SIZE,
         dpf_n: 20, // same domain as INDEX
@@ -62,7 +62,7 @@ fn merkle_sibling_params(level: usize) -> TableParams {
         k: 75,
         num_hashes: 3,
         master_seed: 0xBA7C_51B1_0000_0000u64.wrapping_add(level as u64),
-        cuckoo_bucket_size: 4,
+        slots_per_bin: 4,
         cuckoo_num_hashes: 2,
         slot_size: MERKLE_SIBLING_SLOT_SIZE,
         dpf_n: 0, // computed per-level based on actual size
@@ -112,7 +112,7 @@ fn main() {
     println!("[1] Loading index and chunks...");
     let f = File::open(&index_file).expect("open index file");
     let index_mmap = unsafe { Mmap::map(&f) }.expect("mmap index");
-    let num_entries = index_mmap.len() / INDEX_ENTRY_SIZE;
+    let num_entries = index_mmap.len() / INDEX_RECORD_SIZE;
     println!("    {} index entries", num_entries);
 
     let f = File::open(&chunks_file).expect("open chunks file");
@@ -137,7 +137,7 @@ fn main() {
     let leaf_infos: Vec<LeafInfo> = (0..num_entries)
         .into_par_iter()
         .map(|i| {
-            let offset = i * INDEX_ENTRY_SIZE;
+            let offset = i * INDEX_RECORD_SIZE;
             let mut scripthash = [0u8; 20];
             scripthash.copy_from_slice(&index_mmap[offset..offset + 20]);
 
@@ -230,28 +230,28 @@ fn main() {
     let t = Instant::now();
     let md_params = merkle_data_params();
 
-    // Assign to buckets (same as INDEX — by scripthash)
-    let mut md_bucket_entries: Vec<Vec<usize>> = vec![Vec::new(); md_params.k];
+    // Assign to groups (same as INDEX — by scripthash)
+    let mut md_group_entries: Vec<Vec<usize>> = vec![Vec::new(); md_params.k];
     for i in 0..num_entries {
-        let buckets = hash::derive_buckets_3(&leaf_infos[i].scripthash, md_params.k);
-        for &b in &buckets {
-            md_bucket_entries[b].push(i);
+        let groups = hash::derive_groups_3(&leaf_infos[i].scripthash, md_params.k);
+        for &b in &groups {
+            md_group_entries[b].push(i);
         }
     }
 
-    let md_max_load = md_bucket_entries.iter().map(|v| v.len()).max().unwrap_or(0);
-    let md_bins = cuckoo::compute_bins_per_table(md_max_load, md_params.cuckoo_bucket_size);
+    let md_max_load = md_group_entries.iter().map(|v| v.len()).max().unwrap_or(0);
+    let md_bins = cuckoo::compute_bins_per_table(md_max_load, md_params.slots_per_bin);
     println!("    K={}, max_load={}, bins_per_table={}", md_params.k, md_max_load, md_bins);
 
     let done = AtomicUsize::new(0);
     let md_tables: Vec<Vec<u32>> = (0..md_params.k)
         .into_par_iter()
-        .map(|bucket_id| {
-            let entries = &md_bucket_entries[bucket_id];
+        .map(|group_id| {
+            let entries = &md_group_entries[group_id];
             let script_hashes: Vec<&[u8]> = entries.iter()
                 .map(|&i| leaf_infos[i].scripthash.as_slice())
                 .collect();
-            let table = cuckoo::build_byte_keyed_table(&script_hashes, bucket_id, &md_params, md_bins);
+            let table = cuckoo::build_byte_keyed_table(&script_hashes, group_id, &md_params, md_bins);
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d % 10 == 0 || d == md_params.k { eprint!("\r    {}/{} tables   ", d, md_params.k); }
             table
@@ -267,11 +267,11 @@ fn main() {
         let mut w = BufWriter::with_capacity(16 * 1024 * 1024, f);
         w.write_all(&header).unwrap();
 
-        for bucket_id in 0..md_params.k {
-            let table = &md_tables[bucket_id];
-            let entries = &md_bucket_entries[bucket_id];
+        for group_id in 0..md_params.k {
+            let table = &md_tables[group_id];
+            let entries = &md_group_entries[group_id];
 
-            for slot_idx in 0..(md_bins * md_params.cuckoo_bucket_size) {
+            for slot_idx in 0..(md_bins * md_params.slots_per_bin) {
                 let entry_local = table[slot_idx];
                 if entry_local == cuckoo::EMPTY {
                     w.write_all(&[0u8; MERKLE_DATA_SLOT_SIZE]).unwrap();
@@ -323,9 +323,9 @@ fn main() {
 
         let mut sib_params = merkle_sibling_params(level);
         let bins_needed = cuckoo::compute_bins_per_table(
-            // Rough estimate of max bucket load
+            // Rough estimate of max group load
             (num_sibling_nodes * 3) / sib_params.k + 1,
-            sib_params.cuckoo_bucket_size,
+            sib_params.slots_per_bin,
         );
         sib_params.dpf_n = min_dpf_n(bins_needed);
 
@@ -347,25 +347,25 @@ fn main() {
             }
         }
 
-        // Assign to buckets (integer-keyed by node index)
-        let mut bucket_items: Vec<Vec<usize>> = vec![Vec::new(); sib_params.k];
+        // Assign to groups (integer-keyed by node index)
+        let mut group_items: Vec<Vec<usize>> = vec![Vec::new(); sib_params.k];
         for (local_idx, &node_id) in sibling_ids.iter().enumerate() {
-            let buckets = hash::derive_int_buckets_3(node_id, sib_params.k);
-            for &b in &buckets {
-                bucket_items[b].push(local_idx);
+            let groups = hash::derive_int_groups_3(node_id, sib_params.k);
+            for &b in &groups {
+                group_items[b].push(local_idx);
             }
         }
 
-        let max_load = bucket_items.iter().map(|v| v.len()).max().unwrap_or(0);
-        let bins = cuckoo::compute_bins_per_table(max_load, sib_params.cuckoo_bucket_size);
+        let max_load = group_items.iter().map(|v| v.len()).max().unwrap_or(0);
+        let bins = cuckoo::compute_bins_per_table(max_load, sib_params.slots_per_bin);
         sib_params.dpf_n = min_dpf_n(bins);
 
         let tables: Vec<Vec<u32>> = (0..sib_params.k)
             .into_par_iter()
-            .map(|bucket_id| {
-                let items = &bucket_items[bucket_id];
+            .map(|group_id| {
+                let items = &group_items[group_id];
                 let ids: Vec<u32> = items.iter().map(|&li| sibling_ids[li]).collect();
-                cuckoo::build_int_keyed_table(&ids, bucket_id, &sib_params, bins)
+                cuckoo::build_int_keyed_table(&ids, group_id, &sib_params, bins)
             })
             .collect();
 
@@ -378,11 +378,11 @@ fn main() {
             w.write_all(&header).unwrap();
 
             let zero_slot = vec![0u8; MERKLE_SIBLING_SLOT_SIZE];
-            for bucket_id in 0..sib_params.k {
-                let table = &tables[bucket_id];
-                let items = &bucket_items[bucket_id];
+            for group_id in 0..sib_params.k {
+                let table = &tables[group_id];
+                let items = &group_items[group_id];
 
-                for slot_idx in 0..(bins * sib_params.cuckoo_bucket_size) {
+                for slot_idx in 0..(bins * sib_params.slots_per_bin) {
                     let entry_local = table[slot_idx];
                     if entry_local == cuckoo::EMPTY {
                         w.write_all(&zero_slot).unwrap();

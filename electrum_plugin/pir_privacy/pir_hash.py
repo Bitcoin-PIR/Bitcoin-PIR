@@ -52,38 +52,38 @@ def compute_tag(tag_seed: int, script_hash: bytes) -> int:
     return h
 
 
-# ── Index-level bucket assignment ──────────────────────────────────────────
+# ── Index-level group assignment ──────────────────────────────────────────
 
 
-def _hash_for_bucket(script_hash: bytes, nonce: int) -> int:
-    """Hash script_hash with a nonce for bucket assignment."""
+def _hash_for_group(script_hash: bytes, nonce: int) -> int:
+    """Hash script_hash with a nonce for group assignment."""
     h = (_sh_a(script_hash) + ((nonce * 0x9e3779b97f4a7c15) & MASK64)) & MASK64
     h = (h ^ _sh_b(script_hash)) & MASK64
     h = splitmix64((h ^ _sh_c(script_hash)) & MASK64)
     return h
 
 
-def derive_buckets(script_hash: bytes) -> list[int]:
-    """Derive NUM_HASHES (3) distinct bucket indices for a script_hash."""
-    buckets: list[int] = []
+def derive_groups(script_hash: bytes) -> list[int]:
+    """Derive NUM_HASHES (3) distinct group indices for a script_hash."""
+    groups: list[int] = []
     nonce = 0
-    while len(buckets) < NUM_HASHES:
-        h = _hash_for_bucket(script_hash, nonce)
-        bucket = h % K
+    while len(groups) < NUM_HASHES:
+        h = _hash_for_group(script_hash, nonce)
+        group = h % K
         nonce += 1
-        if bucket not in buckets:
-            buckets.append(bucket)
-    return buckets
+        if group not in groups:
+            groups.append(group)
+    return groups
 
 
 # ── Index-level cuckoo hashing ─────────────────────────────────────────────
 
 
-def derive_cuckoo_key(bucket_id: int, hash_fn: int) -> int:
-    """Derive a cuckoo hash function key for (bucket_id, hash_fn)."""
+def derive_cuckoo_key(group_id: int, hash_fn: int) -> int:
+    """Derive a cuckoo hash function key for (group_id, hash_fn)."""
     return splitmix64(
         (MASTER_SEED
-         + ((bucket_id * 0x9e3779b97f4a7c15) & MASK64)
+         + ((group_id * 0x9e3779b97f4a7c15) & MASK64)
          + ((hash_fn * 0x517cc1b727220a95) & MASK64)
          ) & MASK64
     )
@@ -97,37 +97,37 @@ def cuckoo_hash(script_hash: bytes, key: int, num_bins: int) -> int:
     return h % num_bins
 
 
-# ── Chunk-level bucket assignment ──────────────────────────────────────────
+# ── Chunk-level group assignment ──────────────────────────────────────────
 
 
-def _hash_chunk_for_bucket(chunk_id: int, nonce: int) -> int:
-    """Hash a chunk_id with a nonce for chunk-level bucket assignment."""
+def _hash_chunk_for_group(chunk_id: int, nonce: int) -> int:
+    """Hash a chunk_id with a nonce for chunk-level group assignment."""
     return splitmix64(
         (chunk_id + ((nonce * 0x9e3779b97f4a7c15) & MASK64)) & MASK64
     )
 
 
-def derive_chunk_buckets(chunk_id: int) -> list[int]:
-    """Derive 3 distinct chunk-level bucket indices for a chunk_id."""
-    buckets: list[int] = []
+def derive_chunk_groups(chunk_id: int) -> list[int]:
+    """Derive 3 distinct chunk-level group indices for a chunk_id."""
+    groups: list[int] = []
     nonce = 0
-    while len(buckets) < NUM_HASHES:
-        h = _hash_chunk_for_bucket(chunk_id, nonce)
-        bucket = h % K_CHUNK
+    while len(groups) < NUM_HASHES:
+        h = _hash_chunk_for_group(chunk_id, nonce)
+        group = h % K_CHUNK
         nonce += 1
-        if bucket not in buckets:
-            buckets.append(bucket)
-    return buckets
+        if group not in groups:
+            groups.append(group)
+    return groups
 
 
 # ── Chunk-level cuckoo hashing ─────────────────────────────────────────────
 
 
-def derive_chunk_cuckoo_key(bucket_id: int, hash_fn: int) -> int:
-    """Derive a cuckoo hash function key for chunk-level (bucket_id, hash_fn)."""
+def derive_chunk_cuckoo_key(group_id: int, hash_fn: int) -> int:
+    """Derive a cuckoo hash function key for chunk-level (group_id, hash_fn)."""
     return splitmix64(
         (CHUNK_MASTER_SEED
-         + ((bucket_id * 0x9e3779b97f4a7c15) & MASK64)
+         + ((group_id * 0x9e3779b97f4a7c15) & MASK64)
          + ((hash_fn * 0x517cc1b727220a95) & MASK64)
          ) & MASK64
     )

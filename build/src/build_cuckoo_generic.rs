@@ -66,14 +66,14 @@ fn build_index_cuckoo(index_file: &str, output_file: &str) {
     println!("=== Generic Index Cuckoo Builder ===");
     println!("Input:  {}", index_file);
     println!("Output: {}", output_file);
-    println!("K={}, bucket_size={}, slot_size={}, num_hashes={}",
-        params.k, params.cuckoo_bucket_size, params.slot_size, params.num_hashes);
+    println!("K={}, slots_per_bin={}, slot_size={}, num_hashes={}",
+        params.k, params.slots_per_bin, params.slot_size, params.num_hashes);
     println!();
 
     // Memory-map input
     let f = File::open(index_file).expect("open index file");
     let mmap = unsafe { Mmap::map(&f) }.expect("mmap index file");
-    let n = mmap.len() / INDEX_ENTRY_SIZE;
+    let n = mmap.len() / INDEX_RECORD_SIZE;
     println!("[1] Loaded {} index entries ({:.1} MB)", n, mmap.len() as f64 / 1e6);
 
     // Load tree_locs.bin sidecar (produced by gen_4_build_merkle)
@@ -86,23 +86,23 @@ fn build_index_cuckoo(index_file: &str, output_file: &str) {
         .collect();
     println!("    Loaded tree_locs.bin ({} entries)", n);
 
-    // Step 2: Assign entries to buckets
-    println!("[2] Assigning entries to {} buckets...", params.k);
+    // Step 2: Assign entries to groups
+    println!("[2] Assigning entries to {} groups...", params.k);
     let t = Instant::now();
 
-    let mut bucket_entries: Vec<Vec<usize>> = vec![Vec::new(); params.k];
+    let mut group_entries: Vec<Vec<usize>> = vec![Vec::new(); params.k];
     for i in 0..n {
-        let offset = i * INDEX_ENTRY_SIZE;
+        let offset = i * INDEX_RECORD_SIZE;
         let script_hash = &mmap[offset..offset + SCRIPT_HASH_SIZE];
-        let buckets = hash::derive_buckets_3(script_hash, params.k);
-        for &b in &buckets {
-            bucket_entries[b].push(i);
+        let groups = hash::derive_groups_3(script_hash, params.k);
+        for &b in &groups {
+            group_entries[b].push(i);
         }
     }
 
-    let max_load = bucket_entries.iter().map(|v| v.len()).max().unwrap_or(0);
-    let bins_per_table = cuckoo::compute_bins_per_table(max_load, params.cuckoo_bucket_size);
-    println!("    Max bucket load: {}, bins_per_table: {}", max_load, bins_per_table);
+    let max_load = group_entries.iter().map(|v| v.len()).max().unwrap_or(0);
+    let bins_per_table = cuckoo::compute_bins_per_table(max_load, params.slots_per_bin);
+    println!("    Max group load: {}, bins_per_table: {}", max_load, bins_per_table);
     println!("    Done in {:.2?}", t.elapsed());
 
     // Step 3: Build cuckoo tables in parallel
@@ -112,14 +112,14 @@ fn build_index_cuckoo(index_file: &str, output_file: &str) {
 
     let tables: Vec<Vec<u32>> = (0..params.k)
         .into_par_iter()
-        .map(|bucket_id| {
-            let entries = &bucket_entries[bucket_id];
+        .map(|group_id| {
+            let entries = &group_entries[group_id];
             let script_hashes: Vec<&[u8]> = entries
                 .iter()
-                .map(|&i| &mmap[i * INDEX_ENTRY_SIZE..i * INDEX_ENTRY_SIZE + SCRIPT_HASH_SIZE])
+                .map(|&i| &mmap[i * INDEX_RECORD_SIZE..i * INDEX_RECORD_SIZE + SCRIPT_HASH_SIZE])
                 .collect();
 
-            let table = cuckoo::build_byte_keyed_table(&script_hashes, bucket_id, params, bins_per_table);
+            let table = cuckoo::build_byte_keyed_table(&script_hashes, group_id, params, bins_per_table);
 
             let d = done_count.fetch_add(1, Ordering::Relaxed) + 1;
             if d % 10 == 0 || d == params.k {
@@ -141,18 +141,18 @@ fn build_index_cuckoo(index_file: &str, output_file: &str) {
     let mut w = BufWriter::with_capacity(16 * 1024 * 1024, f);
     w.write_all(&header).unwrap();
 
-    for bucket_id in 0..params.k {
-        let table = &tables[bucket_id];
-        let entries = &bucket_entries[bucket_id];
+    for group_id in 0..params.k {
+        let table = &tables[group_id];
+        let entries = &group_entries[group_id];
 
-        for slot_idx in 0..(bins_per_table * params.cuckoo_bucket_size) {
+        for slot_idx in 0..(bins_per_table * params.slots_per_bin) {
             let entry_local = table[slot_idx];
             if entry_local == cuckoo::EMPTY {
                 // Empty slot: write zeros (17 bytes)
                 w.write_all(&[0u8; 17]).unwrap(); // INDEX_SLOT_SIZE = 17
             } else {
                 let global_idx = entries[entry_local as usize];
-                let offset = global_idx * INDEX_ENTRY_SIZE;
+                let offset = global_idx * INDEX_RECORD_SIZE;
                 let script_hash = &mmap[offset..offset + SCRIPT_HASH_SIZE];
                 let start_chunk_id = u32::from_le_bytes(
                     mmap[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4]
@@ -188,7 +188,7 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str) {
     println!("Chunks: {}", chunks_file);
     println!("Index:  {}", index_file);
     println!("Output: {}", output_file);
-    println!("K={}, bucket_size={}, num_hashes={}", params.k, params.cuckoo_bucket_size, params.num_hashes);
+    println!("K={}, slots_per_bin={}, num_hashes={}", params.k, params.slots_per_bin, params.num_hashes);
     println!();
 
     // Memory-map chunks data
@@ -197,21 +197,21 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str) {
     let num_chunks = chunks_mmap.len() / CHUNK_SIZE;
     println!("[1] Loaded {} chunks ({:.1} MB)", num_chunks, chunks_mmap.len() as f64 / 1e6);
 
-    // Step 2: Assign chunks to buckets
-    println!("[2] Assigning {} chunks to {} buckets...", num_chunks, params.k);
+    // Step 2: Assign chunks to groups
+    println!("[2] Assigning {} chunks to {} groups...", num_chunks, params.k);
     let t = Instant::now();
 
-    let mut bucket_chunks: Vec<Vec<u32>> = vec![Vec::new(); params.k];
+    let mut group_chunks: Vec<Vec<u32>> = vec![Vec::new(); params.k];
     for chunk_id in 0..num_chunks as u32 {
-        let buckets = hash::derive_int_buckets_3(chunk_id, params.k);
-        for &b in &buckets {
-            bucket_chunks[b].push(chunk_id);
+        let groups = hash::derive_int_groups_3(chunk_id, params.k);
+        for &b in &groups {
+            group_chunks[b].push(chunk_id);
         }
     }
 
-    let max_load = bucket_chunks.iter().map(|v| v.len()).max().unwrap_or(0);
-    let bins_per_table = cuckoo::compute_bins_per_table(max_load, params.cuckoo_bucket_size);
-    println!("    Max bucket load: {}, bins_per_table: {}", max_load, bins_per_table);
+    let max_load = group_chunks.iter().map(|v| v.len()).max().unwrap_or(0);
+    let bins_per_table = cuckoo::compute_bins_per_table(max_load, params.slots_per_bin);
+    println!("    Max group load: {}, bins_per_table: {}", max_load, bins_per_table);
     println!("    Done in {:.2?}", t.elapsed());
 
     // Step 3: Build cuckoo tables in parallel
@@ -221,9 +221,9 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str) {
 
     let tables: Vec<Vec<u32>> = (0..params.k)
         .into_par_iter()
-        .map(|bucket_id| {
-            let ids = &bucket_chunks[bucket_id];
-            let table = cuckoo::build_int_keyed_table(ids, bucket_id, params, bins_per_table);
+        .map(|group_id| {
+            let ids = &group_chunks[group_id];
+            let table = cuckoo::build_int_keyed_table(ids, group_id, params, bins_per_table);
 
             let d = done_count.fetch_add(1, Ordering::Relaxed) + 1;
             if d % 10 == 0 || d == params.k {
@@ -248,11 +248,11 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str) {
     let slot_size = 4 + CHUNK_SIZE; // 44 bytes
     let zero_slot = vec![0u8; slot_size];
 
-    for bucket_id in 0..params.k {
-        let table = &tables[bucket_id];
-        let ids = &bucket_chunks[bucket_id];
+    for group_id in 0..params.k {
+        let table = &tables[group_id];
+        let ids = &group_chunks[group_id];
 
-        for slot_idx in 0..(bins_per_table * params.cuckoo_bucket_size) {
+        for slot_idx in 0..(bins_per_table * params.slots_per_bin) {
             let entry_local = table[slot_idx];
             if entry_local == cuckoo::EMPTY {
                 w.write_all(&zero_slot).unwrap();

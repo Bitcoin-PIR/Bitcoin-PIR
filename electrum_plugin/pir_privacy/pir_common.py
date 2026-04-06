@@ -16,7 +16,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 
 from .pir_constants import (
-    TAG_SIZE, INDEX_ENTRY_SIZE,
+    TAG_SIZE, INDEX_SLOT_SIZE,
     CHUNK_SIZE, CHUNK_SLOT_SIZE,
     MASK64,
 )
@@ -32,81 +32,81 @@ logger = logging.getLogger(__name__)
 
 
 def cuckoo_place(
-    cand_buckets: list,
-    buckets: list,
+    cand_groups: list,
+    groups: list,
     qi: int,
     max_kicks: int,
     num_hashes: int,
 ) -> bool:
     """Cuckoo placement with eviction. Returns True if item qi was placed."""
-    cands = cand_buckets[qi]
+    cands = cand_groups[qi]
 
     # Try direct placement
     for c in cands:
-        if buckets[c] is None:
-            buckets[c] = qi
+        if groups[c] is None:
+            groups[c] = qi
             return True
 
     # Eviction loop
     current_qi = qi
-    current_bucket = cand_buckets[current_qi][0]
+    current_group = cand_groups[current_qi][0]
 
     for kick in range(max_kicks):
-        evicted_qi = buckets[current_bucket]
-        buckets[current_bucket] = current_qi
-        ev_cands = cand_buckets[evicted_qi]
+        evicted_qi = groups[current_group]
+        groups[current_group] = current_qi
+        ev_cands = cand_groups[evicted_qi]
 
         for offset in range(num_hashes):
             c = ev_cands[(kick + offset) % num_hashes]
-            if c == current_bucket:
+            if c == current_group:
                 continue
-            if buckets[c] is None:
-                buckets[c] = evicted_qi
+            if groups[c] is None:
+                groups[c] = evicted_qi
                 return True
 
-        next_bucket = ev_cands[0]
+        next_group = ev_cands[0]
         for offset in range(num_hashes):
             c = ev_cands[(kick + offset) % num_hashes]
-            if c != current_bucket:
-                next_bucket = c
+            if c != current_group:
+                next_group = c
                 break
         current_qi = evicted_qi
-        current_bucket = next_bucket
+        current_group = next_group
 
     return False
 
 
 def plan_rounds(
-    item_buckets: list,
-    num_buckets: int,
+    item_groups: list,
+    num_groups: int,
     num_hashes: int,
     max_kicks: int = 500,
 ) -> list[list[tuple[int, int]]]:
     """
-    Plan multi-round PBC placement for items with candidate buckets.
-    Returns rounds, each round is a list of (item_index, bucket_id) tuples.
+    Plan multi-round PBC placement for items with candidate groups.
+    Returns rounds, each round is a list of (item_index, group_id) tuples.
     """
-    remaining = list(range(len(item_buckets)))
+    remaining = list(range(len(item_groups)))
     rounds: list[list[tuple[int, int]]] = []
 
     while remaining:
-        cand_buckets = [item_buckets[i] for i in remaining]
-        bucket_owner: list[Optional[int]] = [None] * num_buckets
+        cand_groups = [item_groups[i] for i in remaining]
+        group_owner: list[Optional[int]] = [None] * num_groups
         placed_local: list[int] = []
 
-        for li in range(len(cand_buckets)):
-            if len(placed_local) >= num_buckets:
+        for li in range(len(cand_groups)):
+            if len(placed_local) >= num_groups:
                 break
-            saved = list(bucket_owner)
-            if cuckoo_place(cand_buckets, bucket_owner, li, max_kicks, num_hashes):
+            saved = list(group_owner)
+            if cuckoo_place(cand_groups, group_owner, li, max_kicks, num_hashes):
                 placed_local.append(li)
             else:
-                for b in range(num_buckets):
-                    bucket_owner[b] = saved[b]
+                for b in range(num_groups):
+                    group_owner[b] = saved[b]
 
         round_entries: list[tuple[int, int]] = []
-        for b in range(num_buckets):
-            local_idx = bucket_owner[b]
+        for b in range(num_groups):
+            local_idx = group_owner[b]
             if local_idx is not None:
                 round_entries.append((remaining[local_idx], b))
 
@@ -190,7 +190,7 @@ def find_entry_in_index_result(
     data: bytes,
     expected_tag: int,
     num_slots: int = 3,
-    slot_size: int = INDEX_ENTRY_SIZE,
+    slot_size: int = INDEX_SLOT_SIZE,
 ) -> Optional[tuple[int, int]]:
     """Search cuckoo bin slots for matching tag.
     Returns (start_chunk_id, num_chunks) or None.

@@ -2,7 +2,7 @@
 Two-level Batch PIR client (DPF 2-server).
 
 Supports true batching: multiple script hashes are packed into a single
-batch of K=75 index buckets (Level 1) and K_CHUNK=80 chunk buckets
+batch of K=75 index groups (Level 1) and K_CHUNK=80 chunk groups
 (Level 2) using cuckoo placement, minimizing round-trips.
 
 Port of web/src/client.ts to Python.
@@ -23,8 +23,8 @@ from .pir_constants import (
 )
 from .pir_hash import (
     compute_tag,
-    derive_buckets, derive_cuckoo_key, cuckoo_hash,
-    derive_chunk_buckets, derive_chunk_cuckoo_key, cuckoo_hash_int,
+    derive_groups, derive_cuckoo_key, cuckoo_hash,
+    derive_chunk_groups, derive_chunk_cuckoo_key, cuckoo_hash_int,
 )
 from .pir_dpf import dpf_gen as _dpf_gen_raw
 from .pir_protocol import (
@@ -156,7 +156,7 @@ class BatchPirClient:
         """
         Query multiple script hashes in true batched mode.
 
-        Level 1: Packs queries into K=75 index buckets using cuckoo placement.
+        Level 1: Packs queries into K=75 index groups using cuckoo placement.
         Level 2: Collects ALL chunk IDs and fetches in batched chunk rounds.
 
         Returns a list parallel to the input, with QueryResult or None.
@@ -176,11 +176,11 @@ class BatchPirClient:
         # ══════════════════════════════════════════════════════════════════
         progress('Level 1', f'Planning index batch for {N} queries...')
 
-        # Compute candidate index buckets for each query
-        index_cand_buckets = [derive_buckets(sh) for sh in script_hashes]
+        # Compute candidate index groups for each query
+        index_cand_groups = [derive_groups(sh) for sh in script_hashes]
 
         # Plan index rounds using cuckoo placement
-        index_rounds = plan_rounds(index_cand_buckets, K, NUM_HASHES)
+        index_rounds = plan_rounds(index_cand_groups, K, NUM_HASHES)
         logger.info(f'Level 1: {N} queries -> {len(index_rounds)} index round(s)')
 
         # Per-query results from Level 1
@@ -189,20 +189,20 @@ class BatchPirClient:
         for ir, rnd in enumerate(index_rounds):
             progress('Level 1', f'Index round {ir + 1}/{len(index_rounds)} ({len(rnd)} queries)...')
 
-            # Build bucket -> query mapping
-            bucket_to_query: dict[int, int] = {}
-            for query_idx, bucket_id in rnd:
-                bucket_to_query[bucket_id] = query_idx
+            # Build group -> query mapping
+            group_to_query: dict[int, int] = {}
+            for query_idx, group_id in rnd:
+                group_to_query[group_id] = query_idx
 
-            # Generate DPF keys for all K buckets
+            # Generate DPF keys for all K groups
             progress('Level 1', f'Round {ir + 1}: generating DPF keys...')
             s0_keys: list[list[bytes]] = []
             s1_keys: list[list[bytes]] = []
 
             for b in range(K):
-                qi = bucket_to_query.get(b)
-                s0_bucket: list[bytes] = []
-                s1_bucket: list[bytes] = []
+                qi = group_to_query.get(b)
+                s0_group: list[bytes] = []
+                s1_group: list[bytes] = []
 
                 for h in range(INDEX_CUCKOO_NUM_HASHES):
                     if qi is not None:
@@ -213,11 +213,11 @@ class BatchPirClient:
                         alpha = self._rng.next_u64() % self.index_bins
 
                     k0, k1 = _dpf_gen_bytes(alpha, DPF_N)
-                    s0_bucket.append(k0)
-                    s1_bucket.append(k1)
+                    s0_group.append(k0)
+                    s1_group.append(k1)
 
-                s0_keys.append(s0_bucket)
-                s1_keys.append(s1_bucket)
+                s0_keys.append(s0_group)
+                s1_keys.append(s1_group)
 
             # Send to both servers in parallel
             progress('Level 1', f'Round {ir + 1}: querying servers...')
@@ -236,9 +236,9 @@ class BatchPirClient:
                 raise ValueError(f"Unexpected index response: {resp0['type']}, {resp1['type']}")
 
             # XOR and extract results
-            for query_idx, bucket_id in rnd:
-                r0 = resp0['result'].results[bucket_id]
-                r1 = resp1['result'].results[bucket_id]
+            for query_idx, group_id in rnd:
+                r0 = resp0['result'].results[group_id]
+                r1 = resp1['result'].results[group_id]
 
                 found = None
                 expected_tag = compute_tag(self.tag_seed, script_hashes[query_idx])
@@ -282,8 +282,8 @@ class BatchPirClient:
         logger.info(f'Level 2: {len(all_chunk_ids)} unique chunks to fetch')
 
         # Plan chunk rounds
-        chunk_cand_buckets = [derive_chunk_buckets(cid) for cid in all_chunk_ids]
-        chunk_rounds = plan_rounds(chunk_cand_buckets, K_CHUNK, NUM_HASHES)
+        chunk_cand_groups = [derive_chunk_groups(cid) for cid in all_chunk_ids]
+        chunk_rounds = plan_rounds(chunk_cand_groups, K_CHUNK, NUM_HASHES)
         logger.info(f'  {len(all_chunk_ids)} chunks -> {len(chunk_rounds)} chunk round(s)')
 
         # Execute chunk rounds
@@ -293,32 +293,32 @@ class BatchPirClient:
             progress('Level 2', f'Chunk round {ri + 1}/{len(chunk_rounds)} ({len(round_plan)} chunks)...')
 
             # Compute target locations
-            bucket_targets: dict[int, list[int]] = {}
-            for chunk_list_idx, bucket_id in round_plan:
+            group_targets: dict[int, list[int]] = {}
+            for chunk_list_idx, group_id in round_plan:
                 chunk_id = all_chunk_ids[chunk_list_idx]
                 locs: list[int] = []
                 for h in range(CHUNK_CUCKOO_NUM_HASHES):
-                    ck = derive_chunk_cuckoo_key(bucket_id, h)
+                    ck = derive_chunk_cuckoo_key(group_id, h)
                     locs.append(cuckoo_hash_int(chunk_id, ck, self.chunk_bins))
-                bucket_targets[bucket_id] = locs
+                group_targets[group_id] = locs
 
             # Generate DPF keys
             s0_keys: list[list[bytes]] = []
             s1_keys: list[list[bytes]] = []
 
             for b in range(K_CHUNK):
-                target = bucket_targets.get(b)
-                s0_bucket: list[bytes] = []
-                s1_bucket: list[bytes] = []
+                target = group_targets.get(b)
+                s0_group: list[bytes] = []
+                s1_group: list[bytes] = []
 
                 for h in range(CHUNK_CUCKOO_NUM_HASHES):
                     alpha = target[h] if target else (self._rng.next_u64() % self.chunk_bins)
                     k0, k1 = _dpf_gen_bytes(alpha, CHUNK_DPF_N)
-                    s0_bucket.append(k0)
-                    s1_bucket.append(k1)
+                    s0_group.append(k0)
+                    s1_group.append(k1)
 
-                s0_keys.append(s0_bucket)
-                s1_keys.append(s1_bucket)
+                s0_keys.append(s0_group)
+                s1_keys.append(s1_group)
 
             # Send
             creq0 = encode_chunk_batch(ri, s0_keys)
@@ -336,10 +336,10 @@ class BatchPirClient:
                 raise ValueError(f"Unexpected chunk response: {cresp0['type']}, {cresp1['type']}")
 
             # XOR and extract
-            for chunk_list_idx, bucket_id in round_plan:
+            for chunk_list_idx, group_id in round_plan:
                 chunk_id = all_chunk_ids[chunk_list_idx]
-                cr0 = cresp0['result'].results[bucket_id]
-                cr1 = cresp1['result'].results[bucket_id]
+                cr0 = cresp0['result'].results[group_id]
+                cr1 = cresp1['result'].results[group_id]
 
                 data = None
                 for h in range(len(cr0)):
@@ -351,7 +351,7 @@ class BatchPirClient:
                 if data:
                     recovered_chunks[chunk_id] = data
                 else:
-                    logger.warning(f'Chunk {chunk_id} not found in round {ri} bucket {bucket_id}')
+                    logger.warning(f'Chunk {chunk_id} not found in round {ri} group {group_id}')
 
         logger.info(f'Level 2 complete: recovered {len(recovered_chunks)}/{len(all_chunk_ids)} chunks')
 

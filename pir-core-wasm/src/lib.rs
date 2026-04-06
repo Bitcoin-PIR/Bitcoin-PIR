@@ -39,29 +39,29 @@ pub fn compute_tag(tag_seed_hi: u32, tag_seed_lo: u32, script_hash: &[u8]) -> Ve
     u64_to_le8(tag)
 }
 
-// ─── INDEX-level bucket assignment ────────────────────────────────────────
+// ─── INDEX-level group assignment ────────────────────────────────────────
 
-/// Derive 3 distinct bucket indices for a script_hash.
-/// `k` is the number of buckets. Returns a Vec<u32> of 3 indices.
+/// Derive 3 distinct group indices for a script_hash.
+/// `k` is the number of groups. Returns a Vec<u32> of 3 indices.
 #[wasm_bindgen]
-pub fn derive_buckets(script_hash: &[u8], k: u32) -> Vec<u32> {
-    let buckets = pir_core::hash::derive_buckets_3(script_hash, k as usize);
-    buckets.iter().map(|&b| b as u32).collect()
+pub fn derive_groups(script_hash: &[u8], k: u32) -> Vec<u32> {
+    let groups = pir_core::hash::derive_groups_3(script_hash, k as usize);
+    groups.iter().map(|&b| b as u32).collect()
 }
 
 // ─── INDEX-level cuckoo key derivation ────────────────────────────────────
 
-/// Derive a cuckoo hash function key for (bucket_id, hash_fn).
+/// Derive a cuckoo hash function key for (group_id, hash_fn).
 /// master_seed is split into (hi, lo). Returns 8 LE bytes (the key).
 #[wasm_bindgen]
 pub fn derive_cuckoo_key(
     master_seed_hi: u32,
     master_seed_lo: u32,
-    bucket_id: u32,
+    group_id: u32,
     hash_fn: u32,
 ) -> Vec<u8> {
     let seed = u64_from_parts(master_seed_hi, master_seed_lo);
-    let key = pir_core::hash::derive_cuckoo_key(seed, bucket_id as usize, hash_fn as usize);
+    let key = pir_core::hash::derive_cuckoo_key(seed, group_id as usize, hash_fn as usize);
     u64_to_le8(key)
 }
 
@@ -75,14 +75,14 @@ pub fn cuckoo_hash(script_hash: &[u8], key_hi: u32, key_lo: u32, num_bins: u32) 
     pir_core::hash::cuckoo_hash(script_hash, key, num_bins as usize) as u32
 }
 
-// ─── CHUNK-level bucket assignment ────────────────────────────────────────
+// ─── CHUNK-level group assignment ────────────────────────────────────────
 
-/// Derive 3 distinct bucket indices for a chunk_id.
-/// `k` is the number of buckets. Returns Vec<u32> of 3 indices.
+/// Derive 3 distinct group indices for a chunk_id.
+/// `k` is the number of groups. Returns Vec<u32> of 3 indices.
 #[wasm_bindgen]
-pub fn derive_chunk_buckets(chunk_id: u32, k: u32) -> Vec<u32> {
-    let buckets = pir_core::hash::derive_int_buckets_3(chunk_id, k as usize);
-    buckets.iter().map(|&b| b as u32).collect()
+pub fn derive_chunk_groups(chunk_id: u32, k: u32) -> Vec<u32> {
+    let groups = pir_core::hash::derive_int_groups_3(chunk_id, k as usize);
+    groups.iter().map(|&b| b as u32).collect()
 }
 
 // ─── CHUNK-level cuckoo key derivation ────────────────────────────────────
@@ -93,11 +93,11 @@ pub fn derive_chunk_buckets(chunk_id: u32, k: u32) -> Vec<u32> {
 pub fn derive_chunk_cuckoo_key(
     master_seed_hi: u32,
     master_seed_lo: u32,
-    bucket_id: u32,
+    group_id: u32,
     hash_fn: u32,
 ) -> Vec<u8> {
     let seed = u64_from_parts(master_seed_hi, master_seed_lo);
-    let key = pir_core::hash::derive_cuckoo_key(seed, bucket_id as usize, hash_fn as usize);
+    let key = pir_core::hash::derive_cuckoo_key(seed, group_id as usize, hash_fn as usize);
     u64_to_le8(key)
 }
 
@@ -152,51 +152,51 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 // ─── PBC cuckoo placement ─────────────────────────────────────────────────
 
-/// Cuckoo-place items into buckets.
+/// Cuckoo-place items into groups.
 ///
-/// `cand_buckets_flat` is a flat array of candidate bucket indices,
+/// `cand_groups_flat` is a flat array of candidate group indices,
 /// `num_items` items each having `num_hashes` candidates (so length =
-/// num_items * num_hashes). Returns Vec<i32> of bucket assignments per item
+/// num_items * num_hashes). Returns Vec<i32> of group assignments per item
 /// (-1 if unplaced).
 #[wasm_bindgen]
 pub fn cuckoo_place(
-    cand_buckets_flat: &[u32],
+    cand_groups_flat: &[u32],
     num_items: u32,
-    num_buckets: u32,
+    num_groups: u32,
     max_kicks: u32,
     num_hashes: u32,
 ) -> Vec<i32> {
     let ni = num_items as usize;
     let nh = num_hashes as usize;
-    let nb = num_buckets as usize;
+    let nb = num_groups as usize;
 
-    // Unflatten candidate buckets
-    let cand_buckets: Vec<Vec<usize>> = (0..ni)
+    // Unflatten candidate groups
+    let cand_groups: Vec<Vec<usize>> = (0..ni)
         .map(|i| {
             (0..nh)
-                .map(|h| cand_buckets_flat[i * nh + h] as usize)
+                .map(|h| cand_groups_flat[i * nh + h] as usize)
                 .collect()
         })
         .collect();
 
-    let mut bucket_owner: Vec<Option<usize>> = vec![None; nb];
+    let mut group_owner: Vec<Option<usize>> = vec![None; nb];
 
     for qi in 0..ni {
-        let saved = bucket_owner.clone();
+        let saved = group_owner.clone();
         if !pir_core::pbc::pbc_cuckoo_place(
-            &cand_buckets,
-            &mut bucket_owner,
+            &cand_groups,
+            &mut group_owner,
             qi,
             max_kicks as usize,
             nh,
         ) {
-            bucket_owner = saved;
+            group_owner = saved;
         }
     }
 
-    // Build per-item assignment: item_index -> bucket_id (or -1)
+    // Build per-item assignment: item_index -> group_id (or -1)
     let mut assignments = vec![-1i32; ni];
-    for (b, owner) in bucket_owner.iter().enumerate() {
+    for (b, owner) in group_owner.iter().enumerate() {
         if let Some(qi) = owner {
             assignments[*qi] = b as i32;
         }
@@ -208,30 +208,30 @@ pub fn cuckoo_place(
 
 /// Plan multi-round PBC placement.
 ///
-/// `item_buckets_flat` is a flat array: num_items * items_per candidates.
-/// Returns JSON: array of rounds, each round is array of [item_index, bucket_id].
+/// `item_groups_flat` is a flat array: num_items * items_per candidates.
+/// Returns JSON: array of rounds, each round is array of [item_index, group_id].
 #[wasm_bindgen]
 pub fn plan_rounds(
-    item_buckets_flat: &[u32],
+    item_groups_flat: &[u32],
     items_per: u32,
-    num_buckets: u32,
+    num_groups: u32,
     num_hashes: u32,
     max_kicks: u32,
 ) -> JsValue {
     let ip = items_per as usize;
-    let num_items = item_buckets_flat.len() / ip;
+    let num_items = item_groups_flat.len() / ip;
 
-    let item_buckets: Vec<Vec<usize>> = (0..num_items)
+    let item_groups: Vec<Vec<usize>> = (0..num_items)
         .map(|i| {
             (0..ip)
-                .map(|h| item_buckets_flat[i * ip + h] as usize)
+                .map(|h| item_groups_flat[i * ip + h] as usize)
                 .collect()
         })
         .collect();
 
     let rounds = pir_core::pbc::pbc_plan_rounds(
-        &item_buckets,
-        num_buckets as usize,
+        &item_groups,
+        num_groups as usize,
         num_hashes as usize,
         max_kicks as usize,
     );
@@ -239,7 +239,7 @@ pub fn plan_rounds(
     // Convert to JSON: Vec<Vec<[usize, usize]>>
     let json_rounds: Vec<Vec<[usize; 2]>> = rounds
         .iter()
-        .map(|round| round.iter().map(|&(item, bucket)| [item, bucket]).collect())
+        .map(|round| round.iter().map(|&(item, group)| [item, group]).collect())
         .collect();
 
     serde_wasm_bindgen::to_value(&json_rounds).unwrap_or(JsValue::NULL)

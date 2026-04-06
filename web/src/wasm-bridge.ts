@@ -14,11 +14,11 @@
 interface PirCoreWasm {
   splitmix64(x_hi: number, x_lo: number): Uint8Array;
   compute_tag(tag_seed_hi: number, tag_seed_lo: number, script_hash: Uint8Array): Uint8Array;
-  derive_buckets(script_hash: Uint8Array, k: number): Uint32Array;
-  derive_cuckoo_key(master_seed_hi: number, master_seed_lo: number, bucket_id: number, hash_fn: number): Uint8Array;
+  derive_groups(script_hash: Uint8Array, k: number): Uint32Array;
+  derive_cuckoo_key(master_seed_hi: number, master_seed_lo: number, group_id: number, hash_fn: number): Uint8Array;
   cuckoo_hash(script_hash: Uint8Array, key_hi: number, key_lo: number, num_bins: number): number;
-  derive_chunk_buckets(chunk_id: number, k: number): Uint32Array;
-  derive_chunk_cuckoo_key(master_seed_hi: number, master_seed_lo: number, bucket_id: number, hash_fn: number): Uint8Array;
+  derive_chunk_groups(chunk_id: number, k: number): Uint32Array;
+  derive_chunk_cuckoo_key(master_seed_hi: number, master_seed_lo: number, group_id: number, hash_fn: number): Uint8Array;
   cuckoo_hash_int(chunk_id: number, key_hi: number, key_lo: number, num_bins: number): number;
 }
 
@@ -99,20 +99,20 @@ export function wasmComputeTag(tagSeed: bigint, scriptHash: Uint8Array): bigint 
   return leBytes8ToBigint(result);
 }
 
-export function wasmDeriveBuckets(scriptHash: Uint8Array, k: number): number[] | undefined {
+export function wasmDeriveGroups(scriptHash: Uint8Array, k: number): number[] | undefined {
   if (!wasmModule) return undefined;
-  const result = wasmModule.derive_buckets(scriptHash, k);
+  const result = wasmModule.derive_groups(scriptHash, k);
   return Array.from(result);
 }
 
 export function wasmDeriveCuckooKey(
   masterSeed: bigint,
-  bucketId: number,
+  groupId: number,
   hashFn: number,
 ): bigint | undefined {
   if (!wasmModule) return undefined;
   const [hi, lo] = bigintToHiLo(masterSeed);
-  const result = wasmModule.derive_cuckoo_key(hi, lo, bucketId, hashFn);
+  const result = wasmModule.derive_cuckoo_key(hi, lo, groupId, hashFn);
   return leBytes8ToBigint(result);
 }
 
@@ -126,20 +126,20 @@ export function wasmCuckooHash(
   return wasmModule.cuckoo_hash(scriptHash, hi, lo, numBins);
 }
 
-export function wasmDeriveChunkBuckets(chunkId: number, k: number): number[] | undefined {
+export function wasmDeriveChunkGroups(chunkId: number, k: number): number[] | undefined {
   if (!wasmModule) return undefined;
-  const result = wasmModule.derive_chunk_buckets(chunkId, k);
+  const result = wasmModule.derive_chunk_groups(chunkId, k);
   return Array.from(result);
 }
 
 export function wasmDeriveChunkCuckooKey(
   masterSeed: bigint,
-  bucketId: number,
+  groupId: number,
   hashFn: number,
 ): bigint | undefined {
   if (!wasmModule) return undefined;
   const [hi, lo] = bigintToHiLo(masterSeed);
-  const result = wasmModule.derive_chunk_cuckoo_key(hi, lo, bucketId, hashFn);
+  const result = wasmModule.derive_chunk_cuckoo_key(hi, lo, groupId, hashFn);
   return leBytes8ToBigint(result);
 }
 

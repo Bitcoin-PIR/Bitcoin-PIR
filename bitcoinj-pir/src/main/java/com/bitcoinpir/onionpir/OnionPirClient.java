@@ -124,13 +124,13 @@ public class OnionPirClient implements PirClient {
         // ── Level 1: Index PIR ──────────────────────────────────────────────
 
         // Derive PBC candidate groups for each query
-        int[][] itemBuckets = new int[N][];
+        int[][] itemGroups = new int[N][];
         for (int i = 0; i < N; i++) {
-            itemBuckets[i] = PirHash.deriveBuckets(scriptHashes.get(i));
+            itemGroups[i] = PirHash.deriveGroups(scriptHashes.get(i));
         }
 
         // Plan rounds via PBC cuckoo placement
-        List<int[][]> rounds = PbcPlanner.planRounds(itemBuckets, indexK);
+        List<int[][]> rounds = PbcPlanner.planRounds(itemGroups, indexK);
 
         // IndexResult: queryIndex -> {entryId, byteOffset, numEntries}
         Map<Integer, int[]> indexResults = new HashMap<>();
@@ -232,7 +232,7 @@ public class OnionPirClient implements PirClient {
             // PBC placement of entry_ids into chunk groups
             int[][] entryGroups = new int[uniqueEntryIds.size()][];
             for (int i = 0; i < uniqueEntryIds.size(); i++) {
-                entryGroups[i] = PirHash.deriveChunkBuckets(uniqueEntryIds.get(i));
+                entryGroups[i] = PirHash.deriveChunkGroups(uniqueEntryIds.get(i));
             }
 
             List<int[][]> chunkRounds = PbcPlanner.planRounds(entryGroups, chunkK);

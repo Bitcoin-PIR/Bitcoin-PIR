@@ -22,6 +22,7 @@ use std::time::Instant;
 const PACKED_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin";
 const NTT_STORE_FILE: &str = "/Volumes/Bitcoin/data/onion_shared_ntt.bin";
 const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/onion_chunk_cuckoo.bin";
+const BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_data_bin_hashes.bin";
 
 const PACKED_ENTRY_SIZE: usize = 3840;
 
@@ -49,31 +50,31 @@ fn splitmix64(mut x: u64) -> u64 {
 }
 
 #[inline]
-fn hash_entry_for_bucket(entry_id: u32, nonce: u64) -> u64 {
+fn hash_entry_for_group(entry_id: u32, nonce: u64) -> u64 {
     splitmix64((entry_id as u64).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15)))
 }
 
 /// Derive 3 distinct PBC group indices for an entry_id.
-fn derive_chunk_buckets(entry_id: u32) -> [usize; NUM_HASHES] {
-    let mut buckets = [0usize; NUM_HASHES];
+fn derive_chunk_groups(entry_id: u32) -> [usize; NUM_HASHES] {
+    let mut groups = [0usize; NUM_HASHES];
     let mut nonce: u64 = 0;
     let mut count = 0;
     while count < NUM_HASHES {
-        let h = hash_entry_for_bucket(entry_id, nonce);
-        let bucket = (h % K_CHUNK as u64) as usize;
+        let h = hash_entry_for_group(entry_id, nonce);
+        let group = (h % K_CHUNK as u64) as usize;
         nonce += 1;
         let mut dup = false;
         for i in 0..count {
-            if buckets[i] == bucket {
+            if groups[i] == group {
                 dup = true;
                 break;
             }
         }
         if dup { continue; }
-        buckets[count] = bucket;
+        groups[count] = group;
         count += 1;
     }
-    buckets
+    groups
 }
 
 #[inline]
@@ -243,8 +244,8 @@ fn main() {
         .collect();
 
     for entry_id in 0..num_entries as u32 {
-        let buckets = derive_chunk_buckets(entry_id);
-        for &b in &buckets {
+        let assigned = derive_chunk_groups(entry_id);
+        for &b in &assigned {
             groups[b].push(entry_id);
         }
     }
@@ -317,7 +318,45 @@ fn main() {
     println!("  Cuckoo file: {} (header 40B + {} groups × {} bins × 4B)",
         format_bytes(cuckoo_file_size as u64), K_CHUNK, bins_per_table);
 
-    // ── 7. Verify with test query ───────────────────────────────────────
+    // ── 7. Compute and write DATA bin hashes (for per-bin Merkle) ──────
+    println!("\n[7] Computing DATA bin hashes for per-bin Merkle...");
+    let t_hash = Instant::now();
+    {
+        let zero_entry = [0u8; PACKED_ENTRY_SIZE];
+        let total_bins = K_CHUNK * bins_per_table;
+        let mut bin_hashes = Vec::with_capacity(total_bins * 32);
+
+        for group_id in 0..K_CHUNK {
+            let table = &all_cuckoo_tables[group_id];
+            for bin in 0..bins_per_table {
+                let entry_id = table[bin];
+                let bin_bytes: &[u8] = if entry_id == EMPTY {
+                    &zero_entry
+                } else {
+                    let off = entry_id as usize * PACKED_ENTRY_SIZE;
+                    &packed_mmap[off..off + PACKED_ENTRY_SIZE]
+                };
+                let hash = pir_core::merkle::sha256(bin_bytes);
+                bin_hashes.extend_from_slice(&hash);
+            }
+            if group_id % 10 == 0 || group_id + 1 == K_CHUNK {
+                eprint!("\r  Hashing group {}/{}", group_id + 1, K_CHUNK);
+            }
+        }
+        eprintln!();
+
+        // Header: [4B K_CHUNK][4B bins_per_table]
+        let f = File::create(BIN_HASHES_FILE).expect("create bin hashes file");
+        let mut w = BufWriter::new(f);
+        w.write_all(&(K_CHUNK as u32).to_le_bytes()).unwrap();
+        w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
+        w.write_all(&bin_hashes).unwrap();
+        w.flush().unwrap();
+        println!("  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
+            total_bins, 8 + total_bins * 32, BIN_HASHES_FILE, t_hash.elapsed());
+    }
+
+    // ── 8. Verify with test query ───────────────────────────────────────
     println!("\n[7] Verification: test query with shared NTT store...");
 
     // Pick group 0, find a real entry in its cuckoo table

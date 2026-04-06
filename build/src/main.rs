@@ -1,11 +1,11 @@
-//! Batch PIR bucket assignment + per-bucket Cuckoo hashing over UTXO chunks index.
+//! Batch PIR group assignment + per-group Cuckoo hashing over UTXO chunks index.
 //!
 //! 1. Reads the UTXO chunks index (`utxo_chunks_index.bin`): N entries of 26 bytes.
-//! 2. Assigns each entry to 3 distinct buckets out of k=75 (by hashing script_hash).
-//! 3. Within each bucket, builds a Cuckoo hash table (2 hash functions, bucket size 4,
+//! 2. Assigns each entry to 3 distinct groups out of k=75 (by hashing script_hash).
+//! 3. Within each group, builds a Cuckoo hash table (2 hash functions, slots_per_bin=4,
 //!    load factor 0.95). Hash function parameters are derived from a master PRG seed.
 //! 4. Serializes all 75 cuckoo tables into a single flat binary file, with every table
-//!    padded to the same size (max num_bins across buckets).
+//!    padded to the same size (max num_bins across groups).
 //!
 //! Each slot in the output stores a 13-byte tagged entry:
 //!   [8B fingerprint tag | 4B start_chunk_id | 1B num_chunks]
@@ -15,12 +15,12 @@
 //!   [Header: 40 bytes]
 //!     magic:             u64   (0xBA7C_C000_C000_0004)
 //!     k:                 u32   (75)
-//!     cuckoo_bucket_size:u32   (4)
+//!     slots_per_bin:     u32   (4)
 //!     bins_per_table:    u32   (max num_bins, all tables padded to this)
 //!     num_hashes:        u32   (3 — Batch PIR hashes per entry)
 //!     master_seed:       u64   (PRG seed for cuckoo key derivation)
 //!     tag_seed:          u64   (seed for fingerprint tag computation)
-//!   [Body: k * bins_per_table * cuckoo_bucket_size * 14 bytes]
+//!   [Body: k * bins_per_table * slots_per_bin * 14 bytes]
 //!     table[0], table[1], ..., table[k-1]
 //!     Unused slots are zero-filled.
 //!
@@ -41,9 +41,9 @@ const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_index_n
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";
 
 /// Size of each index entry in the intermediate file: 20B script_hash + 4B start_chunk_id + 1B num_chunks
-const INDEX_ENTRY_SIZE: usize = 25;
+const INDEX_RECORD_SIZE: usize = 25;
 
-/// Size of the script hash portion (in intermediate file, used for bucket/cuckoo derivation)
+/// Size of the script hash portion (in intermediate file, used for group/cuckoo derivation)
 const SCRIPT_HASH_SIZE: usize = 20;
 
 /// Size of the fingerprint tag in the final cuckoo table
@@ -52,22 +52,22 @@ const TAG_SIZE: usize = 8;
 /// Size of each tagged entry in the final cuckoo table: 8B tag + 4B + 1B
 const TAGGED_ENTRY_SIZE: usize = TAG_SIZE + 4 + 1; // 13
 
-/// Number of Batch PIR buckets
+/// Number of Batch PIR groups
 const K: usize = 75;
 
-/// Number of bucket assignments per entry
+/// Number of group assignments per entry
 const NUM_HASHES: usize = 3;
 
 /// Cuckoo hash table parameters
-const CUCKOO_BUCKET_SIZE: usize = 4;
+const SLOTS_PER_BIN: usize = 4;
 const CUCKOO_LOAD_FACTOR: f64 = 0.95;
 const CUCKOO_MAX_KICKS: usize = 2000;
 const EMPTY: u32 = u32::MAX;
 
-/// Master PRG seed for deriving per-bucket hash function keys
+/// Master PRG seed for deriving per-group hash function keys
 const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
 
-/// File format magic number (v3: bucket_size=4)
+/// File format magic number (v3: slots_per_bin=4)
 const MAGIC: u64 = 0xBA7C_C000_C000_0004;
 
 /// Header size in bytes (includes tag_seed)
@@ -115,29 +115,29 @@ fn sh_c(script_hash: &[u8]) -> u64 {
     ]) as u64
 }
 
-/// Hash script_hash with a nonce for Batch PIR bucket assignment.
+/// Hash script_hash with a nonce for Batch PIR group assignment.
 #[inline]
-fn hash_for_bucket(script_hash: &[u8], nonce: u64) -> u64 {
+fn hash_for_group(script_hash: &[u8], nonce: u64) -> u64 {
     let mut h = sh_a(script_hash).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15));
     h ^= sh_b(script_hash);
     h = splitmix64(h ^ sh_c(script_hash));
     h
 }
 
-/// Derive 3 distinct Batch PIR bucket indices for a script_hash.
-fn derive_buckets(script_hash: &[u8]) -> [usize; NUM_HASHES] {
-    let mut buckets = [0usize; NUM_HASHES];
+/// Derive 3 distinct Batch PIR group indices for a script_hash.
+fn derive_groups(script_hash: &[u8]) -> [usize; NUM_HASHES] {
+    let mut groups = [0usize; NUM_HASHES];
     let mut nonce: u64 = 0;
     let mut count = 0;
 
     while count < NUM_HASHES {
-        let h = hash_for_bucket(script_hash, nonce);
-        let bucket = (h % K as u64) as usize;
+        let h = hash_for_group(script_hash, nonce);
+        let group = (h % K as u64) as usize;
         nonce += 1;
 
         let mut dup = false;
         for i in 0..count {
-            if buckets[i] == bucket {
+            if groups[i] == group {
                 dup = true;
                 break;
             }
@@ -146,11 +146,11 @@ fn derive_buckets(script_hash: &[u8]) -> [usize; NUM_HASHES] {
             continue;
         }
 
-        buckets[count] = bucket;
+        groups[count] = group;
         count += 1;
     }
 
-    buckets
+    groups
 }
 
 /// Compute an 8-byte fingerprint tag for a script_hash using a keyed hash.
@@ -161,14 +161,14 @@ fn compute_tag(tag_seed: u64, script_hash: &[u8]) -> u64 {
     splitmix64(h ^ sh_c(script_hash))
 }
 
-// ─── Per-bucket Cuckoo hashing ───────────────────────────────────────────────
+// ─── Per-group Cuckoo hashing ───────────────────────────────────────────────
 
-/// Derive a hash function key for a given (batch-PIR bucket, cuckoo hash fn index).
+/// Derive a hash function key for a given (batch-PIR group, cuckoo hash fn index).
 #[inline]
-fn derive_cuckoo_key(bucket_id: usize, hash_fn: usize) -> u64 {
+fn derive_cuckoo_key(group_id: usize, hash_fn: usize) -> u64 {
     splitmix64(
         MASTER_SEED
-            .wrapping_add((bucket_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
+            .wrapping_add((group_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
             .wrapping_add((hash_fn as u64).wrapping_mul(0x517cc1b727220a95)),
     )
 }
@@ -182,9 +182,9 @@ fn cuckoo_hash(script_hash: &[u8], key: u64, num_bins: usize) -> usize {
     (h % num_bins as u64) as usize
 }
 
-/// Result of building a cuckoo table for one Batch PIR bucket.
+/// Result of building a cuckoo table for one Batch PIR group.
 struct CuckooResult {
-    bucket_id: usize,
+    group_id: usize,
     num_entries: usize,
     num_bins: usize,
     _table_slots: usize,
@@ -193,7 +193,7 @@ struct CuckooResult {
 }
 
 fn main() {
-    println!("=== Batch PIR: Bucket Assignment + Cuckoo Hashing ===");
+    println!("=== Batch PIR: Group Assignment + Cuckoo Hashing ===");
     println!();
 
     let start = Instant::now();
@@ -211,50 +211,50 @@ fn main() {
     });
 
     let file_size = mmap.len();
-    if file_size % INDEX_ENTRY_SIZE != 0 {
+    if file_size % INDEX_RECORD_SIZE != 0 {
         eprintln!(
             "Index file size ({}) is not a multiple of entry size ({})",
-            file_size, INDEX_ENTRY_SIZE
+            file_size, INDEX_RECORD_SIZE
         );
         std::process::exit(1);
     }
 
-    let n = file_size / INDEX_ENTRY_SIZE;
+    let n = file_size / INDEX_RECORD_SIZE;
     println!(
         "  N = {} entries ({:.2} MB)",
         n,
         file_size as f64 / (1024.0 * 1024.0)
     );
-    println!("  k = {} buckets, {} hashes per entry", K, NUM_HASHES);
+    println!("  k = {} groups, {} hashes per entry", K, NUM_HASHES);
     println!();
 
-    // ── Step 2: Assign entries to Batch PIR buckets ──────────────────────
-    println!("[2] Assigning entries to {} buckets...", K);
+    // ── Step 2: Assign entries to Batch PIR groups ──────────────────────
+    println!("[2] Assigning entries to {} groups...", K);
     let assign_start = Instant::now();
 
-    let expected_per_bucket = (n * NUM_HASHES) / K + 1;
-    let mut buckets: Vec<Vec<u32>> = (0..K)
-        .map(|_| Vec::with_capacity(expected_per_bucket))
+    let expected_per_group = (n * NUM_HASHES) / K + 1;
+    let mut groups: Vec<Vec<u32>> = (0..K)
+        .map(|_| Vec::with_capacity(expected_per_group))
         .collect();
 
     for i in 0..n {
-        let base = i * INDEX_ENTRY_SIZE;
+        let base = i * INDEX_RECORD_SIZE;
         let script_hash = &mmap[base..base + SCRIPT_HASH_SIZE];
-        let bucket_indices = derive_buckets(script_hash);
-        for &b in &bucket_indices {
-            buckets[b].push(i as u32);
+        let group_indices = derive_groups(script_hash);
+        for &b in &group_indices {
+            groups[b].push(i as u32);
         }
     }
 
-    let bucket_loads: Vec<usize> = buckets.iter().map(|b| b.len()).collect();
-    let min_load = *bucket_loads.iter().min().unwrap();
-    let max_load = *bucket_loads.iter().max().unwrap();
-    let total_refs: usize = bucket_loads.iter().sum();
+    let group_loads: Vec<usize> = groups.iter().map(|b| b.len()).collect();
+    let min_load = *group_loads.iter().min().unwrap();
+    let max_load = *group_loads.iter().max().unwrap();
+    let total_refs: usize = group_loads.iter().sum();
     let expected = n as f64 * NUM_HASHES as f64 / K as f64;
 
     println!("  Done in {:.2?}", assign_start.elapsed());
     println!(
-        "  Bucket loads: min={}, max={}, expected={:.0}, max/expected={:.4}",
+        "  Group loads: min={}, max={}, expected={:.0}, max/expected={:.4}",
         min_load,
         max_load,
         expected,
@@ -269,29 +269,29 @@ fn main() {
     println!();
 
     // ── Step 3: Build Cuckoo tables in parallel ──────────────────────────
-    // Compute a uniform bins_per_table from the max bucket load so all 75
+    // Compute a uniform bins_per_table from the max group load so all 75
     // tables use the same num_bins (required for correct lookup after
     // serialization — the verifier/server only knows bins_per_table).
     let bins_per_table =
-        ((max_load as f64) / (CUCKOO_BUCKET_SIZE as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
+        ((max_load as f64) / (SLOTS_PER_BIN as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
 
     println!(
-        "[3] Building Cuckoo tables (2 hash fns, bucket_size={}, load={}, uniform bins={})...",
-        CUCKOO_BUCKET_SIZE, CUCKOO_LOAD_FACTOR, bins_per_table
+        "[3] Building Cuckoo tables (2 hash fns, slots_per_bin={}, load={}, uniform bins={})...",
+        SLOTS_PER_BIN, CUCKOO_LOAD_FACTOR, bins_per_table
     );
     let cuckoo_start = Instant::now();
 
     let mmap_slice: &[u8] = &mmap;
     let completed = AtomicUsize::new(0);
 
-    let results: Vec<(Vec<u32>, CuckooResult)> = buckets
+    let results: Vec<(Vec<u32>, CuckooResult)> = groups
         .into_par_iter()
         .enumerate()
-        .map(|(bucket_id, entries)| {
+        .map(|(group_id, entries)| {
             let result =
-                build_cuckoo_for_bucket(bucket_id, &entries, mmap_slice, bins_per_table);
+                build_cuckoo_for_group(group_id, &entries, mmap_slice, bins_per_table);
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            eprint!("\r  Progress: {}/{} buckets", done, K);
+            eprint!("\r  Progress: {}/{} groups", done, K);
             let _ = io::stderr().flush();
             result
         })
@@ -313,18 +313,18 @@ fn main() {
         if !res.success {
             failures += 1;
             eprintln!(
-                "  WARNING: Bucket {} FAILED cuckoo insertion ({} entries, {} bins)",
-                res.bucket_id, res.num_entries, res.num_bins
+                "  WARNING: Group {} FAILED cuckoo insertion ({} entries, {} bins)",
+                res.group_id, res.num_entries, res.num_bins
             );
         }
     }
 
     if failures > 0 {
-        eprintln!("  {} bucket(s) failed — output file will NOT be written.", failures);
+        eprintln!("  {} group(s) failed — output file will NOT be written.", failures);
         std::process::exit(1);
     }
 
-    let slots_per_table = bins_per_table * CUCKOO_BUCKET_SIZE;
+    let slots_per_table = bins_per_table * SLOTS_PER_BIN;
     let total_slots = K * slots_per_table;
     let fill_rate = if total_slots > 0 {
         total_occupied as f64 / total_slots as f64
@@ -334,15 +334,15 @@ fn main() {
     let body_bytes = K * slots_per_table * TAGGED_ENTRY_SIZE;
     let total_file_bytes = HEADER_SIZE + body_bytes;
 
-    println!("  Buckets:               {}", K);
+    println!("  Groups:               {}", K);
     println!("  Total entries placed:  {}", total_entries);
     println!(
-        "  Bins per table:        {} (uniform across all buckets)",
+        "  Bins per table:        {} (uniform across all groups)",
         bins_per_table
     );
     println!(
-        "  Total cuckoo slots:    {} ({} buckets x {} bins x {})",
-        total_slots, K, bins_per_table, CUCKOO_BUCKET_SIZE
+        "  Total cuckoo slots:    {} ({} groups x {} bins x {})",
+        total_slots, K, bins_per_table, SLOTS_PER_BIN
     );
     println!("  Occupied slots:        {}", total_occupied);
     println!(
@@ -356,7 +356,7 @@ fn main() {
         HEADER_SIZE,
         body_bytes
     );
-    println!("  Failed buckets:        {}", failures);
+    println!("  Failed groups:        {}", failures);
     println!();
 
     // ── Step 5: Serialize to disk ────────────────────────────────────────
@@ -373,7 +373,7 @@ fn main() {
     writer.write_all(&MAGIC.to_le_bytes()).unwrap();
     writer.write_all(&(K as u32).to_le_bytes()).unwrap();
     writer
-        .write_all(&(CUCKOO_BUCKET_SIZE as u32).to_le_bytes())
+        .write_all(&(SLOTS_PER_BIN as u32).to_le_bytes())
         .unwrap();
     writer
         .write_all(&(bins_per_table as u32).to_le_bytes())
@@ -390,7 +390,7 @@ fn main() {
     // Each slot: [8B tag | 4B start_chunk_id | 1B num_chunks]
     // Tag is computed from the 20-byte script_hash in the intermediate index file.
     let mut sorted: Vec<&(Vec<u32>, CuckooResult)> = results.iter().collect();
-    sorted.sort_by_key(|(_, res)| res.bucket_id);
+    sorted.sort_by_key(|(_, res)| res.group_id);
 
     let empty_slot = [0u8; TAGGED_ENTRY_SIZE];
     for (table, _) in &sorted {
@@ -399,12 +399,12 @@ fn main() {
             if slot == EMPTY {
                 writer.write_all(&empty_slot).unwrap();
             } else {
-                let offset = slot as usize * INDEX_ENTRY_SIZE;
+                let offset = slot as usize * INDEX_RECORD_SIZE;
                 let script_hash = &mmap[offset..offset + SCRIPT_HASH_SIZE];
                 let tag = compute_tag(TAG_SEED, script_hash);
                 writer.write_all(&tag.to_le_bytes()).unwrap();
                 // start_chunk_id (4B) + num_chunks (1B)
-                writer.write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_ENTRY_SIZE]).unwrap();
+                writer.write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_RECORD_SIZE]).unwrap();
             }
         }
     }
@@ -422,8 +422,8 @@ fn main() {
 
 // ─── Cuckoo builder ──────────────────────────────────────────────────────────
 
-fn build_cuckoo_for_bucket(
-    bucket_id: usize,
+fn build_cuckoo_for_group(
+    group_id: usize,
     entries: &[u32],
     mmap: &[u8],
     num_bins: usize,
@@ -431,28 +431,28 @@ fn build_cuckoo_for_bucket(
     let num_entries = entries.len();
     if num_entries == 0 {
         return (
-            vec![EMPTY; num_bins * CUCKOO_BUCKET_SIZE],
+            vec![EMPTY; num_bins * SLOTS_PER_BIN],
             CuckooResult {
-                bucket_id,
+                group_id,
                 num_entries: 0,
                 num_bins,
-                _table_slots: num_bins * CUCKOO_BUCKET_SIZE,
+                _table_slots: num_bins * SLOTS_PER_BIN,
                 occupied: 0,
                 success: true,
             },
         );
     }
 
-    let table_slots = num_bins * CUCKOO_BUCKET_SIZE;
+    let table_slots = num_bins * SLOTS_PER_BIN;
     let mut table = vec![EMPTY; table_slots];
 
-    let key0 = derive_cuckoo_key(bucket_id, 0);
-    let key1 = derive_cuckoo_key(bucket_id, 1);
+    let key0 = derive_cuckoo_key(group_id, 0);
+    let key1 = derive_cuckoo_key(group_id, 1);
 
     let mut success = true;
 
     for &entry_idx in entries {
-        let base = entry_idx as usize * INDEX_ENTRY_SIZE;
+        let base = entry_idx as usize * INDEX_RECORD_SIZE;
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
 
         if !cuckoo_insert(&mut table, sh, entry_idx, key0, key1, num_bins, mmap) {
@@ -466,7 +466,7 @@ fn build_cuckoo_for_bucket(
     (
         table,
         CuckooResult {
-            bucket_id,
+            group_id,
             num_entries,
             num_bins,
             _table_slots: table_slots,
@@ -488,8 +488,8 @@ fn cuckoo_insert(
 ) -> bool {
     // Try bin 0
     let bin0 = cuckoo_hash(script_hash, key0, num_bins);
-    let base0 = bin0 * CUCKOO_BUCKET_SIZE;
-    for s in 0..CUCKOO_BUCKET_SIZE {
+    let base0 = bin0 * SLOTS_PER_BIN;
+    for s in 0..SLOTS_PER_BIN {
         if table[base0 + s] == EMPTY {
             table[base0 + s] = entry_idx;
             return true;
@@ -498,8 +498,8 @@ fn cuckoo_insert(
 
     // Try bin 1
     let bin1 = cuckoo_hash(script_hash, key1, num_bins);
-    let base1 = bin1 * CUCKOO_BUCKET_SIZE;
-    for s in 0..CUCKOO_BUCKET_SIZE {
+    let base1 = bin1 * SLOTS_PER_BIN;
+    for s in 0..SLOTS_PER_BIN {
         if table[base1 + s] == EMPTY {
             table[base1 + s] = entry_idx;
             return true;
@@ -511,22 +511,22 @@ fn cuckoo_insert(
     let mut current_bin = bin0;
 
     for kick in 0..CUCKOO_MAX_KICKS {
-        let base = current_bin * CUCKOO_BUCKET_SIZE;
-        let slot = kick % CUCKOO_BUCKET_SIZE;
+        let base = current_bin * SLOTS_PER_BIN;
+        let slot = kick % SLOTS_PER_BIN;
         let evicted_idx = table[base + slot];
         table[base + slot] = current_idx;
 
         // Find the alternative bin for the evicted entry
-        let ev_base = evicted_idx as usize * INDEX_ENTRY_SIZE;
+        let ev_base = evicted_idx as usize * INDEX_RECORD_SIZE;
         let ev_sh = &mmap[ev_base..ev_base + SCRIPT_HASH_SIZE];
         let ev_bin0 = cuckoo_hash(ev_sh, key0, num_bins);
         let ev_bin1 = cuckoo_hash(ev_sh, key1, num_bins);
         let alt_bin = if ev_bin0 == current_bin { ev_bin1 } else { ev_bin0 };
 
         // Try to place evicted entry in its alternative bin
-        let alt_base = alt_bin * CUCKOO_BUCKET_SIZE;
+        let alt_base = alt_bin * SLOTS_PER_BIN;
         let mut placed = false;
-        for s in 0..CUCKOO_BUCKET_SIZE {
+        for s in 0..SLOTS_PER_BIN {
             if table[alt_base + s] == EMPTY {
                 table[alt_base + s] = evicted_idx;
                 placed = true;

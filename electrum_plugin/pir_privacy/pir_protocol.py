@@ -3,7 +3,7 @@ Binary protocol encoder/decoder for the Batch PIR system.
 
 Matches web/src/protocol.ts and runtime/src/protocol.rs exactly:
   Messages are length-prefixed: [4B total_len LE][1B variant][payload...]
-  Batch queries/results: [2B round_id][1B count][1B keys_per_bucket][per-bucket: [2B len][key]...]
+  Batch queries/results: [2B round_id][1B count][1B keys_per_group][per-group: [2B len][key]...]
 """
 
 import struct
@@ -32,7 +32,7 @@ class ServerInfo:
 class BatchResult:
     round_id: int = 0
     results: list[list[bytes]] = field(default_factory=list)
-    # results[bucket_idx][hash_fn_idx] = result bytes
+    # results[group_idx][hash_fn_idx] = result bytes
 
 
 # ── Encoding ───────────────────────────────────────────────────────────────
@@ -51,22 +51,22 @@ def encode_get_info() -> bytes:
 
 
 def _encode_batch_query(variant: int, round_id: int,
-                        keys_by_bucket: list[list[bytes]]) -> bytes:
+                        keys_by_group: list[list[bytes]]) -> bytes:
     """Encode a batch query (IndexBatch or ChunkBatch)."""
     parts = bytearray()
     parts.append(variant)
 
     # round_id: u16 LE
     parts.extend(struct.pack('<H', round_id))
-    # count: u8 (number of buckets)
-    num_buckets = len(keys_by_bucket)
-    parts.append(num_buckets & 0xFF)
-    # keys_per_bucket: u8
-    keys_per_bucket = len(keys_by_bucket[0]) if num_buckets > 0 else 0
-    parts.append(keys_per_bucket & 0xFF)
+    # count: u8 (number of groups)
+    num_groups = len(keys_by_group)
+    parts.append(num_groups & 0xFF)
+    # keys_per_group: u8
+    keys_per_group = len(keys_by_group[0]) if num_groups > 0 else 0
+    parts.append(keys_per_group & 0xFF)
 
-    for bucket_keys in keys_by_bucket:
-        for key in bucket_keys:
+    for group_keys in keys_by_group:
+        for key in group_keys:
             parts.extend(struct.pack('<H', len(key)))
             parts.extend(key)
 
@@ -74,15 +74,15 @@ def _encode_batch_query(variant: int, round_id: int,
 
 
 def encode_index_batch(round_id: int,
-                       keys_by_bucket: list[list[bytes]]) -> bytes:
+                       keys_by_group: list[list[bytes]]) -> bytes:
     """Encode an IndexBatch request."""
-    return _encode_batch_query(REQ_INDEX_BATCH, round_id, keys_by_bucket)
+    return _encode_batch_query(REQ_INDEX_BATCH, round_id, keys_by_group)
 
 
 def encode_chunk_batch(round_id: int,
-                       keys_by_bucket: list[list[bytes]]) -> bytes:
+                       keys_by_group: list[list[bytes]]) -> bytes:
     """Encode a ChunkBatch request."""
-    return _encode_batch_query(REQ_CHUNK_BATCH, round_id, keys_by_bucket)
+    return _encode_batch_query(REQ_CHUNK_BATCH, round_id, keys_by_group)
 
 
 # ── Decoding ───────────────────────────────────────────────────────────────
@@ -94,19 +94,19 @@ def _decode_batch_result(data: bytes, pos: int) -> tuple[BatchResult, int]:
     pos += 2
     count = data[pos]
     pos += 1
-    results_per_bucket = data[pos]
+    results_per_group = data[pos]
     pos += 1
 
     results: list[list[bytes]] = []
     for _ in range(count):
-        bucket_results: list[bytes] = []
-        for _ in range(results_per_bucket):
+        group_results: list[bytes] = []
+        for _ in range(results_per_group):
             length = struct.unpack_from('<H', data, pos)[0]
             pos += 2
             r = data[pos:pos + length]
             pos += length
-            bucket_results.append(r)
-        results.append(bucket_results)
+            group_results.append(r)
+        results.append(group_results)
 
     return BatchResult(round_id=round_id, results=results), pos
 

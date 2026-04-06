@@ -5,15 +5,15 @@
  * - Hint Server: computes and sends hint parities (offline phase)
  * - Query Server: answers online queries (simple indexed lookups)
  *
- * Each PBC bucket is managed by a WASM HarmonyBucket instance that
+ * Each PBC group is managed by a WASM HarmonyGroup instance that
  * handles the PRP-based relocation data structure and XOR operations.
  */
 
 import {
   K, K_CHUNK, NUM_HASHES,
-  CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
-  CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
-  INDEX_ENTRY_SIZE, CHUNK_SLOT_SIZE, CHUNK_SIZE, TAG_SIZE,
+  INDEX_SLOTS_PER_BIN, INDEX_CUCKOO_NUM_HASHES,
+  CHUNK_SLOTS_PER_BIN, CHUNK_CUCKOO_NUM_HASHES,
+  INDEX_SLOT_SIZE, CHUNK_SLOT_SIZE, CHUNK_SIZE, TAG_SIZE,
   HARMONY_INDEX_W, HARMONY_CHUNK_W, HARMONY_EMPTY,
   REQ_HARMONY_HINTS,
   REQ_HARMONY_BATCH_QUERY, RESP_HARMONY_BATCH_QUERY,
@@ -21,8 +21,8 @@ import {
 } from './constants.js';
 
 import {
-  deriveBuckets, deriveCuckooKey, cuckooHash, computeTag,
-  deriveChunkBuckets, deriveChunkCuckooKey, cuckooHashInt,
+  deriveGroups, deriveCuckooKey, cuckooHash, computeTag,
+  deriveChunkGroups, deriveChunkCuckooKey, cuckooHashInt,
   scriptHash as computeScriptHash, addressToScriptPubKey,
   hexToBytes, bytesToHex,
 } from './hash.js';
@@ -73,14 +73,15 @@ export interface HarmonyQueryResult {
 
 interface HarmonyWasmModule {
   HarmonyBucket: {
-    new(n: number, w: number, t: number, prpKey: Uint8Array, bucketId: number): HarmonyBucketWasm;
-    new_with_backend(n: number, w: number, t: number, prpKey: Uint8Array, bucketId: number, prpBackend: number): HarmonyBucketWasm;
+    // Note: parameter name matches pre-built WASM export; renamed to group_id in Rust source
+    new(n: number, w: number, t: number, prpKey: Uint8Array, bucketId: number): HarmonyGroupWasm;
+    new_with_backend(n: number, w: number, t: number, prpKey: Uint8Array, bucketId: number, prpBackend: number): HarmonyGroupWasm;
   };
   compute_balanced_t(n: number): number;
   verify_protocol(n: number, w: number): boolean;
 }
 
-interface HarmonyBucketWasm {
+interface HarmonyGroupWasm {
   load_hints(hintsData: Uint8Array): void;
   build_request(q: number): HarmonyRequestWasm;
   build_synthetic_dummy(): Uint8Array;
@@ -124,8 +125,8 @@ export interface QueryInspectorData {
   address: string;
   scriptPubKeyHex: string;
   scriptHashHex: string;
-  candidateIndexBuckets: number[];
-  assignedIndexBucket: number;
+  candidateIndexGroups: number[];
+  assignedIndexGroup: number;
   indexPlacementRound: number;
   // INDEX details
   indexBinIndex?: number;
@@ -140,7 +141,7 @@ export interface QueryInspectorData {
   // CHUNK details (per chunk)
   chunkDetails?: Array<{
     chunkId: number;
-    bucketId: number;
+    groupId: number;
     segment?: number;
     position?: number;
   }>;
@@ -158,9 +159,9 @@ export class HarmonyPirClient {
   private hintWs: WebSocket | null = null;
   private pool: HarmonyWorkerPool | null = null;
 
-  // Per-bucket WASM state (used in single-threaded fallback only)
-  private indexBuckets: Map<number, HarmonyBucketWasm> = new Map();
-  private chunkBuckets: Map<number, HarmonyBucketWasm> = new Map();
+  // Per-group WASM state (used in single-threaded fallback only)
+  private indexGroups: Map<number, HarmonyGroupWasm> = new Map();
+  private chunkGroups: Map<number, HarmonyGroupWasm> = new Map();
 
   // Server params
   private serverInfo: ServerInfoJson | null = null;
@@ -178,7 +179,7 @@ export class HarmonyPirClient {
   // Cache of serialized hint state per PRP backend.
   private hintCache: Map<number, {
     prpKey: Uint8Array;
-    buckets: Map<number, Uint8Array>;
+    groups: Map<number, Uint8Array>;
     totalHintBytes: number;
   }> = new Map();
 
@@ -285,44 +286,44 @@ export class HarmonyPirClient {
     this.log(`Server info (JSON): indexBins=${this.indexBinsPerTable}, chunkBins=${this.chunkBinsPerTable}`);
   }
 
-  /** Initialize WASM bucket instances on workers (or main thread fallback). */
-  async initBuckets(): Promise<void> {
+  /** Initialize WASM group instances on workers (or main thread fallback). */
+  async initGroups(): Promise<void> {
     if (!this.wasm) throw new Error('WASM not loaded');
     const backend = this.config.prpBackend ?? 0;
     const backendName = ['Hoang', 'FastPRP', 'ALF'][backend] ?? 'Hoang';
 
     if (this.pool) {
-      // Create buckets on workers.
+      // Create groups on workers.
       const promises: Promise<void>[] = [];
       for (let b = 0; b < K; b++) {
-        promises.push(this.pool.createBucket(b, this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, backend));
+        promises.push(this.pool.createGroup(b, this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, backend));
       }
       for (let b = 0; b < K_CHUNK; b++) {
-        // Chunk buckets use IDs K..K+K_CHUNK-1 for PRP derivation.
-        promises.push(this.pool.createBucket(K + b, this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, backend));
+        // Chunk groups use IDs K..K+K_CHUNK-1 for PRP derivation.
+        promises.push(this.pool.createGroup(K + b, this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, backend));
       }
       await Promise.all(promises);
     } else {
       // Single-threaded fallback.
       for (let b = 0; b < K; b++) {
-        const bucket = this.wasm.HarmonyBucket.new_with_backend(
+        const group = this.wasm.HarmonyBucket.new_with_backend(
           this.indexBinsPerTable, HARMONY_INDEX_W, 0, this.prpKey, b, backend
         );
-        this.indexBuckets.set(b, bucket);
+        this.indexGroups.set(b, group);
       }
       for (let b = 0; b < K_CHUNK; b++) {
-        const bucket = this.wasm.HarmonyBucket.new_with_backend(
+        const group = this.wasm.HarmonyBucket.new_with_backend(
           this.chunkBinsPerTable, HARMONY_CHUNK_W, 0, this.prpKey, K + b, backend
         );
-        this.chunkBuckets.set(b, bucket);
+        this.chunkGroups.set(b, group);
       }
     }
 
-    this.log(`Initialized ${K} index + ${K_CHUNK} chunk buckets (PRP: ${backendName}${this.pool ? `, ${this.pool.size} workers` : ''})`);
+    this.log(`Initialized ${K} index + ${K_CHUNK} chunk groups (PRP: ${backendName}${this.pool ? `, ${this.pool.size} workers` : ''})`);
   }
 
   /**
-   * Fetch hints from the Hint Server for all buckets.
+   * Fetch hints from the Hint Server for all groups.
    * This is the offline phase — typically done once per session.
    */
   async fetchHints(): Promise<void> {
@@ -337,10 +338,10 @@ export class HarmonyPirClient {
     this.totalHintBytes = 0;
     this.log('Fetching hints from Hint Server...');
 
-    const total = K + K_CHUNK; // 75 + 80 = 155 buckets total
+    const total = K + K_CHUNK; // 75 + 80 = 155 groups total
     let globalReceived = 0;
 
-    const onBucketDone = () => {
+    const onGroupDone = () => {
       if (gen !== this.hintFetchGen) return; // stale fetch
       globalReceived++;
       const pct = Math.round((globalReceived / total) * 100);
@@ -351,17 +352,17 @@ export class HarmonyPirClient {
     const hintWs = await this.connectHintServer();
     this.hintWs = hintWs;
 
-    // Request index hints (75 buckets). Offset=0 for INDEX.
+    // Request index hints (75 groups). Offset=0 for INDEX.
     const tIdx = performance.now();
-    await this.requestHints(hintWs, 0, K, 0, this.indexBuckets, HARMONY_INDEX_W, onBucketDone);
+    await this.requestHints(hintWs, 0, K, 0, this.indexGroups, HARMONY_INDEX_W, onGroupDone);
     if (gen !== this.hintFetchGen) { hintWs.close(); return; }
-    this.log(`  INDEX hints: ${K} buckets in ${((performance.now() - tIdx) / 1000).toFixed(1)}s`);
+    this.log(`  INDEX hints: ${K} groups in ${((performance.now() - tIdx) / 1000).toFixed(1)}s`);
 
-    // Request chunk hints (80 buckets). Offset=K for CHUNK.
+    // Request chunk hints (80 groups). Offset=K for CHUNK.
     const tChk = performance.now();
-    await this.requestHints(hintWs, 1, K_CHUNK, K, this.chunkBuckets, HARMONY_CHUNK_W, onBucketDone);
+    await this.requestHints(hintWs, 1, K_CHUNK, K, this.chunkGroups, HARMONY_CHUNK_W, onGroupDone);
     if (gen !== this.hintFetchGen) { hintWs.close(); return; }
-    this.log(`  CHUNK hints: ${K_CHUNK} buckets in ${((performance.now() - tChk) / 1000).toFixed(1)}s`);
+    this.log(`  CHUNK hints: ${K_CHUNK} groups in ${((performance.now() - tChk) / 1000).toFixed(1)}s`);
 
     hintWs.close();
     this.hintWs = null;
@@ -437,29 +438,29 @@ export class HarmonyPirClient {
     });
   }
 
-  /** Request hints from the Hint Server for a set of buckets at one level.
-   *  bucketIdOffset: 0 for INDEX, K for CHUNK (maps local 0-based ID to global bucket ID for pool). */
+  /** Request hints from the Hint Server for a set of groups at one level.
+   *  groupIdOffset: 0 for INDEX, K for CHUNK (maps local 0-based ID to global group ID for pool). */
   private async requestHints(
     ws: WebSocket,
     level: number,
-    numBuckets: number,
-    bucketIdOffset: number,
-    buckets: Map<number, HarmonyBucketWasm>,
+    numGroups: number,
+    groupIdOffset: number,
+    groups: Map<number, HarmonyGroupWasm>,
     w: number,
-    onBucketDone?: () => void,
+    onGroupDone?: () => void,
   ): Promise<void> {
     // Build hint request.
-    const bucketIds = Array.from({ length: numBuckets }, (_, i) => i);
-    // Wire: [1B variant][16B prp_key][1B prp_backend][1B level][1B num_buckets][per bucket: 1B id]
+    const groupIds = Array.from({ length: numGroups }, (_, i) => i);
+    // Wire: [1B variant][16B prp_key][1B prp_backend][1B level][1B num_groups][per group: 1B id]
     const backend = this.config.prpBackend ?? 0;
-    const msg = new Uint8Array(1 + 16 + 1 + 1 + 1 + numBuckets);
+    const msg = new Uint8Array(1 + 16 + 1 + 1 + 1 + numGroups);
     msg[0] = REQ_HARMONY_HINTS;
     msg.set(this.prpKey, 1);
     msg[17] = backend;
     msg[18] = level;
-    msg[19] = numBuckets;
-    for (let i = 0; i < numBuckets; i++) {
-      msg[20 + i] = bucketIds[i];
+    msg[19] = numGroups;
+    for (let i = 0; i < numGroups; i++) {
+      msg[20 + i] = groupIds[i];
     }
 
     // Length-prefix and send.
@@ -476,22 +477,22 @@ export class HarmonyPirClient {
         const payload = data.slice(4);
 
         if (payload[0] === RESP_HARMONY_HINTS) {
-          const bucketId = payload[1];
+          const groupId = payload[1];
           const hintsData = payload.slice(14);
           this.totalHintBytes += hintsData.length;
 
           if (this.pool) {
-            // Forward hints to worker (global bucket ID = offset + local).
-            this.pool.loadHints(bucketIdOffset + bucketId, hintsData);
+            // Forward hints to worker (global group ID = offset + local).
+            this.pool.loadHints(groupIdOffset + groupId, hintsData);
           } else {
             // Single-threaded fallback: load directly.
-            const bucket = buckets.get(bucketId);
-            if (bucket) bucket.load_hints(hintsData);
+            const group = groups.get(groupId);
+            if (group) group.load_hints(hintsData);
           }
 
           received++;
-          onBucketDone?.();
-          if (received === numBuckets) {
+          onGroupDone?.();
+          if (received === numGroups) {
             resolve();
           }
         } else if (payload[0] === RESP_ERROR) {
@@ -519,14 +520,14 @@ export class HarmonyPirClient {
    * INDEX:
    *   For each placement round:
    *     For h = 0 .. INDEX_CUCKOO_NUM_HASHES-1:
-   *       - Real query (build_request) for buckets whose tag is NOT yet found
-   *       - Fake query (build_synthetic_dummy) for buckets whose tag WAS found
-   *       - Synthetic dummy for unassigned buckets
-   *       → 1 batch message with K buckets × 1 sub-query each
+   *       - Real query (build_request) for groups whose tag is NOT yet found
+   *       - Fake query (build_synthetic_dummy) for groups whose tag WAS found
+   *       - Synthetic dummy for unassigned groups
+   *       → 1 batch message with K groups × 1 sub-query each
    *       → Server responds, client calls process_response for real queries
    *
    * CHUNK:
-   *   Same structure with K_CHUNK buckets and CHUNK_CUCKOO_NUM_HASHES rounds.
+   *   Same structure with K_CHUNK groups and CHUNK_CUCKOO_NUM_HASHES rounds.
    */
   async queryBatch(
     addresses: string[],
@@ -543,7 +544,7 @@ export class HarmonyPirClient {
       this.log('Hints exhausted — re-downloading...');
       await this.refreshHints();
     } else if (remaining < 4) {
-      this.log(`Warning: only ${remaining} queries remaining per bucket`);
+      this.log(`Warning: only ${remaining} queries remaining per group`);
     }
 
     // ── Prepare script hashes (accept both addresses and hex scriptPubKeys) ──
@@ -574,8 +575,8 @@ export class HarmonyPirClient {
     progress?.('Level 1', 'Planning index rounds...');
 
     const tL1Start = performance.now();
-    const indexCandBuckets = scriptHashes.map(sh => deriveBuckets(sh));
-    const indexRounds = planRounds(indexCandBuckets, K, NUM_HASHES, (msg) => this.log(msg));
+    const indexCandGroups = scriptHashes.map(sh => deriveGroups(sh));
+    const indexRounds = planRounds(indexCandGroups, K, NUM_HASHES, (msg) => this.log(msg));
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index placement round(s) × ${INDEX_CUCKOO_NUM_HASHES} hash-fn rounds`);
 
     // Pre-populate inspector data for each query.
@@ -585,8 +586,8 @@ export class HarmonyPirClient {
         scriptPubKeyHex: (/^[0-9a-fA-F]+$/.test(addresses[qi]) && addresses[qi].length % 2 === 0)
           ? addresses[qi].toLowerCase() : (addressToScriptPubKey(addresses[qi]) ?? ''),
         scriptHashHex: shHexes[qi],
-        candidateIndexBuckets: indexCandBuckets[qi],
-        assignedIndexBucket: -1,
+        candidateIndexGroups: indexCandGroups[qi],
+        assignedIndexGroup: -1,
         indexPlacementRound: -1,
         isWhale: false,
         roundTimings,
@@ -599,13 +600,13 @@ export class HarmonyPirClient {
 
     for (let ir = 0; ir < indexRounds.length; ir++) {
       const round = indexRounds[ir];
-      const bucketToQuery = new Map<number, number>();
-      for (const [qi, bucketId] of round) {
-        bucketToQuery.set(bucketId, qi);
-        // Inspector: record which bucket each query is assigned to.
+      const groupToQuery = new Map<number, number>();
+      for (const [qi, groupId] of round) {
+        groupToQuery.set(groupId, qi);
+        // Inspector: record which group each query is assigned to.
         const qd = inspectorMap.get(qi);
-        if (qd && qd.assignedIndexBucket < 0) {
-          qd.assignedIndexBucket = bucketId;
+        if (qd && qd.assignedIndexGroup < 0) {
+          qd.assignedIndexGroup = groupId;
           qd.indexPlacementRound = ir;
         }
       }
@@ -615,24 +616,24 @@ export class HarmonyPirClient {
       for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
         progress?.('Level 1', `Index placement ${ir + 1}/${indexRounds.length}, h=${h}...`);
 
-        // Determine which buckets get real vs dummy queries.
-        const realBuckets = new Map<number, number>(); // bucketId → qi
+        // Determine which groups get real vs dummy queries.
+        const realGroups = new Map<number, number>(); // groupId → qi
         const buildItems: BuildItem[] = [];
 
         for (let b = 0; b < K; b++) {
-          const qi = bucketToQuery.get(b);
+          const qi = groupToQuery.get(b);
           if (qi !== undefined && !foundThisPlacement.has(qi) && !indexResults.has(qi) && !whaleQueries.has(qi)) {
             const ck = deriveCuckooKey(b, h);
             const binIndex = cuckooHash(scriptHashes[qi], ck, this.indexBinsPerTable);
-            buildItems.push({ bucketId: b, binIndex });
-            realBuckets.set(b, qi);
+            buildItems.push({ groupId: b, binIndex });
+            realGroups.set(b, qi);
             // Inspector: record which binIndex this query used.
             const qd = inspectorMap.get(qi);
             if (qd && qd.indexBinIndex === undefined) {
               qd.indexBinIndex = binIndex;
             }
           } else {
-            buildItems.push({ bucketId: b }); // dummy (binIndex undefined)
+            buildItems.push({ groupId: b }); // dummy (binIndex undefined)
           }
         }
 
@@ -642,8 +643,8 @@ export class HarmonyPirClient {
         const buildMs = performance.now() - tBuild;
 
         // Inspector: capture segment/position from build results.
-        for (const [bucketId, qi] of realBuckets) {
-          const br = reqBytesMap.get(bucketId);
+        for (const [groupId, qi] of realGroups) {
+          const br = reqBytesMap.get(groupId);
           const qd = inspectorMap.get(qi);
           if (br && qd && qd.indexSegment === undefined) {
             qd.indexSegment = br.segment;
@@ -654,8 +655,8 @@ export class HarmonyPirClient {
 
         // Encode and send batch.
         const batchItems = buildItems.map(item => ({
-          bucketId: item.bucketId,
-          subQueryBytes: [(reqBytesMap.get(item.bucketId)?.bytes) ?? new Uint8Array(0)],
+          groupId: item.groupId,
+          subQueryBytes: [(reqBytesMap.get(item.groupId)?.bytes) ?? new Uint8Array(0)],
         }));
         const roundId = ir * INDEX_CUCKOO_NUM_HASHES + h;
         const reqMsg = this.encodeHarmonyBatchRequest(0, roundId, 1, batchItems);
@@ -666,10 +667,10 @@ export class HarmonyPirClient {
 
         // Process real responses (parallel via workers or single-threaded fallback).
         const processItems: ProcessItem[] = [];
-        for (const [bucketId] of realBuckets) {
-          const respItem = batchResp.get(bucketId);
+        for (const [groupId] of realGroups) {
+          const respItem = batchResp.get(groupId);
           if (respItem && respItem.length > 0) {
-            processItems.push({ bucketId, response: respItem[0] });
+            processItems.push({ groupId: groupId, response: respItem[0] });
           }
         }
         const tProc = performance.now();
@@ -677,11 +678,11 @@ export class HarmonyPirClient {
         const procMs = performance.now() - tProc;
 
         // Match answers against expected tags.
-        for (const [bucketId, qi] of realBuckets) {
-          const answer = answers.get(bucketId);
+        for (const [groupId, qi] of realGroups) {
+          const answer = answers.get(groupId);
           if (!answer) continue;
           const expectedTag = computeTag(this.tagSeed, scriptHashes[qi]);
-          const found = findEntryInIndexResult(answer, expectedTag, HARMONY_INDEX_W / INDEX_ENTRY_SIZE, INDEX_ENTRY_SIZE);
+          const found = findEntryInIndexResult(answer, expectedTag, HARMONY_INDEX_W / INDEX_SLOT_SIZE, INDEX_SLOT_SIZE);
           if (found) {
             if (found.numChunks === 0) {
               whaleQueries.add(qi);
@@ -711,16 +712,16 @@ export class HarmonyPirClient {
 
         // Deferred relocation (expensive PRP work, after results are available).
         const tReloc = performance.now();
-        await this.doFinishRelocation(processItems.map(i => i.bucketId), 'index');
+        await this.doFinishRelocation(processItems.map(i => i.groupId), 'index');
         const relocMs = performance.now() - tReloc;
 
         // Inspector: record round timing.
         roundTimings.push({
           phase: 'index', roundIdx: ir, hashIdx: h,
-          realCount: realBuckets.size, totalCount: K,
+          realCount: realGroups.size, totalCount: K,
           buildMs, netMs, procMs, relocMs,
         });
-        this.log(`  INDEX r${ir}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realBuckets.size} real / ${K} total)`);
+        this.log(`  INDEX r${ir}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realGroups.size} real / ${K} total)`);
       }
     }
 
@@ -749,15 +750,15 @@ export class HarmonyPirClient {
     const recoveredChunks = new Map<number, Uint8Array>();
 
     if (allChunkIds.length > 0) {
-      const chunkCandBuckets = allChunkIds.map(cid => deriveChunkBuckets(cid));
-      const chunkRounds = planRounds(chunkCandBuckets, K_CHUNK, NUM_HASHES, (msg) => this.log(msg));
+      const chunkCandGroups = allChunkIds.map(cid => deriveChunkGroups(cid));
+      const chunkRounds = planRounds(chunkCandGroups, K_CHUNK, NUM_HASHES, (msg) => this.log(msg));
       this.log(`  ${allChunkIds.length} chunks → ${chunkRounds.length} chunk placement round(s) × ${CHUNK_CUCKOO_NUM_HASHES} hash-fn rounds`);
 
       for (let ri = 0; ri < chunkRounds.length; ri++) {
         const roundPlan = chunkRounds[ri];
-        const bucketToChunk = new Map<number, number>(); // bucketId → chunkListIdx
-        for (const [chunkListIdx, bucketId] of roundPlan) {
-          bucketToChunk.set(bucketId, chunkListIdx);
+        const groupToChunk = new Map<number, number>(); // groupId → chunkListIdx
+        for (const [chunkListIdx, groupId] of roundPlan) {
+          groupToChunk.set(groupId, chunkListIdx);
         }
 
         const foundThisPlacement = new Set<number>(); // chunk_ids found in this placement round
@@ -765,23 +766,23 @@ export class HarmonyPirClient {
         for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
           progress?.('Level 2', `Chunk placement ${ri + 1}/${chunkRounds.length}, h=${h}...`);
 
-          const realBuckets = new Map<number, { chunkListIdx: number; chunkId: number }>();
+          const realGroups = new Map<number, { chunkListIdx: number; chunkId: number }>();
           const buildItems: BuildItem[] = [];
 
           for (let b = 0; b < K_CHUNK; b++) {
-            const chunkListIdx = bucketToChunk.get(b);
+            const chunkListIdx = groupToChunk.get(b);
             if (chunkListIdx !== undefined) {
               const chunkId = allChunkIds[chunkListIdx];
               if (!foundThisPlacement.has(chunkId) && !recoveredChunks.has(chunkId)) {
                 const ck = deriveChunkCuckooKey(b, h);
                 const binIndex = cuckooHashInt(chunkId, ck, this.chunkBinsPerTable);
-                buildItems.push({ bucketId: K + b, binIndex }); // global ID = K + b
-                realBuckets.set(b, { chunkListIdx, chunkId });
+                buildItems.push({ groupId: K + b, binIndex }); // global ID = K + b
+                realGroups.set(b, { chunkListIdx, chunkId });
               } else {
-                buildItems.push({ bucketId: K + b }); // dummy
+                buildItems.push({ groupId: K + b }); // dummy
               }
             } else {
-              buildItems.push({ bucketId: K + b }); // dummy
+              buildItems.push({ groupId: K + b }); // dummy
             }
           }
 
@@ -790,8 +791,8 @@ export class HarmonyPirClient {
           const buildMs = performance.now() - tBuild;
 
           const batchItems = buildItems.map(item => ({
-            bucketId: item.bucketId - K, // local bucket ID for wire protocol
-            subQueryBytes: [(reqBytesMap.get(item.bucketId)?.bytes) ?? new Uint8Array(0)],
+            groupId: item.groupId - K, // local group ID for wire protocol
+            subQueryBytes: [(reqBytesMap.get(item.groupId)?.bytes) ?? new Uint8Array(0)],
           }));
           const roundId = ri * CHUNK_CUCKOO_NUM_HASHES + h;
           const reqMsg = this.encodeHarmonyBatchRequest(1, roundId, 1, batchItems);
@@ -801,17 +802,17 @@ export class HarmonyPirClient {
           const batchResp = this.decodeHarmonyBatchResponse(respData);
 
           const processItems: ProcessItem[] = [];
-          for (const [localB] of realBuckets) {
+          for (const [localB] of realGroups) {
             const respItem = batchResp.get(localB);
             if (respItem && respItem.length > 0) {
-              processItems.push({ bucketId: K + localB, response: respItem[0] }); // global ID
+              processItems.push({ groupId: K + localB, response: respItem[0] }); // global ID
             }
           }
           const tProc = performance.now();
           const answers = await this.doProcessBatch(processItems, 'chunk');
           const procMs = performance.now() - tProc;
 
-          for (const [localB, { chunkId }] of realBuckets) {
+          for (const [localB, { chunkId }] of realGroups) {
             const answer = answers.get(K + localB); // global ID
             if (!answer) continue;
             const found = findChunkInResult(answer, chunkId, answer.length / CHUNK_SLOT_SIZE, CHUNK_SLOT_SIZE);
@@ -827,7 +828,7 @@ export class HarmonyPirClient {
                   if (!qd.chunkDetails) qd.chunkDetails = [];
                   qd.chunkDetails.push({
                     chunkId,
-                    bucketId: localB,
+                    groupId: localB,
                     segment: br?.segment,
                     position: br?.position,
                   });
@@ -838,16 +839,16 @@ export class HarmonyPirClient {
 
           // Deferred relocation (expensive PRP work, after results are available).
           const tReloc = performance.now();
-          await this.doFinishRelocation(processItems.map(i => i.bucketId), 'chunk');
+          await this.doFinishRelocation(processItems.map(i => i.groupId), 'chunk');
           const relocMs = performance.now() - tReloc;
 
           // Inspector: record chunk round timing.
           roundTimings.push({
             phase: 'chunk', roundIdx: ri, hashIdx: h,
-            realCount: realBuckets.size, totalCount: K_CHUNK,
+            realCount: realGroups.size, totalCount: K_CHUNK,
             buildMs, netMs, procMs, relocMs,
           });
-          this.log(`  CHUNK r${ri}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realBuckets.size} real / ${K_CHUNK} total)`);
+          this.log(`  CHUNK r${ri}h${h}: build=${buildMs.toFixed(0)}ms net=${netMs.toFixed(0)}ms proc=${procMs.toFixed(0)}ms reloc=${relocMs.toFixed(0)}ms (${realGroups.size} real / ${K_CHUNK} total)`);
         }
       }
     }
@@ -912,13 +913,13 @@ export class HarmonyPirClient {
   private encodeHarmonyBatchRequest(
     level: number,
     roundId: number,
-    subQueriesPerBucket: number,
-    items: Array<{ bucketId: number; subQueryBytes: Uint8Array[] }>,
+    subQueriesPerGroup: number,
+    items: Array<{ groupId: number; subQueryBytes: Uint8Array[] }>,
   ): Uint8Array {
     // Compute total size.
-    let size = 1 + 1 + 2 + 2 + 1; // variant + level + round_id + num_buckets + subQ
+    let size = 1 + 1 + 2 + 2 + 1; // variant + level + round_id + num_groups + subQ
     for (const item of items) {
-      size += 1; // bucket_id
+      size += 1; // group_id
       for (const sq of item.subQueryBytes) {
         size += 4 + sq.length; // count + indices
       }
@@ -932,10 +933,10 @@ export class HarmonyPirClient {
     buf[pos++] = level;
     view.setUint16(pos, roundId, true); pos += 2;
     view.setUint16(pos, items.length, true); pos += 2;
-    buf[pos++] = subQueriesPerBucket;
+    buf[pos++] = subQueriesPerGroup;
 
     for (const item of items) {
-      buf[pos++] = item.bucketId;
+      buf[pos++] = item.groupId;
       for (const sq of item.subQueryBytes) {
         const count = sq.length / 4;
         view.setUint32(pos, count, true); pos += 4;
@@ -950,25 +951,25 @@ export class HarmonyPirClient {
   private decodeHarmonyBatchResponse(
     data: Uint8Array,
   ): Map<number, Uint8Array[]> {
-    // data = [1B variant][1B level][2B round_id][2B num_buckets][1B subResultsPerBucket]
-    //        per bucket: [1B bucket_id] per sub_result: [4B data_len][data]
+    // data = [1B variant][1B level][2B round_id][2B num_groups][1B subResultsPerGroup]
+    //        per group: [1B group_id] per sub_result: [4B data_len][data]
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     let pos = 1; // skip variant
     /* const level = */ data[pos++];
     /* const roundId = */ view.getUint16(pos, true); pos += 2;
-    const numBuckets = view.getUint16(pos, true); pos += 2;
-    const subResultsPerBucket = data[pos++];
+    const numGroups = view.getUint16(pos, true); pos += 2;
+    const subResultsPerGroup = data[pos++];
 
     const result = new Map<number, Uint8Array[]>();
-    for (let i = 0; i < numBuckets; i++) {
-      const bucketId = data[pos++];
+    for (let i = 0; i < numGroups; i++) {
+      const groupId = data[pos++];
       const subResults: Uint8Array[] = [];
-      for (let s = 0; s < subResultsPerBucket; s++) {
+      for (let s = 0; s < subResultsPerGroup; s++) {
         const len = view.getUint32(pos, true); pos += 4;
         subResults.push(data.slice(pos, pos + len));
         pos += len;
       }
-      result.set(bucketId, subResults);
+      result.set(groupId, subResults);
     }
     return result;
   }
@@ -976,9 +977,9 @@ export class HarmonyPirClient {
   // ─── Worker/fallback dispatch helpers ────────────────────────────────────
 
   /**
-   * Build requests for a batch of buckets.
+   * Build requests for a batch of groups.
    * Uses worker pool if available, otherwise direct WASM calls.
-   * @param level 'index' or 'chunk' — determines which bucket map to use for fallback.
+   * @param level 'index' or 'chunk' — determines which group map to use for fallback.
    */
   private async doBuildBatch(
     items: BuildItem[],
@@ -989,30 +990,30 @@ export class HarmonyPirClient {
     }
 
     // Single-threaded fallback.
-    const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
+    const groupMap = level === 'index' ? this.indexGroups : this.chunkGroups;
     const result = new Map<number, BuildResult>();
     for (const item of items) {
-      const localId = level === 'index' ? item.bucketId : item.bucketId - K;
-      const bucket = bucketMap.get(localId);
-      if (!bucket) continue;
+      const localId = level === 'index' ? item.groupId : item.groupId - K;
+      const group = groupMap.get(localId);
+      if (!group) continue;
       if (item.binIndex !== undefined) {
-        const req = bucket.build_request(item.binIndex);
+        const req = group.build_request(item.binIndex);
         const br: BuildResult = {
           bytes: new Uint8Array(req.request),
           segment: req.segment,
           position: req.position,
         };
         req.free();
-        result.set(item.bucketId, br);
+        result.set(item.groupId, br);
       } else {
-        result.set(item.bucketId, { bytes: new Uint8Array(bucket.build_synthetic_dummy()) });
+        result.set(item.groupId, { bytes: new Uint8Array(group.build_synthetic_dummy()) });
       }
     }
     return result;
   }
 
   /**
-   * Process responses for a batch of buckets.
+   * Process responses for a batch of groups.
    * Uses worker pool if available, otherwise direct WASM calls.
    */
   private async doProcessBatch(
@@ -1025,33 +1026,33 @@ export class HarmonyPirClient {
     }
 
     // Single-threaded fallback: also use xor-only path for consistent timing.
-    const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
+    const groupMap = level === 'index' ? this.indexGroups : this.chunkGroups;
     const result = new Map<number, Uint8Array>();
     for (const item of items) {
-      const localId = level === 'index' ? item.bucketId : item.bucketId - K;
-      const bucket = bucketMap.get(localId);
-      if (!bucket) continue;
-      const answer = bucket.process_response_xor_only(item.response);
-      result.set(item.bucketId, answer);
+      const localId = level === 'index' ? item.groupId : item.groupId - K;
+      const group = groupMap.get(localId);
+      if (!group) continue;
+      const answer = group.process_response_xor_only(item.response);
+      result.set(item.groupId, answer);
     }
     return result;
   }
 
-  /** Complete deferred relocation for buckets that had xor-only processing. */
+  /** Complete deferred relocation for groups that had xor-only processing. */
   private async doFinishRelocation(
-    bucketIds: number[],
+    groupIds: number[],
     level: 'index' | 'chunk',
   ): Promise<void> {
     if (this.pool) {
-      return this.pool.finishRelocation(bucketIds);
+      return this.pool.finishRelocation(groupIds);
     }
 
     // Single-threaded fallback.
-    const bucketMap = level === 'index' ? this.indexBuckets : this.chunkBuckets;
-    for (const id of bucketIds) {
+    const groupMap = level === 'index' ? this.indexGroups : this.chunkGroups;
+    for (const id of groupIds) {
       const localId = level === 'index' ? id : id - K;
-      const bucket = bucketMap.get(localId);
-      if (bucket) bucket.finish_relocation();
+      const group = groupMap.get(localId);
+      if (group) group.finish_relocation();
     }
   }
 
@@ -1088,6 +1089,14 @@ export class HarmonyPirClient {
     this.log('Reconnected to Query Server (hints preserved)');
   }
 
+  /** Return all open WebSocket connections (for diagnostics like residency check). */
+  getConnectedSockets(): { label: string; ws: ManagedWebSocket }[] {
+    const out: { label: string; ws: ManagedWebSocket }[] = [];
+    if (this.queryWs?.isOpen()) out.push({ label: 'HarmonyPIR Query Server', ws: this.queryWs });
+    if (this.primaryWs?.isOpen()) out.push({ label: 'HarmonyPIR Primary Server', ws: this.primaryWs });
+    return out;
+  }
+
   /** Disconnect and free all resources (full teardown). */
   disconnect(): void {
     this.hintFetchGen++; // abort any in-progress hint fetch
@@ -1100,10 +1109,10 @@ export class HarmonyPirClient {
       this.pool.terminate();
       this.pool = null;
     }
-    for (const [_, b] of this.indexBuckets) b.free();
-    for (const [_, b] of this.chunkBuckets) b.free();
-    this.indexBuckets.clear();
-    this.chunkBuckets.clear();
+    for (const [_, b] of this.indexGroups) b.free();
+    for (const [_, b] of this.chunkGroups) b.free();
+    this.indexGroups.clear();
+    this.chunkGroups.clear();
     this.wasm = null;
     this.hintsLoaded = false;
   }
@@ -1116,10 +1125,10 @@ export class HarmonyPirClient {
       this.pool.terminate();
       this.pool = null;
     }
-    for (const [_, b] of this.indexBuckets) b.free();
-    for (const [_, b] of this.chunkBuckets) b.free();
-    this.indexBuckets.clear();
-    this.chunkBuckets.clear();
+    for (const [_, b] of this.indexGroups) b.free();
+    for (const [_, b] of this.chunkGroups) b.free();
+    this.indexGroups.clear();
+    this.chunkGroups.clear();
     this.wasm = null;
     this.hintsLoaded = false;
   }
@@ -1206,10 +1215,10 @@ export class HarmonyPirClient {
     const serialized = await this.pool.serializeAll();
     this.hintCache.set(backend, {
       prpKey: new Uint8Array(this.prpKey),
-      buckets: serialized,
+      groups: serialized,
       totalHintBytes: this.totalHintBytes,
     });
-    this.log(`Cached hints for PRP backend ${backend} (${serialized.size} buckets)`);
+    this.log(`Cached hints for PRP backend ${backend} (${serialized.size} groups)`);
   }
 
   /** Try to restore hints from cache for a given PRP backend. Returns true on cache hit. */
@@ -1218,9 +1227,9 @@ export class HarmonyPirClient {
     if (!cached || !this.pool) return false;
     this.prpKey = new Uint8Array(cached.prpKey);
     this.totalHintBytes = cached.totalHintBytes;
-    await this.pool.deserializeAll(cached.buckets, this.prpKey);
+    await this.pool.deserializeAll(cached.groups, this.prpKey);
     this.hintsLoaded = true;
-    this.log(`Restored ${cached.buckets.size} buckets from cache`);
+    this.log(`Restored ${cached.groups.size} groups from cache`);
     return true;
   }
 
@@ -1233,22 +1242,22 @@ export class HarmonyPirClient {
   // Hint exhaustion detection
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** Get the minimum queries remaining across all buckets. */
+  /** Get the minimum queries remaining across all groups. */
   async getMinQueriesRemaining(): Promise<number> {
     if (this.pool) {
       return this.pool.getMinQueriesRemaining();
     }
     // Single-threaded fallback.
     let min = Infinity;
-    for (const [_, b] of this.indexBuckets) min = Math.min(min, b.queries_remaining());
-    for (const [_, b] of this.chunkBuckets) min = Math.min(min, b.queries_remaining());
+    for (const [_, b] of this.indexGroups) min = Math.min(min, b.queries_remaining());
+    for (const [_, b] of this.chunkGroups) min = Math.min(min, b.queries_remaining());
     return min;
   }
 
-  /** Re-initialize buckets and re-download hints (resets query budget). */
+  /** Re-initialize groups and re-download hints (resets query budget). */
   async refreshHints(): Promise<void> {
     this.log('Refreshing hints (re-running offline phase)...');
-    await this.initBuckets();
+    await this.initGroups();
     await this.fetchHints();
   }
 }

@@ -18,9 +18,9 @@ pub struct MappedSubTable {
     pub mmap: Mmap,
     /// Parameters that describe this table's layout.
     pub params: TableParams,
-    /// Number of cuckoo bins per Batch PIR bucket (read from header).
+    /// Number of cuckoo bins per PBC group (read from header).
     pub bins_per_table: usize,
-    /// Byte size of one bucket's sub-table (bins × bucket_size × slot_size).
+    /// Byte size of one group's sub-table (bins × slots_per_bin × slot_size).
     pub table_byte_size: usize,
     /// Tag seed from header (0 if the table has no tag seed).
     pub tag_seed: u64,
@@ -63,9 +63,9 @@ impl MappedSubTable {
         MappedSubTable { mmap, params, bins_per_table, table_byte_size, tag_seed }
     }
 
-    /// Get the byte slice for a specific bucket's sub-table.
-    pub fn bucket_bytes(&self, bucket_id: usize) -> &[u8] {
-        let offset = self.params.header_size + bucket_id * self.table_byte_size;
+    /// Get the byte slice for a specific group's sub-table.
+    pub fn group_bytes(&self, group_id: usize) -> &[u8] {
+        let offset = self.params.header_size + group_id * self.table_byte_size;
         &self.mmap[offset..offset + self.table_byte_size]
     }
 }
@@ -149,7 +149,7 @@ impl MappedDatabase {
                     k: 75,
                     num_hashes: 3,
                     master_seed: 0xBA7C_51B1_0000_0000u64.wrapping_add(level as u64),
-                    cuckoo_bucket_size: 4,
+                    slots_per_bin: 4,
                     cuckoo_num_hashes: 2,
                     slot_size: sib_slot_size,
                     dpf_n: 0, // read from file header
@@ -211,7 +211,7 @@ pub struct CuckooTablePair {
     pub index_cuckoo: Mmap,
     /// Number of bins per sub-table in the index cuckoo.
     pub index_bins_per_table: usize,
-    /// Total byte size of one index sub-table (bins × bucket_size × slot_size).
+    /// Total byte size of one index sub-table (bins × slots_per_bin × slot_size).
     pub index_table_byte_size: usize,
     /// Fingerprint tag seed from the index cuckoo header.
     pub tag_seed: u64,
@@ -234,7 +234,7 @@ impl CuckooTablePair {
         let f = File::open(CUCKOO_FILE).expect("open index cuckoo");
         let index_cuckoo = unsafe { Mmap::map(&f) }.expect("mmap index cuckoo");
         let (index_bins_per_table, tag_seed) = read_cuckoo_header(&index_cuckoo);
-        let index_table_byte_size = index_bins_per_table * CUCKOO_BUCKET_SIZE * INDEX_SLOT_SIZE;
+        let index_table_byte_size = index_bins_per_table * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
         println!(
             "  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
             index_bins_per_table,
@@ -265,7 +265,7 @@ impl CuckooTablePair {
         let chunk_bins_per_table = read_chunk_cuckoo_header(&chunk_cuckoo);
         let chunk_slot_size = 4 + CHUNK_SIZE;
         let chunk_table_byte_size =
-            chunk_bins_per_table * CHUNK_CUCKOO_BUCKET_SIZE * chunk_slot_size;
+            chunk_bins_per_table * CHUNK_SLOTS_PER_BIN * chunk_slot_size;
         println!(
             "  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
             chunk_bins_per_table,

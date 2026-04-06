@@ -14,10 +14,10 @@ import {
 import {
   wasmSplitmix64,
   wasmComputeTag,
-  wasmDeriveBuckets,
+  wasmDeriveGroups,
   wasmDeriveCuckooKey,
   wasmCuckooHash,
-  wasmDeriveChunkBuckets,
+  wasmDeriveChunkGroups,
   wasmDeriveChunkCuckooKey,
   wasmCuckooHashInt,
 } from './wasm-bridge.js';
@@ -70,47 +70,47 @@ export function computeTag(tagSeed: bigint, scriptHash: Uint8Array): bigint {
   return h;
 }
 
-// ─── Index-level bucket assignment ─────────────────────────────────────────
+// ─── Index-level group assignment ──────────────────────────────────────────
 
-/** Hash script_hash with a nonce for bucket assignment */
-function hashForBucket(scriptHash: Uint8Array, nonce: bigint): bigint {
+/** Hash script_hash with a nonce for group assignment */
+function hashForGroup(scriptHash: Uint8Array, nonce: bigint): bigint {
   let h = (shA(scriptHash) + ((nonce * 0x9e3779b97f4a7c15n) & MASK64)) & MASK64;
   h = (h ^ shB(scriptHash)) & MASK64;
   h = splitmix64((h ^ shC(scriptHash)) & MASK64);
   return h;
 }
 
-/** Derive NUM_HASHES (3) distinct bucket indices for a script_hash */
-export function deriveBuckets(scriptHash: Uint8Array): number[] {
-  const w = wasmDeriveBuckets(scriptHash, K);
+/** Derive NUM_HASHES (3) distinct group indices for a script_hash */
+export function deriveGroups(scriptHash: Uint8Array): number[] {
+  const w = wasmDeriveGroups(scriptHash, K);
   if (w !== undefined) return w;
   // Pure-TS fallback
-  const buckets: number[] = [];
+  const groups: number[] = [];
   let nonce = 0n;
 
-  while (buckets.length < NUM_HASHES) {
-    const h = hashForBucket(scriptHash, nonce);
-    const bucket = Number(h % BigInt(K));
+  while (groups.length < NUM_HASHES) {
+    const h = hashForGroup(scriptHash, nonce);
+    const group = Number(h % BigInt(K));
     nonce += 1n;
 
-    if (!buckets.includes(bucket)) {
-      buckets.push(bucket);
+    if (!groups.includes(group)) {
+      groups.push(group);
     }
   }
 
-  return buckets;
+  return groups;
 }
 
 // ─── Index-level cuckoo hashing ────────────────────────────────────────────
 
-/** Derive a cuckoo hash function key for (bucket_id, hash_fn) */
-export function deriveCuckooKey(bucketId: number, hashFn: number): bigint {
-  const w = wasmDeriveCuckooKey(MASTER_SEED, bucketId, hashFn);
+/** Derive a cuckoo hash function key for (groupId, hash_fn) */
+export function deriveCuckooKey(groupId: number, hashFn: number): bigint {
+  const w = wasmDeriveCuckooKey(MASTER_SEED, groupId, hashFn);
   if (w !== undefined) return w;
   // Pure-TS fallback
   return splitmix64(
     (MASTER_SEED
-      + ((BigInt(bucketId) * 0x9e3779b97f4a7c15n) & MASK64)
+      + ((BigInt(groupId) * 0x9e3779b97f4a7c15n) & MASK64)
       + ((BigInt(hashFn) * 0x517cc1b727220a95n) & MASK64)
     ) & MASK64
   );
@@ -127,46 +127,46 @@ export function cuckooHash(scriptHash: Uint8Array, key: bigint, numBins: number)
   return Number(h % BigInt(numBins));
 }
 
-// ─── Chunk-level bucket assignment ─────────────────────────────────────────
+// ─── Chunk-level group assignment ──────────────────────────────────────────
 
-/** Hash a chunk_id with a nonce for chunk-level bucket assignment */
-function hashChunkForBucket(chunkId: number, nonce: bigint): bigint {
+/** Hash a chunk_id with a nonce for chunk-level group assignment */
+function hashChunkForGroup(chunkId: number, nonce: bigint): bigint {
   return splitmix64(
     (BigInt(chunkId) + ((nonce * 0x9e3779b97f4a7c15n) & MASK64)) & MASK64
   );
 }
 
-/** Derive 3 distinct chunk-level bucket indices for a chunk_id */
-export function deriveChunkBuckets(chunkId: number): number[] {
-  const w = wasmDeriveChunkBuckets(chunkId, K_CHUNK);
+/** Derive 3 distinct chunk-level group indices for a chunk_id */
+export function deriveChunkGroups(chunkId: number): number[] {
+  const w = wasmDeriveChunkGroups(chunkId, K_CHUNK);
   if (w !== undefined) return w;
   // Pure-TS fallback
-  const buckets: number[] = [];
+  const groups: number[] = [];
   let nonce = 0n;
 
-  while (buckets.length < NUM_HASHES) {
-    const h = hashChunkForBucket(chunkId, nonce);
-    const bucket = Number(h % BigInt(K_CHUNK));
+  while (groups.length < NUM_HASHES) {
+    const h = hashChunkForGroup(chunkId, nonce);
+    const group = Number(h % BigInt(K_CHUNK));
     nonce += 1n;
 
-    if (!buckets.includes(bucket)) {
-      buckets.push(bucket);
+    if (!groups.includes(group)) {
+      groups.push(group);
     }
   }
 
-  return buckets;
+  return groups;
 }
 
 // ─── Chunk-level cuckoo hashing ────────────────────────────────────────────
 
-/** Derive a cuckoo hash function key for chunk-level (bucket_id, hash_fn) */
-export function deriveChunkCuckooKey(bucketId: number, hashFn: number): bigint {
-  const w = wasmDeriveChunkCuckooKey(CHUNK_MASTER_SEED, bucketId, hashFn);
+/** Derive a cuckoo hash function key for chunk-level (groupId, hash_fn) */
+export function deriveChunkCuckooKey(groupId: number, hashFn: number): bigint {
+  const w = wasmDeriveChunkCuckooKey(CHUNK_MASTER_SEED, groupId, hashFn);
   if (w !== undefined) return w;
   // Pure-TS fallback
   return splitmix64(
     (CHUNK_MASTER_SEED
-      + ((BigInt(bucketId) * 0x9e3779b97f4a7c15n) & MASK64)
+      + ((BigInt(groupId) * 0x9e3779b97f4a7c15n) & MASK64)
       + ((BigInt(hashFn) * 0x517cc1b727220a95n) & MASK64)
     ) & MASK64
   );
@@ -182,26 +182,26 @@ export function cuckooHashInt(chunkId: number, key: bigint, numBins: number): nu
 
 // ─── Merkle sibling integer-keyed hashing ─────────────────────────────────
 
-/** Derive 3 distinct bucket indices for an integer ID (generic K). */
-export function deriveIntBuckets3(id: number, k: number): [number, number, number] {
-  const buckets: number[] = [];
+/** Derive 3 distinct group indices for an integer ID (generic K). */
+export function deriveIntGroups3(id: number, k: number): [number, number, number] {
+  const groups: number[] = [];
   let nonce = 0n;
-  while (buckets.length < 3) {
-    const h = hashChunkForBucket(id, nonce);
-    const bucket = Number(h % BigInt(k));
+  while (groups.length < 3) {
+    const h = hashChunkForGroup(id, nonce);
+    const group = Number(h % BigInt(k));
     nonce += 1n;
-    if (!buckets.includes(bucket)) {
-      buckets.push(bucket);
+    if (!groups.includes(group)) {
+      groups.push(group);
     }
   }
-  return buckets as [number, number, number];
+  return groups as [number, number, number];
 }
 
-/** Derive a cuckoo hash function key for a given (masterSeed, bucketId, hashFn). */
-export function deriveCuckooKeyGeneric(masterSeed: bigint, bucketId: number, hashFn: number): bigint {
+/** Derive a cuckoo hash function key for a given (masterSeed, groupId, hashFn). */
+export function deriveCuckooKeyGeneric(masterSeed: bigint, groupId: number, hashFn: number): bigint {
   return splitmix64(
     (masterSeed
-      + ((BigInt(bucketId) * 0x9e3779b97f4a7c15n) & MASK64)
+      + ((BigInt(groupId) * 0x9e3779b97f4a7c15n) & MASK64)
       + ((BigInt(hashFn) * 0x517cc1b727220a95n) & MASK64)
     ) & MASK64
   );

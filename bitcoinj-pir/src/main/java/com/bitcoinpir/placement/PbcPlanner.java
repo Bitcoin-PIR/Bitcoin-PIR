@@ -10,8 +10,8 @@ import java.util.Set;
  * PBC (Probabilistic Batch Codes) cuckoo placement for round planning.
  * Ports planRounds / cuckooPlace from web/src/pbc.ts.
  *
- * Each query has NUM_HASHES candidate buckets. We pack as many queries as
- * possible into each round (one query per bucket), using cuckoo-style
+ * Each query has NUM_HASHES candidate groups. We pack as many queries as
+ * possible into each round (one query per group), using cuckoo-style
  * eviction to maximize utilization.
  */
 public final class PbcPlanner {
@@ -22,44 +22,44 @@ public final class PbcPlanner {
     /**
      * Plan query rounds for batch PIR.
      *
-     * @param itemBuckets  itemBuckets[i] = candidate bucket indices for item i
-     * @param numBuckets   total number of buckets (K or K_CHUNK)
-     * @return list of rounds; each round is a list of [itemIndex, bucketId] pairs
+     * @param itemGroups  itemGroups[i] = candidate group indices for item i
+     * @param numGroups   total number of groups (K or K_CHUNK)
+     * @return list of rounds; each round is a list of [itemIndex, groupId] pairs
      */
-    public static List<int[][]> planRounds(int[][] itemBuckets, int numBuckets) {
+    public static List<int[][]> planRounds(int[][] itemGroups, int numGroups) {
         List<Integer> remaining = new ArrayList<>();
-        for (int i = 0; i < itemBuckets.length; i++) {
+        for (int i = 0; i < itemGroups.length; i++) {
             remaining.add(i);
         }
 
         List<int[][]> rounds = new ArrayList<>();
 
         while (!remaining.isEmpty()) {
-            int[] bucketOwner = new int[numBuckets];
-            Arrays.fill(bucketOwner, -1);
+            int[] groupOwner = new int[numGroups];
+            Arrays.fill(groupOwner, -1);
 
             List<Integer> placedLocal = new ArrayList<>();
-            int[][] candBuckets = new int[remaining.size()][];
+            int[][] candGroups = new int[remaining.size()][];
             for (int li = 0; li < remaining.size(); li++) {
-                candBuckets[li] = itemBuckets[remaining.get(li)];
+                candGroups[li] = itemGroups[remaining.get(li)];
             }
 
-            for (int li = 0; li < candBuckets.length; li++) {
-                if (placedLocal.size() >= numBuckets) break;
+            for (int li = 0; li < candGroups.length; li++) {
+                if (placedLocal.size() >= numGroups) break;
 
-                int[] saved = Arrays.copyOf(bucketOwner, numBuckets);
-                if (cuckooPlace(candBuckets, bucketOwner, li, numBuckets)) {
+                int[] saved = Arrays.copyOf(groupOwner, numGroups);
+                if (cuckooPlace(candGroups, groupOwner, li, numGroups)) {
                     placedLocal.add(li);
                 } else {
-                    System.arraycopy(saved, 0, bucketOwner, 0, numBuckets);
+                    System.arraycopy(saved, 0, groupOwner, 0, numGroups);
                 }
             }
 
             // Build round entries
             List<int[]> roundEntries = new ArrayList<>();
-            for (int b = 0; b < numBuckets; b++) {
-                if (bucketOwner[b] >= 0) {
-                    int localIdx = bucketOwner[b];
+            for (int b = 0; b < numGroups; b++) {
+                if (groupOwner[b] >= 0) {
+                    int localIdx = groupOwner[b];
                     roundEntries.add(new int[]{remaining.get(localIdx), b});
                 }
             }
@@ -83,32 +83,32 @@ public final class PbcPlanner {
     }
 
     /**
-     * Try to place item {@code qi} into the bucket assignment, using cuckoo eviction.
+     * Try to place item {@code qi} into the group assignment, using cuckoo eviction.
      *
-     * @param candBuckets  candidate buckets for all local items
-     * @param buckets      current assignment (bucket → local item index, -1 = empty)
+     * @param candGroups   candidate groups for all local items
+     * @param groups       current assignment (group → local item index, -1 = empty)
      * @param qi           local item index to place
-     * @param numBuckets   total number of buckets
+     * @param numGroups    total number of groups
      * @return true if placed successfully
      */
-    private static boolean cuckooPlace(int[][] candBuckets, int[] buckets, int qi, int numBuckets) {
+    private static boolean cuckooPlace(int[][] candGroups, int[] groups, int qi, int numGroups) {
         int current = qi;
 
         for (int kick = 0; kick < MAX_KICKS; kick++) {
-            int[] cands = candBuckets[current];
+            int[] cands = candGroups[current];
 
-            // Try to find an empty bucket
-            for (int bucket : cands) {
-                if (buckets[bucket] < 0) {
-                    buckets[bucket] = current;
+            // Try to find an empty group
+            for (int group : cands) {
+                if (groups[group] < 0) {
+                    groups[group] = current;
                     return true;
                 }
             }
 
-            // Evict a random occupant from one of our candidate buckets
-            int evictBucket = cands[kick % cands.length];
-            int evicted = buckets[evictBucket];
-            buckets[evictBucket] = current;
+            // Evict a random occupant from one of our candidate groups
+            int evictGroup = cands[kick % cands.length];
+            int evicted = groups[evictGroup];
+            groups[evictGroup] = current;
             current = evicted;
         }
 

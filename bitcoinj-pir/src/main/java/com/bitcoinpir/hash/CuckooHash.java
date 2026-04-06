@@ -13,11 +13,11 @@ public final class CuckooHash {
 
     // ── Index-level cuckoo hashing ──────────────────────────────────────────
 
-    /** Derive a cuckoo hash function key for (bucketId, hashFn) at index level. */
-    public static long deriveCuckooKey(int bucketId, int hashFn) {
+    /** Derive a cuckoo hash function key for (groupId, hashFn) at index level. */
+    public static long deriveCuckooKey(int groupId, int hashFn) {
         return splitmix64(
             PirConstants.MASTER_SEED
-            + ((long) bucketId * 0x9e3779b97f4a7c15L)
+            + ((long) groupId * 0x9e3779b97f4a7c15L)
             + ((long) hashFn * 0x517cc1b727220a95L)
         );
     }
@@ -32,11 +32,11 @@ public final class CuckooHash {
 
     // ── Chunk-level cuckoo hashing ──────────────────────────────────────────
 
-    /** Derive a cuckoo hash function key for chunk-level (bucketId, hashFn). */
-    public static long deriveChunkCuckooKey(int bucketId, int hashFn) {
+    /** Derive a cuckoo hash function key for chunk-level (groupId, hashFn). */
+    public static long deriveChunkCuckooKey(int groupId, int hashFn) {
         return splitmix64(
             PirConstants.CHUNK_MASTER_SEED
-            + ((long) bucketId * 0x9e3779b97f4a7c15L)
+            + ((long) groupId * 0x9e3779b97f4a7c15L)
             + ((long) hashFn * 0x517cc1b727220a95L)
         );
     }

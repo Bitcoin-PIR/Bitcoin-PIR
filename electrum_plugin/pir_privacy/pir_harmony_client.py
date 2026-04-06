@@ -5,7 +5,7 @@ Two-server stateful PIR:
   - Hint Server: computes and sends hint parities (offline phase)
   - Query Server: answers online queries (indexed lookups)
 
-Each Batch PIR bucket is managed by a PyHarmonyBucket (Rust via PyO3).
+Each Batch PIR group is managed by a PyHarmonyGroup (Rust via PyO3).
 
 Build the native library:
   cd electrum_plugin/harmonypir-python
@@ -23,9 +23,9 @@ from typing import Optional, Callable
 
 from .pir_constants import (
     K, K_CHUNK, NUM_HASHES,
-    CUCKOO_BUCKET_SIZE, INDEX_CUCKOO_NUM_HASHES,
-    CHUNK_CUCKOO_BUCKET_SIZE, CHUNK_CUCKOO_NUM_HASHES,
-    INDEX_ENTRY_SIZE, CHUNK_SLOT_SIZE,
+    INDEX_SLOTS_PER_BIN, INDEX_CUCKOO_NUM_HASHES,
+    CHUNK_SLOTS_PER_BIN, CHUNK_CUCKOO_NUM_HASHES,
+    INDEX_SLOT_SIZE, CHUNK_SLOT_SIZE,
     HARMONY_INDEX_W, HARMONY_CHUNK_W, HARMONY_EMPTY,
     REQ_HARMONY_GET_INFO, REQ_HARMONY_HINTS,
     REQ_HARMONY_BATCH_QUERY,
@@ -33,8 +33,8 @@ from .pir_constants import (
     MASK64,
 )
 from .pir_hash import (
-    derive_buckets, derive_cuckoo_key, cuckoo_hash, compute_tag,
-    derive_chunk_buckets, derive_chunk_cuckoo_key, cuckoo_hash_int,
+    derive_groups, derive_cuckoo_key, cuckoo_hash, compute_tag,
+    derive_chunk_groups, derive_chunk_cuckoo_key, cuckoo_hash_int,
     hash160,
 )
 from .pir_ws_client import PirConnection
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 # Try to import the native PyO3 module
 try:
-    from harmonypir_python import PyHarmonyBucket, compute_balanced_t, verify_protocol
+    from harmonypir_python import PyHarmonyGroup, compute_balanced_t, verify_protocol
     HAS_NATIVE = True
 except ImportError:
     HAS_NATIVE = False
@@ -66,7 +66,7 @@ class HarmonyPirClient:
     with offline hint download + online stateful queries.
 
     Servers:
-      - Hint Server: downloads hint parities for all 155 buckets (offline)
+      - Hint Server: downloads hint parities for all 155 groups (offline)
       - Query Server: answers batch queries (online)
     """
 
@@ -89,9 +89,9 @@ class HarmonyPirClient:
         self.chunk_bins = 0
         self.tag_seed = 0
 
-        # Bucket instances (75 index + 80 chunk)
-        self._index_buckets: list = []  # PyHarmonyBucket instances
-        self._chunk_buckets: list = []
+        # Group instances (75 index + 80 chunk)
+        self._index_groups: list = []  # PyHarmonyGroup instances
+        self._chunk_groups: list = []
 
         self._hints_loaded = False
         self._prp_key = os.urandom(16)
@@ -105,7 +105,7 @@ class HarmonyPirClient:
         self._query_conn = PirConnection(self.query_server_url)
         await self._query_conn.connect()
         await self._fetch_server_info()
-        self._init_buckets()
+        self._init_groups()
         logger.info('HarmonyPIR query server connected')
 
     async def disconnect(self) -> None:
@@ -125,31 +125,31 @@ class HarmonyPirClient:
         self.tag_seed = struct.unpack_from('<Q', data, 11)[0]
         logger.info(f'HarmonyPIR info: index_bins={self.index_bins}, chunk_bins={self.chunk_bins}')
 
-    def _init_buckets(self) -> None:
-        """Create PyHarmonyBucket instances for all buckets."""
-        self._index_buckets = []
+    def _init_groups(self) -> None:
+        """Create PyHarmonyGroup instances for all groups."""
+        self._index_groups = []
         for b in range(K):
             t = compute_balanced_t(self.index_bins)
-            bucket = PyHarmonyBucket(
+            grp = PyHarmonyGroup(
                 n=self.index_bins, w=HARMONY_INDEX_W, t=t,
-                prp_key=self._prp_key, bucket_id=b,
+                prp_key=self._prp_key, group_id=b,
             )
-            self._index_buckets.append(bucket)
+            self._index_groups.append(grp)
 
-        self._chunk_buckets = []
+        self._chunk_groups = []
         for b in range(K_CHUNK):
             t = compute_balanced_t(self.chunk_bins)
-            bucket = PyHarmonyBucket(
+            grp = PyHarmonyGroup(
                 n=self.chunk_bins, w=HARMONY_CHUNK_W, t=t,
-                prp_key=self._prp_key, bucket_id=K + b,
+                prp_key=self._prp_key, group_id=K + b,
             )
-            self._chunk_buckets.append(bucket)
+            self._chunk_groups.append(grp)
 
-        logger.info(f'Initialized {K} index + {K_CHUNK} chunk HarmonyPIR buckets')
+        logger.info(f'Initialized {K} index + {K_CHUNK} chunk HarmonyPIR groups')
 
     async def fetch_hints(self) -> None:
         """
-        Download hints from the Hint Server for all 155 buckets.
+        Download hints from the Hint Server for all 155 groups.
         This is the offline phase. Must be done once before queries.
         Uses raw websockets (not PirConnection) because hints arrive
         as multiple messages per single request.
@@ -163,50 +163,50 @@ class HarmonyPirClient:
         )
 
         try:
-            # Request index hints (75 buckets)
+            # Request index hints (75 groups)
             logger.info('Fetching index hints...')
-            await self._request_hints(hint_ws, 0, K, self._index_buckets, HARMONY_INDEX_W)
-            logger.info(f'Index hints loaded ({K} buckets)')
+            await self._request_hints(hint_ws, 0, K, self._index_groups, HARMONY_INDEX_W)
+            logger.info(f'Index hints loaded ({K} groups)')
 
-            # Request chunk hints (80 buckets)
+            # Request chunk hints (80 groups)
             logger.info('Fetching chunk hints...')
-            await self._request_hints(hint_ws, 1, K_CHUNK, self._chunk_buckets, HARMONY_CHUNK_W)
-            logger.info(f'Chunk hints loaded ({K_CHUNK} buckets)')
+            await self._request_hints(hint_ws, 1, K_CHUNK, self._chunk_groups, HARMONY_CHUNK_W)
+            logger.info(f'Chunk hints loaded ({K_CHUNK} groups)')
 
             self._hints_loaded = True
         finally:
             await hint_ws.close()
 
     async def _request_hints(self, conn, level: int,
-                             num_buckets: int, buckets: list,
+                             num_groups: int, groups: list,
                              w: int) -> None:
-        """Request and load hints for a set of buckets.
+        """Request and load hints for a set of groups.
 
-        The hint server sends one response message per bucket:
-          [4B len][1B RESP_HARMONY_HINTS][1B bucket_id][12B metadata][hint_data...]
-        We send one request and receive num_buckets individual responses.
+        The hint server sends one response message per group:
+          [4B len][1B RESP_HARMONY_HINTS][1B group_id][12B metadata][hint_data...]
+        We send one request and receive num_groups individual responses.
         """
         # Encode hint request: [1B variant][16B prp_key][1B backend][1B level]
-        #                       [1B num_buckets][bucket_ids...]
+        #                       [1B num_groups][group_ids...]
         payload = bytearray()
         payload.append(REQ_HARMONY_HINTS)
         payload.extend(self._prp_key)
         payload.append(self.prp_backend)
         payload.append(level)
-        payload.append(num_buckets)
-        for b in range(num_buckets):
+        payload.append(num_groups)
+        for b in range(num_groups):
             payload.append(b)
 
         msg = struct.pack('<I', len(payload)) + bytes(payload)
 
-        # Send request and read multiple responses (one per bucket).
+        # Send request and read multiple responses (one per group).
         await conn.send(msg)
 
-        # Receive one response per bucket.
-        # Format per message: [4B len LE][1B RESP_HARMONY_HINTS][1B bucket_id]
+        # Receive one response per group.
+        # Format per message: [4B len LE][1B RESP_HARMONY_HINTS][1B group_id]
         #                     [4B n LE][4B t LE][4B m LE][m*w bytes hints]
         received = 0
-        while received < num_buckets:
+        while received < num_groups:
             raw = await conn.recv()
             data = bytes(raw)
             if len(data) < 5:
@@ -215,33 +215,33 @@ class HarmonyPirClient:
             response = data[4:]  # strip length prefix
 
             if response[0] == RESP_HARMONY_HINTS:
-                bucket_id = response[1]
+                group_id = response[1]
                 server_n = struct.unpack_from('<I', response, 2)[0]
                 server_t = struct.unpack_from('<I', response, 6)[0]
                 server_m = struct.unpack_from('<I', response, 10)[0]
                 hints_data = response[14:]
 
-                if bucket_id < len(buckets):
-                    bucket = buckets[bucket_id]
-                    expected = bucket.m() * w
+                if group_id < len(groups):
+                    grp = groups[group_id]
+                    expected = grp.m() * w
 
                     if len(hints_data) != expected:
-                        # Server's m differs — recreate bucket with server params
+                        # Server's m differs — recreate group with server params
                         logger.debug(
-                            f'  Bucket {bucket_id}: server n={server_n} t={server_t} m={server_m}, '
+                            f'  Group {group_id}: server n={server_n} t={server_t} m={server_m}, '
                             f'got {len(hints_data)} bytes, expected {expected}'
                         )
-                        # Recreate bucket with server's parameters
-                        buckets[bucket_id] = PyHarmonyBucket(
+                        # Recreate group with server's parameters
+                        groups[group_id] = PyHarmonyGroup(
                             n=server_n, w=w, t=server_t,
-                            prp_key=self._prp_key, bucket_id=bucket_id if level == 0 else K + bucket_id,
+                            prp_key=self._prp_key, group_id=group_id if level == 0 else K + group_id,
                         )
-                        bucket = buckets[bucket_id]
+                        grp = groups[group_id]
 
-                    bucket.load_hints(hints_data)
+                    grp.load_hints(hints_data)
                     received += 1
-                    if received % 25 == 0 or received == num_buckets:
-                        logger.info(f'  Hints: {received}/{num_buckets}')
+                    if received % 25 == 0 or received == num_groups:
+                        logger.info(f'  Hints: {received}/{num_groups}')
             elif response[0] == 0xFF:  # RESP_ERROR
                 raise ValueError(f'Hint server error for level {level}')
             # Skip pong/other messages
@@ -275,34 +275,34 @@ class HarmonyPirClient:
         # ── LEVEL 1: Index queries ────────────────────────────────────
         progress('Level 1', f'Planning {N} index queries...')
 
-        index_cand_buckets = [derive_buckets(sh) for sh in script_hashes]
-        index_rounds = plan_rounds(index_cand_buckets, K, NUM_HASHES)
+        index_cand_groups = [derive_groups(sh) for sh in script_hashes]
+        index_rounds = plan_rounds(index_cand_groups, K, NUM_HASHES)
 
         index_results: dict[int, tuple[int, int]] = {}
         whale_queries: set[int] = set()
 
         for ir, rnd in enumerate(index_rounds):
-            bucket_to_query = {b: qi for qi, b in rnd}
+            group_to_query = {b: qi for qi, b in rnd}
 
             for h in range(INDEX_CUCKOO_NUM_HASHES):
                 progress('Level 1', f'Round {ir+1}, h={h}...')
 
-                # Build requests for all K buckets
+                # Build requests for all K groups
                 batch_items: list[tuple[int, bytes]] = []
-                real_buckets: dict[int, int] = {}
+                real_groups: dict[int, int] = {}
 
                 for b in range(K):
-                    qi = bucket_to_query.get(b)
-                    bucket = self._index_buckets[b]
+                    qi = group_to_query.get(b)
+                    grp = self._index_groups[b]
 
                     if qi is not None and qi not in index_results and qi not in whale_queries:
                         ck = derive_cuckoo_key(b, h)
                         bin_index = cuckoo_hash(script_hashes[qi], ck, self.index_bins)
-                        req_bytes, seg, pos, _ = bucket.build_request(bin_index)
+                        req_bytes, seg, pos, _ = grp.build_request(bin_index)
                         batch_items.append((b, req_bytes))
-                        real_buckets[b] = qi
+                        real_groups[b] = qi
                     else:
-                        dummy = bucket.build_synthetic_dummy()
+                        dummy = grp.build_synthetic_dummy()
                         batch_items.append((b, dummy))
 
                 # Encode and send batch query
@@ -310,12 +310,12 @@ class HarmonyPirClient:
                 resp_data = await self._query_conn.send_request(req_msg)
                 batch_resp = self._decode_batch_response(resp_data[4:])
 
-                # Process responses for real buckets
-                for b, qi in real_buckets.items():
+                # Process responses for real groups
+                for b, qi in real_groups.items():
                     resp_entries = batch_resp.get(b)
                     if resp_entries and len(resp_entries) > 0:
-                        bucket = self._index_buckets[b]
-                        answer_raw = bucket.process_response(resp_entries[0])
+                        grp = self._index_groups[b]
+                        answer_raw = grp.process_response(resp_entries[0])
                         # PyO3 returns Vec<u8> as list[int]; convert to bytes
                         answer = bytes(answer_raw) if not isinstance(answer_raw, bytes) else answer_raw
 
@@ -323,7 +323,7 @@ class HarmonyPirClient:
                         expected_tag = compute_tag(self.tag_seed, script_hashes[qi])
                         found = find_entry_in_index_result(
                             answer, expected_tag,
-                            num_slots=len(answer) // INDEX_ENTRY_SIZE,
+                            num_slots=len(answer) // INDEX_SLOT_SIZE,
                         )
                         if found:
                             index_results[qi] = found
@@ -348,46 +348,46 @@ class HarmonyPirClient:
             query_chunk_info[qi] = (start_chunk_id, num_units, start_chunk_id, num_chunks)
 
         all_chunk_ids = sorted(all_chunk_ids_set)
-        chunk_cand_buckets = [derive_chunk_buckets(cid) for cid in all_chunk_ids]
-        chunk_rounds = plan_rounds(chunk_cand_buckets, K_CHUNK, NUM_HASHES)
+        chunk_cand_groups = [derive_chunk_groups(cid) for cid in all_chunk_ids]
+        chunk_rounds = plan_rounds(chunk_cand_groups, K_CHUNK, NUM_HASHES)
 
         recovered_chunks: dict[int, bytes] = {}
 
         for ri, round_plan in enumerate(chunk_rounds):
             progress('Level 2', f'Chunk round {ri+1}/{len(chunk_rounds)}...')
 
-            bucket_to_chunk: dict[int, int] = {}
+            group_to_chunk: dict[int, int] = {}
             for cli, bid in round_plan:
-                bucket_to_chunk[bid] = cli
+                group_to_chunk[bid] = cli
 
             for h in range(CHUNK_CUCKOO_NUM_HASHES):
                 batch_items = []
-                real_buckets = {}
+                real_groups = {}
 
                 for b in range(K_CHUNK):
-                    cli = bucket_to_chunk.get(b)
-                    bucket = self._chunk_buckets[b]
+                    cli = group_to_chunk.get(b)
+                    grp = self._chunk_groups[b]
 
                     if cli is not None:
                         chunk_id = all_chunk_ids[cli]
                         ck = derive_chunk_cuckoo_key(b, h)
                         bin_index = cuckoo_hash_int(chunk_id, ck, self.chunk_bins)
-                        req_bytes, _, _, _ = bucket.build_request(bin_index)
+                        req_bytes, _, _, _ = grp.build_request(bin_index)
                         batch_items.append((b, req_bytes))
-                        real_buckets[b] = cli
+                        real_groups[b] = cli
                     else:
-                        dummy = bucket.build_synthetic_dummy()
+                        dummy = grp.build_synthetic_dummy()
                         batch_items.append((b, dummy))
 
                 req_msg = self._encode_batch_query(1, ri * CHUNK_CUCKOO_NUM_HASHES + h, batch_items)
                 resp_data = await self._query_conn.send_request(req_msg)
                 batch_resp = self._decode_batch_response(resp_data[4:])
 
-                for b, cli in real_buckets.items():
+                for b, cli in real_groups.items():
                     resp_entries = batch_resp.get(b)
                     if resp_entries and len(resp_entries) > 0:
-                        bucket = self._chunk_buckets[b]
-                        answer_raw = bucket.process_response(resp_entries[0])
+                        grp = self._chunk_groups[b]
+                        answer_raw = grp.process_response(resp_entries[0])
                         answer = bytes(answer_raw) if not isinstance(answer_raw, bytes) else answer_raw
                         chunk_id = all_chunk_ids[cli]
                         chunk_data = find_chunk_in_result(
@@ -435,10 +435,10 @@ class HarmonyPirClient:
         payload.append(level)
         payload.extend(struct.pack('<H', round_id))
         payload.extend(struct.pack('<H', len(items)))
-        payload.append(1)  # sub_queries_per_bucket
+        payload.append(1)  # sub_queries_per_group
 
-        for bucket_id, req_bytes in items:
-            payload.append(bucket_id & 0xFF)
+        for group_id, req_bytes in items:
+            payload.append(group_id & 0xFF)
             count = len(req_bytes) // 4  # number of u32 indices
             payload.extend(struct.pack('<I', count))
             payload.extend(req_bytes)
@@ -448,9 +448,9 @@ class HarmonyPirClient:
     def _decode_batch_response(self, data: bytes) -> dict[int, list[bytes]]:
         """Decode a HarmonyPIR batch response.
 
-        Format: [1B variant][1B level][2B round_id][2B num_buckets][1B sub_results_per_bucket]
-                per bucket: [1B bucket_id] per sub_result: [4B data_len][data]
-        Returns bucket_id -> [response_bytes].
+        Format: [1B variant][1B level][2B round_id][2B num_groups][1B sub_results_per_group]
+                per group: [1B group_id] per sub_result: [4B data_len][data]
+        Returns group_id -> [response_bytes].
         """
         if data[0] != RESP_HARMONY_BATCH_QUERY:
             raise ValueError(f'Unexpected batch response: 0x{data[0]:02x}')
@@ -458,19 +458,19 @@ class HarmonyPirClient:
         pos = 1  # skip variant
         _level = data[pos]; pos += 1
         _round_id = struct.unpack_from('<H', data, pos)[0]; pos += 2
-        num_buckets = struct.unpack_from('<H', data, pos)[0]; pos += 2
-        sub_results_per_bucket = data[pos]; pos += 1
+        num_groups = struct.unpack_from('<H', data, pos)[0]; pos += 2
+        sub_results_per_group = data[pos]; pos += 1
 
         result: dict[int, list[bytes]] = {}
-        for _ in range(num_buckets):
-            bucket_id = data[pos]; pos += 1
+        for _ in range(num_groups):
+            group_id = data[pos]; pos += 1
             entries = []
-            for _ in range(sub_results_per_bucket):
+            for _ in range(sub_results_per_group):
                 length = struct.unpack_from('<I', data, pos)[0]
                 pos += 4
                 entries.append(data[pos:pos + length])
                 pos += length
-            result[bucket_id] = entries
+            result[group_id] = entries
 
         return result
 
@@ -482,7 +482,7 @@ class HarmonyPirClient:
     # ── Hint caching ──────────────────────────────────────────────────
 
     async def save_hints_to_cache(self, cache_path: str) -> None:
-        """Serialize all bucket states to a local file."""
+        """Serialize all group states to a local file."""
         data = bytearray()
         # Header: prp_key + prp_backend + index_bins + chunk_bins + tag_seed
         data.extend(self._prp_key)
@@ -490,9 +490,9 @@ class HarmonyPirClient:
         data.extend(struct.pack('<I', self.index_bins))
         data.extend(struct.pack('<I', self.chunk_bins))
         data.extend(struct.pack('<Q', self.tag_seed))
-        # Per-bucket serialized state
-        for bucket in self._index_buckets + self._chunk_buckets:
-            state = bucket.serialize()
+        # Per-group serialized state
+        for grp in self._index_groups + self._chunk_groups:
+            state = grp.serialize()
             data.extend(struct.pack('<I', len(state)))
             data.extend(state)
 
@@ -514,8 +514,8 @@ class HarmonyPirClient:
             self.chunk_bins = struct.unpack_from('<I', data, 21)[0]
             self.tag_seed = struct.unpack_from('<Q', data, 25)[0]
 
-            self._init_buckets()
-            # TODO: deserialize per-bucket state from cache
+            self._init_groups()
+            # TODO: deserialize per-group state from cache
             logger.info(f'Restored HarmonyPIR hints from {cache_path}')
             self._hints_loaded = True
             return True

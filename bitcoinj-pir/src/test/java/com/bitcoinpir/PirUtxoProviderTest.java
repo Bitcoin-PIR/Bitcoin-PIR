@@ -44,36 +44,36 @@ class PirUtxoProviderTest {
         assertNotEquals(PirHash.splitmix64(1), PirHash.splitmix64(2));
     }
 
-    // ── Unit: deriveBuckets ─────────────────────────────────────────────────
+    // ── Unit: deriveGroups ──────────────────────────────────────────────────
 
     @Test
-    void testDeriveBucketsProduces3Distinct() {
+    void testDeriveGroupsProduces3Distinct() {
         byte[] scriptHash = new byte[20];
         scriptHash[0] = 0x42;
         scriptHash[7] = (byte) 0xAB;
 
-        int[] buckets = PirHash.deriveBuckets(scriptHash);
-        assertEquals(3, buckets.length);
+        int[] groups = PirHash.deriveGroups(scriptHash);
+        assertEquals(3, groups.length);
 
         // All distinct
-        assertNotEquals(buckets[0], buckets[1]);
-        assertNotEquals(buckets[0], buckets[2]);
-        assertNotEquals(buckets[1], buckets[2]);
+        assertNotEquals(groups[0], groups[1]);
+        assertNotEquals(groups[0], groups[2]);
+        assertNotEquals(groups[1], groups[2]);
 
         // All in range [0, K)
-        for (int b : buckets) {
-            assertTrue(b >= 0 && b < PirConstants.K, "bucket " + b + " out of range");
+        for (int b : groups) {
+            assertTrue(b >= 0 && b < PirConstants.K, "group " + b + " out of range");
         }
     }
 
     @Test
-    void testDeriveChunkBucketsProduces3Distinct() {
-        int[] buckets = PirHash.deriveChunkBuckets(12345);
-        assertEquals(3, buckets.length);
-        assertNotEquals(buckets[0], buckets[1]);
-        assertNotEquals(buckets[0], buckets[2]);
-        assertNotEquals(buckets[1], buckets[2]);
-        for (int b : buckets) {
+    void testDeriveChunkGroupsProduces3Distinct() {
+        int[] groups = PirHash.deriveChunkGroups(12345);
+        assertEquals(3, groups.length);
+        assertNotEquals(groups[0], groups[1]);
+        assertNotEquals(groups[0], groups[2]);
+        assertNotEquals(groups[1], groups[2]);
+        for (int b : groups) {
             assertTrue(b >= 0 && b < PirConstants.K_CHUNK);
         }
     }
@@ -177,23 +177,23 @@ class PirUtxoProviderTest {
 
     @Test
     void testPbcPlannerSingleItem() {
-        int[][] itemBuckets = {{0, 5, 10}};
-        var rounds = PbcPlanner.planRounds(itemBuckets, PirConstants.K);
+        int[][] itemGroups = {{0, 5, 10}};
+        var rounds = PbcPlanner.planRounds(itemGroups, PirConstants.K);
         assertEquals(1, rounds.size());
         assertEquals(1, rounds.get(0).length);
     }
 
     @Test
     void testPbcPlannerMultipleItems() {
-        // 10 items with random buckets
-        int[][] itemBuckets = new int[10][];
+        // 10 items with random groups
+        int[][] itemGroups = new int[10][];
         for (int i = 0; i < 10; i++) {
             byte[] hash = new byte[20];
             hash[0] = (byte) i;
-            itemBuckets[i] = PirHash.deriveBuckets(hash);
+            itemGroups[i] = PirHash.deriveGroups(hash);
         }
 
-        var rounds = PbcPlanner.planRounds(itemBuckets, PirConstants.K);
+        var rounds = PbcPlanner.planRounds(itemGroups, PirConstants.K);
         assertFalse(rounds.isEmpty());
 
         // All 10 items should be placed across all rounds

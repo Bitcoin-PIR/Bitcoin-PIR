@@ -1,6 +1,6 @@
-//! Multi-bucket state file I/O for HarmonyPIR.
+//! Multi-group state file I/O for HarmonyPIR.
 //!
-//! The state file contains the full client state for all PBC buckets
+//! The state file contains the full client state for all PBC groups
 //! (75 index + 80 chunk). It is written during the offline phase (hint
 //! generation) and updated after each online query session.
 //!
@@ -15,14 +15,14 @@
 //!   index_bins_per_table: u32 LE
 //!   chunk_bins_per_table: u32 LE
 //!   tag_seed: u64 LE
-//! [Bucket count: 4 bytes]
-//!   num_buckets: u32 LE
-//! [Per-bucket: repeated num_buckets times]
-//!   bucket_id: u32 LE
+//! [Group count: 4 bytes]
+//!   num_groups: u32 LE
+//! [Per-group: repeated num_groups times]
+//!   group_id:  u32 LE
 //!   level:     u8
 //!   _pad:      [u8; 3]
-//!   data_len:  u32 LE  (length of serialized bucket data that follows)
-//!   data:      [u8; data_len]  (output of HarmonyBucket::serialize())
+//!   data_len:  u32 LE  (length of serialized group data that follows)
+//!   data:      [u8; data_len]  (output of HarmonyGroup::serialize())
 //! ```
 
 use std::io::{self, Read, Write};
@@ -41,10 +41,10 @@ pub struct StateFileHeader {
     pub tag_seed: u64,
 }
 
-/// One bucket's state in the file.
+/// One group's state in the file.
 #[derive(Debug, Clone)]
-pub struct BucketEntry {
-    pub bucket_id: u32,
+pub struct GroupEntry {
+    pub group_id: u32,
     pub level: u8,
     pub data: Vec<u8>,
 }
@@ -53,14 +53,14 @@ pub struct BucketEntry {
 #[derive(Debug, Clone)]
 pub struct StateFile {
     pub header: StateFileHeader,
-    pub buckets: Vec<BucketEntry>,
+    pub groups: Vec<GroupEntry>,
 }
 
 /// Write a state file.
 pub fn write_state_file(
     w: &mut impl Write,
     header: &StateFileHeader,
-    buckets: &[BucketEntry],
+    groups: &[GroupEntry],
 ) -> io::Result<()> {
     // Header (48 bytes).
     w.write_all(&STATE_FILE_MAGIC.to_le_bytes())?;
@@ -71,12 +71,12 @@ pub fn write_state_file(
     w.write_all(&header.chunk_bins_per_table.to_le_bytes())?;
     w.write_all(&header.tag_seed.to_le_bytes())?;
 
-    // Bucket count.
-    w.write_all(&(buckets.len() as u32).to_le_bytes())?;
+    // Group count.
+    w.write_all(&(groups.len() as u32).to_le_bytes())?;
 
-    // Per-bucket.
-    for entry in buckets {
-        w.write_all(&entry.bucket_id.to_le_bytes())?;
+    // Per-group.
+    for entry in groups {
+        w.write_all(&entry.group_id.to_le_bytes())?;
         w.write_all(&[entry.level, 0, 0, 0])?;
         w.write_all(&(entry.data.len() as u32).to_le_bytes())?;
         w.write_all(&entry.data)?;
@@ -134,15 +134,15 @@ pub fn read_state_file(r: &mut impl Read) -> io::Result<StateFile> {
         tag_seed,
     };
 
-    // Bucket count.
+    // Group count.
     r.read_exact(&mut buf4)?;
-    let num_buckets = u32::from_le_bytes(buf4) as usize;
+    let num_groups = u32::from_le_bytes(buf4) as usize;
 
-    // Per-bucket.
-    let mut buckets = Vec::with_capacity(num_buckets);
-    for _ in 0..num_buckets {
+    // Per-group.
+    let mut groups = Vec::with_capacity(num_groups);
+    for _ in 0..num_groups {
         r.read_exact(&mut buf4)?;
-        let bucket_id = u32::from_le_bytes(buf4);
+        let group_id = u32::from_le_bytes(buf4);
 
         r.read_exact(&mut pad4)?;
         let level = pad4[0];
@@ -153,14 +153,14 @@ pub fn read_state_file(r: &mut impl Read) -> io::Result<StateFile> {
         let mut data = vec![0u8; data_len];
         r.read_exact(&mut data)?;
 
-        buckets.push(BucketEntry {
-            bucket_id,
+        groups.push(GroupEntry {
+            group_id,
             level,
             data,
         });
     }
 
-    Ok(StateFile { header, buckets })
+    Ok(StateFile { header, groups })
 }
 
 #[cfg(test)]
@@ -176,21 +176,21 @@ mod tests {
             chunk_bins_per_table: 2000,
             tag_seed: 0xDEADBEEF,
         };
-        let buckets = vec![
-            BucketEntry { bucket_id: 0, level: 0, data: vec![1, 2, 3, 4] },
-            BucketEntry { bucket_id: 1, level: 1, data: vec![5, 6, 7] },
+        let groups = vec![
+            GroupEntry { group_id: 0, level: 0, data: vec![1, 2, 3, 4] },
+            GroupEntry { group_id: 1, level: 1, data: vec![5, 6, 7] },
         ];
 
         let mut buf = Vec::new();
-        write_state_file(&mut buf, &header, &buckets).unwrap();
+        write_state_file(&mut buf, &header, &groups).unwrap();
 
         let parsed = read_state_file(&mut &buf[..]).unwrap();
         assert_eq!(parsed.header.prp_key, header.prp_key);
         assert_eq!(parsed.header.index_bins_per_table, 1000);
         assert_eq!(parsed.header.tag_seed, 0xDEADBEEF);
-        assert_eq!(parsed.buckets.len(), 2);
-        assert_eq!(parsed.buckets[0].data, vec![1, 2, 3, 4]);
-        assert_eq!(parsed.buckets[1].bucket_id, 1);
-        assert_eq!(parsed.buckets[1].level, 1);
+        assert_eq!(parsed.groups.len(), 2);
+        assert_eq!(parsed.groups[0].data, vec![1, 2, 3, 4]);
+        assert_eq!(parsed.groups[1].group_id, 1);
+        assert_eq!(parsed.groups[1].level, 1);
     }
 }

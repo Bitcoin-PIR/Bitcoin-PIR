@@ -75,7 +75,7 @@ const INDEX_META_MAGIC: u64 = 0xBA7C_0010_0000_0002;
 struct IndexMeta {
     k: usize,
     cuckoo_num_hashes: usize,
-    cuckoo_bucket_size: usize,
+    slots_per_bin: usize,
     bins_per_table: usize,
     master_seed: u64,
     tag_seed: u64,
@@ -88,7 +88,7 @@ fn read_index_meta(data: &[u8]) -> IndexMeta {
     IndexMeta {
         k: u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize,
         cuckoo_num_hashes: u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize,
-        cuckoo_bucket_size: u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize,
+        slots_per_bin: u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize,
         bins_per_table: u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize,
         master_seed: u64::from_le_bytes(data[24..32].try_into().unwrap()),
         tag_seed: u64::from_le_bytes(data[32..40].try_into().unwrap()),
@@ -123,7 +123,7 @@ struct ServerInfoData {
     chunk_bins_per_table: usize,
     tag_seed: u64,
     total_packed_entries: usize,
-    index_cuckoo_bucket_size: usize,
+    index_slots_per_bin: usize,
     index_slot_size: usize,
 }
 
@@ -131,15 +131,15 @@ impl ServerInfoData {
     /// Encode as JSON info response: [4B len LE][1B variant=0x03][JSON bytes...]
     fn encode_json(&self) -> Vec<u8> {
         let json = format!(
-            r#"{{"index_bins_per_table":{},"chunk_bins_per_table":{},"index_k":{},"chunk_k":{},"tag_seed":"0x{:016x}","index_cuckoo_bucket_size":{},"index_slot_size":{},"chunk_cuckoo_bucket_size":1,"chunk_slot_size":3840,"role":"primary","onionpir":{{"total_packed_entries":{},"index_bins_per_table":{},"chunk_bins_per_table":{},"tag_seed":"0x{:016x}","index_k":{},"chunk_k":{},"index_cuckoo_bucket_size":{},"index_slot_size":{},"chunk_cuckoo_bucket_size":1,"chunk_slot_size":3840}}}}"#,
+            r#"{{"index_bins_per_table":{},"chunk_bins_per_table":{},"index_k":{},"chunk_k":{},"tag_seed":"0x{:016x}","index_slots_per_bin":{},"index_slot_size":{},"chunk_slots_per_bin":1,"chunk_slot_size":3840,"role":"primary","onionpir":{{"total_packed_entries":{},"index_bins_per_table":{},"chunk_bins_per_table":{},"tag_seed":"0x{:016x}","index_k":{},"chunk_k":{},"index_slots_per_bin":{},"index_slot_size":{},"chunk_slots_per_bin":1,"chunk_slot_size":3840}}}}"#,
             self.index_bins_per_table, self.chunk_bins_per_table,
             self.index_k, self.chunk_k, self.tag_seed,
-            self.index_cuckoo_bucket_size, self.index_slot_size,
+            self.index_slots_per_bin, self.index_slot_size,
             // onionpir sub-object (same values — this is an OnionPIR-only server)
             self.total_packed_entries,
             self.index_bins_per_table, self.chunk_bins_per_table,
             self.tag_seed, self.index_k, self.chunk_k,
-            self.index_cuckoo_bucket_size, self.index_slot_size,
+            self.index_slots_per_bin, self.index_slot_size,
         );
         let json_bytes = json.as_bytes();
         let payload_len = 1 + json_bytes.len();
@@ -206,8 +206,8 @@ async fn main() {
     let meta_file = File::open(INDEX_META_FILE).expect("open index meta");
     let meta_mmap = unsafe { Mmap::map(&meta_file) }.expect("mmap index meta");
     let im = read_index_meta(&meta_mmap);
-    println!("  K={}, bins_per_table={}, bucket_size={}, slot_size={}",
-        im.k, im.bins_per_table, im.cuckoo_bucket_size, im.slot_size);
+    println!("  K={}, bins_per_table={}, slots_per_bin={}, slot_size={}",
+        im.k, im.bins_per_table, im.slots_per_bin, im.slot_size);
 
     // ── 4. Set up PIR servers on worker thread ──────────────────────────
     let (pir_tx, mut pir_rx) = mpsc::channel::<PirCommand>(64);
@@ -267,7 +267,7 @@ async fn main() {
 
         let mut index_servers: Vec<PirServer> = Vec::with_capacity(k_index);
         for b in 0..k_index {
-            let path = Path::new(INDEX_PIR_DIR).join(format!("bucket_{}.bin", b));
+            let path = Path::new(INDEX_PIR_DIR).join(format!("group_{}.bin", b));
             let mut server = PirServer::new(index_bins as u64);
             assert!(
                 server.load_db(path.to_str().unwrap()),
@@ -344,7 +344,7 @@ async fn main() {
         chunk_bins_per_table: chunk_bins,
         tag_seed: im.tag_seed,
         total_packed_entries: ch.num_packed_entries,
-        index_cuckoo_bucket_size: im.cuckoo_bucket_size,
+        index_slots_per_bin: im.slots_per_bin,
         index_slot_size: im.slot_size,
     });
     let pir_tx = Arc::new(pir_tx);
@@ -355,8 +355,8 @@ async fn main() {
     let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().unwrap();
     let listener = TcpListener::bind(addr).await.expect("bind");
     println!("Listening on ws://{}", addr);
-    println!("  Index: K={}, bins_per_table={}, bucket_size={}",
-        k_index, index_bins, im.cuckoo_bucket_size);
+    println!("  Index: K={}, bins_per_table={}, slots_per_bin={}",
+        k_index, index_bins, im.slots_per_bin);
     println!("  Chunk: K={}, bins_per_table={}, total_packed={}",
         k_chunk, chunk_bins, ch.num_packed_entries);
     println!();

@@ -2,13 +2,13 @@
  * HarmonyPIR Web Worker
  *
  * Each worker loads its own WASM instance and owns a subset of
- * HarmonyBucket instances. Handles build_request, build_synthetic_dummy,
+ * HarmonyGroup instances. Handles build_request, build_synthetic_dummy,
  * process_response, and hint loading — keeping the tight state coupling
- * (build_request ↔ process_response) within a single thread.
+ * (build_request <-> process_response) within a single thread.
  */
 
 // Minimal WASM interface — matches harmonypir_wasm no-modules output.
-interface HarmonyBucketWasm {
+interface HarmonyGroupWasm {
   load_hints(hintsData: Uint8Array): void;
   build_request(q: number): { request: Uint8Array; segment: number; position: number; query_index: number; free(): void };
   build_synthetic_dummy(): Uint8Array;
@@ -18,15 +18,15 @@ interface HarmonyBucketWasm {
 }
 
 interface WasmBindgen {
-  HarmonyBucket: {
-    new_with_backend(n: number, w: number, t: number, prpKey: Uint8Array, bucketId: number, backend: number): HarmonyBucketWasm;
+  HarmonyGroup: {  // Note: pre-built WASM may still export HarmonyBucket
+    new_with_backend(n: number, w: number, t: number, prpKey: Uint8Array, groupId: number, backend: number): HarmonyGroupWasm;
   };
   (wasmUrl: string): Promise<void>;
 }
 
 // ─── Worker state ────────────────────────────────────────────────────────────
 
-const buckets = new Map<number, HarmonyBucketWasm>();
+const groups = new Map<number, HarmonyGroupWasm>();
 let wasm: WasmBindgen | null = null;
 
 // ─── Message types ───────────────────────────────────────────────────────────
@@ -37,9 +37,9 @@ interface InitMsg {
   wasmBinaryUrl: string;
 }
 
-interface CreateBucketMsg {
-  type: 'createBucket';
-  bucketId: number;
+interface CreateGroupMsg {
+  type: 'createGroup';
+  groupId: number;
   n: number;
   w: number;
   t: number;
@@ -49,7 +49,7 @@ interface CreateBucketMsg {
 
 interface LoadHintsMsg {
   type: 'loadHints';
-  bucketId: number;
+  groupId: number;
   hints: Uint8Array;
 }
 
@@ -57,7 +57,7 @@ interface BuildBatchMsg {
   type: 'buildBatch';
   requestId: number;
   items: Array<{
-    bucketId: number;
+    groupId: number;
     binIndex?: number;  // undefined = dummy
   }>;
 }
@@ -66,12 +66,12 @@ interface ProcessBatchMsg {
   type: 'processBatch';
   requestId: number;
   items: Array<{
-    bucketId: number;
+    groupId: number;
     response: Uint8Array;
   }>;
 }
 
-type WorkerMessage = InitMsg | CreateBucketMsg | LoadHintsMsg | BuildBatchMsg | ProcessBatchMsg;
+type WorkerMessage = InitMsg | CreateGroupMsg | LoadHintsMsg | BuildBatchMsg | ProcessBatchMsg;
 
 // ─── Message handler ─────────────────────────────────────────────────────────
 
@@ -102,51 +102,51 @@ self.onmessage = async (ev: MessageEvent<WorkerMessage>) => {
       break;
     }
 
-    case 'createBucket': {
+    case 'createGroup': {
       if (!wasm) { (self as any).postMessage({ type: 'error', error: 'WASM not loaded' }); return; }
       try {
-        const bucket = wasm.HarmonyBucket.new_with_backend(
-          msg.n, msg.w, msg.t, msg.prpKey, msg.bucketId, msg.backend,
+        const group = wasm.HarmonyBucket.new_with_backend(
+          msg.n, msg.w, msg.t, msg.prpKey, msg.groupId, msg.backend,
         );
-        buckets.set(msg.bucketId, bucket);
-        (self as any).postMessage({ type: 'bucketCreated', bucketId: msg.bucketId });
+        groups.set(msg.groupId, group);
+        (self as any).postMessage({ type: 'groupCreated', groupId: msg.groupId });
       } catch (e: any) {
-        (self as any).postMessage({ type: 'error', error: `createBucket(${msg.bucketId}): ${e.message}` });
+        (self as any).postMessage({ type: 'error', error: `createGroup(${msg.groupId}): ${e.message}` });
       }
       break;
     }
 
     case 'loadHints': {
-      const bucket = buckets.get(msg.bucketId);
-      if (!bucket) { (self as any).postMessage({ type: 'error', error: `bucket ${msg.bucketId} not found` }); return; }
+      const group = groups.get(msg.groupId);
+      if (!group) { (self as any).postMessage({ type: 'error', error: `group ${msg.groupId} not found` }); return; }
       try {
-        bucket.load_hints(msg.hints);
-        (self as any).postMessage({ type: 'hintsLoaded', bucketId: msg.bucketId });
+        group.load_hints(msg.hints);
+        (self as any).postMessage({ type: 'hintsLoaded', groupId: msg.groupId });
       } catch (e: any) {
-        (self as any).postMessage({ type: 'error', error: `loadHints(${msg.bucketId}): ${e.message}` });
+        (self as any).postMessage({ type: 'error', error: `loadHints(${msg.groupId}): ${e.message}` });
       }
       break;
     }
 
     case 'buildBatch': {
-      const results: Array<{ bucketId: number; bytes: Uint8Array }> = [];
+      const results: Array<{ groupId: number; bytes: Uint8Array }> = [];
       const transferables: ArrayBuffer[] = [];
 
       for (const item of msg.items) {
-        const bucket = buckets.get(item.bucketId);
-        if (!bucket) continue;
+        const group = groups.get(item.groupId);
+        if (!group) continue;
 
         let bytes: Uint8Array;
         if (item.binIndex !== undefined) {
           // Real query.
-          const req = bucket.build_request(item.binIndex);
+          const req = group.build_request(item.binIndex);
           bytes = new Uint8Array(req.request);
           req.free();
         } else {
           // Dummy.
-          bytes = new Uint8Array(bucket.build_synthetic_dummy());
+          bytes = new Uint8Array(group.build_synthetic_dummy());
         }
-        results.push({ bucketId: item.bucketId, bytes });
+        results.push({ groupId: item.groupId, bytes });
         transferables.push(bytes.buffer as ArrayBuffer);
       }
 
@@ -158,15 +158,15 @@ self.onmessage = async (ev: MessageEvent<WorkerMessage>) => {
     }
 
     case 'processBatch': {
-      const results: Array<{ bucketId: number; answer: Uint8Array }> = [];
+      const results: Array<{ groupId: number; answer: Uint8Array }> = [];
       const transferables: ArrayBuffer[] = [];
 
       for (const item of msg.items) {
-        const bucket = buckets.get(item.bucketId);
-        if (!bucket) continue;
+        const group = groups.get(item.groupId);
+        if (!group) continue;
 
-        const answer = bucket.process_response(item.response);
-        results.push({ bucketId: item.bucketId, answer });
+        const answer = group.process_response(item.response);
+        results.push({ groupId: item.groupId, answer });
         transferables.push(answer.buffer as ArrayBuffer);
       }
 

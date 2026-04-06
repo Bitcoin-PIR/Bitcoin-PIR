@@ -33,7 +33,7 @@ const DEFAULT_PARTITIONS: usize = 4;
 const DUST_THRESHOLD: u64 = 576; // sats
 const MAX_UTXOS_PER_SPK: usize = 100; // skip script pubkeys with more than this many UTXOs
 const TOP_N: usize = 100;
-const INDEX_ENTRY_SIZE: usize = 20 + 4 + 1; // script_hash + start_chunk_id(u32) + num_chunks(u8)
+const INDEX_RECORD_SIZE: usize = 20 + 4 + 1; // script_hash + start_chunk_id(u32) + num_chunks(u8)
 const WHALES_FILE: &str = "/Volumes/Bitcoin/data/intermediate/whale_addresses.txt";
 
 /// Zero buffer for padding (max padding = BLOCK_SIZE - 1 = 79 bytes)
@@ -421,12 +421,12 @@ fn main() {
         BLOCK_SIZE
     );
     let total_index_entries = total_groups_written + total_whale_skipped;
-    let index_size = total_index_entries * INDEX_ENTRY_SIZE as u64;
+    let index_size = total_index_entries * INDEX_RECORD_SIZE as u64;
     println!(
         "Index file size:      {} ({} entries x {} bytes, incl. {} whale sentinels)",
         format_bytes(index_size),
         total_index_entries,
-        INDEX_ENTRY_SIZE,
+        INDEX_RECORD_SIZE,
         total_whale_skipped
     );
     println!(
