@@ -24,7 +24,7 @@ You can pick the backend that matches your threat model and performance needs:
 |---------|-------------|----------|
 | **DPF (2-server)** | Privacy holds as long as two servers don't collude | Fast, lightweight queries |
 | **OnionPIR (1-server, FHE)** | Single server, cryptographic privacy from lattice hardness | Strongest single-server guarantee |
-| **HarmonyPIR (1-server, stateful)** | Single server with an offline setup phase | Fast online queries after initial sync |
+| **HarmonyPIR (1 or 2-server, stateful)** | Offline setup phase; deployed here as 2-server (query server + dedicated hint server) | Fast online queries after initial sync |
 
 All three backends expose the same high-level API — clients can switch between them without changing their code.
 
