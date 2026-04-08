@@ -308,9 +308,11 @@ struct UnifiedServerData {
     /// Per-DB OnionPIR parameters (None if that DB has no OnionPIR data).
     /// Length matches `state.databases.len()`.
     onionpir_infos: Vec<Option<OnionPirInfo>>,
-    /// OnionPIR Merkle sibling info for the main DB (if available).
-    /// Per-DB Merkle is intentionally not yet supported — only db_id=0.
-    onionpir_merkle: Option<OnionPirMerkleInfo>,
+    /// OnionPIR per-bin Merkle info indexed by db_id.
+    /// Each entry is `None` if that DB has no OnionPIR Merkle data (no
+    /// `merkle_onion_*` sibling / root / tree-top files on disk).
+    /// Length matches `state.databases.len()`.
+    onionpir_merkle: Vec<Option<OnionPirMerkleInfo>>,
     /// All mmap'd regions for residency monitoring.
     mmap_regions: Vec<MmapRegion>,
 }
@@ -330,6 +332,17 @@ impl UnifiedServerData {
     /// Returns `None` if the db_id is out of range or if that DB has no OnionPIR data.
     fn onionpir_tx_for(&self, db_id: u8) -> Option<&Arc<mpsc::Sender<PirCommand>>> {
         self.onionpir_txs.get(db_id as usize).and_then(|o| o.as_ref())
+    }
+
+    /// Look up the OnionPIR per-bin Merkle info for a specific db_id.
+    /// Returns `None` if the db_id is out of range or if that DB has no Merkle data.
+    fn onionpir_merkle_for(&self, db_id: u8) -> Option<&OnionPirMerkleInfo> {
+        self.onionpir_merkle.get(db_id as usize).and_then(|o| o.as_ref())
+    }
+
+    /// Whether ANY database has OnionPIR Merkle data loaded.
+    fn has_any_onionpir_merkle(&self) -> bool {
+        self.onionpir_merkle.iter().any(|m| m.is_some())
     }
 }
 
@@ -369,6 +382,46 @@ struct OnionPirInfo {
 }
 
 impl UnifiedServerData {
+    /// Append a single `OnionPirMerkleInfo` object to `json` preceded by `prefix`.
+    /// Emits the same schema as the old main-only top-level `onionpir_merkle`
+    /// field (arity + index sub-tree + data sub-tree).
+    fn append_onionpir_merkle_json(json: &mut String, prefix: &str, om: &OnionPirMerkleInfo) {
+        json.push_str(prefix);
+        json.push_str(&format!(r#"{{"arity":{}"#, om.arity));
+
+        // INDEX sub-tree
+        let it = &om.index_tree;
+        json.push_str(&format!(r#","index":{{"sibling_levels":{},"levels":["#, it.levels.len()));
+        for (i, lv) in it.levels.iter().enumerate() {
+            if i > 0 { json.push(','); }
+            json.push_str(&format!(r#"{{"k":{},"bins_per_table":{},"num_groups":{}}}"#,
+                lv.k, lv.bins_per_table, lv.num_groups));
+        }
+        json.push_str("]");
+        json.push_str(&format!(r#","root":"{}""#, it.root_hex));
+        let top_hash = pir_core::merkle::sha256(&it.tree_top);
+        json.push_str(&format!(r#","tree_top_hash":"{}""#,
+            top_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>()));
+        json.push_str(&format!(r#","tree_top_size":{}}}"#, it.tree_top.len()));
+
+        // DATA sub-tree
+        let dt = &om.data_tree;
+        json.push_str(&format!(r#","data":{{"sibling_levels":{},"levels":["#, dt.levels.len()));
+        for (i, lv) in dt.levels.iter().enumerate() {
+            if i > 0 { json.push(','); }
+            json.push_str(&format!(r#"{{"k":{},"bins_per_table":{},"num_groups":{}}}"#,
+                lv.k, lv.bins_per_table, lv.num_groups));
+        }
+        json.push_str("]");
+        json.push_str(&format!(r#","root":"{}""#, dt.root_hex));
+        let top_hash = pir_core::merkle::sha256(&dt.tree_top);
+        json.push_str(&format!(r#","tree_top_hash":"{}""#,
+            top_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>()));
+        json.push_str(&format!(r#","tree_top_size":{}}}"#, dt.tree_top.len()));
+
+        json.push('}');
+    }
+
     fn server_info(&self) -> ServerInfo {
         ServerInfo {
             index_bins_per_table: self.main_db().index.bins_per_table as u32,
@@ -408,41 +461,11 @@ impl UnifiedServerData {
             ));
         }
 
-        if let Some(ref om) = self.onionpir_merkle {
-            // Per-bin Merkle with two sub-trees: index and data
-            json.push_str(&format!(r#","onionpir_merkle":{{"arity":{}"#, om.arity));
-
-            // INDEX sub-tree
-            let it = &om.index_tree;
-            json.push_str(&format!(r#","index":{{"sibling_levels":{},"levels":["#, it.levels.len()));
-            for (i, lv) in it.levels.iter().enumerate() {
-                if i > 0 { json.push(','); }
-                json.push_str(&format!(r#"{{"k":{},"bins_per_table":{},"num_groups":{}}}"#,
-                    lv.k, lv.bins_per_table, lv.num_groups));
-            }
-            json.push_str("]");
-            json.push_str(&format!(r#","root":"{}""#, it.root_hex));
-            let top_hash = pir_core::merkle::sha256(&it.tree_top);
-            json.push_str(&format!(r#","tree_top_hash":"{}""#,
-                top_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>()));
-            json.push_str(&format!(r#","tree_top_size":{}}}"#, it.tree_top.len()));
-
-            // DATA sub-tree
-            let dt = &om.data_tree;
-            json.push_str(&format!(r#","data":{{"sibling_levels":{},"levels":["#, dt.levels.len()));
-            for (i, lv) in dt.levels.iter().enumerate() {
-                if i > 0 { json.push(','); }
-                json.push_str(&format!(r#"{{"k":{},"bins_per_table":{},"num_groups":{}}}"#,
-                    lv.k, lv.bins_per_table, lv.num_groups));
-            }
-            json.push_str("]");
-            json.push_str(&format!(r#","root":"{}""#, dt.root_hex));
-            let top_hash = pir_core::merkle::sha256(&dt.tree_top);
-            json.push_str(&format!(r#","tree_top_hash":"{}""#,
-                top_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>()));
-            json.push_str(&format!(r#","tree_top_size":{}}}"#, dt.tree_top.len()));
-
-            json.push('}');
+        // Top-level `onionpir_merkle` reflects the main DB (db_id=0) for
+        // backward compatibility with clients that only look at the main
+        // entry. Per-DB Merkle is also emitted under `databases[]` below.
+        if let Some(ref om) = self.onionpir_merkle_for(0) {
+            Self::append_onionpir_merkle_json(&mut json, ",\"onionpir_merkle\":", om);
         }
 
         if self.main_db().has_merkle() {
@@ -552,12 +575,31 @@ impl UnifiedServerData {
         }
 
         // Per-database info array (Merkle availability + params for each DB)
-        if self.state.databases.len() > 1 || self.state.databases.iter().any(|db| db.has_bucket_merkle()) {
+        if self.state.databases.len() > 1
+            || self.state.databases.iter().any(|db| db.has_bucket_merkle())
+            || self.has_any_onionpir_merkle()
+        {
             json.push_str(r#","databases":["#);
             for (i, db) in self.state.databases.iter().enumerate() {
                 if i > 0 { json.push(','); }
-                json.push_str(&format!(r#"{{"db_id":{},"has_bucket_merkle":{}"#,
-                    i, db.has_bucket_merkle()));
+                let has_onionpir_merkle = self.onionpir_merkle_for(i as u8).is_some();
+                let has_onionpir = self.onionpir_txs.get(i).map(|o| o.is_some()).unwrap_or(false);
+                json.push_str(&format!(
+                    r#"{{"db_id":{},"has_bucket_merkle":{},"has_onionpir":{},"has_onionpir_merkle":{}"#,
+                    i, db.has_bucket_merkle(), has_onionpir, has_onionpir_merkle
+                ));
+
+                // Per-DB OnionPIR parameters (so the web client can switch BFV
+                // params when querying a delta with different bins_per_table).
+                if let Some(Some(ref opi)) = self.onionpir_infos.get(i) {
+                    json.push_str(&format!(
+                        r#","onionpir":{{"total_packed_entries":{},"index_bins_per_table":{},"chunk_bins_per_table":{},"tag_seed":"0x{:016x}","index_k":{},"chunk_k":{},"index_slots_per_bin":{},"index_slot_size":{},"chunk_slots_per_bin":1,"chunk_slot_size":{}}}"#,
+                        opi.total_packed_entries, opi.index_bins_per_table, opi.chunk_bins_per_table,
+                        opi.tag_seed, opi.index_k, opi.chunk_k,
+                        opi.index_slots_per_bin, opi.index_slot_size,
+                        3840, // PACKED_ENTRY_SIZE
+                    ));
+                }
 
                 if db.has_bucket_merkle() {
                     json.push_str(r#","merkle_bucket":{"arity":8,"#);
@@ -625,6 +667,11 @@ impl UnifiedServerData {
                     }
 
                     json.push('}'); // close merkle_bucket
+                }
+
+                // Per-DB OnionPIR per-bin Merkle, when this DB has it
+                if let Some(ref om) = self.onionpir_merkle_for(i as u8) {
+                    Self::append_onionpir_merkle_json(&mut json, ",\"onionpir_merkle\":", om);
                 }
 
                 json.push('}'); // close database entry
@@ -1067,7 +1114,7 @@ async fn main() {
     // Each database can have its own OnionPIR data. Loading is per-DB:
     //   onionpir_txs[db_id]    = Some(channel) if db has OnionPIR data
     //   onionpir_infos[db_id]  = Some(info)    if db has OnionPIR data
-    //   onionpir_merkle        = main DB only (db_id=0)
+    //   onionpir_merkle[db_id] = Some(info)    if db has OnionPIR Merkle data
     //
     // db_paths was already populated alongside `all_databases` above; it's
     // a list of (db_id, label, source_dir) for every loaded database.
@@ -1075,18 +1122,10 @@ async fn main() {
     let num_total_dbs = db_paths.len();
     let mut onionpir_txs: Vec<Option<Arc<mpsc::Sender<PirCommand>>>> = vec![None; num_total_dbs];
     let mut onionpir_infos: Vec<Option<OnionPirInfo>> = (0..num_total_dbs).map(|_| None).collect();
+    let mut onionpir_merkle_per_db: Vec<Option<OnionPirMerkleInfo>> =
+        (0..num_total_dbs).map(|_| None).collect();
 
-    // Per-bin Merkle: two sub-trees (INDEX-MERKLE and DATA-MERKLE) — main DB only
-    let mut index_merkle_sib_infos: Vec<OnionPirMerkleLevelInfo> = Vec::new();
-    let mut data_merkle_sib_infos: Vec<OnionPirMerkleLevelInfo> = Vec::new();
-    let mut index_merkle_root: Option<Vec<u8>> = None;
-    let mut data_merkle_root: Option<Vec<u8>> = None;
-    let mut index_merkle_tree_top: Option<Vec<u8>> = None;
-    let mut data_merkle_tree_top: Option<Vec<u8>> = None;
-    let mut num_index_sibling_levels: usize = 0;
-    let mut num_data_sibling_levels: usize = 0;
-
-    // Per-bin Merkle sibling DBs are only ever loaded for the main DB.
+    // Per-bin Merkle: loaded per-DB alongside the OnionPIR worker setup.
     struct SiblingLevelData {
         k: usize,
         bins_per_table: usize,
@@ -1097,6 +1136,7 @@ async fn main() {
 
     fn load_merkle_sib_levels(
         data_dir: &std::path::Path,
+        db_label: &str,
         prefix: &str,
         mmap_regions: &mut Vec<MmapRegion>,
     ) -> Vec<SiblingLevelData> {
@@ -1127,10 +1167,10 @@ async fn main() {
             let ntt_file = std::fs::File::open(&ntt_path).expect("open sibling NTT");
             let ntt_mm = unsafe { Mmap::map(&ntt_file) }.expect("mmap sibling NTT");
 
-            println!("  {} Sibling L{}: K={}, bins={}, groups={}, NTT={:.2} GB",
-                prefix, level, k, bins_per_table, num_groups, ntt_mm.len() as f64 / 1e9);
+            println!("  [{}] {} Sibling L{}: K={}, bins={}, groups={}, NTT={:.2} GB",
+                db_label, prefix, level, k, bins_per_table, num_groups, ntt_mm.len() as f64 / 1e9);
             mmap_regions.push(MmapRegion {
-                name: format!("merkle_onion_{}_sib_L{}_ntt.bin", prefix, level),
+                name: format!("{}/merkle_onion_{}_sib_L{}_ntt.bin", db_label, prefix, level),
                 ptr: ntt_mm.as_ptr(),
                 len: ntt_mm.len(),
                 priority: 2,
@@ -1199,45 +1239,93 @@ async fn main() {
                 priority: 1,
             });
 
-            // Only load Merkle sibling levels for the main DB (db_id=0).
-            // Per-DB OnionPIR Merkle is intentionally out of scope right now.
-            let (index_sibling_levels, data_sibling_levels) = if *db_id == 0 {
-                (
-                    load_merkle_sib_levels(db_dir, "index", &mut mmap_regions),
-                    load_merkle_sib_levels(db_dir, "data", &mut mmap_regions),
-                )
-            } else {
-                (Vec::new(), Vec::new())
-            };
+            // Load per-DB Merkle sibling levels (if present on disk). Every
+            // DB that ships `merkle_onion_*` sidecars gets its own per-bin
+            // Merkle trees — previously this was gated on db_id == 0.
+            let index_sibling_levels =
+                load_merkle_sib_levels(db_dir, db_label, "index", &mut mmap_regions);
+            let data_sibling_levels =
+                load_merkle_sib_levels(db_dir, db_label, "data", &mut mmap_regions);
 
-            if *db_id == 0 {
-                // Load Merkle roots and tree-top caches (main DB only)
+            // Load Merkle roots and tree-top caches for this DB.
+            let index_merkle_root: Option<Vec<u8>> = {
                 let root_path = db_dir.join("merkle_onion_index_root.bin");
                 if root_path.exists() {
-                    index_merkle_root = Some(std::fs::read(&root_path).expect("read index merkle root"));
+                    Some(std::fs::read(&root_path).expect("read index merkle root"))
+                } else {
+                    None
                 }
+            };
+            let data_merkle_root: Option<Vec<u8>> = {
                 let root_path = db_dir.join("merkle_onion_data_root.bin");
                 if root_path.exists() {
-                    data_merkle_root = Some(std::fs::read(&root_path).expect("read data merkle root"));
+                    Some(std::fs::read(&root_path).expect("read data merkle root"))
+                } else {
+                    None
                 }
+            };
+            let index_merkle_tree_top: Option<Vec<u8>> = {
                 let top_path = db_dir.join("merkle_onion_index_tree_top.bin");
                 if top_path.exists() {
-                    index_merkle_tree_top = Some(std::fs::read(&top_path).expect("read index merkle tree-top"));
+                    Some(std::fs::read(&top_path).expect("read index merkle tree-top"))
+                } else {
+                    None
                 }
+            };
+            let data_merkle_tree_top: Option<Vec<u8>> = {
                 let top_path = db_dir.join("merkle_onion_data_tree_top.bin");
                 if top_path.exists() {
-                    data_merkle_tree_top = Some(std::fs::read(&top_path).expect("read data merkle tree-top"));
+                    Some(std::fs::read(&top_path).expect("read data merkle tree-top"))
+                } else {
+                    None
                 }
+            };
 
-                num_index_sibling_levels = index_sibling_levels.len();
-                num_data_sibling_levels = data_sibling_levels.len();
+            let index_merkle_sib_infos: Vec<OnionPirMerkleLevelInfo> = index_sibling_levels
+                .iter()
+                .map(|s| OnionPirMerkleLevelInfo {
+                    k: s.k,
+                    bins_per_table: s.bins_per_table,
+                    num_groups: s.num_groups,
+                })
+                .collect();
+            let data_merkle_sib_infos: Vec<OnionPirMerkleLevelInfo> = data_sibling_levels
+                .iter()
+                .map(|s| OnionPirMerkleLevelInfo {
+                    k: s.k,
+                    bins_per_table: s.bins_per_table,
+                    num_groups: s.num_groups,
+                })
+                .collect();
 
-                index_merkle_sib_infos = index_sibling_levels.iter().map(|s| {
-                    OnionPirMerkleLevelInfo { k: s.k, bins_per_table: s.bins_per_table, num_groups: s.num_groups }
-                }).collect();
-                data_merkle_sib_infos = data_sibling_levels.iter().map(|s| {
-                    OnionPirMerkleLevelInfo { k: s.k, bins_per_table: s.bins_per_table, num_groups: s.num_groups }
-                }).collect();
+            // Assemble the per-DB Merkle info if any of its pieces are on disk.
+            let has_merkle_data = !index_sibling_levels.is_empty()
+                || !data_sibling_levels.is_empty()
+                || index_merkle_root.is_some()
+                || data_merkle_root.is_some();
+
+            if has_merkle_data {
+                let index_root_hex = index_merkle_root
+                    .as_ref()
+                    .map(|r| r.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+                    .unwrap_or_default();
+                let data_root_hex = data_merkle_root
+                    .as_ref()
+                    .map(|r| r.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+                    .unwrap_or_default();
+                onionpir_merkle_per_db[*db_id as usize] = Some(OnionPirMerkleInfo {
+                    arity: 120,
+                    index_tree: OnionPirMerkleSubTree {
+                        levels: index_merkle_sib_infos,
+                        root_hex: index_root_hex,
+                        tree_top: index_merkle_tree_top.unwrap_or_default(),
+                    },
+                    data_tree: OnionPirMerkleSubTree {
+                        levels: data_merkle_sib_infos,
+                        root_hex: data_root_hex,
+                        tree_top: data_merkle_tree_top.unwrap_or_default(),
+                    },
+                });
             }
 
             // Combine sibling levels for the PIR worker:
@@ -1388,33 +1476,8 @@ async fn main() {
     }
 
     // ── Build server state ──────────────────────────────────────────────
-
-    // Build OnionPIR per-bin Merkle info if any sibling levels were loaded
-    let onionpir_merkle_data = if num_index_sibling_levels > 0 || num_data_sibling_levels > 0
-        || index_merkle_root.is_some() || data_merkle_root.is_some()
-    {
-        let index_root_hex = index_merkle_root.as_ref()
-            .map(|r| r.iter().map(|b| format!("{:02x}", b)).collect::<String>())
-            .unwrap_or_default();
-        let data_root_hex = data_merkle_root.as_ref()
-            .map(|r| r.iter().map(|b| format!("{:02x}", b)).collect::<String>())
-            .unwrap_or_default();
-        Some(OnionPirMerkleInfo {
-            arity: 120,
-            index_tree: OnionPirMerkleSubTree {
-                levels: index_merkle_sib_infos,
-                root_hex: index_root_hex,
-                tree_top: index_merkle_tree_top.unwrap_or_default(),
-            },
-            data_tree: OnionPirMerkleSubTree {
-                levels: data_merkle_sib_infos,
-                root_hex: data_root_hex,
-                tree_top: data_merkle_tree_top.unwrap_or_default(),
-            },
-        })
-    } else {
-        None
-    };
+    // (OnionPIR per-bin Merkle info was built per-DB inside the loading
+    // loop above; it's stored in `onionpir_merkle_per_db`.)
 
     println!();
     println!("Data loaded in {:.2?}", total_start.elapsed());
@@ -1438,7 +1501,7 @@ async fn main() {
         role: args.role,
         onionpir_txs,
         onionpir_infos,
-        onionpir_merkle: onionpir_merkle_data,
+        onionpir_merkle: onionpir_merkle_per_db,
         mmap_regions,
     });
 
@@ -1816,8 +1879,17 @@ async fn main() {
                             let _ = sink.send(Message::Binary(result_msg.encode(RESP_ONIONPIR_CHUNK_RESULT).into())).await;
                         }
                     }
-                    REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP if server.onionpir_merkle.is_some() => {
-                        let om = server.onionpir_merkle.as_ref().unwrap();
+                    REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP if server.has_any_onionpir_merkle() => {
+                        // Optional db_id byte: payload[1] if present, else 0.
+                        let db_id = if payload.len() > 1 { payload[1] } else { 0 };
+                        let om = match server.onionpir_merkle_for(db_id) {
+                            Some(om) => om,
+                            None => {
+                                let resp = Response::Error(format!("OnionPIR Merkle not available for db_id={}", db_id));
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                continue;
+                            }
+                        };
                         let top = &om.index_tree.tree_top;
                         let payload_len = 1 + top.len();
                         let mut msg = Vec::with_capacity(4 + payload_len);
@@ -1825,10 +1897,19 @@ async fn main() {
                         msg.push(RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP);
                         msg.extend_from_slice(top);
                         let _ = sink.send(Message::Binary(msg.into())).await;
-                        println!("[onion-merkle-index-top] sent {} bytes", top.len());
+                        println!("[onion-merkle-index-top] db={} sent {} bytes", db_id, top.len());
                     }
-                    REQ_ONIONPIR_MERKLE_DATA_TREE_TOP if server.onionpir_merkle.is_some() => {
-                        let om = server.onionpir_merkle.as_ref().unwrap();
+                    REQ_ONIONPIR_MERKLE_DATA_TREE_TOP if server.has_any_onionpir_merkle() => {
+                        // Optional db_id byte: payload[1] if present, else 0.
+                        let db_id = if payload.len() > 1 { payload[1] } else { 0 };
+                        let om = match server.onionpir_merkle_for(db_id) {
+                            Some(om) => om,
+                            None => {
+                                let resp = Response::Error(format!("OnionPIR Merkle not available for db_id={}", db_id));
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                continue;
+                            }
+                        };
                         let top = &om.data_tree.tree_top;
                         let payload_len = 1 + top.len();
                         let mut msg = Vec::with_capacity(4 + payload_len);
@@ -1836,19 +1917,23 @@ async fn main() {
                         msg.push(RESP_ONIONPIR_MERKLE_DATA_TREE_TOP);
                         msg.extend_from_slice(top);
                         let _ = sink.send(Message::Binary(msg.into())).await;
-                        println!("[onion-merkle-data-top] sent {} bytes", top.len());
+                        println!("[onion-merkle-data-top] db={} sent {} bytes", db_id, top.len());
                     }
                     REQ_ONIONPIR_MERKLE_INDEX_SIBLING if server.has_any_onionpir() => {
                         // round_id encoding: sibling_level * 100 + pbc_round_index
-                        // Per-DB OnionPIR Merkle is intentionally out of scope — only db_id=0.
+                        // Per-DB: the db_id trailer in the batch message selects the
+                        // OnionPIR worker and its per-bin Merkle sibling levels.
                         if let Ok(batch) = OnionPirBatchQuery::decode(body) {
-                            if batch.db_id != 0 {
-                                let resp = Response::Error("OnionPIR Merkle is only supported for db_id=0".to_string());
+                            if server.onionpir_merkle_for(batch.db_id).is_none() {
+                                let resp = Response::Error(format!(
+                                    "OnionPIR Merkle not available for db_id={}",
+                                    batch.db_id
+                                ));
                                 let _ = sink.send(Message::Binary(resp.encode().into())).await;
                                 continue;
                             }
                             let sibling_level = (batch.round_id / 100) as u8;
-                            let tx = match server.onionpir_tx_for(0) {
+                            let tx = match server.onionpir_tx_for(batch.db_id) {
                                 Some(t) => t.clone(),
                                 None => continue,
                             };
@@ -1864,20 +1949,24 @@ async fn main() {
                             let _ = sink.send(Message::Binary(result_msg.encode(RESP_ONIONPIR_MERKLE_INDEX_SIBLING).into())).await;
                         }
                     }
-                    REQ_ONIONPIR_MERKLE_DATA_SIBLING if server.has_any_onionpir() && server.onionpir_merkle.is_some() => {
+                    REQ_ONIONPIR_MERKLE_DATA_SIBLING if server.has_any_onionpir() && server.has_any_onionpir_merkle() => {
                         // round_id encoding: sibling_level * 100 + pbc_round_index
                         // Data siblings start after index siblings in the worker's server array.
-                        // Per-DB OnionPIR Merkle is intentionally out of scope — only db_id=0.
                         if let Ok(batch) = OnionPirBatchQuery::decode(body) {
-                            if batch.db_id != 0 {
-                                let resp = Response::Error("OnionPIR Merkle is only supported for db_id=0".to_string());
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
-                                continue;
-                            }
+                            let om = match server.onionpir_merkle_for(batch.db_id) {
+                                Some(om) => om,
+                                None => {
+                                    let resp = Response::Error(format!(
+                                        "OnionPIR Merkle not available for db_id={}",
+                                        batch.db_id
+                                    ));
+                                    let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                    continue;
+                                }
+                            };
                             let sibling_level = (batch.round_id / 100) as u8;
-                            let om = server.onionpir_merkle.as_ref().unwrap();
                             let index_sib_count = om.index_tree.levels.len() as u8;
-                            let tx = match server.onionpir_tx_for(0) {
+                            let tx = match server.onionpir_tx_for(batch.db_id) {
                                 Some(t) => t.clone(),
                                 None => continue,
                             };

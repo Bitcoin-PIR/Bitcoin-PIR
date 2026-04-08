@@ -47,7 +47,16 @@ export interface ServerInfoJson {
 export interface PerDatabaseInfoJson {
   db_id: number;
   has_bucket_merkle: boolean;
+  /** Whether the server has OnionPIR data loaded for this DB. */
+  has_onionpir?: boolean;
+  /** Whether the server has per-bin OnionPIR Merkle data for this DB. */
+  has_onionpir_merkle?: boolean;
   merkle_bucket?: BucketMerkleInfoJson;
+  /** Per-DB OnionPIR params. When non-zero DBs have different bins_per_table
+   * from main, the client must switch BFV params by reading this field. */
+  onionpir?: OnionPirInfoJson;
+  /** Per-DB OnionPIR per-bin Merkle info. Same shape as the top-level field. */
+  onionpir_merkle?: OnionPirMerkleInfoJson;
 }
 
 export interface MerkleLevelInfo {
@@ -149,6 +158,9 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
     role: raw.role,
   };
 
+  // `onionpir` is defined below but we also want it in the top-level
+  // `info.onionpir` assignment. The helper is hoisted via `const` below so
+  // we reference a local inline copy here to avoid hoisting issues.
   if (raw.onionpir) {
     info.onionpir = {
       total_packed_entries: raw.onionpir.total_packed_entries,
@@ -164,20 +176,36 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
     };
   }
 
-  if (raw.onionpir_merkle && typeof raw.onionpir_merkle === 'object') {
-    const om = raw.onionpir_merkle;
-    const parseSubTree = (st: any): import('./server-info.js').OnionPirMerkleSubTreeInfo => ({
+  const parseOnionPirMerkle = (om: any): OnionPirMerkleInfoJson => {
+    const parseSubTree = (st: any): OnionPirMerkleSubTreeInfo => ({
       sibling_levels: st.sibling_levels ?? 0,
       levels: st.levels ?? [],
       root: st.root ?? '',
       tree_top_hash: st.tree_top_hash ?? '',
       tree_top_size: st.tree_top_size ?? 0,
     });
-    info.onionpir_merkle = {
+    return {
       arity: om.arity,
       index: parseSubTree(om.index ?? {}),
       data: parseSubTree(om.data ?? {}),
     };
+  };
+
+  const parseOnionPir = (op: any): OnionPirInfoJson => ({
+    total_packed_entries: op.total_packed_entries,
+    index_bins_per_table: op.index_bins_per_table,
+    chunk_bins_per_table: op.chunk_bins_per_table,
+    tag_seed: BigInt(op.tag_seed),
+    index_k: op.index_k,
+    chunk_k: op.chunk_k,
+    index_slots_per_bin: op.index_slots_per_bin,
+    index_slot_size: op.index_slot_size,
+    chunk_slots_per_bin: op.chunk_slots_per_bin,
+    chunk_slot_size: op.chunk_slot_size,
+  });
+
+  if (raw.onionpir_merkle && typeof raw.onionpir_merkle === 'object') {
+    info.onionpir_merkle = parseOnionPirMerkle(raw.onionpir_merkle);
   }
 
   if (raw.merkle && typeof raw.merkle === 'object') {
@@ -204,9 +232,17 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
       const entry: PerDatabaseInfoJson = {
         db_id: db.db_id,
         has_bucket_merkle: db.has_bucket_merkle ?? false,
+        has_onionpir: db.has_onionpir ?? false,
+        has_onionpir_merkle: db.has_onionpir_merkle ?? false,
       };
       if (db.merkle_bucket && typeof db.merkle_bucket === 'object') {
         entry.merkle_bucket = parseBucketMerkleInfo(db.merkle_bucket);
+      }
+      if (db.onionpir && typeof db.onionpir === 'object') {
+        entry.onionpir = parseOnionPir(db.onionpir);
+      }
+      if (db.onionpir_merkle && typeof db.onionpir_merkle === 'object') {
+        entry.onionpir_merkle = parseOnionPirMerkle(db.onionpir_merkle);
       }
       return entry;
     });

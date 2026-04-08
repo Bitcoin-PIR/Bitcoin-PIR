@@ -9,20 +9,59 @@
 //!   - onion_chunk_cuckoo.bin: per-group cuckoo tables (bin → entry_id mapping)
 //!
 //! Usage:
-//!   cargo run --release -p build --bin gen_2_onion
+//!   cargo run --release -p build --bin gen_2_onion [-- --data-dir <dir>]
+//!
+//! With no flags, reads `/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin`
+//! and writes the NTT store, cuckoo table, and bin-hash sidecar to
+//! `/Volumes/Bitcoin/data/`.
+//!
+//! With `--data-dir <D>`, reads `<D>/onion_packed_entries.bin` and writes
+//! all outputs under `<D>/`. Use this for delta DB builds.
 
 use memmap2::{Mmap, MmapMut};
 use onionpir::{self, Client as PirClient, Server as PirServer};
+use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::time::Instant;
 
-// ─── Constants ──────────────────────────────────────────────────────────────
+// ─── Default paths (used when --data-dir is not specified) ──────────────────
 
-const PACKED_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin";
-const NTT_STORE_FILE: &str = "/Volumes/Bitcoin/data/onion_shared_ntt.bin";
-const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/onion_chunk_cuckoo.bin";
-const BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_data_bin_hashes.bin";
+const DEFAULT_PACKED_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin";
+const DEFAULT_NTT_STORE_FILE: &str = "/Volumes/Bitcoin/data/onion_shared_ntt.bin";
+const DEFAULT_CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/onion_chunk_cuckoo.bin";
+const DEFAULT_BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_data_bin_hashes.bin";
+
+/// Resolve input/output paths from optional `--data-dir <D>` argument.
+/// When `--data-dir` is given, all four paths live under that directory.
+fn resolve_paths() -> (String, String, String, String) {
+    let args: Vec<String> = env::args().collect();
+    let mut data_dir: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--data-dir" {
+            if let Some(v) = args.get(i + 1) {
+                data_dir = Some(v.clone());
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    match data_dir {
+        Some(d) => (
+            format!("{}/onion_packed_entries.bin", d),
+            format!("{}/onion_shared_ntt.bin", d),
+            format!("{}/onion_chunk_cuckoo.bin", d),
+            format!("{}/onion_data_bin_hashes.bin", d),
+        ),
+        None => (
+            DEFAULT_PACKED_FILE.to_string(),
+            DEFAULT_NTT_STORE_FILE.to_string(),
+            DEFAULT_CUCKOO_FILE.to_string(),
+            DEFAULT_BIN_HASHES_FILE.to_string(),
+        ),
+    }
+}
 
 const PACKED_ENTRY_SIZE: usize = 3840;
 
@@ -175,9 +214,17 @@ fn main() {
     println!("=== gen_2_onion: Build OnionPIR Main Database ===\n");
     let total_start = Instant::now();
 
+    let (packed_file_path, ntt_store_file, cuckoo_file, bin_hashes_file) = resolve_paths();
+    println!("Paths:");
+    println!("  Input packed:    {}", packed_file_path);
+    println!("  Output NTT:      {}", ntt_store_file);
+    println!("  Output cuckoo:   {}", cuckoo_file);
+    println!("  Output hashes:   {}", bin_hashes_file);
+    println!();
+
     // ── 1. Read packed entries ───────────────────────────────────────────
-    println!("[1] Memory-mapping packed entries: {}", PACKED_FILE);
-    let packed_file = File::open(PACKED_FILE).expect("open packed entries file");
+    println!("[1] Memory-mapping packed entries: {}", packed_file_path);
+    let packed_file = File::open(&packed_file_path).expect("open packed entries file");
     let packed_mmap = unsafe { Mmap::map(&packed_file) }.expect("mmap packed entries");
     let num_entries = packed_mmap.len() / PACKED_ENTRY_SIZE;
     assert_eq!(packed_mmap.len() % PACKED_ENTRY_SIZE, 0, "packed file not aligned");
@@ -201,7 +248,7 @@ fn main() {
     // Create and mmap the output file
     let ntt_file = OpenOptions::new()
         .read(true).write(true).create(true).truncate(true)
-        .open(NTT_STORE_FILE).expect("create NTT store file");
+        .open(&ntt_store_file).expect("create NTT store file");
     ntt_file.set_len(ntt_store_bytes as u64).expect("set NTT file size");
     let mut ntt_mmap = unsafe { MmapMut::map_mut(&ntt_file) }.expect("mmap NTT store");
 
@@ -231,7 +278,7 @@ fn main() {
     eprintln!();
     ntt_mmap.flush().expect("flush NTT store");
     println!("  NTT expansion: {:.2?}", t_ntt.elapsed());
-    println!("  NTT store file: {} ({})", NTT_STORE_FILE, format_bytes(ntt_store_bytes as u64));
+    println!("  NTT store file: {} ({})", ntt_store_file, format_bytes(ntt_store_bytes as u64));
 
     // ── 4. Assign entries to PBC groups ─────────────────────────────────
     println!("\n[4] Assigning {} entries to {} PBC groups ({} copies each)...",
@@ -289,10 +336,10 @@ fn main() {
     println!("  Cuckoo tables built in {:.2?}", t_cuckoo.elapsed());
 
     // ── 6. Save cuckoo tables to disk ───────────────────────────────────
-    println!("\n[6] Saving cuckoo tables to {}...", CUCKOO_FILE);
+    println!("\n[6] Saving cuckoo tables to {}...", cuckoo_file);
     {
-        let cuckoo_file = File::create(CUCKOO_FILE).expect("create cuckoo file");
-        let mut writer = BufWriter::with_capacity(1024 * 1024, cuckoo_file);
+        let cuckoo_out = File::create(&cuckoo_file).expect("create cuckoo file");
+        let mut writer = BufWriter::with_capacity(1024 * 1024, cuckoo_out);
 
         // Header: magic, k_chunk, cuckoo_num_hashes, bins_per_table, master_seed, num_entries
         let magic: u64 = 0xBA7C_0010_0000_0001;
@@ -346,14 +393,14 @@ fn main() {
         eprintln!();
 
         // Header: [4B K_CHUNK][4B bins_per_table]
-        let f = File::create(BIN_HASHES_FILE).expect("create bin hashes file");
+        let f = File::create(&bin_hashes_file).expect("create bin hashes file");
         let mut w = BufWriter::new(f);
         w.write_all(&(K_CHUNK as u32).to_le_bytes()).unwrap();
         w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
         w.write_all(&bin_hashes).unwrap();
         w.flush().unwrap();
         println!("  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
-            total_bins, 8 + total_bins * 32, BIN_HASHES_FILE, t_hash.elapsed());
+            total_bins, 8 + total_bins * 32, bin_hashes_file, t_hash.elapsed());
     }
 
     // ── 8. Verify with test query ───────────────────────────────────────

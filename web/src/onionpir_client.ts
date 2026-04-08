@@ -35,7 +35,13 @@ import {
 } from './merkle.js';
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './client.js';
-import type { OnionPirMerkleInfoJson, OnionPirMerkleSubTreeInfo, ServerInfoJson } from './server-info.js';
+import type {
+  DatabaseCatalog,
+  OnionPirMerkleInfoJson,
+  OnionPirMerkleSubTreeInfo,
+  ServerInfoJson,
+} from './server-info.js';
+import { fetchDatabaseCatalog } from './server-info.js';
 
 // ─── Constants for OnionPIR v2 layout ─────────────────────────────────────
 
@@ -101,6 +107,21 @@ async function loadWasmModule(): Promise<OnionPirModule> {
   return wasmModulePromise;
 }
 
+// ─── Main-thread yield that bypasses background-tab timer throttling ─────
+//
+// In background/hidden tabs Chromium throttles `setTimeout(..., 0)` callbacks
+// to ≥1000ms (sometimes tens of seconds), which turns a 150-iter generation
+// loop into a multi-minute stall. `MessageChannel.postMessage` is scheduled as
+// a task rather than a timer and is not subject to that throttling, giving us
+// a stable ~sub-ms yield point in both foreground and background tabs.
+function yieldToMain(): Promise<void> {
+  return new Promise<void>(resolve => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+    ch.port2.postMessage(null);
+  });
+}
+
 // ─── Chunk cuckoo hash functions (BigInt for 64-bit precision) ────────────
 
 function chunkDeriveCuckooKey(groupId: number, hashFn: number): bigint {
@@ -147,7 +168,7 @@ async function ensureChunkReverseIndex(
     // Yield periodically — 815K iterations with BigInt hashing
     if (eid % 50000 === 49999) {
       onProgress?.(`Building chunk reverse index: ${eid + 1}/${totalEntries}...`);
-      await new Promise(r => setTimeout(r, 0));
+      await yieldToMain();
     }
   }
 
@@ -300,8 +321,98 @@ export class OnionPirWebClient {
   // Maps dbId → true once registered.
   private registeredDbs: Set<number> = new Set();
 
+  // Active database ID. Controls both queryBatch (via getDbId()) and all
+  // Merkle verification operations. Switch with setDbId().
+  private dbId: number = 0;
+
+  // Database catalog (populated after connect). Used by the UI selector.
+  private catalog: DatabaseCatalog | null = null;
+
+  // Test hook: one-shot override of the computed scripthashes for the next
+  // queryBatch() call. Consumed on use and then cleared. Used by harnesses
+  // that need to drive a query at a specific scripthash without reversing
+  // HASH160. Production UI never sets this.
+  private _scriptHashOverride: Uint8Array[] | undefined = undefined;
+
+  /**
+   * Set a one-shot scripthash override for the NEXT queryBatch call.
+   * The override[] replaces the computed scripthashes 1:1 (same length).
+   * Cleared after consumption.
+   */
+  setScriptHashOverrideForNextQuery(hashes: Uint8Array[]): void {
+    this._scriptHashOverride = hashes;
+  }
+
   constructor(config: OnionPirClientConfig) {
     this.config = config;
+  }
+
+  /** Return the currently active database ID (0 = main). */
+  getDbId(): number { return this.dbId; }
+
+  /**
+   * Switch to a different database. Updates BFV params, invalidates cached
+   * Merkle state, and forces fresh key registration on the next queryBatch.
+   */
+  setDbId(newDbId: number): void {
+    if (newDbId === this.dbId) return;
+    const oldDbId = this.dbId;
+    this.dbId = newDbId;
+    // Invalidate Merkle tree-top caches (each DB has its own tree tops).
+    this.indexTreeTopCache = null;
+    this.dataTreeTopCache = null;
+    // Re-sync BFV params from the per-DB info, if available. Keeps the
+    // existing values if this DB's params aren't exposed (e.g. if the
+    // server is older and doesn't emit per-DB `onionpir` info).
+    this.updateParamsForActiveDb();
+    this.log(`Switched dbId=${oldDbId} -> dbId=${newDbId} (bins=${this.indexBins}/${this.chunkBins})`);
+  }
+
+  /** Return the parsed database catalog (fetched after connect). */
+  getCatalog(): DatabaseCatalog | null { return this.catalog; }
+
+  /** Internal: resolve per-DB OnionPIR params from serverInfo. */
+  private getOnionPirForDb(dbId: number) {
+    if (dbId === 0) return this.serverInfo?.onionpir;
+    return this.serverInfo?.databases?.find(d => d.db_id === dbId)?.onionpir;
+  }
+
+  /** Internal: resolve per-DB OnionPIR Merkle info from serverInfo. */
+  private getOnionPirMerkleForDb(dbId: number): OnionPirMerkleInfoJson | undefined {
+    if (dbId === 0) return this.serverInfo?.onionpir_merkle;
+    return this.serverInfo?.databases?.find(d => d.db_id === dbId)?.onionpir_merkle;
+  }
+
+  /**
+   * Re-populate BFV params (indexBins, chunkBins, tagSeed, etc.) from the
+   * currently active dbId's per-DB info. Falls back to main-DB params if
+   * the active DB does not expose its own `onionpir` block.
+   */
+  private updateParamsForActiveDb(): void {
+    const opi = this.getOnionPirForDb(this.dbId) ?? this.serverInfo?.onionpir;
+    if (!opi) return;
+    this.indexK = opi.index_k;
+    this.chunkK = opi.chunk_k;
+    this.indexBins = opi.index_bins_per_table;
+    this.chunkBins = opi.chunk_bins_per_table;
+    this.tagSeed = opi.tag_seed;
+    this.totalPacked = opi.total_packed_entries;
+    this.indexSlotsPerBin = opi.index_slots_per_bin;
+    this.indexSlotSize = opi.index_slot_size;
+  }
+
+  /**
+   * Whether this database has OnionPIR per-bin Merkle data available.
+   * Works for both the main DB (dbId=0) and delta DBs.
+   */
+  hasMerkleForDb(dbId: number): boolean {
+    const info = this.getOnionPirMerkleForDb(dbId);
+    return !!(info && (info.index?.root || info.data?.root));
+  }
+
+  /** Merkle super-root hex for a specific DB — returns the INDEX root. */
+  getMerkleRootHexForDb(dbId: number): string | undefined {
+    return this.getOnionPirMerkleForDb(dbId)?.index?.root;
   }
 
   private log(message: string, level: 'info' | 'success' | 'error' = 'info'): void {
@@ -373,19 +484,11 @@ export class OnionPirWebClient {
     const info = await fetchServerInfoJson(this.ws!);
     this.serverInfo = info;
 
+    // Default to main-DB params (active dbId defaults to 0). Fall back to
+    // top-level DPF params if the server has no OnionPIR data at all.
     if (info.onionpir) {
-      // Use OnionPIR-specific parameters
-      const opi = info.onionpir;
-      this.indexK = opi.index_k;
-      this.chunkK = opi.chunk_k;
-      this.indexBins = opi.index_bins_per_table;
-      this.chunkBins = opi.chunk_bins_per_table;
-      this.tagSeed = opi.tag_seed;
-      this.totalPacked = opi.total_packed_entries;
-      this.indexSlotsPerBin = opi.index_slots_per_bin;
-      this.indexSlotSize = opi.index_slot_size;
+      this.updateParamsForActiveDb();
     } else {
-      // Fallback to top-level DPF params (server without OnionPIR data)
       this.indexK = info.index_k;
       this.chunkK = info.chunk_k;
       this.indexBins = info.index_bins_per_table;
@@ -397,6 +500,15 @@ export class OnionPirWebClient {
     }
 
     this.log(`Server (JSON): index K=${this.indexK} bins=${this.indexBins} slots_per_bin=${this.indexSlotsPerBin}, chunk K=${this.chunkK} bins=${this.chunkBins}, total_packed=${this.totalPacked}`);
+
+    // Fetch the database catalog so the UI can populate a selector.
+    try {
+      this.catalog = await fetchDatabaseCatalog(this.ws!);
+      this.log(`Catalog: ${this.catalog.databases.length} database(s)`);
+    } catch (e: any) {
+      this.log(`Catalog fetch failed (non-fatal): ${e.message}`, 'info');
+      this.catalog = null;
+    }
   }
 
   // ─── Index bin scanning (delegates to shared scan.ts) ────────────────────
@@ -414,27 +526,37 @@ export class OnionPirWebClient {
   async queryBatch(
     scriptHashes: Uint8Array[],
     onProgress?: (step: string, detail: string) => void,
-    dbId: number = 0,
+    dbIdOverride?: number,
   ): Promise<(QueryResult | null)[]> {
     if (!this.isConnected()) throw new Error('Not connected');
     if (!this.wasmModule) throw new Error('WASM not loaded');
 
+    const dbId = dbIdOverride ?? this.dbId;
+    // Consume the test hook override (if any) — one-shot replacement of the
+    // input scripthashes so harnesses can drive queries at known-present
+    // delta entries without needing an H160 preimage.
+    const override = this._scriptHashOverride;
+    this._scriptHashOverride = undefined;
+    if (override && override.length === scriptHashes.length) {
+      scriptHashes = override;
+    }
+
+    // Re-sync BFV params with the requested DB. This lets the caller switch
+    // between main and delta in a single queryBatch call. For dbId != 0,
+    // if the server didn't advertise per-DB onionpir params, this falls
+    // back to the main-DB params (which may produce garbage on decryption).
+    if (dbId !== this.dbId) {
+      const prev = this.dbId;
+      this.dbId = dbId;
+      this.updateParamsForActiveDb();
+      this.log(`queryBatch: transient switch dbId=${prev} -> dbId=${dbId}`);
+    } else {
+      this.updateParamsForActiveDb();
+    }
+
     const N = scriptHashes.length;
     const progress = onProgress || (() => {});
-    this.log(`=== Batch query: ${N} script hashes (dbId=${dbId}) ===`);
-
-    // NOTE: For dbId != 0 (delta DBs) the BFV parameters can differ because
-    // each DB may have a different `bins_per_table`. For now, the JSON server
-    // info only exposes the main DB's OnionPIR params. Querying a different
-    // DB is plumbed end-to-end through the wire format, but the caller is
-    // responsible for ensuring the params match — typically by configuring
-    // a separate client instance per DB. The current implementation reuses
-    // `this.indexBins` / `this.chunkBins`, so it only works correctly for
-    // a DB whose OnionPIR params match the JSON-advertised ones. The Rust
-    // server will route the query to the correct worker via db_id regardless.
-    if (dbId !== 0) {
-      this.log(`Note: dbId=${dbId} OnionPIR query — using main-DB params for BFV (server routes by db_id)`, 'info');
-    }
+    this.log(`=== Batch query: ${N} script hashes (dbId=${dbId}, bins=${this.indexBins}/${this.chunkBins}) ===`);
 
     // ── Generate keys and create per-level clients ─────────────────────
     // Generate keys with a real num_entries (not 0) — keys generated with
@@ -532,7 +654,7 @@ export class OnionPirWebClient {
           // Yield after every group — each generateQuery is ~20-50ms of WASM FHE work
           if (g % 3 === 2) {
             progress('Level 1', `Round ${roundNum}/${totalRounds}: ${(g + 1) * 2}/${this.indexK * 2} queries...`);
-            await new Promise(r => setTimeout(r, 0));
+            await yieldToMain();
           }
         }
 
@@ -564,7 +686,7 @@ export class OnionPirWebClient {
             }
             // Yield after every decrypt — each is ~100ms+ of WASM FHE work
             progress('Level 1', `Round ${roundNum}/${totalRounds}: decrypted ${decrypted}/${totalDecrypts}...`);
-            await new Promise(r => setTimeout(r, 0));
+            await yieldToMain();
           }
         }
       }
@@ -611,7 +733,7 @@ export class OnionPirWebClient {
       if (uniqueEntryIds.length > 0) {
         // Create chunk client from same secret key (no extra registration needed)
         progress('Level 2', 'Setting up chunk phase...');
-        await new Promise(r => setTimeout(r, 0));
+        await yieldToMain();
         chunkClient = this.wasmModule!.createClientFromSecretKey(this.chunkBins, clientId, secretKey);
 
         // Build reverse index once: group → entry_ids (single pass over 815K entries)
@@ -642,7 +764,7 @@ export class OnionPirWebClient {
               cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, reverseIndex, this.chunkBins));
               tablesBuilt++;
               progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: built ${tablesBuilt} cuckoo tables...`);
-              await new Promise(r => setTimeout(r, 0));
+              await yieldToMain();
             }
 
             const keys: bigint[] = [];
@@ -669,7 +791,7 @@ export class OnionPirWebClient {
             // Yield frequently — each generateQuery is expensive WASM FHE work
             if (g % 3 === 2) {
               progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: ${g + 1}/${this.chunkK} queries...`);
-              await new Promise(r => setTimeout(r, 0));
+              await yieldToMain();
             }
           }
 
@@ -690,7 +812,7 @@ export class OnionPirWebClient {
             dataLeafPositions.set(qi.entryId, qi.group * this.chunkBins + qi.bin);
             chunkDecrypted++;
             progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: decrypted ${chunkDecrypted}/${queryInfos.length}...`);
-            await new Promise(r => setTimeout(r, 0));
+            await yieldToMain();
           }
         }
       }
@@ -749,8 +871,8 @@ export class OnionPirWebClient {
           numChunks: ir.numEntries,
           numRounds: chunkRoundsCount,
           isWhale: false,
-          merkleIndexRoot: this.serverInfo?.onionpir_merkle?.index?.root,
-          merkleDataRoot: this.serverInfo?.onionpir_merkle?.data?.root,
+          merkleIndexRoot: this.getOnionPirMerkleForDb(this.dbId)?.index?.root,
+          merkleDataRoot: this.getOnionPirMerkleForDb(this.dbId)?.data?.root,
           indexBinHash: indexBinHashes[qi] ?? undefined,
           indexLeafPos: indexLeafPos[qi] ?? undefined,
           dataBinHashes: addrDataBinHashes,
@@ -774,15 +896,14 @@ export class OnionPirWebClient {
   // MERKLE VERIFICATION
   // ═══════════════════════════════════════════════════════════════════════
 
-  /** Check if server supports OnionPIR per-bin Merkle verification */
+  /** Check if the ACTIVE database supports OnionPIR per-bin Merkle verification */
   hasMerkle(): boolean {
-    const om = this.serverInfo?.onionpir_merkle;
-    return !!(om && (om.index?.root || om.data?.root));
+    return this.hasMerkleForDb(this.dbId);
   }
 
-  /** Get the Merkle root hash hex (for display — returns INDEX root) */
+  /** Get the INDEX sub-tree root hex for the active DB (for display). */
   getMerkleRootHex(): string | undefined {
-    return this.serverInfo?.onionpir_merkle?.index?.root;
+    return this.getMerkleRootHexForDb(this.dbId);
   }
 
   /**
@@ -799,8 +920,11 @@ export class OnionPirWebClient {
   ): Promise<boolean[]> {
     if (!this.isConnected()) throw new Error('Not connected');
     if (!this.wasmModule) throw new Error('WASM not loaded');
-    const merkle = this.serverInfo?.onionpir_merkle;
-    if (!merkle) throw new Error('Server does not support OnionPIR Merkle');
+    // Per-DB Merkle lookup: falls back to the top-level `onionpir_merkle`
+    // when dbId=0 (backward compatible with older servers that only emit
+    // main-DB Merkle info at the top level).
+    const merkle = this.getOnionPirMerkleForDb(this.dbId);
+    if (!merkle) throw new Error(`OnionPIR Merkle not available for dbId=${this.dbId}`);
     if (!this.fheSecretKey) throw new Error('No FHE keys — call queryBatch() first');
 
     const progress = onProgress || (() => {});
@@ -970,7 +1094,7 @@ export class OnionPirWebClient {
           } else {
             groupInfo.set(pbcGroup, { gid, targetBin });
           }
-          await new Promise(r => setTimeout(r, 0));
+          await yieldToMain();
         }
 
         // Generate K FHE queries
@@ -983,10 +1107,10 @@ export class OnionPirWebClient {
             const info = groupInfo.get(b);
             const bin = info ? info.targetBin : Number(this.rng.nextU64() % BigInt(levelInfo.bins_per_table));
             queries.push(sibClient.generateQuery(bin));
-            if (b % 5 === 4) await new Promise(r => setTimeout(r, 0));
+            if (b % 5 === 4) await yieldToMain();
           }
 
-          const batchMsg = encodeBatchQuery(reqCode, level * 100 + ri, queries);
+          const batchMsg = encodeBatchQuery(reqCode, level * 100 + ri, queries, this.dbId);
           const respRaw = await this.sendRaw(batchMsg);
           const respPayload = respRaw.slice(4);
           if (respPayload[0] !== respCode) {
@@ -1054,17 +1178,25 @@ export class OnionPirWebClient {
 
   // ─── Tree-top cache fetch (per sub-tree) ───────────────────────────
 
-  private indexTreeTopCache: { rawBytes: Uint8Array; parsed: TreeTopCache } | null = null;
-  private dataTreeTopCache: { rawBytes: Uint8Array; parsed: TreeTopCache } | null = null;
+  // Tree-top caches are per-DB: each DB has its own INDEX and DATA sub-tree
+  // tops. Invalidated on setDbId() and wrapped to include the dbId in the
+  // cache key so a stale switch never returns the wrong tops.
+  private indexTreeTopCache: { rawBytes: Uint8Array; parsed: TreeTopCache; dbId: number } | null = null;
+  private dataTreeTopCache: { rawBytes: Uint8Array; parsed: TreeTopCache; dbId: number } | null = null;
 
   private async fetchTreeTopCache(treeName: 'index' | 'data'): Promise<{ rawBytes: Uint8Array; parsed: TreeTopCache }> {
     const cached = treeName === 'index' ? this.indexTreeTopCache : this.dataTreeTopCache;
-    if (cached) return cached;
+    if (cached && cached.dbId === this.dbId) return cached;
 
     const reqCode = treeName === 'index' ? REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP : REQ_ONIONPIR_MERKLE_DATA_TREE_TOP;
     const respCode = treeName === 'index' ? RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP : RESP_ONIONPIR_MERKLE_DATA_TREE_TOP;
 
-    const req = new Uint8Array([1, 0, 0, 0, reqCode]);
+    // Wire: [4B len][1B req]([1B db_id] if non-zero, backward compatible).
+    const payloadLen = this.dbId !== 0 ? 2 : 1;
+    const req = new Uint8Array(4 + payloadLen);
+    new DataView(req.buffer).setUint32(0, payloadLen, true);
+    req[4] = reqCode;
+    if (this.dbId !== 0) req[5] = this.dbId;
     const raw = await this.sendRaw(req);
 
     const variant = raw[4];
@@ -1074,11 +1206,11 @@ export class OnionPirWebClient {
     const treeTopBytes = raw.slice(5);
     const parsed = parseTreeTopCache(treeTopBytes);
 
-    const result = { rawBytes: treeTopBytes, parsed };
+    const result = { rawBytes: treeTopBytes, parsed, dbId: this.dbId };
     if (treeName === 'index') this.indexTreeTopCache = result;
     else this.dataTreeTopCache = result;
 
-    this.log(`Fetched ${treeName} tree-top: ${treeTopBytes.length} bytes, ${parsed.levels.length} levels`);
+    this.log(`Fetched ${treeName} tree-top (db=${this.dbId}): ${treeTopBytes.length} bytes, ${parsed.levels.length} levels`);
     return result;
   }
 }

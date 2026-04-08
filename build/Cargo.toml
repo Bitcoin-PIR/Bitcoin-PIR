@@ -111,6 +111,10 @@ name = "delta_gen_1"
 path = "src/delta_gen_1_build_chunks.rs"
 
 [[bin]]
+name = "delta_gen_1_onion"
+path = "src/delta_gen_1_onion.rs"
+
+[[bin]]
 name = "build_cuckoo_generic"
 path = "src/build_cuckoo_generic.rs"
 

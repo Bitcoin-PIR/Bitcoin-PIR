@@ -15,23 +15,60 @@
 //!   - onion_index_meta.bin: header with parameters for the server to load
 //!
 //! Usage:
-//!   cargo run --release -p build --bin gen_3_onion
+//!   cargo run --release -p build --bin gen_3_onion [-- --data-dir <dir>]
+//!
+//! With no flags, reads `/Volumes/Bitcoin/data/intermediate/onion_index.bin`
+//! and writes outputs to `/Volumes/Bitcoin/data/`.
+//!
+//! With `--data-dir <D>`, reads `<D>/onion_index.bin` and writes all outputs
+//! under `<D>/`. Use this for delta DB builds.
 
 use memmap2::Mmap;
 use onionpir::{self, Server as PirServer, Client as PirClient};
 use rayon::prelude::*;
+use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-// ─── Constants ──────────────────────────────────────────────────────────────
+// ─── Default paths (used when --data-dir is not specified) ──────────────────
 
-const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_index.bin";
-const OUTPUT_DIR: &str = "/Volumes/Bitcoin/data/onion_index_pir";
-const META_FILE: &str = "/Volumes/Bitcoin/data/onion_index_meta.bin";
-const BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_index_bin_hashes.bin";
+const DEFAULT_INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_index.bin";
+const DEFAULT_OUTPUT_DIR: &str = "/Volumes/Bitcoin/data/onion_index_pir";
+const DEFAULT_META_FILE: &str = "/Volumes/Bitcoin/data/onion_index_meta.bin";
+const DEFAULT_BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_index_bin_hashes.bin";
+
+/// Resolve input/output paths from optional `--data-dir <D>` argument.
+fn resolve_paths() -> (String, PathBuf, String, String) {
+    let args: Vec<String> = env::args().collect();
+    let mut data_dir: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--data-dir" {
+            if let Some(v) = args.get(i + 1) {
+                data_dir = Some(v.clone());
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    match data_dir {
+        Some(d) => (
+            format!("{}/onion_index.bin", d),
+            PathBuf::from(format!("{}/onion_index_pir", d)),
+            format!("{}/onion_index_meta.bin", d),
+            format!("{}/onion_index_bin_hashes.bin", d),
+        ),
+        None => (
+            DEFAULT_INDEX_FILE.to_string(),
+            PathBuf::from(DEFAULT_OUTPUT_DIR),
+            DEFAULT_META_FILE.to_string(),
+            DEFAULT_BIN_HASHES_FILE.to_string(),
+        ),
+    }
+}
 
 /// OnionPIR index entry from gen_1_onion: 20B script_hash + 4B entry_id + 2B offset + 1B num_entries
 const ONION_INDEX_RECORD_SIZE: usize = 27;
@@ -283,9 +320,17 @@ fn main() {
     println!("=== gen_3_onion: Build OnionPIR Index Database ===\n");
     let total_start = Instant::now();
 
+    let (index_file_path, output_dir, meta_file, bin_hashes_file) = resolve_paths();
+    println!("Paths:");
+    println!("  Input index:     {}", index_file_path);
+    println!("  Output PIR dir:  {}", output_dir.display());
+    println!("  Output meta:     {}", meta_file);
+    println!("  Output hashes:   {}", bin_hashes_file);
+    println!();
+
     // ── 1. Read index file ──────────────────────────────────────────────
-    println!("[1] Memory-mapping index file: {}", INDEX_FILE);
-    let file = File::open(INDEX_FILE).expect("open index file");
+    println!("[1] Memory-mapping index file: {}", index_file_path);
+    let file = File::open(&index_file_path).expect("open index file");
     let mmap = unsafe { Mmap::map(&file) }.expect("mmap index");
     let n = mmap.len() / ONION_INDEX_RECORD_SIZE;
     assert_eq!(mmap.len() % ONION_INDEX_RECORD_SIZE, 0, "index file not aligned");
@@ -371,7 +416,7 @@ fn main() {
 
     // ── 4. Build OnionPIR databases ─────────────────────────────────────
     println!("\n[4] Building OnionPIR databases (push_chunk → preprocess → save)...");
-    fs::create_dir_all(OUTPUT_DIR).expect("create output dir");
+    fs::create_dir_all(&output_dir).expect("create output dir");
 
     let t_pir = Instant::now();
     let p = onionpir::params_info(bins_per_table as u64);
@@ -387,7 +432,7 @@ fn main() {
 
     // Process groups sequentially (OnionPIR Server is not Send)
     for (group_id, table, _) in &cuckoo_results {
-        let preproc_path = Path::new(OUTPUT_DIR).join(format!("group_{}.bin", group_id));
+        let preproc_path = output_dir.join(format!("group_{}.bin", group_id));
 
         // Check if already preprocessed
         let mut server = PirServer::new(bins_per_table as u64);
@@ -429,10 +474,10 @@ fn main() {
     println!("  All groups built in {:.2?}", t_pir.elapsed());
 
     // ── 5. Save metadata ────────────────────────────────────────────────
-    println!("\n[5] Saving metadata to {}...", META_FILE);
+    println!("\n[5] Saving metadata to {}...", meta_file);
     {
-        let meta_file = File::create(META_FILE).expect("create meta file");
-        let mut w = BufWriter::new(meta_file);
+        let meta_out = File::create(&meta_file).expect("create meta file");
+        let mut w = BufWriter::new(meta_out);
         let magic: u64 = 0xBA7C_0010_0000_0002;
         w.write_all(&magic.to_le_bytes()).unwrap();
         w.write_all(&(K as u32).to_le_bytes()).unwrap();
@@ -465,14 +510,14 @@ fn main() {
         eprintln!();
 
         // Header: [4B K][4B bins_per_table]
-        let f = File::create(BIN_HASHES_FILE).expect("create bin hashes file");
+        let f = File::create(&bin_hashes_file).expect("create bin hashes file");
         let mut w = BufWriter::new(f);
         w.write_all(&(K as u32).to_le_bytes()).unwrap();
         w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
         w.write_all(&bin_hashes).unwrap();
         w.flush().unwrap();
         println!("  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
-            total_bins, 8 + total_bins * 32, BIN_HASHES_FILE, t_hash.elapsed());
+            total_bins, 8 + total_bins * 32, bin_hashes_file, t_hash.elapsed());
     }
 
     // ── 7. Verify with test query ───────────────────────────────────────
@@ -518,7 +563,7 @@ fn main() {
     println!("  Test entry: index={}, bin={}, tag=0x{:016x}", test_idx, test_bin, test_tag);
 
     // Load the preprocessed database and query
-    let preproc_path = Path::new(OUTPUT_DIR).join("group_0.bin");
+    let preproc_path = output_dir.join("group_0.bin");
     let mut server = PirServer::new(bins_per_table as u64);
     assert!(server.load_db(preproc_path.to_str().unwrap()), "failed to load group_0.bin");
 
