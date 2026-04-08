@@ -528,6 +528,21 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             </div>
         </details>
 
+        <!-- Database selector (shown only when the server has a multi-DB catalog) -->
+        <details id="hp-advancedDbDetails" style="display: none; margin: 10px 0;">
+            <summary style="cursor: pointer; font-size: 13px; color: #888;">Advanced: query a specific database</summary>
+            <div id="hp-dbSelectorRow" style="margin-top: 8px; padding: 8px 12px; background: #f0f8ff; border: 1px solid #bee5eb; border-radius: 6px;">
+                <label for="hp-dbSelect" style="display: inline; font-size: 13px; color: #0c5460; margin-right: 8px;">Database:</label>
+                <select id="hp-dbSelect" style="padding: 4px 8px; border: 1px solid #bee5eb; border-radius: 4px; font-size: 13px; background: white;">
+                    <option value="0">Main UTXO (loading...)</option>
+                </select>
+                <span id="hp-dbInfo" style="font-size: 12px; color: #888; margin-left: 10px;"></span>
+                <div style="margin-top: 6px; font-size: 12px; color: #666;">
+                    Switching databases re-downloads hints for the new database (cached per PRP backend, so switching back is instant).
+                </div>
+            </div>
+        </details>
+
         <!-- Offline phase indicator (unique to HarmonyPIR) -->
         <div id="hp-offlineContainer" style="margin: 10px 0; display: none;">
             <div style="background: #e8f4f8; border: 1px solid #8cc4d7; border-radius: 6px; padding: 12px;">
@@ -1804,6 +1819,95 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         let hpClient = null;
         let hpHintsLoaded = false;
         let hpCurrentPrp = 0;
+        let hpSwitchingDb = false;
+
+        function hpPopulateDbSelector() {
+            const catalog = hpClient?.getCatalog();
+            const select = document.getElementById('hp-dbSelect');
+            const advancedDetails = document.getElementById('hp-advancedDbDetails');
+            const infoSpan = document.getElementById('hp-dbInfo');
+            select.innerHTML = '';
+
+            if (!catalog || catalog.databases.length <= 1) {
+                advancedDetails.style.display = 'none';
+                return;
+            }
+
+            for (const db of catalog.databases) {
+                const opt = document.createElement('option');
+                opt.value = db.dbId;
+                if (db.dbType === 0) {
+                    opt.textContent = `[${db.dbId}] ${db.name} (full, height ${db.height.toLocaleString()})`;
+                } else {
+                    opt.textContent = `[${db.dbId}] ${db.name} (delta, ${db.baseHeight.toLocaleString()} \u2192 ${db.height.toLocaleString()})`;
+                }
+                if (db.dbId === hpClient.getDbId()) opt.selected = true;
+                select.appendChild(opt);
+            }
+
+            const refreshInfo = () => {
+                const dbId = parseInt(select.value);
+                const entry = catalog.databases.find(d => d.dbId === dbId);
+                if (entry) {
+                    const merkleTag = entry.hasBucketMerkle ? ', Merkle' : '';
+                    infoSpan.textContent = `index_bins=${entry.indexBinsPerTable.toLocaleString()}, chunk_bins=${entry.chunkBinsPerTable.toLocaleString()}${merkleTag}`;
+                }
+            };
+            refreshInfo();
+            advancedDetails.style.display = 'block';
+        }
+
+        async function hpSwitchDb(newDbId) {
+            if (!hpClient || hpSwitchingDb) return;
+            if (newDbId === hpClient.getDbId()) return;
+            if (hpSwitchingPrp) { log('HarmonyPIR: PRP switch in progress, please retry.', 'error'); return; }
+
+            hpSwitchingDb = true;
+            const statusDiv = document.getElementById('hp-status');
+            const prevStatusClass = statusDiv.className;
+            document.getElementById('hp-queryBtn').disabled = true;
+            try {
+                // Cache the current DB's hints before switching so a round-trip is free.
+                if (hpHintsLoaded) {
+                    statusDiv.textContent = 'Status: Caching hints...';
+                    statusDiv.className = 'status connecting';
+                    await hpClient.saveHintsToCache();
+                }
+
+                hpClient.setDbId(newDbId);
+                hpHintsLoaded = false;
+                log(`HarmonyPIR: Switched to db_id=${newDbId}`, 'info');
+
+                // Try a cache hit first (instant); otherwise re-init groups and re-download.
+                if (await hpClient.restoreHintsFromCache(hpCurrentPrp)) {
+                    hpHintsLoaded = true;
+                    statusDiv.textContent = 'Status: Ready';
+                    statusDiv.className = 'status connected';
+                    const offlineLabel = document.getElementById('hp-offlineLabel');
+                    if (offlineLabel) {
+                        offlineLabel.textContent = 'Hints restored from cache (~' + hpClient.estimateHintSize() + ' MB). Ready for queries.';
+                    }
+                    log(`HarmonyPIR: Restored cached hints for db=${newDbId}`, 'success');
+                } else {
+                    await hpClient.initGroups();
+                    document.getElementById('hp-offlineContainer').style.display = 'block';
+                    statusDiv.textContent = 'Status: Downloading hints for new database...';
+                    statusDiv.className = 'status connecting';
+                    await hpFetchHints();
+                    if (hpHintsLoaded) {
+                        statusDiv.textContent = 'Status: Ready';
+                        statusDiv.className = 'status connected';
+                    }
+                }
+            } catch (error) {
+                log(`HarmonyPIR db switch failed: ${error.message}`, 'error');
+                statusDiv.textContent = 'Status: Error switching database';
+                statusDiv.className = prevStatusClass;
+            } finally {
+                hpSwitchingDb = false;
+                document.getElementById('hp-queryBtn').disabled = false;
+            }
+        }
 
         function hpSetButtons(connected) {
             document.getElementById('hp-connectBtn').disabled = connected;
@@ -1940,6 +2044,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     statusDiv.textContent = 'Status: Ready';
                 }
 
+                // Expose the multi-DB selector now that the catalog is loaded.
+                hpPopulateDbSelector();
+
                 // Update UI when query server disconnects (e.g. idle timeout).
                 hpClient.onQueryServerClose(() => {
                     statusDiv.textContent = 'Status: Disconnected (hints preserved)';
@@ -1969,6 +2076,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 hpClient = null;
                 hpHintsLoaded = false;
                 document.getElementById('hp-offlineContainer').style.display = 'none';
+                document.getElementById('hp-advancedDbDetails').style.display = 'none';
             } else {
                 // Soft disconnect: keep hints alive.
                 hpClient.disconnectQueryServer();
@@ -2179,6 +2287,27 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('hp-connectBtn').addEventListener('click', hpConnect);
         document.getElementById('hp-disconnectBtn').addEventListener('click', hpDisconnect);
         document.getElementById('hp-queryBtn').addEventListener('click', hpQueryUtxos);
+        document.getElementById('hp-dbSelect').addEventListener('change', async (e) => {
+            const newDbId = parseInt(e.target.value);
+            if (!hpClient) return;
+            if (newDbId === hpClient.getDbId()) return;
+            // Revert the visual selection if the switch fails; hpSwitchDb sets dbId on success.
+            try {
+                await hpSwitchDb(newDbId);
+            } finally {
+                if (hpClient) e.target.value = String(hpClient.getDbId());
+                // Refresh the info label for the new selection.
+                const catalog = hpClient?.getCatalog();
+                if (catalog) {
+                    const entry = catalog.databases.find(d => d.dbId === parseInt(e.target.value));
+                    const infoSpan = document.getElementById('hp-dbInfo');
+                    if (entry && infoSpan) {
+                        const merkleTag = entry.hasBucketMerkle ? ', Merkle' : '';
+                        infoSpan.textContent = `index_bins=${entry.indexBinsPerTable.toLocaleString()}, chunk_bins=${entry.chunkBinsPerTable.toLocaleString()}${merkleTag}`;
+                    }
+                }
+            }
+        });
         hpSetButtons(false);
     </script>
 
