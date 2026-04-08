@@ -276,6 +276,7 @@ fn main() {
                 round_id: (ri * INDEX_CUCKOO_NUM_HASHES + h) as u16,
                 sub_queries_per_group: 1,
                 items,
+                db_id: 0,
             };
 
             // Wire round-trip + server.
@@ -466,7 +467,7 @@ fn main() {
                 }
             }
 
-            let batch = HarmonyBatchQuery { level: 1, round_id: (pri * CHUNK_CUCKOO_NUM_HASHES + h) as u16, sub_queries_per_group: 1, items };
+            let batch = HarmonyBatchQuery { level: 1, round_id: (pri * CHUNK_CUCKOO_NUM_HASHES + h) as u16, sub_queries_per_group: 1, items, db_id: 0 };
             let req_enc = Request::HarmonyBatchQuery(batch).encode();
             let decoded = match Request::decode(&req_enc[4..]).unwrap() { Request::HarmonyBatchQuery(q) => q, _ => panic!() };
             let t0 = Instant::now();

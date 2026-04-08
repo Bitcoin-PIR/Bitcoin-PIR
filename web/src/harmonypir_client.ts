@@ -33,7 +33,10 @@ import { cuckooPlace, planRounds } from './pbc.js';
 import { readVarint, decodeUtxoData } from './codec.js';
 import { findEntryInIndexResult, findChunkInResult } from './scan.js';
 import { ManagedWebSocket } from './ws.js';
-import { fetchServerInfoJson, type ServerInfoJson } from './server-info.js';
+import {
+  fetchServerInfoJson, fetchDatabaseCatalog,
+  type ServerInfoJson, type DatabaseCatalog, type DatabaseCatalogEntry,
+} from './server-info.js';
 import { computeBinLeafHash, computeParentN, ZERO_HASH } from './merkle.js';
 import { sha256 } from './hash.js';
 
@@ -179,22 +182,28 @@ export class HarmonyPirClient {
 
   // Server params
   private serverInfo: ServerInfoJson | null = null;
+  private catalog: DatabaseCatalog | null = null;
+  // Active params: reflect the currently selected database (main or delta).
   private indexBinsPerTable = 0;
   private chunkBinsPerTable = 0;
   private tagSeed = 0n;
   private prpKey: Uint8Array;
+  /** Currently selected database ID (0 = main, 1+ = delta). */
+  private dbId = 0;
 
   // Actual hint bytes received during download.
   private totalHintBytes = 0;
 
-  // Cache of serialized hint state per PRP backend.
-  private hintCache: Map<number, {
+  // Cache of serialized hint state per (dbId, PRP backend) pair.
+  // Each (dbId, prpBackend) combination needs its own hints because
+  // the underlying tables (and thus cell layouts) differ between databases.
+  private hintCache: Map<string, {
     prpKey: Uint8Array;
     groups: Map<number, Uint8Array>;
     totalHintBytes: number;
   }> = new Map();
 
-  // Whether hints have been loaded for the current PRP backend.
+  // Whether hints have been loaded for the current (dbId, PRP backend).
   hintsLoaded = false;
 
   // Inspector data from the last queryBatch call.
@@ -291,10 +300,81 @@ export class HarmonyPirClient {
   async fetchServerInfo(): Promise<void> {
     const info = await fetchServerInfoJson(this.queryWs!);
     this.serverInfo = info;
+    // Load main DB params by default; switching dbs is done via setDbId().
     this.indexBinsPerTable = info.index_bins_per_table;
     this.chunkBinsPerTable = info.chunk_bins_per_table;
     this.tagSeed = info.tag_seed;
     this.log(`Server info (JSON): indexBins=${this.indexBinsPerTable}, chunkBins=${this.chunkBinsPerTable}`);
+
+    // Fetch the database catalog (older servers may not support this).
+    try {
+      this.catalog = await fetchDatabaseCatalog(this.queryWs!);
+      if (this.catalog.databases.length > 1) {
+        this.log(`Database catalog: ${this.catalog.databases.length} databases available`);
+        for (const db of this.catalog.databases) {
+          this.log(`  [${db.dbId}] ${db.name} (height=${db.height}, index_bins=${db.indexBinsPerTable}, chunk_bins=${db.chunkBinsPerTable})`);
+        }
+      }
+      // Re-apply current dbId in case the catalog tells us about non-zero DBs.
+      this.applyDbParams(this.dbId);
+    } catch {
+      this.log('Database catalog not available (older server)');
+      this.catalog = null;
+    }
+  }
+
+  /** Return the database catalog (fetched on connect). */
+  getCatalog(): DatabaseCatalog | null {
+    return this.catalog;
+  }
+
+  /** Find a catalog entry by db_id. */
+  getCatalogEntry(dbId: number): DatabaseCatalogEntry | undefined {
+    return this.catalog?.databases.find(d => d.dbId === dbId);
+  }
+
+  /** Currently active database ID. */
+  getDbId(): number {
+    return this.dbId;
+  }
+
+  /**
+   * Switch the active database. Hints from the previous DB stay cached so
+   * switching back is cheap. Caller must call initGroups() and fetchHints()
+   * (or restoreHintsFromCache) for the new DB before issuing queries.
+   */
+  setDbId(dbId: number): void {
+    if (dbId !== 0 && this.catalog && !this.getCatalogEntry(dbId)) {
+      throw new Error(`Unknown database dbId=${dbId}`);
+    }
+    this.dbId = dbId;
+    this.applyDbParams(dbId);
+    // The new DB has its own (potentially different) bin layout, so any
+    // previously-loaded hints in the WASM groups are no longer valid.
+    this.hintsLoaded = false;
+  }
+
+  /** Update active params from the catalog entry for the given dbId. */
+  private applyDbParams(dbId: number): void {
+    if (dbId === 0 || !this.catalog) {
+      // Use main DB params from server-info JSON.
+      if (this.serverInfo) {
+        this.indexBinsPerTable = this.serverInfo.index_bins_per_table;
+        this.chunkBinsPerTable = this.serverInfo.chunk_bins_per_table;
+        this.tagSeed = this.serverInfo.tag_seed;
+      }
+      return;
+    }
+    const entry = this.getCatalogEntry(dbId);
+    if (!entry) return;
+    this.indexBinsPerTable = entry.indexBinsPerTable;
+    this.chunkBinsPerTable = entry.chunkBinsPerTable;
+    this.tagSeed = entry.tagSeed;
+  }
+
+  /** Cache key for hints: combines dbId + prpBackend. */
+  private hintCacheKey(dbId: number, backend: number): string {
+    return `${dbId}:${backend}`;
   }
 
   /** Initialize WASM group instances on workers (or main thread fallback). */
@@ -386,8 +466,8 @@ export class HarmonyPirClient {
    * Query a single Bitcoin address via HarmonyPIR.
    * Delegates to queryBatch with a single address.
    */
-  async query(address: string): Promise<HarmonyQueryResult> {
-    const results = await this.queryBatch([address]);
+  async query(address: string, dbId?: number): Promise<HarmonyQueryResult> {
+    const results = await this.queryBatch([address], undefined, dbId);
     return results.get(0) ?? { address, scriptHash: '', utxos: [], whale: false };
   }
 
@@ -463,8 +543,12 @@ export class HarmonyPirClient {
     // Build hint request.
     const groupIds = Array.from({ length: numGroups }, (_, i) => i);
     // Wire: [1B variant][16B prp_key][1B prp_backend][1B level][1B num_groups][per group: 1B id]
+    //       [optional trailing 1B db_id, only when non-zero — backward compatible]
     const backend = this.config.prpBackend ?? 0;
-    const msg = new Uint8Array(1 + 16 + 1 + 1 + 1 + numGroups);
+    const dbId = this.dbId;
+    const baseLen = 1 + 16 + 1 + 1 + 1 + numGroups;
+    const msgLen = baseLen + (dbId !== 0 ? 1 : 0);
+    const msg = new Uint8Array(msgLen);
     msg[0] = REQ_HARMONY_HINTS;
     msg.set(this.prpKey, 1);
     msg[17] = backend;
@@ -472,6 +556,9 @@ export class HarmonyPirClient {
     msg[19] = numGroups;
     for (let i = 0; i < numGroups; i++) {
       msg[20 + i] = groupIds[i];
+    }
+    if (dbId !== 0) {
+      msg[baseLen] = dbId;
     }
 
     // Length-prefix and send.
@@ -543,11 +630,22 @@ export class HarmonyPirClient {
   async queryBatch(
     addresses: string[],
     progress?: (phase: string, detail: string) => void,
+    dbId?: number,
   ): Promise<Map<number, HarmonyQueryResult>> {
+    // If a dbId is supplied it must match the active database — switching
+    // databases requires re-running setDbId() + initGroups() + fetchHints()
+    // (or restoreHintsFromCache) because hint state is per-(dbId, backend).
+    if (dbId !== undefined && dbId !== this.dbId) {
+      throw new Error(
+        `queryBatch dbId=${dbId} does not match active dbId=${this.dbId}; ` +
+        `call setDbId() and reload hints before querying a different database.`
+      );
+    }
+
     const tBatchStart = performance.now();
     const N = addresses.length;
     const results = new Map<number, HarmonyQueryResult>();
-    this.log(`Starting batch query for ${N} addresses...`);
+    this.log(`Starting batch query for ${N} addresses (dbId=${this.dbId})...`);
 
     // ── Pre-flight: check hint budget ──
     const remaining = await this.getMinQueriesRemaining();
@@ -950,13 +1048,20 @@ export class HarmonyPirClient {
 
   // ─── Batch wire protocol ───────────────────────────────────────────────────
 
-  /** Encode a HarmonyBatchQuery message (excluding the 4B length prefix). */
+  /** Encode a HarmonyBatchQuery message (excluding the 4B length prefix).
+   *  Wire format mirrors runtime/src/protocol.rs encode_harmony_batch_query:
+   *    [1B variant][1B level][2B round_id][2B num_groups][1B sub_queries_per_group]
+   *    per group: [1B group_id] per sub_query: [4B count][count × 4B u32 LE indices]
+   *    [optional trailing 1B db_id, only when non-zero — backward compatible]
+   */
   private encodeHarmonyBatchRequest(
     level: number,
     roundId: number,
     subQueriesPerGroup: number,
     items: Array<{ groupId: number; subQueryBytes: Uint8Array[] }>,
   ): Uint8Array {
+    const dbId = this.dbId;
+
     // Compute total size.
     let size = 1 + 1 + 2 + 2 + 1; // variant + level + round_id + num_groups + subQ
     for (const item of items) {
@@ -965,6 +1070,7 @@ export class HarmonyPirClient {
         size += 4 + sq.length; // count + indices
       }
     }
+    if (dbId !== 0) size += 1; // trailing db_id byte
 
     const buf = new Uint8Array(size);
     const view = new DataView(buf.buffer);
@@ -983,6 +1089,10 @@ export class HarmonyPirClient {
         view.setUint32(pos, count, true); pos += 4;
         buf.set(sq, pos); pos += sq.length;
       }
+    }
+
+    if (dbId !== 0) {
+      buf[pos++] = dbId;
     }
 
     return buf;
@@ -1538,34 +1648,36 @@ export class HarmonyPirClient {
   // PRP hint caching
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** Save current hint state to cache for the current PRP backend. */
+  /** Save current hint state to cache for the current (dbId, PRP backend). */
   async saveHintsToCache(): Promise<void> {
     if (!this.pool || !this.hintsLoaded) return;
     const backend = this.config.prpBackend ?? 0;
+    const key = this.hintCacheKey(this.dbId, backend);
     const serialized = await this.pool.serializeAll();
-    this.hintCache.set(backend, {
+    this.hintCache.set(key, {
       prpKey: new Uint8Array(this.prpKey),
       groups: serialized,
       totalHintBytes: this.totalHintBytes,
     });
-    this.log(`Cached hints for PRP backend ${backend} (${serialized.size} groups)`);
+    this.log(`Cached hints for db=${this.dbId} backend=${backend} (${serialized.size} groups)`);
   }
 
   /** Try to restore hints from cache for a given PRP backend. Returns true on cache hit. */
   async restoreHintsFromCache(backend: number): Promise<boolean> {
-    const cached = this.hintCache.get(backend);
+    const key = this.hintCacheKey(this.dbId, backend);
+    const cached = this.hintCache.get(key);
     if (!cached || !this.pool) return false;
     this.prpKey = new Uint8Array(cached.prpKey);
     this.totalHintBytes = cached.totalHintBytes;
     await this.pool.deserializeAll(cached.groups, this.prpKey);
     this.hintsLoaded = true;
-    this.log(`Restored ${cached.groups.size} groups from cache`);
+    this.log(`Restored ${cached.groups.size} groups from cache (db=${this.dbId} backend=${backend})`);
     return true;
   }
 
-  /** Check if cached hints exist for a given PRP backend. */
+  /** Check if cached hints exist for the active dbId + given PRP backend. */
   hasCachedHints(backend: number): boolean {
-    return this.hintCache.has(backend);
+    return this.hintCache.has(this.hintCacheKey(this.dbId, backend));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

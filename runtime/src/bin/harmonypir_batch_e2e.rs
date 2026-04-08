@@ -258,6 +258,7 @@ fn main() {
         round_id: 0,
         sub_queries_per_group: sub_q_per_group,
         items: batch_items,
+        db_id: 0,
     };
 
     println!("  Batch request: {} groups × {} sub-queries", batch_query.items.len(), sub_q_per_group);
@@ -482,6 +483,7 @@ fn main() {
                 round_id: h as u16,
                 sub_queries_per_group: 1,
                 items: chunk_batch_items,
+                db_id: 0,
             };
 
             // Wire round-trip.

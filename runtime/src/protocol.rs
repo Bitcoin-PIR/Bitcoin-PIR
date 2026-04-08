@@ -75,23 +75,31 @@ pub struct BatchQuery {
 /// HarmonyPIR hint request: client asks Hint Server to compute hints.
 ///
 /// Wire: [16B prp_key][1B prp_backend][1B level][1B num_groups][per group: 1B id]
+///       [optional trailing 1B db_id, only when non-zero — backward compatible]
 #[derive(Clone, Debug)]
 pub struct HarmonyHintRequest {
     pub prp_key: [u8; 16],
     pub prp_backend: u8,
     pub level: u8,
     pub group_ids: Vec<u8>,
+    /// Database ID (0 = main UTXO, 1+ = delta databases).
+    /// Defaults to 0 for backward compatibility.
+    pub db_id: u8,
 }
 
 /// HarmonyPIR query: client sends T indices for one group to Query Server.
 ///
 /// Wire: [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE indices]
+///       [optional trailing 1B db_id, only when non-zero — backward compatible]
 #[derive(Clone, Debug)]
 pub struct HarmonyQuery {
     pub level: u8,
     pub group_id: u8,
     pub round_id: u16,
     pub indices: Vec<u32>,
+    /// Database ID (0 = main UTXO, 1+ = delta databases).
+    /// Defaults to 0 for backward compatibility.
+    pub db_id: u8,
 }
 
 /// HarmonyPIR query result: server returns T entries for one group.
@@ -110,6 +118,7 @@ pub struct HarmonyQueryResult {
 ///     [1B group_id]
 ///     per sub_query (× sub_queries_per_group):
 ///       [4B count LE][count × 4B u32 LE indices]
+///   [optional trailing 1B db_id, only when non-zero — backward compatible]
 #[derive(Clone, Debug)]
 pub struct HarmonyBatchQuery {
     pub level: u8,
@@ -117,6 +126,9 @@ pub struct HarmonyBatchQuery {
     pub sub_queries_per_group: u8,
     /// Per-group items.  Each item has `sub_queries_per_group` sub-queries.
     pub items: Vec<HarmonyBatchItem>,
+    /// Database ID (0 = main UTXO, 1+ = delta databases).
+    /// Defaults to 0 for backward compatibility.
+    pub db_id: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -273,6 +285,10 @@ impl Request {
                 payload.push(h.level);
                 payload.push(h.group_ids.len() as u8);
                 payload.extend_from_slice(&h.group_ids);
+                // Trailing db_id byte: only appended when non-zero for backward compatibility.
+                if h.db_id != 0 {
+                    payload.push(h.db_id);
+                }
             }
             Request::HarmonyQuery(q) => {
                 payload.push(REQ_HARMONY_QUERY);
@@ -282,6 +298,10 @@ impl Request {
                 payload.extend_from_slice(&(q.indices.len() as u32).to_le_bytes());
                 for idx in &q.indices {
                     payload.extend_from_slice(&idx.to_le_bytes());
+                }
+                // Trailing db_id byte: only appended when non-zero for backward compatibility.
+                if q.db_id != 0 {
+                    payload.push(q.db_id);
                 }
             }
             Request::HarmonyBatchQuery(q) => {
@@ -597,6 +617,7 @@ fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
 
 fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
     // [16B prp_key][1B prp_backend][1B level][1B num_groups][per group: 1B id]
+    // [optional trailing 1B db_id, only when non-zero — backward compatible]
     if data.len() < 19 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony hint request too short"));
     }
@@ -605,15 +626,19 @@ fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
     let prp_backend = data[16];
     let level = data[17];
     let num_groups = data[18] as usize;
-    if data.len() < 19 + num_groups {
+    let pos = 19 + num_groups;
+    if data.len() < pos {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated group list"));
     }
-    let group_ids = data[19..19 + num_groups].to_vec();
+    let group_ids = data[19..pos].to_vec();
+    // Read trailing db_id if present (backward compatible: old clients don't send it).
+    let db_id = if pos < data.len() { data[pos] } else { 0 };
     Ok(HarmonyHintRequest {
         prp_key,
         prp_backend,
         level,
         group_ids,
+        db_id,
     })
 }
 
@@ -632,6 +657,10 @@ fn encode_harmony_batch_query(buf: &mut Vec<u8>, q: &HarmonyBatchQuery) {
                 buf.extend_from_slice(&idx.to_le_bytes());
             }
         }
+    }
+    // Trailing db_id byte: only appended when non-zero for backward compatibility.
+    if q.db_id != 0 {
+        buf.push(q.db_id);
     }
 }
 
@@ -671,7 +700,9 @@ fn decode_harmony_batch_query(data: &[u8]) -> io::Result<HarmonyBatchQuery> {
         }
         items.push(HarmonyBatchItem { group_id, sub_queries });
     }
-    Ok(HarmonyBatchQuery { level, round_id, sub_queries_per_group, items })
+    // Read trailing db_id if present (backward compatible: old clients don't send it).
+    let db_id = if pos < data.len() { data[pos] } else { 0 };
+    Ok(HarmonyBatchQuery { level, round_id, sub_queries_per_group, items, db_id })
 }
 
 fn encode_harmony_batch_result(buf: &mut Vec<u8>, r: &HarmonyBatchResult) {
@@ -825,6 +856,7 @@ fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
 
 fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
     // [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE]
+    // [optional trailing 1B db_id, only when non-zero — backward compatible]
     if data.len() < 8 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony query too short"));
     }
@@ -841,10 +873,13 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
         let off = 8 + i * 4;
         indices.push(u32::from_le_bytes(data[off..off + 4].try_into().unwrap()));
     }
+    // Read trailing db_id if present (backward compatible: old clients don't send it).
+    let db_id = if expected < data.len() { data[expected] } else { 0 };
     Ok(HarmonyQuery {
         level,
         group_id,
         round_id,
         indices,
+        db_id,
     })
 }

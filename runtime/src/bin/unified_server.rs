@@ -813,9 +813,14 @@ impl UnifiedServerData {
     }
 
     fn handle_harmony_query(&self, query: &HarmonyQuery) -> Response {
+        let db = match self.state.get_db(query.db_id) {
+            Some(d) => d,
+            None => return Response::Error(format!("unknown db_id {}", query.db_id)),
+        };
+
         let (sub_table, entry_size) = match query.level {
-            0 => (&self.main_db().index, self.main_db().index.params.bin_size()),
-            1 => (&self.main_db().chunk, self.main_db().chunk.params.bin_size()),
+            0 => (&db.index, db.index.params.bin_size()),
+            1 => (&db.chunk, db.chunk.params.bin_size()),
             _ => return Response::Error("invalid level".into()),
         };
 
@@ -840,27 +845,32 @@ impl UnifiedServerData {
     }
 
     fn handle_harmony_batch_query(&self, query: &HarmonyBatchQuery) -> Response {
+        let db = match self.state.get_db(query.db_id) {
+            Some(d) => d,
+            None => return Response::Error(format!("unknown db_id {}", query.db_id)),
+        };
+
         // Level mapping (same as hint levels):
         //   0 = INDEX, 1 = CHUNK
         //   10..10+N = bucket Merkle INDEX sibling L0, L1, ...
         //   20..20+N = bucket Merkle CHUNK sibling L0, L1, ...
         let (sub_table, entry_size) = if query.level == 0 {
-            (&self.main_db().index, self.main_db().index.params.bin_size())
+            (&db.index, db.index.params.bin_size())
         } else if query.level == 1 {
-            (&self.main_db().chunk, self.main_db().chunk.params.bin_size())
+            (&db.chunk, db.chunk.params.bin_size())
         } else if query.level >= 10 && query.level < 20 {
             let sib_level = (query.level - 10) as usize;
-            if sib_level >= self.main_db().bucket_merkle_index_siblings.len() {
+            if sib_level >= db.bucket_merkle_index_siblings.len() {
                 return Response::Error(format!("invalid bucket merkle index sib level {}", sib_level));
             }
-            let sib = &self.main_db().bucket_merkle_index_siblings[sib_level];
+            let sib = &db.bucket_merkle_index_siblings[sib_level];
             (sib, sib.params.bin_size())
         } else if query.level >= 20 && query.level < 30 {
             let sib_level = (query.level - 20) as usize;
-            if sib_level >= self.main_db().bucket_merkle_chunk_siblings.len() {
+            if sib_level >= db.bucket_merkle_chunk_siblings.len() {
                 return Response::Error(format!("invalid bucket merkle chunk sib level {}", sib_level));
             }
-            let sib = &self.main_db().bucket_merkle_chunk_siblings[sib_level];
+            let sib = &db.bucket_merkle_chunk_siblings[sib_level];
             (sib, sib.params.bin_size())
         } else {
             return Response::Error(format!("invalid level {}", query.level));
@@ -1668,12 +1678,20 @@ async fn main() {
                             let prp_key: [u8; 16] = hint_req.prp_key;
                             let prp_backend = hint_req.prp_backend;
                             let group_ids = hint_req.group_ids.clone();
+                            let db_id = hint_req.db_id;
+                            // Validate db_id before spawning blocking work.
+                            if server.state.get_db(db_id).is_none() {
+                                let resp = Response::Error(format!("unknown db_id {}", db_id));
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                continue;
+                            }
                             let s = Arc::clone(&server);
 
                             let (tx, mut rx) = tokio::sync::mpsc::channel::<(u8, u32, u32, u32, Vec<u8>)>(4);
                             tokio::task::spawn_blocking(move || {
+                                let db = s.state.get_db(db_id).expect("db_id checked before spawn");
                                 group_ids.par_iter().for_each_with(tx, |tx, &bid| {
-                                    let result = compute_hints_for_group(s.main_db(), &prp_key, prp_backend, level, bid);
+                                    let result = compute_hints_for_group(db, &prp_key, prp_backend, level, bid);
                                     let _ = tx.blocking_send(result);
                                 });
                             });
@@ -1695,11 +1713,17 @@ async fn main() {
                                 }
                                 sent += 1;
                             }
-                            println!("[harmony-hint] L{} {}/{} groups in {:.2?}", level, sent, num, t_start.elapsed());
+                            println!("[harmony-hint] db={} L{} {}/{} groups in {:.2?}", db_id, level, sent, num, t_start.elapsed());
                         }
                     }
                     REQ_HARMONY_QUERY if server.role == ServerRole::Primary => {
                         if let Ok(Request::HarmonyQuery(q)) = Request::decode(payload) {
+                            // Validate db_id before dispatching to a worker.
+                            if server.state.get_db(q.db_id).is_none() {
+                                let resp = Response::Error(format!("unknown db_id {}", q.db_id));
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                continue;
+                            }
                             let s = Arc::clone(&server);
                             let resp = tokio::task::spawn_blocking(move || s.handle_harmony_query(&q)).await.unwrap();
                             let _ = sink.send(Message::Binary(resp.encode().into())).await;
@@ -1707,12 +1731,19 @@ async fn main() {
                     }
                     REQ_HARMONY_BATCH_QUERY if server.role == ServerRole::Primary => {
                         if let Ok(Request::HarmonyBatchQuery(q)) = Request::decode(payload) {
+                            // Validate db_id before dispatching to a worker.
+                            if server.state.get_db(q.db_id).is_none() {
+                                let resp = Response::Error(format!("unknown db_id {}", q.db_id));
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                continue;
+                            }
                             let t = Instant::now();
                             let n = q.items.len();
                             let level = q.level;
+                            let db_id = q.db_id;
                             let s = Arc::clone(&server);
                             let resp = tokio::task::spawn_blocking(move || s.handle_harmony_batch_query(&q)).await.unwrap();
-                            println!("[harmony-batch] L{} {} groups in {:.2?}", level, n, t.elapsed());
+                            println!("[harmony-batch] db={} L{} {} groups in {:.2?}", db_id, level, n, t.elapsed());
                             let _ = sink.send(Message::Binary(resp.encode().into())).await;
                         }
                     }
