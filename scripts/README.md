@@ -33,3 +33,16 @@ Samples random entries from the cuckoo hash table for debugging.
 ```bash
 ./scripts/get_random_hash.sh
 ```
+
+### `build_delta.sh`
+
+Builds a complete delta UTXO database between two block heights, including
+the per-bucket bin Merkle verification files. Runs the full pipeline:
+`delta_gen_0` -> `delta_gen_1` -> `build_cuckoo_generic` (index + chunk) ->
+`gen_4_build_merkle_bucket`.
+
+```bash
+./scripts/build_delta.sh <dumptxoutset_file> <bitcoin_datadir> <start_height> <end_height>
+```
+
+Output goes to `/Volumes/Bitcoin/data/deltas/<start>_<end>/`.
