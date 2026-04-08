@@ -206,6 +206,15 @@ export class HarmonyPirClient {
   // Whether hints have been loaded for the current (dbId, PRP backend).
   hintsLoaded = false;
 
+  // Test hook: one-shot override of the computed scripthashes for the next
+  // queryBatch() call. Consumed on use and then cleared. Used by harnesses
+  // that need to drive a query at a specific scripthash without reversing
+  // HASH160. Production UI never sets this.
+  private _scriptHashOverride: Uint8Array[] | undefined = undefined;
+  setScriptHashOverrideForNextQuery(hashes: Uint8Array[]): void {
+    this._scriptHashOverride = hashes;
+  }
+
   // Inspector data from the last queryBatch call.
   lastInspectorData: Map<number, QueryInspectorData> | null = null;
 
@@ -352,6 +361,26 @@ export class HarmonyPirClient {
     // The new DB has its own (potentially different) bin layout, so any
     // previously-loaded hints in the WASM groups are no longer valid.
     this.hintsLoaded = false;
+    // Sibling Merkle groups also have per-DB bucket counts and per-DB
+    // sibling tables on the server, so the cached sibling state from the
+    // previous DB cannot be reused either. Force a re-download on the next
+    // verifyMerkleBatch() call.
+    this.siblingHintsLoaded = false;
+  }
+
+  /** Check if a specific database has per-bucket Merkle available. */
+  hasMerkleForDb(dbId: number): boolean {
+    const info = this.getBucketMerkleForDb(dbId);
+    return !!(info && info.index_levels.length > 0);
+  }
+
+  /** Get BucketMerkleInfoJson for the given database, main or per-DB. */
+  private getBucketMerkleForDb(dbId: number): import('./server-info.js').BucketMerkleInfoJson | undefined {
+    if (dbId === 0) {
+      return this.serverInfo?.merkle_bucket;
+    }
+    const dbInfo = this.serverInfo?.databases?.find(d => d.db_id === dbId);
+    return dbInfo?.merkle_bucket;
   }
 
   /** Update active params from the catalog entry for the given dbId. */
@@ -657,8 +686,14 @@ export class HarmonyPirClient {
     }
 
     // ── Prepare script hashes (accept both addresses and hex scriptPubKeys) ──
+    // Test/debug hook: if an override array is set, it replaces the computed
+    // scripthashes 1:1 with the override (same length). This lets harnesses
+    // drive queries against known-present entries without needing a reverse
+    // HASH160 preimage. Cleared after consumption so it never lingers.
     const scriptHashes: Uint8Array[] = [];
     const shHexes: string[] = [];
+    const override = this._scriptHashOverride;
+    this._scriptHashOverride = undefined;
     for (let i = 0; i < N; i++) {
       const input = addresses[i];
       let spkHex: string | null;
@@ -669,7 +704,7 @@ export class HarmonyPirClient {
         spkHex = addressToScriptPubKey(input);
       }
       if (!spkHex) { this.log(`Invalid input ${i}: ${input}`); continue; }
-      const sh = computeScriptHash(hexToBytes(spkHex));
+      const sh = override && i < override.length ? override[i] : computeScriptHash(hexToBytes(spkHex));
       scriptHashes.push(sh);
       shHexes.push(bytesToHex(sh));
     }
@@ -1295,9 +1330,11 @@ export class HarmonyPirClient {
     return !!(this.serverInfo?.merkle_bucket && this.serverInfo.merkle_bucket.index_levels.length > 0);
   }
 
-  /** Get the Merkle root hash hex (for display) */
+  /** Get the Merkle super-root hash hex for the currently active database. */
   getMerkleRootHex(): string | undefined {
-    return this.serverInfo?.merkle_bucket?.super_root ?? this.serverInfo?.merkle?.root;
+    return this.getBucketMerkleForDb(this.dbId)?.super_root
+      ?? this.serverInfo?.merkle_bucket?.super_root
+      ?? this.serverInfo?.merkle?.root;
   }
 
   /** Whether sibling hints have been downloaded for bucket Merkle. */
@@ -1314,8 +1351,10 @@ export class HarmonyPirClient {
     results: HarmonyQueryResult[],
     onProgress?: (step: string, detail: string) => void,
   ): Promise<boolean[]> {
-    const merkle = this.serverInfo?.merkle_bucket;
-    if (!merkle) throw new Error('Server does not support bucket Merkle');
+    // Resolve per-DB Merkle info. For db_id=0 this falls back to the
+    // top-level merkle_bucket (backward compatible with older servers).
+    const merkle = this.getBucketMerkleForDb(this.dbId);
+    if (!merkle) throw new Error(`Database dbId=${this.dbId} does not support bucket Merkle`);
     if (!this.queryWs) throw new Error('Not connected to query server');
 
     // Build verifiable items
@@ -1347,11 +1386,14 @@ export class HarmonyPirClient {
 
     // ── Step 2: Fetch tree-top caches ──
     onProgress?.('Merkle', 'Fetching tree-top caches...');
-    this.log('Fetching bucket Merkle tree-tops...');
+    this.log(`Fetching bucket Merkle tree-tops (db=${this.dbId})...`);
 
-    const topsReq = new Uint8Array(5);
-    new DataView(topsReq.buffer).setUint32(0, 1, true);
+    // [4B len][1B REQ_BUCKET_MERKLE_TREE_TOPS]([1B db_id] if non-zero)
+    const topsLen = this.dbId !== 0 ? 2 : 1;
+    const topsReq = new Uint8Array(4 + topsLen);
+    new DataView(topsReq.buffer).setUint32(0, topsLen, true);
     topsReq[4] = REQ_BUCKET_MERKLE_TREE_TOPS;
+    if (this.dbId !== 0) topsReq[5] = this.dbId;
     const topsRaw = await this.queryWs.sendRaw(topsReq);
     if (topsRaw.length < 6 || topsRaw[4] !== RESP_BUCKET_MERKLE_TREE_TOPS) {
       this.log('Failed to fetch bucket Merkle tree-tops');
