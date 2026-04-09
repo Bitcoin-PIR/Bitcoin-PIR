@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Extract "example SPKs present in a delta database" and update
- * web/src/example_spks.json with a per-delta list.
+ * Extract "example SPKs that produce a visibly positive change in a delta"
+ * and update web/src/example_spks.json with a per-delta list.
  *
  * Usage:
  *   node scripts/extract_delta_examples.js <start_height> <end_height>
@@ -12,15 +12,20 @@
  *      legacy flat-array shape and the new per-DB object shape.
  *   2. Computes hash160 = ripemd160(sha256(spk_bytes)) for each entry in
  *      the "main" list (the 1000 example scriptPubKeys).
- *   3. Streams /Volumes/Bitcoin/data/intermediate/delta_index_<A>_<B>.bin
- *      — a file of 25-byte records whose first 20 bytes are each delta
- *      scripthash — into a Set.
- *   4. Emits the intersection: scriptPubKeys whose scripthash is present in
- *      both the main UTXO set and the delta. These addresses will show
- *      visible delta results (spent or new UTXOs) in the web frontend's
- *      sync flow after the delta is applied.
- *   5. Writes the result back to web/src/example_spks.json under the key
- *      `delta_<A>_<B>`.
+ *   3. Streams /Volumes/Bitcoin/data/intermediate/delta_grouped_<A>_<B>.bin
+ *      (the source-of-truth grouped delta from delta_gen_0). For each
+ *      target scripthash present in the file, decodes its `num_spent` and
+ *      `num_new` counts.
+ *   4. Filters the intersection to addresses with `num_new > 0` — these
+ *      add at least one new UTXO that's still unspent at the delta's tip
+ *      height, so the post-merge view in the web sync flow is guaranteed
+ *      to show a visible "+UTXO appeared" effect. Spent-only addresses
+ *      are excluded because the merged view of an address whose only
+ *      UTXOs were spent shows zero UTXOs, which testers misread as
+ *      "the delta did nothing".
+ *   5. Writes the filtered list back to web/src/example_spks.json under
+ *      the key `delta_<A>_<B>`. Also reports the breakdown (spent-only,
+ *      new-only, both) for transparency.
  *
  * Re-run this whenever a new delta database is built.
  */
@@ -44,7 +49,7 @@ if (!Number.isFinite(startH) || !Number.isFinite(endH) || startH >= endH) {
 }
 
 const deltaKey = `delta_${startH}_${endH}`;
-const deltaIndexPath = `/Volumes/Bitcoin/data/intermediate/delta_index_${startH}_${endH}.bin`;
+const deltaGroupedPath = `/Volumes/Bitcoin/data/intermediate/delta_grouped_${startH}_${endH}.bin`;
 const examplesPath = path.join(__dirname, '..', 'web', 'src', 'example_spks.json');
 
 // ─── Hash160 (must match web/src/hash.ts::scriptHash) ────────────────────────
@@ -69,35 +74,117 @@ if (Array.isArray(raw)) {
 }
 console.log(`[info] Loaded ${examples.main.length} main example SPKs`);
 
-// ─── Read delta index file ──────────────────────────────────────────────────
-if (!fs.existsSync(deltaIndexPath)) {
-  console.error(`[error] Delta index not found: ${deltaIndexPath}`);
+// ─── Read grouped delta file (source of truth from delta_gen_0) ────────────
+if (!fs.existsSync(deltaGroupedPath)) {
+  console.error(`[error] Grouped delta not found: ${deltaGroupedPath}`);
   console.error('        Run scripts/build_delta.sh for this height range first.');
   process.exit(1);
 }
-const idxBuf = fs.readFileSync(deltaIndexPath);
-if (idxBuf.length % 25 !== 0) {
-  console.error(`[error] Delta index size ${idxBuf.length} is not a multiple of 25 bytes`);
-  process.exit(1);
-}
-const numRecords = idxBuf.length / 25;
-console.log(`[info] Delta index: ${numRecords.toLocaleString()} scripthashes (${idxBuf.length.toLocaleString()} bytes)`);
+const gBuf = fs.readFileSync(deltaGroupedPath);
+console.log(`[info] Grouped delta: ${gBuf.length.toLocaleString()} bytes`);
 
-const deltaHashes = new Set();
-for (let off = 0; off < idxBuf.length; off += 25) {
-  deltaHashes.add(idxBuf.slice(off, off + 20).toString('hex'));
-}
-
-// ─── Compute intersection ────────────────────────────────────────────────────
-const intersection = [];
+// ─── Build set of target scripthashes from the example SPKs ────────────────
+const spkByHash = new Map();
 for (const spk of examples.main) {
-  if (deltaHashes.has(hash160(spk))) {
-    intersection.push(spk);
+  spkByHash.set(hash160(spk), spk);
+}
+
+// ─── Walk the grouped delta and decode each target's spent/new counts ──────
+//
+// Format (from delta_gen_0_compute_delta.rs):
+//   [u32 num_scripts LE]
+//   per script:
+//     [20B scripthash]
+//     [varint num_spent]
+//       per spent: [32B txid][varint vout]
+//     [varint num_new]
+//       per new:   [32B txid][varint vout][varint amount]
+function readVarint(off) {
+  let r = 0n, shift = 0n, bytes = 0;
+  while (true) {
+    const b = gBuf[off + bytes];
+    bytes++;
+    r |= BigInt(b & 0x7f) << shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7n;
+    if (shift >= 64n) throw new Error('varint too large');
+  }
+  return [r, bytes];
+}
+
+let pos = 0;
+const numScripts = gBuf.readUInt32LE(pos);
+pos += 4;
+console.log(`[info] num_scripts in grouped delta: ${numScripts.toLocaleString()}`);
+
+// matches[hash] = { numSpent, numNew, totalNewAmount }
+const matches = new Map();
+let scanned = 0;
+while (pos < gBuf.length) {
+  const sh = gBuf.slice(pos, pos + 20).toString('hex');
+  pos += 20;
+  let [numSpent, c] = readVarint(pos); pos += c;
+  for (let i = 0; i < Number(numSpent); i++) {
+    pos += 32; // txid
+    const [, c2] = readVarint(pos); pos += c2; // vout
+  }
+  let [numNew, c3] = readVarint(pos); pos += c3;
+  let totalNewAmount = 0n;
+  for (let i = 0; i < Number(numNew); i++) {
+    pos += 32; // txid
+    const [, c4] = readVarint(pos); pos += c4; // vout
+    const [amt, c5] = readVarint(pos); pos += c5; // amount
+    totalNewAmount += amt;
+  }
+  if (spkByHash.has(sh)) {
+    matches.set(sh, {
+      numSpent: Number(numSpent),
+      numNew: Number(numNew),
+      totalNewAmount,
+    });
+  }
+  scanned++;
+  if (scanned % 500000 === 0) {
+    process.stderr.write(`\r  scanned ${scanned}/${numScripts}...`);
   }
 }
-console.log(`[info] Intersection: ${intersection.length} example SPKs present in both main and ${deltaKey}`);
+process.stderr.write('\n');
+console.log(`[info] Walked ${scanned} scripthashes; ${matches.size} matched the example SPKs`);
+
+// ─── Apply demo-friendly filter ────────────────────────────────────────────
+//
+// Keep only addresses with `numNew > 0`. These guarantee the post-merge
+// view in the web sync flow shows MORE UTXOs at the delta's tip height
+// than at the base height — a clear "+UTXO appeared" signal that testers
+// can observe even without seeing the spent-list breakdown.
+//
+// Spent-only addresses are excluded because if `numSpent` reaches the
+// address's main UTXO count (which is the typical case for small
+// addresses), the merged result has zero UTXOs and reads as "the delta
+// did nothing".
+
+let countSpentOnly = 0;
+let countNewOnly = 0;
+let countBoth = 0;
+const intersection = [];
+for (const [sh, info] of matches) {
+  if (info.numSpent > 0 && info.numNew > 0) countBoth++;
+  else if (info.numSpent > 0) countSpentOnly++;
+  else if (info.numNew > 0) countNewOnly++;
+
+  if (info.numNew > 0) {
+    intersection.push(spkByHash.get(sh));
+  }
+}
+
+console.log(`[info] Match breakdown:`);
+console.log(`         spent-only:  ${countSpentOnly}  (excluded)`);
+console.log(`         new-only:    ${countNewOnly}  (kept)`);
+console.log(`         both:        ${countBoth}  (kept)`);
+console.log(`[info] Demo-friendly examples (numNew > 0): ${intersection.length}`);
 if (intersection.length === 0) {
-  console.error('[warn] Zero intersection — the delta has no entries matching any of the example SPKs.');
+  console.error('[warn] Zero demo-friendly examples — no main SPK gained a new UTXO in this delta.');
+  console.error('       Consider sampling more SPKs into example_spks.json["main"].');
 }
 
 // ─── Write back ─────────────────────────────────────────────────────────────
