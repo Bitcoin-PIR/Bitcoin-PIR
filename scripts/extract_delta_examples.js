@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Extract "example SPKs that produce a visibly positive change in a delta"
- * and update web/src/example_spks.json with a per-delta list.
+ * Extract "example SPKs with visible activity in a delta" and update
+ * web/src/example_spks.json with a per-delta list.
  *
  * Usage:
  *   node scripts/extract_delta_examples.js <start_height> <end_height>
@@ -16,16 +16,15 @@
  *      (the source-of-truth grouped delta from delta_gen_0). For each
  *      target scripthash present in the file, decodes its `num_spent` and
  *      `num_new` counts.
- *   4. Filters the intersection to addresses with `num_new > 0` — these
- *      add at least one new UTXO that's still unspent at the delta's tip
- *      height, so the post-merge view in the web sync flow is guaranteed
- *      to show a visible "+UTXO appeared" effect. Spent-only addresses
- *      are excluded because the merged view of an address whose only
- *      UTXOs were spent shows zero UTXOs, which testers misread as
- *      "the delta did nothing".
- *   5. Writes the filtered list back to web/src/example_spks.json under
- *      the key `delta_<A>_<B>`. Also reports the breakdown (spent-only,
- *      new-only, both) for transparency.
+ *   4. Keeps every address with ANY activity (spent > 0 OR new > 0). Both
+ *      signals make good demos: the web frontend's delta-activity renderer
+ *      shows spent UTXOs with their pre-delta amounts from the prior
+ *      snapshot, so "address X had 1,600 sats at height A and the delta
+ *      at height B spent them" is a clearer demo than "address X now has
+ *      more UTXOs". Reports a breakdown by category (spent-only, new-only,
+ *      both) so callers can see the distribution.
+ *   5. Writes the list back to web/src/example_spks.json under the key
+ *      `delta_<A>_<B>`.
  *
  * Re-run this whenever a new delta database is built.
  */
@@ -151,17 +150,13 @@ while (pos < gBuf.length) {
 process.stderr.write('\n');
 console.log(`[info] Walked ${scanned} scripthashes; ${matches.size} matched the example SPKs`);
 
-// ─── Apply demo-friendly filter ────────────────────────────────────────────
+// ─── Keep every address with activity, report breakdown ───────────────────
 //
-// Keep only addresses with `numNew > 0`. These guarantee the post-merge
-// view in the web sync flow shows MORE UTXOs at the delta's tip height
-// than at the base height — a clear "+UTXO appeared" signal that testers
-// can observe even without seeing the spent-list breakdown.
-//
-// Spent-only addresses are excluded because if `numSpent` reaches the
-// address's main UTXO count (which is the typical case for small
-// addresses), the merged result has zero UTXOs and reads as "the delta
-// did nothing".
+// All three categories (spent-only, new-only, both) are good demo material.
+// The web frontend's delta-activity renderer shows spent UTXOs with amounts
+// looked up from the pre-delta snapshot, so testers can visually see "these
+// UTXOs existed before, and the delta spent them" even when the merged view
+// has zero remaining UTXOs.
 
 let countSpentOnly = 0;
 let countNewOnly = 0;
@@ -172,19 +167,18 @@ for (const [sh, info] of matches) {
   else if (info.numSpent > 0) countSpentOnly++;
   else if (info.numNew > 0) countNewOnly++;
 
-  if (info.numNew > 0) {
+  if (info.numSpent > 0 || info.numNew > 0) {
     intersection.push(spkByHash.get(sh));
   }
 }
 
-console.log(`[info] Match breakdown:`);
-console.log(`         spent-only:  ${countSpentOnly}  (excluded)`);
-console.log(`         new-only:    ${countNewOnly}  (kept)`);
-console.log(`         both:        ${countBoth}  (kept)`);
-console.log(`[info] Demo-friendly examples (numNew > 0): ${intersection.length}`);
+console.log(`[info] Match breakdown (all kept):`);
+console.log(`         spent-only:  ${countSpentOnly}`);
+console.log(`         new-only:    ${countNewOnly}`);
+console.log(`         both:        ${countBoth}`);
+console.log(`[info] Delta examples with visible activity: ${intersection.length}`);
 if (intersection.length === 0) {
-  console.error('[warn] Zero demo-friendly examples — no main SPK gained a new UTXO in this delta.');
-  console.error('       Consider sampling more SPKs into example_spks.json["main"].');
+  console.error('[warn] Zero intersection — no main SPK had activity in this delta.');
 }
 
 // ─── Write back ─────────────────────────────────────────────────────────────

@@ -1043,6 +1043,162 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             container.appendChild(section);
         }
 
+        /**
+         * Render a per-address "delta activity" card showing what a single
+         * delta step did to this address. Designed for the sync flow so
+         * testers can visually see the delta effect even when the merged
+         * post-sync view has fewer (or zero) UTXOs.
+         *
+         * Inputs:
+         *   container       — element to append the card to (append order = plan order)
+         *   spkHex          — scriptPubKey hex for the address's title/script box
+         *   stepLabel       — human-readable step label, e.g. "delta_940611_944000"
+         *   stepRange       — {base, tip} heights for the header line
+         *   deltaResult     — the raw delta query result for this address; its
+         *                     rawChunkData is decoded to extract spent+new
+         *   preSnapshot     — the address's merged state immediately BEFORE the
+         *                     step ran. Used to cross-reference spent outpoints
+         *                     and recover the amounts that used to live there.
+         *                     Accepts either a DPF/OnionPIR `QueryResult`
+         *                     (entries: {txid: Uint8Array, vout, amount: bigint})
+         *                     or null (fresh sync with no prior state).
+         *
+         * If the delta had no activity for this address (empty rawChunkData)
+         * the function renders nothing.
+         */
+        function renderDeltaActivity(container, spkHex, stepLabel, stepRange, deltaResult, preSnapshot) {
+            if (!deltaResult || !deltaResult.rawChunkData || deltaResult.rawChunkData.length === 0) {
+                return; // no activity
+            }
+
+            let deltaData;
+            try {
+                deltaData = decodeDeltaData(deltaResult.rawChunkData, (msg) => log(msg, 'error'));
+            } catch (e) {
+                log(`Delta activity decode error: ${e.message}`, 'error');
+                return;
+            }
+
+            const numSpent = deltaData.spent.length;
+            const numNew = deltaData.newUtxos.length;
+            if (numSpent === 0 && numNew === 0) return;
+
+            // Build a txid_hex:vout → amount lookup from the pre-delta snapshot
+            // so we can show the *amounts* of spent UTXOs (SpentRef itself
+            // carries only txid+vout, not amount). If preSnapshot is null or
+            // doesn't contain the outpoint, we fall back to "? sats".
+            const priorByOutpoint = new Map();
+            if (preSnapshot && Array.isArray(preSnapshot.entries)) {
+                for (const e of preSnapshot.entries) {
+                    // e.txid is Uint8Array (DPF/OnionPIR). Normalize to hex key.
+                    const key = `${bytesToHex(e.txid)}:${e.vout}`;
+                    priorByOutpoint.set(key, e.amount);
+                }
+            }
+
+            let totalSpentSats = 0n;
+            let spentFromSnapshot = 0;
+            const spentRows = deltaData.spent.map((s, i) => {
+                const txidHex = bytesToHex(s.txid);        // internal byte order — matches snapshot keys
+                const displayTxid = txidToReversedHex(s.txid); // big-endian for explorer links
+                const key = `${txidHex}:${s.vout}`;
+                const amt = priorByOutpoint.get(key);
+                let amtCell;
+                if (amt !== undefined) {
+                    totalSpentSats += amt;
+                    spentFromSnapshot++;
+                    amtCell = `<td style="text-decoration: line-through; color: #dc3545;">${amt.toLocaleString()}</td><td class="amount-btc" style="text-decoration: line-through; color: #dc3545;">${formatBtc(amt)} BTC</td>`;
+                } else {
+                    amtCell = `<td style="color: #999;">—</td><td style="color: #999;">—</td>`;
+                }
+                return `<tr><td>${i+1}</td><td><a href="https://mempool.space/tx/${displayTxid}" target="_blank" class="txid-link">${displayTxid}</a></td><td>${s.vout}</td>${amtCell}</tr>`;
+            }).join('');
+
+            const totalNewSats = deltaData.newUtxos.reduce((s, u) => s + u.amount, 0n);
+            const newRows = deltaData.newUtxos.map((u, i) => {
+                const txid = txidToReversedHex(u.txid);
+                return `<tr><td>${i+1}</td><td><a href="https://mempool.space/tx/${txid}" target="_blank" class="txid-link">${txid}</a></td><td>${u.vout}</td><td>${u.amount.toLocaleString()}</td><td class="amount-btc">${formatBtc(u.amount)} BTC</td></tr>`;
+            }).join('');
+
+            const address = scriptPubKeyToAddress(spkHex);
+            const scriptLabel = detectScriptLabel(spkHex);
+            let titleHtml;
+            if (address) {
+                const labelBadge = scriptLabel ? `<span style="font-size: 11px; color: #fff; background: #6c757d; padding: 1px 6px; border-radius: 3px; margin-left: 8px; vertical-align: middle;">${scriptLabel}</span>` : '';
+                titleHtml = `<a href="https://mempool.space/address/${address}" target="_blank" style="color: #0066cc; text-decoration: none; font-family: monospace;">${address}</a>${labelBadge}`;
+            } else {
+                titleHtml = `<span style="font-family: monospace; font-size: 13px; color: #555;">${spkHex.slice(0, 40)}${spkHex.length > 40 ? '…' : ''}</span>`;
+            }
+
+            const card = document.createElement('div');
+            card.className = 'container';
+            card.style.cssText = 'margin-top: 10px; border-left: 4px solid #f7931a; background: #fff9ee;';
+            card.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 10px;">
+                    <h3 style="margin: 0; font-size: 14px; color: #6d5200;">
+                        &#x0394; Delta activity: <code style="color: #0c5460;">${stepLabel}</code>
+                        <span style="font-weight: normal; color: #888;">${stepRange.base.toLocaleString()} \u2192 ${stepRange.tip.toLocaleString()}</span>
+                    </h3>
+                    <div style="font-size: 12px; color: #555;">${titleHtml}</div>
+                </div>
+                <div style="display: flex; gap: 30px; flex-wrap: wrap; margin: 10px 0 6px 0; font-size: 13px;">
+                    <div><span style="color: #888;">Spent</span> <strong style="color: #dc3545;">${numSpent}</strong></div>
+                    <div><span style="color: #888;">New</span> <strong style="color: #28a745;">${numNew}</strong></div>
+                    ${numSpent > 0 ? `<div><span style="color: #888;">Spent sats</span> <strong style="color: #dc3545;">${spentFromSnapshot === numSpent ? totalSpentSats.toLocaleString() : `\u2265 ${totalSpentSats.toLocaleString()}`}</strong>${spentFromSnapshot < numSpent ? `<span style="color: #999; font-size: 11px;"> (${spentFromSnapshot}/${numSpent} known)</span>` : ''}</div>` : ''}
+                    ${numNew > 0 ? `<div><span style="color: #888;">New sats</span> <strong style="color: #28a745;">${totalNewSats.toLocaleString()}</strong></div>` : ''}
+                </div>
+            `;
+
+            if (numSpent > 0) {
+                const spentDiv = document.createElement('div');
+                spentDiv.style.marginTop = '6px';
+                spentDiv.innerHTML = `
+                    <h4 style="color: #dc3545; font-size: 13px; margin: 4px 0;">&#x2716; Spent UTXOs (struck-through amounts are the values that were removed)</h4>
+                    <table class="utxo-table">
+                        <thead><tr><th>#</th><th style="min-width:280px;">TXID</th><th>Vout</th><th>Amount (sats)</th><th>Amount (BTC)</th></tr></thead>
+                        <tbody>${spentRows}</tbody>
+                    </table>
+                `;
+                card.appendChild(spentDiv);
+            }
+
+            if (numNew > 0) {
+                const newDiv = document.createElement('div');
+                newDiv.style.marginTop = '6px';
+                newDiv.innerHTML = `
+                    <h4 style="color: #28a745; font-size: 13px; margin: 4px 0;">&#x2714; New UTXOs</h4>
+                    <table class="utxo-table">
+                        <thead><tr><th>#</th><th style="min-width:280px;">TXID</th><th>Vout</th><th>Amount (sats)</th><th>Amount (BTC)</th></tr></thead>
+                        <tbody>${newRows}</tbody>
+                    </table>
+                `;
+                card.appendChild(newDiv);
+            }
+
+            container.appendChild(card);
+        }
+
+        /**
+         * Adapter: HarmonyPIR's snapshot shape is HarmonyQueryResult with
+         * `utxos: {txid: hex string, vout, value: number}[]`, not the
+         * QueryResult-with-entries shape that renderDeltaActivity expects.
+         * This wraps a HarmonyQueryResult into a shim that looks like the
+         * QueryResult shape so we can reuse renderDeltaActivity for the
+         * HarmonyPIR tab without a second copy of the renderer.
+         */
+        function harmonySnapshotToQueryResultShim(hResult) {
+            if (!hResult) return null;
+            return {
+                entries: (hResult.utxos || []).map(u => ({
+                    txid: hexToBytes(u.txid),  // HarmonyPIR hex → internal bytes
+                    vout: u.vout,
+                    amount: BigInt(u.value),
+                })),
+                totalSats: (hResult.utxos || []).reduce((s, u) => s + BigInt(u.value), 0n),
+                isWhale: !!hResult.whale,
+            };
+        }
+
         // ─── Shared batch Merkle verification button ──────────────────────
         // verifyBatchFn: (results[], onProgress) → Promise<boolean[]>  (single batch call)
         function addBatchMerkleButton(container, verifiableResults, prefix, verifyBatchFn, getRootHex, label) {
@@ -1471,7 +1627,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             resultsContainer.innerHTML = '';
 
             try {
-                const { merged, verifiableSteps } = await dpfSync.execute(plan, {
+                const { merged, verifiableSteps, preStepSnapshots } = await dpfSync.execute(plan, {
                     scriptHashes,
                     queryStep: async (step, si) => {
                         const stepLabel = describeStep(step, si + 1, plan.steps.length);
@@ -1493,7 +1649,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     onError: (msg) => log(msg, 'error'),
                 });
 
-                // Render merged results.
+                // Render merged results + per-address delta activity cards.
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
@@ -1501,6 +1657,25 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const r = merged[qi];
                     if (r) found++;
                     renderResult(resultsContainer, spkHex, hashHex, r);
+
+                    // Append a "delta activity" card for each delta step that
+                    // touched this address, showing spent UTXOs with their
+                    // pre-delta amounts cross-referenced from the snapshot
+                    // captured just before the delta ran. This makes "the
+                    // delta spent my UTXOs" visible even when the merged
+                    // post-delta state is empty.
+                    for (let si = 0; si < verifiableSteps.length; si++) {
+                        const vs = verifiableSteps[si];
+                        if (vs.step.dbType !== 'delta') continue;
+                        renderDeltaActivity(
+                            resultsContainer,
+                            spkHex,
+                            vs.step.name,
+                            { base: vs.step.baseHeight, tip: vs.step.tipHeight },
+                            vs.stepResults[qi],
+                            preStepSnapshots[si][qi],
+                        );
+                    }
                 }
 
                 refreshSyncStateUI();
@@ -2024,7 +2199,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const savedDbId = opClient.getDbId();
 
             try {
-                const { merged, verifiableSteps } = await opSync.execute(plan, {
+                const { merged, verifiableSteps, preStepSnapshots } = await opSync.execute(plan, {
                     scriptHashes,
                     queryStep: async (step, si) => {
                         const stepLabel = describeStep(step, si + 1, plan.steps.length);
@@ -2049,7 +2224,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     onError: (msg) => log(msg, 'error'),
                 });
 
-                // Render merged results.
+                // Render merged results + per-address delta activity cards.
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
@@ -2057,6 +2232,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const r = merged[qi];
                     if (r) found++;
                     renderResult(resultsContainer, spkHex, hashHex, r);
+
+                    for (let si = 0; si < verifiableSteps.length; si++) {
+                        const vs = verifiableSteps[si];
+                        if (vs.step.dbType !== 'delta') continue;
+                        renderDeltaActivity(
+                            resultsContainer,
+                            spkHex,
+                            vs.step.name,
+                            { base: vs.step.baseHeight, tip: vs.step.tipHeight },
+                            vs.stepResults[qi],
+                            preStepSnapshots[si][qi],
+                        );
+                    }
                 }
 
                 opRefreshSyncStateUI();
@@ -2683,7 +2871,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const savedDbId = hpClient.getDbId();
 
             try {
-                const { merged, verifiableSteps } = await hpSync.execute(plan, {
+                const { merged, verifiableSteps, preStepSnapshots } = await hpSync.execute(plan, {
                     scriptHashes,
                     beforeStep: async (step, si) => {
                         // HarmonyPIR has strict per-(dbId, PRP) hint state.
@@ -2729,7 +2917,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // queryBatch call populated it internally).
                 hpInspectorDataMap = hpClient.lastInspectorData;
 
-                // Render merged HarmonyQueryResults via the existing adapter.
+                // Render merged HarmonyQueryResults via the existing adapter,
+                // plus per-address delta activity cards.
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
@@ -2738,6 +2927,27 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const r = harmonyResultToRenderFormat(hResult);
                     if (r && r.entries.length > 0) found++;
                     renderResult(resultsContainer, spkHex, hashHex, r, qi);
+
+                    for (let si = 0; si < verifiableSteps.length; si++) {
+                        const vs = verifiableSteps[si];
+                        if (vs.step.dbType !== 'delta') continue;
+                        // HarmonyPIR snapshots use a different shape than DPF/
+                        // OnionPIR; wrap them through the shim so renderDeltaActivity
+                        // can look up spent outpoints → amounts.
+                        const priorShim = harmonySnapshotToQueryResultShim(
+                            preStepSnapshots[si][qi],
+                        );
+                        renderDeltaActivity(
+                            resultsContainer,
+                            spkHex,
+                            vs.step.name,
+                            { base: vs.step.baseHeight, tip: vs.step.tipHeight },
+                            // HarmonyQueryResult also carries rawChunkData directly,
+                            // matching what renderDeltaActivity's decoder expects.
+                            vs.stepResults[qi],
+                            priorShim,
+                        );
+                    }
                 }
 
                 hpRefreshSyncStateUI();

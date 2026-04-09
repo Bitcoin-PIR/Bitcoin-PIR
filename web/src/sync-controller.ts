@@ -57,6 +57,19 @@ export interface SyncExecuteOutput<T extends SyncableResult> {
    * Merkle verifies the bin content of the specific DB each step ran against.
    */
   verifiableSteps: { step: SyncStep; stepResults: (T | null)[] }[];
+  /**
+   * Per-step snapshots captured **immediately before** each step ran, in
+   * plan order. `preStepSnapshots[si][qi]` is the merged state of
+   * scripthash `qi` just before step `si` was applied. Callers can use
+   * these to render "delta activity" visualizations: when a delta step
+   * spends an outpoint, look it up in `preStepSnapshots[si][qi]` to
+   * recover the amount that used to live there.
+   *
+   * For the first step, `preStepSnapshots[0]` is whatever was in the
+   * in-memory snapshot cache at the time `execute` was called (may be
+   * null for a fresh sync).
+   */
+  preStepSnapshots: (T | null)[][];
   /** Height the client is at after this sync run. */
   targetHeight: number;
 }
@@ -161,8 +174,15 @@ export class SyncController<T extends SyncableResult> {
       sh => this.cache.get(bytesToHex(sh)) ?? null,
     );
     const verifiableSteps: SyncExecuteOutput<T>['verifiableSteps'] = [];
+    const preStepSnapshots: (T | null)[][] = [];
 
     for (let si = 0; si < plan.steps.length; si++) {
+      // Snapshot `merged` BEFORE running this step. Callers use these to
+      // render per-step "delta activity": for each spent outpoint in a
+      // delta step, look it up in `preStepSnapshots[si][qi]` to recover
+      // the amount that was there before the delta removed it.
+      preStepSnapshots.push(merged.slice());
+
       const step = plan.steps[si];
       const label = describeStep(step, si + 1, plan.steps.length);
       hooks.onStepProgress?.(si, label, 5, 'starting');
@@ -193,7 +213,7 @@ export class SyncController<T extends SyncableResult> {
     }
     this.saveLastSyncedHeight(plan.targetHeight);
 
-    return { merged, verifiableSteps, targetHeight: plan.targetHeight };
+    return { merged, verifiableSteps, preStepSnapshots, targetHeight: plan.targetHeight };
   }
 
   // ── Reset ──────────────────────────────────────────────────────────────
