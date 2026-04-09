@@ -77,10 +77,26 @@ export function computeSyncPlan(
     if (!bestFull) {
       throw new Error('No full checkpoint available for fresh sync');
     }
+    const steps: SyncStep[] = [toStep(bestFull)];
+    // Chain deltas on top of the full checkpoint so "sync to latest"
+    // actually reaches the catalog tip in one run. Without this, the
+    // first-time plan stops at bestFull.height and the user has to
+    // click Sync a second time for deltas to apply — confusing because
+    // "Sync to *latest*" should land the user at the real tip.
+    if (bestFull.height < latestTip) {
+      const tail = findDeltaChain(deltaDbs, bestFull.height, latestTip);
+      if (tail && tail.length <= MAX_DELTA_CHAIN_LENGTH) {
+        steps.push(...tail.map(toStep));
+      }
+      // If the chain is unreachable or too long, fall through with just
+      // the full checkpoint — matches the existing fallback semantics
+      // for non-fresh syncs that can't find a valid chain.
+    }
+    const finalHeight = steps[steps.length - 1].tipHeight;
     return {
-      steps: [toStep(bestFull)],
+      steps,
       isFreshSync: true,
-      targetHeight: bestFull.height,
+      targetHeight: finalHeight,
     };
   }
 

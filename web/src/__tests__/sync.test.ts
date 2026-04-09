@@ -59,6 +59,59 @@ describe('computeSyncPlan', () => {
     expect(plan.steps[0].tipHeight).toBe(940611);
   });
 
+  it('fresh sync chains delta on top of the full checkpoint to reach latestTip', () => {
+    const cat = catalog(
+      entry({ dbId: 0, dbType: 0, name: 'main', baseHeight: 0, height: 940611 }),
+      entry({ dbId: 1, dbType: 1, name: 'delta1', baseHeight: 940611, height: 944000 }),
+    );
+
+    const plan = computeSyncPlan(cat); // no lastSyncedHeight → fresh
+    expect(plan.isFreshSync).toBe(true);
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0].dbType).toBe('full');
+    expect(plan.steps[0].name).toBe('main');
+    expect(plan.steps[0].tipHeight).toBe(940611);
+    expect(plan.steps[1].dbType).toBe('delta');
+    expect(plan.steps[1].name).toBe('delta1');
+    expect(plan.steps[1].baseHeight).toBe(940611);
+    expect(plan.steps[1].tipHeight).toBe(944000);
+    expect(plan.targetHeight).toBe(944000);
+  });
+
+  it('fresh sync chains a 2-delta chain on top of the full checkpoint', () => {
+    const cat = catalog(
+      entry({ dbId: 0, dbType: 0, name: 'main', baseHeight: 0, height: 940611 }),
+      entry({ dbId: 1, dbType: 1, name: 'd1', baseHeight: 940611, height: 942000 }),
+      entry({ dbId: 2, dbType: 1, name: 'd2', baseHeight: 942000, height: 944000 }),
+    );
+
+    const plan = computeSyncPlan(cat);
+    expect(plan.isFreshSync).toBe(true);
+    expect(plan.steps).toHaveLength(3); // 1 full + 2 deltas
+    expect(plan.steps[0].dbType).toBe('full');
+    expect(plan.steps[1].name).toBe('d1');
+    expect(plan.steps[1].tipHeight).toBe(942000);
+    expect(plan.steps[2].name).toBe('d2');
+    expect(plan.steps[2].tipHeight).toBe(944000);
+    expect(plan.targetHeight).toBe(944000);
+  });
+
+  it('fresh sync with orphan delta (unchainable) stops at the full checkpoint', () => {
+    // Delta exists but its baseHeight doesn't match the full checkpoint,
+    // so findDeltaChain returns null and the plan falls back to full-only.
+    const cat = catalog(
+      entry({ dbId: 0, dbType: 0, name: 'main', baseHeight: 0, height: 940611 }),
+      entry({ dbId: 1, dbType: 1, name: 'orphan', baseHeight: 800000, height: 810000 }),
+    );
+
+    const plan = computeSyncPlan(cat);
+    expect(plan.isFreshSync).toBe(true);
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0].dbType).toBe('full');
+    expect(plan.steps[0].name).toBe('main');
+    expect(plan.targetHeight).toBe(940611);
+  });
+
   it('single delta incremental sync', () => {
     const cat = catalog(
       entry({ dbId: 0, dbType: 0, name: 'main', baseHeight: 0, height: 940611 }),

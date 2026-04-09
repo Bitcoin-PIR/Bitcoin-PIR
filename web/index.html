@@ -288,12 +288,9 @@
         <!-- ═══ DPF Tab ═══ -->
         <div id="tab-dpf" class="tab-content active" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
 
-        <div style="display: flex; align-items: center; gap: 12px; margin: 10px 0;">
-            <div id="status" class="status disconnected" style="margin: 0; flex: 1;">
-                Status: Disconnected
-            </div>
-            <button id="connectBtn" class="small">Connect</button>
-            <button id="disconnectBtn" class="small secondary" disabled>Disconnect</button>
+        <!-- Status line: informational only. Connect/Disconnect moved to the action row below. -->
+        <div id="status" class="status disconnected" style="margin: 10px 0;">
+            Status: Disconnected
         </div>
 
         <details id="serverConfig" style="margin-bottom: 10px;">
@@ -387,7 +384,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 </div>
             </details>
             <br>
-            <button id="syncBtn" style="width: 100%; font-size: 16px; padding: 12px; background-color: #28a745; margin-bottom: 8px;" disabled>Sync to latest &amp; query</button>
+            <!-- Action row: Connect visually grouped with the primary Sync button -->
+            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
+                <button id="connectBtn" class="small" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;">Connect</button>
+                <button id="disconnectBtn" class="small secondary" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;" disabled>Disconnect</button>
+                <button id="syncBtn" style="flex: 1; font-size: 16px; padding: 12px; background-color: #28a745;" disabled>Sync to latest &amp; query</button>
+            </div>
             <div id="syncPlanBox" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px; color: #0c5460;">
                 <div id="syncPlanText" style="font-family: monospace;"></div>
                 <div style="margin-top: 8px;">
@@ -414,12 +416,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         <!-- ═══ OnionPIR Tab ═══ -->
         <div id="tab-onionpir" class="tab-content" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
 
-        <div style="display: flex; align-items: center; gap: 12px; margin: 10px 0;">
-            <div id="op-status" class="status disconnected" style="margin: 0; flex: 1;">
-                Status: Disconnected
-            </div>
-            <button id="op-connectBtn" class="small">Connect</button>
-            <button id="op-disconnectBtn" class="small secondary" disabled>Disconnect</button>
+        <!-- Status line: informational only. Connect/Disconnect moved to the action row below. -->
+        <div id="op-status" class="status disconnected" style="margin: 10px 0;">
+            Status: Disconnected
         </div>
 
         <details style="margin-bottom: 10px;">
@@ -509,7 +508,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 </div>
             </details>
             <br>
-            <button id="op-syncBtn" style="width: 100%; font-size: 16px; padding: 12px; background-color: #28a745; margin-bottom: 8px;" disabled>Sync to latest &amp; query</button>
+            <!-- Action row: Connect visually grouped with the primary Sync button -->
+            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
+                <button id="op-connectBtn" class="small" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;">Connect</button>
+                <button id="op-disconnectBtn" class="small secondary" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;" disabled>Disconnect</button>
+                <button id="op-syncBtn" style="flex: 1; font-size: 16px; padding: 12px; background-color: #28a745;" disabled>Sync to latest &amp; query</button>
+            </div>
             <div id="op-syncPlanBox" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px; color: #0c5460;">
                 <div id="op-syncPlanText" style="font-family: monospace;"></div>
                 <div style="margin-top: 8px;">
@@ -538,12 +542,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         <!-- ═══════════════════════════════════════════════════════════ -->
         <div id="tab-harmonypir" class="tab-content" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
 
-        <div style="display: flex; align-items: center; gap: 12px; margin: 10px 0;">
-            <div id="hp-status" class="status disconnected" style="margin: 0; flex: 1;">
-                Status: Disconnected
-            </div>
-            <button id="hp-connectBtn" class="small">Connect</button>
-            <button id="hp-disconnectBtn" class="small secondary" disabled>Disconnect</button>
+        <!-- Status line: informational only. Connect/Disconnect moved to the action row below. -->
+        <div id="hp-status" class="status disconnected" style="margin: 10px 0;">
+            Status: Disconnected
         </div>
 
         <details style="margin-bottom: 10px;">
@@ -660,7 +661,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 </div>
             </details>
             <br>
-            <button id="hp-syncBtn" style="width: 100%; font-size: 16px; padding: 12px; background-color: #28a745; margin-bottom: 8px;" disabled>Sync to latest &amp; query</button>
+            <!-- Action row: Connect visually grouped with the primary Sync button -->
+            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
+                <button id="hp-connectBtn" class="small" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;">Connect</button>
+                <button id="hp-disconnectBtn" class="small secondary" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;" disabled>Disconnect</button>
+                <button id="hp-syncBtn" style="flex: 1; font-size: 16px; padding: 12px; background-color: #28a745;" disabled>Sync to latest &amp; query</button>
+            </div>
             <div id="hp-syncPlanBox" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px; color: #0c5460;">
                 <div id="hp-syncPlanText" style="font-family: monospace;"></div>
                 <div style="margin-top: 8px;">
@@ -1284,9 +1290,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 });
 
                 await client.connect();
-                populateDbSelector();
+                // Post-connect state refresh: enable sync button, reveal the
+                // sync state row IFF a persisted height exists (i.e. user
+                // already synced in a prior session). Advanced DB selector
+                // and delta example buttons stay hidden until the first
+                // successful sync — see executeSync() for their reveal.
                 refreshSyncStateUI();
-                showDeltaExamples('', 'scriptPubkeys', client.getCatalog());
             } catch (error) {
                 log(`Connection failed: ${error.message}`, 'error');
                 client = null;
@@ -1349,9 +1358,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (syncBtn) syncBtn.disabled = true;
                 return;
             }
-            row.style.display = 'block';
+            // Post-sync reveal: the row (and the Advanced DB selector +
+            // delta example buttons, revealed separately) only appears
+            // once the user has actually synced at least once. Before
+            // that first sync, the header is hidden to keep the initial
+            // UI clean; everything "post-sync" shows up together after
+            // executeSync() commits a new lastSyncedHeight.
             const h = dpfSync.loadLastSyncedHeight();
-            label.textContent = h > 0 ? `synced to height ${h.toLocaleString()}` : 'not yet synced';
+            if (h > 0) {
+                row.style.display = 'block';
+                label.textContent = `synced to height ${h.toLocaleString()}`;
+            } else {
+                row.style.display = 'none';
+            }
             if (syncBtn) syncBtn.disabled = false;
         }
 
@@ -1679,6 +1698,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 refreshSyncStateUI();
+                // Post-sync reveals: Advanced DB selector + delta example
+                // buttons appear together now that the user has confirmed
+                // a successful sync. Pre-sync these stay hidden to keep
+                // the first-time flow uncluttered.
+                populateDbSelector();
+                showDeltaExamples('', 'scriptPubkeys', client.getCatalog());
 
                 // Offer Merkle verification for each step whose target DB
                 // has per-bucket Merkle available. Rendered in plan order so
@@ -1972,9 +1997,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (syncBtn) syncBtn.disabled = true;
                 return;
             }
-            row.style.display = 'block';
+            // Post-sync reveal: row only visible once a persisted height
+            // exists. See DPF refreshSyncStateUI for the same pattern.
             const h = opSync.loadLastSyncedHeight();
-            label.textContent = h > 0 ? `synced to height ${h.toLocaleString()}` : 'not yet synced';
+            if (h > 0) {
+                row.style.display = 'block';
+                label.textContent = `synced to height ${h.toLocaleString()}`;
+            } else {
+                row.style.display = 'none';
+            }
             if (syncBtn) syncBtn.disabled = false;
         }
 
@@ -2065,10 +2096,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     onLog: (msg, level) => log(msg, level),
                 });
                 await opClient.connect();
-                // Expose the multi-DB selector once the catalog is loaded.
-                opPopulateDbSelector();
+                // Post-connect: just refresh the sync state UI. The Advanced
+                // DB selector and delta example buttons reveal after the
+                // first successful sync (see opExecuteSync).
                 opRefreshSyncStateUI();
-                showDeltaExamples('op-', 'op-scriptPubkeys', opClient.getCatalog());
                 // Dev-only: expose client on window for browser console debugging.
                 window.opClient = opClient;
             } catch (error) {
@@ -2248,6 +2279,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 opRefreshSyncStateUI();
+                // Post-sync reveals: Advanced DB selector + delta example
+                // buttons appear together now that the user has confirmed
+                // a successful sync.
+                opPopulateDbSelector();
+                showDeltaExamples('op-', 'op-scriptPubkeys', opClient.getCatalog());
 
                 // Per-step Merkle verification buttons (OnionPIR per-bin).
                 // Steps are rendered in plan order.
@@ -2476,9 +2512,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (syncBtn) syncBtn.disabled = true;
                 return;
             }
-            row.style.display = 'block';
+            // Post-sync reveal: row only visible once a persisted height
+            // exists. See DPF refreshSyncStateUI for the same pattern.
             const h = hpSync.loadLastSyncedHeight();
-            label.textContent = h > 0 ? `synced to height ${h.toLocaleString()}` : 'not yet synced';
+            if (h > 0) {
+                row.style.display = 'block';
+                label.textContent = `synced to height ${h.toLocaleString()}`;
+            } else {
+                row.style.display = 'none';
+            }
             if (syncBtn) syncBtn.disabled = false;
         }
 
@@ -2705,10 +2747,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     statusDiv.textContent = 'Status: Ready';
                 }
 
-                // Expose the multi-DB selector now that the catalog is loaded.
-                hpPopulateDbSelector();
+                // Post-connect: just refresh the sync state UI. The Advanced
+                // DB selector and delta example buttons reveal after the
+                // first successful sync (see hpExecuteSync).
                 hpRefreshSyncStateUI();
-                showDeltaExamples('hp-', 'hp-scriptPubkeys', hpClient.getCatalog());
 
                 // Update UI when query server disconnects (e.g. idle timeout).
                 hpClient.onQueryServerClose(() => {
@@ -2951,6 +2993,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 hpRefreshSyncStateUI();
+                // Post-sync reveals: Advanced DB selector + delta example
+                // buttons appear together now that the user has confirmed
+                // a successful sync.
+                hpPopulateDbSelector();
+                showDeltaExamples('hp-', 'hp-scriptPubkeys', hpClient.getCatalog());
 
                 // Per-step Merkle verification. Matches DPF / OnionPIR pattern:
                 // verify against each step's raw stepResults (not the merged
