@@ -376,19 +376,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <button class="example-btn" id="pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
                     <button class="example-btn" id="pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
                     <button class="example-btn" id="pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
+                    <br>
+                    <!-- Delta examples: addresses that have activity (spent and/or
+                         new UTXOs) in the delta DB loaded on the server. Hardcoded
+                         from the first delta_<A>_<B> entry in example_spks.json —
+                         works for our current single-delta setup, would need a
+                         lookup rewire if the server starts shipping multiple deltas. -->
+                    <span class="example-label" id="deltaExampleLabel">Delta examples:</span>
+                    <button class="example-btn" id="loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
+                    <button class="example-btn" id="pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
+                    <button class="example-btn" id="pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
                 </div>
             </details>
-            <!-- Delta example panel: hoisted OUT of the collapsed "Load examples"
-                 disclosure so it's visible inline once the user has synced. These
-                 addresses are a primary demo target and need to be discoverable
-                 without expanding a closed <details>. Revealed post-sync by
-                 showDeltaExamples(). -->
-            <div id="deltaExamplePanel" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px;">
-                <div id="deltaExampleLabel" style="color: #0c5460; margin-bottom: 6px; font-weight: bold;">Delta examples</div>
-                <button class="example-btn" id="loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
-                <button class="example-btn" id="pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
-                <button class="example-btn" id="pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
-            </div>
             <br>
             <!-- Action row: Connect visually grouped with the primary Sync button -->
             <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
@@ -506,16 +505,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <button class="example-btn" id="op-pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
                     <button class="example-btn" id="op-pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
                     <button class="example-btn" id="op-pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
+                    <br>
+                    <!-- Delta examples: see DPF tab for rationale. -->
+                    <span class="example-label" id="op-deltaExampleLabel">Delta examples:</span>
+                    <button class="example-btn" id="op-loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
+                    <button class="example-btn" id="op-pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
+                    <button class="example-btn" id="op-pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
                 </div>
             </details>
-            <!-- Delta example panel: hoisted OUT of the collapsed "Load examples"
-                 disclosure so it's visible inline once the user has synced. -->
-            <div id="op-deltaExamplePanel" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px;">
-                <div id="op-deltaExampleLabel" style="color: #0c5460; margin-bottom: 6px; font-weight: bold;">Delta examples</div>
-                <button class="example-btn" id="op-loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
-                <button class="example-btn" id="op-pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
-                <button class="example-btn" id="op-pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
-            </div>
             <br>
             <!-- Action row: Connect visually grouped with the primary Sync button -->
             <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
@@ -662,16 +659,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <button class="example-btn" id="hp-pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
                     <button class="example-btn" id="hp-pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
                     <button class="example-btn" id="hp-pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
+                    <br>
+                    <!-- Delta examples: see DPF tab for rationale. -->
+                    <span class="example-label" id="hp-deltaExampleLabel">Delta examples:</span>
+                    <button class="example-btn" id="hp-loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
+                    <button class="example-btn" id="hp-pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
+                    <button class="example-btn" id="hp-pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
                 </div>
             </details>
-            <!-- Delta example panel: hoisted OUT of the collapsed "Load examples"
-                 disclosure so it's visible inline once the user has synced. -->
-            <div id="hp-deltaExamplePanel" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px;">
-                <div id="hp-deltaExampleLabel" style="color: #0c5460; margin-bottom: 6px; font-weight: bold;">Delta examples</div>
-                <button class="example-btn" id="hp-loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
-                <button class="example-btn" id="hp-pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
-                <button class="example-btn" id="hp-pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
-            </div>
             <br>
             <!-- Action row: Connect visually grouped with the primary Sync button -->
             <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
@@ -756,27 +751,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
         import EXAMPLES from './src/example_spks.json';
         // Legacy alias: the existing Pick-N-random buttons work on the main
-        // UTXO set. Delta-specific example lists live under EXAMPLES[`delta_<A>_<B>`]
-        // and are used by the "Delta examples" buttons added below.
+        // UTXO set. Delta-specific example lists live under EXAMPLES[`delta_<A>_<B>`].
         const EXAMPLE_SPKS = EXAMPLES.main;
-        // All delta example arrays, keyed by catalog name
-        // (e.g. "delta_940611_944000"). Empty array for unknown keys.
-        function getDeltaExamples(dbName) {
-            return EXAMPLES[dbName] || [];
-        }
-        // Return the delta examples for the first delta database found in
-        // the given catalog, or null if none exists. Used to wire a single
-        // "Load delta examples" button without the user having to pick the
-        // delta by name.
-        function firstDeltaExamples(catalog) {
-            if (!catalog) return null;
-            for (const db of catalog.databases) {
-                if (db.dbType === 1) {
-                    const arr = EXAMPLES[db.name];
-                    if (arr && arr.length > 0) return { name: db.name, spks: arr, db };
-                }
-            }
-            return null;
+        // Primary delta example list: the first `delta_*` key in example_spks.json.
+        // We currently ship exactly one delta database at a time, so hardcoding
+        // "first" here is fine. If the server starts shipping multiple deltas
+        // simultaneously, this would need to loop or pick per catalog.
+        function primaryDeltaExamples() {
+            const deltaKeys = Object.keys(EXAMPLES).filter(k => k.startsWith('delta_'));
+            if (deltaKeys.length === 0) return null;
+            const key = deltaKeys[0];
+            const spks = EXAMPLES[key];
+            if (!spks || spks.length === 0) return null;
+            return { name: key, spks };
         }
 
         let client = null;
@@ -1401,7 +1388,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('syncStateRow').style.display = 'none';
             document.getElementById('syncPlanBox').style.display = 'none';
             document.getElementById('syncBtn').disabled = true;
-            hideDeltaExamples('');
         }
 
         async function queryUtxos() {
@@ -1710,12 +1696,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 refreshSyncStateUI();
-                // Post-sync reveals: Advanced DB selector + delta example
-                // buttons appear together now that the user has confirmed
-                // a successful sync. Pre-sync these stay hidden to keep
-                // the first-time flow uncluttered.
+                // Post-sync reveal: the Advanced DB selector appears once
+                // the user has confirmed a successful sync. Delta example
+                // buttons are NOT gated here — they live directly inside
+                // the Load examples disclosure and are wired at page load
+                // via wireDeltaExampleButtons(), so testers can pick delta
+                // addresses before clicking Sync.
                 populateDbSelector();
-                showDeltaExamples('', 'scriptPubkeys', client.getCatalog());
 
                 // Offer Merkle verification for each step whose target DB
                 // has per-bucket Merkle available. Rendered in plan order so
@@ -1812,49 +1799,51 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 5).join('\n');
         });
 
-        // ─── Delta example panel wiring (shared across tabs) ────────────
-        // Each tab has a #<prefix>deltaExamplePanel wrapper (hoisted OUT of
-        // the collapsed "Load examples" disclosure so it's visible inline
-        // without the user expanding anything). The panel contains a label
-        // and three buttons (load all, pick 10 random, pick 5 random).
-        // Call showDeltaExamples after a successful sync to reveal the
-        // panel and wire its button click handlers to the target textarea,
-        // or hide it if the catalog has no matching delta examples.
-        function showDeltaExamples(tabPrefix, textareaId, catalog) {
-            const panelEl = document.getElementById(`${tabPrefix}deltaExamplePanel`);
+        // ─── Delta example buttons: page-load wiring (shared across tabs) ──
+        // Each tab has three delta example buttons inside its collapsed
+        // "Load examples" disclosure, alongside the main/whale/pick-N-random
+        // buttons. We wire them once at page load from the FIRST delta_<A>_<B>
+        // entry in example_spks.json — our current server configuration ships
+        // exactly one delta database, so hardcoding "first" here is fine.
+        //
+        // These buttons are ALWAYS visible (no sync-gating) because the
+        // delta-example addresses are known good demo targets that testers
+        // can load before clicking Sync. The delta step in the sync plan
+        // must still run before any "delta activity" cards render — but
+        // selecting the addresses is pre-sync.
+        function wireDeltaExampleButtons(tabPrefix, textareaId) {
             const labelEl = document.getElementById(`${tabPrefix}deltaExampleLabel`);
             const allBtn = document.getElementById(`${tabPrefix}loadDeltaAllBtn`);
             const r10Btn = document.getElementById(`${tabPrefix}pickDeltaRandom10Btn`);
             const r5Btn = document.getElementById(`${tabPrefix}pickDeltaRandom5Btn`);
-            const delta = firstDeltaExamples(catalog);
+            if (!labelEl || !allBtn || !r10Btn || !r5Btn) return;
+
+            const delta = primaryDeltaExamples();
             if (!delta) {
-                if (panelEl) panelEl.style.display = 'none';
+                // No delta examples shipped in example_spks.json — hide the row.
+                labelEl.style.display = 'none';
+                allBtn.style.display = 'none';
+                r10Btn.style.display = 'none';
+                r5Btn.style.display = 'none';
                 return;
             }
-            labelEl.textContent = `Delta examples (present in both main & ${delta.name} — delta must be applied to see changes, ${delta.spks.length} available)`;
+
+            labelEl.textContent = `Delta examples (${delta.name} — spent or new UTXOs, visible after applying the delta):`;
             allBtn.textContent = `Load all ${delta.spks.length} delta`;
+            // Hide pick-N buttons that are meaningless for small lists.
             r10Btn.style.display = delta.spks.length > 10 ? '' : 'none';
             r5Btn.style.display = delta.spks.length > 5 ? '' : 'none';
-            // Replace click listeners by cloning the buttons (cheap, avoids
-            // stacking handlers across reconnects).
-            const wire = (btn, getValue) => {
-                const clone = btn.cloneNode(true);
-                btn.parentNode.replaceChild(clone, btn);
-                clone.addEventListener('click', () => {
-                    document.getElementById(textareaId).value = getValue();
-                });
-                return clone;
-            };
-            wire(allBtn, () => delta.spks.join('\n'));
-            wire(r10Btn, () => pickRandom(delta.spks, 10).join('\n'));
-            wire(r5Btn, () => pickRandom(delta.spks, 5).join('\n'));
-            if (panelEl) panelEl.style.display = 'block';
-        }
 
-        function hideDeltaExamples(tabPrefix) {
-            const panelEl = document.getElementById(`${tabPrefix}deltaExamplePanel`);
-            if (panelEl) panelEl.style.display = 'none';
+            const target = document.getElementById(textareaId);
+            allBtn.addEventListener('click', () => { target.value = delta.spks.join('\n'); });
+            r10Btn.addEventListener('click', () => { target.value = pickRandom(delta.spks, 10).join('\n'); });
+            r5Btn.addEventListener('click', () => { target.value = pickRandom(delta.spks, 5).join('\n'); });
         }
+        // Wire the three tabs' delta buttons immediately (DOM is ready because
+        // this script block is at the bottom of <body>, after every element).
+        wireDeltaExampleButtons('', 'scriptPubkeys');
+        wireDeltaExampleButtons('op-', 'op-scriptPubkeys');
+        wireDeltaExampleButtons('hp-', 'hp-scriptPubkeys');
 
         // ─── Main buttons (DPF) ────────────────────────────────────────
         document.getElementById('connectBtn').addEventListener('click', connect);
@@ -2124,7 +2113,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('op-syncStateRow').style.display = 'none';
             document.getElementById('op-syncPlanBox').style.display = 'none';
             document.getElementById('op-syncBtn').disabled = true;
-            hideDeltaExamples('op-');
             opPendingSync = null;
             opSetButtons(false);
         }
@@ -2288,11 +2276,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 opRefreshSyncStateUI();
-                // Post-sync reveals: Advanced DB selector + delta example
-                // buttons appear together now that the user has confirmed
-                // a successful sync.
+                // Post-sync reveal: Advanced DB selector. Delta example
+                // buttons live inside Load examples and are wired at page
+                // load (see wireDeltaExampleButtons).
                 opPopulateDbSelector();
-                showDeltaExamples('op-', 'op-scriptPubkeys', opClient.getCatalog());
 
                 // Per-step Merkle verification buttons (OnionPIR per-bin).
                 // Steps are rendered in plan order.
@@ -2799,7 +2786,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('hp-syncStateRow').style.display = 'none';
             document.getElementById('hp-syncPlanBox').style.display = 'none';
             document.getElementById('hp-syncBtn').disabled = true;
-            hideDeltaExamples('hp-');
             hpPendingSync = null;
             const statusDiv = document.getElementById('hp-status');
             statusDiv.textContent = hpHintsLoaded
@@ -3002,11 +2988,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 hpRefreshSyncStateUI();
-                // Post-sync reveals: Advanced DB selector + delta example
-                // buttons appear together now that the user has confirmed
-                // a successful sync.
+                // Post-sync reveal: Advanced DB selector. Delta example
+                // buttons live inside Load examples and are wired at page
+                // load (see wireDeltaExampleButtons).
                 hpPopulateDbSelector();
-                showDeltaExamples('hp-', 'hp-scriptPubkeys', hpClient.getCatalog());
 
                 // Per-step Merkle verification. Matches DPF / OnionPIR pattern:
                 // verify against each step's raw stepResults (not the merged
