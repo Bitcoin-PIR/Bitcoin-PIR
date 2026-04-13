@@ -69,19 +69,21 @@ To fully hide found/not-found, the client would need to send dummy chunk and Mer
    - `web/index.html` - Calls `initSdkWasm()` at startup
    - `web/package.json` - Added `pir-sdk-wasm` dependency
 
+6. **Merkle Verification for "Not Found" Results** (commit `60fe19c`):
+   - All three PIR clients (DPF, OnionPIR, HarmonyPIR) now track ALL bins checked
+   - For "not found", verifies ALL INDEX_CUCKOO_NUM_HASHES=2 positions
+   - Proves scripthash is truly absent from the database
+   - Enables Merkle verification of delta databases even when no activity
+
+7. **Human-Verifiable Audit Logging** (commit `9a693c5`):
+   - Added `[PIR-AUDIT]` prefixed logs to all three PIR clients
+   - Logs show: query parameters, padding reminders, per-query FOUND/NOT FOUND status,
+     bin indices, chunk IDs, Merkle verification details
+   - Enables humans to verify PIR operations are correct
+
 ---
 
 ## Next TODOs
-
-### Recent Fix: Merkle Verification for "Not Found" Results
-- Previously, Merkle verification only worked for queries that FOUND a match
-- Now all three PIR clients (DPF, OnionPIR, HarmonyPIR) track ALL bins checked
-  (all cuckoo hash positions) even when the scripthash is NOT found
-- For "not found", we must verify ALL INDEX_CUCKOO_NUM_HASHES=2 positions
-  to prove the scripthash is truly absent from the database
-- This allows Merkle verification of delta databases even when addresses have
-  no activity in the delta period
-- Security benefit: proves the server returned authentic "not found" responses
 
 ### If GitHub Actions SUCCEEDS:
 1. **Test in browser**: Open the deployed web app, check DevTools console for `[PIR] SDK WASM loaded`
