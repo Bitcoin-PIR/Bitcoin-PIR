@@ -557,6 +557,7 @@ export class OnionPirWebClient {
     const N = scriptHashes.length;
     const progress = onProgress || (() => {});
     this.log(`=== Batch query: ${N} script hashes (dbId=${dbId}, bins=${this.indexBins}/${this.chunkBins}) ===`);
+    this.log(`[PIR-AUDIT] Query parameters: K=${this.indexK} index groups, K_CHUNK=${this.chunkK} chunk groups, INDEX_CUCKOO_NUM_HASHES=${INDEX_CUCKOO_NUM_HASHES}`);
 
     // ── Generate keys and create per-level clients ─────────────────────
     // Generate keys with a real num_entries (not 0) — keys generated with
@@ -622,6 +623,7 @@ export class OnionPirWebClient {
       const allGroups = addrInfos.map(a => a.groups);
       const indexRounds = planPbcRounds(allGroups, this.indexK);
       this.log(`Level 1: ${N} queries → ${indexRounds.length} round(s)`);
+      this.log(`[PIR-AUDIT] PADDING: Each index round sends exactly ${this.indexK} queries (real + empty groups for privacy)`);
 
       // Each round: 2 queries per group (hash0 + hash1 bins), matching DPF approach.
       // Groups without a real address send empty queries (server skips them).
@@ -708,6 +710,10 @@ export class OnionPirWebClient {
               indexLeafPos[addrIdx] = firstBin.leafPos;
             }
             allBinsChecked.set(addrIdx, binsForAddr);
+            this.log(`[PIR-AUDIT] Query ${addrIdx}: NOT FOUND (checked ${binsForAddr.length} bins)`);
+          } else {
+            const ir = indexResults[addrIdx];
+            this.log(`[PIR-AUDIT] Query ${addrIdx}: FOUND at entryId=${ir?.entryId}, numEntries=${ir?.numEntries}`);
           }
         }
       }

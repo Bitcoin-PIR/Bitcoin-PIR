@@ -3,6 +3,48 @@
 ## Project Overview
 Bitcoin Private Information Retrieval (PIR) system with three backends: DPF-PIR, OnionPIR, HarmonyPIR. Supports full snapshots and delta synchronization for incremental updates.
 
+---
+
+## CRITICAL SECURITY REQUIREMENTS
+
+### Query Padding (MANDATORY for Privacy)
+
+**NEVER OPTIMIZE AWAY PADDING. The padding is INTENTIONAL and REQUIRED for privacy.**
+
+Within each PIR round, queries are padded to FIXED counts:
+- **INDEX queries**: Always K=75 groups (regardless of how many real queries)
+- **CHUNK queries**: Always K_CHUNK=80 groups (regardless of how many real chunks)
+- **MERKLE queries**: Always 25 sibling queries (regardless of proof depth)
+
+**Why:** If the server sees varying numbers of queries, it can infer information about which groups contain real queries vs padding. By always sending exactly K queries, the server cannot distinguish real queries from dummy queries.
+
+**How padding works:**
+1. Real queries are placed in their computed cuckoo positions
+2. Remaining empty groups get random DPF keys (dummy queries)
+3. Server processes ALL groups identically, cannot tell which are real
+
+### Cuckoo Hashing and "Not Found" Verification
+
+Each scripthash maps to INDEX_CUCKOO_NUM_HASHES=2 possible cuckoo positions. To prove a scripthash is "not found", ALL positions must be checked and verified:
+- Client checks position h=0, then h=1
+- If neither contains the scripthash, it's definitively not in the database
+- Merkle verification must cover ALL checked bins to prove "not found"
+
+### What the Server Learns (Documented Trade-offs)
+
+The server **cannot** learn:
+- Which specific groups contain real queries (due to padding)
+- Which specific scripthash was queried
+
+The server **can** observe (known trade-offs):
+- Whether chunk/Merkle rounds occur (reveals found vs not-found)
+- Roughly how many chunk rounds (reveals approximate UTXO count)
+- Timing patterns across rounds
+
+To fully hide found/not-found, the client would need to send dummy chunk and Merkle rounds even when no results were found. This is a documented privacy/efficiency trade-off.
+
+---
+
 ## Recent Work: PIR SDK Implementation
 
 ### Completed
@@ -33,8 +75,10 @@ Bitcoin Private Information Retrieval (PIR) system with three backends: DPF-PIR,
 
 ### Recent Fix: Merkle Verification for "Not Found" Results
 - Previously, Merkle verification only worked for queries that FOUND a match
-- Now all three PIR clients (DPF, OnionPIR, HarmonyPIR) track the first bin checked
-  even when the scripthash is NOT found in the database
+- Now all three PIR clients (DPF, OnionPIR, HarmonyPIR) track ALL bins checked
+  (all cuckoo hash positions) even when the scripthash is NOT found
+- For "not found", we must verify ALL INDEX_CUCKOO_NUM_HASHES=2 positions
+  to prove the scripthash is truly absent from the database
 - This allows Merkle verification of delta databases even when addresses have
   no activity in the delta period
 - Security benefit: proves the server returned authentic "not found" responses

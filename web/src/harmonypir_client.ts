@@ -680,6 +680,7 @@ export class HarmonyPirClient {
     const N = addresses.length;
     const results = new Map<number, HarmonyQueryResult>();
     this.log(`Starting batch query for ${N} addresses (dbId=${this.dbId})...`);
+    this.log(`[PIR-AUDIT] Query parameters: K=${K} index groups, K_CHUNK=${K_CHUNK} chunk groups, INDEX_CUCKOO_NUM_HASHES=${INDEX_CUCKOO_NUM_HASHES}`);
 
     // ── Pre-flight: check hint budget ──
     const remaining = await this.getMinQueriesRemaining();
@@ -727,6 +728,7 @@ export class HarmonyPirClient {
     const indexCandGroups = scriptHashes.map(sh => deriveGroups(sh));
     const indexRounds = planRounds(indexCandGroups, K, NUM_HASHES, (msg) => this.log(msg));
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index placement round(s) × ${INDEX_CUCKOO_NUM_HASHES} hash-fn rounds`);
+    this.log(`[PIR-AUDIT] PADDING: Each index round sends exactly ${K} queries (real + dummy for privacy)`);
 
     // Pre-populate inspector data for each query.
     for (let qi = 0; qi < N; qi++) {
@@ -896,6 +898,19 @@ export class HarmonyPirClient {
 
     const l1Ms = performance.now() - tL1Start;
     this.log(`Level 1 done: ${indexResults.size} found, ${whaleQueries.size} whales (${(l1Ms / 1000).toFixed(1)}s)`);
+    // Audit log: which queries found vs not found
+    for (let qi = 0; qi < N; qi++) {
+      const bins = allBinsChecked.get(qi);
+      const ir = indexResults.get(qi);
+      if (ir) {
+        this.log(`[PIR-AUDIT] Query ${qi}: FOUND at group=${ir.pbcGroup}, binIndex=${ir.binIndex}, startChunk=${ir.startChunkId}, numChunks=${ir.numChunks}`);
+      } else if (whaleQueries.has(qi)) {
+        this.log(`[PIR-AUDIT] Query ${qi}: WHALE (excluded due to too many UTXOs)`);
+      } else {
+        const checkedCount = bins?.length ?? 0;
+        this.log(`[PIR-AUDIT] Query ${qi}: NOT FOUND (checked ${checkedCount} bins)`);
+      }
+    }
 
     // ══════════════════════════════════════════════════════════════════
     // PHASE 2: CHUNK — global batch across all queries
@@ -921,9 +936,11 @@ export class HarmonyPirClient {
     const chunkMerkleInfo = new Map<number, { pbcGroup: number; binIndex: number; binContent: Uint8Array }>();
 
     if (allChunkIds.length > 0) {
+      this.log(`[PIR-AUDIT] Chunk IDs to fetch: [${allChunkIds.slice(0, 10).join(', ')}${allChunkIds.length > 10 ? '...' : ''}]`);
       const chunkCandGroups = allChunkIds.map(cid => deriveChunkGroups(cid));
       const chunkRounds = planRounds(chunkCandGroups, K_CHUNK, NUM_HASHES, (msg) => this.log(msg));
       this.log(`  ${allChunkIds.length} chunks → ${chunkRounds.length} chunk placement round(s) × ${CHUNK_CUCKOO_NUM_HASHES} hash-fn rounds`);
+      this.log(`[PIR-AUDIT] PADDING: Each chunk round sends exactly ${K_CHUNK} queries (real + dummy for privacy)`);
 
       for (let ri = 0; ri < chunkRounds.length; ri++) {
         const roundPlan = chunkRounds[ri];

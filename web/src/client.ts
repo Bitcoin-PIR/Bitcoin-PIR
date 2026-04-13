@@ -356,7 +356,8 @@ export class BatchPirClient {
     const N = scriptHashes.length;
     const progress = onProgress || (() => {});
 
-    this.log(`=== Batch query: ${N} script hashes ===`);
+    this.log(`=== Batch query: ${N} script hashes (dbId=${dbId}) ===`);
+    this.log(`[PIR-AUDIT] Query parameters: K=${K} index groups, K_CHUNK=${K_CHUNK} chunk groups, INDEX_CUCKOO_NUM_HASHES=${INDEX_CUCKOO_NUM_HASHES}`);
 
     // ════════════════════════════════════════════════════════════════════
     // LEVEL 1: Index PIR (batched)
@@ -369,6 +370,7 @@ export class BatchPirClient {
     // Plan index rounds using cuckoo placement
     const indexRounds = planRounds(indexCandGroups, K, NUM_HASHES, (msg) => this.log(msg, 'error'));
     this.log(`Level 1: ${N} queries → ${indexRounds.length} index round(s)`);
+    this.log(`[PIR-AUDIT] PADDING: Each index round sends exactly ${K} DPF key pairs (real queries + dummy queries)`);
 
     // Per-query results from Level 1
     const indexResults: Map<number, { startChunkId: number; numChunks: number; pbcGroup: number; binIndex: number; binContent: Uint8Array }> = new Map();
@@ -466,9 +468,11 @@ export class BatchPirClient {
           // For "found", we only need to verify the one bin where we found it
           // But store all bins anyway in case caller wants full verification
           allBinsChecked.set(queryIdx, binsForThisQuery.slice(0, matchedH + 1));
+          this.log(`[PIR-AUDIT] Query ${queryIdx}: FOUND at group=${groupId}, h=${matchedH}, binIndex=${matchedBinIndex}, startChunk=${found.startChunkId}, numChunks=${found.numChunks}`);
         } else {
-          this.log(`  Query ${queryIdx}: not found in index`, 'error');
           // For "not found", store ALL bins checked — all must be verified
+          const checkedBinsStr = binsForThisQuery.map((b, h) => `h=${h}:bin${b.binIndex}`).join(', ');
+          this.log(`[PIR-AUDIT] Query ${queryIdx}: NOT FOUND (checked ${binsForThisQuery.length} bins: ${checkedBinsStr})`);
           allBinsChecked.set(queryIdx, binsForThisQuery);
         }
       }
@@ -510,6 +514,9 @@ export class BatchPirClient {
 
     const allChunkIds = Array.from(allChunkIdsSet).sort((a, b) => a - b);
     this.log(`Level 2: ${allChunkIds.length} unique chunks to fetch across ${indexResults.size} queries`);
+    if (allChunkIds.length > 0) {
+      this.log(`[PIR-AUDIT] Chunk IDs to fetch: [${allChunkIds.slice(0, 10).join(', ')}${allChunkIds.length > 10 ? '...' : ''}]`);
+    }
 
     // Plan chunk rounds collectively
     const chunkCandGroups = allChunkIds.map(cid => deriveChunkGroups(cid));
@@ -521,6 +528,7 @@ export class BatchPirClient {
     );
     // chunkRounds[r][i] = [chunkListIndex, groupId]
     this.log(`  ${allChunkIds.length} chunks → ${chunkRounds.length} chunk round(s)`);
+    this.log(`[PIR-AUDIT] PADDING: Each chunk round sends exactly ${K_CHUNK} DPF key pairs (real chunks + dummy chunks)`);
 
     // Execute chunk rounds
     const recoveredChunks = new Map<number, Uint8Array>();
@@ -776,7 +784,9 @@ export class BatchPirClient {
       if (r.isWhale) continue;
 
       // For "not found" (numChunks=0, no entries), verify ALL index bins
+      // This is required to prove the scripthash is truly absent (all cuckoo positions checked)
       if (r.allIndexBins && r.allIndexBins.length > 0 && r.entries.length === 0) {
+        this.log(`[PIR-AUDIT] Result ${i}: NOT FOUND - verifying ${r.allIndexBins.length} index bins for absence proof`);
         for (const bin of r.allIndexBins) {
           items.push({
             indexPbcGroup: bin.pbcGroup,
@@ -790,6 +800,8 @@ export class BatchPirClient {
         }
       } else if (r.indexPbcGroup !== undefined && r.indexBinContent) {
         // For "found" results, verify the one bin where we found the match + chunks
+        const numChunks = r.chunkPbcGroups?.length ?? 0;
+        this.log(`[PIR-AUDIT] Result ${i}: FOUND - verifying 1 index bin + ${numChunks} chunk bins`);
         items.push({
           indexPbcGroup: r.indexPbcGroup,
           indexBinIndex: r.indexBinIndex!,
@@ -803,6 +815,11 @@ export class BatchPirClient {
     }
 
     if (items.length === 0) return results.map(() => false);
+
+    // Log audit info for Merkle verification
+    const indexBinSummary = items.map((it, i) => `item${i}:group${it.indexPbcGroup}/bin${it.indexBinIndex}`).slice(0, 5);
+    this.log(`[PIR-AUDIT] Merkle verification: ${items.length} items (${indexBinSummary.join(', ')}${items.length > 5 ? '...' : ''})`);
+    this.log(`[PIR-AUDIT] Merkle super_root: ${merkle.super_root.slice(0, 16)}...`);
 
     const batchResults = await verifyBucketMerkleBatchDpf(
       this.ws0!, this.ws1!, merkle, items, onProgress,
