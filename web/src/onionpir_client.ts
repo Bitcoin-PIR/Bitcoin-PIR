@@ -614,6 +614,8 @@ export class OnionPirWebClient {
       // Per-bin Merkle: store index bin hash + leaf position per address
       const indexBinHashes: (Uint8Array | null)[] = new Array(N).fill(null);
       const indexLeafPos: (number | null)[] = new Array(N).fill(null);
+      // Track ALL bins checked per address for "not found" verification
+      const allBinsChecked: Map<number, { hash: Uint8Array; leafPos: number }[]> = new Map();
       let totalIndexRounds = 0;
 
       // PBC place all addresses into groups (same logic as DPF-PIR)
@@ -672,36 +674,40 @@ export class OnionPirWebClient {
         const totalDecrypts = round.length * INDEX_CUCKOO_NUM_HASHES;
         for (const [addrIdx, group] of round) {
           let foundMatch = false;
-          // Track first bin for Merkle verification even if not found
-          let firstBinHash: Uint8Array | undefined;
-          let firstLeafPos: number | undefined;
+          // Track ALL bins checked for this address
+          const binsForAddr: { hash: Uint8Array; leafPos: number }[] = [];
           for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
             const qi = group * 2 + h;
             const bin = queryBins[qi];
             const entryBytes = indexClient.decryptResponse(bin, results[qi]);
             decrypted++;
-            // Always capture first bin for Merkle verification
-            if (h === 0) {
-              firstBinHash = sha256(entryBytes.slice(0, PACKED_ENTRY_SIZE));
-              firstLeafPos = group * this.indexBins + bin;
-            }
+            const binHash = sha256(entryBytes.slice(0, PACKED_ENTRY_SIZE));
+            const leafPos = group * this.indexBins + bin;
+            binsForAddr.push({ hash: binHash, leafPos });
+
             const found = findEntryInOnionPirIndexResult(entryBytes, addrInfos[addrIdx].tag, this.indexSlotsPerBin, this.indexSlotSize);
             if (found) {
               indexResults[addrIdx] = found;
-              // Per-bin Merkle: hash the full decrypted bin and record leaf position
-              indexBinHashes[addrIdx] = sha256(entryBytes.slice(0, PACKED_ENTRY_SIZE));
-              indexLeafPos[addrIdx] = group * this.indexBins + bin;
+              // Per-bin Merkle: use the bin where we found the match
+              indexBinHashes[addrIdx] = binHash;
+              indexLeafPos[addrIdx] = leafPos;
               foundMatch = true;
+              // Store bins checked up to and including the match
+              allBinsChecked.set(addrIdx, binsForAddr);
               break;
             }
             // Yield after every decrypt — each is ~100ms+ of WASM FHE work
             progress('Level 1', `Round ${roundNum}/${totalRounds}: decrypted ${decrypted}/${totalDecrypts}...`);
             await yieldToMain();
           }
-          // If not found, still store first bin for Merkle verification
-          if (!foundMatch && firstBinHash && firstLeafPos !== undefined) {
-            indexBinHashes[addrIdx] = firstBinHash;
-            indexLeafPos[addrIdx] = firstLeafPos;
+          // If not found, store ALL bins checked
+          if (!foundMatch) {
+            const firstBin = binsForAddr[0];
+            if (firstBin) {
+              indexBinHashes[addrIdx] = firstBin.hash;
+              indexLeafPos[addrIdx] = firstBin.leafPos;
+            }
+            allBinsChecked.set(addrIdx, binsForAddr);
           }
         }
       }
@@ -848,9 +854,10 @@ export class OnionPirWebClient {
         }
         const ir = indexResults[qi];
         if (!ir) {
-          // Not found in index — but we may still have bin hash for Merkle verification
+          // Not found in index — include ALL bins checked for Merkle verification
           const binHash = indexBinHashes[qi];
           const leafPos = indexLeafPos[qi];
+          const allBins = allBinsChecked.get(qi);
           if (binHash && leafPos !== undefined) {
             results[qi] = {
               entries: [],
@@ -863,6 +870,7 @@ export class OnionPirWebClient {
               merkleDataRoot: this.getOnionPirMerkleForDb(this.dbId)?.data?.root,
               indexBinHash: binHash,
               indexLeafPos: leafPos,
+              allIndexBinHashes: allBins, // All bins for "not found" verification
               dataBinHashes: [],
               dataLeafPositions: [],
               scriptHash: scriptHashes[qi],
@@ -913,6 +921,7 @@ export class OnionPirWebClient {
           merkleDataRoot: this.getOnionPirMerkleForDb(this.dbId)?.data?.root,
           indexBinHash: indexBinHashes[qi] ?? undefined,
           indexLeafPos: indexLeafPos[qi] ?? undefined,
+          allIndexBinHashes: allBinsChecked.get(qi), // Bins checked (for found, just up to match)
           dataBinHashes: addrDataBinHashes,
           dataLeafPositions: addrDataLeafPositions,
           scriptHash: scriptHashes[qi],
@@ -978,8 +987,19 @@ export class OnionPirWebClient {
 
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.isWhale || !r.indexBinHash || r.indexLeafPos === undefined) continue;
-      allLeaves.push({ hash: r.indexBinHash, leafPos: r.indexLeafPos, resultIdx: i, tree: 'index' });
+      if (r.isWhale) continue;
+
+      // For "not found" (no entries), verify ALL index bins checked
+      if (r.allIndexBinHashes && r.allIndexBinHashes.length > 0 && r.entries.length === 0) {
+        for (const bin of r.allIndexBinHashes) {
+          allLeaves.push({ hash: bin.hash, leafPos: bin.leafPos, resultIdx: i, tree: 'index' });
+        }
+      } else if (r.indexBinHash && r.indexLeafPos !== undefined) {
+        // For "found", just verify the one bin where we found the match
+        allLeaves.push({ hash: r.indexBinHash, leafPos: r.indexLeafPos, resultIdx: i, tree: 'index' });
+      }
+
+      // Data bins (only for "found" results)
       if (r.dataBinHashes && r.dataLeafPositions) {
         for (let j = 0; j < r.dataBinHashes.length; j++) {
           allLeaves.push({ hash: r.dataBinHashes[j], leafPos: r.dataLeafPositions[j], resultIdx: i, tree: 'data' });

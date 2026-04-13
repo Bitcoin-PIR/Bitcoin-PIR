@@ -58,12 +58,18 @@ export interface QueryResult {
   /** Script hash used for this query */
   scriptHash?: Uint8Array;
   // ── Per-bucket bin Merkle ─────────────────────────────────────────
-  /** PBC group index for the INDEX query */
+  /** PBC group index for the INDEX query (when found) */
   indexPbcGroup?: number;
-  /** Cuckoo bin index within the INDEX group */
+  /** Cuckoo bin index within the INDEX group (when found) */
   indexBinIndex?: number;
-  /** Raw INDEX bin content (slotsPerBin × slotSize bytes) */
+  /** Raw INDEX bin content (slotsPerBin × slotSize bytes, when found) */
   indexBinContent?: Uint8Array;
+  /**
+   * All INDEX bins checked (for "not found" verification).
+   * When a scripthash is NOT found, we check multiple cuckoo positions.
+   * All of them must be verified to prove the scripthash is truly absent.
+   */
+  allIndexBins?: { pbcGroup: number; binIndex: number; binContent: Uint8Array }[];
   /** PBC group indices for each CHUNK query */
   chunkPbcGroups?: number[];
   /** Cuckoo bin indices for each CHUNK query */
@@ -79,6 +85,11 @@ export interface QueryResult {
   indexBinHash?: Uint8Array;
   /** Leaf position in INDEX-MERKLE tree */
   indexLeafPos?: number;
+  /**
+   * All INDEX bins checked for "not found" verification (OnionPIR).
+   * Each entry has the bin hash and leaf position.
+   */
+  allIndexBinHashes?: { hash: Uint8Array; leafPos: number }[];
   /** SHA256 of each decrypted DATA bin (per-bin Merkle leaves) */
   dataBinHashes?: Uint8Array[];
   /** Leaf positions in DATA-MERKLE tree */
@@ -361,9 +372,9 @@ export class BatchPirClient {
 
     // Per-query results from Level 1
     const indexResults: Map<number, { startChunkId: number; numChunks: number; pbcGroup: number; binIndex: number; binContent: Uint8Array }> = new Map();
-    // Track "not found" queries with their bin info for Merkle verification
-    // (proves the server returned authentic bin content even when no match)
-    const notFoundBins: Map<number, { pbcGroup: number; binIndex: number; binContent: Uint8Array }> = new Map();
+    // Track ALL bins checked per query for "not found" Merkle verification.
+    // To prove "not found", we must verify ALL cuckoo positions were checked.
+    const allBinsChecked: Map<number, { pbcGroup: number; binIndex: number; binContent: Uint8Array }[]> = new Map();
 
     for (let ir = 0; ir < indexRounds.length; ir++) {
       const round = indexRounds[ir];
@@ -425,24 +436,22 @@ export class BatchPirClient {
         let found: { startChunkId: number; numChunks: number } | null = null;
         let matchedBinContent: Uint8Array | undefined;
         let matchedBinIndex = 0;
-        // Track the first bin (h=0) for Merkle verification even if not found
-        let firstBinContent: Uint8Array | undefined;
-        let firstBinIndex = 0;
+        let matchedH = 0;
+        // Track ALL bins checked for "not found" Merkle verification
+        const binsForThisQuery: { pbcGroup: number; binIndex: number; binContent: Uint8Array }[] = [];
         const expectedTag = computeTag(tagSeed, scriptHashes[queryIdx]);
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
           const result = this.xorBuffers(r0[h], r1[h]);
-          // Always capture the first bin for Merkle verification
-          if (h === 0) {
-            firstBinContent = result;
-            const ck = deriveCuckooKey(groupId, 0);
-            firstBinIndex = cuckooHash(scriptHashes[queryIdx], ck, indexBins);
-          }
+          const ck = deriveCuckooKey(groupId, h);
+          const binIndex = cuckooHash(scriptHashes[queryIdx], ck, indexBins);
+          // Track every bin we check
+          binsForThisQuery.push({ pbcGroup: groupId, binIndex, binContent: result });
+
           found = findEntryInIndexResult(result, expectedTag, this.serverInfo!.index_slots_per_bin, this.serverInfo!.index_slot_size);
           if (found) {
             matchedBinContent = result;
-            // The bin index is the cuckoo hash of the script hash into this group's table
-            const ck = deriveCuckooKey(groupId, h);
-            matchedBinIndex = cuckooHash(scriptHashes[queryIdx], ck, indexBins);
+            matchedBinIndex = binIndex;
+            matchedH = h;
             break;
           }
         }
@@ -454,16 +463,13 @@ export class BatchPirClient {
             binIndex: matchedBinIndex,
             binContent: matchedBinContent!,
           });
+          // For "found", we only need to verify the one bin where we found it
+          // But store all bins anyway in case caller wants full verification
+          allBinsChecked.set(queryIdx, binsForThisQuery.slice(0, matchedH + 1));
         } else {
           this.log(`  Query ${queryIdx}: not found in index`, 'error');
-          // Store the first bin for Merkle verification of "not found"
-          if (firstBinContent) {
-            notFoundBins.set(queryIdx, {
-              pbcGroup: groupId,
-              binIndex: firstBinIndex,
-              binContent: firstBinContent,
-            });
-          }
+          // For "not found", store ALL bins checked — all must be verified
+          allBinsChecked.set(queryIdx, binsForThisQuery);
         }
       }
     }
@@ -625,10 +631,11 @@ export class BatchPirClient {
 
       const info = queryChunkInfo.get(qi);
       if (!info) {
-        // Not found in index — but we may still have bin content for Merkle verification
-        const nfBin = notFoundBins.get(qi);
-        if (nfBin) {
-          // Create a "not found" result with verifiable bin content
+        // Not found in index — create result with ALL bins checked for Merkle verification
+        const bins = allBinsChecked.get(qi);
+        if (bins && bins.length > 0) {
+          // Use first bin for backward-compatible singular fields
+          const firstBin = bins[0];
           results[qi] = {
             entries: [],
             totalSats: 0n,
@@ -638,9 +645,12 @@ export class BatchPirClient {
             isWhale: false,
             merkleRootHex: this.serverInfo?.merkle_bucket?.super_root ?? this.serverInfo?.merkle?.root,
             scriptHash: scriptHashes[qi],
-            indexPbcGroup: nfBin.pbcGroup,
-            indexBinIndex: nfBin.binIndex,
-            indexBinContent: nfBin.binContent,
+            // Singular fields (backward compat) - first bin
+            indexPbcGroup: firstBin.pbcGroup,
+            indexBinIndex: firstBin.binIndex,
+            indexBinContent: firstBin.binContent,
+            // ALL bins checked - needed for proper "not found" verification
+            allIndexBins: bins,
             // No chunk data for not-found queries
             chunkPbcGroups: [],
             chunkBinIndices: [],
@@ -700,6 +710,8 @@ export class BatchPirClient {
         indexPbcGroup: idxInfo?.pbcGroup,
         indexBinIndex: idxInfo?.binIndex,
         indexBinContent: idxInfo?.binContent,
+        // For "found", allIndexBins contains just the bins checked up to the match
+        allIndexBins: allBinsChecked.get(qi),
         chunkPbcGroups: qChunkPbcGroups,
         chunkBinIndices: qChunkBinIndices,
         chunkBinContents: qChunkBinContents,
@@ -754,21 +766,40 @@ export class BatchPirClient {
     const merkle = this.getMerkleInfoForDb(dbId);
     if (!merkle) throw new Error(`Database ${dbId} does not support bucket Merkle`);
 
-    // Build BucketMerkleItem[] from verifiable results
+    // Build BucketMerkleItem[] from verifiable results.
+    // For "not found" results, we create one item PER INDEX BIN checked
+    // to prove all cuckoo positions were verified.
     const items: BucketMerkleItem[] = [];
     const itemToResult: number[] = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.isWhale || r.indexPbcGroup === undefined || !r.indexBinContent) continue;
-      items.push({
-        indexPbcGroup: r.indexPbcGroup,
-        indexBinIndex: r.indexBinIndex!,
-        indexBinContent: r.indexBinContent,
-        chunkPbcGroups: r.chunkPbcGroups ?? [],
-        chunkBinIndices: r.chunkBinIndices ?? [],
-        chunkBinContents: r.chunkBinContents ?? [],
-      });
-      itemToResult.push(i);
+      if (r.isWhale) continue;
+
+      // For "not found" (numChunks=0, no entries), verify ALL index bins
+      if (r.allIndexBins && r.allIndexBins.length > 0 && r.entries.length === 0) {
+        for (const bin of r.allIndexBins) {
+          items.push({
+            indexPbcGroup: bin.pbcGroup,
+            indexBinIndex: bin.binIndex,
+            indexBinContent: bin.binContent,
+            chunkPbcGroups: [],
+            chunkBinIndices: [],
+            chunkBinContents: [],
+          });
+          itemToResult.push(i);
+        }
+      } else if (r.indexPbcGroup !== undefined && r.indexBinContent) {
+        // For "found" results, verify the one bin where we found the match + chunks
+        items.push({
+          indexPbcGroup: r.indexPbcGroup,
+          indexBinIndex: r.indexBinIndex!,
+          indexBinContent: r.indexBinContent,
+          chunkPbcGroups: r.chunkPbcGroups ?? [],
+          chunkBinIndices: r.chunkBinIndices ?? [],
+          chunkBinContents: r.chunkBinContents ?? [],
+        });
+        itemToResult.push(i);
+      }
     }
 
     if (items.length === 0) return results.map(() => false);
@@ -779,11 +810,23 @@ export class BatchPirClient {
       dbId,
     );
 
+    // Aggregate results. For "not found" with multiple bins, ALL must pass.
     const out: boolean[] = new Array(results.length).fill(false);
+    const resultBinCounts = new Map<number, { total: number; passed: number }>();
+
     for (let j = 0; j < batchResults.length; j++) {
       const ri = itemToResult[j];
-      out[ri] = batchResults[j];
-      results[ri].merkleVerified = batchResults[j];
+      const counts = resultBinCounts.get(ri) ?? { total: 0, passed: 0 };
+      counts.total++;
+      if (batchResults[j]) counts.passed++;
+      resultBinCounts.set(ri, counts);
+    }
+
+    for (const [ri, counts] of resultBinCounts) {
+      // Result passes only if ALL its bins were verified
+      const allPassed = counts.passed === counts.total;
+      out[ri] = allPassed;
+      results[ri].merkleVerified = allPassed;
     }
     return out;
   }

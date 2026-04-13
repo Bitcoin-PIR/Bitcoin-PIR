@@ -72,12 +72,17 @@ export interface HarmonyQueryResult {
   /** Script hash as bytes (for Merkle leaf hash) */
   scriptHashBytes?: Uint8Array;
   // ── Per-bucket bin Merkle ─────────────────────────────────────────
-  /** PBC group index for the INDEX query */
+  /** PBC group index for the INDEX query (when found) */
   indexPbcGroup?: number;
-  /** Cuckoo bin index within the INDEX group */
+  /** Cuckoo bin index within the INDEX group (when found) */
   indexBinIndex?: number;
-  /** Raw INDEX bin content (slotsPerBin × slotSize bytes) */
+  /** Raw INDEX bin content (slotsPerBin × slotSize bytes, when found) */
   indexBinContent?: Uint8Array;
+  /**
+   * All INDEX bins checked (for "not found" verification).
+   * When a scripthash is NOT found, all cuckoo positions must be verified.
+   */
+  allIndexBins?: { pbcGroup: number; binIndex: number; binContent: Uint8Array }[];
   /** PBC group indices for each CHUNK query */
   chunkPbcGroups?: number[];
   /** Cuckoo bin indices for each CHUNK query */
@@ -741,8 +746,8 @@ export class HarmonyPirClient {
 
     const indexResults = new Map<number, { startChunkId: number; numChunks: number; pbcGroup: number; binIndex: number; binContent: Uint8Array }>();
     const whaleQueries = new Set<number>();
-    // Track "not found" queries with their first bin info for Merkle verification
-    const notFoundBins = new Map<number, { pbcGroup: number; binIndex: number; binContent: Uint8Array }>();
+    // Track ALL bins checked per query for "not found" Merkle verification
+    const allBinsChecked = new Map<number, { pbcGroup: number; binIndex: number; binContent: Uint8Array }[]>();
 
     for (let ir = 0; ir < indexRounds.length; ir++) {
       const round = indexRounds[ir];
@@ -829,19 +834,20 @@ export class HarmonyPirClient {
         for (const [groupId, qi] of realGroups) {
           const answer = answers.get(groupId);
           if (!answer) continue;
-          // For h=0, always track the bin for Merkle verification (even if not found)
-          if (h === 0 && !notFoundBins.has(qi)) {
-            notFoundBins.set(qi, {
-              pbcGroup: groupId,
-              binIndex: realBinIndices.get(groupId) ?? 0,
-              binContent: answer,
-            });
-          }
+
+          // Track every bin checked for this query
+          const binInfo = {
+            pbcGroup: groupId,
+            binIndex: realBinIndices.get(groupId) ?? 0,
+            binContent: answer,
+          };
+          const bins = allBinsChecked.get(qi) ?? [];
+          bins.push(binInfo);
+          allBinsChecked.set(qi, bins);
+
           const expectedTag = computeTag(this.tagSeed, scriptHashes[qi]);
           const found = findEntryInIndexResult(answer, expectedTag, HARMONY_INDEX_W / INDEX_SLOT_SIZE, INDEX_SLOT_SIZE);
           if (found) {
-            // Found! Remove from notFoundBins since we'll use indexResults
-            notFoundBins.delete(qi);
             if (found.numChunks === 0) {
               whaleQueries.add(qi);
               const qd = inspectorMap.get(qi);
@@ -1034,8 +1040,9 @@ export class HarmonyPirClient {
       }
       const info = queryChunkInfo.get(qi);
       if (!info) {
-        // Not found — but we may still have bin info for Merkle verification
-        const nfBin = notFoundBins.get(qi);
+        // Not found — include ALL bins checked for Merkle verification
+        const bins = allBinsChecked.get(qi);
+        const firstBin = bins?.[0];
         results.set(qi, {
           address: addresses[qi],
           scriptHash: shHexes[qi],
@@ -1043,9 +1050,12 @@ export class HarmonyPirClient {
           whale: false,
           merkleRootHex: this.serverInfo?.merkle_bucket?.super_root ?? this.serverInfo?.merkle?.root,
           scriptHashBytes: scriptHashes[qi],
-          indexPbcGroup: nfBin?.pbcGroup,
-          indexBinIndex: nfBin?.binIndex,
-          indexBinContent: nfBin?.binContent,
+          // Singular fields (backward compat) - first bin
+          indexPbcGroup: firstBin?.pbcGroup,
+          indexBinIndex: firstBin?.binIndex,
+          indexBinContent: firstBin?.binContent,
+          // ALL bins checked - needed for proper "not found" verification
+          allIndexBins: bins,
           chunkPbcGroups: [],
           chunkBinIndices: [],
           chunkBinContents: [],
@@ -1090,6 +1100,8 @@ export class HarmonyPirClient {
         indexPbcGroup: idxInfo?.pbcGroup,
         indexBinIndex: idxInfo?.binIndex,
         indexBinContent: idxInfo?.binContent,
+        // For "found", allIndexBins contains bins checked up to the match
+        allIndexBins: allBinsChecked.get(qi),
         chunkPbcGroups: qChunkPbcGroups,
         chunkBinIndices: qChunkBinIndices,
         chunkBinContents: qChunkBinContents,
@@ -1384,7 +1396,8 @@ export class HarmonyPirClient {
     if (!merkle) throw new Error(`Database dbId=${this.dbId} does not support bucket Merkle`);
     if (!this.queryWs) throw new Error('Not connected to query server');
 
-    // Build verifiable items
+    // Build verifiable items.
+    // For "not found" (no utxos), we create one item PER INDEX BIN checked.
     const items: Array<{
       qi: number;
       indexPbcGroup: number; indexBinIndex: number; indexBinContent: Uint8Array;
@@ -1392,16 +1405,33 @@ export class HarmonyPirClient {
     }> = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.whale || r.indexPbcGroup === undefined || !r.indexBinContent) continue;
-      items.push({
-        qi: i,
-        indexPbcGroup: r.indexPbcGroup,
-        indexBinIndex: r.indexBinIndex!,
-        indexBinContent: r.indexBinContent,
-        chunkPbcGroups: r.chunkPbcGroups ?? [],
-        chunkBinIndices: r.chunkBinIndices ?? [],
-        chunkBinContents: r.chunkBinContents ?? [],
-      });
+      if (r.whale) continue;
+
+      // For "not found" (no utxos), verify ALL index bins
+      if (r.allIndexBins && r.allIndexBins.length > 0 && r.utxos.length === 0) {
+        for (const bin of r.allIndexBins) {
+          items.push({
+            qi: i,
+            indexPbcGroup: bin.pbcGroup,
+            indexBinIndex: bin.binIndex,
+            indexBinContent: bin.binContent,
+            chunkPbcGroups: [],
+            chunkBinIndices: [],
+            chunkBinContents: [],
+          });
+        }
+      } else if (r.indexPbcGroup !== undefined && r.indexBinContent) {
+        // For "found", verify the one bin where we found the match + chunks
+        items.push({
+          qi: i,
+          indexPbcGroup: r.indexPbcGroup,
+          indexBinIndex: r.indexBinIndex!,
+          indexBinContent: r.indexBinContent,
+          chunkPbcGroups: r.chunkPbcGroups ?? [],
+          chunkBinIndices: r.chunkBinIndices ?? [],
+          chunkBinContents: r.chunkBinContents ?? [],
+        });
+      }
     }
     if (items.length === 0) return results.map(() => false);
 
@@ -1471,20 +1501,37 @@ export class HarmonyPirClient {
       : [];
 
     // ── Step 5: Combine results ──
+    // For "not found" with multiple bins, ALL must pass.
     const out: boolean[] = new Array(results.length).fill(false);
+    const resultBinCounts = new Map<number, { total: number; passed: number }>();
+
     for (let i = 0; i < items.length; i++) {
-      out[items[i].qi] = indexVerified[i];
+      const qi = items[i].qi;
+      const counts = resultBinCounts.get(qi) ?? { total: 0, passed: 0 };
+      counts.total++;
+      if (indexVerified[i]) counts.passed++;
+      resultBinCounts.set(qi, counts);
     }
     for (let j = 0; j < chunkMap.length; j++) {
-      if (!chunkVerified[j]) out[items[chunkMap[j].addrIdx].qi] = false;
+      const qi = items[chunkMap[j].addrIdx].qi;
+      const counts = resultBinCounts.get(qi)!;
+      counts.total++;
+      if (chunkVerified[j]) counts.passed++;
     }
+
+    for (const [qi, counts] of resultBinCounts) {
+      // Result passes only if ALL its bins were verified
+      out[qi] = counts.passed === counts.total;
+    }
+
     // Mark results
     for (let i = 0; i < results.length; i++) {
       results[i].merkleVerified = out[i];
     }
 
     const passed = out.filter(v => v).length;
-    this.log(`Merkle: ${passed}/${items.length} verified, ${items.length - passed} failed`);
+    const totalResults = resultBinCounts.size;
+    this.log(`Merkle: ${passed}/${totalResults} results verified`);
     return out;
   }
 
