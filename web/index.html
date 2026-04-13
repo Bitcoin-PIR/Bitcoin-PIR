@@ -706,8 +706,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </div>
 
     <script type="module">
-        import { BatchPirClient, OnionPirWebClient, HarmonyPirClient, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep } from './src/index.ts';
+        import { BatchPirClient, OnionPirWebClient, HarmonyPirClient, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady } from './src/index.ts';
         import { fetchResidency } from './src/server-info.ts';
+
+        // Initialize SDK WASM (optional - falls back to TS if unavailable)
+        initSdkWasm().then(ok => {
+            if (ok) console.log('[PIR] SDK WASM loaded');
+            else console.log('[PIR] SDK WASM unavailable, using TypeScript fallback');
+        });
 
         /**
          * Detect well-known script patterns and return a label, or null.

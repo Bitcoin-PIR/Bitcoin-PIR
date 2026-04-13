@@ -1,0 +1,30 @@
+[package]
+name = "pir-sdk-client"
+version = "0.1.0"
+edition = "2021"
+description = "PIR SDK Client: Native Rust client for PIR queries"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Core SDK types and traits
+pir-sdk = { path = "../pir-sdk" }
+pir-core = { path = "../pir-core" }
+
+# DPF library
+libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+async-trait = "0.1"
+
+# Logging
+log = "0.4"
+
+# Error handling
+thiserror = "1.0"
+
+[dev-dependencies]
+env_logger = "0.11"
+hex = "0.4"

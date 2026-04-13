@@ -1,0 +1,28 @@
+[package]
+name = "pir-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "PIR SDK: core types, traits, and abstractions for Private Information Retrieval"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pir-project/BitcoinPIR"
+keywords = ["pir", "privacy", "bitcoin", "utxo"]
+
+[dependencies]
+# Re-export core primitives
+pir-core = { path = "../pir-core" }
+
+# Async runtime traits
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+# Error handling
+thiserror = "1.0"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

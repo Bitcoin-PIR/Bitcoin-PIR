@@ -16,7 +16,7 @@
  * No DOM access — all UI updates happen via progress/error callbacks provided
  * by the caller.
  */
-import { computeSyncPlan, type SyncPlan, type SyncStep } from './sync.js';
+import { computeSyncPlanSdk as computeSyncPlan, type SyncPlan, type SyncStep } from './sdk-bridge.js';
 import { bytesToHex } from './hash.js';
 import type { DatabaseCatalog } from './server-info.js';
 

@@ -1,0 +1,33 @@
+[package]
+name = "pir-sdk-server"
+version = "0.1.0"
+edition = "2021"
+description = "PIR SDK Server: load databases and serve PIR requests"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Core SDK types and traits
+pir-sdk = { path = "../pir-sdk" }
+pir-core = { path = "../pir-core" }
+
+# Re-use existing runtime components
+runtime = { path = "../runtime" }
+build = { path = "../build" }
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+
+# Logging
+log = "0.4"
+
+# Error handling
+thiserror = "1.0"
+
+[dev-dependencies]
+env_logger = "0.11"

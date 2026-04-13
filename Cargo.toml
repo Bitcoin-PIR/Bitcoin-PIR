@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["pir-core",
+members = [
+    "pir-core",
+    "pir-sdk",
+    "pir-sdk-server",
+    "pir-sdk-client",
+    "pir-sdk-wasm",
     "build",
     "runtime",
     "harmonypir-wasm",

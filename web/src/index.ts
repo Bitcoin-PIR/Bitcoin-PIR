@@ -164,3 +164,17 @@ export {
   type SyncExecuteOutput,
   type SyncControllerConfig,
 } from './sync-controller.js';
+
+// SDK WASM bridge (optional - use pir-sdk-wasm for Rust-backed implementations)
+export {
+  initSdkWasm,
+  isSdkWasmReady,
+  computeSyncPlanSdk,
+  sdkSplitmix64,
+  sdkComputeTag,
+  sdkDeriveGroups,
+  sdkDeriveCuckooKey,
+  sdkCuckooHash,
+  sdkDeriveChunkGroups,
+  sdkCuckooHashInt,
+} from './sdk-bridge.js';
