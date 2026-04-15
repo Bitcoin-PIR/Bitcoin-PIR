@@ -40,14 +40,14 @@ pub fn page_residency(region: &MmapRegion) -> io::Result<(usize, usize)> {
     }
     let ps = page_size();
     let total_pages = (region.len + ps - 1) / ps;
-    // macOS mincore takes *mut c_char; libc crate reflects this per-platform.
-    let mut vec: Vec<libc::c_char> = vec![0; total_pages];
+    // libc::mincore takes *mut c_char on macOS, *mut c_uchar on Linux; cast lets one body fit both.
+    let mut vec: Vec<u8> = vec![0; total_pages];
 
     let ret = unsafe {
         libc::mincore(
             region.ptr as *mut libc::c_void,
             region.len,
-            vec.as_mut_ptr(),
+            vec.as_mut_ptr() as *mut _,
         )
     };
     if ret != 0 {
