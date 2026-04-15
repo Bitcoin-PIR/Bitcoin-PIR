@@ -1148,6 +1148,16 @@ export class HarmonyPirClient {
     for (const [qi, qd] of inspectorMap) { qd.totalMs = totalMs; }
     this.lastInspectorData = inspectorMap;
 
+    // Persist the POST-mutation MAIN hint state so a page reload after query
+    // restores the advanced (not the original) counters. Hints are stateful:
+    // each query consumes budget on its groups, and saving pre-query state
+    // would let a reloaded client re-use already-consumed rows.
+    try {
+      await this.saveHintsToCache();
+    } catch (e) {
+      this.log(`Hint persist after queryBatch failed: ${(e as Error).message}`);
+    }
+
     return results;
   }
 
@@ -1646,13 +1656,11 @@ export class HarmonyPirClient {
     this._chunkSibGroupIds = chunkSibGroupIds;
     this.siblingHintsLoaded = true;
     this.log('Sibling hints loaded');
-
-    // Re-persist so the IndexedDB record now includes sibling hints too.
-    try {
-      await this.saveHintsToCache();
-    } catch (e) {
-      this.log(`Hint persist after sibling download failed: ${(e as Error).message}`);
-    }
+    // Note: we intentionally do NOT persist sibling hints. Sibling groups are
+    // mutated via process_response_xor_only without a matching finish_relocation
+    // in verifySiblingLevelsHarmony(), so their state is mid-transition after
+    // a Merkle verify and unsafe to restore. Siblings are always re-downloaded
+    // fresh on each session.
   }
 
   // Stored sibling group IDs (set by initAndFetchSiblingHints)
@@ -1829,7 +1837,16 @@ export class HarmonyPirClient {
     return fp;
   }
 
-  /** Save current hint state to in-memory cache AND IndexedDB. */
+  /**
+   * Save current hint state to in-memory cache AND IndexedDB.
+   *
+   * Only MAIN (INDEX + CHUNK) groups are persisted to IndexedDB. Sibling
+   * (Merkle) groups are intentionally excluded: verifySiblingLevelsHarmony()
+   * mutates sibling state via process_response_xor_only WITHOUT calling
+   * finish_relocation, so serializing sibling groups after a Merkle verify
+   * captures a mid-relocation state that is not safe to restore. Siblings
+   * are always re-downloaded fresh via initAndFetchSiblingHints().
+   */
   async saveHintsToCache(): Promise<void> {
     if (!this.pool || !this.hintsLoaded) return;
     const backend = this.config.prpBackend ?? 0;
@@ -1843,23 +1860,27 @@ export class HarmonyPirClient {
     this.log(`Cached hints for db=${this.dbId} backend=${backend} (${serialized.size} groups)`);
 
     // Also persist to IndexedDB so hints survive page reload.
+    // Filter to MAIN groups only (siblings are never persisted — see docstring).
     try {
-      const hasSiblings = Array.from(serialized.keys()).some(id => id >= K + K_CHUNK);
+      const mainOnly = new Map<number, Uint8Array>();
+      for (const [gid, bytes] of serialized) {
+        if (gid < K + K_CHUNK) mainOnly.set(gid, bytes);
+      }
       await idbPutHints({
         cacheKey: idbCacheKey(this.config.queryServerUrl, this.dbId, backend),
         serverUrl: this.config.queryServerUrl,
         dbId: this.dbId,
         backend,
         prpKey: new Uint8Array(this.prpKey),
-        groups: serialized,
+        groups: mainOnly,
         totalHintBytes: this.totalHintBytes,
         fingerprint: this.currentFingerprint(),
         hasMainHints: this.hintsLoaded,
-        hasSiblingHints: this.siblingHintsLoaded && hasSiblings,
+        hasSiblingHints: false,
         savedAt: Date.now(),
         schemaVersion: HINT_SCHEMA_VERSION,
       });
-      this.log(`Persisted hints to IndexedDB (db=${this.dbId} backend=${backend}, siblings=${hasSiblings})`);
+      this.log(`Persisted ${mainOnly.size} MAIN groups to IndexedDB (db=${this.dbId} backend=${backend})`);
     } catch (e) {
       this.log(`IndexedDB persist failed (continuing with in-memory cache): ${(e as Error).message}`);
     }
@@ -1867,25 +1888,35 @@ export class HarmonyPirClient {
 
   /**
    * Restore hints from in-memory cache, falling back to IndexedDB.
-   * Returns true on cache hit (from either source). Updates `hintsLoaded`
-   * and `siblingHintsLoaded` based on which group families were restored.
-   * IndexedDB entries are validated against the current server fingerprint;
-   * mismatches are deleted so the caller can cleanly re-download.
+   * Returns true on cache hit (from either source). Sibling hints are never
+   * persisted, so this only restores MAIN hints and `siblingHintsLoaded`
+   * stays false — the first verifyMerkleBatch() call will fresh-download
+   * them via initAndFetchSiblingHints(). IndexedDB entries are validated
+   * against the current server fingerprint; mismatches are deleted so the
+   * caller can cleanly re-download.
    */
   async restoreHintsFromCache(backend: number): Promise<boolean> {
     if (!this.pool) return false;
 
-    // In-memory cache first (cheapest).
+    // In-memory cache first (cheapest). May contain sibling groups from a
+    // prior in-process Merkle verify; filter them out since sibling state
+    // from a mid-relocation pass is not safe to replay.
     const memKey = this.hintCacheKey(this.dbId, backend);
     const memCached = this.hintCache.get(memKey);
     if (memCached) {
+      const mainOnly = new Map<number, Uint8Array>();
+      for (const [gid, bytes] of memCached.groups) {
+        if (gid < K + K_CHUNK) mainOnly.set(gid, bytes);
+      }
       this.prpKey = new Uint8Array(memCached.prpKey);
       this.totalHintBytes = memCached.totalHintBytes;
-      await this.pool.deserializeAll(memCached.groups, this.prpKey);
+      await this.pool.deserializeAll(mainOnly, this.prpKey);
       this.hintsLoaded = true;
-      const hasSiblings = Array.from(memCached.groups.keys()).some(id => id >= K + K_CHUNK);
-      if (hasSiblings) this.siblingHintsLoaded = true;
-      this.log(`Restored ${memCached.groups.size} groups from memory cache (db=${this.dbId} backend=${backend})`);
+      // Siblings stay un-loaded — verifyMerkleBatch() will re-download them.
+      this.siblingHintsLoaded = false;
+      this._indexSibGroupIds = [];
+      this._chunkSibGroupIds = [];
+      this.log(`Restored ${mainOnly.size} MAIN groups from memory cache (db=${this.dbId} backend=${backend})`);
       return true;
     }
 
@@ -1908,9 +1939,15 @@ export class HarmonyPirClient {
       return false;
     }
 
+    // Filter to MAIN groups only (old records may contain siblings; discard them).
+    const mainOnly = new Map<number, Uint8Array>();
+    for (const [gid, bytes] of stored.groups) {
+      if (gid < K + K_CHUNK) mainOnly.set(gid, bytes);
+    }
+
     // Deserialize into workers.
     try {
-      await this.pool.deserializeAll(stored.groups, stored.prpKey);
+      await this.pool.deserializeAll(mainOnly, stored.prpKey);
     } catch (e) {
       this.log(`Persisted hint deserialize failed (${(e as Error).message}); deleting entry.`);
       try { await idbDeleteHints(idbKey); } catch { /* best-effort */ }
@@ -1920,53 +1957,24 @@ export class HarmonyPirClient {
     this.prpKey = new Uint8Array(stored.prpKey);
     this.totalHintBytes = stored.totalHintBytes;
     this.hintsLoaded = stored.hasMainHints;
-    if (stored.hasSiblingHints) {
-      // Reconstruct sibling group-ID tables from current server merkle info so
-      // verifyMerkleBatch() knows which groups to query.
-      const merkle = this.getBucketMerkleForDb(this.dbId);
-      if (merkle) this.rebuildSiblingGroupIds(merkle);
-      this.siblingHintsLoaded = true;
-    }
-    // Populate in-memory cache from the IDB hit so subsequent saves round-trip.
+    // Siblings are never persisted; verifyMerkleBatch() will lazily fetch.
+    this.siblingHintsLoaded = false;
+    this._indexSibGroupIds = [];
+    this._chunkSibGroupIds = [];
+
+    // Populate in-memory cache (MAIN only) so subsequent saves round-trip.
     this.hintCache.set(memKey, {
       prpKey: new Uint8Array(stored.prpKey),
-      groups: stored.groups,
+      groups: mainOnly,
       totalHintBytes: stored.totalHintBytes,
     });
 
     const ageHrs = ((Date.now() - stored.savedAt) / 3600000).toFixed(1);
     this.log(
-      `Restored ${stored.groups.size} groups from IndexedDB ` +
-      `(db=${this.dbId} backend=${backend}, age=${ageHrs}h, siblings=${stored.hasSiblingHints})`
+      `Restored ${mainOnly.size} MAIN groups from IndexedDB ` +
+      `(db=${this.dbId} backend=${backend}, age=${ageHrs}h)`
     );
     return true;
-  }
-
-  /**
-   * Recompute the global group IDs used for each INDEX/CHUNK sibling level.
-   * This mirrors the allocation logic in initAndFetchSiblingHints() so
-   * verifyMerkleBatch() can locate restored sibling groups in the pool.
-   */
-  private rebuildSiblingGroupIds(
-    merkle: import('./server-info.js').BucketMerkleInfoJson,
-  ): void {
-    let nextGroupId = K + K_CHUNK;
-    const indexSib: number[][] = [];
-    for (let level = 0; level < merkle.index_levels.length; level++) {
-      const ids: number[] = [];
-      for (let g = 0; g < K; g++) ids.push(nextGroupId + g);
-      indexSib.push(ids);
-      nextGroupId += K;
-    }
-    const chunkSib: number[][] = [];
-    for (let level = 0; level < merkle.chunk_levels.length; level++) {
-      const ids: number[] = [];
-      for (let g = 0; g < K_CHUNK; g++) ids.push(nextGroupId + g);
-      chunkSib.push(ids);
-      nextGroupId += K_CHUNK;
-    }
-    this._indexSibGroupIds = indexSib;
-    this._chunkSibGroupIds = chunkSib;
   }
 
   /** Check if cached hints exist in memory for the active dbId + given PRP backend. */
