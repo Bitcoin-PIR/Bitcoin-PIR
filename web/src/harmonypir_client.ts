@@ -290,7 +290,7 @@ export class HarmonyPirClient {
 
     const wb = (globalThis as any).wasm_bindgen;
     if (!wb) throw new Error(`HarmonyPIR WASM did not initialize from ${jsUrl}`);
-    await wb(binaryUrl);
+    await wb({ module_or_path: binaryUrl });
     this.wasm = wb as any;
 
     // Initialize worker pool.

@@ -21,7 +21,7 @@ interface WasmBindgen {
   HarmonyGroup: {  // Note: pre-built WASM may still export HarmonyBucket
     new_with_backend(n: number, w: number, t: number, prpKey: Uint8Array, groupId: number, backend: number): HarmonyGroupWasm;
   };
-  (wasmUrl: string): Promise<void>;
+  (init: { module_or_path: string }): Promise<void>;
 }
 
 // ─── Worker state ────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ self.onmessage = async (ev: MessageEvent<WorkerMessage>) => {
         (0, eval)(jsText);
         const wb = (self as any).wasm_bindgen as WasmBindgen;
         if (!wb) throw new Error('wasm_bindgen not defined after eval');
-        await wb(msg.wasmBinaryUrl);
+        await wb({ module_or_path: msg.wasmBinaryUrl });
         wasm = wb;
         (self as any).postMessage({ type: 'ready' });
       } catch (e: any) {

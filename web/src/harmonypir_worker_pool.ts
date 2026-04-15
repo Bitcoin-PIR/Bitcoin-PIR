@@ -350,7 +350,7 @@ self.onmessage = async (ev) => {
         (0, eval)(jsText);
         const wb = self.wasm_bindgen;
         if (!wb) throw new Error('wasm_bindgen not defined after eval');
-        await wb(msg.wasmBinaryUrl);
+        await wb({ module_or_path: msg.wasmBinaryUrl });
         wasm = wb;
         self.postMessage({ type: 'ready' });
       } catch (e) {
