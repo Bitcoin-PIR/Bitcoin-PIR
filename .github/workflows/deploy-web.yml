@@ -43,6 +43,13 @@ jobs:
           wasm-pack build pir-core-wasm --target bundler --out-dir pkg
           mv Cargo.toml.bak Cargo.toml
 
+      - name: Build pir-sdk-wasm
+        run: |
+          cp Cargo.toml Cargo.toml.bak
+          printf '[workspace]\nresolver = "2"\nmembers = ["pir-core", "pir-sdk", "pir-sdk-wasm"]\n' > Cargo.toml
+          wasm-pack build pir-sdk-wasm --target web --out-dir pkg
+          mv Cargo.toml.bak Cargo.toml
+
       - name: Install dependencies
         working-directory: web
         run: npm ci
