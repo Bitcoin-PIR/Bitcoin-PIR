@@ -1,0 +1,13 @@
+# Enable AES-NI and adjacent SSE/PCLMUL features on x86_64 so that intrinsic
+# calls in dependencies like alf-nt (used by HarmonyPIR's PRP backend) inline
+# the AES round instructions instead of going through one out-of-line
+# function call per `_mm_aesenc_si128`. Without this, ALF's `Ktm::tweak_init`
+# generates 48 `call _mm_aesenc_si128` sites in the release binary because
+# the dep's own `.cargo/config.toml` is not propagated when it is consumed
+# as a git dependency.
+#
+# Target gate is `cfg(target_arch = "x86_64")` so wasm32 and aarch64 builds
+# are unaffected (those backends have their own intrinsic paths).
+
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+aes,+ssse3,+sse4.1,+pclmulqdq"]
