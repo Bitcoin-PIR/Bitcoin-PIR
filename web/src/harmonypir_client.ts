@@ -764,7 +764,11 @@ export class HarmonyPirClient {
 
     const indexResults = new Map<number, { startChunkId: number; numChunks: number; pbcGroup: number; binIndex: number; binContent: Uint8Array }>();
     const whaleQueries = new Set<number>();
-    // Track ALL bins checked per query for "not found" Merkle verification
+    // Per-whale matched INDEX bin info — needed so whales can be Merkle-verified
+    // on their INDEX entry (numChunks=0, committed to INDEX Merkle root).
+    const whaleIndexInfo = new Map<number, { pbcGroup: number; binIndex: number; binContent: Uint8Array }>();
+    // Track ALL bins probed per query — used by Merkle verifier to emit one
+    // item per cuckoo position for uniform pass-count.
     const allBinsChecked = new Map<number, { pbcGroup: number; binIndex: number; binContent: Uint8Array }[]>();
 
     for (let ir = 0; ir < indexRounds.length; ir++) {
@@ -780,7 +784,17 @@ export class HarmonyPirClient {
         }
       }
 
-      const foundThisPlacement = new Set<number>(); // qi already found in this placement round
+      // Snapshot queries resolved in PRIOR placement rounds — those skip all h.
+      // Queries resolved in THIS placement round still issue real queries at
+      // subsequent h, so the Merkle item count is uniform across found / not-found
+      // (INDEX_CUCKOO_NUM_HASHES items per query). Closes the side channel where
+      // sibling-pass count leaks presence. See CLAUDE.md "Merkle INDEX
+      // item-count symmetry". Cost: one extra real PRP/relocation cycle per
+      // found@h=0 query (the server-side batch was already K-padded).
+      const resolvedBefore = new Set<number>();
+      for (const qi of indexResults.keys()) resolvedBefore.add(qi);
+      for (const qi of whaleQueries) resolvedBefore.add(qi);
+      const foundThisPlacement = new Set<number>(); // qi matched at some h in this placement round
 
       for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
         progress?.('Level 1', `Index placement ${ir + 1}/${indexRounds.length}, h=${h}...`);
@@ -792,13 +806,13 @@ export class HarmonyPirClient {
 
         for (let b = 0; b < K; b++) {
           const qi = groupToQuery.get(b);
-          if (qi !== undefined && !foundThisPlacement.has(qi) && !indexResults.has(qi) && !whaleQueries.has(qi)) {
+          if (qi !== undefined && !resolvedBefore.has(qi)) {
             const ck = deriveCuckooKey(b, h);
             const binIndex = cuckooHash(scriptHashes[qi], ck, this.indexBinsPerTable);
             buildItems.push({ groupId: b, binIndex });
             realGroups.set(b, qi);
             realBinIndices.set(b, binIndex);
-            // Inspector: record which binIndex this query used.
+            // Inspector: record which binIndex this query used (first h only).
             const qd = inspectorMap.get(qi);
             if (qd && qd.indexBinIndex === undefined) {
               qd.indexBinIndex = binIndex;
@@ -865,9 +879,20 @@ export class HarmonyPirClient {
 
           const expectedTag = computeTag(this.tagSeed, scriptHashes[qi]);
           const found = findEntryInIndexResult(answer, expectedTag, HARMONY_INDEX_W / INDEX_SLOT_SIZE, INDEX_SLOT_SIZE);
-          if (found) {
+          // Only record the first match per query — later h iterations still
+          // probe (and track allBinsChecked above) but don't overwrite the
+          // found-bin state. Different cuckoo positions normally can't both
+          // carry the same tag, but guard defensively.
+          if (found && !foundThisPlacement.has(qi)) {
             if (found.numChunks === 0) {
               whaleQueries.add(qi);
+              // Capture the matched bin so the Merkle item builder can mark
+              // it as "matched" (chunks attach to this one, empty for others).
+              whaleIndexInfo.set(qi, {
+                pbcGroup: groupId,
+                binIndex: realBinIndices.get(groupId) ?? 0,
+                binContent: answer,
+              });
               const qd = inspectorMap.get(qi);
               if (qd) {
                 qd.isWhale = true;
@@ -1068,7 +1093,25 @@ export class HarmonyPirClient {
 
     for (let qi = 0; qi < N; qi++) {
       if (whaleQueries.has(qi)) {
-        results.set(qi, { address: addresses[qi], scriptHash: shHexes[qi], utxos: [], whale: true });
+        // Whales are Merkle-verified on their INDEX entry (numChunks=0 bin is
+        // committed to the INDEX Merkle root — proving the whale status is
+        // server-authenticated). No chunks to verify.
+        const whaleInfo = whaleIndexInfo.get(qi);
+        results.set(qi, {
+          address: addresses[qi],
+          scriptHash: shHexes[qi],
+          utxos: [],
+          whale: true,
+          merkleRootHex: this.serverInfo?.merkle_bucket?.super_root ?? this.serverInfo?.merkle?.root,
+          scriptHashBytes: scriptHashes[qi],
+          indexPbcGroup: whaleInfo?.pbcGroup,
+          indexBinIndex: whaleInfo?.binIndex,
+          indexBinContent: whaleInfo?.binContent,
+          allIndexBins: allBinsChecked.get(qi),
+          chunkPbcGroups: [],
+          chunkBinIndices: [],
+          chunkBinContents: [],
+        });
         continue;
       }
       const info = queryChunkInfo.get(qi);
@@ -1448,31 +1491,27 @@ export class HarmonyPirClient {
     }> = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.whale) continue;
 
-      // For "not found" (no utxos), verify ALL index bins
-      if (r.allIndexBins && r.allIndexBins.length > 0 && r.utxos.length === 0) {
-        for (const bin of r.allIndexBins) {
-          items.push({
-            qi: i,
-            indexPbcGroup: bin.pbcGroup,
-            indexBinIndex: bin.binIndex,
-            indexBinContent: bin.binContent,
-            chunkPbcGroups: [],
-            chunkBinIndices: [],
-            chunkBinContents: [],
-          });
-        }
-      } else if (r.indexPbcGroup !== undefined && r.indexBinContent) {
-        // For "found", verify the one bin where we found the match + chunks
+      // Emit one item per probed INDEX bin so the Merkle item count is
+      // uniform across found / not-found / whale (CHUNK bins attach only to
+      // the matched INDEX item). See CLAUDE.md "Merkle INDEX item-count
+      // symmetry". Whales verify on INDEX only (bin content with numChunks=0
+      // is committed to the INDEX Merkle root).
+      if (!r.allIndexBins || r.allIndexBins.length === 0) continue;
+
+      const matchedPbc = r.indexPbcGroup;
+      const matchedBin = r.indexBinIndex;
+
+      for (const bin of r.allIndexBins) {
+        const isMatchedBin = matchedPbc === bin.pbcGroup && matchedBin === bin.binIndex;
         items.push({
           qi: i,
-          indexPbcGroup: r.indexPbcGroup,
-          indexBinIndex: r.indexBinIndex!,
-          indexBinContent: r.indexBinContent,
-          chunkPbcGroups: r.chunkPbcGroups ?? [],
-          chunkBinIndices: r.chunkBinIndices ?? [],
-          chunkBinContents: r.chunkBinContents ?? [],
+          indexPbcGroup: bin.pbcGroup,
+          indexBinIndex: bin.binIndex,
+          indexBinContent: bin.binContent,
+          chunkPbcGroups: isMatchedBin ? (r.chunkPbcGroups ?? []) : [],
+          chunkBinIndices: isMatchedBin ? (r.chunkBinIndices ?? []) : [],
+          chunkBinContents: isMatchedBin ? (r.chunkBinContents ?? []) : [],
         });
       }
     }

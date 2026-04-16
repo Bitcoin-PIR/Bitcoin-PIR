@@ -23,6 +23,14 @@ change near them needs extra care — do not optimize away padding.
   Commit `6aee562`.
 - Web TypeScript client parity for all three protocols including Merkle
   verification and IndexedDB-cached Harmony hints.
+- 🔒 **Merkle INDEX item-count symmetry across all five clients.** All
+  five clients (TS DPF/Onion/Harmony, Rust DPF/Harmony) now probe both
+  cuckoo positions unconditionally and emit `INDEX_CUCKOO_NUM_HASHES=2`
+  Merkle items per INDEX query regardless of outcome. Closes the side
+  channel where per-level sibling `max_items_per_group` leaked
+  found-vs-not-found and cuckoo h-position. Whales also emit their
+  INDEX Merkle item so whale-exclusion is verifiable. See CLAUDE.md
+  "Merkle INDEX Item-Count Symmetry" for the full invariant.
 
 ## P0 — Blockers for "production-ready"
 

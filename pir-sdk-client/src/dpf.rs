@@ -219,64 +219,52 @@ impl DpfClient {
         let mut item_to_query: Vec<usize> = Vec::new();
 
         for (qi, trace) in traces.iter().enumerate() {
-            // Skip whales — we deliberately cannot Merkle-verify them
-            // (no chunk chain), matching the TS client behavior.
-            let is_whale = results
-                .get(qi)
-                .and_then(|r| r.as_ref().map(|x| x.is_whale))
-                .unwrap_or(false);
-            if is_whale {
-                log::info!(
-                    "[PIR-AUDIT] Merkle: skipping query #{} (whale — unverifiable)",
-                    qi
-                );
-                continue;
-            }
+            // Emit one BucketMerkleItem per probed INDEX bin so the Merkle
+            // item count is uniform (INDEX_CUCKOO_NUM_HASHES items per query)
+            // across found / not-found / whale. CHUNK bins attach only to
+            // the matched INDEX item; the other item(s) get empty chunk
+            // vectors and exercise only the INDEX Merkle tree.
+            //
+            // Whales are verified on the INDEX side — the bin content with
+            // num_chunks=0 is committed to the INDEX Merkle root, so verifying
+            // it proves the server-reported whale status.
+            let outcome = match trace.matched_index_idx {
+                Some(_) => {
+                    let is_whale = results
+                        .get(qi)
+                        .and_then(|r| r.as_ref().map(|x| x.is_whale))
+                        .unwrap_or(false);
+                    if is_whale { "WHALE" } else { "FOUND" }
+                }
+                None => "NOT FOUND",
+            };
+            log::info!(
+                "[PIR-AUDIT] Merkle: query #{} {} — verifying {} index bins + {} chunk bins",
+                qi,
+                outcome,
+                trace.index_bins.len(),
+                trace.chunk_bins.len()
+            );
 
-            match trace.matched_index_idx {
-                Some(mi) => {
-                    // FOUND: one item covering the matching INDEX bin and all
-                    // CHUNK bins we retrieved.
-                    let idx = &trace.index_bins[mi];
-                    let mut it = BucketMerkleItem {
-                        index_pbc_group: idx.pbc_group,
-                        index_bin_index: idx.bin_index,
-                        index_bin_content: idx.bin_content.clone(),
-                        chunk_pbc_groups: Vec::with_capacity(trace.chunk_bins.len()),
-                        chunk_bin_indices: Vec::with_capacity(trace.chunk_bins.len()),
-                        chunk_bin_contents: Vec::with_capacity(trace.chunk_bins.len()),
-                    };
+            for (bi, bin) in trace.index_bins.iter().enumerate() {
+                let is_matched = trace.matched_index_idx == Some(bi);
+                let mut it = BucketMerkleItem {
+                    index_pbc_group: bin.pbc_group,
+                    index_bin_index: bin.bin_index,
+                    index_bin_content: bin.bin_content.clone(),
+                    chunk_pbc_groups: Vec::new(),
+                    chunk_bin_indices: Vec::new(),
+                    chunk_bin_contents: Vec::new(),
+                };
+                if is_matched {
                     for cb in &trace.chunk_bins {
                         it.chunk_pbc_groups.push(cb.pbc_group);
                         it.chunk_bin_indices.push(cb.bin_index);
                         it.chunk_bin_contents.push(cb.bin_content.clone());
                     }
-                    log::info!(
-                        "[PIR-AUDIT] Merkle: query #{} FOUND — 1 index bin + {} chunk bins to verify",
-                        qi, trace.chunk_bins.len()
-                    );
-                    items.push(it);
-                    item_to_query.push(qi);
                 }
-                None => {
-                    // NOT-FOUND: one item per INDEX cuckoo bin we checked
-                    // (must all pass to prove absence).
-                    log::info!(
-                        "[PIR-AUDIT] Merkle: query #{} NOT FOUND — verifying {} cuckoo bins for absence proof",
-                        qi, trace.index_bins.len()
-                    );
-                    for bin in &trace.index_bins {
-                        items.push(BucketMerkleItem {
-                            index_pbc_group: bin.pbc_group,
-                            index_bin_index: bin.bin_index,
-                            index_bin_content: bin.bin_content.clone(),
-                            chunk_pbc_groups: Vec::new(),
-                            chunk_bin_indices: Vec::new(),
-                            chunk_bin_contents: Vec::new(),
-                        });
-                        item_to_query.push(qi);
-                    }
-                }
+                items.push(it);
+                item_to_query.push(qi);
             }
         }
 
@@ -492,8 +480,10 @@ impl DpfClient {
         let my_tag = pir_core::hash::compute_tag(tag_seed, script_hash);
 
         // XOR results for assigned group and look for our entry.
-        // Record every bin we inspect so the Merkle verifier can cover the
-        // "NOT FOUND at both cuckoo positions" absence proof.
+        // Record every bin we inspect so the Merkle verifier can cover both
+        // cuckoo positions uniformly — see CLAUDE.md "Merkle INDEX item-count
+        // symmetry" (we emit INDEX_CUCKOO_NUM_HASHES items per query regardless
+        // of found/not-found to avoid leaking presence via pass count).
         let mut index_bins: Vec<IndexBinTrace> = Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES);
         let mut found: Option<(u32, u8, bool)> = None;
         let mut matched_idx: Option<usize> = None;
@@ -503,11 +493,22 @@ impl DpfClient {
             xor_into(&mut bin_content, &results1[assigned_group][h]);
 
             let bin_index = my_locs[h] as u32;
-            let trace = IndexBinTrace {
+            let pos = index_bins.len();
+            index_bins.push(IndexBinTrace {
                 pbc_group: assigned_group,
                 bin_index,
                 bin_content: bin_content.clone(),
-            };
+            });
+
+            if found.is_some() {
+                // Already matched earlier; still probe this position so the
+                // Merkle item count is uniform across found/not-found.
+                log::info!(
+                    "[PIR-AUDIT] INDEX extra probe at cuckoo h={} (group={}, bin={}) — tracked for Merkle uniformity",
+                    h, assigned_group, bin_index
+                );
+                continue;
+            }
 
             if let Some((start_chunk, num_chunks)) =
                 find_entry_in_index_result(&bin_content, my_tag)
@@ -517,16 +518,13 @@ impl DpfClient {
                     "[PIR-AUDIT] INDEX FOUND at cuckoo h={} (group={}, bin={}): start_chunk={}, num_chunks={}, whale={}",
                     h, assigned_group, bin_index, start_chunk, num_chunks, is_whale
                 );
-                matched_idx = Some(index_bins.len());
-                index_bins.push(trace);
+                matched_idx = Some(pos);
                 found = Some((start_chunk, num_chunks as u8, is_whale));
-                break;
             } else {
                 log::info!(
                     "[PIR-AUDIT] INDEX miss at cuckoo h={} (group={}, bin={})",
                     h, assigned_group, bin_index
                 );
-                index_bins.push(trace);
             }
         }
 

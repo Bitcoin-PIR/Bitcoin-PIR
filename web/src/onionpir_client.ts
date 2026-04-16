@@ -671,13 +671,17 @@ export class OnionPirWebClient {
         if (respPayload[0] !== RESP_ONIONPIR_INDEX_RESULT) throw new Error('Unexpected index response');
         const { results } = decodeBatchResult(respPayload, 1);
 
-        // Decrypt only real addresses (skip dummy groups — client knows which are fake)
+        // Decrypt all INDEX_CUCKOO_NUM_HASHES responses per address — even
+        // after a match — so the Merkle item count is uniform across
+        // found/not-found (closes the side channel where pass count leaks
+        // presence). Cost: ~100ms of WASM FHE work per extra decrypt on
+        // found@h=0 queries. See CLAUDE.md "Merkle INDEX item-count symmetry".
         let decrypted = 0;
         const totalDecrypts = round.length * INDEX_CUCKOO_NUM_HASHES;
         for (const [addrIdx, group] of round) {
-          let foundMatch = false;
-          // Track ALL bins checked for this address
+          // Track ALL bins probed for this address.
           const binsForAddr: { hash: Uint8Array; leafPos: number }[] = [];
+          let foundMatch = false;
           for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
             const qi = group * 2 + h;
             const bin = queryBins[qi];
@@ -687,33 +691,35 @@ export class OnionPirWebClient {
             const leafPos = group * this.indexBins + bin;
             binsForAddr.push({ hash: binHash, leafPos });
 
-            const found = findEntryInOnionPirIndexResult(entryBytes, addrInfos[addrIdx].tag, this.indexSlotsPerBin, this.indexSlotSize);
-            if (found) {
-              indexResults[addrIdx] = found;
-              // Per-bin Merkle: use the bin where we found the match
-              indexBinHashes[addrIdx] = binHash;
-              indexLeafPos[addrIdx] = leafPos;
-              foundMatch = true;
-              // Store bins checked up to and including the match
-              allBinsChecked.set(addrIdx, binsForAddr);
-              break;
+            // Only capture the first match; later iterations still decrypt
+            // and track their bin but don't overwrite the matched-bin record.
+            if (!foundMatch) {
+              const found = findEntryInOnionPirIndexResult(entryBytes, addrInfos[addrIdx].tag, this.indexSlotsPerBin, this.indexSlotSize);
+              if (found) {
+                indexResults[addrIdx] = found;
+                indexBinHashes[addrIdx] = binHash;
+                indexLeafPos[addrIdx] = leafPos;
+                foundMatch = true;
+              }
             }
             // Yield after every decrypt — each is ~100ms+ of WASM FHE work
             progress('Level 1', `Round ${roundNum}/${totalRounds}: decrypted ${decrypted}/${totalDecrypts}...`);
             await yieldToMain();
           }
-          // If not found, store ALL bins checked
+
+          allBinsChecked.set(addrIdx, binsForAddr);
           if (!foundMatch) {
+            // Fall back to the first probed bin for the legacy hashes/leafPos
+            // fields (unused for Merkle now — item builder reads allIndexBinHashes).
             const firstBin = binsForAddr[0];
             if (firstBin) {
               indexBinHashes[addrIdx] = firstBin.hash;
               indexLeafPos[addrIdx] = firstBin.leafPos;
             }
-            allBinsChecked.set(addrIdx, binsForAddr);
             this.log(`[PIR-AUDIT] Query ${addrIdx}: NOT FOUND (checked ${binsForAddr.length} bins)`);
           } else {
             const ir = indexResults[addrIdx];
-            this.log(`[PIR-AUDIT] Query ${addrIdx}: FOUND at entryId=${ir?.entryId}, numEntries=${ir?.numEntries}`);
+            this.log(`[PIR-AUDIT] Query ${addrIdx}: FOUND at entryId=${ir?.entryId}, numEntries=${ir?.numEntries} (tracking ${binsForAddr.length} bins for Merkle)`);
           }
         }
       }
@@ -993,19 +999,20 @@ export class OnionPirWebClient {
 
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.isWhale) continue;
 
-      // For "not found" (no entries), verify ALL index bins checked
-      if (r.allIndexBinHashes && r.allIndexBinHashes.length > 0 && r.entries.length === 0) {
+      // Always push one INDEX leaf per probed cuckoo bin (uniform count across
+      // found / not-found / whale — closes the side channel where pass count
+      // leaks presence). Whales verify on INDEX only (their bin with
+      // numEntries=0 is committed to the INDEX Merkle root).
+      // See CLAUDE.md "Merkle INDEX item-count symmetry".
+      if (r.allIndexBinHashes && r.allIndexBinHashes.length > 0) {
         for (const bin of r.allIndexBinHashes) {
           allLeaves.push({ hash: bin.hash, leafPos: bin.leafPos, resultIdx: i, tree: 'index' });
         }
-      } else if (r.indexBinHash && r.indexLeafPos !== undefined) {
-        // For "found", just verify the one bin where we found the match
-        allLeaves.push({ hash: r.indexBinHash, leafPos: r.indexLeafPos, resultIdx: i, tree: 'index' });
       }
 
-      // Data bins (only for "found" results)
+      // Data bins (only for "found" results — CHUNK-round-presence asymmetry
+      // is the documented trade-off, out of scope for this fix).
       if (r.dataBinHashes && r.dataLeafPositions) {
         for (let j = 0; j < r.dataBinHashes.length; j++) {
           allLeaves.push({ hash: r.dataBinHashes[j], leafPos: r.dataLeafPositions[j], resultIdx: i, tree: 'data' });

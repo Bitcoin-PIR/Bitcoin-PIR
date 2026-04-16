@@ -439,7 +439,10 @@ export class BatchPirClient {
         let matchedBinContent: Uint8Array | undefined;
         let matchedBinIndex = 0;
         let matchedH = 0;
-        // Track ALL bins checked for "not found" Merkle verification
+        // Track ALL bins probed — we always probe both cuckoo positions so the
+        // Merkle item count is uniform across found/not-found/whale (closes the
+        // side channel where pass count leaks presence). See CLAUDE.md
+        // "Merkle INDEX item-count symmetry".
         const binsForThisQuery: { pbcGroup: number; binIndex: number; binContent: Uint8Array }[] = [];
         const expectedTag = computeTag(tagSeed, scriptHashes[queryIdx]);
         for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
@@ -449,12 +452,17 @@ export class BatchPirClient {
           // Track every bin we check
           binsForThisQuery.push({ pbcGroup: groupId, binIndex, binContent: result });
 
-          found = findEntryInIndexResult(result, expectedTag, this.serverInfo!.index_slots_per_bin, this.serverInfo!.index_slot_size);
-          if (found) {
-            matchedBinContent = result;
-            matchedBinIndex = binIndex;
-            matchedH = h;
-            break;
+          // Still scan every bin for a match — but once we have one, don't
+          // overwrite it. The extra probe is tracking-only (the response was
+          // already XOR'd from the same batch response, no extra server work).
+          if (!found) {
+            const maybe = findEntryInIndexResult(result, expectedTag, this.serverInfo!.index_slots_per_bin, this.serverInfo!.index_slot_size);
+            if (maybe) {
+              found = maybe;
+              matchedBinContent = result;
+              matchedBinIndex = binIndex;
+              matchedH = h;
+            }
           }
         }
 
@@ -465,12 +473,12 @@ export class BatchPirClient {
             binIndex: matchedBinIndex,
             binContent: matchedBinContent!,
           });
-          // For "found", we only need to verify the one bin where we found it
-          // But store all bins anyway in case caller wants full verification
-          allBinsChecked.set(queryIdx, binsForThisQuery.slice(0, matchedH + 1));
-          this.log(`[PIR-AUDIT] Query ${queryIdx}: FOUND at group=${groupId}, h=${matchedH}, binIndex=${matchedBinIndex}, startChunk=${found.startChunkId}, numChunks=${found.numChunks}`);
+          // Always store every probed bin — item builder emits one Merkle
+          // item per bin regardless of outcome for pass-count uniformity.
+          allBinsChecked.set(queryIdx, binsForThisQuery);
+          this.log(`[PIR-AUDIT] Query ${queryIdx}: FOUND at group=${groupId}, h=${matchedH}, binIndex=${matchedBinIndex}, startChunk=${found.startChunkId}, numChunks=${found.numChunks} (tracking ${binsForThisQuery.length} bins for Merkle)`);
         } else {
-          // For "not found", store ALL bins checked — all must be verified
+          // "Not found" — every probed bin is required for the absence proof.
           const checkedBinsStr = binsForThisQuery.map((b, h) => `h=${h}:bin${b.binIndex}`).join(', ');
           this.log(`[PIR-AUDIT] Query ${queryIdx}: NOT FOUND (checked ${binsForThisQuery.length} bins: ${checkedBinsStr})`);
           allBinsChecked.set(queryIdx, binsForThisQuery);
@@ -624,8 +632,14 @@ export class BatchPirClient {
     const results: (QueryResult | null)[] = new Array(N).fill(null);
 
     for (let qi = 0; qi < N; qi++) {
-      // Return a whale result if this address was excluded
+      // Return a whale result if this address was excluded.
+      // The whale's INDEX bin IS committed to the INDEX Merkle root, so we
+      // populate allIndexBins + indexPbcGroup/binIndex/binContent so the caller
+      // can Merkle-verify that the address really is whale-excluded (numChunks=0
+      // in the committed INDEX entry). Chunk-level Merkle info is empty by
+      // construction (whales have no chunk chain — documented trade-off).
       if (whaleQueries.has(qi)) {
+        const idxInfo = indexResults.get(qi);
         results[qi] = {
           entries: [],
           totalSats: 0n,
@@ -633,6 +647,15 @@ export class BatchPirClient {
           numChunks: 0,
           numRounds: 0,
           isWhale: true,
+          merkleRootHex: this.serverInfo?.merkle_bucket?.super_root ?? this.serverInfo?.merkle?.root,
+          scriptHash: scriptHashes[qi],
+          indexPbcGroup: idxInfo?.pbcGroup,
+          indexBinIndex: idxInfo?.binIndex,
+          indexBinContent: idxInfo?.binContent,
+          allIndexBins: allBinsChecked.get(qi),
+          chunkPbcGroups: [],
+          chunkBinIndices: [],
+          chunkBinContents: [],
         };
         continue;
       }
@@ -775,40 +798,29 @@ export class BatchPirClient {
     if (!merkle) throw new Error(`Database ${dbId} does not support bucket Merkle`);
 
     // Build BucketMerkleItem[] from verifiable results.
-    // For "not found" results, we create one item PER INDEX BIN checked
-    // to prove all cuckoo positions were verified.
+    // Emit one item per INDEX cuckoo bin we probed so the Merkle item count
+    // (and thus sibling pass count per level) is uniform across found /
+    // not-found / whale. CHUNK bins attach only to the matched INDEX item.
+    // See CLAUDE.md "Merkle INDEX item-count symmetry".
     const items: BucketMerkleItem[] = [];
     const itemToResult: number[] = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.isWhale) continue;
+      if (!r.allIndexBins || r.allIndexBins.length === 0) continue;
 
-      // For "not found" (numChunks=0, no entries), verify ALL index bins
-      // This is required to prove the scripthash is truly absent (all cuckoo positions checked)
-      if (r.allIndexBins && r.allIndexBins.length > 0 && r.entries.length === 0) {
-        this.log(`[PIR-AUDIT] Result ${i}: NOT FOUND - verifying ${r.allIndexBins.length} index bins for absence proof`);
-        for (const bin of r.allIndexBins) {
-          items.push({
-            indexPbcGroup: bin.pbcGroup,
-            indexBinIndex: bin.binIndex,
-            indexBinContent: bin.binContent,
-            chunkPbcGroups: [],
-            chunkBinIndices: [],
-            chunkBinContents: [],
-          });
-          itemToResult.push(i);
-        }
-      } else if (r.indexPbcGroup !== undefined && r.indexBinContent) {
-        // For "found" results, verify the one bin where we found the match + chunks
-        const numChunks = r.chunkPbcGroups?.length ?? 0;
-        this.log(`[PIR-AUDIT] Result ${i}: FOUND - verifying 1 index bin + ${numChunks} chunk bins`);
+      const outcome = r.isWhale ? 'WHALE' : (r.entries.length > 0 ? 'FOUND' : 'NOT FOUND');
+      const numChunks = r.chunkPbcGroups?.length ?? 0;
+      this.log(`[PIR-AUDIT] Result ${i}: ${outcome} - verifying ${r.allIndexBins.length} index bins + ${numChunks} chunk bins`);
+
+      for (const bin of r.allIndexBins) {
+        const isMatchedBin = r.indexPbcGroup === bin.pbcGroup && r.indexBinIndex === bin.binIndex;
         items.push({
-          indexPbcGroup: r.indexPbcGroup,
-          indexBinIndex: r.indexBinIndex!,
-          indexBinContent: r.indexBinContent,
-          chunkPbcGroups: r.chunkPbcGroups ?? [],
-          chunkBinIndices: r.chunkBinIndices ?? [],
-          chunkBinContents: r.chunkBinContents ?? [],
+          indexPbcGroup: bin.pbcGroup,
+          indexBinIndex: bin.binIndex,
+          indexBinContent: bin.binContent,
+          chunkPbcGroups: isMatchedBin ? (r.chunkPbcGroups ?? []) : [],
+          chunkBinIndices: isMatchedBin ? (r.chunkBinIndices ?? []) : [],
+          chunkBinContents: isMatchedBin ? (r.chunkBinContents ?? []) : [],
         });
         itemToResult.push(i);
       }
