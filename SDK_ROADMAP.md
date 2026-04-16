@@ -158,6 +158,32 @@ change near them needs extra care — do not optimize away padding.
   contract (all-empty / mixed / zero-length); the function is kept
   as a free-standing `pub(crate)` so it can be tested on non-`onion`
   builds.
+- **Thread-safety audit for `unsafe impl Sync for SendClient`.**
+  Walked the entire public API of `onionpir::Client` @ rev `946550a`
+  (pinned in our `Cargo.toml`): only two methods take `&self` —
+  `id(&self) -> u64` and `export_secret_key(&self) -> Vec<u8>`.
+  Everything else (query generation, key generation, response
+  decryption) is `&mut self`. Audited the C++ side too: both
+  read-only FFI entry points accept `const OnionPirClient&` and
+  delegate to `client.inner.get_client_id()` (pure integer read) and
+  `SecretKey::save(stream)` into a local `stringstream` (SEAL const
+  member; uses the default thread-safe `MemoryPool`). The Sync impl
+  is therefore sound, but the audit also noted that the SDK's code
+  paths never actually share `&SendClient` across threads today —
+  `FheState.level_clients` is only reached via `&mut OnionClient`, so
+  the Sync impl exists purely to satisfy the `PirClient: Send + Sync`
+  trait bound. The long-form safety comment in
+  `pir-sdk-client/src/onion.rs` now records this audit explicitly.
+  Added compile-time `assert_send_sync::<OnionClient>` / `<SendClient>`
+  / `<FheState>` probes so regressions (e.g. adding an `Rc<>` field)
+  fail at the declaration site instead of at a distant `PirClient`
+  trait-usage site. Added a feature-gated concurrency smoke test
+  (`test_send_client_sync_smoke`) that spawns 8 threads sharing
+  `Arc<SendClient>` and hammers `id` + `export_secret_key` from each;
+  the test runs in the `integration-onion` CI job (plain
+  `cargo test -p pir-sdk-client` doesn't need the C++ toolchain).
+  `onion_merkle.rs::SibSendClient` also picked up a compile-time
+  `assert_send` probe and a cross-reference to this audit.
 
 ## P0 — Blockers for "production-ready"
 
@@ -165,11 +191,7 @@ _(none — all P0 items closed.)_
 
 ## P1 — Correctness & robustness
 
-- [ ] **Thread-safety audit for `unsafe impl Sync for SendClient`.**
-      Documented as safe because only `&mut self` FFI calls mutate, but
-      this assumes OpenMP/SEAL static state is also safe under
-      concurrent read. Worth a second pair of eyes from OnionPIR
-      maintainers.
+_(none — all P1 items closed.)_
 
 ## P2 — API completeness
 
@@ -232,10 +254,15 @@ link the branch / commit.
 
 ### In progress
 
-_(none — P0 is empty. Three more P1 items are now closed:
-`REQ_GET_DB_CATALOG` (Harmony now reports real tip height),
+_(none — P0 and P1 are both empty. All four P1 items closed in this
+batch: `REQ_GET_DB_CATALOG` (Harmony reports real tip height),
 **Connection resilience** (`WsConnection` has per-request deadlines
-and reconnect-with-backoff), and **OnionPIR LRU-eviction retry**
-(INDEX + CHUNK rounds now re-register and retry once when the server
-surfaces eviction as an all-empty batch). Remaining P1 work:
-**Thread-safety audit for `unsafe impl Sync for SendClient`**.)_
+and reconnect-with-backoff), **OnionPIR LRU-eviction retry** (INDEX
++ CHUNK rounds re-register and retry once on eviction), and
+**Thread-safety audit for `unsafe impl Sync for SendClient`** (C++
+FFI const-ness confirmed, compile-time `Send + Sync` assertions added,
+concurrency smoke test added for `&self` paths). Next work should
+pick a P2 item from the list above — `pir-sdk-wasm` full client
+wrappers is probably the highest-impact since it would unify Rust
+and TS query paths and eliminate the duplicate Merkle-verification
+implementations in the web client.)_

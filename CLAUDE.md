@@ -232,11 +232,14 @@ forgotten. Padding/privacy invariants (🔒 items in the roadmap) must
 not be optimized away — see "Query Padding" above.
 
 Short-term active work:
-- _(none — all P0 items closed. Three P1 items are now closed:
-  **HarmonyClient REQ_GET_DB_CATALOG**, **Connection resilience**,
-  and **OnionPIR LRU-eviction retry**.)_ Only remaining P1 candidate
-  per [SDK_ROADMAP.md](SDK_ROADMAP.md): **Thread-safety audit for
-  `unsafe impl Sync for SendClient`**.
+- _(none — all P0 and P1 items closed. Four P1 items completed in
+  one batch: **HarmonyClient REQ_GET_DB_CATALOG**, **Connection
+  resilience**, **OnionPIR LRU-eviction retry**, and **Thread-safety
+  audit for `unsafe impl Sync for SendClient`**.)_ Next work should
+  pick from the P2 list in [SDK_ROADMAP.md](SDK_ROADMAP.md) —
+  `pir-sdk-wasm` full client wrappers is the highest-leverage item
+  since it would unify Rust + TS query paths and drop the web
+  client's duplicate Merkle-verification implementations.
 
 ### Completed milestones
 - PIR SDK + WASM bindings + web integration (commit `19cbf5f`).
@@ -373,6 +376,33 @@ Short-term active work:
   (all-empty triggers, mixed/full don't, zero-length doesn't either so
   decode bugs can't masquerade as eviction); the helper is `pub(crate)`
   free-standing so it's testable on non-`onion` builds.
+- **Thread-safety audit for `unsafe impl Sync for SendClient`** (P1,
+  final P1 item): Walked the full public API of `onionpir::Client`
+  @ rev `946550a` and confirmed only `id(&self) -> u64` and
+  `export_secret_key(&self) -> Vec<u8>` take `&self`; everything else
+  is `&mut self`. Cross-checked the C++ side
+  (`rust/onionpir-fork/src/ffi.cpp` + `ffi_c.cpp`): both read-only
+  entry points accept `const OnionPirClient&` and delegate to
+  `client.inner.get_client_id()` (pure integer read) and
+  `SecretKey::save(stringstream)` (SEAL const member; uses the default
+  thread-safe `MemoryPool`). No `mutable` fields, no globals, no
+  thread-locals, no OpenMP parallel regions in those paths. The Sync
+  impl is sound, and in practice the SDK never actually shares
+  `&SendClient` across threads — `FheState.level_clients` is reached
+  only via `&mut OnionClient`, so the Sync impl exists purely to
+  satisfy the `PirClient: Send + Sync` trait bound. Recorded the
+  audit in a long-form safety comment in
+  [`pir-sdk-client/src/onion.rs`](pir-sdk-client/src/onion.rs) and
+  locked in compile-time assertions via `const _: fn() = || {
+  assert_send_sync::<OnionClient>(); ... }` probes that fail at the
+  declaration site if someone adds an `Rc<>` / `RefCell<>` / raw
+  pointer to `FheState` or `SendClient`. Added a feature-gated
+  concurrency smoke test `test_send_client_sync_smoke` that spawns 8
+  threads sharing `Arc<SendClient>` and hammers `id` +
+  `export_secret_key` from each (runs in the `integration-onion` CI
+  job; plain `cargo test -p pir-sdk-client` doesn't need the C++
+  toolchain). `onion_merkle.rs::SibSendClient` picked up a matching
+  `assert_send` probe and a cross-reference to the audit.
 
 ---
 

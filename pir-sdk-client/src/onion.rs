@@ -156,38 +156,109 @@ struct OnionDbParams {
 // ─── Send + Sync wrapper around onionpir::Client ────────────────────────────
 //
 // `onionpir::Client` wraps an opaque C++ pointer via FFI and is `!Send + !Sync`
-// by default.
+// by default. We need both marker traits because `OnionClient` has to satisfy
+// `PirClient: Send + Sync` (see `pir-sdk/src/client.rs`), and `OnionClient`'s
+// `FheState` transitively holds `HashMap<_, SendClient>`.
 //
-// **Send is safe** because all mutating methods take `&mut self` and the
-// upstream implementation has no global state touched by queries/decrypt.
-// Moving an instance between threads (without sharing) is fine.
+// ─── Audit: what Rust methods `SendClient` exposes ──────────────────────────
 //
-// **Sync is safe (with the same caveats as Send)** because the only `&self`
-// methods on `onionpir::Client` are `export_secret_key` and `id`, both of
-// which are read-only FFI calls over immutable C++ state. Any mutation goes
-// through `&mut self`, which the Rust borrow checker forbids sharing across
-// threads. So a `&SendClient` shared across threads can only invoke the
-// read-only methods, which don't race. We still never intentionally call
-// `generate_query`/`decrypt_response` concurrently on the same client — the
-// SDK uses one client per (db_id, level) and serializes calls.
+// The full public API of `onionpir::Client` (upstream
+// `rust/onionpir/src/lib.rs` @ rev `946550a`, pinned in our Cargo.toml) is:
 //
-// The `PirClient` trait requires `Send + Sync`, which is why both impls are
-// needed.
+//     new(num_entries: u64) -> Self                                 [ctor]
+//     new_from_secret_key(num_entries, client_id, sk) -> Self       [ctor]
+//     export_secret_key(&self) -> Vec<u8>                           [&self]
+//     id(&self) -> u64                                              [&self]
+//     generate_galois_keys(&mut self) -> Vec<u8>                    [&mut]
+//     generate_gsw_keys(&mut self) -> Vec<u8>                       [&mut]
+//     generate_query(&mut self, entry_index: u64) -> Vec<u8>        [&mut]
+//     decrypt_response(&mut self, entry_index, response) -> Vec<u8> [&mut]
+//     Drop::drop(&mut self)                                         [&mut]
+//
+// Only two methods take `&self`: `id` and `export_secret_key`. Everything
+// else (including all query generation and decryption) requires `&mut self`.
+//
+// ─── Send safety ────────────────────────────────────────────────────────────
+//
+// `Send` is safe because:
+// 1. `onionpir::Client` owns a unique C++ object via `ClientHandle`; no
+//    internal sharing with other `onionpir::Client` instances.
+// 2. All mutating entry points take `&mut self`, so an owned move across
+//    threads cannot race with a concurrent `&mut` on the origin thread.
+// 3. `Drop` takes `&mut self` and calls `onion_client_free`, a standard
+//    per-instance `delete`.
+//
+// ─── Sync safety ────────────────────────────────────────────────────────────
+//
+// `Sync` means `&SendClient` is shareable across threads. Because the Rust
+// borrow checker will only let a shared `&SendClient` invoke `&self` methods,
+// the Sync safety argument only needs to cover `id` and `export_secret_key`.
+//
+// I audited the C++ side (upstream `src/ffi.cpp` + `src/ffi_c.cpp`) and
+// confirmed:
+// * `client_get_id(const OnionPirClient& client)` just reads an integer
+//   field (`client.inner.get_client_id()`). No allocation, no mutation.
+// * `client_export_secret_key(const OnionPirClient& client)` calls
+//   SEAL's `SecretKey::save(stream)` into a *local* `stringstream`. SEAL's
+//   `save` is a const member that only reads the secret-key polynomial.
+//   Any SEAL-internal allocation goes through SEAL's default `MemoryPool`,
+//   which is thread-safe by SEAL's contract.
+//
+// Neither function touches shared mutable state, global state, thread-local
+// state, or OpenMP parallel regions — those all live on `Server::*`, which
+// is explicitly documented as `!Send + !Sync` upstream and is not used here.
+//
+// ─── Practical note: `&self` paths are unused by the SDK ────────────────────
+//
+// In practice the OnionPIR SDK never actually invokes `&SendClient` methods
+// concurrently. `FheState.level_clients` is only accessed via
+// `get_level_client(&mut self, ...)` which takes `&mut self` on the
+// `OnionClient`, and the per-query callers hold `&mut OnionClient`. So the
+// Sync impl exists purely to satisfy the `PirClient: Send + Sync` trait
+// bound — it is never exercised in parallel at runtime today.
+//
+// Keeping the Sync impl (instead of wrapping `SendClient` in a `Mutex`) is
+// intentional: a `Mutex` would add lock overhead to every `get_level_client`
+// call on the hot query path, and the guarantee it provides is no stronger
+// than what the audit above already gives us.
 
 #[cfg(feature = "onion")]
 struct SendClient(onionpir::Client);
 
 #[cfg(feature = "onion")]
-// Safety: `onionpir::Client` has no internal sharing, and all mutating FFI
-// entry points take `&mut self`. Moving it between tasks is fine.
+// Safety: see the "Send + Sync wrapper around onionpir::Client" block above.
+// Short version: `onionpir::Client` owns a unique C++ object via an opaque
+// handle; all mutation is `&mut self`; there is no internal sharing.
 unsafe impl Send for SendClient {}
 
 #[cfg(feature = "onion")]
-// Safety: The only `&self` methods (`id`, `export_secret_key`) are read-only
-// FFI calls. All mutation goes through `&mut self`, which Rust's aliasing
-// rules prevent from being shared. So concurrent `&SendClient` access is
-// race-free.
+// Safety: see the "Send + Sync wrapper around onionpir::Client" block above.
+// Short version: the only `&self` methods are `id` (integer read) and
+// `export_secret_key` (const serialization into a local stringstream).
+// Neither touches shared mutable state. No code path in the SDK actually
+// shares `&SendClient` across threads today — the impl exists only to
+// satisfy the `PirClient: Send + Sync` bound.
 unsafe impl Sync for SendClient {}
+
+// Compile-time assertion that `OnionClient` genuinely is `Send + Sync`. If
+// somebody adds a new field that is `!Send` or `!Sync` (e.g. an `Rc`, a
+// `RefCell`, or a raw pointer) without also wrapping it, this fails to
+// compile rather than breaking the `PirClient` trait contract at a distant
+// call site.
+#[cfg(feature = "onion")]
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SendClient>();
+    assert_send_sync::<FheState>();
+    assert_send_sync::<OnionClient>();
+};
+// Same assertion for the stub (non-`onion`) build: `OnionClient` there is a
+// no-op but still has to meet `PirClient: Send + Sync`.
+#[cfg(not(feature = "onion"))]
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<OnionClient>();
+};
 
 // ─── FHE state (only when the `onion` feature is on) ────────────────────────
 
@@ -2109,6 +2180,65 @@ mod tests {
                     bins
                 );
             }
+        }
+    }
+
+    /// Concurrency smoke test for the `unsafe impl Sync for SendClient`.
+    ///
+    /// The Sync claim only covers the two `&self` methods on
+    /// `onionpir::Client`: `id` and `export_secret_key`. This test
+    /// exercises both from multiple threads sharing a single
+    /// `Arc<SendClient>`. If the `&self` FFI path touches any internal
+    /// mutable state that isn't protected by a lock (a
+    /// `mutable`-declared member, a non-thread-safe SEAL MemoryPool
+    /// operation, a static cache, etc.), we expect this to either
+    /// produce mismatched results, hang, or trip ASAN in CI.
+    ///
+    /// The test is a smoke test, not a proof — data races in SEAL
+    /// could be demonic enough to only show up under load or with a
+    /// particular allocator state. CI runs under tsan would make this
+    /// considerably stronger, but the full SEAL stack is not tsan-clean
+    /// (OpenMP is already tsan-unfriendly), so the lightweight check is
+    /// the best we can do in-tree.
+    ///
+    /// Gated behind `feature = "onion"` because it constructs a real
+    /// `onionpir::Client`, which requires the SEAL C++ toolchain.
+    #[cfg(feature = "onion")]
+    #[test]
+    fn test_send_client_sync_smoke() {
+        use std::sync::Arc;
+        use std::thread;
+
+        // Tiny num_entries so this is cheap. We only call `&self` methods.
+        let client = onionpir::Client::new(1 << 10);
+        let expected_id = client.id();
+        let expected_sk = client.export_secret_key();
+        let shared = Arc::new(SendClient(client));
+
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                let s = Arc::clone(&shared);
+                let exp_id = expected_id;
+                let exp_sk = expected_sk.clone();
+                thread::spawn(move || {
+                    // Alternate between `id` and `export_secret_key` across
+                    // threads so both `&self` FFI entry points are hit.
+                    for i in 0..50 {
+                        if (t + i) % 2 == 0 {
+                            assert_eq!(s.0.id(), exp_id, "id() disagrees across threads");
+                        } else {
+                            let sk = s.0.export_secret_key();
+                            assert_eq!(
+                                sk, exp_sk,
+                                "export_secret_key() disagrees across threads"
+                            );
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("thread panicked — possible data race in &self FFI path");
         }
     }
 }

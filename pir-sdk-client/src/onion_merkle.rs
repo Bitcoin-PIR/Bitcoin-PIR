@@ -76,13 +76,29 @@ pub const DATA_SIBLING_SEED_BASE: u64 = 0xBA7C_51B1_FEED_0200;
 // `onionpir::Client` wraps an opaque C++ pointer via FFI and is `!Send` by
 // default. The sibling-fetch loop instantiates one locally and must hold it
 // across an `await` on `conn.roundtrip(...)`, which requires the whole
-// future to be `Send`. The same safety argument as in `onion.rs` applies:
-// all mutating FFI entry points take `&mut self`, the client has no internal
-// sharing, and we never pass it across threads without moving it. So a
-// thin unsafe Send newtype is correct here.
+// future to be `Send`.
+//
+// Note that — unlike `SendClient` in `onion.rs` — this newtype intentionally
+// does *not* implement `Sync`. `SibSendClient` is a purely single-task value
+// (constructed, used through a few `&mut` calls, then dropped, all inside
+// the same async fn), so only `Send` is needed. See the extended safety
+// audit on `SendClient` in `onion.rs` for the argument that holds equally
+// well here: `onionpir::Client` owns a unique C++ object via an opaque
+// handle, all mutating FFI entry points take `&mut self`, and there is no
+// internal sharing.
 struct SibSendClient(onionpir::Client);
-// Safety: no shared state; mutation gated behind `&mut self`.
+// Safety: no shared state; all mutation gated behind `&mut self`.
+// See `pir-sdk-client/src/onion.rs` for the full audit.
 unsafe impl Send for SibSendClient {}
+
+// Compile-time assertion: `SibSendClient` must remain `Send` so the
+// sibling-fetch future stays `Send`. If someone adds a `!Send` field without
+// wrapping it, this breaks at the declaration instead of at the future-type
+// inference site inside the fetch loop (which produces truly cryptic errors).
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<SibSendClient>();
+};
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
