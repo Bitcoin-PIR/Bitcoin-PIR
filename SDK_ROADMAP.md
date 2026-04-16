@@ -113,6 +113,28 @@ change near them needs extra care — do not optimize away padding.
   `pir-sdk-client/src/protocol.rs` module (with 4 unit tests covering
   the wire format) — future catalog-format changes now live in one
   place instead of three.
+- **Connection resilience: per-request deadlines + reconnect-with-
+  backoff.** `WsConnection` now wraps every `send` / `recv` /
+  `roundtrip` in `tokio::time::timeout` (default 90s, configurable via
+  `with_request_timeout`), and wraps the initial TLS/WebSocket
+  handshake in a separate `connect_timeout` (default 30s). A wedged
+  server no longer hangs a query indefinitely; the caller gets
+  `PirError::Timeout` in bounded time and can decide what to do.
+  `connect_with_backoff(url, RetryPolicy)` replaces the single-shot
+  `connect` internally — the default policy is 5 attempts with
+  250ms→5s exponential backoff, which rides out brief server restarts
+  without punishing an actually-down server. `reconnect(&mut self)`
+  re-handshakes to the same URL using the stored retry policy and
+  replaces the underlying sink/stream in place, giving higher-level
+  clients a clean escape hatch when server-side state is lost (Harmony
+  hints / Onion FHE keys must be re-negotiated after, since a fresh
+  server session has no record of them). Seven new unit tests cover
+  retry-policy shape, backoff doubling + clamping, overflow safety,
+  and DNS-fail / route-unreachable timeout paths; a new live-server
+  integration test `test_wsconnection_reconnect_roundtrip` proves
+  the transport actually works post-`reconnect`. `RetryPolicy` and
+  the default constants are re-exported from the crate root so
+  downstream users can dial a custom policy.
 
 ## P0 — Blockers for "production-ready"
 
@@ -123,10 +145,11 @@ _(none — all P0 items closed.)_
 - [ ] **OnionPIR LRU-eviction retry.** Server evicts clients at 100
       connections. Current `ensure_keys_registered` uses `HashSet<u8>`
       but doesn't catch mid-session eviction. Parse specific
-      "client not found" server response codes and re-register.
-- [ ] **Connection resilience.** WebSocket disconnects, server restarts,
-      request timeouts. `WsConnection` is best-effort today; add
-      auto-reconnect with backoff and per-request deadlines.
+      "client not found" server response codes and re-register. Now
+      that `WsConnection::reconnect` exists (see "Connection
+      resilience" in Completed), this hook has somewhere to live:
+      detect the LRU-eviction response code, call `reconnect`, then
+      re-register keys.
 - [ ] **Thread-safety audit for `unsafe impl Sync for SendClient`.**
       Documented as safe because only `&mut self` FFI calls mutate, but
       this assumes OpenMP/SEAL static state is also safe under
@@ -194,9 +217,10 @@ link the branch / commit.
 
 ### In progress
 
-_(none — P0 is empty. P1's `REQ_GET_DB_CATALOG` item is now closed
-too, so `SyncResult::synced_height` works for Harmony. Next candidate
-is **Connection resilience** (auto-reconnect / per-request deadlines
-in `WsConnection`) or **OnionPIR LRU-eviction retry** depending on
-whether production robustness or OnionPIR mid-session stability is
-the more pressing need.)_
+_(none — P0 is empty. Two more P1 items are now closed:
+`REQ_GET_DB_CATALOG` (Harmony now reports real tip height) and
+**Connection resilience** (`WsConnection` has per-request deadlines
+and reconnect-with-backoff). Remaining P1 work: **OnionPIR
+LRU-eviction retry** (now plumbable on top of
+`WsConnection::reconnect`) and **Thread-safety audit for
+`unsafe impl Sync for SendClient`**.)_

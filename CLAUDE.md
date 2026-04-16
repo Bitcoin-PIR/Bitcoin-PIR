@@ -232,12 +232,12 @@ forgotten. Padding/privacy invariants (🔒 items in the roadmap) must
 not be optimized away — see "Query Padding" above.
 
 Short-term active work:
-- _(none — all P0 items closed, and the P1
-  `REQ_GET_DB_CATALOG` item is now closed too.)_ Next candidates per
-  [SDK_ROADMAP.md](SDK_ROADMAP.md) are P1 **Connection resilience**
-  (auto-reconnect / per-request deadlines in `WsConnection`), P1
-  **OnionPIR LRU-eviction retry** (100-connection eviction recovery),
-  and P1 **Thread-safety audit for `unsafe impl Sync for SendClient`**.
+- _(none — all P0 items closed. P1 **HarmonyClient REQ_GET_DB_CATALOG**
+  and P1 **Connection resilience** are both closed.)_ Remaining P1
+  candidates per [SDK_ROADMAP.md](SDK_ROADMAP.md): **OnionPIR
+  LRU-eviction retry** (now plumbable on top of
+  `WsConnection::reconnect`) and **Thread-safety audit for `unsafe
+  impl Sync for SendClient`**.
 
 ### Completed milestones
 - PIR SDK + WASM bindings + web integration (commit `19cbf5f`).
@@ -325,6 +325,32 @@ Short-term active work:
   module (4 new unit tests for wire-format and catalog decoding) —
   future catalog-format changes now live in one place instead of
   three.
+- **Connection resilience: per-request deadlines + reconnect with
+  exponential backoff** (P1):
+  [`pir-sdk-client/src/connection.rs`](pir-sdk-client/src/connection.rs)
+  now wraps every `send` / `recv` / `roundtrip` on `WsConnection` in
+  `tokio::time::timeout` (default `DEFAULT_REQUEST_TIMEOUT = 90s`,
+  overridable via `with_request_timeout`), and wraps the initial
+  TLS/WebSocket handshake in a separate `connect_timeout` (default
+  `DEFAULT_CONNECT_TIMEOUT = 30s`). A wedged server no longer hangs a
+  query indefinitely — the caller gets `PirError::Timeout` in bounded
+  time and can decide what to do next. `WsConnection::connect` now
+  internally calls `connect_with_backoff(url, RetryPolicy::default())`;
+  the default policy retries up to
+  `DEFAULT_MAX_CONNECT_ATTEMPTS = 5` times with
+  `DEFAULT_INITIAL_BACKOFF_DELAY = 250ms`→`DEFAULT_MAX_BACKOFF_DELAY
+  = 5s` exponential backoff. `reconnect(&mut self)` re-handshakes to
+  the same URL using the stored retry policy and replaces the
+  sink/stream in place — higher-level clients can use it as an escape
+  hatch, but must remember that server-side session state (Harmony
+  hints, Onion FHE keys, in-flight round IDs) is gone after a
+  reconnect and needs to be re-negotiated. Seven new unit tests cover
+  retry-policy shape, backoff doubling + clamping, u32-overflow
+  safety, and DNS-fail / route-unreachable timeout paths; a new
+  live-server integration test `test_wsconnection_reconnect_roundtrip`
+  proves the transport works post-reconnect. `RetryPolicy` and the
+  `DEFAULT_*` constants are re-exported from the crate root so
+  downstream callers can dial custom policies.
 
 ---
 

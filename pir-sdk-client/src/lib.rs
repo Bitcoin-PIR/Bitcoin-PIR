@@ -58,7 +58,10 @@ mod onion;
 mod onion_merkle;
 mod protocol;
 
-pub use connection::WsConnection;
+pub use connection::{
+    RetryPolicy, WsConnection, DEFAULT_CONNECT_TIMEOUT, DEFAULT_INITIAL_BACKOFF_DELAY,
+    DEFAULT_MAX_BACKOFF_DELAY, DEFAULT_MAX_CONNECT_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT,
+};
 pub use dpf::DpfClient;
 pub use harmony::{HarmonyClient, PRP_ALF, PRP_FASTPRP, PRP_HOANG};
 pub use onion::OnionClient;

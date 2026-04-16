@@ -312,6 +312,43 @@ async fn test_harmony_client_query_batch() {
     client.disconnect().await.unwrap();
 }
 
+// ─── WsConnection Resilience Tests ───────────────────────────────────────
+
+/// End-to-end test that `WsConnection::reconnect` actually yields a working
+/// transport — after reconnecting, we send a fresh `REQ_GET_DB_CATALOG`
+/// and verify the response parses. The wire-format constants come from
+/// `crate::protocol`, which isn't exposed, so we reconstruct the request
+/// inline: `[4B len LE][0x02]`.
+#[tokio::test]
+#[ignore = "requires running PIR servers"]
+async fn test_wsconnection_reconnect_roundtrip() {
+    use pir_sdk_client::WsConnection;
+    let mut conn = WsConnection::connect(&dpf_server0_url())
+        .await
+        .expect("connect failed");
+
+    // Baseline: fetch catalog once.
+    let req = {
+        let mut buf = Vec::with_capacity(5);
+        buf.extend_from_slice(&1u32.to_le_bytes()); // len=1 (just variant byte)
+        buf.push(0x02); // REQ_GET_DB_CATALOG
+        buf
+    };
+    let resp1 = conn.roundtrip(&req).await.expect("first roundtrip failed");
+    assert!(!resp1.is_empty(), "first response empty");
+    assert_eq!(resp1[0], 0x02, "expected RESP_DB_CATALOG");
+
+    // Now force a reconnect — drops the existing TCP + WebSocket state
+    // and re-handshakes. The new transport should still work.
+    conn.reconnect().await.expect("reconnect failed");
+
+    let resp2 = conn.roundtrip(&req).await.expect("post-reconnect roundtrip failed");
+    assert!(!resp2.is_empty(), "post-reconnect response empty");
+    assert_eq!(resp2[0], 0x02, "expected RESP_DB_CATALOG after reconnect");
+
+    conn.close().await.unwrap();
+}
+
 // ─── OnionPIR Integration Tests (require running servers + `onion` feature) ─
 
 #[cfg(feature = "onion")]
