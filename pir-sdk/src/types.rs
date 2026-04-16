@@ -184,33 +184,85 @@ impl DatabaseCatalog {
 }
 
 /// Result of a single PIR query for one script hash.
-#[derive(Clone, Debug, Default)]
+///
+/// # Merkle verification semantics
+///
+/// `merkle_verified` signals whether per-bucket Merkle proofs for this
+/// query passed:
+/// - `true`  — either proofs verified against the server-published root,
+///             or the database does not publish Merkle commitments
+///             (`DatabaseInfo::has_bucket_merkle == false`). "No failure
+///             detected." Callers that *require* Merkle must also check
+///             `has_bucket_merkle` on the source database.
+/// - `false` — Merkle verification was attempted and FAILED. `entries`
+///             is emptied and `is_whale` cleared; the result should be
+///             treated as untrusted. This is the ONLY way a failed proof
+///             is surfaced to callers (previously failures were coerced
+///             to `None`, indistinguishable from genuine absence).
+///
+/// A `None` in `SyncResult::results` still means "not found" — if the
+/// database has Merkle commitments, absence is proved by the symmetric
+/// INDEX bin probes (`INDEX_CUCKOO_NUM_HASHES=2` per query, see
+/// CLAUDE.md "Merkle INDEX Item-Count Symmetry").
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct QueryResult {
     /// Decoded UTXO entries.
     pub entries: Vec<UtxoEntry>,
     /// Whether this address is a "whale" (too many UTXOs to fit in chunks).
     pub is_whale: bool,
+    /// Whether the per-bucket Merkle proof verified (or N/A for databases
+    /// without Merkle). See struct-level docs for full semantics.
+    pub merkle_verified: bool,
     /// Raw chunk data for delta merging (only populated for delta queries).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub raw_chunk_data: Option<Vec<u8>>,
 }
 
+impl Default for QueryResult {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl QueryResult {
     /// Create an empty result.
+    ///
+    /// Defaults `merkle_verified` to `true` (no known failure). Callers
+    /// that specifically want to represent a failed Merkle proof should
+    /// set `merkle_verified = false` explicitly (or use
+    /// [`merkle_failed`](Self::merkle_failed)).
     pub fn empty() -> Self {
         Self {
             entries: Vec::new(),
             is_whale: false,
+            merkle_verified: true,
             raw_chunk_data: None,
         }
     }
 
     /// Create a result with entries.
+    ///
+    /// Defaults `merkle_verified` to `true` (no known failure).
     pub fn with_entries(entries: Vec<UtxoEntry>) -> Self {
         Self {
             entries,
             is_whale: false,
+            merkle_verified: true,
+            raw_chunk_data: None,
+        }
+    }
+
+    /// Build a result representing a FAILED Merkle verification.
+    ///
+    /// Entries are empty and `merkle_verified` is `false`. Emitted by the
+    /// per-backend `run_merkle_verification` paths when sibling proofs
+    /// don't reconcile against the server-published root.
+    pub fn merkle_failed() -> Self {
+        Self {
+            entries: Vec::new(),
+            is_whale: false,
+            merkle_verified: false,
             raw_chunk_data: None,
         }
     }

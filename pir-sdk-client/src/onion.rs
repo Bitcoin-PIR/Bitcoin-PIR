@@ -373,6 +373,9 @@ impl OnionClient {
                     Some(QueryResult {
                         entries: Vec::new(),
                         is_whale: true,
+                        // Optimistic default — `run_merkle_verification`
+                        // flips this to `false` if the INDEX proof fails.
+                        merkle_verified: true,
                         raw_chunk_data: None,
                     })
                 }
@@ -391,6 +394,10 @@ impl OnionClient {
                     Some(QueryResult {
                         entries,
                         is_whale: false,
+                        // Optimistic default — `run_merkle_verification`
+                        // flips this to `false` (and empties `entries`) if
+                        // INDEX or DATA proofs fail for this query.
+                        merkle_verified: true,
                         raw_chunk_data: if db_info.kind.is_delta() {
                             Some(raw)
                         } else {
@@ -542,12 +549,18 @@ impl OnionClient {
             }
             if per_query_ok[qi] {
                 log::info!("[PIR-AUDIT] OnionPIR Merkle PASSED for query #{}", qi);
+                // merkle_verified is already true by construction above.
             } else {
                 log::warn!(
-                    "[PIR-AUDIT] OnionPIR Merkle FAILED for query #{}: result set to None (untrusted)",
+                    "[PIR-AUDIT] OnionPIR Merkle FAILED for query #{}: \
+                     emitting QueryResult {{ merkle_verified: false, entries: [] }} (untrusted)",
                     qi
                 );
-                results[qi] = None;
+                // Surface the failure as a distinct signal from "not found"
+                // (the old behaviour collapsed both to `None`). Entries are
+                // wiped so downstream callers cannot accidentally trust
+                // unverified data even if they ignore `merkle_verified`.
+                results[qi] = Some(QueryResult::merkle_failed());
             }
         }
 

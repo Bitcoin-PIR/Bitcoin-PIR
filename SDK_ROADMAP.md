@@ -55,13 +55,20 @@ change near them needs extra care — do not optimize away padding.
   set — that is the N>1 generalization, not a different placement
   rule. Explanatory comments added at both single-query sites to
   prevent future re-flagging.
+- **`merkle_verified: bool` on `QueryResult`.** Verification failures
+  used to be silently coerced to `None`, indistinguishable from "not
+  found". Now a failed proof surfaces as
+  `Some(QueryResult::merkle_failed())` — `merkle_verified = false`,
+  `entries = []`, `is_whale = false`. Successful verification (or a
+  database without Merkle commitments) yields `merkle_verified = true`.
+  `merge_delta_batch` ANDs the flag from snapshot × delta so a single
+  untrusted input taints the merge. WASM exposes `merkleVerified` as a
+  getter and in `toJson()`. New unit tests cover AND semantics,
+  `(None, Some(del))` propagation, and `merkle_failed()` state.
 
 ## P0 — Blockers for "production-ready"
 
-- [ ] **Expose `merkle_verified: bool` on `QueryResult`.** Currently
-      `run_merkle_verification` silently coerces failed proofs to
-      `None`, making verification failure indistinguishable from
-      absence. Callers need a separate signal to audit.
+_(none — all P0 items closed.)_
 
 ## P1 — Correctness & robustness
 
@@ -145,5 +152,7 @@ link the branch / commit.
 
 ### In progress
 
-_(none — P0 `INDEX PBC placement` closed as verified (not a bug).
-Next candidate: P0 `merkle_verified: bool` on `QueryResult`.)_
+_(none — all P0 items closed. Next candidate is P1; the best starting
+point is probably **Run ignored integration tests in CI**, since the
+twelve ignored integration tests block end-to-end validation of the
+Merkle + `merkle_verified` paths added in P0.)_

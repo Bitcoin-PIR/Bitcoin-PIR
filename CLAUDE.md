@@ -232,10 +232,10 @@ forgotten. Padding/privacy invariants (🔒 items in the roadmap) must
 not be optimized away — see "Query Padding" above.
 
 Short-term active work:
-- **P0 (next):** expose `merkle_verified: bool` on `QueryResult`.
-  Currently all three clients silently coerce failed proofs to `None`,
-  making Merkle verification failure indistinguishable from genuine
-  absence. Callers need a separate signal to audit.
+- _(none — all P0 items closed.)_ Next candidate per
+  [SDK_ROADMAP.md](SDK_ROADMAP.md) is P1 "Run ignored integration tests
+  in CI" since the twelve ignored integration tests are what would
+  end-to-end validate the Merkle + `merkle_verified` paths added in P0.
 
 ### Completed milestones
 - PIR SDK + WASM bindings + web integration (commit `19cbf5f`).
@@ -258,6 +258,18 @@ Short-term active work:
   (`runtime/src/bin/client.rs:246`) and every web TS / Python client.
   Explanatory comments added at `DpfClient::query_index_level` and
   `HarmonyClient::query_single` to prevent future re-flagging.
+- **`merkle_verified: bool` on `QueryResult`** (last P0): a failed
+  per-bucket Merkle proof is now surfaced as
+  `Some(QueryResult::merkle_failed())` — `merkle_verified = false`,
+  empty entries, `is_whale = false` — instead of being coerced to
+  `None`. `None` in `SyncResult::results` is now purely "not found"
+  (verified absent when the DB publishes Merkle, via the symmetric
+  INDEX bin probes). All three native Rust clients (`DpfClient`,
+  `HarmonyClient`, `OnionClient`) and the WASM bindings propagate the
+  flag. `merge_delta_batch` ANDs snapshot × delta so a single untrusted
+  input taints the merge. New unit tests in `pir-sdk/src/sync.rs`
+  cover AND semantics, `(None, Some(del))` propagation, and the
+  `merkle_failed()` / default-verified state.
 
 ---
 

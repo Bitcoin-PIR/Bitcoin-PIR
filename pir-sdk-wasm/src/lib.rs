@@ -407,10 +407,20 @@ impl WasmQueryResult {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Default `merkleVerified` to `true` when absent — matches the
+        // "no failure detected" semantics of `QueryResult::with_entries`.
+        // JS callers that want to round-trip failed results must pass the
+        // flag explicitly.
+        let merkle_verified = data
+            .get("merkleVerified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         Ok(WasmQueryResult {
             inner: QueryResult {
                 entries,
                 is_whale,
+                merkle_verified,
                 raw_chunk_data: None,
             },
         })
@@ -432,6 +442,17 @@ impl WasmQueryResult {
     #[wasm_bindgen(getter, js_name = isWhale)]
     pub fn is_whale(&self) -> bool {
         self.inner.is_whale
+    }
+
+    /// Whether the per-bucket Merkle proof verified for this result.
+    ///
+    /// `true` means the proof passed or the database doesn't publish
+    /// Merkle commitments (no failure detected). `false` means
+    /// verification was attempted and FAILED; the result should be
+    /// treated as untrusted.
+    #[wasm_bindgen(getter, js_name = merkleVerified)]
+    pub fn merkle_verified(&self) -> bool {
+        self.inner.merkle_verified
     }
 
     /// Get entry at index as JSON.
@@ -468,6 +489,7 @@ impl WasmQueryResult {
             "entries": entries,
             "isWhale": self.inner.is_whale,
             "totalBalance": self.inner.total_balance(),
+            "merkleVerified": self.inner.merkle_verified,
         }))
         .unwrap_or(JsValue::NULL)
     }

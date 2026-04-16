@@ -351,6 +351,10 @@ pub fn merge_delta(snapshot: &QueryResult, delta_raw: &[u8]) -> PirResult<QueryR
     Ok(QueryResult {
         entries: merged,
         is_whale: snapshot.is_whale,
+        // Inherit the snapshot's verification status. Callers that have
+        // separately verified the delta should AND in its `merkle_verified`
+        // on the returned value; `merge_delta_batch` does this automatically.
+        merkle_verified: snapshot.merkle_verified,
         raw_chunk_data: None,
     })
 }
@@ -402,11 +406,18 @@ pub fn merge_delta_batch(
     for (snapshot, delta) in snapshots.iter().zip(delta_results.iter()) {
         let result = match (snapshot, delta) {
             (Some(snap), Some(del)) => {
+                // A merged result is Merkle-verified iff BOTH inputs were.
+                // One untrusted source taints the merge.
+                let merkle_verified = snap.merkle_verified && del.merkle_verified;
                 if let Some(raw) = &del.raw_chunk_data {
-                    Some(merge_delta(snap, raw)?)
+                    let mut m = merge_delta(snap, raw)?;
+                    m.merkle_verified = merkle_verified;
+                    Some(m)
                 } else {
                     // No delta data means no changes for this script hash
-                    Some(snap.clone())
+                    let mut m = snap.clone();
+                    m.merkle_verified = merkle_verified;
+                    Some(m)
                 }
             }
             (Some(snap), None) => {
@@ -414,12 +425,15 @@ pub fn merge_delta_batch(
                 Some(snap.clone())
             }
             (None, Some(del)) => {
-                // New entry from delta (script hash didn't exist in snapshot)
+                // New entry from delta (script hash didn't exist in snapshot).
+                // Verification state inherits from the delta query alone —
+                // there is no snapshot side to AND against.
                 if let Some(raw) = &del.raw_chunk_data {
                     let delta_data = decode_delta_data(raw)?;
                     Some(QueryResult {
                         entries: delta_data.new_utxos,
                         is_whale: false,
+                        merkle_verified: del.merkle_verified,
                         raw_chunk_data: None,
                     })
                 } else {
@@ -555,5 +569,126 @@ mod tests {
         assert!(plan.is_fresh_sync);
         assert_eq!(plan.steps.len(), 1);
         assert!(plan.steps[0].is_full());
+    }
+
+    // ─── merkle_verified propagation tests ───────────────────────────────
+
+    /// Encode a delta payload containing no spends and a single new UTXO.
+    /// Mirrors the on-wire format in `decode_delta_data`.
+    fn encode_delta_one_new(new: &UtxoEntry) -> Vec<u8> {
+        let mut out = Vec::new();
+        // spent_count varint = 0
+        out.push(0);
+        // new_count varint = 1
+        out.push(1);
+        // 44 bytes per entry: txid(32) || vout_le(4) || amount_le(8)
+        out.extend_from_slice(&new.txid);
+        out.extend_from_slice(&new.vout.to_le_bytes());
+        out.extend_from_slice(&new.amount_sats.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn test_merge_delta_inherits_verified_from_snapshot() {
+        let snap_entry = make_entry(1, 0, 1000);
+        let mut snap = QueryResult::with_entries(vec![snap_entry]);
+        snap.merkle_verified = true;
+
+        let raw = encode_delta_one_new(&make_entry(2, 0, 2000));
+        let merged = merge_delta(&snap, &raw).unwrap();
+        assert!(merged.merkle_verified, "verified snapshot stays verified");
+        assert_eq!(merged.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_delta_inherits_unverified_from_snapshot() {
+        let mut snap = QueryResult::with_entries(vec![make_entry(1, 0, 1000)]);
+        snap.merkle_verified = false;
+
+        let raw = encode_delta_one_new(&make_entry(2, 0, 2000));
+        let merged = merge_delta(&snap, &raw).unwrap();
+        assert!(
+            !merged.merkle_verified,
+            "unverified snapshot taints the merge (merge_delta inherits from snapshot)"
+        );
+    }
+
+    #[test]
+    fn test_merge_delta_batch_ands_verified_flags() {
+        let raw = encode_delta_one_new(&make_entry(2, 0, 2000));
+
+        // Base case: both verified -> merged verified.
+        {
+            let mut snap = QueryResult::with_entries(vec![make_entry(1, 0, 1000)]);
+            snap.merkle_verified = true;
+            let mut del = QueryResult::with_entries(vec![]);
+            del.merkle_verified = true;
+            del.raw_chunk_data = Some(raw.clone());
+
+            let out = merge_delta_batch(&[Some(snap)], &[Some(del)]).unwrap();
+            assert!(out[0].as_ref().unwrap().merkle_verified);
+        }
+
+        // Unverified snapshot -> merged unverified.
+        {
+            let mut snap = QueryResult::with_entries(vec![make_entry(1, 0, 1000)]);
+            snap.merkle_verified = false;
+            let mut del = QueryResult::with_entries(vec![]);
+            del.merkle_verified = true;
+            del.raw_chunk_data = Some(raw.clone());
+
+            let out = merge_delta_batch(&[Some(snap)], &[Some(del)]).unwrap();
+            assert!(!out[0].as_ref().unwrap().merkle_verified);
+        }
+
+        // Unverified delta -> merged unverified.
+        {
+            let mut snap = QueryResult::with_entries(vec![make_entry(1, 0, 1000)]);
+            snap.merkle_verified = true;
+            let mut del = QueryResult::with_entries(vec![]);
+            del.merkle_verified = false;
+            del.raw_chunk_data = Some(raw.clone());
+
+            let out = merge_delta_batch(&[Some(snap)], &[Some(del)]).unwrap();
+            assert!(
+                !out[0].as_ref().unwrap().merkle_verified,
+                "unverified delta taints the merge"
+            );
+        }
+    }
+
+    #[test]
+    fn test_merge_delta_batch_new_from_delta_only() {
+        // (None, Some(del)) path: no snapshot entry, delta introduces a new
+        // UTXO set. The merged verification flag should come from the delta.
+        let raw = encode_delta_one_new(&make_entry(5, 0, 5000));
+
+        let mut del = QueryResult::with_entries(vec![]);
+        del.merkle_verified = false;
+        del.raw_chunk_data = Some(raw);
+
+        let out = merge_delta_batch(&[None], &[Some(del)]).unwrap();
+        let merged = out[0].as_ref().unwrap();
+        assert!(!merged.merkle_verified, "unverified delta propagates");
+        assert_eq!(merged.entries.len(), 1);
+    }
+
+    #[test]
+    fn test_query_result_merkle_failed() {
+        let qr = QueryResult::merkle_failed();
+        assert!(!qr.merkle_verified);
+        assert!(qr.entries.is_empty());
+        assert!(!qr.is_whale);
+        assert!(qr.raw_chunk_data.is_none());
+    }
+
+    #[test]
+    fn test_query_result_constructors_default_verified() {
+        // empty() and with_entries() default to merkle_verified=true
+        // ("no failure detected"). Callers that need the pessimistic
+        // default must set the field explicitly.
+        assert!(QueryResult::empty().merkle_verified);
+        assert!(QueryResult::with_entries(vec![]).merkle_verified);
+        assert!(QueryResult::default().merkle_verified);
     }
 }
