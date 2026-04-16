@@ -94,9 +94,15 @@ strictly weaker than — the INDEX-Merkle leak closed above.
    - Hash functions exposed to JS
    - Built with `wasm-pack build --target web`
 
-3. **pir-sdk-client/** - Native Rust client. `DpfClient` is fully implemented
-   (including per-bucket Merkle verification, see item 8 below). `HarmonyClient`
-   and `OnionClient` are placeholders — see their module docs.
+3. **pir-sdk-client/** - Native Rust client. All three backends are fully
+   implemented:
+   - `DpfClient` — per-bucket Merkle verification via `merkle_verify.rs`
+     (see item 8 below).
+   - `HarmonyClient` — per-bucket Merkle verification via the shared
+     `BucketMerkleSiblingQuerier` trait (see item 8 below).
+   - `OnionClient` — per-bin Merkle verification via a separate module
+     `onion_merkle.rs` (INDEX + DATA flat trees, FHE sibling queries;
+     see item 10 below). Feature-gated behind `onion`.
 
 4. **pir-sdk-server/** - Server-side SDK placeholder
 
@@ -154,9 +160,47 @@ strictly weaker than — the INDEX-Merkle leak closed above.
    - Whales **are** Merkle-verified on their INDEX bin (so the client can
      prove the address really is whale-excluded). Whales have no chunk
      chain, so chunk-level Merkle info is empty by construction.
-   - `OnionClient` Merkle verification is **not yet wired**. This is
-     tracked as P0 work in [SDK_ROADMAP.md](SDK_ROADMAP.md). Until wired,
-     OnionPIR results should be treated as unverified.
+   - `OnionClient` Merkle verification is wired via a **separate**
+     module [`pir-sdk-client/src/onion_merkle.rs`](pir-sdk-client/src/onion_merkle.rs)
+     — see item 10 below. (OnionPIR uses its own two flat trees +
+     FHE sibling queries, so the per-bucket `merkle_verify.rs` machinery
+     doesn't apply.)
+
+10. **Native Rust OnionPIR per-bin Merkle verification**:
+    - Module [`pir-sdk-client/src/onion_merkle.rs`](pir-sdk-client/src/onion_merkle.rs)
+      implements the OnionPIR Merkle subsystem, which is **distinct**
+      from per-bucket Merkle:
+      * Two flat trees (INDEX + DATA), not per-PBC-bucket trees.
+      * Leaf hash: `SHA256(decrypted_bin_bytes)` (no bin-index prefix).
+      * Sibling cuckoo: 6 hash functions, 1 slot per bin, per-level
+        master seed `SEED_BASE + level`
+        (`INDEX_SIBLING_SEED_BASE = 0xBA7C_51B1_FEED_0100`,
+         `DATA_SIBLING_SEED_BASE  = 0xBA7C_51B1_FEED_0200`).
+      * Sibling queries are FHE-encrypted: `0x53` INDEX, `0x55` DATA.
+        Tree-top fetches: `0x54` INDEX, `0x56` DATA.
+    - `OnionClient::query_index_level` now tracks every probed INDEX
+      cuckoo bin (both `INDEX_CUCKOO_NUM_HASHES = 2` positions, matched
+      or not, whale or found, see invariant #9) and emits a
+      `(pbc_group * index_bins + bin, SHA256(bin))` trace per bin.
+    - `OnionClient::query_chunk_level` emits a DATA trace per decrypted
+      entry_id: `(pbc_group * chunk_bins + bin, SHA256(packed))`.
+    - `run_merkle_verification` aggregates traces into
+      `Vec<OnionMerkleLeaf>`, calls `verify_onion_merkle_batch`, and
+      coerces failed queries to `None` (same "untrusted ⇒ absent"
+      pattern as DpfClient/HarmonyClient). A local `SibSendClient`
+      newtype makes `onionpir::Client` `Send` across `.await` for the
+      sibling roundtrips.
+    - Gated behind the `onion` cargo feature (same as `OnionClient`'s
+      query path). Padding is preserved (K per sibling round, dummy
+      FHE queries fill empty groups).
+    - JSON parsing: `parse_onion_merkle_per_db` handles top-level
+      `onionpir_merkle` (db_id=0) and per-entry `onionpir_merkle` inside
+      `databases[]` — symmetric with `parse_onion_params_per_db`. The
+      subtree parser tolerates whitespace after `"root":` and
+      `"levels":` so pretty-printed JSON works.
+    - 46 unit tests cover tree-top parsing, sibling cuckoo
+      (INDEX + DATA, 6-hash roundtrip), seed-base invariants, wire
+      encoder/decoder, and JSON parse shapes.
 
 9. **Merkle INDEX item-count symmetry (all five clients)**:
    - All five clients — TS DPF (`web/src/client.ts`), TS OnionPIR
@@ -188,9 +232,10 @@ forgotten. Padding/privacy invariants (🔒 items in the roadmap) must
 not be optimized away — see "Query Padding" above.
 
 Short-term active work:
-- **P0 #2 (next):** Merkle verification for `OnionClient`. Onion trace
-  state already records both cuckoo positions; wiring is mechanical.
-  Reference: web client's `web/src/onion-client.ts`.
+- **P0 #1 (next):** verify INDEX PBC placement in
+  `DpfClient::query_index_level` — flagged as possibly using only
+  `my_groups[0]` of the 3 PBC candidates. Confirm against server
+  behaviour; fan out to all 3 groups (with padding preserved) if wrong.
 
 ### Completed milestones
 - PIR SDK + WASM bindings + web integration (commit `19cbf5f`).
@@ -200,10 +245,12 @@ Short-term active work:
 - Native Rust `HarmonyClient` + `OnionClient` un-stub (commit `f37db8f`).
 - Native Rust `DpfClient` per-bucket Merkle verification (commit `8bd4b7b`).
 - Native Rust `HarmonyClient` per-bucket Merkle verification via
-  shared `BucketMerkleSiblingQuerier` trait (commit `6aee562`, P0 #1).
+  shared `BucketMerkleSiblingQuerier` trait (commit `6aee562`).
 - Merkle INDEX item-count symmetry across all five clients + whale
   INDEX Merkle verification (closes found-vs-not-found / h-position
   side channel at the INDEX Merkle level).
+- Native Rust `OnionClient` per-bin Merkle verification via
+  feature-gated `onion_merkle.rs` module (P0 #1 — see item 10 above).
 
 ---
 

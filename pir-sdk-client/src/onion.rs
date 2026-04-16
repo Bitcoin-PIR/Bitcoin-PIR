@@ -61,6 +61,15 @@ use pir_sdk::{
 use pir_sdk::UtxoEntry;
 
 #[cfg(feature = "onion")]
+use crate::onion_merkle::{
+    parse_onionpir_merkle, verify_onion_merkle_batch, OnionMerkleInfo, OnionMerkleLeaf,
+    OnionTreeKind,
+};
+
+#[cfg(feature = "onion")]
+use pir_core::merkle::Hash256;
+
+#[cfg(feature = "onion")]
 use std::collections::{HashMap, HashSet};
 
 // ─── Protocol wire codes ────────────────────────────────────────────────────
@@ -217,6 +226,12 @@ pub struct OnionClient {
     catalog: Option<DatabaseCatalog>,
     /// Per-DB OnionPIR-specific parameters. Keyed by db_id.
     onion_params: std::collections::HashMap<u8, OnionDbParams>,
+    /// Per-DB OnionPIR per-bin Merkle info, populated during `fetch_server_info`
+    /// when the server exposes an `onionpir_merkle` section. Absent entries
+    /// mean the server has no Merkle commitment for that DB and queries run
+    /// unverified (matching DpfClient's `has_bucket_merkle=false` path).
+    #[cfg(feature = "onion")]
+    onion_merkle: std::collections::HashMap<u8, OnionMerkleInfo>,
     /// Cached raw JSON info (so we can re-parse per-DB params on demand).
     info_json: Option<String>,
     #[cfg(feature = "onion")]
@@ -231,6 +246,8 @@ impl OnionClient {
             conn: None,
             catalog: None,
             onion_params: std::collections::HashMap::new(),
+            #[cfg(feature = "onion")]
+            onion_merkle: std::collections::HashMap::new(),
             info_json: None,
             #[cfg(feature = "onion")]
             fhe: None,
@@ -261,6 +278,14 @@ impl OnionClient {
             return Err(PirError::Protocol(
                 "server has no OnionPIR data — is this an OnionPIR-enabled server?".into(),
             ));
+        }
+
+        // Parse onionpir_merkle (optional). Populated per-DB so queries
+        // against the main DB, deltas, and secondary DBs each pick up the
+        // right root + sibling-level layout.
+        #[cfg(feature = "onion")]
+        {
+            self.onion_merkle = parse_onion_merkle_per_db(&json);
         }
 
         // Best-effort DPF catalog fetch for heights/names. If the server
@@ -321,11 +346,11 @@ impl OnionClient {
             db_info.chunk_k,
         );
 
-        let index_results = self
+        let (index_results, index_traces) = self
             .query_index_level(script_hashes, db_info, &params)
             .await?;
 
-        let chunk_data = self
+        let (chunk_data, data_merkle) = self
             .query_chunk_level(script_hashes, &index_results, db_info, &params)
             .await?;
 
@@ -377,7 +402,156 @@ impl OnionClient {
             results.push(qr);
         }
 
+        // Per-bin Merkle verification — same semantics as DpfClient: on any
+        // leaf failing verification the corresponding result is coerced to
+        // None so callers can't distinguish server lies from genuine absence.
+        //
+        // Only runs if the server exposed an `onionpir_merkle` section for
+        // this DB (otherwise it's a silent skip, matching
+        // `has_bucket_merkle=false` for DPF/Harmony).
+        if self.onion_merkle.contains_key(&db_info.db_id) {
+            self.run_merkle_verification(
+                &mut results,
+                &index_traces,
+                &index_results,
+                &data_merkle,
+                db_info,
+            )
+            .await?;
+        } else {
+            log::info!(
+                "[PIR-AUDIT] OnionPIR Merkle verification SKIPPED \
+                 (db_id={} has no onionpir_merkle section)",
+                db_info.db_id
+            );
+        }
+
         Ok(results)
+    }
+
+    /// Run OnionPIR per-bin Merkle verification on the traces collected
+    /// during `query_index_level` / `query_chunk_level`.
+    ///
+    /// A query passes iff ALL of its INDEX leaves and (if found) DATA leaves
+    /// verify to the respective sub-tree roots. On any failure, that query's
+    /// result is set to `None` so untrusted data never reaches the caller.
+    #[cfg(feature = "onion")]
+    async fn run_merkle_verification(
+        &mut self,
+        results: &mut [Option<QueryResult>],
+        index_traces: &[IndexBinMerkle],
+        index_results: &[Option<IndexResult>],
+        data_merkle: &HashMap<u32, (Hash256, usize)>,
+        db_info: &DatabaseInfo,
+    ) -> PirResult<()> {
+        let info = match self.onion_merkle.get(&db_info.db_id).cloned() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        // Build the flat leaf list (both INDEX and DATA).
+        let mut leaves: Vec<OnionMerkleLeaf> =
+            Vec::with_capacity(index_traces.len() + data_merkle.len());
+
+        for it in index_traces {
+            leaves.push(OnionMerkleLeaf {
+                tree: OnionTreeKind::Index,
+                leaf_pos: it.leaf_pos,
+                hash: it.bin_hash,
+                result_idx: it.sh_idx,
+            });
+        }
+
+        // DATA leaves map back to which scripthash they belong to via
+        // entry_id range [entry_id, entry_id + num_entries). A single entry_id
+        // may back multiple scripthashes (shared chunks are rare but possible
+        // across batches) — we track all owners so any failure fails them all.
+        let mut entry_id_to_result: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (idx, ir) in index_results.iter().enumerate() {
+            if let Some(ir) = ir {
+                if ir.num_entries == 0 {
+                    continue; // whale has no DATA leaves
+                }
+                for i in 0..ir.num_entries as u32 {
+                    let eid = ir.entry_id + i;
+                    entry_id_to_result.entry(eid).or_default().push(idx);
+                }
+            }
+        }
+
+        for (eid, &(hash, leaf_pos)) in data_merkle {
+            let owners = match entry_id_to_result.get(eid) {
+                Some(o) => o,
+                None => continue, // entry fetched but no owning query — shouldn't happen
+            };
+            for &owner in owners {
+                leaves.push(OnionMerkleLeaf {
+                    tree: OnionTreeKind::Data,
+                    leaf_pos,
+                    hash,
+                    result_idx: owner,
+                });
+            }
+        }
+
+        if leaves.is_empty() {
+            log::info!(
+                "[PIR-AUDIT] OnionPIR Merkle: no leaves to verify for db_id={}",
+                db_info.db_id
+            );
+            return Ok(());
+        }
+
+        log::info!(
+            "[PIR-AUDIT] OnionPIR Merkle: verifying db_id={} ({} INDEX + {} DATA leaves across {} queries)",
+            db_info.db_id,
+            index_traces.len(),
+            data_merkle.len(),
+            results.len(),
+        );
+
+        let (client_id, secret_key) = {
+            let fhe = self
+                .fhe
+                .as_ref()
+                .ok_or_else(|| PirError::InvalidState("FHE not initialised".into()))?;
+            (fhe.client_id, fhe.secret_key.clone())
+        };
+        let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        let verdicts =
+            verify_onion_merkle_batch(conn, &info, &leaves, client_id, &secret_key, db_info.db_id)
+                .await?;
+
+        // Aggregate: a result passes iff ALL of its leaves' verdicts are true.
+        let mut per_query_ok = vec![true; results.len()];
+        let mut per_query_touched = vec![false; results.len()];
+        for leaf in &leaves {
+            per_query_touched[leaf.result_idx] = true;
+            let ok = verdicts
+                .get(&(leaf.tree, leaf.leaf_pos))
+                .copied()
+                .unwrap_or(false);
+            if !ok {
+                per_query_ok[leaf.result_idx] = false;
+            }
+        }
+
+        for qi in 0..results.len() {
+            if !per_query_touched[qi] {
+                continue;
+            }
+            if per_query_ok[qi] {
+                log::info!("[PIR-AUDIT] OnionPIR Merkle PASSED for query #{}", qi);
+            } else {
+                log::warn!(
+                    "[PIR-AUDIT] OnionPIR Merkle FAILED for query #{}: result set to None (untrusted)",
+                    qi
+                );
+                results[qi] = None;
+            }
+        }
+
+        Ok(())
     }
 
     /// Placeholder fallback when the `onion` feature is disabled.
@@ -530,7 +704,7 @@ impl OnionClient {
         script_hashes: &[ScriptHash],
         db_info: &DatabaseInfo,
         params: &OnionDbParams,
-    ) -> PirResult<Vec<Option<IndexResult>>> {
+    ) -> PirResult<(Vec<Option<IndexResult>>, Vec<IndexBinMerkle>)> {
         let k = db_info.index_k as usize;
         let bins = db_info.index_bins as usize;
         let tag_seed = db_info.tag_seed;
@@ -545,6 +719,11 @@ impl OnionClient {
 
         let mut results: Vec<Option<IndexResult>> =
             (0..script_hashes.len()).map(|_| None).collect();
+        // INDEX Merkle traces: always `INDEX_CUCKOO_NUM_HASHES = 2` entries
+        // per scripthash so Merkle item-count is uniform across found /
+        // not-found / whale (CLAUDE.md: "Merkle INDEX Item-Count Symmetry").
+        let mut index_traces: Vec<IndexBinMerkle> =
+            Vec::with_capacity(script_hashes.len() * INDEX_CUCKOO_NUM_HASHES);
         let mut rng = SimpleRng::new();
 
         for (round_id, round) in rounds.iter().enumerate() {
@@ -590,7 +769,13 @@ impl OnionClient {
             }
             let batch = decode_onionpir_batch_result(&response[1..])?;
 
-            // Decrypt the 2 responses per real-group and scan for tags.
+            // Decrypt both cuckoo positions for every real scripthash in this
+            // round. We DO NOT early-exit on match — both bins must be tracked
+            // so the INDEX Merkle leaf count is 2 per query regardless of
+            // outcome (see CLAUDE.md "Merkle INDEX Item-Count Symmetry"). The
+            // second decrypt costs ~100ms FHE but closes the side channel
+            // where sibling-round pass counts would otherwise leak
+            // found-vs-not-found and h-position.
             let index_client = self.get_level_client(db_info.db_id, false)?;
             for &(sh_idx, group) in round {
                 let tag = pir_core::hash::compute_tag(tag_seed, &script_hashes[sh_idx]);
@@ -605,20 +790,38 @@ impl OnionClient {
                     }
                     let bin = query_bins[qi];
                     let entry = index_client.decrypt_response(bin, &batch[qi]);
-                    if let Some(ir) = scan_index_bin(
-                        &entry,
-                        tag,
-                        params.index_slots_per_bin,
-                        params.index_slot_size,
-                    ) {
-                        results[sh_idx] = Some(ir);
-                        break;
+
+                    // Emit a Merkle trace for EVERY probed bin (not just the
+                    // matching one). Leaf position matches the server's
+                    // flat-table ordering: `pbc_group * bins + bin`.
+                    let entry_for_hash = if entry.len() >= PACKED_ENTRY_SIZE {
+                        &entry[..PACKED_ENTRY_SIZE]
+                    } else {
+                        &entry[..]
+                    };
+                    index_traces.push(IndexBinMerkle {
+                        sh_idx,
+                        leaf_pos: group * bins + bin as usize,
+                        bin_hash: pir_core::merkle::sha256(entry_for_hash),
+                    });
+
+                    // Only record the first matching index result — the
+                    // second probe is tracking-only for Merkle symmetry.
+                    if results[sh_idx].is_none() {
+                        if let Some(ir) = scan_index_bin(
+                            &entry,
+                            tag,
+                            params.index_slots_per_bin,
+                            params.index_slot_size,
+                        ) {
+                            results[sh_idx] = Some(ir);
+                        }
                     }
                 }
             }
         }
 
-        Ok(results)
+        Ok((results, index_traces))
     }
 
     #[cfg(feature = "onion")]
@@ -628,7 +831,7 @@ impl OnionClient {
         index_results: &[Option<IndexResult>],
         db_info: &DatabaseInfo,
         params: &OnionDbParams,
-    ) -> PirResult<HashMap<u32, Vec<u8>>> {
+    ) -> PirResult<(HashMap<u32, Vec<u8>>, HashMap<u32, (Hash256, usize)>)> {
         // Collect unique entry_ids to fetch.
         let mut unique: Vec<u32> = Vec::new();
         let mut seen: HashSet<u32> = HashSet::new();
@@ -645,8 +848,12 @@ impl OnionClient {
         }
 
         let mut decrypted: HashMap<u32, Vec<u8>> = HashMap::new();
+        // entry_id → (SHA256(decrypted_bin), pbc_group * chunk_bins + bin)
+        // Populated per DATA bin fetched — later fed to the OnionPIR per-bin
+        // Merkle verifier.
+        let mut data_merkle: HashMap<u32, (Hash256, usize)> = HashMap::new();
         if unique.is_empty() {
-            return Ok(decrypted);
+            return Ok((decrypted, data_merkle));
         }
 
         let chunk_k = db_info.chunk_k as usize;
@@ -748,11 +955,22 @@ impl OnionClient {
                         PACKED_ENTRY_SIZE
                     )));
                 }
-                decrypted.insert(q.entry_id, bytes[..PACKED_ENTRY_SIZE].to_vec());
+                let packed = &bytes[..PACKED_ENTRY_SIZE];
+                decrypted.insert(q.entry_id, packed.to_vec());
+                // DATA Merkle trace: one leaf per fetched entry_id. Leaf
+                // position matches server's flat-table layout
+                // (`pbc_group * chunk_bins + bin`).
+                data_merkle.insert(
+                    q.entry_id,
+                    (
+                        pir_core::merkle::sha256(packed),
+                        q.group * chunk_bins + q.bin,
+                    ),
+                );
             }
         }
 
-        Ok(decrypted)
+        Ok((decrypted, data_merkle))
     }
 }
 
@@ -787,6 +1005,7 @@ impl PirClient for OnionClient {
         #[cfg(feature = "onion")]
         {
             self.fhe = None;
+            self.onion_merkle.clear();
         }
         Ok(())
     }
@@ -918,6 +1137,23 @@ struct IndexResult {
     entry_id: u32,
     byte_offset: u16,
     num_entries: u8,
+}
+
+/// Per-bin Merkle trace entry from the INDEX or DATA level.
+///
+/// Emitted for **every** probed cuckoo bin so the INDEX leaf count is uniform
+/// across found / not-found / whale — see CLAUDE.md's
+/// "Merkle INDEX Item-Count Symmetry" invariant. One of these is pushed per
+/// bin we inspect (INDEX) or per entry_id we fetch (DATA).
+#[cfg(feature = "onion")]
+#[derive(Clone, Debug)]
+struct IndexBinMerkle {
+    /// Back-reference to which scripthash (query index) this bin belongs to.
+    sh_idx: usize,
+    /// `pbc_group * index_bins + bin` — leaf position in the flat INDEX tree.
+    leaf_pos: usize,
+    /// `SHA256(decrypted_bin[..PACKED_ENTRY_SIZE])`.
+    bin_hash: Hash256,
 }
 
 /// Scan a decrypted INDEX bin (slots_per_bin × slot_size bytes) for a tag.
@@ -1394,6 +1630,40 @@ fn parse_onion_params_from_opi(opi: &str) -> Option<OnionDbParams> {
         index_slots_per_bin: json_u64(opi, "index_slots_per_bin")? as usize,
         index_slot_size: json_u64(opi, "index_slot_size")? as usize,
     })
+}
+
+/// Parse per-DB OnionPIR per-bin Merkle info from the JSON info response.
+///
+/// Looks for a top-level `"onionpir_merkle"` sub-object (main DB, db_id=0)
+/// and each entry in `"databases":[ ... ]` with a nested `"onionpir_merkle"`
+/// object. Returns an empty map if the server has no Merkle commitment at
+/// all — callers treat that as "skip verification" (analogous to
+/// `DatabaseInfo::has_bucket_merkle=false`).
+#[cfg(feature = "onion")]
+fn parse_onion_merkle_per_db(json: &str) -> std::collections::HashMap<u8, OnionMerkleInfo> {
+    let mut out = std::collections::HashMap::new();
+
+    // Main DB (db_id=0) — top-level onionpir_merkle.
+    if let Some(info) = parse_onionpir_merkle(json) {
+        out.insert(0u8, info);
+    }
+
+    // Per-DB entries. Each element is a full JSON object so
+    // parse_onionpir_merkle can locate the nested "onionpir_merkle" sub-object
+    // on its own.
+    if let Some(dbs) = extract_json_object_array(json, "databases") {
+        for entry in dbs {
+            let id = match json_u64(entry, "db_id") {
+                Some(v) => v as u8,
+                None => continue,
+            };
+            if let Some(info) = parse_onionpir_merkle(entry) {
+                out.insert(id, info);
+            }
+        }
+    }
+
+    out
 }
 
 /// Extract array elements of a top-level `"key":[{...},{...},...]` JSON field.

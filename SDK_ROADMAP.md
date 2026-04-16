@@ -1,9 +1,9 @@
 # PIR SDK Roadmap
 
 Status snapshot: the native Rust SDK has three real clients (`DpfClient`,
-`HarmonyClient`, `OnionClient`) and per-bucket Merkle verification
-wired into `DpfClient` only. This document tracks what's left before the
-SDK is production-ready.
+`HarmonyClient`, `OnionClient`) and per-bin Merkle verification wired
+into all three. This document tracks what's left before the SDK is
+production-ready.
 
 Items marked 🔒 touch the padding/privacy invariants in CLAUDE.md
 ("Query Padding", "Cuckoo Hashing and Not-Found Verification"). Any
@@ -31,13 +31,19 @@ change near them needs extra care — do not optimize away padding.
   found-vs-not-found and cuckoo h-position. Whales also emit their
   INDEX Merkle item so whale-exclusion is verifiable. See CLAUDE.md
   "Merkle INDEX Item-Count Symmetry" for the full invariant.
+- 🔒 **Merkle verification for native Rust `OnionClient`.** New
+  module `pir-sdk-client/src/onion_merkle.rs` implements the OnionPIR
+  per-bin Merkle subsystem (INDEX + DATA flat trees, 6-hash sibling
+  cuckoo with 1 slot per bin, FHE sibling queries `0x53`/`0x55`,
+  tree-top fetches `0x54`/`0x56`). `OnionClient` tracks per-bin INDEX
+  hashes (both probed cuckoo positions, regardless of match) plus DATA
+  bin hashes for every fetched chunk, then batch-verifies via
+  `verify_onion_merkle_batch`. Failed proofs coerce results to `None`
+  (matches DpfClient/HarmonyClient behavior). Gated behind the `onion`
+  feature so consumers without a C++ toolchain are unaffected.
 
 ## P0 — Blockers for "production-ready"
 
-- [ ] **🔒 Merkle verification for `OnionClient`.** Same as above.
-      OnionPIR already records both cuckoo positions in its trace
-      state; wiring is mechanical. Reference: web client's
-      `web/src/onion-client.ts`.
 - [ ] **🔒 Verify INDEX PBC placement.** `DpfClient::query_index_level`
       uses `my_groups[0]` (first of 3 PBC candidates) — the Merkle
       subagent flagged this as possibly wrong. Confirm against server
@@ -130,4 +136,5 @@ link the branch / commit.
 
 ### In progress
 
-_(none — P0 #1 moved to Completed.)_
+_(none — P0 #1 `OnionClient` Merkle verification moved to Completed.
+Next candidate: P0 #1 `INDEX PBC placement` verification.)_

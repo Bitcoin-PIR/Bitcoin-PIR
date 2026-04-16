@@ -54,6 +54,8 @@ mod dpf;
 mod harmony;
 mod merkle_verify;
 mod onion;
+#[cfg(feature = "onion")]
+mod onion_merkle;
 
 pub use connection::WsConnection;
 pub use dpf::DpfClient;
