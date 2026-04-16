@@ -31,6 +31,7 @@
 //! privacy requirement, not an artifact.
 
 use crate::connection::WsConnection;
+use async_trait::async_trait;
 use libdpf::Dpf;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, Hash256, ZERO_HASH};
 use pir_core::params::compute_dpf_n;
@@ -330,16 +331,184 @@ pub async fn fetch_tree_tops(
     parse_tree_tops(&raw[5..])
 }
 
+// ─── Sibling querier trait ──────────────────────────────────────────────────
+
+/// Abstract one K-padded sibling-query round at a given Merkle level.
+///
+/// Separates the DPF- vs. HarmonyPIR-specific wire plumbing from the
+/// shared Merkle-walk logic. Implementors are responsible for issuing
+/// exactly one server round-trip covering `table_k = pass_targets.len()`
+/// groups — both real targets and random/synthetic dummies — and
+/// returning the XOR-reconstructed 256-byte sibling rows for the real
+/// slots.
+///
+/// # Contract
+///
+/// * **`pass_targets[g] = Some(target_group_idx)`** — real query. `target_group_idx`
+///   is the child-group index at this Merkle level (i.e. `node_idx / arity`).
+///   The querier MUST send a genuine query for that index and return the
+///   reconstructed row in `Ok(rows[g] = Some(..))`.
+/// * **`pass_targets[g] = None`** — padding slot. The querier MUST still
+///   issue a dummy query for that group (K-padding preservation is a
+///   privacy requirement — see CLAUDE.md "Query Padding"). The returned
+///   `rows[g]` must be `None`.
+///
+/// Returned rows MUST be exactly [`BUCKET_MERKLE_SIB_ROW_SIZE`] (= 256)
+/// bytes; shorter rows are treated as an error and coerced to `ZERO_HASH`
+/// by the caller.
+///
+/// `table_type` is `0` for INDEX trees and `1` for CHUNK trees. `level` is
+/// the sibling level (0-indexed, bottom-up).
+/// `level_bins_per_table` is the number of bins per group at *this* level
+/// (= `ceil(main_bins / arity^(level+1))`). Querier impls that use DPF
+/// internally need it to size the DPF domain; HarmonyPIR impls need it
+/// when sizing/building group state.
+#[async_trait]
+pub trait BucketMerkleSiblingQuerier: Send {
+    async fn query_pass(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        level_bins_per_table: u32,
+        pass_targets: &[Option<u32>],
+        db_id: u8,
+    ) -> PirResult<Vec<Option<Vec<u8>>>>;
+}
+
+// ─── DPF sibling querier ────────────────────────────────────────────────────
+
+/// `BucketMerkleSiblingQuerier` impl that fulfils each pass with a two-server
+/// DPF sibling batch (variant `REQ_BUCKET_MERKLE_SIB_BATCH = 0x33`).
+///
+/// Borrows both `WsConnection`s mutably for its lifetime so one pass =
+/// exactly one request/response per server.
+pub struct DpfSiblingQuerier<'a> {
+    conn0: &'a mut WsConnection,
+    conn1: &'a mut WsConnection,
+    dpf: Dpf,
+    rng: SimpleRng,
+}
+
+impl<'a> DpfSiblingQuerier<'a> {
+    pub fn new(conn0: &'a mut WsConnection, conn1: &'a mut WsConnection) -> Self {
+        Self {
+            conn0,
+            conn1,
+            dpf: Dpf::with_default_key(),
+            rng: SimpleRng::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl BucketMerkleSiblingQuerier for DpfSiblingQuerier<'_> {
+    async fn query_pass(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        level_bins_per_table: u32,
+        pass_targets: &[Option<u32>],
+        db_id: u8,
+    ) -> PirResult<Vec<Option<Vec<u8>>>> {
+        let table_k = pass_targets.len();
+        let num_groups_at_level = level_bins_per_table as u64;
+        let level_dpf_n = compute_dpf_n(num_groups_at_level as usize);
+
+        let mut s0_keys: Vec<Vec<u8>> = Vec::with_capacity(table_k);
+        let mut s1_keys: Vec<Vec<u8>> = Vec::with_capacity(table_k);
+        for target in pass_targets.iter() {
+            let alpha = match *target {
+                Some(t) => t as u64,
+                None => {
+                    if num_groups_at_level == 0 {
+                        0
+                    } else {
+                        self.rng.next_u64() % num_groups_at_level
+                    }
+                }
+            };
+            let (k0, k1) = self.dpf.gen(alpha, level_dpf_n);
+            s0_keys.push(k0.to_bytes());
+            s1_keys.push(k1.to_bytes());
+        }
+
+        // round_id mirrors the TS convention: table_type * 100 + level.
+        let round_id = (table_type as u16) * 100 + level as u16;
+        let req0 = encode_sibling_batch(db_id, round_id, &s0_keys);
+        let req1 = encode_sibling_batch(db_id, round_id, &s1_keys);
+        self.conn0.send(req0).await?;
+        self.conn1.send(req1).await?;
+        let resp0_raw = self.conn0.recv().await?;
+        let resp1_raw = self.conn1.recv().await?;
+        if resp0_raw.len() < 4 || resp1_raw.len() < 4 {
+            return Err(PirError::Protocol(
+                "sibling response missing length prefix".into(),
+            ));
+        }
+        let r0 = decode_sibling_batch(&resp0_raw[4..])?;
+        let r1 = decode_sibling_batch(&resp1_raw[4..])?;
+
+        let mut out: Vec<Option<Vec<u8>>> = vec![None; table_k];
+        for (g, target) in pass_targets.iter().enumerate() {
+            if target.is_none() {
+                continue;
+            }
+            if g >= r0.len() || g >= r1.len() || r0[g].is_empty() || r1[g].is_empty() {
+                // Let the caller handle the missing row by coercing to ZERO_HASH.
+                continue;
+            }
+            let mut row = r0[g][0].clone();
+            xor_into(&mut row, &r1[g][0]);
+            out[g] = Some(row);
+        }
+        Ok(out)
+    }
+}
+
 // ─── Main verification ──────────────────────────────────────────────────────
 
 /// Batch-verify per-bucket bin Merkle proofs using DPF sibling queries.
 ///
+/// Convenience wrapper: builds a [`DpfSiblingQuerier`] and calls
+/// [`verify_bucket_merkle_batch_generic`]. See that function for details.
+///
 /// Preserves K / K_CHUNK query padding at every sibling level. When two items
 /// share a PBC group, multiple passes are run — each pass itself padded.
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_bucket_merkle_batch_dpf(
+    conn0: &mut WsConnection,
+    conn1: &mut WsConnection,
+    items: &[BucketMerkleItem],
+    index_bins: u32,
+    chunk_bins: u32,
+    index_k: usize,
+    chunk_k: usize,
+    db_id: u8,
+    tree_tops: &[TreeTop],
+) -> PirResult<Vec<bool>> {
+    let mut querier = DpfSiblingQuerier::new(conn0, conn1);
+    verify_bucket_merkle_batch_generic(
+        &mut querier,
+        items,
+        index_bins,
+        chunk_bins,
+        index_k,
+        chunk_k,
+        db_id,
+        tree_tops,
+    )
+    .await
+}
+
+/// Backend-agnostic per-bucket Merkle batch verifier.
+///
+/// Drives the shared sibling-walk via an arbitrary
+/// [`BucketMerkleSiblingQuerier`]. Used directly by the HarmonyPIR client;
+/// [`verify_bucket_merkle_batch_dpf`] wraps it with a DPF-specific querier.
 ///
 /// # Parameters
 ///
-/// * `conn0`, `conn1` — both DPF servers (XOR reconstruction).
+/// * `querier` — per-pass sibling fetcher. See the trait docs.
 /// * `items` — one per bin to verify (multiple per query for not-found proofs).
 /// * `index_bins` — bins per table at the INDEX level (`DatabaseInfo::index_bins`).
 /// * `chunk_bins` — bins per table at the CHUNK level.
@@ -352,9 +521,8 @@ pub async fn fetch_tree_tops(
 /// `Vec<bool>` of length `items.len()`; `true` iff the item's Merkle path
 /// reconstructs to the expected per-group root.
 #[allow(clippy::too_many_arguments)]
-pub async fn verify_bucket_merkle_batch_dpf(
-    conn0: &mut WsConnection,
-    conn1: &mut WsConnection,
+pub async fn verify_bucket_merkle_batch_generic(
+    querier: &mut dyn BucketMerkleSiblingQuerier,
     items: &[BucketMerkleItem],
     index_bins: u32,
     chunk_bins: u32,
@@ -396,8 +564,7 @@ pub async fn verify_bucket_merkle_batch_dpf(
     );
 
     let index_verified = verify_sibling_levels(
-        conn0,
-        conn1,
+        querier,
         &index_sub_items,
         index_bins,
         index_k,
@@ -432,8 +599,7 @@ pub async fn verify_bucket_merkle_batch_dpf(
         Vec::new()
     } else {
         verify_sibling_levels(
-            conn0,
-            conn1,
+            querier,
             &chunk_sub_items,
             chunk_bins,
             chunk_k,
@@ -490,8 +656,7 @@ struct SubItem {
 
 #[allow(clippy::too_many_arguments)]
 async fn verify_sibling_levels(
-    conn0: &mut WsConnection,
-    conn1: &mut WsConnection,
+    querier: &mut dyn BucketMerkleSiblingQuerier,
     items: &[SubItem],
     bins: u32,
     table_k: usize,
@@ -540,16 +705,10 @@ async fn verify_sibling_levels(
         }
     }
 
-    let dpf = Dpf::with_default_key();
-    let mut rng = SimpleRng::new();
-
     // For each sibling level, run `max_items_per_group` passes. Each pass is
-    // itself K-padded: every group gets a DPF key (real target for items
-    // active in this pass, random dummy otherwise).
+    // itself K-padded: the querier sends one (real or dummy) sub-request per
+    // group for every slot.
     for (level, &groups_at_level) in level_groups_count.iter().enumerate() {
-        let num_groups_at_level = groups_at_level as u64;
-        let level_dpf_n = compute_dpf_n(num_groups_at_level as usize);
-
         for pass in 0..max_items_per_group {
             // Select the item handled in this pass for each group.
             let mut pass_group_to_item: HashMap<usize, usize> = HashMap::new();
@@ -559,62 +718,42 @@ async fn verify_sibling_levels(
                 }
             }
 
-            // ── Generate DPF keys (K entries, padded with dummies) ─────
-            let mut s0_keys: Vec<Vec<u8>> = Vec::with_capacity(table_k);
-            let mut s1_keys: Vec<Vec<u8>> = Vec::with_capacity(table_k);
-            for g in 0..table_k {
-                let alpha = if let Some(&item_idx) = pass_group_to_item.get(&g) {
-                    (node_idx[item_idx] as u64) / arity as u64
-                } else {
-                    rng.next_u64() % num_groups_at_level
-                };
-                let (k0, k1) = dpf.gen(alpha, level_dpf_n);
-                s0_keys.push(k0.to_bytes());
-                s1_keys.push(k1.to_bytes());
-            }
+            // Build per-group targets: Some(target_child_idx) or None for padding.
+            let pass_targets: Vec<Option<u32>> = (0..table_k)
+                .map(|g| {
+                    pass_group_to_item
+                        .get(&g)
+                        .map(|&item_idx| node_idx[item_idx] / arity as u32)
+                })
+                .collect();
 
-            // ── Send / receive the K-padded batch ──────────────────────
-            // round_id mirrors the TS convention: table_type * 100 + level.
-            let round_id = (table_type as u16) * 100 + level as u16;
-            let req0 = encode_sibling_batch(db_id, round_id, &s0_keys);
-            let req1 = encode_sibling_batch(db_id, round_id, &s1_keys);
-            conn0.send(req0).await?;
-            conn1.send(req1).await?;
-            let resp0_raw = conn0.recv().await?;
-            let resp1_raw = conn1.recv().await?;
-            if resp0_raw.len() < 4 || resp1_raw.len() < 4 {
-                return Err(PirError::Protocol(
-                    "sibling response missing length prefix".into(),
-                ));
-            }
-            let r0 = decode_sibling_batch(&resp0_raw[4..])?;
-            let r1 = decode_sibling_batch(&resp1_raw[4..])?;
+            // Send one K-padded pass via the querier.
+            let rows = querier
+                .query_pass(table_type, level, groups_at_level, &pass_targets, db_id)
+                .await?;
 
             // ── Update running hashes for this pass ────────────────────
             for (&g, &item_idx) in &pass_group_to_item {
-                if g >= r0.len() || g >= r1.len() || r0[g].is_empty() || r1[g].is_empty() {
+                let row_opt = rows.get(g).and_then(|r| r.as_ref());
+                let Some(row) = row_opt else {
                     log::warn!(
-                        "[PIR-AUDIT] Merkle L{} pass {}: missing data for group {} (item {})",
-                        level,
-                        pass,
-                        g,
-                        item_idx
+                        "[PIR-AUDIT] Merkle L{} pass {}: missing sibling row for group {} (item {})",
+                        level, pass, g, item_idx
                     );
                     current_hash[item_idx] = ZERO_HASH;
                     continue;
-                }
-                let mut row = r0[g][0].clone();
+                };
                 if row.len() < BUCKET_MERKLE_SIB_ROW_SIZE {
                     log::warn!(
-                        "[PIR-AUDIT] Merkle L{} group {}: sibling row too short ({} bytes)",
+                        "[PIR-AUDIT] Merkle L{} group {}: sibling row too short ({} bytes, need {})",
                         level,
                         g,
-                        row.len()
+                        row.len(),
+                        BUCKET_MERKLE_SIB_ROW_SIZE
                     );
                     current_hash[item_idx] = ZERO_HASH;
                     continue;
                 }
-                xor_into(&mut row, &r1[g][0]);
 
                 let child_pos = (node_idx[item_idx] as usize) % arity;
                 let mut children: Vec<Hash256> = Vec::with_capacity(arity);
@@ -703,7 +842,7 @@ async fn verify_sibling_levels(
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
-fn xor_into(dst: &mut [u8], src: &[u8]) {
+pub(crate) fn xor_into(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst.iter_mut().zip(src.iter()) {
         *d ^= *s;
     }
@@ -711,12 +850,12 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
 
 /// Same splitmix64-based PRNG as `dpf.rs::SimpleRng`.
 /// Duplicated here to keep this module self-contained (it's tiny).
-struct SimpleRng {
+pub(crate) struct SimpleRng {
     state: u64,
 }
 
 impl SimpleRng {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -726,7 +865,7 @@ impl SimpleRng {
         }
     }
 
-    fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
         pir_core::hash::splitmix64(self.state)
     }

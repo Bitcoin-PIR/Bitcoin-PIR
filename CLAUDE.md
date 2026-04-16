@@ -85,54 +85,64 @@ To fully hide found/not-found, the client would need to send dummy chunk and Mer
      status, bin indices, chunk IDs, Merkle verification details.
    - Enables humans to verify PIR operations are correct.
 
-8. **Native Rust per-bucket Merkle verification (DPF only)**:
-   - New module [`pir-sdk-client/src/merkle_verify.rs`](pir-sdk-client/src/merkle_verify.rs)
-     implements the shared verifier: bin-leaf hash, K-padded DPF sibling batches,
+8. **Native Rust per-bucket Merkle verification (DPF + Harmony)**:
+   - Module [`pir-sdk-client/src/merkle_verify.rs`](pir-sdk-client/src/merkle_verify.rs)
+     implements the shared verifier: bin-leaf hash, K-padded sibling batches,
      tree-top parsing, full walk-to-root. 12 unit tests cover good proofs,
      tampered content, wrong bin index, encoding/decoding round-trips, and
      partial-cache walks against `pir-core::merkle`.
-   - [`DpfClient`](pir-sdk-client/src/dpf.rs) now tracks every INDEX cuckoo bin
-     it inspects (both `INDEX_CUCKOO_NUM_HASHES=2` positions for not-found,
-     the matching position for found) and every CHUNK bin that returned a
-     UTXO, then batch-verifies them via
-     `run_merkle_verification` against the per-group root from the tree-top
-     blob. Queries whose Merkle proof fails are coerced to `None`.
+   - Backend-agnostic driver: a `BucketMerkleSiblingQuerier` trait abstracts
+     one K-padded sibling-query round, with `DpfSiblingQuerier`
+     (two-server DPF, `REQ_BUCKET_MERKLE_SIB_BATCH = 0x33`) and
+     `HarmonySiblingQuerier` (single-server Harmony query,
+     `REQ_HARMONY_BATCH_QUERY = 0x43` with `level = 10+L` INDEX or `20+L`
+     CHUNK) both implementing it. `verify_bucket_merkle_batch_generic`
+     drives the shared walk.
+   - [`DpfClient`](pir-sdk-client/src/dpf.rs) and
+     [`HarmonyClient`](pir-sdk-client/src/harmony.rs) now track every INDEX
+     cuckoo bin they inspect (both `INDEX_CUCKOO_NUM_HASHES=2` positions for
+     not-found, the matching position for found) and every CHUNK bin that
+     returned a UTXO, then batch-verify them against the per-group root
+     from the tree-top blob. Queries whose Merkle proof fails are coerced
+     to `None`.
+   - HarmonyPIR sibling groups and hints are lazily initialised per
+     `(db_id, merkle_level)` — sibling-group count is derived from the
+     server-supplied tree-tops (`cache_from_level`), and the sibling
+     group's `derived_key` offset matches the server's
+     `compute_hints_for_group` layout:
+     * INDEX sib L, group g → `(k_index + k_chunk) + L*k_index + g`
+     * CHUNK sib L, group g →
+       `(k_index + k_chunk) + index_sib_levels*k_index + L*k_chunk + g`
    - Gated on `DatabaseInfo::has_bucket_merkle`. Padding (K=75 INDEX,
      K_CHUNK=80 CHUNK, 25 MERKLE) is preserved — see CLAUDE.md "Query Padding"
      section above.
    - Whales are deliberately not Merkle-verified (matches TS client behavior).
-   - `HarmonyClient` and `OnionClient` remain placeholders: since they issue
-     no real PIR queries, there are no bins to Merkle-verify. Their module
-     docs reference `DpfClient::run_merkle_verification` as the pattern to
-     copy once queries land.
+   - `OnionClient` Merkle verification is **not yet wired**. This is
+     tracked as P0 work in [SDK_ROADMAP.md](SDK_ROADMAP.md). Until wired,
+     OnionPIR results should be treated as unverified.
 
 ---
 
-## Next TODOs
+## SDK Roadmap
 
-### If GitHub Actions SUCCEEDS:
-1. **Test in browser**: Open the deployed web app, check DevTools console for `[PIR] SDK WASM loaded`
-2. **Run a sync**: Connect to servers, enter a scriptPubKey, click Sync - verify sync planning works
-3. **Migrate more functions to SDK**: 
-   - Wire up SDK hash functions (`sdkComputeTag`, `sdkDeriveGroups`, etc.) in actual query flow
-   - Move delta merging to SDK (`mergeDelta` WASM function)
-4. **Rust client integration**: Have the Rust CLI client use `pir-sdk` for sync planning
+The full SDK work plan lives in [SDK_ROADMAP.md](SDK_ROADMAP.md) — P0
+through P4 priorities, with in-progress items tracked at the bottom.
+Consult it before starting new SDK work so nothing gets duplicated or
+forgotten. Padding/privacy invariants (🔒 items in the roadmap) must
+not be optimized away — see "Query Padding" above.
 
-### If GitHub Actions FAILS:
-1. **Check build logs**: Look for WASM compilation errors in `pir-sdk-wasm`
-2. **Common issues**:
-   - Missing `wasm-pack` in CI - may need to add installation step
-   - WASM target not installed - `rustup target add wasm32-unknown-unknown`
-   - Cargo.toml workspace issues - ensure `pir-sdk-wasm` is in workspace members
-3. **Web bundle issues**: Vite may fail if pir-sdk-wasm/pkg doesn't exist at build time
-4. **Fix and re-push**: Address errors and push again
+Short-term active work:
+- **P0 #2 (next):** Merkle verification for `OnionClient`. Onion trace
+  state already records both cuckoo positions; wiring is mechanical.
+  Reference: web client's `web/src/onion-client.ts`.
 
-### Future Enhancements:
-- [ ] Add SDK hash function verification tests (compare WASM vs TS outputs)
-- [ ] Move PBC (cuckoo placement) logic to SDK for all backends
-- [ ] Add Merkle verification to SDK
-- [ ] Create SDK documentation with examples
-- [ ] Publish pir-sdk-wasm to npm
+### Completed milestones
+- PIR SDK + WASM bindings + web integration (commit `19cbf5f`).
+- Merkle verification for "not found" results in the web clients
+  (commit `60fe19c`).
+- `[PIR-AUDIT]` logging in web clients (commit `9a693c5`).
+- Native Rust `HarmonyClient` + `OnionClient` un-stub (commit `f37db8f`).
+- Native Rust `DpfClient` per-bucket Merkle verification (commit `8bd4b7b`).
 
 ---
 

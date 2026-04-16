@@ -30,6 +30,10 @@
 //! the wire instead of computing them from a local mmap.
 
 use crate::connection::WsConnection;
+use crate::merkle_verify::{
+    fetch_tree_tops, verify_bucket_merkle_batch_generic, BucketMerkleItem,
+    BucketMerkleSiblingQuerier, TreeTop, BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
+};
 use async_trait::async_trait;
 use harmonypir_wasm::HarmonyGroup;
 use pir_core::params::{
@@ -61,6 +65,67 @@ pub const PRP_HOANG: u8 = 0;
 pub const PRP_FASTPRP: u8 = 1;
 pub const PRP_ALF: u8 = 2;
 
+/// Which group-map `fetch_and_load_hints_into` should write into.
+///
+/// Keeps the hint-loading plumbing single-purpose — the caller supplies
+/// both the wire `level` byte and the matching local destination.
+#[derive(Copy, Clone, Debug)]
+enum HintTarget {
+    /// Main INDEX groups keyed by `group_id` (0..index_k).
+    Index,
+    /// Main CHUNK groups keyed by `group_id` (0..chunk_k).
+    Chunk,
+    /// Bucket-Merkle INDEX sibling groups at `sib_level` L (0..).
+    IndexSib(usize),
+    /// Bucket-Merkle CHUNK sibling groups at `sib_level` L (0..).
+    ChunkSib(usize),
+}
+
+// ─── Merkle verification traces ─────────────────────────────────────────────
+
+/// Record of one INDEX cuckoo bin we checked during a query.
+///
+/// Mirrors `dpf.rs::IndexBinTrace`: populated for every cuckoo position probed
+/// by `query_single`, consumed by the Merkle verifier to prove bin content is
+/// consistent with the published root.
+#[derive(Clone, Debug)]
+struct IndexBinTrace {
+    /// PBC group this bin belongs to (0..index_k).
+    pbc_group: usize,
+    /// Cuckoo bin index within the group's flat table.
+    bin_index: u32,
+    /// XOR-reconstructed bin content (INDEX_SLOTS_PER_BIN × INDEX_SLOT_SIZE bytes).
+    bin_content: Vec<u8>,
+}
+
+/// Record of one CHUNK cuckoo bin we used to recover a retrieved chunk.
+#[derive(Clone, Debug)]
+struct ChunkBinTrace {
+    /// PBC group this bin belongs to (0..chunk_k).
+    pbc_group: usize,
+    /// Cuckoo bin index within the group's flat table.
+    bin_index: u32,
+    /// XOR-reconstructed bin content.
+    bin_content: Vec<u8>,
+}
+
+/// Metadata collected during a `query_single` call that downstream code
+/// needs for Merkle verification. See `dpf.rs::QueryTraces` for the same
+/// invariants.
+#[derive(Clone, Debug)]
+struct QueryTraces {
+    /// Every INDEX bin we inspected. For NOT-FOUND this is all
+    /// `INDEX_CUCKOO_NUM_HASHES` positions (required for the absence proof);
+    /// for FOUND it can be up to the cuckoo position that matched.
+    index_bins: Vec<IndexBinTrace>,
+    /// If the query resolved to a match, the index in `index_bins` of the
+    /// matching bin. `None` for NOT-FOUND or whale.
+    matched_index_idx: Option<usize>,
+    /// Per-chunk bin traces — one entry per chunk that was recovered.
+    /// Empty for NOT-FOUND, whale, or zero-chunk matches.
+    chunk_bins: Vec<ChunkBinTrace>,
+}
+
 // ─── HarmonyPIR Client ──────────────────────────────────────────────────────
 
 /// HarmonyPIR client for two-server PIR queries.
@@ -78,6 +143,16 @@ pub struct HarmonyClient {
     loaded_db_id: Option<u8>,
     index_groups: HashMap<u8, HarmonyGroup>,
     chunk_groups: HashMap<u8, HarmonyGroup>,
+    /// Bucket-Merkle INDEX sibling groups, keyed by `(sib_level, local_group)`.
+    /// Each level has exactly `index_k` groups; hints are fetched once per
+    /// (db_id, level) and consumed during Merkle verification.
+    index_sib_groups: HashMap<(usize, u8), HarmonyGroup>,
+    /// Bucket-Merkle CHUNK sibling groups, keyed by `(sib_level, local_group)`.
+    chunk_sib_groups: HashMap<(usize, u8), HarmonyGroup>,
+    /// `Some(db_id)` when sibling groups + hints are loaded and fresh; reset
+    /// whenever `loaded_db_id` changes or `master_prp_key`/`prp_backend`
+    /// changes (via `invalidate_groups`).
+    sibling_hints_loaded: Option<u8>,
 }
 
 impl HarmonyClient {
@@ -108,6 +183,9 @@ impl HarmonyClient {
             loaded_db_id: None,
             index_groups: HashMap::new(),
             chunk_groups: HashMap::new(),
+            index_sib_groups: HashMap::new(),
+            chunk_sib_groups: HashMap::new(),
+            sibling_hints_loaded: None,
         }
     }
 
@@ -128,7 +206,10 @@ impl HarmonyClient {
     fn invalidate_groups(&mut self) {
         self.index_groups.clear();
         self.chunk_groups.clear();
+        self.index_sib_groups.clear();
+        self.chunk_sib_groups.clear();
         self.loaded_db_id = None;
+        self.sibling_hints_loaded = None;
     }
 
     /// Fetch server info (legacy single-database path).
@@ -226,6 +307,34 @@ impl HarmonyClient {
         level: u8,
         num_groups: u8,
     ) -> PirResult<()> {
+        let target = if level == 0 {
+            HintTarget::Index
+        } else if level == 1 {
+            HintTarget::Chunk
+        } else {
+            return Err(PirError::InvalidState(format!(
+                "fetch_and_load_hints called with non-main level {}",
+                level
+            )));
+        };
+        self.fetch_and_load_hints_into(db_id, level, num_groups, target)
+            .await
+    }
+
+    /// Generalised hint fetch: issues a `REQ_HARMONY_HINTS` with the given
+    /// `level` byte (0=INDEX, 1=CHUNK, 10+L=INDEX sib L, 20+L=CHUNK sib L)
+    /// and streams responses into the group map pointed to by `target`.
+    ///
+    /// The server derives per-group PRP keys using `(prp_key, level, group_id)`
+    /// internally — the client only needs to pass the correct `level` byte;
+    /// the `k_offset` accounting in the server is transparent here.
+    async fn fetch_and_load_hints_into(
+        &mut self,
+        db_id: u8,
+        level: u8,
+        num_groups: u8,
+        target: HintTarget,
+    ) -> PirResult<()> {
         let mut payload = Vec::with_capacity(16 + 1 + 1 + 1 + num_groups as usize + 1);
         payload.extend_from_slice(&self.master_prp_key);
         payload.push(self.prp_backend);
@@ -276,9 +385,17 @@ impl HarmonyClient {
             // local HarmonyGroup was constructed with the same params.
             let hints_data = &body[14..];
 
-            let map = if level == 0 { &mut self.index_groups } else { &mut self.chunk_groups };
-            let group = map.get_mut(&group_id).ok_or_else(|| {
-                PirError::Protocol(format!("hint for unknown group {}", group_id))
+            let group = match target {
+                HintTarget::Index => self.index_groups.get_mut(&group_id),
+                HintTarget::Chunk => self.chunk_groups.get_mut(&group_id),
+                HintTarget::IndexSib(sl) => self.index_sib_groups.get_mut(&(sl, group_id)),
+                HintTarget::ChunkSib(sl) => self.chunk_sib_groups.get_mut(&(sl, group_id)),
+            };
+            let group = group.ok_or_else(|| {
+                PirError::Protocol(format!(
+                    "hint for unknown group {} at level {}",
+                    group_id, level
+                ))
             })?;
             group
                 .load_hints(hints_data)
@@ -291,6 +408,14 @@ impl HarmonyClient {
     }
 
     /// Execute a single query step for a batch of script hashes.
+    ///
+    /// Runs PIR queries for each script hash, then — if the target database
+    /// publishes a per-bucket Merkle tree (`DatabaseInfo::has_bucket_merkle`) —
+    /// performs a single batched Merkle verification covering every INDEX
+    /// cuckoo position inspected (two per not-found query) and every CHUNK
+    /// bin that returned data. Items whose Merkle proof fails are coerced to
+    /// `None` (treated as unverified; callers should treat them as an
+    /// unknown/error state), mirroring the DPF client.
     async fn execute_step(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -299,11 +424,33 @@ impl HarmonyClient {
     ) -> PirResult<Vec<Option<QueryResult>>> {
         self.ensure_groups_ready(db_info).await?;
 
-        let mut results = Vec::with_capacity(script_hashes.len());
+        log::info!(
+            "[PIR-AUDIT] HarmonyPIR execute_step: db_id={}, name={}, height={}, queries={}, has_bucket_merkle={}",
+            db_info.db_id,
+            db_info.name,
+            db_info.height,
+            script_hashes.len(),
+            db_info.has_bucket_merkle
+        );
+
+        let mut results: Vec<Option<QueryResult>> = Vec::with_capacity(script_hashes.len());
+        let mut traces: Vec<QueryTraces> = Vec::with_capacity(script_hashes.len());
         for script_hash in script_hashes {
-            let result = self.query_single(script_hash, db_info).await?;
+            let (result, trace) = self.query_single(script_hash, db_info).await?;
             results.push(result);
+            traces.push(trace);
         }
+
+        if db_info.has_bucket_merkle {
+            self.run_merkle_verification(&mut results, &traces, db_info)
+                .await?;
+        } else {
+            log::info!(
+                "[PIR-AUDIT] HarmonyPIR Merkle verification SKIPPED (db_id={} has no bucket Merkle)",
+                db_info.db_id
+            );
+        }
+
         Ok(results)
     }
 
@@ -311,11 +458,15 @@ impl HarmonyClient {
     ///
     /// Runs up to [`INDEX_CUCKOO_NUM_HASHES`] INDEX rounds (one per hash
     /// function); on a hit, runs the CHUNK rounds to recover UTXO bytes.
+    ///
+    /// Also returns `QueryTraces` describing every INDEX/CHUNK cuckoo bin we
+    /// inspected, so the caller (`execute_step`) can run per-bucket Merkle
+    /// verification if `DatabaseInfo::has_bucket_merkle` is set.
     async fn query_single(
         &mut self,
         script_hash: &ScriptHash,
         db_info: &DatabaseInfo,
-    ) -> PirResult<Option<QueryResult>> {
+    ) -> PirResult<(Option<QueryResult>, QueryTraces)> {
         let k_index = db_info.index_k as usize;
         let index_bins = db_info.index_bins as usize;
         let tag_seed = db_info.tag_seed;
@@ -323,6 +474,20 @@ impl HarmonyClient {
         let real_group = pir_core::hash::derive_groups_3(script_hash, k_index)[0];
         let my_tag = pir_core::hash::compute_tag(tag_seed, script_hash);
 
+        log::info!(
+            "[PIR-AUDIT] HarmonyPIR INDEX query: script_hash={}, assigned_group={}, k={}, bins={} (K-padded to {} groups per round)",
+            format_hash_short(script_hash),
+            real_group,
+            k_index,
+            index_bins,
+            k_index
+        );
+
+        let mut traces = QueryTraces {
+            index_bins: Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES),
+            matched_index_idx: None,
+            chunk_bins: Vec::new(),
+        };
         let mut hit: Option<(u32, u8, bool)> = None;
 
         for h in 0..INDEX_CUCKOO_NUM_HASHES {
@@ -334,39 +499,73 @@ impl HarmonyClient {
                 .run_index_round(db_info.db_id, real_group as u8, target_bin as u32, h)
                 .await?;
 
+            let trace = IndexBinTrace {
+                pbc_group: real_group,
+                bin_index: target_bin as u32,
+                bin_content: answer.clone(),
+            };
+
             if let Some(entry) = find_entry_in_index_result(&answer, my_tag) {
-                hit = Some((entry.0, entry.1, entry.1 == 0));
+                let is_whale = entry.1 == 0;
+                log::info!(
+                    "[PIR-AUDIT] HarmonyPIR INDEX FOUND at cuckoo h={} (group={}, bin={}): start_chunk={}, num_chunks={}, whale={}",
+                    h, real_group, target_bin, entry.0, entry.1, is_whale
+                );
+                traces.matched_index_idx = Some(traces.index_bins.len());
+                traces.index_bins.push(trace);
+                hit = Some((entry.0, entry.1, is_whale));
                 break;
+            } else {
+                log::info!(
+                    "[PIR-AUDIT] HarmonyPIR INDEX miss at cuckoo h={} (group={}, bin={})",
+                    h, real_group, target_bin
+                );
+                traces.index_bins.push(trace);
             }
         }
 
         let (start_chunk_id, num_chunks, is_whale) = match hit {
             Some(v) => v,
-            None => return Ok(None),
+            None => {
+                log::info!(
+                    "[PIR-AUDIT] HarmonyPIR INDEX NOT FOUND: verified {} cuckoo positions at group {} — all {} bins will be Merkle-verified for absence proof",
+                    traces.index_bins.len(),
+                    real_group,
+                    traces.index_bins.len()
+                );
+                return Ok((None, traces));
+            }
         };
 
         if num_chunks == 0 {
-            return Ok(Some(QueryResult {
-                entries: Vec::new(),
-                is_whale,
-                raw_chunk_data: None,
-            }));
+            return Ok((
+                Some(QueryResult {
+                    entries: Vec::new(),
+                    is_whale,
+                    raw_chunk_data: None,
+                }),
+                traces,
+            ));
         }
 
         let chunk_ids: Vec<u32> =
             (start_chunk_id..start_chunk_id + num_chunks as u32).collect();
-        let chunk_data = self.query_chunk_level(&chunk_ids, db_info).await?;
+        let (chunk_data, chunk_bins) = self.query_chunk_level(&chunk_ids, db_info).await?;
+        traces.chunk_bins = chunk_bins;
 
         let entries = decode_utxo_entries(&chunk_data);
-        Ok(Some(QueryResult {
-            entries,
-            is_whale,
-            raw_chunk_data: if db_info.kind.is_delta() {
-                Some(chunk_data)
-            } else {
-                None
-            },
-        }))
+        Ok((
+            Some(QueryResult {
+                entries,
+                is_whale,
+                raw_chunk_data: if db_info.kind.is_delta() {
+                    Some(chunk_data)
+                } else {
+                    None
+                },
+            }),
+            traces,
+        ))
     }
 
     /// Build and send one INDEX batch (K groups, 1 sub-query each, real
@@ -424,11 +623,17 @@ impl HarmonyClient {
     }
 
     /// Execute CHUNK rounds to recover each chunk in `chunk_ids`.
+    ///
+    /// Returns `(chunk_data, chunk_bins)`:
+    /// * `chunk_data` — assembled raw chunk bytes in the order of `chunk_ids`.
+    /// * `chunk_bins` — per-chunk (pbc_group, bin_index, bin_content) for every
+    ///   chunk we actually located. Used by the Merkle verifier to commit
+    ///   the server to the chunk bin that served each slot.
     async fn query_chunk_level(
         &mut self,
         chunk_ids: &[u32],
         db_info: &DatabaseInfo,
-    ) -> PirResult<Vec<u8>> {
+    ) -> PirResult<(Vec<u8>, Vec<ChunkBinTrace>)> {
         let k_chunk = db_info.chunk_k as usize;
         let chunk_bins = db_info.chunk_bins as usize;
 
@@ -461,7 +666,16 @@ impl HarmonyClient {
             }
         }
 
+        log::info!(
+            "[PIR-AUDIT] HarmonyPIR CHUNK phase: {} chunks, k_chunk={}, bins={} (each round K_CHUNK-padded to {} groups)",
+            chunk_ids.len(),
+            k_chunk,
+            chunk_bins,
+            k_chunk
+        );
+
         let mut chunk_data: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut chunk_trace_map: HashMap<u32, ChunkBinTrace> = HashMap::new();
         let mut recovered: std::collections::HashSet<u32> =
             std::collections::HashSet::new();
 
@@ -483,21 +697,346 @@ impl HarmonyClient {
             for (cid, group_id) in &still_needed {
                 if let Some(answer) = round_answers.get(group_id) {
                     if let Some(data) = find_chunk_in_result(answer, *cid) {
+                        // Recompute the bin index the same way `run_chunk_round`
+                        // did, so our trace commits the server to the precise
+                        // (group, bin) that served this chunk.
+                        let key = pir_core::hash::derive_cuckoo_key(
+                            CHUNK_PARAMS.master_seed,
+                            *group_id as usize,
+                            h,
+                        );
+                        let bin_index =
+                            pir_core::hash::cuckoo_hash_int(*cid, key, chunk_bins) as u32;
                         chunk_data.insert(*cid, data.to_vec());
+                        chunk_trace_map.insert(
+                            *cid,
+                            ChunkBinTrace {
+                                pbc_group: *group_id as usize,
+                                bin_index,
+                                bin_content: answer.clone(),
+                            },
+                        );
+                        log::info!(
+                            "[PIR-AUDIT] HarmonyPIR CHUNK FOUND: chunk_id={}, group={}, bin={}, cuckoo_h={}",
+                            cid, group_id, bin_index, h
+                        );
                         recovered.insert(*cid);
                     }
                 }
             }
         }
 
+        for cid in chunk_ids {
+            if !recovered.contains(cid) {
+                log::warn!(
+                    "[PIR-AUDIT] HarmonyPIR CHUNK MISSING: chunk_id={} (no cuckoo position matched)",
+                    cid
+                );
+            }
+        }
+
         let mut out = Vec::with_capacity(chunk_ids.len() * CHUNK_SIZE);
+        let mut traces = Vec::with_capacity(chunk_ids.len());
         for cid in chunk_ids {
             if let Some(data) = chunk_data.get(cid) {
                 out.extend_from_slice(data);
             }
+            if let Some(trace) = chunk_trace_map.remove(cid) {
+                traces.push(trace);
+            }
         }
 
-        Ok(out)
+        Ok((out, traces))
+    }
+
+    /// Lazily create (and hint-load) sibling groups for per-bucket Merkle.
+    ///
+    /// Idempotent: re-runs are no-ops while `self.sibling_hints_loaded`
+    /// matches the active db_id. Any change to `master_prp_key`,
+    /// `prp_backend`, or `loaded_db_id` (via `invalidate_groups`) clears
+    /// sibling state so the next call re-downloads.
+    ///
+    /// The number of sibling levels is derived from the server-supplied
+    /// tree-tops: each tree's `cache_from_level` gives how many sibling
+    /// rounds feed it, and the per-type max is the total sibling depth.
+    /// `bins_per_table` at level L = `ceil(main_bins / arity^(L+1))`.
+    async fn ensure_sibling_groups_ready(
+        &mut self,
+        db_info: &DatabaseInfo,
+        tree_tops: &[TreeTop],
+    ) -> PirResult<()> {
+        if self.sibling_hints_loaded == Some(db_info.db_id)
+            && !self.index_sib_groups.is_empty()
+            && !self.chunk_sib_groups.is_empty()
+        {
+            return Ok(());
+        }
+
+        // Reset any stale state.
+        self.index_sib_groups.clear();
+        self.chunk_sib_groups.clear();
+        self.sibling_hints_loaded = None;
+
+        let k_index = db_info.index_k as usize;
+        let k_chunk = db_info.chunk_k as usize;
+        if tree_tops.len() < k_index + k_chunk {
+            return Err(PirError::Protocol(format!(
+                "tree-tops has {} entries, expected at least {}",
+                tree_tops.len(),
+                k_index + k_chunk
+            )));
+        }
+        let arity = BUCKET_MERKLE_ARITY as u64;
+        let sib_w = BUCKET_MERKLE_SIB_ROW_SIZE as u32;
+
+        let index_sib_levels = tree_tops[..k_index]
+            .iter()
+            .map(|t| t.cache_from_level)
+            .max()
+            .unwrap_or(0);
+        let chunk_sib_levels = tree_tops[k_index..k_index + k_chunk]
+            .iter()
+            .map(|t| t.cache_from_level)
+            .max()
+            .unwrap_or(0);
+
+        log::info!(
+            "[PIR-AUDIT] HarmonyPIR sibling init: db_id={}, INDEX sib levels={}, CHUNK sib levels={}",
+            db_info.db_id, index_sib_levels, chunk_sib_levels
+        );
+
+        // ── INDEX sibling groups ───────────────────────────────────────
+        let mut nodes: u64 = db_info.index_bins as u64;
+        for sl in 0..index_sib_levels {
+            let level_n = nodes.div_ceil(arity);
+            nodes = level_n;
+            for g in 0..k_index {
+                let group = HarmonyGroup::new_with_backend(
+                    level_n as u32,
+                    sib_w,
+                    0,
+                    &self.master_prp_key,
+                    // Matches server `compute_hints_for_group` for level 10+sl:
+                    //   k_offset = (k_index + k_chunk) + sl * k_index
+                    //   derived_key uses k_offset + group_id.
+                    ((k_index + k_chunk) + sl * k_index + g) as u32,
+                    self.prp_backend,
+                )
+                .map_err(|e| {
+                    PirError::BackendState(format!("INDEX sib HarmonyGroup init: {:?}", e))
+                })?;
+                self.index_sib_groups.insert((sl, g as u8), group);
+            }
+            self.fetch_and_load_hints_into(
+                db_info.db_id,
+                10 + sl as u8,
+                k_index as u8,
+                HintTarget::IndexSib(sl),
+            )
+            .await?;
+            log::info!(
+                "[PIR-AUDIT] HarmonyPIR INDEX sib L{}: loaded hints for {} groups (n={})",
+                sl, k_index, level_n
+            );
+        }
+
+        // ── CHUNK sibling groups ───────────────────────────────────────
+        let mut nodes: u64 = db_info.chunk_bins as u64;
+        for sl in 0..chunk_sib_levels {
+            let level_n = nodes.div_ceil(arity);
+            nodes = level_n;
+            for g in 0..k_chunk {
+                let group = HarmonyGroup::new_with_backend(
+                    level_n as u32,
+                    sib_w,
+                    0,
+                    &self.master_prp_key,
+                    // Matches server `compute_hints_for_group` for level 20+sl:
+                    //   k_offset = (k_index + k_chunk)
+                    //            + index_sib_levels * k_index
+                    //            + sl * k_chunk
+                    ((k_index + k_chunk)
+                        + index_sib_levels * k_index
+                        + sl * k_chunk
+                        + g) as u32,
+                    self.prp_backend,
+                )
+                .map_err(|e| {
+                    PirError::BackendState(format!("CHUNK sib HarmonyGroup init: {:?}", e))
+                })?;
+                self.chunk_sib_groups.insert((sl, g as u8), group);
+            }
+            self.fetch_and_load_hints_into(
+                db_info.db_id,
+                20 + sl as u8,
+                k_chunk as u8,
+                HintTarget::ChunkSib(sl),
+            )
+            .await?;
+            log::info!(
+                "[PIR-AUDIT] HarmonyPIR CHUNK sib L{}: loaded hints for {} groups (n={})",
+                sl, k_chunk, level_n
+            );
+        }
+
+        self.sibling_hints_loaded = Some(db_info.db_id);
+        Ok(())
+    }
+
+    /// Build `BucketMerkleItem`s from collected query traces and verify them
+    /// in one padded batch via HarmonyPIR sibling queries.
+    ///
+    /// Mirrors `dpf.rs::run_merkle_verification`: on any bin failing
+    /// verification, the corresponding query is coerced to `None` to signal
+    /// an unverified/untrusted result.
+    async fn run_merkle_verification(
+        &mut self,
+        results: &mut [Option<QueryResult>],
+        traces: &[QueryTraces],
+        db_info: &DatabaseInfo,
+    ) -> PirResult<()> {
+        // Build items + mapping from item back to the query it covers.
+        let mut items: Vec<BucketMerkleItem> = Vec::new();
+        let mut item_to_query: Vec<usize> = Vec::new();
+
+        for (qi, trace) in traces.iter().enumerate() {
+            // Skip whales — we deliberately cannot Merkle-verify them
+            // (no chunk chain), matching the TS client behavior.
+            let is_whale = results
+                .get(qi)
+                .and_then(|r| r.as_ref().map(|x| x.is_whale))
+                .unwrap_or(false);
+            if is_whale {
+                log::info!(
+                    "[PIR-AUDIT] HarmonyPIR Merkle: skipping query #{} (whale — unverifiable)",
+                    qi
+                );
+                continue;
+            }
+
+            match trace.matched_index_idx {
+                Some(mi) => {
+                    let idx = &trace.index_bins[mi];
+                    let mut it = BucketMerkleItem {
+                        index_pbc_group: idx.pbc_group,
+                        index_bin_index: idx.bin_index,
+                        index_bin_content: idx.bin_content.clone(),
+                        chunk_pbc_groups: Vec::with_capacity(trace.chunk_bins.len()),
+                        chunk_bin_indices: Vec::with_capacity(trace.chunk_bins.len()),
+                        chunk_bin_contents: Vec::with_capacity(trace.chunk_bins.len()),
+                    };
+                    for cb in &trace.chunk_bins {
+                        it.chunk_pbc_groups.push(cb.pbc_group);
+                        it.chunk_bin_indices.push(cb.bin_index);
+                        it.chunk_bin_contents.push(cb.bin_content.clone());
+                    }
+                    log::info!(
+                        "[PIR-AUDIT] HarmonyPIR Merkle: query #{} FOUND — 1 index bin + {} chunk bins to verify",
+                        qi, trace.chunk_bins.len()
+                    );
+                    items.push(it);
+                    item_to_query.push(qi);
+                }
+                None => {
+                    log::info!(
+                        "[PIR-AUDIT] HarmonyPIR Merkle: query #{} NOT FOUND — verifying {} cuckoo bins for absence proof",
+                        qi, trace.index_bins.len()
+                    );
+                    for bin in &trace.index_bins {
+                        items.push(BucketMerkleItem {
+                            index_pbc_group: bin.pbc_group,
+                            index_bin_index: bin.bin_index,
+                            index_bin_content: bin.bin_content.clone(),
+                            chunk_pbc_groups: Vec::new(),
+                            chunk_bin_indices: Vec::new(),
+                            chunk_bin_contents: Vec::new(),
+                        });
+                        item_to_query.push(qi);
+                    }
+                }
+            }
+        }
+
+        if items.is_empty() {
+            log::info!(
+                "[PIR-AUDIT] HarmonyPIR Merkle: no items to verify — nothing to do"
+            );
+            return Ok(());
+        }
+
+        // Fetch tree-tops blob via the query server (same blob both servers share).
+        let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        let tree_tops = fetch_tree_tops(conn, db_info.db_id).await?;
+
+        // Ensure sibling groups + hints are initialised.
+        self.ensure_sibling_groups_ready(db_info, &tree_tops).await?;
+
+        // Drive the shared verifier with a Harmony-specific sibling querier.
+        let index_k = db_info.index_k as usize;
+        let chunk_k = db_info.chunk_k as usize;
+
+        // Temporarily move sibling maps out of self so the querier can hold
+        // mutable borrows of both them and the query connection. The maps
+        // are restored before returning.
+        let mut index_sib_groups = std::mem::take(&mut self.index_sib_groups);
+        let mut chunk_sib_groups = std::mem::take(&mut self.chunk_sib_groups);
+
+        let per_item = {
+            let query_conn = self
+                .query_conn
+                .as_mut()
+                .ok_or(PirError::NotConnected)?;
+            let mut querier = HarmonySiblingQuerier {
+                query_conn,
+                index_sib_groups: &mut index_sib_groups,
+                chunk_sib_groups: &mut chunk_sib_groups,
+            };
+            verify_bucket_merkle_batch_generic(
+                &mut querier,
+                &items,
+                db_info.index_bins,
+                db_info.chunk_bins,
+                index_k,
+                chunk_k,
+                db_info.db_id,
+                &tree_tops,
+            )
+            .await
+        };
+
+        // Restore sibling state regardless of success.
+        self.index_sib_groups = index_sib_groups;
+        self.chunk_sib_groups = chunk_sib_groups;
+
+        let per_item = per_item?;
+
+        // Aggregate per-item outcomes back to per-query verdicts.
+        let mut per_query_ok = vec![true; results.len()];
+        let mut per_query_touched = vec![false; results.len()];
+        for (ii, ok) in per_item.iter().enumerate() {
+            let qi = item_to_query[ii];
+            per_query_touched[qi] = true;
+            if !ok {
+                per_query_ok[qi] = false;
+            }
+        }
+
+        for qi in 0..results.len() {
+            if !per_query_touched[qi] {
+                continue; // whale or skipped
+            }
+            if !per_query_ok[qi] {
+                log::warn!(
+                    "[PIR-AUDIT] HarmonyPIR Merkle FAILED for query #{}: result set to None (untrusted)",
+                    qi
+                );
+                results[qi] = None;
+            } else {
+                log::info!("[PIR-AUDIT] HarmonyPIR Merkle PASSED for query #{}", qi);
+            }
+        }
+
+        Ok(())
     }
 
     /// Build and send one CHUNK batch (K_CHUNK groups, 1 sub-query each).
@@ -935,6 +1474,175 @@ fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
         });
     }
     entries
+}
+
+/// Hex-format a 20-byte script hash as "aabbcc..eeff" (first and last 4 bytes).
+/// Avoids pulling in the `hex` crate for one audit-log string; mirrors the
+/// helper in `dpf.rs` so both clients log query traces identically.
+fn format_hash_short(h: &[u8]) -> String {
+    if h.len() <= 8 {
+        let mut s = String::with_capacity(h.len() * 2);
+        for b in h {
+            s.push_str(&format!("{:02x}", b));
+        }
+        return s;
+    }
+    let mut s = String::with_capacity(22);
+    for b in &h[..4] {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s.push_str("..");
+    for b in &h[h.len() - 4..] {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
+// ─── HarmonyPIR sibling querier for per-bucket Merkle ───────────────────────
+
+/// HarmonyPIR-specific [`BucketMerkleSiblingQuerier`] impl.
+///
+/// One instance drives all sibling-level batches for one call to
+/// `verify_bucket_merkle_batch_generic`. It borrows the query connection
+/// and the sibling-group maps (owned by [`HarmonyClient`]) for the
+/// duration of the verification, so the caller must `std::mem::take` them
+/// out first to satisfy the borrow checker — see
+/// `HarmonyClient::run_merkle_verification` for the pattern.
+///
+/// Each call to [`BucketMerkleSiblingQuerier::query_pass`] runs one
+/// server round-trip on the query server:
+///
+/// * exactly K (INDEX) or K_CHUNK (CHUNK) sub-queries — one per PBC group —
+///   matching `pass_targets.len()`;
+/// * real slots use `HarmonyGroup::build_request` + `process_response`
+///   to recover the 256-byte sibling row;
+/// * padding slots use `HarmonyGroup::build_synthetic_dummy` so the server
+///   cannot distinguish real from padding (see CLAUDE.md "Query Padding").
+///
+/// The `level` byte sent on the wire is `10 + merkle_level` for INDEX
+/// sibling rounds and `20 + merkle_level` for CHUNK, matching the server
+/// convention (see `runtime::protocol::HarmonyBatchQuery`).
+struct HarmonySiblingQuerier<'a> {
+    /// Query server connection — held mutably across the verification.
+    query_conn: &'a mut WsConnection,
+    /// INDEX sibling groups keyed by `(merkle_level, group_id)`.
+    /// Populated by `HarmonyClient::ensure_sibling_groups_ready`.
+    index_sib_groups: &'a mut HashMap<(usize, u8), HarmonyGroup>,
+    /// CHUNK sibling groups keyed by `(merkle_level, group_id)`.
+    chunk_sib_groups: &'a mut HashMap<(usize, u8), HarmonyGroup>,
+}
+
+#[async_trait]
+impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
+    async fn query_pass(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        _level_bins_per_table: u32,
+        pass_targets: &[Option<u32>],
+        db_id: u8,
+    ) -> PirResult<Vec<Option<Vec<u8>>>> {
+        let table_k = pass_targets.len();
+
+        // Wire `level` byte: 10+L for INDEX sib L, 20+L for CHUNK sib L.
+        let wire_level: u8 = match table_type {
+            0 => 10u8
+                .checked_add(level as u8)
+                .ok_or_else(|| PirError::InvalidState(format!(
+                    "INDEX sib level {} does not fit in wire byte",
+                    level
+                )))?,
+            1 => 20u8
+                .checked_add(level as u8)
+                .ok_or_else(|| PirError::InvalidState(format!(
+                    "CHUNK sib level {} does not fit in wire byte",
+                    level
+                )))?,
+            other => {
+                return Err(PirError::InvalidState(format!(
+                    "unknown sibling table_type {}",
+                    other
+                )))
+            }
+        };
+
+        // Track which slots issued a real request so we can call
+        // process_response on exactly those groups.
+        let mut real_slots: Vec<u8> = Vec::new();
+        let mut batch_items: Vec<BatchItem> = Vec::with_capacity(table_k);
+
+        for (g_idx, target) in pass_targets.iter().enumerate() {
+            let g = g_idx as u8;
+            let group = match table_type {
+                0 => self.index_sib_groups.get_mut(&(level, g)),
+                1 => self.chunk_sib_groups.get_mut(&(level, g)),
+                _ => None,
+            };
+            let group = group.ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "missing {} sib group ({}, {})",
+                    if table_type == 0 { "INDEX" } else { "CHUNK" },
+                    level,
+                    g
+                ))
+            })?;
+
+            let bytes = if let Some(t) = *target {
+                real_slots.push(g);
+                let req = group.build_request(t).map_err(|e| {
+                    PirError::BackendState(format!("sib build_request: {:?}", e))
+                })?;
+                req.request()
+            } else {
+                group.build_synthetic_dummy()
+            };
+
+            batch_items.push(BatchItem {
+                group_id: g,
+                indices: bytes_to_u32_vec(&bytes)?,
+            });
+        }
+
+        // round_id mirrors the DPF querier's convention so audit logs align.
+        let round_id = (table_type as u16) * 100 + level as u16;
+        let request = encode_batch_query(wire_level, round_id, db_id, &batch_items);
+        let response = self.query_conn.roundtrip(&request).await?;
+        let raw_results = decode_batch_response(&response)?;
+
+        let mut out: Vec<Option<Vec<u8>>> = vec![None; table_k];
+        for g in &real_slots {
+            let data = raw_results.get(g).ok_or_else(|| {
+                PirError::Protocol(format!(
+                    "no sibling response for group {} at table_type={}, level={}",
+                    g, table_type, level
+                ))
+            })?;
+            let group = match table_type {
+                0 => self.index_sib_groups.get_mut(&(level, *g)),
+                1 => self.chunk_sib_groups.get_mut(&(level, *g)),
+                _ => None,
+            };
+            let group = group.ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "sib group vanished mid-pass ({}, {})",
+                    level, g
+                ))
+            })?;
+            let row = group.process_response(data).map_err(|e| {
+                PirError::BackendState(format!("sib process_response: {:?}", e))
+            })?;
+            if row.len() != BUCKET_MERKLE_SIB_ROW_SIZE {
+                return Err(PirError::Protocol(format!(
+                    "sib response has {} bytes, expected {}",
+                    row.len(),
+                    BUCKET_MERKLE_SIB_ROW_SIZE
+                )));
+            }
+            out[*g as usize] = Some(row);
+        }
+
+        Ok(out)
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
