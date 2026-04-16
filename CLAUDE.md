@@ -232,10 +232,10 @@ forgotten. Padding/privacy invariants (🔒 items in the roadmap) must
 not be optimized away — see "Query Padding" above.
 
 Short-term active work:
-- **P0 #1 (next):** verify INDEX PBC placement in
-  `DpfClient::query_index_level` — flagged as possibly using only
-  `my_groups[0]` of the 3 PBC candidates. Confirm against server
-  behaviour; fan out to all 3 groups (with padding preserved) if wrong.
+- **P0 (next):** expose `merkle_verified: bool` on `QueryResult`.
+  Currently all three clients silently coerce failed proofs to `None`,
+  making Merkle verification failure indistinguishable from genuine
+  absence. Callers need a separate signal to audit.
 
 ### Completed milestones
 - PIR SDK + WASM bindings + web integration (commit `19cbf5f`).
@@ -251,6 +251,13 @@ Short-term active work:
   side channel at the INDEX Merkle level).
 - Native Rust `OnionClient` per-bin Merkle verification via
   feature-gated `onion_merkle.rs` module (P0 #1 — see item 10 above).
+- INDEX PBC placement verified (P0 #1 closed — not a bug): server
+  replicates each scripthash into all 3 candidate groups at build time
+  (`build/src/build_cuckoo_generic.rs:87-90`), so `my_groups[0]` in
+  single-query paths is correct and matches the reference Rust binary
+  (`runtime/src/bin/client.rs:246`) and every web TS / Python client.
+  Explanatory comments added at `DpfClient::query_index_level` and
+  `HarmonyClient::query_single` to prevent future re-flagging.
 
 ---
 

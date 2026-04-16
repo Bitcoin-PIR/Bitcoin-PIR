@@ -41,14 +41,23 @@ change near them needs extra care — do not optimize away padding.
   `verify_onion_merkle_batch`. Failed proofs coerce results to `None`
   (matches DpfClient/HarmonyClient behavior). Gated behind the `onion`
   feature so consumers without a C++ toolchain are unaffected.
+- 🔒 **INDEX PBC placement verified.** `DpfClient::query_index_level`
+  and `HarmonyClient::query_single` use `my_groups[0]` (first of 3 PBC
+  candidates). Confirmed correct: the server REPLICATES every
+  scripthash into all 3 candidate groups at build time
+  (`build/src/build_cuckoo_generic.rs:87-90`,
+  `build/src/gen_4_build_merkle.rs:236-239`), so any one group is
+  sufficient for retrieval. Matches the reference Rust binary
+  (`runtime/src/bin/client.rs:246`: "single query, just use first") and
+  every web TS / Python client (all reduce to `candGroups[0]` at N=1 via
+  `planRounds`). `OnionClient::query_index_level` uses `pbc_plan_rounds`
+  because it genuinely batches multiple scripthashes into one FHE query
+  set — that is the N>1 generalization, not a different placement
+  rule. Explanatory comments added at both single-query sites to
+  prevent future re-flagging.
 
 ## P0 — Blockers for "production-ready"
 
-- [ ] **🔒 Verify INDEX PBC placement.** `DpfClient::query_index_level`
-      uses `my_groups[0]` (first of 3 PBC candidates) — the Merkle
-      subagent flagged this as possibly wrong. Confirm against server
-      behavior. If wrong, fan out to all 3 groups with padding
-      preserved.
 - [ ] **Expose `merkle_verified: bool` on `QueryResult`.** Currently
       `run_merkle_verification` silently coerces failed proofs to
       `None`, making verification failure indistinguishable from
@@ -136,5 +145,5 @@ link the branch / commit.
 
 ### In progress
 
-_(none — P0 #1 `OnionClient` Merkle verification moved to Completed.
-Next candidate: P0 #1 `INDEX PBC placement` verification.)_
+_(none — P0 `INDEX PBC placement` closed as verified (not a bug).
+Next candidate: P0 `merkle_verified: bool` on `QueryResult`.)_

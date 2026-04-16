@@ -408,7 +408,22 @@ impl DpfClient {
         let tag_seed = db_info.tag_seed;
         let master_seed = pir_core::params::INDEX_PARAMS.master_seed;
 
-        // Compute candidate groups for our script hash
+        // Compute candidate groups for our script hash.
+        //
+        // NOTE: the server REPLICATES every scripthash into all 3 candidate
+        // groups at build time (see `build/src/build_cuckoo_generic.rs:87-90`
+        // and `gen_4_build_merkle.rs:236-239`). Any one of the 3 groups is
+        // therefore sufficient to retrieve an entry. For a single-query round
+        // we just pick the first group — matching the reference Rust client
+        // (`runtime/src/bin/client.rs:246`), the web TS client
+        // (`web/src/client.ts` via `planRounds` which reduces to `candGroups[0]`
+        // at N=1), and the Python plugin. When this function is ever extended
+        // to batch multiple scripthashes in a single DPF request (like
+        // `OnionClient::query_index_level`), replace this with
+        // `pbc_plan_rounds` to balance load across groups; the padding
+        // invariant (K queries per round) and the Merkle INDEX item-count
+        // symmetry (`INDEX_CUCKOO_NUM_HASHES = 2` items per query) must be
+        // preserved.
         let my_groups = pir_core::hash::derive_groups_3(script_hash, k);
         let assigned_group = my_groups[0];
 

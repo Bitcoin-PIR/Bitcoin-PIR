@@ -471,6 +471,18 @@ impl HarmonyClient {
         let index_bins = db_info.index_bins as usize;
         let tag_seed = db_info.tag_seed;
 
+        // Pick the first of 3 candidate groups. The server replicates each
+        // scripthash into ALL 3 candidate groups at build time
+        // (see `build/src/build_cuckoo_generic.rs:87-90` and
+        // `gen_4_build_merkle.rs:236-239`), so any one is sufficient to
+        // retrieve an entry. This matches the reference Rust DPF binary
+        // (`runtime/src/bin/client.rs:246`) and every web TS client's
+        // single-query behavior (all reduce to `candGroups[0]` at N=1 via
+        // `planRounds`). If this path is ever extended to batch multiple
+        // scripthashes per HarmonyPIR round, switch to `pbc_plan_rounds` to
+        // spread real queries across groups — but K padding
+        // (`INDEX_PADDED_GROUPS` queries per round) and the Merkle INDEX
+        // item-count symmetry must be preserved.
         let real_group = pir_core::hash::derive_groups_3(script_hash, k_index)[0];
         let my_tag = pir_core::hash::compute_tag(tag_seed, script_hash);
 
