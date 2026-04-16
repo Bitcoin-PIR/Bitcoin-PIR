@@ -688,6 +688,86 @@ impl OnionClient {
         }
     }
 
+    /// Send an OnionPIR `[REQ_ONIONPIR_INDEX_QUERY | REQ_ONIONPIR_CHUNK_QUERY]`
+    /// batch, parse the response, and transparently handle server-side
+    /// LRU eviction of our registered keys.
+    ///
+    /// If the server returns an all-empty batch (see
+    /// [`batch_looks_evicted`]), we treat it as eviction: mark
+    /// `db_id` as un-registered, call `register_keys(db_id)`, and retry
+    /// the exact same query once. A second all-empty response is
+    /// surfaced as a `PirError::ServerError` — at that point something
+    /// more fundamental is wrong (server doesn't accept our keys, DB is
+    /// misconfigured, etc.) and a retry loop would just spin.
+    ///
+    /// This is the single chokepoint for both `query_index_level` and
+    /// `query_chunk_level`; keeping it in one place means the Merkle
+    /// verification path (which uses its own sibling-query path in
+    /// `onion_merkle.rs`) is the only OnionPIR code path still
+    /// vulnerable to silent LRU eviction. That path's failure mode is
+    /// "Merkle proof fails → result coerced to `Some(merkle_failed())`"
+    /// which is already conservative, so it's acceptable to leave it
+    /// uncovered here.
+    #[cfg(feature = "onion")]
+    async fn onionpir_batch_rpc(
+        &mut self,
+        msg: &[u8],
+        expected_variant: u8,
+        db_id: u8,
+        variant_name: &'static str,
+    ) -> PirResult<Vec<Vec<u8>>> {
+        let batch = self
+            .onionpir_batch_rpc_once(msg, expected_variant, variant_name)
+            .await?;
+        if !batch_looks_evicted(&batch) {
+            return Ok(batch);
+        }
+        log::warn!(
+            "[PIR-AUDIT] OnionPIR: all-empty {} for db_id={} — assuming \
+             server LRU-evicted our keys. Re-registering and retrying once.",
+            variant_name,
+            db_id,
+        );
+        // Drop the "already registered" flag so `register_keys` will
+        // actually re-register (otherwise a caller that calls
+        // `ensure_keys_registered` before this would be a no-op).
+        if let Some(fhe) = self.fhe.as_mut() {
+            fhe.registered.remove(&db_id);
+        }
+        self.register_keys(db_id).await?;
+        let batch = self
+            .onionpir_batch_rpc_once(msg, expected_variant, variant_name)
+            .await?;
+        if batch_looks_evicted(&batch) {
+            return Err(PirError::ServerError(format!(
+                "OnionPIR {} returned all-empty batch for db_id={} \
+                 even after re-registering keys — server may be \
+                 overloaded, or FHE params may have drifted",
+                variant_name, db_id,
+            )));
+        }
+        Ok(batch)
+    }
+
+    /// One-shot sender for `onionpir_batch_rpc`: single roundtrip, no retry.
+    #[cfg(feature = "onion")]
+    async fn onionpir_batch_rpc_once(
+        &mut self,
+        msg: &[u8],
+        expected_variant: u8,
+        variant_name: &'static str,
+    ) -> PirResult<Vec<Vec<u8>>> {
+        let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        let response = conn.roundtrip(msg).await?;
+        if response.is_empty() || response[0] != expected_variant {
+            return Err(PirError::Protocol(format!(
+                "expected {} (0x{:02x})",
+                variant_name, expected_variant,
+            )));
+        }
+        decode_onionpir_batch_result(&response[1..])
+    }
+
     /// Get or create a per-level `onionpir::Client` for (db_id, level).
     #[cfg(feature = "onion")]
     fn get_level_client(&mut self, db_id: u8, chunk: bool) -> PirResult<&mut onionpir::Client> {
@@ -764,21 +844,23 @@ impl OnionClient {
                 queries.push(index_client.generate_query(bin));
             }
 
-            // Send and receive.
+            // Send and receive. `onionpir_batch_rpc` transparently
+            // re-registers keys + retries once if the server LRU-evicted
+            // us mid-session (the 100-client cap in SEAL's KeyStore).
             let msg = encode_onionpir_batch_query(
                 REQ_ONIONPIR_INDEX_QUERY,
                 round_id as u16,
                 &queries,
                 db_info.db_id,
             );
-            let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-            let response = conn.roundtrip(&msg).await?;
-            if response.is_empty() || response[0] != RESP_ONIONPIR_INDEX_RESULT {
-                return Err(PirError::Protocol(
-                    "expected RESP_ONIONPIR_INDEX_RESULT (0x51)".into(),
-                ));
-            }
-            let batch = decode_onionpir_batch_result(&response[1..])?;
+            let batch = self
+                .onionpir_batch_rpc(
+                    &msg,
+                    RESP_ONIONPIR_INDEX_RESULT,
+                    db_info.db_id,
+                    "RESP_ONIONPIR_INDEX_RESULT",
+                )
+                .await?;
 
             // Decrypt both cuckoo positions for every real scripthash in this
             // round. We DO NOT early-exit on match — both bins must be tracked
@@ -934,20 +1016,22 @@ impl OnionClient {
                 queries.push(chunk_client.generate_query(bin));
             }
 
+            // Same eviction-retry path as the INDEX round — see
+            // `onionpir_batch_rpc` for the reasoning.
             let msg = encode_onionpir_batch_query(
                 REQ_ONIONPIR_CHUNK_QUERY,
                 round_id as u16,
                 &queries,
                 db_info.db_id,
             );
-            let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-            let response = conn.roundtrip(&msg).await?;
-            if response.is_empty() || response[0] != RESP_ONIONPIR_CHUNK_RESULT {
-                return Err(PirError::Protocol(
-                    "expected RESP_ONIONPIR_CHUNK_RESULT (0x52)".into(),
-                ));
-            }
-            let batch = decode_onionpir_batch_result(&response[1..])?;
+            let batch = self
+                .onionpir_batch_rpc(
+                    &msg,
+                    RESP_ONIONPIR_CHUNK_RESULT,
+                    db_info.db_id,
+                    "RESP_ONIONPIR_CHUNK_RESULT",
+                )
+                .await?;
 
             let chunk_client = self.get_level_client(db_info.db_id, true)?;
             for q in &round_queries {
@@ -1447,6 +1531,30 @@ fn encode_onionpir_batch_query(
     msg
 }
 
+/// Detect whether an OnionPIR batch response signals that the server
+/// has lost our keys.
+///
+/// The server-side `unified_server` loop wraps each `answer_query`
+/// call in `catch_unwind` and returns `Vec::new()` on panic. When the
+/// SEAL `KeyStore` has evicted our `client_id` (after 100 concurrent
+/// clients, FIFO), every `answer_query` for us throws inside SEAL →
+/// panics → returns empty. Since all queries in one batch share a
+/// `client_id`, either every slot is empty (we've been evicted) or
+/// every slot carries a real ciphertext. An all-empty batch with ≥1
+/// slot is therefore an unambiguous eviction signal; an empty-length
+/// batch is not (it would indicate a decode error in the outer frame,
+/// which is handled elsewhere).
+///
+/// Kept as a free-standing function (rather than `impl OnionClient`)
+/// so it can be unit-tested without the `onion` cargo feature.
+/// The function itself has no FHE dependencies; the `#[allow(dead_code)]`
+/// attribute below silences the spurious "never used" warning on
+/// non-onion builds, where the only call sites are cfg-gated out.
+#[cfg_attr(not(feature = "onion"), allow(dead_code))]
+pub(crate) fn batch_looks_evicted(batch: &[Vec<u8>]) -> bool {
+    !batch.is_empty() && batch.iter().all(|r| r.is_empty())
+}
+
 /// Decode an `OnionPirBatchResult` payload (after the variant byte).
 ///
 /// Wire format: `[2B round_id][1B num_groups]({ [4B len][bytes] })*`.
@@ -1871,6 +1979,42 @@ mod tests {
         assert_eq!(c.backend_type(), PirBackendType::Onion);
         assert!(!c.is_connected());
         assert!(c.cached_catalog().is_none());
+    }
+
+    /// `batch_looks_evicted` must fire on an all-empty batch of ≥1 slot,
+    /// which is the server's signal that our `client_id` has been
+    /// LRU-evicted from SEAL's `KeyStore`. A legit response has at
+    /// least one non-empty ciphertext, so the function must return
+    /// `false` in that case.
+    #[test]
+    fn test_batch_looks_evicted_all_empty() {
+        // All-empty batch of 3 slots: eviction.
+        let batch = vec![Vec::<u8>::new(), Vec::<u8>::new(), Vec::<u8>::new()];
+        assert!(batch_looks_evicted(&batch));
+        // Single empty slot: eviction.
+        let batch = vec![Vec::<u8>::new()];
+        assert!(batch_looks_evicted(&batch));
+    }
+
+    #[test]
+    fn test_batch_looks_evicted_mixed_and_full() {
+        // Mixed: at least one non-empty → NOT eviction.
+        let batch = vec![Vec::<u8>::new(), vec![0x01, 0x02]];
+        assert!(!batch_looks_evicted(&batch));
+        // All non-empty: clearly not eviction.
+        let batch = vec![vec![0xaa], vec![0xbb], vec![0xcc]];
+        assert!(!batch_looks_evicted(&batch));
+    }
+
+    #[test]
+    fn test_batch_looks_evicted_zero_length() {
+        // Zero-slot batch: NOT eviction — that would be a decode
+        // error (num_groups=0 payload), handled upstream. This test
+        // pins the contract so a future `.all(...)` simplification
+        // (which returns true on an empty iterator) doesn't silently
+        // start reporting "eviction" on decode bugs.
+        let batch: Vec<Vec<u8>> = Vec::new();
+        assert!(!batch_looks_evicted(&batch));
     }
 
     #[cfg(feature = "onion")]

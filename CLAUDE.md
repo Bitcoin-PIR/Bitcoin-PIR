@@ -232,12 +232,11 @@ forgotten. Padding/privacy invariants (🔒 items in the roadmap) must
 not be optimized away — see "Query Padding" above.
 
 Short-term active work:
-- _(none — all P0 items closed. P1 **HarmonyClient REQ_GET_DB_CATALOG**
-  and P1 **Connection resilience** are both closed.)_ Remaining P1
-  candidates per [SDK_ROADMAP.md](SDK_ROADMAP.md): **OnionPIR
-  LRU-eviction retry** (now plumbable on top of
-  `WsConnection::reconnect`) and **Thread-safety audit for `unsafe
-  impl Sync for SendClient`**.
+- _(none — all P0 items closed. Three P1 items are now closed:
+  **HarmonyClient REQ_GET_DB_CATALOG**, **Connection resilience**,
+  and **OnionPIR LRU-eviction retry**.)_ Only remaining P1 candidate
+  per [SDK_ROADMAP.md](SDK_ROADMAP.md): **Thread-safety audit for
+  `unsafe impl Sync for SendClient`**.
 
 ### Completed milestones
 - PIR SDK + WASM bindings + web integration (commit `19cbf5f`).
@@ -351,6 +350,29 @@ Short-term active work:
   proves the transport works post-reconnect. `RetryPolicy` and the
   `DEFAULT_*` constants are re-exported from the crate root so
   downstream callers can dial custom policies.
+- **OnionPIR LRU-eviction retry in INDEX/CHUNK query rounds** (P1):
+  The OnionPIR server's SEAL `KeyStore` evicts registered clients FIFO
+  at a 100-client cap; any `answer_query` for an evicted client panics
+  inside SEAL and the server's `catch_unwind` surfaces the failure as
+  an all-empty batch response (every slot `Vec::new()`). Both query
+  rounds in [`pir-sdk-client/src/onion.rs`](pir-sdk-client/src/onion.rs)
+  now send through a single chokepoint `onionpir_batch_rpc` that
+  (a) detects the eviction signal via a free-standing `batch_looks_evicted`
+  helper (≥1-slot batch where every slot is empty — legit FHE responses
+  can never match because all slots share one `client_id`), (b) drops
+  the `registered[db_id]` flag so `register_keys` actually re-registers,
+  (c) replays Galois + GSW keys via `register_keys(db_id)`, and
+  (d) retries the exact same encoded query once. A second all-empty
+  response surfaces as `PirError::ServerError` instead of looping —
+  that case indicates FHE param drift, unreachable DB, or similar. The
+  Merkle sibling path in `onion_merkle.rs` is intentionally left
+  uncovered; its failure mode ("Merkle proof fails ⇒ result coerced to
+  `merkle_failed()`") is already conservative, so post-eviction Merkle
+  failures surface as untrusted-⇒-absent rather than stale cache.
+  Three new unit tests lock the `batch_looks_evicted` contract
+  (all-empty triggers, mixed/full don't, zero-length doesn't either so
+  decode bugs can't masquerade as eviction); the helper is `pub(crate)`
+  free-standing so it's testable on non-`onion` builds.
 
 ---
 

@@ -135,6 +135,29 @@ change near them needs extra care — do not optimize away padding.
   the transport actually works post-`reconnect`. `RetryPolicy` and
   the default constants are re-exported from the crate root so
   downstream users can dial a custom policy.
+- **OnionPIR LRU-eviction retry in query rounds.** The SEAL
+  `KeyStore` on the OnionPIR server evicts registered clients FIFO at
+  the 100-client cap; any subsequent `answer_query` for an evicted
+  client panics inside SEAL and the server's `catch_unwind` surfaces
+  it as an all-empty batch response. `OnionClient::query_index_level`
+  and `query_chunk_level` now route their batch sends through a
+  single chokepoint `onionpir_batch_rpc` that detects this signal
+  (`batch_looks_evicted` — every slot in a ≥1-slot batch is empty,
+  which can never happen to a legitimate FHE response because all
+  queries in a batch share one `client_id`), drops the
+  `registered[db_id]` flag, calls `register_keys(db_id)` to replay
+  our Galois + GSW keys, and retries the exact same query once.
+  Falling back to `PirError::ServerError` after a second all-empty
+  response avoids a retry loop when the real failure is something
+  other than eviction (FHE param drift, unreachable DB, etc.). The
+  Merkle sibling path in `onion_merkle.rs` is intentionally left
+  uncovered — its failure mode ("Merkle proof fails → coerce query
+  result to `merkle_failed()`") is already conservative, so silent
+  post-eviction Merkle failures surface as untrusted-⇒-absent rather
+  than stale cache. Three new unit tests lock the `batch_looks_evicted`
+  contract (all-empty / mixed / zero-length); the function is kept
+  as a free-standing `pub(crate)` so it can be tested on non-`onion`
+  builds.
 
 ## P0 — Blockers for "production-ready"
 
@@ -142,14 +165,6 @@ _(none — all P0 items closed.)_
 
 ## P1 — Correctness & robustness
 
-- [ ] **OnionPIR LRU-eviction retry.** Server evicts clients at 100
-      connections. Current `ensure_keys_registered` uses `HashSet<u8>`
-      but doesn't catch mid-session eviction. Parse specific
-      "client not found" server response codes and re-register. Now
-      that `WsConnection::reconnect` exists (see "Connection
-      resilience" in Completed), this hook has somewhere to live:
-      detect the LRU-eviction response code, call `reconnect`, then
-      re-register keys.
 - [ ] **Thread-safety audit for `unsafe impl Sync for SendClient`.**
       Documented as safe because only `&mut self` FFI calls mutate, but
       this assumes OpenMP/SEAL static state is also safe under
@@ -217,10 +232,10 @@ link the branch / commit.
 
 ### In progress
 
-_(none — P0 is empty. Two more P1 items are now closed:
-`REQ_GET_DB_CATALOG` (Harmony now reports real tip height) and
+_(none — P0 is empty. Three more P1 items are now closed:
+`REQ_GET_DB_CATALOG` (Harmony now reports real tip height),
 **Connection resilience** (`WsConnection` has per-request deadlines
-and reconnect-with-backoff). Remaining P1 work: **OnionPIR
-LRU-eviction retry** (now plumbable on top of
-`WsConnection::reconnect`) and **Thread-safety audit for
-`unsafe impl Sync for SendClient`**.)_
+and reconnect-with-backoff), and **OnionPIR LRU-eviction retry**
+(INDEX + CHUNK rounds now re-register and retry once when the server
+surfaces eviction as an all-empty batch). Remaining P1 work:
+**Thread-safety audit for `unsafe impl Sync for SendClient`**.)_
