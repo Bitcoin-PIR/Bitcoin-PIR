@@ -277,11 +277,33 @@ Short-term active work:
   "Native Rust tracing instrumentation (P2 observability Phase 1)"
   entry in Completed milestones below for the full breakdown.
 
+- **Observability Phase 2 is complete.** `pir-sdk` now ships a
+  `PirMetrics` observer trait with six defaulted callbacks
+  (`on_query_start` / `on_query_end` / `on_bytes_sent` /
+  `on_bytes_received` / `on_connect` / `on_disconnect`) plus two
+  concrete recorders (`NoopMetrics`, `AtomicMetrics` with lock-free
+  `AtomicU64` counters + a `Copy` `Snapshot`). `PirTransport` gained
+  `set_metrics_recorder(recorder, backend)` with a default no-op
+  body; `WsConnection`, `MockTransport`, and `WasmWebSocketTransport`
+  override to fire per-frame byte callbacks (`send` counts after
+  confirmed-OK result, `recv` counts full raw frame including
+  length prefix). `DpfClient`, `HarmonyClient`, `OnionClient` each
+  expose a client-layer `set_metrics_recorder` that stores the
+  handle, propagates it to every owned transport (DPF: 2, Harmony:
+  2, Onion: 1) with the matching `&'static str` backend label, and
+  fires `on_connect` per-transport + `on_disconnect` once per
+  client + `on_query_start` / `on_query_end` around `query_batch`.
+  Pre-connect and post-connect installation both work. See the
+  "Native Rust metrics observer (P2 observability Phase 2)" entry
+  in Completed milestones below for the full breakdown.
+
 - Other unblocked P2 items:
-  * **Observability Phase 2+** — per-client metrics (query count,
-    bytes in/out, round-trip latency), WASM bindings for tracing
-    (`pir-sdk-wasm` needs a web-compatible subscriber adapter),
-    per-transport byte counters surfaced through `PirTransport`.
+  * **Observability Phase 2+ tail** — per-client latency histograms
+    (need a `performance.now()`-backed substitute for wasm32's lack
+    of `std::time::Instant`), WASM bindings for `tracing`
+    (`pir-sdk-wasm` needs a web-compatible subscriber adapter), and
+    a `WasmAtomicMetrics` bridge so a browser tools panel can read
+    the counters.
   * **Post-Session-6 worker-pool measurement follow-up** — revisit
     if real-world p95 query latency exceeds the ~200ms budget
     that Session 5's main-thread decision was predicated on.
@@ -1031,11 +1053,160 @@ Short-term active work:
   behavioural impact, and `skip_all` explicitly keeps binary
   payloads out of the span fields.
 
+- **Native Rust metrics observer (P2 observability Phase 2)**:
+  structured counters that sit alongside the tracing spans. Four
+  layers landed:
+
+  *Layer 1 — trait and recorders in `pir-sdk`.* New module
+  [`pir-sdk/src/metrics.rs`](pir-sdk/src/metrics.rs) (~280 LOC)
+  defines a `PirMetrics: Send + Sync + 'static` observer trait
+  with six callbacks, all defaulted to empty-body no-ops so a
+  transport or client doesn't *have* to implement them if it
+  prefers to be silent on a given event. The six are
+  `on_query_start(backend: &'static str, batch_size: usize,
+  db_id: u8)`, `on_query_end(backend, batch_size, db_id,
+  success)`, `on_bytes_sent(backend, bytes)`, `on_bytes_received(
+  backend, bytes)`, `on_connect(backend)`, `on_disconnect(
+  backend)`. Backend labels are `&'static str` (`"dpf"`,
+  `"harmony"`, `"onion"`) so per-callback allocations are zero.
+  Two concrete impls: `NoopMetrics` (explicit ZST that simply
+  inherits the trait defaults — useful as an
+  `Arc<dyn PirMetrics>` placeholder in tests) and `AtomicMetrics`
+  (nine `AtomicU64` counters: `query_starts` / `query_ends` /
+  `query_successes` / `query_failures` / `bytes_sent` /
+  `bytes_received` / `frames_sent` / `frames_received` /
+  `connects` / `disconnects`). `AtomicMetrics::snapshot()` returns
+  a `Copy` `AtomicMetricsSnapshot` struct with `Ordering::Relaxed`
+  loads — correct since each counter is independently atomic with
+  no cross-counter invariant (a snapshot is a momentary fuzzy
+  read, not a transaction). The trait + `PirMetrics` /
+  `NoopMetrics` / `AtomicMetrics` / `AtomicMetricsSnapshot` are
+  re-exported from `pir_sdk` crate root. 8 unit tests cover
+  defaulted callbacks (installing a bare trait impl still
+  compiles), atomic counter agreement across 16 threads hammering
+  a shared `Arc<AtomicMetrics>`, snapshot determinism when the
+  world is quiet, `NoopMetrics` producing no writes, `Copy`
+  semantics on the snapshot struct, backend label preservation
+  through `on_query_start`, and crate-root re-export existence.
+  Plus 1 doc-test demonstrating the canonical
+  `Arc::new(AtomicMetrics::new())` install pattern.
+
+  *Layer 2 — `PirTransport` extension + transport impls.* The
+  trait picked up `fn set_metrics_recorder(&mut self, recorder:
+  Option<Arc<dyn PirMetrics>>, backend: &'static str)` with a
+  default empty body so existing impls compile unchanged. The
+  `Box<T: PirTransport + ?Sized>` blanket impl forwards via
+  `(**self).set_metrics_recorder(recorder, backend)`. `WsConnection`
+  gained an *inherent* `set_metrics_recorder` method (the trait
+  impl delegates to it via UFCS — having both the trait and the
+  inherent method would normally bind to the trait and recurse,
+  but the inherent method wins at the name lookup level when both
+  exist with the same signature, which is the pattern that
+  closes the recursion). Inherent helpers `fire_bytes_sent` /
+  `fire_bytes_received` null-check the `Option<Arc<dyn PirMetrics>>`
+  on every frame (hot path; one branch is cheap). `send` fires
+  the byte callback only *after* the send future resolves with
+  `Ok(())` — a timeout or wire error produces no byte callback,
+  so the counters reflect bytes that actually hit the wire.
+  `recv` counts the full raw frame including the 4-byte length
+  prefix on a successful decode. `roundtrip` is the tricky one:
+  `self.sink` / `self.stream` are mutably borrowed during the
+  inner async block, so `self.metrics_recorder` can't be read
+  inside it — instead we capture `bytes_out: usize`,
+  `bytes_in: Option<usize>`, and `send_succeeded: bool` in locals
+  inside the async block, then fire the byte callbacks after the
+  future resolves and the `sink`/`stream` borrows drop.
+  `MockTransport` picked up an `Option<(Arc<dyn PirMetrics>,
+  &'static str)>` field + `fire_bytes_sent` / `fire_bytes_received`
+  helpers; `send` / `recv` / `roundtrip` fire them.
+  `WasmWebSocketTransport` got the same treatment — the recorder
+  field sits alongside the existing `SendWrapper`-guarded DOM
+  handles, but `Arc<dyn PirMetrics>: Send + Sync` so it doesn't
+  need `SendWrapper`. `send` fires after the successful
+  `ws.send_with_u8_array`; `recv` fires on the `IncomingFrame::Binary`
+  branch. 3 new `transport::tests` unit tests
+  (`mock_transport_fires_byte_callbacks`,
+  `mock_transport_roundtrip_fires_both_callbacks`,
+  `mock_transport_uninstall_recorder_silences_callbacks`) lock in
+  the install-fires / roundtrip-fires-both / uninstall-silences
+  contract.
+
+  *Layer 3 — client wiring.* `DpfClient`, `HarmonyClient`,
+  `OnionClient` each gained `metrics_recorder: Option<Arc<dyn
+  PirMetrics>>` + public `set_metrics_recorder`. The client's
+  setter stores the handle, then propagates to every owned
+  transport (DpfClient: `conn0` / `conn1`, HarmonyClient:
+  `hint_conn` / `query_conn`, OnionClient: `conn`) with the
+  backend label `"dpf"` / `"harmony"` / `"onion"` respectively.
+  Install-before-connect: the handle is stored, then pushed to
+  each transport slot in `connect_with_transport` and `connect`
+  after the slot is populated. Install-after-connect: the setter
+  pushes immediately to any already-populated transport slot.
+  Each client has `fire_query_start` / `fire_query_end` /
+  `fire_connect` / `fire_disconnect` inherent helpers. Semantics:
+  * `on_connect` fires per transport — so DPF and Harmony each
+    tick `connects` by 2 per successful `connect`, Onion by 1.
+  * `on_disconnect` fires once per client — the semantic signal
+    is "the client left the connected state", which happens once
+    regardless of how many transports it owns.
+  * `on_query_start` and `on_query_end` fire at `query_batch`
+    entry and exit, passing `batch_size`, `db_id`, and (for
+    `on_query_end`) a `success` flag.
+  The query-round internals don't fire per-round metrics (INDEX
+  / CHUNK / Merkle sub-rounds) — that's intentional for now;
+  sub-round instrumentation is in the Phase 2+ tail. 12 new
+  client-layer tests (4 per client × 3 clients): pre-connect
+  install via `connect_with_transport` +
+  `connects == N_transports` assertion, post-connect
+  `set_metrics_recorder(None)` silences all subsequent callbacks,
+  post-connect install propagates the handle (exercised by driving
+  a raw `send` through the underlying transport and asserting
+  `bytes_sent > 0`), and explicit `disconnect` fires
+  `on_disconnect` once.
+
+  *Layer 4 — documentation and invariant preservation.*
+  The metrics layer is strictly observational: callbacks receive
+  scalar counters and `&'static str` labels only, never query
+  payloads, hint blobs, secret keys, or padding-critical state.
+  It sits *above* the query code that owns K=75 INDEX / K_CHUNK=80
+  CHUNK / 25-MERKLE padding and the INDEX-Merkle item-count
+  symmetry invariant, and there is no code path by which a
+  recorder can influence the number or content of padding queries
+  sent. Installing no recorder (the default) means the
+  `Option<Arc<dyn PirMetrics>>` is `None` everywhere and every
+  `fire_*` helper is a single null-check with no allocation.
+
+  **Phase 2+ tail (deferred):** per-client latency histograms
+  (need a `performance.now()`-backed substitute for wasm32's lack
+  of `std::time::Instant`), WASM bindings for `tracing`
+  (`pir-sdk-wasm` needs a `tracing` feature + a web-compatible
+  subscriber adapter since `tracing-subscriber::fmt` writes to
+  `io::Write` which doesn't exist on `wasm32-unknown-unknown`),
+  round-trip latency tracking (capture `Instant` at
+  `on_query_start`, diff at `on_query_end`), and
+  `WasmAtomicMetrics` bridge so a browser tools panel can read
+  the counters through `wasm-bindgen`.
+
+  Verification: `cargo test -p pir-sdk --lib` = 39/39 passing
+  (up from 31/31; 8 new metrics tests). `cargo test -p
+  pir-sdk-client --lib` = 116/116 passing (up from 101/101; 15
+  new tests — 3 `MockTransport`, 4 DpfClient, 4 HarmonyClient, 4
+  OnionClient). `cargo test -p pir-sdk-client --features onion
+  --lib` = 138/138 passing. `cargo test -p pir-sdk-wasm --lib`
+  = 39/39 (unchanged — WASM client wrappers don't expose
+  metrics yet; that's Phase 2+). `cargo build --target
+  wasm32-unknown-unknown -p pir-sdk-client` clean (the 3
+  pre-existing warnings — `INDEX_RESULT_SIZE` / `CHUNK_RESULT_SIZE`
+  / `Path` unused on wasm32 — are unchanged from pre-session
+  baseline). `cargo check -p pir-sdk-client --features onion`
+  clean. 🔒 Padding invariants preserved — see Layer 4 above.
+
 ---
 
 ## Key Files
 - `pir-sdk/src/lib.rs` - SDK entry point
 - `pir-sdk/src/error.rs` - `PirError` + `ErrorKind` taxonomy + classification helpers
+- `pir-sdk/src/metrics.rs` - `PirMetrics` observer trait + `NoopMetrics` / `AtomicMetrics` (Phase 2 observability)
 - `pir-sdk-wasm/src/lib.rs` - WASM bindings
 - `pir-sdk-wasm/src/merkle_verify.rs` - WASM per-bucket Merkle verifier
 - `pir-sdk-wasm/src/client.rs` - `WasmDpfClient` + `WasmHarmonyClient` wrappers

@@ -25,7 +25,8 @@
 //! expected.
 
 use async_trait::async_trait;
-use pir_sdk::PirResult;
+use pir_sdk::{PirMetrics, PirResult};
+use std::sync::Arc;
 
 /// Generic bidirectional wire transport for PIR clients.
 ///
@@ -108,6 +109,29 @@ pub trait PirTransport: Send + Sync {
     /// `"wss://pir1.example.com/"` for WebSocket, `"mock://test-1"` for
     /// an in-memory mock.
     fn url(&self) -> &str;
+
+    /// Install a metrics recorder. The transport fires per-frame
+    /// [`on_bytes_sent`](PirMetrics::on_bytes_sent) /
+    /// [`on_bytes_received`](PirMetrics::on_bytes_received) callbacks
+    /// on the installed recorder for every [`send`](PirTransport::send)
+    /// / [`recv`](PirTransport::recv) / [`roundtrip`](PirTransport::roundtrip)
+    /// call thereafter. The `backend` argument is threaded through to
+    /// the callbacks so a single recorder can disambiguate metrics
+    /// from multiple transports (e.g. a DPF client holds two).
+    ///
+    /// Pass `None` to uninstall; pass a fresh `Arc` to replace.
+    ///
+    /// Default impl: no-op. Transports that care about per-frame byte
+    /// counting override this and the relevant send/recv paths;
+    /// transports that don't care (e.g. a test-only shim) can ignore
+    /// it — the client will still receive aggregated query-level
+    /// callbacks fired from above the transport layer.
+    fn set_metrics_recorder(
+        &mut self,
+        _recorder: Option<Arc<dyn PirMetrics>>,
+        _backend: &'static str,
+    ) {
+    }
 }
 
 // ─── Blanket impl for Box<T> ───────────────────────────────────────────────
@@ -141,6 +165,14 @@ impl<T: PirTransport + ?Sized> PirTransport for Box<T> {
 
     fn url(&self) -> &str {
         (**self).url()
+    }
+
+    fn set_metrics_recorder(
+        &mut self,
+        recorder: Option<Arc<dyn PirMetrics>>,
+        backend: &'static str,
+    ) {
+        (**self).set_metrics_recorder(recorder, backend);
     }
 }
 
@@ -180,6 +212,14 @@ impl PirTransport for WsConnection {
     fn url(&self) -> &str {
         WsConnection::url(self)
     }
+
+    fn set_metrics_recorder(
+        &mut self,
+        recorder: Option<Arc<dyn PirMetrics>>,
+        backend: &'static str,
+    ) {
+        WsConnection::set_metrics_recorder(self, recorder, backend);
+    }
 }
 
 // ─── In-memory mock transport for tests ─────────────────────────────────────
@@ -206,6 +246,10 @@ pub(crate) mod mock {
         pub(crate) sent: Vec<Vec<u8>>,
         /// Whether `close` has been called — subsequent ops then error.
         pub(crate) closed: bool,
+        /// Metrics recorder + backend label installed via
+        /// `set_metrics_recorder`. Fires on every send / recv / roundtrip
+        /// once installed; `None` = silent.
+        pub(crate) metrics: Option<(Arc<dyn PirMetrics>, &'static str)>,
     }
 
     impl MockTransport {
@@ -215,11 +259,24 @@ pub(crate) mod mock {
                 responses: VecDeque::new(),
                 sent: Vec::new(),
                 closed: false,
+                metrics: None,
             }
         }
 
         pub(crate) fn enqueue_response(&mut self, data: Vec<u8>) {
             self.responses.push_back(data);
+        }
+
+        fn fire_bytes_sent(&self, bytes: usize) {
+            if let Some((rec, backend)) = &self.metrics {
+                rec.on_bytes_sent(backend, bytes);
+            }
+        }
+
+        fn fire_bytes_received(&self, bytes: usize) {
+            if let Some((rec, backend)) = &self.metrics {
+                rec.on_bytes_received(backend, bytes);
+            }
         }
     }
 
@@ -229,6 +286,7 @@ pub(crate) mod mock {
             if self.closed {
                 return Err(PirError::ConnectionClosed("mock closed".into()));
             }
+            self.fire_bytes_sent(data.len());
             self.sent.push(data);
             Ok(())
         }
@@ -237,15 +295,18 @@ pub(crate) mod mock {
             if self.closed {
                 return Err(PirError::ConnectionClosed("mock closed".into()));
             }
-            self.responses.pop_front().ok_or_else(|| {
+            let frame = self.responses.pop_front().ok_or_else(|| {
                 PirError::Protocol("mock: no enqueued response".into())
-            })
+            })?;
+            self.fire_bytes_received(frame.len());
+            Ok(frame)
         }
 
         async fn roundtrip(&mut self, request: &[u8]) -> PirResult<Vec<u8>> {
             if self.closed {
                 return Err(PirError::ConnectionClosed("mock closed".into()));
             }
+            self.fire_bytes_sent(request.len());
             self.sent.push(request.to_vec());
             // Mimic WsConnection::roundtrip's "strip 4-byte length prefix"
             // behaviour — tests enqueue the full frame, the mock returns
@@ -258,6 +319,10 @@ pub(crate) mod mock {
                     "mock: enqueued frame too short for length prefix".into(),
                 ));
             }
+            // Record the full frame length (what came off the wire),
+            // not the post-strip payload — that matches what a real
+            // transport would observe.
+            self.fire_bytes_received(frame.len());
             Ok(frame[4..].to_vec())
         }
 
@@ -268,6 +333,14 @@ pub(crate) mod mock {
 
         fn url(&self) -> &str {
             &self.url
+        }
+
+        fn set_metrics_recorder(
+            &mut self,
+            recorder: Option<Arc<dyn PirMetrics>>,
+            backend: &'static str,
+        ) {
+            self.metrics = recorder.map(|r| (r, backend));
         }
     }
 }
@@ -386,5 +459,79 @@ mod tests {
     fn mock_transport_url_roundtrips() {
         let t = MockTransport::new("mock://test-url");
         assert_eq!(t.url(), "mock://test-url");
+    }
+
+    /// MockTransport fires per-frame `on_bytes_sent` /
+    /// `on_bytes_received` when a metrics recorder is installed. This
+    /// is the contract client-level tests rely on to observe what
+    /// traffic their query paths actually generate.
+    #[tokio::test]
+    async fn mock_transport_fires_byte_callbacks() {
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut t = MockTransport::new("mock://metered");
+        t.set_metrics_recorder(Some(recorder.clone()), "dpf");
+
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&3u32.to_le_bytes());
+        framed.extend_from_slice(b"abc");
+        t.enqueue_response(framed.clone());
+
+        // send → 5 bytes out
+        t.send(vec![1, 2, 3, 4, 5]).await.unwrap();
+        // recv → 7 bytes in (4-byte prefix + 3-byte payload)
+        let _ = t.recv().await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.bytes_sent, 5);
+        assert_eq!(snap.bytes_received, 7);
+        assert_eq!(snap.frames_sent, 1);
+        assert_eq!(snap.frames_received, 1);
+    }
+
+    /// roundtrip fires one on_bytes_sent (request) + one
+    /// on_bytes_received (raw frame before prefix-strip).
+    #[tokio::test]
+    async fn mock_transport_roundtrip_fires_both_callbacks() {
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut t = MockTransport::new("mock://metered-rt");
+        t.set_metrics_recorder(Some(recorder.clone()), "harmony");
+
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&2u32.to_le_bytes());
+        framed.extend_from_slice(b"yz");
+        t.enqueue_response(framed);
+
+        let reply = t.roundtrip(b"hello").await.unwrap();
+        assert_eq!(reply, b"yz");
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.bytes_sent, 5); // "hello"
+        assert_eq!(snap.bytes_received, 6); // 4 prefix + 2 payload
+        assert_eq!(snap.frames_sent, 1);
+        assert_eq!(snap.frames_received, 1);
+    }
+
+    /// Uninstalling the recorder (pass `None`) silences subsequent
+    /// callbacks.
+    #[tokio::test]
+    async fn mock_transport_uninstall_recorder_silences_callbacks() {
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut t = MockTransport::new("mock://silenceable");
+        t.set_metrics_recorder(Some(recorder.clone()), "dpf");
+
+        t.send(vec![1, 2, 3]).await.unwrap();
+        assert_eq!(recorder.snapshot().bytes_sent, 3);
+
+        t.set_metrics_recorder(None, "dpf");
+        t.send(vec![4, 5, 6, 7]).await.unwrap();
+        // Recorder stays at 3 — the second send fired no callback.
+        assert_eq!(recorder.snapshot().bytes_sent, 3);
+        assert_eq!(recorder.snapshot().frames_sent, 1);
     }
 }

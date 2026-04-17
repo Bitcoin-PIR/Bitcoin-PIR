@@ -14,8 +14,9 @@ use async_trait::async_trait;
 use libdpf::Dpf;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, PirBackendType, PirClient, PirError, PirResult, QueryResult,
-    ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
+    DatabaseInfo, DatabaseKind, PirBackendType, PirClient, PirError, PirMetrics, PirResult,
+    QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
+    UtxoEntry,
 };
 use std::sync::Arc;
 
@@ -234,6 +235,13 @@ pub struct DpfClient {
     /// DPF client, a Harmony client, a logger, etc. — mirrors how the
     /// WASM side stores an `Rc<RefCell<Closure>>` behind a `SendWrapper`.
     state_listener: Option<Arc<dyn StateListener>>,
+    /// Optional metrics recorder. When installed, fires
+    /// `on_connect` / `on_disconnect` lifecycle events and
+    /// `on_query_start` / `on_query_end` per-batch callbacks from the
+    /// client layer, plus per-frame `on_bytes_sent` /
+    /// `on_bytes_received` from the two transports below (wired on
+    /// connect via `set_metrics_recorder`).
+    metrics_recorder: Option<Arc<dyn PirMetrics>>,
 }
 
 impl DpfClient {
@@ -246,6 +254,65 @@ impl DpfClient {
             conn1: None,
             catalog: None,
             state_listener: None,
+            metrics_recorder: None,
+        }
+    }
+
+    /// Install (or replace) a metrics recorder.
+    ///
+    /// The recorder receives:
+    /// * Per-frame `on_bytes_sent` / `on_bytes_received` callbacks from
+    ///   each of the two transports (both labelled `"dpf"`).
+    /// * Per-batch `on_query_start` / `on_query_end` callbacks fired at
+    ///   [`query_batch`](Self::query_batch) entry / exit.
+    /// * `on_connect` on successful [`connect`] / `on_disconnect` on
+    ///   [`disconnect`].
+    ///
+    /// If the client is already connected when the recorder is
+    /// installed, the recorder is propagated to both transports
+    /// immediately (so it starts seeing byte traffic on the next
+    /// frame); otherwise it's held until `connect` wires the fresh
+    /// transports.
+    ///
+    /// Pass `None` to uninstall — subsequent callbacks are silenced,
+    /// and the transports are told to drop their recorder too.
+    pub fn set_metrics_recorder(&mut self, recorder: Option<Arc<dyn PirMetrics>>) {
+        self.metrics_recorder = recorder.clone();
+        if let Some(ref mut c) = self.conn0 {
+            c.set_metrics_recorder(recorder.clone(), "dpf");
+        }
+        if let Some(ref mut c) = self.conn1 {
+            c.set_metrics_recorder(recorder, "dpf");
+        }
+    }
+
+    /// Fire `on_query_start` on the installed recorder, if any.
+    fn fire_query_start(&self, db_id: u8, num_queries: usize) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_query_start("dpf", db_id, num_queries);
+        }
+    }
+
+    /// Fire `on_query_end` on the installed recorder, if any.
+    fn fire_query_end(&self, db_id: u8, num_queries: usize, success: bool) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_query_end("dpf", db_id, num_queries, success);
+        }
+    }
+
+    /// Fire `on_connect` for a given URL. Both transports are labelled
+    /// `"dpf"`, but we still pass the URL through so a recorder can
+    /// distinguish server0 from server1.
+    fn fire_connect(&self, url: &str) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_connect("dpf", url);
+        }
+    }
+
+    /// Fire `on_disconnect` on the installed recorder, if any.
+    fn fire_disconnect(&self) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_disconnect("dpf");
         }
     }
 
@@ -288,9 +355,22 @@ impl DpfClient {
     ) {
         self.conn0 = Some(conn0);
         self.conn1 = Some(conn1);
+        // Propagate any installed recorder to the injected transports so
+        // state-machine tests see per-frame byte counts just like the
+        // URL-driven `connect()` path does.
+        if let Some(rec) = self.metrics_recorder.clone() {
+            if let Some(ref mut c) = self.conn0 {
+                c.set_metrics_recorder(Some(rec.clone()), "dpf");
+            }
+            if let Some(ref mut c) = self.conn1 {
+                c.set_metrics_recorder(Some(rec), "dpf");
+            }
+        }
         // Same `Connected` event a URL-driven `connect()` fires — lets
         // injection-driven tests exercise the state listener without a
         // real WebSocket handshake.
+        self.fire_connect(&self.server0_url);
+        self.fire_connect(&self.server1_url);
         self.notify_state(ConnectionState::Connected);
     }
 
@@ -1285,7 +1365,22 @@ impl PirClient for DpfClient {
         self.conn0 = Some(conn0);
         self.conn1 = Some(conn1);
 
+        // Propagate any installed recorder to the fresh transports so
+        // per-frame byte counts start flowing immediately. Done *after*
+        // both `conn0`/`conn1` slots are populated so a mid-connect
+        // observer can't see half-installed state.
+        if let Some(rec) = self.metrics_recorder.clone() {
+            if let Some(ref mut c) = self.conn0 {
+                c.set_metrics_recorder(Some(rec.clone()), "dpf");
+            }
+            if let Some(ref mut c) = self.conn1 {
+                c.set_metrics_recorder(Some(rec), "dpf");
+            }
+        }
+
         log::info!("Connected to both servers");
+        self.fire_connect(&self.server0_url);
+        self.fire_connect(&self.server1_url);
         self.notify_state(ConnectionState::Connected);
         Ok(())
     }
@@ -1301,6 +1396,7 @@ impl PirClient for DpfClient {
         self.conn0 = None;
         self.conn1 = None;
         self.catalog = None;
+        self.fire_disconnect();
         self.notify_state(ConnectionState::Disconnected);
         Ok(())
     }
@@ -1466,8 +1562,16 @@ impl PirClient for DpfClient {
             .ok_or_else(|| PirError::DatabaseNotFound(db_id))?
             .clone();
 
+        // Fire `on_query_start` before the step kicks off and
+        // `on_query_end` after it resolves either way — a recorder
+        // diffing snapshots across the two can derive wall-clock
+        // latency without needing a mid-layer instant-provider.
+        let num_queries = script_hashes.len();
+        self.fire_query_start(db_id, num_queries);
         let step = SyncStep::from_db_info(&db_info);
-        self.execute_step(script_hashes, &step, &db_info).await
+        let result = self.execute_step(script_hashes, &step, &db_info).await;
+        self.fire_query_end(db_id, num_queries, result.is_ok());
+        result
     }
 }
 
@@ -1915,5 +2019,117 @@ mod tests {
             "expected backend=\"dpf\" field in captured output, got: {}",
             captured
         );
+    }
+
+    // ─── Metrics recorder tests ─────────────────────────────────────────────
+
+    /// Installing a recorder *before* `connect_with_transport` must
+    /// fire an `on_connect` callback per transport (the DPF client
+    /// holds two, one per server URL) plus propagate the recorder
+    /// down to both transports so subsequent per-frame byte callbacks
+    /// flow through. Using `connect_with_transport` so no network.
+    #[test]
+    fn metrics_recorder_fires_on_connect_via_inject() {
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-0")),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+
+        let snap = recorder.snapshot();
+        assert_eq!(
+            snap.connects, 2,
+            "expected one on_connect per transport (2 total)"
+        );
+        assert_eq!(snap.disconnects, 0);
+    }
+
+    /// `disconnect` fires a single `on_disconnect` — we don't fire it
+    /// per-transport because the semantic signal is "client left the
+    /// connected state", which happens once regardless of how many
+    /// transports it owns.
+    #[tokio::test]
+    async fn metrics_recorder_fires_on_disconnect() {
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-0")),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+        client.disconnect().await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.connects, 2);
+        assert_eq!(snap.disconnects, 1);
+    }
+
+    /// Installing the recorder *after* `connect_with_transport` still
+    /// propagates the handle to both transports. Exercised via an
+    /// in-memory mock `send` — each send must fire
+    /// `on_bytes_sent("dpf", N)` on the recorder even though it was
+    /// installed post-connect.
+    #[tokio::test]
+    async fn metrics_recorder_propagates_to_transports_after_connect() {
+        use crate::transport::PirTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-0")),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+
+        // Install the recorder post-connect.
+        let recorder = Arc::new(AtomicMetrics::new());
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        // Drive one send through each transport directly — this is
+        // the fastest way to prove the recorder is wired without
+        // standing up a full PIR query round.
+        client.conn0.as_mut().unwrap().send(vec![1, 2, 3]).await.unwrap();
+        client.conn1.as_mut().unwrap().send(vec![4, 5]).await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.bytes_sent, 5);
+        assert_eq!(snap.frames_sent, 2);
+    }
+
+    /// `set_metrics_recorder(None)` silences both the client-level
+    /// and transport-level callbacks.
+    #[tokio::test]
+    async fn metrics_recorder_uninstall_silences_everything() {
+        use crate::transport::PirTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_metrics_recorder(Some(recorder.clone()));
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-0")),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+
+        // Uninstall mid-session.
+        client.set_metrics_recorder(None);
+        // Neither the client-level disconnect callback nor the
+        // transport-level send callback should fire now.
+        client.conn0.as_mut().unwrap().send(vec![9; 42]).await.unwrap();
+        client.disconnect().await.unwrap();
+
+        let snap = recorder.snapshot();
+        // Only the pre-uninstall connect ticks survive.
+        assert_eq!(snap.connects, 2);
+        assert_eq!(snap.disconnects, 0);
+        assert_eq!(snap.bytes_sent, 0);
+        assert_eq!(snap.frames_sent, 0);
     }
 }

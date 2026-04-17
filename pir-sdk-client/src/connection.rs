@@ -28,7 +28,8 @@
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use pir_sdk::{PirError, PirResult};
+use pir_sdk::{PirError, PirMetrics, PirResult};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -139,6 +140,19 @@ pub struct WsConnection {
     url: String,
     request_timeout: Duration,
     retry_policy: RetryPolicy,
+    /// Optional metrics recorder. Fires per-frame `on_bytes_sent` /
+    /// `on_bytes_received` callbacks from `send` / `recv` / `roundtrip` once
+    /// installed via [`set_metrics_recorder`](Self::set_metrics_recorder).
+    /// `None` = silent (the default).
+    ///
+    /// Note: this field is *not* carried across `reconnect` — the reconnect
+    /// path keeps the field value in place (we only replace the
+    /// `sink`/`stream`), so a recorder installed before reconnect keeps
+    /// firing afterwards.
+    metrics_recorder: Option<Arc<dyn PirMetrics>>,
+    /// Backend label passed to the recorder's callbacks. Defaults to the
+    /// empty string; the owning client overrides via `set_metrics_recorder`.
+    metrics_backend: &'static str,
 }
 
 /// Install the `ring` crypto provider for rustls exactly once per process.
@@ -253,6 +267,8 @@ impl WsConnection {
                         url: url.to_string(),
                         request_timeout: DEFAULT_REQUEST_TIMEOUT,
                         retry_policy: policy,
+                        metrics_recorder: None,
+                        metrics_backend: "",
                     });
                 }
                 Err(err) if err.is_connection_error() => {
@@ -345,6 +361,45 @@ impl WsConnection {
         }))
     }
 
+    /// Install (or replace) a metrics recorder. Once installed, every
+    /// `send` / `recv` / `roundtrip` fires
+    /// [`PirMetrics::on_bytes_sent`] / [`PirMetrics::on_bytes_received`]
+    /// with the full wire-frame byte count (including the 4-byte length
+    /// prefix on recv / the `recv`-half of `roundtrip`).
+    ///
+    /// `backend` is passed through to each callback so a single recorder
+    /// can disambiguate which transport a byte count came from (a DPF
+    /// client, for example, holds two `WsConnection`s and can label them
+    /// both `"dpf"`; a Harmony client holds one `"harmony"` + one hint
+    /// socket, etc.).
+    ///
+    /// Pass `None` to uninstall; pass a fresh `Arc` to replace. This is
+    /// the inherent method the `PirTransport` trait impl delegates to.
+    pub fn set_metrics_recorder(
+        &mut self,
+        recorder: Option<Arc<dyn PirMetrics>>,
+        backend: &'static str,
+    ) {
+        self.metrics_recorder = recorder;
+        self.metrics_backend = backend;
+    }
+
+    /// Fire `on_bytes_sent` on the installed recorder, if any. No-op when
+    /// no recorder is installed — hot path, so the check is inline.
+    fn fire_bytes_sent(&self, bytes: usize) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_bytes_sent(self.metrics_backend, bytes);
+        }
+    }
+
+    /// Fire `on_bytes_received` on the installed recorder, if any. No-op
+    /// when no recorder is installed.
+    fn fire_bytes_received(&self, bytes: usize) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_bytes_received(self.metrics_backend, bytes);
+        }
+    }
+
     /// Send a binary message, subject to the per-request deadline.
     pub async fn send(&mut self, data: Vec<u8>) -> PirResult<()> {
         // Capture the read-only bits before `self.sink` is mutably
@@ -352,9 +407,16 @@ impl WsConnection {
         // tell the timeout/format fields don't alias the sink.
         let request_timeout = self.request_timeout;
         let url = self.url.clone();
+        let bytes_out = data.len();
         let send_fut = self.sink.send(Message::Binary(data.into()));
         match tokio::time::timeout(request_timeout, send_fut).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                // Only fire after a confirmed successful send — a failed
+                // send didn't put bytes on the wire from the caller's
+                // perspective, so double-counting would be misleading.
+                self.fire_bytes_sent(bytes_out);
+                Ok(())
+            }
             Ok(Err(e)) => Err(PirError::ConnectionClosed(format!("send: {}", e))),
             Err(_) => Err(PirError::Timeout(format!(
                 "send to {} took longer than {:?}",
@@ -370,7 +432,15 @@ impl WsConnection {
         let url = self.url.clone();
         let recv_fut = self.recv_inner();
         match tokio::time::timeout(request_timeout, recv_fut).await {
-            Ok(result) => result,
+            Ok(Ok(frame)) => {
+                // Report the raw frame length (including any length
+                // prefix the PIR protocol adds on top of the WebSocket
+                // payload — matches what a wire-level observer would
+                // see).
+                self.fire_bytes_received(frame.len());
+                Ok(frame)
+            }
+            Ok(Err(e)) => Err(e),
             Err(_) => Err(PirError::Timeout(format!(
                 "recv from {} took longer than {:?}",
                 url, request_timeout,
@@ -417,6 +487,16 @@ impl WsConnection {
     pub async fn roundtrip(&mut self, request: &[u8]) -> PirResult<Vec<u8>> {
         let request_timeout = self.request_timeout;
         let url = self.url.clone();
+        // `request` length is observable *before* we enter the async block
+        // — capturing it here lets us fire `on_bytes_sent` without having
+        // to thread the count through the future.
+        let bytes_out = request.len();
+        // Track whether the response future actually received something,
+        // so we can fire `on_bytes_received` from outside the inner
+        // `async` block (where we can't borrow `self.metrics_recorder`
+        // while `self.sink`/`self.stream` are also mutably borrowed).
+        let mut bytes_in: Option<usize> = None;
+        let mut send_succeeded = false;
         let fut = async {
             // Send request (already includes length prefix from protocol
             // encoding).
@@ -424,21 +504,36 @@ impl WsConnection {
             send_fut
                 .await
                 .map_err(|e| PirError::ConnectionClosed(format!("send: {}", e)))?;
+            send_succeeded = true;
 
             // Receive response.
             let response = self.recv_inner().await?;
             if response.len() < 4 {
                 return Err(PirError::Protocol("response too short".into()));
             }
+            bytes_in = Some(response.len());
             Ok(response[4..].to_vec())
         };
-        match tokio::time::timeout(request_timeout, fut).await {
+        let result = match tokio::time::timeout(request_timeout, fut).await {
             Ok(result) => result,
             Err(_) => Err(PirError::Timeout(format!(
                 "roundtrip to {} took longer than {:?}",
                 url, request_timeout,
             ))),
+        };
+        // Fire byte-count callbacks *after* the future resolves so the
+        // borrow of `self.sink`/`self.stream` is over. We fire on-send
+        // only when the send half actually completed (a timeout before
+        // the send future resolves means nothing hit the wire from the
+        // caller's POV); we fire on-recv only when a full frame was
+        // read (the raw frame length including prefix, matching `recv`).
+        if send_succeeded {
+            self.fire_bytes_sent(bytes_out);
         }
+        if let Some(n) = bytes_in {
+            self.fire_bytes_received(n);
+        }
+        result
     }
 
     /// Close the connection.

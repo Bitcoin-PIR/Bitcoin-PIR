@@ -40,6 +40,7 @@ pub mod types;
 pub mod error;
 pub mod backend;
 pub mod client;
+pub mod metrics;
 pub mod sync;
 
 // Re-export main types at crate root
@@ -50,6 +51,7 @@ pub use client::{
     ConnectionState, NoProgress, PirClient, PirClientConfig, PrintProgress, StateListener,
     SyncProgress,
 };
+pub use metrics::{AtomicMetrics, AtomicMetricsSnapshot, NoopMetrics, PirMetrics};
 pub use sync::{SyncPlan, SyncStep, compute_sync_plan, merge_delta, merge_delta_batch, DeltaData, decode_delta_data};
 
 // Re-export pir-core for convenience

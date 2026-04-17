@@ -48,8 +48,9 @@ use pir_core::params::{
 };
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, PirBackendType, PirClient, PirError, PirResult, QueryResult,
-    ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
+    DatabaseInfo, DatabaseKind, PirBackendType, PirClient, PirError, PirMetrics, PirResult,
+    QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
+    UtxoEntry,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -308,6 +309,16 @@ pub struct HarmonyClient {
     /// one sink between DPF + Harmony clients lets the WASM bindings
     /// plumb a single `Rc<RefCell<js_sys::Function>>` through both.
     state_listener: Option<Arc<dyn StateListener>>,
+    /// Optional metrics recorder. When installed, fires
+    /// `on_connect` / `on_disconnect` lifecycle events and
+    /// `on_query_start` / `on_query_end` per-batch callbacks from the
+    /// client layer, plus per-frame `on_bytes_sent` /
+    /// `on_bytes_received` from the hint/query transports (wired on
+    /// connect via `set_metrics_recorder`). Both transports are
+    /// labelled `"harmony"` — a recorder can't tell which socket a
+    /// byte count came from, but can split queries-vs-hints by
+    /// observing the URL on `on_connect`.
+    metrics_recorder: Option<Arc<dyn PirMetrics>>,
 }
 
 impl HarmonyClient {
@@ -343,6 +354,60 @@ impl HarmonyClient {
             sibling_hints_loaded: None,
             hint_cache_dir: None,
             state_listener: None,
+            metrics_recorder: None,
+        }
+    }
+
+    // ─── Metrics recorder ──────────────────────────────────────────────────
+
+    /// Install (or replace) a metrics recorder.
+    ///
+    /// The recorder receives:
+    /// * Per-frame `on_bytes_sent` / `on_bytes_received` callbacks from
+    ///   the hint + query transports (both labelled `"harmony"`).
+    /// * Per-batch `on_query_start` / `on_query_end` callbacks at
+    ///   [`query_batch`](PirClient::query_batch) entry / exit.
+    /// * `on_connect` on successful `connect` (one per transport) and
+    ///   `on_disconnect` on `disconnect` (once).
+    ///
+    /// If the client is already connected when the recorder is
+    /// installed, the recorder is propagated to both transports
+    /// immediately. Pass `None` to uninstall.
+    pub fn set_metrics_recorder(&mut self, recorder: Option<Arc<dyn PirMetrics>>) {
+        self.metrics_recorder = recorder.clone();
+        if let Some(ref mut c) = self.hint_conn {
+            c.set_metrics_recorder(recorder.clone(), "harmony");
+        }
+        if let Some(ref mut c) = self.query_conn {
+            c.set_metrics_recorder(recorder, "harmony");
+        }
+    }
+
+    /// Fire `on_query_start` on the installed recorder, if any.
+    fn fire_query_start(&self, db_id: u8, num_queries: usize) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_query_start("harmony", db_id, num_queries);
+        }
+    }
+
+    /// Fire `on_query_end` on the installed recorder, if any.
+    fn fire_query_end(&self, db_id: u8, num_queries: usize, success: bool) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_query_end("harmony", db_id, num_queries, success);
+        }
+    }
+
+    /// Fire `on_connect` for one transport, if a recorder is installed.
+    fn fire_connect(&self, url: &str) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_connect("harmony", url);
+        }
+    }
+
+    /// Fire `on_disconnect` on the installed recorder, if any.
+    fn fire_disconnect(&self) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_disconnect("harmony");
         }
     }
 
@@ -458,6 +523,20 @@ impl HarmonyClient {
     ) {
         self.hint_conn = Some(hint_conn);
         self.query_conn = Some(query_conn);
+        // Propagate any installed recorder to the injected transports so
+        // state-machine tests see per-frame byte counts just like the
+        // URL-driven `connect()` path does. Both transports are
+        // labelled `"harmony"`.
+        if let Some(rec) = self.metrics_recorder.clone() {
+            if let Some(ref mut c) = self.hint_conn {
+                c.set_metrics_recorder(Some(rec.clone()), "harmony");
+            }
+            if let Some(ref mut c) = self.query_conn {
+                c.set_metrics_recorder(Some(rec), "harmony");
+            }
+        }
+        self.fire_connect(&self.hint_server_url);
+        self.fire_connect(&self.query_server_url);
         self.notify_state(ConnectionState::Connected);
     }
 
@@ -2285,7 +2364,23 @@ impl PirClient for HarmonyClient {
 
         self.hint_conn = Some(hint_conn);
         self.query_conn = Some(query_conn);
+
+        // Propagate any installed recorder to the fresh transports so
+        // per-frame byte counts start flowing immediately. Done after
+        // both slots are populated so a mid-connect observer can't see
+        // half-installed state.
+        if let Some(rec) = self.metrics_recorder.clone() {
+            if let Some(ref mut c) = self.hint_conn {
+                c.set_metrics_recorder(Some(rec.clone()), "harmony");
+            }
+            if let Some(ref mut c) = self.query_conn {
+                c.set_metrics_recorder(Some(rec), "harmony");
+            }
+        }
+
         log::info!("Connected to both HarmonyPIR servers");
+        self.fire_connect(&self.hint_server_url);
+        self.fire_connect(&self.query_server_url);
         self.notify_state(ConnectionState::Connected);
         Ok(())
     }
@@ -2302,6 +2397,7 @@ impl PirClient for HarmonyClient {
         self.query_conn = None;
         self.catalog = None;
         self.invalidate_groups();
+        self.fire_disconnect();
         self.notify_state(ConnectionState::Disconnected);
         Ok(())
     }
@@ -2472,8 +2568,15 @@ impl PirClient for HarmonyClient {
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
 
+        // Fire query lifecycle callbacks so a recorder can time the
+        // batch end-to-end without needing mid-layer hooks. `fire_*`
+        // is a no-op when no recorder is installed.
+        let num_queries = script_hashes.len();
+        self.fire_query_start(db_id, num_queries);
         let step = SyncStep::from_db_info(&db_info);
-        self.execute_step(script_hashes, &step, &db_info).await
+        let result = self.execute_step(script_hashes, &step, &db_info).await;
+        self.fire_query_end(db_id, num_queries, result.is_ok());
+        result
     }
 }
 
@@ -3455,5 +3558,106 @@ mod tests {
             "expected backend=\"harmony\" field in captured output, got: {}",
             captured
         );
+    }
+
+    // ─── Metrics recorder tests ─────────────────────────────────────────────
+
+    /// Installing a recorder before `connect_with_transport` fires one
+    /// `on_connect` per transport (hint + query) and propagates the
+    /// recorder to both transports.
+    #[test]
+    fn metrics_recorder_fires_on_connect_via_inject() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-hint")),
+            Box::new(MockTransport::new("wss://mock-query")),
+        );
+
+        let snap = recorder.snapshot();
+        assert_eq!(
+            snap.connects, 2,
+            "expected one on_connect per transport (2 total)"
+        );
+        assert_eq!(snap.disconnects, 0);
+    }
+
+    /// `disconnect` fires a single `on_disconnect`.
+    #[tokio::test]
+    async fn metrics_recorder_fires_on_disconnect() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-hint")),
+            Box::new(MockTransport::new("wss://mock-query")),
+        );
+        client.disconnect().await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.connects, 2);
+        assert_eq!(snap.disconnects, 1);
+    }
+
+    /// Installing the recorder after `connect_with_transport` still
+    /// propagates the handle to both transports. Proved by driving a
+    /// `send` through each and reading back the byte counts.
+    #[tokio::test]
+    async fn metrics_recorder_propagates_to_transports_after_connect() {
+        use crate::transport::mock::MockTransport;
+        use crate::transport::PirTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-hint")),
+            Box::new(MockTransport::new("wss://mock-query")),
+        );
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        client.hint_conn.as_mut().unwrap().send(vec![1, 2, 3]).await.unwrap();
+        client.query_conn.as_mut().unwrap().send(vec![4, 5]).await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.bytes_sent, 5);
+        assert_eq!(snap.frames_sent, 2);
+    }
+
+    /// `set_metrics_recorder(None)` silences both client-level and
+    /// transport-level callbacks.
+    #[tokio::test]
+    async fn metrics_recorder_uninstall_silences_everything() {
+        use crate::transport::mock::MockTransport;
+        use crate::transport::PirTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_metrics_recorder(Some(recorder.clone()));
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-hint")),
+            Box::new(MockTransport::new("wss://mock-query")),
+        );
+
+        client.set_metrics_recorder(None);
+        client.hint_conn.as_mut().unwrap().send(vec![9; 42]).await.unwrap();
+        client.disconnect().await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.connects, 2);
+        assert_eq!(snap.disconnects, 0);
+        assert_eq!(snap.bytes_sent, 0);
+        assert_eq!(snap.frames_sent, 0);
     }
 }

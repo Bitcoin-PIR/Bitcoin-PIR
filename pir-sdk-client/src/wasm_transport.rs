@@ -64,10 +64,11 @@ use futures::channel::mpsc;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use js_sys::{ArrayBuffer, Uint8Array};
-use pir_sdk::{PirError, PirResult};
+use pir_sdk::{PirError, PirMetrics, PirResult};
 use send_wrapper::SendWrapper;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{BinaryType, ErrorEvent, Event, MessageEvent, WebSocket};
@@ -121,6 +122,15 @@ pub struct WasmWebSocketTransport {
     /// single-thread soundness reason as `ws`.
     #[allow(dead_code)]
     callbacks: SendWrapper<Rc<RefCell<Callbacks>>>,
+    /// Optional metrics recorder. Fires per-frame `on_bytes_sent` /
+    /// `on_bytes_received` callbacks once installed via
+    /// [`PirTransport::set_metrics_recorder`]. `None` = silent.
+    /// `Arc<dyn PirMetrics>` is `Send + Sync` so it doesn't need the
+    /// `SendWrapper` treatment the DOM-bound fields get above.
+    metrics_recorder: Option<Arc<dyn PirMetrics>>,
+    /// Backend label passed to the recorder's callbacks. Defaults to
+    /// `""`; owning clients override via `set_metrics_recorder`.
+    metrics_backend: &'static str,
 }
 
 impl WasmWebSocketTransport {
@@ -266,9 +276,28 @@ fn build_transport(
         ws: SendWrapper::new(ws),
         rx,
         callbacks: SendWrapper::new(callbacks),
+        metrics_recorder: None,
+        metrics_backend: "",
     };
 
     Ok((open_rx, transport))
+}
+
+impl WasmWebSocketTransport {
+    /// Fire `on_bytes_sent` on the installed recorder, if any. No-op
+    /// when no recorder is installed — the hot path stays a null check.
+    fn fire_bytes_sent(&self, bytes: usize) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_bytes_sent(self.metrics_backend, bytes);
+        }
+    }
+
+    /// Fire `on_bytes_received` on the installed recorder, if any.
+    fn fire_bytes_received(&self, bytes: usize) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_bytes_received(self.metrics_backend, bytes);
+        }
+    }
 }
 
 #[async_trait]
@@ -283,12 +312,18 @@ impl PirTransport for WasmWebSocketTransport {
                 self.ws.ready_state()
             )));
         }
+        let bytes_out = data.len();
         // `send_with_u8_array` takes `&[u8]` — no owned copy is needed on
         // our side even though the trait takes `Vec<u8>` (so the signature
         // matches `WsConnection::send`).
         self.ws
             .send_with_u8_array(&data)
-            .map_err(|e| PirError::ConnectionFailed(format!("WebSocket send threw: {:?}", e)))
+            .map_err(|e| PirError::ConnectionFailed(format!("WebSocket send threw: {:?}", e)))?;
+        // Fire only after a confirmed-OK send; a throw above means the
+        // bytes never left the caller, so double-counting them would
+        // mislead a recorder.
+        self.fire_bytes_sent(bytes_out);
+        Ok(())
     }
 
     async fn recv(&mut self) -> PirResult<Vec<u8>> {
@@ -296,7 +331,10 @@ impl PirTransport for WasmWebSocketTransport {
         // `IncomingFrame` lands on the channel — could be a message,
         // error, or close.
         match self.rx.next().await {
-            Some(IncomingFrame::Binary(bytes)) => Ok(bytes),
+            Some(IncomingFrame::Binary(bytes)) => {
+                self.fire_bytes_received(bytes.len());
+                Ok(bytes)
+            }
             Some(IncomingFrame::Error(msg)) => Err(PirError::ConnectionFailed(msg)),
             Some(IncomingFrame::Closed(reason)) => {
                 Err(PirError::ConnectionClosed(reason))
@@ -308,6 +346,8 @@ impl PirTransport for WasmWebSocketTransport {
     }
 
     async fn roundtrip(&mut self, request: &[u8]) -> PirResult<Vec<u8>> {
+        // `send` / `recv` already fire per-frame byte callbacks, so
+        // roundtrip inherits them for free — no extra wiring needed here.
         self.send(request.to_vec()).await?;
         let full = self.recv().await?;
         // Match the `WsConnection::roundtrip` contract — the 4-byte LE
@@ -340,5 +380,14 @@ impl PirTransport for WasmWebSocketTransport {
 
     fn url(&self) -> &str {
         &self.url
+    }
+
+    fn set_metrics_recorder(
+        &mut self,
+        recorder: Option<Arc<dyn PirMetrics>>,
+        backend: &'static str,
+    ) {
+        self.metrics_recorder = recorder;
+        self.metrics_backend = backend;
     }
 }

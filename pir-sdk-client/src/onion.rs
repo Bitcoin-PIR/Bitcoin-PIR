@@ -55,9 +55,10 @@ use crate::transport::PirTransport;
 use async_trait::async_trait;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, DatabaseCatalog, DatabaseInfo, DatabaseKind,
-    PirBackendType, PirClient, PirError, PirResult, QueryResult, ScriptHash, SyncPlan, SyncResult,
-    SyncStep,
+    PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, ScriptHash,
+    SyncPlan, SyncResult, SyncStep,
 };
+use std::sync::Arc;
 
 // `UtxoEntry` is only constructed by the feature-gated decode path.
 #[cfg(feature = "onion")]
@@ -307,6 +308,13 @@ pub struct OnionClient {
     info_json: Option<String>,
     #[cfg(feature = "onion")]
     fhe: Option<FheState>,
+    /// Optional metrics recorder. When installed, fires
+    /// `on_connect` / `on_disconnect` lifecycle events and
+    /// `on_query_start` / `on_query_end` per-batch callbacks from the
+    /// client layer, plus per-frame `on_bytes_sent` /
+    /// `on_bytes_received` from the single transport below (wired on
+    /// connect via `set_metrics_recorder`, labelled `"onion"`).
+    metrics_recorder: Option<Arc<dyn PirMetrics>>,
 }
 
 impl OnionClient {
@@ -322,6 +330,55 @@ impl OnionClient {
             info_json: None,
             #[cfg(feature = "onion")]
             fhe: None,
+            metrics_recorder: None,
+        }
+    }
+
+    /// Install (or replace) a metrics recorder.
+    ///
+    /// The recorder receives:
+    /// * Per-frame `on_bytes_sent` / `on_bytes_received` callbacks from
+    ///   the single transport, labelled `"onion"`.
+    /// * Per-batch `on_query_start` / `on_query_end` callbacks at
+    ///   [`query_batch`](PirClient::query_batch) entry / exit.
+    /// * `on_connect` on successful `connect` and `on_disconnect` on
+    ///   `disconnect`.
+    ///
+    /// If the client is already connected when the recorder is
+    /// installed, the recorder is propagated to the transport
+    /// immediately. Pass `None` to uninstall.
+    pub fn set_metrics_recorder(&mut self, recorder: Option<Arc<dyn PirMetrics>>) {
+        self.metrics_recorder = recorder.clone();
+        if let Some(ref mut c) = self.conn {
+            c.set_metrics_recorder(recorder, "onion");
+        }
+    }
+
+    /// Fire `on_query_start` on the installed recorder, if any.
+    fn fire_query_start(&self, db_id: u8, num_queries: usize) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_query_start("onion", db_id, num_queries);
+        }
+    }
+
+    /// Fire `on_query_end` on the installed recorder, if any.
+    fn fire_query_end(&self, db_id: u8, num_queries: usize, success: bool) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_query_end("onion", db_id, num_queries, success);
+        }
+    }
+
+    /// Fire `on_connect` on the installed recorder, if any.
+    fn fire_connect(&self, url: &str) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_connect("onion", url);
+        }
+    }
+
+    /// Fire `on_disconnect` on the installed recorder, if any.
+    fn fire_disconnect(&self) {
+        if let Some(rec) = &self.metrics_recorder {
+            rec.on_disconnect("onion");
         }
     }
 
@@ -342,6 +399,15 @@ impl OnionClient {
     #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion"))]
     pub fn connect_with_transport(&mut self, conn: Box<dyn PirTransport>) {
         self.conn = Some(conn);
+        // Propagate any installed recorder so per-frame byte counts flow
+        // from this injected transport. OnionPIR only has one transport,
+        // so no cloning game like DPF/Harmony — just forward directly.
+        if let Some(rec) = self.metrics_recorder.clone() {
+            if let Some(ref mut c) = self.conn {
+                c.set_metrics_recorder(Some(rec), "onion");
+            }
+        }
+        self.fire_connect(&self.server_url);
     }
 
     /// Fetch the JSON server info and (best-effort) the DPF-format catalog,
@@ -1218,6 +1284,14 @@ impl PirClient for OnionClient {
         };
 
         self.conn = Some(conn);
+        // Propagate any installed recorder to the fresh transport so
+        // per-frame byte counts start flowing immediately.
+        if let Some(rec) = self.metrics_recorder.clone() {
+            if let Some(ref mut c) = self.conn {
+                c.set_metrics_recorder(Some(rec), "onion");
+            }
+        }
+        self.fire_connect(&self.server_url);
         #[cfg(not(feature = "onion"))]
         log::warn!(
             "OnionPIR client connected without the `onion` cargo feature — \
@@ -1240,6 +1314,7 @@ impl PirClient for OnionClient {
             self.fhe = None;
             self.onion_merkle.clear();
         }
+        self.fire_disconnect();
         Ok(())
     }
 
@@ -1361,8 +1436,14 @@ impl PirClient for OnionClient {
             .get(db_id)
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
+        // Fire the query lifecycle callbacks so a recorder can time
+        // the end-to-end round. `fire_*` is a no-op absent a recorder.
+        let num_queries = script_hashes.len();
+        self.fire_query_start(db_id, num_queries);
         let step = SyncStep::from_db_info(&db_info);
-        self.execute_step(script_hashes, &step, &db_info).await
+        let result = self.execute_step(script_hashes, &step, &db_info).await;
+        self.fire_query_end(db_id, num_queries, result.is_ok());
+        result
     }
 }
 
@@ -2387,5 +2468,114 @@ mod tests {
             "expected backend=\"onion\" field in captured output, got: {}",
             captured
         );
+    }
+
+    // ─── Metrics recorder tests ─────────────────────────────────────────────
+    //
+    // Companion to the DPF/Harmony metrics tests. OnionClient has a
+    // single transport (no hint/query split), so the `connects`
+    // counter tops out at 1 here where DPF/Harmony top out at 2.
+
+    /// Installing a recorder *before* `connect_with_transport` must
+    /// fire exactly one `on_connect` callback for OnionClient's single
+    /// transport, and must propagate the recorder to that transport so
+    /// subsequent per-frame byte callbacks flow through.
+    #[test]
+    fn metrics_recorder_fires_on_connect_via_inject_onion() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        client.connect_with_transport(Box::new(MockTransport::new(
+            "wss://mock-onion",
+        )));
+
+        let snap = recorder.snapshot();
+        assert_eq!(
+            snap.connects, 1,
+            "expected one on_connect for OnionClient's single transport"
+        );
+        assert_eq!(snap.disconnects, 0);
+    }
+
+    /// `disconnect` fires a single `on_disconnect` — same semantic as
+    /// DPF/Harmony, the signal is "client left the connected state".
+    #[tokio::test]
+    async fn metrics_recorder_fires_on_disconnect_onion() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        client.connect_with_transport(Box::new(MockTransport::new(
+            "wss://mock-onion",
+        )));
+        client.disconnect().await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.connects, 1);
+        assert_eq!(snap.disconnects, 1);
+    }
+
+    /// Installing the recorder *after* `connect_with_transport` still
+    /// propagates the handle to the transport. Drive a `send` through
+    /// the conn directly — it must fire `on_bytes_sent("onion", N)`
+    /// on the recorder even though it was installed post-connect.
+    #[tokio::test]
+    async fn metrics_recorder_propagates_to_transport_after_connect_onion() {
+        use crate::transport::mock::MockTransport;
+        use crate::transport::PirTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.connect_with_transport(Box::new(MockTransport::new(
+            "wss://mock-onion",
+        )));
+
+        // Install the recorder post-connect.
+        let recorder = Arc::new(AtomicMetrics::new());
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        // Drive one send through the transport directly.
+        client.conn.as_mut().unwrap().send(vec![1, 2, 3, 4, 5, 6, 7]).await.unwrap();
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.bytes_sent, 7);
+        assert_eq!(snap.frames_sent, 1);
+    }
+
+    /// `set_metrics_recorder(None)` silences both the client-level and
+    /// transport-level callbacks.
+    #[tokio::test]
+    async fn metrics_recorder_uninstall_silences_everything_onion() {
+        use crate::transport::mock::MockTransport;
+        use crate::transport::PirTransport;
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.set_metrics_recorder(Some(recorder.clone()));
+        client.connect_with_transport(Box::new(MockTransport::new(
+            "wss://mock-onion",
+        )));
+
+        // Uninstall mid-session.
+        client.set_metrics_recorder(None);
+        // Neither the client-level disconnect callback nor the
+        // transport-level send callback should fire now.
+        client.conn.as_mut().unwrap().send(vec![9; 42]).await.unwrap();
+        client.disconnect().await.unwrap();
+
+        let snap = recorder.snapshot();
+        // Only the pre-uninstall connect tick survives.
+        assert_eq!(snap.connects, 1);
+        assert_eq!(snap.disconnects, 0);
+        assert_eq!(snap.bytes_sent, 0);
+        assert_eq!(snap.frames_sent, 0);
     }
 }
