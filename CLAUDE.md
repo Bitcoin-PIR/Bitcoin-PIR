@@ -262,9 +262,26 @@ Short-term active work:
   refinement" entry in Completed milestones below for the full
   breakdown.
 
+- **Observability Phase 1 is complete.** `tracing` is now an
+  additive dep of `pir-sdk-client` (with the `log` feature so the
+  existing `[PIR-AUDIT]` `log::info!` trail continues to flow
+  through any installed subscriber). `DpfClient`, `HarmonyClient`,
+  `OnionClient`, and `WsConnection` public methods carry
+  `#[tracing::instrument]` spans with a consistent `backend =
+  "dpf"/"harmony"/"onion"` field, level tiers (`info` for top-level
+  ops, `debug` for sub-ops, `trace` for per-query inner loops), and
+  `skip_all` to keep binary payloads / secrets out of spans. A
+  smoke test per client captures the formatted span output through
+  a `MakeWriter` buffer so an accidental `#[tracing::instrument]`
+  removal or `backend` field rename fails at test time. See the
+  "Native Rust tracing instrumentation (P2 observability Phase 1)"
+  entry in Completed milestones below for the full breakdown.
+
 - Other unblocked P2 items:
-  * **Observability** — `tracing` spans + per-client metrics +
-    progress callbacks for long syncs.
+  * **Observability Phase 2+** — per-client metrics (query count,
+    bytes in/out, round-trip latency), WASM bindings for tracing
+    (`pir-sdk-wasm` needs a web-compatible subscriber adapter),
+    per-transport byte counters surfaced through `PirTransport`.
   * **Post-Session-6 worker-pool measurement follow-up** — revisit
     if real-world p95 query latency exceeds the ~200ms budget
     that Session 5's main-thread decision was predicated on.
@@ -926,6 +943,93 @@ Short-term active work:
   K_CHUNK=80 CHUNK / 25-MERKLE padding, and the three
   migrations are error-raising-only changes (no wire-format or
   query-logic shifts).
+- **Native Rust tracing instrumentation (P2 observability Phase
+  1)**: added `tracing = "0.1"` (with the `log` feature so every
+  existing `log::info!`/`log::warn!`/`log::debug!` call
+  automatically bridges into any installed subscriber) as an
+  additive dep on `pir-sdk-client`. Every public inherent + trait
+  method on `DpfClient` / `HarmonyClient` / `OnionClient` now
+  carries a `#[tracing::instrument(level = …, skip_all, fields(…))]`
+  attribute; `WsConnection::{connect, connect_once,
+  connect_with_backoff, reconnect}` likewise. Consistent shape
+  across all three backends:
+  * Every span has `backend = "dpf" | "harmony" | "onion"` as a
+    recorded field so a downstream subscriber can filter to a
+    single backend with one clause. The three
+    `tracing_instrument_emits_backend_field_for_<backend>` smoke
+    tests lock this in — they install a scoped
+    `tracing_subscriber::fmt` backed by an in-memory
+    `MakeWriter` buffer, drive an instrumented method via the
+    `MockTransport` injection path, then assert the captured
+    output contains both the span name and the `backend="…"`
+    field string. An accidental `#[tracing::instrument]` removal
+    or `backend` rename therefore fails at `cargo test` time, not
+    in a production log search.
+  * Three-tier level hierarchy:
+    - `info` for top-level user operations (`connect`,
+      `disconnect`, `sync`, `reconnect`).
+    - `debug` for sub-operations (`connect_with_transport`,
+      `connect_with_backoff`, `execute_step`, `fetch_catalog`,
+      `sync_with_plan`, `query_batch`, `query_batch_with_inspector`,
+      `verify_merkle_batch_for_results`, `sync_with_progress`,
+      `run_merkle_verification`, `ensure_groups_ready`,
+      `ensure_sibling_groups_ready`, `verify_merkle_items`).
+    - `trace` for per-query inner loops (`query_index_level`,
+      `query_chunk_level`, Harmony's `query_single`).
+  * `skip_all` on every instrument attribute guards against
+    accidental injection of binary payloads (script-hash slices,
+    hint blobs, `Arc<…>` trait objects, `Box<dyn PirTransport>`)
+    as span fields. Only scalars / display-string URLs / DB ids
+    / query counts / heights / step names / flags are recorded.
+    Display formatting goes through `%` (for `Display`) or `?`
+    (for `Debug`); no `Serialize` bounds are imposed on recorded
+    types.
+  * DPF-specific fields recorded: `server0` / `server1` URLs on
+    `connect`, `db_id` / `step` / `height` / `num_queries` on
+    `execute_step`, `db_id` on the two per-level query helpers.
+  * Harmony-specific fields recorded: `hint` / `query` URLs on
+    `connect`, `num_items` on `verify_merkle_items`, same
+    step/db/height/query-count triplet as DPF on `execute_step`.
+  * Onion-specific fields recorded: `server` URL on `connect`,
+    same step/db/height/query-count triplet on `execute_step`,
+    `db_id` on the INDEX / CHUNK level helpers. The Onion spans
+    fire from both the `cfg(feature = "onion")` and the
+    placeholder-fallback `cfg(not(feature = "onion"))` `execute_step`
+    so a disabled-feature trace still surfaces the attempt.
+  * `WsConnection` spans: `url` + `max_attempts` on
+    `connect_with_backoff`, `url` on `connect` / `connect_once`,
+    `url` on `reconnect` (pulled from `self.url` since reconnect
+    re-handshakes the same endpoint). Chosen scope: lifecycle
+    only — `send` / `recv` / `roundtrip` are per-frame and too
+    noisy to span without sampling, which is Phase 2+ work.
+
+  **Phase 2+ (deferred):** per-client metrics trait + recorder
+  (query count / bytes-in / bytes-out / round-trip-latency
+  histograms), WASM bindings for tracing (`pir-sdk-wasm` needs a
+  `tracing` feature + a web-compatible subscriber adapter, since
+  `tracing-subscriber::fmt` writes to `io::Write` which doesn't
+  exist on `wasm32-unknown-unknown`), per-transport byte counters
+  surfaced through `PirTransport`.
+
+  Verification: `cargo build -p pir-sdk-client` clean (only the
+  two pre-existing `INDEX_RESULT_SIZE` / `CHUNK_RESULT_SIZE`
+  dead-code warnings). `cargo build --target
+  wasm32-unknown-unknown -p pir-sdk-client` clean (`tracing` core
+  compiles to wasm32; only the subscriber side is gated). `cargo
+  check -p pir-sdk-client --features onion` clean (the
+  feature-gated `query_index_level` / `query_chunk_level` /
+  `execute_step` / `run_merkle_verification` instruments compile
+  under the C++/SEAL path too). `cargo test -p pir-sdk-client
+  --lib` = 101/101 passing (up from 98/98; three new
+  tracing-capture smoke tests). `tracing-subscriber` is a
+  dev-dep only — no subscriber is forced on downstream callers.
+  No-op unless an application installs one. 🔒 Padding invariants
+  preserved — tracing sits above the query code that owns K=75
+  INDEX / K_CHUNK=80 CHUNK / 25-MERKLE padding and the
+  INDEX-Merkle item-count symmetry invariant; every
+  instrumentation change is a pure attribute addition with zero
+  behavioural impact, and `skip_all` explicitly keeps binary
+  payloads out of the span fields.
 
 ---
 

@@ -450,6 +450,7 @@ impl HarmonyClient {
     /// Fires the same `Connected` state event a URL-driven `connect()`
     /// would — lets injection-driven tests exercise the state listener
     /// without a real WebSocket handshake.
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony"))]
     pub fn connect_with_transport(
         &mut self,
         hint_conn: Box<dyn PirTransport>,
@@ -865,6 +866,7 @@ impl HarmonyClient {
     /// Sibling hints are only persisted once
     /// [`ensure_sibling_groups_ready`](Self::ensure_sibling_groups_ready)
     /// has populated them (see that method for the second persist).
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
     async fn ensure_groups_ready(&mut self, db_info: &DatabaseInfo) -> PirResult<()> {
         if self.loaded_db_id == Some(db_info.db_id)
             && !self.index_groups.is_empty()
@@ -1053,6 +1055,17 @@ impl HarmonyClient {
     /// bin that returned data. Items whose Merkle proof fails are coerced to
     /// `None` (treated as unverified; callers should treat them as an
     /// unknown/error state), mirroring the DPF client.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(
+            backend = "harmony",
+            db_id = _step.db_id,
+            step = %_step.name,
+            height = _step.tip_height,
+            num_queries = script_hashes.len(),
+        )
+    )]
     async fn execute_step(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1099,6 +1112,7 @@ impl HarmonyClient {
     /// Also returns `QueryTraces` describing every INDEX/CHUNK cuckoo bin we
     /// inspected, so the caller (`execute_step`) can run per-bucket Merkle
     /// verification if `DatabaseInfo::has_bucket_merkle` is set.
+    #[tracing::instrument(level = "trace", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
     async fn query_single(
         &mut self,
         script_hash: &ScriptHash,
@@ -1442,6 +1456,7 @@ impl HarmonyClient {
     /// tree-tops: each tree's `cache_from_level` gives how many sibling
     /// rounds feed it, and the per-type max is the total sibling depth.
     /// `bins_per_table` at level L = `ceil(main_bins / arity^(L+1))`.
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
     async fn ensure_sibling_groups_ready(
         &mut self,
         db_info: &DatabaseInfo,
@@ -1599,6 +1614,7 @@ impl HarmonyClient {
     /// [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
     /// API — items come from the per-query [`QueryTraces`], but the
     /// verifier itself is shared.
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
     async fn run_merkle_verification(
         &mut self,
         results: &mut [Option<QueryResult>],
@@ -1684,6 +1700,11 @@ impl HarmonyClient {
     /// `INDEX_CUCKOO_NUM_HASHES` INDEX items per query, regardless of
     /// found/not-found (see CLAUDE.md "Merkle INDEX Item-Count
     /// Symmetry").
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "harmony", db_id = db_info.db_id, num_items = items.len(), num_queries)
+    )]
     async fn verify_merkle_items(
         &mut self,
         items: &[BucketMerkleItem],
@@ -1783,6 +1804,11 @@ impl HarmonyClient {
     /// round, synthetic HarmonyGroup dummies fill empty slots. This
     /// method only changes whether the client further requests Merkle
     /// siblings, not what the server sees at the query layer.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "harmony", db_id, num_queries = script_hashes.len())
+    )]
     pub async fn query_batch_with_inspector(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1876,6 +1902,11 @@ impl HarmonyClient {
     /// probes per query, and the shared verifier pads each level's
     /// sibling batch to K / K_CHUNK siblings (see CLAUDE.md "Query
     /// Padding").
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "harmony", db_id, num_results = results.len())
+    )]
     pub async fn verify_merkle_batch_for_results(
         &mut self,
         results: &[Option<QueryResult>],
@@ -1948,6 +1979,11 @@ impl HarmonyClient {
     ///
     /// Padding invariants are preserved — progress is purely
     /// observational and doesn't change what's sent on the wire.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "harmony", num_queries = script_hashes.len(), last_height = ?last_height)
+    )]
     pub async fn sync_with_progress(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -2197,6 +2233,7 @@ impl PirClient for HarmonyClient {
         PirBackendType::Harmony
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(backend = "harmony", hint = %self.hint_server_url, query = %self.query_server_url))]
     async fn connect(&mut self) -> PirResult<()> {
         log::info!(
             "Connecting to HarmonyPIR servers: hint={}, query={}",
@@ -2253,6 +2290,7 @@ impl PirClient for HarmonyClient {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(backend = "harmony"))]
     async fn disconnect(&mut self) -> PirResult<()> {
         if let Some(ref mut conn) = self.hint_conn {
             let _ = conn.close().await;
@@ -2272,6 +2310,7 @@ impl PirClient for HarmonyClient {
         self.hint_conn.is_some() && self.query_conn.is_some()
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony"))]
     async fn fetch_catalog(&mut self) -> PirResult<DatabaseCatalog> {
         if !self.is_connected() {
             return Err(PirError::NotConnected);
@@ -2319,6 +2358,11 @@ impl PirClient for HarmonyClient {
         compute_sync_plan(catalog, last_height)
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(backend = "harmony", num_queries = script_hashes.len(), last_height = ?last_height)
+    )]
     async fn sync(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -2337,6 +2381,17 @@ impl PirClient for HarmonyClient {
         self.sync_with_plan(script_hashes, &plan, None).await
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(
+            backend = "harmony",
+            num_queries = script_hashes.len(),
+            num_steps = plan.steps.len(),
+            target_height = plan.target_height,
+            is_fresh_sync = plan.is_fresh_sync,
+        )
+    )]
     async fn sync_with_plan(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -2393,6 +2448,11 @@ impl PirClient for HarmonyClient {
         })
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "harmony", db_id, num_queries = script_hashes.len())
+    )]
     async fn query_batch(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -3329,5 +3389,71 @@ mod tests {
         )
         .fingerprint();
         assert_eq!(fp1, expected);
+    }
+
+    // ─── Tracing smoke test ──────────────────────────────────────────────
+    //
+    // Companion to the `tracing_instrument_emits_backend_field_for_dpf`
+    // test in `dpf.rs`. Installs a scoped `tracing_subscriber::fmt`
+    // subscriber backed by an in-memory buffer, drives an instrumented
+    // method, and asserts the Harmony span emitted `backend="harmony"`.
+    // Catches accidental `#[tracing::instrument]` removal or a
+    // `backend` field rename at test time instead of only in production
+    // log searches.
+
+    #[derive(Clone)]
+    struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufferWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+        type Writer = BufferWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn tracing_instrument_emits_backend_field_for_harmony() {
+        use crate::transport::mock::MockTransport;
+        use tracing_subscriber::fmt;
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = fmt::Subscriber::builder()
+            .with_span_events(fmt::format::FmtSpan::CLOSE)
+            .with_writer(BufferWriter(buf.clone()))
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut client =
+                HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+            client.connect_with_transport(
+                Box::new(MockTransport::new("wss://mock-hint")),
+                Box::new(MockTransport::new("wss://mock-query")),
+            );
+        });
+
+        let captured = String::from_utf8(buf.lock().unwrap().clone())
+            .expect("tracing writer produced valid UTF-8");
+        assert!(
+            captured.contains("connect_with_transport"),
+            "expected span name in captured output, got: {}",
+            captured
+        );
+        assert!(
+            captured.contains("backend=\"harmony\""),
+            "expected backend=\"harmony\" field in captured output, got: {}",
+            captured
+        );
     }
 }

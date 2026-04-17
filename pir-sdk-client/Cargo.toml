@@ -51,6 +51,13 @@ futures-util = "0.3"
 # Logging
 log = "0.4"
 
+# Structured tracing (spans + events). Additive: the `log::info!` audit
+# trail still works unchanged, and `tracing`'s `log` feature bridges
+# existing `log::*!` calls into any installed `tracing` subscriber so
+# callers get a unified event stream. No-op unless a subscriber is
+# installed. Cross-target — `tracing` core compiles to wasm32.
+tracing = { version = "0.1", features = ["log"] }
+
 # Error handling
 thiserror = "1.0"
 
@@ -112,3 +119,7 @@ send_wrapper = "0.6"
 [dev-dependencies]
 env_logger = "0.11"
 hex = "0.4"
+# Test-only: a subscriber that captures formatted span/event output for
+# assertion. Kept as a dev-dep to avoid forcing a subscriber choice on
+# downstream callers — production code only depends on the facade.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }

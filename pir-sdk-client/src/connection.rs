@@ -208,12 +208,14 @@ impl WsConnection {
     /// [`connect_once`](Self::connect_once) for a single-shot attempt,
     /// or [`connect_with_backoff`](Self::connect_with_backoff) to dial a
     /// custom policy.
+    #[tracing::instrument(level = "info", skip_all, fields(url = %url))]
     pub async fn connect(url: &str) -> PirResult<Self> {
         Self::connect_with_backoff(url, RetryPolicy::default()).await
     }
 
     /// Connect with a single attempt — no retry, no backoff. Useful for
     /// tests and for callers that want to implement their own retry loop.
+    #[tracing::instrument(level = "debug", skip_all, fields(url = %url))]
     pub async fn connect_once(url: &str) -> PirResult<Self> {
         Self::connect_with_backoff(url, RetryPolicy::single_attempt()).await
     }
@@ -224,6 +226,7 @@ impl WsConnection {
     /// ([`PirError::is_connection_error`]) — a 4xx/5xx HTTP response from
     /// the server bubbles up immediately, since those indicate a
     /// configuration bug rather than a transient outage.
+    #[tracing::instrument(level = "debug", skip_all, fields(url = %url, max_attempts = policy.max_attempts))]
     pub async fn connect_with_backoff(
         url: &str,
         policy: RetryPolicy,
@@ -300,6 +303,7 @@ impl WsConnection {
     /// failure the old sink/stream have already been dropped, so the
     /// `WsConnection` is no longer usable and the caller should surface the
     /// error or drop the connection.
+    #[tracing::instrument(level = "info", skip_all, fields(url = %self.url))]
     pub async fn reconnect(&mut self) -> PirResult<()> {
         // Drop the old transport first so any half-open OS socket is
         // released before we start a fresh handshake. `connect_async`

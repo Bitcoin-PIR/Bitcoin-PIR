@@ -1425,9 +1425,41 @@ _(none — all P1 items closed.)_
       `--features onion` checks clean. 🔒 Padding invariants
       preserved — error taxonomy sits above the query code that owns
       K=75 INDEX / K_CHUNK=80 CHUNK / 25-MERKLE padding.
-- [ ] **Observability beyond `[PIR-AUDIT]`.** Add `tracing` spans,
-      per-client metrics (query count, bytes in/out, round-trip
-      latency), progress callbacks for long syncs.
+- [~] **Observability beyond `[PIR-AUDIT]`.** Phase 1 (tracing
+      spans) landed; Phase 2+ (metrics, WASM bindings for tracing,
+      per-transport byte counters) deferred.
+      * Phase 1 ✅ — `tracing` is an additive dep on `pir-sdk-client`
+        (with the `log` feature so existing `log::info!` calls still
+        surface through any installed subscriber). Every public
+        inherent + trait method on `DpfClient`, `HarmonyClient`, and
+        `OnionClient` is now annotated with
+        `#[tracing::instrument(level = …, skip_all, fields(backend =
+        "dpf"/"harmony"/"onion", …))]`. `WsConnection::{connect,
+        connect_once, connect_with_backoff, reconnect}` carry
+        equivalent lifecycle spans. Span levels follow a three-tier
+        scheme: `info` for top-level user ops (`sync` / `connect` /
+        `disconnect` / `reconnect`), `debug` for sub-operations
+        (step execution, catalog fetch, inspector/verify paths),
+        `trace` for per-query inner loops (`query_index_level` /
+        `query_chunk_level` / `query_single`). Recorded fields skip
+        binary payloads, `Arc`s, and secrets; they carry only
+        scalars / URLs / display-string identifiers. `skip_all`
+        guards against accidental injection of large values. One
+        `tracing_instrument_emits_backend_field_for_<backend>` smoke
+        test per client captures the formatted span output through
+        an in-memory `MakeWriter` and asserts the span name +
+        `backend=` field are present, so future renames /
+        accidental `#[tracing::instrument]` removal fail at test
+        time. Test totals: `pir-sdk-client` lib tests 98 → 101.
+        `tracing-subscriber` is a dev-dep only — no subscriber is
+        forced on downstream callers. No-op unless an application
+        installs one.
+      * Phase 2+ (deferred): per-client metrics trait +
+        recorder (query count / bytes-in / bytes-out / round-trip
+        latency histograms), WASM bindings for tracing
+        (`pir-sdk-wasm` needs a `tracing` feature + a web-compatible
+        subscriber adapter), per-transport byte counters surfaced
+        through `PirTransport`.
 
 ## P3 — Polish & ship
 
@@ -1728,6 +1760,8 @@ the web client indefinitely because SEAL does not compile to
 wasm32.)_
 
 Other tractable P2 items that are unblocked:
-Observability (`tracing` spans + per-client metrics, progress
-callbacks for long syncs). Independent of the (now complete) TS
-retirement and error taxonomy.
+Observability Phase 2 (per-client metrics + WASM-side tracing
+subscriber + per-transport byte counters). Phase 1 (`tracing`
+spans on public methods) is complete — see the `[~]` entry above.
+Independent of the (now complete) TS retirement and error
+taxonomy.

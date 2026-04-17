@@ -339,6 +339,7 @@ impl OnionClient {
     /// [`PirClient::fetch_catalog`]. Tests that want to bypass the wire
     /// entirely should drive query primitives directly, not through
     /// `sync_with_plan`.
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion"))]
     pub fn connect_with_transport(&mut self, conn: Box<dyn PirTransport>) {
         self.conn = Some(conn);
     }
@@ -399,6 +400,7 @@ impl OnionClient {
 
     /// Execute a single sync step for a batch of script hashes.
     #[cfg(feature = "onion")]
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion", db_id = _step.db_id, step = %_step.name, height = _step.tip_height, num_queries = script_hashes.len()))]
     async fn execute_step(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -546,6 +548,7 @@ impl OnionClient {
     /// verify to the respective sub-tree roots. On any failure, that query's
     /// result is set to `None` so untrusted data never reaches the caller.
     #[cfg(feature = "onion")]
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion", db_id = db_info.db_id))]
     async fn run_merkle_verification(
         &mut self,
         results: &mut [Option<QueryResult>],
@@ -672,6 +675,7 @@ impl OnionClient {
 
     /// Placeholder fallback when the `onion` feature is disabled.
     #[cfg(not(feature = "onion"))]
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion", db_id = _step.db_id, step = %_step.name, height = _step.tip_height, num_queries = script_hashes.len()))]
     async fn execute_step(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -908,6 +912,7 @@ impl OnionClient {
     }
 
     #[cfg(feature = "onion")]
+    #[tracing::instrument(level = "trace", skip_all, fields(backend = "onion", db_id = db_info.db_id, num_queries = script_hashes.len()))]
     async fn query_index_level(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1036,6 +1041,7 @@ impl OnionClient {
     }
 
     #[cfg(feature = "onion")]
+    #[tracing::instrument(level = "trace", skip_all, fields(backend = "onion", db_id = db_info.db_id))]
     async fn query_chunk_level(
         &mut self,
         _script_hashes: &[ScriptHash],
@@ -1195,6 +1201,7 @@ impl PirClient for OnionClient {
         PirBackendType::Onion
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(backend = "onion", server = %self.server_url))]
     async fn connect(&mut self) -> PirResult<()> {
         log::info!("Connecting to OnionPIR server: {}", self.server_url);
 
@@ -1219,6 +1226,7 @@ impl PirClient for OnionClient {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(backend = "onion"))]
     async fn disconnect(&mut self) -> PirResult<()> {
         if let Some(ref mut conn) = self.conn {
             let _ = conn.close().await;
@@ -1239,6 +1247,7 @@ impl PirClient for OnionClient {
         self.conn.is_some()
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion"))]
     async fn fetch_catalog(&mut self) -> PirResult<DatabaseCatalog> {
         if !self.is_connected() {
             return Err(PirError::NotConnected);
@@ -1262,6 +1271,7 @@ impl PirClient for OnionClient {
         compute_sync_plan(catalog, last_height)
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(backend = "onion", num_queries = script_hashes.len(), last_height = ?last_height))]
     async fn sync(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1278,6 +1288,7 @@ impl PirClient for OnionClient {
         self.sync_with_plan(script_hashes, &plan, None).await
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion", num_queries = script_hashes.len(), num_steps = plan.steps.len(), target_height = plan.target_height, is_fresh_sync = plan.is_fresh_sync))]
     async fn sync_with_plan(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1333,6 +1344,7 @@ impl PirClient for OnionClient {
         })
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion", db_id, num_queries = script_hashes.len()))]
     async fn query_batch(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -2314,5 +2326,66 @@ mod tests {
             "wss://mock-onion",
         )));
         assert!(client.is_connected());
+    }
+
+    // ─── Tracing smoke test ──────────────────────────────────────────────
+    //
+    // Companion to `tracing_instrument_emits_backend_field_for_dpf` in
+    // `dpf.rs` — proves the OnionClient span carries `backend="onion"`
+    // so future maintainers can find OnionPIR-specific traces via a
+    // single `backend=onion` filter.
+
+    #[derive(Clone)]
+    struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufferWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+        type Writer = BufferWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn tracing_instrument_emits_backend_field_for_onion() {
+        use crate::transport::mock::MockTransport;
+        use tracing_subscriber::fmt;
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = fmt::Subscriber::builder()
+            .with_span_events(fmt::format::FmtSpan::CLOSE)
+            .with_writer(BufferWriter(buf.clone()))
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut client = OnionClient::new("wss://mock-onion");
+            client.connect_with_transport(Box::new(MockTransport::new(
+                "wss://mock-onion",
+            )));
+        });
+
+        let captured = String::from_utf8(buf.lock().unwrap().clone())
+            .expect("tracing writer produced valid UTF-8");
+        assert!(
+            captured.contains("connect_with_transport"),
+            "expected span name in captured output, got: {}",
+            captured
+        );
+        assert!(
+            captured.contains("backend=\"onion\""),
+            "expected backend=\"onion\" field in captured output, got: {}",
+            captured
+        );
     }
 }

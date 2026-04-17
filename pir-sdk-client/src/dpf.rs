@@ -280,6 +280,7 @@ impl DpfClient {
     /// so `fetch_catalog` / `sync_with_plan` work as usual.
     ///
     /// [`MockTransport`]: crate::transport::MockTransport
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "dpf"))]
     pub fn connect_with_transport(
         &mut self,
         conn0: Box<dyn PirTransport>,
@@ -340,6 +341,17 @@ impl DpfClient {
     /// cuckoo position inspected (two per not-found query) and every CHUNK bin
     /// that returned data. Items whose Merkle proof fails are zeroed (treated
     /// as unverified; callers should treat them as an unknown/error state).
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(
+            backend = "dpf",
+            db_id = _step.db_id,
+            step = %_step.name,
+            height = _step.tip_height,
+            num_queries = script_hashes.len(),
+        )
+    )]
     async fn execute_step(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -389,6 +401,11 @@ impl DpfClient {
     /// the standalone [`verify_merkle_batch_for_results`](Self::verify_merkle_batch_for_results)
     /// API — items come from the per-query [`QueryTraces`], but the verifier
     /// itself is shared.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "dpf", db_id = db_info.db_id)
+    )]
     async fn run_merkle_verification(
         &mut self,
         results: &mut [Option<QueryResult>],
@@ -605,6 +622,11 @@ impl DpfClient {
     ///
     /// Padding invariant: the underlying PIR batch always covers all K groups
     /// regardless of match outcome (CLAUDE.md privacy requirement).
+    #[tracing::instrument(
+        level = "trace",
+        skip_all,
+        fields(backend = "dpf", db_id = db_info.db_id)
+    )]
     async fn query_index_level(
         &mut self,
         script_hash: &ScriptHash,
@@ -774,6 +796,11 @@ impl DpfClient {
     ///
     /// Padding invariant: each round emits exactly K_CHUNK DPF queries
     /// regardless of how many real chunks that round carries.
+    #[tracing::instrument(
+        level = "trace",
+        skip_all,
+        fields(backend = "dpf", db_id = db_info.db_id)
+    )]
     async fn query_chunk_level(
         &mut self,
         chunk_ids: &[u32],
@@ -965,6 +992,11 @@ impl DpfClient {
     /// CHUNK groups per round, random dummy DPF keys fill empty slots.
     /// This method only changes whether the client further requests
     /// Merkle siblings, not what the server sees at the query layer.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "dpf", db_id, num_queries = script_hashes.len())
+    )]
     pub async fn query_batch_with_inspector(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1043,6 +1075,11 @@ impl DpfClient {
     /// caller supplies items built from INDEX_CUCKOO_NUM_HASHES probes
     /// per query, and the shared verifier pads each level's sibling
     /// batch to 25 siblings (see CLAUDE.md "Query Padding").
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "dpf", db_id, num_results = results.len())
+    )]
     pub async fn verify_merkle_batch_for_results(
         &mut self,
         results: &[Option<QueryResult>],
@@ -1110,6 +1147,11 @@ impl DpfClient {
     ///
     /// Padding invariants are preserved — progress is purely
     /// observational and doesn't change what's sent on the wire.
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "dpf", num_queries = script_hashes.len(), last_height = ?last_height)
+    )]
     pub async fn sync_with_progress(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1188,6 +1230,7 @@ impl PirClient for DpfClient {
         PirBackendType::Dpf
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(backend = "dpf", server0 = %self.server0_url, server1 = %self.server1_url))]
     async fn connect(&mut self) -> PirResult<()> {
         log::info!(
             "Connecting to servers: {}, {}",
@@ -1247,6 +1290,7 @@ impl PirClient for DpfClient {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(backend = "dpf"))]
     async fn disconnect(&mut self) -> PirResult<()> {
         if let Some(ref mut conn) = self.conn0 {
             let _ = conn.close().await;
@@ -1265,6 +1309,7 @@ impl PirClient for DpfClient {
         self.conn0.is_some() && self.conn1.is_some()
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "dpf"))]
     async fn fetch_catalog(&mut self) -> PirResult<DatabaseCatalog> {
         if !self.is_connected() {
             return Err(PirError::NotConnected);
@@ -1307,6 +1352,11 @@ impl PirClient for DpfClient {
         compute_sync_plan(catalog, last_height)
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(backend = "dpf", num_queries = script_hashes.len(), last_height = ?last_height)
+    )]
     async fn sync(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1325,6 +1375,17 @@ impl PirClient for DpfClient {
         self.sync_with_plan(script_hashes, &plan, None).await
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(
+            backend = "dpf",
+            num_queries = script_hashes.len(),
+            num_steps = plan.steps.len(),
+            target_height = plan.target_height,
+            is_fresh_sync = plan.is_fresh_sync,
+        )
+    )]
     async fn sync_with_plan(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1381,6 +1442,11 @@ impl PirClient for DpfClient {
         })
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(backend = "dpf", db_id, num_queries = script_hashes.len())
+    )]
     async fn query_batch(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -1771,5 +1837,83 @@ mod tests {
         assert_eq!(ConnectionState::Connecting.as_str(), "connecting");
         assert_eq!(ConnectionState::Connected.as_str(), "connected");
         assert_eq!(ConnectionState::Disconnected.as_str(), "disconnected");
+    }
+
+    // ─── Tracing smoke test ──────────────────────────────────────────────
+    //
+    // Captures the formatted span output emitted by
+    // `#[tracing::instrument]` on inherent methods, so that a future
+    // accidental `#[tracing::instrument]` removal or field-name rename is
+    // caught at test time. We install a scoped subscriber backed by a
+    // shared `Vec<u8>` buffer, run the instrumented method, then parse
+    // the captured bytes and assert on the contained span name + fields.
+    //
+    // The subscriber is scoped via `with_default`, not
+    // `set_global_default` — global subscribers can only be set once per
+    // process, and this test has to coexist with the other crate tests.
+    // Scoped subscribers are per-async-task / per-thread and cleaned up
+    // when the guard drops.
+
+    /// `MakeWriter` adapter over an `Arc<Mutex<Vec<u8>>>` so
+    /// `tracing_subscriber::fmt` can append formatted events to a shared
+    /// in-memory buffer that the test assertion can read back.
+    #[derive(Clone)]
+    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufferWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+        type Writer = BufferWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn tracing_instrument_emits_backend_field_for_dpf() {
+        use tracing_subscriber::fmt;
+
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = fmt::Subscriber::builder()
+            // `span::close` events are what `instrument` emits at method
+            // exit; we enable them so the formatter records the span's
+            // recorded fields after the method returns.
+            .with_span_events(fmt::format::FmtSpan::CLOSE)
+            .with_writer(BufferWriter(buf.clone()))
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+            client.connect_with_transport(
+                Box::new(MockTransport::new("wss://mock-0")),
+                Box::new(MockTransport::new("wss://mock-1")),
+            );
+        });
+
+        let captured = String::from_utf8(buf.lock().unwrap().clone())
+            .expect("tracing writer produced valid UTF-8");
+        // The `connect_with_transport` span must:
+        //  (a) fire on the close event (= method returned), and
+        //  (b) carry `backend="dpf"` as a recorded field.
+        assert!(
+            captured.contains("connect_with_transport"),
+            "expected span name in captured output, got: {}",
+            captured
+        );
+        assert!(
+            captured.contains("backend=\"dpf\""),
+            "expected backend=\"dpf\" field in captured output, got: {}",
+            captured
+        );
     }
 }
