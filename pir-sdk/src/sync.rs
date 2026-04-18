@@ -244,13 +244,18 @@ pub struct DeltaData {
 
 /// Decode delta data from raw chunk bytes.
 ///
-/// Delta format:
+/// Delta format (matches `build/src/delta_gen_1_build_chunks.rs` and
+/// `web/src/codec.ts::decodeDeltaData`):
 /// ```text
 /// [varint num_spent]
-/// [num_spent × 36B spent outpoints]
+///   per spent: [32B txid][varint vout]
 /// [varint num_new]
-/// [num_new × (32B txid + 4B vout_le + 8B amount_le)]
+///   per new:   [32B txid][varint vout][varint amount]
 /// ```
+///
+/// Spent outpoints are materialized as `[32B txid][4B vout_le]` (36 bytes)
+/// in memory so they match `UtxoEntry::outpoint()` for the spent-set lookup
+/// in `apply_delta_data`; the wire format itself is varint-encoded.
 pub fn decode_delta_data(raw: &[u8]) -> PirResult<DeltaData> {
     let mut pos = 0;
 
@@ -258,39 +263,49 @@ pub fn decode_delta_data(raw: &[u8]) -> PirResult<DeltaData> {
     let (num_spent, consumed) = read_varint(&raw[pos..])?;
     pos += consumed;
 
-    // Read spent outpoints
+    // Read spent outpoints: [32B txid][varint vout]
     let mut spent = Vec::with_capacity(num_spent as usize);
     for _ in 0..num_spent {
-        if pos + 36 > raw.len() {
-            return Err(PirError::Decode("truncated spent outpoint".into()));
+        if pos + 32 > raw.len() {
+            return Err(PirError::Decode("truncated spent txid".into()));
         }
         let mut outpoint = [0u8; 36];
-        outpoint.copy_from_slice(&raw[pos..pos + 36]);
+        outpoint[..32].copy_from_slice(&raw[pos..pos + 32]);
+        pos += 32;
+
+        let (vout, consumed) = read_varint(&raw[pos..])?;
+        pos += consumed;
+        if vout > u32::MAX as u64 {
+            return Err(PirError::Decode("spent vout exceeds u32".into()));
+        }
+        outpoint[32..36].copy_from_slice(&(vout as u32).to_le_bytes());
         spent.push(outpoint);
-        pos += 36;
     }
 
     // Read num_new as varint
     let (num_new, consumed) = read_varint(&raw[pos..])?;
     pos += consumed;
 
-    // Read new UTXOs
+    // Read new UTXOs: [32B txid][varint vout][varint amount]
     let mut new_utxos = Vec::with_capacity(num_new as usize);
     for _ in 0..num_new {
-        if pos + 44 > raw.len() {
-            return Err(PirError::Decode("truncated new UTXO".into()));
+        if pos + 32 > raw.len() {
+            return Err(PirError::Decode("truncated new UTXO txid".into()));
         }
         let mut txid = [0u8; 32];
         txid.copy_from_slice(&raw[pos..pos + 32]);
         pos += 32;
 
-        let vout = u32::from_le_bytes(raw[pos..pos + 4].try_into().unwrap());
-        pos += 4;
+        let (vout, consumed) = read_varint(&raw[pos..])?;
+        pos += consumed;
+        if vout > u32::MAX as u64 {
+            return Err(PirError::Decode("new UTXO vout exceeds u32".into()));
+        }
 
-        let amount_sats = u64::from_le_bytes(raw[pos..pos + 8].try_into().unwrap());
-        pos += 8;
+        let (amount_sats, consumed) = read_varint(&raw[pos..])?;
+        pos += consumed;
 
-        new_utxos.push(UtxoEntry { txid, vout, amount_sats });
+        new_utxos.push(UtxoEntry { txid, vout: vout as u32, amount_sats });
     }
 
     Ok(DeltaData { spent, new_utxos })
@@ -583,17 +598,18 @@ mod tests {
     // ─── merkle_verified propagation tests ───────────────────────────────
 
     /// Encode a delta payload containing no spends and a single new UTXO.
-    /// Mirrors the on-wire format in `decode_delta_data`.
+    /// Mirrors the on-wire format built by `delta_gen_1_build_chunks.rs`
+    /// and consumed by `decode_delta_data`.
     fn encode_delta_one_new(new: &UtxoEntry) -> Vec<u8> {
         let mut out = Vec::new();
         // spent_count varint = 0
-        out.push(0);
+        push_varint(&mut out, 0);
         // new_count varint = 1
-        out.push(1);
-        // 44 bytes per entry: txid(32) || vout_le(4) || amount_le(8)
+        push_varint(&mut out, 1);
+        // Per entry: txid(32) || varint vout || varint amount
         out.extend_from_slice(&new.txid);
-        out.extend_from_slice(&new.vout.to_le_bytes());
-        out.extend_from_slice(&new.amount_sats.to_le_bytes());
+        push_varint(&mut out, new.vout as u64);
+        push_varint(&mut out, new.amount_sats);
         out
     }
 
@@ -699,5 +715,92 @@ mod tests {
         assert!(QueryResult::empty().merkle_verified);
         assert!(QueryResult::with_entries(vec![]).merkle_verified);
         assert!(QueryResult::default().merkle_verified);
+    }
+
+    // ─── Wire-format compatibility tests ─────────────────────────────────
+    //
+    // The build pipeline (`build/src/delta_gen_1_build_chunks.rs:88-108`
+    // and `delta_gen_1_onion.rs:300-317`) encodes delta chunks as:
+    //   [varint num_spent]
+    //     per spent: [32B txid][varint vout]
+    //   [varint num_new]
+    //     per new:   [32B txid][varint vout][varint amount]
+    // The TS decoder in `web/src/codec.ts::decodeDeltaData` matches this.
+    // `decode_delta_data` must agree byte-for-byte.
+
+    fn push_varint(out: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    /// Encode one spent + two new entries using the real on-wire varint
+    /// format. Mirrors `build/src/delta_gen_1_build_chunks.rs`.
+    fn encode_wire_format_sample() -> (Vec<u8>, UtxoEntry, UtxoEntry, [u8; 36]) {
+        let spent_txid = [0xAAu8; 32];
+        let spent_vout: u32 = 3;
+        let mut spent_outpoint = [0u8; 36];
+        spent_outpoint[..32].copy_from_slice(&spent_txid);
+        spent_outpoint[32..36].copy_from_slice(&spent_vout.to_le_bytes());
+
+        let new1 = UtxoEntry {
+            txid: [0xBBu8; 32],
+            vout: 0,
+            amount_sats: 42,
+        };
+        let new2 = UtxoEntry {
+            txid: [0xCCu8; 32],
+            vout: 500, // > 127 to force a 2-byte varint
+            amount_sats: 100_000_000, // 1 BTC — multi-byte varint
+        };
+
+        let mut out = Vec::new();
+        // num_spent
+        push_varint(&mut out, 1);
+        out.extend_from_slice(&spent_txid);
+        push_varint(&mut out, spent_vout as u64);
+        // num_new
+        push_varint(&mut out, 2);
+        out.extend_from_slice(&new1.txid);
+        push_varint(&mut out, new1.vout as u64);
+        push_varint(&mut out, new1.amount_sats);
+        out.extend_from_slice(&new2.txid);
+        push_varint(&mut out, new2.vout as u64);
+        push_varint(&mut out, new2.amount_sats);
+
+        (out, new1, new2, spent_outpoint)
+    }
+
+    #[test]
+    fn decode_delta_data_matches_wire_format() {
+        let (raw, new1, new2, spent_outpoint) = encode_wire_format_sample();
+        let decoded = decode_delta_data(&raw).expect("decode must succeed");
+
+        assert_eq!(decoded.spent.len(), 1, "exactly one spent outpoint");
+        assert_eq!(decoded.spent[0], spent_outpoint);
+
+        assert_eq!(decoded.new_utxos.len(), 2, "exactly two new utxos");
+        assert_eq!(decoded.new_utxos[0], new1);
+        assert_eq!(decoded.new_utxos[1], new2);
+    }
+
+    #[test]
+    fn decode_delta_data_rejects_truncated_varint_amount() {
+        // Build a valid prefix: 0 spent + 1 new whose amount varint is cut off.
+        let mut out = Vec::new();
+        push_varint(&mut out, 0); // num_spent = 0
+        push_varint(&mut out, 1); // num_new = 1
+        out.extend_from_slice(&[0xDDu8; 32]);
+        push_varint(&mut out, 0); // vout = 0
+        out.push(0x80); // amount varint: continuation bit set but no follow-up
+        assert!(decode_delta_data(&out).is_err());
     }
 }
