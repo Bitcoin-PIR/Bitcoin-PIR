@@ -5,28 +5,28 @@ let wasm_bindgen = (function(exports) {
     }
 
     /**
-     * Per-PBC-bucket HarmonyPIR client state.
+     * Per-PBC-group HarmonyPIR client state.
      */
-    class HarmonyBucket {
+    class HarmonyGroup {
         static __wrap(ptr) {
             ptr = ptr >>> 0;
-            const obj = Object.create(HarmonyBucket.prototype);
+            const obj = Object.create(HarmonyGroup.prototype);
             obj.__wbg_ptr = ptr;
-            HarmonyBucketFinalization.register(obj, obj.__wbg_ptr, obj);
+            HarmonyGroupFinalization.register(obj, obj.__wbg_ptr, obj);
             return obj;
         }
         __destroy_into_raw() {
             const ptr = this.__wbg_ptr;
             this.__wbg_ptr = 0;
-            HarmonyBucketFinalization.unregister(this);
+            HarmonyGroupFinalization.unregister(this);
             return ptr;
         }
         free() {
             const ptr = this.__destroy_into_raw();
-            wasm.__wbg_harmonybucket_free(ptr, 0);
+            wasm.__wbg_harmonygroup_free(ptr, 0);
         }
         /**
-         * Build a dummy request for a bucket the client doesn't actually need.
+         * Build a dummy request for a group the client doesn't actually need.
          *
          * Picks a random bin in `[0, real_n)` and builds a real-looking request.
          * The client discards the server's response — **no `process_response`
@@ -46,7 +46,7 @@ let wasm_bindgen = (function(exports) {
          * @returns {HarmonyRequest}
          */
         build_dummy_request() {
-            const ret = wasm.harmonybucket_build_dummy_request(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_build_dummy_request(this.__wbg_ptr);
             if (ret[2]) {
                 throw takeFromExternrefTable0(ret[1]);
             }
@@ -62,7 +62,7 @@ let wasm_bindgen = (function(exports) {
          * @returns {HarmonyRequest}
          */
         build_request(q) {
-            const ret = wasm.harmonybucket_build_request(this.__wbg_ptr, q);
+            const ret = wasm.harmonygroup_build_request(this.__wbg_ptr, q);
             if (ret[2]) {
                 throw takeFromExternrefTable0(ret[1]);
             }
@@ -92,38 +92,38 @@ let wasm_bindgen = (function(exports) {
          * @returns {Uint8Array}
          */
         build_synthetic_dummy() {
-            const ret = wasm.harmonybucket_build_synthetic_dummy(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_build_synthetic_dummy(this.__wbg_ptr);
             var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
             wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
             return v1;
         }
         /**
-         * Restore a bucket from serialized bytes.
+         * Restore a group from serialized bytes.
          *
          * Reconstructs the PRP from key + params (+ cache for FastPRP),
          * creates a fresh DS', then replays all relocated segments to
          * restore the exact same DS' state.
          * @param {Uint8Array} data
          * @param {Uint8Array} prp_key
-         * @param {number} bucket_id
-         * @returns {HarmonyBucket}
+         * @param {number} group_id
+         * @returns {HarmonyGroup}
          */
-        static deserialize(data, prp_key, bucket_id) {
+        static deserialize(data, prp_key, group_id) {
             const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
             const ptr1 = passArray8ToWasm0(prp_key, wasm.__wbindgen_malloc);
             const len1 = WASM_VECTOR_LEN;
-            const ret = wasm.harmonybucket_deserialize(ptr0, len0, ptr1, len1, bucket_id);
+            const ret = wasm.harmonygroup_deserialize(ptr0, len0, ptr1, len1, group_id);
             if (ret[2]) {
                 throw takeFromExternrefTable0(ret[1]);
             }
-            return HarmonyBucket.__wrap(ret[0]);
+            return HarmonyGroup.__wrap(ret[0]);
         }
         /**
          * Complete the deferred relocation from a prior `process_response_xor_only` call.
          */
         finish_relocation() {
-            const ret = wasm.harmonybucket_finish_relocation(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_finish_relocation(this.__wbg_ptr);
             if (ret[1]) {
                 throw takeFromExternrefTable0(ret[0]);
             }
@@ -135,7 +135,7 @@ let wasm_bindgen = (function(exports) {
         load_hints(hints_data) {
             const ptr0 = passArray8ToWasm0(hints_data, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.harmonybucket_load_hints(this.__wbg_ptr, ptr0, len0);
+            const ret = wasm.harmonygroup_load_hints(this.__wbg_ptr, ptr0, len0);
             if (ret[1]) {
                 throw takeFromExternrefTable0(ret[0]);
             }
@@ -144,14 +144,14 @@ let wasm_bindgen = (function(exports) {
          * @returns {number}
          */
         m() {
-            const ret = wasm.harmonybucket_m(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_m(this.__wbg_ptr);
             return ret >>> 0;
         }
         /**
          * @returns {number}
          */
         max_queries() {
-            const ret = wasm.harmonybucket_max_queries(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_max_queries(this.__wbg_ptr);
             return ret >>> 0;
         }
         /**
@@ -159,26 +159,26 @@ let wasm_bindgen = (function(exports) {
          * @returns {number}
          */
         n() {
-            const ret = wasm.harmonybucket_n(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_n(this.__wbg_ptr);
             return ret >>> 0;
         }
         /**
-         * Create a new HarmonyBucket with Hoang PRP (default).
+         * Create a new HarmonyGroup with HMR12 PRP (default).
          * @param {number} n
          * @param {number} w
          * @param {number} t
          * @param {Uint8Array} prp_key
-         * @param {number} bucket_id
+         * @param {number} group_id
          */
-        constructor(n, w, t, prp_key, bucket_id) {
+        constructor(n, w, t, prp_key, group_id) {
             const ptr0 = passArray8ToWasm0(prp_key, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.harmonybucket_new(n, w, t, ptr0, len0, bucket_id);
+            const ret = wasm.harmonygroup_new(n, w, t, ptr0, len0, group_id);
             if (ret[2]) {
                 throw takeFromExternrefTable0(ret[1]);
             }
             this.__wbg_ptr = ret[0] >>> 0;
-            HarmonyBucketFinalization.register(this, this.__wbg_ptr, this);
+            HarmonyGroupFinalization.register(this, this.__wbg_ptr, this);
             return this;
         }
         /**
@@ -191,18 +191,18 @@ let wasm_bindgen = (function(exports) {
          * @param {number} w
          * @param {number} t
          * @param {Uint8Array} prp_key
-         * @param {number} bucket_id
+         * @param {number} group_id
          * @param {number} prp_backend
-         * @returns {HarmonyBucket}
+         * @returns {HarmonyGroup}
          */
-        static new_with_backend(n, w, t, prp_key, bucket_id, prp_backend) {
+        static new_with_backend(n, w, t, prp_key, group_id, prp_backend) {
             const ptr0 = passArray8ToWasm0(prp_key, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.harmonybucket_new_with_backend(n, w, t, ptr0, len0, bucket_id, prp_backend);
+            const ret = wasm.harmonygroup_new_with_backend(n, w, t, ptr0, len0, group_id, prp_backend);
             if (ret[2]) {
                 throw takeFromExternrefTable0(ret[1]);
             }
-            return HarmonyBucket.__wrap(ret[0]);
+            return HarmonyGroup.__wrap(ret[0]);
         }
         /**
          * Process the Query Server's response and recover the target entry.
@@ -215,7 +215,7 @@ let wasm_bindgen = (function(exports) {
         process_response(response) {
             const ptr0 = passArray8ToWasm0(response, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.harmonybucket_process_response(this.__wbg_ptr, ptr0, len0);
+            const ret = wasm.harmonygroup_process_response(this.__wbg_ptr, ptr0, len0);
             if (ret[3]) {
                 throw takeFromExternrefTable0(ret[2]);
             }
@@ -226,14 +226,14 @@ let wasm_bindgen = (function(exports) {
         /**
          * Fast path: recover the answer via XOR only, deferring relocation.
          *
-         * Call `finish_relocation()` before the next query on this bucket.
+         * Call `finish_relocation()` before the next query on this group.
          * @param {Uint8Array} response
          * @returns {Uint8Array}
          */
         process_response_xor_only(response) {
             const ptr0 = passArray8ToWasm0(response, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.harmonybucket_process_response_xor_only(this.__wbg_ptr, ptr0, len0);
+            const ret = wasm.harmonygroup_process_response_xor_only(this.__wbg_ptr, ptr0, len0);
             if (ret[3]) {
                 throw takeFromExternrefTable0(ret[2]);
             }
@@ -245,21 +245,21 @@ let wasm_bindgen = (function(exports) {
          * @returns {number}
          */
         prp_backend() {
-            const ret = wasm.harmonybucket_prp_backend(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_prp_backend(this.__wbg_ptr);
             return ret;
         }
         /**
          * @returns {number}
          */
         queries_remaining() {
-            const ret = wasm.harmonybucket_queries_remaining(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_queries_remaining(this.__wbg_ptr);
             return ret >>> 0;
         }
         /**
          * @returns {number}
          */
         queries_used() {
-            const ret = wasm.harmonybucket_queries_used(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_queries_used(this.__wbg_ptr);
             return ret >>> 0;
         }
         /**
@@ -267,11 +267,11 @@ let wasm_bindgen = (function(exports) {
          * @returns {number}
          */
         real_n() {
-            const ret = wasm.harmonybucket_real_n(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_real_n(this.__wbg_ptr);
             return ret >>> 0;
         }
         /**
-         * Serialize this bucket's full mutable state to bytes.
+         * Serialize this group's full mutable state to bytes.
          *
          * Format:
          * ```text
@@ -283,7 +283,7 @@ let wasm_bindgen = (function(exports) {
          * @returns {Uint8Array}
          */
         serialize() {
-            const ret = wasm.harmonybucket_serialize(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_serialize(this.__wbg_ptr);
             var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
             wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
             return v1;
@@ -292,19 +292,19 @@ let wasm_bindgen = (function(exports) {
          * @returns {number}
          */
         t() {
-            const ret = wasm.harmonybucket_t(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_t(this.__wbg_ptr);
             return ret >>> 0;
         }
         /**
          * @returns {number}
          */
         w() {
-            const ret = wasm.harmonybucket_w(this.__wbg_ptr);
+            const ret = wasm.harmonygroup_w(this.__wbg_ptr);
             return ret >>> 0;
         }
     }
-    if (Symbol.dispose) HarmonyBucket.prototype[Symbol.dispose] = HarmonyBucket.prototype.free;
-    exports.HarmonyBucket = HarmonyBucket;
+    if (Symbol.dispose) HarmonyGroup.prototype[Symbol.dispose] = HarmonyGroup.prototype.free;
+    exports.HarmonyGroup = HarmonyGroup;
 
     class HarmonyRequest {
         static __wrap(ptr) {
@@ -405,9 +405,9 @@ let wasm_bindgen = (function(exports) {
         };
     }
 
-    const HarmonyBucketFinalization = (typeof FinalizationRegistry === 'undefined')
+    const HarmonyGroupFinalization = (typeof FinalizationRegistry === 'undefined')
         ? { register: () => {}, unregister: () => {} }
-        : new FinalizationRegistry(ptr => wasm.__wbg_harmonybucket_free(ptr >>> 0, 1));
+        : new FinalizationRegistry(ptr => wasm.__wbg_harmonygroup_free(ptr >>> 0, 1));
     const HarmonyRequestFinalization = (typeof FinalizationRegistry === 'undefined')
         ? { register: () => {}, unregister: () => {} }
         : new FinalizationRegistry(ptr => wasm.__wbg_harmonyrequest_free(ptr >>> 0, 1));
