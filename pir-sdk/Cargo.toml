@@ -42,3 +42,14 @@ serde = ["dep:serde"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Criterion drives the `sync_plan` micro-benchmark suite. dev-dep only —
+# downstream callers that just want `pir_sdk::compute_sync_plan` don't pay
+# for it. Pinned to the 0.5 line because that's the latest stable.
+criterion = "0.5"
+
+# Custom Criterion bench: the `harness = false` switch tells Cargo not to
+# inject the libtest harness, so `criterion_main!` in the bench file owns
+# the entry point. Run with `cargo bench -p pir-sdk --bench sync_plan`.
+[[bench]]
+name = "sync_plan"
+harness = false

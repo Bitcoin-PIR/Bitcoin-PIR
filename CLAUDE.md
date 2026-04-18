@@ -1945,12 +1945,104 @@ Short-term active work:
   (don't relax) the padding + INDEX-Merkle symmetry rules
   from this file's CRITICAL SECURITY REQUIREMENTS section.
 
+- **Delta sync chain optimizations (P3 #4 in
+  [SDK_ROADMAP.md](SDK_ROADMAP.md)).** Refactored
+  `pir-sdk/src/sync.rs::compute_sync_plan` and
+  `find_delta_chain` around a new `SyncPlanner<'a>` type
+  that pins a catalog and caches its `base_height →
+  deltas` adjacency map. The free `compute_sync_plan`
+  function is now a thin wrapper over `SyncPlanner::new
+  + plan` with an at-tip fast path that skips the
+  adjacency-map build entirely. Three internal wins
+  landed:
+  * **Single shared adjacency map.** Previously the
+    incremental BFS and the fall-back fresh-sync path
+    each rebuilt their own
+    `HashMap<u32, Vec<&DatabaseInfo>>` — the fall-back
+    path therefore paid for two map builds when an
+    over-bound chain forced fall-back. Now both branches
+    share one map cached on `SyncPlanner`.
+  * **Parent-pointer BFS.** Replaced the per-edge
+    `Vec<&DatabaseInfo>::clone()` with a flat
+    `BfsNode<'a>` arena (parent index + delta + depth)
+    and a `reconstruct_chain` helper that walks back
+    from the goal node. `O(depth × edges)` →
+    `O(depth)` allocations.
+  * **Tighter depth bound.** The original guard
+    `path.len() >= MAX_DELTA_CHAIN_LENGTH + 1` let BFS
+    explore one hop deeper than the caller could accept.
+    Now `depth >= MAX_DELTA_CHAIN_LENGTH` at enqueue,
+    so over-long chains are pruned before computation.
+  * Plus dead-code removal of the unreachable
+    `if height >= end_height { return Some(path); }`
+    check inside the loop body — only reachable via the
+    `delta.height >= end_height` early-return below,
+    which already returns the chain.
+
+  New Criterion bench harness
+  `pir-sdk/benches/sync_plan.rs` (run with `cargo bench
+  -p pir-sdk --bench sync_plan`) covers tiny (1F+5D) /
+  realistic (1F+50D) / stress (5F+200D) catalog shapes
+  × at_tip / 1-step / 5-step / 6-step-fallback /
+  fresh-sync queries plus a planner-reuse vs
+  free-function head-to-head. Measured speedups vs
+  pre-refactor baseline:
+  * 6-step fallback **~2× across all shapes** (closes
+    the double-build): tiny 2.24 µs → 1.08 µs,
+    realistic 6.67 µs → 3.31 µs, stress 21.8 µs →
+    11.1 µs.
+  * Tiny 5-step **1.79× faster** (1.47 µs → 822 ns) —
+    parent-pointer BFS removes Vec::clone overhead at
+    small chain depths.
+  * `SyncPlanner` reuse **4.1× faster** for 10 plans
+    against the realistic catalog
+    (32.2 µs → 7.79 µs) — the cache-reuse story made
+    visible. Recommended for multi-account wallets and
+    polling dashboards.
+  * At-tip path preserved at baseline (~4 ns / ~12 ns
+    / ~30 ns across shapes) thanks to the explicit
+    fast path in `compute_sync_plan` that skips
+    `SyncPlanner::new` entirely when no work is needed.
+
+  8 new unit tests in `sync::tests`:
+  `test_compute_sync_plan_incremental_max_chain` (5-step
+  in-bound), `test_compute_sync_plan_incremental_over_bound_falls_back`
+  (6-step → fresh sync),
+  `test_compute_sync_plan_incremental_short_chain`
+  (2-step), `test_sync_planner_reuse_across_multiple_plans`,
+  `test_sync_planner_empty_catalog_errors`,
+  `test_sync_planner_no_full_snapshot_fresh_sync_errors`,
+  `test_find_delta_chain_picks_shortest_path` (BFS
+  shortcut vs scenic route),
+  `test_find_delta_chain_no_path_returns_fresh`
+  (orphan deltas). Plus a `criterion = "0.5"` dev-dep
+  on `pir-sdk` (no impact on production builds —
+  bench-only).
+
+  Verification: `cargo test -p pir-sdk --lib` =
+  **56/56** (up from 48/48; 8 new), `cargo test -p
+  pir-sdk-client --lib` = 125/125, `cargo test -p
+  pir-sdk-wasm --lib` = 51/51, `cargo test -p pir-core
+  --lib` = 25/25; `cargo build --target
+  wasm32-unknown-unknown -p pir-sdk -p pir-sdk-wasm`
+  clean. `SyncPlanner` and `MAX_DELTA_CHAIN_LENGTH` are
+  re-exported from `pir_sdk` crate root alongside the
+  pre-existing `compute_sync_plan` / `SyncPlan` /
+  `SyncStep`. 🔒 Padding invariants unaffected —
+  `compute_sync_plan` is a pure planning function
+  returning a list of database IDs to query; the K=75
+  INDEX / K_CHUNK=80 CHUNK / 25-MERKLE padding lives
+  in the per-database query code that consumes the
+  plan, untouched by this work.
+
 ---
 
 ## Key Files
 - `pir-sdk/src/lib.rs` - SDK entry point
 - `pir-sdk/src/error.rs` - `PirError` + `ErrorKind` taxonomy + classification helpers
 - `pir-sdk/src/metrics.rs` - `PirMetrics` observer trait + `NoopMetrics` / `AtomicMetrics` (Phase 2 observability)
+- `pir-sdk/src/sync.rs` - `compute_sync_plan` + `SyncPlanner` + `merge_delta_batch` (P3 #4 delta sync chain optimization)
+- `pir-sdk/benches/sync_plan.rs` - Criterion bench harness for `compute_sync_plan` + `SyncPlanner` reuse (P3 #4)
 - `pir-sdk-wasm/src/lib.rs` - WASM bindings
 - `pir-sdk-wasm/src/merkle_verify.rs` - WASM per-bucket Merkle verifier
 - `pir-sdk-wasm/src/client.rs` - `WasmDpfClient` + `WasmHarmonyClient` wrappers
