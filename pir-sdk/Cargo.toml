@@ -20,6 +20,16 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 # Error handling
 thiserror = "1.0"
 
+# `web-time` is a drop-in for `std::time::{Instant, Duration}` that
+# uses `performance.now()` on `wasm32-unknown-unknown` and the standard
+# library on every other target. The crate handles the cfg-branch
+# internally — pir-sdk consumers just import `web_time::Instant` (or
+# the `pir_sdk::Instant` re-export) and the same code path works on
+# both native and wasm32. Used by `metrics::PirMetrics` to attach a
+# `Duration` to `on_query_end` for per-query latency tracking
+# (Phase 2+ observability tail).
+web-time = "1.1"
+
 [features]
 default = []
 serde = ["dep:serde"]

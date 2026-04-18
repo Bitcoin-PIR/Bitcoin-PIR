@@ -43,6 +43,12 @@ interface PirSdkWasm {
   WasmHarmonyClient: {
     new(hintServerUrl: string, queryServerUrl: string): WasmHarmonyClient;
   };
+  // Phase 2+ observability bridge — lock-free atomic counters shared between
+  // JavaScript and any client that has the recorder installed. See the
+  // `WasmAtomicMetrics` interface below for the JS-facing surface.
+  WasmAtomicMetrics: {
+    new(): WasmAtomicMetrics;
+  };
   PRP_HOANG: () => number;
   PRP_FASTPRP: () => number;
   PRP_ALF: () => number;
@@ -102,6 +108,15 @@ interface PirSdkWasm {
     siblingRowsFlat: Uint8Array,
     treeTops: WasmBucketMerkleTreeTops,
   ): boolean;
+  /**
+   * Install a `tracing-wasm` subscriber as the global `tracing` default,
+   * so the Phase 1 `#[tracing::instrument]` spans on the native
+   * `DpfClient` / `HarmonyClient` / `OnionClient` / `WsConnection` surface
+   * in the browser DevTools console. Call once at app startup after
+   * `await init()`. Subsequent calls are no-ops (guarded by
+   * `std::sync::Once`).
+   */
+  initTracingSubscriber(): void;
 }
 
 interface WasmBucketMerkleTreeTops {
@@ -148,6 +163,17 @@ interface WasmDpfClient {
   onStateChange(cb: (state: string) => void): void;
   /** Returns `[server0Url, server1Url]`. */
   serverUrls(): [string, string];
+  /** Install a `WasmAtomicMetrics` recorder. The recorder's counters are
+   *  shared (via an `Arc` clone) with the native `DpfClient`; all
+   *  subsequent connect / disconnect / byte / query-lifecycle events
+   *  increment the shared counters. Installing replaces any previous
+   *  recorder. */
+  setMetricsRecorder(metrics: WasmAtomicMetrics): void;
+  /** Remove any installed metrics recorder on this client. Counters
+   *  already observed by a `WasmAtomicMetrics` handle held by JS
+   *  continue to reflect the values at uninstall time — they don't
+   *  zero out. */
+  clearMetricsRecorder(): void;
 }
 
 interface WasmSyncPlan {
@@ -212,6 +238,76 @@ interface WasmHarmonyClient {
     lastHeight: number | null | undefined,
     progress: (step: string, detail: string) => void,
   ): Promise<any>;
+  /** Install a `WasmAtomicMetrics` recorder. Mirrors
+   *  `WasmDpfClient.setMetricsRecorder`; the same recorder can be
+   *  installed on multiple clients to aggregate counters across them. */
+  setMetricsRecorder(metrics: WasmAtomicMetrics): void;
+  /** Remove any installed metrics recorder on this client. */
+  clearMetricsRecorder(): void;
+}
+
+/**
+ * Plain-JS shape of one `WasmAtomicMetrics.snapshot()` observation.
+ *
+ * Every counter is a `u64` on the native side, surfaced to JS as a
+ * `bigint` to avoid the 2^53 precision ceiling on `Number`. Wrap with
+ * `Number(snap.bytesSent)` if you prefer `Number` arithmetic and the
+ * value is known to fit.
+ *
+ * Latency-snapshot semantics:
+ * - `totalQueryLatencyMicros` and `maxQueryLatencyMicros` are `0n`
+ *   when no completions have been recorded.
+ * - `minQueryLatencyMicros` is `0xFFFF_FFFF_FFFF_FFFFn` (the BigInt
+ *   form of `u64::MAX`) when no completions have been recorded.
+ *   Normalize via the comparison
+ *   `snap.minQueryLatencyMicros === 0xFFFF_FFFF_FFFF_FFFFn ? 0n : snap.minQueryLatencyMicros`
+ *   if a 0-when-empty value is preferable.
+ */
+interface AtomicMetricsSnapshot {
+  readonly queriesStarted: bigint;
+  readonly queriesCompleted: bigint;
+  readonly queryErrors: bigint;
+  readonly bytesSent: bigint;
+  readonly bytesReceived: bigint;
+  readonly framesSent: bigint;
+  readonly framesReceived: bigint;
+  readonly connects: bigint;
+  readonly disconnects: bigint;
+  /** Sum of every observed query duration in microseconds. */
+  readonly totalQueryLatencyMicros: bigint;
+  /** Smallest observed query duration in microseconds. `u64::MAX` (the
+   *  sentinel) when no completions have been recorded. */
+  readonly minQueryLatencyMicros: bigint;
+  /** Largest observed query duration in microseconds. `0n` when no
+   *  completions have been recorded. */
+  readonly maxQueryLatencyMicros: bigint;
+}
+
+/**
+ * Lock-free atomic metrics recorder exposed to JavaScript.
+ *
+ * Construct via `sdkCreateAtomicMetrics()` or the raw class constructor
+ * (`new sdkWasm.WasmAtomicMetrics()`), then install on one or more
+ * clients via `client.setMetricsRecorder(metrics)` to start recording.
+ *
+ * Every client the recorder is installed on shares the same atomic
+ * counters (via an `Arc` clone on the native side), so this single
+ * handle aggregates events from an entire PIR deployment.
+ */
+interface WasmAtomicMetrics {
+  free(): void;
+  /**
+   * Return a snapshot object with twelve `bigint` counters: nine
+   * lifecycle / byte counters (`queriesStarted`, `queriesCompleted`,
+   * `queryErrors`, `bytesSent`, `bytesReceived`, `framesSent`,
+   * `framesReceived`, `connects`, `disconnects`) plus three latency
+   * fields (`totalQueryLatencyMicros`, `minQueryLatencyMicros`,
+   * `maxQueryLatencyMicros`). Individual counters are atomic, but the
+   * snapshot as a whole is NOT — two counters may be observed at
+   * slightly different instants. See [`AtomicMetricsSnapshot`] for
+   * the latency-sentinel semantics.
+   */
+  snapshot(): AtomicMetricsSnapshot;
 }
 
 interface WasmQueryResult {
@@ -776,6 +872,71 @@ export function requireSdkWasm(): PirSdkWasm {
 // import them without having to reach into this module's type-only
 // `PirSdkWasm` shape.
 export type { WasmDpfClient, WasmHarmonyClient, WasmQueryResult, WasmDatabaseCatalog };
+
+// ─── Metrics bridge (Phase 2+ observability) ───────────────────────────────
+//
+// A `WasmAtomicMetrics` handle wraps `Arc<pir_sdk::AtomicMetrics>`. Install
+// one on a `WasmDpfClient` / `WasmHarmonyClient` via `setMetricsRecorder`
+// and every connect / disconnect / byte / query-lifecycle event is
+// reflected in the atomic counters. `snapshot()` returns a plain JS object
+// with nine `bigint` fields so a browser tools panel / dashboard can poll
+// live counters without JS `Number` precision loss.
+//
+// 🔒 Padding invariants: the metrics layer is strictly observational — it
+// sits above the query code that owns K=75 INDEX / K_CHUNK=80 CHUNK /
+// 25-MERKLE padding, and has no code path by which a recorder can
+// influence the number or content of padding queries sent.
+
+/**
+ * Construct a fresh `WasmAtomicMetrics` handle. All nine counters start
+ * at zero. Throws if the SDK WASM module hasn't been loaded yet — call
+ * `initSdkWasm()` at app startup first.
+ *
+ * Remember to call `.free()` on the returned handle when done (or rely
+ * on a `FinalizationRegistry`). The underlying `Arc` is NOT freed until
+ * every client that has the recorder installed uninstalls it too —
+ * calling `.free()` on the JS handle only drops this one reference.
+ */
+export function sdkCreateAtomicMetrics(): WasmAtomicMetrics {
+  return new (requireSdkWasm().WasmAtomicMetrics)();
+}
+
+export type { WasmAtomicMetrics, AtomicMetricsSnapshot };
+
+// ─── Tracing subscriber (Phase 2+ observability tail) ──────────────────────
+//
+// Companion to the metrics bridge above. Where `WasmAtomicMetrics` exposes
+// structured counters, `initSdkTracing()` routes the Phase 1
+// `#[tracing::instrument]` spans from the native client code into the
+// browser's DevTools console. Install both for full observability — they
+// answer different questions ("how many" vs. "what is happening now").
+//
+// 🔒 Padding invariants: the tracing bridge is strictly observational.
+// Span fields are filtered by `#[tracing::instrument(skip_all, ...)]` on
+// the native side, so only whitelisted scalars / URLs / labels reach the
+// subscriber — never binary payloads, hint blobs, or secret keys.
+
+/**
+ * Install the `tracing-wasm` subscriber as the global `tracing` default.
+ *
+ * Call once at app startup (after `initSdkWasm()` has resolved). All
+ * subsequent calls are no-ops (guarded on the Rust side by a
+ * `std::sync::Once`), so invoking from multiple initialization paths is
+ * safe.
+ *
+ * After this returns, every PIR operation — `DpfClient::sync`,
+ * `HarmonyClient::query_batch`, `WsConnection::connect`, etc. — emits
+ * structured spans to the browser DevTools console with a consistent
+ * `backend="dpf"/"harmony"/"onion"` field plus per-method scalars
+ * (db_id, step name, height, batch size, URL, etc.).
+ *
+ * Throws if `initSdkWasm()` has not resolved yet — there is no TS
+ * fallback, because the point of the bridge is to surface Rust-side
+ * span events.
+ */
+export function initSdkTracing(): void {
+  requireSdkWasm().initTracingSubscriber();
+}
 
 // ─── Re-exports for convenience ─────────────────────────────────────────────
 

@@ -51,7 +51,9 @@ pub use client::{
     ConnectionState, NoProgress, PirClient, PirClientConfig, PrintProgress, StateListener,
     SyncProgress,
 };
-pub use metrics::{AtomicMetrics, AtomicMetricsSnapshot, NoopMetrics, PirMetrics};
+pub use metrics::{
+    AtomicMetrics, AtomicMetricsSnapshot, Duration, Instant, NoopMetrics, PirMetrics,
+};
 pub use sync::{SyncPlan, SyncStep, compute_sync_plan, merge_delta, merge_delta_batch, DeltaData, decode_delta_data};
 
 // Re-export pir-core for convenience

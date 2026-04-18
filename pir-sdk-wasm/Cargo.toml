@@ -37,8 +37,17 @@ js-sys = "0.3"
 # — sound on wasm32 where the runtime is single-threaded. Not needed on
 # native (the recorder impls in `#[cfg(test)]` modules use plain
 # `Arc<Mutex<_>>`).
+#
+# `tracing-wasm` is wasm32-only: it provides a `tracing::Subscriber` impl
+# that routes spans + events to the browser's `web_sys::console`. Pulled
+# in by the Phase 2+ observability bridge (`tracing_bridge` module) so the
+# `#[tracing::instrument]` attributes laid down on `DpfClient` /
+# `HarmonyClient` / `OnionClient` / `WsConnection` in Phase 1 surface in
+# the browser DevTools. Not needed on native — native tests install
+# `tracing-subscriber::fmt` directly via the Phase 1 smoke-test path.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 send_wrapper = "0.6"
+tracing-wasm = "0.2"
 
 [profile.release]
 opt-level = "s"

@@ -48,9 +48,9 @@ use pir_core::params::{
 };
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, PirBackendType, PirClient, PirError, PirMetrics, PirResult,
-    QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
-    UtxoEntry,
+    DatabaseInfo, DatabaseKind, Instant, PirBackendType, PirClient, PirError, PirMetrics,
+    PirResult, QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult,
+    SyncStep, UtxoEntry,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -383,17 +383,35 @@ impl HarmonyClient {
         }
     }
 
-    /// Fire `on_query_start` on the installed recorder, if any.
-    fn fire_query_start(&self, db_id: u8, num_queries: usize) {
+    /// Fire `on_query_start` on the installed recorder, if any. Returns
+    /// the `Instant` captured at start so a later
+    /// [`fire_query_end`](Self::fire_query_end) can compute the
+    /// wall-clock duration. `None` when no recorder is installed
+    /// (preserves the zero-overhead no-recorder path).
+    fn fire_query_start(&self, db_id: u8, num_queries: usize) -> Option<Instant> {
         if let Some(rec) = &self.metrics_recorder {
             rec.on_query_start("harmony", db_id, num_queries);
+            Some(Instant::now())
+        } else {
+            None
         }
     }
 
-    /// Fire `on_query_end` on the installed recorder, if any.
-    fn fire_query_end(&self, db_id: u8, num_queries: usize, success: bool) {
+    /// Fire `on_query_end` on the installed recorder, if any. The
+    /// `started_at` value comes from the matching
+    /// [`fire_query_start`](Self::fire_query_start) call; `None`
+    /// produces `Duration::ZERO` (best-effort observation per
+    /// [`PirMetrics::on_query_end`] semantics).
+    fn fire_query_end(
+        &self,
+        db_id: u8,
+        num_queries: usize,
+        success: bool,
+        started_at: Option<Instant>,
+    ) {
         if let Some(rec) = &self.metrics_recorder {
-            rec.on_query_end("harmony", db_id, num_queries, success);
+            let duration = started_at.map(|t| t.elapsed()).unwrap_or_default();
+            rec.on_query_end("harmony", db_id, num_queries, success, duration);
         }
     }
 
@@ -2570,12 +2588,15 @@ impl PirClient for HarmonyClient {
 
         // Fire query lifecycle callbacks so a recorder can time the
         // batch end-to-end without needing mid-layer hooks. `fire_*`
-        // is a no-op when no recorder is installed.
+        // is a no-op when no recorder is installed; the
+        // `Option<Instant>` returned by `fire_query_start` carries
+        // the start moment when a recorder is installed and is `None`
+        // otherwise (zero-overhead no-recorder path).
         let num_queries = script_hashes.len();
-        self.fire_query_start(db_id, num_queries);
+        let started_at = self.fire_query_start(db_id, num_queries);
         let step = SyncStep::from_db_info(&db_info);
         let result = self.execute_step(script_hashes, &step, &db_info).await;
-        self.fire_query_end(db_id, num_queries, result.is_ok());
+        self.fire_query_end(db_id, num_queries, result.is_ok(), started_at);
         result
     }
 }
@@ -3659,5 +3680,66 @@ mod tests {
         assert_eq!(snap.disconnects, 0);
         assert_eq!(snap.bytes_sent, 0);
         assert_eq!(snap.frames_sent, 0);
+    }
+
+    /// `fire_query_start` returns `Some(Instant)` only when a recorder
+    /// is installed — keeps the no-recorder path at zero overhead.
+    #[test]
+    fn fire_query_start_returns_instant_only_when_recorder_installed() {
+        use pir_sdk::AtomicMetrics;
+
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        assert!(client.fire_query_start(0, 10).is_none());
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        client.set_metrics_recorder(Some(recorder));
+        assert!(client.fire_query_start(0, 10).is_some());
+    }
+
+    /// `fire_query_end` records non-zero duration when threading the
+    /// captured `Instant`. We sleep a few ms to make the measured
+    /// duration comfortably distinguishable from clock jitter.
+    #[test]
+    fn fire_query_end_records_non_zero_duration_with_recorder() {
+        use pir_sdk::AtomicMetrics;
+        use std::thread::sleep;
+        use std::time::Duration as StdDuration;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        let started = client.fire_query_start(0, 10);
+        assert!(started.is_some());
+        sleep(StdDuration::from_millis(5));
+        client.fire_query_end(0, 10, true, started);
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.queries_started, 1);
+        assert_eq!(snap.queries_completed, 1);
+        assert!(
+            snap.min_query_latency_micros >= 1_000,
+            "expected min_query_latency_micros >= 1000, got {}",
+            snap.min_query_latency_micros
+        );
+    }
+
+    /// `fire_query_end` with `started_at = None` records `Duration::ZERO`
+    /// — best-effort observation per [`PirMetrics::on_query_end`].
+    #[test]
+    fn fire_query_end_with_none_start_records_zero_duration() {
+        use pir_sdk::AtomicMetrics;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+
+        let started = client.fire_query_start(0, 10); // None (no recorder yet)
+        client.set_metrics_recorder(Some(recorder.clone()));
+        client.fire_query_end(0, 10, true, started);
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.queries_completed, 1);
+        assert_eq!(snap.min_query_latency_micros, 0);
+        assert_eq!(snap.max_query_latency_micros, 0);
     }
 }

@@ -60,6 +60,20 @@ pub use merkle_verify::{
 pub mod client;
 pub use client::{WasmDpfClient, WasmHarmonyClient, WasmSyncResult};
 
+/// Phase 2+ observability bridge — exposes `pir_sdk::AtomicMetrics` to
+/// JavaScript so a browser tools panel / dashboard can poll live PIR
+/// query and transport counters. See [`metrics::WasmAtomicMetrics`] for
+/// the installation + snapshot API.
+pub mod metrics;
+pub use metrics::WasmAtomicMetrics;
+
+/// Phase 2+ observability tail — wires a `tracing-wasm` subscriber that
+/// routes Phase 1 `#[tracing::instrument]` spans to the browser
+/// DevTools console. Call [`init_tracing_subscriber`] once at app
+/// startup. See [`tracing_bridge`] for the full rationale.
+pub mod tracing_bridge;
+pub use tracing_bridge::init_tracing_subscriber;
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn hex_encode(bytes: &[u8]) -> String {

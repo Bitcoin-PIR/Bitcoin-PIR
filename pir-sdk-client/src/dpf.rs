@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use libdpf::Dpf;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, PirBackendType, PirClient, PirError, PirMetrics, PirResult,
-    QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
-    UtxoEntry,
+    DatabaseInfo, DatabaseKind, Instant, PirBackendType, PirClient, PirError, PirMetrics,
+    PirResult, QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult,
+    SyncStep, UtxoEntry,
 };
 use std::sync::Arc;
 
@@ -286,17 +286,39 @@ impl DpfClient {
         }
     }
 
-    /// Fire `on_query_start` on the installed recorder, if any.
-    fn fire_query_start(&self, db_id: u8, num_queries: usize) {
+    /// Fire `on_query_start` on the installed recorder, if any. Returns
+    /// the `Instant` captured at the start of the query so a later
+    /// [`fire_query_end`](Self::fire_query_end) can compute the
+    /// wall-clock duration. Returns `None` when no recorder is
+    /// installed — the timing path is short-circuited so the
+    /// no-recorder case stays at zero overhead.
+    fn fire_query_start(&self, db_id: u8, num_queries: usize) -> Option<Instant> {
         if let Some(rec) = &self.metrics_recorder {
             rec.on_query_start("dpf", db_id, num_queries);
+            Some(Instant::now())
+        } else {
+            None
         }
     }
 
-    /// Fire `on_query_end` on the installed recorder, if any.
-    fn fire_query_end(&self, db_id: u8, num_queries: usize, success: bool) {
+    /// Fire `on_query_end` on the installed recorder, if any. The
+    /// `started_at` value comes from the matching
+    /// [`fire_query_start`](Self::fire_query_start) call (i.e. it is
+    /// `Some` exactly when a recorder was installed at start time);
+    /// `None` produces a `Duration::ZERO`, which the
+    /// `AtomicMetrics` recorder treats as a best-effort observation
+    /// (see the `Duration::ZERO` semantics on
+    /// [`PirMetrics::on_query_end`]).
+    fn fire_query_end(
+        &self,
+        db_id: u8,
+        num_queries: usize,
+        success: bool,
+        started_at: Option<Instant>,
+    ) {
         if let Some(rec) = &self.metrics_recorder {
-            rec.on_query_end("dpf", db_id, num_queries, success);
+            let duration = started_at.map(|t| t.elapsed()).unwrap_or_default();
+            rec.on_query_end("dpf", db_id, num_queries, success, duration);
         }
     }
 
@@ -1563,14 +1585,17 @@ impl PirClient for DpfClient {
             .clone();
 
         // Fire `on_query_start` before the step kicks off and
-        // `on_query_end` after it resolves either way — a recorder
-        // diffing snapshots across the two can derive wall-clock
-        // latency without needing a mid-layer instant-provider.
+        // `on_query_end` after it resolves either way. The
+        // `Option<Instant>` returned by `fire_query_start` carries the
+        // start moment when a recorder is installed (and is `None`
+        // when no recorder is installed, leaving the timing path at
+        // zero overhead). `fire_query_end` computes the wall-clock
+        // duration from it and forwards to `PirMetrics::on_query_end`.
         let num_queries = script_hashes.len();
-        self.fire_query_start(db_id, num_queries);
+        let started_at = self.fire_query_start(db_id, num_queries);
         let step = SyncStep::from_db_info(&db_info);
         let result = self.execute_step(script_hashes, &step, &db_info).await;
-        self.fire_query_end(db_id, num_queries, result.is_ok());
+        self.fire_query_end(db_id, num_queries, result.is_ok(), started_at);
         result
     }
 }
@@ -2131,5 +2156,90 @@ mod tests {
         assert_eq!(snap.disconnects, 0);
         assert_eq!(snap.bytes_sent, 0);
         assert_eq!(snap.frames_sent, 0);
+    }
+
+    /// `fire_query_start` returns `Some(Instant)` when a recorder is
+    /// installed and `None` when not. The `None` case keeps the
+    /// no-recorder path at zero overhead — no `Instant::now()` call,
+    /// no allocation, just a null-check on the `Option<Arc>`.
+    #[test]
+    fn fire_query_start_returns_instant_only_when_recorder_installed() {
+        use pir_sdk::AtomicMetrics;
+
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+
+        // No recorder installed → no Instant captured.
+        assert!(client.fire_query_start(0, 10).is_none());
+
+        // Install recorder → Instant captured.
+        let recorder = Arc::new(AtomicMetrics::new());
+        client.set_metrics_recorder(Some(recorder));
+        assert!(client.fire_query_start(0, 10).is_some());
+    }
+
+    /// Threading the captured `Instant` through `fire_query_end`
+    /// yields a non-zero duration on the installed recorder. We sleep
+    /// a few milliseconds between start and end so the measured
+    /// duration is comfortably distinguishable from clock jitter.
+    #[test]
+    fn fire_query_end_records_non_zero_duration_with_recorder() {
+        use pir_sdk::AtomicMetrics;
+        use std::thread::sleep;
+        use std::time::Duration as StdDuration;
+
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_metrics_recorder(Some(recorder.clone()));
+
+        let started = client.fire_query_start(0, 10);
+        assert!(started.is_some());
+        sleep(StdDuration::from_millis(5));
+        client.fire_query_end(0, 10, true, started);
+
+        let snap = recorder.snapshot();
+        assert_eq!(snap.queries_started, 1);
+        assert_eq!(snap.queries_completed, 1);
+        assert_eq!(snap.query_errors, 0);
+        // 5ms = 5_000us; allow generous slack for slow CI runners but
+        // require strictly positive (the "no recorder" path produces
+        // zero, so any positive value proves the timing path fired).
+        assert!(
+            snap.min_query_latency_micros >= 1_000,
+            "expected min_query_latency_micros >= 1000, got {}",
+            snap.min_query_latency_micros
+        );
+        assert_eq!(
+            snap.max_query_latency_micros, snap.min_query_latency_micros,
+            "single-completion: min and max must coincide",
+        );
+    }
+
+    /// `fire_query_end` with `started_at = None` (no recorder at start
+    /// time) records `Duration::ZERO` — distinct from the no-recorder
+    /// path (which fires nothing at all). This is the documented
+    /// "best-effort observation" semantics from
+    /// [`PirMetrics::on_query_end`].
+    #[test]
+    fn fire_query_end_with_none_start_records_zero_duration() {
+        use pir_sdk::AtomicMetrics;
+
+        // Install the recorder *between* start and end, simulating a
+        // late-install race. `fire_query_start` returned `None`
+        // (recorder absent), so `fire_query_end` sees no Instant and
+        // forwards Duration::ZERO.
+        let recorder = Arc::new(AtomicMetrics::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+
+        let started = client.fire_query_start(0, 10); // None
+        client.set_metrics_recorder(Some(recorder.clone()));
+        client.fire_query_end(0, 10, true, started);
+
+        let snap = recorder.snapshot();
+        // The end-callback fired (count incremented), but with zero
+        // duration — the recorder treats that as a best-effort point.
+        assert_eq!(snap.queries_completed, 1);
+        assert_eq!(snap.min_query_latency_micros, 0);
+        assert_eq!(snap.max_query_latency_micros, 0);
+        assert_eq!(snap.total_query_latency_micros, 0);
     }
 }

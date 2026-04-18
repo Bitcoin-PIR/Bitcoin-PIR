@@ -36,7 +36,7 @@ use pir_sdk::{PirClient, QueryResult, ScriptHash, SyncResult};
 use pir_sdk_client::{DpfClient, HarmonyClient, PRP_ALF, PRP_FASTPRP, PRP_HOANG};
 use wasm_bindgen::prelude::*;
 
-use crate::{parse_query_result_json, WasmDatabaseCatalog, WasmQueryResult};
+use crate::{parse_query_result_json, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult};
 
 // These symbols are only referenced from wasm32-gated bridges below, so
 // keep their imports gated too — on native we only compile recorder-impl
@@ -580,6 +580,40 @@ impl WasmDpfClient {
         }
         Ok(arr.into())
     }
+
+    /// Install a [`WasmAtomicMetrics`] recorder. All subsequent
+    /// connect / disconnect / byte / query-lifecycle events are
+    /// recorded on the shared atomic counters.
+    ///
+    /// Pre- and post-connect installs both work: if the client is
+    /// already connected, the recorder is pushed to both transports
+    /// immediately so it starts seeing byte traffic on the very next
+    /// frame; otherwise the handle is held until `connect` wires up
+    /// the fresh transports.
+    ///
+    /// The recorder is held behind an `Arc`, so installing the same
+    /// [`WasmAtomicMetrics`] on multiple clients aggregates counters
+    /// across all of them. Call [`clearMetricsRecorder`](Self::clear_metrics_recorder)
+    /// to uninstall.
+    ///
+    /// 🔒 Padding invariants unaffected — the metrics surface is
+    /// observational only and cannot influence the number or content
+    /// of padding queries sent.
+    #[wasm_bindgen(js_name = setMetricsRecorder)]
+    pub fn set_metrics_recorder(&mut self, metrics: &WasmAtomicMetrics) {
+        self.inner
+            .set_metrics_recorder(Some(metrics.recorder_handle()));
+    }
+
+    /// Uninstall the currently-registered metrics recorder. Subsequent
+    /// events are silenced on this client — any previously-shared
+    /// [`WasmAtomicMetrics`] handle held by JS continues to reflect
+    /// the last observed state and can still be installed on other
+    /// clients.
+    #[wasm_bindgen(js_name = clearMetricsRecorder)]
+    pub fn clear_metrics_recorder(&mut self) {
+        self.inner.set_metrics_recorder(None);
+    }
 }
 
 /// wasm32-only: progress-aware sync and state-change observer.
@@ -997,6 +1031,29 @@ impl WasmHarmonyClient {
             .get(db_id)
             .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?;
         self.inner.load_hints_bytes(bytes, db_info).map_err(err_to_js)
+    }
+
+    /// Install a [`WasmAtomicMetrics`] recorder.
+    ///
+    /// See [`WasmDpfClient::set_metrics_recorder`] for the full
+    /// install + aggregation contract — the Harmony implementation
+    /// propagates the handle to both transports (hint + query) with
+    /// the `"harmony"` backend label, so a single
+    /// [`WasmAtomicMetrics`] installed on a DPF and a Harmony client
+    /// simultaneously can aggregate counters across both backends.
+    ///
+    /// 🔒 Padding invariants unaffected.
+    #[wasm_bindgen(js_name = setMetricsRecorder)]
+    pub fn set_metrics_recorder(&mut self, metrics: &WasmAtomicMetrics) {
+        self.inner
+            .set_metrics_recorder(Some(metrics.recorder_handle()));
+    }
+
+    /// Uninstall the currently-registered metrics recorder. See
+    /// [`WasmDpfClient::clear_metrics_recorder`].
+    #[wasm_bindgen(js_name = clearMetricsRecorder)]
+    pub fn clear_metrics_recorder(&mut self) {
+        self.inner.set_metrics_recorder(None);
     }
 }
 
