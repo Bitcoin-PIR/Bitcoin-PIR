@@ -14,7 +14,7 @@ use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::RelocationDS;
 use harmonypir_wasm::state::{self, GroupEntry, StateFileHeader};
-use harmonypir_wasm::{compute_rounds, derive_group_key, find_best_t, HarmonyGroup, PRP_HOANG};
+use harmonypir_wasm::{compute_rounds, derive_group_key, find_best_t, HarmonyGroup, PRP_HMR12};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -88,7 +88,7 @@ fn main() {
 
     println!("\n[5] Writing state file ({} groups)...", all_entries.len());
     let header = StateFileHeader {
-        prp_backend: PRP_HOANG,
+        prp_backend: PRP_HMR12,
         prp_key,
         index_bins_per_table: index_bins_per_table as u32,
         chunk_bins_per_table: chunk_bins_per_table as u32,
@@ -147,7 +147,7 @@ fn compute_group_hints(
 
     // Create a HarmonyGroup, load hints, serialize.
     let mut group = HarmonyGroup::new_with_backend(
-        n as u32, w as u32, t as u32, prp_key, group_id, PRP_HOANG,
+        n as u32, w as u32, t as u32, prp_key, group_id, PRP_HMR12,
     ).expect("group creation");
 
     let flat: Vec<u8> = hints.into_iter().flat_map(|h| h.into_iter()).collect();

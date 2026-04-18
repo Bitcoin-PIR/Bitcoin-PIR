@@ -126,7 +126,7 @@ Client methods (both `Dpf` and `Harmony`):
 
 `WasmHarmonyClient` additionally has:
 
-- `setMasterKey(Uint8Array[16])` / `setPrpBackend(PRP_HOANG/PRP_FASTPRP/PRP_ALF)`
+- `setMasterKey(Uint8Array[16])` / `setPrpBackend(PRP_HMR12/PRP_FASTPRP/PRP_ALF)`
 - `dbId()` / `setDbId(u8)` — switch databases (invalidates hints)
 - `minQueriesRemaining()` / `estimateHintSizeBytes()`
 - `fingerprint(catalog, dbId)` — 16-byte cache key

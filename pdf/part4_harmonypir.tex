@@ -90,14 +90,14 @@ The query protocol proceeds in rounds, analogous to DPF-PIR:
 The PRP $P$ must be a permutation over a domain of size $N'$ (typically $\sim 10^6$), which is far smaller than the $2^{128}$ domain of standard block ciphers like AES. Several small-domain PRP constructions are available, each with different performance characteristics:
 
 \begin{itemize}[nolistsep,leftmargin=*]
-    \item \textbf{Hoang (swap-or-not) \cite{hoang12}:} A Feistel-like construction based on card shuffles. Uses AES round functions with 4-way pipelining. This is the default backend and serves as the baseline.
+    \item \textbf{HMR12 (swap-or-not) \cite{hmr12}:} A Feistel-like construction based on card shuffles. Uses AES round functions with 4-way pipelining. This is the default backend and serves as the baseline.
 
-    \item \textbf{FastPRP:} A radix-sort-based PRP with $O(N \log N)$ batch evaluation. Precomputes the entire permutation table, trading memory for speed. Achieves $2$--$4\times$ speedup over Hoang.
+    \item \textbf{FastPRP:} A radix-sort-based PRP with $O(N \log N)$ batch evaluation. Precomputes the entire permutation table, trading memory for speed. Achieves $2$--$4\times$ speedup over HMR12.
 
-    \item \textbf{ALF \cite{alf25}:} An AES-NI-based format-preserving encryption scheme optimized for SIMD execution. Achieves the best performance: $4$--$8\times$ faster than Hoang. Requires hardware AES-NI support (available on modern x86 and ARM processors, and via WASM SIMD128 in browsers).
+    \item \textbf{ALF \cite{alf25}:} An AES-NI-based format-preserving encryption scheme optimized for SIMD execution. Achieves the best performance: $4$--$8\times$ faster than HMR12. Requires hardware AES-NI support (available on modern x86 and ARM processors, and via WASM SIMD128 in browsers).
 \end{itemize}
 
-The PRP backend is selected at session initialization and must be consistent between the hint server and client. Server-side benchmarks on a 24-thread machine show ALF computing all 75 index hints in $\sim$711~ms, compared to $\sim$1.05~s for FastPRP and $\sim$7.24~s for Hoang.
+The PRP backend is selected at session initialization and must be consistent between the hint server and client. Server-side benchmarks on a 24-thread machine show ALF computing all 75 index hints in $\sim$711~ms, compared to $\sim$1.05~s for FastPRP and $\sim$7.24~s for HMR12.
 
 \subsection{Hint Caching and Query Budget}
 \label{sec:harmony-caching}

@@ -13,7 +13,7 @@ use harmonypir::prp::Prp;
 use harmonypir::relocation::{RelocationDS, EMPTY};
 use harmonypir_wasm::state::{self, GroupEntry, StateFileHeader};
 use harmonypir_wasm::{
-    HarmonyGroup, PRP_HOANG, PRP_FASTPRP, PRP_ALF,
+    HarmonyGroup, PRP_HMR12, PRP_FASTPRP, PRP_ALF,
     compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
     verify_protocol_impl,
 };
@@ -40,7 +40,7 @@ fn main() {
     let w: u32 = 42;
     let num_buckets: u32 = 2;
     let key = [0x42u8; 16];
-    let backend_name = "Hoang PRP";
+    let backend_name = "HMR12 PRP";
 
     let t_raw = find_best_t(n);
     let (padded_n, t_val) = pad_n_for_t(n, t_raw);
@@ -56,7 +56,7 @@ fn main() {
     let m = params.m;
 
     println!("[CONFIG]");
-    println!("  PRP backend:  {} (PRP_HOANG=0)", backend_name);
+    println!("  PRP backend:  {} (PRP_HMR12=0)", backend_name);
     println!("  real_N:       {}", n);
     println!("  padded_N:     {} (+{} virtual rows)", pn, pn - n_usize);
     println!("  w (entry sz): {} bytes", w);
@@ -167,16 +167,16 @@ fn main() {
 
     // ─── Create groups and serialize ───────────────────────────────────
     println!("[3] Creating HarmonyGroup instances and writing state file...");
-    let mut group0 = HarmonyGroup::new_with_backend(n, w, t, &key, 0, PRP_HOANG).unwrap();
+    let mut group0 = HarmonyGroup::new_with_backend(n, w, t, &key, 0, PRP_HMR12).unwrap();
     let flat0: Vec<u8> = hints0.iter().flat_map(|h| h.iter().copied()).collect();
     group0.load_hints(&flat0).unwrap();
 
-    let mut group1 = HarmonyGroup::new_with_backend(n, w, t, &key, 1, PRP_HOANG).unwrap();
+    let mut group1 = HarmonyGroup::new_with_backend(n, w, t, &key, 1, PRP_HMR12).unwrap();
     let flat1: Vec<u8> = hints1.iter().flat_map(|h| h.iter().copied()).collect();
     group1.load_hints(&flat1).unwrap();
 
     let header = StateFileHeader {
-        prp_backend: PRP_HOANG,
+        prp_backend: PRP_HMR12,
         prp_key: key,
         index_bins_per_table: n,
         chunk_bins_per_table: n,
@@ -371,12 +371,12 @@ fn main() {
         assert!(ok, "ALF test failed!");
     }
 
-    // Also verify Hoang at larger N to be thorough.
+    // Also verify HMR12 at larger N to be thorough.
     {
         let t0 = Instant::now();
-        let ok = verify_protocol_impl(1024, 42, PRP_HOANG);
-        println!("[Hoang]    N=1024, w=42 → {} ({:.2?})", if ok { "PASS ✓" } else { "FAIL ✗" }, t0.elapsed());
-        assert!(ok, "Hoang (large N) test failed!");
+        let ok = verify_protocol_impl(1024, 42, PRP_HMR12);
+        println!("[HMR12]    N=1024, w=42 → {} ({:.2?})", if ok { "PASS ✓" } else { "FAIL ✗" }, t0.elapsed());
+        assert!(ok, "HMR12 (large N) test failed!");
     }
 
     println!("\n=== ALL PRP BACKENDS PASS ===");

@@ -31,7 +31,7 @@ pub mod state;
 
 // ─── PRP backend constants ──────────────────────────────────────────────────
 
-pub const PRP_HOANG: u8 = 0;
+pub const PRP_HMR12: u8 = 0;
 pub const PRP_FASTPRP: u8 = 1;
 pub const PRP_ALF: u8 = 2;
 
@@ -83,7 +83,7 @@ pub fn pad_n_for_t(n: u32, t: u32) -> (u32, u32) {
 /// Build a PRP for the given backend, key, and domain.
 fn build_prp(backend: u8, key: &[u8; 16], domain: usize, n: u32, _prp_cache: &[u8]) -> Box<dyn Prp> {
     match backend {
-        PRP_HOANG => {
+        PRP_HMR12 => {
             let r = compute_rounds(n);
             Box::new(HoangPrp::new(domain, r, key))
         }
@@ -101,7 +101,7 @@ fn build_prp(backend: u8, key: &[u8; 16], domain: usize, n: u32, _prp_cache: &[u
             Box::new(AlfPrp::new(key, domain, key, 0x4250_4952)) // app_id = "BPIR"
         }
         _ => {
-            // Fallback to Hoang for unknown backends.
+            // Fallback to HMR12 for unknown backends.
             let r = compute_rounds(n);
             Box::new(HoangPrp::new(domain, r, key))
         }
@@ -173,9 +173,9 @@ pub struct HarmonyGroup {
     hints: Vec<Vec<u8>>,
     query_count: usize,
     rng: ChaCha20Rng,
-    /// PRP backend identifier (0=Hoang, 1=FastPRP).
+    /// PRP backend identifier (0=HMR12, 1=FastPRP).
     prp_backend: u8,
-    /// Cached PRP data (for FastPRP). Empty for Hoang.
+    /// Cached PRP data (for FastPRP). Empty for HMR12.
     prp_cache: Vec<u8>,
     // NOTE: `derived_key` / `group_id` are intentionally NOT stored on
     // the struct. `serialize()` doesn't persist them — instead,
@@ -205,10 +205,10 @@ pub struct HarmonyGroup {
 
 #[wasm_bindgen]
 impl HarmonyGroup {
-    /// Create a new HarmonyGroup with Hoang PRP (default).
+    /// Create a new HarmonyGroup with HMR12 PRP (default).
     #[wasm_bindgen(constructor)]
     pub fn new(n: u32, w: u32, t: u32, prp_key: &[u8], group_id: u32) -> Result<HarmonyGroup, JsError> {
-        Self::new_with_backend(n, w, t, prp_key, group_id, PRP_HOANG)
+        Self::new_with_backend(n, w, t, prp_key, group_id, PRP_HMR12)
     }
 
     /// Create with a specific PRP backend.
@@ -765,7 +765,7 @@ pub fn compute_balanced_t(n: u32) -> u32 {
 
 #[wasm_bindgen]
 pub fn verify_protocol(n: u32, w: u32) -> bool {
-    verify_protocol_impl(n, w, PRP_HOANG)
+    verify_protocol_impl(n, w, PRP_HMR12)
 }
 
 /// Internal: run protocol test with simulated server, optionally with serialize round-trip.
@@ -923,7 +923,7 @@ mod tests {
     fn test_serialize_deserialize_roundtrip() {
         // This test is embedded in verify_protocol_impl:
         // queries → serialize → deserialize → more queries → verify all correct.
-        assert!(verify_protocol_impl(256, 42, PRP_HOANG));
+        assert!(verify_protocol_impl(256, 42, PRP_HMR12));
     }
 
     #[test]

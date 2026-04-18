@@ -103,7 +103,7 @@ impl HintServerData {
                 prp.batch_forward()
             }
             _ => {
-                // Default: Hoang PRP
+                // Default: HMR12 PRP
                 let prp = HoangPrp::new(domain, r, &derived_key);
                 prp.batch_forward()
             }
@@ -252,7 +252,7 @@ async fn main() {
                         let backend_name = match prp_backend {
                             1 => "FastPRP",
                             2 => "ALF",
-                            _ => "Hoang",
+                            _ => "HMR12",
                         };
                         println!("[{}] Hint request: level={} groups={} prp={}",
                             peer, level, num, backend_name);

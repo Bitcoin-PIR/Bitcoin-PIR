@@ -20,7 +20,7 @@ change near them needs extra care — do not optimize away padding.
     covers the two-server DPF XOR basis and shows both a basic
     `query_batch` call and a `sync` call driven by a catalog.
     `HarmonyClient`'s doc covers the hint + query two-server
-    architecture, PRP backend selection (Hoang default;
+    architecture, PRP backend selection (HMR12 default;
     `fastprp`/`alf` feature-gated), and demonstrates the
     hint-cache-resume pattern via `with_hint_cache_dir` +
     `load_hints_bytes` / `save_hints_bytes`. `OnionClient`'s doc
@@ -1102,7 +1102,7 @@ change near them needs extra care — do not optimize away padding.
 
   * *`sdk-bridge.ts` interface extension* — added a
     `WasmHarmonyClient` interface + `WasmHarmonyClient` /
-    `PRP_HOANG` / `PRP_FASTPRP` / `PRP_ALF` entries on the
+    `PRP_HMR12` / `PRP_FASTPRP` / `PRP_ALF` entries on the
     `PirSdkWasm` contract (mirrors the `WasmDpfClient` pattern).
     The adapter reads the type via the same `requireSdkWasm()`
     accessor used elsewhere.
@@ -1880,7 +1880,7 @@ _(none — all P1 items closed.)_
           `resultCount` / `syncedHeight` / `wasFreshSync` getters,
           `getResult(i)` → `WasmQueryResult | null`, and `toJson()` for
           the whole blob. PRP-backend selection is exposed as
-          `PRP_HOANG()` / `PRP_FASTPRP()` / `PRP_ALF()` free functions
+          `PRP_HMR12()` / `PRP_FASTPRP()` / `PRP_ALF()` free functions
           plus `setPrpBackend(u8)` / `setMasterKey(Uint8Array)` on
           `WasmHarmonyClient`. Internals: `pir-sdk-client` and
           `wasm-bindgen-futures` added as cross-target deps of

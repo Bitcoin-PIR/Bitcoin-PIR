@@ -76,7 +76,7 @@ class Plugin(PirPrivacyPlugin):
         protocol_layout.addWidget(prp_label, 1, 0)
         prp_combo = QComboBox()
         prp_combo.addItems([
-            'Hoang (default)',
+            'HMR12 (default)',
             'FastPRP',
             'ALF',
         ])

@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `setMetricsRecorder(metrics)` / `clearMetricsRecorder()` —
     per-client observability toggle.
   - `WasmHarmonyClient` adds `setMasterKey(Uint8Array[16])`,
-    `setPrpBackend(u8)` (with `PRP_HOANG` / `PRP_FASTPRP` /
+    `setPrpBackend(u8)` (with `PRP_HMR12` / `PRP_FASTPRP` /
     `PRP_ALF` free-function constants), `dbId()` / `setDbId(u8)`
     for catalog switching (invalidates hints),
     `minQueriesRemaining()`, `estimateHintSizeBytes()`,

@@ -33,7 +33,7 @@
 
 use js_sys::{Array, Uint8Array};
 use pir_sdk::{PirClient, QueryResult, ScriptHash, SyncResult};
-use pir_sdk_client::{DpfClient, HarmonyClient, PRP_ALF, PRP_FASTPRP, PRP_HOANG};
+use pir_sdk_client::{DpfClient, HarmonyClient, PRP_ALF, PRP_FASTPRP, PRP_HMR12};
 use wasm_bindgen::prelude::*;
 
 use crate::{parse_query_result_json, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult};
@@ -82,10 +82,10 @@ fn unpack_script_hashes(packed: &[u8]) -> Result<Vec<ScriptHash>, String> {
 /// use, factored out so unit tests can exercise it without constructing
 /// a `JsError` (which panics on native).
 fn validate_prp_backend(backend: u8) -> Result<(), String> {
-    if backend != PRP_HOANG && backend != PRP_FASTPRP && backend != PRP_ALF {
+    if backend != PRP_HMR12 && backend != PRP_FASTPRP && backend != PRP_ALF {
         return Err(format!(
-            "unknown PRP backend: {} (use PRP_HOANG={}, PRP_FASTPRP={}, PRP_ALF={})",
-            backend, PRP_HOANG, PRP_FASTPRP, PRP_ALF
+            "unknown PRP backend: {} (use PRP_HMR12={}, PRP_FASTPRP={}, PRP_ALF={})",
+            backend, PRP_HMR12, PRP_FASTPRP, PRP_ALF
         ));
     }
     Ok(())
@@ -729,8 +729,8 @@ impl WasmHarmonyClient {
 
     /// Select the PRP backend.
     ///
-    /// Accepts any of the [`PRP_HOANG`], [`PRP_FASTPRP`], [`PRP_ALF`]
-    /// constants. [`PRP_HOANG`] is the reference backend (always
+    /// Accepts any of the [`PRP_HMR12`], [`PRP_FASTPRP`], [`PRP_ALF`]
+    /// constants. [`PRP_HMR12`] is the reference backend (always
     /// available); the faster backends require the corresponding cargo
     /// features on the enclosing build.
     #[wasm_bindgen(js_name = setPrpBackend)]
@@ -1102,11 +1102,11 @@ impl WasmHarmonyClient {
 
 // ─── PRP backend constants (re-exported as JS number constants) ─────────────
 
-/// PRP backend constant for the reference `Hoang` implementation.
+/// PRP backend constant for the reference `HMR12` implementation.
 /// Always available.
-#[wasm_bindgen(js_name = PRP_HOANG)]
-pub fn prp_hoang() -> u8 {
-    PRP_HOANG
+#[wasm_bindgen(js_name = PRP_HMR12)]
+pub fn prp_hmr12() -> u8 {
+    PRP_HMR12
 }
 
 /// PRP backend constant for `FastPRP`. Requires the `fastprp` cargo
@@ -1228,7 +1228,7 @@ mod tests {
 
     #[test]
     fn validate_prp_backend_matches_constants() {
-        assert!(validate_prp_backend(PRP_HOANG).is_ok());
+        assert!(validate_prp_backend(PRP_HMR12).is_ok());
         assert!(validate_prp_backend(PRP_FASTPRP).is_ok());
         assert!(validate_prp_backend(PRP_ALF).is_ok());
         assert!(validate_prp_backend(99).is_err());
@@ -1237,14 +1237,14 @@ mod tests {
 
     #[test]
     fn prp_constants_reachable() {
-        assert_eq!(prp_hoang(), PRP_HOANG);
+        assert_eq!(prp_hmr12(), PRP_HMR12);
         assert_eq!(prp_fastprp(), PRP_FASTPRP);
         assert_eq!(prp_alf(), PRP_ALF);
         // Exercise the uniqueness invariant — the set_prp_backend guard
         // above relies on these three being distinct.
-        assert_ne!(PRP_HOANG, PRP_FASTPRP);
+        assert_ne!(PRP_HMR12, PRP_FASTPRP);
         assert_ne!(PRP_FASTPRP, PRP_ALF);
-        assert_ne!(PRP_HOANG, PRP_ALF);
+        assert_ne!(PRP_HMR12, PRP_ALF);
     }
 
     #[test]

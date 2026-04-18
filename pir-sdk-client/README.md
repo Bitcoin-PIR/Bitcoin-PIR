@@ -93,13 +93,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### HarmonyPIR (two-server, stateful hints)
 
 ```rust,ignore
-use pir_sdk_client::{HarmonyClient, PirClient, PRP_HOANG};
+use pir_sdk_client::{HarmonyClient, PirClient, PRP_HMR12};
 
 let mut client = HarmonyClient::new(
     "wss://pir1.chenweikeng.com", // query server
     "wss://pir2.chenweikeng.com", // hint server
 );
-client.set_prp_backend(PRP_HOANG);
+client.set_prp_backend(PRP_HMR12);
 client.set_master_key(&[0u8; 16]); // 128-bit session key
 client.connect().await?;
 

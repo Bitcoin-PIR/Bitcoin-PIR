@@ -72,7 +72,7 @@ pir-sdk-client = { version = "0.1", features = ["onion"] }
 ### `fastprp` — off by default
 
 Enables the **FastPRP** backend for HarmonyPIR. Faster per-element than
-the default Hoang PRP but with a slightly larger setup cost. Call
+the default HMR12 PRP but with a slightly larger setup cost. Call
 `HarmonyClient::set_prp_backend(PRP_FASTPRP)` at runtime to select it.
 
 ```toml
@@ -92,7 +92,7 @@ pir-sdk-client = { version = "0.1", features = ["alf"] }
 
 The `fastprp` and `alf` features are mutually compatible — you can
 enable both and switch backends at runtime — but enabling neither is
-fine too; the default `PRP_HOANG` backend is always compiled in.
+fine too; the default `PRP_HMR12` backend is always compiled in.
 
 ## `pir-core`
 
@@ -137,7 +137,7 @@ cargo build -p pir-sdk-client --features "onion,fastprp,alf"
 # All PRP backends without the C++ dependency.
 cargo build -p pir-sdk-client --features "fastprp,alf"
 
-# Default (DPF + Harmony with Hoang PRP only — no C++ toolchain required).
+# Default (DPF + Harmony with HMR12 PRP only — no C++ toolchain required).
 cargo build -p pir-sdk-client
 ```
 

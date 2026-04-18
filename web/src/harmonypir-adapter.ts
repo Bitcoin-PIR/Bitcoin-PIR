@@ -92,7 +92,7 @@ export interface HarmonyPirClientConfig {
   hintServerUrl: string;
   queryServerUrl: string;
   onProgress?: (msg: string) => void;
-  /** PRP backend: 0=Hoang (default), 1=FastPRP, 2=ALF. */
+  /** PRP backend: 0=HMR12 (default), 1=FastPRP, 2=ALF. */
   prpBackend?: number;
 }
 
@@ -159,7 +159,7 @@ export class HarmonyPirClientAdapter {
     );
     const backend = this.config.prpBackend ?? 0;
     this.wasmClient.setPrpBackend(backend);
-    const backendName = ['Hoang', 'FastPRP', 'ALF'][backend] ?? 'Hoang';
+    const backendName = ['HMR12', 'FastPRP', 'ALF'][backend] ?? 'HMR12';
     this.log(`WASM loaded: ${backendName}`);
   }
 

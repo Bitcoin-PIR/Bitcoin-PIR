@@ -671,7 +671,7 @@ Short-term active work:
   async `queryBatch(Uint8Array, db_id): Promise<any>`, and a
   `isConnected` getter. `WasmHarmonyClient` additionally has
   `setMasterKey(Uint8Array[16])` + `setPrpBackend(u8)`, and the PRP
-  backend constants are exposed as `PRP_HOANG()` / `PRP_FASTPRP()` /
+  backend constants are exposed as `PRP_HMR12()` / `PRP_FASTPRP()` /
   `PRP_ALF()` free functions. A new `WasmSyncResult` class wraps
   `pir_sdk::SyncResult`: `resultCount` / `syncedHeight` /
   `wasFreshSync` getters, `getResult(i) → WasmQueryResult | null`,
@@ -1782,7 +1782,7 @@ Short-term active work:
     covers the two-server DPF XOR basis and shows both a
     basic `query_batch` call and a `sync` call driven by a
     catalog. `HarmonyClient`'s doc covers the hint + query
-    two-server architecture, PRP backend selection (Hoang
+    two-server architecture, PRP backend selection (HMR12
     default; `fastprp`/`alf` feature-gated), and
     demonstrates the hint-cache-resume pattern via
     [`with_hint_cache_dir`] + [`load_hints_bytes`] /

@@ -71,7 +71,7 @@ const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
 // `crate::protocol` — shared with `DpfClient` and `OnionClient`.
 
 /// PRP backends (mirrors `harmonypir_wasm::PRP_*`).
-pub const PRP_HOANG: u8 = 0;
+pub const PRP_HMR12: u8 = 0;
 pub const PRP_FASTPRP: u8 = 1;
 pub const PRP_ALF: u8 = 2;
 
@@ -282,10 +282,10 @@ fn chunk_trace_to_bucket_ref(t: &ChunkBinTrace) -> BucketRef {
 /// # PRP backend selection
 ///
 /// HarmonyPIR is parameterised by a pseudo-random permutation. The
-/// default is Hoang (portable, no extra deps); the `fastprp` cargo
+/// default is HMR12 (portable, no extra deps); the `fastprp` cargo
 /// feature enables FastPRP (2-3× faster per-group encode with a
 /// precomputed cache) and the `alf` feature enables ALF. Select at
-/// runtime via [`set_prp_backend`] with one of [`PRP_HOANG`],
+/// runtime via [`set_prp_backend`] with one of [`PRP_HMR12`],
 /// [`PRP_FASTPRP`], or [`PRP_ALF`].
 ///
 /// # Examples
@@ -293,7 +293,7 @@ fn chunk_trace_to_bucket_ref(t: &ChunkBinTrace) -> BucketRef {
 /// Basic flow — create, connect, sync, use the results:
 ///
 /// ```ignore
-/// use pir_sdk_client::{HarmonyClient, PirClient, ScriptHash, PRP_HOANG};
+/// use pir_sdk_client::{HarmonyClient, PirClient, ScriptHash, PRP_HMR12};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -301,7 +301,7 @@ fn chunk_trace_to_bucket_ref(t: &ChunkBinTrace) -> BucketRef {
 ///         "ws://hint-server:8091",
 ///         "ws://query-server:8092",
 ///     );
-///     client.set_prp_backend(PRP_HOANG);
+///     client.set_prp_backend(PRP_HMR12);
 ///     client.connect().await.unwrap();
 ///
 ///     let script_hash: ScriptHash = [0u8; 20]; // your HASH160 script hash
@@ -419,7 +419,7 @@ impl HarmonyClient {
             hint_conn: None,
             query_conn: None,
             catalog: None,
-            prp_backend: PRP_HOANG,
+            prp_backend: PRP_HMR12,
             master_prp_key,
             loaded_db_id: None,
             index_groups: HashMap::new(),
@@ -639,7 +639,7 @@ impl HarmonyClient {
         self.invalidate_groups();
     }
 
-    /// Set the PRP backend (`PRP_HOANG`, `PRP_FASTPRP`, or `PRP_ALF`).
+    /// Set the PRP backend (`PRP_HMR12`, `PRP_FASTPRP`, or `PRP_ALF`).
     pub fn set_prp_backend(&mut self, backend: u8) {
         if backend != self.prp_backend {
             self.prp_backend = backend;
@@ -3062,7 +3062,7 @@ mod tests {
         let client = HarmonyClient::new("ws://localhost:8080", "ws://localhost:8081");
         assert!(!client.is_connected());
         assert_eq!(client.backend_type(), PirBackendType::Harmony);
-        assert_eq!(client.prp_backend, PRP_HOANG);
+        assert_eq!(client.prp_backend, PRP_HMR12);
     }
 
     #[test]

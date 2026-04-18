@@ -18,7 +18,7 @@ use harmonypir::prp::alf::AlfPrp;
 use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir_wasm::{
-    HarmonyGroup, PRP_ALF, PRP_HOANG,
+    HarmonyGroup, PRP_ALF, PRP_HMR12,
     compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
 };
 
@@ -54,12 +54,12 @@ fn decode_chunk_slot(slot: &[u8]) -> (u32, &[u8]) {
     (chunk_id, &slot[4..])
 }
 
-/// Pick the PRP backend: ALF if available, else Hoang.
+/// Pick the PRP backend: ALF if available, else HMR12.
 fn choose_backend() -> (u8, &'static str) {
     #[cfg(feature = "alf")]
     { (PRP_ALF, "ALF") }
     #[cfg(not(feature = "alf"))]
-    { (PRP_HOANG, "Hoang") }
+    { (PRP_HMR12, "HMR12") }
 }
 
 fn build_prp_box(backend: u8, key: &[u8; 16], domain: usize, rounds: usize) -> Box<dyn Prp> {

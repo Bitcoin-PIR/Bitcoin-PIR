@@ -38,7 +38,7 @@ We have implemented a complete, unified system supporting all three PIR protocol
 
 \textbf{Unified server binary.} A single Rust binary, \texttt{unified\_server}, implements all three protocols and selects a role at startup:
 \begin{itemize}[nolistsep,leftmargin=*]
-    \item \textbf{Primary role:} Serves DPF batch queries (one of the two DPF shares), OnionPIR queries, and both HarmonyPIR hint streaming and HarmonyPIR online queries. Loads every database declared in its configuration file, the shared OnionPIR NTT store, and the per-group Merkle sibling tables. All databases and NTT data are memory-mapped via \texttt{memmap2}, so server startup is fast even for multi-gigabyte datasets. OnionPIR evaluation uses the SEAL library~\cite{seal} via Rust FFI. HarmonyPIR hint generation uses \texttt{rayon} for batch parallelism with the selected PRP backend (Hoang, FastPRP, or ALF).
+    \item \textbf{Primary role:} Serves DPF batch queries (one of the two DPF shares), OnionPIR queries, and both HarmonyPIR hint streaming and HarmonyPIR online queries. Loads every database declared in its configuration file, the shared OnionPIR NTT store, and the per-group Merkle sibling tables. All databases and NTT data are memory-mapped via \texttt{memmap2}, so server startup is fast even for multi-gigabyte datasets. OnionPIR evaluation uses the SEAL library~\cite{seal} via Rust FFI. HarmonyPIR hint generation uses \texttt{rayon} for batch parallelism with the selected PRP backend (HMR12, FastPRP, or ALF).
     \item \textbf{Secondary role:} Serves the other DPF share only. A client connects to one primary and one secondary for the 2-server DPF-PIR protocol, ensuring that the two servers do not need to trust each other.
 \end{itemize}
 A production deployment typically runs one primary and one secondary on separate hosts, both exposing WebSocket endpoints. Because HarmonyPIR's hint and query roles can be split across any two non-colluding nodes, a client is free to pick any available primary as its HarmonyPIR query server and another as the hint server. For OnionPIR, the single server can be either instance, since OnionPIR does not rely on non-collusion.
@@ -49,9 +49,9 @@ The browser client supports all three protocols through WebAssembly \cite{wasm} 
 
 \textbf{HarmonyPIR WASM.} Three independent WASM builds provide the PRP backends:
 \begin{itemize}[nolistsep,leftmargin=*]
-    \item \texttt{harmonypir/}: Hoang (swap-or-not) backend---smallest binary, no SIMD requirement.
+    \item \texttt{harmonypir/}: HMR12 (swap-or-not) backend---smallest binary, no SIMD requirement.
     \item \texttt{harmonypir-fastprp/}: FastPRP backend---precomputed permutation tables.
-    \item \texttt{harmonypir-alf/}: ALF backend with WASM SIMD128---fastest in browsers with SIMD support ($4$--$8\times$ over Hoang).
+    \item \texttt{harmonypir-alf/}: ALF backend with WASM SIMD128---fastest in browsers with SIMD support ($4$--$8\times$ over HMR12).
 \end{itemize}
 
 Each WASM module exports a \texttt{HarmonyGroup} class (whose original name in the codebase, \texttt{HarmonyBucket}, predates the bucket-to-group rename) with methods for hint loading, request building, response processing, and state serialization.

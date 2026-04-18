@@ -49,7 +49,7 @@ interface PirSdkWasm {
   WasmAtomicMetrics: {
     new(): WasmAtomicMetrics;
   };
-  PRP_HOANG: () => number;
+  PRP_HMR12: () => number;
   PRP_FASTPRP: () => number;
   PRP_ALF: () => number;
   /**

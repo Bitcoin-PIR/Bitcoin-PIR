@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `DpfClient` — two-server DPF (XOR of two shares).
   - `HarmonyClient` — two-server PBC-code hint + query architecture
     with PRP-based hint server. PRP backend selectable
-    (`PRP_HOANG` / `PRP_FASTPRP` / `PRP_ALF`) via the `fastprp` /
+    (`PRP_HMR12` / `PRP_FASTPRP` / `PRP_ALF`) via the `fastprp` /
     `alf` cargo features.
   - `OnionClient` — single-server FHE (Microsoft SEAL BFV) via the
     `onion` cargo feature. Native-only; SEAL does not compile to

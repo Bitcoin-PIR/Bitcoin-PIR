@@ -567,7 +567,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <div style="margin: 8px 0;">
                     <label style="display: inline; font-weight: bold; font-size: 13px;">PRP Backend:</label>
                     <select id="hp-prpSelect" style="padding: 4px 8px; margin-left: 6px; border-radius: 4px; border: 1px solid #ddd;">
-                        <option value="0" selected>Hoang (default)</option>
+                        <option value="0" selected>HMR12 (default)</option>
                         <option value="1">FastPRP</option>
                         <option value="2">ALF</option>
                     </select>
@@ -3201,7 +3201,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (newPrp === hpCurrentPrp) return;
             const oldPrp = hpCurrentPrp;
             hpCurrentPrp = newPrp;
-            const names = ['Hoang', 'FastPRP', 'ALF'];
+            const names = ['HMR12', 'FastPRP', 'ALF'];
             log(`HarmonyPIR: PRP changed to ${names[newPrp]}.`, 'info');
 
             if (!hpClient) return;

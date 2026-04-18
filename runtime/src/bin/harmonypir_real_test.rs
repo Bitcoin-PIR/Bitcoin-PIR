@@ -20,7 +20,7 @@ use harmonypir::prp::alf::AlfPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::RelocationDS;
 use harmonypir_wasm::{
-    HarmonyGroup, PRP_HOANG, PRP_FASTPRP, PRP_ALF,
+    HarmonyGroup, PRP_HMR12, PRP_FASTPRP, PRP_ALF,
     compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
 };
 
@@ -57,7 +57,7 @@ fn decode_chunk_slot(slot: &[u8]) -> (u32, &[u8]) {
 /// Build a boxed PRP for the given backend.
 fn build_prp_box(backend: u8, key: &[u8; 16], domain: usize, rounds: usize) -> Box<dyn Prp> {
     match backend {
-        PRP_HOANG => Box::new(HoangPrp::new(domain, rounds, key)),
+        PRP_HMR12 => Box::new(HoangPrp::new(domain, rounds, key)),
         #[cfg(feature = "fastprp")]
         PRP_FASTPRP => Box::new(FastPrpWrapper::new(key, domain)),
         #[cfg(feature = "alf")]
@@ -101,7 +101,7 @@ fn main() {
     // All PRP backends to test
     // ═══════════════════════════════════════════════════════════════════
     let backends: Vec<(u8, &str)> = vec![
-        (PRP_HOANG, "Hoang PRP"),
+        (PRP_HMR12, "HMR12 PRP"),
         #[cfg(feature = "fastprp")]
         (PRP_FASTPRP, "FastPRP"),
         #[cfg(feature = "alf")]
@@ -194,7 +194,7 @@ fn run_narrative(
     println!("    For each entry k: cell = P(k), segment = cell/T, H[segment] ^= DB[k]\n");
 
     // Build cell assignment: cell_of[v] = P(v) for all v in domain.
-    // All backends implement BatchPrp: Hoang uses 4-way AES pipelining + rayon,
+    // All backends implement BatchPrp: HMR12 uses 4-way AES pipelining + rayon,
     // FastPRP uses O(N log N) radix-sort, ALF uses SIMD batch.
     let cell_of: Vec<usize> = {
         use harmonypir::prp::BatchPrp;
@@ -215,7 +215,7 @@ fn run_narrative(
                 full[..pn].to_vec()
             }
             _ => {
-                println!("    Using Hoang batch_forward() (4-way AES + rayon)...");
+                println!("    Using HMR12 batch_forward() (4-way AES + rayon)...");
                 let hp = prp.as_ref() as *const dyn Prp;
                 let full = unsafe { &*(hp as *const HoangPrp) }.batch_forward();
                 full[..pn].to_vec()

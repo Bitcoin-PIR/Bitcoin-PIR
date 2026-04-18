@@ -15,7 +15,7 @@ use harmonypir::prp::fast::FastPrpWrapper;
 use harmonypir::prp::alf::AlfPrp;
 use harmonypir::prp::Prp;
 use harmonypir_wasm::{
-    PRP_HOANG, PRP_FASTPRP, PRP_ALF,
+    PRP_HMR12, PRP_FASTPRP, PRP_ALF,
     compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
 };
 
@@ -46,7 +46,7 @@ fn generate_hints_single_group(
 
     // Build PRP.
     let prp: Box<dyn Prp> = match backend {
-        PRP_HOANG => {
+        PRP_HMR12 => {
             Box::new(HoangPrp::new(domain, rounds, &derived_key))
         }
         #[cfg(feature = "fastprp")]
@@ -64,7 +64,7 @@ fn generate_hints_single_group(
 
     // Compute cell assignments — single-threaded.
     // For FastPRP: batch_permute() is already single-threaded — perfect.
-    // For Hoang: use shuffle_forward_4way in chunks of 4, no rayon.
+    // For HMR12: use shuffle_forward_4way in chunks of 4, no rayon.
     // For ALF: sequential forward() calls.
     let cell_of: Vec<usize> = match backend {
         #[cfg(feature = "fastprp")]
@@ -75,8 +75,8 @@ fn generate_hints_single_group(
             let full = unsafe { &*(fp as *const FastPrpWrapper) }.batch_forward();
             full[..padded_n].to_vec()
         }
-        PRP_HOANG => {
-            // Hoang: single-threaded 4-way AES pipelining via Prp::forward_4 (no rayon).
+        PRP_HMR12 => {
+            // HMR12: single-threaded 4-way AES pipelining via Prp::forward_4 (no rayon).
             let mut result = vec![0usize; padded_n];
             let mut i = 0;
             while i + 4 <= padded_n {
@@ -143,7 +143,7 @@ fn generate_hints_inner_rayon(
 
     // Build PRP — same as before.
     let prp: Box<dyn BatchPrp> = match backend {
-        PRP_HOANG => {
+        PRP_HMR12 => {
             Box::new(HoangPrp::new(domain, rounds, &derived_key))
         }
         #[cfg(feature = "alf")]
@@ -155,7 +155,7 @@ fn generate_hints_inner_rayon(
         }
     };
 
-    // batch_forward() uses rayon internally (par_chunks_mut for Hoang, par_iter for ALF).
+    // batch_forward() uses rayon internally (par_chunks_mut for HMR12, par_iter for ALF).
     let full_perm = prp.batch_forward();
 
     // Scatter-XOR into hints — same sequential loop.
@@ -211,7 +211,7 @@ fn main() {
     println!("  Rayon threads: {}\n", num_threads);
 
     let backends: Vec<(u8, &str)> = vec![
-        (PRP_HOANG, "Hoang (4-way AES, single-threaded per group)"),
+        (PRP_HMR12, "HMR12 (4-way AES, single-threaded per group)"),
         #[cfg(feature = "fastprp")]
         (PRP_FASTPRP, "FastPRP (batch_permute, single-threaded per group)"),
         #[cfg(feature = "alf")]
@@ -263,13 +263,13 @@ fn main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Inner-only rayon comparison (Hoang + ALF only — FastPRP has no inner rayon)
+    // Inner-only rayon comparison (HMR12 + ALF only — FastPRP has no inner rayon)
     // ═══════════════════════════════════════════════════════════════════
     println!("  ════════════════════════════════════════════");
     println!("  Inner-only rayon (sequential over groups, rayon inside batch_forward)\n");
 
     let inner_backends: Vec<(u8, &str)> = vec![
-        (PRP_HOANG, "Hoang (inner rayon par_chunks_mut(4))"),
+        (PRP_HMR12, "HMR12 (inner rayon par_chunks_mut(4))"),
         #[cfg(feature = "alf")]
         (PRP_ALF, "ALF (inner rayon par_iter)"),
     ];

@@ -41,7 +41,7 @@ class PirPrivacyPlugin(BasePlugin):
         self.server0_url = self.config.get('pir_server0_url', DEFAULT_SERVER0_URL)
         self.server1_url = self.config.get('pir_server1_url', DEFAULT_SERVER1_URL)
         self.sync_interval = self.config.get('pir_sync_interval', 30)  # seconds
-        self.prp_backend = self.config.get('pir_prp_backend', 0)  # 0=Hoang, 1=FastPRP, 2=ALF
+        self.prp_backend = self.config.get('pir_prp_backend', 0)  # 0=HMR12, 1=FastPRP, 2=ALF
 
         # PIR client (shared across wallets)
         self._pir_client: Optional[BatchPirClient] = None
