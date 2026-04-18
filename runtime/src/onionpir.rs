@@ -213,4 +213,3 @@ impl OnionPirBatchResult {
 }
 
 // Note: OnionPirServerInfo (binary format) removed — all clients now use JSON (0x03).
-// The Java client (bitcoinj-pir) has its own copy and will need a similar migration.

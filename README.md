@@ -34,7 +34,6 @@ Bitcoin PIR plugs into the existing Bitcoin ecosystem rather than replacing it:
 
 - **Web browser** — a TypeScript + WASM client runs entirely in-browser, no extension needed
 - **Electrum** — a drop-in plugin for Electrum 4.7+ that replaces the normal Electrum server calls with private PIR queries
-- **bitcoinj** — a Java library for Android wallets and JVM applications built on bitcoinj
 - **bitcoinjs ecosystem** — a drop-in replacement for `@bitcoinerlab/explorer`, so any bitcoinjs wallet can use PIR by swapping one import
 - **Rust CLI** — a reference command-line client for testing and scripting
 
@@ -62,7 +61,6 @@ BitcoinPIR/
 ├── build/            Database generation pipeline (Rust)
 ├── web/              Browser client (TypeScript + WASM)
 ├── explorer/         bitcoinjs adapter
-├── bitcoinj-pir/     Java wallet library
 ├── electrum_plugin/  Electrum plugin (Python)
 ├── doc/              Deployment and integration guides
 └── pdf/              Research paper
@@ -87,7 +85,6 @@ For a quick taste:
 - [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) — Production deployment guide
 - [`doc/WEB.md`](doc/WEB.md) — Web client details
 - [`doc/WALLET_INTEGRATION_ANALYSIS.md`](doc/WALLET_INTEGRATION_ANALYSIS.md) — How Bitcoin PIR integrates with existing wallets
-- [`bitcoinj-pir/USAGE.md`](bitcoinj-pir/USAGE.md) — Java client API
 - [`pdf/main.pdf`](pdf/main.pdf) — Research paper with full protocol descriptions and benchmarks
 
 ## License
