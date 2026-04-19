@@ -289,7 +289,7 @@ pub struct DpfClient {
     /// Optional observer invoked on every `ConnectionState` transition.
     /// `Arc` instead of `Box` so one listener can be shared between a
     /// DPF client, a Harmony client, a logger, etc. — mirrors how the
-    /// WASM side stores an `Rc<RefCell<Closure>>` behind a `SendWrapper`.
+    /// WASM side stores an `Rc<RefCell<Closure>>` behind a `Wasm32Shim`.
     state_listener: Option<Arc<dyn StateListener>>,
     /// Optional metrics recorder. When installed, fires
     /// `on_connect` / `on_disconnect` lifecycle events and

@@ -29,12 +29,17 @@
 //! And `#[async_trait]` makes trait-method futures `Send`, which in turn
 //! requires all captured state to be `Send`.
 //!
-//! Fix: wrap every `!Send` field in [`send_wrapper::SendWrapper<T>`], which
-//! unsafely impls `Send + Sync` for any `T` but panics if dropped or
-//! dereferenced from a thread other than the one that constructed it.
-//! On `wasm32-unknown-unknown` there is exactly one thread (the browser
-//! main thread, or a dedicated worker — in both cases a single thread owns
-//! the `WebSocket`), so the panic condition never triggers.
+//! Fix: wrap every `!Send` field in [`Wasm32Shim<T>`], a thin
+//! `#[repr(transparent)]` wrapper that unconditionally implements
+//! `Send + Sync`. This is sound because the whole module is gated to
+//! `wasm32-unknown-unknown`, which — absent the unstable `+atomics`
+//! target feature — is single-threaded: `T` is never actually shared
+//! between threads because no such second thread exists. We used to use
+//! [`send_wrapper::SendWrapper`] for this, but its runtime thread-id
+//! check spuriously fires during teardown of long-lived transports
+//! (reproducibly on `close()` after a successful `HarmonyClient` hint
+//! phase) even though the JS main thread never changed. `Wasm32Shim`
+//! drops the check.
 //!
 //! # Not a drop-in for `WsConnection`
 //!
@@ -65,13 +70,55 @@ use futures::channel::oneshot;
 use futures::StreamExt;
 use js_sys::{ArrayBuffer, Uint8Array};
 use pir_sdk::{Duration, Instant, PirError, PirMetrics, PirResult};
-use send_wrapper::SendWrapper;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{BinaryType, ErrorEvent, Event, MessageEvent, WebSocket};
+
+/// Transparent wrapper that unconditionally satisfies `Send + Sync`.
+///
+/// Sound because this module is gated to `wasm32-unknown-unknown` (see
+/// the `#![cfg(target_arch = "wasm32")]` at the top), which is
+/// single-threaded unless the unstable `+atomics` target feature is
+/// enabled — this crate's build config does not enable it, so `T` is
+/// never actually sent between threads because no second thread exists.
+///
+/// Replaces `send_wrapper::SendWrapper` whose runtime thread-id check
+/// was observed to spuriously panic during teardown paths ("Dereferenced
+/// SendWrapper<T> variable from a thread different to the one it has
+/// been created with.") even though wasm is single-threaded. Since the
+/// check added no additional safety on this target, removing it is the
+/// cleanest fix.
+#[repr(transparent)]
+struct Wasm32Shim<T>(T);
+
+// Safety: wasm32-unknown-unknown is single-threaded absent +atomics,
+// which this crate does not enable. No second thread exists to receive
+// a `Send` or observe a `Sync` access, so the impl is trivially sound.
+unsafe impl<T> Send for Wasm32Shim<T> {}
+unsafe impl<T> Sync for Wasm32Shim<T> {}
+
+impl<T> Wasm32Shim<T> {
+    fn new(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> Deref for Wasm32Shim<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Wasm32Shim<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
 
 /// Items the callbacks push onto the `UnboundedReceiver<IncomingFrame>`.
 /// A channel of `Result<Vec<u8>, PirError>` would work too, but wrapping in
@@ -105,28 +152,33 @@ struct Callbacks {
 /// `PirTransport` backed by the browser's `WebSocket`.
 ///
 /// Construct via [`WasmWebSocketTransport::connect`]. The struct is
-/// `Send + Sync` thanks to [`SendWrapper`] (see module docs); in practice
+/// `Send + Sync` thanks to [`Wasm32Shim`] (see module docs); in practice
 /// every access must stay on the thread that built it, which on
 /// `wasm32-unknown-unknown` is always the only thread.
 pub struct WasmWebSocketTransport {
     url: String,
-    /// `WebSocket` handle for `send` and `close`. `SendWrapper` is sound
+    /// `WebSocket` handle for `send` and `close`. `Wasm32Shim` is sound
     /// because wasm32-unknown-unknown runs single-threaded.
-    ws: SendWrapper<WebSocket>,
+    ws: Wasm32Shim<WebSocket>,
     /// Receives frames the `on_message` closure pushes.
     /// `mpsc::UnboundedReceiver` is `Send` on its own.
     rx: mpsc::UnboundedReceiver<IncomingFrame>,
     /// Closures kept alive for the lifetime of the transport. Held behind
     /// `Rc<RefCell<_>>` so `close()` can drop them to break the Browser →
-    /// Closure → Channel reference cycle, then `SendWrapper` for the same
+    /// Closure → Channel reference cycle, then `Wasm32Shim` for the same
     /// single-thread soundness reason as `ws`.
     #[allow(dead_code)]
-    callbacks: SendWrapper<Rc<RefCell<Callbacks>>>,
+    callbacks: Wasm32Shim<Rc<RefCell<Callbacks>>>,
+    /// Shared flag flipped to `true` by the `on_error` / `on_close`
+    /// closures. `send()` / `roundtrip()` short-circuit on it so a
+    /// server-side idle-timeout close doesn't send us into
+    /// `WebSocket::send_with_u8_array` on a dead socket.
+    closed: Wasm32Shim<Rc<Cell<bool>>>,
     /// Optional metrics recorder. Fires per-frame `on_bytes_sent` /
     /// `on_bytes_received` callbacks once installed via
     /// [`PirTransport::set_metrics_recorder`]. `None` = silent.
     /// `Arc<dyn PirMetrics>` is `Send + Sync` so it doesn't need the
-    /// `SendWrapper` treatment the DOM-bound fields get above.
+    /// `Wasm32Shim` treatment the DOM-bound fields get above.
     metrics_recorder: Option<Arc<dyn PirMetrics>>,
     /// Backend label passed to the recorder's callbacks. Defaults to
     /// `""`; owning clients override via `set_metrics_recorder`.
@@ -187,6 +239,11 @@ fn build_transport(
 
     let (tx, rx) = mpsc::unbounded::<IncomingFrame>();
 
+    // Sticky flag flipped by `on_error` / `on_close` so a server-side
+    // idle-timeout close is observed by the next `send()` without
+    // waiting for someone to call `recv()`. Cloned into both callbacks.
+    let closed = Rc::new(Cell::new(false));
+
     // `on_open` fires exactly once, so we use a oneshot to notify
     // the `connect` future. `on_open_result` carries either the
     // `open` event or an early error if `on_error` / `on_close` fired
@@ -231,7 +288,9 @@ fn build_transport(
     let on_error = {
         let tx = tx.clone();
         let open_tx = open_tx.clone();
+        let closed = closed.clone();
         Closure::wrap(Box::new(move |ev: ErrorEvent| {
+            closed.set(true);
             let msg = format!("WebSocket error: {}", ev.message());
             // If the socket errored before `on_open`, unblock the
             // pending `connect` future with a proper error.
@@ -250,7 +309,9 @@ fn build_transport(
     let on_close = {
         let tx = tx.clone();
         let open_tx = open_tx.clone();
+        let closed = closed.clone();
         Closure::wrap(Box::new(move |ev: Event| {
+            closed.set(true);
             let reason = ev
                 .dyn_into::<web_sys::CloseEvent>()
                 .map(|ce| format!("code={} reason={}", ce.code(), ce.reason()))
@@ -273,9 +334,10 @@ fn build_transport(
 
     let transport = WasmWebSocketTransport {
         url: url.to_string(),
-        ws: SendWrapper::new(ws),
+        ws: Wasm32Shim::new(ws),
         rx,
-        callbacks: SendWrapper::new(callbacks),
+        callbacks: Wasm32Shim::new(callbacks),
+        closed: Wasm32Shim::new(closed),
         metrics_recorder: None,
         metrics_backend: "",
     };
@@ -318,8 +380,11 @@ impl PirTransport for WasmWebSocketTransport {
     async fn send(&mut self, data: Vec<u8>) -> PirResult<()> {
         // `ready_state` returns a `u16`; `WebSocket::OPEN` is `1`. If we
         // try to send on a closing / closed socket the browser throws
-        // `InvalidStateError`.
-        if self.ws.ready_state() != WebSocket::OPEN {
+        // `InvalidStateError`. We also check the `closed` flag first so
+        // a server-side idle-timeout close (observed via `on_close`) is
+        // reported cleanly even if the browser's ready_state hasn't
+        // flipped yet.
+        if self.closed.get() || self.ws.ready_state() != WebSocket::OPEN {
             return Err(PirError::ConnectionClosed(format!(
                 "send on non-open socket (state={})",
                 self.ws.ready_state()
@@ -393,7 +458,17 @@ impl PirTransport for WasmWebSocketTransport {
         // `WebSocket::close()` is a void function in the browser — errors
         // only surface via `dyn_ref` / `InvalidStateError` for bad codes.
         // Passing no args uses the 1005-no-status-rcvd close code.
-        let _ = self.ws.close();
+        //
+        // Skip the call on a socket the server already closed (e.g.
+        // idle-timeout): the WebSocket spec defines `close()` on a
+        // CLOSED socket as a no-op, but calling through the
+        // wasm-bindgen extern boundary is cheaper to avoid. Also marks
+        // the socket closed for any concurrent code path that might
+        // still be holding a reference.
+        self.closed.set(true);
+        if self.ws.ready_state() != WebSocket::CLOSED {
+            let _ = self.ws.close();
+        }
         // Drop the callbacks to break the cycle Browser → Closure →
         // Channel. The `Rc<RefCell<_>>` lets us do it without needing
         // `&mut self` over the full teardown.
