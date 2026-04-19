@@ -5,9 +5,10 @@
 //!
 //! * The default native impl, [`WsConnection`](crate::connection::WsConnection),
 //!   which uses `tokio-tungstenite` over `tokio::net::TcpStream`.
-//! * A WASM impl (future work, see SDK_ROADMAP.md P2 #1a) backed by
-//!   `web-sys::WebSocket` + `wasm-bindgen-futures::spawn_local`, since the
-//!   tokio stack doesn't compile to `wasm32-unknown-unknown`.
+//! * A WASM impl, `WasmWebSocketTransport` (in the `wasm_transport` module,
+//!   cfg-gated to `target_arch = "wasm32"`), backed by `web-sys::WebSocket`
+//!   + `wasm-bindgen-futures::spawn_local`, since the tokio stack doesn't
+//!   compile to `wasm32-unknown-unknown`.
 //! * An in-memory [`MockTransport`] for testing client state-machines
 //!   without a live server (see `#[cfg(test)]` below).
 //!
