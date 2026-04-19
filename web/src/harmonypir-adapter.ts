@@ -159,6 +159,16 @@ export class HarmonyPirClientAdapter {
     );
     const backend = this.config.prpBackend ?? 0;
     this.wasmClient.setPrpBackend(backend);
+    // Pin the adapter's master PRP key NOW, before any hints are fetched.
+    // `setMasterKey` invalidates any already-loaded hint groups on the
+    // native side; deferring this call until `saveHintsToCache` (the old
+    // lazy path) would swap the key mid-session and leave the persisted
+    // blob / fingerprint / masterKey triple mutually inconsistent on the
+    // very next `restoreHintsFromCache`.
+    const masterKey = new Uint8Array(16);
+    crypto.getRandomValues(masterKey);
+    this.wasmClient.setMasterKey(masterKey);
+    this._masterKey = masterKey;
     const backendName = ['HMR12', 'FastPRP', 'ALF'][backend] ?? 'HMR12';
     this.log(`WASM loaded: ${backendName}`);
   }
@@ -548,10 +558,15 @@ export class HarmonyPirClientAdapter {
 
   async reconnectQueryServer(): Promise<void> {
     this.disconnectQueryServer();
-    // Re-open side-channel. The WASM client's internal sockets
-    // aren't re-opened here; callers that see a close should usually
-    // call the full `connectQueryServer` flow instead, but we honour
-    // this contract for UI parity.
+    // Re-open the WASM client's internal hint + query sockets if they
+    // dropped (e.g. server-side idle timeout). Without this, the next
+    // `queryBatch` hits `send on non-open socket (state=3)` even though
+    // the UI-side side-channel is healthy. `isConnected` on the WASM
+    // client tracks the native `HarmonyClient`'s view; if it still says
+    // connected we skip re-opening to avoid orphaning live sockets.
+    if (this.wasmClient && !this.wasmClient.isConnected) {
+      await this.wasmClient.connect();
+    }
     this.queryWs = new ManagedWebSocket({
       url: this.config.queryServerUrl,
       label: 'HarmonyPIR Query Server',
@@ -642,23 +657,20 @@ export class HarmonyPirClientAdapter {
   }
 
   /**
-   * Read or lazily mint the 16-byte master PRP key. The native WASM
-   * client doesn't expose its random key, so this adapter owns one
-   * generated once per instance and mirrors it into the client via
-   * `setMasterKey`. That guarantees the persisted blob and the key
-   * survive a `saveHints` → reload → `setMasterKey` → `loadHints`
-   * round-trip byte-exact.
+   * Read the 16-byte master PRP key pinned by `loadWasm()`. The native
+   * WASM client doesn't expose its random key, so this adapter mints one
+   * per instance at `loadWasm()` time and pushes it into the client via
+   * `setMasterKey` **before** any hints are fetched. That guarantees the
+   * persisted blob, its fingerprint, and the key stored alongside it are
+   * mutually consistent for the `saveHints` → reload → `setMasterKey`
+   * → `loadHints` round-trip.
    */
   private _masterKey: Uint8Array | null = null;
   private currentMasterKey(): Uint8Array {
-    if (this._masterKey) return this._masterKey;
-    // First-time: the WASM client already has a random key internally.
-    // Generate our own and push it down so we remember what it is.
-    const key = new Uint8Array(16);
-    crypto.getRandomValues(key);
-    this.wasmClient?.setMasterKey(key);
-    this._masterKey = key;
-    return key;
+    if (!this._masterKey) {
+      throw new Error('master key not initialized; loadWasm() must be called first');
+    }
+    return this._masterKey;
   }
 }
 
@@ -723,7 +735,13 @@ function translateWasmResult(
     binIndex: b.binIndex,
     binContent: hexToBytes(b.binContent),
   }));
-  const primary = matchedIdx !== undefined ? allIndexBins[matchedIdx] : undefined;
+  // Fall back to the first probed bin for NOT-FOUND queries so
+  // `indexPbcGroup !== undefined` stays truthy — the Merkle-button filter
+  // in `web/index.html` uses that predicate to decide whether to attach a
+  // verify button for the step, and not-found queries in a sparse delta
+  // would otherwise drop out entirely (absence is still provable via
+  // `allIndexBins`). Matches the DPF adapter's fallback.
+  const primary = matchedIdx !== undefined ? allIndexBins[matchedIdx] : allIndexBins[0];
 
   return {
     address,
