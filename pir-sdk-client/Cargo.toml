@@ -121,12 +121,11 @@ futures-channel = "0.3"
 # `web_sys::WebSocket` and `Rc<RefCell<_>>` are `!Send + !Sync`, but
 # `PirTransport: Send + Sync` is required so the trait object satisfies
 # `PirClient: Send + Sync` on the native side of the codebase (and because
-# `#[async_trait]` futures have a Send bound by default). `SendWrapper<T>`
-# unsafely impls `Send + Sync` for any `T`, panicking on access from a
-# thread other than the one that constructed it — which on
-# `wasm32-unknown-unknown` is always the main thread. This lets us keep
-# one PirTransport trait shape across both targets.
-send_wrapper = "0.6"
+# `#[async_trait]` futures have a Send bound by default). The wasm32
+# transport uses a local `Wasm32Shim<T>` wrapper (see
+# `wasm_transport.rs`) that `unsafe impl`s `Send + Sync` unconditionally
+# — sound because wasm32-unknown-unknown is single-threaded absent the
+# unstable `+atomics` target feature, which this crate does not enable.
 
 [dev-dependencies]
 env_logger = "0.11"
