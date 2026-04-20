@@ -195,9 +195,23 @@ pub struct HarmonyGroup {
     last_segment: usize,
     last_position: usize,
     last_query: usize,
-    /// Maps each entry in the sorted request → its position in the segment.
-    /// Used by process_response() to reconstruct per-position entries for relocation.
+    /// One entry per REAL (non-dummy) slot in the last sorted request,
+    /// in the same sorted-merged order. Each entry is that real value's
+    /// original position-in-segment (0..T, excluding `r`).  Used by
+    /// process_response() to reconstruct per-position entries for
+    /// relocation.  Length = number of real non-empty segment cells at
+    /// the time of the last `build_request` call (may be less than T-1
+    /// when some cells were empty and padded with dummies).
     last_position_map: Vec<usize>,
+    /// Per-sorted-slot dummy flag for the last `build_request` call.
+    /// `last_is_dummy[i] = true` means slot `i` of the sorted request is
+    /// a padding index (draw from `[0, real_n) \ real`) that must be
+    /// XOR-cancelled out of the server's response before returning the
+    /// recovered row.  Length = `params.t - 1` after every call.
+    ///
+    /// Round-local scratch — never serialized.  See
+    /// `PLAN_HARMONY_COUNT_LEAK_FIX.md` for the privacy rationale.
+    last_is_dummy: Vec<bool>,
     /// Stashed state for deferred relocation (set by process_response_xor_only).
     deferred_entries: Option<Vec<Vec<u8>>>,
     deferred_answer: Option<Vec<u8>>,
@@ -265,6 +279,7 @@ impl HarmonyGroup {
             last_position: 0,
             last_query: 0,
             last_position_map: Vec::new(),
+            last_is_dummy: Vec::new(),
             deferred_entries: None,
             deferred_answer: None,
         })
@@ -289,9 +304,19 @@ impl HarmonyGroup {
 
     /// Build a request for database row `q`.
     ///
-    /// Returns only the non-empty indices from the segment (excluding the
-    /// dummy at position r), sorted for server cache efficiency.  The dummy
-    /// is omitted entirely — the server never sees it.
+    /// Emits exactly `T - 1` sorted distinct u32 indices drawn from
+    /// `[0, real_n)`.  Real non-empty segment cells contribute their
+    /// actual DB index; empty slots are padded with fresh random
+    /// indices (distinct from each other and from the real indices).
+    /// The dummy indices are tracked in `last_is_dummy` so that
+    /// `process_response` can XOR-cancel their server responses out
+    /// of the recovered row.
+    ///
+    /// Fixed-count invariant: every call emits `(T - 1) * 4` bytes,
+    /// regardless of segment state, query count, or round.  See
+    /// `PLAN_HARMONY_COUNT_LEAK_FIX.md` and the "HarmonyPIR Per-Group
+    /// Request-Count Symmetry" section of `CLAUDE.md` — do NOT change
+    /// this to a variable count.
     pub fn build_request(&mut self, q: u32) -> Result<HarmonyRequest, JsError> {
         let q_usize = q as usize;
         if q_usize >= self.params.n {
@@ -302,6 +327,23 @@ impl HarmonyGroup {
         }
 
         let t = self.params.t;
+        if t < 2 {
+            return Err(JsError::new(&format!("t={t} must be >= 2 for padded request")));
+        }
+        let target = t - 1;
+        // Dummies are drawn from the same [0, padded_n) domain that
+        // real non-empty segment values can take — virtual rows in
+        // [real_n, padded_n) are valid PRP outputs too, so restricting
+        // dummies to [0, real_n) would leak padded_n - real_n virtual
+        // values on the wire.
+        let domain = self.params.n as u32;
+        if (target as u64) > (domain as u64) {
+            return Err(JsError::new(&format!(
+                "T-1={} exceeds padded_n={}, cannot pad to fixed count",
+                target, domain
+            )));
+        }
+
         let c = self.ds.locate(q_usize)
             .map_err(|e| JsError::new(&format!("locate failed: {e:?}")))?;
         let s = c / t;
@@ -309,8 +351,8 @@ impl HarmonyGroup {
 
         // Batch-access all cells in the segment except position r.
         // Uses 4-way PRP pipelining internally.
-        let mut cells: Vec<usize> = Vec::with_capacity(t);
-        let mut cell_positions: Vec<usize> = Vec::with_capacity(t); // original position in segment
+        let mut cells: Vec<usize> = Vec::with_capacity(t - 1);
+        let mut cell_positions: Vec<usize> = Vec::with_capacity(t - 1); // original position in segment
         for i in 0..t {
             if i != r {
                 cells.push(s * t + i);
@@ -320,25 +362,66 @@ impl HarmonyGroup {
         let values = self.ds.batch_access(&cells)
             .map_err(|e| JsError::new(&format!("batch_access failed: {e:?}")))?;
 
-        let mut filtered: Vec<(u32, usize)> = Vec::new();
+        // Collect real (non-empty) cells: (db_index, segment_position).
+        let mut real: Vec<(u32, usize)> = Vec::with_capacity(target);
         for (k, &val) in values.iter().enumerate() {
             if val != EMPTY {
-                filtered.push((val as u32, cell_positions[k]));
+                real.push((val as u32, cell_positions[k]));
             }
         }
 
-        // Sort by DB index for cache-friendly server lookups.
-        filtered.sort_unstable_by_key(|&(idx, _)| idx);
+        // Pad with distinct random indices from [0, padded_n) that are
+        // not already in `real`. The count of dummies brings the total
+        // up to `target = t - 1` — independent of how many real cells
+        // were non-empty, which is the key privacy property.
+        let real_by_idx: std::collections::HashMap<u32, usize> =
+            real.iter().map(|&(idx, pos)| (idx, pos)).collect();
+        let need = target - real.len();
+        let mut chosen: std::collections::HashSet<u32> =
+            real_by_idx.keys().copied().collect();
+        let mut dummies: Vec<u32> = Vec::with_capacity(need);
+        while dummies.len() < need {
+            let cand = self.rng.next_u32() % domain;
+            if chosen.insert(cand) {
+                dummies.push(cand);
+            }
+        }
 
-        // Store position mapping for process_response().
-        self.last_position_map = filtered.iter().map(|&(_, pos)| pos).collect();
+        // Merge real + dummies, sort ascending for cache-friendly
+        // server lookups. All `target` indices are distinct by
+        // construction (dummies rejected against `chosen`).
+        let mut merged: Vec<u32> = real_by_idx.keys().copied()
+            .chain(dummies.iter().copied())
+            .collect();
+        merged.sort_unstable();
+        debug_assert_eq!(merged.len(), target);
+
+        // Build per-slot dummy flag + position map over real slots in
+        // sorted-merged order. `last_position_map[k]` = segment position
+        // of the k-th REAL entry when iterating `merged` in sorted order.
+        let mut is_dummy: Vec<bool> = Vec::with_capacity(target);
+        let mut position_map: Vec<usize> = Vec::with_capacity(real.len());
+        for &idx in &merged {
+            match real_by_idx.get(&idx) {
+                Some(&pos) => {
+                    is_dummy.push(false);
+                    position_map.push(pos);
+                }
+                None => {
+                    is_dummy.push(true);
+                }
+            }
+        }
+
+        self.last_position_map = position_map;
+        self.last_is_dummy = is_dummy;
         self.last_segment = s;
         self.last_position = r;
         self.last_query = q_usize;
 
-        // Serialize only the sorted indices (no EMPTY markers, no dummy).
-        let mut request_bytes = Vec::with_capacity(filtered.len() * 4);
-        for &(idx, _) in &filtered {
+        // Serialize sorted indices.
+        let mut request_bytes = Vec::with_capacity(target * 4);
+        for &idx in &merged {
             request_bytes.extend_from_slice(&idx.to_le_bytes());
         }
 
@@ -375,6 +458,7 @@ impl HarmonyGroup {
         let saved_position = self.last_position;
         let saved_query = self.last_query;
         let saved_map = std::mem::take(&mut self.last_position_map);
+        let saved_is_dummy = std::mem::take(&mut self.last_is_dummy);
 
         let result = self.build_request(q);
 
@@ -383,58 +467,54 @@ impl HarmonyGroup {
         self.last_position = saved_position;
         self.last_query = saved_query;
         self.last_position_map = saved_map;
+        self.last_is_dummy = saved_is_dummy;
 
         result
     }
 
-    /// Build a **synthetic** dummy request that is distribution-matched with
-    /// real queries but touches NO real segment or DS' state.
+    /// Build a **synthetic** dummy request that is byte-for-byte
+    /// indistinguishable on the wire from a real `build_request`.
     ///
-    /// Privacy rationale: `build_dummy_request()` queries a real segment
-    /// without relocating it, which could let the server correlate the
-    /// dummy with future real queries to the same segment.  Synthetic
-    /// dummies avoid this — they sample random indices that look
-    /// statistically identical to a real query:
+    /// Emits exactly `T - 1` sorted distinct u32 indices drawn
+    /// uniformly at random from `[0, real_n)` — the same fixed count
+    /// that `build_request` produces after padding.  Because the
+    /// count is deterministic, the server cannot tell synthetic
+    /// dummies apart from real queries, nor can it tell real queries
+    /// with many empty segment cells apart from real queries with
+    /// few.  See `PLAN_HARMONY_COUNT_LEAK_FIX.md`.
     ///
-    /// - count ~ Binomial(T, 0.5) — each of T cells has ~50% chance of
-    ///   being non-empty (N values fill 2N cells).
-    /// - indices: `count` unique values drawn uniformly from [0, real_n),
-    ///   sorted ascending — matches the distribution of non-empty cell
-    ///   values in a real segment (PRP makes them uniform in [0, N)).
-    ///
-    /// Returns raw bytes: `count × 4B u32 LE` (same format as
+    /// Returns raw bytes: `(T - 1) × 4B u32 LE` (same format as
     /// `HarmonyRequest.request`).
     ///
-    /// **No state mutation**: hints, DS', query count, and RNG-derived
-    /// segment state are untouched.  (The RNG *is* advanced, which is fine.)
+    /// **No state mutation**: hints, DS', query count, and
+    /// RNG-derived segment state are untouched.  (The RNG *is*
+    /// advanced, which is fine.)
     pub fn build_synthetic_dummy(&mut self) -> Vec<u8> {
         let t = self.params.t;
-        let n = self.real_n;
-
-        // 1. Sample count ~ Binomial(T, 0.5): flip T coins.
-        let mut count = 0u32;
-        for _ in 0..t {
-            if self.rng.next_u32() & 1 == 0 {
-                count += 1;
-            }
+        // Match the domain used by build_request: dummies must come from
+        // [0, padded_n), not [0, real_n), because real segment values
+        // can include virtual row indices in [real_n, padded_n) and any
+        // restriction would be a wire-visible distinguisher.
+        let domain = self.params.n as u32;
+        if t < 2 || domain == 0 {
+            return Vec::new();
         }
+        let target = t - 1;
 
-        // 2. Sample `count` unique values from [0, real_n), sort.
-        //    Rejection sampling — fast because count ≈ T/2 << N.
-        let mut indices: Vec<u32> = Vec::with_capacity(count as usize);
-        // Use a simple seen-set for dedup.  For T ≈ 1200 and N ≈ 750K
-        // the collision probability per draw is < 0.2%, so few redraws.
-        let mut seen = std::collections::HashSet::with_capacity(count as usize);
-        while indices.len() < count as usize {
-            let v = self.rng.next_u32() % n;
+        // Sample `target` unique values from [0, padded_n), sort.
+        // Rejection sampling terminates quickly because target << domain
+        // for all realistic Params (target ≈ sqrt(2n)).
+        let mut indices: Vec<u32> = Vec::with_capacity(target);
+        let mut seen = std::collections::HashSet::with_capacity(target);
+        while indices.len() < target {
+            let v = self.rng.next_u32() % domain;
             if seen.insert(v) {
                 indices.push(v);
             }
         }
         indices.sort_unstable();
 
-        // 3. Encode as [u32 LE] bytes — same format as build_request().request.
-        let mut bytes = Vec::with_capacity(indices.len() * 4);
+        let mut bytes = Vec::with_capacity(target * 4);
         for &idx in &indices {
             bytes.extend_from_slice(&idx.to_le_bytes());
         }
@@ -443,16 +523,19 @@ impl HarmonyGroup {
 
     /// Process the Query Server's response and recover the target entry.
     ///
-    /// Response contains `count` entries of w bytes each, in the same sorted
-    /// order as the request indices.  The answer is H[s] ⊕ XOR(all entries).
+    /// Response contains exactly `T - 1` entries of w bytes each, in
+    /// the same sorted order as the padded request indices.  Dummy
+    /// slots (tracked in `last_is_dummy`) are XOR-cancelled out of
+    /// the final answer so only real segment entries contribute:
+    /// `answer = H[s] ⊕ XOR(entries[i] for i where !last_is_dummy[i])`.
     pub fn process_response(&mut self, response: &[u8]) -> Result<Vec<u8>, JsError> {
         let w = self.params.w;
-        let count = self.last_position_map.len();
-        let expected = count * w;
+        let target = self.last_is_dummy.len();
+        let expected = target * w;
         if response.len() != expected {
             return Err(JsError::new(&format!(
                 "expected {} bytes response ({} entries × {}B), got {}",
-                expected, count, w, response.len()
+                expected, target, w, response.len()
             )));
         }
 
@@ -460,17 +543,28 @@ impl HarmonyGroup {
         let r = self.last_position;
 
         // Split response into individual entries (sorted order).
-        let entries: Vec<&[u8]> = (0..count)
+        let entries: Vec<&[u8]> = (0..target)
             .map(|i| &response[i * w..(i + 1) * w])
             .collect();
 
-        // answer = H[s] ⊕ all entries  (dummy was never sent, so no skip needed)
+        // answer = H[s] ⊕ XOR(real entries only).
+        // Dummy entries are XOR-cancelled by skipping them here.
         let mut answer = self.hints[s].clone();
-        for entry in &entries {
-            xor_into(&mut answer, entry);
+        for (i, entry) in entries.iter().enumerate() {
+            if !self.last_is_dummy[i] {
+                xor_into(&mut answer, entry);
+            }
         }
 
-        self.relocate_and_update_hints(s, r, &entries, &answer)?;
+        // Collect real entries in sorted-merged order for relocation.
+        // `last_position_map[k]` gives the segment position of the k-th
+        // real entry — which matches the order we iterate here.
+        let real_entries: Vec<&[u8]> = entries.iter().enumerate()
+            .filter_map(|(i, e)| if !self.last_is_dummy[i] { Some(*e) } else { None })
+            .collect();
+        debug_assert_eq!(real_entries.len(), self.last_position_map.len());
+
+        self.relocate_and_update_hints(s, r, &real_entries, &answer)?;
         self.query_count += 1;
         Ok(answer)
     }
@@ -480,28 +574,32 @@ impl HarmonyGroup {
     /// Call `finish_relocation()` before the next query on this group.
     pub fn process_response_xor_only(&mut self, response: &[u8]) -> Result<Vec<u8>, JsError> {
         let w = self.params.w;
-        let count = self.last_position_map.len();
-        let expected = count * w;
+        let target = self.last_is_dummy.len();
+        let expected = target * w;
         if response.len() != expected {
             return Err(JsError::new(&format!(
                 "expected {} bytes response ({} entries × {}B), got {}",
-                expected, count, w, response.len()
+                expected, target, w, response.len()
             )));
         }
 
-        // Split response into owned entries.
-        let entries: Vec<Vec<u8>> = (0..count)
-            .map(|i| response[i * w..(i + 1) * w].to_vec())
-            .collect();
-
-        // answer = H[s] ⊕ all entries
+        // Retain only REAL entries — dummies are XOR-cancelled by not
+        // being included at all. `deferred_entries` thus matches
+        // `last_position_map` in length + order, exactly what
+        // `finish_relocation` / `relocate_and_update_hints` expects.
+        let mut real_entries: Vec<Vec<u8>> = Vec::with_capacity(self.last_position_map.len());
         let mut answer = self.hints[self.last_segment].clone();
-        for entry in &entries {
-            xor_into(&mut answer, entry);
+        for i in 0..target {
+            let slot = &response[i * w..(i + 1) * w];
+            if !self.last_is_dummy[i] {
+                xor_into(&mut answer, slot);
+                real_entries.push(slot.to_vec());
+            }
         }
+        debug_assert_eq!(real_entries.len(), self.last_position_map.len());
 
         // Stash for deferred relocation.
-        self.deferred_entries = Some(entries);
+        self.deferred_entries = Some(real_entries);
         self.deferred_answer = Some(answer.clone());
         Ok(answer)
     }
@@ -665,6 +763,7 @@ impl HarmonyGroup {
             last_position: 0,
             last_query: 0,
             last_position_map: Vec::new(),
+            last_is_dummy: Vec::new(),
             deferred_entries: None,
             deferred_answer: None,
         })
@@ -943,8 +1042,218 @@ mod tests {
         let hints = vec![0u8; m * w as usize];
         group.load_hints(&hints).unwrap();
 
+        // Fixed-count invariant: every request is exactly (T - 1) * 4 bytes.
         let req = group.build_request(0).unwrap();
-        assert_eq!(req.request_bytes.len(), group.t() as usize * 4);
+        assert_eq!(
+            req.request_bytes.len(),
+            (group.t() as usize - 1) * 4,
+            "request must contain exactly T-1 sorted u32 indices"
+        );
+    }
+
+    /// Exercise a full query lifecycle and collect request byte lengths.
+    fn collect_request_sizes(
+        n: u32, w: u32, queries: usize, backend: u8,
+    ) -> Vec<usize> {
+        let real_n = n as usize;
+        let w_usize = w as usize;
+        let t_val = find_best_t(n);
+        let (padded_n, t_val) = pad_n_for_t(n, t_val);
+        let padded_n_usize = padded_n as usize;
+        let t = t_val as usize;
+
+        let db: Vec<Vec<u8>> = (0..real_n)
+            .map(|i| {
+                let mut entry = vec![0u8; w_usize];
+                let bytes = (i as u64).to_le_bytes();
+                entry[..bytes.len().min(w_usize)]
+                    .copy_from_slice(&bytes[..bytes.len().min(w_usize)]);
+                entry
+            })
+            .collect();
+
+        let key = [0x42u8; 16];
+        let group_id: u32 = 0;
+        let derived_key = derive_group_key(&key, group_id);
+        let domain = 2 * padded_n_usize;
+
+        let prp_server = build_prp(backend, &derived_key, domain, padded_n, &[]);
+        let params = Params::new(padded_n_usize, w_usize, t).unwrap();
+        let ds_server = RelocationDS::new(padded_n_usize, t, prp_server).unwrap();
+
+        let m = params.m;
+        let mut hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
+        for k in 0..padded_n_usize {
+            let cell = ds_server.locate(k).unwrap();
+            if k < real_n {
+                xor_into(&mut hints[cell / t], &db[k]);
+            }
+        }
+
+        let mut group =
+            HarmonyGroup::new_with_backend(n, w, t_val, &key, group_id, backend).unwrap();
+        let flat_hints: Vec<u8> = hints.iter().flat_map(|h| h.iter().copied()).collect();
+        group.load_hints(&flat_hints).unwrap();
+
+        let simulate = |req: &HarmonyRequest, db: &[Vec<u8>], real_n: usize, w: usize| -> Vec<u8> {
+            let count = req.request_bytes.len() / 4;
+            let mut response = Vec::with_capacity(count * w);
+            for j in 0..count {
+                let off = j * 4;
+                let idx = u32::from_le_bytes(req.request_bytes[off..off + 4].try_into().unwrap());
+                if idx as usize >= real_n {
+                    response.extend(std::iter::repeat(0u8).take(w));
+                } else {
+                    response.extend_from_slice(&db[idx as usize]);
+                }
+            }
+            response
+        };
+
+        let max_q = params.max_queries.min(queries);
+        let mut sizes = Vec::with_capacity(max_q);
+        for i in 0..max_q {
+            let q = (i * 7 + 3) % real_n;
+            let req = group.build_request(q as u32).unwrap();
+            sizes.push(req.request_bytes.len());
+            let resp = simulate(&req, &db, real_n, w_usize);
+            let result = group.process_response(&resp).unwrap();
+            assert_eq!(result, db[q], "wrong row at query {i}");
+        }
+        sizes
+    }
+
+    #[test]
+    fn test_request_is_fixed_length() {
+        let n = 256u32;
+        let w = 32u32;
+        let key = [0x42u8; 16];
+        let mut group = HarmonyGroup::new(n, w, 0, &key, 0).unwrap();
+        let m = group.m() as usize;
+        group.load_hints(&vec![0u8; m * w as usize]).unwrap();
+        let t = group.t() as usize;
+        let expected = (t - 1) * 4;
+
+        // Fresh group (no relocation yet).
+        let req = group.build_request(0).unwrap();
+        assert_eq!(req.request_bytes.len(), expected);
+    }
+
+    #[test]
+    fn test_synthetic_dummy_is_fixed_length() {
+        let n = 256u32;
+        let w = 32u32;
+        let key = [0x42u8; 16];
+        let mut group = HarmonyGroup::new(n, w, 0, &key, 0).unwrap();
+        let t = group.t() as usize;
+        let expected = (t - 1) * 4;
+        for _ in 0..16 {
+            let bytes = group.build_synthetic_dummy();
+            assert_eq!(bytes.len(), expected);
+        }
+    }
+
+    #[test]
+    fn test_dummies_distinct_from_reals_and_each_other() {
+        let n = 256u32;
+        let w = 32u32;
+        let key = [0x42u8; 16];
+        let mut group = HarmonyGroup::new(n, w, 0, &key, 7).unwrap();
+        let m = group.m() as usize;
+        group.load_hints(&vec![0u8; m * w as usize]).unwrap();
+        let padded_n = group.n();
+
+        for q in [0u32, 17, 100, 250] {
+            let req = group.build_request(q).unwrap();
+            let bytes = &req.request_bytes;
+            let count = bytes.len() / 4;
+            let orig: Vec<u32> = (0..count)
+                .map(|i| u32::from_le_bytes(bytes[i * 4..(i + 1) * 4].try_into().unwrap()))
+                .collect();
+
+            // Sorted ascending + distinct.
+            let mut dedup = orig.clone();
+            dedup.sort_unstable();
+            dedup.dedup();
+            assert_eq!(dedup.len(), orig.len(), "duplicate indices in request");
+            let mut sorted_copy = orig.clone();
+            sorted_copy.sort_unstable();
+            assert_eq!(orig, sorted_copy, "indices must be sorted ascending");
+
+            // All within the padded_n PRP domain.
+            for &idx in &orig {
+                assert!(
+                    idx < padded_n,
+                    "index {idx} out of range [0, {padded_n})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_correctness_survives_padding() {
+        // Full protocol + many queries. verify_protocol_impl covers this,
+        // but also run a longer lifecycle that stresses relocation.
+        assert!(verify_protocol_impl(128, 32, PRP_HMR12));
+        let sizes = collect_request_sizes(256, 32, 16, PRP_HMR12);
+        let expected = sizes[0];
+        for (i, &sz) in sizes.iter().enumerate() {
+            assert_eq!(sz, expected, "size drift at query {i}: {sz} != {expected}");
+        }
+    }
+
+    #[test]
+    fn test_count_constant_across_aging() {
+        // Request size must be identical across every query, regardless
+        // of how hint/DS state has evolved (fresh → aged).
+        let n = 256u32;
+        let w = 32u32;
+        // Run enough queries to cover a substantial fraction of max_queries.
+        let sizes = collect_request_sizes(n, w, 24, PRP_HMR12);
+        assert!(!sizes.is_empty());
+        let expected = sizes[0];
+        for (i, &sz) in sizes.iter().enumerate() {
+            assert_eq!(sz, expected, "size drift at query {i}: {sz} != {expected}");
+        }
+    }
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip_with_aging() {
+        // Queries before serialize + queries after deserialize must all
+        // succeed and maintain the fixed-count invariant. The verify
+        // helper runs this end-to-end.
+        assert!(verify_protocol_impl(256, 42, PRP_HMR12));
+
+        // Additionally, assert that scratch state (last_is_dummy) is
+        // NOT persisted — a fresh deserialize should have an empty
+        // last_is_dummy until the first build_request call.
+        let key = [0x42u8; 16];
+        let mut group = HarmonyGroup::new(64, 32, 0, &key, 0).unwrap();
+        let m = group.m() as usize;
+        group.load_hints(&vec![0u8; m * 32]).unwrap();
+        let data = group.serialize();
+        let restored = HarmonyGroup::deserialize(&data, &key, 0).unwrap();
+        assert!(restored.last_is_dummy.is_empty(),
+            "last_is_dummy must not be persisted across serialize/deserialize");
+        assert!(restored.last_position_map.is_empty(),
+            "last_position_map must not be persisted across serialize/deserialize");
+    }
+
+    #[test]
+    fn test_dummy_collision_budget_small() {
+        // Edge case: T - 1 approaches real_n. Ensure the rejection
+        // sampling loop terminates and produces distinct indices.
+        // We force a small configuration via find_best_t.
+        let n = 64u32;
+        let w = 32u32;
+        let key = [0x42u8; 16];
+        let mut group = HarmonyGroup::new(n, w, 0, &key, 0).unwrap();
+        let m = group.m() as usize;
+        group.load_hints(&vec![0u8; m * w as usize]).unwrap();
+        let t = group.t() as usize;
+        assert!((t - 1) <= n as usize, "T-1={} must not exceed real_n={}", t - 1, n);
+        let req = group.build_request(5).unwrap();
+        assert_eq!(req.request_bytes.len(), (t - 1) * 4);
     }
 
     #[test]

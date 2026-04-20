@@ -59,6 +59,29 @@ level and leaks cuckoo-position (h=0 vs h=1) as well.
    CHUNK Merkle item counts still vary with UTXO count — that is a
    separate, documented trade-off (see "What the Server Learns" below).
 
+### HarmonyPIR Per-Group Request-Count Symmetry (MANDATORY for Privacy)
+
+**Every HarmonyPIR per-group query slot (INDEX, CHUNK, or sibling) MUST
+send exactly `T − 1` sorted distinct u32 indices drawn from
+`[0, real_n)`, regardless of segment state, query count, or round.**
+
+Filtering `EMPTY` cells and sending only the surviving non-empty
+indices leaks the per-group count. The count drifts upward as hints
+get consumed and as cells fill via relocation — a server can fit the
+trajectory, distinguish the real-query slot from padding dummies
+every round, estimate queries-since-last-rehint, and predict when a
+fresh offline phase is imminent.
+
+Do NOT add any code path that emits fewer than `T − 1` indices, and
+do NOT add a "skip if empty" early-exit.
+
+The fix is implemented in `HarmonyGroup::build_request` /
+`build_synthetic_dummy` (see `PLAN_HARMONY_COUNT_LEAK_FIX.md`) by
+padding the shortfall with random distinct indices drawn from
+`[0, real_n) \ R` and XOR-cancelling those dummy response entries in
+`process_response` / `process_response_xor_only`. No wire-format or
+server-side change is required.
+
 ### What the Server Learns (Documented Trade-offs)
 
 The server **cannot** learn:
