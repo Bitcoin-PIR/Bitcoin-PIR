@@ -4,706 +4,1480 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bitcoin PIR</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <style>
+        /* ── tokens ──────────────────────────────────────────────────── */
+        :root {
+            --bg:        oklch(98.2% 0.004 80);
+            --panel:     oklch(99.5% 0.003 80);
+            --sunken:    oklch(96.2% 0.005 80);
+            --ink:       oklch(22% 0.01 80);
+            --ink-soft:  oklch(40% 0.01 80);
+            --ink-mute:  oklch(58% 0.008 80);
+            --ink-faint: oklch(72% 0.006 80);
+            --line:      oklch(91% 0.006 80);
+            --line-soft: oklch(94% 0.005 80);
+
+            --accent:       oklch(70% 0.14 65);
+            --accent-ink:   oklch(42% 0.12 55);
+            --accent-wash:  oklch(96% 0.03 75);
+            --accent-line:  oklch(86% 0.08 70);
+
+            --ok:       oklch(64% 0.12 155);
+            --ok-wash:  oklch(95% 0.03 155);
+            --warn:     oklch(72% 0.14 75);
+            --err:      oklch(60% 0.18 25);
+            --err-wash: oklch(95% 0.03 25);
+
+            --term-bg:   oklch(18% 0.01 260);
+            --term-ink:  oklch(88% 0.008 80);
+            --term-mute: oklch(60% 0.01 260);
+            --term-line: oklch(26% 0.01 260);
+
+            --r: 6px;
+            --r-lg: 10px;
+            --shadow-sm: 0 1px 0 oklch(90% 0.005 80 / .6);
+            --shadow:    0 1px 2px oklch(40% 0.02 80 / .06), 0 2px 8px oklch(40% 0.02 80 / .04);
+
+            --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+            --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+
+        [data-theme="dark"] {
+            --bg:        oklch(18% 0.01 260);
+            --panel:     oklch(21% 0.01 260);
+            --sunken:    oklch(16% 0.01 260);
+            --ink:       oklch(94% 0.005 80);
+            --ink-soft:  oklch(78% 0.008 80);
+            --ink-mute:  oklch(62% 0.008 80);
+            --ink-faint: oklch(48% 0.008 80);
+            --line:      oklch(28% 0.01 260);
+            --line-soft: oklch(24% 0.01 260);
+            --accent-ink:  oklch(82% 0.12 70);
+            --accent-wash: oklch(30% 0.04 70);
+            --accent-line: oklch(42% 0.08 70);
+            --ok-wash:  oklch(28% 0.04 155);
+            --err-wash: oklch(30% 0.05 25);
+        }
+        [data-density="compact"] { --pad: 10px; --gap: 8px; }
+        :root                    { --pad: 14px; --gap: 12px; }
+        [data-density="cozy"]    { --pad: 18px; --gap: 16px; }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
         body {
-            font-family: Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
+            font-family: var(--sans);
+            font-size: 14px; line-height: 1.5;
+            color: var(--ink); background: var(--bg);
+            -webkit-font-smoothing: antialiased;
+            font-feature-settings: "ss01", "cv11";
         }
-        .container {
-            background-color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
+        ::selection { background: var(--accent-wash); color: var(--ink); }
+
+        /* ── top bar ──────────────────────────────────────────────── */
+        .topbar {
+            height: 48px; border-bottom: 1px solid var(--line);
+            background: var(--panel);
+            display: flex; align-items: center;
+            padding: 0 20px; gap: 16px;
+            position: sticky; top: 0; z-index: 40;
         }
-        h1 {
-            color: #333;
-            border-bottom: 3px solid #f7931a;
-            padding-bottom: 10px;
+        .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+        .brand-mark {
+            width: 22px; height: 22px; border-radius: 5px;
+            background: conic-gradient(from 210deg at 50% 50%, var(--accent) 0deg 120deg, oklch(82% 0.12 55) 120deg 240deg, var(--accent-ink) 240deg 360deg);
+            position: relative; box-shadow: inset 0 0 0 1px oklch(0% 0 0 / .08);
         }
-        h2 {
-            color: #666;
-            margin-top: 30px;
+        .brand-mark::after {
+            content: "₿"; position: absolute; inset: 0;
+            display: grid; place-items: center;
+            font-family: var(--sans); font-weight: 700;
+            color: oklch(100% 0 0 / .92); font-size: 13px;
+            text-shadow: 0 1px 0 oklch(0% 0 0 / .15);
         }
+        .brand small {
+            font-weight: 500; color: var(--ink-mute);
+            border-left: 1px solid var(--line); margin-left: 4px; padding-left: 10px;
+            font-size: 12px;
+        }
+        .topbar-spacer { flex: 1; }
+        .topbar-meta {
+            display: flex; align-items: center; gap: 14px;
+            color: var(--ink-mute); font-size: 12px;
+            font-family: var(--mono);
+        }
+        .topbar-meta .sep { color: var(--ink-faint); }
+        .topbar-meta b { color: var(--ink); font-weight: 500; }
+        .topbar-btn {
+            font: inherit; background: transparent; border: 1px solid var(--line);
+            border-radius: var(--r); padding: 5px 10px; color: var(--ink-soft);
+            cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+            font-size: 12px; text-decoration: none;
+        }
+        .topbar-btn:hover { border-color: var(--ink-faint); color: var(--ink); }
+
+        /* ── layout ───────────────────────────────────────────────── */
+        .app {
+            display: grid;
+            grid-template-columns: 248px 1fr;
+            min-height: calc(100vh - 48px);
+        }
+        .sidebar {
+            border-right: 1px solid var(--line); background: var(--panel);
+            padding: 20px 14px;
+            position: sticky; top: 48px; align-self: start;
+            height: calc(100vh - 48px); overflow-y: auto;
+        }
+        .sb-title {
+            font-size: 10.5px; font-weight: 600;
+            letter-spacing: 0.08em; text-transform: uppercase;
+            color: var(--ink-mute);
+            padding: 6px 10px 10px;
+        }
+        .scheme-list { display: flex; flex-direction: column; gap: 4px; }
+        .scheme {
+            all: unset;
+            display: grid;
+            grid-template-columns: 22px 1fr auto;
+            align-items: center;
+            gap: 10px;
+            padding: 10px; border-radius: var(--r);
+            cursor: pointer; color: var(--ink-soft);
+            border: 1px solid transparent;
+        }
+        .scheme:hover { background: var(--sunken); color: var(--ink); }
+        .scheme.active {
+            background: var(--accent-wash);
+            border-color: var(--accent-line);
+            color: var(--accent-ink);
+        }
+        .scheme .ico {
+            width: 22px; height: 22px; border-radius: 5px;
+            background: var(--sunken); border: 1px solid var(--line);
+            display: grid; place-items: center;
+            font-family: var(--mono); font-size: 10px; font-weight: 600;
+            color: var(--ink-mute);
+        }
+        .scheme.active .ico {
+            background: oklch(100% 0 0); border-color: var(--accent-line);
+            color: var(--accent-ink);
+        }
+        .scheme .name { font-weight: 500; font-size: 13.5px; letter-spacing: -0.005em; }
+        .scheme .sub { display: block; font-weight: 400; color: var(--ink-mute); font-size: 11.5px; margin-top: 1px; }
+        .scheme.active .sub { color: var(--accent-ink); opacity: .7; }
+        .scheme .servers {
+            font-family: var(--mono); font-size: 10.5px;
+            color: var(--ink-mute);
+            padding: 2px 6px; border-radius: 4px;
+            background: var(--sunken);
+        }
+        .scheme.active .servers { background: oklch(100% 0 0); color: var(--accent-ink); }
+
+        .sb-section { margin-top: 22px; }
+        .sb-disclaimer {
+            margin: 18px 2px 0;
+            padding: 10px 12px;
+            border: 1px solid oklch(from var(--err) 86% 0.05 h);
+            background: var(--err-wash);
+            color: var(--err);
+            border-radius: var(--r);
+            font-size: 11.5px;
+            line-height: 1.5;
+        }
+        .sb-disclaimer strong { color: var(--err); font-weight: 600; }
+        .sb-disclaimer em { font-style: italic; }
+        .sb-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 10px;
+            font-size: 12px; color: var(--ink-mute);
+            font-family: var(--mono);
+        }
+        .sb-row b { font-weight: 500; color: var(--ink-soft); }
+        .sb-repo {
+            margin-top: 10px; padding: 10px;
+            border: 1px solid var(--line); border-radius: var(--r);
+            background: var(--bg);
+            font-size: 12px; color: var(--ink-soft);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .sb-repo svg { flex: 0 0 14px; }
+        .sb-repo a { color: var(--ink); text-decoration: none; font-weight: 500; }
+        .sb-repo a:hover { color: var(--accent-ink); }
+
+        /* ── main ─────────────────────────────────────────────────── */
+        .main { min-width: 0; padding: 28px 36px 260px; }
+        .crumbs {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 12px; color: var(--ink-mute);
+            font-family: var(--mono); margin-bottom: 14px;
+        }
+        .crumbs span.sep { color: var(--ink-faint); }
+        .crumbs b { font-weight: 500; color: var(--ink); }
+        .hero {
+            display: flex; justify-content: space-between; align-items: flex-end;
+            gap: 24px;
+            padding-bottom: 22px; margin-bottom: 22px;
+            border-bottom: 1px solid var(--line);
+        }
+        .hero h1 {
+            margin: 0 0 6px; font-size: 26px; letter-spacing: -0.02em;
+            font-weight: 600; color: var(--ink);
+        }
+        .hero h1 .tag {
+            font-family: var(--mono); font-size: 12px; font-weight: 500;
+            color: var(--accent-ink); background: var(--accent-wash);
+            border: 1px solid var(--accent-line);
+            padding: 2px 7px; border-radius: 999px;
+            vertical-align: middle; margin-left: 10px;
+            letter-spacing: 0;
+        }
+        .hero p { margin: 0; color: var(--ink-soft); max-width: 62ch; }
+        .hero-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+        /* ── buttons ──────────────────────────────────────────────── */
+        button, input, textarea, select { font: inherit; }
+        .btn {
+            font: inherit; font-size: 13px; font-weight: 500;
+            padding: 7px 12px; border-radius: var(--r);
+            border: 1px solid var(--line); background: var(--panel);
+            color: var(--ink); cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+            transition: border-color .12s, background .12s;
+            white-space: nowrap;
+        }
+        .btn:hover:not(:disabled) { border-color: var(--ink-faint); }
+        .btn:disabled { opacity: .5; cursor: not-allowed; }
+        .btn.ghost { border-color: transparent; background: transparent; color: var(--ink-soft); }
+        .btn.ghost:hover:not(:disabled) { background: var(--sunken); color: var(--ink); }
+        .btn.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+        .btn.primary:hover:not(:disabled) { background: oklch(from var(--ink) calc(l - 0.03) c h); }
+        .btn.accent {
+            background: var(--accent); color: oklch(18% 0.02 60);
+            border-color: var(--accent); font-weight: 600;
+        }
+        .btn.accent:hover:not(:disabled) { background: oklch(from var(--accent) calc(l - 0.03) c h); }
+        .btn.success {
+            background: var(--ok); color: #fff; border-color: var(--ok); font-weight: 600;
+        }
+        .btn.success:hover:not(:disabled) { background: oklch(from var(--ok) calc(l - 0.04) c h); }
+        .btn.danger { color: var(--err); border-color: var(--line); }
+        .btn.danger:hover:not(:disabled) { border-color: var(--err); background: var(--err-wash); }
+        .btn.sm { padding: 4px 8px; font-size: 12px; }
+
+        /* ── grid of cards ────────────────────────────────────────── */
+        .grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+            gap: 16px; align-items: start;
+        }
+        .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--r-lg);
+            box-shadow: var(--shadow-sm);
+        }
+        .card-head {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 10px;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--line-soft);
+        }
+        .card-title {
+            display: flex; align-items: center; gap: 10px;
+            font-weight: 600; font-size: 13px; letter-spacing: -0.005em;
+            color: var(--ink);
+        }
+        .card-title .num {
+            font-family: var(--mono); font-size: 11px; font-weight: 500;
+            color: var(--ink-mute);
+            width: 20px; height: 20px; border-radius: 5px;
+            background: var(--sunken); border: 1px solid var(--line);
+            display: grid; place-items: center;
+        }
+        .card-body { padding: 16px; }
+
+        /* ── status/config rows ───────────────────────────────────── */
+        .status-row {
+            display: grid; grid-template-columns: 140px 1fr auto;
+            gap: 12px; align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px dashed var(--line-soft);
+        }
+        .status-row:last-child { border-bottom: none; padding-bottom: 0; }
+        .status-row:first-child { padding-top: 0; }
+        .status-row > label {
+            font-size: 12px; color: var(--ink-mute); font-family: var(--mono);
+            margin: 0; font-weight: 400; display: block;
+        }
+        .input, .select {
+            font: inherit; font-family: var(--mono); font-size: 12.5px;
+            padding: 6px 10px;
+            border: 1px solid var(--line); border-radius: var(--r);
+            background: var(--bg); color: var(--ink);
+            width: 100%; max-width: none;
+        }
+        .input:focus, .select:focus {
+            outline: none; border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-wash);
+        }
+
+        /* ── status pill (repurposed .status.connected/disconnected/…) */
         .status {
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 4px;
-            font-weight: bold;
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 11.5px; font-family: var(--mono);
+            padding: 3px 9px; border-radius: 999px;
+            border: 1px solid var(--line);
+            background: var(--sunken);
+            color: var(--ink-soft); font-weight: 400;
+            line-height: 1.4;
         }
-        .status.connected { background-color: #d4edda; color: #155724; }
-        .status.disconnected { background-color: #f8d7da; color: #721c24; }
-        .status.connecting { background-color: #fff3cd; color: #856404; }
-        .status.reconnecting { background-color: #ffeaa7; color: #856404; animation: pulse 1.5s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-
-        button {
-            background-color: #f7931a;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            margin: 5px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
+        .status::before {
+            content: ""; width: 6px; height: 6px; border-radius: 999px;
+            background: var(--ink-faint);
         }
-        button:hover { background-color: #e0820e; }
-        button:disabled { background-color: #ccc; cursor: not-allowed; }
-        button.secondary { background-color: #6c757d; }
-        button.secondary:hover { background-color: #5a6268; }
-        button.small { padding: 5px 12px; font-size: 12px; margin: 2px; }
-
-        input[type="text"] {
-            padding: 8px;
-            margin: 5px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            width: 300px;
+        .status.connected {
+            color: var(--ok);
+            border-color: oklch(from var(--ok) 82% 0.05 h);
+            background: var(--ok-wash);
         }
-        input[type="text"].small { width: 200px; }
+        .status.connected::before {
+            background: var(--ok);
+            box-shadow: 0 0 0 3px oklch(from var(--ok) 82% 0.05 h / .5);
+            animation: statusPulse 1.8s ease-in-out infinite;
+        }
+        .status.disconnected {
+            color: var(--err);
+            border-color: oklch(from var(--err) 82% 0.05 h);
+            background: var(--err-wash);
+        }
+        .status.disconnected::before { background: var(--err); }
+        .status.connecting, .status.reconnecting {
+            color: oklch(42% 0.12 75);
+            border-color: oklch(82% 0.08 75);
+            background: oklch(97% 0.03 75);
+        }
+        .status.connecting::before, .status.reconnecting::before {
+            background: var(--warn);
+            animation: statusPulse 1.4s ease-in-out infinite;
+        }
+        @keyframes statusPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
-        textarea {
-            padding: 8px;
-            margin: 5px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            width: 95%;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            resize: vertical;
+        /* ── pill (generic, for inline badges) ────────────────────── */
+        .pill {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 11.5px; font-family: var(--mono);
+            padding: 3px 9px; border-radius: 999px;
+            border: 1px solid var(--line); background: var(--sunken);
+            color: var(--ink-soft);
+        }
+        .pill .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ink-faint); }
+        .pill.ok  { color: var(--ok); border-color: oklch(from var(--ok) 82% 0.05 h); background: var(--ok-wash); }
+        .pill.ok .dot { background: var(--ok); }
+
+        /* ── query composer ───────────────────────────────────────── */
+        .composer-label {
+            font-size: 11px; font-weight: 600; letter-spacing: .08em;
+            text-transform: uppercase; color: var(--ink-mute);
+            margin-bottom: 8px;
+        }
+        .composer-label .hint {
+            font-family: var(--mono); font-weight: 500;
+            color: var(--ink-faint); letter-spacing: 0;
+            margin-left: 4px; text-transform: none;
+        }
+        textarea.addr-input, #scriptPubkeys, #op-scriptPubkeys, #hp-scriptPubkeys {
+            font: inherit; font-family: var(--mono); font-size: 12.5px;
+            width: 100%; min-height: 96px; resize: vertical;
+            padding: 10px 12px;
+            border: 1px solid var(--line); border-radius: var(--r);
+            background: var(--bg); color: var(--ink);
+            line-height: 1.55; margin: 0;
+        }
+        textarea.addr-input:focus, #scriptPubkeys:focus, #op-scriptPubkeys:focus, #hp-scriptPubkeys:focus {
+            outline: none; border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-wash);
+        }
+        .conversion-note {
+            font-size: 11.5px; font-family: var(--mono); color: var(--ok);
+            margin: 6px 2px 0;
         }
 
-        label {
-            display: block;
-            margin: 10px 0 5px 0;
-            font-weight: bold;
+        .ex-section { margin-top: 14px; }
+        .ex-head {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 10.5px; font-weight: 600;
+            letter-spacing: 0.08em; text-transform: uppercase;
+            color: var(--ink-mute); margin-bottom: 8px;
+        }
+        .ex-head .count {
+            font-family: var(--mono); font-size: 10px;
+            color: var(--ink-faint); font-weight: 500;
+            letter-spacing: 0; text-transform: none;
+        }
+        .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        /* .example-btn retargeted to chip look */
+        .example-btn, .chip {
+            font: inherit; font-family: var(--mono); font-size: 11.5px;
+            padding: 4px 10px; border-radius: 999px;
+            border: 1px solid var(--line); background: var(--panel);
+            color: var(--ink-soft); cursor: pointer;
+            display: inline-flex; align-items: center; gap: 6px;
+            margin: 0;
+        }
+        .example-btn:hover, .chip:hover { border-color: var(--ink-faint); color: var(--ink); background: var(--sunken); }
+        .example-btn.whale, .chip.whale { color: var(--accent-ink); }
+        .example-btn.whale::before, .chip.whale::before {
+            content: ""; width: 4px; height: 4px; border-radius: 999px;
+            background: var(--accent); display: inline-block;
+        }
+        .example-btn.excluded, .chip.excluded {
+            color: var(--err); opacity: .75; border-color: oklch(from var(--err) 86% 0.03 h);
+            background: var(--err-wash);
+        }
+        .example-btn.delta, .chip.delta {
+            color: var(--accent-ink);
+            border-color: var(--accent-line);
+            background: var(--accent-wash);
+        }
+        .example-btn.batch, .chip.batch {
+            color: var(--ok); border-color: oklch(from var(--ok) 84% 0.04 h);
+            background: var(--ok-wash);
+        }
+        .example-label {
+            display: none; /* now rendered via .ex-head */
         }
 
-        .result {
-            background-color: #f8f9fa;
-            padding: 15px;
-            border-radius: 4px;
-            margin: 10px 0;
-            font-family: 'Courier New', Consolas, monospace;
-            white-space: pre-wrap;
-            word-break: break-all;
+        /* ── action row + progress ────────────────────────────────── */
+        .action-row {
+            display: flex; gap: 8px; margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--line-soft);
+            align-items: stretch; flex-wrap: wrap;
         }
+        .action-row .btn { flex: 0 0 auto; padding: 8px 14px; }
+        .action-row .btn.grow { flex: 1 1 auto; padding: 10px 14px; font-size: 14px; }
 
-        .step {
-            margin: 20px 0;
-            padding: 15px;
-            border-left: 4px solid #f7931a;
-            background-color: #fff8f0;
+        .plan-box {
+            margin-top: 12px;
+            padding: 10px 14px;
+            border: 1px solid var(--accent-line);
+            background: var(--accent-wash);
+            border-radius: var(--r);
+            font-size: 12.5px;
+            color: var(--accent-ink);
         }
-        .step-number { font-weight: bold; color: #f7931a; }
+        .plan-box .mono { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+        .plan-box .actions { margin-top: 8px; display: flex; gap: 8px; }
 
-        .log {
-            background-color: #1e1e1e;
-            color: #d4d4d4;
-            padding: 15px;
-            border-radius: 4px;
-            max-height: 300px;
-            overflow-y: auto;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
+        .progress-container {
+            margin-top: 14px; display: none;
+            background: var(--sunken); border: 1px solid var(--line);
+            border-radius: var(--r); padding: 10px 12px;
         }
-        .log-entry { margin: 5px 0; }
-        .log-entry.error { color: #f48771; }
-        .log-entry.success { color: #89d185; }
-        .log-entry.info { color: #4fc1ff; }
-
-        .progress-container { margin: 15px 0; display: none; }
         .progress-container.active { display: block; }
-        .progress-bar { height: 24px; background-color: #e9ecef; border-radius: 4px; overflow: hidden; }
-        .progress-fill {
-            height: 100%; background-color: #f7931a; transition: width 0.3s;
-            display: flex; align-items: center; justify-content: center;
-            color: white; font-size: 12px; font-weight: bold;
+        .progress-bar {
+            height: 6px; border-radius: 999px;
+            background: var(--line); overflow: hidden;
         }
-        .progress-label { font-size: 13px; color: #666; margin-top: 4px; }
+        .progress-fill {
+            height: 100%; background: var(--accent);
+            transition: width 0.3s;
+            color: transparent; font-size: 0;
+            border-radius: 999px;
+        }
+        .progress-label {
+            font-family: var(--mono); font-size: 11.5px;
+            color: var(--ink-soft); margin-top: 6px;
+        }
 
-        .utxo-section { margin-top: 20px; border-top: 2px solid #f7931a; padding-top: 20px; }
-        .utxo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-        .utxo-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 13px; }
-        .utxo-table th { background-color: #f7931a; color: white; padding: 10px; text-align: left; }
-        .utxo-table td { padding: 8px 10px; border-bottom: 1px solid #ddd; }
-        .utxo-table tr:nth-child(even) { background-color: #f9f9f9; }
-        .utxo-table tr:hover { background-color: #fff3e0; }
-        .pagination-controls { display: flex; justify-content: center; align-items: center; margin: 20px 0; gap: 10px; }
-        .pagination-info { font-size: 14px; color: #666; margin: 0 15px; }
+        /* Offline (HarmonyPIR hint) panel */
+        #hp-offlineContainer { margin-top: 14px; }
+        #hp-offlineContainer > div {
+            background: var(--sunken) !important;
+            border: 1px solid var(--line) !important;
+            border-radius: var(--r) !important;
+            padding: 10px 12px !important;
+        }
+        #hp-offlineContainer #hp-offlineFill { background: oklch(70% 0.12 230) !important; }
+
+        /* Sync state row */
+        #syncStateRow, #op-syncStateRow, #hp-syncStateRow {
+            background: var(--accent-wash) !important;
+            border: 1px solid var(--accent-line) !important;
+            color: var(--accent-ink) !important;
+            border-radius: var(--r) !important;
+            padding: 8px 12px !important;
+            font-family: var(--mono); font-size: 12px;
+        }
+        #syncStateRow span, #op-syncStateRow span, #hp-syncStateRow span { color: var(--accent-ink) !important; }
+        #syncStateRow button, #op-syncStateRow button, #hp-syncStateRow button {
+            background: transparent; border: 1px solid var(--accent-line);
+            color: var(--accent-ink); border-radius: var(--r);
+            padding: 2px 8px; font-size: 11px; cursor: pointer;
+        }
+        #syncStateRow button:hover, #op-syncStateRow button:hover, #hp-syncStateRow button:hover {
+            background: var(--panel);
+        }
+
+        #syncPlanBox, #op-syncPlanBox, #hp-syncPlanBox {
+            margin-top: 12px; padding: 10px 14px;
+            border: 1px solid var(--accent-line) !important;
+            background: var(--accent-wash) !important;
+            color: var(--accent-ink) !important;
+            border-radius: var(--r) !important;
+            font-size: 12.5px;
+        }
+
+        /* Database selector details */
+        details.adv-db {
+            margin-top: 10px;
+            border: 1px solid var(--line);
+            border-radius: var(--r);
+            background: var(--bg);
+            padding: 0;
+        }
+        details.adv-db > summary {
+            cursor: pointer; padding: 8px 12px;
+            font-size: 12px; color: var(--ink-mute);
+            font-family: var(--mono);
+            list-style: none;
+        }
+        details.adv-db > summary::-webkit-details-marker { display: none; }
+        details.adv-db[open] > summary { border-bottom: 1px solid var(--line-soft); }
+        details.adv-db > div { padding: 10px 12px; }
+
+        /* Results container */
+        .results-container { display: flex; flex-direction: column; gap: 12px; }
+        .results-container > .container {
+            background: var(--panel); border: 1px solid var(--line);
+            border-radius: var(--r-lg); padding: 16px;
+            box-shadow: var(--shadow-sm);
+        }
+        .utxo-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+        .utxo-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 10px;
+        }
+        .utxo-table {
+            width: 100%; border-collapse: collapse;
+            font-family: var(--mono); font-size: 12.5px;
+        }
+        .utxo-table th {
+            background: var(--sunken); color: var(--ink-soft);
+            padding: 8px 10px; text-align: left;
+            font-weight: 500; font-size: 11px;
+            border-bottom: 1px solid var(--line);
+            text-transform: uppercase; letter-spacing: .05em;
+        }
+        .utxo-table td {
+            padding: 7px 10px; border-bottom: 1px solid var(--line-soft);
+            color: var(--ink);
+        }
+        .utxo-table tr:hover td { background: var(--sunken); }
+        .pagination-controls {
+            display: flex; justify-content: center; align-items: center;
+            margin: 14px 0 0; gap: 10px;
+        }
+        .pagination-info { font-size: 12px; color: var(--ink-mute); margin: 0 12px; font-family: var(--mono); }
         .hidden { display: none; }
-        .amount-btc { color: #28a745; font-weight: bold; }
-        .txid-link { color: #0066cc; font-family: monospace; font-size: 11px; word-break: break-all; text-decoration: none; }
-        .txid-link:hover { text-decoration: underline; color: #004499; }
-        .server-row { display: flex; align-items: center; gap: 10px; margin: 5px 0; }
-        .server-label { width: 80px; font-weight: normal; }
+        .amount-btc { color: var(--ok); font-weight: 600; }
+        .txid-link {
+            color: var(--accent-ink); font-family: var(--mono);
+            font-size: 11px; word-break: break-all; text-decoration: none;
+        }
+        .txid-link:hover { text-decoration: underline; }
+        .server-row {
+            display: flex; align-items: center; gap: 10px;
+            margin: 5px 0;
+        }
+        .server-label {
+            font-size: 12px; color: var(--ink-mute);
+            font-family: var(--mono);
+            min-width: 90px;
+        }
 
         .summary-box {
-            background: linear-gradient(135deg, #fff8f0, #fff3e0);
-            border: 2px solid #f7931a; border-radius: 8px; padding: 20px; margin: 15px 0; display: none;
+            background: var(--accent-wash); border: 1px solid var(--accent-line);
+            border-radius: var(--r); padding: 14px; margin: 12px 0; display: none;
+            color: var(--accent-ink);
         }
         .summary-box.active { display: block; }
         .summary-stat { display: inline-block; margin: 5px 20px 5px 0; }
-        .summary-stat .label { font-size: 12px; color: #666; text-transform: uppercase; }
-        .summary-stat .value { font-size: 18px; font-weight: bold; color: #333; }
-        .summary-stat .value.btc { color: #f7931a; }
-
-        .examples { margin-top: 10px; }
-        .example-btn {
-            background-color: #e9ecef; color: #333; border: 1px solid #ccc;
-            padding: 4px 10px; margin: 3px; border-radius: 3px; cursor: pointer;
-            font-size: 11px; font-family: monospace;
+        .summary-stat .label {
+            font-size: 10.5px; color: var(--ink-mute);
+            text-transform: uppercase; font-family: var(--mono);
+            letter-spacing: .05em;
         }
-        .example-btn:hover { background-color: #dee2e6; }
-        .example-label { font-size: 12px; color: #888; margin-right: 5px; }
+        .summary-stat .value {
+            font-size: 17px; font-weight: 600; color: var(--ink);
+            letter-spacing: -0.01em;
+        }
+        .summary-stat .value.btc { color: var(--accent-ink); }
 
+        /* ── step boxes (query composer wrapper) ──────────────────── */
+        .step {
+            margin: 0;
+            padding: 0;
+            border: none;
+            background: transparent;
+        }
+        .step label {
+            display: block; margin: 0 0 8px;
+            font-size: 11px; font-weight: 600;
+            letter-spacing: .08em; text-transform: uppercase;
+            color: var(--ink-mute);
+        }
+        .step-number { font-weight: 600; color: var(--accent-ink); }
+
+        /* ── script box (dark inline script preview) ──────────────── */
         .script-box {
-            background-color: #1e1e2e;
-            color: #cdd6f4;
-            font-family: 'Courier New', Consolas, monospace;
-            font-size: 12px;
-            line-height: 1.6;
-            padding: 10px 12px;
-            border-radius: 6px;
-            max-height: 90px;
-            overflow-y: auto;
-            overflow-x: hidden;
-            word-break: break-all;
-            overflow-wrap: break-word;
+            background: var(--term-bg);
+            color: var(--term-ink);
+            font-family: var(--mono);
+            font-size: 12px; line-height: 1.55;
+            padding: 10px 12px; border-radius: var(--r);
+            max-height: 110px; overflow-y: auto; overflow-x: hidden;
+            word-break: break-all; overflow-wrap: break-word;
             margin-top: 6px;
-            border: 1px solid #313244;
+            border: 1px solid var(--term-line);
         }
-        .script-box .op { color: #cba6f7; font-weight: bold; }
-        .script-box .data { color: #a6e3a1; }
-        .script-box .data-len { color: #6c7086; font-size: 10px; }
-        .script-box .spk-label { color: #6c7086; display: block; margin-bottom: 4px; font-size: 11px; }
-        .script-box .spk-hex { color: #9399b2; word-break: break-all; }
-        .script-box .separator { border-top: 1px solid #313244; margin: 6px 0; }
+        .script-box .op { color: oklch(75% 0.12 295); font-weight: 600; }
+        .script-box .data { color: oklch(78% 0.1 145); }
+        .script-box .data-len { color: var(--term-mute); font-size: 10px; }
+        .script-box .spk-label { color: var(--term-mute); display: block; margin-bottom: 4px; font-size: 11px; }
+        .script-box .spk-hex { color: oklch(72% 0.01 260); word-break: break-all; }
+        .script-box .separator { border-top: 1px solid var(--term-line); margin: 6px 0; }
 
-        /* Tab styles */
-        .tab-bar { display: flex; gap: 0; margin-bottom: 0; }
-        .tab-btn {
-            padding: 10px 24px; border: 2px solid #ddd; border-bottom: none;
-            background: #f0f0f0; color: #666; cursor: pointer; font-size: 14px;
-            font-weight: bold; border-radius: 8px 8px 0 0; margin-right: -1px;
-            transition: background 0.15s, color 0.15s;
-        }
-        .tab-btn:hover { background: #e8e8e8; }
-        .tab-btn.active { background: white; color: #333; border-color: #f7931a; border-bottom: 2px solid white; position: relative; z-index: 1; }
+        /* ── tab content ──────────────────────────────────────────── */
         .tab-content { display: none; }
         .tab-content.active { display: block; }
+        .tab-btn { /* retained for JS compat; visual role is the sidebar .scheme */ }
+        .tab-btn.sr { position: absolute; left: -9999px; }
 
-        /* Query Inspector Modal */
+        /* ── terminal log (pinned bottom) ─────────────────────────── */
+        .terminal {
+            position: fixed; left: 0; right: 0; bottom: 0;
+            background: var(--term-bg); color: var(--term-ink);
+            border-top: 1px solid var(--term-line);
+            font-family: var(--mono); font-size: 12px;
+            z-index: 30;
+            transition: height .18s ease;
+        }
+        .terminal.collapsed { height: 34px; }
+        .terminal:not(.collapsed) { height: 220px; }
+        .term-head {
+            height: 34px;
+            display: flex; align-items: center; padding: 0 16px; gap: 12px;
+            border-bottom: 1px solid var(--term-line);
+            color: var(--term-mute); cursor: pointer;
+            user-select: none;
+        }
+        .term-head .title { color: var(--term-ink); font-weight: 600; letter-spacing: 0.02em; }
+        .term-head .meta { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+        .term-head .pill-dark {
+            padding: 1px 8px; border-radius: 999px;
+            background: oklch(26% 0.01 260); color: var(--term-ink);
+            font-size: 10.5px;
+        }
+        .term-body {
+            height: calc(100% - 34px); overflow-y: auto;
+            padding: 10px 16px;
+            scrollbar-width: thin;
+            scrollbar-color: oklch(38% 0.01 260) transparent;
+        }
+        .term-body::-webkit-scrollbar { width: 8px; }
+        .term-body::-webkit-scrollbar-thumb { background: oklch(30% 0.01 260); border-radius: 4px; }
+        /* retarget .log + .log-entry to terminal style */
+        .log { background: transparent; color: var(--term-ink); padding: 0; border-radius: 0; max-height: none; font-family: var(--mono); font-size: 12px; }
+        .log-entry { margin: 2px 0; padding: 0; color: var(--term-ink); }
+        .log-entry.info { color: oklch(75% 0.09 230); }
+        .log-entry.success { color: oklch(78% 0.12 155); }
+        .log-entry.error { color: oklch(72% 0.18 25); }
+
+        /* ── tweaks panel ─────────────────────────────────────────── */
+        .tweaks {
+            position: fixed; right: 20px; bottom: 240px; z-index: 50;
+            width: 260px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--r-lg);
+            box-shadow: var(--shadow);
+            display: none; overflow: hidden;
+        }
+        .tweaks.open { display: block; }
+        .tweaks-head {
+            padding: 10px 14px; border-bottom: 1px solid var(--line);
+            font-size: 12px; font-weight: 600;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .tweaks-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+        .tweaks-row { display: flex; flex-direction: column; gap: 6px; }
+        .tweaks-row label {
+            font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+            color: var(--ink-mute);
+        }
+        .tweaks-seg {
+            display: flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+        }
+        .tweaks-seg button {
+            flex: 1; padding: 5px 8px; font: inherit; font-size: 11.5px;
+            background: transparent; color: var(--ink-mute); border: none;
+            border-right: 1px solid var(--line); cursor: pointer;
+            font-family: var(--mono);
+        }
+        .tweaks-seg button:last-child { border-right: none; }
+        .tweaks-seg button.on { background: var(--accent-wash); color: var(--accent-ink); }
+        .fab-tweaks {
+            position: fixed; right: 20px; bottom: 50px; z-index: 49;
+            background: var(--panel); border: 1px solid var(--line);
+            border-radius: 999px; padding: 7px 12px;
+            font-size: 12px; font-family: var(--mono);
+            cursor: pointer; box-shadow: var(--shadow);
+            color: var(--ink-soft);
+            display: inline-flex; align-items: center; gap: 6px;
+        }
+        .fab-tweaks::before {
+            content: ""; width: 6px; height: 6px; background: var(--accent);
+            border-radius: 999px; display: inline-block;
+        }
+
+        /* accent variants */
+        body[data-accent="slate"] {
+            --accent:      oklch(55% 0.06 250);
+            --accent-ink:  oklch(38% 0.07 250);
+            --accent-wash: oklch(95% 0.02 250);
+            --accent-line: oklch(82% 0.04 250);
+        }
+        body[data-accent="violet"] {
+            --accent:      oklch(62% 0.16 290);
+            --accent-ink:  oklch(42% 0.14 290);
+            --accent-wash: oklch(96% 0.03 290);
+            --accent-line: oklch(86% 0.07 290);
+        }
+
+        /* responsive */
+        @media (max-width: 1080px) {
+            .grid { grid-template-columns: 1fr; }
+            .app { grid-template-columns: 1fr; }
+            .sidebar {
+                position: static; height: auto;
+                border-right: none; border-bottom: 1px solid var(--line);
+            }
+            .main { padding: 20px 20px 260px; }
+        }
+
+        /* ── Query Inspector Modal (unchanged functional classes) ─── */
         .qi-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; display: flex; align-items: flex-start; justify-content: center; padding-top: 3vh; }
         .qi-modal.hidden { display: none; }
         .qi-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
-        .qi-content { position: relative; width: 92%; max-width: 820px; max-height: 92vh; overflow-y: auto; background: white; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); z-index: 1; }
-        .qi-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 3px solid #f7931a; }
-        .qi-header h2 { margin: 0; font-size: 18px; color: #333; }
-        .qi-close { background: none; border: none; font-size: 28px; cursor: pointer; color: #999; line-height: 1; }
-        .qi-close:hover { color: #333; }
-        .qi-stepper { display: flex; gap: 4px; padding: 14px 24px; background: #f8f9fa; }
-        .qi-dot { flex: 1; height: 5px; border-radius: 3px; background: #ddd; transition: background 0.3s; cursor: pointer; }
-        .qi-dot.active { background: #f7931a; }
-        .qi-dot.done { background: #28a745; }
-        .qi-body { padding: 24px; min-height: 280px; }
-        .qi-footer { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-top: 1px solid #eee; }
-        .qi-footer button { padding: 8px 20px; border: 1px solid #bbb; border-radius: 6px; background: #fff; color: #333; cursor: pointer; font-size: 13px; font-weight: 500; }
-        .qi-footer button:hover { background: #f0f0f0; border-color: #999; }
+        .qi-content { position: relative; width: 92%; max-width: 820px; max-height: 92vh; overflow-y: auto; background: var(--panel); border-radius: var(--r-lg); box-shadow: 0 20px 60px rgba(0,0,0,0.3); z-index: 1; color: var(--ink); }
+        .qi-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+        .qi-header h2 { margin: 0; font-size: 16px; color: var(--ink); letter-spacing: -0.01em; }
+        .qi-close { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--ink-mute); line-height: 1; }
+        .qi-close:hover { color: var(--ink); }
+        .qi-stepper { display: flex; gap: 4px; padding: 12px 20px; background: var(--sunken); }
+        .qi-dot { flex: 1; height: 4px; border-radius: 2px; background: var(--line); transition: background 0.3s; cursor: pointer; }
+        .qi-dot.active { background: var(--accent); }
+        .qi-dot.done { background: var(--ok); }
+        .qi-body { padding: 20px; min-height: 280px; }
+        .qi-footer { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--line); }
+        .qi-footer button { padding: 6px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); color: var(--ink); cursor: pointer; font-size: 12.5px; font-weight: 500; }
+        .qi-footer button:hover { background: var(--sunken); border-color: var(--ink-faint); }
         .qi-footer button:disabled { opacity: 0.4; cursor: default; }
-        .qi-step-title { font-size: 15px; font-weight: 600; color: #333; margin: 0 0 16px 0; }
+        .qi-step-title { font-size: 14px; font-weight: 600; color: var(--ink); margin: 0 0 14px 0; letter-spacing: -0.005em; }
         .qi-flow { display: flex; flex-direction: column; gap: 0; }
         .qi-flow-item { display: flex; align-items: flex-start; gap: 12px; }
         .qi-flow-line { display: flex; flex-direction: column; align-items: center; width: 24px; flex-shrink: 0; }
-        .qi-flow-circle { width: 10px; height: 10px; border-radius: 50%; background: #f7931a; border: 2px solid #e88a10; flex-shrink: 0; }
-        .qi-flow-connector { width: 2px; min-height: 20px; background: #ddd; flex-grow: 1; }
+        .qi-flow-circle { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--accent-ink); flex-shrink: 0; }
+        .qi-flow-connector { width: 2px; min-height: 20px; background: var(--line); flex-grow: 1; }
         .qi-flow-content { flex: 1; padding-bottom: 12px; }
-        .qi-flow-label { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
-        .qi-flow-value { font-family: 'SF Mono', 'Menlo', monospace; font-size: 13px; color: #333; word-break: break-all; }
-        .qi-code { font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; background: #f4f4f4; padding: 10px 14px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; line-height: 1.6; }
-        .qi-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-        .qi-badge-green { background: #d4edda; color: #155724; }
-        .qi-badge-orange { background: #fff3cd; color: #856404; }
-        .qi-badge-blue { background: #d1ecf1; color: #0c5460; }
+        .qi-flow-label { font-size: 10.5px; color: var(--ink-mute); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px; font-family: var(--mono); }
+        .qi-flow-value { font-family: var(--mono); font-size: 12.5px; color: var(--ink); word-break: break-all; }
+        .qi-code { font-family: var(--mono); font-size: 12px; background: var(--sunken); padding: 10px 14px; border-radius: var(--r); border: 1px solid var(--line-soft); overflow-x: auto; white-space: pre-wrap; line-height: 1.55; color: var(--ink); }
+        .qi-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; font-family: var(--mono); }
+        .qi-badge-green { background: var(--ok-wash); color: var(--ok); }
+        .qi-badge-orange { background: oklch(96% 0.03 75); color: oklch(42% 0.12 75); }
+        .qi-badge-blue { background: oklch(96% 0.03 230); color: oklch(42% 0.1 230); }
         .qi-timing-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
-        .qi-timing-label { width: 100px; font-family: monospace; color: #666; flex-shrink: 0; }
+        .qi-timing-label { width: 100px; font-family: var(--mono); color: var(--ink-mute); flex-shrink: 0; }
         .qi-timing-bar { flex: 1; height: 18px; display: flex; border-radius: 3px; overflow: hidden; }
         .qi-timing-bar > div { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 9px; color: white; min-width: 1px; }
-        .qi-timing-total { width: 55px; text-align: right; font-family: monospace; color: #333; flex-shrink: 0; }
-        .qi-inspect-btn { display: inline-block; padding: 2px 8px; font-size: 11px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; color: #666; margin-left: 8px; vertical-align: middle; }
-        .qi-inspect-btn:hover { background: #e8e8e8; color: #333; }
+        .qi-timing-total { width: 55px; text-align: right; font-family: var(--mono); color: var(--ink); flex-shrink: 0; }
+        .qi-inspect-btn { display: inline-block; padding: 2px 8px; font-size: 11px; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; color: var(--ink-mute); margin-left: 8px; vertical-align: middle; font-family: var(--mono); }
+        .qi-inspect-btn:hover { background: var(--panel); color: var(--ink); border-color: var(--ink-faint); }
 
         /* Residency panel */
-        .residency-panel { display: none; margin: 10px 0; padding: 12px 16px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; }
+        .residency-panel { display: none; margin: 12px 0 0; padding: 12px 14px; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r); font-size: 12px; }
         .residency-panel.active { display: block; }
         .residency-server { margin-bottom: 10px; }
         .residency-server:last-child { margin-bottom: 0; }
-        .residency-server-label { font-weight: bold; font-size: 13px; margin-bottom: 4px; }
+        .residency-server-label { font-weight: 600; font-size: 12.5px; margin-bottom: 4px; color: var(--ink); font-family: var(--mono); }
         .residency-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
-        .residency-name { width: 220px; font-family: monospace; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
-        .residency-bar-wrap { flex: 1; height: 16px; background: #e9ecef; border-radius: 3px; overflow: hidden; min-width: 100px; }
-        .residency-bar-fill { height: 100%; background: #f7931a; transition: width 0.5s; border-radius: 3px; }
-        .residency-pct { width: 48px; text-align: right; font-family: monospace; font-weight: bold; flex-shrink: 0; }
-        .residency-size { width: 90px; text-align: right; font-family: monospace; color: #888; flex-shrink: 0; }
-        .residency-total { font-weight: bold; border-top: 1px solid #ccc; padding-top: 4px; margin-top: 4px; }
-        .residency-error { color: #dc3545; font-style: italic; }
+        .residency-name { width: 220px; font-family: var(--mono); color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+        .residency-bar-wrap { flex: 1; height: 10px; background: var(--line); border-radius: 3px; overflow: hidden; min-width: 100px; }
+        .residency-bar-fill { height: 100%; background: var(--accent); transition: width 0.5s; border-radius: 3px; }
+        .residency-pct { width: 48px; text-align: right; font-family: var(--mono); font-weight: 500; flex-shrink: 0; color: var(--ink); }
+        .residency-size { width: 90px; text-align: right; font-family: var(--mono); color: var(--ink-mute); flex-shrink: 0; }
+        .residency-total { font-weight: 600; border-top: 1px solid var(--line); padding-top: 4px; margin-top: 4px; }
+        .residency-error { color: var(--err); font-style: italic; }
     </style>
     <script src="/wasm/onionpir_client.js"></script>
     <!-- HarmonyPIR WASM loaded dynamically in loadWasm() based on PRP selection -->
 </head>
-<body>
-    <div class="container">
-        <div style="display: flex; align-items: baseline; gap: 14px; border-bottom: 3px solid #f7931a; padding-bottom: 10px; margin-bottom: 0;">
-            <h1 style="border-bottom: none; padding-bottom: 0; margin: 0;">Bitcoin PIR</h1>
-            <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener"
-               style="display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #555; text-decoration: none; padding: 3px 9px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; white-space: nowrap; transition: background 0.15s, border-color 0.15s;"
-               onmouseover="this.style.background='#eef1f5';this.style.borderColor='#adb5bd';"
-               onmouseout="this.style.background='#f6f8fa';this.style.borderColor='#d0d7de';">
-                <svg height="15" width="15" viewBox="0 0 16 16" fill="#24292f" aria-hidden="true">
-                    <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/>
-                </svg>
-                Bitcoin-PIR/Bitcoin-PIR
-            </a>
-        </div>
-        <p style="font-size: 13px; color: #888; margin-top: 8px;">
-            Note: UTXOs with &le; 576 sats (dust) are excluded from the database.
-            ScriptPubKeys with more than 100 UTXOs are also excluded.
-        </p>
+<body data-theme="light" data-density="cozy">
 
-        <!-- Tab bar + localhost toggle -->
-        <div style="display: flex; align-items: center; margin-top: 12px;">
-            <div class="tab-bar" style="flex: 1;">
-                <button class="tab-btn active" data-tab="dpf">2-Server DPF-PIR</button>
-                <button class="tab-btn" data-tab="onionpir">1-Server OnionPIR</button>
-                <button class="tab-btn" data-tab="harmonypir">2-Server HarmonyPIR</button>
-            </div>
-            <button id="localhostToggle" class="small secondary" style="font-size: 11px; padding: 4px 10px; white-space: nowrap;" title="Switch all server URLs between remote and localhost">🌐 Remote</button>
-            <button id="residencyBtn" class="small secondary" style="font-size: 11px; padding: 4px 10px; white-space: nowrap; margin-left: 4px;" title="Check server mmap page residency (warmup status)">Server Warmup</button>
+    <!-- ── TOP BAR ──────────────────────────────────────────────── -->
+    <header class="topbar">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span>Bitcoin PIR</span>
+            <small>private UTXO lookup</small>
         </div>
-        <div id="residencyPanel" class="residency-panel"></div>
+        <div class="topbar-spacer"></div>
+        <button id="localhostToggle" class="topbar-btn" title="Switch all server URLs between remote and localhost">🌐 Remote</button>
+        <button id="residencyBtn" class="topbar-btn" title="Check server mmap page residency (warmup status)">Server Warmup</button>
+        <a class="topbar-btn" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2.2.5-2.7-1.1-2.7-1.1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8 0 1.2.8 1.2.8.7 1.2 1.9.9 2.4.7.1-.5.3-.9.5-1.1-1.8-.2-3.7-.9-3.7-4 0-.9.3-1.6.8-2.1-.1-.2-.3-1 .1-2.1 0 0 .7-.2 2.2.8a7.6 7.6 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.5.8 1.2.8 2.1 0 3.1-1.9 3.8-3.7 4 .3.2.5.7.5 1.5v2.2c0 .2.1.5.5.4A8 8 0 0 0 8 .2Z"/></svg>
+            Bitcoin-PIR/Bitcoin-PIR
+        </a>
+    </header>
+
+    <!-- ── APP ──────────────────────────────────────────────────── -->
+    <div class="app">
+
+        <!-- SIDEBAR -->
+        <aside class="sidebar">
+            <div class="sb-title">Single-server PIR</div>
+            <div class="scheme-list" role="tablist">
+                <button class="scheme tab-btn" data-tab="onionpir" role="tab">
+                    <span class="ico">O</span>
+                    <span>
+                        <span class="name">OnionPIR</span>
+                        <span class="sub">Lattice-based FHE</span>
+                    </span>
+                    <span class="servers">1-srv</span>
+                </button>
+            </div>
+
+            <div class="sb-title" style="margin-top: 18px;">Two-server PIR</div>
+            <div class="scheme-list" role="tablist">
+                <button class="scheme tab-btn active" data-tab="dpf" role="tab">
+                    <span class="ico">D</span>
+                    <span>
+                        <span class="name">DPF-PIR</span>
+                        <span class="sub">Distributed point fn</span>
+                    </span>
+                    <span class="servers">2-srv</span>
+                </button>
+                <button class="scheme tab-btn" data-tab="harmonypir" role="tab">
+                    <span class="ico">H</span>
+                    <span>
+                        <span class="name">HarmonyPIR</span>
+                        <span class="sub">Preprocessing + PRP</span>
+                    </span>
+                    <span class="servers">2-srv</span>
+                </button>
+            </div>
+
+            <div class="sb-disclaimer" role="note">
+                <strong>Demo only.</strong> Both two-server PIR schemes currently
+                run <em>on the same machine</em> — the non-collusion assumption
+                is not satisfied, so privacy against a curious operator is not
+                guaranteed. For a production deployment the two servers must be
+                operated by independent, non-colluding parties.
+            </div>
+
+            <div class="sb-section">
+                <div class="sb-title">About</div>
+                <div class="sb-repo">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2.2.5-2.7-1.1-2.7-1.1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8 0 1.2.8 1.2.8.7 1.2 1.9.9 2.4.7.1-.5.3-.9.5-1.1-1.8-.2-3.7-.9-3.7-4 0-.9.3-1.6.8-2.1-.1-.2-.3-1 .1-2.1 0 0 .7-.2 2.2.8a7.6 7.6 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.5.8 1.2.8 2.1 0 3.1-1.9 3.8-3.7 4 .3.2.5.7.5 1.5v2.2c0 .2.1.5.5.4A8 8 0 0 0 8 .2Z"/></svg>
+                    <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">Bitcoin-PIR</a>
+                </div>
+                <p style="font-size:12px; color:var(--ink-mute); margin:10px 2px 0; line-height:1.55;">
+                    UTXOs with ≤ 576 sats (dust) and scriptPubKeys with &gt; 100 UTXOs are excluded from the database.
+                </p>
+            </div>
+        </aside>
+
+        <!-- MAIN -->
+        <main class="main">
+
+            <nav class="crumbs">
+                <span>home</span>
+                <span class="sep">/</span>
+                <span>schemes</span>
+                <span class="sep">/</span>
+                <b id="cbScheme">dpf-pir</b>
+            </nav>
+
+            <header class="hero">
+                <div>
+                    <h1 id="heroTitle">DPF-PIR <span class="tag">2-server · info-theoretic</span></h1>
+                    <p id="heroSub">Query two non-colluding servers with distributed point functions. No preprocessing; strong information-theoretic privacy against a single curious server.</p>
+                </div>
+            </header>
+
+            <div id="residencyPanel" class="residency-panel"></div>
 
         <!-- ═══ DPF Tab ═══ -->
-        <div id="tab-dpf" class="tab-content active" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
+        <div id="tab-dpf" class="tab-content active">
+          <div class="grid">
+            <!-- LEFT COLUMN -->
+            <div class="col">
 
-        <!-- Status line: informational only. Connect/Disconnect moved to the action row below. -->
-        <div id="status" class="status disconnected" style="margin: 10px 0;">
-            Status: Disconnected
-        </div>
-
-        <details id="serverConfig" style="margin-bottom: 10px;">
-            <summary style="cursor: pointer; font-size: 13px; color: #888;">Server configuration</summary>
-            <div style="margin-top: 8px;">
-                <div class="server-row">
-                    <span class="server-label">Server 0:</span>
-                    <input type="text" id="server0Url" class="small" value="wss://pir1.chenweikeng.com">
-                </div>
-                <div class="server-row">
-                    <span class="server-label">Server 1:</span>
-                    <input type="text" id="server1Url" class="small" value="wss://pir2.chenweikeng.com">
-                </div>
-            </div>
-        </details>
-
-        <!-- Sync state row (visible when connected) -->
-        <div id="syncStateRow" style="display: none; margin: 10px 0; padding: 8px 12px; background: #fff8e1; border: 1px solid #ffd54f; border-radius: 6px; font-size: 13px;">
-            <span style="color: #6d5200;">Sync state:</span>
-            <span id="syncStateLabel" style="font-weight: bold; color: #6d5200; margin-left: 4px;">Not synced</span>
-            <button id="resetSyncBtn" class="small secondary" style="float: right; padding: 2px 8px; font-size: 11px;">Reset</button>
-            <div style="clear: both;"></div>
-        </div>
-
-        <!-- Advanced (manual DB) — collapsed by default -->
-        <details id="advancedDbDetails" style="display: none; margin: 10px 0;">
-            <summary style="cursor: pointer; font-size: 13px; color: #888;">Advanced: query a specific database</summary>
-            <div id="dbSelectorRow" style="margin-top: 8px; padding: 8px 12px; background: #f0f8ff; border: 1px solid #bee5eb; border-radius: 6px;">
-                <label for="dbSelect" style="display: inline; font-size: 13px; color: #0c5460; margin-right: 8px;">Database:</label>
-                <select id="dbSelect" style="padding: 4px 8px; border: 1px solid #bee5eb; border-radius: 4px; font-size: 13px; background: white;">
-                    <option value="0">Main UTXO (loading...)</option>
-                </select>
-                <span id="dbInfo" style="font-size: 12px; color: #888; margin-left: 10px;"></span>
-                <div style="margin-top: 6px; font-size: 12px; color: #666;">
-                    Direct query against a single database. Bypasses the sync flow and does not update the sync state.
-                </div>
-            </div>
-        </details>
-
-        <div class="step">
-            <label for="scriptPubkeys">Bitcoin address(es) or scriptPubKey hex — one per line:</label>
-            <textarea id="scriptPubkeys" rows="4" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
+                <!-- Query composer card -->
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
+                        <div id="status" class="status disconnected">Disconnected</div>
+                    </div>
+                    <div class="card-body">
+                        <div class="step">
+                            <label for="scriptPubkeys">Bitcoin address(es) or scriptPubKey hex <span style="font-family:var(--mono); font-weight:500; color:var(--ink-faint); letter-spacing:0; text-transform:none;">· one per line</span></label>
+                            <textarea id="scriptPubkeys" rows="4" class="addr-input" spellcheck="false" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
 bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
-            <div id="conversionNote" style="font-size: 12px; color: #28a745; margin: 2px 0 6px 5px; display: none;"></div>
+                            <div id="conversionNote" class="conversion-note" style="display: none;"></div>
 
-            <details id="examplesDetail" style="margin-top: 6px;">
-                <summary style="cursor: pointer; font-size: 13px; color: #666;">Load examples</summary>
-                <div class="examples" style="margin-top: 8px;">
-                    <span class="example-label">Known in dataset:</span>
-                    <button class="example-btn" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH</button>
-                    <button class="example-btn" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b" style="background:#fff3cd; border-color:#ffc107;">P2WPKH</button>
-                    <button class="example-btn" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87" style="background:#fff3cd; border-color:#ffc107;">P2SH</button>
-                    <button class="example-btn" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a" style="background:#fff3cd; border-color:#ffc107;">P2TR</button>
-                    <button class="example-btn" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e" style="background:#fff3cd; border-color:#ffc107;">P2WSH</button>
-                    <button class="example-btn" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae" style="background:#fff3cd; border-color:#ffc107;">1-of-3 Multisig</button>
-                    <button class="example-btn" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae" style="background:#fff3cd; border-color:#ffc107;">1-of-2 Multisig</button>
-                    <button class="example-btn" id="loadDiverseBtn" style="background:#fff3cd; border-color:#ffc107;">Mix</button>
-                    <br>
-                    <span class="example-label">Top whales (most UTXOs, in dataset):</span>
-                    <button class="example-btn" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale</button>
-                    <button class="example-btn" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 2</button>
-                    <button class="example-btn" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 3</button>
-                    <button class="example-btn" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale</button>
-                    <button class="example-btn" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale 2</button>
-                    <button class="example-btn" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087" style="background:#fff3cd; border-color:#ffc107;">P2SH whale</button>
-                    <button class="example-btn" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487" style="background:#fff3cd; border-color:#ffc107;">P2SH whale 2</button>
-                    <button class="example-btn" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale</button>
-                    <button class="example-btn" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale 2</button>
-                    <br>
-                    <span class="example-label">Excluded whales (&gt;100 UTXOs):</span>
-                    <button class="example-btn" data-spk="76a914000000000000000000000000000000000000000088ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 376k UTXOs</button>
-                    <button class="example-btn" data-spk="76a914fa0692278afe508514b5ffee8fe5e97732ce066988ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 161k UTXOs</button>
-                    <button class="example-btn" data-spk="76a9149f21a07a0c7c3cf65a51f586051395762267cdaf88ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 117k UTXOs</button>
-                    <button class="example-btn" data-spk="0014c015c65276d5f38d599d445c4cb03aa7aa0dc365" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 128k UTXOs</button>
-                    <button class="example-btn" data-spk="001409e4581b5a796feffc1c4f0669206e801cb7a9eb" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 338k UTXOs</button>
-                    <button class="example-btn" data-spk="a914ea6b832a05c6ca578baa3836f3f25553d41068a587" style="background:#fde2e2; border-color:#e74c3c;">P2SH 215k UTXOs</button>
-                    <button class="example-btn" data-spk="a9140c42e8868812fccabb2c364390539106cd5fa8d987" style="background:#fde2e2; border-color:#e74c3c;">P2SH 51k UTXOs</button>
-                    <button class="example-btn" data-spk="a91456483d546400fc354bab9fc373238ee94002cc2b87" style="background:#fde2e2; border-color:#e74c3c;">P2SH 45k UTXOs</button>
-                    <button class="example-btn" data-spk="5120a669250ad7137b88ec550d446d8d34e4b1fa13067274c3627469e885e90743e4" style="background:#fde2e2; border-color:#e74c3c;">P2TR 35k UTXOs</button>
-                    <br>
-                    <span class="example-label">Batch test (1000 known scriptPubKeys):</span>
-                    <button class="example-btn" id="pickRandom100Btn" style="background-color: #d4edda; border-color: #28a745; padding: 6px 14px; font-size: 13px;">Pick 100 random</button>
-                    <button class="example-btn" id="pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
-                    <button class="example-btn" id="pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
-                    <button class="example-btn" id="pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
-                    <br>
-                    <!-- Delta examples: addresses that have activity (spent and/or
-                         new UTXOs) in the delta DB loaded on the server. Hardcoded
-                         from the first delta_<A>_<B> entry in example_spks.json —
-                         works for our current single-delta setup, would need a
-                         lookup rewire if the server starts shipping multiple deltas. -->
-                    <span class="example-label" id="deltaExampleLabel">Delta examples:</span>
-                    <button class="example-btn" id="loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
-                    <button class="example-btn" id="pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
-                    <button class="example-btn" id="pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
-                </div>
-            </details>
-            <br>
-            <!-- Action row: Connect visually grouped with the primary Sync button -->
-            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
-                <button id="connectBtn" class="small" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;">Connect</button>
-                <button id="disconnectBtn" class="small secondary" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;" disabled>Disconnect</button>
-                <button id="syncBtn" style="flex: 1; font-size: 16px; padding: 12px; background-color: #28a745;" disabled>Sync to latest &amp; query</button>
+                            <details id="examplesDetail" style="margin-top: 14px;">
+                                <summary style="cursor: pointer; font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute);">Load examples</summary>
+                                <div class="examples" style="margin-top: 10px; display: flex; flex-direction: column; gap: 12px;">
+                                    <div class="ex-section" style="margin-top:0;">
+                                        <div class="ex-head">Known in dataset <span class="count">· 8 types</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac">P2PKH</button>
+                                            <button class="example-btn" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b">P2WPKH</button>
+                                            <button class="example-btn" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87">P2SH</button>
+                                            <button class="example-btn" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a">P2TR</button>
+                                            <button class="example-btn" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e">P2WSH</button>
+                                            <button class="example-btn" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae">1-of-3 multisig</button>
+                                            <button class="example-btn" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae">1-of-2 multisig</button>
+                                            <button class="example-btn" id="loadDiverseBtn">mix</button>
+                                        </div>
+                                    </div>
+                                    <div class="ex-section">
+                                        <div class="ex-head">Top whales <span class="count">· in dataset</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn whale" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac">P2PKH #1</button>
+                                            <button class="example-btn whale" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac">P2PKH #2</button>
+                                            <button class="example-btn whale" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac">P2PKH #3</button>
+                                            <button class="example-btn whale" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3">P2WPKH #1</button>
+                                            <button class="example-btn whale" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac">P2WPKH #2</button>
+                                            <button class="example-btn whale" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087">P2SH #1</button>
+                                            <button class="example-btn whale" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487">P2SH #2</button>
+                                            <button class="example-btn whale" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012">P2WSH #1</button>
+                                            <button class="example-btn whale" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69">P2WSH #2</button>
+                                        </div>
+                                    </div>
+                                    <div class="ex-section">
+                                        <div class="ex-head">Excluded whales <span class="count">· &gt; 100 UTXOs, not in DB</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn excluded" data-spk="76a914000000000000000000000000000000000000000088ac">P2PKH · 376k</button>
+                                            <button class="example-btn excluded" data-spk="76a914fa0692278afe508514b5ffee8fe5e97732ce066988ac">P2PKH · 161k</button>
+                                            <button class="example-btn excluded" data-spk="76a9149f21a07a0c7c3cf65a51f586051395762267cdaf88ac">P2PKH · 117k</button>
+                                            <button class="example-btn excluded" data-spk="0014c015c65276d5f38d599d445c4cb03aa7aa0dc365">P2WPKH · 128k</button>
+                                            <button class="example-btn excluded" data-spk="001409e4581b5a796feffc1c4f0669206e801cb7a9eb">P2WPKH · 338k</button>
+                                            <button class="example-btn excluded" data-spk="a914ea6b832a05c6ca578baa3836f3f25553d41068a587">P2SH · 215k</button>
+                                            <button class="example-btn excluded" data-spk="a9140c42e8868812fccabb2c364390539106cd5fa8d987">P2SH · 51k</button>
+                                            <button class="example-btn excluded" data-spk="a91456483d546400fc354bab9fc373238ee94002cc2b87">P2SH · 45k</button>
+                                            <button class="example-btn excluded" data-spk="5120a669250ad7137b88ec550d446d8d34e4b1fa13067274c3627469e885e90743e4">P2TR · 35k</button>
+                                        </div>
+                                    </div>
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                                        <div class="ex-section" style="margin-top:0;">
+                                            <div class="ex-head">Batch test <span class="count">· 1000 spks</span></div>
+                                            <div class="chips">
+                                                <button class="example-btn batch" id="pickRandom100Btn">random 100</button>
+                                                <button class="example-btn" id="pickRandomBtn">random 50</button>
+                                                <button class="example-btn" id="pickRandom10Btn">random 10</button>
+                                                <button class="example-btn" id="pickRandom5Btn">random 5</button>
+                                            </div>
+                                        </div>
+                                        <div class="ex-section" style="margin-top:0;">
+                                            <div class="ex-head" id="deltaExampleLabel">Delta examples</div>
+                                            <div class="chips">
+                                                <button class="example-btn delta" id="loadDeltaAllBtn">load all</button>
+                                                <button class="example-btn delta" id="pickDeltaRandom10Btn">random 10</button>
+                                                <button class="example-btn delta" id="pickDeltaRandom5Btn">random 5</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </details>
+
+                            <div class="action-row">
+                                <button id="connectBtn" class="btn">Connect</button>
+                                <button id="disconnectBtn" class="btn ghost" disabled>Disconnect</button>
+                                <button id="syncBtn" class="btn accent grow" disabled>Sync to latest &amp; query</button>
+                            </div>
+                            <div id="syncPlanBox" style="display: none;">
+                                <div id="syncPlanText" class="mono"></div>
+                                <div class="actions">
+                                    <button id="syncConfirmBtn" class="btn success sm">Confirm sync</button>
+                                    <button id="syncCancelBtn" class="btn ghost sm">Cancel</button>
+                                </div>
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <button id="queryBtn" class="btn" style="width: 100%;">Query UTXOs (manual mode)</button>
+                            </div>
+                        </div>
+
+                        <div id="progressContainer" class="progress-container">
+                            <div class="progress-bar">
+                                <div id="progressFill" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div id="progressLabel" class="progress-label"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Results card -->
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">03</span><span>Results</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div id="resultsContainer" class="results-container"></div>
+                    </div>
+                </section>
             </div>
-            <div id="syncPlanBox" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px; color: #0c5460;">
-                <div id="syncPlanText" style="font-family: monospace;"></div>
-                <div style="margin-top: 8px;">
-                    <button id="syncConfirmBtn" class="small" style="background-color: #28a745;">Confirm sync</button>
-                    <button id="syncCancelBtn" class="small secondary" style="margin-left: 6px;">Cancel</button>
-                </div>
+
+            <!-- RIGHT COLUMN -->
+            <div class="col">
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div class="status-row">
+                            <label for="server0Url">Server 0</label>
+                            <input type="text" id="server0Url" class="input" value="wss://pir1.chenweikeng.com" spellcheck="false">
+                        </div>
+                        <div class="status-row">
+                            <label for="server1Url">Server 1</label>
+                            <input type="text" id="server1Url" class="input" value="wss://pir2.chenweikeng.com" spellcheck="false">
+                        </div>
+
+                        <div id="syncStateRow" style="display: none; margin-top: 14px;">
+                            <span>Sync state:</span>
+                            <span id="syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
+                            <button id="resetSyncBtn" style="float: right;">Reset</button>
+                            <div style="clear: both;"></div>
+                        </div>
+
+                        <details id="advancedDbDetails" class="adv-db" style="display: none;">
+                            <summary>Advanced · direct database query</summary>
+                            <div id="dbSelectorRow">
+                                <label for="dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                <select id="dbSelect" class="select" style="width: auto; display: inline-block;">
+                                    <option value="0">Main UTXO (loading...)</option>
+                                </select>
+                                <span id="dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                    Bypasses the sync flow and does not update sync state.
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                </section>
             </div>
-            <button id="queryBtn" style="width: 100%; font-size: 16px; padding: 12px;">Query UTXOs (manual mode)</button>
-        </div>
-
-        <!-- Progress -->
-        <div id="progressContainer" class="progress-container">
-            <div class="progress-bar">
-                <div id="progressFill" class="progress-fill" style="width: 0%"></div>
-            </div>
-            <div id="progressLabel" class="progress-label"></div>
-        </div>
-
-        <!-- Results container — one per queried scriptPubKey -->
-        <div id="resultsContainer"></div>
-
+          </div>
         </div><!-- end tab-dpf -->
 
         <!-- ═══ OnionPIR Tab ═══ -->
-        <div id="tab-onionpir" class="tab-content" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
-
-        <!-- Status line: informational only. Connect/Disconnect moved to the action row below. -->
-        <div id="op-status" class="status disconnected" style="margin: 10px 0;">
-            Status: Disconnected
-        </div>
-
-        <details style="margin-bottom: 10px;">
-            <summary style="cursor: pointer; font-size: 13px; color: #888;">Server configuration</summary>
-            <div style="margin-top: 8px;">
-                <div class="server-row">
-                    <span class="server-label">Server:</span>
-                    <input type="text" id="op-serverUrl" class="small" value="wss://pir1.chenweikeng.com">
-                </div>
-            </div>
-        </details>
-
-        <!-- Sync state row (visible when connected) -->
-        <div id="op-syncStateRow" style="display: none; margin: 10px 0; padding: 8px 12px; background: #fff8e1; border: 1px solid #ffd54f; border-radius: 6px; font-size: 13px;">
-            <span style="color: #6d5200;">Sync state:</span>
-            <span id="op-syncStateLabel" style="font-weight: bold; color: #6d5200; margin-left: 4px;">Not synced</span>
-            <button id="op-resetSyncBtn" class="small secondary" style="float: right; padding: 2px 8px; font-size: 11px;">Reset</button>
-            <div style="clear: both;"></div>
-        </div>
-
-        <!-- Database selector (shown only when the server has a multi-DB catalog) -->
-        <details id="op-advancedDbDetails" style="display: none; margin: 10px 0;">
-            <summary style="cursor: pointer; font-size: 13px; color: #888;">Advanced: query a specific database</summary>
-            <div id="op-dbSelectorRow" style="margin-top: 8px; padding: 8px 12px; background: #fff7e6; border: 1px solid #f7cf87; border-radius: 6px;">
-                <label for="op-dbSelect" style="display: inline; font-size: 13px; color: #7a4b00; margin-right: 8px;">Database:</label>
-                <select id="op-dbSelect" style="padding: 4px 8px; border: 1px solid #f7cf87; border-radius: 4px; font-size: 13px; background: white;">
-                    <option value="0">Main UTXO (loading...)</option>
-                </select>
-                <span id="op-dbInfo" style="font-size: 12px; color: #888; margin-left: 10px;"></span>
-                <div style="margin-top: 6px; font-size: 12px; color: #666;">
-                    Direct query against a single database. Bypasses the sync flow and does not update the sync state.
-                </div>
-            </div>
-        </details>
-
-        <div class="step">
-            <label for="op-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex — one per line:</label>
-            <textarea id="op-scriptPubkeys" rows="4" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
+        <div id="tab-onionpir" class="tab-content">
+          <div class="grid">
+            <div class="col">
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
+                        <div id="op-status" class="status disconnected">Disconnected</div>
+                    </div>
+                    <div class="card-body">
+                        <div class="step">
+                            <label for="op-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex <span style="font-family:var(--mono); font-weight:500; color:var(--ink-faint); letter-spacing:0; text-transform:none;">· one per line</span></label>
+                            <textarea id="op-scriptPubkeys" rows="4" class="addr-input" spellcheck="false" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
 bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
-            <div id="op-conversionNote" style="font-size: 12px; color: #28a745; margin: 2px 0 6px 5px; display: none;"></div>
+                            <div id="op-conversionNote" class="conversion-note" style="display: none;"></div>
 
-            <details style="margin-top: 6px;">
-                <summary style="cursor: pointer; font-size: 13px; color: #666;">Load examples</summary>
-                <div class="examples" style="margin-top: 8px;">
-                    <span class="example-label">Known in dataset:</span>
-                    <button class="example-btn op-example" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH</button>
-                    <button class="example-btn op-example" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b" style="background:#fff3cd; border-color:#ffc107;">P2WPKH</button>
-                    <button class="example-btn op-example" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87" style="background:#fff3cd; border-color:#ffc107;">P2SH</button>
-                    <button class="example-btn op-example" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a" style="background:#fff3cd; border-color:#ffc107;">P2TR</button>
-                    <button class="example-btn op-example" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e" style="background:#fff3cd; border-color:#ffc107;">P2WSH</button>
-                    <button class="example-btn op-example" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae" style="background:#fff3cd; border-color:#ffc107;">1-of-3 Multisig</button>
-                    <button class="example-btn op-example" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae" style="background:#fff3cd; border-color:#ffc107;">1-of-2 Multisig</button>
-                    <button class="example-btn" id="op-loadDiverseBtn" style="background:#fff3cd; border-color:#ffc107;">Mix</button>
-                    <br>
-                    <span class="example-label">Top whales (most UTXOs, in dataset):</span>
-                    <button class="example-btn op-example" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale</button>
-                    <button class="example-btn op-example" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 2</button>
-                    <button class="example-btn op-example" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 3</button>
-                    <button class="example-btn op-example" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale</button>
-                    <button class="example-btn op-example" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale 2</button>
-                    <button class="example-btn op-example" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087" style="background:#fff3cd; border-color:#ffc107;">P2SH whale</button>
-                    <button class="example-btn op-example" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487" style="background:#fff3cd; border-color:#ffc107;">P2SH whale 2</button>
-                    <button class="example-btn op-example" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale</button>
-                    <button class="example-btn op-example" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale 2</button>
-                    <br>
-                    <span class="example-label">Excluded whales (&gt;100 UTXOs):</span>
-                    <button class="example-btn op-example" data-spk="76a914000000000000000000000000000000000000000088ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 376k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="76a914fa0692278afe508514b5ffee8fe5e97732ce066988ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 161k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="76a9149f21a07a0c7c3cf65a51f586051395762267cdaf88ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 117k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="0014c015c65276d5f38d599d445c4cb03aa7aa0dc365" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 128k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="001409e4581b5a796feffc1c4f0669206e801cb7a9eb" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 338k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="a914ea6b832a05c6ca578baa3836f3f25553d41068a587" style="background:#fde2e2; border-color:#e74c3c;">P2SH 215k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="a9140c42e8868812fccabb2c364390539106cd5fa8d987" style="background:#fde2e2; border-color:#e74c3c;">P2SH 51k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="a91456483d546400fc354bab9fc373238ee94002cc2b87" style="background:#fde2e2; border-color:#e74c3c;">P2SH 45k UTXOs</button>
-                    <button class="example-btn op-example" data-spk="5120a669250ad7137b88ec550d446d8d34e4b1fa13067274c3627469e885e90743e4" style="background:#fde2e2; border-color:#e74c3c;">P2TR 35k UTXOs</button>
-                    <br>
-                    <span class="example-label">Batch test (1000 known scriptPubKeys):</span>
-                    <button class="example-btn" id="op-pickRandom100Btn" style="background-color: #d4edda; border-color: #28a745; padding: 6px 14px; font-size: 13px;">Pick 100 random</button>
-                    <button class="example-btn" id="op-pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
-                    <button class="example-btn" id="op-pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
-                    <button class="example-btn" id="op-pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
-                    <br>
-                    <!-- Delta examples: see DPF tab for rationale. -->
-                    <span class="example-label" id="op-deltaExampleLabel">Delta examples:</span>
-                    <button class="example-btn" id="op-loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
-                    <button class="example-btn" id="op-pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
-                    <button class="example-btn" id="op-pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
-                </div>
-            </details>
-            <br>
-            <!-- Action row: Connect visually grouped with the primary Sync button -->
-            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
-                <button id="op-connectBtn" class="small" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;">Connect</button>
-                <button id="op-disconnectBtn" class="small secondary" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;" disabled>Disconnect</button>
-                <button id="op-syncBtn" style="flex: 1; font-size: 16px; padding: 12px; background-color: #28a745;" disabled>Sync to latest &amp; query</button>
+                            <details style="margin-top: 14px;">
+                                <summary style="cursor: pointer; font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute);">Load examples</summary>
+                                <div class="examples" style="margin-top: 10px; display: flex; flex-direction: column; gap: 12px;">
+                                    <div class="ex-section" style="margin-top:0;">
+                                        <div class="ex-head">Known in dataset <span class="count">· 8 types</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn op-example" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac">P2PKH</button>
+                                            <button class="example-btn op-example" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b">P2WPKH</button>
+                                            <button class="example-btn op-example" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87">P2SH</button>
+                                            <button class="example-btn op-example" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a">P2TR</button>
+                                            <button class="example-btn op-example" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e">P2WSH</button>
+                                            <button class="example-btn op-example" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae">1-of-3 multisig</button>
+                                            <button class="example-btn op-example" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae">1-of-2 multisig</button>
+                                            <button class="example-btn" id="op-loadDiverseBtn">mix</button>
+                                        </div>
+                                    </div>
+                                    <div class="ex-section">
+                                        <div class="ex-head">Top whales <span class="count">· in dataset</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn op-example whale" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac">P2PKH #1</button>
+                                            <button class="example-btn op-example whale" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac">P2PKH #2</button>
+                                            <button class="example-btn op-example whale" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac">P2PKH #3</button>
+                                            <button class="example-btn op-example whale" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3">P2WPKH #1</button>
+                                            <button class="example-btn op-example whale" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac">P2WPKH #2</button>
+                                            <button class="example-btn op-example whale" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087">P2SH #1</button>
+                                            <button class="example-btn op-example whale" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487">P2SH #2</button>
+                                            <button class="example-btn op-example whale" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012">P2WSH #1</button>
+                                            <button class="example-btn op-example whale" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69">P2WSH #2</button>
+                                        </div>
+                                    </div>
+                                    <div class="ex-section">
+                                        <div class="ex-head">Excluded whales <span class="count">· &gt; 100 UTXOs, not in DB</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn op-example excluded" data-spk="76a914000000000000000000000000000000000000000088ac">P2PKH · 376k</button>
+                                            <button class="example-btn op-example excluded" data-spk="76a914fa0692278afe508514b5ffee8fe5e97732ce066988ac">P2PKH · 161k</button>
+                                            <button class="example-btn op-example excluded" data-spk="76a9149f21a07a0c7c3cf65a51f586051395762267cdaf88ac">P2PKH · 117k</button>
+                                            <button class="example-btn op-example excluded" data-spk="0014c015c65276d5f38d599d445c4cb03aa7aa0dc365">P2WPKH · 128k</button>
+                                            <button class="example-btn op-example excluded" data-spk="001409e4581b5a796feffc1c4f0669206e801cb7a9eb">P2WPKH · 338k</button>
+                                            <button class="example-btn op-example excluded" data-spk="a914ea6b832a05c6ca578baa3836f3f25553d41068a587">P2SH · 215k</button>
+                                            <button class="example-btn op-example excluded" data-spk="a9140c42e8868812fccabb2c364390539106cd5fa8d987">P2SH · 51k</button>
+                                            <button class="example-btn op-example excluded" data-spk="a91456483d546400fc354bab9fc373238ee94002cc2b87">P2SH · 45k</button>
+                                            <button class="example-btn op-example excluded" data-spk="5120a669250ad7137b88ec550d446d8d34e4b1fa13067274c3627469e885e90743e4">P2TR · 35k</button>
+                                        </div>
+                                    </div>
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                                        <div class="ex-section" style="margin-top:0;">
+                                            <div class="ex-head">Batch test <span class="count">· 1000 spks</span></div>
+                                            <div class="chips">
+                                                <button class="example-btn batch" id="op-pickRandom100Btn">random 100</button>
+                                                <button class="example-btn" id="op-pickRandomBtn">random 50</button>
+                                                <button class="example-btn" id="op-pickRandom10Btn">random 10</button>
+                                                <button class="example-btn" id="op-pickRandom5Btn">random 5</button>
+                                            </div>
+                                        </div>
+                                        <div class="ex-section" style="margin-top:0;">
+                                            <div class="ex-head" id="op-deltaExampleLabel">Delta examples</div>
+                                            <div class="chips">
+                                                <button class="example-btn delta" id="op-loadDeltaAllBtn">load all</button>
+                                                <button class="example-btn delta" id="op-pickDeltaRandom10Btn">random 10</button>
+                                                <button class="example-btn delta" id="op-pickDeltaRandom5Btn">random 5</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </details>
+
+                            <div class="action-row">
+                                <button id="op-connectBtn" class="btn">Connect</button>
+                                <button id="op-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
+                                <button id="op-syncBtn" class="btn accent grow" disabled>Sync to latest &amp; query</button>
+                            </div>
+                            <div id="op-syncPlanBox" style="display: none;">
+                                <div id="op-syncPlanText" class="mono"></div>
+                                <div class="actions">
+                                    <button id="op-syncConfirmBtn" class="btn success sm">Confirm sync</button>
+                                    <button id="op-syncCancelBtn" class="btn ghost sm">Cancel</button>
+                                </div>
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <button id="op-queryBtn" class="btn" style="width: 100%;">Query UTXOs (manual mode)</button>
+                            </div>
+                        </div>
+
+                        <div id="op-progressContainer" class="progress-container">
+                            <div class="progress-bar">
+                                <div id="op-progressFill" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div id="op-progressLabel" class="progress-label"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">03</span><span>Results</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div id="op-resultsContainer" class="results-container"></div>
+                    </div>
+                </section>
             </div>
-            <div id="op-syncPlanBox" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px; color: #0c5460;">
-                <div id="op-syncPlanText" style="font-family: monospace;"></div>
-                <div style="margin-top: 8px;">
-                    <button id="op-syncConfirmBtn" class="small" style="background-color: #28a745;">Confirm sync</button>
-                    <button id="op-syncCancelBtn" class="small secondary" style="margin-left: 6px;">Cancel</button>
-                </div>
+
+            <div class="col">
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div class="status-row">
+                            <label for="op-serverUrl">Server</label>
+                            <input type="text" id="op-serverUrl" class="input" value="wss://pir1.chenweikeng.com" spellcheck="false">
+                        </div>
+
+                        <div id="op-syncStateRow" style="display: none; margin-top: 14px;">
+                            <span>Sync state:</span>
+                            <span id="op-syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
+                            <button id="op-resetSyncBtn" style="float: right;">Reset</button>
+                            <div style="clear: both;"></div>
+                        </div>
+
+                        <details id="op-advancedDbDetails" class="adv-db" style="display: none;">
+                            <summary>Advanced · direct database query</summary>
+                            <div id="op-dbSelectorRow">
+                                <label for="op-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                <select id="op-dbSelect" class="select" style="width: auto; display: inline-block;">
+                                    <option value="0">Main UTXO (loading...)</option>
+                                </select>
+                                <span id="op-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                    Bypasses the sync flow and does not update sync state.
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                </section>
             </div>
-            <button id="op-queryBtn" style="width: 100%; font-size: 16px; padding: 12px;">Query UTXOs (manual mode)</button>
-        </div>
-
-        <!-- Progress -->
-        <div id="op-progressContainer" class="progress-container">
-            <div class="progress-bar">
-                <div id="op-progressFill" class="progress-fill" style="width: 0%"></div>
-            </div>
-            <div id="op-progressLabel" class="progress-label"></div>
-        </div>
-
-        <!-- Results -->
-        <div id="op-resultsContainer"></div>
-
+          </div>
         </div><!-- end tab-onionpir -->
 
-        <!-- ═══════════════════════════════════════════════════════════ -->
-        <!-- HarmonyPIR Tab                                             -->
-        <!-- ═══════════════════════════════════════════════════════════ -->
-        <div id="tab-harmonypir" class="tab-content" style="border: 2px solid #f7931a; border-top: none; border-radius: 0 0 8px 8px; padding: 15px; margin-bottom: 15px;">
-
-        <!-- Status line: informational only. Connect/Disconnect moved to the action row below. -->
-        <div id="hp-status" class="status disconnected" style="margin: 10px 0;">
-            Status: Disconnected
-        </div>
-
-        <details style="margin-bottom: 10px;">
-            <summary style="cursor: pointer; font-size: 13px; color: #888;">Server configuration &amp; PRP</summary>
-            <div style="margin-top: 8px;">
-                <div class="server-row">
-                    <span class="server-label">Hint Server:</span>
-                    <input type="text" id="hp-hintServerUrl" class="small" value="wss://pir2.chenweikeng.com">
-                </div>
-                <div class="server-row">
-                    <span class="server-label">Query Server:</span>
-                    <input type="text" id="hp-queryServerUrl" class="small" value="wss://pir1.chenweikeng.com">
-                </div>
-                <div style="margin: 8px 0;">
-                    <label style="display: inline; font-weight: bold; font-size: 13px;">PRP Backend:</label>
-                    <select id="hp-prpSelect" style="padding: 4px 8px; margin-left: 6px; border-radius: 4px; border: 1px solid #ddd;">
-                        <option value="0" selected>HMR12 (default)</option>
-                        <option value="1">FastPRP</option>
-                        <option value="2">ALF</option>
-                    </select>
-                    <span id="hp-prpNote" style="font-size: 11px; color: #888; margin-left: 6px;"></span>
-                </div>
-            </div>
-        </details>
-
-        <!-- Sync state row (visible when connected) -->
-        <div id="hp-syncStateRow" style="display: none; margin: 10px 0; padding: 8px 12px; background: #fff8e1; border: 1px solid #ffd54f; border-radius: 6px; font-size: 13px;">
-            <span style="color: #6d5200;">Sync state:</span>
-            <span id="hp-syncStateLabel" style="font-weight: bold; color: #6d5200; margin-left: 4px;">Not synced</span>
-            <button id="hp-resetSyncBtn" class="small secondary" style="float: right; padding: 2px 8px; font-size: 11px;">Reset</button>
-            <div style="clear: both;"></div>
-        </div>
-
-        <!-- Database selector (shown only when the server has a multi-DB catalog) -->
-        <details id="hp-advancedDbDetails" style="display: none; margin: 10px 0;">
-            <summary style="cursor: pointer; font-size: 13px; color: #888;">Advanced: query a specific database</summary>
-            <div id="hp-dbSelectorRow" style="margin-top: 8px; padding: 8px 12px; background: #f0f8ff; border: 1px solid #bee5eb; border-radius: 6px;">
-                <label for="hp-dbSelect" style="display: inline; font-size: 13px; color: #0c5460; margin-right: 8px;">Database:</label>
-                <select id="hp-dbSelect" style="padding: 4px 8px; border: 1px solid #bee5eb; border-radius: 4px; font-size: 13px; background: white;">
-                    <option value="0">Main UTXO (loading...)</option>
-                </select>
-                <span id="hp-dbInfo" style="font-size: 12px; color: #888; margin-left: 10px;"></span>
-                <div style="margin-top: 6px; font-size: 12px; color: #666;">
-                    Direct query against a single database. Switching re-downloads hints (cached per PRP backend, so switching back is instant). Bypasses the sync flow and does not update the sync state.
-                </div>
-            </div>
-        </details>
-
-        <!-- Offline phase indicator (unique to HarmonyPIR) -->
-        <div id="hp-offlineContainer" style="margin: 10px 0; display: none;">
-            <div style="background: #e8f4f8; border: 1px solid #8cc4d7; border-radius: 6px; padding: 12px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: bold; color: #2980b9;">&#128274; Offline Phase (Hint Download)</span>
-                    <span id="hp-offlineStatus" style="font-size: 12px; color: #666;">Not started</span>
-                </div>
-                <div class="progress-bar" style="margin-top: 8px;">
-                    <div id="hp-offlineFill" class="progress-fill" style="width: 0%; background-color: #3498db;"></div>
-                </div>
-                <div id="hp-offlineLabel" style="font-size: 12px; color: #666; margin-top: 4px;"></div>
-            </div>
-        </div>
-
-        <div class="step">
-            <label for="hp-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex — one per line:</label>
-            <textarea id="hp-scriptPubkeys" rows="4" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
+        <!-- ═══ HarmonyPIR Tab ═══ -->
+        <div id="tab-harmonypir" class="tab-content">
+          <div class="grid">
+            <div class="col">
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
+                        <div id="hp-status" class="status disconnected">Disconnected</div>
+                    </div>
+                    <div class="card-body">
+                        <div class="step">
+                            <label for="hp-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex <span style="font-family:var(--mono); font-weight:500; color:var(--ink-faint); letter-spacing:0; text-transform:none;">· one per line</span></label>
+                            <textarea id="hp-scriptPubkeys" rows="4" class="addr-input" spellcheck="false" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
 bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
-            <div id="hp-conversionNote" style="font-size: 12px; color: #28a745; margin: 2px 0 6px 5px; display: none;"></div>
+                            <div id="hp-conversionNote" class="conversion-note" style="display: none;"></div>
 
-            <details style="margin-top: 6px;">
-                <summary style="cursor: pointer; font-size: 13px; color: #666;">Load examples</summary>
-                <div class="examples" style="margin-top: 8px;">
-                    <span class="example-label">Known in dataset:</span>
-                    <button class="example-btn hp-example" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH</button>
-                    <button class="example-btn hp-example" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b" style="background:#fff3cd; border-color:#ffc107;">P2WPKH</button>
-                    <button class="example-btn hp-example" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87" style="background:#fff3cd; border-color:#ffc107;">P2SH</button>
-                    <button class="example-btn hp-example" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a" style="background:#fff3cd; border-color:#ffc107;">P2TR</button>
-                    <button class="example-btn hp-example" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e" style="background:#fff3cd; border-color:#ffc107;">P2WSH</button>
-                    <button class="example-btn hp-example" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae" style="background:#fff3cd; border-color:#ffc107;">1-of-3 Multisig</button>
-                    <button class="example-btn hp-example" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae" style="background:#fff3cd; border-color:#ffc107;">1-of-2 Multisig</button>
-                    <button class="example-btn" id="hp-loadDiverseBtn" style="background:#fff3cd; border-color:#ffc107;">Mix</button>
-                    <br>
-                    <span class="example-label">Top whales (most UTXOs, in dataset):</span>
-                    <button class="example-btn hp-example" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale</button>
-                    <button class="example-btn hp-example" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 2</button>
-                    <button class="example-btn hp-example" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac" style="background:#fff3cd; border-color:#ffc107;">P2PKH whale 3</button>
-                    <button class="example-btn hp-example" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale</button>
-                    <button class="example-btn hp-example" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac" style="background:#fff3cd; border-color:#ffc107;">P2WPKH whale 2</button>
-                    <button class="example-btn hp-example" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087" style="background:#fff3cd; border-color:#ffc107;">P2SH whale</button>
-                    <button class="example-btn hp-example" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487" style="background:#fff3cd; border-color:#ffc107;">P2SH whale 2</button>
-                    <button class="example-btn hp-example" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale</button>
-                    <button class="example-btn hp-example" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69" style="background:#fff3cd; border-color:#ffc107;">P2WSH whale 2</button>
-                    <br>
-                    <span class="example-label">Excluded whales (&gt;100 UTXOs):</span>
-                    <button class="example-btn hp-example" data-spk="76a914000000000000000000000000000000000000000088ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 376k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="76a914fa0692278afe508514b5ffee8fe5e97732ce066988ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 161k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="76a9149f21a07a0c7c3cf65a51f586051395762267cdaf88ac" style="background:#fde2e2; border-color:#e74c3c;">P2PKH 117k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="0014c015c65276d5f38d599d445c4cb03aa7aa0dc365" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 128k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="001409e4581b5a796feffc1c4f0669206e801cb7a9eb" style="background:#fde2e2; border-color:#e74c3c;">P2WPKH 338k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="a914ea6b832a05c6ca578baa3836f3f25553d41068a587" style="background:#fde2e2; border-color:#e74c3c;">P2SH 215k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="a9140c42e8868812fccabb2c364390539106cd5fa8d987" style="background:#fde2e2; border-color:#e74c3c;">P2SH 51k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="a91456483d546400fc354bab9fc373238ee94002cc2b87" style="background:#fde2e2; border-color:#e74c3c;">P2SH 45k UTXOs</button>
-                    <button class="example-btn hp-example" data-spk="5120a669250ad7137b88ec550d446d8d34e4b1fa13067274c3627469e885e90743e4" style="background:#fde2e2; border-color:#e74c3c;">P2TR 35k UTXOs</button>
-                    <br>
-                    <span class="example-label">Batch test (1000 known scriptPubKeys):</span>
-                    <button class="example-btn" id="hp-pickRandom100Btn" style="background-color: #d4edda; border-color: #28a745; padding: 6px 14px; font-size: 13px;">Pick 100 random</button>
-                    <button class="example-btn" id="hp-pickRandomBtn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 50 random</button>
-                    <button class="example-btn" id="hp-pickRandom10Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 10 random</button>
-                    <button class="example-btn" id="hp-pickRandom5Btn" style="background-color: #e2e3f1; border-color: #6c757d;">Pick 5 random</button>
-                    <br>
-                    <!-- Delta examples: see DPF tab for rationale. -->
-                    <span class="example-label" id="hp-deltaExampleLabel">Delta examples:</span>
-                    <button class="example-btn" id="hp-loadDeltaAllBtn" style="background-color: #d1ecf1; border-color: #17a2b8;">Load all delta</button>
-                    <button class="example-btn" id="hp-pickDeltaRandom10Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 10 random delta</button>
-                    <button class="example-btn" id="hp-pickDeltaRandom5Btn" style="background-color: #e2f3f7; border-color: #17a2b8;">Pick 5 random delta</button>
-                </div>
-            </details>
-            <br>
-            <!-- Action row: Connect visually grouped with the primary Sync button -->
-            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: stretch;">
-                <button id="hp-connectBtn" class="small" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;">Connect</button>
-                <button id="hp-disconnectBtn" class="small secondary" style="flex: 0 0 auto; padding: 12px 18px; font-size: 14px;" disabled>Disconnect</button>
-                <button id="hp-syncBtn" style="flex: 1; font-size: 16px; padding: 12px; background-color: #28a745;" disabled>Sync to latest &amp; query</button>
+                            <details style="margin-top: 14px;">
+                                <summary style="cursor: pointer; font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute);">Load examples</summary>
+                                <div class="examples" style="margin-top: 10px; display: flex; flex-direction: column; gap: 12px;">
+                                    <div class="ex-section" style="margin-top:0;">
+                                        <div class="ex-head">Known in dataset <span class="count">· 8 types</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn hp-example" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac">P2PKH</button>
+                                            <button class="example-btn hp-example" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b">P2WPKH</button>
+                                            <button class="example-btn hp-example" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87">P2SH</button>
+                                            <button class="example-btn hp-example" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a">P2TR</button>
+                                            <button class="example-btn hp-example" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e">P2WSH</button>
+                                            <button class="example-btn hp-example" data-spk="512102ab5dbba9d81acbadae5ade8ae7ad1fbae2ffc9b566fc408117377f6ae1cea6e221037e8a78ba439913d64c68cd2606ddd48e5e9a58ef03635a543ba4a34a92f6785e2103bcc4e113b8deda823848e07c157d7b341098a5c97851bfd6315d6fe54a85a74a53ae">1-of-3 multisig</button>
+                                            <button class="example-btn hp-example" data-spk="512102f4aef682535628a7e0492b2b5db1aa312348c3095e0258e26b275b25b10290e62120434e54525052545900000014000042e4a3aa79d50000000005f5e1000100000052ae">1-of-2 multisig</button>
+                                            <button class="example-btn" id="hp-loadDiverseBtn">mix</button>
+                                        </div>
+                                    </div>
+                                    <div class="ex-section">
+                                        <div class="ex-head">Top whales <span class="count">· in dataset</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn hp-example whale" data-spk="76a9143cb4b67770d4c1c4539c6b9397e865a05c47c55688ac">P2PKH #1</button>
+                                            <button class="example-btn hp-example whale" data-spk="76a914d35128db955305f78f550b2b3edd603c198b16d788ac">P2PKH #2</button>
+                                            <button class="example-btn hp-example whale" data-spk="76a9145dcf8d3e1445997806e569b546a2b9d85fe637c188ac">P2PKH #3</button>
+                                            <button class="example-btn hp-example whale" data-spk="00146cc553856b233afc1e18fba7f39a724b460a12b3">P2WPKH #1</button>
+                                            <button class="example-btn hp-example whale" data-spk="0014c2a2f99dac2bdc8323bfe47e76211fdf310e2bac">P2WPKH #2</button>
+                                            <button class="example-btn hp-example whale" data-spk="a9140e9feac0552727db096a8731289d952b5babd0e087">P2SH #1</button>
+                                            <button class="example-btn hp-example whale" data-spk="a9148c86d4a4ef15972d636fb87b4acc6bec78baf13487">P2SH #2</button>
+                                            <button class="example-btn hp-example whale" data-spk="00207f6b0309fb368f6c956ec910c747d3af7c8ce57a8f0aef36361675a5047ae012">P2WSH #1</button>
+                                            <button class="example-btn hp-example whale" data-spk="00203a4f7395b03caf1d7f080cfa3f045d39dc325e04f4c1cf231a868c4632b62b69">P2WSH #2</button>
+                                        </div>
+                                    </div>
+                                    <div class="ex-section">
+                                        <div class="ex-head">Excluded whales <span class="count">· &gt; 100 UTXOs, not in DB</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn hp-example excluded" data-spk="76a914000000000000000000000000000000000000000088ac">P2PKH · 376k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="76a914fa0692278afe508514b5ffee8fe5e97732ce066988ac">P2PKH · 161k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="76a9149f21a07a0c7c3cf65a51f586051395762267cdaf88ac">P2PKH · 117k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="0014c015c65276d5f38d599d445c4cb03aa7aa0dc365">P2WPKH · 128k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="001409e4581b5a796feffc1c4f0669206e801cb7a9eb">P2WPKH · 338k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="a914ea6b832a05c6ca578baa3836f3f25553d41068a587">P2SH · 215k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="a9140c42e8868812fccabb2c364390539106cd5fa8d987">P2SH · 51k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="a91456483d546400fc354bab9fc373238ee94002cc2b87">P2SH · 45k</button>
+                                            <button class="example-btn hp-example excluded" data-spk="5120a669250ad7137b88ec550d446d8d34e4b1fa13067274c3627469e885e90743e4">P2TR · 35k</button>
+                                        </div>
+                                    </div>
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                                        <div class="ex-section" style="margin-top:0;">
+                                            <div class="ex-head">Batch test <span class="count">· 1000 spks</span></div>
+                                            <div class="chips">
+                                                <button class="example-btn batch" id="hp-pickRandom100Btn">random 100</button>
+                                                <button class="example-btn" id="hp-pickRandomBtn">random 50</button>
+                                                <button class="example-btn" id="hp-pickRandom10Btn">random 10</button>
+                                                <button class="example-btn" id="hp-pickRandom5Btn">random 5</button>
+                                            </div>
+                                        </div>
+                                        <div class="ex-section" style="margin-top:0;">
+                                            <div class="ex-head" id="hp-deltaExampleLabel">Delta examples</div>
+                                            <div class="chips">
+                                                <button class="example-btn delta" id="hp-loadDeltaAllBtn">load all</button>
+                                                <button class="example-btn delta" id="hp-pickDeltaRandom10Btn">random 10</button>
+                                                <button class="example-btn delta" id="hp-pickDeltaRandom5Btn">random 5</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </details>
+
+                            <div class="action-row">
+                                <button id="hp-connectBtn" class="btn">Connect</button>
+                                <button id="hp-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
+                                <button id="hp-syncBtn" class="btn accent grow" disabled>Sync to latest &amp; query</button>
+                            </div>
+                            <div id="hp-syncPlanBox" style="display: none;">
+                                <div id="hp-syncPlanText" class="mono"></div>
+                                <div class="actions">
+                                    <button id="hp-syncConfirmBtn" class="btn success sm">Confirm sync</button>
+                                    <button id="hp-syncCancelBtn" class="btn ghost sm">Cancel</button>
+                                </div>
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <button id="hp-queryBtn" class="btn" style="width: 100%;">Query UTXOs (manual mode)</button>
+                            </div>
+                        </div>
+
+                        <div id="hp-progressContainer" class="progress-container">
+                            <div class="progress-bar">
+                                <div id="hp-progressFill" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div id="hp-progressLabel" class="progress-label"></div>
+                        </div>
+
+                        <!-- Offline (hint download) phase -->
+                        <div id="hp-offlineContainer" style="display: none;">
+                            <div>
+                                <div style="display: flex; justify-content: space-between; align-items: center; font-family: var(--mono); font-size: 11.5px;">
+                                    <span style="font-weight: 600; color: var(--ink);">🔒 Offline phase (hint download)</span>
+                                    <span id="hp-offlineStatus" style="color: var(--ink-mute);">Not started</span>
+                                </div>
+                                <div class="progress-bar" style="margin-top: 8px;">
+                                    <div id="hp-offlineFill" class="progress-fill" style="width: 0%"></div>
+                                </div>
+                                <div id="hp-offlineLabel" class="progress-label" style="margin-top: 6px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">03</span><span>Results</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div id="hp-resultsContainer" class="results-container"></div>
+                    </div>
+                </section>
             </div>
-            <div id="hp-syncPlanBox" style="display: none; margin: 8px 0; padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; font-size: 13px; color: #0c5460;">
-                <div id="hp-syncPlanText" style="font-family: monospace;"></div>
-                <div style="margin-top: 8px;">
-                    <button id="hp-syncConfirmBtn" class="small" style="background-color: #28a745;">Confirm sync</button>
-                    <button id="hp-syncCancelBtn" class="small secondary" style="margin-left: 6px;">Cancel</button>
-                </div>
+
+            <div class="col">
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div class="status-row">
+                            <label for="hp-hintServerUrl">Hint server</label>
+                            <input type="text" id="hp-hintServerUrl" class="input" value="wss://pir2.chenweikeng.com" spellcheck="false">
+                        </div>
+                        <div class="status-row">
+                            <label for="hp-queryServerUrl">Query server</label>
+                            <input type="text" id="hp-queryServerUrl" class="input" value="wss://pir1.chenweikeng.com" spellcheck="false">
+                        </div>
+                        <div class="status-row">
+                            <label for="hp-prpSelect">PRP backend</label>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <select id="hp-prpSelect" class="select" style="width: auto;">
+                                    <option value="0" selected>HMR12 (default)</option>
+                                    <option value="1">FastPRP</option>
+                                    <option value="2">ALF</option>
+                                </select>
+                                <span id="hp-prpNote" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute);"></span>
+                            </div>
+                        </div>
+
+                        <div id="hp-syncStateRow" style="display: none; margin-top: 14px;">
+                            <span>Sync state:</span>
+                            <span id="hp-syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
+                            <button id="hp-resetSyncBtn" style="float: right;">Reset</button>
+                            <div style="clear: both;"></div>
+                        </div>
+
+                        <details id="hp-advancedDbDetails" class="adv-db" style="display: none;">
+                            <summary>Advanced · direct database query</summary>
+                            <div id="hp-dbSelectorRow">
+                                <label for="hp-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                <select id="hp-dbSelect" class="select" style="width: auto; display: inline-block;">
+                                    <option value="0">Main UTXO (loading...)</option>
+                                </select>
+                                <span id="hp-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                    Switching re-downloads hints (cached per PRP backend, so switching back is instant). Bypasses the sync flow and does not update the sync state.
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                </section>
             </div>
-            <button id="hp-queryBtn" style="width: 100%; font-size: 16px; padding: 12px;">Query UTXOs (manual mode)</button>
-        </div>
-
-        <!-- Progress -->
-        <div id="hp-progressContainer" class="progress-container">
-            <div class="progress-bar">
-                <div id="hp-progressFill" class="progress-fill" style="width: 0%"></div>
-            </div>
-            <div id="hp-progressLabel" class="progress-label"></div>
-        </div>
-
-        <!-- Results -->
-        <div id="hp-resultsContainer"></div>
-
+          </div>
         </div><!-- end tab-harmonypir -->
 
-        <details>
-            <summary style="cursor: pointer; font-size: 18px; color: #666; font-weight: bold; margin-top: 10px;">Log</summary>
-            <div id="log" class="log" style="margin-top: 8px;">
+        </main>
+    </div>
+
+    <!-- ── TERMINAL (pinned log) ─────────────────────────────────── -->
+    <section class="terminal collapsed" id="term">
+        <div class="term-head" id="termHead">
+            <span style="color: oklch(75% 0.11 155);">●</span>
+            <span class="title">log</span>
+            <span>· bitcoin-pir</span>
+            <div class="meta">
+                <span class="pill-dark" id="termScheme">DPF-PIR</span>
+                <span id="termToggle">▴ expand</span>
+            </div>
+        </div>
+        <div class="term-body" id="termBody">
+            <div id="log" class="log">
                 <div class="log-entry info">Waiting for connection...</div>
             </div>
-        </details>
+        </div>
+    </section>
+
+    <!-- ── TWEAKS ────────────────────────────────────────────────── -->
+    <div class="tweaks" id="tweaksPanel">
+        <div class="tweaks-head">
+            <span>Tweaks</span>
+            <button class="btn ghost sm" id="tweaksClose" style="padding: 2px 8px;">×</button>
+        </div>
+        <div class="tweaks-body">
+            <div class="tweaks-row">
+                <label>Theme</label>
+                <div class="tweaks-seg" data-tweak="theme">
+                    <button data-v="light">light</button>
+                    <button data-v="dark">dark</button>
+                </div>
+            </div>
+            <div class="tweaks-row">
+                <label>Density</label>
+                <div class="tweaks-seg" data-tweak="density">
+                    <button data-v="compact">compact</button>
+                    <button data-v="cozy">cozy</button>
+                </div>
+            </div>
+            <div class="tweaks-row">
+                <label>Accent</label>
+                <div class="tweaks-seg" data-tweak="accent">
+                    <button data-v="amber">amber</button>
+                    <button data-v="slate">slate</button>
+                    <button data-v="violet">violet</button>
+                </div>
+            </div>
+        </div>
     </div>
+    <button class="fab-tweaks" id="fabTweaks">Tweaks</button>
 
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady } from './src/index.ts';
@@ -3608,6 +4382,96 @@ Cell at position R = ${r}:
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeQueryInspector();
         });
+    </script>
+
+    <script>
+        // ── Scheme metadata (drives hero + crumb + terminal label) ──
+        const _SCHEME_META = {
+            dpf: {
+                name: "DPF-PIR",
+                tag: "2-server · info-theoretic",
+                sub: "Query two non-colluding servers with distributed point functions. No preprocessing; strong information-theoretic privacy against a single curious server.",
+                crumb: "dpf-pir",
+            },
+            onionpir: {
+                name: "OnionPIR",
+                tag: "1-server · lattice FHE",
+                sub: "Single-server homomorphic PIR. No non-collusion assumption, heavier per-query compute than 2-server schemes.",
+                crumb: "onion-pir",
+            },
+            harmonypir: {
+                name: "HarmonyPIR",
+                tag: "2-server · preprocessing + PRP",
+                sub: "Two non-colluding servers with a one-time hint (offline) phase that amortizes future queries down to milliseconds.",
+                crumb: "harmony-pir",
+            },
+        };
+        function _applySchemeMeta(key) {
+            const s = _SCHEME_META[key]; if (!s) return;
+            const hTitle = document.getElementById('heroTitle');
+            const hSub = document.getElementById('heroSub');
+            const cb = document.getElementById('cbScheme');
+            const termScheme = document.getElementById('termScheme');
+            if (hTitle) hTitle.innerHTML = `${s.name} <span class="tag">${s.tag}</span>`;
+            if (hSub) hSub.textContent = s.sub;
+            if (cb) cb.textContent = s.crumb;
+            if (termScheme) termScheme.textContent = s.name;
+        }
+        document.querySelectorAll('.scheme.tab-btn').forEach(el => {
+            el.addEventListener('click', () => {
+                _applySchemeMeta(el.dataset.tab);
+                document.querySelectorAll('.scheme.tab-btn').forEach(x =>
+                    x.classList.toggle('active', x === el));
+            });
+        });
+        // initial
+        _applySchemeMeta('dpf');
+
+        // ── Terminal collapse ──
+        (function wireTerminal() {
+            const term = document.getElementById('term');
+            const head = document.getElementById('termHead');
+            const toggle = document.getElementById('termToggle');
+            if (!term || !head) return;
+            head.addEventListener('click', () => {
+                term.classList.toggle('collapsed');
+                if (toggle) toggle.textContent = term.classList.contains('collapsed') ? '▴ expand' : '▾ collapse';
+            });
+        })();
+
+        // ── Tweaks (theme / density / accent), persisted to localStorage ──
+        (function wireTweaks() {
+            const KEY = 'bitcoinpir.tweaks';
+            const defaults = { theme: 'light', density: 'cozy', accent: 'amber' };
+            let state;
+            try { state = { ...defaults, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; }
+            catch { state = { ...defaults }; }
+
+            function apply() {
+                document.body.dataset.theme = state.theme;
+                document.body.dataset.density = state.density;
+                document.body.dataset.accent = state.accent;
+                document.querySelectorAll('.tweaks-seg').forEach(seg => {
+                    const k = seg.dataset.tweak;
+                    [...seg.children].forEach(b => b.classList.toggle('on', b.dataset.v === state[k]));
+                });
+            }
+            function persist(partial) {
+                Object.assign(state, partial);
+                apply();
+                try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+            }
+            document.querySelectorAll('.tweaks-seg').forEach(seg => {
+                const k = seg.dataset.tweak;
+                [...seg.children].forEach(b => b.addEventListener('click', () => persist({ [k]: b.dataset.v })));
+            });
+            const fab = document.getElementById('fabTweaks');
+            const panel = document.getElementById('tweaksPanel');
+            const closeBtn = document.getElementById('tweaksClose');
+            if (fab && panel) fab.addEventListener('click', () => panel.classList.toggle('open'));
+            if (closeBtn && panel) closeBtn.addEventListener('click', () => panel.classList.remove('open'));
+            apply();
+        })();
     </script>
 </body>
 </html>
