@@ -1,0 +1,7 @@
+# EasyCrypt compilation artifacts
+*.eco
+*.ecpc
+*.ecaut
+
+# OCaml/dune side products if anyone runs build helpers in this dir
+_build/
