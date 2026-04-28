@@ -31,6 +31,17 @@
 //!   compared too: DPF / FHE ciphertexts are fixed-length per param
 //!   set, so two not-found queries should produce byte-identical
 //!   transcripts.
+//! * **(c) CHUNK Round-Presence Symmetry P1** — the wire transcript's
+//!   round count depends only on batch size, never on per-query
+//!   found/not-found classification. Encoded by:
+//!     - `*_per_message_invariants_not_found` asserting ≥1 (Onion) /
+//!       ≥2 (DPF) K_CHUNK-padded CHUNK rounds even for not-found;
+//!     - `*_found_vs_not_found_have_same_round_count` asserting the
+//!       found and not-found profiles emit equal CHUNK and total
+//!       round counts;
+//!     - `*_round_count_is_function_of_batch_size_only` as the
+//!       integration-level binding of the helper-level Kani harness on
+//!       `items_from_trace`.
 
 use std::sync::Arc;
 
@@ -256,12 +267,27 @@ async fn dpf_per_message_invariants_not_found() {
         "expected ≥2 Index rounds (one per DPF server), got {}",
         profile.count_of_kind(&RoundKind::Index),
     );
-    // Not-found queries don't trigger CHUNK rounds (CLAUDE.md "What the
-    // Server Learns": chunk-round absence reveals not-found).
-    assert_eq!(
-        profile.count_of_kind(&RoundKind::Chunk), 0,
-        "not-found query unexpectedly emitted CHUNK rounds",
+    // CHUNK Round-Presence Symmetry: not-found queries also emit
+    // K_CHUNK-padded CHUNK rounds (one per server) so a wire observer
+    // cannot distinguish found vs not-found at the round-count level.
+    // Pre-fix this asserted == 0; the symmetry fix flipped it.
+    let chunk_rounds = profile.count_of_kind(&RoundKind::Chunk);
+    assert!(
+        chunk_rounds >= 2,
+        "expected ≥2 Chunk rounds for not-found post-fix (one per server), got {} \
+         — CHUNK Round-Presence Symmetry violated (pre-fix behavior?)",
+        chunk_rounds,
     );
+    // Each emitted CHUNK round must still be K_CHUNK-padded.
+    // `assert_pir_k_padding` below would also catch this, but make it
+    // explicit since it is the invariant the symmetry fix preserves.
+    for r in profile.rounds_of_kind(&RoundKind::Chunk) {
+        assert_eq!(
+            r.items.len(), k_chunk,
+            "DPF not-found Chunk round items.len()={}, expected K_CHUNK={}",
+            r.items.len(), k_chunk,
+        );
+    }
 
     assert_pir_k_padding(&profile, k_index, k_chunk);
     assert_merkle_per_level_uniform(&profile);
@@ -436,6 +462,24 @@ async fn onion_per_message_invariants_not_found() {
         "expected ≥1 Index round, got {}",
         profile.count_of_kind(&RoundKind::Index),
     );
+    // CHUNK Round-Presence Symmetry: not-found also emits a
+    // K_CHUNK-padded CHUNK round (single-server, so just one). Pre-fix
+    // OnionPIR not-found queries skipped CHUNK rounds entirely, which
+    // distinguished found vs not-found on the wire.
+    let chunk_rounds = profile.count_of_kind(&RoundKind::Chunk);
+    assert!(
+        chunk_rounds >= 1,
+        "expected ≥1 Chunk round for not-found post-fix, got {} \
+         — CHUNK Round-Presence Symmetry violated (pre-fix behavior?)",
+        chunk_rounds,
+    );
+    for r in profile.rounds_of_kind(&RoundKind::Chunk) {
+        assert_eq!(
+            r.items.len(), k_chunk,
+            "OnionPIR not-found Chunk round items.len()={}, expected K_CHUNK={}",
+            r.items.len(), k_chunk,
+        );
+    }
 
     assert_pir_k_padding(&profile, k_index, k_chunk);
     assert_merkle_per_level_uniform(&profile);
@@ -550,16 +594,21 @@ async fn dpf_found_query_includes_chunk_rounds() {
     }
 }
 
-/// "Should differ" test — validates that L is honest about admitted
-/// leakage. A FOUND query and a NOT-FOUND query MUST produce different
-/// profiles (specifically, the FOUND profile has additional CHUNK +
-/// ChunkMerkle rounds). If `assert_profiles_equivalent` succeeded
-/// here, our `L` would be over-claiming: it'd say "found vs not-found
-/// don't differ on the wire", which contradicts CLAUDE.md "What the
-/// Server Learns" (chunk-round absence reveals not-found).
+/// CHUNK Round-Presence Symmetry P1: a FOUND query and a NOT-FOUND
+/// query MUST produce the same round count. This was the pre-fix
+/// admitted leak — chunk-round absence revealed not-found — that the
+/// symmetry fix in `pir-sdk-client/src/dpf.rs` closes by emitting
+/// dummy K_CHUNK-padded CHUNK rounds even on the not-found path.
+///
+/// Pre-fix this test asserted divergence; post-fix it asserts
+/// equality. If equality fails, either:
+///   (a) the not-found path emits fewer CHUNK rounds than found
+///       (regression — pre-fix behavior reintroduced), or
+///   (b) the FOUND example was spent and degraded to NOT-FOUND
+///       (update `found_pair()` from `web/src/example_spks.json`).
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
-async fn dpf_found_vs_not_found_profiles_differ() {
+async fn dpf_found_vs_not_found_have_same_round_count() {
     let (sh_found, _) = found_pair();
     let (sh_not_found, _) = not_found_pair();
     let p_found = run_dpf_single_query(sh_found).await;
@@ -574,23 +623,64 @@ async fn dpf_found_vs_not_found_profiles_differ() {
         found_chunks,
         not_found_chunks,
     );
-    // Found has CHUNK rounds; not-found does not. This IS the admitted
-    // leak — the test asserts it manifests (otherwise our security
-    // story under-promises).
+    // Both paths emit ≥2 CHUNK rounds (one per server).
     assert!(
-        found_chunks > 0,
-        "FOUND query unexpectedly emitted 0 CHUNK rounds — example may be spent",
+        found_chunks >= 2,
+        "FOUND query expected ≥2 CHUNK rounds, got {} — example may be spent",
+        found_chunks,
+    );
+    assert!(
+        not_found_chunks >= 2,
+        "NOT-FOUND query expected ≥2 CHUNK rounds post-fix, got {} \
+         — CHUNK Round-Presence Symmetry violated",
+        not_found_chunks,
+    );
+    // CHUNK round counts AGREE — the wire transcripts are
+    // indistinguishable at the round-count level.
+    assert_eq!(
+        found_chunks, not_found_chunks,
+        "found and not-found CHUNK round counts diverge ({} vs {}) \
+         — CHUNK Round-Presence Symmetry P1 violated",
+        found_chunks, not_found_chunks,
     );
     assert_eq!(
-        not_found_chunks, 0,
-        "NOT-FOUND query unexpectedly emitted CHUNK rounds",
+        p_found.rounds.len(), p_not_found.rounds.len(),
+        "found and not-found total round counts diverge ({} vs {})",
+        p_found.rounds.len(), p_not_found.rounds.len(),
     );
-    // Total round count must differ — proves the wire transcripts are
-    // distinguishable, so an admitted-leak must be admitted in `L`.
-    assert!(
-        p_found.rounds.len() != p_not_found.rounds.len(),
-        "found and not-found profiles unexpectedly have identical round counts ({})",
-        p_found.rounds.len(),
+}
+
+/// CHUNK Round-Presence Symmetry P1 (positive form): the wire
+/// transcript's round count must depend only on batch size, not on
+/// per-query found/not-found classification. This is the
+/// integration-level expression of the helper-level Kani harness on
+/// `items_from_trace` in `pir-sdk-client/src/dpf.rs` (which proves the
+/// per-slot decision tree emits the same number of items regardless
+/// of trace outcome).
+///
+/// Drives equal-size single-query batches — one FOUND, one NOT-FOUND
+/// — through fresh DPF clients and asserts identical
+/// `count_of_kind(Chunk)` on the resulting profiles. Captures
+/// regressions that the Kani harness cannot — those bind helper
+/// correctness, this binds it to actual wire emission.
+#[tokio::test]
+#[ignore = "requires running PIR servers"]
+async fn dpf_round_count_is_function_of_batch_size_only() {
+    let (sh_found, _) = found_pair();
+    let (sh_nf, _) = not_found_pair();
+    let p_found = run_dpf_single_query(sh_found).await;
+    let p_nf = run_dpf_single_query(sh_nf).await;
+    let found_chunks = p_found.count_of_kind(&RoundKind::Chunk);
+    let nf_chunks = p_nf.count_of_kind(&RoundKind::Chunk);
+    println!(
+        "dpf batch-size-only: found_chunks={}, nf_chunks={}",
+        found_chunks, nf_chunks,
+    );
+    assert_eq!(
+        found_chunks, nf_chunks,
+        "CHUNK round count must be a function of batch size only \
+         (found={}, not_found={}) — CHUNK Round-Presence Symmetry P1 violated",
+        found_chunks, nf_chunks,
     );
 }
 
@@ -694,11 +784,16 @@ async fn onion_found_query_includes_chunk_rounds() {
     }
 }
 
-/// FOUND vs NOT-FOUND on OnionPIR: round counts must differ.
+/// CHUNK Round-Presence Symmetry P1 (OnionPIR variant): FOUND and
+/// NOT-FOUND queries must produce the same round count. Pre-fix
+/// OnionPIR not-found emitted 0 CHUNK rounds; the symmetry fix in
+/// `pir-sdk-client/src/onion.rs` (and `web/src/onionpir_client.ts`)
+/// emits a K_CHUNK-padded dummy CHUNK round even on the not-found
+/// path.
 #[cfg(feature = "onion")]
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
-async fn onion_found_vs_not_found_profiles_differ() {
+async fn onion_found_vs_not_found_have_same_round_count() {
     let (sh_found, _) = found_pair();
     let (sh_not_found, _) = not_found_pair();
     let p_found = run_onion_single_query(sh_found).await;
@@ -713,9 +808,53 @@ async fn onion_found_vs_not_found_profiles_differ() {
         found_chunks,
         not_found_chunks,
     );
-    assert!(found_chunks > 0, "FOUND query expected CHUNK rounds");
-    assert_eq!(not_found_chunks, 0, "NOT-FOUND query unexpectedly emitted CHUNK rounds");
-    assert!(p_found.rounds.len() != p_not_found.rounds.len());
+    assert!(
+        found_chunks >= 1,
+        "FOUND query expected ≥1 CHUNK round, got {}",
+        found_chunks,
+    );
+    assert!(
+        not_found_chunks >= 1,
+        "NOT-FOUND query expected ≥1 CHUNK round post-fix, got {} \
+         — CHUNK Round-Presence Symmetry violated",
+        not_found_chunks,
+    );
+    assert_eq!(
+        found_chunks, not_found_chunks,
+        "OnionPIR found and not-found CHUNK round counts diverge ({} vs {}) \
+         — CHUNK Round-Presence Symmetry P1 violated",
+        found_chunks, not_found_chunks,
+    );
+    assert_eq!(
+        p_found.rounds.len(), p_not_found.rounds.len(),
+        "OnionPIR found and not-found total round counts diverge ({} vs {})",
+        p_found.rounds.len(), p_not_found.rounds.len(),
+    );
+}
+
+/// CHUNK Round-Presence Symmetry P1 (OnionPIR positive form). See
+/// `dpf_round_count_is_function_of_batch_size_only` for the rationale
+/// — same property, different backend.
+#[cfg(feature = "onion")]
+#[tokio::test]
+#[ignore = "requires running PIR servers"]
+async fn onion_round_count_is_function_of_batch_size_only() {
+    let (sh_found, _) = found_pair();
+    let (sh_nf, _) = not_found_pair();
+    let p_found = run_onion_single_query(sh_found).await;
+    let p_nf = run_onion_single_query(sh_nf).await;
+    let found_chunks = p_found.count_of_kind(&RoundKind::Chunk);
+    let nf_chunks = p_nf.count_of_kind(&RoundKind::Chunk);
+    println!(
+        "onion batch-size-only: found_chunks={}, nf_chunks={}",
+        found_chunks, nf_chunks,
+    );
+    assert_eq!(
+        found_chunks, nf_chunks,
+        "OnionPIR CHUNK round count must be a function of batch size only \
+         (found={}, not_found={}) — CHUNK Round-Presence Symmetry P1 violated",
+        found_chunks, nf_chunks,
+    );
 }
 
 // Suppress unused-warning noise when only one backend is built.
