@@ -63,6 +63,21 @@
  *      that this axis is a function of session length, which is
  *      already public, not of the queries' content.
  *
+ *   4. query_db_id : db_id
+ *      The database the query targets — wire-observable on every
+ *      PIR round (RoundProfile.db_id_opt = Some). Trivially admitted:
+ *      the user explicitly chose to query this database, so the
+ *      server's awareness of it is by design, not a privacy
+ *      violation. Included in `L` because the simulator must
+ *      reproduce the transcript's `db_id_opt` field; without this
+ *      axis the simulator-property statement is vacuous (any
+ *      multi-DB session is distinguishable). Added during the
+ *      proof-body fleshout phase (the absence was caught precisely
+ *      by trying to write `Sim.query` and noticing it had no way to
+ *      reproduce the per-round `db_id_opt`).
+ *      Closure path: none required — this is intentional public
+ *      protocol metadata, not a side channel.
+ *
  * --------------------------------------------------------------------- *
  *  CLOSED AXES (must be obligations the proof discharges)
  * --------------------------------------------------------------------- *
@@ -117,6 +132,7 @@
  * --------------------------------------------------------------------- *)
 
 require import Common.
+require import AllCore Int.
 
 (* ---------- Leakage record ---------- *
  * The simulator gets exactly this; nothing else. Each field
@@ -128,6 +144,7 @@ type leakage = {
   index_max_items_per_group_per_level : int;
   chunk_max_items_per_group_per_level : int;
   session_query_index                 : int;
+  query_db_id                         : db_id;
 }.
 
 (* The leakage function. Declared abstractly: the proof obligation
@@ -139,6 +156,33 @@ type leakage = {
  * onto the admitted axes.
  *)
 op L : query -> leakage.
+
+(* ---------- Per-axis projection axioms ---------- *
+ * The query has accessors that produce each leakage component
+ * directly. `L_factors` says `L` projects through these accessors.
+ * The Real protocol module reads via the accessors; the Sim module
+ * reads via `L`. The simulator-property proof reduces to "per-axis
+ * agreement" via these projections, so a future maintainer who adds
+ * a Real-side branch on a query-property not covered by `L` will
+ * find no axiom to reduce to and will be forced to either (a) add
+ * the property as a new admitted axis, or (b) prove the branch is
+ * unreachable.
+ *
+ * The query-side accessors `query_db_id`, `query_index_max`, etc.
+ * are declared abstractly in Common.ec / here; their semantics are
+ * pinned by L_factors.
+ *)
+op query_index_max : query -> int.
+op query_chunk_max : query -> int.
+op query_session_query_index : query -> int.
+
+axiom L_factors :
+  forall (q : query),
+    L q = {| index_max_items_per_group_per_level = query_index_max q;
+             chunk_max_items_per_group_per_level = query_chunk_max q;
+             session_query_index                 = query_session_query_index q;
+             query_db_id                         = query_db_id q;
+          |}.
 
 (* ---------- Range axioms ---------- *
  * All admitted-axis values are non-negative integers. Tighter
@@ -158,6 +202,9 @@ axiom L_session_query_index_nonneg :
   forall (q : query),
     0 <= (L q).`session_query_index.
 
+(* No range axiom on query_db_id — it is an abstract type with no
+ * arithmetic structure. Equality is the only operation we need. *)
+
 (* ---------- Equivalence relation on leakage ---------- *
  * Two queries are L-equivalent iff their leakage records are equal.
  * The simulator argument's quantification: forall q1 q2,
@@ -166,18 +213,18 @@ axiom L_session_query_index_nonneg :
 op L_eq (q1 q2 : query) : bool =
   (L q1) = (L q2).
 
-lemma L_eq_refl (q : query) : L_eq q q
+lemma L_eq_refl (q : query) : L_eq q q.
 proof.
   by rewrite /L_eq.
 qed.
 
-lemma L_eq_sym (q1 q2 : query) : L_eq q1 q2 => L_eq q2 q1
+lemma L_eq_sym (q1 q2 : query) : L_eq q1 q2 => L_eq q2 q1.
 proof.
-  by rewrite /L_eq.
+  by rewrite /L_eq => ->.
 qed.
 
 lemma L_eq_trans (q1 q2 q3 : query) :
-  L_eq q1 q2 => L_eq q2 q3 => L_eq q1 q3
+  L_eq q1 q2 => L_eq q2 q3 => L_eq q1 q3.
 proof.
   by rewrite /L_eq => -> ->.
 qed.

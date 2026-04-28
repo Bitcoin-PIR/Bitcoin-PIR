@@ -33,9 +33,18 @@ axiom index_cuckoo : 2 <= index_cuckoo_num_hashes.
  * The transcript proof never inspects the bytes — privacy reduces to
  * "the wire shape is independent of the bytes" — so we leave it as
  * an abstract type.
+ *
+ * `db_id` is exposed via the accessor `query_db_id` because every PIR
+ * round's `round_profile` carries `db_id_opt = Some (query_db_id q)`.
+ * The simulator must read this from the leakage record (where it is
+ * admitted as `query_db_id`) — not from `q` — to build the same
+ * transcript. The accessor lets the `Real` module read it directly
+ * from the query while `Sim` reads the corresponding leakage axis.
  *)
 type query.
 type db_id.
+
+op query_db_id : query -> db_id.
 
 (* ---------- Wire transcript ---------- *
  * The server-observable transcript is a list of per-round events.
