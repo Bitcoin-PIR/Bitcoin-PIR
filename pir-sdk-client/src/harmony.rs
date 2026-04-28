@@ -48,9 +48,9 @@ use pir_core::params::{
 };
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, Instant, PirBackendType, PirClient, PirError, PirMetrics,
-    PirResult, QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult,
-    SyncStep, UtxoEntry,
+    DatabaseInfo, DatabaseKind, Instant, LeakageRecorder, PirBackendType, PirClient, PirError,
+    PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, StateListener,
+    SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -411,6 +411,13 @@ pub struct HarmonyClient {
     /// byte count came from, but can split queries-vs-hints by
     /// observing the URL on `on_connect`.
     metrics_recorder: Option<Arc<dyn PirMetrics>>,
+    /// Optional leakage recorder. When installed, every transport-level
+    /// roundtrip (hint refresh, INDEX query, CHUNK query, Merkle
+    /// tree-tops, Merkle sibling pass) emits a structured
+    /// [`RoundProfile`] with the wire-observable shape. `server_id` is
+    /// 0 for the query server and 1 for the hint server. Independent
+    /// of `metrics_recorder` — install neither, either, or both.
+    leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 }
 
 impl HarmonyClient {
@@ -444,6 +451,7 @@ impl HarmonyClient {
             hint_cache_dir: None,
             state_listener: None,
             metrics_recorder: None,
+            leakage_recorder: None,
         }
     }
 
@@ -515,6 +523,21 @@ impl HarmonyClient {
     fn fire_disconnect(&self) {
         if let Some(rec) = &self.metrics_recorder {
             rec.on_disconnect("harmony");
+        }
+    }
+
+    /// Install (or replace) a leakage recorder. Independent of
+    /// [`set_metrics_recorder`](Self::set_metrics_recorder).
+    /// `server_id = 0` is the query server, `1` is the hint server.
+    /// Pass `None` to uninstall.
+    pub fn set_leakage_recorder(&mut self, recorder: Option<Arc<dyn LeakageRecorder>>) {
+        self.leakage_recorder = recorder;
+    }
+
+    /// Emit a [`RoundProfile`] to the installed leakage recorder, if any.
+    fn record_round(&self, round: RoundProfile) {
+        if let Some(rec) = &self.leakage_recorder {
+            rec.record_round("harmony", round);
         }
     }
 
@@ -979,7 +1002,18 @@ impl HarmonyClient {
     async fn try_fetch_db_catalog(&mut self) -> PirResult<Option<DatabaseCatalog>> {
         let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
         let request = encode_request(REQ_GET_DB_CATALOG, &[]);
+        let request_bytes = request.len() as u64;
         let response = conn.roundtrip(&request).await?;
+        // `roundtrip` strips the 4-byte length prefix; add it back so the
+        // recorded byte count matches what a wire-level observer sees.
+        self.record_round(RoundProfile {
+            kind: RoundKind::Info,
+            server_id: 1,
+            db_id: None,
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: Vec::new(),
+        });
 
         if response.is_empty() {
             return Ok(None);
@@ -1010,7 +1044,16 @@ impl HarmonyClient {
         let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
 
         let request = encode_request(REQ_HARMONY_GET_INFO, &[]);
+        let request_bytes = request.len() as u64;
         let response = conn.roundtrip(&request).await?;
+        self.record_round(RoundProfile {
+            kind: RoundKind::Info,
+            server_id: 1,
+            db_id: None,
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: Vec::new(),
+        });
 
         if response.is_empty() || response[0] != RESP_HARMONY_INFO {
             return Err(PirError::Protocol("invalid harmony info response".into()));
@@ -1234,13 +1277,22 @@ impl HarmonyClient {
             payload.push(db_id);
         }
         let request = encode_request(REQ_HARMONY_HINTS, &payload);
+        let request_bytes = request.len() as u64;
 
         let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
         conn.send(request).await?;
 
+        // The hint server streams `num_groups` separate response frames.
+        // Sum their sizes for a single `HarmonyHintRefresh` round event —
+        // a wire observer sees one request followed by N responses, all
+        // logically tied to this one hint refresh. Round is emitted only
+        // on the success path; error returns mid-stream skip emission
+        // (matches the early-error semantics of the other rounds).
         let mut received = 0u32;
+        let mut total_response_bytes: u64 = 0;
         while received < num_groups as u32 {
             let msg = conn.recv().await?;
+            total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
             if msg.len() < 5 {
                 return Err(PirError::Protocol("truncated hint response".into()));
             }
@@ -1295,6 +1347,14 @@ impl HarmonyClient {
             received += 1;
         }
 
+        self.record_round(RoundProfile {
+            kind: RoundKind::HarmonyHintRefresh,
+            server_id: 1,
+            db_id: Some(db_id),
+            request_bytes,
+            response_bytes: total_response_bytes,
+            items: vec![1u32; num_groups as usize],
+        });
         Ok(())
     }
 
@@ -1552,8 +1612,23 @@ impl HarmonyClient {
         }
 
         let request = encode_batch_query(0, round_tag as u16, db_id, &batch_items);
+        let request_bytes = request.len() as u64;
+        // Per-group request shape: each group sends its `T - 1` indices
+        // (the HarmonyPIR per-group invariant from CLAUDE.md). Capturing
+        // `batch_items[g].indices.len()` lets a test assert the invariant
+        // directly from the leakage profile.
+        let items_per_group: Vec<u32> =
+            batch_items.iter().map(|it| it.indices.len() as u32).collect();
         let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
         let response = conn.roundtrip(&request).await?;
+        self.record_round(RoundProfile {
+            kind: RoundKind::Index,
+            server_id: 0,
+            db_id: Some(db_id),
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: items_per_group,
+        });
         let results = decode_batch_response(&response)?;
 
         let data = results
@@ -1975,7 +2050,10 @@ impl HarmonyClient {
 
         // Fetch tree-tops blob via the query server (same blob both servers share).
         let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        let tree_tops = fetch_tree_tops(conn, db_info.db_id).await?;
+        // Tree-tops fetch goes over the query server (server_id = 0).
+        let leakage = self.leakage_recorder.clone();
+        let tree_tops =
+            fetch_tree_tops(conn, db_info.db_id, leakage.as_ref(), "harmony", 0).await?;
 
         // Ensure sibling groups + hints are initialised.
         self.ensure_sibling_groups_ready(db_info, &tree_tops).await?;
@@ -1999,6 +2077,7 @@ impl HarmonyClient {
                 query_conn,
                 index_sib_groups: &mut index_sib_groups,
                 chunk_sib_groups: &mut chunk_sib_groups,
+                leakage_recorder: leakage.clone(),
             };
             verify_bucket_merkle_batch_generic(
                 &mut querier,
@@ -2491,8 +2570,19 @@ impl HarmonyClient {
         }
 
         let request = encode_batch_query(1, round_id, db_id, &batch_items);
+        let request_bytes = request.len() as u64;
+        let items_per_group: Vec<u32> =
+            batch_items.iter().map(|it| it.indices.len() as u32).collect();
         let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
         let response = conn.roundtrip(&request).await?;
+        self.record_round(RoundProfile {
+            kind: RoundKind::Chunk,
+            server_id: 0,
+            db_id: Some(db_id),
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: items_per_group,
+        });
         let raw_results = decode_batch_response(&response)?;
 
         let mut out = HashMap::new();
@@ -3050,6 +3140,11 @@ struct HarmonySiblingQuerier<'a> {
     index_sib_groups: &'a mut HashMap<(usize, u8), HarmonyGroup>,
     /// CHUNK sibling groups keyed by `(merkle_level, group_id)`.
     chunk_sib_groups: &'a mut HashMap<(usize, u8), HarmonyGroup>,
+    /// Optional leakage recorder forwarded from `HarmonyClient`. Each
+    /// pass emits one `IndexMerkleSiblings` / `ChunkMerkleSiblings`
+    /// round on the query server (`server_id = 0`) — there is no
+    /// per-server fan-out for HarmonyPIR Merkle.
+    leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 }
 
 #[async_trait]
@@ -3126,7 +3221,31 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
         // round_id mirrors the DPF querier's convention so audit logs align.
         let round_id = (table_type as u16) * 100 + level as u16;
         let request = encode_batch_query(wire_level, round_id, db_id, &batch_items);
+        let request_bytes = request.len() as u64;
+        // Per-group request shape — every Harmony query slot must send
+        // exactly `T - 1` indices (CLAUDE.md "HarmonyPIR Per-Group
+        // Request-Count Symmetry"). Capture the actual `indices.len()`
+        // so a test can assert the invariant directly.
+        let items_per_group: Vec<u32> =
+            batch_items.iter().map(|it| it.indices.len() as u32).collect();
         let response = self.query_conn.roundtrip(&request).await?;
+        if let Some(rec) = &self.leakage_recorder {
+            let kind = match table_type {
+                1 => RoundKind::ChunkMerkleSiblings { level: level as u8 },
+                _ => RoundKind::IndexMerkleSiblings { level: level as u8 },
+            };
+            rec.record_round(
+                "harmony",
+                RoundProfile {
+                    kind,
+                    server_id: 0,
+                    db_id: Some(db_id),
+                    request_bytes,
+                    response_bytes: (response.len() as u64).saturating_add(4),
+                    items: items_per_group,
+                },
+            );
+        }
         let raw_results = decode_batch_response(&response)?;
 
         let mut out: Vec<Option<Vec<u8>>> = vec![None; table_k];
@@ -3930,5 +4049,216 @@ mod tests {
         assert_eq!(snap.queries_completed, 1);
         assert_eq!(snap.min_query_latency_micros, 0);
         assert_eq!(snap.max_query_latency_micros, 0);
+    }
+
+    // ─── Merkle INDEX item-count symmetry invariant ─────────────────
+    //
+    // Mirrors the DPF tests in `dpf.rs`. CLAUDE.md "Merkle INDEX
+    // Item-Count Symmetry" requires every INDEX query to emit exactly
+    // `INDEX_CUCKOO_NUM_HASHES` Merkle items regardless of outcome.
+    // For HarmonyPIR specifically, the extra probe costs one extra
+    // wire round per `found@h=0` query (the two cuckoo positions are
+    // separate per-h batch queries, not a single XOR'd response like
+    // DPF/Onion), so the loop in `query_single` must NOT early-exit
+    // on match.
+
+    fn h_idx_bin(bin_index: u32) -> IndexBinTrace {
+        IndexBinTrace {
+            pbc_group: 3,
+            bin_index,
+            bin_content: vec![0u8; 16],
+        }
+    }
+
+    fn h_chk_bin(bin_index: u32) -> ChunkBinTrace {
+        ChunkBinTrace {
+            pbc_group: 5,
+            bin_index,
+            bin_content: vec![0u8; 32],
+        }
+    }
+
+    #[test]
+    fn items_from_trace_found_at_h0_emits_two() {
+        let trace = QueryTraces {
+            index_bins: vec![h_idx_bin(100), h_idx_bin(200)],
+            matched_index_idx: Some(0),
+            chunk_bins: vec![h_chk_bin(50)],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 1);
+        assert_eq!(items[1].chunk_bin_indices.len(), 0);
+    }
+
+    #[test]
+    fn items_from_trace_found_at_h1_emits_two() {
+        let trace = QueryTraces {
+            index_bins: vec![h_idx_bin(100), h_idx_bin(200)],
+            matched_index_idx: Some(1),
+            chunk_bins: vec![h_chk_bin(50)],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 0);
+        assert_eq!(items[1].chunk_bin_indices.len(), 1);
+    }
+
+    #[test]
+    fn items_from_trace_not_found_emits_two() {
+        let trace = QueryTraces {
+            index_bins: vec![h_idx_bin(100), h_idx_bin(200)],
+            matched_index_idx: None,
+            chunk_bins: vec![],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 0);
+        assert_eq!(items[1].chunk_bin_indices.len(), 0);
+    }
+
+    #[test]
+    fn items_from_trace_whale_emits_two_no_chunks() {
+        let trace = QueryTraces {
+            index_bins: vec![h_idx_bin(100), h_idx_bin(200)],
+            matched_index_idx: Some(0),
+            chunk_bins: vec![],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 0);
+        assert_eq!(items[1].chunk_bin_indices.len(), 0);
+    }
+
+    // ─── Leakage recorder wiring ────────────────────────────────────────────
+
+    /// `record_round` emits to an installed buffering recorder.
+    #[test]
+    fn leakage_recorder_records_via_helper_harmony() {
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_leakage_recorder(Some(rec.clone()));
+
+        // T - 1 indices per slot is the HarmonyPIR per-group invariant —
+        // a hypothetical T=8 here yields items[g] = 7.
+        client.record_round(RoundProfile {
+            kind: RoundKind::Index,
+            server_id: 0,
+            db_id: Some(3),
+            request_bytes: 1234,
+            response_bytes: 5678,
+            items: vec![7; 75],
+        });
+
+        let snap = rec.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(matches!(snap[0].kind, RoundKind::Index));
+        assert_eq!(snap[0].server_id, 0); // 0 = query server for harmony
+        assert_eq!(snap[0].items.len(), 75);
+        assert!(snap[0].items.iter().all(|&x| x == 7));
+    }
+
+    /// `set_leakage_recorder(None)` silences subsequent emissions.
+    #[test]
+    fn leakage_recorder_uninstall_silences_harmony() {
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_leakage_recorder(Some(rec.clone()));
+        client.set_leakage_recorder(None);
+
+        client.record_round(RoundProfile {
+            kind: RoundKind::HarmonyHintRefresh,
+            server_id: 1,
+            db_id: Some(0),
+            request_bytes: 100,
+            response_bytes: 200,
+            items: vec![1; 75],
+        });
+
+        assert!(rec.is_empty());
+    }
+
+    /// Driving a real `fetch_legacy_info` through `MockTransport` emits
+    /// exactly one `Info` round on server 1 (hint server).
+    #[tokio::test]
+    async fn leakage_recorder_captures_info_round_end_to_end_harmony() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_leakage_recorder(Some(rec.clone()));
+
+        // Valid REQ_HARMONY_GET_INFO (0x40) response shape mirrors
+        // REQ_GET_INFO: [4B len=19][1B variant=0x40][4B index_bins]
+        // [4B chunk_bins][1B index_k][1B chunk_k][8B tag_seed].
+        let mut hint_mock = MockTransport::new("wss://mock-hint");
+        let mut info_resp = Vec::with_capacity(23);
+        info_resp.extend_from_slice(&19u32.to_le_bytes());
+        info_resp.push(0x40); // RESP_HARMONY_INFO
+        info_resp.extend_from_slice(&1024u32.to_le_bytes()); // index_bins
+        info_resp.extend_from_slice(&2048u32.to_le_bytes()); // chunk_bins
+        info_resp.push(75); // index_k
+        info_resp.push(80); // chunk_k
+        info_resp.extend_from_slice(&0u64.to_le_bytes()); // tag_seed
+        assert_eq!(info_resp.len(), 23);
+        hint_mock.enqueue_response(info_resp);
+
+        client.connect_with_transport(
+            Box::new(hint_mock),
+            Box::new(MockTransport::new("wss://mock-query")),
+        );
+        let _info = client.fetch_legacy_info().await.unwrap();
+
+        let snap = rec.snapshot();
+        assert_eq!(snap.len(), 1, "expected exactly one Info round");
+        let r = &snap[0];
+        assert!(matches!(r.kind, RoundKind::Info));
+        assert_eq!(r.server_id, 1, "harmony info goes to hint server");
+        assert_eq!(r.db_id, None);
+        // request: REQ_HARMONY_GET_INFO is `[4B len=1][1B 0x40]` = 5 bytes.
+        assert_eq!(r.request_bytes, 5);
+        // response: 23 bytes on the wire (4-byte prefix + 19-byte payload).
+        assert_eq!(r.response_bytes, 23);
+        assert!(r.items.is_empty());
+    }
+
+    /// Leakage and metrics recorders coexist independently.
+    #[tokio::test]
+    async fn leakage_and_metrics_recorders_are_independent_harmony() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::{AtomicMetrics, BufferingLeakageRecorder};
+
+        let leakage = Arc::new(BufferingLeakageRecorder::new());
+        let metrics = Arc::new(AtomicMetrics::new());
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.set_leakage_recorder(Some(leakage.clone()));
+        client.set_metrics_recorder(Some(metrics.clone()));
+
+        let mut hint_mock = MockTransport::new("wss://mock-hint");
+        let mut info_resp = Vec::with_capacity(23);
+        info_resp.extend_from_slice(&19u32.to_le_bytes());
+        info_resp.push(0x40);
+        info_resp.extend_from_slice(&1024u32.to_le_bytes());
+        info_resp.extend_from_slice(&2048u32.to_le_bytes());
+        info_resp.push(75);
+        info_resp.push(80);
+        info_resp.extend_from_slice(&0u64.to_le_bytes());
+        hint_mock.enqueue_response(info_resp);
+
+        client.connect_with_transport(
+            Box::new(hint_mock),
+            Box::new(MockTransport::new("wss://mock-query")),
+        );
+        let _info = client.fetch_legacy_info().await.unwrap();
+
+        assert_eq!(leakage.len(), 1);
+        let snap = metrics.snapshot();
+        assert!(snap.bytes_sent > 0);
+        assert!(snap.bytes_received > 0);
     }
 }

@@ -46,6 +46,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # downstream callers that just want `pir_sdk::compute_sync_plan` don't pay
 # for it. Pinned to the 0.5 line because that's the latest stable.
 criterion = "0.5"
+# serde_json drives the LeakageProfile JSON-roundtrip tests in
+# `leakage::tests` (gated on `feature = "serde"`). Cross-language diff
+# (Phase 2.3) reuses the same serde derives over JSON, so this dep also
+# stages the corpus-generation example.
+serde_json = "1.0"
 
 # Custom Criterion bench: the `harness = false` switch tells Cargo not to
 # inject the libtest harness, so `criterion_main!` in the bench file owns

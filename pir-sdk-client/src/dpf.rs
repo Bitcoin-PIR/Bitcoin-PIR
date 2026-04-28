@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use libdpf::Dpf;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, Instant, PirBackendType, PirClient, PirError, PirMetrics,
-    PirResult, QueryResult, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult,
-    SyncStep, UtxoEntry,
+    DatabaseInfo, DatabaseKind, Instant, LeakageRecorder, PirBackendType, PirClient, PirError,
+    PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, StateListener,
+    SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
 };
 use std::sync::Arc;
 
@@ -298,6 +298,14 @@ pub struct DpfClient {
     /// `on_bytes_received` from the two transports below (wired on
     /// connect via `set_metrics_recorder`).
     metrics_recorder: Option<Arc<dyn PirMetrics>>,
+    /// Optional leakage recorder. When installed, every transport-level
+    /// roundtrip emits a structured [`RoundProfile`] capturing the
+    /// wire-observable shape (round kind, server id, request/response
+    /// bytes, per-group or per-query item counts). Used by the
+    /// differential-testing harness in `PLAN_LEAKAGE_VERIFICATION.md`.
+    /// Independent of `metrics_recorder` — install neither, either, or
+    /// both.
+    leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 }
 
 impl DpfClient {
@@ -311,6 +319,7 @@ impl DpfClient {
             catalog: None,
             state_listener: None,
             metrics_recorder: None,
+            leakage_recorder: None,
         }
     }
 
@@ -394,6 +403,31 @@ impl DpfClient {
         }
     }
 
+    /// Install (or replace) a leakage recorder.
+    ///
+    /// Independent of [`set_metrics_recorder`](Self::set_metrics_recorder)
+    /// — leakage recorders observe per-round structural events
+    /// (round kind, item counts, per-server bytes), while metrics
+    /// recorders aggregate byte / latency counters. Tests installing a
+    /// [`BufferingLeakageRecorder`](pir_sdk::BufferingLeakageRecorder)
+    /// can call [`take_profile`](pir_sdk::BufferingLeakageRecorder::take_profile)
+    /// after a query to inspect the recorded sequence of
+    /// [`RoundProfile`]s.
+    ///
+    /// Pass `None` to uninstall — subsequent rounds are silenced.
+    pub fn set_leakage_recorder(&mut self, recorder: Option<Arc<dyn LeakageRecorder>>) {
+        self.leakage_recorder = recorder;
+    }
+
+    /// Emit a [`RoundProfile`] to the installed leakage recorder, if any.
+    /// No-op when no recorder is installed — the typical case in
+    /// production.
+    fn record_round(&self, round: RoundProfile) {
+        if let Some(rec) = &self.leakage_recorder {
+            rec.record_round("dpf", round);
+        }
+    }
+
     /// Register a callback that will be invoked on every
     /// [`ConnectionState`] transition (`Connecting` → `Connected` /
     /// `Disconnected`). Replaces any previously registered listener —
@@ -458,7 +492,21 @@ impl DpfClient {
 
         // REQ_GET_INFO = 0x01
         let request = encode_request(0x01, &[]);
+        let request_bytes = request.len() as u64;
         let response = conn0.roundtrip(&request).await?;
+        // `roundtrip` strips the 4-byte length prefix on success, so the
+        // observable response payload size on the wire is `response.len() + 4`
+        // — matches what `request.len()` reports (which still includes the
+        // outgoing 4-byte prefix).
+        let response_bytes = (response.len() as u64).saturating_add(4);
+        self.record_round(RoundProfile {
+            kind: RoundKind::Info,
+            server_id: 0,
+            db_id: None,
+            request_bytes,
+            response_bytes,
+            items: Vec::new(),
+        });
 
         if response.is_empty() || response[0] != 0x01 {
             return Err(PirError::Protocol("invalid info response".into()));
@@ -655,8 +703,10 @@ impl DpfClient {
         }
 
         // Fetch tree-tops blob (server 0 only — both servers share it).
+        let leakage = self.leakage_recorder.clone();
         let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
-        let tree_tops = fetch_tree_tops(conn0, db_info.db_id).await?;
+        let tree_tops =
+            fetch_tree_tops(conn0, db_info.db_id, leakage.as_ref(), "dpf", 0).await?;
 
         // Disjoint field borrows: `self.conn0` and `self.conn1` are separate
         // Option fields, so we can borrow both mutably at once.
@@ -674,6 +724,7 @@ impl DpfClient {
             chunk_k,
             db_info.db_id,
             &tree_tops,
+            leakage,
         )
         .await?;
 
@@ -862,6 +913,15 @@ impl DpfClient {
         let req0 = encode_batch_query(0x11, 0, 0, db_info.db_id, &s0_keys);
         let req1 = encode_batch_query(0x11, 0, 0, db_info.db_id, &s1_keys);
 
+        // Capture wire shape before `send` consumes the request buffers.
+        // Per-group item counts come from the actual nested Vec lengths so
+        // the leakage profile reflects the wire payload, not constants the
+        // test might also be wrong about.
+        let req0_bytes = req0.len() as u64;
+        let req1_bytes = req1.len() as u64;
+        let items_s0: Vec<u32> = s0_keys.iter().map(|g| g.len() as u32).collect();
+        let items_s1: Vec<u32> = s1_keys.iter().map(|g| g.len() as u32).collect();
+
         let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
         conn0.send(req0).await?;
 
@@ -874,6 +934,23 @@ impl DpfClient {
 
         let conn1 = self.conn1.as_mut().ok_or(PirError::NotConnected)?;
         let resp1 = conn1.recv().await?;
+
+        self.record_round(RoundProfile {
+            kind: RoundKind::Index,
+            server_id: 0,
+            db_id: Some(db_info.db_id),
+            request_bytes: req0_bytes,
+            response_bytes: resp0.len() as u64,
+            items: items_s0,
+        });
+        self.record_round(RoundProfile {
+            kind: RoundKind::Index,
+            server_id: 1,
+            db_id: Some(db_info.db_id),
+            request_bytes: req1_bytes,
+            response_bytes: resp1.len() as u64,
+            items: items_s1,
+        });
 
         // Parse responses
         let results0 = decode_batch_response(&resp0[4..])?; // skip length prefix
@@ -1032,6 +1109,15 @@ impl DpfClient {
             let req0 = encode_batch_query(0x21, 1, round_id as u16, db_info.db_id, &s0_keys);
             let req1 = encode_batch_query(0x21, 1, round_id as u16, db_info.db_id, &s1_keys);
 
+            // Capture wire shape before `send` consumes the request buffers.
+            // CHUNK item counts vary per-group (admitted leak — reveals UTXO
+            // count for found queries); recording the actual lengths is what
+            // makes the leakage profile capture that variation.
+            let req0_bytes = req0.len() as u64;
+            let req1_bytes = req1.len() as u64;
+            let items_s0: Vec<u32> = s0_keys.iter().map(|g| g.len() as u32).collect();
+            let items_s1: Vec<u32> = s1_keys.iter().map(|g| g.len() as u32).collect();
+
             let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
             conn0.send(req0).await?;
 
@@ -1044,6 +1130,23 @@ impl DpfClient {
 
             let conn1 = self.conn1.as_mut().ok_or(PirError::NotConnected)?;
             let resp1 = conn1.recv().await?;
+
+            self.record_round(RoundProfile {
+                kind: RoundKind::Chunk,
+                server_id: 0,
+                db_id: Some(db_info.db_id),
+                request_bytes: req0_bytes,
+                response_bytes: resp0.len() as u64,
+                items: items_s0,
+            });
+            self.record_round(RoundProfile {
+                kind: RoundKind::Chunk,
+                server_id: 1,
+                db_id: Some(db_info.db_id),
+                request_bytes: req1_bytes,
+                response_bytes: resp1.len() as u64,
+                items: items_s1,
+            });
 
             // Parse and XOR results
             let results0 = decode_batch_response(&resp0[4..])?;
@@ -2293,5 +2396,224 @@ mod tests {
         assert_eq!(snap.min_query_latency_micros, 0);
         assert_eq!(snap.max_query_latency_micros, 0);
         assert_eq!(snap.total_query_latency_micros, 0);
+    }
+
+    // ─── Merkle INDEX item-count symmetry invariant ─────────────────
+    //
+    // CLAUDE.md "Merkle INDEX Item-Count Symmetry" requires every INDEX
+    // query to contribute exactly `INDEX_CUCKOO_NUM_HASHES` Merkle items,
+    // regardless of found@h=0 / found@h=1 / not-found / whale. The
+    // server observes per-level sibling pass count directly on the wire,
+    // so any per-query item-count asymmetry leaks found-vs-not-found
+    // and h-position. These tests pin that contract for both
+    // `items_from_trace` (hot-path) and `items_from_inspector_result`
+    // (deferred re-verify). A regression that re-introduced an early
+    // `break` in `query_index_level` or a "skip empty bin" optimization
+    // in the builder would fail at `cargo test`.
+
+    fn idx_bin(bin_index: u32) -> IndexBinTrace {
+        IndexBinTrace {
+            pbc_group: 7,
+            bin_index,
+            bin_content: vec![0u8; 16],
+        }
+    }
+
+    fn chk_bin(bin_index: u32) -> ChunkBinTrace {
+        ChunkBinTrace {
+            pbc_group: 11,
+            bin_index,
+            bin_content: vec![0u8; 32],
+        }
+    }
+
+    #[test]
+    fn items_from_trace_found_at_h0_emits_two() {
+        let trace = QueryTraces {
+            index_bins: vec![idx_bin(100), idx_bin(200)],
+            matched_index_idx: Some(0),
+            chunk_bins: vec![chk_bin(50)],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 1);
+        assert_eq!(items[1].chunk_bin_indices.len(), 0);
+    }
+
+    #[test]
+    fn items_from_trace_found_at_h1_emits_two() {
+        let trace = QueryTraces {
+            index_bins: vec![idx_bin(100), idx_bin(200)],
+            matched_index_idx: Some(1),
+            chunk_bins: vec![chk_bin(50)],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 0);
+        assert_eq!(items[1].chunk_bin_indices.len(), 1);
+    }
+
+    #[test]
+    fn items_from_trace_not_found_emits_two() {
+        let trace = QueryTraces {
+            index_bins: vec![idx_bin(100), idx_bin(200)],
+            matched_index_idx: None,
+            chunk_bins: vec![],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 0);
+        assert_eq!(items[1].chunk_bin_indices.len(), 0);
+    }
+
+    #[test]
+    fn items_from_trace_whale_emits_two_no_chunks() {
+        // Whale: matched at h=0 but `num_chunks == 0`, so `chunk_bins`
+        // is empty. Both INDEX bins still emitted for symmetry.
+        let trace = QueryTraces {
+            index_bins: vec![idx_bin(100), idx_bin(200)],
+            matched_index_idx: Some(0),
+            chunk_bins: vec![],
+        };
+        let items = items_from_trace(&trace);
+        assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
+        assert_eq!(items[0].chunk_bin_indices.len(), 0);
+        assert_eq!(items[1].chunk_bin_indices.len(), 0);
+    }
+
+    // ─── Leakage recorder wiring ────────────────────────────────────────────
+
+    /// `record_round` emits to an installed buffering recorder. Direct
+    /// helper-method coverage so the recorder integration is testable
+    /// independent of a full PIR query flow.
+    #[test]
+    fn leakage_recorder_records_via_helper() {
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_leakage_recorder(Some(rec.clone()));
+
+        client.record_round(RoundProfile {
+            kind: RoundKind::Index,
+            server_id: 0,
+            db_id: Some(7),
+            request_bytes: 100,
+            response_bytes: 200,
+            items: vec![2; 75],
+        });
+
+        let snap = rec.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(matches!(snap[0].kind, RoundKind::Index));
+        assert_eq!(snap[0].server_id, 0);
+        assert_eq!(snap[0].db_id, Some(7));
+        assert_eq!(snap[0].items.len(), 75);
+    }
+
+    /// `set_leakage_recorder(None)` silences subsequent emissions.
+    #[test]
+    fn leakage_recorder_uninstall_silences() {
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_leakage_recorder(Some(rec.clone()));
+        client.set_leakage_recorder(None);
+
+        client.record_round(RoundProfile {
+            kind: RoundKind::Info,
+            server_id: 0,
+            db_id: None,
+            request_bytes: 5,
+            response_bytes: 19,
+            items: Vec::new(),
+        });
+
+        assert!(rec.is_empty());
+    }
+
+    /// Driving a real `fetch_legacy_info` through `MockTransport`
+    /// emits exactly one `Info` round on server 0. Proves the wiring
+    /// at the actual emission site (not just the helper).
+    #[tokio::test]
+    async fn leakage_recorder_captures_info_round_end_to_end() {
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_leakage_recorder(Some(rec.clone()));
+
+        let mut mock0 = MockTransport::new("wss://mock-0");
+        // Valid REQ_GET_INFO response: [4B len=19][1B variant=0x01]
+        // [4B index_bins][4B chunk_bins][1B index_k][1B chunk_k]
+        // [8B tag_seed] — total wire frame is 23 bytes.
+        let mut info_resp = Vec::with_capacity(23);
+        info_resp.extend_from_slice(&19u32.to_le_bytes()); // length prefix
+        info_resp.push(0x01); // variant
+        info_resp.extend_from_slice(&1024u32.to_le_bytes()); // index_bins
+        info_resp.extend_from_slice(&2048u32.to_le_bytes()); // chunk_bins
+        info_resp.push(75); // index_k
+        info_resp.push(80); // chunk_k
+        info_resp.extend_from_slice(&0u64.to_le_bytes()); // tag_seed
+        assert_eq!(info_resp.len(), 23);
+        mock0.enqueue_response(info_resp);
+
+        client.connect_with_transport(
+            Box::new(mock0),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+        let _info = client.fetch_legacy_info().await.unwrap();
+
+        let snap = rec.snapshot();
+        assert_eq!(snap.len(), 1, "expected exactly one Info round");
+        let r = &snap[0];
+        assert!(matches!(r.kind, RoundKind::Info));
+        assert_eq!(r.server_id, 0);
+        assert_eq!(r.db_id, None);
+        // request: REQ_GET_INFO is `[4B len=1][1B 0x01]` = 5 bytes.
+        assert_eq!(r.request_bytes, 5);
+        // response: full wire frame is 23 bytes (length prefix + payload).
+        // `roundtrip` strips the prefix so the client sees 19 bytes;
+        // recording adds 4 back to match what a wire-level observer sees.
+        assert_eq!(r.response_bytes, 23);
+        assert!(r.items.is_empty());
+    }
+
+    /// Leakage and metrics recorders are independent — installing both
+    /// causes both to fire on the same query, neither blocks the other.
+    #[tokio::test]
+    async fn leakage_and_metrics_recorders_are_independent() {
+        use pir_sdk::{AtomicMetrics, BufferingLeakageRecorder};
+
+        let leakage = Arc::new(BufferingLeakageRecorder::new());
+        let metrics = Arc::new(AtomicMetrics::new());
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.set_leakage_recorder(Some(leakage.clone()));
+        client.set_metrics_recorder(Some(metrics.clone()));
+
+        let mut mock0 = MockTransport::new("wss://mock-0");
+        let mut info_resp = Vec::with_capacity(23);
+        info_resp.extend_from_slice(&19u32.to_le_bytes());
+        info_resp.push(0x01);
+        info_resp.extend_from_slice(&1024u32.to_le_bytes());
+        info_resp.extend_from_slice(&2048u32.to_le_bytes());
+        info_resp.push(75);
+        info_resp.push(80);
+        info_resp.extend_from_slice(&0u64.to_le_bytes());
+        mock0.enqueue_response(info_resp);
+
+        client.connect_with_transport(
+            Box::new(mock0),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+        let _info = client.fetch_legacy_info().await.unwrap();
+
+        // Leakage saw the structured round.
+        assert_eq!(leakage.len(), 1);
+        // Metrics saw the byte counts via the transport.
+        let snap = metrics.snapshot();
+        assert!(snap.bytes_sent > 0);
+        assert!(snap.bytes_received > 0);
     }
 }

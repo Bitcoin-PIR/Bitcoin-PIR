@@ -34,9 +34,14 @@ Each scripthash maps to INDEX_CUCKOO_NUM_HASHES=2 possible cuckoo positions. To 
 
 ### Merkle INDEX Item-Count Symmetry (MANDATORY for Privacy)
 
-**All five clients (TS DPF/Onion/Harmony, Rust DPF/Harmony) MUST emit exactly
-`INDEX_CUCKOO_NUM_HASHES = 2` Merkle items per INDEX query, regardless of
-query outcome (found at h=0, found at h=1, not-found, or whale).**
+**All four implementations MUST emit exactly `INDEX_CUCKOO_NUM_HASHES = 2`
+Merkle items per INDEX query, regardless of query outcome (found at h=0,
+found at h=1, not-found, or whale):**
+
+- `pir-sdk-client/src/dpf.rs` (Rust DPF — also drives `web/src/dpf-adapter.ts` via WASM)
+- `pir-sdk-client/src/harmony.rs` (Rust HarmonyPIR — also drives `web/src/harmonypir-adapter.ts` via WASM)
+- `pir-sdk-client/src/onion.rs` (Rust OnionPIR, feature-gated)
+- `web/src/onionpir_client.ts` (standalone TS — SEAL doesn't compile to wasm32)
 
 The per-level sibling **pass count** (`max_items_per_group`) is directly
 observable on the wire. If a found query emits 1 INDEX Merkle item and a

@@ -32,8 +32,11 @@ onion = ["dep:onionpir", "dep:rand"]
 # target-specific sections below.
 
 [dependencies]
-# Core SDK types and traits
-pir-sdk = { version = "0.1.0", path = "../pir-sdk" }
+# Core SDK types and traits.
+# `serde` activates the `LeakageProfile` JSON derives the
+# `onion_leakage_dump` example (Phase 2.3) needs; cost is the serde
+# crate, no runtime overhead unless callers actually serialise.
+pir-sdk = { version = "0.1.0", path = "../pir-sdk", features = ["serde"] }
 pir-core = { version = "0.1.0", path = "../pir-core" }
 
 # DPF library — pure Rust, works on any target.
@@ -130,6 +133,9 @@ futures-channel = "0.3"
 [dev-dependencies]
 env_logger = "0.11"
 hex = "0.4"
+# `serde_json` drives JSON output for the `onion_leakage_dump`
+# example (Phase 2.3 cross-language diff fixture).
+serde_json = "1.0"
 # Test-only: a subscriber that captures formatted span/event output for
 # assertion. Kept as a dev-dep to avoid forcing a subscriber choice on
 # downstream callers — production code only depends on the facade.

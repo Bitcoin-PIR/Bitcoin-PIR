@@ -40,6 +40,7 @@ pub mod types;
 pub mod error;
 pub mod backend;
 pub mod client;
+pub mod leakage;
 pub mod metrics;
 pub mod sync;
 
@@ -50,6 +51,10 @@ pub use backend::PirBackend;
 pub use client::{
     ConnectionState, NoProgress, PirClient, PirClientConfig, PrintProgress, StateListener,
     SyncProgress,
+};
+pub use leakage::{
+    BufferingLeakageRecorder, LeakageProfile, LeakageRecorder, NoopLeakageRecorder, RoundKind,
+    RoundProfile,
 };
 pub use metrics::{
     AtomicMetrics, AtomicMetricsSnapshot, Duration, Instant, NoopMetrics, PirMetrics,

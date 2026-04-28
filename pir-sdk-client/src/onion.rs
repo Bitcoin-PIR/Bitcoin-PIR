@@ -55,8 +55,8 @@ use crate::transport::PirTransport;
 use async_trait::async_trait;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant,
-    PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, ScriptHash,
-    SyncPlan, SyncResult, SyncStep,
+    LeakageRecorder, PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult,
+    RoundKind, RoundProfile, ScriptHash, SyncPlan, SyncResult, SyncStep,
 };
 use std::sync::Arc;
 
@@ -363,6 +363,12 @@ pub struct OnionClient {
     /// `on_bytes_received` from the single transport below (wired on
     /// connect via `set_metrics_recorder`, labelled `"onion"`).
     metrics_recorder: Option<Arc<dyn PirMetrics>>,
+    /// Optional leakage recorder. When installed, every transport-level
+    /// roundtrip (info / catalog fetch, FHE key registration, INDEX +
+    /// CHUNK FHE PIR queries, Merkle tree-tops + sibling rounds) emits
+    /// a structured [`RoundProfile`] on `server_id = 0` (single-server
+    /// backend).
+    leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 }
 
 impl OnionClient {
@@ -379,6 +385,7 @@ impl OnionClient {
             #[cfg(feature = "onion")]
             fhe: None,
             metrics_recorder: None,
+            leakage_recorder: None,
         }
     }
 
@@ -448,6 +455,21 @@ impl OnionClient {
         }
     }
 
+    /// Install (or replace) a leakage recorder. Independent of
+    /// [`set_metrics_recorder`](Self::set_metrics_recorder).
+    /// All emissions tag `server_id = 0` (OnionPIR is single-server).
+    /// Pass `None` to uninstall.
+    pub fn set_leakage_recorder(&mut self, recorder: Option<Arc<dyn LeakageRecorder>>) {
+        self.leakage_recorder = recorder;
+    }
+
+    /// Emit a [`RoundProfile`] to the installed leakage recorder, if any.
+    fn record_round(&self, round: RoundProfile) {
+        if let Some(rec) = &self.leakage_recorder {
+            rec.record_round("onion", round);
+        }
+    }
+
     /// Install a pre-built transport directly, bypassing the URL-based
     /// [`PirClient::connect`] path.
     ///
@@ -483,7 +505,18 @@ impl OnionClient {
 
         // Request JSON info.
         let req = encode_request(REQ_GET_INFO_JSON, &[]);
+        let request_bytes = req.len() as u64;
         let response = conn.roundtrip(&req).await?;
+        // `roundtrip` strips the 4-byte length prefix; restore it for the
+        // wire-observable byte count.
+        self.record_round(RoundProfile {
+            kind: RoundKind::Info,
+            server_id: 0,
+            db_id: None,
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: Vec::new(),
+        });
 
         if response.is_empty() || response[0] != RESP_GET_INFO_JSON {
             return Err(PirError::Protocol(
@@ -523,7 +556,16 @@ impl OnionClient {
     async fn try_fetch_dpf_catalog(&mut self) -> PirResult<DatabaseCatalog> {
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
         let req = encode_request(REQ_GET_DB_CATALOG, &[]);
+        let request_bytes = req.len() as u64;
         let response = conn.roundtrip(&req).await?;
+        self.record_round(RoundProfile {
+            kind: RoundKind::Info,
+            server_id: 0,
+            db_id: None,
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: Vec::new(),
+        });
         if response.is_empty() || response[0] != RESP_DB_CATALOG {
             return Err(PirError::Protocol("no DPF catalog available".into()));
         }
@@ -762,10 +804,18 @@ impl OnionClient {
                 .ok_or_else(|| PirError::InvalidState("FHE not initialised".into()))?;
             (fhe.client_id, fhe.secret_key.clone())
         };
+        let leakage = self.leakage_recorder.clone();
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        let verdicts =
-            verify_onion_merkle_batch(conn, &info, &leaves, client_id, &secret_key, db_info.db_id)
-                .await?;
+        let verdicts = verify_onion_merkle_batch(
+            conn,
+            &info,
+            &leaves,
+            client_id,
+            &secret_key,
+            db_info.db_id,
+            leakage,
+        )
+        .await?;
 
         // Aggregate: a result passes iff ALL of its leaves' verdicts are true.
         let mut per_query_ok = vec![true; results.len()];
@@ -897,8 +947,17 @@ impl OnionClient {
         };
 
         let payload = encode_register_keys(&galois_keys, &gsw_keys, db_id);
+        let request_bytes = payload.len() as u64;
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
         let response = conn.roundtrip(&payload).await?;
+        self.record_round(RoundProfile {
+            kind: RoundKind::OnionKeyRegister,
+            server_id: 0,
+            db_id: Some(db_id),
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: Vec::new(),
+        });
 
         if response.is_empty() || response[0] != RESP_KEYS_ACK {
             return Err(PirError::Protocol(
@@ -964,9 +1023,18 @@ impl OnionClient {
         expected_variant: u8,
         db_id: u8,
         variant_name: &'static str,
+        round_kind: RoundKind,
+        items_per_group: &[u32],
     ) -> PirResult<Vec<Vec<u8>>> {
         let batch = self
-            .onionpir_batch_rpc_once(msg, expected_variant, variant_name)
+            .onionpir_batch_rpc_once(
+                msg,
+                expected_variant,
+                variant_name,
+                round_kind,
+                items_per_group,
+                db_id,
+            )
             .await?;
         if !batch_looks_evicted(&batch) {
             return Ok(batch);
@@ -985,7 +1053,14 @@ impl OnionClient {
         }
         self.register_keys(db_id).await?;
         let batch = self
-            .onionpir_batch_rpc_once(msg, expected_variant, variant_name)
+            .onionpir_batch_rpc_once(
+                msg,
+                expected_variant,
+                variant_name,
+                round_kind,
+                items_per_group,
+                db_id,
+            )
             .await?;
         if batch_looks_evicted(&batch) {
             // Two consecutive empty batches ⇒ eviction signal even
@@ -1004,15 +1079,31 @@ impl OnionClient {
     }
 
     /// One-shot sender for `onionpir_batch_rpc`: single roundtrip, no retry.
+    /// Emits one `RoundProfile` per actual roundtrip — so an LRU-eviction
+    /// retry loop in [`onionpir_batch_rpc`](Self::onionpir_batch_rpc)
+    /// records two `Index` (or `Chunk`) rounds plus one `OnionKeyRegister`
+    /// in between, matching what the server sees on the wire.
     #[cfg(feature = "onion")]
     async fn onionpir_batch_rpc_once(
         &mut self,
         msg: &[u8],
         expected_variant: u8,
         variant_name: &'static str,
+        round_kind: RoundKind,
+        items_per_group: &[u32],
+        db_id: u8,
     ) -> PirResult<Vec<Vec<u8>>> {
+        let request_bytes = msg.len() as u64;
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
         let response = conn.roundtrip(msg).await?;
+        self.record_round(RoundProfile {
+            kind: round_kind,
+            server_id: 0,
+            db_id: Some(db_id),
+            request_bytes,
+            response_bytes: (response.len() as u64).saturating_add(4),
+            items: items_per_group.to_vec(),
+        });
         if response.is_empty() || response[0] != expected_variant {
             return Err(PirError::Protocol(format!(
                 "expected {} (0x{:02x})",
@@ -1108,12 +1199,20 @@ impl OnionClient {
                 &queries,
                 db_info.db_id,
             );
+            // Per-group item count: every group sends exactly
+            // INDEX_CUCKOO_NUM_HASHES queries (the same Merkle INDEX
+            // Item-Count Symmetry invariant DPF / Harmony preserve).
+            let items_per_group: Vec<u32> = (0..k)
+                .map(|_| INDEX_CUCKOO_NUM_HASHES as u32)
+                .collect();
             let batch = self
                 .onionpir_batch_rpc(
                     &msg,
                     RESP_ONIONPIR_INDEX_RESULT,
                     db_info.db_id,
                     "RESP_ONIONPIR_INDEX_RESULT",
+                    RoundKind::Index,
+                    &items_per_group,
                 )
                 .await?;
 
@@ -1280,12 +1379,18 @@ impl OnionClient {
                 &queries,
                 db_info.db_id,
             );
+            // OnionPIR CHUNK sends one query per group (different from
+            // DPF / Harmony which send `CHUNK_CUCKOO_NUM_HASHES = 2`
+            // per group); items[g] = 1 captures that wire shape.
+            let items_per_group: Vec<u32> = (0..chunk_k).map(|_| 1u32).collect();
             let batch = self
                 .onionpir_batch_rpc(
                     &msg,
                     RESP_ONIONPIR_CHUNK_RESULT,
                     db_info.db_id,
                     "RESP_ONIONPIR_CHUNK_RESULT",
+                    RoundKind::Chunk,
+                    &items_per_group,
                 )
                 .await?;
 
@@ -2707,5 +2812,140 @@ mod tests {
         assert_eq!(snap.queries_completed, 1);
         assert_eq!(snap.min_query_latency_micros, 0);
         assert_eq!(snap.max_query_latency_micros, 0);
+    }
+
+    // ─── Leakage recorder wiring ────────────────────────────────────────────
+
+    /// `record_round` emits to an installed buffering recorder.
+    #[test]
+    fn leakage_recorder_records_via_helper_onion() {
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.set_leakage_recorder(Some(rec.clone()));
+
+        // OnionPIR INDEX shape: items[g] = INDEX_CUCKOO_NUM_HASHES = 2
+        // (matches DPF) — captures the Merkle INDEX item-count symmetry
+        // invariant in profile form.
+        client.record_round(RoundProfile {
+            kind: RoundKind::Index,
+            server_id: 0,
+            db_id: Some(0),
+            request_bytes: 1024,
+            response_bytes: 4096,
+            items: vec![2; 75],
+        });
+
+        let snap = rec.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(matches!(snap[0].kind, RoundKind::Index));
+        assert_eq!(snap[0].server_id, 0); // Onion is single-server
+        assert_eq!(snap[0].items.len(), 75);
+        assert!(snap[0].items.iter().all(|&x| x == 2));
+    }
+
+    /// `set_leakage_recorder(None)` silences subsequent emissions.
+    #[test]
+    fn leakage_recorder_uninstall_silences_onion() {
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.set_leakage_recorder(Some(rec.clone()));
+        client.set_leakage_recorder(None);
+
+        client.record_round(RoundProfile {
+            kind: RoundKind::OnionKeyRegister,
+            server_id: 0,
+            db_id: Some(0),
+            request_bytes: 100_000,
+            response_bytes: 5,
+            items: Vec::new(),
+        });
+
+        assert!(rec.is_empty());
+    }
+
+    /// Driving a real `fetch_server_info` through `MockTransport` emits
+    /// exactly one `Info` round on server 0. Proves the wiring at the
+    /// actual emission site.
+    #[tokio::test]
+    async fn leakage_recorder_captures_info_round_end_to_end_onion() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::BufferingLeakageRecorder;
+
+        let rec = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.set_leakage_recorder(Some(rec.clone()));
+
+        // Construct a minimal valid REQ_GET_INFO_JSON response. The
+        // payload is a JSON blob; `fetch_server_info` parses it via
+        // `parse_onion_params_per_db`. We need at least one valid DB
+        // entry, otherwise the function errors out before recording the
+        // round. To keep the test focused on the leakage-recorder wiring
+        // (which fires regardless of parse outcome), build a JSON that
+        // has at least one OnionPIR entry.
+        let json = r#"{"main":{"backend":"onionpir","index_bins":1024,"chunk_bins":2048,"index_k":75,"chunk_k":80,"tag_seed":0,"index_slots_per_bin":4,"index_slot_size":13,"chunk_slot_size":44,"total_packed":1000}}"#;
+        let payload_len = (1 + json.len()) as u32;
+        let mut info_resp = Vec::with_capacity(4 + 1 + json.len());
+        info_resp.extend_from_slice(&payload_len.to_le_bytes());
+        info_resp.push(0x03); // RESP_GET_INFO_JSON
+        info_resp.extend_from_slice(json.as_bytes());
+        let total_response_size = info_resp.len() as u64;
+
+        let mut mock = MockTransport::new("wss://mock-onion");
+        mock.enqueue_response(info_resp);
+
+        client.connect_with_transport(Box::new(mock));
+        // `fetch_server_info` may or may not succeed depending on whether
+        // the JSON triggers the catalog fallback path; we only care that
+        // the Info round was recorded before any failure.
+        let _ = client.fetch_server_info().await;
+
+        let snap = rec.snapshot();
+        assert!(!snap.is_empty(), "expected at least one Info round");
+        let r = &snap[0];
+        assert!(matches!(r.kind, RoundKind::Info));
+        assert_eq!(r.server_id, 0); // Onion single-server
+        assert_eq!(r.db_id, None);
+        // request: REQ_GET_INFO_JSON is `[4B len=1][1B 0x03]` = 5 bytes.
+        assert_eq!(r.request_bytes, 5);
+        // response: full wire frame = 4 (length prefix) + 1 (variant) + json.
+        assert_eq!(r.response_bytes, total_response_size);
+        assert!(r.items.is_empty());
+    }
+
+    /// Leakage and metrics recorders coexist independently.
+    #[tokio::test]
+    async fn leakage_and_metrics_recorders_are_independent_onion() {
+        use crate::transport::mock::MockTransport;
+        use pir_sdk::{AtomicMetrics, BufferingLeakageRecorder};
+
+        let leakage = Arc::new(BufferingLeakageRecorder::new());
+        let metrics = Arc::new(AtomicMetrics::new());
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.set_leakage_recorder(Some(leakage.clone()));
+        client.set_metrics_recorder(Some(metrics.clone()));
+
+        let json = r#"{"main":{"backend":"onionpir","index_bins":1024,"chunk_bins":2048,"index_k":75,"chunk_k":80,"tag_seed":0,"index_slots_per_bin":4,"index_slot_size":13,"chunk_slot_size":44,"total_packed":1000}}"#;
+        let payload_len = (1 + json.len()) as u32;
+        let mut info_resp = Vec::with_capacity(4 + 1 + json.len());
+        info_resp.extend_from_slice(&payload_len.to_le_bytes());
+        info_resp.push(0x03);
+        info_resp.extend_from_slice(json.as_bytes());
+
+        let mut mock = MockTransport::new("wss://mock-onion");
+        mock.enqueue_response(info_resp);
+
+        client.connect_with_transport(Box::new(mock));
+        let _ = client.fetch_server_info().await;
+
+        // Leakage saw the Info round.
+        assert!(!leakage.is_empty());
+        // Metrics saw byte counts via the transport.
+        let snap = metrics.snapshot();
+        assert!(snap.bytes_sent > 0);
+        assert!(snap.bytes_received > 0);
     }
 }

@@ -35,9 +35,10 @@ use async_trait::async_trait;
 use libdpf::Dpf;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, Hash256, ZERO_HASH};
 use pir_core::params::compute_dpf_n;
-use pir_sdk::{PirError, PirResult};
+use pir_sdk::{LeakageRecorder, PirError, PirResult, RoundKind, RoundProfile};
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -321,10 +322,27 @@ pub fn decode_sibling_batch(data: &[u8]) -> PirResult<SiblingResults> {
 pub async fn fetch_tree_tops(
     conn0: &mut dyn PirTransport,
     db_id: u8,
+    leakage_recorder: Option<&Arc<dyn LeakageRecorder>>,
+    leakage_backend: &'static str,
+    leakage_server_id: u8,
 ) -> PirResult<Vec<TreeTop>> {
     let req = encode_tree_tops_request(db_id);
+    let request_bytes = req.len() as u64;
     conn0.send(req).await?;
     let raw = conn0.recv().await?;
+    if let Some(rec) = leakage_recorder {
+        rec.record_round(
+            leakage_backend,
+            RoundProfile {
+                kind: RoundKind::MerkleTreeTops,
+                server_id: leakage_server_id,
+                db_id: Some(db_id),
+                request_bytes,
+                response_bytes: raw.len() as u64,
+                items: Vec::new(),
+            },
+        );
+    }
     // Response: [4B len][1B variant=0x34][blob...]
     if raw.len() < 6 {
         return Err(PirError::Protocol(
@@ -409,6 +427,11 @@ pub struct DpfSiblingQuerier<'a> {
     conn1: &'a mut dyn PirTransport,
     dpf: Dpf,
     rng: SimpleRng,
+    /// Optional leakage recorder. When installed, every
+    /// [`query_pass`](Self::query_pass) emits two `RoundProfile`s
+    /// (one per server) tagged `IndexMerkleSiblings` or
+    /// `ChunkMerkleSiblings` per the `table_type` it was called with.
+    leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 }
 
 impl<'a> DpfSiblingQuerier<'a> {
@@ -421,7 +444,14 @@ impl<'a> DpfSiblingQuerier<'a> {
             conn1,
             dpf: Dpf::with_default_key(),
             rng: SimpleRng::new(),
+            leakage_recorder: None,
         }
+    }
+
+    /// Install (or replace) a leakage recorder. Subsequent passes emit
+    /// structured `RoundProfile`s; passing `None` silences emission.
+    pub fn set_leakage_recorder(&mut self, recorder: Option<Arc<dyn LeakageRecorder>>) {
+        self.leakage_recorder = recorder;
     }
 }
 
@@ -461,10 +491,45 @@ impl BucketMerkleSiblingQuerier for DpfSiblingQuerier<'_> {
         let round_id = (table_type as u16) * 100 + level as u16;
         let req0 = encode_sibling_batch(db_id, round_id, &s0_keys);
         let req1 = encode_sibling_batch(db_id, round_id, &s1_keys);
+
+        // Capture wire shape before `send` consumes the buffers. The
+        // K-padding invariant says every Merkle sibling pass emits exactly
+        // K (INDEX) or K_CHUNK (CHUNK) queries, one per group — the
+        // `items` length below is what tests assert.
+        let req0_bytes = req0.len() as u64;
+        let req1_bytes = req1.len() as u64;
+        let items_per_group: Vec<u32> = s0_keys.iter().map(|_| 1u32).collect();
+
         self.conn0.send(req0).await?;
         self.conn1.send(req1).await?;
         let resp0_raw = self.conn0.recv().await?;
         let resp1_raw = self.conn1.recv().await?;
+
+        if let Some(rec) = &self.leakage_recorder {
+            // table_type matches the convention in `verify_sibling_levels`:
+            // 0 → INDEX trees, 1 → CHUNK trees. Treat any other value as
+            // INDEX (defensive — current callers only pass 0 or 1).
+            let kind = match table_type {
+                1 => RoundKind::ChunkMerkleSiblings { level: level as u8 },
+                _ => RoundKind::IndexMerkleSiblings { level: level as u8 },
+            };
+            for (sid, req_bytes, resp_bytes) in [
+                (0u8, req0_bytes, resp0_raw.len() as u64),
+                (1u8, req1_bytes, resp1_raw.len() as u64),
+            ] {
+                rec.record_round(
+                    "dpf",
+                    RoundProfile {
+                        kind,
+                        server_id: sid,
+                        db_id: Some(db_id),
+                        request_bytes: req_bytes,
+                        response_bytes: resp_bytes,
+                        items: items_per_group.clone(),
+                    },
+                );
+            }
+        }
         if resp0_raw.len() < 4 || resp1_raw.len() < 4 {
             return Err(PirError::Protocol(
                 "sibling response missing length prefix".into(),
@@ -510,8 +575,10 @@ pub async fn verify_bucket_merkle_batch_dpf(
     chunk_k: usize,
     db_id: u8,
     tree_tops: &[TreeTop],
+    leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 ) -> PirResult<Vec<bool>> {
     let mut querier = DpfSiblingQuerier::new(conn0, conn1);
+    querier.set_leakage_recorder(leakage_recorder);
     verify_bucket_merkle_batch_generic(
         &mut querier,
         items,

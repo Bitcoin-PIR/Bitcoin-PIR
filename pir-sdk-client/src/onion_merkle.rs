@@ -33,7 +33,8 @@ use crate::transport::PirTransport;
 use pir_core::hash::{cuckoo_hash_int, derive_cuckoo_key, derive_int_groups_3, splitmix64, GOLDEN_RATIO};
 use pir_core::merkle::{compute_parent_n, sha256, Hash256};
 use pir_core::pbc::pbc_plan_rounds;
-use pir_sdk::{PirError, PirResult};
+use pir_sdk::{LeakageRecorder, PirError, PirResult, RoundKind, RoundProfile};
+use std::sync::Arc;
 use std::collections::HashMap;
 
 // ─── Wire codes (match runtime/src/onionpir.rs) ─────────────────────────────
@@ -642,6 +643,7 @@ pub async fn verify_onion_merkle_batch(
     client_id: u64,
     secret_key: &[u8],
     db_id: u8,
+    leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 ) -> PirResult<OnionMerkleVerdicts> {
     let mut verdicts: OnionMerkleVerdicts = HashMap::new();
 
@@ -664,6 +666,7 @@ pub async fn verify_onion_merkle_batch(
             client_id,
             secret_key,
             db_id,
+            leakage_recorder.as_ref(),
         )
         .await?;
         for (lp, ok) in per_leaf {
@@ -681,6 +684,7 @@ pub async fn verify_onion_merkle_batch(
             client_id,
             secret_key,
             db_id,
+            leakage_recorder.as_ref(),
         )
         .await?;
         for (lp, ok) in per_leaf {
@@ -702,6 +706,7 @@ async fn verify_sub_tree(
     client_id: u64,
     secret_key: &[u8],
     db_id: u8,
+    leakage_recorder: Option<&Arc<dyn LeakageRecorder>>,
 ) -> PirResult<HashMap<usize, bool>> {
     let mut out: HashMap<usize, bool> = HashMap::new();
     if leaves.is_empty() {
@@ -710,7 +715,21 @@ async fn verify_sub_tree(
 
     // ── 1. Fetch tree-top cache ─────────────────────────────────────────
     let req = encode_tree_top_request(tree.req_tree_top(), db_id);
+    let request_bytes = req.len() as u64;
     let resp = conn.roundtrip(&req).await?;
+    if let Some(rec) = leakage_recorder {
+        rec.record_round(
+            "onion",
+            RoundProfile {
+                kind: RoundKind::MerkleTreeTops,
+                server_id: 0,
+                db_id: Some(db_id),
+                request_bytes,
+                response_bytes: (resp.len() as u64).saturating_add(4),
+                items: Vec::new(),
+            },
+        );
+    }
     if resp.is_empty() || resp[0] != tree.resp_tree_top() {
         return Err(PirError::Protocol(format!(
             "expected {} tree-top response (0x{:02x}), got variant 0x{:02x}",
@@ -843,7 +862,33 @@ async fn verify_sub_tree(
 
             let round_id = (level * 100 + ri) as u16;
             let msg = encode_sibling_batch_query(tree.req_sibling(), round_id, &queries, db_id);
+            let request_bytes = msg.len() as u64;
             let resp = conn.roundtrip(&msg).await?;
+            if let Some(rec) = leakage_recorder {
+                let kind = match tree {
+                    OnionTreeKind::Index => {
+                        RoundKind::IndexMerkleSiblings { level: level as u8 }
+                    }
+                    OnionTreeKind::Data => {
+                        RoundKind::ChunkMerkleSiblings { level: level as u8 }
+                    }
+                };
+                // OnionPIR sibling round: K (or K_CHUNK) FHE queries, one
+                // per PBC group — items[g] = 1 captures the wire shape.
+                let items_per_group: Vec<u32> =
+                    (0..level_info.k).map(|_| 1u32).collect();
+                rec.record_round(
+                    "onion",
+                    RoundProfile {
+                        kind,
+                        server_id: 0,
+                        db_id: Some(db_id),
+                        request_bytes,
+                        response_bytes: (resp.len() as u64).saturating_add(4),
+                        items: items_per_group,
+                    },
+                );
+            }
             if resp.is_empty() || resp[0] != tree.resp_sibling() {
                 return Err(PirError::Protocol(format!(
                     "expected {} sibling response (0x{:02x}), got variant 0x{:02x}",
