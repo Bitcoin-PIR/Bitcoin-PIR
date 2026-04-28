@@ -2167,6 +2167,72 @@ mod kani_harnesses {
     /// argue the batch invariant by inspection — a future paper-grade
     /// Kani harness could close this gap with explicit induction
     /// machinery.)
+    /// Prove that `items_from_inspector_result` preserves the length of
+    /// `result.index_bins` (= INDEX_CUCKOO_NUM_HASHES = 2 by inspector
+    /// contract). Parallel to `items_from_trace_preserves_index_count`
+    /// — `items_from_inspector_result` operates on the public
+    /// [`QueryResult`] type instead of the internal [`QueryTraces`], so
+    /// the same length-preservation property must hold across the two
+    /// codepaths. Used by `verify_merkle_batch_for_results` for
+    /// re-verifying persisted results, so any drift between the two
+    /// would silently weaken offline re-verification.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn items_from_inspector_result_preserves_index_count() {
+        // BucketRef is the public type — its `pbc_group` is u32 (vs
+        // usize in IndexBinTrace), but the per-query item count is the
+        // same wire-observable value.
+        let result = QueryResult {
+            entries: Vec::new(),
+            is_whale: false,
+            merkle_verified: true,
+            raw_chunk_data: None,
+            index_bins: vec![
+                BucketRef {
+                    pbc_group: kani::any(),
+                    bin_index: kani::any(),
+                    bin_content: Vec::new(),
+                },
+                BucketRef {
+                    pbc_group: kani::any(),
+                    bin_index: kani::any(),
+                    bin_content: Vec::new(),
+                },
+            ],
+            chunk_bins: Vec::new(),
+            matched_index_idx: symbolic_matched_idx(),
+        };
+
+        let items = items_from_inspector_result(&result);
+
+        assert_eq!(
+            items.len(),
+            INDEX_CUCKOO_NUM_HASHES,
+            "items_from_inspector_result must emit INDEX_CUCKOO_NUM_HASHES \
+             items per query — same invariant as items_from_trace",
+        );
+        // The inspector path widens pbc_group from u32 to usize, so
+        // assert on the converted form.
+        assert_eq!(
+            items[0].index_pbc_group,
+            result.index_bins[0].pbc_group as usize,
+        );
+        assert_eq!(
+            items[1].index_pbc_group,
+            result.index_bins[1].pbc_group as usize,
+        );
+    }
+
+    // No multi-trace `collect_merkle_items_from_traces` harness: Kani
+    // CBMC ran past 2.5 minutes with `traces.len() == 2` even after
+    // bounding `matched_index_idx` to `None` (the wrapper's flatten
+    // produces a Vec<usize> backmap whose equality assertion against
+    // a literal generates a large state space). The wrapper's loop
+    // structure — `for trace in traces { for it in items_from_trace(trace) {
+    // push(it); push(qi) } }` — is trivially correct from the per-trace
+    // invariant proven by `items_from_trace_preserves_index_count`,
+    // so the marginal Kani coverage doesn't justify the runtime.
+
     #[kani::proof]
     #[kani::unwind(4)]
     fn collect_merkle_items_single_trace() {
