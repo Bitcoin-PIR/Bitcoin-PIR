@@ -73,20 +73,43 @@
  *          (structural triviality).
  *
  *   2. chunk_max_items_per_group_per_level : int
- *      Number of CHUNK Merkle items concentrated in any single
- *      chunk-PBC group. For a found query producing M total chunk
- *      Merkle items the wire reveals the per-level pass count =
- *      max items in any single group, which depends on how the
- *      chunk-IDs distribute across chunk groups. Two queries with
- *      the same total M can have different transcripts if their
- *      chunk-IDs collide differently. (Strictly more precise than
- *      the previous `chunk_merkle_item_count : int` axis the spec
- *      first declared; updated to match what the wire actually
- *      reveals.)
- *      Closure path: pad chunk Merkle items to a fixed M per query
- *      and distribute across chunk-PBC groups uniformly. This is
- *      the most expensive padding to add — the marginal CHUNK PIR
- *      round count scales with M.
+ *      Pre-closure: a found query producing N total chunk Merkle
+ *      items revealed the per-level pass count = max items in any
+ *      chunk-PBC group, varying with N and the chunk-id distribution.
+ *      The closure target was a constant function of (M, K_CHUNK).
+ *
+ *      Post-closure (commits `565ea47` DPF, `08ec736` Harmony,
+ *      follow-up OnionPIR): every query (found / not-found / whale)
+ *      contributes exactly `CHUNK_MERKLE_ITEMS_PER_QUERY = M = 16`
+ *      chunk Merkle items via the pure helper
+ *      `crate::dpf::pad_chunk_ids_to_m`. Real chunks fill the prefix
+ *      of the per-query owned-list; synthetic chunk_ids `0..` (skipping
+ *      reals) fill the suffix. The wire-observable
+ *      `max_items_per_group_per_level = ceil(M / K_CHUNK) = 1` for
+ *      production parameters (`M = 16, K_CHUNK = 80`), constant
+ *      across all query classifications and content.
+ *
+ *      The same closure incidentally also closes a separate residual
+ *      leak — the pre-closure ChunkMerkleSiblings round count was 0
+ *      for not-found / whale queries but ≥1 for found, letting the
+ *      wire reveal UTXO existence even when the per-message K-padding
+ *      was preserved. After M-padding, every query emits identical
+ *      ChunkMerkleSiblings + DATA tree-tops traffic.
+ *
+ *      Empirical witnesses (Hetzner, single-query, post-closure):
+ *
+ *        - `dpf_found_vs_not_found_have_byte_identical_profiles` —
+ *          `total rounds = 23, ChunkMerkleSiblings = 6`
+ *          (= 1 pass × 2 servers × 3 levels). Pre-closure not-found
+ *          was 17 rounds with 0 ChunkMerkleSiblings.
+ *        - `harmony_found_vs_not_found_have_byte_identical_profiles` —
+ *          `total rounds = 23, ChunkMerkleSiblings = 3` (1 server × 3 levels).
+ *        - `onion_found_vs_not_found_have_byte_identical_profiles` —
+ *          `total rounds = 9, ChunkMerkleSiblings = 1` (single-server,
+ *          single-level Onion Merkle).
+ *
+ *      The axis is retained in `L` for spec stability; the field is
+ *      empirically constant for fixed M and DB parameters.
  *
  *   3. session_query_index : int
  *      Position of `q` within a session of queries from the same
