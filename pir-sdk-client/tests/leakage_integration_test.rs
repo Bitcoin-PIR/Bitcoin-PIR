@@ -1112,22 +1112,39 @@ async fn dpf_found_vs_not_found_have_same_round_count() {
          — CHUNK Round-Presence Symmetry violated",
         not_found_chunks,
     );
-    // CHUNK round counts AGREE — the property the symmetry fix
-    // delivers. The wire transcripts are indistinguishable at the
-    // CHUNK-round-count level.
-    //
-    // Note on total round count: `p_found.rounds.len() !=
-    // p_not_found.rounds.len()` is still expected — the FOUND path
-    // emits CHUNK Merkle sibling rounds whose count varies with UTXO
-    // count, a documented residual leak (CLAUDE.md "What the Server
-    // Learns"). Closing that would be a separate "CHUNK Merkle
-    // Round-Presence Symmetry" fix, not in scope here. We only assert
-    // CHUNK-PIR-round equality.
+    // CHUNK round counts AGREE — the property the CHUNK Round-
+    // Presence Symmetry fix delivers. The wire transcripts are
+    // indistinguishable at the CHUNK-PIR-round-count level.
     assert_eq!(
         found_chunks, not_found_chunks,
         "found and not-found CHUNK round counts diverge ({} vs {}) \
          — CHUNK Round-Presence Symmetry P1 violated",
         found_chunks, not_found_chunks,
+    );
+
+    // Post-`chunk_max` closure (commit landing this test): TOTAL
+    // round count also agrees. Pre-closure the FOUND path emitted
+    // ChunkMerkleSiblings rounds whose presence and per-level pass
+    // count revealed UTXO existence and approximate count; the
+    // closure pads every query (found / not-found / whale) to
+    // `CHUNK_MERKLE_ITEMS_PER_QUERY = 16` chunk Merkle items, so
+    // the wire-observable ChunkMerkleSiblings round count is now
+    // a constant function of the database parameters
+    // (`ceil(M / K_CHUNK) × n_servers × n_chunk_merkle_levels`).
+    let found_cms = p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
+    let nf_cms = p_not_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
+    assert_eq!(
+        found_cms, nf_cms,
+        "found and not-found ChunkMerkleSiblings round counts diverge \
+         ({} vs {}) — chunk_max axis closure regressed; the not-found \
+         path may have skipped the M-padded chunk fetch",
+        found_cms, nf_cms,
+    );
+    assert_eq!(
+        p_found.rounds.len(), p_not_found.rounds.len(),
+        "found and not-found total round counts diverge ({} vs {}) \
+         — chunk_max axis closure regressed",
+        p_found.rounds.len(), p_not_found.rounds.len(),
     );
 }
 
@@ -1163,6 +1180,45 @@ async fn dpf_round_count_is_function_of_batch_size_only() {
          (found={}, not_found={}) — CHUNK Round-Presence Symmetry P1 violated",
         found_chunks, nf_chunks,
     );
+}
+
+/// Post-`chunk_max` closure: a FOUND query and a NOT-FOUND query
+/// must produce **byte-identical** leakage profiles. Pre-closure
+/// the FOUND path emitted CHUNK rounds with per-group item counts
+/// proportional to UTXO distribution and ChunkMerkleSiblings rounds
+/// scaled to per-query Merkle item count; both varied with the
+/// scripthash queried. Post-closure (every query pads to
+/// `CHUNK_MERKLE_ITEMS_PER_QUERY = 16` chunk Merkle items via the
+/// `pad_chunk_ids_to_m` helper) the wire shape of CHUNK PIR and
+/// ChunkMerkleSiblings rounds is the SAME across found, not-found,
+/// and whale paths — only DPF-key bytes differ, and those are
+/// hidden by the per-key fixed-length encoding.
+///
+/// This is the strongest regression guard for the chunk_max
+/// closure: any divergence in `request_bytes` / `response_bytes` /
+/// `items` for a CHUNK or ChunkMerkleSiblings round between found
+/// and not-found indicates the closure was undone (e.g., the
+/// not-found path stopped padding to M).
+#[tokio::test]
+#[ignore = "requires running PIR servers"]
+async fn dpf_found_vs_not_found_have_byte_identical_profiles() {
+    let (sh_found, _) = found_pair();
+    let (sh_nf, _) = not_found_pair();
+    let p_found = run_dpf_single_query(sh_found).await;
+    let p_nf = run_dpf_single_query(sh_nf).await;
+
+    println!(
+        "dpf found-vs-not-found byte-identity: total={} vs {}, ChunkMerkleSiblings={} vs {}",
+        p_found.rounds.len(),
+        p_nf.rounds.len(),
+        p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
+        p_nf.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
+    );
+
+    // Strongest possible assertion: every wire-recorded field on
+    // every round must match between the two profiles. If the
+    // closure regressed, this fires loudly.
+    assert_profiles_equivalent(&p_found, &p_nf);
 }
 
 /// Same-class simulator property: two FOUND scripthashes follow the

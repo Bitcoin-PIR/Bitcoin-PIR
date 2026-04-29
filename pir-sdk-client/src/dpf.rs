@@ -231,11 +231,21 @@ struct QueryTraces {
 }
 
 /// Build `BucketMerkleItem`s for one query from its internal trace —
-/// emits one item per probed INDEX cuckoo bin, with CHUNK bins attached
-/// only to the matched INDEX item (or none, if not matched). This layout
+/// emits one item per probed INDEX cuckoo bin, with the query's CHUNK
+/// bins attached to the first probed INDEX item (`bi == 0`). The layout
 /// preserves the 🔒 Merkle INDEX Item-Count Symmetry invariant: every
 /// query contributes exactly `INDEX_CUCKOO_NUM_HASHES` items regardless
 /// of found / not-found / whale.
+///
+/// Post-Option-B `chunk_max_items_per_group_per_level` closure (this
+/// commit), `trace.chunk_bins` holds exactly
+/// `CHUNK_MERKLE_ITEMS_PER_QUERY = M` entries for *every* query
+/// classification — found queries pad real chunks to M with
+/// synthetic chunk_ids; not-found and whale queries pad with M
+/// synthetics. The chunk-bin attachment is therefore unconditional:
+/// the receiver picks `it.chunk_pbc_groups` etc. from `bi == 0` and
+/// ignores the matched_index_idx coupling that the pre-closure code
+/// used to gate the attachment.
 fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
     trace
         .index_bins
@@ -250,7 +260,12 @@ fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
                 chunk_bin_indices: Vec::new(),
                 chunk_bin_contents: Vec::new(),
             };
-            if trace.matched_index_idx == Some(bi) {
+            // Attach all chunk Merkle items to the first INDEX item.
+            // Pre-closure this was gated on `matched_index_idx == Some(bi)`
+            // so not-found/whale emitted zero CHUNK Merkle items; post-
+            // closure every query emits M CHUNK Merkle items so the wire
+            // round count is the same across found/not-found/whale.
+            if bi == 0 {
                 for cb in &trace.chunk_bins {
                     it.chunk_pbc_groups.push(cb.pbc_group);
                     it.chunk_bin_indices.push(cb.bin_index);
@@ -716,6 +731,18 @@ impl DpfClient {
         // queries fetch their chunks; not-found / whale queries still
         // emit a K_CHUNK-padded dummy CHUNK round (CHUNK Round-Presence
         // Symmetry).
+        // M = constant chunk-Merkle items every query contributes,
+        // independent of UTXO count or found/not-found. Drives the
+        // `chunk_max_items_per_group_per_level` axis closure: the
+        // wire-observable per-Merkle-level pass count becomes
+        // `ceil(M / K_CHUNK) = 1` for the production parameters
+        // `M = 16, K_CHUNK = 80`, so every query (found, not-found,
+        // whale) emits the same number of `ChunkMerkleSiblings`
+        // rounds. Closes the "chunk Merkle round absence reveals
+        // not-found" leak the pre-closure code admitted via the
+        // dummy-`query_chunk_level(&[])` round.
+        let chunk_pad_m = pir_core::params::CHUNK_MERKLE_ITEMS_PER_QUERY;
+
         for (i, (found_info, index_bins, matched_idx)) in index_outcomes.into_iter().enumerate() {
             let mut q_traces = QueryTraces {
                 index_bins,
@@ -723,51 +750,79 @@ impl DpfClient {
                 chunk_bins: Vec::new(),
             };
 
-            let (start_chunk_id, num_chunks, is_whale) = match found_info {
-                Some((start, num, whale)) => (start, num, whale),
-                None => {
-                    let _ = self.query_chunk_level(&[], db_info).await?;
-                    log::info!(
-                        "[PIR-AUDIT] CHUNK round-presence padding: not-found query #{} issued 1 dummy CHUNK round",
-                        i,
-                    );
-                    results.push(None);
-                    traces.push(q_traces);
-                    continue;
-                }
+            // Resolve the real-chunk slice for this query. Found queries
+            // contribute `start..start+num` real chunks; not-found and
+            // whale queries contribute none. The padded list always has
+            // length `M` so the wire shape of `query_chunk_level` is the
+            // same across all three classifications.
+            let (real_chunk_ids, is_whale, has_real_match): (Vec<u32>, bool, bool) =
+                match found_info {
+                    Some((start, num, whale)) if num > 0 => (
+                        (start..start + num as u32).collect(),
+                        whale,
+                        true,
+                    ),
+                    Some((_start, _num, whale)) => {
+                        // Whale: matched but `num_chunks == 0`. Pad with
+                        // M synthetics; emit no real UTXO entries.
+                        (Vec::new(), whale, true)
+                    }
+                    None => (Vec::new(), false, false),
+                };
+
+            let real_count = real_chunk_ids.len();
+            let padded_chunk_ids = pad_chunk_ids_to_m(&real_chunk_ids, chunk_pad_m);
+            log::info!(
+                "[PIR-AUDIT] CHUNK chunk_max closure: query #{} real_chunks={} padded_to={} (M={})",
+                i,
+                real_count,
+                padded_chunk_ids.len(),
+                chunk_pad_m,
+            );
+            let (chunk_data, chunk_bins) =
+                self.query_chunk_level(&padded_chunk_ids, db_info).await?;
+            q_traces.chunk_bins = chunk_bins;
+
+            // Decode only the first `real_count * CHUNK_SIZE` payload
+            // bytes — these are the genuine UTXO entries for THIS
+            // scripthash. Synthetic chunks were drawn from a deterministic
+            // pool and their payloads belong to other scripthashes.
+            let real_data_len = real_count * pir_core::params::CHUNK_SIZE;
+            let real_data: Vec<u8> = if real_data_len <= chunk_data.len() {
+                chunk_data[..real_data_len].to_vec()
+            } else {
+                // Defensive: server failed to recover one of the real
+                // chunks. Fall back to whatever we got rather than panic;
+                // Merkle verification will catch the discrepancy.
+                chunk_data.clone()
             };
 
-            if num_chunks == 0 {
-                let _ = self.query_chunk_level(&[], db_info).await?;
-                log::info!(
-                    "[PIR-AUDIT] CHUNK round-presence padding: whale query #{} issued 1 dummy CHUNK round",
-                    i,
-                );
-                results.push(Some(QueryResult {
-                    entries: Vec::new(),
-                    is_whale,
-                    merkle_verified: true,
-                    raw_chunk_data: None,
-                    index_bins: Vec::new(),
-                    chunk_bins: Vec::new(),
-                    matched_index_idx: None,
-                }));
+            if !has_real_match {
+                // Not-found: no UTXO entries; chunk_bins still holds M
+                // traces for the Merkle layer.
+                results.push(None);
                 traces.push(q_traces);
                 continue;
             }
 
-            let chunk_ids: Vec<u32> =
-                (start_chunk_id..start_chunk_id + num_chunks as u32).collect();
-            let (chunk_data, chunk_bins) = self.query_chunk_level(&chunk_ids, db_info).await?;
-            q_traces.chunk_bins = chunk_bins;
-            let entries = decode_utxo_entries(&chunk_data);
+            if !is_whale && real_count == 0 {
+                // Defensive — `Some((_, num, false))` with `num == 0`
+                // would be surprising (matched a non-whale entry that
+                // declared 0 chunks). Treat as whale for shape symmetry.
+                log::warn!(
+                    "[PIR-AUDIT] CHUNK closure: query #{} matched a non-whale INDEX entry with num_chunks=0; treating as whale",
+                    i,
+                );
+            }
+
+            let entries = decode_utxo_entries(&real_data);
 
             results.push(Some(QueryResult {
                 entries,
                 is_whale,
                 merkle_verified: true,
-                raw_chunk_data: if db_info.kind.is_delta() {
-                    Some(chunk_data)
+                raw_chunk_data: if db_info.kind.is_delta() && real_count > 0 {
+                    Some(real_data)
                 } else {
                     None
                 },
@@ -2396,6 +2451,58 @@ fn plan_chunk_rounds(chunk_ids: &[u32], k: usize) -> Vec<Vec<(u32, usize)>> {
         .collect()
 }
 
+/// Pad a real-chunk list to exactly `m` chunk_ids by appending
+/// synthetic chunk_ids drawn from `[0, u32::MAX)`. Synthetic ids are
+/// chosen deterministically from the prefix `0..` so the closure
+/// doesn't depend on a per-query RNG; collisions with the real-chunk
+/// list are skipped so the planner sees `m` distinct chunk_ids.
+///
+/// Pure helper extracted for Kani verification:
+/// * `result.len() == m` regardless of `real_chunks.len()`.
+/// * `result[..real_chunks.len()] == real_chunks` (real chunks come first
+///   so the caller can decode the first `N * CHUNK_SIZE` payload bytes
+///   as the genuine UTXO entries; synthetic-chunk payloads belong to
+///   other scripthashes' UTXOs and must be discarded).
+/// * Synthetic ids are pairwise distinct and disjoint from `real_chunks`.
+///
+/// `m` is the post-closure constant
+/// `pir_core::params::CHUNK_MERKLE_ITEMS_PER_QUERY`. Calling with
+/// `m == 0` is a no-op (returns the original list unchanged) — the
+/// closure is enabled by passing a non-zero `m`.
+pub(crate) fn pad_chunk_ids_to_m(real_chunks: &[u32], m: usize) -> Vec<u32> {
+    if m <= real_chunks.len() {
+        return real_chunks.to_vec();
+    }
+    let mut padded: Vec<u32> = Vec::with_capacity(m);
+    padded.extend_from_slice(real_chunks);
+    let mut next: u32 = 0;
+    while padded.len() < m {
+        // Check `next` against `real_chunks` only (a fixed-size input
+        // slice; bounded loop). Synthetic ids generated so far are
+        // guaranteed pairwise distinct by the strictly-increasing
+        // `next` counter, so we don't need to scan `padded` itself
+        // — only avoid colliding with the real-chunk prefix.
+        let mut conflict = false;
+        for &r in real_chunks {
+            if r == next {
+                conflict = true;
+                break;
+            }
+        }
+        if !conflict {
+            padded.push(next);
+        }
+        // Saturating_add at u32::MAX guards a degenerate input where the
+        // real-chunks list contains every u32 (impossible in practice,
+        // but keeps the helper total).
+        if next == u32::MAX {
+            break;
+        }
+        next = next.saturating_add(1);
+    }
+    padded
+}
+
 /// Decode UTXO entries from raw chunk data.
 fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
     let mut entries = Vec::new();
@@ -2920,6 +3027,76 @@ mod kani_harnesses {
             }
         }
     }
+
+    // ─── chunk_max closure helpers ───────────────────────────────────────
+
+    /// Prove `pad_chunk_ids_to_m` produces exactly `m` ids when
+    /// `m > real_chunks.len()`. Pinned at `m = 4` — anything ≥ 1 is
+    /// enough to exercise the padding branch; the loop body invariants
+    /// don't change with larger `m`. `real_chunks` is symbolic-shape:
+    /// either empty (the not-found / whale path) or a single fixed
+    /// real chunk_id (`real_chunks = [42]`, the most adversarial case
+    /// w.r.t. the synthetic-id collision-skip branch).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn pad_chunk_ids_to_m_emits_exactly_m_when_padding_needed() {
+        let pick: u8 = kani::any();
+        kani::assume(pick < 2);
+        let real_chunks: Vec<u32> = if pick == 0 {
+            Vec::new()
+        } else {
+            vec![42u32]
+        };
+        let padded = pad_chunk_ids_to_m(&real_chunks, /* m */ 4);
+        assert_eq!(padded.len(), 4);
+    }
+
+    /// Prove the closure preserves real chunks: the first
+    /// `real_chunks.len()` entries of the padded list equal
+    /// `real_chunks` verbatim. This is what lets the caller decode
+    /// only the first `N * CHUNK_SIZE` payload bytes as genuine UTXO
+    /// entries — if synthetic ids slipped into the prefix, the
+    /// caller would decode wrong-scripthash data.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn pad_chunk_ids_to_m_real_chunks_in_prefix() {
+        let real_chunks = [100u32, 200u32];
+        let padded = pad_chunk_ids_to_m(&real_chunks, /* m */ 4);
+        assert_eq!(padded[0], 100);
+        assert_eq!(padded[1], 200);
+    }
+
+    /// Prove the synthetic ids never collide with the real-chunk list
+    /// — the helper's `if !padded.contains(&next)` skip-branch is the
+    /// only way duplicates would appear, and Kani exhaustively
+    /// witnesses that branch never falls through. Pinning real chunks
+    /// to `[0, 1]` (the worst case where the helper must skip both
+    /// initial synthetic candidates 0 and 1 before settling on 2 and 3).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn pad_chunk_ids_to_m_synthetics_disjoint_from_real() {
+        let real_chunks = [0u32, 1u32];
+        let padded = pad_chunk_ids_to_m(&real_chunks, /* m */ 4);
+        assert_eq!(padded.len(), 4);
+        // Synthetic prefix `[2, 3]` because 0 and 1 are both real.
+        assert_eq!(padded[2], 2);
+        assert_eq!(padded[3], 3);
+    }
+
+    /// Prove `pad_chunk_ids_to_m` is a no-op when `m <= real_chunks.len()`
+    /// — the helper returns the input verbatim. Closes the
+    /// `m == 0` "feature off" path and the rare `m < N` "downsizing"
+    /// path (defensive — production callers always pass `m == M_FIXED`).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn pad_chunk_ids_to_m_zero_m_is_identity() {
+        let real_chunks = [10u32, 20u32, 30u32];
+        let padded = pad_chunk_ids_to_m(&real_chunks, /* m */ 0);
+        assert_eq!(padded.len(), 3);
+        assert_eq!(padded[0], 10);
+        assert_eq!(padded[1], 20);
+        assert_eq!(padded[2], 30);
+    }
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -3342,6 +3519,14 @@ mod tests {
         }
     }
 
+    /// Post-`chunk_max` closure: chunk_bins attach to `bi == 0`
+    /// unconditionally — `matched_index_idx` no longer gates the
+    /// attachment because every query (found / not-found / whale) emits
+    /// `CHUNK_MERKLE_ITEMS_PER_QUERY` chunk Merkle items, all aggregated
+    /// on the first INDEX item for bookkeeping symmetry. The matched
+    /// position is still recorded in `matched_index_idx` for downstream
+    /// callers that need it (e.g. inspector path), but the Merkle layer
+    /// only reads chunk fields off `bi == 0`.
     #[test]
     fn items_from_trace_found_at_h0_emits_two() {
         let trace = QueryTraces {
@@ -3364,8 +3549,11 @@ mod tests {
         };
         let items = items_from_trace(&trace);
         assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
-        assert_eq!(items[0].chunk_bin_indices.len(), 0);
-        assert_eq!(items[1].chunk_bin_indices.len(), 1);
+        // Post-closure: chunks always live on items[0], regardless of which
+        // INDEX position matched. matched_index_idx == Some(1) is preserved
+        // on the trace for the inspector path but doesn't move the chunks.
+        assert_eq!(items[0].chunk_bin_indices.len(), 1);
+        assert_eq!(items[1].chunk_bin_indices.len(), 0);
     }
 
     #[test]
