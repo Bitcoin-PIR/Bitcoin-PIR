@@ -1390,15 +1390,68 @@ async fn onion_found_vs_not_found_have_same_round_count() {
          — CHUNK Round-Presence Symmetry violated",
         not_found_chunks,
     );
-    // CHUNK round counts AGREE — see DPF analog for the note on why
-    // total round count is still allowed to differ (CHUNK Merkle is
-    // a separately-tracked residual leak, not closed by this fix).
+    // CHUNK round counts AGREE — the property the CHUNK Round-
+    // Presence Symmetry fix delivers.
     assert_eq!(
         found_chunks, not_found_chunks,
         "OnionPIR found and not-found CHUNK round counts diverge ({} vs {}) \
          — CHUNK Round-Presence Symmetry P1 violated",
         found_chunks, not_found_chunks,
     );
+
+    // Post-`chunk_max` closure (this commit): TOTAL round count and
+    // ChunkMerkleSiblings round count also agree. Pre-closure not-
+    // found emitted 0 ChunkMerkleSiblings (and skipped DATA tree-tops)
+    // while found emitted those. The closure pads every query to
+    // `CHUNK_MERKLE_ITEMS_PER_QUERY = 16` chunk Merkle items so the
+    // wire-observable shape is constant.
+    let found_cms = p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
+    let nf_cms = p_not_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
+    assert_eq!(
+        found_cms, nf_cms,
+        "OnionPIR found and not-found ChunkMerkleSiblings round counts diverge \
+         ({} vs {}) — chunk_max axis closure regressed; the not-found path may \
+         have skipped the M-padded chunk fetch",
+        found_cms, nf_cms,
+    );
+    assert_eq!(
+        p_found.rounds.len(), p_not_found.rounds.len(),
+        "OnionPIR found and not-found total round counts diverge ({} vs {}) \
+         — chunk_max axis closure regressed",
+        p_found.rounds.len(), p_not_found.rounds.len(),
+    );
+}
+
+/// Post-`chunk_max` closure (OnionPIR analog of
+/// `dpf_found_vs_not_found_have_byte_identical_profiles`): a FOUND
+/// query and a NOT-FOUND query must produce byte-identical leakage
+/// profiles. Pre-closure NOT-FOUND emitted 0 ChunkMerkleSiblings
+/// rounds and skipped the DATA tree-tops fetch (entry_id_to_result
+/// map was built from real `index_results.num_entries > 0` only).
+/// The M-padded closure populates the map from
+/// `chunk_owned_per_query` so every query owns exactly
+/// `CHUNK_MERKLE_ITEMS_PER_QUERY = 16` DATA leaves, attaching
+/// synthetic leaves for not-found / whale paths.
+#[cfg(feature = "onion")]
+#[tokio::test]
+#[ignore = "requires running PIR servers"]
+async fn onion_found_vs_not_found_have_byte_identical_profiles() {
+    let (sh_found, _) = found_pair();
+    let (sh_nf, _) = not_found_pair();
+    let p_found = run_onion_single_query(sh_found).await;
+    let p_nf = run_onion_single_query(sh_nf).await;
+
+    println!(
+        "onion found-vs-not-found byte-identity: total={} vs {}, ChunkMerkleSiblings={} vs {}",
+        p_found.rounds.len(),
+        p_nf.rounds.len(),
+        p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
+        p_nf.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
+    );
+
+    // Strongest possible assertion: every wire-recorded field on
+    // every round must match between the two profiles.
+    assert_profiles_equivalent(&p_found, &p_nf);
 }
 
 /// CHUNK Round-Presence Symmetry P1 (OnionPIR positive form). See

@@ -692,7 +692,7 @@ impl OnionClient {
             .query_index_level(script_hashes, db_info, &params)
             .await?;
 
-        let (chunk_data, data_merkle) = self
+        let (chunk_data, data_merkle, chunk_owned_per_query) = self
             .query_chunk_level(script_hashes, &index_results, db_info, &params)
             .await?;
 
@@ -778,6 +778,7 @@ impl OnionClient {
                 &index_traces,
                 &index_results,
                 &data_merkle,
+                &chunk_owned_per_query,
                 db_info,
             )
             .await?;
@@ -804,8 +805,9 @@ impl OnionClient {
         &mut self,
         results: &mut [Option<QueryResult>],
         index_traces: &[IndexBinMerkle],
-        index_results: &[Option<IndexResult>],
+        _index_results: &[Option<IndexResult>],
         data_merkle: &HashMap<u32, (Hash256, usize)>,
+        chunk_owned_per_query: &[Vec<u32>],
         db_info: &DatabaseInfo,
     ) -> PirResult<()> {
         let info = match self.onion_merkle.get(&db_info.db_id).cloned() {
@@ -826,20 +828,21 @@ impl OnionClient {
             });
         }
 
-        // DATA leaves map back to which scripthash they belong to via
-        // entry_id range [entry_id, entry_id + num_entries). A single entry_id
-        // may back multiple scripthashes (shared chunks are rare but possible
-        // across batches) — we track all owners so any failure fails them all.
+        // DATA leaves: per the `chunk_max_items_per_group_per_level`
+        // closure, every query (found / not-found / whale) owns
+        // exactly `CHUNK_MERKLE_ITEMS_PER_QUERY = M` entry_ids in
+        // `chunk_owned_per_query[idx]`. A query "passes" iff ALL M of
+        // its DATA leaves verify — synthetic entries are real
+        // commitments in the DB, so a server lying about any of them
+        // (even a synthetic) fails the query. The same entry_id may
+        // be owned by multiple queries when reals overlap or
+        // synthetics are shared across the batch; tracking all
+        // owners in `entry_id_to_result` ensures failures propagate
+        // to every owning query.
         let mut entry_id_to_result: HashMap<u32, Vec<usize>> = HashMap::new();
-        for (idx, ir) in index_results.iter().enumerate() {
-            if let Some(ir) = ir {
-                if ir.num_entries == 0 {
-                    continue; // whale has no DATA leaves
-                }
-                for i in 0..ir.num_entries as u32 {
-                    let eid = ir.entry_id + i;
-                    entry_id_to_result.entry(eid).or_default().push(idx);
-                }
+        for (idx, owned) in chunk_owned_per_query.iter().enumerate() {
+            for &eid in owned {
+                entry_id_to_result.entry(eid).or_default().push(idx);
             }
         }
 
@@ -1356,79 +1359,64 @@ impl OnionClient {
         index_results: &[Option<IndexResult>],
         db_info: &DatabaseInfo,
         params: &OnionDbParams,
-    ) -> PirResult<(HashMap<u32, Vec<u8>>, HashMap<u32, (Hash256, usize)>)> {
-        // Collect unique entry_ids to fetch.
+    ) -> PirResult<(
+        HashMap<u32, Vec<u8>>,
+        HashMap<u32, (Hash256, usize)>,
+        Vec<Vec<u32>>,
+    )> {
+        // Collect per-query owned entry_ids for the
+        // `chunk_max_items_per_group_per_level` axis closure
+        // (Phase 3 — DPF in 565ea47, Harmony in 08ec736, this commit
+        // ships OnionPIR). Every query (found / not-found / whale)
+        // owns exactly `CHUNK_MERKLE_ITEMS_PER_QUERY = M` entry_ids:
+        //   - Found with N real entries: N reals + (M - N) synthetic.
+        //   - Not-found / whale: M synthetic.
         //
-        // 🔒 CHUNK Round-Presence Symmetry (CLAUDE.md): every query in
-        // the batch contributes at least one entry_id to `unique` —
-        // real ones for found-with-entries, a uniformly random dummy
-        // for not-found and whale (`num_entries == 0`). This keeps
-        // CHUNK round count proportional to the batch size regardless
-        // of how many queries actually matched, so the server cannot
-        // infer found-vs-not-found from CHUNK round absence. The
-        // dummy's response is decrypted but its bin contents are
-        // discarded (no `IndexResult` ever pointed at it, so downstream
-        // result-assembly skips it naturally).
+        // Synthetic entry_ids are drawn deterministically from `0..`
+        // skipping any reals already in this query's owned list, via
+        // `crate::dpf::pad_chunk_ids_to_m` (the same Kani-verified
+        // helper DPF and Harmony reuse — see `pir-core::params::CHUNK_MERKLE_ITEMS_PER_QUERY`).
+        // Reals & synthetics are valid `entry_id`s in
+        // `[0, total_packed)` for any production OnionPIR DB
+        // (total_packed = millions of packed entries).
         //
-        // Decision tree extracted into the Kani-verified helper
-        // `classify_chunk_slots` (top of this file): the helper
-        // returns one `ChunkSlotAction` per input slot, witnessing the
-        // P1 round-count and P2 no-skip properties of the symmetry
-        // invariant.
-        let slots: Vec<ChunkSlotInput> = index_results
-            .iter()
-            .map(|opt| match opt {
-                Some(ir) => ChunkSlotInput {
-                    entry_id: ir.entry_id,
-                    num_entries: ir.num_entries,
-                },
-                // Not-found sentinel — collapses to the same all-dummy
-                // path as a whale (`num_entries == 0`) inside the
-                // classifier.
-                None => ChunkSlotInput {
-                    entry_id: 0,
-                    num_entries: 0,
-                },
-            })
-            .collect();
-        let actions = classify_chunk_slots(&slots);
+        // The previous round-presence dummy-injection (one random
+        // dummy per not-found / whale) is subsumed: M-padding both
+        // closes the chunk_max axis AND the FOUND-vs-NOT-FOUND
+        // wire-shape asymmetry where DATA Merkle traffic was emitted
+        // only for found queries.
+        let m = pir_core::params::CHUNK_MERKLE_ITEMS_PER_QUERY;
+        let total_packed = params.total_packed.max(1) as u32;
 
         let mut unique: Vec<u32> = Vec::new();
         let mut seen: HashSet<u32> = HashSet::new();
-        let mut padding_rng = SimpleRng::new();
-        let total_packed = params.total_packed.max(1) as u64;
-        let mut dummies_added = 0usize;
-        for action in &actions {
-            match *action {
-                ChunkSlotAction::AppendReal { entry_id, num_entries } => {
-                    for i in 0..num_entries as u32 {
-                        let eid = entry_id + i;
-                        if seen.insert(eid) {
-                            unique.push(eid);
-                        }
-                    }
+        let mut owned_per_query: Vec<Vec<u32>> = Vec::with_capacity(index_results.len());
+
+        for ir_opt in index_results {
+            let real_chunks: Vec<u32> = match ir_opt {
+                Some(ir) if ir.num_entries > 0 => {
+                    (0..ir.num_entries as u32).map(|i| ir.entry_id + i).collect()
                 }
-                ChunkSlotAction::AppendDummy => {
-                    // Loop until we land on a fresh value so we don't
-                    // shrink `unique` via dedup — collision probability
-                    // is ~`unique.len() / total_packed` per attempt.
-                    for _ in 0..32 {
-                        let cand = (padding_rng.next_u64() % total_packed) as u32;
-                        if seen.insert(cand) {
-                            unique.push(cand);
-                            dummies_added += 1;
-                            break;
-                        }
-                    }
+                _ => Vec::new(),
+            };
+            // Pad to M with deterministic synthetic ids; bound at
+            // `total_packed` so we never reference an out-of-range
+            // entry. For typical Bitcoin UTXO DBs, total_packed >> M.
+            let owned = crate::dpf::pad_chunk_ids_to_m(&real_chunks, m);
+            for &eid in &owned {
+                if eid < total_packed && seen.insert(eid) {
+                    unique.push(eid);
                 }
             }
+            owned_per_query.push(owned);
         }
-        if dummies_added > 0 {
-            log::info!(
-                "[PIR-AUDIT] OnionPIR CHUNK round-presence padding: added {} dummy entry_id(s) for not-found/whale queries",
-                dummies_added
-            );
-        }
+
+        log::info!(
+            "[PIR-AUDIT] OnionPIR CHUNK chunk_max closure: {} queries × M={} owned each = {} unique fetched",
+            index_results.len(),
+            m,
+            unique.len(),
+        );
 
         let mut decrypted: HashMap<u32, Vec<u8>> = HashMap::new();
         // entry_id → (SHA256(decrypted_bin), pbc_group * chunk_bins + bin)
@@ -1436,10 +1424,8 @@ impl OnionClient {
         // Merkle verifier.
         let mut data_merkle: HashMap<u32, (Hash256, usize)> = HashMap::new();
         if unique.is_empty() {
-            // All 32 dedup attempts collided AND the batch had zero queries
-            // — the latter can only happen on an empty `script_hashes` call,
-            // which is a no-op anyway. Either way, nothing to emit.
-            return Ok((decrypted, data_merkle));
+            // Empty batch (no queries to pad). Caller's no-op path.
+            return Ok((decrypted, data_merkle, owned_per_query));
         }
 
         let chunk_k = db_info.chunk_k as usize;
@@ -1564,7 +1550,7 @@ impl OnionClient {
             }
         }
 
-        Ok((decrypted, data_merkle))
+        Ok((decrypted, data_merkle, owned_per_query))
     }
 }
 

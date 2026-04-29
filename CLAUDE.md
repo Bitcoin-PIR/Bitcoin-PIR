@@ -177,6 +177,69 @@ required.
 - `onion_simulator_property_multi_query_collision`: A=B=C=7 rounds,
   IndexMerkleSiblings A=B=C=1 (structurally trivial pre- and post-).
 
+### CHUNK Merkle Item-Count Symmetry (MANDATORY for Privacy)
+
+**Every query (found / not-found / whale) MUST contribute exactly
+`CHUNK_MERKLE_ITEMS_PER_QUERY = M = 16` chunk Merkle items to the
+per-bucket Merkle verification, regardless of UTXO count or
+classification.**
+
+Pre-closure, found queries with N real UTXO chunks emitted N CHUNK
+Merkle items, while not-found / whale emitted 0. The wire revealed
+this via two leaks: (a) the per-Merkle-level pass count =
+`max_items_per_group_per_level`, varying with N and the chunk-id
+distribution; (b) the ChunkMerkleSiblings round count being 0 for
+not-found vs ≥1 for found, exposing UTXO existence directly.
+
+**Why:** Padding every query to M chunk Merkle items collapses both
+leaks. With `K_CHUNK = 80`, the per-Merkle-level pass count is
+`ceil(M / K_CHUNK) = 1` constant; the round count is identical
+across found / not-found / whale because every query reaches the
+DATA tree-tops + ChunkMerkleSiblings phase.
+
+**How implementations preserve this:**
+
+1. **Pure helper**:
+   [`pir-sdk-client/src/dpf.rs::pad_chunk_ids_to_m`](pir-sdk-client/src/dpf.rs)
+   takes a real-chunk list and `m`, returns a Vec of length `m`
+   with reals in the prefix + deterministic synthetic chunk_ids
+   `0..` (skipping reals) filling the suffix. 4 Kani harnesses
+   verify shape, prefix-preservation, synthetic-disjointness, and
+   the `m == 0` no-op identity.
+
+2. **DPF / HarmonyPIR**: `execute_step` per-scripthash CHUNK +
+   result assembly pads real-chunks to M via `pad_chunk_ids_to_m`,
+   runs `query_chunk_level` over the padded list, decodes only the
+   first `N * CHUNK_SIZE` payload bytes as genuine UTXO entries
+   (synthetic-slot payloads belong to other scripthashes and are
+   discarded). `items_from_trace` attaches all chunk Merkle items
+   to the first INDEX item (`bi == 0`) unconditionally —
+   `matched_index_idx` no longer gates the attachment.
+
+3. **OnionPIR**: `query_chunk_level` builds
+   `chunk_owned_per_query: Vec<Vec<u32>>` of length `batch_size`
+   with M entry_ids per query (real + synthetic). The same
+   `pad_chunk_ids_to_m` helper is reused.
+   `run_merkle_verification` builds the entry_id-to-result map
+   from `chunk_owned_per_query` instead of from real `index_results`,
+   so synthetic Merkle leaves are owned by their synthesizer query
+   and contribute to the verdict.
+
+**Server-side compatibility:** synthetic entry_ids must be valid
+in the DB's chunk space. For DPF / Harmony this is `[0, num_chunks)`;
+for OnionPIR `[0, total_packed)`. The synthetic prefix `0..M-1`
+exists in any production DB (M = 16 ≪ millions of entries).
+No server changes were required.
+
+**Empirical witnesses (against `wss://pir1.chenweikeng.com`):**
+- `dpf_found_vs_not_found_have_byte_identical_profiles`:
+  `total rounds = 23, ChunkMerkleSiblings = 6` (= 1 pass × 2 servers × 3 levels).
+  Pre-closure: found 23 / not-found 17, ChunkMerkleSiblings 6 vs 0.
+- `harmony_found_vs_not_found_have_byte_identical_profiles`:
+  `total rounds = 23, ChunkMerkleSiblings = 3` (1 server × 3 levels).
+- `onion_found_vs_not_found_have_byte_identical_profiles`:
+  `total rounds = 9, ChunkMerkleSiblings = 1`.
+
 ### What the Server Learns (Documented Trade-offs)
 
 The server **cannot** learn:
@@ -189,12 +252,15 @@ The server **cannot** learn:
 - Which cuckoo position (h=0 vs h=1) a found query matched at
 - The collision pattern of `derive_groups_3[0]` across a multi-query
   batch (closed by the INDEX Merkle Group-Symmetry invariant above)
+- How many CHUNK Merkle items each query contributes — i.e. the
+  approximate UTXO count for found queries (closed by the CHUNK
+  Merkle Item-Count Symmetry invariant above; every query
+  contributes exactly M)
+- Whether a query is found or not-found from CHUNK Merkle round
+  presence (closed by the same invariant — every query emits
+  ChunkMerkleSiblings + DATA tree-tops)
 
 The server **can** observe (known trade-offs):
-- How many CHUNK Merkle items each query contributes (reveals
-  approximate UTXO count for found queries; a not-found query
-  contributes zero CHUNK Merkle items today). Closing this requires
-  per-query item-count padding to a fixed `M`, separately tracked.
 - Timing patterns across rounds.
 
 To also hide approximate UTXO count, the client would need to pad
