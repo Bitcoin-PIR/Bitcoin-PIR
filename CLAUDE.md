@@ -5,6 +5,17 @@ Bitcoin Private Information Retrieval (PIR) system with three backends:
 DPF-PIR, OnionPIR, HarmonyPIR. Supports full snapshots and delta
 synchronization for incremental updates.
 
+> **Verification status (2026-04-29).** The multi-session leakage
+> verification effort wrapped: all four privacy invariants below are
+> closed end-to-end across DPF / HarmonyPIR / OnionPIR (Rust) plus the
+> WASM bindings and standalone TS `OnionPirWebClient`. EasyCrypt spec
+> at `proofs/easycrypt/` mechanizes the simulator-property argument
+> (31 lemmas, zero admits). Cross-language equivalence (Rust ↔ TS)
+> verified live against Hetzner. See
+> [docs/VERIFICATION_OVERVIEW.md](docs/VERIFICATION_OVERVIEW.md) for
+> the consolidated final-state summary, including the honest scope
+> split (mechanized wire-shape vs cited primitive-layer reductions).
+
 ---
 
 ## CRITICAL SECURITY REQUIREMENTS
