@@ -92,6 +92,7 @@
  * --------------------------------------------------------------------- *)
 
 require import Common Leakage Protocol Simulator.
+require import Protocol_DPF Protocol_Harmony Protocol_Onion.
 require import AllCore List Distr Int.
 
 (* ---------------------------------------------------------------------- *

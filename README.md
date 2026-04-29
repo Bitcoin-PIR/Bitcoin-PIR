@@ -52,15 +52,18 @@ fully randomised pRHL formulation.
 |---|---|---|
 | [Common.ec](Common.ec) | Shared abstract types (`query`, `db_id`, `transcript`, `round_kind`, `round_profile`, `backend`); protocol parameters (K=75, K_chunk=80, INDEX_CUCKOO_NUM_HASHES=2). | ~95 |
 | [Leakage.ec](Leakage.ec) | The leakage record `L : query → leakage` with four admitted axes (`index_max_items_per_group_per_level`, `chunk_max_items_per_group_per_level`, `session_query_index`, `query_db_id`); query-side accessors; the `L_factors` axiom relating accessors to `L`. Documents 4 explicit non-claims and 5 closed axes. | ~210 |
-| [Protocol.ec](Protocol.ec) | The `Real` model — abstract description of what the client emits on the wire. Per-section transcript fragments (info, key-register, hint-refresh, index, chunk, merkle-tops, index-merkle, chunk-merkle), each a deterministic function of backend + db_id + leakage axes. `Real.query` body composes the fragments in order. Pure-functional view `real_transcript` provided for proofs that prefer equational reasoning. The `Real_batch.query_batch` module + `real_batch_transcript = flatten ∘ map (real_transcript b)` op extends the per-query model to multi-query batches. | ~290 |
+| [Protocol.ec](Protocol.ec) | Abstract `Real` model — wire-shape parameters declared as `op X : backend -> ...`; per-section transcript fragments (info, key-register, hint-refresh, index, chunk, merkle-tops, index-merkle, chunk-merkle); the `real_transcript` op composing the fragments. The `Real_batch.query_batch` module + `real_batch_transcript = flatten ∘ map (real_transcript b)` op extends to multi-query batches. **Backend-specific axioms** (`pir_server_ids BDpf = [0; 1]`, etc.) live in the per-backend files below — see split rationale in `Protocol_DPF.ec`'s preamble. | ~210 |
+| [Protocol_DPF.ec](Protocol_DPF.ec) | DPF concrete bindings: `pir_server_ids BDpf = [0; 1]`. Specialisation lemmas: `dpf_index_segment_size = 2`, `dpf_chunk_segment_size = 2`, `dpf_no_onion_key_register`, `dpf_no_harmony_hint_refresh`. | ~70 |
+| [Protocol_Harmony.ec](Protocol_Harmony.ec) | HarmonyPIR concrete bindings: `pir_server_ids BHarmony = [0]`. Specialisation lemmas: `harmony_index_segment_size = 1`, `harmony_chunk_segment_size = 1`, `harmony_no_onion_key_register`, `harmony_no_hint_refresh_when_not_due`. | ~50 |
+| [Protocol_Onion.ec](Protocol_Onion.ec) | OnionPIR concrete bindings: `pir_server_ids BOnion = [0]`. Specialisation lemmas: `onion_index_segment_size = 1`, `onion_chunk_segment_size = 1`, `onion_emits_key_register = 1`, `onion_no_harmony_hint_refresh`. | ~50 |
 | [Simulator.ec](Simulator.ec) | The `Sim` model — same per-section composition as `Real`, but reads exclusively from `L q`. Once the body executes `leak <- L q`, every subsequent computation is a function of `leak` and `b` alone — no further reads of `q`. Pure-functional view `sim_transcript`. The `Sim_batch.query_batch` module + `sim_batch_transcript b leaks = flatten ∘ map (sim_transcript b)` op extends to multi-query batches; the procedure binds `leaks = map L qs` as the only `q`-touching step. | ~85 |
-| [Theorem.ec](Theorem.ec) | The simulator-property statement, decomposed into per-axis lemmas: (1) `L_eq` implies each accessor agrees, (2) `real_transcript` factors through `L`, (3) `real_transcript b q = sim_transcript b (L q)`, (4) bridge to `proc` view, (5) headline per-query simulator-property, (6) **multi-query closure** (this revision): `simulator_property_multi_query` op-form + `real_eq_sim_op_batch` + proc bridges + equiv-form analog + `Real_batch ≡ Sim_batch`. | ~340 |
+| [Theorem.ec](Theorem.ec) | The simulator-property statement, decomposed into per-axis lemmas: (1) `L_eq` implies each accessor agrees, (2) `real_transcript` factors through `L`, (3) `real_transcript b q = sim_transcript b (L q)`, (4) bridge to `proc` view, (5) headline per-query simulator-property, (6) multi-query closure: `simulator_property_multi_query` op-form + `real_eq_sim_op_batch` + proc bridges + equiv-form analog + `Real_batch ≡ Sim_batch`. Imports the three per-backend files so `make check` validates them all. | ~340 |
 
 ## Status: proven vs. admitted
 
-The spec **typechecks cleanly with all 19 lemmas closed** (`make check` exits 0; zero `admit` tactics; zero warnings).
+The spec **typechecks cleanly with all 31 lemmas closed** (`make check` exits 0; zero `admit` tactics; zero warnings).
 
-**19 of 19 lemmas mechanically closed:**
+**31 of 31 lemmas mechanically closed:**
 
 In `Leakage.ec`:
 - `L_eq_refl`, `L_eq_sym`, `L_eq_trans` — equivalence-relation axioms.
@@ -78,6 +81,9 @@ In `Theorem.ec`:
   - `Real_batch_proc_eq_op`, `Sim_batch_proc_eq_op` — proc bridges. Proof: `proc; auto.`
   - `simulator_property_multi_query_equiv` — equiv-form `equiv [ Real_batch ~ Real_batch : pairwise L_eq ==> ={res} ]`. Proof: `proc; skip => />` + exact of the op-form.
   - `simulator_property_multi_query_constructive` — equiv-form `Real_batch ≡ Sim_batch`. Proof: `proc; skip => />` + exact of `real_eq_sim_op_batch`.
+
+In `Protocol_DPF.ec` / `Protocol_Harmony.ec` / `Protocol_Onion.ec` (4 lemmas each — 12 total):
+- **Per-backend specialisation lemmas** documenting concrete wire-shape facts. E.g. `dpf_index_segment_size : size (index_segment BDpf db) = 2` (the abstract `index_segment` op composed with the `pir_server_ids BDpf = [0; 1]` axiom yields exactly two rounds). These exist as documentation: a reviewer who wants to know "what does DPF emit?" reads the `Protocol_DPF.ec` lemmas instead of unfolding the abstract spec by hand. Closures: `rewrite /op size_map pir_server_ids_BACKEND` + `auto`.
 
 **Subtle gotcha caught while closing the per-query equiv lemmas.** The lemma signatures originally used parameter names `b` and `q`, which shadow the procedure parameters `b` and `q` of `Real.query` / `Sim.query`. EasyCrypt parses the unmarked `b` in the precondition `b{1} = b` as `b{1}` (defaulting to memory `&1`), making the precondition `b{1} = b{1}` — tautological. The fix is to rename the lemma parameters to `b0` and `q0`, matching the convention already established by `Real_proc_eq_op (b0 : backend)`. The same `b0` / `qs0` naming convention applies to the new multi-query equiv lemmas.
 

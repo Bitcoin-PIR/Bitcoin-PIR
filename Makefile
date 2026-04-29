@@ -7,7 +7,9 @@ EC      = easycrypt compile
 EC_OPTS = -I .
 
 # Files in dependency order.
-SOURCES = Common.ec Leakage.ec Protocol.ec Simulator.ec Theorem.ec
+SOURCES = Common.ec Leakage.ec Protocol.ec Simulator.ec \
+          Protocol_DPF.ec Protocol_Harmony.ec Protocol_Onion.ec \
+          Theorem.ec
 
 .PHONY: all check verbose clean
 
