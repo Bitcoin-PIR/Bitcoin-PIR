@@ -34,7 +34,16 @@ class MockWebSocket {
 
   /** Simulate receiving a message from the server */
   receiveMessage(data: Uint8Array) {
-    const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    // `Uint8Array.buffer` is typed `ArrayBuffer | SharedArrayBuffer` in
+    // newer DOM types, but `.slice()` over a fresh `Uint8Array` constructed
+    // from `new Uint8Array([...])` always backs onto a plain `ArrayBuffer`.
+    // Narrow with a cast — the runtime invariant is preserved by the
+    // construction sites of the test fixtures (`new Uint8Array([…])` and
+    // `new Uint8Array(N)`).
+    const buffer = data.buffer.slice(
+      data.byteOffset,
+      data.byteOffset + data.byteLength,
+    ) as ArrayBuffer;
     this.onmessage?.({ data: buffer });
   }
 

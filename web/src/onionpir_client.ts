@@ -1216,7 +1216,13 @@ export class OnionPirWebClient {
           const binHash = indexBinHashes[qi];
           const leafPos = indexLeafPos[qi];
           const allBins = allBinsChecked.get(qi);
-          if (binHash && leafPos !== undefined) {
+          // `indexLeafPos: (number | null)[]` (line 854): unfilled slots
+          // are `null`, not `undefined`. The earlier `leafPos !== undefined`
+          // check was a no-op against a `number | null` value — the
+          // post-closure compiler now catches that the assignment to
+          // `indexLeafPos: number | undefined` (QueryResult field) drops
+          // the null option implicitly. Narrow against `null` instead.
+          if (binHash && leafPos !== null) {
             results[qi] = {
               entries: [],
               totalSats: 0n,

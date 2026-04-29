@@ -125,7 +125,17 @@ describe('OnionPIR cross-language leakage diff (Phase 2.3 step D)', () => {
         // as a separate `verifyMerkleBatch` call (production UI chains
         // them — see web/index.html). Chain it here so the captured
         // profile shape matches the Rust corpus.
-        await client.verifyMerkleBatch(results);
+        //
+        // `queryBatch` returns `(QueryResult | null)[]` for the legacy
+        // null-=-not-found contract. Post-`chunk_max` closure every
+        // query resolves to a non-null result (not-found queries fill
+        // M synthetic data leaves), but the type signature is preserved
+        // for backward compatibility. Filter nulls before
+        // `verifyMerkleBatch`, which expects `QueryResult[]`.
+        const nonNull = results.filter(
+          (r): r is NonNullable<typeof r> => r !== null,
+        );
+        await client.verifyMerkleBatch(nonNull);
       } finally {
         client.disconnect();
       }
