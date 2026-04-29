@@ -90,11 +90,12 @@ op chunk_merkle_items_for_pass : backend -> int.   (* per-level uniform; depends
 
 (* Per-server emission for round-types: DPF emits on both server 0 and
  * server 1; Onion and Harmony emit on a single server. The server set
- * is itself a function of backend, encoded as a list. *)
+ * is itself a function of backend, encoded as a list. The concrete
+ * bindings for each backend (`pir_server_ids BDpf = [0; 1]`, etc.)
+ * live in the per-backend files `Protocol_DPF.ec`,
+ * `Protocol_Harmony.ec`, `Protocol_Onion.ec` so adding a new round
+ * type to one backend doesn't require editing the abstract spec. *)
 op pir_server_ids : backend -> int list.
-axiom pir_server_ids_dpf     : pir_server_ids BDpf     = [0; 1].
-axiom pir_server_ids_harmony : pir_server_ids BHarmony = [0].
-axiom pir_server_ids_onion   : pir_server_ids BOnion   = [0].
 
 (* Whether the HarmonyPIR hint-refresh round fires given the session
  * position. Modelled as an abstract op so the protocol-design choice
