@@ -1,0 +1,138 @@
+name: Web client build + tests
+
+# Release-readiness gate for the web client and its WASM dependencies.
+#
+# `pir-sdk-integration.yml` already validates the Rust-native code path
+# against the live Hetzner deployment, and `deploy-web.yml` builds the
+# web bundle on push-to-main for GitHub Pages. Neither covers:
+#
+#   1. **wasm32 target compilation on PRs.** Today wasm-pack only runs
+#      via `deploy-web.yml` on push-to-main; a PR that breaks the
+#      wasm32 build (e.g., refactor that pulls a native-only API into
+#      shared code) merges silently and surfaces only at deploy time.
+#
+#   2. **TypeScript strict typecheck (`tsc`).** `web/package.json` has
+#      `build` = `tsc` and `build-web` = `vite build`. The deploy
+#      workflow runs `build-web` (esbuild bundler — permissive). `tsc`
+#      strict-mode errors (null-vs-undefined narrows, hand-written
+#      interface drift between `sdk-bridge.ts` and WASM-generated
+#      stubs, etc.) are never gated.
+#
+#   3. **vitest unit tests.** `web/src/__tests__/` includes the
+#      pure-helper TS-side analog of the Kani harnesses
+#      (`onion_pad_chunk_ids.test.ts`, `onion_chunk_slot_classifier.test.ts`,
+#      `leakage.test.ts`, `onion_leakage_corpus.test.ts`, etc.) — 138
+#      tests at last count. Currently never run in CI.
+#
+# This workflow plugs all three gaps with a single PR-time job. The
+# wasm-pack output is reused by the tsc step (the regenerated
+# `pir-sdk-wasm/pkg/*.d.ts` stubs are what `web/src/sdk-bridge.ts`
+# imports), so any drift between the Rust-side `#[wasm_bindgen]` API
+# and the hand-written TS interface fires at this point.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pir-core/**'
+      - 'pir-sdk/**'
+      - 'pir-sdk-wasm/**'
+      - 'pir-sdk-client/**'
+      - 'harmonypir-wasm/**'
+      - 'web/**'
+      - '.github/workflows/web-build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pir-core/**'
+      - 'pir-sdk/**'
+      - 'pir-sdk-wasm/**'
+      - 'pir-sdk-client/**'
+      - 'harmonypir-wasm/**'
+      - 'web/**'
+      - '.github/workflows/web-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web-build:
+    name: wasm-pack + tsc + vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (with wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Separate cache key from `pir-sdk-integration.yml` and
+          # `deploy-web.yml` — this workflow uses a trimmed workspace
+          # (no `pir-sdk-client`, no native-only deps), so the target
+          # dir layout differs from those jobs and sharing the cache
+          # would cause collisions.
+          key: ${{ runner.os }}-cargo-web-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-web-build-
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      # Build pir-sdk-wasm with a trimmed workspace. The full workspace
+      # contains crates that don't compile to wasm32 (the `onion`
+      # feature pulls SEAL via a C++ toolchain; harmonypir-wasm has
+      # native bindgen deps). Same pattern as `deploy-web.yml` —
+      # mirror the `[workspace]` munging exactly so this job catches
+      # any drift in what's-wasm-buildable.
+      - name: Build pir-sdk-wasm (wasm32 target validation)
+        run: |
+          cp Cargo.toml Cargo.toml.bak
+          printf '[workspace]\nresolver = "2"\nmembers = ["pir-core", "pir-sdk", "pir-sdk-wasm"]\n' > Cargo.toml
+          wasm-pack build pir-sdk-wasm --target web --out-dir pkg
+          mv Cargo.toml.bak Cargo.toml
+
+      # `npm run build` = `tsc`. Strict typecheck of every .ts file
+      # under web/src/, including the test files. Catches drift in
+      # `sdk-bridge.ts` interfaces against the regenerated
+      # `pir-sdk-wasm/pkg/*.d.ts` stubs.
+      - name: TypeScript strict typecheck (npm run build = tsc)
+        working-directory: web
+        run: npm run build
+
+      # `npm test` = `vitest run`. 138 tests across 11 files at last
+      # count, including the chunk_max / index_max closure helper
+      # tests (`onion_pad_chunk_ids.test.ts`,
+      # `onion_chunk_slot_classifier.test.ts`).
+      #
+      # Excludes the live cross-language diff (`onion_leakage_diff.test.ts`)
+      # — that test is gated on `RUN_LIVE_DIFF=1` because it requires
+      # live FHE setup against a Hetzner OnionPIR server (~30s per
+      # query × 2 queries). Run it manually before releases.
+      - name: Run vitest unit tests
+        working-directory: web
+        run: npm test
