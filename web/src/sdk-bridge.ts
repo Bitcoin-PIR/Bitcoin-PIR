@@ -141,14 +141,18 @@ interface WasmDatabaseCatalog {
 /**
  * Native-WASM DPF client. See `PirSdkWasm.WasmDpfClient` for the constructor
  * signature. Only the subset used by `dpf-adapter.ts` is typed here; other
- * surfaces (`sync`, `syncWithProgress`, `queryBatch`, `fetchCatalog`) exist
- * on the actual class but aren't needed by the adapter.
+ * surfaces (`sync`, `syncWithProgress`, `queryBatch`) exist on the actual
+ * class but aren't needed by the adapter.
  */
 interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  /** Populate the native-side catalog so subsequent `queryBatchRaw` calls
+   * (which go through `query_batch_with_inspector`) can resolve `db_id`
+   * against an in-memory catalog. Returns the freshly fetched catalog. */
+  fetchCatalog(): Promise<unknown>;
   /** Inspector-path batch query. Returns an `Array<WasmQueryResult>` of
    * length `N` (one per packed scripthash). Every slot is non-null —
    * not-found queries are synthesised as empty inspector-populated
