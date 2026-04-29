@@ -411,6 +411,73 @@ export function selectChunkUniqueFetches(
   return { unique, dummiesAdded };
 }
 
+/**
+ * Number of CHUNK Merkle items every query contributes to the per-bin
+ * Merkle verification, regardless of UTXO count or
+ * found/not-found classification. Closure for the
+ * `chunk_max_items_per_group_per_level` axis from
+ * `proofs/easycrypt/Leakage.ec`. Must match the Rust constant
+ * `pir-core::params::CHUNK_MERKLE_ITEMS_PER_QUERY = 16`; the
+ * cross-language diff test (`onion_leakage_diff.test.ts`) catches
+ * any drift between this TS port and the Rust reference.
+ *
+ * With `K_CHUNK = 80` the wire-observable
+ * `max_items_per_group_per_level = ceil(M / K_CHUNK) = 1`, constant
+ * across all query classifications. The same closure also collapses
+ * the long-standing FOUND-vs-NOT-FOUND ChunkMerkleSiblings asymmetry
+ * (pre-closure not-found emitted 0 chunk-Merkle leaves while found
+ * emitted ≥1); after closure every query contributes exactly M.
+ */
+export const CHUNK_MERKLE_ITEMS_PER_QUERY = 16;
+
+/**
+ * Pad a real-chunk list to length `m` by appending deterministic
+ * synthetic chunk_ids drawn from `0..` (skipping any in
+ * `realChunks`). Mirrors the Rust helper
+ * `crate::dpf::pad_chunk_ids_to_m` (Kani-verified, 4 harnesses):
+ *
+ *   - `result.length === m` when `m > realChunks.length`.
+ *   - `result.slice(0, realChunks.length)` deep-equals `realChunks`
+ *     (real chunks come first so the caller can decode the first
+ *     `N * CHUNK_SIZE` payload bytes as genuine UTXO entries;
+ *     synthetic-chunk payloads belong to other scripthashes and
+ *     must be discarded).
+ *   - Synthetic ids are pairwise distinct and disjoint from
+ *     `realChunks`.
+ *   - Identity when `m <= realChunks.length` (`m == 0` no-op or
+ *     defensive shrink).
+ *
+ * Called by `queryBatch` to pad each query's owned-entry-id list
+ * to `CHUNK_MERKLE_ITEMS_PER_QUERY` regardless of UTXO count.
+ */
+export function padChunkIdsToM(realChunks: readonly number[], m: number): number[] {
+  if (m <= realChunks.length) {
+    return [...realChunks];
+  }
+  const padded: number[] = [...realChunks];
+  let next = 0;
+  while (padded.length < m) {
+    let conflict = false;
+    for (const r of realChunks) {
+      if (r === next) {
+        conflict = true;
+        break;
+      }
+    }
+    if (!conflict) {
+      padded.push(next);
+    }
+    if (next === 0xffffffff) {
+      // u32 saturation guard — would loop forever if `realChunks`
+      // somehow contained every u32 (impossible in practice for
+      // any real Bitcoin DB; bound here keeps the helper total).
+      break;
+    }
+    next++;
+  }
+  return padded;
+}
+
 // ─── Client class ─────────────────────────────────────────────────────────
 
 export class OnionPirWebClient {
@@ -913,60 +980,59 @@ export class OnionPirWebClient {
       // LEVEL 2: Chunk PIR
       // ════════════════════════════════════════════════════════════════
 
-      // Collect unique entry_ids and detect whales BEFORE registering chunk keys.
+      // Collect per-query owned entry_ids for the
+      // `chunk_max_items_per_group_per_level` axis closure (mirror of
+      // the Rust `OnionClient::query_chunk_level` body — see
+      // commit `f915a65`). Every query (found / not-found / whale)
+      // owns exactly `CHUNK_MERKLE_ITEMS_PER_QUERY = M` entry_ids:
+      //   - Found with N real entries: N reals + (M - N) synthetic.
+      //   - Not-found / whale: M synthetic.
       //
-      // 🔒 CHUNK Round-Presence Symmetry (CLAUDE.md): every query in the
-      // batch contributes at least one entry_id to `uniqueEntryIds` —
-      // real ones for found-with-entries, a uniformly random dummy for
-      // not-found and whale (`numEntries === 0`). This keeps CHUNK round
-      // count proportional to batch size regardless of how many queries
-      // actually matched, so the server cannot infer found-vs-not-found
-      // from CHUNK round absence.
+      // Synthetic entry_ids are drawn deterministically from `0..`
+      // skipping any reals already in this query's owned list, via
+      // `padChunkIdsToM` (same Kani-verified pattern the Rust
+      // `pad_chunk_ids_to_m` helper uses). Reals & synthetics are
+      // valid `entry_id`s in `[0, totalPacked)` for any production
+      // OnionPIR DB.
       //
-      // The decision tree lives in the pure helper `classifyChunkSlots`,
-      // wrapped by `selectChunkUniqueFetches` which folds in the dedup
-      // loop. Same shape as the Rust client's `classify_chunk_slots` —
-      // verified by unit tests in `__tests__/onion_chunk_slot_classifier.test.ts`
-      // and by the cross-language diff test
-      // (`__tests__/onion_leakage_diff.test.ts`).
+      // The closure subsumes the previous CHUNK Round-Presence
+      // Symmetry random-dummy injection (1 dummy per not-found /
+      // whale): M-padding closes both the chunk_max axis AND the
+      // FOUND-vs-NOT-FOUND wire-shape asymmetry where DATA Merkle
+      // traffic was emitted only for found queries.
       const whaleQueries = new Set<number>();
-      const slots: ChunkSlotInput[] = [];
+      const chunkOwnedPerQuery: number[][] = new Array(N);
+      const uniqueEntryIds: number[] = [];
+      const seen = new Set<number>();
+
       for (let i = 0; i < N; i++) {
         const ir = indexResults[i];
         if (ir && ir.numEntries === 0) {
           whaleQueries.add(i);
         }
-        slots.push({
-          entryId: ir ? ir.entryId : 0,
-          numEntries: ir ? ir.numEntries : 0,
-        });
-      }
-
-      const pickDummyEntryId = (): number => {
-        const buf = new Uint32Array(1);
-        crypto.getRandomValues(buf);
-        return buf[0] % this.totalPacked;
-      };
-
-      const { unique: uniqueEntryIdsArr, dummiesAdded } = selectChunkUniqueFetches(
-        slots,
-        pickDummyEntryId,
-      );
-      const uniqueEntryIds: number[] = uniqueEntryIdsArr;
-      // Build the entry_id → unique-list-position map the chunk loop
-      // below uses for response assembly.
-      const entryIdSet = new Map<number, number>();
-      for (let i = 0; i < uniqueEntryIds.length; i++) {
-        entryIdSet.set(uniqueEntryIds[i], i);
+        const realChunks: number[] = [];
+        if (ir && ir.numEntries > 0) {
+          for (let j = 0; j < ir.numEntries; j++) {
+            realChunks.push(ir.entryId + j);
+          }
+        }
+        const owned = padChunkIdsToM(realChunks, CHUNK_MERKLE_ITEMS_PER_QUERY);
+        for (const eid of owned) {
+          if (eid < this.totalPacked && !seen.has(eid)) {
+            seen.add(eid);
+            uniqueEntryIds.push(eid);
+          }
+        }
+        chunkOwnedPerQuery[i] = owned;
       }
 
       if (whaleQueries.size > 0) {
         this.log(`${whaleQueries.size} whale address(es) excluded`);
       }
 
-      if (dummiesAdded > 0) {
-        this.log(`[PIR-AUDIT] CHUNK round-presence padding: added ${dummiesAdded} dummy entry_id(s) for not-found/whale queries`);
-      }
+      this.log(
+        `[PIR-AUDIT] CHUNK chunk_max closure: ${N} queries × M=${CHUNK_MERKLE_ITEMS_PER_QUERY} owned each = ${uniqueEntryIds.length} unique fetched`,
+      );
 
       if (uniqueEntryIds.length === 0) {
         // Only reachable on empty-batch calls (no scripthashes queried),
@@ -1088,14 +1154,65 @@ export class OnionPirWebClient {
 
       const results: (QueryResult | null)[] = new Array(N).fill(null);
 
+      // Helper: assemble the M data leaves owned by query qi from the
+      // per-query owned entry_id list. Closure invariant: every query
+      // (found / not-found / whale) owns exactly
+      // `CHUNK_MERKLE_ITEMS_PER_QUERY` data leaves so the wire shape
+      // is constant. Synthetic entry_ids contribute valid Merkle
+      // proofs (the server commits to them in the published DATA
+      // Merkle root); the closure simply ensures every query attaches
+      // them as DATA leaves the verifier owns.
+      const collectOwnedDataLeaves = (qi: number): {
+        hashes: Uint8Array[];
+        positions: number[];
+      } => {
+        const owned = chunkOwnedPerQuery[qi];
+        const hashes: Uint8Array[] = [];
+        const positions: number[] = [];
+        for (const eid of owned) {
+          const h = dataBinHashes.get(eid);
+          const lp = dataLeafPositions.get(eid);
+          if (h && lp !== undefined) {
+            hashes.push(h);
+            positions.push(lp);
+          }
+        }
+        return { hashes, positions };
+      };
+
       for (let qi = 0; qi < N; qi++) {
+        const ownedLeaves = collectOwnedDataLeaves(qi);
+
         if (whaleQueries.has(qi)) {
-          results[qi] = { entries: [], totalSats: 0n, startChunkId: 0, numChunks: 0, numRounds: 0, isWhale: true };
+          // Whale: matched INDEX entry but `numEntries == 0`. Post
+          // chunk_max closure, whales also own M synthetic data
+          // leaves — the verifier walks them just like found queries.
+          results[qi] = {
+            entries: [],
+            totalSats: 0n,
+            startChunkId: 0,
+            numChunks: 0,
+            numRounds: chunkRoundsCount,
+            isWhale: true,
+            merkleIndexRoot: this.getOnionPirMerkleForDb(this.dbId)?.index?.root,
+            merkleDataRoot: this.getOnionPirMerkleForDb(this.dbId)?.data?.root,
+            indexBinHash: indexBinHashes[qi] ?? undefined,
+            indexLeafPos: indexLeafPos[qi] ?? undefined,
+            allIndexBinHashes: allBinsChecked.get(qi),
+            dataBinHashes: ownedLeaves.hashes,
+            dataLeafPositions: ownedLeaves.positions,
+            scriptHash: scriptHashes[qi],
+            rawChunkData: new Uint8Array(0),
+          };
           continue;
         }
+
         const ir = indexResults[qi];
         if (!ir) {
-          // Not found in index — include ALL bins checked for Merkle verification
+          // Not-found in INDEX — every probed cuckoo bin is committed
+          // for the absence proof; chunk_max closure attaches the M
+          // owned synthetic data leaves so found-vs-not-found is
+          // wire-shape-identical at the Merkle level.
           const binHash = indexBinHashes[qi];
           const leafPos = indexLeafPos[qi];
           const allBins = allBinsChecked.get(qi);
@@ -1105,15 +1222,15 @@ export class OnionPirWebClient {
               totalSats: 0n,
               startChunkId: 0,
               numChunks: 0,
-              numRounds: 0,
+              numRounds: chunkRoundsCount,
               isWhale: false,
               merkleIndexRoot: this.getOnionPirMerkleForDb(this.dbId)?.index?.root,
               merkleDataRoot: this.getOnionPirMerkleForDb(this.dbId)?.data?.root,
               indexBinHash: binHash,
               indexLeafPos: leafPos,
-              allIndexBinHashes: allBins, // All bins for "not found" verification
-              dataBinHashes: [],
-              dataLeafPositions: [],
+              allIndexBinHashes: allBins,
+              dataBinHashes: ownedLeaves.hashes,
+              dataLeafPositions: ownedLeaves.positions,
               scriptHash: scriptHashes[qi],
               rawChunkData: new Uint8Array(0),
             };
@@ -1121,7 +1238,10 @@ export class OnionPirWebClient {
           continue;
         }
 
-        // Assemble data from entries
+        // Found path — assemble UTXO data from REAL entries only.
+        // Synthetic-slot payloads belong to other scripthashes and
+        // are not surfaced in `entries` / `rawChunkData`; they only
+        // contribute to Merkle leaf coverage.
         const parts: Uint8Array[] = [];
         for (let j = 0; j < ir.numEntries; j++) {
           const eid = ir.entryId + j;
@@ -1139,18 +1259,6 @@ export class OnionPirWebClient {
         for (const p of parts) { fullData.set(p, pos); pos += p.length; }
 
         const { entries, totalSats } = this.decodeUtxoData(fullData);
-        // Collect data bin hashes for this address's entry_ids
-        const addrDataBinHashes: Uint8Array[] = [];
-        const addrDataLeafPositions: number[] = [];
-        for (let j = 0; j < ir.numEntries; j++) {
-          const eid = ir.entryId + j;
-          const h = dataBinHashes.get(eid);
-          const lp = dataLeafPositions.get(eid);
-          if (h && lp !== undefined) {
-            addrDataBinHashes.push(h);
-            addrDataLeafPositions.push(lp);
-          }
-        }
         results[qi] = {
           entries,
           totalSats,
@@ -1166,8 +1274,12 @@ export class OnionPirWebClient {
           // see CLAUDE.md "Merkle INDEX Item-Count Symmetry"). Used by the
           // Merkle item builder to emit one INDEX leaf per probed bin.
           allIndexBinHashes: allBinsChecked.get(qi),
-          dataBinHashes: addrDataBinHashes,
-          dataLeafPositions: addrDataLeafPositions,
+          // Post-closure: M data leaves per query (real + synthetic).
+          // Synthetic-slot leaves are valid Merkle commitments; the
+          // verifier requires ALL M leaves to verify for the query
+          // to pass.
+          dataBinHashes: ownedLeaves.hashes,
+          dataLeafPositions: ownedLeaves.positions,
           scriptHash: scriptHashes[qi],
           // Preserve raw bytes so delta-DB queries can be re-decoded via
           // decodeDeltaData in the sync-merge flow. For main DB this is just
