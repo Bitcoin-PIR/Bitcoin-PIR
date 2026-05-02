@@ -1,0 +1,173 @@
+//! `bpir-admin attest` — fetch and verify a server's SEV-SNP report.
+//!
+//! Drives `pir_sdk_client::attest::attest()` and presents the result.
+//! Optional `--expect-binary` and `--expect-manifest-roots` flags cross-
+//! check the server's self-reported values against operator-published
+//! expected values; mismatches exit non-zero so this can be wired into
+//! CI.
+
+use clap::Args;
+use pir_sdk_client::attest::{attest, SevStatus};
+use pir_sdk_client::WsConnection;
+
+#[derive(Args, Debug)]
+pub struct AttestArgs {
+    /// WebSocket URL of the server to attest, e.g.
+    /// `wss://pir2.chenweikeng.com` or `ws://localhost:8092`.
+    pub server: String,
+
+    /// Expected hex of the server binary's SHA-256. If set, exit
+    /// non-zero unless the server's self-reported `binary_sha256`
+    /// matches.
+    #[arg(long)]
+    pub expect_binary: Option<String>,
+
+    /// Comma-separated list of expected per-DB manifest roots (hex,
+    /// in db_id order). If set, every position must match.
+    #[arg(long, value_delimiter = ',')]
+    pub expect_manifest_roots: Vec<String>,
+
+    /// Override the connect+request timeout (seconds, default 30).
+    #[arg(long, default_value_t = 30)]
+    pub timeout_seconds: u64,
+}
+
+/// Run the attest subcommand, returning the process exit code.
+pub async fn run(args: AttestArgs) -> Result<(), i32> {
+    let mut conn = match connect(&args.server, args.timeout_seconds).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("attest: connect to {} failed: {}", args.server, e);
+            return Err(1);
+        }
+    };
+
+    let mut nonce = [0u8; 32];
+    if let Err(e) = getrandom::getrandom(&mut nonce) {
+        eprintln!("attest: getrandom: {}", e);
+        return Err(1);
+    }
+
+    let v = match attest(&mut conn, nonce).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("attest: server returned error: {}", e);
+            return Err(1);
+        }
+    };
+
+    println!("Server URL:        {}", args.server);
+    println!("Nonce sent:        {}", hex::encode(nonce));
+    println!();
+    println!("== Self-reported (server-side) ==");
+    println!("binary_sha256:     {}", hex::encode(v.response.binary_sha256));
+    println!("git_rev:           {}", v.response.git_rev);
+    println!("manifest roots ({} DB{}):",
+             v.response.manifest_roots.len(),
+             if v.response.manifest_roots.len() == 1 { "" } else { "s" });
+    for (i, root) in v.response.manifest_roots.iter().enumerate() {
+        println!("  db_id={}: {}", i, hex::encode(root));
+    }
+    println!();
+    println!("== SEV-SNP attestation ==");
+    println!("Report bytes:      {}", v.response.sev_snp_report.len());
+    println!("Status:            {:?}", v.sev_status);
+    println!("Expected REPORT_DATA[..32]: {}", hex::encode(v.expected_report_data_hash));
+    if !v.response.sev_snp_report.is_empty() {
+        // Pull the launch MEASUREMENT (offset 0x90, 48 bytes) for display.
+        // (See AMD SEV-SNP ABI doc: report v2/v5 layout.)
+        const MEASUREMENT_OFFSET: usize = 0x90;
+        const MEASUREMENT_LEN: usize = 48;
+        if v.response.sev_snp_report.len() >= MEASUREMENT_OFFSET + MEASUREMENT_LEN {
+            let m = &v.response.sev_snp_report
+                [MEASUREMENT_OFFSET..MEASUREMENT_OFFSET + MEASUREMENT_LEN];
+            println!("Launch MEASUREMENT: {}", hex::encode(m));
+        }
+    }
+
+    let mut mismatch = false;
+
+    // Cross-check sev status
+    match v.sev_status {
+        SevStatus::ReportDataMatch => {
+            println!();
+            println!("✓ SEV-SNP REPORT_DATA binding verified.");
+        }
+        SevStatus::NoSevHost => {
+            println!();
+            println!("⚠ Server is not running on a SEV-SNP host —");
+            println!("   self-reported metadata is NOT hardware-backed.");
+        }
+        SevStatus::ReportDataMismatch => {
+            println!();
+            println!("✗ REPORT_DATA does not match recomputation —");
+            println!("   server may be lying about its self-reported state.");
+            mismatch = true;
+        }
+        SevStatus::MalformedReport => {
+            println!();
+            println!("✗ SEV report is malformed (too short for REPORT_DATA field).");
+            mismatch = true;
+        }
+    }
+
+    // Cross-check expected binary hash
+    if let Some(expected_hex) = args.expect_binary {
+        let actual_hex = hex::encode(v.response.binary_sha256);
+        if !expected_hex.eq_ignore_ascii_case(&actual_hex) {
+            println!();
+            println!("✗ binary_sha256 mismatch:");
+            println!("    expected: {}", expected_hex);
+            println!("    got:      {}", actual_hex);
+            mismatch = true;
+        } else {
+            println!();
+            println!("✓ binary_sha256 matches expected.");
+        }
+    }
+
+    // Cross-check expected manifest roots
+    if !args.expect_manifest_roots.is_empty() {
+        if args.expect_manifest_roots.len() != v.response.manifest_roots.len() {
+            println!();
+            println!(
+                "✗ manifest root count mismatch: expected {}, got {}",
+                args.expect_manifest_roots.len(),
+                v.response.manifest_roots.len()
+            );
+            mismatch = true;
+        } else {
+            for (i, (exp, got)) in args
+                .expect_manifest_roots
+                .iter()
+                .zip(v.response.manifest_roots.iter())
+                .enumerate()
+            {
+                let got_hex = hex::encode(got);
+                if !exp.eq_ignore_ascii_case(&got_hex) {
+                    println!();
+                    println!("✗ manifest_root[{}] mismatch:", i);
+                    println!("    expected: {}", exp);
+                    println!("    got:      {}", got_hex);
+                    mismatch = true;
+                }
+            }
+            if !mismatch {
+                println!("✓ all manifest roots match expected.");
+            }
+        }
+    }
+
+    if mismatch {
+        Err(2)
+    } else {
+        Ok(())
+    }
+}
+
+async fn connect(url: &str, _timeout_secs: u64) -> Result<WsConnection, String> {
+    // WsConnection::connect() applies DEFAULT_CONNECT_TIMEOUT (30s)
+    // internally; per-request deadline is DEFAULT_REQUEST_TIMEOUT.
+    // For an MVP CLI the defaults are fine; expose finer control later.
+    WsConnection::connect(url).await.map_err(|e| e.to_string())
+}

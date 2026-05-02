@@ -1,0 +1,31 @@
+[package]
+name = "bpir-admin"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "Operator CLI for Bitcoin PIR servers: keygen, attest, DB upload"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "bpir-admin"
+path = "src/main.rs"
+
+[dependencies]
+pir-core = { path = "../pir-core" }
+pir-sdk = { path = "../pir-sdk" }
+pir-sdk-client = { path = "../pir-sdk-client" }
+
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
+ed25519-dalek = "2"
+getrandom = "0.2"
+hex = "0.4"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+# Used by upload-side tests to confirm the bytes we emit parse and
+# verify cleanly via the same parser the server runs.
+pir-runtime-core = { path = "../pir-runtime-core" }
