@@ -98,6 +98,15 @@ impl RequestHandler {
             Request::HarmonyQuery(query) => self.handle_harmony_query(query),
             Request::HarmonyBatchQuery(query) => self.handle_harmony_batch_query(query),
             Request::Attest { nonce } => Response::Attest(self.handle_attest(*nonce)),
+            // Admin requests need per-connection state, which the stateless
+            // RequestHandler doesn't carry. Binaries that want admin
+            // (unified_server) implement these directly in their dispatch
+            // loop where per-connection state is naturally available.
+            Request::AdminAuthChallenge | Request::AdminAuthResponse { .. } => {
+                Response::Error(
+                    "admin requests not supported via stateless RequestHandler — use the unified_server's per-connection path".into(),
+                )
+            }
         }
     }
 

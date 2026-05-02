@@ -44,12 +44,38 @@ pub const REQ_RESIDENCY: u8 = 0x04;
 
 pub const REQ_ATTEST: u8 = 0x05;
 
+// ─── Admin auth (Slice 3a) ─────────────────────────────────────────────────
+//
+// Challenge/response with ed25519. The server holds the admin's public
+// key (loaded once at startup from a CLI flag or env var, eventually
+// from the UKI cmdline in tier 3). The client holds the matching
+// private key on the operator's laptop.
+//
+//   client → server:  REQ_ADMIN_AUTH_CHALLENGE
+//   server → client:  RESP_ADMIN_AUTH_CHALLENGE { nonce: [u8; 32] }
+//   client signs `b"BPIR-ADMIN-AUTH-V1" || nonce` with their ed25519 sk
+//   client → server:  REQ_ADMIN_AUTH_RESPONSE { signature: [u8; 64] }
+//   server verifies → marks the connection authenticated.
+//
+// Auth state lives per-WebSocket-connection on the server. Disconnecting
+// is logging out. Nothing in the wire protocol persists auth across
+// connections.
+
+pub const REQ_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
+pub const REQ_ADMIN_AUTH_RESPONSE: u8 = 0x81;
+
+/// Domain-separation tag for admin-auth signatures. Must match between
+/// client and server.
+pub const ADMIN_AUTH_DOMAIN_TAG: &[u8] = b"BPIR-ADMIN-AUTH-V1";
+
 // ─── Response variants ──────────────────────────────────────────────────────
 
 pub const RESP_PONG: u8 = 0x00;
 pub const RESP_INFO: u8 = 0x01;
 pub const RESP_DB_CATALOG: u8 = 0x02;
 pub const RESP_ATTEST: u8 = 0x05;
+pub const RESP_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
+pub const RESP_ADMIN_AUTH_RESPONSE: u8 = 0x81;
 pub const RESP_INDEX_BATCH: u8 = 0x11;
 pub const RESP_CHUNK_BATCH: u8 = 0x21;
 pub const RESP_MERKLE_SIBLING_BATCH: u8 = 0x31;
@@ -180,6 +206,11 @@ pub enum Request {
     /// Attestation request — 32-byte client-supplied nonce gets folded
     /// into REPORT_DATA so the response is anti-replay.
     Attest { nonce: [u8; 32] },
+    /// Admin auth step 1 — client asks the server for a challenge nonce.
+    AdminAuthChallenge,
+    /// Admin auth step 2 — client returns ed25519 signature over
+    /// `ADMIN_AUTH_DOMAIN_TAG || nonce`.
+    AdminAuthResponse { signature: [u8; 64] },
     IndexBatch(BatchQuery),
     ChunkBatch(BatchQuery),
     MerkleSiblingBatch(BatchQuery),
@@ -238,6 +269,24 @@ pub struct DatabaseCatalog {
     pub databases: Vec<DatabaseCatalogEntry>,
 }
 
+/// Server response to a `REQ_ADMIN_AUTH_CHALLENGE`. The 32-byte
+/// `nonce` is what the client must sign (prefixed by
+/// `ADMIN_AUTH_DOMAIN_TAG`) and return as a `REQ_ADMIN_AUTH_RESPONSE`.
+#[derive(Clone, Debug)]
+pub struct AdminAuthChallenge {
+    pub nonce: [u8; 32],
+}
+
+/// Server response to a `REQ_ADMIN_AUTH_RESPONSE`. `ok = true` means
+/// the connection is now authenticated; subsequent admin requests on
+/// the same connection are accepted. `msg` is a short status string
+/// (e.g. "ok", "no challenge issued", "bad signature").
+#[derive(Clone, Debug)]
+pub struct AdminAuthResult {
+    pub ok: bool,
+    pub msg: String,
+}
+
 /// Result of an attestation request.
 ///
 /// Wire format (encoded after the `RESP_ATTEST` variant byte):
@@ -277,6 +326,8 @@ pub enum Response {
     Info(ServerInfo),
     DbCatalog(DatabaseCatalog),
     Attest(AttestResult),
+    AdminAuthChallenge(AdminAuthChallenge),
+    AdminAuthResponse(AdminAuthResult),
     IndexBatch(BatchResult),
     ChunkBatch(BatchResult),
     MerkleSiblingBatch(BatchResult),
@@ -305,6 +356,13 @@ impl Request {
             Request::Attest { nonce } => {
                 payload.push(REQ_ATTEST);
                 payload.extend_from_slice(nonce);
+            }
+            Request::AdminAuthChallenge => {
+                payload.push(REQ_ADMIN_AUTH_CHALLENGE);
+            }
+            Request::AdminAuthResponse { signature } => {
+                payload.push(REQ_ADMIN_AUTH_RESPONSE);
+                payload.extend_from_slice(signature);
             }
             Request::IndexBatch(q) => {
                 payload.push(REQ_INDEX_BATCH);
@@ -381,6 +439,18 @@ impl Request {
                 nonce.copy_from_slice(&data[1..33]);
                 Ok(Request::Attest { nonce })
             }
+            REQ_ADMIN_AUTH_CHALLENGE => Ok(Request::AdminAuthChallenge),
+            REQ_ADMIN_AUTH_RESPONSE => {
+                if data.len() < 1 + 64 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "admin auth response must carry a 64-byte signature",
+                    ));
+                }
+                let mut signature = [0u8; 64];
+                signature.copy_from_slice(&data[1..65]);
+                Ok(Request::AdminAuthResponse { signature })
+            }
             REQ_INDEX_BATCH => {
                 let q = decode_batch_query(&data[1..])?;
                 Ok(Request::IndexBatch(q))
@@ -440,6 +510,17 @@ impl Response {
             Response::Attest(r) => {
                 payload.push(RESP_ATTEST);
                 encode_attest_result(&mut payload, r);
+            }
+            Response::AdminAuthChallenge(c) => {
+                payload.push(RESP_ADMIN_AUTH_CHALLENGE);
+                payload.extend_from_slice(&c.nonce);
+            }
+            Response::AdminAuthResponse(r) => {
+                payload.push(RESP_ADMIN_AUTH_RESPONSE);
+                payload.push(if r.ok { 1 } else { 0 });
+                let msg_bytes = r.msg.as_bytes();
+                payload.extend_from_slice(&(msg_bytes.len() as u16).to_le_bytes());
+                payload.extend_from_slice(msg_bytes);
             }
             Response::IndexBatch(r) => {
                 payload.push(RESP_INDEX_BATCH);
@@ -513,6 +594,35 @@ impl Response {
             RESP_ATTEST => {
                 let r = decode_attest_result(&data[1..])?;
                 Ok(Response::Attest(r))
+            }
+            RESP_ADMIN_AUTH_CHALLENGE => {
+                if data.len() < 1 + 32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "admin auth challenge response missing nonce",
+                    ));
+                }
+                let mut nonce = [0u8; 32];
+                nonce.copy_from_slice(&data[1..33]);
+                Ok(Response::AdminAuthChallenge(AdminAuthChallenge { nonce }))
+            }
+            RESP_ADMIN_AUTH_RESPONSE => {
+                if data.len() < 1 + 1 + 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "admin auth result too short",
+                    ));
+                }
+                let ok = data[1] != 0;
+                let msg_len = u16::from_le_bytes(data[2..4].try_into().unwrap()) as usize;
+                if 4 + msg_len > data.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "admin auth result truncated msg",
+                    ));
+                }
+                let msg = String::from_utf8_lossy(&data[4..4 + msg_len]).to_string();
+                Ok(Response::AdminAuthResponse(AdminAuthResult { ok, msg }))
             }
             RESP_INDEX_BATCH => {
                 let r = decode_batch_result(&data[1..])?;

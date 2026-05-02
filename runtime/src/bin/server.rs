@@ -431,6 +431,11 @@ async fn main() {
                             // not the Query Server.
                             Response::Error("hint requests not supported on query server".into())
                         }
+                        Request::AdminAuthChallenge | Request::AdminAuthResponse { .. } => {
+                            // Legacy server doesn't support admin operations.
+                            // Use unified_server with --admin-pubkey-hex.
+                            Response::Error("admin auth not supported on legacy server".into())
+                        }
                         Request::Attest { nonce } => {
                             // Legacy server doesn't load DBs via MappedDatabase, so it
                             // has no MANIFEST.toml verification — manifest_roots is empty.

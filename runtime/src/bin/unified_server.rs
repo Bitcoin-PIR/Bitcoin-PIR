@@ -58,6 +58,11 @@ struct CliArgs {
     checkpoints: Vec<(PathBuf, u32)>,
     /// Delta databases: (path, base_height, tip_height).
     deltas: Vec<(PathBuf, u32, u32)>,
+    /// Hex-encoded ed25519 admin pubkey (64 chars). When set, REQ_ADMIN_*
+    /// requests are accepted and gated by challenge/response auth against
+    /// this key. When unset, all REQ_ADMIN_* requests return an error
+    /// envelope.
+    admin_pubkey_hex: Option<String>,
 }
 
 fn parse_args() -> CliArgs {
@@ -69,6 +74,7 @@ fn parse_args() -> CliArgs {
     let mut config_path: Option<PathBuf> = None;
     let mut checkpoints: Vec<(PathBuf, u32)> = Vec::new();
     let mut deltas: Vec<(PathBuf, u32, u32)> = Vec::new();
+    let mut admin_pubkey_hex: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -122,12 +128,18 @@ fn parse_args() -> CliArgs {
                     i += 3;
                 }
             }
+            "--admin-pubkey-hex" => {
+                if let Some(hex) = args.get(i + 1) {
+                    admin_pubkey_hex = Some(hex.clone());
+                }
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -324,6 +336,9 @@ struct UnifiedServerData {
     onionpir_merkle: Vec<Option<OnionPirMerkleInfo>>,
     /// All mmap'd regions for residency monitoring.
     mmap_regions: Vec<MmapRegion>,
+    /// Admin auth config — `Some` when the operator started the server with
+    /// `--admin-pubkey-hex <hex>`. `None` means REQ_ADMIN_* requests fail.
+    admin_config: Option<pir_runtime_core::admin::AdminConfig>,
 }
 
 impl UnifiedServerData {
@@ -1578,6 +1593,17 @@ async fn main() {
     let num_databases = all_databases.len();
     let state = ServerState { databases: all_databases };
 
+    let admin_config = match args.admin_pubkey_hex.as_deref() {
+        None => None,
+        Some(hex) => match pir_runtime_core::admin::AdminConfig::from_hex(hex) {
+            Ok(c) => {
+                println!("  Admin auth: enabled (pubkey={})", &hex[..16]);
+                Some(c)
+            }
+            Err(e) => panic!("invalid --admin-pubkey-hex: {}", e),
+        },
+    };
+
     let server = Arc::new(UnifiedServerData {
         state,
         role: args.role,
@@ -1585,6 +1611,7 @@ async fn main() {
         onionpir_infos,
         onionpir_merkle: onionpir_merkle_per_db,
         mmap_regions,
+        admin_config,
     });
 
     // ── Accept WebSocket connections ────────────────────────────────────
@@ -1623,6 +1650,10 @@ async fn main() {
             println!("[{}] Connected (id={})", peer, client_id);
             let (mut sink, mut ws_stream) = ws.split();
 
+            // Per-connection admin auth state. Lives until the connection
+            // drops; disconnecting is logging out.
+            let mut admin_state = pir_runtime_core::admin::AdminConnectionState::default();
+
             while let Some(msg) = ws_stream.next().await {
                 let msg = match msg {
                     Ok(m) => m,
@@ -1657,6 +1688,49 @@ async fn main() {
                     // All clients should use 0x03 (JSON) instead.
                     REQ_GET_DB_CATALOG => {
                         let _ = sink.send(Message::Binary(Response::DbCatalog(server.build_catalog()).encode().into())).await;
+                    }
+                    REQ_ADMIN_AUTH_CHALLENGE => {
+                        match server.admin_config {
+                            None => {
+                                let resp = Response::Error("admin auth disabled (server started without --admin-pubkey-hex)".into());
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            }
+                            Some(_) => {
+                                let nonce = admin_state.issue_challenge();
+                                let resp = Response::AdminAuthChallenge(
+                                    pir_runtime_core::protocol::AdminAuthChallenge { nonce },
+                                );
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            }
+                        }
+                    }
+                    REQ_ADMIN_AUTH_RESPONSE => {
+                        let cfg = match server.admin_config.as_ref() {
+                            Some(c) => c,
+                            None => {
+                                let resp = Response::Error("admin auth disabled".into());
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                continue;
+                            }
+                        };
+                        let signature = if let Ok(Request::AdminAuthResponse { signature }) = Request::decode(payload) {
+                            signature
+                        } else {
+                            let resp = Response::Error("malformed REQ_ADMIN_AUTH_RESPONSE".into());
+                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            continue;
+                        };
+                        let result = match admin_state.verify_response(&signature, cfg) {
+                            Ok(()) => {
+                                println!("[{}] admin authenticated", peer);
+                                pir_runtime_core::protocol::AdminAuthResult { ok: true, msg: "ok".into() }
+                            }
+                            Err(e) => {
+                                eprintln!("[{}] admin auth failed: {}", peer, e);
+                                pir_runtime_core::protocol::AdminAuthResult { ok: false, msg: e.to_string() }
+                            }
+                        };
+                        let _ = sink.send(Message::Binary(Response::AdminAuthResponse(result).encode().into())).await;
                     }
                     REQ_ATTEST => {
                         if let Ok(Request::Attest { nonce }) = Request::decode(payload) {

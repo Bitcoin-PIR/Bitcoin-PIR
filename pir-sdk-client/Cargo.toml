@@ -65,6 +65,10 @@ rand = { version = "0.8", optional = true }
 # WsConnection impl and the WASM WebSocket transport impl share it.
 async-trait = "0.1"
 
+# ed25519 signing for the admin authentication challenge/response
+# (REQ_ADMIN_AUTH_*). Pure-Rust, no C deps; works cross-target.
+ed25519-dalek = "2"
+
 # futures-util combinators are cross-target. The native WebSocket path uses
 # `StreamExt`/`SinkExt`; the WASM path uses channel combinators.
 futures-util = "0.3"
