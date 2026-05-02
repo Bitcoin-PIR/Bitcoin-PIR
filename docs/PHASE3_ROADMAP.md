@@ -168,6 +168,16 @@ reliable recovery path.
 
 ## Slice 3 — Tier 3 lockdown: bake binary into initramfs, drop sshd
 
+> **Canonical to-do moved to [PHASE3_SLICE3_PLAN.md](PHASE3_SLICE3_PLAN.md)**
+> (2026-05-03). The section below is the original sketch retained for
+> historical context; the plan doc has the current architectural
+> decisions, post-Slices-A–D baseline, and discovered constraints
+> (notably: VPSBG VNC doesn't work on this SEV-SNP guest, so prior
+> "VNC console shows …" acceptance criteria don't apply).
+
+### Original sketch (superseded — see PHASE3_SLICE3_PLAN.md)
+
+
 **Goal**: the UKI itself contains everything needed to run
 `unified_server` — kernel + initramfs (with binary, libs, configs) +
 cmdline (admin pubkey, listen port). No rootfs needed for the service
