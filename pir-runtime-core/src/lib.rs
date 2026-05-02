@@ -4,5 +4,6 @@
 
 pub mod eval;
 pub mod handler;
+pub mod manifest;
 pub mod protocol;
 pub mod table;

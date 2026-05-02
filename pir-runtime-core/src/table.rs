@@ -4,7 +4,9 @@
 //! and the new `MappedSubTable` / `MappedDatabase` types that support
 //! multiple databases with different parameters.
 
+use crate::manifest::{hex_encode, DbManifest};
 use memmap2::Mmap;
+use pir_core::merkle::Hash256;
 use pir_core::params::{
     TableParams, CHUNK_CUCKOO_FILE, CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, CUCKOO_FILE, HEADER_SIZE,
     INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, MAGIC,
@@ -136,6 +138,15 @@ pub struct MappedDatabase {
     pub bucket_merkle_roots: Option<Vec<u8>>,
     /// Super-root: SHA256 of all 155 roots concatenated.
     pub bucket_merkle_root: Option<Vec<u8>>,
+
+    /// SHA-256 of `MANIFEST.toml` if one was present and verified.
+    /// `None` for legacy DBs that pre-date the manifest format.
+    /// Folded into REPORT_DATA when the server signs an attestation report.
+    pub manifest_root: Option<Hash256>,
+    /// The parsed manifest (kept around so `/attest` can return per-file
+    /// hashes to the client without re-reading the file). `None` iff
+    /// `manifest_root` is `None`.
+    pub manifest: Option<DbManifest>,
 }
 
 impl MappedDatabase {
@@ -144,6 +155,33 @@ impl MappedDatabase {
     /// Automatically detects and loads Merkle sub-tables if present.
     pub fn load(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
         println!("[DB:{}] Loading from {}", descriptor.name, base_dir.display());
+
+        // Verify MANIFEST.toml first if present. Aborts startup on mismatch
+        // — refusing to mmap unaccounted bytes is the safety boundary that
+        // makes the per-DB manifest_root meaningful for attestation.
+        let (manifest, manifest_root) = match DbManifest::load_and_verify(base_dir) {
+            Ok(Some((m, root))) => {
+                println!(
+                    "  Manifest verified: {} files, root=sha256({}...)",
+                    m.files.len(),
+                    &hex_encode(&root)[..16]
+                );
+                (Some(m), Some(root))
+            }
+            Ok(None) => {
+                eprintln!(
+                    "[DB:{}] WARN: no MANIFEST.toml in {} — manifest verification SKIPPED (back-compat). \
+                     Generate one with scripts/build_db_manifest.sh to enable attestation coverage.",
+                    descriptor.name,
+                    base_dir.display()
+                );
+                (None, None)
+            }
+            Err(e) => panic!(
+                "[DB:{}] manifest verification failed: {}. Refusing to load.",
+                descriptor.name, e
+            ),
+        };
 
         let index = MappedSubTable::load(
             &base_dir.join("batch_pir_cuckoo.bin"),
@@ -276,6 +314,7 @@ impl MappedDatabase {
             merkle_siblings, merkle_tree_top, merkle_root, merkle_arity,
             bucket_merkle_index_siblings, bucket_merkle_chunk_siblings,
             bucket_merkle_tree_tops, bucket_merkle_roots, bucket_merkle_root,
+            manifest, manifest_root,
         }
     }
 

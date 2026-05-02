@@ -19,3 +19,8 @@ libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
 memmap2 = "0.9"
 rayon = "1.10"
 libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
