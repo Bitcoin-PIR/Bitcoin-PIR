@@ -115,6 +115,16 @@ impl RequestHandler {
             Request::HarmonyQuery(query) => self.handle_harmony_query(query),
             Request::HarmonyBatchQuery(query) => self.handle_harmony_batch_query(query),
             Request::Attest { nonce } => Response::Attest(self.handle_attest(*nonce)),
+            // Handshake needs per-connection state to mint a fresh
+            // ephemeral keypair, derive the session key, and stash it
+            // for subsequent encrypted-frame open/seal. The stateless
+            // RequestHandler can't do that — unified_server handles it
+            // directly in its per-connection dispatch loop.
+            Request::Handshake { .. } => {
+                Response::Error(
+                    "handshake requires per-connection state — use the unified_server's per-connection path".into(),
+                )
+            }
             // Admin requests need per-connection state, which the stateless
             // RequestHandler doesn't carry. Binaries that want admin
             // (unified_server) implement these directly in their dispatch

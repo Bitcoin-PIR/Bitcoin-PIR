@@ -44,6 +44,10 @@ onion = ["dep:onionpir", "dep:rand"]
 # crate, no runtime overhead unless callers actually serialise.
 pir-sdk = { version = "0.1.0", path = "../pir-sdk", features = ["serde"] }
 pir-core = { version = "0.1.0", path = "../pir-core" }
+# Pure-crypto handshake + AEAD primitives shared with the server
+# (pir-runtime-core::channel). Compiles to wasm32 (verified — uses
+# RustCrypto's pure-Rust x25519-dalek + chacha20poly1305 + hkdf).
+pir-channel = { version = "0.1.0", path = "../pir-channel" }
 
 # DPF library — pure Rust, works on any target.
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
@@ -143,6 +147,10 @@ futures-channel = "0.3"
 [dev-dependencies]
 env_logger = "0.11"
 hex = "0.4"
+# Used by pir-sdk-client::channel tests to mint test ephemeral keys
+# and probe handshake-mismatch behaviour against a fake server.
+rand_core = { version = "0.6", features = ["getrandom"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 # `serde_json` drives JSON output for the `onion_leakage_dump`
 # example (Phase 2.3 cross-language diff fixture).
 serde_json = "1.0"

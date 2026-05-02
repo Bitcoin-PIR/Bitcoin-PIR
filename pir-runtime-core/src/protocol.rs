@@ -44,6 +44,29 @@ pub const REQ_RESIDENCY: u8 = 0x04;
 
 pub const REQ_ATTEST: u8 = 0x05;
 
+// ─── Encrypted channel handshake (Slice B) ─────────────────────────────────
+//
+// One-round X25519 handshake before any traffic-bearing requests on a
+// connection. After the handshake completes, every subsequent frame is
+// AEAD-wrapped per `pir_channel::Session::seal` — the wire layout starts
+// with `pir_channel::ENCRYPTED_FRAME_MAGIC` (= 0xfe), a sequence number,
+// and a ChaCha20-Poly1305 ciphertext of the inner request/response.
+//
+// Sequence:
+//   client → server:  REQ_HANDSHAKE { client_eph_pub: [u8;32], nonce: [u8;32] }
+//   server → client:  RESP_HANDSHAKE { server_eph_pub: [u8;32] }
+//
+// The client must already know the server's long-lived static pubkey
+// (via REQ_ATTEST + verifying REPORT_DATA — the V2 layout binds the
+// pubkey to the chip-signed attestation). With both pubkeys + the
+// nonce, both sides derive a session key via HKDF-SHA256.
+//
+// Cleartext requests (PING, GET_INFO, ATTEST, the handshake itself)
+// remain available pre-handshake. Once the server processes a
+// REQ_HANDSHAKE, the connection enters encrypted mode and any
+// cleartext frame after that is a protocol error.
+pub const REQ_HANDSHAKE: u8 = 0x06;
+
 // ─── Admin auth (Slice 3a) ─────────────────────────────────────────────────
 //
 // Challenge/response with ed25519. The server holds the admin's public
@@ -101,6 +124,7 @@ pub const RESP_PONG: u8 = 0x00;
 pub const RESP_INFO: u8 = 0x01;
 pub const RESP_DB_CATALOG: u8 = 0x02;
 pub const RESP_ATTEST: u8 = 0x05;
+pub const RESP_HANDSHAKE: u8 = 0x06;
 pub const RESP_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
 pub const RESP_ADMIN_AUTH_RESPONSE: u8 = 0x81;
 pub const RESP_ADMIN_DB_UPLOAD_BEGIN: u8 = 0x82;
@@ -237,6 +261,18 @@ pub enum Request {
     /// Attestation request — 32-byte client-supplied nonce gets folded
     /// into REPORT_DATA so the response is anti-replay.
     Attest { nonce: [u8; 32] },
+    /// Encrypted-channel handshake — sent in cleartext as the first
+    /// channel-establishing message. After the server replies with its
+    /// `server_eph_pub`, both sides derive a session key per
+    /// `pir_channel`'s ECDH+HKDF construction. Subsequent client→server
+    /// frames are AEAD-wrapped with `pir_channel::ENCRYPTED_FRAME_MAGIC`
+    /// as the leading byte.
+    Handshake {
+        /// Client's per-session X25519 ephemeral pubkey.
+        client_eph_pub: [u8; 32],
+        /// Random 32-byte salt for HKDF-SHA256 session-key derivation.
+        nonce: [u8; 32],
+    },
     /// Admin auth step 1 — client asks the server for a challenge nonce.
     AdminAuthChallenge,
     /// Admin auth step 2 — client returns ed25519 signature over
@@ -370,6 +406,22 @@ pub struct AdminFinalizeResult {
 ///
 /// Per-DB manifest roots are zero (`[0u8; 32]`) for DBs that don't have
 /// a `MANIFEST.toml` (back-compat with legacy DBs).
+/// Server's response to a `REQ_HANDSHAKE`. Carries the per-session
+/// X25519 ephemeral public key. The client combines this with the
+/// server's long-lived static pubkey (verified via attestation) and
+/// its own ephemeral secret to derive the session key — see
+/// `pir_channel::ClientHandshake::complete_handshake`.
+///
+/// Wire format (after the `RESP_HANDSHAKE` variant byte):
+/// `[u8; 32] server_eph_pub`
+#[derive(Clone, Debug)]
+pub struct HandshakeResult {
+    /// Per-session X25519 ephemeral pubkey. Different for every
+    /// handshake even within the same boot of the server (provides
+    /// forward secrecy).
+    pub server_eph_pub: [u8; 32],
+}
+
 #[derive(Clone, Debug)]
 pub struct AttestResult {
     /// Raw signed SEV-SNP attestation report bytes (~1184 for v5).
@@ -406,6 +458,10 @@ pub enum Response {
     Info(ServerInfo),
     DbCatalog(DatabaseCatalog),
     Attest(AttestResult),
+    /// Server's reply to `Request::Handshake`. Carries the per-session
+    /// X25519 ephemeral pubkey. After this exchange both sides have the
+    /// same session key derived via `pir_channel`'s ECDH+HKDF.
+    Handshake(HandshakeResult),
     AdminAuthChallenge(AdminAuthChallenge),
     AdminAuthResponse(AdminAuthResult),
     AdminDbUploadBegin(AdminAck),
@@ -439,6 +495,11 @@ impl Request {
             }
             Request::Attest { nonce } => {
                 payload.push(REQ_ATTEST);
+                payload.extend_from_slice(nonce);
+            }
+            Request::Handshake { client_eph_pub, nonce } => {
+                payload.push(REQ_HANDSHAKE);
+                payload.extend_from_slice(client_eph_pub);
                 payload.extend_from_slice(nonce);
             }
             Request::AdminAuthChallenge => {
@@ -545,6 +606,20 @@ impl Request {
                 let mut nonce = [0u8; 32];
                 nonce.copy_from_slice(&data[1..33]);
                 Ok(Request::Attest { nonce })
+            }
+            REQ_HANDSHAKE => {
+                // Wire layout: [variant:1][client_eph_pub:32][nonce:32]
+                if data.len() < 1 + 32 + 32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "handshake request must carry 32-byte client_eph_pub + 32-byte nonce",
+                    ));
+                }
+                let mut client_eph_pub = [0u8; 32];
+                client_eph_pub.copy_from_slice(&data[1..33]);
+                let mut nonce = [0u8; 32];
+                nonce.copy_from_slice(&data[33..65]);
+                Ok(Request::Handshake { client_eph_pub, nonce })
             }
             REQ_ADMIN_AUTH_CHALLENGE => Ok(Request::AdminAuthChallenge),
             REQ_ADMIN_AUTH_RESPONSE => {
@@ -663,6 +738,10 @@ impl Response {
                 payload.push(RESP_ATTEST);
                 encode_attest_result(&mut payload, r);
             }
+            Response::Handshake(r) => {
+                payload.push(RESP_HANDSHAKE);
+                payload.extend_from_slice(&r.server_eph_pub);
+            }
             Response::AdminAuthChallenge(c) => {
                 payload.push(RESP_ADMIN_AUTH_CHALLENGE);
                 payload.extend_from_slice(&c.nonce);
@@ -763,6 +842,17 @@ impl Response {
             RESP_ATTEST => {
                 let r = decode_attest_result(&data[1..])?;
                 Ok(Response::Attest(r))
+            }
+            RESP_HANDSHAKE => {
+                if data.len() < 1 + 32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "handshake response missing 32-byte server_eph_pub",
+                    ));
+                }
+                let mut server_eph_pub = [0u8; 32];
+                server_eph_pub.copy_from_slice(&data[1..33]);
+                Ok(Response::Handshake(HandshakeResult { server_eph_pub }))
             }
             RESP_ADMIN_AUTH_CHALLENGE => {
                 if data.len() < 1 + 32 {

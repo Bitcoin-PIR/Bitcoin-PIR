@@ -16,6 +16,7 @@ categories = ["cryptography", "cryptography::cryptocurrencies", "network-program
 
 [dependencies]
 pir-core = { version = "0.1.0", path = "../pir-core" }
+pir-channel = { version = "0.1.0", path = "../pir-channel" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
 memmap2 = "0.9"
 rayon = "1.10"

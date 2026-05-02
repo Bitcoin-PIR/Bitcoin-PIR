@@ -1,0 +1,33 @@
+[package]
+name = "pir-channel"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "End-to-end encrypted channel primitives for Bitcoin PIR: X25519 ECDH handshake derivation + ChaCha20-Poly1305 AEAD frame wrapping. Used by both pir-runtime-core (server) and pir-sdk-client (client) so cloudflared (or any other transport-layer intermediary) sees only ciphertext PIR frames."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-channel"
+readme = "README.md"
+keywords = ["pir", "privacy", "x25519", "chacha20", "aead"]
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+
+[dependencies]
+# Long-lived static + per-session ephemeral X25519 ECDH.
+# `static_secrets` enables `StaticSecret` (used by the long-lived
+# server key); without it only ephemeral keys are exposed.
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+# AEAD for the wrapped frames. ChaCha20-Poly1305 is fast on CPUs
+# without AES-NI (and equally well-supported in WebCrypto for the
+# browser-side mirror of this protocol).
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# HKDF-SHA256 for session-key derivation from the two ECDH shared
+# secrets.
+hkdf = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+# Tests need an RNG to mint ephemeral keys. The library itself is
+# RNG-agnostic (callers pass in keys) so this stays a dev dep.
+rand_core = { version = "0.6", features = ["getrandom"] }

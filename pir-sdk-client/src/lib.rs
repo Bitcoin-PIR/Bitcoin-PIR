@@ -59,6 +59,7 @@
 mod connection;
 pub mod admin;
 pub mod attest;
+pub mod channel;
 mod dpf;
 mod harmony;
 pub mod hint_cache;

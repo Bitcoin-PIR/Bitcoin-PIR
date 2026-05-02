@@ -439,6 +439,11 @@ async fn main() {
                         | Request::AdminDbActivate { .. } => {
                             Response::Error("admin not supported on legacy server".into())
                         }
+                        Request::Handshake { .. } => {
+                            // Legacy server has no per-connection state for the encrypted
+                            // channel; clients should use unified_server for that path.
+                            Response::Error("handshake not supported on legacy server".into())
+                        }
                         Request::Attest { nonce } => {
                             // Legacy server doesn't load DBs via MappedDatabase, so it
                             // has no MANIFEST.toml verification — manifest_roots is empty.

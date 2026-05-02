@@ -1,6 +1,15 @@
 //! Long-lived X25519 channel keypair for end-to-end encrypted client
 //! sessions.
 //!
+//! The pure-crypto handshake / AEAD primitives live in `pir-channel`
+//! (so the same code is callable from the wasm32 client). This module
+//! adds the server-side pieces that pir-channel doesn't deal with:
+//! generating + holding the long-lived static keypair, and bridging
+//! to `pir_channel::ServerHandshake` for the per-connection handshake.
+//!
+//! Re-exports `pir_channel::ServerHandshake` and `pir_channel::Session`
+//! for callers that want to drive the handshake from this crate.
+//!
 //! ## Why this exists
 //!
 //! cloudflared sits between the browser and `unified_server` and
@@ -36,6 +45,10 @@
 use rand_core::{OsRng, RngCore};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+// Re-export the handshake types so server code can drive a per-
+// connection handshake without depending on pir-channel directly.
+pub use pir_channel::{Direction, Session, ServerHandshake};
+
 /// X25519 keypair the server uses for the inner encrypted channel.
 ///
 /// Generate one with [`Self::generate`] at process start and stash it
@@ -69,10 +82,23 @@ impl ChannelKeypair {
         *self.public.as_bytes()
     }
 
-    /// Borrow the secret half. Slice B will use this to compute ECDH
-    /// against a client-supplied ephemeral pubkey during handshakes.
+    /// Borrow the secret half. The server uses this to construct a
+    /// per-connection [`ServerHandshake`] when a client sends
+    /// REQ_HANDSHAKE; the handshake then derives the session key
+    /// against the client's ephemeral pubkey.
     pub fn secret(&self) -> &StaticSecret {
         &self.secret
+    }
+
+    /// Convenience: build a per-connection [`ServerHandshake`] using
+    /// this server's long-lived static secret + a freshly-minted
+    /// ephemeral seed (pulled from `OsRng`). Each call mints a new
+    /// ephemeral keypair — every session has its own forward-secret
+    /// half.
+    pub fn new_handshake(&self) -> ServerHandshake<'_> {
+        let mut eph_seed = [0u8; 32];
+        OsRng.fill_bytes(&mut eph_seed);
+        ServerHandshake::new(&self.secret, eph_seed)
     }
 }
 
