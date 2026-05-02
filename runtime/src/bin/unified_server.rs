@@ -339,6 +339,11 @@ struct UnifiedServerData {
     /// Admin auth config — `Some` when the operator started the server with
     /// `--admin-pubkey-hex <hex>`. `None` means REQ_ADMIN_* requests fail.
     admin_config: Option<pir_runtime_core::admin::AdminConfig>,
+    /// Data root for admin DB uploads: the directory `databases.toml`
+    /// lives in (or `data_dir` for legacy invocations). Staging dirs
+    /// land at `<data_root>/.staging/<name>/` and ACTIVATE renames into
+    /// `<data_root>/<target_path>/`.
+    data_root: PathBuf,
 }
 
 impl UnifiedServerData {
@@ -1604,6 +1609,14 @@ async fn main() {
         },
     };
 
+    // data_root = directory of databases.toml (where DB subdirs live)
+    // when --config is given; otherwise fall back to --data-dir.
+    let data_root = match args.config_path.as_ref() {
+        Some(p) => p.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")),
+        None => args.data_dir.clone(),
+    };
+    println!("  Data root: {}", data_root.display());
+
     let server = Arc::new(UnifiedServerData {
         state,
         role: args.role,
@@ -1612,6 +1625,7 @@ async fn main() {
         onionpir_merkle: onionpir_merkle_per_db,
         mmap_regions,
         admin_config,
+        data_root,
     });
 
     // ── Accept WebSocket connections ────────────────────────────────────
@@ -1731,6 +1745,74 @@ async fn main() {
                             }
                         };
                         let _ = sink.send(Message::Binary(Response::AdminAuthResponse(result).encode().into())).await;
+                    }
+                    REQ_ADMIN_DB_UPLOAD_BEGIN | REQ_ADMIN_DB_UPLOAD_CHUNK
+                    | REQ_ADMIN_DB_UPLOAD_FINALIZE | REQ_ADMIN_DB_ACTIVATE => {
+                        if !admin_state.authenticated {
+                            let resp = Response::Error("not authenticated; complete REQ_ADMIN_AUTH_* first".into());
+                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            continue;
+                        }
+                        let req = match Request::decode(payload) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let resp = Response::Error(format!("decode admin request: {}", e));
+                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                continue;
+                            }
+                        };
+                        let resp = match req {
+                            Request::AdminDbUploadBegin { name, manifest_toml } => {
+                                let r = match admin_state.begin_upload(name.clone(), manifest_toml, &server.data_root) {
+                                    Ok(()) => {
+                                        println!("[{}] admin upload BEGIN {:?}", peer, name);
+                                        pir_runtime_core::protocol::AdminAck { ok: true, msg: "ok".into() }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[{}] admin upload BEGIN failed: {}", peer, e);
+                                        pir_runtime_core::protocol::AdminAck { ok: false, msg: e.to_string() }
+                                    }
+                                };
+                                Response::AdminDbUploadBegin(r)
+                            }
+                            Request::AdminDbUploadChunk { name, file_path, offset, data } => {
+                                let r = match admin_state.write_chunk(&name, &file_path, offset, &data) {
+                                    Ok(()) => pir_runtime_core::protocol::AdminAck { ok: true, msg: "ok".into() },
+                                    Err(e) => pir_runtime_core::protocol::AdminAck { ok: false, msg: e.to_string() },
+                                };
+                                Response::AdminDbUploadChunk(r)
+                            }
+                            Request::AdminDbUploadFinalize { name } => {
+                                let r = match admin_state.finalize_upload(&name) {
+                                    Ok(root) => pir_runtime_core::protocol::AdminFinalizeResult {
+                                        ok: true,
+                                        msg: "verified".into(),
+                                        manifest_root: root,
+                                    },
+                                    Err(e) => pir_runtime_core::protocol::AdminFinalizeResult {
+                                        ok: false,
+                                        msg: e.to_string(),
+                                        manifest_root: [0u8; 32],
+                                    },
+                                };
+                                Response::AdminDbUploadFinalize(r)
+                            }
+                            Request::AdminDbActivate { name, target_path } => {
+                                let r = match admin_state.activate(&name, &target_path, &server.data_root) {
+                                    Ok(()) => {
+                                        println!("[{}] admin ACTIVATE {:?} → {:?} (restart server to load)", peer, name, target_path);
+                                        pir_runtime_core::protocol::AdminAck {
+                                            ok: true,
+                                            msg: "activated; restart server to load".into(),
+                                        }
+                                    }
+                                    Err(e) => pir_runtime_core::protocol::AdminAck { ok: false, msg: e.to_string() },
+                                };
+                                Response::AdminDbActivate(r)
+                            }
+                            _ => unreachable!("variant byte already filtered"),
+                        };
+                        let _ = sink.send(Message::Binary(resp.encode().into())).await;
                     }
                     REQ_ATTEST => {
                         if let Ok(Request::Attest { nonce }) = Request::decode(payload) {

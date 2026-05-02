@@ -27,8 +27,16 @@ pub const ADMIN_AUTH_DOMAIN_TAG: &[u8] = b"BPIR-ADMIN-AUTH-V1";
 
 pub(crate) const REQ_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
 pub(crate) const REQ_ADMIN_AUTH_RESPONSE: u8 = 0x81;
+pub(crate) const REQ_ADMIN_DB_UPLOAD_BEGIN: u8 = 0x82;
+pub(crate) const REQ_ADMIN_DB_UPLOAD_CHUNK: u8 = 0x83;
+pub(crate) const REQ_ADMIN_DB_UPLOAD_FINALIZE: u8 = 0x84;
+pub(crate) const REQ_ADMIN_DB_ACTIVATE: u8 = 0x85;
 pub(crate) const RESP_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
 pub(crate) const RESP_ADMIN_AUTH_RESPONSE: u8 = 0x81;
+pub(crate) const RESP_ADMIN_DB_UPLOAD_BEGIN: u8 = 0x82;
+pub(crate) const RESP_ADMIN_DB_UPLOAD_CHUNK: u8 = 0x83;
+pub(crate) const RESP_ADMIN_DB_UPLOAD_FINALIZE: u8 = 0x84;
+pub(crate) const RESP_ADMIN_DB_ACTIVATE: u8 = 0x85;
 const RESP_ERROR: u8 = 0xff;
 
 /// Outcome of an `authenticate` call.
@@ -116,6 +124,145 @@ pub async fn authenticate<T: PirTransport + ?Sized>(
         v => Err(PirError::Protocol(format!(
             "unexpected auth response variant 0x{:02x}",
             v
+        ))),
+    }
+}
+
+/// Generic admin ack returned by BEGIN, CHUNK, ACTIVATE.
+#[derive(Clone, Debug)]
+pub struct AdminAck {
+    pub ok: bool,
+    pub msg: String,
+}
+
+/// Result of a FINALIZE call. On success, `manifest_root` matches what
+/// `MappedDatabase::load()` would emit for the staged dir.
+#[derive(Clone, Debug)]
+pub struct FinalizeResult {
+    pub ok: bool,
+    pub msg: String,
+    pub manifest_root: [u8; 32],
+}
+
+/// Send `REQ_ADMIN_DB_UPLOAD_BEGIN`. Server creates `<data_root>/.staging/<name>/`
+/// and writes `MANIFEST.toml` from the supplied bytes.
+pub async fn upload_begin<T: PirTransport + ?Sized>(
+    transport: &mut T,
+    name: &str,
+    manifest_toml: &[u8],
+) -> PirResult<AdminAck> {
+    let mut payload = Vec::with_capacity(name.len() + manifest_toml.len() + 16);
+    encode_lp(&mut payload, name.as_bytes());
+    payload.extend_from_slice(&(manifest_toml.len() as u32).to_le_bytes());
+    payload.extend_from_slice(manifest_toml);
+    let req = encode_request(REQ_ADMIN_DB_UPLOAD_BEGIN, &payload);
+    let resp = transport.roundtrip(&req).await?;
+    parse_ack(&resp, RESP_ADMIN_DB_UPLOAD_BEGIN, "BEGIN")
+}
+
+/// Send `REQ_ADMIN_DB_UPLOAD_CHUNK`. Server appends `data` to
+/// `<staging>/<file_path>` at byte `offset`.
+pub async fn upload_chunk<T: PirTransport + ?Sized>(
+    transport: &mut T,
+    name: &str,
+    file_path: &str,
+    offset: u64,
+    data: &[u8],
+) -> PirResult<AdminAck> {
+    let mut payload = Vec::with_capacity(name.len() + file_path.len() + 16 + data.len());
+    encode_lp(&mut payload, name.as_bytes());
+    encode_lp(&mut payload, file_path.as_bytes());
+    payload.extend_from_slice(&offset.to_le_bytes());
+    payload.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    payload.extend_from_slice(data);
+    let req = encode_request(REQ_ADMIN_DB_UPLOAD_CHUNK, &payload);
+    let resp = transport.roundtrip(&req).await?;
+    parse_ack(&resp, RESP_ADMIN_DB_UPLOAD_CHUNK, "CHUNK")
+}
+
+/// Send `REQ_ADMIN_DB_UPLOAD_FINALIZE`. Server hashes every file
+/// against the manifest and returns the manifest root.
+pub async fn upload_finalize<T: PirTransport + ?Sized>(
+    transport: &mut T,
+    name: &str,
+) -> PirResult<FinalizeResult> {
+    let mut payload = Vec::new();
+    encode_lp(&mut payload, name.as_bytes());
+    let req = encode_request(REQ_ADMIN_DB_UPLOAD_FINALIZE, &payload);
+    let resp = transport.roundtrip(&req).await?;
+    if resp.is_empty() {
+        return Err(PirError::Protocol("empty FINALIZE response".into()));
+    }
+    match resp[0] {
+        RESP_ADMIN_DB_UPLOAD_FINALIZE => {
+            // [1B ok][2B msg_len][msg][32B root]
+            if resp.len() < 1 + 1 + 2 + 32 {
+                return Err(PirError::Protocol("FINALIZE response too short".into()));
+            }
+            let ok = resp[1] != 0;
+            let msg_len = u16::from_le_bytes(resp[2..4].try_into().unwrap()) as usize;
+            if 4 + msg_len + 32 > resp.len() {
+                return Err(PirError::Protocol("FINALIZE response truncated".into()));
+            }
+            let msg = String::from_utf8_lossy(&resp[4..4 + msg_len]).to_string();
+            let mut manifest_root = [0u8; 32];
+            manifest_root.copy_from_slice(&resp[4 + msg_len..4 + msg_len + 32]);
+            Ok(FinalizeResult { ok, msg, manifest_root })
+        }
+        RESP_ERROR => {
+            let msg = String::from_utf8_lossy(&resp[1..]).to_string();
+            Err(PirError::ServerError(msg))
+        }
+        v => Err(PirError::Protocol(format!("unexpected FINALIZE variant 0x{:02x}", v))),
+    }
+}
+
+/// Send `REQ_ADMIN_DB_ACTIVATE`. Server atomically renames
+/// `<staging>/<name>/` → `<data_root>/<target_path>/`. The operator
+/// must restart the server to pick up the new DB (this slice has
+/// no hot-reload).
+pub async fn activate<T: PirTransport + ?Sized>(
+    transport: &mut T,
+    name: &str,
+    target_path: &str,
+) -> PirResult<AdminAck> {
+    let mut payload = Vec::new();
+    encode_lp(&mut payload, name.as_bytes());
+    encode_lp(&mut payload, target_path.as_bytes());
+    let req = encode_request(REQ_ADMIN_DB_ACTIVATE, &payload);
+    let resp = transport.roundtrip(&req).await?;
+    parse_ack(&resp, RESP_ADMIN_DB_ACTIVATE, "ACTIVATE")
+}
+
+fn encode_lp(buf: &mut Vec<u8>, bytes: &[u8]) {
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
+fn parse_ack(resp: &[u8], expected_variant: u8, op: &str) -> PirResult<AdminAck> {
+    if resp.is_empty() {
+        return Err(PirError::Protocol(format!("empty {} response", op)));
+    }
+    match resp[0] {
+        v if v == expected_variant => {
+            if resp.len() < 1 + 1 + 2 {
+                return Err(PirError::Protocol(format!("{} response too short", op)));
+            }
+            let ok = resp[1] != 0;
+            let msg_len = u16::from_le_bytes(resp[2..4].try_into().unwrap()) as usize;
+            if 4 + msg_len > resp.len() {
+                return Err(PirError::Protocol(format!("{} response truncated msg", op)));
+            }
+            let msg = String::from_utf8_lossy(&resp[4..4 + msg_len]).to_string();
+            Ok(AdminAck { ok, msg })
+        }
+        RESP_ERROR => {
+            let msg = String::from_utf8_lossy(&resp[1..]).to_string();
+            Err(PirError::ServerError(msg))
+        }
+        v => Err(PirError::Protocol(format!(
+            "unexpected {} response variant 0x{:02x}",
+            op, v
         ))),
     }
 }
@@ -253,6 +400,157 @@ mod tests {
             _ => panic!("expected Rejected, got {:?}", outcome),
         }
         assert!(!*sim.authenticated.lock().unwrap());
+    }
+
+    // ─── Upload helper tests (Slice 3b) ──────────────────────────────────
+    //
+    // These exercise the client-side wire encoding + response parsing.
+    // The real server-side state machine lives in pir-runtime-core's
+    // admin.rs and has its own test coverage there.
+
+    /// Mock that returns a canned reply per opcode and records the last request.
+    struct CannedTransport {
+        replies: std::collections::HashMap<u8, Vec<u8>>,
+        last_request: std::sync::Mutex<Vec<u8>>,
+    }
+    #[async_trait]
+    impl PirTransport for CannedTransport {
+        async fn send(&mut self, _data: Vec<u8>) -> PirResult<()> {
+            Ok(())
+        }
+        async fn recv(&mut self) -> PirResult<Vec<u8>> {
+            unimplemented!()
+        }
+        async fn roundtrip(&mut self, request: &[u8]) -> PirResult<Vec<u8>> {
+            *self.last_request.lock().unwrap() = request.to_vec();
+            // request format: [4B len LE][1B variant][...]
+            let variant = request[4];
+            Ok(self.replies.get(&variant).cloned().unwrap_or_else(|| vec![RESP_ERROR]))
+        }
+        async fn close(&mut self) -> PirResult<()> {
+            Ok(())
+        }
+        fn url(&self) -> &str {
+            "canned://test"
+        }
+    }
+
+    fn ack_reply(variant: u8, ok: bool, msg: &str) -> Vec<u8> {
+        let mut r = vec![variant, if ok { 1 } else { 0 }];
+        let mb = msg.as_bytes();
+        r.extend_from_slice(&(mb.len() as u16).to_le_bytes());
+        r.extend_from_slice(mb);
+        r
+    }
+
+    fn finalize_reply(ok: bool, msg: &str, root: [u8; 32]) -> Vec<u8> {
+        let mut r = vec![RESP_ADMIN_DB_UPLOAD_FINALIZE, if ok { 1 } else { 0 }];
+        let mb = msg.as_bytes();
+        r.extend_from_slice(&(mb.len() as u16).to_le_bytes());
+        r.extend_from_slice(mb);
+        r.extend_from_slice(&root);
+        r
+    }
+
+    #[tokio::test]
+    async fn upload_begin_encodes_correctly_and_parses_ok() {
+        let mut replies = std::collections::HashMap::new();
+        replies.insert(RESP_ADMIN_DB_UPLOAD_BEGIN, ack_reply(RESP_ADMIN_DB_UPLOAD_BEGIN, true, "ok"));
+        let mut t = CannedTransport {
+            replies,
+            last_request: std::sync::Mutex::new(Vec::new()),
+        };
+        let manifest = b"[manifest]\nversion = 1\n[files]\n";
+        let ack = upload_begin(&mut t, "snap1", manifest).await.unwrap();
+        assert!(ack.ok);
+        assert_eq!(ack.msg, "ok");
+        // Validate the request bytes start with REQ_ADMIN_DB_UPLOAD_BEGIN
+        let req = t.last_request.lock().unwrap().clone();
+        assert_eq!(req[4], REQ_ADMIN_DB_UPLOAD_BEGIN);
+        // Name length-prefix
+        let name_len = u32::from_le_bytes(req[5..9].try_into().unwrap()) as usize;
+        assert_eq!(name_len, "snap1".len());
+        assert_eq!(&req[9..9 + name_len], b"snap1");
+        // Manifest length-prefix
+        let mlen_off = 9 + name_len;
+        let mlen = u32::from_le_bytes(req[mlen_off..mlen_off + 4].try_into().unwrap()) as usize;
+        assert_eq!(mlen, manifest.len());
+        assert_eq!(&req[mlen_off + 4..mlen_off + 4 + mlen], manifest);
+    }
+
+    #[tokio::test]
+    async fn upload_chunk_encodes_offset_and_data() {
+        let mut replies = std::collections::HashMap::new();
+        replies.insert(RESP_ADMIN_DB_UPLOAD_CHUNK, ack_reply(RESP_ADMIN_DB_UPLOAD_CHUNK, true, ""));
+        let mut t = CannedTransport {
+            replies,
+            last_request: std::sync::Mutex::new(Vec::new()),
+        };
+        let data = vec![0xAAu8; 1234];
+        upload_chunk(&mut t, "snap1", "a.bin", 0xDEAD_BEEF_DEAD_BEEFu64, &data).await.unwrap();
+        let req = t.last_request.lock().unwrap().clone();
+        assert_eq!(req[4], REQ_ADMIN_DB_UPLOAD_CHUNK);
+        // Find the offset field (after two LP strings) and check it's intact.
+        // name_len(4) + name + path_len(4) + path + offset(8) + data_len(4) + data
+        let mut pos = 5;
+        let nl = u32::from_le_bytes(req[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4 + nl;
+        let pl = u32::from_le_bytes(req[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4 + pl;
+        let offset = u64::from_le_bytes(req[pos..pos + 8].try_into().unwrap());
+        assert_eq!(offset, 0xDEAD_BEEF_DEAD_BEEFu64);
+        pos += 8;
+        let dl = u32::from_le_bytes(req[pos..pos + 4].try_into().unwrap()) as usize;
+        assert_eq!(dl, data.len());
+        assert_eq!(&req[pos + 4..pos + 4 + dl], &data[..]);
+    }
+
+    #[tokio::test]
+    async fn finalize_returns_root() {
+        let root = [0xCDu8; 32];
+        let mut replies = std::collections::HashMap::new();
+        replies.insert(RESP_ADMIN_DB_UPLOAD_FINALIZE, finalize_reply(true, "verified", root));
+        let mut t = CannedTransport {
+            replies,
+            last_request: std::sync::Mutex::new(Vec::new()),
+        };
+        let r = upload_finalize(&mut t, "snap1").await.unwrap();
+        assert!(r.ok);
+        assert_eq!(r.manifest_root, root);
+        assert_eq!(r.msg, "verified");
+    }
+
+    #[tokio::test]
+    async fn server_error_on_upload_propagates() {
+        // Server returned RESP_ERROR (e.g., not authenticated)
+        let mut replies = std::collections::HashMap::new();
+        let mut err_reply = vec![RESP_ERROR];
+        err_reply.extend_from_slice(b"not authenticated");
+        replies.insert(RESP_ADMIN_DB_UPLOAD_BEGIN, err_reply);
+        let mut t = CannedTransport {
+            replies,
+            last_request: std::sync::Mutex::new(Vec::new()),
+        };
+        let err = upload_begin(&mut t, "snap1", b"...").await.unwrap_err();
+        match err {
+            PirError::ServerError(m) => assert!(m.contains("not authenticated")),
+            _ => panic!("expected ServerError, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn activate_encodes_target_path() {
+        let mut replies = std::collections::HashMap::new();
+        replies.insert(RESP_ADMIN_DB_ACTIVATE, ack_reply(RESP_ADMIN_DB_ACTIVATE, true, "activated"));
+        let mut t = CannedTransport {
+            replies,
+            last_request: std::sync::Mutex::new(Vec::new()),
+        };
+        let ack = activate(&mut t, "snap1", "checkpoints/940611").await.unwrap();
+        assert!(ack.ok);
+        assert_eq!(ack.msg, "activated");
+        let req = t.last_request.lock().unwrap().clone();
+        assert_eq!(req[4], REQ_ADMIN_DB_ACTIVATE);
     }
 
     #[tokio::test]

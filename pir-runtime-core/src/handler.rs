@@ -102,7 +102,12 @@ impl RequestHandler {
             // RequestHandler doesn't carry. Binaries that want admin
             // (unified_server) implement these directly in their dispatch
             // loop where per-connection state is naturally available.
-            Request::AdminAuthChallenge | Request::AdminAuthResponse { .. } => {
+            Request::AdminAuthChallenge
+            | Request::AdminAuthResponse { .. }
+            | Request::AdminDbUploadBegin { .. }
+            | Request::AdminDbUploadChunk { .. }
+            | Request::AdminDbUploadFinalize { .. }
+            | Request::AdminDbActivate { .. } => {
                 Response::Error(
                     "admin requests not supported via stateless RequestHandler — use the unified_server's per-connection path".into(),
                 )
