@@ -23,6 +23,7 @@ use clap::{Parser, Subcommand};
 mod attest;
 mod channel_test;
 mod keygen;
+mod show_vcek_url;
 mod upload;
 
 #[derive(Parser, Debug)]
@@ -43,6 +44,10 @@ enum Command {
     /// cloudflared-blind path works.
     #[command(name = "channel-test")]
     ChannelTest(channel_test::ChannelTestArgs),
+    /// Print the AMD KDS URLs for the connected server's chip + TCB so
+    /// the operator can curl them down and place in --vcek-dir.
+    #[command(name = "show-vcek-url")]
+    ShowVcekUrl(show_vcek_url::ShowVcekUrlArgs),
     /// Upload a DB directory: auth → BEGIN → CHUNK* → FINALIZE → ACTIVATE.
     Upload(upload::UploadArgs),
 }
@@ -63,6 +68,10 @@ async fn main() {
             Err(code) => code,
         },
         Command::ChannelTest(args) => match channel_test::run(args).await {
+            Ok(()) => 0,
+            Err(code) => code,
+        },
+        Command::ShowVcekUrl(args) => match show_vcek_url::run(args).await {
             Ok(()) => 0,
             Err(code) => code,
         },
