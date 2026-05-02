@@ -78,7 +78,8 @@ fine while Slice 2 doesn't enforce — but if Slice 2 lands without
 re-baking, the dracut hook will refuse to start the service.
 
 ```bash
-ssh vpsbg-pir 'sudo -u pir /home/pir/BitcoinPIR/scripts/build_uki.sh'
+# Must run as root — /boot/vmlinuz-* is mode 0600.
+ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki.sh'
 scp vpsbg-pir:/tmp/bpir.efi ./bpir.efi
 # then upload bpir.efi via VPSBG portal → Confidentiality &
 # Protection → Advanced: Measured Boot → UKI → Save & Reboot.
@@ -357,8 +358,8 @@ HarmonyPIR query and confirm.
     --server wss://pir2.chenweikeng.com
 ssh vpsbg-pir 'systemctl restart pir-vpsbg'
 
-# Build a fresh UKI on VPSBG (after binary rebuild)
-ssh vpsbg-pir 'sudo -u pir /home/pir/BitcoinPIR/scripts/build_uki.sh'
+# Build a fresh UKI on VPSBG (after binary rebuild; must run as root)
+ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki.sh'
 scp vpsbg-pir:/tmp/bpir.efi ./bpir.efi
 # then upload via VPSBG portal → reboot → re-attest → republish
 

@@ -22,8 +22,8 @@
 # that's the "honest" check, since right now nothing on the box
 # enforces the equality.
 #
-# Operator usage:
-#   ssh vpsbg-pir 'sudo -u pir /home/pir/BitcoinPIR/scripts/build_uki.sh'
+# Operator usage (must run as root — /boot/vmlinuz-* is mode 0600):
+#   ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki.sh'
 # then upload the printed .efi path via VPSBG dashboard → Confidentiality
 # & Protection → Advanced: Measured Boot → UKI → Upload, then Save & Reboot.
 #
@@ -32,6 +32,15 @@
 # and capture the new MEASUREMENT — that's what you publish for verifiers.
 
 set -euo pipefail
+
+# Must run as root: /boot/vmlinuz-* is mode 0600 on Ubuntu.
+if [ "$EUID" != "0" ]; then
+    echo "error: build_uki.sh must run as root — /boot/vmlinuz-* is not" >&2
+    echo "       readable by the pir user. Re-run as:" >&2
+    echo "         ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki.sh'" >&2
+    echo "       (default ssh user is root via your ~/.ssh/config alias.)" >&2
+    exit 1
+fi
 
 # ─── Defaults (override via env) ───────────────────────────────────────────
 KERNEL=${KERNEL:-/boot/vmlinuz-7.0.0-15-generic}
