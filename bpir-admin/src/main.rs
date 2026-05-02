@@ -8,6 +8,9 @@
 //! - `attest` — exercise REQ_ATTEST against a server, verify the
 //!   REPORT_DATA binding, optionally cross-check against expected
 //!   binary hash / manifest roots.
+//! - `channel-test` — end-to-end smoke test of the encrypted channel:
+//!   attest → handshake → encrypted ping/pong + get_info. Use post-deploy
+//!   to confirm the cloudflared-blind path actually works.
 //! - `upload` — authenticate, build a manifest, stream a DB directory
 //!   to the server's staging area, finalize, optionally activate.
 //!
@@ -18,6 +21,7 @@
 use clap::{Parser, Subcommand};
 
 mod attest;
+mod channel_test;
 mod keygen;
 mod upload;
 
@@ -34,6 +38,11 @@ enum Command {
     Keygen(keygen::KeygenArgs),
     /// Send REQ_ATTEST to a server and verify the response.
     Attest(attest::AttestArgs),
+    /// End-to-end smoke test of the encrypted channel: attest → handshake
+    /// → encrypted ping/pong + get_info. Use post-deploy to confirm the
+    /// cloudflared-blind path works.
+    #[command(name = "channel-test")]
+    ChannelTest(channel_test::ChannelTestArgs),
     /// Upload a DB directory: auth → BEGIN → CHUNK* → FINALIZE → ACTIVATE.
     Upload(upload::UploadArgs),
 }
@@ -50,6 +59,10 @@ async fn main() {
             }
         },
         Command::Attest(args) => match attest::run(args).await {
+            Ok(()) => 0,
+            Err(code) => code,
+        },
+        Command::ChannelTest(args) => match channel_test::run(args).await {
             Ok(()) => 0,
             Err(code) => code,
         },
