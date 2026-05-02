@@ -45,9 +45,9 @@
 use rand_core::{OsRng, RngCore};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-// Re-export the handshake types so server code can drive a per-
-// connection handshake without depending on pir-channel directly.
-pub use pir_channel::{Direction, Session, ServerHandshake};
+// Re-export the handshake types + frame magic so server code can drive
+// a per-connection handshake without depending on pir-channel directly.
+pub use pir_channel::{Direction, ServerHandshake, Session, ENCRYPTED_FRAME_MAGIC};
 
 /// X25519 keypair the server uses for the inner encrypted channel.
 ///

@@ -388,9 +388,9 @@ struct UnifiedServerData {
     /// (cloudflared-blind WSS frames). Generated inside the SEV-SNP
     /// guest at startup; the public half is committed to REPORT_DATA
     /// via `pir_core::attest::build_report_data` (V2). The secret half
-    /// is unused in Slice A (only the pubkey is wired); Slice B will
-    /// consume it during per-session ECDH.
-    #[allow(dead_code)]
+    /// is consumed by per-connection handshakes via
+    /// `channel_keypair.new_handshake()` in the dispatch loop's
+    /// REQ_HANDSHAKE branch.
     channel_keypair: pir_runtime_core::channel::ChannelKeypair,
 }
 
@@ -1028,6 +1028,58 @@ impl UnifiedServerData {
             items: result_items,
         })
     }
+}
+
+// ─── Encrypted-channel send helper ─────────────────────────────────────────
+//
+// Wraps the raw `sink.send(Message::Binary(...))` pattern so that, if a
+// session is established for this connection, the outgoing payload gets
+// AEAD-sealed via pir_channel before going on the wire. Cleartext callers
+// pass `None` and the function is a thin pass-through.
+//
+// `payload` is the full outgoing wire blob: `[4B len LE][1B variant][body]`.
+// When sealing, we strip the 4-byte length, seal the rest, then re-frame
+// with a fresh outer length around the sealed bytes. The result still
+// satisfies the WS receiver's `[4B len][payload]` expectation; the
+// payload's first byte is now `pir_channel::ENCRYPTED_FRAME_MAGIC` (0xfe)
+// instead of the raw variant byte.
+//
+// Errors from sealing (sequence-counter exhaustion, AEAD backend failure)
+// are surfaced as `tungstenite::Error::Io(..)` so the caller can use the
+// same `if let Err(e) = ...` shape it already uses for raw send errors.
+async fn send_resp<S>(
+    sink: &mut S,
+    session: Option<&mut pir_runtime_core::channel::Session>,
+    payload: Vec<u8>,
+) -> tokio_tungstenite::tungstenite::Result<()>
+where
+    S: futures_util::SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error>
+        + Unpin,
+{
+    use tokio_tungstenite::tungstenite::{Error as TungError, Message};
+    let to_send = match session {
+        Some(s) => {
+            if payload.len() < 4 {
+                // Defensive: malformed (no length prefix). Pass through —
+                // the WS receiver will see a too-short frame and ignore it,
+                // matching pre-Slice-B.2 behaviour.
+                payload
+            } else {
+                let inner = &payload[4..];
+                let sealed = s
+                    .seal(pir_runtime_core::channel::Direction::ServerToClient, inner)
+                    .map_err(|e| {
+                        TungError::Io(std::io::Error::other(format!("channel seal: {}", e)))
+                    })?;
+                let mut framed = Vec::with_capacity(4 + sealed.len());
+                framed.extend_from_slice(&(sealed.len() as u32).to_le_bytes());
+                framed.extend_from_slice(&sealed);
+                framed
+            }
+        }
+        None => payload,
+    };
+    sink.send(Message::Binary(to_send.into())).await
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -1757,6 +1809,20 @@ async fn main() {
             // drops; disconnecting is logging out.
             let mut admin_state = pir_runtime_core::admin::AdminConnectionState::default();
 
+            // Per-connection encrypted-channel session. `None` until the
+            // client sends REQ_HANDSHAKE; `Some` after we've derived the
+            // session key. While Some, every outgoing response is sealed
+            // (via send_resp below), and incoming frames whose first byte
+            // is `pir_channel::ENCRYPTED_FRAME_MAGIC` are decrypted at the
+            // top of the dispatch loop.
+            //
+            // We KEEP cleartext support per-frame even after the session
+            // is established — a client can mix cleartext probes (e.g.
+            // REQ_PING) with encrypted PIR queries on the same socket.
+            // Privacy-conscious clients (the browser SDK) wrap every
+            // application frame; legacy clients keep working.
+            let mut channel_session: Option<pir_runtime_core::channel::Session> = None;
+
             while let Some(msg) = ws_stream.next().await {
                 let msg = match msg {
                     Ok(m) => m,
@@ -1771,7 +1837,42 @@ async fn main() {
                 };
 
                 if bin.len() < 5 { continue; }
-                let payload = &bin[4..];
+                let outer_payload = &bin[4..];
+
+                // Encrypted-frame demux. If the first byte is the channel
+                // magic AND we have an established session, open the frame
+                // and dispatch the inner request as if it were cleartext.
+                // If the magic appears but no session is established, that's
+                // a protocol error (clients must REQ_HANDSHAKE first).
+                let decrypted: Vec<u8>;
+                let payload: &[u8] = if outer_payload.first() == Some(&pir_runtime_core::channel::ENCRYPTED_FRAME_MAGIC) {
+                    match channel_session.as_mut() {
+                        Some(s) => {
+                            match s.open(pir_runtime_core::channel::Direction::ClientToServer, outer_payload) {
+                                Ok(buf) => {
+                                    decrypted = buf;
+                                    decrypted.as_slice()
+                                }
+                                Err(e) => {
+                                    eprintln!("[{}] channel open failed: {}", peer, e);
+                                    let err = Response::Error(format!("channel open failed: {}", e));
+                                    let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
+                                    continue;
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!("[{}] received encrypted frame without established session", peer);
+                            let err = Response::Error("encrypted frame received but no session established (run REQ_HANDSHAKE first)".into());
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
+                            continue;
+                        }
+                    }
+                } else {
+                    outer_payload
+                };
+
+                if payload.is_empty() { continue; }
                 let variant = payload[0];
                 let body = &payload[1..];
 
@@ -1779,31 +1880,31 @@ async fn main() {
                 match variant {
                     // ── Shared: info / ping ──────────────────────────────
                     REQ_PING => {
-                        let _ = sink.send(Message::Binary(Response::Pong.encode().into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), Response::Pong.encode()).await;
                     }
                     REQ_GET_INFO => {
-                        let _ = sink.send(Message::Binary(Response::Info(server.server_info()).encode().into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), Response::Info(server.server_info()).encode()).await;
                     }
                     0x03 /* REQ_GET_INFO_JSON */ => {
-                        let _ = sink.send(Message::Binary(server.encode_info_json_response(0x03).into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), server.encode_info_json_response(0x03)).await;
                     }
                     // 0x33 was REQ_ONIONPIR_GET_INFO (binary ServerInfoV2), now removed.
                     // All clients should use 0x03 (JSON) instead.
                     REQ_GET_DB_CATALOG => {
-                        let _ = sink.send(Message::Binary(Response::DbCatalog(server.build_catalog()).encode().into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), Response::DbCatalog(server.build_catalog()).encode()).await;
                     }
                     REQ_ADMIN_AUTH_CHALLENGE => {
                         match server.admin_config {
                             None => {
                                 let resp = Response::Error("admin auth disabled (server started without --admin-pubkey-hex)".into());
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             }
                             Some(_) => {
                                 let nonce = admin_state.issue_challenge();
                                 let resp = Response::AdminAuthChallenge(
                                     pir_runtime_core::protocol::AdminAuthChallenge { nonce },
                                 );
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             }
                         }
                     }
@@ -1812,7 +1913,7 @@ async fn main() {
                             Some(c) => c,
                             None => {
                                 let resp = Response::Error("admin auth disabled".into());
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                         };
@@ -1820,7 +1921,7 @@ async fn main() {
                             signature
                         } else {
                             let resp = Response::Error("malformed REQ_ADMIN_AUTH_RESPONSE".into());
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             continue;
                         };
                         let result = match admin_state.verify_response(&signature, cfg) {
@@ -1833,20 +1934,20 @@ async fn main() {
                                 pir_runtime_core::protocol::AdminAuthResult { ok: false, msg: e.to_string() }
                             }
                         };
-                        let _ = sink.send(Message::Binary(Response::AdminAuthResponse(result).encode().into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), Response::AdminAuthResponse(result).encode()).await;
                     }
                     REQ_ADMIN_DB_UPLOAD_BEGIN | REQ_ADMIN_DB_UPLOAD_CHUNK
                     | REQ_ADMIN_DB_UPLOAD_FINALIZE | REQ_ADMIN_DB_ACTIVATE => {
                         if !admin_state.authenticated {
                             let resp = Response::Error("not authenticated; complete REQ_ADMIN_AUTH_* first".into());
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             continue;
                         }
                         let req = match Request::decode(payload) {
                             Ok(r) => r,
                             Err(e) => {
                                 let resp = Response::Error(format!("decode admin request: {}", e));
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                         };
@@ -1901,7 +2002,7 @@ async fn main() {
                             }
                             _ => unreachable!("variant byte already filtered"),
                         };
-                        let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                     }
                     REQ_ATTEST => {
                         if let Ok(Request::Attest { nonce }) = Request::decode(payload) {
@@ -1931,7 +2032,33 @@ async fn main() {
                                     git_rev: git_rev.to_string(),
                                 })
                             }).await.unwrap();
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                        }
+                    }
+                    REQ_HANDSHAKE => {
+                        // Encrypted-channel handshake. The reply MUST go out
+                        // in cleartext — the client doesn't have the session
+                        // key until it processes RESP_HANDSHAKE. So we mint
+                        // the Session AFTER the send, and the next inbound
+                        // frame the client sends will be encrypted.
+                        if let Ok(Request::Handshake { client_eph_pub, nonce }) = Request::decode(payload) {
+                            let server_hs = server.channel_keypair.new_handshake();
+                            let server_eph_pub = server_hs.server_eph_pub();
+                            let new_session = server_hs.complete_handshake(&client_eph_pub, &nonce);
+                            let resp = Response::Handshake(
+                                pir_runtime_core::protocol::HandshakeResult { server_eph_pub },
+                            );
+                            // Cleartext send (force `None` so send_resp doesn't seal).
+                            let _ = send_resp(&mut sink, None, resp.encode()).await;
+                            // Now switch the connection into encrypted mode for
+                            // all subsequent client→server and server→client
+                            // frames.
+                            channel_session = Some(new_session);
+                        } else {
+                            let err = Response::Error(
+                                "malformed REQ_HANDSHAKE (expected client_eph_pub:32 + nonce:32)".into(),
+                            );
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
                         }
                     }
                     REQ_RESIDENCY => {
@@ -1942,7 +2069,7 @@ async fn main() {
                         msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                         msg.push(RESP_RESIDENCY);
                         msg.extend_from_slice(json_bytes);
-                        let _ = sink.send(Message::Binary(msg.into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
                     }
 
                     // ── DPF batch queries (both roles) ──────────────────
@@ -1961,7 +2088,7 @@ async fn main() {
                                 println!("[index] db={} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, n, wall, dpf_sum, fetch_sum);
                                 Response::IndexBatch(batch)
                             }).await.unwrap();
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
                     REQ_CHUNK_BATCH => {
@@ -1980,7 +2107,7 @@ async fn main() {
                                 println!("[chunk] db={} r{} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, round, n, wall, dpf_sum, fetch_sum);
                                 Response::ChunkBatch(batch)
                             }).await.unwrap();
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
 
@@ -2004,7 +2131,7 @@ async fn main() {
                                     q.db_id, level, pbc_round, n, wall, dpf_sum, fetch_sum);
                                 Response::MerkleSiblingBatch(batch)
                             }).await.unwrap();
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
 
@@ -2021,11 +2148,11 @@ async fn main() {
                             msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                             msg.push(RESP_MERKLE_TREE_TOP);
                             msg.extend_from_slice(top);
-                            let _ = sink.send(Message::Binary(msg.into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
                             println!("[merkle-top] db={} sent {} bytes", db_id, top.len());
                         } else {
                             let err = Response::Error(format!("db {} has no merkle tree-top", db_id));
-                            let _ = sink.send(Message::Binary(err.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
                         }
                     }
 
@@ -2058,7 +2185,7 @@ async fn main() {
                                     q.db_id, table_type, level, n, wall, dpf_sum, fetch_sum);
                                 Response::BucketMerkleSibBatch(batch)
                             }).await.unwrap();
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
 
@@ -2074,11 +2201,11 @@ async fn main() {
                             msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                             msg.push(RESP_BUCKET_MERKLE_TREE_TOPS);
                             msg.extend_from_slice(tops);
-                            let _ = sink.send(Message::Binary(msg.into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
                             println!("[bkt-merkle-tops] db={} sent {} bytes", db_id, tops.len());
                         } else {
                             let err = Response::Error(format!("db {} has no bucket merkle tree-tops", db_id));
-                            let _ = sink.send(Message::Binary(err.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
                         }
                     }
 
@@ -2096,9 +2223,11 @@ async fn main() {
                     // matching hardware capacity, without re-rolling the
                     // role flag and the systemd unit.
                     REQ_HARMONY_GET_INFO => {
-                        let _ = sink.send(Message::Binary(
-                            Response::HarmonyInfo(server.server_info()).encode().into()
-                        )).await;
+                        let _ = send_resp(
+                            &mut sink,
+                            channel_session.as_mut(),
+                            Response::HarmonyInfo(server.server_info()).encode(),
+                        ).await;
                     }
                     REQ_HARMONY_HINTS => {
                         if let Ok(Request::HarmonyHints(hint_req)) = Request::decode(payload) {
@@ -2112,7 +2241,7 @@ async fn main() {
                             // Validate db_id before spawning blocking work.
                             if server.state.get_db(db_id).is_none() {
                                 let resp = Response::Error(format!("unknown db_id {}", db_id));
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                             let s = Arc::clone(&server);
@@ -2137,7 +2266,7 @@ async fn main() {
                                 resp.extend_from_slice(&t.to_le_bytes());
                                 resp.extend_from_slice(&m.to_le_bytes());
                                 resp.extend_from_slice(&flat_hints);
-                                if let Err(e) = sink.send(Message::Binary(resp.into())).await {
+                                if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), resp).await {
                                     eprintln!("[{}] Send error: {}", peer, e);
                                     break;
                                 }
@@ -2151,12 +2280,12 @@ async fn main() {
                             // Validate db_id before dispatching to a worker.
                             if server.state.get_db(q.db_id).is_none() {
                                 let resp = Response::Error(format!("unknown db_id {}", q.db_id));
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                             let s = Arc::clone(&server);
                             let resp = tokio::task::spawn_blocking(move || s.handle_harmony_query(&q)).await.unwrap();
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
                     REQ_HARMONY_BATCH_QUERY => {
@@ -2164,7 +2293,7 @@ async fn main() {
                             // Validate db_id before dispatching to a worker.
                             if server.state.get_db(q.db_id).is_none() {
                                 let resp = Response::Error(format!("unknown db_id {}", q.db_id));
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                             let t = Instant::now();
@@ -2174,7 +2303,7 @@ async fn main() {
                             let s = Arc::clone(&server);
                             let resp = tokio::task::spawn_blocking(move || s.handle_harmony_batch_query(&q)).await.unwrap();
                             println!("[harmony-batch] db={} L{} {} groups in {:.2?}", db_id, level, n, t.elapsed());
-                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
 
@@ -2186,7 +2315,7 @@ async fn main() {
                                 Some(t) => t.clone(),
                                 None => {
                                     let resp = Response::Error(format!("OnionPIR not available for db_id={}", db_id));
-                                    let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                     continue;
                                 }
                             };
@@ -2201,7 +2330,7 @@ async fn main() {
                             let mut resp = Vec::with_capacity(5);
                             resp.extend_from_slice(&1u32.to_le_bytes());
                             resp.push(RESP_KEYS_ACK);
-                            let _ = sink.send(Message::Binary(resp.into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp).await;
                         }
                     }
                     REQ_ONIONPIR_INDEX_QUERY if server.has_any_onionpir() => {
@@ -2210,7 +2339,7 @@ async fn main() {
                                 Some(t) => t.clone(),
                                 None => {
                                     let resp = Response::Error(format!("OnionPIR not available for db_id={}", batch.db_id));
-                                    let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                     continue;
                                 }
                             };
@@ -2222,7 +2351,7 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = sink.send(Message::Binary(result_msg.encode(RESP_ONIONPIR_INDEX_RESULT).into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_INDEX_RESULT)).await;
                         }
                     }
                     REQ_ONIONPIR_CHUNK_QUERY if server.has_any_onionpir() => {
@@ -2231,7 +2360,7 @@ async fn main() {
                                 Some(t) => t.clone(),
                                 None => {
                                     let resp = Response::Error(format!("OnionPIR not available for db_id={}", batch.db_id));
-                                    let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                     continue;
                                 }
                             };
@@ -2243,7 +2372,7 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = sink.send(Message::Binary(result_msg.encode(RESP_ONIONPIR_CHUNK_RESULT).into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_CHUNK_RESULT)).await;
                         }
                     }
                     REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP if server.has_any_onionpir_merkle() => {
@@ -2253,7 +2382,7 @@ async fn main() {
                             Some(om) => om,
                             None => {
                                 let resp = Response::Error(format!("OnionPIR Merkle not available for db_id={}", db_id));
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                         };
@@ -2263,7 +2392,7 @@ async fn main() {
                         msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                         msg.push(RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP);
                         msg.extend_from_slice(top);
-                        let _ = sink.send(Message::Binary(msg.into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
                         println!("[onion-merkle-index-top] db={} sent {} bytes", db_id, top.len());
                     }
                     REQ_ONIONPIR_MERKLE_DATA_TREE_TOP if server.has_any_onionpir_merkle() => {
@@ -2273,7 +2402,7 @@ async fn main() {
                             Some(om) => om,
                             None => {
                                 let resp = Response::Error(format!("OnionPIR Merkle not available for db_id={}", db_id));
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                         };
@@ -2283,7 +2412,7 @@ async fn main() {
                         msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                         msg.push(RESP_ONIONPIR_MERKLE_DATA_TREE_TOP);
                         msg.extend_from_slice(top);
-                        let _ = sink.send(Message::Binary(msg.into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
                         println!("[onion-merkle-data-top] db={} sent {} bytes", db_id, top.len());
                     }
                     REQ_ONIONPIR_MERKLE_INDEX_SIBLING if server.has_any_onionpir() => {
@@ -2296,7 +2425,7 @@ async fn main() {
                                     "OnionPIR Merkle not available for db_id={}",
                                     batch.db_id
                                 ));
-                                let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
                             let sibling_level = (batch.round_id / 100) as u8;
@@ -2313,7 +2442,7 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = sink.send(Message::Binary(result_msg.encode(RESP_ONIONPIR_MERKLE_INDEX_SIBLING).into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_MERKLE_INDEX_SIBLING)).await;
                         }
                     }
                     REQ_ONIONPIR_MERKLE_DATA_SIBLING if server.has_any_onionpir() && server.has_any_onionpir_merkle() => {
@@ -2327,7 +2456,7 @@ async fn main() {
                                         "OnionPIR Merkle not available for db_id={}",
                                         batch.db_id
                                     ));
-                                    let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                     continue;
                                 }
                             };
@@ -2346,14 +2475,14 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = sink.send(Message::Binary(result_msg.encode(RESP_ONIONPIR_MERKLE_DATA_SIBLING).into())).await;
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_MERKLE_DATA_SIBLING)).await;
                         }
                     }
 
                     // ── Unsupported ──────────────────────────────────────
                     _ => {
                         let resp = Response::Error(format!("unsupported request 0x{:02x} for {} role", variant, role_name));
-                        let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                     }
                 }
             }
