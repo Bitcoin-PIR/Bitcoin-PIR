@@ -1655,7 +1655,13 @@ async fn main() {
 
     // ── Accept WebSocket connections ────────────────────────────────────
 
-    let addr: SocketAddr = format!("0.0.0.0:{}", args.port).parse().unwrap();
+    // Bind dual-stack: `[::]:port` accepts both IPv6 connections AND IPv4
+    // connections (via v4-mapped addresses) on Linux when the system default
+    // `IPV6_V6ONLY=0` is in effect (true by default on Ubuntu). This matters
+    // for cloudflared and similar reverse-proxies that resolve `localhost`
+    // to `::1` first per RFC 6724 happy-eyeballs — binding only `0.0.0.0`
+    // would silently refuse those connections.
+    let addr: SocketAddr = format!("[::]:{}", args.port).parse().unwrap();
     let listener = TcpListener::bind(addr).await.expect("bind");
     println!("Listening on ws://{}", addr);
     println!("  Role: {}", role_name);
