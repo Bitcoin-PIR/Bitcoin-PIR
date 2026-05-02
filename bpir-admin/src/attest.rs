@@ -27,6 +27,16 @@ pub struct AttestArgs {
     #[arg(long, value_delimiter = ',')]
     pub expect_manifest_roots: Vec<String>,
 
+    /// Expected SEV-SNP launch MEASUREMENT (96-char hex = 48 bytes).
+    /// This is the value the operator publishes after uploading a UKI
+    /// via VPSBG's Measured Boot UI and rebooting — it covers OVMF +
+    /// the entire UKI bytes (kernel + initrd + cmdline). If set, exit
+    /// non-zero on any mismatch. Implies the SEV report must be
+    /// present (i.e., we're attesting against a SEV-SNP host, not a
+    /// stock-Linux Hetzner-style fallback).
+    #[arg(long)]
+    pub expect_measurement: Option<String>,
+
     /// Override the connect+request timeout (seconds, default 30).
     #[arg(long, default_value_t = 30)]
     pub timeout_seconds: u64,
@@ -123,6 +133,34 @@ pub async fn run(args: AttestArgs) -> Result<(), i32> {
         } else {
             println!();
             println!("✓ binary_sha256 matches expected.");
+        }
+    }
+
+    // Cross-check expected MEASUREMENT (the operator-published launch
+    // digest from the chip-signed report, NOT a recomputation).
+    if let Some(expected_hex) = args.expect_measurement {
+        const MEASUREMENT_OFFSET: usize = 0x90;
+        const MEASUREMENT_LEN: usize = 48;
+        if v.response.sev_snp_report.len() < MEASUREMENT_OFFSET + MEASUREMENT_LEN {
+            println!();
+            println!("✗ --expect-measurement set but server returned no SEV report");
+            println!("    (host is not running on a SEV-SNP guest, or report is malformed)");
+            mismatch = true;
+        } else {
+            let actual = &v.response.sev_snp_report
+                [MEASUREMENT_OFFSET..MEASUREMENT_OFFSET + MEASUREMENT_LEN];
+            let actual_hex = hex::encode(actual);
+            if !expected_hex.eq_ignore_ascii_case(&actual_hex) {
+                println!();
+                println!("✗ MEASUREMENT mismatch:");
+                println!("    expected: {}", expected_hex);
+                println!("    got:      {}", actual_hex);
+                println!("    (different UKI loaded, or VPSBG OVMF version changed)");
+                mismatch = true;
+            } else {
+                println!();
+                println!("✓ Launch MEASUREMENT matches expected.");
+            }
         }
     }
 
