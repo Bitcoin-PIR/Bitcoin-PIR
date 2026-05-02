@@ -28,6 +28,10 @@ pir-core = { version = "0.1.0", path = "../pir-core" }
 # the native path in `cargo test -p pir-sdk-wasm`, so the tokio pull-in is
 # acceptable.
 pir-sdk-client = { version = "0.1.0", path = "../pir-sdk-client" }
+# Per-handshake nonce + ephemeral seed in `WasmDpfClient::attest`. The
+# "js" feature lets it use `crypto.getRandomValues` on wasm32; on
+# native (used only by `cargo test`) it reads /dev/urandom.
+getrandom = { version = "0.2", features = ["js"] }
 wasm-bindgen = "0.2"
 # Bridges Rust `Future` → JS `Promise` for the client's async methods
 # (`connect` / `sync` / `fetch_catalog`). Builds on native too (the macros

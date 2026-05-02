@@ -1711,6 +1711,99 @@ impl DpfClient {
         (&self.server0_url, &self.server1_url)
     }
 
+    /// Send REQ_ATTEST to one of the connected servers (`server_index ∈
+    /// {0, 1}`) and return the verification result. The caller picks
+    /// the nonce — typically 32 bytes from a CSPRNG.
+    ///
+    /// Use this before [`Self::upgrade_to_secure_channel`] to recover
+    /// the server's `server_static_pub` and verify the V2 REPORT_DATA
+    /// binding. (Slice D will add an out-of-band AMD VCEK chain check
+    /// for the SEV-SNP report itself; until then the binding proves
+    /// internal consistency only.)
+    pub async fn attest(
+        &mut self,
+        server_index: u8,
+        nonce: [u8; 32],
+    ) -> PirResult<crate::attest::AttestVerification> {
+        let conn = match server_index {
+            0 => self.conn0.as_mut().ok_or_else(|| {
+                PirError::Protocol("attest: server0 not connected".into())
+            })?,
+            1 => self.conn1.as_mut().ok_or_else(|| {
+                PirError::Protocol("attest: server1 not connected".into())
+            })?,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "attest: server_index must be 0 or 1, got {}",
+                    server_index
+                )))
+            }
+        };
+        crate::attest::attest(conn.as_mut(), nonce).await
+    }
+
+    /// Replace both server connections with secure-channel-wrapped
+    /// versions. Sends REQ_HANDSHAKE on each, derives the per-session
+    /// AEAD key, and stores `SecureChannelTransport` wrappers in place
+    /// of the raw transports. After this returns, every subsequent
+    /// PIR request goes through `pir_channel`'s ChaCha20-Poly1305
+    /// frame wrapping — cloudflared (or any other transport-layer
+    /// intermediary) sees only ciphertext.
+    ///
+    /// Caller is responsible for verifying `server_static_pub_0` /
+    /// `server_static_pub_1` came from a trustworthy source (the
+    /// recommended path: call [`Self::attest`] first, verify the
+    /// SEV-SNP REPORT_DATA binding, optionally cross-check the AMD
+    /// VCEK chain, then pass the pubkeys here).
+    ///
+    /// Errors if either connection is unestablished or if either
+    /// handshake fails. On error the connections are restored to their
+    /// pre-call state (cleartext) so the caller can retry.
+    pub async fn upgrade_to_secure_channel(
+        &mut self,
+        server_static_pub_0: [u8; 32],
+        server_static_pub_1: [u8; 32],
+    ) -> PirResult<()> {
+        // Take out both transports up front. If either is missing we
+        // re-store what we took before bailing.
+        let raw0 = self
+            .conn0
+            .take()
+            .ok_or_else(|| PirError::Protocol("upgrade: server0 not connected".into()))?;
+        let raw1 = match self.conn1.take() {
+            Some(c) => c,
+            None => {
+                self.conn0 = Some(raw0);
+                return Err(PirError::Protocol("upgrade: server1 not connected".into()));
+            }
+        };
+
+        // Mint fresh ephemeral seed + nonce per server.
+        let mut eph0 = [0u8; 32];
+        let mut nonce0 = [0u8; 32];
+        let mut eph1 = [0u8; 32];
+        let mut nonce1 = [0u8; 32];
+        getrandom::getrandom(&mut eph0)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut nonce0)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut eph1)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut nonce1)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+
+        // Run the two handshakes. If either fails, leave both connections
+        // in self.conn0/conn1 as None — the caller knows from the error
+        // that the connection state is now invalid (and should reconnect
+        // before retrying).
+        let wrapped0 = crate::channel::establish(raw0, server_static_pub_0, eph0, nonce0).await?;
+        let wrapped1 = crate::channel::establish(raw1, server_static_pub_1, eph1, nonce1).await?;
+
+        self.conn0 = Some(Box::new(wrapped0));
+        self.conn1 = Some(Box::new(wrapped1));
+        Ok(())
+    }
+
     /// Run a batch of PIR queries against `db_id` and return the raw
     /// per-query results **with inspector state populated**, deferring
     /// Merkle verification to a later

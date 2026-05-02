@@ -33,6 +33,7 @@
 
 use js_sys::{Array, Uint8Array};
 use pir_sdk::{PirClient, QueryResult, ScriptHash, SyncResult};
+use pir_sdk_client::attest::{AttestVerification, SevStatus};
 use pir_sdk_client::{DpfClient, HarmonyClient, PRP_ALF, PRP_FASTPRP, PRP_HMR12};
 #[cfg(target_arch = "wasm32")]
 use pir_sdk_client::HintProgress;
@@ -354,6 +355,117 @@ impl WasmSyncResult {
     }
 }
 
+// ─── WasmAttestVerification ────────────────────────────────────────────────
+
+/// JS-visible result of a `WasmDpfClient.attest()` (or
+/// `WasmHarmonyClient.attest()`) call.
+///
+/// Carries the server's self-reported binary hash + git rev + per-DB
+/// manifest roots + V2 channel pubkey, plus the SEV-SNP report binding
+/// status. The raw `sevSnpReport` bytes are also exposed so a future
+/// browser-side AMD VCEK chain verifier (Slice D) can authenticate the
+/// signature without re-fetching the report.
+///
+/// Caller workflow:
+/// 1. `await client.attest(serverIndex)` → this object.
+/// 2. Read `sevStatus` — if `"reportDataMatch"`, the server's
+///    self-reported state is internally consistent with the chip-
+///    signed REPORT_DATA. Anything else means "do not trust the
+///    self-reported fields".
+/// 3. (Slice D) Verify `sevSnpReport` against AMD's VCEK chain to
+///    prove the report itself is signed by real silicon.
+/// 4. `await client.upgradeToSecureChannel(attest0.serverStaticPub,
+///    attest1.serverStaticPub)` — wraps both connections with the
+///    AEAD frame layer.
+#[wasm_bindgen]
+pub struct WasmAttestVerification {
+    inner: AttestVerification,
+}
+
+#[wasm_bindgen]
+impl WasmAttestVerification {
+    /// 32-byte client nonce sent in REQ_ATTEST. Hex-encoded.
+    #[wasm_bindgen(getter, js_name = nonceHex)]
+    pub fn nonce_hex(&self) -> String {
+        hex_encode(&self.inner.nonce)
+    }
+
+    /// SEV-SNP REPORT_DATA binding status as a string. One of:
+    /// `"noSevHost"`, `"reportDataMatch"`, `"reportDataMismatch"`,
+    /// `"malformedReport"`. Use this to decide whether the
+    /// self-reported fields below are trustworthy.
+    #[wasm_bindgen(getter, js_name = sevStatus)]
+    pub fn sev_status(&self) -> String {
+        match self.inner.sev_status {
+            SevStatus::NoSevHost => "noSevHost",
+            SevStatus::ReportDataMatch => "reportDataMatch",
+            SevStatus::ReportDataMismatch => "reportDataMismatch",
+            SevStatus::MalformedReport => "malformedReport",
+        }
+        .to_string()
+    }
+
+    /// SHA-256 of the running `unified_server` binary (server-side
+    /// self-report). Hex-encoded. Trusted only if `sevStatus` is
+    /// `"reportDataMatch"`.
+    #[wasm_bindgen(getter, js_name = binarySha256Hex)]
+    pub fn binary_sha256_hex(&self) -> String {
+        hex_encode(&self.inner.response.binary_sha256)
+    }
+
+    /// X25519 public key the server uses for the encrypted channel.
+    /// Returns the raw 32 bytes — pass directly to
+    /// [`WasmDpfClient::upgrade_to_secure_channel`]. All-zero if the
+    /// server doesn't yet have a channel key.
+    #[wasm_bindgen(getter, js_name = serverStaticPub)]
+    pub fn server_static_pub(&self) -> Uint8Array {
+        Uint8Array::from(&self.inner.response.server_static_pub[..])
+    }
+
+    /// Same data as [`Self::server_static_pub`] but hex-encoded (for
+    /// display / logging / cross-check against operator-published
+    /// values).
+    #[wasm_bindgen(getter, js_name = serverStaticPubHex)]
+    pub fn server_static_pub_hex(&self) -> String {
+        hex_encode(&self.inner.response.server_static_pub)
+    }
+
+    /// Git commit baked into the running server binary. May be
+    /// suffixed with `-dirty` or be the literal `"unknown"`.
+    #[wasm_bindgen(getter, js_name = gitRev)]
+    pub fn git_rev(&self) -> String {
+        self.inner.response.git_rev.clone()
+    }
+
+    /// Per-DB manifest roots in db_id order. Each entry is a 64-char
+    /// hex string. The all-zero hash means that DB has no
+    /// `MANIFEST.toml` (legacy / un-verified state).
+    #[wasm_bindgen(getter, js_name = manifestRootsHex)]
+    pub fn manifest_roots_hex(&self) -> Array {
+        let arr = Array::new();
+        for r in &self.inner.response.manifest_roots {
+            arr.push(&JsValue::from_str(&hex_encode(r)));
+        }
+        arr
+    }
+
+    /// Raw signed SEV-SNP attestation report bytes (~1184 for v5).
+    /// Empty if the server isn't on a SEV-SNP host. Slice D's AMD VCEK
+    /// chain verifier consumes this directly.
+    #[wasm_bindgen(getter, js_name = sevSnpReport)]
+    pub fn sev_snp_report(&self) -> Uint8Array {
+        Uint8Array::from(&self.inner.response.sev_snp_report[..])
+    }
+
+    /// Hex-encoded REPORT_DATA preimage hash the client recomputed
+    /// locally. For comparison against the SEV report's REPORT_DATA[..32]
+    /// when manually inspecting an attestation.
+    #[wasm_bindgen(getter, js_name = expectedReportDataHashHex)]
+    pub fn expected_report_data_hash_hex(&self) -> String {
+        hex_encode(&self.inner.expected_report_data_hash)
+    }
+}
+
 // ─── WasmDpfClient ──────────────────────────────────────────────────────────
 
 /// Two-server DPF-PIR client exposed to JavaScript.
@@ -507,6 +619,68 @@ impl WasmDpfClient {
         arr.push(&JsValue::from_str(a));
         arr.push(&JsValue::from_str(b));
         arr.into()
+    }
+
+    /// Send REQ_ATTEST to one of the connected servers and return a
+    /// [`WasmAttestVerification`] handle covering the response.
+    ///
+    /// `serverIndex` selects 0 (first URL) or 1 (second URL). The 32-byte
+    /// nonce is generated browser-side from `crypto.getRandomValues` (via
+    /// `getrandom`'s "js" feature) — different on every call, so callers
+    /// can correlate parallel attests by re-reading
+    /// [`WasmAttestVerification::nonce_hex`].
+    ///
+    /// Use the returned `serverStaticPub` (32 bytes) as input to
+    /// [`Self::upgradeToSecureChannel`]. Verifying the SEV-SNP report's
+    /// AMD VCEK chain is a separate concern (Slice D) — until that
+    /// lands, the V2 binding only proves internal consistency of the
+    /// claimed server-side state, not the chip's signature.
+    #[wasm_bindgen(js_name = attest)]
+    pub async fn attest(
+        &mut self,
+        server_index: u8,
+    ) -> Result<WasmAttestVerification, JsError> {
+        let mut nonce = [0u8; 32];
+        getrandom::getrandom(&mut nonce)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        let v = self
+            .inner
+            .attest(server_index, nonce)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAttestVerification { inner: v })
+    }
+
+    /// Wrap both server connections with the encrypted-channel
+    /// transport.
+    ///
+    /// `serverStaticPub0` and `serverStaticPub1` are the X25519 pubkeys
+    /// the caller obtained (and verified) via [`Self::attest`]. Each
+    /// must be exactly 32 bytes; shorter or longer rejects with a
+    /// JsError. After this returns, every subsequent query through
+    /// this client is AEAD-sealed via `pir_channel`'s ChaCha20-Poly1305
+    /// frame format — cloudflared (or any other transport-layer
+    /// intermediary) sees only ciphertext.
+    ///
+    /// Errors if either connection isn't established, or if either
+    /// handshake fails. On error, the connections are dropped — call
+    /// [`Self::connect`] to re-establish.
+    #[wasm_bindgen(js_name = upgradeToSecureChannel)]
+    pub async fn upgrade_to_secure_channel(
+        &mut self,
+        server_static_pub_0: &[u8],
+        server_static_pub_1: &[u8],
+    ) -> Result<(), JsError> {
+        let pub0: [u8; 32] = server_static_pub_0
+            .try_into()
+            .map_err(|_| JsError::new("serverStaticPub0 must be exactly 32 bytes"))?;
+        let pub1: [u8; 32] = server_static_pub_1
+            .try_into()
+            .map_err(|_| JsError::new("serverStaticPub1 must be exactly 32 bytes"))?;
+        self.inner
+            .upgrade_to_secure_channel(pub0, pub1)
+            .await
+            .map_err(err_to_js)
     }
 
     /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)

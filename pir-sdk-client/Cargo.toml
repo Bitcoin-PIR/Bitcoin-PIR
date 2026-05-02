@@ -48,6 +48,10 @@ pir-core = { version = "0.1.0", path = "../pir-core" }
 # (pir-runtime-core::channel). Compiles to wasm32 (verified — uses
 # RustCrypto's pure-Rust x25519-dalek + chacha20poly1305 + hkdf).
 pir-channel = { version = "0.1.0", path = "../pir-channel" }
+# Per-handshake ephemeral seed + nonce generation in
+# `DpfClient::upgrade_to_secure_channel`. The "js" feature lets it
+# use WebCrypto on wasm32; on native it reads /dev/urandom.
+getrandom = { version = "0.2", features = ["js"] }
 
 # DPF library — pure Rust, works on any target.
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
