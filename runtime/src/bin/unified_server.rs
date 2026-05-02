@@ -41,9 +41,24 @@ use onionpir::{self, Server as PirServer, KeyStore};
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
+/// Which side of the two-server protocols this instance plays.
+///
+/// Both roles serve DPF queries (DPF needs two non-colluding servers; the
+/// CLIENT decides which key to send to which endpoint, so role doesn't
+/// determine "DPF server 0 vs 1").
+///
+/// The role split exists for HarmonyPIR (which has distinct hint and
+/// query ops) and for OnionPIR (single-server, primary only by default).
 #[derive(Clone, Copy, PartialEq)]
 enum ServerRole {
+    /// HarmonyPIR query (online) server. By default also loads OnionPIR
+    /// data if `onion_*.bin` files are present in any DB dir; pass
+    /// `--disable-onion` to skip OnionPIR even on a primary instance
+    /// (e.g., the VPSBG box, which is intentionally OnionPIR-free).
     Primary,
+    /// HarmonyPIR hint (offline preprocessing) server. Never loads
+    /// OnionPIR — the data isn't useful here. CPU-heavier than primary
+    /// because per-group PRP forward batches dominate.
     Secondary,
 }
 
@@ -63,6 +78,12 @@ struct CliArgs {
     /// this key. When unset, all REQ_ADMIN_* requests return an error
     /// envelope.
     admin_pubkey_hex: Option<String>,
+    /// Skip OnionPIR loading even if files are present and this is a
+    /// primary-role instance. Used on hosts that are intentionally
+    /// OnionPIR-free (e.g., the VPSBG non-collusion partner where
+    /// OnionPIR data is not synced from Hetzner). Primary role
+    /// otherwise auto-loads OnionPIR if files exist.
+    disable_onion: bool,
 }
 
 fn parse_args() -> CliArgs {
@@ -75,6 +96,7 @@ fn parse_args() -> CliArgs {
     let mut checkpoints: Vec<(PathBuf, u32)> = Vec::new();
     let mut deltas: Vec<(PathBuf, u32, u32)> = Vec::new();
     let mut admin_pubkey_hex: Option<String> = None;
+    let mut disable_onion = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -134,12 +156,15 @@ fn parse_args() -> CliArgs {
                 }
                 i += 1;
             }
+            "--disable-onion" => {
+                disable_onion = true;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -1210,7 +1235,7 @@ async fn main() {
         levels
     }
 
-    if args.role == ServerRole::Primary {
+    if args.role == ServerRole::Primary && !args.disable_onion {
         for (db_id, db_label, db_dir) in &db_paths {
             let ntt_path = db_dir.join(ONION_NTT_FILE);
             if !ntt_path.exists() {
@@ -1637,7 +1662,18 @@ async fn main() {
     println!("  Index: K={}, bins_per_table={}", index_k, server.main_db().index.bins_per_table);
     println!("  Chunk: K={}, bins_per_table={}", chunk_k, server.main_db().chunk.bins_per_table);
     println!("  Databases: {}", num_databases);
-    println!("  OnionPIR: {}", if server.has_any_onionpir() { "enabled" } else { "disabled" });
+    println!(
+        "  OnionPIR: {}",
+        if server.has_any_onionpir() {
+            "enabled"
+        } else if args.disable_onion {
+            "disabled (--disable-onion)"
+        } else if args.role == ServerRole::Secondary {
+            "disabled (secondary role never loads OnionPIR)"
+        } else {
+            "disabled (no onion_*.bin files in any DB dir)"
+        }
+    );
     match args.role {
         ServerRole::Primary => println!("  HarmonyPIR: query server"),
         ServerRole::Secondary => println!("  HarmonyPIR: hint server"),
