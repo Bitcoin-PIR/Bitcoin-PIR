@@ -1,0 +1,33 @@
+[package]
+name = "pir-attest-verify"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "Browser-side AMD SEV-SNP attestation chain verifier for BitcoinPIR. Parses 1184-byte SNP reports, verifies the report's ECDSA-P384 signature against a VCEK certificate, and (when given) chain-validates the VCEK back through ASK and ARK. Pure Rust, compiles to wasm32 — used by pir-sdk-wasm to give the browser a fully trustless attestation check (no Cloudflare Worker, no fetched-at-runtime root cert)."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-attest-verify"
+readme = "README.md"
+keywords = ["pir", "privacy", "sev-snp", "attestation", "amd"]
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+
+[dependencies]
+# RustCrypto's pure-Rust SNP report parser + signature verifier
+# (the `crypto_nossl` feature replaces the openssl backend with
+# rsa + p384 + sha2). Verified earlier to compile to wasm32 cleanly.
+sev = { version = "7", default-features = false, features = ["snp", "crypto_nossl"] }
+# wasm32 needs the "js" feature to back getrandom with crypto.getRandomValues.
+# We don't actively call getrandom here, but pulled in transitively by
+# `sev`'s p384/rsa deps. Required at the leaf so wasm builds link cleanly.
+getrandom = { version = "0.2", features = ["js"] }
+# Re-export structured field accessors from the parsed SNP report
+# (chip ID, TCB version, MEASUREMENT, REPORT_DATA) without forcing
+# downstream callers to depend on sev directly.
+hex = "0.4"
+# SHA-256 for the operator-pinned ARK fingerprint check. (sev's
+# `crypto_nossl` already pulls sha2 in transitively for RSA-PSS-
+# SHA384, but we depend on it directly so the ARK fingerprint stays
+# wired even if sev swaps backends.)
+sha2 = "0.10"
