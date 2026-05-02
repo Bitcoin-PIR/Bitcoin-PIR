@@ -1050,6 +1050,46 @@ impl WasmHarmonyClient {
         arr.into()
     }
 
+    /// Send REQ_ATTEST to the hint (`serverIndex=0`) or query
+    /// (`serverIndex=1`) server and return the verification result.
+    /// See [`WasmDpfClient::attest`] for the full semantics.
+    #[wasm_bindgen(js_name = attest)]
+    pub async fn attest(
+        &mut self,
+        server_index: u8,
+    ) -> Result<WasmAttestVerification, JsError> {
+        let mut nonce = [0u8; 32];
+        getrandom::getrandom(&mut nonce)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        let v = self
+            .inner
+            .attest(server_index, nonce)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAttestVerification { inner: v })
+    }
+
+    /// Wrap both server connections (hint + query) with the encrypted
+    /// channel transport. See [`WasmDpfClient::upgrade_to_secure_channel`].
+    /// Argument order matches `serverUrls()` — `(hint, query)`.
+    #[wasm_bindgen(js_name = upgradeToSecureChannel)]
+    pub async fn upgrade_to_secure_channel(
+        &mut self,
+        hint_server_static_pub: &[u8],
+        query_server_static_pub: &[u8],
+    ) -> Result<(), JsError> {
+        let hint_pub: [u8; 32] = hint_server_static_pub
+            .try_into()
+            .map_err(|_| JsError::new("hintServerStaticPub must be exactly 32 bytes"))?;
+        let query_pub: [u8; 32] = query_server_static_pub
+            .try_into()
+            .map_err(|_| JsError::new("queryServerStaticPub must be exactly 32 bytes"))?;
+        self.inner
+            .upgrade_to_secure_channel(hint_pub, query_pub)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// Inspector-path batch query — like [`queryBatch`](Self::query_batch)
     /// but returns opaque [`WasmQueryResult`] handles whose
     /// `indexBins`/`chunkBins`/`matchedIndexIdx` accessors are populated,

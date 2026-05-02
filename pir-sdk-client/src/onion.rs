@@ -557,6 +557,41 @@ impl OnionClient {
     /// `PirClient::is_connected` returns `true` after this call.
     ///
     /// Note: with the `onion` feature, real queries also require FHE state
+    /// Send REQ_ATTEST and verify the REPORT_DATA binding. See
+    /// [`super::DpfClient::attest`] for the full semantics.
+    pub async fn attest(
+        &mut self,
+        nonce: [u8; 32],
+    ) -> PirResult<crate::attest::AttestVerification> {
+        let conn = self
+            .conn
+            .as_mut()
+            .ok_or_else(|| PirError::Protocol("attest: server not connected".into()))?;
+        crate::attest::attest(conn.as_mut(), nonce).await
+    }
+
+    /// Replace the server connection with a secure-channel-wrapped
+    /// version. See [`super::DpfClient::upgrade_to_secure_channel`]
+    /// for the full semantics.
+    pub async fn upgrade_to_secure_channel(
+        &mut self,
+        server_static_pub: [u8; 32],
+    ) -> PirResult<()> {
+        let raw = self
+            .conn
+            .take()
+            .ok_or_else(|| PirError::Protocol("upgrade: server not connected".into()))?;
+        let mut eph = [0u8; 32];
+        let mut nonce = [0u8; 32];
+        getrandom::getrandom(&mut eph)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut nonce)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        let wrapped = crate::channel::establish(raw, server_static_pub, eph, nonce).await?;
+        self.conn = Some(Box::new(wrapped));
+        Ok(())
+    }
+
     /// (Galois + GSW keys) which is populated during
     /// [`PirClient::fetch_catalog`]. Tests that want to bypass the wire
     /// entirely should drive query primitives directly, not through

@@ -706,6 +706,77 @@ impl HarmonyClient {
         (&self.hint_server_url, &self.query_server_url)
     }
 
+    /// Send REQ_ATTEST to one of the connected servers (`server_index`:
+    /// 0 = hint server, 1 = query server) and return the verification
+    /// result. See [`super::DpfClient::attest`] for the full semantics.
+    pub async fn attest(
+        &mut self,
+        server_index: u8,
+        nonce: [u8; 32],
+    ) -> PirResult<crate::attest::AttestVerification> {
+        let conn = match server_index {
+            0 => self.hint_conn.as_mut().ok_or_else(|| {
+                PirError::Protocol("attest: hint server not connected".into())
+            })?,
+            1 => self.query_conn.as_mut().ok_or_else(|| {
+                PirError::Protocol("attest: query server not connected".into())
+            })?,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "attest: server_index must be 0 (hint) or 1 (query), got {}",
+                    server_index
+                )))
+            }
+        };
+        crate::attest::attest(conn.as_mut(), nonce).await
+    }
+
+    /// Replace both server connections with secure-channel-wrapped
+    /// versions. See [`super::DpfClient::upgrade_to_secure_channel`]
+    /// for the full semantics. Argument order matches the
+    /// `(hint_server, query_server)` URL order.
+    pub async fn upgrade_to_secure_channel(
+        &mut self,
+        hint_server_static_pub: [u8; 32],
+        query_server_static_pub: [u8; 32],
+    ) -> PirResult<()> {
+        let raw_hint = self
+            .hint_conn
+            .take()
+            .ok_or_else(|| PirError::Protocol("upgrade: hint server not connected".into()))?;
+        let raw_query = match self.query_conn.take() {
+            Some(c) => c,
+            None => {
+                self.hint_conn = Some(raw_hint);
+                return Err(PirError::Protocol(
+                    "upgrade: query server not connected".into(),
+                ));
+            }
+        };
+
+        let mut eph_h = [0u8; 32];
+        let mut nonce_h = [0u8; 32];
+        let mut eph_q = [0u8; 32];
+        let mut nonce_q = [0u8; 32];
+        getrandom::getrandom(&mut eph_h)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut nonce_h)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut eph_q)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut nonce_q)
+            .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
+
+        let wrapped_hint =
+            crate::channel::establish(raw_hint, hint_server_static_pub, eph_h, nonce_h).await?;
+        let wrapped_query =
+            crate::channel::establish(raw_query, query_server_static_pub, eph_q, nonce_q).await?;
+
+        self.hint_conn = Some(Box::new(wrapped_hint));
+        self.query_conn = Some(Box::new(wrapped_query));
+        Ok(())
+    }
+
     /// Register a callback that will be invoked on every
     /// [`ConnectionState`] transition (`Connecting` → `Connected` /
     /// `Disconnected`). Replaces any previously registered listener
