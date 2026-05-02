@@ -464,6 +464,107 @@ impl WasmAttestVerification {
     pub fn expected_report_data_hash_hex(&self) -> String {
         hex_encode(&self.inner.expected_report_data_hash)
     }
+
+    // ── Slice D.2 cert chain accessors ──────────────────────────────
+    //
+    // PEM-encoded ARK / ASK / VCEK certs the server bundled in its
+    // AttestResult. Empty Uint8Arrays if the server didn't have a
+    // VCEK chain loaded (--vcek-dir unset, or reading failed). Use
+    // `verifyVcekChain` below for the one-shot validation rather
+    // than fetching these and feeding them to a separate verifier.
+
+    /// Raw PEM bytes of the AMD ARK (Root Key) cert. Empty when not
+    /// bundled by the server.
+    #[wasm_bindgen(getter, js_name = arkPem)]
+    pub fn ark_pem(&self) -> Uint8Array {
+        Uint8Array::from(&self.inner.response.ark_pem[..])
+    }
+
+    /// Raw PEM bytes of the AMD ASK (SEV Signing Key) cert. Empty
+    /// when not bundled.
+    #[wasm_bindgen(getter, js_name = askPem)]
+    pub fn ask_pem(&self) -> Uint8Array {
+        Uint8Array::from(&self.inner.response.ask_pem[..])
+    }
+
+    /// Raw PEM bytes of the per-chip VCEK cert. Empty when not
+    /// bundled.
+    #[wasm_bindgen(getter, js_name = vcekPem)]
+    pub fn vcek_pem(&self) -> Uint8Array {
+        Uint8Array::from(&self.inner.response.vcek_pem[..])
+    }
+
+    /// True when all three cert PEMs are non-empty. Cheap pre-check
+    /// before calling `verifyVcekChain` — saves a WASM round-trip
+    /// when the server hasn't loaded a chain.
+    #[wasm_bindgen(getter, js_name = hasVcekChain)]
+    pub fn has_vcek_chain(&self) -> bool {
+        !self.inner.response.ark_pem.is_empty()
+            && !self.inner.response.ask_pem.is_empty()
+            && !self.inner.response.vcek_pem.is_empty()
+    }
+
+    // ── Slice D.3 verifier ──────────────────────────────────────────
+
+    /// One-shot AMD VCEK chain validation. Verifies:
+    ///   1. The ARK PEM's SHA-256 fingerprint matches
+    ///      `expectedArkFingerprint` (a 32-byte operator-pinned value
+    ///      — typically baked into the web bundle at build time so a
+    ///      malicious server can't substitute a forged root).
+    ///   2. ARK is self-signed; ARK signs ASK (RSA-PSS-SHA384).
+    ///   3. ASK signs the VCEK (RSA-PSS-SHA384).
+    ///   4. The SEV-SNP report's ECDSA-P384-SHA384 signature
+    ///      verifies against the VCEK's pubkey.
+    ///
+    /// On success returns nothing (resolves the Promise). On failure
+    /// throws a `JsError` whose message is a single-line diagnostic
+    /// from `pir_attest_verify::VerifyError`.
+    ///
+    /// `expectedArkFingerprint` MUST be exactly 32 bytes (SHA-256 of
+    /// the ARK's DER-encoded certificate). Pass `null` to skip the
+    /// pinning check (NOT recommended for production — without a
+    /// pinned root, a malicious server could supply a self-signed
+    /// "ARK" that doesn't actually belong to AMD).
+    #[wasm_bindgen(js_name = verifyVcekChain)]
+    pub fn verify_vcek_chain(
+        &self,
+        expected_ark_fingerprint: Option<Box<[u8]>>,
+    ) -> Result<(), JsError> {
+        if !self.has_vcek_chain() {
+            return Err(JsError::new(
+                "verifyVcekChain: server didn't bundle a VCEK chain (arkPem/askPem/vcekPem empty)",
+            ));
+        }
+        let pin = match expected_ark_fingerprint {
+            None => None,
+            Some(bytes) => {
+                if bytes.len() != 32 {
+                    return Err(JsError::new(&format!(
+                        "expectedArkFingerprint must be exactly 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(arr)
+            }
+        };
+        // Step 1+2+3: chain + pinned ARK
+        pir_attest_verify::verify_chain(
+            &self.inner.response.ark_pem,
+            &self.inner.response.ask_pem,
+            &self.inner.response.vcek_pem,
+            pin,
+        )
+        .map_err(|e| JsError::new(&format!("{}", e)))?;
+        // Step 4: report sig against VCEK
+        pir_attest_verify::verify_report_against_vcek(
+            &self.inner.response.sev_snp_report,
+            &self.inner.response.vcek_pem,
+        )
+        .map_err(|e| JsError::new(&format!("{}", e)))?;
+        Ok(())
+    }
 }
 
 // ─── WasmDpfClient ──────────────────────────────────────────────────────────

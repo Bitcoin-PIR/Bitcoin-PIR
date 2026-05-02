@@ -110,6 +110,14 @@ export interface HarmonyPirClientConfig {
    *  per-server attestation. `serverIndex` 0 = hint server, 1 = query
    *  server (matches `serverUrls()` order). */
   onAttestation?: (serverIndex: 0 | 1, info: ServerAttestation) => void;
+  /**
+   * Operator-pinned 32-byte SHA-256 fingerprint of the AMD ARK
+   * (Root Key) certificate. See
+   * `BatchPirClientConfig.expectedArkFingerprint` for the full
+   * doc-comment. When set + server bundles a chain, the adapter
+   * flips state to `'verified-vcek'` on chain validation success.
+   */
+  expectedArkFingerprint?: Uint8Array | null;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -194,6 +202,8 @@ export class HarmonyPirClientAdapter {
     const hintAtt = await attestOne(0);
     const queryAtt = await attestOne(1);
 
+    const expectedArkFp = this.config.expectedArkFingerprint ?? null;
+
     const summarise = (att: WasmAttestVerification | null): ServerAttestation => {
       if (!att) return { state: 'mismatch' };
       const allZero = att.serverStaticPub.every((b) => b === 0);
@@ -204,13 +214,36 @@ export class HarmonyPirClientAdapter {
       if (allZero) state = 'plaintext';
       else if (!channelOk) state = 'mismatch';
       else state = 'verified';
-      return {
+      const result: ServerAttestation = {
         state,
         sevStatus: att.sevStatus,
         serverStaticPubHex: att.serverStaticPubHex,
         binarySha256Hex: att.binarySha256Hex,
         gitRev: att.gitRev,
       };
+      // Slice D.3 chain validation. Same gating logic as the DPF
+      // adapter — see dpf-adapter.ts::attestAndUpgrade for rationale.
+      if (state === 'verified' && matched && att.hasVcekChain) {
+        if (expectedArkFp) {
+          try {
+            att.verifyVcekChain(expectedArkFp);
+            result.state = 'verified-vcek';
+            result.vcekChain = 'pass';
+          } catch (e) {
+            result.vcekChain = 'fail';
+            result.vcekChainError = (e as Error)?.message ?? String(e);
+            this.log(
+              `HarmonyPIR verifyVcekChain failed: ${result.vcekChainError}`,
+            );
+            result.state = 'mismatch';
+          }
+        } else {
+          result.vcekChain = 'skipped';
+        }
+      } else if (state === 'verified' && matched && !att.hasVcekChain) {
+        result.vcekChain = 'skipped';
+      }
+      return result;
     };
 
     this.attestation.hint = summarise(hintAtt);
@@ -218,9 +251,11 @@ export class HarmonyPirClientAdapter {
     this.config.onAttestation?.(0, this.attestation.hint);
     this.config.onAttestation?.(1, this.attestation.query);
 
+    const channelReady = (s: ServerAttestation['state']) =>
+      s === 'verified' || s === 'verified-vcek';
     if (
-      this.attestation.hint.state === 'verified'
-      && this.attestation.query.state === 'verified'
+      channelReady(this.attestation.hint.state)
+      && channelReady(this.attestation.query.state)
       && hintAtt
       && queryAtt
     ) {

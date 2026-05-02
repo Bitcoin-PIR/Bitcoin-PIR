@@ -181,6 +181,31 @@ export interface WasmAttestVerification {
   /** Hex-encoded REPORT_DATA preimage hash the client recomputed
    *  locally. Compare against `sevSnpReport[0x50..0x70]`. */
   readonly expectedReportDataHashHex: string;
+
+  // ── Slice D.2 + D.3 cert chain ──────────────────────────────────
+  /** Raw PEM bytes of the AMD ARK (Root Key) cert, as bundled by
+   *  the server. Empty if `--vcek-dir` wasn't configured server-
+   *  side. */
+  readonly arkPem: Uint8Array;
+  /** Raw PEM bytes of the AMD ASK (per-family Signing Key) cert.
+   *  Empty if not bundled. */
+  readonly askPem: Uint8Array;
+  /** Raw PEM bytes of the per-chip VCEK cert. Empty if not bundled. */
+  readonly vcekPem: Uint8Array;
+  /** True when all three cert PEMs are non-empty. Pre-check before
+   *  calling `verifyVcekChain`. */
+  readonly hasVcekChain: boolean;
+  /**
+   * One-shot AMD VCEK chain validation. Verifies:
+   *   1. ARK PEM's SHA-256 fingerprint matches the operator-pinned
+   *      32 bytes (pass `null` to skip — NOT recommended).
+   *   2. ARK self-signed; ARK→ASK; ASK→VCEK (RSA-PSS-SHA384).
+   *   3. SEV-SNP report's ECDSA-P384 signature against VCEK's pubkey.
+   *
+   * Resolves on success. Throws on any failure with a single-line
+   * diagnostic string.
+   */
+  verifyVcekChain(expectedArkFingerprint: Uint8Array | null): void;
 }
 
 interface WasmDpfClient {

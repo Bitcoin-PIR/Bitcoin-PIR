@@ -66,7 +66,14 @@ import { ManagedWebSocket } from './ws.js';
  *   - `'verified'`: attest returned `'reportDataMatch'` AND the server
  *     reported a non-zero X25519 channel pubkey AND the
  *     `upgradeToSecureChannel` call succeeded. Subsequent traffic is
- *     AEAD-sealed; cloudflared sees only ciphertext.
+ *     AEAD-sealed; cloudflared sees only ciphertext. The SEV-SNP
+ *     report is internally consistent but its signature has NOT been
+ *     chain-validated back to AMD's root.
+ *   - `'verified-vcek'`: same as `'verified'` PLUS the AMD VCEK chain
+ *     (ARK→ASK→VCEK) verified AND the report's ECDSA-P384 signature
+ *     verified against the VCEK pubkey. Strongest browser-side
+ *     guarantee — the report is provably signed by real AMD silicon
+ *     whose root we operator-pinned at web-build time.
  *   - `'plaintext'`: attest succeeded but the server has no channel
  *     pubkey (legacy server). Subsequent traffic is plaintext through
  *     cloudflared — fine for development but not for production
@@ -76,7 +83,7 @@ import { ManagedWebSocket } from './ws.js';
  *     adapter logs a warning and falls back to cleartext.
  */
 export interface ServerAttestation {
-  state: 'unattested' | 'verified' | 'plaintext' | 'mismatch';
+  state: 'unattested' | 'verified' | 'verified-vcek' | 'plaintext' | 'mismatch';
   /** Raw SEV-SNP REPORT_DATA binding status from the attest call.
    *  Useful for surfacing the precise reason behind `mismatch`. */
   sevStatus?: string;
@@ -84,10 +91,19 @@ export interface ServerAttestation {
    *  on `unattested`; all-zero hex (`'00…00'`) on `plaintext`. */
   serverStaticPubHex?: string;
   /** SHA-256 of the running server binary (server-side self-report).
-   *  Hex-encoded. Trusted only when `state === 'verified'`. */
+   *  Hex-encoded. Trusted only when `state === 'verified'` or
+   *  `'verified-vcek'`. */
   binarySha256Hex?: string;
   /** Git commit baked into the running server binary. */
   gitRev?: string;
+  /** When VCEK chain validation was attempted: 'pass' / 'fail' /
+   *  'skipped' (server didn't bundle a chain — pre-Slice-D.2 server
+   *  or `--vcek-dir` unset). Filled in by the adapter after the
+   *  attest call resolves. */
+  vcekChain?: 'pass' | 'fail' | 'skipped';
+  /** When `vcekChain === 'fail'`, the diagnostic from
+   *  `pir_attest_verify::VerifyError`. */
+  vcekChainError?: string;
 }
 
 export interface BatchPirClientConfig {
@@ -116,6 +132,21 @@ export interface BatchPirClientConfig {
    *  attestation result. Use to surface a "verified channel" badge in
    *  the UI. `serverIndex` is 0 (first URL) or 1 (second URL). */
   onAttestation?: (serverIndex: 0 | 1, info: ServerAttestation) => void;
+  /**
+   * Operator-pinned 32-byte SHA-256 fingerprint of the AMD ARK
+   * (Root Key) certificate. When set AND the server bundles a VCEK
+   * chain, the adapter calls `verifyVcekChain` and flips
+   * `attestation.serverN.state` to `'verified-vcek'` on success. When
+   * `null` (default), the chain isn't validated and state caps at
+   * `'verified'` (V2 binding only).
+   *
+   * Pin this at web-build time (e.g. read from a `.env` constant) so a
+   * malicious server can't substitute a forged "ARK". Compute via
+   *   sha256(DER(ARK))
+   * — for AMD's published ARK at https://kdsintf.amd.com/vcek/v1/{Family}/cert_chain
+   * (the second PEM block).
+   */
+  expectedArkFingerprint?: Uint8Array | null;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -462,6 +493,8 @@ export class BatchPirClientAdapter {
     const att0 = await attestOne(0);
     const att1 = await attestOne(1);
 
+    const expectedArkFp = this.config.expectedArkFingerprint ?? null;
+
     const summarise = (
       idx: 0 | 1,
       att: WasmAttestVerification | null,
@@ -481,13 +514,44 @@ export class BatchPirClientAdapter {
       if (allZero) state = 'plaintext';
       else if (!channelOk) state = 'mismatch';
       else state = 'verified';
-      return {
+
+      const result: ServerAttestation = {
         state,
         sevStatus: att.sevStatus,
         serverStaticPubHex: att.serverStaticPubHex,
         binarySha256Hex: att.binarySha256Hex,
         gitRev: att.gitRev,
       };
+
+      // Slice D.3: AMD VCEK chain validation. Only attempt when the
+      // V2 binding already passed (otherwise the report is suspect
+      // anyway), the server bundled a chain, AND we have an
+      // operator-pinned ARK fingerprint to anchor trust.
+      if (state === 'verified' && matched && att.hasVcekChain) {
+        if (expectedArkFp) {
+          try {
+            att.verifyVcekChain(expectedArkFp);
+            result.state = 'verified-vcek';
+            result.vcekChain = 'pass';
+          } catch (e) {
+            result.vcekChain = 'fail';
+            result.vcekChainError = (e as Error)?.message ?? String(e);
+            this.log(
+              `verifyVcekChain(server${idx}) failed: ${result.vcekChainError}`,
+              'error',
+            );
+            // Demote to 'mismatch' on chain failure — the operator's
+            // pinning explicitly demanded chain validation, and it
+            // didn't pass. Treat as a strong negative signal.
+            result.state = 'mismatch';
+          }
+        } else {
+          result.vcekChain = 'skipped';
+        }
+      } else if (state === 'verified' && matched && !att.hasVcekChain) {
+        result.vcekChain = 'skipped';
+      }
+      return result;
     };
 
     const sum0 = summarise(0, att0);
@@ -500,7 +564,13 @@ export class BatchPirClientAdapter {
     // Only upgrade if BOTH servers cleared the channel-OK gate. A
     // half-encrypted setup gives no privacy benefit (the all-cleartext
     // server still leaks queries to cloudflared) and complicates UI.
-    if (sum0.state === 'verified' && sum1.state === 'verified' && att0 && att1) {
+    // Either 'verified' (V2 binding only) or 'verified-vcek' (full
+    // AMD chain) qualifies — both prove the channel pubkey is bound
+    // to a SEV-SNP report; the V2 binding is the gate that matters
+    // for the channel itself.
+    const channelReady = (s: ServerAttestation['state']) =>
+      s === 'verified' || s === 'verified-vcek';
+    if (channelReady(sum0.state) && channelReady(sum1.state) && att0 && att1) {
       try {
         await this.wasmClient.upgradeToSecureChannel(
           att0.serverStaticPub,

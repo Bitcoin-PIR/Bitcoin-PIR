@@ -28,6 +28,11 @@ pir-core = { version = "0.1.0", path = "../pir-core" }
 # the native path in `cargo test -p pir-sdk-wasm`, so the tokio pull-in is
 # acceptable.
 pir-sdk-client = { version = "0.1.0", path = "../pir-sdk-client" }
+# Browser-side AMD VCEK chain verifier (Slice D). Pure-Rust crypto
+# so the browser can chain-validate the SEV-SNP report's signature
+# back to AMD's known root without talking to kdsintf.amd.com
+# (CORS-blocked from browser context).
+pir-attest-verify = { version = "0.1.0", path = "../pir-attest-verify" }
 # Per-handshake nonce + ephemeral seed in `WasmDpfClient::attest`. The
 # "js" feature lets it use `crypto.getRandomValues` on wasm32; on
 # native (used only by `cargo test`) it reads /dev/urandom.
