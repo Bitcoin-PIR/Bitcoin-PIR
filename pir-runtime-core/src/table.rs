@@ -329,10 +329,19 @@ impl MappedDatabase {
     }
 }
 
-/// Server state holding multiple databases.
+/// Server state holding multiple databases plus the long-lived
+/// channel-encryption pubkey.
 pub struct ServerState {
     /// All loaded databases. Index 0 is typically the main UTXO database.
     pub databases: Vec<MappedDatabase>,
+    /// X25519 public key the server generates inside the SEV-SNP guest
+    /// at startup. Bound into REPORT_DATA via
+    /// `pir_core::attest::build_report_data` (V2 layout). Echoed back
+    /// to clients in `AttestResult::server_static_pub` so they can
+    /// verify the chip-attested key matches what they'll handshake
+    /// against. All-zero on servers that don't yet have a channel key
+    /// (transitional — unified_server should always set one).
+    pub server_static_pub: [u8; 32],
 }
 
 impl ServerState {

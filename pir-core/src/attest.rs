@@ -6,7 +6,7 @@
 //! platform-specific (the `/dev/sev-guest` ioctl, AMD VCEK chain
 //! verification) lives in the consuming crates.
 //!
-//! ## REPORT_DATA layout
+//! ## REPORT_DATA layout (V2)
 //!
 //! SEV-SNP attestation reports include 64 bytes of attester-supplied
 //! "user data". BPIR uses the first 32 bytes for a SHA-256 commitment,
@@ -14,22 +14,52 @@
 //! later without re-keying the verifier:
 //!
 //! ```text
-//! report_data[ 0..32] = sha256(BPIR-ATTEST-V1
-//!                              || nonce              (32 B)
-//!                              || combined_root      (32 B)  // sha256(root_0 || root_1 || ...)
-//!                              || binary_sha256      (32 B)
+//! report_data[ 0..32] = sha256(BPIR-ATTEST-V2
+//!                              || nonce                (32 B)
+//!                              || combined_root        (32 B)  // sha256(root_0 || root_1 || ...)
+//!                              || binary_sha256        (32 B)
+//!                              || server_static_pub    (32 B)  // X25519 channel pubkey
 //!                              || git_rev_utf8)
 //! report_data[32..64] = 0x00 * 32
 //! ```
 //!
-//! The domain tag `BPIR-ATTEST-V1` ensures collisions with unrelated
-//! protocols (or other BPIR features that may want their own
-//! REPORT_DATA derivation) cannot be confused for valid attestations.
+//! The domain tag `BPIR-ATTEST-V2` ensures collisions with V1 (or any
+//! unrelated protocol that may want its own REPORT_DATA derivation)
+//! cannot be confused for valid attestations.
+//!
+//! ## Why server_static_pub is in the preimage
+//!
+//! The V2 layout binds a long-lived X25519 public key — generated
+//! inside the SEV-SNP guest at boot — into the chip-signed report.
+//! That lets browser clients establish an encrypted+authenticated
+//! channel directly to `unified_server` without trusting cloudflared
+//! (which sits between the browser and the guest, terminating TLS at
+//! the tunnel edge and seeing plaintext PIR traffic today).
+//!
+//! Concretely: client sends an ephemeral X25519 pubkey + nonce,
+//! server's ECDH peer is its long-lived `server_static_pub` (so the
+//! handshake derives a key that depends on the attested-once static
+//! key + a fresh per-session ephemeral pair → forward secrecy + chip-
+//! attested identity).
+//!
+//! ## V1 → V2 migration
+//!
+//! V1 (no pubkey, tag `BPIR-ATTEST-V1`) is gone. There is no
+//! coexistence path: a V1 verifier checking a V2 report's
+//! REPORT_DATA fails loudly (mismatch), which is the correct
+//! behaviour — silently mis-validating an unbound pubkey would let
+//! cloudflared substitute its own key.
 
 use crate::merkle::{sha256, Hash256};
 
+/// Length of an X25519 public key (RFC 7748 §6.1).
+pub const X25519_PUBKEY_LEN: usize = 32;
+
 /// Domain-separation tag prefixed to the REPORT_DATA preimage.
-pub const REPORT_DATA_DOMAIN_TAG: &[u8] = b"BPIR-ATTEST-V1";
+///
+/// Bumped from `V1` to `V2` when `server_static_pub` was added to the
+/// preimage — see module docs for the migration story.
+pub const REPORT_DATA_DOMAIN_TAG: &[u8] = b"BPIR-ATTEST-V2";
 
 /// Concatenate per-DB manifest roots and hash, producing the single
 /// "combined manifest root" that goes into REPORT_DATA. Empty input
@@ -52,23 +82,33 @@ pub fn combine_manifest_roots(roots: &[Hash256]) -> Hash256 {
 /// Build the 64-byte REPORT_DATA payload that gets passed into
 /// `/dev/sev-guest`'s SNP_GET_REPORT ioctl.
 ///
-/// See module docs for the exact layout. The high 32 bytes are zero
+/// See module docs for the exact V2 layout. The high 32 bytes are zero
 /// today; clients verify the low 32 bytes match a fresh recomputation.
+///
+/// `server_static_pub` is the X25519 public half of the long-lived
+/// channel key the server generates inside the SEV-SNP guest at boot.
+/// Binding it here means a verifier with the chip-signed report can
+/// trust that subsequent encrypted-channel handshakes terminate inside
+/// the same attested guest (cloudflared can't substitute its own key).
+/// Pass `[0u8; 32]` if the server has no channel key yet (transitional;
+/// any production server should have one).
 pub fn build_report_data(
     nonce: [u8; 32],
     manifest_roots: &[Hash256],
     binary_sha256: Hash256,
+    server_static_pub: [u8; X25519_PUBKEY_LEN],
     git_rev: &str,
 ) -> [u8; 64] {
     let combined_root = combine_manifest_roots(manifest_roots);
 
     let mut preimage = Vec::with_capacity(
-        REPORT_DATA_DOMAIN_TAG.len() + 32 + 32 + 32 + git_rev.len(),
+        REPORT_DATA_DOMAIN_TAG.len() + 32 + 32 + 32 + 32 + git_rev.len(),
     );
     preimage.extend_from_slice(REPORT_DATA_DOMAIN_TAG);
     preimage.extend_from_slice(&nonce);
     preimage.extend_from_slice(&combined_root);
     preimage.extend_from_slice(&binary_sha256);
+    preimage.extend_from_slice(&server_static_pub);
     preimage.extend_from_slice(git_rev.as_bytes());
 
     let h = sha256(&preimage);
@@ -120,56 +160,69 @@ mod tests {
 
     #[test]
     fn build_report_data_changes_with_nonce() {
-        let h1 = build_report_data([1u8; 32], &[], [2u8; 32], "abc");
-        let h2 = build_report_data([3u8; 32], &[], [2u8; 32], "abc");
+        let h1 = build_report_data([1u8; 32], &[], [2u8; 32], [0u8; 32], "abc");
+        let h2 = build_report_data([3u8; 32], &[], [2u8; 32], [0u8; 32], "abc");
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn build_report_data_changes_with_manifest_roots() {
-        let h1 = build_report_data([1u8; 32], &[[7u8; 32]], [2u8; 32], "abc");
-        let h2 = build_report_data([1u8; 32], &[[8u8; 32]], [2u8; 32], "abc");
+        let h1 = build_report_data([1u8; 32], &[[7u8; 32]], [2u8; 32], [0u8; 32], "abc");
+        let h2 = build_report_data([1u8; 32], &[[8u8; 32]], [2u8; 32], [0u8; 32], "abc");
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn build_report_data_changes_with_binary_hash() {
-        let h1 = build_report_data([1u8; 32], &[], [2u8; 32], "abc");
-        let h2 = build_report_data([1u8; 32], &[], [3u8; 32], "abc");
+        let h1 = build_report_data([1u8; 32], &[], [2u8; 32], [0u8; 32], "abc");
+        let h2 = build_report_data([1u8; 32], &[], [3u8; 32], [0u8; 32], "abc");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn build_report_data_changes_with_server_static_pub() {
+        // The whole point of V2 — substituting a different pubkey
+        // (e.g. cloudflared inserting its own key) must produce a
+        // different REPORT_DATA so the verifier rejects the binding.
+        let h1 = build_report_data([1u8; 32], &[], [2u8; 32], [0xAAu8; 32], "abc");
+        let h2 = build_report_data([1u8; 32], &[], [2u8; 32], [0xBBu8; 32], "abc");
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn build_report_data_changes_with_git_rev() {
-        let h1 = build_report_data([1u8; 32], &[], [2u8; 32], "abc");
-        let h2 = build_report_data([1u8; 32], &[], [2u8; 32], "xyz");
+        let h1 = build_report_data([1u8; 32], &[], [2u8; 32], [0u8; 32], "abc");
+        let h2 = build_report_data([1u8; 32], &[], [2u8; 32], [0u8; 32], "xyz");
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn build_report_data_high_32_bytes_zero() {
-        let h = build_report_data([1u8; 32], &[], [2u8; 32], "abc");
+        let h = build_report_data([1u8; 32], &[], [2u8; 32], [0u8; 32], "abc");
         assert_eq!(&h[32..], &[0u8; 32]);
     }
 
     #[test]
     fn build_report_data_low_32_bytes_match_manual_sha256() {
-        // Recompute the preimage by hand and check it matches.
+        // Recompute the preimage by hand and check it matches the V2
+        // layout exactly (catches accidental field-order regressions).
         let nonce = [0xAAu8; 32];
         let root = [0xBBu8; 32];
         let binary = [0xCCu8; 32];
+        let server_pub = [0xDDu8; 32];
         let git = "deadbeef";
         let combined = combine_manifest_roots(&[root]);
 
         let mut p = Vec::new();
-        p.extend_from_slice(b"BPIR-ATTEST-V1");
+        p.extend_from_slice(b"BPIR-ATTEST-V2");
         p.extend_from_slice(&nonce);
         p.extend_from_slice(&combined);
         p.extend_from_slice(&binary);
+        p.extend_from_slice(&server_pub);
         p.extend_from_slice(git.as_bytes());
         let manual = sha256(&p);
 
-        let out = build_report_data(nonce, &[root], binary, git);
+        let out = build_report_data(nonce, &[root], binary, server_pub, git);
         assert_eq!(&out[..32], &manual);
     }
 

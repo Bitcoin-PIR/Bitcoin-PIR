@@ -7,9 +7,17 @@
 //!   over any [`PirTransport`].
 //! - Decodes the response into a typed [`AttestResponse`] (the wire
 //!   format mirrors `pir_runtime_core::protocol::AttestResult`).
-//! - Recomputes `sha256("BPIR-ATTEST-V1" || nonce || combined_root ||
-//!   binary_sha256 || git_rev)` and checks that the SEV-SNP report's
-//!   REPORT_DATA field (if present) carries that value.
+//! - Recomputes `sha256("BPIR-ATTEST-V2" || nonce || combined_root ||
+//!   binary_sha256 || server_static_pub || git_rev)` and checks that
+//!   the SEV-SNP report's REPORT_DATA field (if present) carries that
+//!   value.
+//!
+//! The V2 preimage adds `server_static_pub` — the long-lived X25519
+//! public key the server generated inside its SEV-SNP guest at boot.
+//! Binding the pubkey here is the foundation of the
+//! browser↔unified_server encrypted channel: with this check passing,
+//! the client knows the X25519 key it'll handshake against was
+//! generated inside the same attested guest cloudflared can't see into.
 //!
 //! ## What this module does NOT do
 //!
@@ -47,6 +55,11 @@ pub struct AttestResponse {
     pub manifest_roots: Vec<Hash256>,
     /// SHA-256 of the running binary (cached at server startup).
     pub binary_sha256: Hash256,
+    /// X25519 public key the server uses for encrypted-channel
+    /// handshakes. All-zero on servers that don't yet have a channel
+    /// key (transitional). Bound into REPORT_DATA via the V2 layout
+    /// so the chip-signed attestation authenticates this exact key.
+    pub server_static_pub: [u8; 32],
     /// Git commit baked into the running binary. May be suffixed with
     /// `-dirty` if the working tree had local changes at build time, or
     /// be the literal `"unknown"` for non-git builds.
@@ -129,6 +142,7 @@ pub async fn attest<T: PirTransport + ?Sized>(
         nonce,
         &parsed.manifest_roots,
         parsed.binary_sha256,
+        parsed.server_static_pub,
         &parsed.git_rev,
     );
     let mut expected_low = [0u8; 32];
@@ -195,6 +209,16 @@ fn decode_attest_response(data: &[u8]) -> PirResult<AttestResponse> {
     binary_sha256.copy_from_slice(&data[pos..pos + 32]);
     pos += 32;
 
+    // V2 wire layout: server_static_pub right after binary_sha256.
+    if pos + 32 > data.len() {
+        return Err(PirError::Protocol(
+            "truncated server_static_pub (V2 wire layout)".into(),
+        ));
+    }
+    let mut server_static_pub = [0u8; 32];
+    server_static_pub.copy_from_slice(&data[pos..pos + 32]);
+    pos += 32;
+
     if pos + 2 > data.len() {
         return Err(PirError::Protocol("truncated git_rev length".into()));
     }
@@ -209,6 +233,7 @@ fn decode_attest_response(data: &[u8]) -> PirResult<AttestResponse> {
         sev_snp_report,
         manifest_roots,
         binary_sha256,
+        server_static_pub,
         git_rev,
     })
 }
@@ -251,6 +276,7 @@ mod tests {
 
     /// Build the wire bytes of a RESP_ATTEST message body (after the
     /// 4-byte outer length prefix would be stripped by transport.roundtrip).
+    /// Mirrors `pir_runtime_core::protocol::encode_attest_result` (V2).
     fn build_response_payload(r: &AttestResponse) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.push(RESP_ATTEST);
@@ -261,6 +287,7 @@ mod tests {
             payload.extend_from_slice(root);
         }
         payload.extend_from_slice(&r.binary_sha256);
+        payload.extend_from_slice(&r.server_static_pub);
         let g = r.git_rev.as_bytes();
         payload.extend_from_slice(&(g.len() as u16).to_le_bytes());
         payload.extend_from_slice(g);
@@ -274,6 +301,7 @@ mod tests {
             sev_snp_report: Vec::new(), // empty → NoSevHost
             manifest_roots: vec![[0xAAu8; 32]],
             binary_sha256: [0xBBu8; 32],
+            server_static_pub: [0u8; 32],
             git_rev: "abc".into(),
         };
         let mut mock = MockTransport {
@@ -296,11 +324,18 @@ mod tests {
         let nonce = [0x10u8; 32];
         let manifest_roots = vec![[0xAAu8; 32], [0xBBu8; 32]];
         let binary_sha256 = [0xCCu8; 32];
+        let server_static_pub = [0xEEu8; 32];
         let git_rev = "deadbeef".to_string();
 
         // Construct a SEV report blob whose REPORT_DATA field at offset 0x50
-        // contains the expected preimage hash.
-        let expected = build_report_data(nonce, &manifest_roots, binary_sha256, &git_rev);
+        // contains the expected V2 preimage hash.
+        let expected = build_report_data(
+            nonce,
+            &manifest_roots,
+            binary_sha256,
+            server_static_pub,
+            &git_rev,
+        );
         let mut sev_blob = vec![0xFFu8; 1184];
         sev_blob[SEV_SNP_REPORT_DATA_OFFSET..SEV_SNP_REPORT_DATA_OFFSET + 64]
             .copy_from_slice(&expected);
@@ -309,6 +344,7 @@ mod tests {
             sev_snp_report: sev_blob,
             manifest_roots,
             binary_sha256,
+            server_static_pub,
             git_rev,
         };
         let mut mock = MockTransport {
@@ -329,9 +365,15 @@ mod tests {
         let claimed_binary = [0xCCu8; 32];
         let actual_binary = [0xDDu8; 32];
         let manifest_roots = vec![[0xAAu8; 32]];
+        let server_static_pub = [0u8; 32];
         let git_rev = "v1".to_string();
-        let dishonest_preimage =
-            build_report_data(nonce, &manifest_roots, actual_binary, &git_rev);
+        let dishonest_preimage = build_report_data(
+            nonce,
+            &manifest_roots,
+            actual_binary,
+            server_static_pub,
+            &git_rev,
+        );
 
         let mut sev_blob = vec![0u8; 1184];
         sev_blob[SEV_SNP_REPORT_DATA_OFFSET..SEV_SNP_REPORT_DATA_OFFSET + 64]
@@ -341,6 +383,50 @@ mod tests {
             sev_snp_report: sev_blob,
             manifest_roots,
             binary_sha256: claimed_binary, // ≠ actual_binary used in REPORT_DATA
+            server_static_pub,
+            git_rev,
+        };
+        let mut mock = MockTransport {
+            reply: build_response_payload(&resp),
+            last_request: Mutex::new(Vec::new()),
+        };
+        let v = attest(&mut mock, nonce).await.unwrap();
+        assert_eq!(v.sev_status, SevStatus::ReportDataMismatch);
+    }
+
+    #[tokio::test]
+    async fn substituted_pubkey_returns_mismatch() {
+        // The whole point of binding server_static_pub: a MITM (e.g.
+        // cloudflared) that replaces the pubkey but echoes everything
+        // else faithfully must trip the binding check.
+        let nonce = [0x10u8; 32];
+        let manifest_roots = vec![[0xAAu8; 32]];
+        let binary_sha256 = [0xCCu8; 32];
+        let real_pubkey = [0x11u8; 32];
+        let attacker_pubkey = [0x22u8; 32];
+        let git_rev = "v1".to_string();
+
+        // Server's chip-signed REPORT_DATA was computed against the
+        // real pubkey (this is the only thing the chip can sign — the
+        // server can't lie to the chip about its own boot-time key).
+        let real_preimage = build_report_data(
+            nonce,
+            &manifest_roots,
+            binary_sha256,
+            real_pubkey,
+            &git_rev,
+        );
+        let mut sev_blob = vec![0u8; 1184];
+        sev_blob[SEV_SNP_REPORT_DATA_OFFSET..SEV_SNP_REPORT_DATA_OFFSET + 64]
+            .copy_from_slice(&real_preimage);
+
+        // But the wire response carries the attacker's pubkey (e.g.
+        // cloudflared swapped it). Recomputed preimage diverges.
+        let resp = AttestResponse {
+            sev_snp_report: sev_blob,
+            manifest_roots,
+            binary_sha256,
+            server_static_pub: attacker_pubkey,
             git_rev,
         };
         let mut mock = MockTransport {
@@ -358,6 +444,7 @@ mod tests {
             sev_snp_report: vec![0u8; 50], // < 0x50 + 64
             manifest_roots: vec![],
             binary_sha256: [0u8; 32],
+            server_static_pub: [0u8; 32],
             git_rev: "x".into(),
         };
         let mut mock = MockTransport {

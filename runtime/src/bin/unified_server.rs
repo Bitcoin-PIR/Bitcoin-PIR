@@ -384,6 +384,14 @@ struct UnifiedServerData {
     /// land at `<data_root>/.staging/<name>/` and ACTIVATE renames into
     /// `<data_root>/<target_path>/`.
     data_root: PathBuf,
+    /// Long-lived X25519 keypair for the inner encrypted channel
+    /// (cloudflared-blind WSS frames). Generated inside the SEV-SNP
+    /// guest at startup; the public half is committed to REPORT_DATA
+    /// via `pir_core::attest::build_report_data` (V2). The secret half
+    /// is unused in Slice A (only the pubkey is wired); Slice B will
+    /// consume it during per-session ECDH.
+    #[allow(dead_code)]
+    channel_keypair: pir_runtime_core::channel::ChannelKeypair,
 }
 
 impl UnifiedServerData {
@@ -1634,9 +1642,32 @@ async fn main() {
     }
     println!();
 
+    // ── Generate the long-lived channel keypair ─────────────────────────
+    // This is the X25519 key the future encrypted channel handshakes
+    // ECDH against. We generate it inside the SEV-SNP guest at startup
+    // (before any client traffic), commit the pubkey to REPORT_DATA via
+    // build_report_data's V2 layout, and stash both halves on the
+    // server. The secret never touches disk; on reboot a new key is
+    // generated, which automatically bumps MEASUREMENT (because the
+    // pubkey-in-cmdline path doesn't apply yet — see Slice B).
+    //
+    // Why on a non-SEV host (Hetzner) too? The channel layer is hosted
+    // identically; only the attestation backing differs. Clients still
+    // get an encrypted channel against pir1; they just don't get the
+    // chip-signed binding.
+    let channel_keypair = pir_runtime_core::channel::ChannelKeypair::generate();
+    let channel_pubkey = channel_keypair.public_bytes();
+    println!(
+        "  Channel pubkey: {}",
+        channel_pubkey.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    );
+
     // ── Assemble ServerState ────────────────────────────────────────────
     let num_databases = all_databases.len();
-    let state = ServerState { databases: all_databases };
+    let state = ServerState {
+        databases: all_databases,
+        server_static_pub: channel_pubkey,
+    };
 
     let admin_config = match args.admin_pubkey_hex.as_deref() {
         None => None,
@@ -1666,6 +1697,7 @@ async fn main() {
         mmap_regions,
         admin_config,
         data_root,
+        channel_keypair,
     });
 
     // ── Accept WebSocket connections ────────────────────────────────────
@@ -1880,9 +1912,14 @@ async fn main() {
                                     .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
                                     .collect();
                                 let binary_sha256 = attest::self_exe_sha256();
+                                let server_static_pub = s.state.server_static_pub;
                                 let git_rev = attest::GIT_REV;
                                 let report_data = attest::build_report_data(
-                                    nonce, &manifest_roots, binary_sha256, git_rev,
+                                    nonce,
+                                    &manifest_roots,
+                                    binary_sha256,
+                                    server_static_pub,
+                                    git_rev,
                                 );
                                 let sev_snp_report = attest::fetch_report(report_data)
                                     .ok().flatten().unwrap_or_default();
@@ -1890,6 +1927,7 @@ async fn main() {
                                     sev_snp_report,
                                     manifest_roots,
                                     binary_sha256,
+                                    server_static_pub,
                                     git_rev: git_rev.to_string(),
                                 })
                             }).await.unwrap();

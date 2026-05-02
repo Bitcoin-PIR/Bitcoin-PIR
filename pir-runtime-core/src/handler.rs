@@ -18,11 +18,28 @@ pub struct RequestHandler {
 }
 
 impl RequestHandler {
-    /// Create a new request handler with the given databases.
+    /// Create a new request handler with the given databases. The
+    /// channel-encryption pubkey defaults to all-zero — call
+    /// [`Self::with_channel_pubkey`] to bind a real key into the V2
+    /// REPORT_DATA layout. Production servers (unified_server) MUST
+    /// set one; the all-zero default is fine for tests and the
+    /// pre-channel transition window.
     pub fn new(databases: Vec<MappedDatabase>) -> Self {
         Self {
-            state: ServerState { databases },
+            state: ServerState {
+                databases,
+                server_static_pub: [0u8; 32],
+            },
         }
+    }
+
+    /// Bind the long-lived X25519 channel pubkey the server generated
+    /// inside its SEV-SNP guest at startup. The pubkey is committed to
+    /// REPORT_DATA via `pir_core::attest::build_report_data`, and
+    /// echoed back to clients in `AttestResult::server_static_pub`.
+    pub fn with_channel_pubkey(mut self, server_static_pub: [u8; 32]) -> Self {
+        self.state.server_static_pub = server_static_pub;
+        self
     }
 
     /// Get a database by ID.
@@ -131,10 +148,12 @@ impl RequestHandler {
             .collect();
         let binary_sha256 = crate::attest::self_exe_sha256();
         let git_rev = crate::attest::GIT_REV;
+        let server_static_pub = self.state.server_static_pub;
         let report_data = crate::attest::build_report_data(
             nonce,
             &manifest_roots,
             binary_sha256,
+            server_static_pub,
             git_rev,
         );
         let sev_snp_report = match crate::attest::fetch_report(report_data) {
@@ -149,6 +168,7 @@ impl RequestHandler {
             sev_snp_report,
             manifest_roots,
             binary_sha256,
+            server_static_pub,
             git_rev: git_rev.to_string(),
         }
     }

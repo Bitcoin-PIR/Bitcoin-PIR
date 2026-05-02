@@ -379,6 +379,14 @@ pub struct AttestResult {
     pub manifest_roots: Vec<[u8; 32]>,
     /// SHA-256 of `/proc/self/exe` captured at server startup.
     pub binary_sha256: [u8; 32],
+    /// Long-lived X25519 public key the server generated inside the
+    /// SEV-SNP guest at boot. Bound into REPORT_DATA via
+    /// `pir_core::attest::build_report_data` (V2 layout) so a chip-
+    /// signed report authenticates this exact key. Used by clients
+    /// to establish an end-to-end encrypted channel that cloudflared
+    /// (and Cloudflare's edge) can't read. All-zero on servers that
+    /// don't yet have a channel key (transitional).
+    pub server_static_pub: [u8; 32],
     /// Git commit baked in at build time (40-char SHA, optionally
     /// suffixed with `-dirty`, or "unknown" for non-git builds).
     pub git_rev: String,
@@ -1216,6 +1224,9 @@ fn encode_attest_result(buf: &mut Vec<u8>, r: &AttestResult) {
         buf.extend_from_slice(root);
     }
     buf.extend_from_slice(&r.binary_sha256);
+    // V2 wire layout: server_static_pub immediately after binary_sha256.
+    // Bumped together with REPORT_DATA's BPIR-ATTEST-V2 tag.
+    buf.extend_from_slice(&r.server_static_pub);
     let git_bytes = r.git_rev.as_bytes();
     debug_assert!(git_bytes.len() <= u16::MAX as usize, "git_rev too long");
     buf.extend_from_slice(&(git_bytes.len() as u16).to_le_bytes());
@@ -1273,6 +1284,17 @@ fn decode_attest_result(data: &[u8]) -> io::Result<AttestResult> {
     binary_sha256.copy_from_slice(&data[pos..pos + 32]);
     pos += 32;
 
+    // V2 wire layout: server_static_pub right after binary_sha256.
+    if pos + 32 > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated server_static_pub (V2 wire layout)",
+        ));
+    }
+    let mut server_static_pub = [0u8; 32];
+    server_static_pub.copy_from_slice(&data[pos..pos + 32]);
+    pos += 32;
+
     if pos + 2 > data.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1293,6 +1315,7 @@ fn decode_attest_result(data: &[u8]) -> io::Result<AttestResult> {
         sev_snp_report,
         manifest_roots,
         binary_sha256,
+        server_static_pub,
         git_rev,
     })
 }
@@ -1414,6 +1437,7 @@ mod attest_wire_tests {
             sev_snp_report: vec![0xCDu8; 1184],
             manifest_roots: vec![[0x11u8; 32], [0x22u8; 32]],
             binary_sha256: [0x33u8; 32],
+            server_static_pub: [0x44u8; 32],
             git_rev: "deadbeef".to_string(),
         };
         let encoded = Response::Attest(r.clone()).encode();
@@ -1423,6 +1447,7 @@ mod attest_wire_tests {
                 assert_eq!(r2.sev_snp_report, r.sev_snp_report);
                 assert_eq!(r2.manifest_roots, r.manifest_roots);
                 assert_eq!(r2.binary_sha256, r.binary_sha256);
+                assert_eq!(r2.server_static_pub, r.server_static_pub);
                 assert_eq!(r2.git_rev, r.git_rev);
             }
             _ => panic!("wrong variant"),
@@ -1436,6 +1461,7 @@ mod attest_wire_tests {
             sev_snp_report: vec![],
             manifest_roots: vec![[0u8; 32]],
             binary_sha256: [0xFFu8; 32],
+            server_static_pub: [0u8; 32], // no channel key on this server yet
             git_rev: "unknown".to_string(),
         };
         let encoded = Response::Attest(r.clone()).encode();
@@ -1444,6 +1470,7 @@ mod attest_wire_tests {
             Response::Attest(r2) => {
                 assert!(r2.sev_snp_report.is_empty());
                 assert_eq!(r2.manifest_roots.len(), 1);
+                assert_eq!(r2.server_static_pub, [0u8; 32]);
                 assert_eq!(r2.git_rev, "unknown");
             }
             _ => panic!("wrong variant"),
@@ -1456,6 +1483,7 @@ mod attest_wire_tests {
             sev_snp_report: vec![0u8; 50],
             manifest_roots: vec![],
             binary_sha256: [0xAAu8; 32],
+            server_static_pub: [0xBBu8; 32],
             git_rev: "abc".into(),
         };
         let encoded = Response::Attest(r.clone()).encode();
@@ -1464,6 +1492,7 @@ mod attest_wire_tests {
             Response::Attest(r2) => {
                 assert!(r2.manifest_roots.is_empty());
                 assert_eq!(r2.sev_snp_report.len(), 50);
+                assert_eq!(r2.server_static_pub, [0xBBu8; 32]);
             }
             _ => panic!("wrong variant"),
         }

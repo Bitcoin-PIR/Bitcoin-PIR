@@ -4,6 +4,7 @@
 
 pub mod admin;
 pub mod attest;
+pub mod channel;
 pub mod eval;
 pub mod handler;
 pub mod manifest;

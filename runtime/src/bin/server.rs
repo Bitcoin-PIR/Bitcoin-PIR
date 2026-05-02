@@ -443,12 +443,15 @@ async fn main() {
                             // Legacy server doesn't load DBs via MappedDatabase, so it
                             // has no MANIFEST.toml verification — manifest_roots is empty.
                             // Binary self-hash + git rev + (if available) SEV-SNP report
-                            // are still meaningful.
+                            // are still meaningful. No channel pubkey on this binary
+                            // (no channel-encryption support) — V2 layout still applies
+                            // with an all-zero `server_static_pub`.
                             use pir_runtime_core::attest;
                             let binary_sha256 = attest::self_exe_sha256();
+                            let server_static_pub = [0u8; 32];
                             let git_rev = attest::GIT_REV;
                             let report_data = attest::build_report_data(
-                                nonce, &[], binary_sha256, git_rev,
+                                nonce, &[], binary_sha256, server_static_pub, git_rev,
                             );
                             let sev_snp_report = attest::fetch_report(report_data)
                                 .ok()
@@ -458,6 +461,7 @@ async fn main() {
                                 sev_snp_report,
                                 manifest_roots: Vec::new(),
                                 binary_sha256,
+                                server_static_pub,
                                 git_rev: git_rev.to_string(),
                             })
                         }

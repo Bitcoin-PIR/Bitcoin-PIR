@@ -72,6 +72,16 @@ pub async fn run(args: AttestArgs) -> Result<(), i32> {
     println!("== Self-reported (server-side) ==");
     println!("binary_sha256:     {}", hex::encode(v.response.binary_sha256));
     println!("git_rev:           {}", v.response.git_rev);
+    // server_static_pub is the X25519 long-lived channel pubkey. All-zero
+    // means the server hasn't enabled the encrypted-channel feature yet
+    // (transitional — flag it so an operator who expects a key sees that
+    // it's missing).
+    if v.response.server_static_pub == [0u8; 32] {
+        println!("channel pubkey:    <none>  (server has no X25519 channel key — encrypted-channel feature off)");
+    } else {
+        println!("channel pubkey:    {}  (X25519, V2-bound to REPORT_DATA)",
+                 hex::encode(v.response.server_static_pub));
+    }
     println!("manifest roots ({} DB{}):",
              v.response.manifest_roots.len(),
              if v.response.manifest_roots.len() == 1 { "" } else { "s" });
