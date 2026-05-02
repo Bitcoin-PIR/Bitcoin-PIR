@@ -99,6 +99,15 @@ struct CliArgs {
     /// OnionPIR data is not synced from Hetzner). Primary role
     /// otherwise auto-loads OnionPIR if files exist.
     disable_onion: bool,
+    /// Directory containing the AMD VCEK chain PEMs. Expected files:
+    ///   - cert_chain.pem  (ASK + ARK concatenated, as AMD KDS returns)
+    ///   - vcek.pem        (the per-chip VCEK for the current TCB)
+    /// If unset (or files missing), the AttestResult ships empty cert
+    /// fields and the browser-side verifier falls back to V2-binding-
+    /// only mode. Operator's responsibility to refresh after TCB
+    /// changes (kernel update, microcode update) — see
+    /// docs/PHASE3_ROADMAP.md.
+    vcek_dir: Option<PathBuf>,
 }
 
 fn parse_args() -> CliArgs {
@@ -112,6 +121,7 @@ fn parse_args() -> CliArgs {
     let mut deltas: Vec<(PathBuf, u32, u32)> = Vec::new();
     let mut admin_pubkey_hex: Option<String> = None;
     let mut disable_onion = false;
+    let mut vcek_dir: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -174,12 +184,18 @@ fn parse_args() -> CliArgs {
             "--disable-onion" => {
                 disable_onion = true;
             }
+            "--vcek-dir" => {
+                if let Some(dir) = args.get(i + 1) {
+                    vcek_dir = Some(PathBuf::from(dir));
+                }
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -1030,6 +1046,61 @@ impl UnifiedServerData {
     }
 }
 
+// ─── AMD VCEK chain loader ─────────────────────────────────────────────────
+//
+// Reads two PEM files from `--vcek-dir`:
+//   - cert_chain.pem  — ASK + ARK as concatenated PEMs (the format AMD
+//                       KDS returns from /vcek/v1/{Family}/cert_chain).
+//                       ASK comes first, ARK second.
+//   - vcek.pem        — the per-chip VCEK for the current TCB (fetched
+//                       from /vcek/v1/{Family}/{ChipID}?TCB-params).
+//
+// Splits cert_chain.pem on the BEGIN/END boundaries so the AttestResult
+// fields end up with separate `ark_pem` and `ask_pem`. (Splitting here
+// rather than at the verifier matches the operator workflow: one curl
+// per file from AMD KDS, then one cp into --vcek-dir.)
+//
+// Returns (ark, ask, vcek). Empty Vecs on any I/O or parse failure;
+// caller logs and continues — AttestResult ships empty cert fields and
+// the browser falls back to V2-binding-only mode.
+fn load_vcek_chain(dir: &PathBuf) -> std::io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let chain_path = dir.join("cert_chain.pem");
+    let vcek_path = dir.join("vcek.pem");
+    let chain_bytes = std::fs::read(&chain_path)?;
+    let vcek_bytes = std::fs::read(&vcek_path)?;
+
+    let (ask, ark) = split_cert_chain_ask_then_ark(&chain_bytes).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "cert_chain.pem at {} did not contain two PEM blocks (expected ASK then ARK)",
+                chain_path.display()
+            ),
+        )
+    })?;
+    Ok((ark, ask, vcek_bytes))
+}
+
+/// Split a concatenated PEM blob into (first_block, second_block) by
+/// looking for `-----BEGIN` / `-----END` boundaries. AMD KDS returns
+/// the chain endpoint as ASK + ARK (in that order); callers swap to
+/// (ark, ask) at the call site.
+fn split_cert_chain_ask_then_ark(bytes: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    // Find the END of the first block, including its line.
+    let first_end = s.find("-----END")?;
+    let after_first_end = first_end + s[first_end..].find('\n')? + 1;
+    let first_block = s[..after_first_end].as_bytes().to_vec();
+    // The remainder should start with the second BEGIN line.
+    let rest = &s[after_first_end..];
+    let second_begin = rest.find("-----BEGIN")?;
+    let second_block = rest[second_begin..].as_bytes().to_vec();
+    if second_block.is_empty() {
+        return None;
+    }
+    Some((first_block, second_block))
+}
+
 // ─── Encrypted-channel send helper ─────────────────────────────────────────
 //
 // Wraps the raw `sink.send(Message::Binary(...))` pattern so that, if a
@@ -1714,11 +1785,47 @@ async fn main() {
         channel_pubkey.iter().map(|b| format!("{:02x}", b)).collect::<String>()
     );
 
+    // ── Load AMD VCEK chain (optional) ───────────────────────────────────
+    // Operator places ARK + ASK + VCEK PEMs at --vcek-dir; server reads
+    // once at startup and ships them in every AttestResult so the
+    // browser can chain-validate the SNP report's signature back to
+    // AMD's known root without talking to kdsintf.amd.com directly
+    // (CORS-blocked from the browser).
+    let (ark_pem, ask_pem, vcek_pem) = match args.vcek_dir.as_ref() {
+        Some(dir) => match load_vcek_chain(dir) {
+            Ok((ark, ask, vcek)) => {
+                println!(
+                    "  VCEK chain: loaded from {} (ark={}B ask={}B vcek={}B)",
+                    dir.display(),
+                    ark.len(),
+                    ask.len(),
+                    vcek.len(),
+                );
+                (ark, ask, vcek)
+            }
+            Err(e) => {
+                eprintln!(
+                    "  VCEK chain: failed to load from {}: {} — AttestResult will ship empty cert fields, browser falls back to V2-binding-only verification",
+                    dir.display(),
+                    e
+                );
+                (Vec::new(), Vec::new(), Vec::new())
+            }
+        },
+        None => {
+            println!("  VCEK chain: not configured (--vcek-dir unset) — AttestResult ships empty cert fields");
+            (Vec::new(), Vec::new(), Vec::new())
+        }
+    };
+
     // ── Assemble ServerState ────────────────────────────────────────────
     let num_databases = all_databases.len();
     let state = ServerState {
         databases: all_databases,
         server_static_pub: channel_pubkey,
+        ark_pem,
+        ask_pem,
+        vcek_pem,
     };
 
     let admin_config = match args.admin_pubkey_hex.as_deref() {
@@ -2030,6 +2137,9 @@ async fn main() {
                                     binary_sha256,
                                     server_static_pub,
                                     git_rev: git_rev.to_string(),
+                                    ark_pem: s.state.ark_pem.clone(),
+                                    ask_pem: s.state.ask_pem.clone(),
+                                    vcek_pem: s.state.vcek_pem.clone(),
                                 })
                             }).await.unwrap();
                             let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;

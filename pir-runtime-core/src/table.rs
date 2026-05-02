@@ -342,6 +342,22 @@ pub struct ServerState {
     /// against. All-zero on servers that don't yet have a channel key
     /// (transitional — unified_server should always set one).
     pub server_static_pub: [u8; 32],
+    /// PEM-encoded AMD ARK / ASK / VCEK certificates. The operator
+    /// fetches the cert chain once from `https://kdsintf.amd.com/vcek/`
+    /// (chain endpoint for the chip's family + per-chip VCEK URL) and
+    /// places the PEMs in `--vcek-dir`; unified_server reads them at
+    /// startup and ships them out in every AttestResult so the
+    /// browser-side `pir-attest-verify` can chain-validate the SNP
+    /// report's ECDSA-P384 signature back to AMD's known root —
+    /// without having to fetch from AMD KDS itself (CORS-blocked
+    /// from the browser context).
+    ///
+    /// Empty on servers that haven't loaded the chain (development,
+    /// non-SEV hosts, transitional). The verifier falls back to V2-
+    /// binding-only mode in that case.
+    pub ark_pem: Vec<u8>,
+    pub ask_pem: Vec<u8>,
+    pub vcek_pem: Vec<u8>,
 }
 
 impl ServerState {

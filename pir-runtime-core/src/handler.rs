@@ -29,6 +29,9 @@ impl RequestHandler {
             state: ServerState {
                 databases,
                 server_static_pub: [0u8; 32],
+                ark_pem: Vec::new(),
+                ask_pem: Vec::new(),
+                vcek_pem: Vec::new(),
             },
         }
     }
@@ -39,6 +42,22 @@ impl RequestHandler {
     /// echoed back to clients in `AttestResult::server_static_pub`.
     pub fn with_channel_pubkey(mut self, server_static_pub: [u8; 32]) -> Self {
         self.state.server_static_pub = server_static_pub;
+        self
+    }
+
+    /// Bundle the AMD VCEK chain (ARK + ASK + VCEK PEMs) into the
+    /// server state so every AttestResult includes them. The browser's
+    /// `pir-attest-verify` consumes these to chain-validate the SNP
+    /// report's ECDSA-P384 signature back to AMD's known root without
+    /// having to talk to `kdsintf.amd.com` directly (CORS-blocked).
+    ///
+    /// Pass empty Vecs to disable — the verifier falls back to V2-
+    /// binding-only mode (still proves internal consistency, but no
+    /// hardware anchor on the report itself).
+    pub fn with_vcek_chain(mut self, ark_pem: Vec<u8>, ask_pem: Vec<u8>, vcek_pem: Vec<u8>) -> Self {
+        self.state.ark_pem = ark_pem;
+        self.state.ask_pem = ask_pem;
+        self.state.vcek_pem = vcek_pem;
         self
     }
 
@@ -180,6 +199,9 @@ impl RequestHandler {
             binary_sha256,
             server_static_pub,
             git_rev: git_rev.to_string(),
+            ark_pem: self.state.ark_pem.clone(),
+            ask_pem: self.state.ask_pem.clone(),
+            vcek_pem: self.state.vcek_pem.clone(),
         }
     }
 

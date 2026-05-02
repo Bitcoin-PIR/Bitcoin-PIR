@@ -442,6 +442,20 @@ pub struct AttestResult {
     /// Git commit baked in at build time (40-char SHA, optionally
     /// suffixed with `-dirty`, or "unknown" for non-git builds).
     pub git_rev: String,
+    /// PEM-encoded AMD ARK (Root Key) certificate. Empty if the server
+    /// doesn't have the cert chain loaded (operator hasn't run the
+    /// fetch-vcek-chain step). The browser's pir-attest-verify uses
+    /// it (combined with `ask_pem` + `vcek_pem`) to chain-validate
+    /// the SEV-SNP report's signature back to AMD's known root.
+    pub ark_pem: Vec<u8>,
+    /// PEM-encoded AMD ASK (SEV Signing Key) certificate, per
+    /// SoC family (Milan / Genoa / Turin). Empty if not loaded.
+    pub ask_pem: Vec<u8>,
+    /// PEM-encoded VCEK (Versioned Chip Endorsement Key) certificate
+    /// for THIS chip + TCB. Empty if not loaded. The chip ID + TCB
+    /// in the SNP report determine the AMD KDS URL the operator
+    /// fetched this from.
+    pub vcek_pem: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -1321,6 +1335,22 @@ fn encode_attest_result(buf: &mut Vec<u8>, r: &AttestResult) {
     debug_assert!(git_bytes.len() <= u16::MAX as usize, "git_rev too long");
     buf.extend_from_slice(&(git_bytes.len() as u16).to_le_bytes());
     buf.extend_from_slice(git_bytes);
+    // V3 cert chain extension: ARK + ASK + VCEK PEMs. Each prefixed
+    // with a u32 LE length (PEMs are ~2 KB each — well below 2 GiB).
+    // Empty if the operator hasn't loaded the cert chain on the
+    // server; the verifier falls back to V2-binding-only mode in
+    // that case.
+    encode_lp_bytes_u32(buf, &r.ark_pem);
+    encode_lp_bytes_u32(buf, &r.ask_pem);
+    encode_lp_bytes_u32(buf, &r.vcek_pem);
+}
+
+/// Length-prefixed bytes write helper (u32 LE length + body). Mirrors
+/// the existing `encode_lp_string` but without the UTF-8 assumption,
+/// for binary blobs like PEM bytes.
+fn encode_lp_bytes_u32(buf: &mut Vec<u8>, body: &[u8]) {
+    buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    buf.extend_from_slice(body);
 }
 
 fn decode_attest_result(data: &[u8]) -> io::Result<AttestResult> {
@@ -1400,6 +1430,17 @@ fn decode_attest_result(data: &[u8]) -> io::Result<AttestResult> {
         ));
     }
     let git_rev = String::from_utf8_lossy(&data[pos..pos + git_len]).to_string();
+    pos += git_len;
+
+    // V3 cert chain extension. Trailing empty for back-compat with
+    // V2-only servers (which stop emitting after git_rev — those
+    // verifiers fall back to V2-binding-only mode).
+    let ark_pem = decode_lp_bytes_u32_or_empty(data, &mut pos)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("ark_pem: {}", e)))?;
+    let ask_pem = decode_lp_bytes_u32_or_empty(data, &mut pos)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("ask_pem: {}", e)))?;
+    let vcek_pem = decode_lp_bytes_u32_or_empty(data, &mut pos)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("vcek_pem: {}", e)))?;
 
     Ok(AttestResult {
         sev_snp_report,
@@ -1407,7 +1448,35 @@ fn decode_attest_result(data: &[u8]) -> io::Result<AttestResult> {
         binary_sha256,
         server_static_pub,
         git_rev,
+        ark_pem,
+        ask_pem,
+        vcek_pem,
     })
+}
+
+/// Read a length-prefixed binary blob. If `pos` is at end-of-buffer
+/// returns empty (back-compat with older servers that don't emit the
+/// trailing fields). If `pos` is mid-buffer but the length prefix is
+/// truncated or the body would overrun, returns an error.
+fn decode_lp_bytes_u32_or_empty(data: &[u8], pos: &mut usize) -> Result<Vec<u8>, String> {
+    if *pos == data.len() {
+        return Ok(Vec::new());
+    }
+    if *pos + 4 > data.len() {
+        return Err(format!(
+            "truncated u32 length prefix at pos {} (len={})",
+            *pos,
+            data.len()
+        ));
+    }
+    let n = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
+    *pos += 4;
+    if *pos + n > data.len() {
+        return Err(format!("body truncated: claimed {} bytes, have {}", n, data.len() - *pos));
+    }
+    let body = data[*pos..*pos + n].to_vec();
+    *pos += n;
+    Ok(body)
 }
 
 // ─── Admin upload encoding helpers ─────────────────────────────────────────
@@ -1529,6 +1598,9 @@ mod attest_wire_tests {
             binary_sha256: [0x33u8; 32],
             server_static_pub: [0x44u8; 32],
             git_rev: "deadbeef".to_string(),
+            ark_pem: b"-----BEGIN ARK-----\nfakebytes\n-----END ARK-----\n".to_vec(),
+            ask_pem: b"-----BEGIN ASK-----\nfakebytes\n-----END ASK-----\n".to_vec(),
+            vcek_pem: b"-----BEGIN VCEK-----\nfakebytes\n-----END VCEK-----\n".to_vec(),
         };
         let encoded = Response::Attest(r.clone()).encode();
         let decoded = Response::decode(&encoded[4..]).unwrap();
@@ -1553,6 +1625,9 @@ mod attest_wire_tests {
             binary_sha256: [0xFFu8; 32],
             server_static_pub: [0u8; 32], // no channel key on this server yet
             git_rev: "unknown".to_string(),
+            ark_pem: Vec::new(),
+            ask_pem: Vec::new(),
+            vcek_pem: Vec::new(),
         };
         let encoded = Response::Attest(r.clone()).encode();
         let decoded = Response::decode(&encoded[4..]).unwrap();
@@ -1562,6 +1637,9 @@ mod attest_wire_tests {
                 assert_eq!(r2.manifest_roots.len(), 1);
                 assert_eq!(r2.server_static_pub, [0u8; 32]);
                 assert_eq!(r2.git_rev, "unknown");
+                assert!(r2.ark_pem.is_empty());
+                assert!(r2.ask_pem.is_empty());
+                assert!(r2.vcek_pem.is_empty());
             }
             _ => panic!("wrong variant"),
         }
@@ -1575,6 +1653,9 @@ mod attest_wire_tests {
             binary_sha256: [0xAAu8; 32],
             server_static_pub: [0xBBu8; 32],
             git_rev: "abc".into(),
+            ark_pem: Vec::new(),
+            ask_pem: Vec::new(),
+            vcek_pem: vec![0xCCu8; 1500], // simulate ~1.5 KB VCEK PEM
         };
         let encoded = Response::Attest(r.clone()).encode();
         let decoded = Response::decode(&encoded[4..]).unwrap();
@@ -1583,8 +1664,57 @@ mod attest_wire_tests {
                 assert!(r2.manifest_roots.is_empty());
                 assert_eq!(r2.sev_snp_report.len(), 50);
                 assert_eq!(r2.server_static_pub, [0xBBu8; 32]);
+                assert_eq!(r2.vcek_pem.len(), 1500);
+                assert_eq!(r2.vcek_pem[0], 0xCC);
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn attest_response_decoder_back_compat_no_cert_fields() {
+        // Synthesise a wire payload that ends right after git_rev —
+        // mimics what a V2-only server (pre-Slice-D.2) would emit.
+        // The decoder should fill the cert fields with empty rather
+        // than erroring with "truncated".
+        let mut payload = Vec::new();
+        payload.push(RESP_ATTEST);
+        payload.extend_from_slice(&0u32.to_le_bytes()); // sev_snp_report len
+        payload.push(0u8); // n_roots
+        payload.extend_from_slice(&[0u8; 32]); // binary_sha256
+        payload.extend_from_slice(&[0u8; 32]); // server_static_pub
+        payload.extend_from_slice(&3u16.to_le_bytes()); // git_rev len
+        payload.extend_from_slice(b"abc"); // git_rev
+        // INTENTIONALLY no cert fields — pre-D.2 server behavior.
+
+        let decoded = Response::decode(&payload).unwrap();
+        match decoded {
+            Response::Attest(r) => {
+                assert_eq!(r.git_rev, "abc");
+                assert!(r.ark_pem.is_empty(), "ark_pem should default empty");
+                assert!(r.ask_pem.is_empty(), "ask_pem should default empty");
+                assert!(r.vcek_pem.is_empty(), "vcek_pem should default empty");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn attest_response_decoder_rejects_truncated_cert_length() {
+        // Build a payload where the ark_pem length prefix starts but
+        // is cut short mid-u32 — must error, not silently truncate.
+        let mut payload = Vec::new();
+        payload.push(RESP_ATTEST);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.push(0u8);
+        payload.extend_from_slice(&[0u8; 32]);
+        payload.extend_from_slice(&[0u8; 32]);
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        // Only 2 of the 4 length-prefix bytes for ark_pem.
+        payload.extend_from_slice(&[0xCC, 0xDD]);
+
+        let err = Response::decode(&payload).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(format!("{}", err).contains("ark_pem"), "got: {}", err);
     }
 }

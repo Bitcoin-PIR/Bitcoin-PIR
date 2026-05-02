@@ -468,6 +468,12 @@ async fn main() {
                                 binary_sha256,
                                 server_static_pub,
                                 git_rev: git_rev.to_string(),
+                                // Legacy server has no VCEK chain support;
+                                // ship empty fields. (Verifier falls back
+                                // to V2-binding-only mode.)
+                                ark_pem: Vec::new(),
+                                ask_pem: Vec::new(),
+                                vcek_pem: Vec::new(),
                             })
                         }
                     }

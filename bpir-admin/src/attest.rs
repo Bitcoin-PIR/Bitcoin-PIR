@@ -88,6 +88,26 @@ pub async fn run(args: AttestArgs) -> Result<(), i32> {
     for (i, root) in v.response.manifest_roots.iter().enumerate() {
         println!("  db_id={}: {}", i, hex::encode(root));
     }
+    // Slice D.2: AMD VCEK chain bundled in AttestResult so the
+    // browser can chain-validate the SEV-SNP report's signature
+    // back to AMD's known root without talking to kdsintf.amd.com.
+    let chain_present = !v.response.ark_pem.is_empty()
+        && !v.response.ask_pem.is_empty()
+        && !v.response.vcek_pem.is_empty();
+    if chain_present {
+        println!(
+            "vcek chain:        bundled (ark={}B ask={}B vcek={}B)",
+            v.response.ark_pem.len(),
+            v.response.ask_pem.len(),
+            v.response.vcek_pem.len(),
+        );
+    } else {
+        println!(
+            "vcek chain:        <none> (server has no VCEK chain loaded — \
+             configure --vcek-dir on the server to enable browser-side \
+             AMD-rooted chain validation)"
+        );
+    }
     println!();
     println!("== SEV-SNP attestation ==");
     println!("Report bytes:      {}", v.response.sev_snp_report.len());

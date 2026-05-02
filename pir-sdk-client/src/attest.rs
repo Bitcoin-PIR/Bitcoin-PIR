@@ -64,6 +64,18 @@ pub struct AttestResponse {
     /// `-dirty` if the working tree had local changes at build time, or
     /// be the literal `"unknown"` for non-git builds.
     pub git_rev: String,
+    /// PEM-encoded AMD ARK certificate, when the server has the cert
+    /// chain loaded. Empty on servers without `--vcek-dir` configured.
+    /// Together with `ask_pem` + `vcek_pem`, the browser-side
+    /// `pir-attest-verify` can chain-validate the SNP report's
+    /// signature back to AMD's known root.
+    pub ark_pem: Vec<u8>,
+    /// PEM-encoded AMD ASK certificate (per SoC family). Empty when
+    /// not loaded server-side.
+    pub ask_pem: Vec<u8>,
+    /// PEM-encoded per-chip + per-TCB VCEK certificate. Empty when
+    /// not loaded server-side.
+    pub vcek_pem: Vec<u8>,
 }
 
 /// Outcome of an attest call: server response + locally-recomputed
@@ -228,6 +240,16 @@ fn decode_attest_response(data: &[u8]) -> PirResult<AttestResponse> {
         return Err(PirError::Protocol("truncated git_rev bytes".into()));
     }
     let git_rev = String::from_utf8_lossy(&data[pos..pos + git_len]).to_string();
+    pos += git_len;
+
+    // V3 cert chain extension. Trailing empty for back-compat with
+    // pre-Slice-D.2 servers.
+    let ark_pem = decode_lp_bytes_u32_or_empty(data, &mut pos)
+        .map_err(|e| PirError::Protocol(format!("ark_pem: {}", e)))?;
+    let ask_pem = decode_lp_bytes_u32_or_empty(data, &mut pos)
+        .map_err(|e| PirError::Protocol(format!("ask_pem: {}", e)))?;
+    let vcek_pem = decode_lp_bytes_u32_or_empty(data, &mut pos)
+        .map_err(|e| PirError::Protocol(format!("vcek_pem: {}", e)))?;
 
     Ok(AttestResponse {
         sev_snp_report,
@@ -235,7 +257,38 @@ fn decode_attest_response(data: &[u8]) -> PirResult<AttestResponse> {
         binary_sha256,
         server_static_pub,
         git_rev,
+        ark_pem,
+        ask_pem,
+        vcek_pem,
     })
+}
+
+/// Read a length-prefixed binary blob from `data` at `pos`, advancing
+/// `pos`. Returns empty if `pos` is at end-of-buffer (back-compat with
+/// pre-Slice-D.2 servers that don't emit cert fields).
+fn decode_lp_bytes_u32_or_empty(data: &[u8], pos: &mut usize) -> Result<Vec<u8>, String> {
+    if *pos == data.len() {
+        return Ok(Vec::new());
+    }
+    if *pos + 4 > data.len() {
+        return Err(format!(
+            "truncated u32 length prefix at pos {} (len={})",
+            *pos,
+            data.len()
+        ));
+    }
+    let n = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
+    *pos += 4;
+    if *pos + n > data.len() {
+        return Err(format!(
+            "body truncated: claimed {} bytes, have {}",
+            n,
+            data.len() - *pos
+        ));
+    }
+    let body = data[*pos..*pos + n].to_vec();
+    *pos += n;
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -276,7 +329,8 @@ mod tests {
 
     /// Build the wire bytes of a RESP_ATTEST message body (after the
     /// 4-byte outer length prefix would be stripped by transport.roundtrip).
-    /// Mirrors `pir_runtime_core::protocol::encode_attest_result` (V2).
+    /// Mirrors `pir_runtime_core::protocol::encode_attest_result` (V3 —
+    /// V2 layout + trailing ark_pem/ask_pem/vcek_pem extension).
     fn build_response_payload(r: &AttestResponse) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.push(RESP_ATTEST);
@@ -291,6 +345,10 @@ mod tests {
         let g = r.git_rev.as_bytes();
         payload.extend_from_slice(&(g.len() as u16).to_le_bytes());
         payload.extend_from_slice(g);
+        for blob in [&r.ark_pem, &r.ask_pem, &r.vcek_pem] {
+            payload.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+            payload.extend_from_slice(blob);
+        }
         payload
     }
 
@@ -303,6 +361,9 @@ mod tests {
             binary_sha256: [0xBBu8; 32],
             server_static_pub: [0u8; 32],
             git_rev: "abc".into(),
+            ark_pem: Vec::new(),
+            ask_pem: Vec::new(),
+            vcek_pem: Vec::new(),
         };
         let mut mock = MockTransport {
             reply: build_response_payload(&resp),
@@ -346,6 +407,9 @@ mod tests {
             binary_sha256,
             server_static_pub,
             git_rev,
+            ark_pem: Vec::new(),
+            ask_pem: Vec::new(),
+            vcek_pem: Vec::new(),
         };
         let mut mock = MockTransport {
             reply: build_response_payload(&resp),
@@ -385,6 +449,9 @@ mod tests {
             binary_sha256: claimed_binary, // ≠ actual_binary used in REPORT_DATA
             server_static_pub,
             git_rev,
+            ark_pem: Vec::new(),
+            ask_pem: Vec::new(),
+            vcek_pem: Vec::new(),
         };
         let mut mock = MockTransport {
             reply: build_response_payload(&resp),
@@ -428,6 +495,9 @@ mod tests {
             binary_sha256,
             server_static_pub: attacker_pubkey,
             git_rev,
+            ark_pem: Vec::new(),
+            ask_pem: Vec::new(),
+            vcek_pem: Vec::new(),
         };
         let mut mock = MockTransport {
             reply: build_response_payload(&resp),
@@ -446,6 +516,9 @@ mod tests {
             binary_sha256: [0u8; 32],
             server_static_pub: [0u8; 32],
             git_rev: "x".into(),
+            ark_pem: Vec::new(),
+            ask_pem: Vec::new(),
+            vcek_pem: Vec::new(),
         };
         let mut mock = MockTransport {
             reply: build_response_payload(&resp),
