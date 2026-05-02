@@ -34,19 +34,19 @@ const SEV_GUEST_DEVICE: &str = "/dev/sev-guest";
 
 // Linux uapi: include/uapi/linux/sev-guest.h (kernel 5.19+):
 //
-//   #define SEV_GUEST_IOC_TYPE 0xa3
+//   #define SNP_GUEST_REQ_IOC_TYPE 'S'         // = 0x53
 //   struct snp_guest_request_ioctl {
 //       __u8  msg_version;     // offset 0, +7 padding to 8
 //       __u64 req_data;        // offset 8
 //       __u64 resp_data;       // offset 16
 //       __u64 exitinfo2;       // offset 24
 //   };  // total 32 bytes on 64-bit Linux
-//   #define SNP_GET_REPORT _IOWR(SEV_GUEST_IOC_TYPE, 0, struct snp_guest_request_ioctl)
+//   #define SNP_GET_REPORT _IOWR(SNP_GUEST_REQ_IOC_TYPE, 0, struct snp_guest_request_ioctl)
 //
-// _IOWR encodes: dir=3 (R|W), size=32, type=0xa3, nr=0
-//   = (3 << 30) | (32 << 16) | (0xa3 << 8) | 0
-//   = 0xc020_a300
-const SNP_GET_REPORT_IOCTL: libc::c_ulong = 0xc020_a300;
+// _IOWR encodes: dir=3 (R|W), size=32, type='S' (0x53), nr=0
+//   = (3 << 30) | (32 << 16) | (0x53 << 8) | 0
+//   = 0xc020_5300
+const SNP_GET_REPORT_IOCTL: libc::c_ulong = 0xc020_5300;
 
 #[repr(C)]
 struct SnpGuestRequestIoctl {
@@ -126,14 +126,14 @@ pub fn fetch_report(user_data: [u8; 64]) -> io::Result<Option<Vec<u8>>> {
         )));
     }
 
-    // resp.data layout: [4B little-endian length][report bytes][padding]
-    let len = u32::from_le_bytes(resp.data[..4].try_into().unwrap()) as usize;
-    if len == 0 || 4 + len > resp.data.len() {
-        // Fallback for older kernels that don't write the length prefix:
-        // assume the canonical 1184-byte v5 report at offset 0.
-        return Ok(Some(resp.data[..1184].to_vec()));
-    }
-    Ok(Some(resp.data[4..4 + len].to_vec()))
+    // resp.data layout: [32B kernel response header][1184B SEV-SNP report]
+    // [zero padding to 4000B]. The 32-byte header is the AMD PSP message
+    // header (msg_type, hdr_size, msg_size, etc.) the kernel passes through
+    // verbatim from the firmware. Verifiers want the report itself, not the
+    // header — so skip 32 bytes.
+    const KERNEL_HEADER_LEN: usize = 32;
+    const REPORT_LEN: usize = 1184;
+    Ok(Some(resp.data[KERNEL_HEADER_LEN..KERNEL_HEADER_LEN + REPORT_LEN].to_vec()))
 }
 
 /// SHA-256 of the running binary (read from `/proc/self/exe`),
