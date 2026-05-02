@@ -33,22 +33,19 @@ These are live values from the running pir2 — anyone can verify with `bpir-adm
 Server: wss://pir2.chenweikeng.com
 
 Launch MEASUREMENT (covers OVMF + UKI bytes):
-  f568fc1f133eb4b74737ce75f4c71b3f31fca1003b39d6e60d537ca71d70f8fd4d568474e4e81e58a40425eea207699d
+  3d5f87bb347d476a6d3d6749b413c8a4b87f50a626df1a3dd18bdb666d16adf9d448ef3fa62abc48c540a1437471a92d
 
-UKI bytes sha256 (the bpir.efi uploaded via VPSBG portal):
-  5a0f0c08730de08398d86599332c2f0e987fe05eea7dcc10dfa45cc541532ad0
+UKI bytes sha256 (deterministic — same binary always builds same UKI):
+  2db5b0b8c8e500d697cde78a4325d915dd386a7c077a06a67ba3a3b6a7a708f6
 
 unified_server binary sha256:
-  9df104eb6d3882d9b9c59765e3c7418d679e2473e6f46af5521b861d2a87ed16
-  (was 6e805660... before the e68df9b dual-stack bind fix; rebuild
-   shifted the binary hash. The cmdline-pinned hash in the live UKI
-   still says 6e805660 — see "Action 0" below.)
+  b338434faf8bd12400b00202b06c66923b9952f931a2fd1ebc4e6a9b7ad07f71
 
 DB manifest roots (db_id order):
   main (940611):              8911588dde20282726b5f2ae8e2c3152c673d636dc6a10295d9b9037e36fba11
   delta_940611_944000:        b1822802cfb193b80c57974e43388d2389c11715eb7b3d56fcd062c348f03f3a
 
-Server git rev: e68df9b (post-fix), expected via `bpir-admin attest`
+Server git rev (per /attest): d38dd96577d2525d24f89e5231c42b31d82b39bc
 ```
 
 ### Slices 1–4 of the dynamic attestation work
