@@ -76,20 +76,46 @@ pub async fn run(args: ShowVcekUrlArgs) -> Result<(), i32> {
         .iter()
         .map(|b| format!("{:02X}", b))
         .collect::<String>();
-    let tcb = &report.current_tcb;
+    // The VCEK is bound to `reported_tcb`, NOT `current_tcb` — they
+    // can differ when AMD wants to publish a VCEK for a TCB version
+    // that's older (or newer) than what the guest is actually running.
+    // Always use reported_tcb for the AMD KDS URL.
+    let tcb = &report.reported_tcb;
 
     println!();
     println!("Chip ID:    {}", chip_id_hex);
+    let fmc_str = match tcb.fmc {
+        Some(fmc) => format!("fmc={} ", fmc),
+        None => String::new(),
+    };
     println!(
-        "TCB:        bl={} tee={} snp={} microcode={}",
-        tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode
+        "TCB (reported): {}bl={} tee={} snp={} microcode={}",
+        fmc_str, tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode
     );
+    let signing_key = report.key_info.signing_key();
+    let signing_key_name = match signing_key {
+        0 => "VCEK (chip-specific, fetch from kdsintf.amd.com/vcek/v1/)",
+        1 => "VLEK (cloud-loaded, fetch from kdsintf.amd.com/vlek/v1/)",
+        _ => "RESERVED/NONE",
+    };
+    println!("Signing key:    {} (key_info.signing_key={})", signing_key_name, signing_key);
+    if signing_key == 1 {
+        println!();
+        println!(
+            "⚠ This chip uses VLEK, NOT VCEK. The cloud provider (VPSBG) loaded a custom\n  signing key. AMD KDS at /vcek/v1/ won't have a matching cert.\n  VLEK certs come from the same KDS host but at /vlek/v1/{{Family}}/{{ChipID}}\n  (ChipID is still the chip's hardware ID)."
+        );
+    }
 
-    // Build the URLs.
+    // Build the URLs. Turin's KDS endpoint also takes `fmcSPL` —
+    // include it whenever fmc is present (Turin and later).
     let chain_url = format!("https://kdsintf.amd.com/vcek/v1/{}/cert_chain", args.family);
+    let fmc_param = match tcb.fmc {
+        Some(fmc) => format!("fmcSPL={}&", fmc),
+        None => String::new(),
+    };
     let vcek_url = format!(
-        "https://kdsintf.amd.com/vcek/v1/{}/{}?blSPL={}&teeSPL={}&snpSPL={}&ucodeSPL={}",
-        args.family, chip_id_hex, tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode
+        "https://kdsintf.amd.com/vcek/v1/{}/{}?{}blSPL={}&teeSPL={}&snpSPL={}&ucodeSPL={}",
+        args.family, chip_id_hex, fmc_param, tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode
     );
     println!();
     println!("Operator commands (run on the SEV-SNP host):");

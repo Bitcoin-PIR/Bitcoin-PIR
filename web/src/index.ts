@@ -114,6 +114,11 @@ export {
   type HarmonyPirClientConfig,
 } from './harmonypir-adapter.js';
 
+export {
+  AMD_TURIN_ARK_FINGERPRINT,
+  AMD_TURIN_ARK_FINGERPRINT_HEX,
+} from './attest-pin.js';
+
 export type {
   HarmonyQueryResult,
   HarmonyUtxoEntry,

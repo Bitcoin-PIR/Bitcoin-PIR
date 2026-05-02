@@ -45,6 +45,12 @@ use pir_sdk_client::WsConnection;
 pub struct ChannelTestArgs {
     /// Server WebSocket URL (e.g. `wss://pir2.chenweikeng.com`).
     pub server_url: String,
+    /// Operator-pinned 64-hex-char SHA-256 fingerprint of the AMD ARK
+    /// (Root Key) certificate. When set + the server bundles a VCEK
+    /// chain, runs full Slice D chain validation
+    /// (ARK→ASK→VCEK + report-sig). Skip to test only V2 binding.
+    #[arg(long = "expect-ark-fingerprint", value_name = "HEX64")]
+    pub expect_ark_fingerprint: Option<String>,
 }
 
 pub async fn run(args: ChannelTestArgs) -> Result<(), i32> {
@@ -87,6 +93,62 @@ pub async fn run(args: ChannelTestArgs) -> Result<(), i32> {
         "server channel pubkey: {}",
         hex::encode(server_static_pub)
     );
+
+    // ── Optional Slice D chain validation ──────────────────────────
+    let chain_present = !v.response.ark_pem.is_empty()
+        && !v.response.ask_pem.is_empty()
+        && !v.response.vcek_pem.is_empty();
+    match (&args.expect_ark_fingerprint, chain_present) {
+        (None, false) => {
+            println!("vcek chain:     <none> (skipped, no --expect-ark-fingerprint)");
+        }
+        (None, true) => {
+            println!(
+                "vcek chain:     bundled but UNVERIFIED (pass --expect-ark-fingerprint to validate)"
+            );
+        }
+        (Some(_), false) => {
+            eprintln!(
+                "--expect-ark-fingerprint set but server didn't bundle a chain — \
+                 deploy `--vcek-dir` on the server first"
+            );
+            return Err(10);
+        }
+        (Some(hex_str), true) => {
+            let pin: [u8; 32] = match hex::decode(hex_str.trim()) {
+                Ok(b) if b.len() == 32 => b.try_into().unwrap(),
+                _ => {
+                    eprintln!("--expect-ark-fingerprint must be 64 hex chars (32 bytes)");
+                    return Err(11);
+                }
+            };
+            match pir_attest_verify::verify_chain(
+                &v.response.ark_pem,
+                &v.response.ask_pem,
+                &v.response.vcek_pem,
+                Some(pin),
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("chain validation failed: {}", e);
+                    return Err(12);
+                }
+            }
+            match pir_attest_verify::verify_report_against_vcek(
+                &v.response.sev_snp_report,
+                &v.response.vcek_pem,
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("report-sig validation failed: {}", e);
+                    return Err(13);
+                }
+            }
+            println!(
+                "vcek chain:     ✓ verified (ARK→ASK→VCEK + report sig validate; ARK fingerprint matches pin)"
+            );
+        }
+    }
 
     // ── Step 3: handshake ───────────────────────────────────────────
     let mut eph_seed = [0u8; 32];
