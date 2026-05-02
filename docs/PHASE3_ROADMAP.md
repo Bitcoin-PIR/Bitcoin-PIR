@@ -1,14 +1,20 @@
 # Phase 3 (Attested Lockdown) — Roadmap
 
-Snapshot of the remaining work after the 2026-05-02 deployment that
-landed Slices 1–4 of the dynamic attestation surface (DB manifests,
-`/attest`, ed25519 admin auth, DB upload protocol, `bpir-admin` CLI),
-deployed VPSBG as the second non-collusion server, set up the
-`pir2.chenweikeng.com` Cloudflare tunnel, shipped Phase 3 Slice 1
-(UKI builder + `--expect-measurement` verifier flag), and landed +
-operator-tamper-tested Phase 3 Slice 2 (dracut hook enforces the
-binary pin at pre-pivot — confirmed end-to-end via tamper + recovery
-on VPSBG 2026-05-02).
+Snapshot of the remaining work after the 2026-05-02 / 2026-05-03
+deployment that landed:
+- Slices 1–4 of the dynamic attestation surface (DB manifests,
+  `/attest`, ed25519 admin auth, DB upload protocol, `bpir-admin` CLI)
+- VPSBG as the second non-collusion server + `pir2.chenweikeng.com`
+  Cloudflare tunnel
+- Phase 3 Slice 1 (UKI builder + `--expect-measurement` verifier flag)
+- Phase 3 Slice 2 (dracut hook enforces the binary pin at pre-pivot
+  — operator tamper-tested end-to-end on VPSBG 2026-05-02)
+- Encrypted channel (Slices A–C, deployed 2026-05-03): X25519 long-
+  lived server keypair generated inside the SEV-SNP guest at boot,
+  bound into REPORT_DATA via the V2 layout. Per-session ECDH +
+  ChaCha20-Poly1305 AEAD frame wrapping. cloudflared sees only
+  ciphertext for any client that runs the handshake. End-to-end
+  verified via `bpir-admin channel-test wss://pir2.chenweikeng.com`.
 
 This document is the canonical to-do for the next sessions on this
 work. Pick up by re-reading the "Current state" summary, then jumping
@@ -35,34 +41,45 @@ These are live values from the running pir2 — anyone can verify with `bpir-adm
 ```
 Server: wss://pir2.chenweikeng.com
 
-Launch MEASUREMENT (covers OVMF + UKI bytes — UKI now contains the
-bpir-verify dracut hook, so this digest authenticates that the box
-boots into a kernel that enforces binary integrity at pre-pivot):
-  8d60b7dc15c3a13142414cb1c4ae5edbdff755a14e4faf020c4c66d9bea6a7d76e94602aae8496ff60ae6197f739e87c
+Launch MEASUREMENT (covers OVMF + UKI bytes — UKI contains the
+bpir-verify dracut hook + the new V2-aware unified_server's hash in
+cmdline, so this digest authenticates that the box boots into a kernel
+that enforces binary integrity at pre-pivot AND that the running
+binary speaks the encrypted-channel protocol):
+  e522983f0d595b99157c9612cb623522044110c5154807df8b5f700da33c09932f14137c8afef2e53127b61b6402ce0a
 
-UKI bytes sha256 (built by scripts/build_uki.sh on the same vpsbg-pir
-checkout — deterministic for back-to-back local builds; fresh git
-clones produce different bytes due to source mtimes leaking into the
-cpio):
-  47b20098dc7a98a0388fe09f493606eb8355988042dd190eb5a5de585c4410b3
+UKI bytes sha256 (built by scripts/build_uki.sh on vpsbg-pir;
+deterministic for back-to-back local builds, fresh git clones produce
+different bytes due to source mtimes leaking into the cpio):
+  8449585e863397dadf7ee55a3af88e9fb52494466ac61bd7edd69bb9e72e1cef
 
 unified_server binary sha256 (pinned in cmdline, enforced at boot by
-the bpir-verify dracut hook — tamper test passed 2026-05-02):
-  b338434faf8bd12400b00202b06c66923b9952f931a2fd1ebc4e6a9b7ad07f71
+the bpir-verify dracut hook — tamper test passed 2026-05-02 against
+the predecessor binary, hook unchanged):
+  3f1f7722f5ca4cb44d9eb240306a5bab47022a665624af12c5e90ad97cd6e993
+
+Server X25519 channel pubkey (V2-bound to REPORT_DATA — bpir-admin
+attest cross-checks the binding; encrypted-channel handshakes ECDH
+against this key, so cloudflared can't substitute its own):
+  615ed2699569fdb0a28b848a16a0155a27b445cfb8617c25d538d5b4ad541f42
 
 DB manifest roots (db_id order):
   main (940611):              8911588dde20282726b5f2ae8e2c3152c673d636dc6a10295d9b9037e36fba11
   delta_940611_944000:        b1822802cfb193b80c57974e43388d2389c11715eb7b3d56fcd062c348f03f3a
 
 Server git rev (per /attest, captured at unified_server build time):
-  d38dd96577d2525d24f89e5231c42b31d82b39bc
+  93ec886ca14cb5b6782a33bd5131b6bc1358054f
 ```
 
 Verifiers can cross-check end-to-end with:
 ```bash
+# Static checks: report binding + binary + measurement
 bpir-admin attest wss://pir2.chenweikeng.com \
-    --expect-measurement 8d60b7dc15c3a13142414cb1c4ae5edbdff755a14e4faf020c4c66d9bea6a7d76e94602aae8496ff60ae6197f739e87c \
-    --expect-binary b338434faf8bd12400b00202b06c66923b9952f931a2fd1ebc4e6a9b7ad07f71
+    --expect-measurement e522983f0d595b99157c9612cb623522044110c5154807df8b5f700da33c09932f14137c8afef2e53127b61b6402ce0a \
+    --expect-binary 3f1f7722f5ca4cb44d9eb240306a5bab47022a665624af12c5e90ad97cd6e993
+
+# Live encrypted channel: handshake + encrypted REQ_PING + REQ_GET_INFO
+bpir-admin channel-test wss://pir2.chenweikeng.com
 ```
 
 ### Slices 1–4 of the dynamic attestation work
