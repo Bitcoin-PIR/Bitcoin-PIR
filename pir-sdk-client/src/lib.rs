@@ -57,6 +57,7 @@
 // and bridges its callback-driven API to `async/.await` via an mpsc channel.
 #[cfg(not(target_arch = "wasm32"))]
 mod connection;
+pub mod attest;
 mod dpf;
 mod harmony;
 pub mod hint_cache;

@@ -431,6 +431,28 @@ async fn main() {
                             // not the Query Server.
                             Response::Error("hint requests not supported on query server".into())
                         }
+                        Request::Attest { nonce } => {
+                            // Legacy server doesn't load DBs via MappedDatabase, so it
+                            // has no MANIFEST.toml verification — manifest_roots is empty.
+                            // Binary self-hash + git rev + (if available) SEV-SNP report
+                            // are still meaningful.
+                            use pir_runtime_core::attest;
+                            let binary_sha256 = attest::self_exe_sha256();
+                            let git_rev = attest::GIT_REV;
+                            let report_data = attest::build_report_data(
+                                nonce, &[], binary_sha256, git_rev,
+                            );
+                            let sev_snp_report = attest::fetch_report(report_data)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
+                            Response::Attest(pir_runtime_core::protocol::AttestResult {
+                                sev_snp_report,
+                                manifest_roots: Vec::new(),
+                                binary_sha256,
+                                git_rev: git_rev.to_string(),
+                            })
+                        }
                     }
                 }).await.unwrap();
 

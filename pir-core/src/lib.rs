@@ -5,6 +5,7 @@
 //! parameters rather than reading global constants, enabling reuse across
 //! INDEX, CHUNK, MERKLE, and DELTA sub-tables with different configurations.
 
+pub mod attest;
 pub mod params;
 pub mod hash;
 pub mod codec;

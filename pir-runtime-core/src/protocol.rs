@@ -33,11 +33,23 @@ pub const REQ_GET_DB_CATALOG: u8 = 0x02;
 
 pub const REQ_RESIDENCY: u8 = 0x04;
 
+// ─── Attestation ───────────────────────────────────────────────────────────
+//
+// Slice 2 of the attestation work. Client sends a 32-byte nonce; server
+// returns the SEV-SNP attestation report (if available), the per-DB
+// manifest roots from MANIFEST.toml verification, the SHA-256 of the
+// running binary, and the build's git rev. The client recomputes the
+// REPORT_DATA preimage and matches it against the field embedded in the
+// signed report.
+
+pub const REQ_ATTEST: u8 = 0x05;
+
 // ─── Response variants ──────────────────────────────────────────────────────
 
 pub const RESP_PONG: u8 = 0x00;
 pub const RESP_INFO: u8 = 0x01;
 pub const RESP_DB_CATALOG: u8 = 0x02;
+pub const RESP_ATTEST: u8 = 0x05;
 pub const RESP_INDEX_BATCH: u8 = 0x11;
 pub const RESP_CHUNK_BATCH: u8 = 0x21;
 pub const RESP_MERKLE_SIBLING_BATCH: u8 = 0x31;
@@ -160,10 +172,14 @@ pub struct HarmonyBatchResultItem {
     pub sub_results: Vec<Vec<u8>>,
 }
 
+#[derive(Clone, Debug)]
 pub enum Request {
     Ping,
     GetInfo,
     GetDbCatalog,
+    /// Attestation request — 32-byte client-supplied nonce gets folded
+    /// into REPORT_DATA so the response is anti-replay.
+    Attest { nonce: [u8; 32] },
     IndexBatch(BatchQuery),
     ChunkBatch(BatchQuery),
     MerkleSiblingBatch(BatchQuery),
@@ -222,6 +238,31 @@ pub struct DatabaseCatalog {
     pub databases: Vec<DatabaseCatalogEntry>,
 }
 
+/// Result of an attestation request.
+///
+/// Wire format (encoded after the `RESP_ATTEST` variant byte):
+///
+///   [4B sev_report_len LE][sev_report_bytes]   (len=0 if not on SEV-SNP)
+///   [1B num_manifest_roots][num × 32B]          (per-DB roots in db_id order)
+///   [32B binary_sha256]
+///   [2B git_rev_len LE][git_rev_bytes UTF-8]
+///
+/// Per-DB manifest roots are zero (`[0u8; 32]`) for DBs that don't have
+/// a `MANIFEST.toml` (back-compat with legacy DBs).
+#[derive(Clone, Debug)]
+pub struct AttestResult {
+    /// Raw signed SEV-SNP attestation report bytes (~1184 for v5).
+    /// Empty if /dev/sev-guest unavailable on the host.
+    pub sev_snp_report: Vec<u8>,
+    /// Per-DB manifest roots in db_id order. Length matches catalog.
+    pub manifest_roots: Vec<[u8; 32]>,
+    /// SHA-256 of `/proc/self/exe` captured at server startup.
+    pub binary_sha256: [u8; 32],
+    /// Git commit baked in at build time (40-char SHA, optionally
+    /// suffixed with `-dirty`, or "unknown" for non-git builds).
+    pub git_rev: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct BatchResult {
     pub level: u8,
@@ -230,10 +271,12 @@ pub struct BatchResult {
     pub results: Vec<Vec<Vec<u8>>>,
 }
 
+#[derive(Clone, Debug)]
 pub enum Response {
     Pong,
     Info(ServerInfo),
     DbCatalog(DatabaseCatalog),
+    Attest(AttestResult),
     IndexBatch(BatchResult),
     ChunkBatch(BatchResult),
     MerkleSiblingBatch(BatchResult),
@@ -258,6 +301,10 @@ impl Request {
             }
             Request::GetDbCatalog => {
                 payload.push(REQ_GET_DB_CATALOG);
+            }
+            Request::Attest { nonce } => {
+                payload.push(REQ_ATTEST);
+                payload.extend_from_slice(nonce);
             }
             Request::IndexBatch(q) => {
                 payload.push(REQ_INDEX_BATCH);
@@ -323,6 +370,17 @@ impl Request {
             REQ_PING => Ok(Request::Ping),
             REQ_GET_INFO => Ok(Request::GetInfo),
             REQ_GET_DB_CATALOG => Ok(Request::GetDbCatalog),
+            REQ_ATTEST => {
+                if data.len() < 1 + 32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "attest request must carry a 32-byte nonce",
+                    ));
+                }
+                let mut nonce = [0u8; 32];
+                nonce.copy_from_slice(&data[1..33]);
+                Ok(Request::Attest { nonce })
+            }
             REQ_INDEX_BATCH => {
                 let q = decode_batch_query(&data[1..])?;
                 Ok(Request::IndexBatch(q))
@@ -378,6 +436,10 @@ impl Response {
             Response::DbCatalog(cat) => {
                 payload.push(RESP_DB_CATALOG);
                 encode_db_catalog(&mut payload, cat);
+            }
+            Response::Attest(r) => {
+                payload.push(RESP_ATTEST);
+                encode_attest_result(&mut payload, r);
             }
             Response::IndexBatch(r) => {
                 payload.push(RESP_INDEX_BATCH);
@@ -447,6 +509,10 @@ impl Response {
             RESP_DB_CATALOG => {
                 let cat = decode_db_catalog(&data[1..])?;
                 Ok(Response::DbCatalog(cat))
+            }
+            RESP_ATTEST => {
+                let r = decode_attest_result(&data[1..])?;
+                Ok(Response::Attest(r))
             }
             RESP_INDEX_BATCH => {
                 let r = decode_batch_result(&data[1..])?;
@@ -854,6 +920,100 @@ fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
     Ok(DatabaseCatalog { databases })
 }
 
+// ─── Attestation encoding helpers ──────────────────────────────────────────
+
+fn encode_attest_result(buf: &mut Vec<u8>, r: &AttestResult) {
+    buf.extend_from_slice(&(r.sev_snp_report.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&r.sev_snp_report);
+    // Manifest-roots count fits in u8 because db_id is u8 (≤255 DBs).
+    let n = r.manifest_roots.len();
+    debug_assert!(n <= u8::MAX as usize, "too many manifest roots");
+    buf.push(n as u8);
+    for root in &r.manifest_roots {
+        buf.extend_from_slice(root);
+    }
+    buf.extend_from_slice(&r.binary_sha256);
+    let git_bytes = r.git_rev.as_bytes();
+    debug_assert!(git_bytes.len() <= u16::MAX as usize, "git_rev too long");
+    buf.extend_from_slice(&(git_bytes.len() as u16).to_le_bytes());
+    buf.extend_from_slice(git_bytes);
+}
+
+fn decode_attest_result(data: &[u8]) -> io::Result<AttestResult> {
+    let mut pos = 0;
+    if data.len() < 4 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attest result missing sev_report length",
+        ));
+    }
+    let sev_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    if pos + sev_len > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated sev_snp_report",
+        ));
+    }
+    let sev_snp_report = data[pos..pos + sev_len].to_vec();
+    pos += sev_len;
+
+    if pos >= data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attest result missing manifest count",
+        ));
+    }
+    let n_roots = data[pos] as usize;
+    pos += 1;
+    if pos + n_roots * 32 > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated manifest roots",
+        ));
+    }
+    let mut manifest_roots = Vec::with_capacity(n_roots);
+    for _ in 0..n_roots {
+        let mut root = [0u8; 32];
+        root.copy_from_slice(&data[pos..pos + 32]);
+        manifest_roots.push(root);
+        pos += 32;
+    }
+
+    if pos + 32 > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated binary_sha256",
+        ));
+    }
+    let mut binary_sha256 = [0u8; 32];
+    binary_sha256.copy_from_slice(&data[pos..pos + 32]);
+    pos += 32;
+
+    if pos + 2 > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated git_rev length",
+        ));
+    }
+    let git_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+    pos += 2;
+    if pos + git_len > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated git_rev bytes",
+        ));
+    }
+    let git_rev = String::from_utf8_lossy(&data[pos..pos + git_len]).to_string();
+
+    Ok(AttestResult {
+        sev_snp_report,
+        manifest_roots,
+        binary_sha256,
+        git_rev,
+    })
+}
+
 fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
     // [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE]
     // [optional trailing 1B db_id, only when non-zero — backward compatible]
@@ -882,4 +1042,96 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
         indices,
         db_id,
     })
+}
+
+#[cfg(test)]
+mod attest_wire_tests {
+    use super::*;
+
+    #[test]
+    fn attest_request_roundtrip() {
+        let nonce = [0xAAu8; 32];
+        let req = Request::Attest { nonce };
+        let encoded = req.encode();
+        // [4B len LE][1B variant][32B nonce] = 4 + 33
+        assert_eq!(encoded.len(), 4 + 33);
+        let payload_len = u32::from_le_bytes(encoded[..4].try_into().unwrap()) as usize;
+        assert_eq!(payload_len, 33);
+        // skip the 4B length prefix when decoding the payload
+        let decoded = Request::decode(&encoded[4..]).unwrap();
+        match decoded {
+            Request::Attest { nonce: n } => assert_eq!(n, nonce),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn attest_request_truncated_nonce_fails() {
+        // Missing the last byte of the nonce.
+        let mut bad = vec![REQ_ATTEST];
+        bad.extend_from_slice(&[0u8; 31]);
+        let err = Request::decode(&bad).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn attest_response_roundtrip_with_sev_report() {
+        let r = AttestResult {
+            sev_snp_report: vec![0xCDu8; 1184],
+            manifest_roots: vec![[0x11u8; 32], [0x22u8; 32]],
+            binary_sha256: [0x33u8; 32],
+            git_rev: "deadbeef".to_string(),
+        };
+        let encoded = Response::Attest(r.clone()).encode();
+        let decoded = Response::decode(&encoded[4..]).unwrap();
+        match decoded {
+            Response::Attest(r2) => {
+                assert_eq!(r2.sev_snp_report, r.sev_snp_report);
+                assert_eq!(r2.manifest_roots, r.manifest_roots);
+                assert_eq!(r2.binary_sha256, r.binary_sha256);
+                assert_eq!(r2.git_rev, r.git_rev);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn attest_response_roundtrip_no_sev_report() {
+        // Hetzner case: empty sev_snp_report, still has the rest.
+        let r = AttestResult {
+            sev_snp_report: vec![],
+            manifest_roots: vec![[0u8; 32]],
+            binary_sha256: [0xFFu8; 32],
+            git_rev: "unknown".to_string(),
+        };
+        let encoded = Response::Attest(r.clone()).encode();
+        let decoded = Response::decode(&encoded[4..]).unwrap();
+        match decoded {
+            Response::Attest(r2) => {
+                assert!(r2.sev_snp_report.is_empty());
+                assert_eq!(r2.manifest_roots.len(), 1);
+                assert_eq!(r2.git_rev, "unknown");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn attest_response_zero_dbs() {
+        let r = AttestResult {
+            sev_snp_report: vec![0u8; 50],
+            manifest_roots: vec![],
+            binary_sha256: [0xAAu8; 32],
+            git_rev: "abc".into(),
+        };
+        let encoded = Response::Attest(r.clone()).encode();
+        let decoded = Response::decode(&encoded[4..]).unwrap();
+        match decoded {
+            Response::Attest(r2) => {
+                assert!(r2.manifest_roots.is_empty());
+                assert_eq!(r2.sev_snp_report.len(), 50);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 }

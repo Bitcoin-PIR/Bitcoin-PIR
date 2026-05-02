@@ -1658,6 +1658,31 @@ async fn main() {
                     REQ_GET_DB_CATALOG => {
                         let _ = sink.send(Message::Binary(Response::DbCatalog(server.build_catalog()).encode().into())).await;
                     }
+                    REQ_ATTEST => {
+                        if let Ok(Request::Attest { nonce }) = Request::decode(payload) {
+                            let s = Arc::clone(&server);
+                            let resp = tokio::task::spawn_blocking(move || {
+                                use pir_runtime_core::attest;
+                                let manifest_roots: Vec<[u8; 32]> = s.state.databases.iter()
+                                    .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
+                                    .collect();
+                                let binary_sha256 = attest::self_exe_sha256();
+                                let git_rev = attest::GIT_REV;
+                                let report_data = attest::build_report_data(
+                                    nonce, &manifest_roots, binary_sha256, git_rev,
+                                );
+                                let sev_snp_report = attest::fetch_report(report_data)
+                                    .ok().flatten().unwrap_or_default();
+                                Response::Attest(pir_runtime_core::protocol::AttestResult {
+                                    sev_snp_report,
+                                    manifest_roots,
+                                    binary_sha256,
+                                    git_rev: git_rev.to_string(),
+                                })
+                            }).await.unwrap();
+                            let _ = sink.send(Message::Binary(resp.encode().into())).await;
+                        }
+                    }
                     REQ_RESIDENCY => {
                         let json = warmup::residency_json(&server.mmap_regions);
                         let json_bytes = json.as_bytes();

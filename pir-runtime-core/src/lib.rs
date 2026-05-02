@@ -2,6 +2,7 @@
 //!
 //! See the crate README for a module-by-module overview.
 
+pub mod attest;
 pub mod eval;
 pub mod handler;
 pub mod manifest;

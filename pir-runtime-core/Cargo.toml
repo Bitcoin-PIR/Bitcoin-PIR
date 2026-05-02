@@ -3,6 +3,7 @@ name = "pir-runtime-core"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.78"
+build = "build.rs"
 authors = ["Bitcoin PIR contributors"]
 description = "Server-side runtime primitives for Bitcoin PIR: wire protocol, mmap'd database tables, DPF evaluation, and the request handler shared by binary servers and pir-sdk-server"
 license = "MIT OR Apache-2.0"

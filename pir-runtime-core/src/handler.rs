@@ -97,6 +97,45 @@ impl RequestHandler {
             }
             Request::HarmonyQuery(query) => self.handle_harmony_query(query),
             Request::HarmonyBatchQuery(query) => self.handle_harmony_batch_query(query),
+            Request::Attest { nonce } => Response::Attest(self.handle_attest(*nonce)),
+        }
+    }
+
+    /// Build the attestation result for a client-supplied nonce.
+    ///
+    /// Folds: per-DB manifest roots (zero if no MANIFEST.toml present),
+    /// SHA-256 of the running binary (cached), and the build's git rev
+    /// into REPORT_DATA. On a SEV-SNP host the kernel signs the report
+    /// with the chip's VCEK; on other hosts the `sev_snp_report` is
+    /// returned empty.
+    pub fn handle_attest(&self, nonce: [u8; 32]) -> AttestResult {
+        let manifest_roots: Vec<[u8; 32]> = self
+            .state
+            .databases
+            .iter()
+            .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
+            .collect();
+        let binary_sha256 = crate::attest::self_exe_sha256();
+        let git_rev = crate::attest::GIT_REV;
+        let report_data = crate::attest::build_report_data(
+            nonce,
+            &manifest_roots,
+            binary_sha256,
+            git_rev,
+        );
+        let sev_snp_report = match crate::attest::fetch_report(report_data) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                eprintln!("[attest] /dev/sev-guest ioctl errored: {}", e);
+                Vec::new()
+            }
+        };
+        AttestResult {
+            sev_snp_report,
+            manifest_roots,
+            binary_sha256,
+            git_rev: git_rev.to_string(),
         }
     }
 
