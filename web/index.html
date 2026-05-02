@@ -3827,6 +3827,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         ? `Merkle verification below applies to the ${merkleSteps[0].step.dbType} step of this sync.`
                         : `Merkle verification below runs one proof batch per sync step (${merkleSteps.length} steps).`;
                     resultsContainer.appendChild(note);
+
+                    // Per-dbId prewarm registry. Each entry resolves once
+                    // that step's sibling hints are loaded (and persisted
+                    // to IndexedDB by ensure_sibling_groups_ready inside
+                    // verify). The button wrapper awaits the matching
+                    // prewarm before doing any DB-switch / verify itself,
+                    // so a click during prewarm coordinates cleanly.
+                    const siblingPrewarms = new Map();
+
                     for (let i = merkleSteps.length - 1; i >= 0; i--) {
                         const { step, verifiable } = merkleSteps[i];
                         const prefix = `hp-sync-${step.dbType}-${step.dbId}`;
@@ -3839,6 +3848,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         // switch via hpSwitchDb if needed).
                         addBatchMerkleButton(resultsContainer, verifiable, prefix,
                             async (results, onProg) => {
+                                // If a background prewarm for this dbId
+                                // is still in flight, wait for it first.
+                                // After the prewarm resolves, sibling
+                                // hints are already loaded + persisted,
+                                // so our DB-switch (if needed) is a
+                                // cache hit and the verify only does
+                                // the small sibling-proof query (~1-2s).
+                                const prewarm = siblingPrewarms.get(step.dbId);
+                                if (prewarm) {
+                                    onProg?.('Prewarm', `awaiting background sibling-hint load for db ${step.dbId}…`);
+                                    try { await prewarm; } catch { /* fall through; we'll surface our own error */ }
+                                }
                                 if (hpClient.getDbId() !== step.dbId) {
                                     // Surface the DB-switch progress to the
                                     // per-button status span so the user
@@ -3858,6 +3879,58 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             () => hpClient.getMerkleRootHex(),
                             label);
                     }
+
+                    // Background prewarm (fire-and-forget). Walks each
+                    // verifiable step in plan order, switches dbId, and
+                    // runs verifyMerkleBatch — discarding the verdicts.
+                    // The side effect is that ensure_sibling_groups_ready
+                    // downloads sibling hints (REQ_HARMONY_HINTS rounds)
+                    // and persists them to IndexedDB, so the user's
+                    // later button click only does the small sibling-
+                    // proof query instead of the full 6-19s sibling-
+                    // hint download.
+                    //
+                    // The button wrapper above awaits siblingPrewarms[dbId]
+                    // so a click during prewarm coordinates cleanly.
+                    //
+                    // We restore back to `savedDbId` (the user-facing
+                    // dbId captured at the top of hpExecuteSync) rather
+                    // than the dbId observed at prewarm-start. Reason:
+                    // prewarm runs concurrently with sync's outer
+                    // `finally` block which is also calling
+                    // hpSwitchDb(savedDbId); whichever wins the
+                    // hpSwitchingDb guard, prewarm's tail must aim
+                    // for the correct end state.
+                    (async () => {
+                        for (const { step, verifiable } of merkleSteps) {
+                            const stepPromise = (async () => {
+                                if (hpClient.getDbId() !== step.dbId) {
+                                    await hpSwitchDb(step.dbId);
+                                    if (!hpHintsLoaded) {
+                                        throw new Error(`hint load failed for db ${step.dbId}`);
+                                    }
+                                }
+                                // Side-effect-only call. Verdicts are
+                                // discarded; we only care that
+                                // ensure_sibling_groups_ready ran and
+                                // persisted to IndexedDB.
+                                await hpClient.verifyMerkleBatch(verifiable);
+                            })();
+                            siblingPrewarms.set(step.dbId, stepPromise);
+                            try {
+                                await stepPromise;
+                                log(`Merkle: sibling hints prewarmed for db ${step.dbId}`, 'info');
+                            } catch (e) {
+                                log(`Merkle: prewarm failed for db ${step.dbId}: ${e.message || e}`, 'warn');
+                            }
+                        }
+                        // Restore user-facing dbId so the next query /
+                        // db-selector interaction starts from the same
+                        // dbId the user expected.
+                        if (hpClient.getDbId() !== savedDbId) {
+                            try { await hpSwitchDb(savedDbId); } catch { /* best-effort */ }
+                        }
+                    })();
                 }
 
                 hpSetProgress(100, `Sync complete! ${found}/${N} found at height ${plan.targetHeight.toLocaleString()}`);
