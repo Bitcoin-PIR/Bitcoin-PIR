@@ -41,24 +41,39 @@ use onionpir::{self, Server as PirServer, KeyStore};
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
-/// Which side of the two-server protocols this instance plays.
+/// Loosely-coupled flag controlling **only OnionPIR loading** at startup.
 ///
-/// Both roles serve DPF queries (DPF needs two non-colluding servers; the
-/// CLIENT decides which key to send to which endpoint, so role doesn't
-/// determine "DPF server 0 vs 1").
+/// History: `Primary` and `Secondary` originally bundled three
+/// independent decisions — OnionPIR loading, HarmonyPIR query
+/// dispatch, HarmonyPIR hint dispatch. That bundling pinned operators
+/// into "primary host = full stack, secondary host = hint-only" which
+/// made it awkward to allocate workload to where the hardware fits.
 ///
-/// The role split exists for HarmonyPIR (which has distinct hint and
-/// query ops) and for OnionPIR (single-server, primary only by default).
+/// Today the role flag controls only one thing: whether to attempt
+/// loading OnionPIR data files at startup. Both roles handle every
+/// DPF and HarmonyPIR opcode (hint, query, batch query, info). The
+/// CLIENT chooses which endpoint to send hint vs query requests to —
+/// the two-server non-collusion property of HarmonyPIR comes from
+/// picking independent operators/hardware, not from server-side
+/// dispatch gating.
+///
+/// `--disable-onion` overrides the OnionPIR-loading default for a
+/// primary-role instance that doesn't have the data files (e.g., the
+/// VPSBG host, which is OnionPIR-free by design).
+///
+/// (The variant names are kept for back-compat with existing systemd
+/// units and CLI invocations; semantically they could just as well be
+/// `WithOnion`/`NoOnion`.)
 #[derive(Clone, Copy, PartialEq)]
 enum ServerRole {
-    /// HarmonyPIR query (online) server. By default also loads OnionPIR
-    /// data if `onion_*.bin` files are present in any DB dir; pass
-    /// `--disable-onion` to skip OnionPIR even on a primary instance
-    /// (e.g., the VPSBG box, which is intentionally OnionPIR-free).
+    /// Tries to load OnionPIR data at startup unless `--disable-onion`
+    /// is set. Both Hetzner (which has OnionPIR data) and VPSBG (which
+    /// doesn't, hence `--disable-onion`) can run as Primary safely;
+    /// the loader gracefully skips on missing files.
     Primary,
-    /// HarmonyPIR hint (offline preprocessing) server. Never loads
-    /// OnionPIR — the data isn't useful here. CPU-heavier than primary
-    /// because per-group PRP forward batches dominate.
+    /// Skips OnionPIR loading entirely. Useful when the operator
+    /// wants to be explicit about "this server is intentionally
+    /// OnionPIR-free" without relying on file-presence detection.
     Secondary,
 }
 
@@ -2030,15 +2045,24 @@ async fn main() {
                     }
 
                     // ── HarmonyPIR ────────────────────────────────────────
-                    // Primary  = query server (REQ_HARMONY_QUERY, REQ_HARMONY_BATCH_QUERY)
-                    // Secondary = hint server (REQ_HARMONY_HINTS)
-                    // Both respond to REQ_HARMONY_GET_INFO
+                    // Both roles respond to ALL HarmonyPIR ops. The
+                    // role flag controls only OnionPIR loading at startup
+                    // (and `--disable-onion` overrides even that). The
+                    // CLIENT decides which server to send hint requests
+                    // vs query requests to — the protocol's two-server
+                    // non-collusion guarantee comes from picking
+                    // independent endpoints, not from server-side dispatch
+                    // gating. This decoupling lets operators allocate
+                    // workload (hint is ~6× CPU of query per Hetzner
+                    // production stats) to whichever endpoint has the
+                    // matching hardware capacity, without re-rolling the
+                    // role flag and the systemd unit.
                     REQ_HARMONY_GET_INFO => {
                         let _ = sink.send(Message::Binary(
                             Response::HarmonyInfo(server.server_info()).encode().into()
                         )).await;
                     }
-                    REQ_HARMONY_HINTS if server.role == ServerRole::Secondary => {
+                    REQ_HARMONY_HINTS => {
                         if let Ok(Request::HarmonyHints(hint_req)) = Request::decode(payload) {
                             let t_start = Instant::now();
                             let level = hint_req.level;
@@ -2084,7 +2108,7 @@ async fn main() {
                             println!("[harmony-hint] db={} L{} {}/{} groups in {:.2?}", db_id, level, sent, num, t_start.elapsed());
                         }
                     }
-                    REQ_HARMONY_QUERY if server.role == ServerRole::Primary => {
+                    REQ_HARMONY_QUERY => {
                         if let Ok(Request::HarmonyQuery(q)) = Request::decode(payload) {
                             // Validate db_id before dispatching to a worker.
                             if server.state.get_db(q.db_id).is_none() {
@@ -2097,7 +2121,7 @@ async fn main() {
                             let _ = sink.send(Message::Binary(resp.encode().into())).await;
                         }
                     }
-                    REQ_HARMONY_BATCH_QUERY if server.role == ServerRole::Primary => {
+                    REQ_HARMONY_BATCH_QUERY => {
                         if let Ok(Request::HarmonyBatchQuery(q)) = Request::decode(payload) {
                             // Validate db_id before dispatching to a worker.
                             if server.state.get_db(q.db_id).is_none() {
