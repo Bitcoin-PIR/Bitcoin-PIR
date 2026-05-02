@@ -3840,7 +3840,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         addBatchMerkleButton(resultsContainer, verifiable, prefix,
                             async (results, onProg) => {
                                 if (hpClient.getDbId() !== step.dbId) {
+                                    // Surface the DB-switch progress to the
+                                    // per-button status span so the user
+                                    // doesn't see an empty "⏳ Verifying…"
+                                    // bar while hpSwitchDb is doing 100s of
+                                    // MB of IndexedDB I/O behind the
+                                    // statusDiv panel.
+                                    onProg?.('DB switch', `caching db ${hpClient.getDbId()} hints + loading db ${step.dbId}…`);
                                     await hpSwitchDb(step.dbId);
+                                    if (!hpHintsLoaded) {
+                                        throw new Error(`hint load failed for db ${step.dbId}`);
+                                    }
+                                    onProg?.('DB switch', `done — ready for db ${step.dbId} merkle proofs`);
                                 }
                                 return hpClient.verifyMerkleBatch(results, onProg);
                             },
