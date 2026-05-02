@@ -144,11 +144,67 @@ interface WasmDatabaseCatalog {
  * surfaces (`sync`, `syncWithProgress`, `queryBatch`) exist on the actual
  * class but aren't needed by the adapter.
  */
+/**
+ * JS-visible result of a `WasmDpfClient.attest()` /
+ * `WasmHarmonyClient.attest()` call. Mirrors the Rust struct
+ * `pir_sdk_wasm::WasmAttestVerification`.
+ *
+ * Use the `serverStaticPub` getter (raw 32 bytes) as input to
+ * `upgradeToSecureChannel`. Until Slice D's WASM VCEK chain verifier
+ * lands, callers should at minimum check `sevStatus === 'reportDataMatch'`
+ * before trusting the self-reported fields.
+ */
+export interface WasmAttestVerification {
+  free(): void;
+  /** 32-byte client nonce sent in REQ_ATTEST, hex-encoded. */
+  readonly nonceHex: string;
+  /** SEV-SNP REPORT_DATA binding status. One of:
+   * `'noSevHost'` | `'reportDataMatch'` | `'reportDataMismatch'` | `'malformedReport'`. */
+  readonly sevStatus: string;
+  /** SHA-256 of the running `unified_server` binary, hex-encoded.
+   *  Only trustworthy if `sevStatus === 'reportDataMatch'`. */
+  readonly binarySha256Hex: string;
+  /** Raw 32-byte X25519 channel pubkey. Pass directly to
+   *  `upgradeToSecureChannel`. All-zero if the server hasn't enabled
+   *  the encrypted channel yet. */
+  readonly serverStaticPub: Uint8Array;
+  /** Hex-encoded form of `serverStaticPub` for display / cross-check. */
+  readonly serverStaticPubHex: string;
+  /** Git rev baked into the running server binary. */
+  readonly gitRev: string;
+  /** Per-DB manifest roots in db_id order, each as 64-char hex. */
+  readonly manifestRootsHex: string[];
+  /** Raw signed SEV-SNP attestation report bytes (~1184 for v5).
+   *  Empty if not on a SEV-SNP host. Slice D's VCEK chain verifier
+   *  consumes this directly. */
+  readonly sevSnpReport: Uint8Array;
+  /** Hex-encoded REPORT_DATA preimage hash the client recomputed
+   *  locally. Compare against `sevSnpReport[0x50..0x70]`. */
+  readonly expectedReportDataHashHex: string;
+}
+
 interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  /** Send REQ_ATTEST to one of the connected servers (`serverIndex`
+   *  ∈ {0, 1}) and return a verification result. The 32-byte nonce
+   *  is generated browser-side via `crypto.getRandomValues`. Use the
+   *  returned `serverStaticPub` (32 bytes) as input to
+   *  `upgradeToSecureChannel`. */
+  attest(serverIndex: number): Promise<WasmAttestVerification>;
+  /** Wrap both server connections with the encrypted-channel transport.
+   *  Caller MUST first verify `pub0`/`pub1` came from a trustworthy
+   *  source (call `attest` first; ideally also check the SEV-SNP report's
+   *  AMD VCEK chain — Slice D). After this returns, every subsequent
+   *  query is AEAD-sealed via `pir_channel`'s ChaCha20-Poly1305 frame
+   *  layer; cloudflared sees only ciphertext.
+   *
+   *  Each pubkey arg must be exactly 32 bytes (rejects with a `Error`
+   *  otherwise). On handshake failure both connections are dropped —
+   *  call `connect` again to retry. */
+  upgradeToSecureChannel(pub0: Uint8Array, pub1: Uint8Array): Promise<void>;
   /** Populate the native-side catalog so subsequent `queryBatchRaw` calls
    * (which go through `query_batch_with_inspector`) can resolve `db_id`
    * against an in-memory catalog. Returns the freshly fetched catalog. */
@@ -202,6 +258,12 @@ interface WasmHarmonyClient {
   readonly isConnected: boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  /** Same as `WasmDpfClient.attest`. `serverIndex` 0 = hint server,
+   *  1 = query server (matches `serverUrls()` order). */
+  attest(serverIndex: number): Promise<WasmAttestVerification>;
+  /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
+   *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
+  upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
   /** Fetch + cache the database catalog over the WASM client's
    *  internal connection. Returns a `WasmDatabaseCatalog` handle the
    *  caller can pass back into `fetchHintsWithProgress` / `loadHints`

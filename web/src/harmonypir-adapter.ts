@@ -67,9 +67,11 @@ import {
 } from './server-info.js';
 import {
   requireSdkWasm,
+  type WasmAttestVerification,
   type WasmHarmonyClient,
   type WasmQueryResult,
 } from './sdk-bridge.js';
+import type { ServerAttestation } from './dpf-adapter.js';
 import type {
   HarmonyQueryResult,
   HarmonyUtxoEntry,
@@ -94,6 +96,20 @@ export interface HarmonyPirClientConfig {
   onProgress?: (msg: string) => void;
   /** PRP backend: 0=HMR12 (default), 1=FastPRP, 2=ALF. */
   prpBackend?: number;
+  /**
+   * If `true` (default), the adapter automatically attests both servers
+   * (hint + query) after `connectQueryServer()` and, when both report
+   * a valid X25519 channel pubkey, upgrades both connections so
+   * subsequent PIR traffic flows through `pir_channel`'s AEAD-sealed
+   * frames. cloudflared sees only ciphertext.
+   *
+   * Set `false` to keep the connection in cleartext for debugging.
+   */
+  useSecureChannel?: boolean;
+  /** Fires once per server after `connectQueryServer()` resolves the
+   *  per-server attestation. `serverIndex` 0 = hint server, 1 = query
+   *  server (matches `serverUrls()` order). */
+  onAttestation?: (serverIndex: 0 | 1, info: ServerAttestation) => void;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -113,6 +129,18 @@ export class HarmonyPirClientAdapter {
   private dbId = 0;
   /** Whether any hints are loaded (main or restored from cache). */
   hintsLoaded = false;
+  /**
+   * Per-server attestation snapshot. Filled in by `connectQueryServer()`
+   * if `useSecureChannel` is enabled (default). Default `'unattested'`
+   * until the post-connect attest call resolves. UI consumers should
+   * read this after `connectQueryServer()` returns or via the
+   * `onAttestation` callback for live updates. Index 0 = hint server,
+   * 1 = query server.
+   */
+  attestation: { hint: ServerAttestation; query: ServerAttestation } = {
+    hint: { state: 'unattested' },
+    query: { state: 'unattested' },
+  };
   /**
    * Inspector data populated by the most recent `queryBatch`. The native
    * `HarmonyClient` doesn't surface placement-round / per-chunk timing
@@ -138,6 +166,85 @@ export class HarmonyPirClientAdapter {
 
   private log(msg: string): void {
     this.config.onProgress?.(msg);
+  }
+
+  /**
+   * Attest both servers (hint + query) and upgrade to the encrypted
+   * channel if both report a valid V2 channel pubkey. Mirrors the
+   * `BatchPirClientAdapter.attestAndUpgrade` flow on the DPF side; see
+   * that doc-comment for failure-mode semantics. Failures leave the
+   * connection alive in cleartext mode and log a warning.
+   */
+  private async attestAndUpgrade(): Promise<void> {
+    if (!this.wasmClient) return;
+
+    const attestOne = async (idx: 0 | 1): Promise<WasmAttestVerification | null> => {
+      try {
+        return await this.wasmClient!.attest(idx);
+      } catch (e) {
+        const which = idx === 0 ? 'hint' : 'query';
+        this.log(`HarmonyPIR attest(${which}) failed: ${(e as Error)?.message ?? e}`);
+        return null;
+      }
+    };
+
+    // Sequential — same reasoning as dpf-adapter::attestAndUpgrade:
+    // both calls target the same WasmHarmonyClient and the underlying
+    // `&mut self` borrow serializes them. Promise.all wedges.
+    const hintAtt = await attestOne(0);
+    const queryAtt = await attestOne(1);
+
+    const summarise = (att: WasmAttestVerification | null): ServerAttestation => {
+      if (!att) return { state: 'mismatch' };
+      const allZero = att.serverStaticPub.every((b) => b === 0);
+      const matched = att.sevStatus === 'reportDataMatch';
+      const noSev = att.sevStatus === 'noSevHost';
+      const channelOk = matched || noSev;
+      let state: ServerAttestation['state'];
+      if (allZero) state = 'plaintext';
+      else if (!channelOk) state = 'mismatch';
+      else state = 'verified';
+      return {
+        state,
+        sevStatus: att.sevStatus,
+        serverStaticPubHex: att.serverStaticPubHex,
+        binarySha256Hex: att.binarySha256Hex,
+        gitRev: att.gitRev,
+      };
+    };
+
+    this.attestation.hint = summarise(hintAtt);
+    this.attestation.query = summarise(queryAtt);
+    this.config.onAttestation?.(0, this.attestation.hint);
+    this.config.onAttestation?.(1, this.attestation.query);
+
+    if (
+      this.attestation.hint.state === 'verified'
+      && this.attestation.query.state === 'verified'
+      && hintAtt
+      && queryAtt
+    ) {
+      try {
+        await this.wasmClient.upgradeToSecureChannel(
+          hintAtt.serverStaticPub,
+          queryAtt.serverStaticPub,
+        );
+        this.log('HarmonyPIR: upgraded to encrypted channel (cloudflared blind)');
+      } catch (e) {
+        this.log(`HarmonyPIR upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`);
+        this.attestation.hint = { ...this.attestation.hint, state: 'mismatch' };
+        this.attestation.query = { ...this.attestation.query, state: 'mismatch' };
+        this.config.onAttestation?.(0, this.attestation.hint);
+        this.config.onAttestation?.(1, this.attestation.query);
+      }
+    } else {
+      this.log(
+        `HarmonyPIR channel left in cleartext (hint=${this.attestation.hint.state},`
+        + ` query=${this.attestation.query.state})`,
+      );
+    }
+    hintAtt?.free();
+    queryAtt?.free();
   }
 
   // ══ Setup / WASM loading ════════════════════════════════════════════════
@@ -182,6 +289,15 @@ export class HarmonyPirClientAdapter {
     if (!this.wasmClient) throw new Error('loadWasm() must be called first');
     // WASM-side dual connection (hint + query).
     await this.wasmClient.connect();
+
+    // Optionally attest both servers and upgrade to the encrypted
+    // channel BEFORE fetching the catalog. After this, every PIR
+    // request (hint fetch, query, Merkle sibling batch) goes through
+    // the AEAD-sealed frame layer; cloudflared only sees ciphertext.
+    if (this.config.useSecureChannel !== false) {
+      await this.attestAndUpgrade();
+    }
+
     // Populate the native-side catalog so subsequent hint fetches and
     // query batches (which go through the native client) can resolve
     // `db_id`. The side-channel `fetchServerInfo` below only populates

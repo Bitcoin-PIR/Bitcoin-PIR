@@ -45,11 +45,50 @@ import {
   type DatabaseCatalogEntry,
   type ServerInfoJson,
 } from './server-info.js';
-import { requireSdkWasm, type WasmDpfClient, type WasmQueryResult } from './sdk-bridge.js';
+import {
+  requireSdkWasm,
+  type WasmAttestVerification,
+  type WasmDpfClient,
+  type WasmQueryResult,
+} from './sdk-bridge.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
+
+/**
+ * Per-server attestation snapshot, exposed via
+ * `BatchPirClientAdapter.attestation` after `connect()` returns.
+ *
+ * `state`:
+ *   - `'unattested'`: no attest call has succeeded for this server (or
+ *     it's still in progress). Treat the channel as cleartext.
+ *   - `'verified'`: attest returned `'reportDataMatch'` AND the server
+ *     reported a non-zero X25519 channel pubkey AND the
+ *     `upgradeToSecureChannel` call succeeded. Subsequent traffic is
+ *     AEAD-sealed; cloudflared sees only ciphertext.
+ *   - `'plaintext'`: attest succeeded but the server has no channel
+ *     pubkey (legacy server). Subsequent traffic is plaintext through
+ *     cloudflared — fine for development but not for production
+ *     privacy.
+ *   - `'mismatch'`: attest binding check failed. Self-reported fields
+ *     should not be trusted; the connection is still alive but the
+ *     adapter logs a warning and falls back to cleartext.
+ */
+export interface ServerAttestation {
+  state: 'unattested' | 'verified' | 'plaintext' | 'mismatch';
+  /** Raw SEV-SNP REPORT_DATA binding status from the attest call.
+   *  Useful for surfacing the precise reason behind `mismatch`. */
+  sevStatus?: string;
+  /** Hex-encoded X25519 channel pubkey reported by the server. Empty
+   *  on `unattested`; all-zero hex (`'00…00'`) on `plaintext`. */
+  serverStaticPubHex?: string;
+  /** SHA-256 of the running server binary (server-side self-report).
+   *  Hex-encoded. Trusted only when `state === 'verified'`. */
+  binarySha256Hex?: string;
+  /** Git commit baked into the running server binary. */
+  gitRev?: string;
+}
 
 export interface BatchPirClientConfig {
   server0Url: string;
@@ -62,6 +101,21 @@ export interface BatchPirClientConfig {
    * errors). Audit events from the native client go to `console.log` —
    * we do not have an `onLog` hook on `WasmDpfClient` yet. */
   onLog?: (msg: string, level: 'info' | 'success' | 'error') => void;
+  /**
+   * If `true` (default), the adapter automatically attests both servers
+   * after the WS connect completes and, when both report a valid
+   * X25519 channel pubkey, upgrades both connections to the encrypted
+   * channel. Subsequent PIR traffic flows through `pir_channel`'s
+   * AEAD-sealed frames so cloudflared sees only ciphertext.
+   *
+   * Set `false` to keep the connection in cleartext (e.g. for
+   * tcpdump-side debugging or testing against pre-V2 servers).
+   */
+  useSecureChannel?: boolean;
+  /** Fires once per server after `connect()` resolves the per-server
+   *  attestation result. Use to surface a "verified channel" badge in
+   *  the UI. `serverIndex` is 0 (first URL) or 1 (second URL). */
+  onAttestation?: (serverIndex: 0 | 1, info: ServerAttestation) => void;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -88,6 +142,17 @@ export class BatchPirClientAdapter {
    */
   private readonly wasmHandles: WeakMap<QueryResult, WasmQueryResult> = new WeakMap();
   private connected = false;
+  /**
+   * Per-server attestation snapshot. Filled in by `connect()` if
+   * `useSecureChannel` is enabled (default). Default `'unattested'`
+   * until the post-connect attest call resolves. UI consumers should
+   * read this after `connect()` returns or via the `onAttestation`
+   * callback for live updates.
+   */
+  attestation: { server0: ServerAttestation; server1: ServerAttestation } = {
+    server0: { state: 'unattested' },
+    server1: { state: 'unattested' },
+  };
 
   constructor(config: BatchPirClientConfig) {
     this.config = config;
@@ -137,6 +202,15 @@ export class BatchPirClientAdapter {
       });
 
       await this.wasmClient.connect();
+
+      // Optionally attest both servers and upgrade to the encrypted
+      // channel BEFORE fetching the catalog (so the catalog request
+      // itself goes through the channel — first frame cloudflared sees
+      // is the handshake, everything after is ciphertext).
+      if (this.config.useSecureChannel !== false) {
+        await this.attestAndUpgrade();
+      }
+
       // Populate the native-side catalog so subsequent `queryBatchRaw`
       // calls (which go through `query_batch_with_inspector`) have an
       // in-memory catalog to resolve `db_id` against. The side-channel
@@ -347,6 +421,111 @@ export class BatchPirClientAdapter {
 
   private log(msg: string, level: 'info' | 'success' | 'error' = 'info'): void {
     this.config.onLog?.(msg, level);
+  }
+
+  /**
+   * Attest both servers and, if both report a valid V2 channel pubkey,
+   * upgrade both connections to the encrypted channel. Called at the
+   * tail of `connect()` when `useSecureChannel` is enabled (default).
+   *
+   * Failure modes (each leaves `attestation.serverN.state` set to a
+   * descriptive value and logs but does NOT throw — the connection
+   * stays alive in cleartext mode):
+   *   - attest call rejects → state `'mismatch'` for that server
+   *   - attest succeeds but `sevStatus !== 'reportDataMatch'` →
+   *     state `'mismatch'`
+   *   - attest succeeds but server reports all-zero pubkey (legacy
+   *     server, no channel support) → state `'plaintext'`
+   *   - both servers verified → call `upgradeToSecureChannel`; state
+   *     becomes `'verified'` on each (or `'mismatch'` if the upgrade
+   *     itself fails)
+   */
+  private async attestAndUpgrade(): Promise<void> {
+    if (!this.wasmClient) return;
+
+    const attestOne = async (idx: 0 | 1): Promise<WasmAttestVerification | null> => {
+      try {
+        return await this.wasmClient!.attest(idx);
+      } catch (e) {
+        this.log(
+          `attest(server${idx}) failed: ${(e as Error)?.message ?? e}`,
+          'error',
+        );
+        return null;
+      }
+    };
+
+    // Run sequentially: both attests target the same WasmDpfClient
+    // instance and the underlying `&mut self` Rust API serializes them
+    // anyway. Using Promise.all here can leave the second future
+    // wedged on the borrow when wasm-bindgen's async glue races.
+    const att0 = await attestOne(0);
+    const att1 = await attestOne(1);
+
+    const summarise = (
+      idx: 0 | 1,
+      att: WasmAttestVerification | null,
+    ): ServerAttestation => {
+      if (!att) {
+        return { state: 'mismatch' };
+      }
+      const allZero = att.serverStaticPub.every((b) => b === 0);
+      const matched = att.sevStatus === 'reportDataMatch';
+      const noSev = att.sevStatus === 'noSevHost';
+      // For non-SEV hosts (e.g. Hetzner) we still allow the channel —
+      // `noSevHost` means the binding can't be hardware-anchored but
+      // the inner crypto is otherwise sound. Production `pir2` is on
+      // SEV-SNP, so it should be `reportDataMatch`.
+      const channelOk = matched || noSev;
+      let state: ServerAttestation['state'];
+      if (allZero) state = 'plaintext';
+      else if (!channelOk) state = 'mismatch';
+      else state = 'verified';
+      return {
+        state,
+        sevStatus: att.sevStatus,
+        serverStaticPubHex: att.serverStaticPubHex,
+        binarySha256Hex: att.binarySha256Hex,
+        gitRev: att.gitRev,
+      };
+    };
+
+    const sum0 = summarise(0, att0);
+    const sum1 = summarise(1, att1);
+    this.attestation.server0 = sum0;
+    this.attestation.server1 = sum1;
+    this.config.onAttestation?.(0, sum0);
+    this.config.onAttestation?.(1, sum1);
+
+    // Only upgrade if BOTH servers cleared the channel-OK gate. A
+    // half-encrypted setup gives no privacy benefit (the all-cleartext
+    // server still leaks queries to cloudflared) and complicates UI.
+    if (sum0.state === 'verified' && sum1.state === 'verified' && att0 && att1) {
+      try {
+        await this.wasmClient.upgradeToSecureChannel(
+          att0.serverStaticPub,
+          att1.serverStaticPub,
+        );
+        this.log('Upgraded to encrypted channel (cloudflared sees only ciphertext)', 'success');
+      } catch (e) {
+        this.log(`upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`, 'error');
+        // Mark both as mismatch since the channel didn't actually come
+        // up despite the per-server attest being clean.
+        this.attestation.server0 = { ...sum0, state: 'mismatch' };
+        this.attestation.server1 = { ...sum1, state: 'mismatch' };
+        this.config.onAttestation?.(0, this.attestation.server0);
+        this.config.onAttestation?.(1, this.attestation.server1);
+      }
+    } else {
+      this.log(
+        `Channel left in cleartext (server0=${sum0.state}, server1=${sum1.state})`,
+        'info',
+      );
+    }
+    // Free the WasmAttestVerification handles to release the WASM-side
+    // copies. We've already extracted the JS-side fields we need.
+    att0?.free();
+    att1?.free();
   }
 }
 
