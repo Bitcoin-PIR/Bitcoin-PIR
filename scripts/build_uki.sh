@@ -94,7 +94,10 @@ KVER=$(basename "$KERNEL" | sed 's/^vmlinuz-//')
 # dracut invocation does.
 DRACUT_MODULE_DST=/usr/lib/dracut/modules.d/95bpir-verify
 mkdir -p "$DRACUT_MODULE_DST"
-cp -f "$DRACUT_MODULE_SRC"/*.sh "$DRACUT_MODULE_DST/"
+# -p preserves source mtimes. Without it, every run stamps the module .sh
+# files with "now", and dracut copies those fresh mtimes into the cpio
+# archive — breaking initrd determinism even with --reproducible below.
+cp -fp "$DRACUT_MODULE_SRC"/*.sh "$DRACUT_MODULE_DST/"
 chmod 0755 "$DRACUT_MODULE_DST"/*.sh
 echo "dracut module installed:  $DRACUT_MODULE_DST"
 
@@ -115,7 +118,10 @@ echo "kernel version:           $KVER"
 # the same KVER without re-tuning). Kept tight: only what the rootfs needs
 # plus our verify hook.
 echo "generating initrd with bpir-verify hook…"
-dracut --force --no-hostonly \
+# --reproducible + SOURCE_DATE_EPOCH=0 make dracut emit a byte-deterministic
+# cpio: without these flags dracut stamps the archive with host file mtimes
+# (and its own "now") so two runs on the same host produce different bytes.
+SOURCE_DATE_EPOCH=0 dracut --force --no-hostonly --reproducible \
        --add bpir-verify \
        --kver "$KVER" \
        "$CUSTOM_INITRD"
