@@ -73,9 +73,14 @@ echo "initrd:                   $INITRD ($(du -h "$INITRD" | cut -f1))"
 # Standard Linux boot params + our BPIR-specific params. The bpir.* keys
 # are inert today (no consumer) but get committed to MEASUREMENT and
 # parsed by future initramfs hooks (Slice 2+).
-CMDLINE="root=LABEL=${ROOT_LABEL} ro console=ttyS0,115200 console=tty1 \
-bpir.expected_binary_sha256=${BIN_HASH} \
-bpir.uki_built_at=$(date -u +%Y%m%dT%H%M%SZ)"
+#
+# Deliberately deterministic: no build timestamp, no random salt. Two
+# runs of this script over the same binary produce byte-identical UKI
+# bytes, so anyone holding the same binary can rebuild and verify the
+# UKI hash. The git rev is captured at binary build time and reported
+# via /attest, so "when was this built" is still recoverable via
+# bpir-admin attest's git_rev field.
+CMDLINE="root=LABEL=${ROOT_LABEL} ro console=ttyS0,115200 console=tty1 bpir.expected_binary_sha256=${BIN_HASH}"
 
 echo "cmdline:                  $CMDLINE"
 echo
