@@ -1,8 +1,9 @@
 # Phase 3 Slice 3 — UKI Reproducible-Build Plan (L4 polish)
 
-**Status (2026-05-03)**: in progress. Sub-tasks 1 + 3(b) + 4 shipped;
-sub-task 2 not started; sub-task 5 out of scope unless 1-4 don't reach
-byte-equivalence. Slice 3 is shipped and Layer 3 reproducibility is
+**Status (2026-05-03)**: in progress. Sub-tasks 1 + 2 + 3(b) + 4 shipped;
+sub-task 5 out of scope unless 1-4 don't reach byte-equivalence
+(cross-machine acceptance test still pending — needs a second Linux
+build host with the same toolchain to genuinely exercise it). Slice 3 is shipped and Layer 3 reproducibility is
 achieved (verifiers can compute MEASUREMENT given operator-published
 UKI bytes + VPSBG's custom OVMF — see
 [PHASE3_ROADMAP.md::Full Layer 3 reproducibility — verified 2026-05-03](PHASE3_ROADMAP.md)).
@@ -19,11 +20,34 @@ Progress log:
   on the rootfs partition, no longer in MEASUREMENT. Validated on
   pir-hetzner with `/etc/cloudflared/tunnel.env` present vs absent
   → byte-identical UKI sha 81ae3e16... — operator-agnostic.
-- ✅ Sub-task 4 — cargo vendor (this commit). 313 crates / 6 git deps /
+- ✅ Sub-task 4 — cargo vendor (commit 96a9753f). 313 crates / 6 git deps /
   261 MB in `vendor/`. Slightly over the plan's "~50-200 MB" estimate
   due to multiple windows-sys versions pulled transitively + SEAL/libdpf
   source. Validated `cargo check --offline -p pir-core` succeeds
   without network access.
+- ✅ Sub-task 2 — cargo bit-determinism (partial). Pinned via:
+    1. `rust-toolchain.toml` → channel = "1.94.1"
+    2. `Cargo.toml [profile.release]` → codegen-units = 1, incremental = false
+    3. `.cargo/config.toml [env]` → SOURCE_DATE_EPOCH = 0 (forced)
+    4. `scripts/build_unified_server.sh` → wraps `cargo build --release
+       --frozen`, sets RUSTFLAGS with `--remap-path-prefix` for
+       `$WORKSPACE_ROOT` and `$HOME` (TOML can't interpolate, so this
+       lives in the wrapper rather than .cargo/config.toml), strips
+       debug info reproducibly. `OFFLINE=1` env enables `--offline`.
+  Validated on pir-hetzner: same-path rebuilds (delete target/, rerun)
+  produce byte-identical binary sha e940d8f5...
+  **Cross-path test FAILS**: build at /home/pir/BitcoinPIR vs build at
+  /tmp/foo_repo with same source produces different binaries (e940d8f5
+  vs 720fa2e3). Root cause: OnionPIR's CMake-built libonionpir.a +
+  libseal-4.1.a contain C++ source paths via `__FILE__` macros that
+  rustc's `--remap-path-prefix` doesn't reach (CMake would need
+  `-ffile-prefix-map=` / `-fdebug-prefix-map=` in CXXFLAGS, but onionpir's
+  build.rs deliberately env-removes CXXFLAGS to keep cargo from injecting
+  Clang-specific flags). Practical consequence: operators must clone
+  to the same canonical path (/home/pir/BitcoinPIR) for byte-identical
+  binaries. Full path-independence requires either upstream OnionPIR
+  fix (add `-ffile-prefix-map` to CMakeLists.txt) or sub-task 5
+  (hermetic env normalises paths via mountpoint conventions).
 
 This plan covers the L4 sub-gap: making the **UKI binary itself
 bit-deterministic from source**, so that any verifier with the

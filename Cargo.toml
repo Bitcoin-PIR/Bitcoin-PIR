@@ -20,7 +20,13 @@ exclude = ["electrum_plugin/harmonypir-python"]
 [profile.release]
 opt-level = 3
 lto = "thin"
-incremental = true
+# codegen-units = 1 + incremental = false make the build deterministic at
+# the cost of slower release compilations (sub-task 2 of
+# docs/PHASE3_SLICE3_REPRO_PLAN.md). The unified_server binary baked into
+# the Tier 3 UKI uses this profile, so its bytes — and therefore the
+# resulting MEASUREMENT — must be reproducible across operators.
+codegen-units = 1
+incremental = false
 panic = 'abort'
 
 [profile.bench]

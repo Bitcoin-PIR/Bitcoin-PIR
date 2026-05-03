@@ -53,3 +53,16 @@ replace-with = "vendored-sources"
 
 [source.vendored-sources]
 directory = "vendor"
+
+# ─── Reproducible-build env ────────────────────────────────────────────────
+# Sub-task 2 of docs/PHASE3_SLICE3_REPRO_PLAN.md. SOURCE_DATE_EPOCH=0 makes
+# any timestamp-embedding build.rs scripts use 1970-01-01 instead of the
+# current wall clock. force=true overrides any operator-set SDE so the
+# value is consistent regardless of shell environment.
+#
+# --remap-path-prefix is NOT in this file — it depends on $PWD/$HOME at
+# build time and TOML can't interpolate. Use scripts/build_unified_server.sh
+# which sets RUSTFLAGS dynamically before invoking cargo build.
+
+[env]
+SOURCE_DATE_EPOCH = { value = "0", force = true }

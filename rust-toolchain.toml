@@ -1,0 +1,14 @@
+# Pinned Rust toolchain — required for UKI MEASUREMENT reproducibility
+# (sub-task 2 of docs/PHASE3_SLICE3_REPRO_PLAN.md). Different rustc
+# versions produce different binary bytes for the same source, so two
+# operators must agree on the toolchain to produce byte-identical
+# unified_server binaries.
+#
+# 1.94.1 = current stable on the production build host (Ubuntu 24.04 +
+# rustup default-stable as of 2026-04). Bump deliberately when crossing
+# a stable cycle, and re-run `cargo vendor` + capture the new binary
+# sha for the operator-published MEASUREMENT pin.
+
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
