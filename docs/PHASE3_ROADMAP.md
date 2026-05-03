@@ -98,6 +98,63 @@ bpir-admin channel-test wss://pir2.chenweikeng.com \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 ```
 
+### Full Layer 3 reproducibility — verified 2026-05-03
+
+The published MEASUREMENT can now be **independently reproduced from
+public artifacts** — no need to trust any operator-published value.
+Verified bit-for-bit against pir2's chip-reported MEASUREMENT for
+both the Tier 3 v2 production UKI and the Slice 2 revert UKI.
+
+Recipe:
+
+```bash
+# 1. Get VPSBG's Measured Boot OVMF (custom EDK2 build with the
+#    SNP_KERNEL_HASHES section that the stock Proxmox OVMF lacks).
+#    Fetched via VPSBG support; binary ships with sha256:
+#      e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e
+#    To request a fresh download link, file a ticket asking for
+#    OVMF_SEV_MEASUREDBOOT_4M.fd. (VPSBG also offered to publish the
+#    exact EDK2 commit + build flags for full source reproducibility.)
+
+# 2. Get the UKI being attested (operator-published bytes).
+#    For Tier 3 v2 the published bytes are at:
+#      uki sha256:    afbc07f8ea8df7f24e0d92980184bcc61e8762dbe3bbf0e161ef08bdf8b8fe90
+#    Anyone with the operator-side build environment can reproduce
+#    via `scripts/build_uki_tier3.sh` (operator binary + Proxmox
+#    + Ubuntu deps required for full bit-equivalence).
+
+# 3. Compute predicted MEASUREMENT.
+sev-snp-measure --mode snp \
+    --vcpus 2 --vcpu-sig 0x00B10F10 \
+    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
+    --kernel bpir-tier3-phase32-v2.efi \
+    --guest-features 0x1
+# expected output: 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5
+
+# 4. Cross-check against the chip's signed report.
+bpir-admin attest wss://pir2.chenweikeng.com \
+    --expect-measurement 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5
+```
+
+Trust chain after this verification: a verifier who accepts AMD's
+ARK as the silicon-rooted trust anchor (and accepts that VPSBG's
+disclosed OVMF is the binary they actually use — confirmable by the
+above hash matching the chip-signed MEASUREMENT) can establish that
+pir2 is running the specific (OVMF + UKI + binary) tuple operator-
+published. No trust in the operator's MEASUREMENT claim is required;
+the operator's MEASUREMENT is independently computable.
+
+Launch parameters (constants for sev-snp-measure):
+
+| Parameter | Value | Source |
+|---|---|---|
+| --vcpus | 2 | `nproc` inside guest, also in SEV-SNP report |
+| --vcpu-sig | 0x00B10F10 | AMD EPYC 9745 Turin: family=26, model=17, stepping=0 |
+| --ovmf | OVMF_SEV_MEASUREDBOOT_4M.fd | VPSBG-disclosed custom build (sha256 e4ac90be…d716e) |
+| --kernel | the .efi UKI uploaded via VPSBG portal | operator-published bytes |
+| --guest-features | 0x1 | SNP_FEATURES_SNP_ACTIVE only |
+| (no --initrd, no --append) | — | UKI carries its own initrd + cmdline |
+
 ### Previous (Slice 2) attested values — superseded 2026-05-03
 
 The Slice 2 baseline (rootfs-resident binary + cmdline hash pin via

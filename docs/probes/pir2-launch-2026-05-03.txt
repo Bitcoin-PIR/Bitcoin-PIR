@@ -567,3 +567,46 @@ OUTSTANDING HYPOTHESES (in order of remaining plausibility):
 
 NEXT STEP: VPSBG support email asking for either the IGVM file, the
 QEMU command line, or a `-trace kvm_sev_snp_launch_update` dump.
+
+==============================================================================
+=== EPILOGUE: VPSBG support response received + Layer 3 verified ===
+==============================================================================
+2026-05-03 (later evening)
+
+VPSBG support replied with full disclosure:
+
+1. Two OVMFs ship:
+   - OVMF_SEV_4M.fd (Proxmox stock, when Measured Boot disabled)
+     sha256 3f60a393… — already identified by us
+   - OVMF_SEV_MEASUREDBOOT_4M.fd (VPSBG custom EDK2 build, when
+     Measured Boot enabled / UKI uploaded)
+     sha256 e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e
+     Custom build with SNP_KERNEL_HASHES section that stock Proxmox
+     OVMF lacks. Build commit + flags available on request.
+
+2. Mechanism: plain QEMU `-kernel <UKI>` + `-object sev-snp-guest,...,
+   kernel-hashes=on` + `-bios <OVMF_SEV_MEASUREDBOOT_4M.fd>`. No
+   `-initrd`, no `-append` (UKI carries its own).
+
+VERIFIED LIVE (against chip-reported MEASUREMENT):
+- Tier 3 v2 UKI (bpir-tier3-phase32-v2.efi):
+  sev-snp-measure with VPSBG's measured-boot OVMF + the UKI
+  produces 2ad9490a… EXACT MATCH against chip.
+- Slice 2 revert UKI (bpir-slice2-revert.efi):
+  same recipe produces d7dad68c… EXACT MATCH against chip.
+
+Upgrade in trust model: now Layer 3 (independent verifiability) is
+achieved. Anyone with VPSBG's OVMF + the UKI bytes + sev-snp-measure
+can independently compute MEASUREMENT and confirm it matches the
+chip-signed value. No trust in operator's published MEASUREMENT
+required.
+
+Recipe + parameters codified in docs/PHASE3_ROADMAP.md::
+"Full Layer 3 reproducibility — verified 2026-05-03".
+
+Brute-force scripts in /tmp/ovmf-bruteforce/ failed because they
+modeled the Proxmox-stock OVMF (no SNP_KERNEL_HASHES) — VPSBG's
+custom OVMF DOES have the section, so sev-snp-measure's standard
+--kernel path works directly. Lesson: the wrong OVMF was the entire
+gap; the page-placement model was correct, just keyed off the
+wrong OVMF metadata.
