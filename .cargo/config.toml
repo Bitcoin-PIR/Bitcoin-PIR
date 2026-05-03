@@ -26,10 +26,16 @@ git = "https://github.com/Bitcoin-PIR/ALF.git"
 rev = "e2e0b3d6a231f2a3491d07a4facbf69d4e5ae607"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git?rev=f18e4985ba835c5563ff804b3fa2c74722d17f6c"]
-git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git"
-rev = "f18e4985ba835c5563ff804b3fa2c74722d17f6c"
-replace-with = "vendored-sources"
+# OnionPIRv2-fork is intentionally NOT vendored. Its build.rs assumes the
+# OnionPIR fork's full repo layout (top-level CMakeLists.txt + extern/SEAL
+# git submodule sibling to the onionpir subcrate), but `cargo vendor`
+# flattens git deps to just the consumed subcrate, leaving build.rs
+# unable to find SEAL or the top-level CMake config. Cargo fetches this
+# from github at build time instead — the rev pin in Cargo.lock keeps
+# the source bytes deterministic; only the offline-build property of
+# sub-task 4 is sacrificed for this one dep. Fixing this requires either
+# upstream restructuring of the fork (move CMakeLists.txt + extern/ inside
+# onionpir/) or a hermetic build env (sub-task 5).
 
 [source."git+https://github.com/Bitcoin-PIR/fastprp.git?rev=eaf1ee787c051c1250329cbe645c157e085af6e2"]
 git = "https://github.com/Bitcoin-PIR/fastprp.git"
