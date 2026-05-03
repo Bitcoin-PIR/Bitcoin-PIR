@@ -24,16 +24,13 @@
     # Both operators end up with byte-identical rustc binaries.
     rustToolchain = pkgs.rust-bin.stable."1.94.1".default;
 
-    # SEAL submodule of OnionPIRv2-fork — cargo's git fetcher doesn't
-    # follow submodules, so we fetch SEAL separately and inject it into
-    # the cargo vendor dir during postPatch. Pinned to the rev that
-    # OnionPIRv2-fork@0c84595's .gitmodules points at.
-    seal-src = pkgs.fetchFromGitHub {
-      owner = "Bitcoin-PIR";
-      repo = "SEAL-For-OnionPIR-fork";
-      rev = "4fcfc6b20a9bda605c90327f26527da3c3f52c46";
-      hash = "sha256-Ig8Q3E1s8yPolAAbfUvBg92MGa1tTlZCC0PVsdSnU+A=";
-    };
+    # SEAL submodule used to be fetched separately + copied into the
+    # vendored onionpir at postPatch — that was needed when SEAL lived
+    # at OnionPIRv2-fork/extern/SEAL, OUTSIDE the rust/onionpir/ subcrate
+    # that cargo vendor would extract. The OnionPIR fork's restructure
+    # (rev ac7082eb...) now bundles SEAL at rust/onionpir/extern/SEAL,
+    # so cargo's git fetcher pulls it as part of the onionpir crate's
+    # own submodules. No separate seal-src needed.
 
   in {
     # ─── packages.unified-server ───────────────────────────────────────
@@ -66,7 +63,9 @@
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
             "harmonypir-0.1.0" = "sha256-uBflflGcvtQLcZJtekCwc5oB4IoyNhtrQmahav5KiR0=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
-            "onionpir-0.1.0"   = "sha256-3jphCozn1yCcYKwzcq32z0f2o580vCjHnVL/UGNsp1s=";
+            # onionpir hash bumped after the upstream restructure (rev
+            # ac7082eb...) — now includes the bundled SEAL submodule.
+            "onionpir-0.1.0"   = "sha256-hRX15/D5rUlFAnVdeTWBB31hDgG9h3BfrtO6GG+K0oA=";
           };
         };
 
@@ -92,38 +91,15 @@
           # entries, and cargo errors on duplicate source definitions.
           sed -i '/^\[source\.crates-io\]/,$d' .cargo/config.toml
 
-          # Pre-populate OnionPIR's SEAL submodule into the cargo vendor
-          # dir. cargo's git fetcher doesn't follow submodules, so the
-          # vendored onionpir/ is missing extern/SEAL/. We pre-fetch SEAL
-          # via Nix (above) and copy it into the vendored crate.
-          #
-          # NOTE — KNOWN BLOCKER: this isn't sufficient on its own.
-          # OnionPIR's build.rs computes
-          #     repo_root = manifest_dir.join("../..").canonicalize()
-          # which inside the Nix sandbox resolves to $NIX_BUILD_TOP, and
-          # then runs `cmake $repo_root` expecting a top-level CMakeLists.txt
-          # to live there. cargo vendor flattens the OnionPIRv2-fork repo
-          # to just the consumed `rust/onionpir/` subcrate, so neither
-          # the top-level CMakeLists.txt nor the extern/SEAL sibling
-          # directory is present at the expected path. Same root cause
-          # that forced sub-task 4 to exclude onionpir from cargo vendor.
-          #
-          # Resolution requires either:
-          #   (a) Upstream OnionPIRv2-fork patch — move CMakeLists.txt +
-          #       extern/SEAL inside rust/onionpir/ (or take a SEAL
-          #       location env-var override), bump the rev pin here.
-          #   (b) Mirror the full OnionPIRv2-fork tree (including
-          #       submodules) into $NIX_BUILD_TOP via a second
-          #       fetchFromGitHub + cp, plus patch the vendored build.rs
-          #       to bypass the .cargo-checksum.json verification.
-          #
-          # For now we copy SEAL into the partial location to document
-          # how far the spike got; the build still fails at the build.rs
-          # layout assumption.
-          mkdir -p "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.1.0/extern"
-          cp -r --no-preserve=mode ${seal-src} \
-              "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.1.0/extern/SEAL"
-          chmod -R u+w "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.1.0/extern/SEAL"
+          # Force USE_HEXL=OFF in the vendored OnionPIR build.rs.
+          # HEXL's FetchContent_Declare hits the network at CMake configure
+          # time, which the strict Nix sandbox blocks. SEAL falls back to
+          # its scalar paths — slower but functionally correct, suitable
+          # for the Phase 2 spike. Re-enable later by pre-fetching HEXL
+          # via fetchFromGitHub and patching SEAL's FetchContent_Declare
+          # (override-by-first-declared rule).
+          sed -i 's|let use_hexl = .*$|let use_hexl = false;|' \
+              "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.1.0/build.rs"
         '';
         # Skip cargo test inside the build (live-server integration tests
         # require network + a running pir2; not appropriate for sandbox).
@@ -149,14 +125,13 @@
         # omits debug; this is defense-in-depth.
         dontStrip = false;
 
-        # The OnionPIR build.rs invokes CMake which uses FetchContent_*
-        # for HEXL. FetchContent normally hits network at configure time
-        # — Nix sandbox blocks this. Two ways to handle:
-        #   (a) Set __noChroot = true (allows network, drops sandbox)
-        #   (b) Pre-fetch HEXL via fetchFromGitHub, point CMake at it
-        # Starting with (a) for the spike; switch to (b) once we have a
-        # working build to compare against.
-        __noChroot = true;
+        # __noChroot DROPPED: it allowed network for HEXL FetchContent but
+        # also let CMake see /usr/bin/gcc, which references impure
+        # /usr/libexec/ paths the Nix ld-wrapper rejects. With strict
+        # sandbox, the only gcc visible is the Nix-provided one in PATH,
+        # but HEXL FetchContent will fail from no-network. Open Phase 2
+        # follow-up: pre-fetch HEXL via fetchFromGitHub and patch SEAL's
+        # FetchContent_Declare to use it (override-by-first-declared rule).
       };
     };
 

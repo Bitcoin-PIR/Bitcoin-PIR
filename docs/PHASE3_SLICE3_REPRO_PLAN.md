@@ -1,10 +1,14 @@
 # Phase 3 Slice 3 — UKI Reproducible-Build Plan (L4 polish)
 
-**Status (2026-05-04)**: in progress. Sub-tasks 1 + 2 + 3(b) + 4 shipped
-+ deployed to pir2 as Tier 3 v4 (MEASUREMENT `f6aa2915…` chip-verified).
-Sub-task 5 Phase 1 (Nix dev shell) shipped; Phase 2 (`nix build`
-derivation) spiked but blocked on the same OnionPIR repo-layout
-assumption that bit sub-task 4 — see Phase 2 status below. Slice 3 is shipped and Layer 3 reproducibility is
+**Status (2026-05-04)**: All five sub-tasks shipped. Sub-tasks 1+2+3b+4
+deployed to pir2 as Tier 3 v4 (MEASUREMENT `f6aa2915…` chip-verified).
+Sub-task 5 Phase 1 (Nix dev shell) + Phase 2 (`nix build .#unified-server`
+derivation) both ship: the latter produces byte-identical binaries
+across host paths inside a strict Nix sandbox (`f5ea19dc…` from any
+clone path), closing the cross-path leak that the convention-based
+recipe could only paper over. Open follow-ups: pre-fetch HEXL into
+Nix to re-enable USE_HEXL=ON; extend Phase 2 to a `tier3-uki`
+derivation that also produces the .efi (currently unified_server only). Slice 3 is shipped and Layer 3 reproducibility is
 achieved (verifiers can compute MEASUREMENT given operator-published
 UKI bytes + VPSBG's custom OVMF — see
 [PHASE3_ROADMAP.md::Full Layer 3 reproducibility — verified 2026-05-03](PHASE3_ROADMAP.md)).
@@ -26,31 +30,29 @@ Progress log:
   due to multiple windows-sys versions pulled transitively + SEAL/libdpf
   source. Validated `cargo check --offline -p pir-core` succeeds
   without network access.
-- 🟡 Sub-task 5 Phase 2 — `nix build .#unified-server` spike (blocked).
-  flake.nix has a `packages.unified-server` derivation using
-  `rustPlatform.buildRustPackage`. Wired in: outputHashes for all 5
-  git deps (alf-nt, fastprp, harmonypir, libdpf, onionpir) captured
-  via `lib.fakeSha256` → first-build error → real values; postPatch
-  strips the `.cargo/config.toml [source...]` blocks (else cargo
-  errors on duplicate source defs from the auto-vendor-dir);
-  `__noChroot = true` + `sandbox = relaxed` (per-host nix.custom.conf)
-  so OnionPIR's CMake FetchContent for HEXL can hit network at build
-  time.
-  **Blocker**: OnionPIR's `build.rs` at the pinned rev still does
-  `repo_root = manifest_dir.join("../..")` then runs `cmake $repo_root`
-  — that resolves to `$NIX_BUILD_TOP` inside the sandbox, which has
-  neither the OnionPIRv2-fork's top-level `CMakeLists.txt` nor an
-  `extern/SEAL/` sibling (cargo vendor flattens git deps to just the
-  consumed subcrate). Same root cause as sub-task 4's "exclude
-  onionpir from vendor" decision.
-  Resolution paths:
-    (a) **Upstream OnionPIRv2-fork patch** — restructure the rust crate
-        to bundle its CMake setup self-contained, OR add an env-var
-        override (e.g. `ONIONPIR_SEAL_DIR=$NIX_FETCH_SEAL_PATH`).
-        Cleanest. Bumps the BitcoinPIR Cargo.lock rev pin.
-    (b) Mirror full OnionPIRv2-fork tree (with submodules) into the
-        Nix sandbox + patch the vendored build.rs in postPatch +
-        rewrite .cargo-checksum.json. Hacky but doesn't need upstream.
+- ✅ Sub-task 5 Phase 2 — `nix build .#unified-server` works end-to-end
+  with **cross-path determinism**. Two upstream OnionPIR fork patches
+  unblocked it:
+    - `5cca228` → `c669da0`: bundle CMake setup into rust/onionpir/
+      (move CMakeLists.txt + cpp/ + extern/SEAL inside the rust crate;
+      drop submodule, commit SEAL as plain tracked tree so cargo vendor
+      includes it).
+    - `350ccc4`: drop hardcoded /usr/bin/{gcc,g++} from CMakeLists.txt;
+      respect CMAKE_C_COMPILER if set, fall back to find_program.
+  BitcoinPIR rev pin bumped to 350ccc4. Spike accepts USE_HEXL=OFF
+  (slower SEAL paths) so we don't need network in the strict Nix
+  sandbox; pre-fetching HEXL via fetchFromGitHub + patching SEAL's
+  FetchContent_Declare is a follow-up.
+  Validated on pir-hetzner: `nix build .#unified-server` from
+  /home/pir/BitcoinPIR vs /tmp/bpir_alt (different host paths, same
+  content) → both produce binary sha
+  f5ea19dcea883ec9c99de8c906e1f6be3efc3c67e758c0dfe9fd725ef2126fce.
+  This closes the cross-path leak that the convention papered over.
+  Open Phase 2 follow-up: pre-fetch HEXL via fetchFromGitHub +
+  patch SEAL's `FetchContent_Declare(hexl ...)` to use it (override-by-
+  first-declared rule). With that, USE_HEXL=ON works inside the strict
+  sandbox and the Nix-built binary matches production's HEXL-on
+  performance profile.
 - ✅ Sub-task 2 — cargo bit-determinism (partial). Pinned via:
     1. `rust-toolchain.toml` → channel = "1.94.1"
     2. `Cargo.toml [profile.release]` → codegen-units = 1, incremental = false
