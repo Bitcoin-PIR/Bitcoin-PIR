@@ -65,24 +65,19 @@ export interface ServerAttestPin {
 }
 
 /**
- * pir2.chenweikeng.com — VPSBG Tier 3 (Slice 3 lockdown), v3 with the
- * reproducibility sub-tasks 1 + 2 + 3(b) + 4 of
- * docs/PHASE3_SLICE3_REPRO_PLAN.md applied.
- * Pinned 2026-05-03 from the v3 deploy (UKI sha
- * `774d88b1…fd78fe1a`). Differences vs v2:
- *   - dracut module mtimes normalized to @0
- *   - cloudflared tunnel.env loaded at runtime from
- *     /home/pir/data/cloudflared/tunnel.env (NOT in MEASUREMENT)
- *   - cargo build deterministic flags (codegen-units=1,
- *     incremental=false, --remap-path-prefix, vendored deps)
- *   - rust-toolchain.toml pins rustc 1.94.1 stable
+ * pir2.chenweikeng.com — VPSBG Tier 3 (Slice 3 lockdown), v4. Same
+ * reproducibility flags as v3 (sub-tasks 1 + 2 + 3(b) + 4) but rebuilt
+ * with the upstream OnionPIR CMake-4.x compatibility fix landed (rev
+ * 0c84595f), so the build no longer needs the in-place cargo-cache
+ * patch hack we used for v3.
+ * Pinned 2026-05-04 from the v4 deploy (UKI sha `e835a516…f8396da0`).
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   measurementHex:
-    'f8fb6190b835b0a8ddfe950b7c1905c3531d33c565bbf3059b56b7e6a36dd80aa1b5fecd79d5efde63c091a47d186345',
+    'f6aa29156c63cae96dce8c33427489016dee86b5716b2aa3c9d9a67e47768fa010d5ad5468ada3f858931f53c6ae8bd9',
   binarySha256Hex:
-    '9029efaf5b58dc965f114d5c99ece20dee6c91aadc9057f76667f8209d997761',
-  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI v3)',
+    'dc1b97b51360afa83cca47eb30870dcf4a5217c85ba1c26219aff1bb1dc16000',
+  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI v4)',
 };
 
 /**

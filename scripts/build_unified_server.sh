@@ -53,14 +53,17 @@ echo "    RUSTFLAGS:         $RUSTFLAGS"
 echo "    SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"
 echo
 
-# --offline is intentionally NOT used: the OnionPIRv2-fork git dep isn't
-# vendored (see .cargo/config.toml note), so cargo needs network on first
-# fetch. After the initial fetch, builds can run offline by passing
-# OFFLINE=1 (cargo will hit only its on-disk git checkout cache).
+# --locked enforces "Cargo.lock is the truth, never auto-update", which is
+# what we want for reproducibility, but unlike --frozen it still allows
+# fetching deps from the network. We need that because the OnionPIRv2-fork
+# git dep isn't vendored (see .cargo/config.toml note) — first build on a
+# fresh cargo cache must hit github to populate the git checkout. After
+# the initial fetch, builds can run offline by passing OFFLINE=1
+# (combines --locked + --offline = same effect as --frozen).
 if [ "${OFFLINE:-0}" = "1" ]; then
-    cargo build --release --frozen --offline -p runtime --bin unified_server
+    cargo build --release --locked --offline -p runtime --bin unified_server
 else
-    cargo build --release --frozen -p runtime --bin unified_server
+    cargo build --release --locked -p runtime --bin unified_server
 fi
 
 # Strip debug info reproducibly. GNU strip on Linux; macOS strip has
