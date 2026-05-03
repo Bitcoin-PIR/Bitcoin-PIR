@@ -1,0 +1,96 @@
+use std::marker::PhantomData;
+
+use rawdb::{Reader, Region};
+
+use crate::{AnyStoredVec, HEADER_OFFSET, ReadOnlyRawVec, VecIndex, VecValue};
+
+use super::super::{RawStrategy, ReadWriteRawVec};
+
+/// Read-only random-access handle into a raw vector's stored data.
+///
+/// Created via `raw_vec.reader()` (available on BytesVec/ZeroCopyVec via Deref).
+/// Provides O(1) point reads directly from the memory-mapped file.
+///
+/// Only sees **stored** (persisted) values — does not check holes, updates,
+/// or pushed values. For full dirty-state reads, use `get_any_or_read`.
+pub struct VecReader<I, T, S> {
+    _reader: Reader,
+    data: *const u8,
+    stored_len: usize,
+    _marker: PhantomData<(I, T, S)>,
+}
+
+unsafe impl<I: Send, T: Send, S: Send> Send for VecReader<I, T, S> {}
+unsafe impl<I: Sync, T: Sync, S: Sync> Sync for VecReader<I, T, S> {}
+
+impl<I, T, S> VecReader<I, T, S>
+where
+    T: VecValue,
+    S: RawStrategy<T>,
+{
+    const SIZE_OF_T: usize = size_of::<T>();
+
+    pub(crate) fn from_region(region: &Region, stored_len: usize) -> Self {
+        let reader = region.create_reader();
+        let slice = reader.prefixed(HEADER_OFFSET);
+        let ptr = slice.as_ptr();
+
+        Self {
+            _reader: reader,
+            data: ptr,
+            stored_len,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn from_read_write(vec: &ReadWriteRawVec<I, T, S>) -> Self
+    where
+        I: VecIndex,
+    {
+        Self::from_region(vec.region(), vec.stored_len())
+    }
+
+    pub fn from_read_only(vec: &ReadOnlyRawVec<I, T, S>) -> Self
+    where
+        I: VecIndex,
+    {
+        Self::from_region(vec.region(), vec.stored_len())
+    }
+
+    /// Returns the value at `index`.
+    ///
+    /// # Panics
+    /// Panics if `index >= len()`.
+    #[inline(always)]
+    pub fn get(&self, index: usize) -> T {
+        assert!(
+            index < self.stored_len,
+            "index {index} out of bounds (len {})",
+            self.stored_len
+        );
+        // SAFETY: index < stored_len guarantees offset + SIZE_OF_T <= data_len
+        unsafe { S::read_from_ptr(self.data, index * Self::SIZE_OF_T) }
+    }
+
+    /// Returns the value at `index`, or `None` if out of bounds.
+    #[inline(always)]
+    pub fn try_get(&self, index: usize) -> Option<T> {
+        if index >= self.stored_len {
+            return None;
+        }
+        // SAFETY: index < stored_len guarantees offset + SIZE_OF_T <= data_len
+        Some(unsafe { S::read_from_ptr(self.data, index * Self::SIZE_OF_T) })
+    }
+
+    /// Returns the number of stored values.
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.stored_len
+    }
+
+    /// Returns `true` if the reader is empty.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.stored_len == 0
+    }
+}

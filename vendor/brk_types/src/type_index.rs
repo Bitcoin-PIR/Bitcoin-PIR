@@ -1,0 +1,154 @@
+use std::ops::Add;
+
+use byteview::ByteView;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use vecdb::{CheckedSub, Formattable, Pco};
+
+/// Index within its type (e.g., 0 for first P2WPKH address)
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    Pco,
+    JsonSchema,
+    Hash,
+)]
+pub struct TypeIndex(u32);
+
+impl TypeIndex {
+    pub const COINBASE: Self = Self(u32::MAX);
+
+    pub fn new(i: u32) -> Self {
+        Self(i)
+    }
+
+    pub fn increment(&mut self) {
+        self.0 += 1;
+    }
+
+    pub fn incremented(self) -> Self {
+        Self(self.0 + 1)
+    }
+
+    pub fn copy_then_increment(&mut self) -> Self {
+        let i = *self;
+        self.increment();
+        i
+    }
+
+    pub fn to_be_bytes(&self) -> [u8; 4] {
+        self.0.to_be_bytes()
+    }
+
+    pub fn to_ne_bytes(&self) -> [u8; 4] {
+        self.0.to_ne_bytes()
+    }
+}
+
+impl From<u32> for TypeIndex {
+    #[inline]
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+impl From<TypeIndex> for u32 {
+    #[inline]
+    fn from(value: TypeIndex) -> Self {
+        value.0
+    }
+}
+
+impl From<u64> for TypeIndex {
+    #[inline]
+    fn from(value: u64) -> Self {
+        Self(value as u32)
+    }
+}
+impl From<TypeIndex> for u64 {
+    #[inline]
+    fn from(value: TypeIndex) -> Self {
+        value.0 as u64
+    }
+}
+
+impl From<usize> for TypeIndex {
+    #[inline]
+    fn from(value: usize) -> Self {
+        Self(value as u32)
+    }
+}
+impl From<TypeIndex> for usize {
+    #[inline]
+    fn from(value: TypeIndex) -> Self {
+        value.0 as usize
+    }
+}
+
+impl Add<u32> for TypeIndex {
+    type Output = Self;
+    fn add(self, rhs: u32) -> Self::Output {
+        Self(self.0 + rhs)
+    }
+}
+impl Add<usize> for TypeIndex {
+    type Output = Self;
+    fn add(self, rhs: usize) -> Self::Output {
+        Self(self.0 + rhs as u32)
+    }
+}
+
+impl Add<TypeIndex> for TypeIndex {
+    type Output = Self;
+    fn add(self, rhs: TypeIndex) -> Self::Output {
+        Self(self.0 + rhs.0)
+    }
+}
+
+impl From<ByteView> for TypeIndex {
+    #[inline]
+    fn from(value: ByteView) -> Self {
+        Self::from(u32::from_be_bytes((&*value).try_into().unwrap()))
+    }
+}
+impl From<TypeIndex> for ByteView {
+    #[inline(always)]
+    fn from(value: TypeIndex) -> Self {
+        ByteView::from(&value)
+    }
+}
+impl From<&TypeIndex> for ByteView {
+    #[inline(always)]
+    fn from(value: &TypeIndex) -> Self {
+        Self::new(&value.0.to_be_bytes())
+    }
+}
+
+impl CheckedSub<TypeIndex> for TypeIndex {
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        self.0.checked_sub(rhs.0).map(Self)
+    }
+}
+
+impl std::fmt::Display for TypeIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = itoa::Buffer::new();
+        let str = buf.format(self.0);
+        f.write_str(str)
+    }
+}
+
+impl Formattable for TypeIndex {
+    #[inline(always)]
+    fn write_to(&self, buf: &mut Vec<u8>) {
+        let mut b = itoa::Buffer::new();
+        buf.extend_from_slice(b.format(self.0).as_bytes());
+    }
+}

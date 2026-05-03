@@ -1,9 +1,29 @@
 # Phase 3 Slice 3 — UKI Reproducible-Build Plan (L4 polish)
 
-**Status (2026-05-03)**: not started. Slice 3 is shipped and Layer 3
-reproducibility is achieved (verifiers can compute MEASUREMENT given
-operator-published UKI bytes + VPSBG's custom OVMF — see
+**Status (2026-05-03)**: in progress. Sub-tasks 1 + 3(b) + 4 shipped;
+sub-task 2 not started; sub-task 5 out of scope unless 1-4 don't reach
+byte-equivalence. Slice 3 is shipped and Layer 3 reproducibility is
+achieved (verifiers can compute MEASUREMENT given operator-published
+UKI bytes + VPSBG's custom OVMF — see
 [PHASE3_ROADMAP.md::Full Layer 3 reproducibility — verified 2026-05-03](PHASE3_ROADMAP.md)).
+
+Progress log:
+- ✅ Cargo.lock now tracked (commit 54078f2 — prerequisite for sub-tasks 2+4).
+- ✅ Sub-task 1 — dracut module mtime normalization (commit dcad127).
+  Empirical finding: dracut-060's `--reproducible` + `SOURCE_DATE_EPOCH=0`
+  on Ubuntu 24.04 already neutralizes source-mtime variance, but the
+  `touch -d @0` is kept as defense-in-depth. Validated on pir-hetzner
+  with source mtimes a year apart → identical UKI sha 1f686ac4...
+- ✅ Sub-task 3 (option b) — token off the initramfs (commit c4a3513).
+  Token loaded at runtime from `/home/pir/data/cloudflared/tunnel.env`
+  on the rootfs partition, no longer in MEASUREMENT. Validated on
+  pir-hetzner with `/etc/cloudflared/tunnel.env` present vs absent
+  → byte-identical UKI sha 81ae3e16... — operator-agnostic.
+- ✅ Sub-task 4 — cargo vendor (this commit). 313 crates / 6 git deps /
+  261 MB in `vendor/`. Slightly over the plan's "~50-200 MB" estimate
+  due to multiple windows-sys versions pulled transitively + SEAL/libdpf
+  source. Validated `cargo check --offline -p pir-core` succeeds
+  without network access.
 
 This plan covers the L4 sub-gap: making the **UKI binary itself
 bit-deterministic from source**, so that any verifier with the

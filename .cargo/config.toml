@@ -11,3 +11,39 @@
 
 [target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-feature=+aes,+ssse3,+sse4.1,+pclmulqdq"]
+
+# ─── Vendored deps ─────────────────────────────────────────────────────────
+# All crates.io + git deps are mirrored in ./vendor/ via `cargo vendor`
+# (sub-task 4 of docs/PHASE3_SLICE3_REPRO_PLAN.md). This pins exact source
+# bytes for reproducibility and lets `cargo build --offline` succeed
+# without network access. Re-run `cargo vendor` whenever Cargo.lock changes.
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Bitcoin-PIR/ALF.git?rev=e2e0b3d6a231f2a3491d07a4facbf69d4e5ae607"]
+git = "https://github.com/Bitcoin-PIR/ALF.git"
+rev = "e2e0b3d6a231f2a3491d07a4facbf69d4e5ae607"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git?rev=f18e4985ba835c5563ff804b3fa2c74722d17f6c"]
+git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git"
+rev = "f18e4985ba835c5563ff804b3fa2c74722d17f6c"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Bitcoin-PIR/fastprp.git?rev=eaf1ee787c051c1250329cbe645c157e085af6e2"]
+git = "https://github.com/Bitcoin-PIR/fastprp.git"
+rev = "eaf1ee787c051c1250329cbe645c157e085af6e2"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Bitcoin-PIR/harmonypir.git?rev=a849dedfe0b0ab283c7c9ad9e20f8775b01b4543"]
+git = "https://github.com/Bitcoin-PIR/harmonypir.git"
+rev = "a849dedfe0b0ab283c7c9ad9e20f8775b01b4543"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/weikengchen/libdpf.git"]
+git = "https://github.com/weikengchen/libdpf.git"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

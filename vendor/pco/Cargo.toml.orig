@@ -1,0 +1,23 @@
+[package]
+name = "pco"
+version = "1.0.1"
+edition = "2021"
+build = "build.rs"
+
+authors = ["mwlon <m.w.loncaric@gmail.com>"]
+categories = ["compression", "encoding"]
+description = "Good compression for numerical sequences"
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "build.rs"]
+keywords = ["compression", "numerical", "delta"]
+license = "Apache-2.0"
+repository = "https://github.com/pcodec/pcodec"
+rust-version = "1.87.0"
+
+[dependencies]
+better_io = { workspace = true }
+dtype_dispatch = { workspace = true }
+half = { workspace = true }
+rand_xoshiro = { workspace = true }
+
+[dev-dependencies]
+rand = "0.8.4"

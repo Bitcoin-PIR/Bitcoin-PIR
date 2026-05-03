@@ -1,0 +1,28 @@
+[package]
+name = "iocuddle"
+version = "0.1.1"
+authors = ["Nathaniel McCallum <npmccallum@redhat.com>"]
+license = "Apache-2.0"
+edition = "2018"
+
+homepage = "https://github.com/enarx/iocuddle"
+repository = "https://github.com/enarx/iocuddle"
+description="Library for building runtime-safe linux `ioctl()` interfaces"
+readme = "README.md"
+
+keywords = ["linux", "ioctl"]
+categories = ["os", "api-bindings"]
+
+exclude = [ ".gitignore", ".github/*" ]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[badges]
+# See https://doc.rust-lang.org/cargo/reference/manifest.html#the-badges-section
+github = { repository = "enarx/iocuddle", workflow = "test" }
+#github = { repository = "enarx/iocuddle", workflow = "lint" }
+maintenance = { status = "actively-developed" }
+is-it-maintained-issue-resolution = { repository = "enarx/iocuddle" }
+is-it-maintained-open-issues = { repository = "enarx/iocuddle" }
+
+[dependencies]

@@ -1,0 +1,30 @@
+[package]
+name = "brk_types"
+description = "Structs used throughout BRK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitcoin = { workspace = true }
+brk_error = { workspace = true, features = ["bitcoin", "jiff", "pco", "serde_json", "vecdb"] }
+byteview = { workspace = true }
+derive_more = { workspace = true }
+indexmap = { workspace = true }
+itoa = "1.0.18"
+jiff = { workspace = true }
+pco = { workspace = true }
+rapidhash = "4.4.1"
+rustc-hash = { workspace = true }
+ryu = "1.0.23"
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_bytes = { workspace = true }
+strum = { version = "0.28", features = ["derive"] }
+vecdb = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]

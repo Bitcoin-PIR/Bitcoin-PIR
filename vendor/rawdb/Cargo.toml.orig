@@ -1,0 +1,25 @@
+[package]
+name = "rawdb"
+description = "Single-file, low-level and space efficient storage engine with filesystem-like API"
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+libc = { workspace = true }
+log = { workspace = true }
+memmap2 = "0.9.10"
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+smallvec = "1.15"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

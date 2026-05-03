@@ -1,0 +1,28 @@
+[package]
+name = "brk-corepc-types"
+version = "0.11.0"
+authors = ["Tobin C. Harding <me@tobin.cc>", "Jamil Lambert <Jamil.Lambert@proton.me>"]
+license = "CC0-1.0"
+repository = "https://github.com/rust-bitcoin/corepc"
+description = "Bitcoin Core JSON-RPC API types"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["bitcoin", "bitcoind", "json-rpc"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.75.0"
+exclude = ["tests", "contrib"]
+
+[features]
+default = ["std"]
+std = ["bitcoin/std"]
+serde-deny-unknown-fields = []
+
+[dependencies]
+bitcoin = { version = "0.32.0", default-features = false, features = ["serde", "base64", "secp-recovery"] }
+serde = { version = "1.0.103", default-features = false, features = [ "derive", "alloc" ] }
+serde_json = { version = "1.0.117" }
+
+[dev-dependencies]
+
+[lints.rust]
+missing_debug_implementations = "deny"

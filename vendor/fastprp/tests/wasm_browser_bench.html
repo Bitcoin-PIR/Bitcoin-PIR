@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>FastPRP WASM Benchmark</title>
+  <style>
+    body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 2em; }
+    h1 { color: #00d4ff; }
+    pre { background: #16213e; padding: 1em; border-radius: 8px; overflow-x: auto; }
+    .running { color: #ffd700; }
+    .done { color: #00ff88; }
+    button { font-family: monospace; font-size: 1em; padding: 0.5em 1em; margin: 0.5em;
+             background: #0f3460; color: #e0e0e0; border: 1px solid #00d4ff; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #16213e; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <h1>FastPRP WASM Browser Benchmark</h1>
+  <div>
+    <button id="btnRun" onclick="runBench()">Run Benchmark</button>
+    <button id="btnRunLarge" onclick="runBench(true)">Run Large (2^27 buckets)</button>
+  </div>
+  <pre id="output">Click "Run Benchmark" to start...</pre>
+
+<script type="module">
+import init, { WasmFastPrp } from '../pkg/fastprp.js';
+
+const output = document.getElementById('output');
+const btnRun = document.getElementById('btnRun');
+const btnRunLarge = document.getElementById('btnRunLarge');
+
+function log(msg) {
+  output.textContent += msg + '\n';
+}
+
+function bench(label, fn, iters) {
+  for (let i = 0; i < Math.min(100, iters); i++) fn(i);
+  const t0 = performance.now();
+  for (let i = 0; i < iters; i++) fn(i);
+  const ms = performance.now() - t0;
+  const us = (ms * 1000) / iters;
+  log(`  ${label.padEnd(20)} ${us.toFixed(1).padStart(8)} us/op  (${iters} ops in ${ms.toFixed(0)} ms)`);
+  return us;
+}
+
+async function runBenchImpl(includeLarge) {
+  output.textContent = '';
+  btnRun.disabled = true;
+  btnRunLarge.disabled = true;
+
+  await init();
+  log('=== FastPRP WASM Browser Benchmark ===');
+  log(`User Agent: ${navigator.userAgent.split(') ')[0]})`);
+  log('');
+
+  const key = new Uint8Array([
+    0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
+    0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
+  ]);
+
+  const sizes = [14, 20, 23];
+
+  for (const logN of sizes) {
+    const n = 1 << logN;
+    log(`N = 2^${logN} = ${n.toLocaleString()}`);
+
+    const t0 = performance.now();
+    const prp = new WasmFastPrp(key, n);
+    const initMs = performance.now() - t0;
+    log(`  init: ${initMs.toFixed(0)} ms, stride=${prp.cacheStride}, cache=${(prp.cacheSizeBytes/1024).toFixed(0)} KB`);
+
+    const numOps = logN >= 23 ? 2000 : 5000;
+
+    bench('permute', (i) => prp.permute(i % n), numOps);
+    bench('unpermute', (i) => prp.unpermute(i % n), numOps);
+    bench('permute4', (i) => {
+      const b = (i * 4) % n;
+      prp.permute4(b, (b+1)%n, (b+2)%n, (b+3)%n);
+    }, Math.floor(numOps / 4));
+
+    if (logN <= 14) {
+      bench('batchPermute', () => prp.batchPermute(), 20);
+    }
+
+    if (logN >= 20) {
+      const coarse = WasmFastPrp.withStride(key, n, prp.cacheStride * 8);
+      const t1 = performance.now();
+      coarse.refineTo(prp.cacheStride);
+      const refineMs = performance.now() - t1;
+      log(`  refine (3 steps):  ${refineMs.toFixed(0)} ms`);
+      coarse.free();
+    }
+
+    prp.free();
+    log('');
+
+    // Yield to browser between sizes
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  // Cache serialization
+  log('Cache serialization (N=2^20):');
+  {
+    const prp = new WasmFastPrp(key, 1 << 20);
+    const t0 = performance.now();
+    const bytes = prp.exportCacheBytes();
+    log(`  export: ${(performance.now() - t0).toFixed(1)} ms, ${(bytes.length/1024).toFixed(0)} KB`);
+    const t1 = performance.now();
+    const prp2 = WasmFastPrp.fromCacheBytes(key, 1 << 20, bytes);
+    log(`  import: ${(performance.now() - t1).toFixed(1)} ms`);
+    prp.free();
+    prp2.free();
+  }
+  log('');
+
+  // Parallel bucket simulation
+  if (includeLarge) {
+    log('=== Parallel bucket simulation (N=2^27 as 200 buckets) ===');
+    const totalN = 1 << 27;
+    const numBuckets = 200;
+    const bucketSize = Math.floor(totalN / numBuckets);
+    log(`  ${numBuckets} buckets x ${bucketSize.toLocaleString()} elements`);
+
+    const t0 = performance.now();
+    const tables = [];
+    for (let b = 0; b < numBuckets; b++) {
+      const bkey = new Uint8Array(key);
+      bkey[0] = b & 0xFF;
+      bkey[1] = (b >> 8) & 0xFF;
+      const prp = new WasmFastPrp(bkey, bucketSize);
+      tables.push(prp.batchPermute());
+      prp.free();
+
+      if (b % 20 === 19) {
+        const pct = ((b + 1) / numBuckets * 100).toFixed(0);
+        log(`  ... ${pct}% (${b+1}/${numBuckets} buckets)`);
+        await new Promise(r => setTimeout(r, 1));
+      }
+    }
+    const totalMs = performance.now() - t0;
+    log(`  total: ${(totalMs/1000).toFixed(1)}s for ${totalN.toLocaleString()} elements`);
+    log(`  throughput: ${(totalN / totalMs * 1000 / 1e6).toFixed(1)} M elements/s`);
+  }
+
+  log('=== Done ===');
+  btnRun.disabled = false;
+  btnRunLarge.disabled = false;
+}
+
+window.runBench = function(large) { runBenchImpl(!!large); };
+</script>
+</body>
+</html>

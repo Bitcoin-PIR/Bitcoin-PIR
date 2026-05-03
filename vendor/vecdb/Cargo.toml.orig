@@ -1,0 +1,68 @@
+[package]
+name = "vecdb"
+description = "High-performance mutable persistent vectors built on rawdb"
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+derive = ["vecdb_derive"]
+lz4 = ["dep:lz4_flex"]
+pco = ["dep:pco"]
+schemars = ["dep:schemars"]
+serde = ["dep:serde"]
+serde_json = ["serde", "dep:serde_json"]
+sonic-rs = ["serde", "dep:sonic-rs"]
+zerocopy = ["dep:zerocopy"]
+zstd = ["dep:zstd"]
+
+[dependencies]
+itoa = "1.0.18"
+libc = { workspace = true }
+log = { workspace = true }
+parking_lot = { workspace = true }
+rawdb = { workspace = true }
+ryu = "1.0.23"
+serde_json = { version = "1.0.149", features = ["float_roundtrip"], optional = true }
+thiserror = "2"
+
+# [optional-dependencies]
+lz4_flex = { version = "0.13.0", default-features = false, optional = true }
+pco = { version = "1.0.1", optional = true }
+schemars = { version = "1.2.1", optional = true }
+serde = { version = "1.0.228", optional = true }
+sonic-rs = { version = "0.5.8", optional = true }
+vecdb_derive = { workspace = true, optional = true }
+zerocopy = { version = "0.8.48", features = ["zerocopy-derive"], optional = true }
+zstd = { version = "0.13.3", optional = true }
+
+[dev-dependencies]
+sha2 = "0.11"
+tempfile = { workspace = true }
+
+[[example]]
+name = "zerocopy"
+required-features = ["zerocopy"]
+
+[[example]]
+name = "pcodec"
+required-features = ["pco"]
+
+[[example]]
+name = "pco_bench"
+required-features = ["pco"]
+
+[[example]]
+name = "io_vs_mmap"
+required-features = ["pco"]
+
+[[example]]
+name = "bench"
+required-features = ["pco", "lz4", "zstd", "zerocopy"]
+
+[package.metadata.docs.rs]
+all-features = true

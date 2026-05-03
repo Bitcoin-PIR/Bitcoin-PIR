@@ -1,0 +1,41 @@
+[package]
+name = "brk-corepc-jsonrpc"
+version = "0.19.0"
+authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>"]
+license = "CC0-1.0"
+repository = "https://github.com/rust-bitcoin/corepc/"
+documentation = "https://docs.rs/jsonrpc/"
+description = "Rust support for the JSON-RPC 2.0 protocol"
+keywords = [ "protocol", "json", "http", "jsonrpc" ]
+readme	 = "README.md"
+edition = "2021"
+rust-version = "1.75.0"
+exclude = ["tests", "contrib"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = [ "simple_http", "simple_tcp" ]
+# A bare-minimum HTTP transport.
+simple_http = [ "base64" ]
+# A transport that uses `bitreq` as the HTTP client.
+bitreq_http = [ "base64", "bitreq" ]
+# Basic transport over a raw TcpListener
+simple_tcp = []
+# Basic transport over a raw UnixStream
+simple_uds = []
+# Enable Socks5 Proxy in transport
+proxy = ["socks"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = [ "raw_value" ] }
+
+base64 = { version = "0.22.1", optional = true }
+bitreq = { version = "0.3.0", path = "../bitreq", features = ["json-using-serde"], optional = true }
+socks = { version = "0.3.4", optional = true}
+
+[lints.rust]
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(jsonrpc_fuzz)'] }

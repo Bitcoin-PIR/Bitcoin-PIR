@@ -1,0 +1,22 @@
+[package]
+name = "brk_reader"
+description = "A very fast Bitcoin block parser and iterator built on top of bitcoin-rust"
+keywords = ["bitcoin", "block", "iterator"]
+categories = ["cryptography::cryptocurrencies", "encoding"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude = ["examples/"]
+
+[dependencies]
+bitcoin = { workspace = true }
+brk_error = { workspace = true }
+brk_rpc = { workspace = true, features = ["corepc"] }
+brk_types = { workspace = true }
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
+derive_more = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }

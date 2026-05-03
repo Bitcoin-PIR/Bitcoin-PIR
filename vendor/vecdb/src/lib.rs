@@ -1,0 +1,41 @@
+#![doc = include_str!("../README.md")]
+
+pub use rawdb::{Database, Error as RawDBError, PAGE_SIZE, Reader, likely, unlikely};
+
+#[cfg(feature = "derive")]
+pub use vecdb_derive::{Bytes, Pco};
+
+mod cursor;
+mod error;
+mod exit;
+mod iterators;
+
+mod stamp;
+mod traits;
+mod variants;
+mod version;
+
+use variants::*;
+
+pub use cursor::*;
+pub use error::*;
+pub use exit::*;
+pub use iterators::*;
+pub use stamp::*;
+pub use traits::*;
+pub use variants::*;
+pub use version::*;
+
+const ONE_KIB: usize = 1024;
+
+/// Buffer size for reading compressed data (512 KiB).
+/// Chosen to balance memory usage with I/O efficiency - large enough to
+/// amortize syscall overhead while fitting comfortably in L2/L3 cache.
+const BUFFER_SIZE: usize = 512 * ONE_KIB;
+
+const SIZE_OF_U64: usize = std::mem::size_of::<u64>();
+
+/// Crossover threshold in bytes for choosing IO vs mmap iteration strategy.
+/// Ranges smaller than this use mmap (zero-copy), larger use buffered IO.
+/// IO is kept for truly massive datasets that may exceed available address space.
+pub(crate) const MMAP_CROSSOVER_BYTES: usize = 1024 * 1024 * 1024; // 1 GiB
