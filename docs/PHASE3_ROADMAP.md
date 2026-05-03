@@ -1,7 +1,7 @@
 # Phase 3 (Attested Lockdown) — Roadmap
 
-Snapshot of the remaining work after the 2026-05-02 / 2026-05-03
-deployment that landed:
+Snapshot of work that landed across the 2026-05-02 / 2026-05-03
+deployment cycle:
 - Slices 1–4 of the dynamic attestation surface (DB manifests,
   `/attest`, ed25519 admin auth, DB upload protocol, `bpir-admin` CLI)
 - VPSBG as the second non-collusion server + `pir2.chenweikeng.com`
@@ -15,6 +15,14 @@ deployment that landed:
   ChaCha20-Poly1305 AEAD frame wrapping. cloudflared sees only
   ciphertext for any client that runs the handshake. End-to-end
   verified via `bpir-admin channel-test wss://pir2.chenweikeng.com`.
+- **Phase 3 Slice 3 — Tier 3 Lockdown** (deployed 2026-05-03 evening):
+  unified_server now runs from inside the UKI's initramfs (binary
+  bytes directly in MEASUREMENT, not just transitively pinned).
+  sshd is gone. Operator access is `bpir-admin` over WSS only. See
+  [PHASE3_SLICE3_PLAN.md](PHASE3_SLICE3_PLAN.md) for the
+  architectural decisions + post-mortem and
+  [PHASE3_SLICE3_RECOVERY.md](PHASE3_SLICE3_RECOVERY.md) for operator
+  recovery if a future Tier 3 UKI bricks the box.
 
 This document is the canonical to-do for the next sessions on this
 work. Pick up by re-reading the "Current state" summary, then jumping
@@ -22,65 +30,81 @@ to whichever slice you want to start on.
 
 ---
 
-## Current state (as of 2026-05-02 commit `e68df9b`)
+## Current state (as of 2026-05-03 evening, Slice 3 Tier 3 deployed)
 
 ### Production deployment
 
 | | |
 |---|---|
 | `pir1.chenweikeng.com` | Hetzner i7-8700, role=primary, DPF + OnionPIR + HarmonyPIR query, 125 GB RAM, 944 GB disk. Cloudflared tunnel terminates here. **Not** SEV-attested (Intel chip). |
-| `pir2.chenweikeng.com` | VPSBG EPYC 9745 (Zen 5), role=secondary, DPF + HarmonyPIR hint, **SEV-SNP active** at VMPL0, custom UKI loaded. 48 GB disk, 22 GB used. |
+| `pir2.chenweikeng.com` | VPSBG EPYC 9745 (Zen 5), role=secondary, DPF + HarmonyPIR hint, **SEV-SNP active** at VMPL0, **Tier 3 UKI loaded**: `unified_server` runs from initramfs, no rootfs pivot for the service, sshd gone. cloudflared also runs from initramfs (supervised by runit alongside unified_server). Rootfs is mounted (rw) only to expose `/home/pir/data` for DBs + VCEK chain. 48 GB disk, 22 GB used. |
 | Cloudflare tunnels | Two: Hetzner (existing) for pir1, VPSBG (new) for pir2. Both healthy. |
 | DBs in production | `main` (height 940611), `delta_940611_944000`. Both have `MANIFEST.toml`. |
 | Hetzner `pir-secondary.service` | Stopped + disabled (port 8092 free). Unit file kept for hot-spare revival via `systemctl start pir-secondary`. |
 
-### Attested values published (operator: weikengchen)
+### Attested values published (operator: weikengchen) — Tier 3 (Slice 3) baseline
 
 These are live values from the running pir2 — anyone can verify with `bpir-admin attest`.
 
 ```
 Server: wss://pir2.chenweikeng.com
 
-Launch MEASUREMENT (covers OVMF + UKI bytes — UKI contains the
-bpir-verify dracut hook + the new V2-aware unified_server's hash in
-cmdline, so this digest authenticates that the box boots into a kernel
-that enforces binary integrity at pre-pivot AND that the running
-binary speaks the encrypted-channel protocol):
-  e522983f0d595b99157c9612cb623522044110c5154807df8b5f700da33c09932f14137c8afef2e53127b61b6402ce0a
+Launch MEASUREMENT (covers OVMF + Tier 3 UKI bytes — UKI now contains
+the unified_server BINARY itself in initramfs, NOT just a cmdline hash
+pin. So this digest authenticates the literal binary bytes the box is
+running, not "a binary the box claims matches a hash"):
+  2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5
 
-UKI bytes sha256 (built by scripts/build_uki.sh on vpsbg-pir;
-deterministic for back-to-back local builds, fresh git clones produce
-different bytes due to source mtimes leaking into the cpio):
-  8449585e863397dadf7ee55a3af88e9fb52494466ac61bd7edd69bb9e72e1cef
+UKI bytes sha256 (built by scripts/build_uki_tier3.sh on vpsbg-pir;
+includes initramfs with unified_server + cloudflared + runit + the
+sev-guest/ccp/tsm_report kernel modules baked in):
+  afbc07f8ea8df7f24e0d92980184bcc61e8762dbe3bbf0e161ef08bdf8b8fe90
 
-unified_server binary sha256 (pinned in cmdline, enforced at boot by
-the bpir-verify dracut hook — tamper test passed 2026-05-02 against
-the predecessor binary, hook unchanged):
-  3f1f7722f5ca4cb44d9eb240306a5bab47022a665624af12c5e90ad97cd6e993
+unified_server binary sha256 (computed at build time AND attested at
+runtime via /proc/self/exe — the two match because dracut was invoked
+with --nostrip; verifiers pin via --expect-binary on bpir-admin attest):
+  324c3883510c56a344221ec379a6466c3089099f51e566e7ad9b1356156eee7e
 
-Server X25519 channel pubkey (V2-bound to REPORT_DATA — bpir-admin
-attest cross-checks the binding; encrypted-channel handshakes ECDH
-against this key, so cloudflared can't substitute its own):
-  615ed2699569fdb0a28b848a16a0155a27b445cfb8617c25d538d5b4ad541f42
+ARK fingerprint (AMD Turin family root certificate — pinned in
+web/src/attest-pin.ts and used by --expect-ark-fingerprint to anchor
+the ARK→ASK→VCEK chain):
+  1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 DB manifest roots (db_id order):
   main (940611):              8911588dde20282726b5f2ae8e2c3152c673d636dc6a10295d9b9037e36fba11
   delta_940611_944000:        b1822802cfb193b80c57974e43388d2389c11715eb7b3d56fcd062c348f03f3a
 
 Server git rev (per /attest, captured at unified_server build time):
-  93ec886ca14cb5b6782a33bd5131b6bc1358054f
+  616f7839dcc6744638f9451f0489a79aa6947329
 ```
+
+NOTE on the X25519 channel pubkey: it's "long-lived" relative to per-
+session ECDH (which is fresh per handshake), but it IS regenerated on
+every server-process start (i.e. every reboot). Verifiers should NOT
+pin it across reboots — they observe it dynamically via attest and
+cross-check the REPORT_DATA binding. The current value as of last
+boot is `08224ddcc2288cb5fec9a7cd2c9d5a69bca6287d9da34203ad231f6b9d739e05`
+but it'll be different next reboot.
 
 Verifiers can cross-check end-to-end with:
 ```bash
-# Static checks: report binding + binary + measurement
+# Static checks: report binding + binary + measurement + ARK chain
 bpir-admin attest wss://pir2.chenweikeng.com \
-    --expect-measurement e522983f0d595b99157c9612cb623522044110c5154807df8b5f700da33c09932f14137c8afef2e53127b61b6402ce0a \
-    --expect-binary 3f1f7722f5ca4cb44d9eb240306a5bab47022a665624af12c5e90ad97cd6e993
+    --expect-measurement 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5 \
+    --expect-binary 324c3883510c56a344221ec379a6466c3089099f51e566e7ad9b1356156eee7e
 
-# Live encrypted channel: handshake + encrypted REQ_PING + REQ_GET_INFO
-bpir-admin channel-test wss://pir2.chenweikeng.com
+# Live encrypted channel + AMD VCEK chain validation
+bpir-admin channel-test wss://pir2.chenweikeng.com \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 ```
+
+### Previous (Slice 2) attested values — superseded 2026-05-03
+
+The Slice 2 baseline (rootfs-resident binary + cmdline hash pin via
+dracut bpir-verify hook) has been retired. Old values for historical
+reference:
+- MEASUREMENT: `e522983f0d595b99157c9612cb623522044110c5154807df8b5f700da33c09932f14137c8afef2e53127b61b6402ce0a`
+- UKI sha256: `8449585e863397dadf7ee55a3af88e9fb52494466ac61bd7edd69bb9e72e1cef`
 
 ### Slices 1–4 of the dynamic attestation work
 
@@ -124,56 +148,66 @@ Only build_uki.sh does.
 
 ---
 
-## Operational reference (Slice 2 in production)
+## Operational reference (Tier 3 in production)
 
 ### Binary update flow
 
-Every time `unified_server` is rebuilt, the cmdline pin no longer
-matches and the dracut hook will block boot. So binary updates require
-a coordinated UKI rebuild:
+Every `unified_server` rebuild requires a fresh Tier 3 UKI bake +
+portal upload + reboot. The new binary's bytes are inside the UKI's
+initramfs (and therefore in MEASUREMENT), so any binary update changes
+both the published binary sha256 AND the published MEASUREMENT.
+
+WARNING: Tier 3 has no SSH. The build host is pir2 itself — to
+re-bake you have to revert to Slice 2 first (so SSH works), build,
+swap back to Tier 3. Or maintain a separate build host with the same
+toolchain. Path below assumes operator handles the revert manually
+via portal.
 
 ```bash
-# 1. Build the new binary (already done if you just `cargo build --release`).
+# 1. Revert pir2 to Slice 2 via VPSBG portal (upload bpir-slice2-revert.efi).
+#    Wait ~90s for sshd.
+# 2. Build the new binary on pir2.
 ssh vpsbg-pir 'sudo -u pir bash -lc "
     source ~/.cargo/env && cd /home/pir/BitcoinPIR &&
     git fetch origin && git reset --hard origin/main &&
     CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build --release -p runtime --bin unified_server
 "'
-# 2. Snapshot the current (good) binary as a recovery backup.
-ssh vpsbg-pir 'cp /home/pir/BitcoinPIR/target/release/unified_server{,.bak}'
-# 3. Re-bake UKI with new binary's hash baked into cmdline.
-ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki.sh'
-scp vpsbg-pir:/tmp/bpir.efi ./bpir.efi
+# 3. Re-bake the Tier 3 UKI.
+ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
+scp vpsbg-pir:/tmp/bpir-tier3.efi ./deploy/uki/bpir-tier3-vNNN.efi
 # 4. Upload via VPSBG portal → Measured Boot → UKI → Save & Reboot.
-# 5. After reboot, capture + republish the new MEASUREMENT.
+# 5. After reboot, capture + republish the new MEASUREMENT + binary sha.
+./target/release/bpir-admin channel-test wss://pir2.chenweikeng.com \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 ./target/release/bpir-admin attest wss://pir2.chenweikeng.com
 ```
 
-### Recovery — UKI bricks the box
+### Recovery — Tier 3 UKI bricks the box
 
-If a future UKI fails to boot (hook bug, kernel update breaks the
-initrd, wrong cmdline pin, etc.) and SSH is dead:
-
-1. **VPSBG portal → Measured Boot → UKI dropdown → "None"** →
-   Save & Reboot. Falls back to stock Ubuntu boot, no enforcement.
-2. SSH back in, `cp .bak unified_server` if the binary is the
-   problem.
-3. Re-bake + re-upload a fresh UKI.
-
-VNC may not work for SEV-SNP guests with measured boot enabled
-(framebuffer often disabled). The "None" UKI fallback is the
-reliable recovery path.
+See **[PHASE3_SLICE3_RECOVERY.md](PHASE3_SLICE3_RECOVERY.md)** for the
+full step-by-step. TL;DR: VPSBG portal → upload `bpir-slice2-revert.efi`
+→ Save & Reboot, or fall through to "None" → stock Ubuntu boot → SSH
+back in.
 
 ---
 
-## Slice 3 — Tier 3 lockdown: bake binary into initramfs, drop sshd
+## Slice 3 — Tier 3 lockdown — SHIPPED 2026-05-03 evening
 
-> **Canonical to-do moved to [PHASE3_SLICE3_PLAN.md](PHASE3_SLICE3_PLAN.md)**
-> (2026-05-03). The section below is the original sketch retained for
-> historical context; the plan doc has the current architectural
-> decisions, post-Slices-A–D baseline, and discovered constraints
-> (notably: VPSBG VNC doesn't work on this SEV-SNP guest, so prior
-> "VNC console shows …" acceptance criteria don't apply).
+✅ **Done.** `unified_server` runs from inside the UKI's initramfs
+(MEASUREMENT covers the binary bytes directly), sshd is gone, operator
+access is `bpir-admin` over WSS only. New MEASUREMENT
+`2ad9490a…3709c4018faf161f52eb3c6063c1e241f19fd6fe5` published above.
+
+For the architectural decisions + four-iteration post-mortem (cloudflared
+arg-order bug, cloudflared env-var bug, missing DNS, VPSBG-uses-static-IP
+discovery, dracut-strips-binaries, sev-guest needs explicit modprobe),
+see [PHASE3_SLICE3_PLAN.md](PHASE3_SLICE3_PLAN.md). For operator
+recovery if a future Tier 3 UKI bricks the box, see
+[PHASE3_SLICE3_RECOVERY.md](PHASE3_SLICE3_RECOVERY.md).
+
+The original architectural sketch below is retained for historical
+context; the actual implementation diverged in places (notably:
+runit not s6-overlay, static IP not DHCP, ephemeral logs ok).
 
 ### Original sketch (superseded — see PHASE3_SLICE3_PLAN.md)
 
@@ -333,35 +367,54 @@ HarmonyPIR query and confirm.
 
 ## Quick-reference command index
 
-```bash
-# Attest VPSBG
-./target/release/bpir-admin attest wss://pir2.chenweikeng.com
+In Tier 3, pir2 has no SSH and no systemd. All operator interaction is
+via `bpir-admin` over WSS. SSH-using commands below assume you've
+reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
 
-# Upload a new DB
+```bash
+# === Tier 3 (current production state) — works without SSH ===
+
+# Attest VPSBG (verifies SEV-SNP report + binds X25519 channel pubkey)
+./target/release/bpir-admin attest wss://pir2.chenweikeng.com \
+    --expect-binary 324c3883510c56a344221ec379a6466c3089099f51e566e7ad9b1356156eee7e
+
+# End-to-end channel test with ARK-rooted chain validation
+./target/release/bpir-admin channel-test wss://pir2.chenweikeng.com \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+
+# Upload a new DB (admin auth + chunked upload + activate). The
+# --activate flag triggers an in-process hot reload — no restart.
 ./target/release/bpir-admin upload main_944321 ./build/output/main_944321 \
     --target-path checkpoints/944321 \
     --server wss://pir2.chenweikeng.com
-ssh vpsbg-pir 'systemctl restart pir-vpsbg'
 
-# Build a fresh UKI on VPSBG (after binary rebuild; must run as root)
+# === Slice 2 (after reverting via portal — restores SSH) ===
+
+# Build a fresh Tier 3 UKI on pir2 (must run as root)
+ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
+scp vpsbg-pir:/tmp/bpir-tier3.efi ./deploy/uki/bpir-tier3-vNNN.efi
+
+# Build a fresh Slice 2 UKI on pir2 (revert artifact)
 ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki.sh'
-scp vpsbg-pir:/tmp/bpir.efi ./bpir.efi
+scp vpsbg-pir:/tmp/bpir.efi ./deploy/uki/bpir-slice2-revert.efi
 # then upload via VPSBG portal → reboot → re-attest → republish
 
-# Hot-spare revival (Hetzner secondary)
-ssh pir-hetzner 'systemctl start pir-secondary'
-
-# Check live state
-ssh vpsbg-pir 'systemctl status pir-vpsbg cloudflared --no-pager | head -20'
-ssh vpsbg-pir 'journalctl -u pir-vpsbg -p err --no-pager -n 20'
-
-# Re-deploy code change (VPSBG)
+# Re-deploy code change (rebuild binary, then re-bake Tier 3 UKI)
 ssh vpsbg-pir 'sudo -u pir bash -lc "
     source ~/.cargo/env && cd /home/pir/BitcoinPIR &&
     git fetch origin && git reset --hard origin/main &&
     CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build --release -p runtime --bin unified_server
 "'
-ssh vpsbg-pir 'systemctl restart pir-vpsbg'
+ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
+
+# Check live state under Slice 2
+ssh vpsbg-pir 'systemctl status pir-vpsbg cloudflared --no-pager | head -20'
+ssh vpsbg-pir 'journalctl -u pir-vpsbg -p err --no-pager -n 20'
+
+# === Hetzner pir1 (Slice 2 only — no SEV) ===
+
+# Hot-spare revival (Hetzner secondary)
+ssh pir-hetzner 'systemctl start pir-secondary'
 ```
 
 ## Open questions worth pinging VPSBG support about

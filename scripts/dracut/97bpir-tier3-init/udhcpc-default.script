@@ -1,0 +1,80 @@
+#!/bin/sh
+# udhcpc state-change handler.
+#
+# busybox's udhcpc exec's this script on every state transition
+# (deconfig, bound, renew, nak, ...) with the lease parameters
+# exported as env vars. Our job: configure the interface accordingly.
+#
+# Env vars busybox udhcpc exports (when available):
+#   $interface  — e.g. "eth0"
+#   $ip         — leased IPv4, dotted ("10.0.0.5")
+#   $subnet     — netmask, dotted ("255.255.255.0")  ← NOT CIDR
+#   $router     — gateway list, space-separated
+#   $dns        — DNS server list, space-separated
+#   $domain     — DNS search domain
+#   $broadcast  — broadcast address
+#
+# busybox's own example simple.script is buggy for the modern
+# `ip addr add $ip/$subnet` path (it passes dotted-mask CIDR which
+# iproute2 rejects), so we convert the netmask to a prefix length
+# in pure shell.
+
+# shellcheck shell=sh
+
+# Phase 3.1 verbose tracing — drop in 3.3 once stable.
+set -x
+echo "[udhcpc-default] event=$1 interface=$interface ip=$ip subnet=$subnet router=$router dns=$dns domain=$domain" >&2
+
+[ -z "$1" ] && { echo "udhcpc-default: missing arg" >&2; exit 1; }
+
+mask_to_cidr() {
+    local mask=$1 cidr=0 octet
+    local IFS=.
+    # shellcheck disable=SC2086 # word-split on $mask is intentional
+    set -- $mask
+    for octet; do
+        case "$octet" in
+            255) cidr=$((cidr + 8)) ;;
+            254) cidr=$((cidr + 7)) ;;
+            252) cidr=$((cidr + 6)) ;;
+            248) cidr=$((cidr + 5)) ;;
+            240) cidr=$((cidr + 4)) ;;
+            224) cidr=$((cidr + 3)) ;;
+            192) cidr=$((cidr + 2)) ;;
+            128) cidr=$((cidr + 1)) ;;
+              0) ;;
+              *) echo "udhcpc-default: bad octet $octet" >&2; cidr=24; break ;;
+        esac
+    done
+    echo "$cidr"
+}
+
+case "$1" in
+    deconfig)
+        ip -4 addr flush dev "$interface" 2>/dev/null
+        ip link set dev "$interface" up
+        ;;
+    bound|renew)
+        cidr=24
+        [ -n "$subnet" ] && cidr=$(mask_to_cidr "$subnet")
+        ip -4 addr flush dev "$interface" 2>/dev/null
+        ip addr add "${ip}/${cidr}" dev "$interface"
+        ip link set dev "$interface" up
+        if [ -n "$router" ]; then
+            for r in $router; do
+                ip route replace default via "$r" dev "$interface"
+                break  # first gateway only — multi-gateway is overkill here
+            done
+        fi
+        : > /etc/resolv.conf
+        [ -n "$domain" ] && echo "search $domain" >> /etc/resolv.conf
+        for d in $dns; do
+            echo "nameserver $d" >> /etc/resolv.conf
+        done
+        ;;
+    nak)
+        echo "udhcpc-default: server NAK'd lease — $message" >&2
+        ;;
+esac
+
+exit 0

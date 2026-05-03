@@ -1,12 +1,20 @@
-# Phase 3 Slice 3 — Tier 3 Lockdown (Plan)
+# Phase 3 Slice 3 — Tier 3 Lockdown (Plan + Post-Mortem)
 
-**Status (2026-05-03)**: not yet started. Slices A → D shipped + live on
-pir2 production; Slice 3 is the next escalation.
+**Status (2026-05-03 evening)**: ✅ **SHIPPED**. pir2 is running Tier 3
+v2 UKI in production. SEV-SNP attestation works end-to-end (channel-test
+returns ARK-verified chain), unified_server runs from the initramfs,
+sshd is gone. New MEASUREMENT
+`2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5`
+captured + published in [docs/PHASE3_ROADMAP.md](PHASE3_ROADMAP.md).
 
-This doc is the canonical to-do for Slice 3. Pick up by reading
-"Current production baseline" (so you know what NOT to break) and
-"Architectural decisions" (so you can confirm or override the
-recommended choices), then follow the phased implementation.
+This doc was the canonical to-do *during* development. The acceptance
+status of each phase is annotated inline. The "Discovered constraints"
+section has been updated in-place with what we actually found
+(several original assumptions were wrong — see the corrections marked
+with **UPDATE**).
+
+For operator recovery if a future Tier 3 UKI bricks the box, see
+[docs/PHASE3_SLICE3_RECOVERY.md](PHASE3_SLICE3_RECOVERY.md).
 
 ---
 
@@ -78,16 +86,18 @@ Browser auto-flips to `verified-vcek` on connect — see
    2026-05-02 during the Slice 2 tamper test — VNC console was
    unable to connect. The framebuffer is likely disabled with
    measured boot.
-   - **Implication**: prior Slice 3 plan said "VPSBG VNC console
-     shows unified_server and cloudflared running supervised" as an
-     acceptance criterion. That doesn't work; need a different
-     observability path (cloudflared health → Cloudflare dashboard,
-     OR a remote log forwarder, OR just `bpir-admin attest` as a
-     liveness probe).
-   - **Implication**: if a Tier 3 UKI bricks the box, recovery is
-     ONLY via the VPSBG portal (re-upload a known-good UKI or set
-     to "None"). No serial console, no VNC. Test the rollback path
-     carefully before going live.
+   - **UPDATE 2026-05-03**: the VPSBG portal **does** expose a
+     console-output / serial-scrollback view that works on SEV-SNP
+     guests. Used heavily during Phase 3.1/3.2 dev to diagnose
+     boot failures (cloudflared arg-order, missing DNS, no DHCP,
+     binary SHA mismatch, NoSevHost). It's read-only text, no
+     interactive shell, but combined with `set -x` in our takeover
+     init it gives full visibility into what failed and where.
+     The earlier "operate blind" assumption was wrong.
+   - Recovery if a Tier 3 UKI bricks the box: still via the VPSBG
+     portal (re-upload known-good Slice 2 UKI, or "None" to boot
+     stock Ubuntu). See
+     [docs/PHASE3_SLICE3_RECOVERY.md](PHASE3_SLICE3_RECOVERY.md).
 
 2. **The dracut hook at `scripts/dracut/95bpir-verify/`** is the
    existing pattern. Slice 3's bigger initramfs additions follow
@@ -113,22 +123,62 @@ Browser auto-flips to `verified-vcek` on connect — see
    (we tried hand-crafting with `current_tcb` instead of
    `reported_tcb` and got a wrong-TCB cert that didn't validate).
 
+6. **VPSBG uses STATIC IP, not DHCP** (discovered Phase 3.1 v3 via
+   netplan inspection). `/etc/netplan/50-cloud-init.yaml` is generated
+   by cloud-init from VPSBG's instance metadata service at first boot
+   — the IP `87.120.8.198/32` and gateway `172.16.0.1` (with
+   `on-link: true` because the gateway isn't in our /32 subnet) are
+   hardcoded there. There is no DHCP server on VPSBG's L2; udhcpc
+   never gets a lease, eth0 stays IP-less, every outbound packet hits
+   "network unreachable". Tier 3's takeover init must hardcode the
+   same static config (see Architectural decision #1 below — REVERSED
+   from the original DHCP recommendation).
+
+7. **dracut's `inst` strips binaries by default** (discovered Phase 3.2 v1
+   via attest binary_sha256 mismatch). The on-disk binary's SHA differs
+   from the in-initramfs binary's SHA after dracut copies it. Pass
+   `--nostrip` (NOT `--no-strip`) to dracut to disable. Cost: ~few
+   hundred KB extra. Without this, the value `build_uki_tier3.sh`
+   computes from the on-disk binary doesn't match what `attest` reports
+   from `/proc/self/exe` at runtime — verifiers can't pin the binary.
+
+8. **sev-guest, ccp, tsm_report are kernel modules on this kernel**
+   (not built-in, discovered Phase 3.2 v1 via NoSevHost attest result).
+   Slice 2 has them auto-loaded via udev on PCI ID match; Tier 3 has
+   no udev so we both bake the .kos in via `--add-drivers` AND
+   explicitly `modprobe` them in the takeover init. Without this,
+   `/dev/sev-guest` doesn't exist, unified_server's attest call returns
+   `Status: NoSevHost` and the SEV-SNP report has 0 bytes — the entire
+   point of Tier 3 is defeated.
+
 ---
 
 ## Architectural decisions (pre-coding)
 
 Each has a recommendation. Confirm or override before coding.
 
-### 1. Networking inside initramfs
+### 1. Networking inside initramfs — **REVERSED to STATIC IP**
 
-- DHCP via dracut's `network-legacy` or `network-manager` module,
-  using `virtio_net` (KVM virt driver).
-- Add via `dracut --add-drivers " virtio_net "` and `--add network`.
+Original recommendation: DHCP via dracut's `network-legacy` module.
+**REVERSED 2026-05-03 (Phase 3.1 v3)**: VPSBG runs no DHCP server;
+the IP is delivered via cloud-init metadata at first boot and persisted
+in `/etc/netplan/50-cloud-init.yaml`. udhcpc gets no lease.
 
-**Recommended**: DHCP. VPSBG's IP is dynamic; static-from-cmdline
-ties us to a specific IP that may change. Cloudflared cares about
-DNS resolution (`kdsintf.amd.com` and Cloudflare edge); DHCP gives
-us `/etc/resolv.conf` pointing at the VPSBG resolver.
+Tier 3 takeover init now hardcodes the static config matching netplan:
+- IP `87.120.8.198/32` on eth0
+- Default route via `172.16.0.1` with `onlink` (the gateway is not in
+  our /32 subnet — `onlink` tells the kernel to treat it as directly
+  attached on eth0 anyway)
+- DNS `9.9.9.9` (Quad9) + `208.67.222.222` (OpenDNS) — same as netplan
+
+Trade-off: the IP is now baked into MEASUREMENT. If VPSBG re-IPs the
+VM (rare for paid VPSes — happens only on instance migration), the
+UKI breaks until rebuilt with the new IP. Acceptable cost in practice;
+operator just re-bakes via `build_uki_tier3.sh`.
+
+The dracut flag `--add-drivers " virtio_net "` is still passed for
+defense in depth but is a no-op on this kernel — virtio_net is
+compiled `=y` not `=m`.
 
 ### 2. Persistent storage for DBs + cert chain
 
@@ -194,8 +244,15 @@ Options:
 - (d) Use systemd inside the initramfs — possible (dracut has a
       `systemd` module) but defeats the "minimal" goal.
 
-**Recommended**: (a) s6-overlay. Battle-tested, ~500 KB, handles
-restart-on-crash + graceful shutdown.
+**Recommended (originally)**: (a) s6-overlay.
+
+**Chosen 2026-05-03**: **runit** (option b). Operator preference for
+the smaller / simpler binary footprint. Single `apt install runit` on
+pir2 + bake `/usr/bin/{runit,runsvdir,runsv,sv,chpst}` into the
+initramfs. Service tree at `/etc/sv/{cloudflared,unified_server}/run`,
+symlinked into `/etc/service/` by the takeover init, supervised by
+`exec /usr/bin/runsvdir /etc/service` as PID 1. Restart-on-crash works
+out of the box; graceful shutdown propagates SIGTERM correctly.
 
 ### 6. Admin key + cmdline params
 
@@ -308,6 +365,28 @@ can follow without prior context.
 - Capture new MEASUREMENT.
 - Update `docs/PHASE3_ROADMAP.md` published values.
 - Browser-verify `verified-vcek` still flips correctly.
+
+---
+
+## Acceptance log (2026-05-03 evening session)
+
+All five phases shipped in one session via four iterative UKI builds.
+
+| Phase | Status | Notes |
+|---|---|---|
+| 3.1 v1 | ❌ | cloudflared got `tunnel --token X run` arg-order, bailed to help (visible on portal console — earlier "operate blind" assumption corrected here) |
+| 3.1 v2 | ❌ | env-var pattern fixed cloudflared, but `/etc/resolv.conf` empty → `[::1]:53` connection refused |
+| 3.1 v3 | ❌ | added defensive resolv.conf (1.1.1.1 / 8.8.8.8), but `network is unreachable` to 8.8.8.8 — eth0 has no IP because VPSBG doesn't run DHCP |
+| 3.1 v4 | ✅ | static IP config matching VPSBG netplan; tunnel UP, Cloudflare dashboard shows connector connected |
+| 3.2 v1 | ⚠️ | unified_server boots, DBs load, listens on 8091, but `Status: NoSevHost` (sev-guest not loaded) + binary SHA mismatch (dracut stripped binary) + missing `--vcek-dir` flag |
+| 3.2 v2 | ✅ | `--nostrip` + bake ccp/sev-guest/tsm_report .kos + `--vcek-dir` — channel-test passes with ARK fingerprint pin, attest matches expected binary, fresh MEASUREMENT captured |
+| 3.3 | ✅ | `ssh vpsbg-pir` returns `Connection refused` (Tier 3 has no sshd) |
+| 3.4 | ✅ | [docs/PHASE3_SLICE3_RECOVERY.md](PHASE3_SLICE3_RECOVERY.md) written |
+| 3.5 | ✅ | new MEASUREMENT `2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5` published in PHASE3_ROADMAP.md; UKI sha256 `afbc07f8ea8df7f24e0d92980184bcc61e8762dbe3bbf0e161ef08bdf8b8fe90` |
+
+Browser `verified-vcek` smoke test: deferred to operator (one click in
+the live web client at `https://pir.chenweikeng.com` against pir2 →
+the badge should auto-flip to `verified-vcek`).
 
 ---
 
