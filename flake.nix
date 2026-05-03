@@ -32,18 +32,74 @@
     # so cargo's git fetcher pulls it as part of the onionpir crate's
     # own submodules. No separate seal-src needed.
 
-    # HEXL pre-fetch attempted via fetchFromGitHub + FETCHCONTENT_SOURCE_DIR_HEXL
-    # injection (see git history of this file for the working approach).
-    # Blocker: HEXL's cmake/third-party/cpu-features/ uses ExternalProject_Add
-    # to fetch google/cpu_features at build time — no SOURCE_DIR override
-    # like FetchContent has, so it still hits the network and fails in
-    # strict sandbox. Closing this requires either:
-    #   - upstreaming a patch to HEXL converting cpu-features to FetchContent
-    #     (then we can FETCHCONTENT_SOURCE_DIR_CPU_FEATURES it too), or
-    #   - bundling cpu-features into our pre-fetched HEXL source at the
-    #     ExternalProject_Add expected location.
-    # Phase 2 ships with USE_HEXL=OFF (forced via build.rs sed below) —
-    # SEAL's scalar fallback paths, slower but functionally correct.
+    # cpu_features — google's runtime CPU-detection library. HEXL's
+    # cmake/third-party/cpu-features/CMakeLists.txt uses ExternalProject_Add
+    # to fetch this at configure time, which the strict Nix sandbox blocks.
+    # We pre-fetch via Nix and rewrite HEXL's CMakeLists (in hexl-src
+    # below) to file(COPY) from this store path instead. Rev pin matches
+    # HEXL v1.2.5's CMakeLists.txt.in: GIT_TAG 32b49eb5...
+    cpu-features-src = pkgs.fetchFromGitHub {
+      owner = "google";
+      repo = "cpu_features";
+      rev = "32b49eb5e7809052a28422cfde2f2745fbb0eb76";
+      hash = "sha256-PGvk5x0MUZojmL3+zpoo0D2t4H5pfcBvMiCPx1Qbs/s=";
+    };
+
+    # HEXL is fetched at CMake configure time by SEAL's FetchContent
+    # (or by OnionPIR's superseding declaration in CMakeLists.txt). We
+    # pre-fetch via Nix + apply two patches:
+    #   1. Drop AVX-512 probes from HEXL's root CMakeLists (matches the
+    #      OnionPIR fork's PATCH_COMMAND — needed on AVX-512-capable
+    #      build hosts to prevent SIGILL on AVX-2-only runtime CPUs).
+    #   2. Replace cpu_features ExternalProject_Add with file(COPY) from
+    #      the Nix-fetched cpu-features-src above (closes the network
+    #      requirement that ExternalProject lacks a SOURCE_DIR override).
+    hexl-src = pkgs.applyPatches {
+      name = "hexl-source-patched";
+      src = pkgs.fetchFromGitHub {
+        owner = "intel";
+        repo = "hexl";
+        rev = "f95acf1";
+        hash = "sha256-AZAQ0l//WHHZW4rqyukldHjFLkm28e0zUfHFEGFy2h4=";
+      };
+      postPatch = ''
+        # 1. AVX-512 probe removal (same as OnionPIR's PATCH_COMMAND)
+        sed -i.bak "/hexl_check_compile_flag.*test-avx512/d" CMakeLists.txt
+        rm -f CMakeLists.txt.bak
+
+        # 2. Replace cpu-features download with file(COPY) from Nix-fetched
+        # source. Quoted heredoc to prevent bash from expanding the
+        # CMake variable references; sed substitutes the Nix store path
+        # for the placeholder.
+        cat > cmake/third-party/cpu-features/CMakeLists.txt <<'NIX_EOF'
+        # Patched by BitcoinPIR's flake.nix: cpu-features pre-fetched.
+        file(COPY @CPU_FEATURES_SRC@/ DESTINATION ''${CMAKE_CURRENT_BINARY_DIR}/cpu-features-src)
+
+        hexl_cache_variable(BUILD_SHARED_LIBS)
+        hexl_cache_variable(BUILD_PIC)
+        hexl_cache_variable(BUILD_TESTING)
+
+        set(BUILD_PIC ON CACHE BOOL "" FORCE)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+        add_subdirectory(''${CMAKE_CURRENT_BINARY_DIR}/cpu-features-src
+                         ''${CMAKE_CURRENT_BINARY_DIR}/cpu-features-build
+                         EXCLUDE_FROM_ALL)
+
+        unset(BUILD_PIC CACHE)
+        unset(BUILD_SHARED_LIBS CACHE)
+        unset(BUILD_TESTING CACHE)
+
+        hexl_uncache_variable(BUILD_SHARED_LIBS)
+        hexl_uncache_variable(BUILD_PIC)
+        hexl_uncache_variable(BUILD_TESTING)
+        NIX_EOF
+
+        sed -i "s|@CPU_FEATURES_SRC@|${cpu-features-src}|g" \
+            cmake/third-party/cpu-features/CMakeLists.txt
+      '';
+    };
 
   in {
     # ─── packages.unified-server ───────────────────────────────────────
@@ -149,12 +205,22 @@
           # entries, and cargo errors on duplicate source definitions.
           sed -i '/^\[source\.crates-io\]/,$d' .cargo/config.toml
 
-          # Force USE_HEXL=OFF in vendored OnionPIR build.rs. HEXL's
-          # FetchContent_Declare hits network at configure time (via its
-          # own transitive ExternalProject of cpu_features), which the
-          # strict Nix sandbox blocks. SEAL's scalar fallback paths get
-          # used instead — slower but functionally correct.
-          sed -i 's|let use_hexl = .*$|let use_hexl = false;|' \
+          # Copy HEXL to a writable location: HEXL's CMakeLists writes
+          # .tmp files next to source during configure_package_config_file,
+          # which fails when the source is in read-only /nix/store.
+          HEXL_RW=$NIX_BUILD_TOP/hexl-rw
+          cp -r ${hexl-src} $HEXL_RW
+          chmod -R u+w $HEXL_RW
+
+          # Inject -DFETCHCONTENT_SOURCE_DIR_HEXL=<writable-hexl-path> into
+          # the vendored onionpir build.rs's CMake configure call, so
+          # SEAL's FetchContent for HEXL skips the network git clone
+          # and uses our pre-fetched + AVX-512-probe-patched +
+          # cpu_features-patched source instead. Must be a CMake
+          # variable (-D...), not env var — CMake's FetchContent.cmake
+          # reads it via if(DEFINED FETCHCONTENT_SOURCE_DIR_<UCNAME>),
+          # not if(DEFINED ENV{...}).
+          sed -i "s|.args(\[\"-DCMAKE_BUILD_TYPE=Release\"\])|.args([\"-DCMAKE_BUILD_TYPE=Release\"])\n        .arg(\"-DFETCHCONTENT_SOURCE_DIR_HEXL=$HEXL_RW\")|" \
               "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.1.0/build.rs"
         '';
         # Skip cargo test inside the build (live-server integration tests
