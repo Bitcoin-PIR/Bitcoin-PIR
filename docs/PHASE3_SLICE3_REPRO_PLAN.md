@@ -1,9 +1,10 @@
 # Phase 3 Slice 3 — UKI Reproducible-Build Plan (L4 polish)
 
-**Status (2026-05-03)**: in progress. Sub-tasks 1 + 2 + 3(b) + 4 shipped;
-sub-task 5 out of scope unless 1-4 don't reach byte-equivalence
-(cross-machine acceptance test still pending — needs a second Linux
-build host with the same toolchain to genuinely exercise it). Slice 3 is shipped and Layer 3 reproducibility is
+**Status (2026-05-04)**: in progress. Sub-tasks 1 + 2 + 3(b) + 4 shipped
++ deployed to pir2 as Tier 3 v4 (MEASUREMENT `f6aa2915…` chip-verified).
+Sub-task 5 Phase 1 (Nix dev shell) shipped; Phase 2 (`nix build`
+derivation) spiked but blocked on the same OnionPIR repo-layout
+assumption that bit sub-task 4 — see Phase 2 status below. Slice 3 is shipped and Layer 3 reproducibility is
 achieved (verifiers can compute MEASUREMENT given operator-published
 UKI bytes + VPSBG's custom OVMF — see
 [PHASE3_ROADMAP.md::Full Layer 3 reproducibility — verified 2026-05-03](PHASE3_ROADMAP.md)).
@@ -25,6 +26,31 @@ Progress log:
   due to multiple windows-sys versions pulled transitively + SEAL/libdpf
   source. Validated `cargo check --offline -p pir-core` succeeds
   without network access.
+- 🟡 Sub-task 5 Phase 2 — `nix build .#unified-server` spike (blocked).
+  flake.nix has a `packages.unified-server` derivation using
+  `rustPlatform.buildRustPackage`. Wired in: outputHashes for all 5
+  git deps (alf-nt, fastprp, harmonypir, libdpf, onionpir) captured
+  via `lib.fakeSha256` → first-build error → real values; postPatch
+  strips the `.cargo/config.toml [source...]` blocks (else cargo
+  errors on duplicate source defs from the auto-vendor-dir);
+  `__noChroot = true` + `sandbox = relaxed` (per-host nix.custom.conf)
+  so OnionPIR's CMake FetchContent for HEXL can hit network at build
+  time.
+  **Blocker**: OnionPIR's `build.rs` at the pinned rev still does
+  `repo_root = manifest_dir.join("../..")` then runs `cmake $repo_root`
+  — that resolves to `$NIX_BUILD_TOP` inside the sandbox, which has
+  neither the OnionPIRv2-fork's top-level `CMakeLists.txt` nor an
+  `extern/SEAL/` sibling (cargo vendor flattens git deps to just the
+  consumed subcrate). Same root cause as sub-task 4's "exclude
+  onionpir from vendor" decision.
+  Resolution paths:
+    (a) **Upstream OnionPIRv2-fork patch** — restructure the rust crate
+        to bundle its CMake setup self-contained, OR add an env-var
+        override (e.g. `ONIONPIR_SEAL_DIR=$NIX_FETCH_SEAL_PATH`).
+        Cleanest. Bumps the BitcoinPIR Cargo.lock rev pin.
+    (b) Mirror full OnionPIRv2-fork tree (with submodules) into the
+        Nix sandbox + patch the vendored build.rs in postPatch +
+        rewrite .cargo-checksum.json. Hacky but doesn't need upstream.
 - ✅ Sub-task 2 — cargo bit-determinism (partial). Pinned via:
     1. `rust-toolchain.toml` → channel = "1.94.1"
     2. `Cargo.toml [profile.release]` → codegen-units = 1, incremental = false
