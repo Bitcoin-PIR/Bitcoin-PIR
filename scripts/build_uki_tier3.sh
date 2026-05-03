@@ -70,13 +70,15 @@ for b in runit runsvdir runsv sv chpst; do
     }
 done
 
-# Cloudflared static binary + tunnel token must be on the build host.
+# Cloudflared static binary must be on the build host. The tunnel
+# token does NOT need to be on the build host — it is loaded at
+# runtime from /home/pir/data/cloudflared/tunnel.env on the target's
+# rootfs partition (see PHASE3_SLICE3_REPRO_PLAN.md sub-task 3 / option b).
+# Operator one-time setup before deploying Tier 3:
+#   ssh <slice2-host> 'mkdir -p /home/pir/data/cloudflared && \
+#       cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/'
 [ -x /usr/local/bin/cloudflared ] || {
     echo "error: /usr/local/bin/cloudflared not executable" >&2
-    exit 1
-}
-[ -r /etc/cloudflared/tunnel.env ] || {
-    echo "error: /etc/cloudflared/tunnel.env not readable (need TUNNEL_TOKEN)" >&2
     exit 1
 }
 
@@ -207,6 +209,17 @@ echo "wrote tier3 UKI:          $OUT (${SIZE})"
 echo "tier3 uki sha256:         $UKI_SHA"
 echo
 echo "Next steps (Phase 3.2 acceptance):"
+echo "  0. (One-time, before first deploy of this Tier 3 variant) provision"
+echo "     the tunnel token on the target's rootfs partition. The token is"
+echo "     no longer baked into the initramfs (sub-task 3 / option b of"
+echo "     PHASE3_SLICE3_REPRO_PLAN.md), so cloudflared-run.sh sources it"
+echo "     from /home/pir/data/cloudflared/tunnel.env at boot. Provision via"
+echo "     Slice 2 SSH access:"
+echo "       ssh <slice2-host> 'mkdir -p /home/pir/data/cloudflared && \\"
+echo "           cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/'"
+echo "     Without this, the Tier 3 boot will FATAL-loop cloudflared and"
+echo "     the tunnel will never come up."
+echo
 echo "  1. Download $OUT to your laptop:"
 echo "       scp vpsbg-pir:$OUT ./bpir-tier3.efi"
 echo

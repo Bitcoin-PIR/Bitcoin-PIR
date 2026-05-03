@@ -5,20 +5,42 @@
 # (started by /sbin/bpir-tier3-init) execs this; if cloudflared exits,
 # runit restarts it after a 1s delay.
 #
-# The token is sourced from /etc/cloudflared/tunnel.env, which the
-# 96bpir-cloudflared dracut module bakes in from the build host's
-# matching file. tunnel.env defines TUNNEL_TOKEN=<base64-jwt>.
+# The token is sourced from /home/pir/data/cloudflared/tunnel.env on
+# the rootfs partition, NOT from the initramfs cpio. The bind mount
+# of /sysroot/home/pir/data → /home/pir/data is set up by
+# /sbin/bpir-tier3-init before runsvdir takes over, so by the time
+# this script runs the path is reachable (or the mount failed and
+# we FATAL out — runit will keep restart-looping until the operator
+# fixes it). tunnel.env defines TUNNEL_TOKEN=<base64-jwt>.
+#
+# Why runtime-sourced: keeping the token out of the cpio means the
+# UKI bytes (and therefore MEASUREMENT) are operator-agnostic — see
+# docs/PHASE3_SLICE3_REPRO_PLAN.md sub-task 3 (option b). Trade-off
+# vs the old in-cpio path: if the rootfs mount fails we lose the
+# tunnel entirely (vs the old "tunnel up to dead origin → 502
+# observable" failure mode), but unified_server can't run without
+# the rootfs anyway, so the box is broken either way and the
+# observability difference is moot.
 
 # shellcheck shell=sh
 
 # Source then explicitly export — `. /file` populates the shell's
 # vars but does NOT export them, so a child process (cloudflared)
 # launched via exec would not inherit TUNNEL_TOKEN unless we export.
-. /etc/cloudflared/tunnel.env
+TUNNEL_ENV=/home/pir/data/cloudflared/tunnel.env
+if [ ! -r "$TUNNEL_ENV" ]; then
+    echo "[cloudflared-run] FATAL: $TUNNEL_ENV not readable" >&2
+    echo "[cloudflared-run]   provision via Slice 2 SSH:" >&2
+    echo "[cloudflared-run]   mkdir -p /home/pir/data/cloudflared && \\" >&2
+    echo "[cloudflared-run]     cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/" >&2
+    sleep 5
+    exit 1
+fi
+. "$TUNNEL_ENV"
 export TUNNEL_TOKEN
 
 if [ -z "$TUNNEL_TOKEN" ]; then
-    echo "[cloudflared-run] FATAL: TUNNEL_TOKEN not set after sourcing tunnel.env" >&2
+    echo "[cloudflared-run] FATAL: TUNNEL_TOKEN not set after sourcing $TUNNEL_ENV" >&2
     sleep 5
     exit 1
 fi
