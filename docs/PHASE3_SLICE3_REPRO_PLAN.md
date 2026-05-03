@@ -356,10 +356,94 @@ quick wins regardless of whether the whole plan ships.
 
 ---
 
-## Quick-start for a new session
+## Reproducibility recipe (post sub-tasks 1 + 2 + 3b + 4)
 
-A self-contained prompt to spawn a new session is provided at the
-bottom of this doc. Copy-paste it into `claude --new-session` (or
-similar) when ready.
+This is the operator-facing recipe for reproducing the production
+Tier 3 UKI from source as of commit `d0ff6f40`. Following it on a
+clean Ubuntu 24.04 host produces a byte-identical
+`unified_server` binary and Tier 3 UKI to the production deploy.
 
-(See `Session-starter prompt` below.)
+**Path convention (load-bearing).** Operators MUST clone the repo to
+`/home/pir/BitcoinPIR`. Cross-path determinism is blocked by C++
+source paths embedded via `__FILE__` in OnionPIR's CMake-built
+`libonionpir.a` + `libseal-4.1.a` (rustc's `--remap-path-prefix`
+covers Rust but not C++; OnionPIR's build.rs deliberately
+`env_remove`s `CXXFLAGS` so we can't inject `-ffile-prefix-map`).
+Cloning to a different path produces a different binary and therefore
+a different MEASUREMENT. Sub-task 5 (hermetic env mounting at a fixed
+path inside a container) is the proper fix; for now, convention.
+
+**Step 0 — host setup** (one-time per build host):
+
+```bash
+# Ubuntu 24.04, kernel 6.8.x or 7.0.x
+sudo apt install -y \
+    rustup git cmake gcc g++ \
+    systemd-ukify dracut dracut-network systemd-boot-efi runit busybox-static
+# Cloudflared static binary at /usr/local/bin/cloudflared (download from
+# Cloudflare and chmod +x).
+```
+
+**Step 1 — clone to the canonical path**:
+
+```bash
+sudo mkdir -p /home/pir
+sudo chown $USER:$USER /home/pir
+git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git /home/pir/BitcoinPIR
+cd /home/pir/BitcoinPIR
+git checkout <target commit>
+# rustup auto-installs the toolchain pinned by rust-toolchain.toml (1.94.1)
+```
+
+**Step 2 — build unified_server with deterministic flags**:
+
+```bash
+./scripts/build_unified_server.sh
+# First-time fetch of the OnionPIRv2-fork git dep happens here (online).
+# Subsequent rebuilds: OFFLINE=1 ./scripts/build_unified_server.sh works.
+# Output: target/release/unified_server  +  printed sha256.
+```
+
+**Step 3 — build the Tier 3 UKI**:
+
+```bash
+sudo ./scripts/build_uki_tier3.sh
+# Output: /tmp/bpir-tier3.efi  +  printed sha256.
+```
+
+**Step 4 — verify against the published artifacts**:
+
+```bash
+# Operator-published triple: (binary sha, UKI sha, MEASUREMENT)
+# Verifier compares the operator's printed shas to their own:
+[ "$LOCAL_BIN_SHA"  = "$PUBLISHED_BIN_SHA"  ] && echo "✓ binary"
+[ "$LOCAL_UKI_SHA"  = "$PUBLISHED_UKI_SHA"  ] && echo "✓ UKI"
+
+# Independently compute MEASUREMENT from the UKI bytes:
+sev-snp-measure --mode snp --vcpus 2 --vcpu-sig 0x00B10F10 \
+    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
+    --kernel /tmp/bpir-tier3.efi \
+    --guest-features 0x1
+# Should match the published MEASUREMENT, which should match the chip-
+# reported MEASUREMENT from `bpir-admin attest wss://pir2.chenweikeng.com`.
+```
+
+**Pre-deploy operator checklist** (one-time, before booting a new
+Tier 3 UKI):
+
+```bash
+# Provision the cloudflared tunnel token on the rootfs partition,
+# since sub-task 3(b) takes it out of MEASUREMENT. The Tier 3 init
+# bind-mounts /sysroot/home/pir/data → /home/pir/data, where
+# cloudflared-run.sh sources tunnel.env at boot.
+ssh <slice2-host> '
+    mkdir -p /home/pir/data/cloudflared && \
+    cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/'
+
+# Then portal-upload /tmp/bpir-tier3.efi and Save & Reboot.
+```
+
+**Recovery if the new UKI bricks the box** — VPSBG portal → Measured
+Boot → UKI → "None" → Save & Reboot. Stock Ubuntu rootfs comes up
+with sshd; rebuild Slice 2 UKI via `scripts/build_uki.sh` if needed
+(which is also bit-deterministic post sub-task 1).
