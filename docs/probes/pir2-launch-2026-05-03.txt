@@ -1,0 +1,569 @@
+=== probe pir2 SEV-SNP launch context — 2026-05-03T12:11:48Z ===
+
+=== 0. distro / kernel / cpu summary ===
+Ubuntu 26.04 LTS
+Linux pir-server-vpsbg 7.0.0-15-generic #15-Ubuntu SMP PREEMPT_DYNAMIC Wed Apr 22 16:06:43 UTC 2026 x86_64 GNU/Linux
+cpu family	: 26
+model		: 17
+model name	: AMD EPYC 9745 128-Core Processor
+stepping	: 0
+microcode	: 0xb101058
+cpu family	: 26
+nproc: 2
+
+=== 1. SEV-SNP report (full) ===
+/usr/local/bin/snpguest
+error: unexpected argument '-e' found
+
+  tip: to pass '-e' as a value, use '-- -e'
+
+Usage: snpguest report [OPTIONS] <att-report-path> <request-file>
+
+For more information, try '--help'.
+(report request failed)
+
+=== 2. boot memory map (dmesg) ===
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009ffff]  System RAM
+[    0.000000] BIOS-e820: [gap 0x00000000000a0000-0x00000000000fffff]
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000000080cfff]  System RAM
+[    0.000000] BIOS-e820: [mem 0x000000000080d000-0x0000000000810fff]  device reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000811000-0x000000007c719fff]  System RAM
+[    0.000000] BIOS-e820: [mem 0x000000007c71a000-0x000000007c71bfff]  ACPI data
+[    0.000000] BIOS-e820: [mem 0x000000007c71c000-0x000000007d805fff]  System RAM
+[    0.000000] BIOS-e820: [mem 0x000000007d806000-0x000000007d806fff]  ACPI data
+[    0.000000] BIOS-e820: [mem 0x000000007d807000-0x000000007f0eefff]  System RAM
+[    0.000000] BIOS-e820: [mem 0x000000007f0ef000-0x000000007f36efff]  device reserved
+[    0.000000] BIOS-e820: [mem 0x000000007f36f000-0x000000007f37efff]  ACPI data
+[    0.000000] BIOS-e820: [mem 0x000000007f37f000-0x000000007f3fefff]  ACPI NVS
+[    0.000000] BIOS-e820: [mem 0x000000007f3ff000-0x000000007fb3dfff]  System RAM
+[    0.000000] BIOS-e820: [mem 0x000000007fb3e000-0x000000007fb41fff]  device reserved
+[    0.000000] BIOS-e820: [mem 0x000000007fb42000-0x000000007fb43fff]  ACPI NVS
+[    0.000000] BIOS-e820: [mem 0x000000007fb44000-0x000000007fb44fff]  device reserved
+[    0.000000] BIOS-e820: [mem 0x000000007fb45000-0x000000007fb78fff]  System RAM
+[    0.000000] BIOS-e820: [mem 0x000000007fb79000-0x000000007fbfcfff]  device reserved
+[    0.000000] BIOS-e820: [mem 0x000000007fbfd000-0x000000007fffafff]  System RAM
+[    0.000000] BIOS-e820: [mem 0x000000007fffb000-0x000000007fffffff]  device reserved
+[    0.000000] BIOS-e820: [gap 0x0000000080000000-0x00000000dfffffff]
+[    0.000000] BIOS-e820: [mem 0x00000000e0000000-0x00000000efffffff]  device reserved
+[    0.000000] BIOS-e820: [gap 0x00000000f0000000-0x00000000feffbfff]
+[    0.000000] BIOS-e820: [mem 0x00000000feffc000-0x00000000feffffff]  device reserved
+[    0.000000] BIOS-e820: [gap 0x00000000ff000000-0x00000000ffffffff]
+[    0.000000] BIOS-e820: [mem 0x0000000100000000-0x000000087fffffff]  System RAM
+[    0.000000] BIOS-e820: [gap 0x0000000880000000-0x000000fcffffffff]
+[    0.000000] BIOS-e820: [mem 0x000000fd00000000-0x000000ffffffffff]  device reserved
+[    0.011487] PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]
+[    0.011488] PM: hibernation: Registered nosave memory: [mem 0x000a0000-0x000fffff]
+[    0.011490] PM: hibernation: Registered nosave memory: [mem 0x0080d000-0x00810fff]
+[    0.011491] PM: hibernation: Registered nosave memory: [mem 0x7c71a000-0x7c71bfff]
+[    0.011492] PM: hibernation: Registered nosave memory: [mem 0x7d806000-0x7d80ffff]
+[    0.011492] PM: hibernation: Registered nosave memory: [mem 0x7f0ef000-0x7f3fefff]
+[    0.011493] PM: hibernation: Registered nosave memory: [mem 0x7fb3e000-0x7fb44fff]
+[    0.011494] PM: hibernation: Registered nosave memory: [mem 0x7fb79000-0x7fbfcfff]
+[    0.011495] PM: hibernation: Registered nosave memory: [mem 0x7fffb000-0xffffffff]
+[    2.301945] Freeing SMP alternatives memory: 56K
+[    3.695085] Memory: 31623924K/33550308K available (23771K kernel code, 4949K rwdata, 16748K rodata, 5292K init, 5860K bss, 1917568K reserved, 0K cma-reserved)
+[    5.195937] efi: Freeing EFI boot services memory: 143336K
+
+=== 3a. /proc/iomem (top-level only) ===
+00000000-00000fff : Reserved
+00001000-0009ffff : System RAM
+000a0000-000bffff : PCI Bus 0000:00
+00100000-0080cfff : System RAM
+0080d000-00810fff : Reserved
+00811000-7c719fff : System RAM
+7c71a000-7c71bfff : ACPI Tables
+7c71c000-7d805fff : System RAM
+7d806000-7d806fff : ACPI Tables
+7d807000-7d80ffff : Reserved
+7d810000-7f0eefff : System RAM
+7f0ef000-7f36efff : Reserved
+7f36f000-7f37efff : ACPI Tables
+7f37f000-7f3fefff : ACPI Non-volatile Storage
+7f3ff000-7fb3dfff : System RAM
+7fb3e000-7fb41fff : Reserved
+7fb42000-7fb43fff : ACPI Non-volatile Storage
+7fb44000-7fb44fff : Reserved
+7fb45000-7fb78fff : System RAM
+7fb79000-7fbfcfff : Reserved
+7fbfd000-7fffafff : System RAM
+7fffb000-7fffffff : Reserved
+80000000-dfffffff : PCI Bus 0000:00
+e0000000-efffffff : PCI ECAM 0000 [bus 00-ff]
+f0000000-febfffff : PCI Bus 0000:00
+
+=== 3b. EFI runtime map ===
+0
+1
+2
+3
+4
+--- 0 ---
+  attribute = 0x800000000000000f
+  num_pages = 0x84
+  phys_addr = 0x7fb79000
+  type = 0x6
+  virt_addr = 0xfffffffeffd79000
+--- 1 ---
+  attribute = 0x800000000000000f
+  num_pages = 0x100
+  phys_addr = 0x7f1ef000
+  type = 0x5
+  virt_addr = 0xfffffffeff3ef000
+--- 2 ---
+  attribute = 0x800000000000000f
+  num_pages = 0x100
+  phys_addr = 0x7f0ef000
+  type = 0x6
+  virt_addr = 0xfffffffeff2ef000
+--- 3 ---
+  attribute = 0x800000000000000f
+  num_pages = 0x9
+  phys_addr = 0x7d807000
+  type = 0x4
+  virt_addr = 0xfffffffefda07000
+--- 4 ---
+  attribute = 0x800000000000000f
+  num_pages = 0x1
+  phys_addr = 0x7d803000
+  type = 0x4
+  virt_addr = 0xfffffffefda03000
+
+=== 4. DMI / SMBIOS (handles, OEM strings) ===
+Handle 0x0100, DMI type 1, 27 bytes
+System Information
+Handle 0x0300, DMI type 3, 22 bytes
+Handle 0x0400, DMI type 4, 42 bytes
+Handle 0x1000, DMI type 16, 23 bytes
+Handle 0x1100, DMI type 17, 40 bytes
+Handle 0x1300, DMI type 19, 31 bytes
+Handle 0x1301, DMI type 19, 31 bytes
+Handle 0x2000, DMI type 32, 11 bytes
+System Boot Information
+Handle 0x0000, DMI type 0, 26 bytes
+BIOS Information
+Handle 0xFEFF, DMI type 127, 4 bytes
+--- OEM strings (Type 11) ---
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+
+=== 5. QEMU fw_cfg enumeration (entry sizes + first bytes) ===
+
+=== 6. ACPI tables (vendor / OEM ID extraction) ===
+DSDT (26452 B) sig=4453 4454 5467 0000 01cd oem=BOCHS  oemtab=BXPC    
+FACP (244 B) sig=4641 4350 f400 0000 03e6 oem=BOCHS  oemtab=BXPC    
+MCFG (60 B) sig=4d43 4647 3c00 0000 015c oem=BOCHS  oemtab=BXPC    
+SRAT (200 B) sig=5352 4154 c800 0000 01df oem=BOCHS  oemtab=BXPC    
+SSDT (202 B) sig=5353 4454 ca00 0000 01b3 oem=BOCHS  oemtab=VMGENID
+WAET (40 B) sig=5741 4554 2800 0000 0139 oem=BOCHS  oemtab=BXPC    
+BGRT (56 B) sig=4247 5254 3800 0000 01c4 oem=INTEL  oemtab=EDK2    
+
+=== 7. determinism check: 3 reports w/ different REPORT_DATA ===
+error: unexpected argument '-e' found
+
+  tip: to pass '-e' as a value, use '-- -e'
+
+Usage: snpguest report [OPTIONS] <att-report-path> <request-file>
+
+For more information, try '--help'.
+error: unexpected argument '-e' found
+
+  tip: to pass '-e' as a value, use '-- -e'
+
+Usage: snpguest report [OPTIONS] <att-report-path> <request-file>
+
+For more information, try '--help'.
+error: unexpected argument '-e' found
+
+  tip: to pass '-e' as a value, use '-- -e'
+
+Usage: snpguest report [OPTIONS] <att-report-path> <request-file>
+
+For more information, try '--help'.
+
+=== 8. VMPL check ===
+[    3.162981] SEV: Status: SEV SEV-ES SEV-SNP 
+[    5.190982] SEV: SNP running at VMPL0.
+[    6.248994] SEV: SNP guest platform devices initialized.
+
+=== 9. Proxmox-side hints (if anything leaks via fw_cfg / SMBIOS) ===
+
+=== 10. /sys/devices/virtual/dmi/id/* (concise) ===
+bios_date = 02/02/2022
+bios_release = 0.0
+bios_vendor = EDK II
+bios_version = unknown
+chassis_type = 1
+chassis_vendor = QEMU
+chassis_version = pc-q35-10.1
+modalias = dmi:bvnEDKII:bvrunknown:bd02/02/2022:br0.0:svnQEMU:pnStandardPC(Q35+ICH9,2009):p
+product_name = Standard PC (Q35 + ICH9, 2009)
+product_uuid = c15dd1ac-72da-4285-a685-6f5ae0eec088
+product_version = pc-q35-10.1
+sys_vendor = QEMU
+uevent = MODALIAS=dmi:bvnEDKII:bvrunknown:bd02/02/2022:br0.0:svnQEMU:pnStandardPC(Q35+ICH
+
+=== END ===
+=== 1-fixed. snpguest report (correct syntax) ===
+Report command to request an attestation report
+
+Usage: snpguest report [OPTIONS] <att-report-path> <request-file>
+
+Arguments:
+  <att-report-path>  File to write the attestation report to
+  <request-file>     Provide file with data for attestation-report request. If provided with random flag, then the random data will be written in the provided path
+
+Options:
+  -r, --random       Use random data for attestation report request. Writes data to ./random-request-file.txt by default, use --request to specify where to write data
+  -v, --vmpl <vmpl>  Specify an integer VMPL level between 0 and 3 that the Guest is running on [default: 1]
+  -p, --platform     Expect that the 64-byte report data will already be provided by the platform provider
+  -h, --help         Print help
+---
+-rw-r--r-- 1 root root 32 May  3 12:12 /tmp/d1.bin
+ERROR: unable to read 64 bytes from REQUEST_FILE
+because: failed to fill whole buffer
+Error: unable to read 64 bytes from REQUEST_FILE
+
+Caused by:
+    failed to fill whole buffer
+
+=== 5-fixed. fw_cfg enumeration ===
+total 0
+drwxr-xr-x 4 root root 0 May  3 09:29 .
+drwxr-xr-x 4 root root 0 May  3 09:29 ..
+lrwxrwxrwx 1 root root 0 May  3 12:12 bios-geometry -> ../by_key/32
+lrwxrwxrwx 1 root root 0 May  3 12:12 bootorder -> ../by_key/33
+lrwxrwxrwx 1 root root 0 May  3 12:12 bootsplash.jpg -> ../by_key/34
+drwxr-xr-x 7 root root 0 May  3 09:32 etc
+drwxr-xr-x 2 root root 0 May  3 12:11 genroms
+bios-geometry
+bootorder
+bootsplash.jpg
+etc
+genroms
+---file dump per entry---
+bios-geometry  (0 B)  
+bootorder  (0 B)  00000000: 2f72 6f6d 4067 656e 726f 6d73 2f6c 696e  /rom@genroms/lin00000010: 7578 626f 6f74 5f64 6d61 2e62 696e 0a2f  uxboot_dma.bin./
+bootsplash.jpg  (0 B)  00000000: ffd8 ffe0 0010 4a46 4946 0001 0101 005a  ......JFIF.....Z00000010: 005a 0000 fffe 0026 2863 2920 6279 2050  .Z.....&(c) by P
+etc//boot-fail-wait  (0 B)  00000000: e803 0000                                ....
+etc//e820  (0 B)  00000000: 00c0 fffe 0000 0000 0040 0000 0000 0000  .........@......
+etc//system-states  (0 B)  00000000: 8000 0001 0280                           ......
+etc//table-loader  (0 B)  00000000: 0100 0000 6574 632f 6163 7069 2f72 7364  ....etc/acpi/rsd
+etc//vmgenid_addr  (0 B)  00000000: 28d0 3f7f 0000 0000                      (.?.....
+etc//vmgenid_guid  (0 B)  00000000: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+genroms//kvmvapic.bin  (0 B)  00000000: 55aa 1206 0e07 31c0 b900 108d 3e00 03fc  U.....1.....>...
+genroms//linuxboot_dma.bin  (0 B)  00000000: 55aa 03cb 0000 0000 0000 0000 0000 0000  U...............
+
+=== 4-fixed. DMI types 0/1/2/3/11 (full) ===
+--- type 0 ---
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+Handle 0x0000, DMI type 0, 26 bytes
+BIOS Information
+	Vendor: EDK II
+	Version: unknown
+	Release Date: 02/02/2022
+	Address: 0xE8000
+	Runtime Size: 96 kB
+	ROM Size: 64 kB
+	Characteristics:
+		BIOS characteristics not supported
+		Targeted content distribution is supported
+		UEFI is supported
+		System is a virtual machine
+	BIOS Revision: 0.0
+
+--- type 1 ---
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+Handle 0x0100, DMI type 1, 27 bytes
+System Information
+	Manufacturer: QEMU
+	Product Name: Standard PC (Q35 + ICH9, 2009)
+	Version: pc-q35-10.1
+	Serial Number: Not Specified
+	UUID: c15dd1ac-72da-4285-a685-6f5ae0eec088
+	Wake-up Type: Power Switch
+	SKU Number: Not Specified
+	Family: Not Specified
+
+--- type 2 ---
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+--- type 3 ---
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+Handle 0x0300, DMI type 3, 22 bytes
+Chassis Information
+	Manufacturer: QEMU
+	Type: Other
+	Lock: Not Present
+	Version: pc-q35-10.1
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Boot-up State: Safe
+	Power Supply State: Safe
+	Thermal State: Safe
+	Security Status: Unknown
+	OEM Information: 0x00000000
+	Height: Unspecified
+	Number Of Power Cords: Unspecified
+	Contained Elements: 0
+	SKU Number: Not Specified
+
+--- type 11 ---
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+=== 1-v3. snpguest with 64-byte binary REPORT_DATA ===
+64+0 records out
+64 bytes copied, 0.000121175 s, 64 kB/s
+-rw-r--r-- 1 root root 64 May  3 12:13 /tmp/zero64.bin
+report size: 1184
+Attestation Report:
+
+Version:                      5
+
+Guest SVN:                    0
+
+Guest Policy (0x30000):
+  ABI Major:     0
+  ABI Minor:     0
+  SMT Allowed:   true
+  Migrate MA:    false
+  Debug Allowed: false
+  Single Socket: false
+  CXL Allowed:   false
+  AEX 256 XTS:   false
+  RAPL Allowed:  false
+  Ciphertext hiding: false
+  Page Swap Disable: false
+
+Family ID:
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+Image ID:
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+VMPL:                         1
+
+Signature Algorithm:          1
+
+Current TCB:
+
+TCB Version:
+  Microcode:   88
+  SNP:         4
+  TEE:         1
+  Boot Loader: 1
+  FMC:         1
+
+Platform Info (101):
+  SMT Enabled:               true
+  TSME Enabled:              false
+  ECC Enabled:               true
+  RAPL Disabled:             false
+  Ciphertext Hiding Enabled: false
+  Alias Check Complete:      true
+  SEV-TIO Enabled:           false
+
+Key Information:
+    author key enabled: false
+    mask chip key:      false
+    signing key:        vcek
+
+Report Data:
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+Measurement:
+D7 DA D6 8C 9B 0D CB 40 DE 6F 45 B8 D1 1B FE D9
+5F 9F 56 DA 9F C1 B3 53 B7 94 A7 D1 87 FA A2 B7
+80 0B 17 92 AD 8E 0E 38 E1 AF C2 1E E7 67 A9 06
+
+Host Data:
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+ID Key Digest:
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+Author Key Digest:
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+Report ID:
+ED 9F CF 1D 0C 43 40 8D 87 A9 E7 2F 92 38 C2 1B
+9B 32 14 0A 41 FF 7D 1B 67 8E 06 36 3B 54 81 B6
+
+Report ID Migration Agent:
+FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+
+Reported TCB:
+
+TCB Version:
+  Microcode:   88
+  SNP:         4
+  TEE:         1
+  Boot Loader: 1
+  FMC:         1
+
+CPUID Family ID:              26
+
+CPUID Model ID:               17
+
+CPUID Stepping:               0
+
+Chip ID:
+00 36 42 73 5D DC 6E 02 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+Committed TCB:
+
+TCB Version:
+  Microcode:   88
+  SNP:         4
+  TEE:         1
+  Boot Loader: 1
+  FMC:         1
+
+Current Version:              1.55.65
+
+Committed Version:            1.55.65
+
+Launch TCB:
+
+TCB Version:
+  Microcode:   88
+  SNP:         4
+  TEE:         1
+  Boot Loader: 1
+  FMC:         1
+
+Launch Mitigation Vector:     63
+
+Current Mitigation Vector:    63
+
+Signature:
+  R:
+97 6D 20 49 F9 B7 B6 26 9D 7C A8 AA 15 D5 53 B7
+8B B8 4C 8B 8F 7D 1B 0E FB 48 F3 4F D6 05 F7 2D
+4A F3 5E 7C 06 62 33 9D CE 7B 8A 4F FE 93 D2 34
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+  S:
+5D 60 8B 7C B8 F2 49 6F 4B 68 FA E8 DB 1A D5 A1
+E2 AE 64 31 80 C4 09 E9 36 93 06 9F CD 34 40 88
+88 A7 92 3C B6 73 AD BD 56 59 FC 61 A8 C5 4F B2
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+
+=== 7-v2. determinism via different REPORT_DATA ===
+report 1:
+  measurement = d7dad68c9b0dcb40de6f45b8d11bfed95f9f56da9fc1b353b794a7d187faa2b7800b1792ad8e0e38e1afc21ee767a906
+  host_data   = 0000000000000000000000000000000000000000000000000000000000000000
+  id_key_dig  = 00000000000000000000000000000000ed9fcf1d0c43408d87a9e72f9238c21b9b32140a41ff7d1b678e06363b5481b6
+  auth_key_dig= ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff01010104000000581a11000000000000
+report 2:
+  measurement = d7dad68c9b0dcb40de6f45b8d11bfed95f9f56da9fc1b353b794a7d187faa2b7800b1792ad8e0e38e1afc21ee767a906
+  host_data   = 0000000000000000000000000000000000000000000000000000000000000000
+  id_key_dig  = 00000000000000000000000000000000ed9fcf1d0c43408d87a9e72f9238c21b9b32140a41ff7d1b678e06363b5481b6
+  auth_key_dig= ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff01010104000000581a11000000000000
+report 3:
+  measurement = d7dad68c9b0dcb40de6f45b8d11bfed95f9f56da9fc1b353b794a7d187faa2b7800b1792ad8e0e38e1afc21ee767a906
+  host_data   = 0000000000000000000000000000000000000000000000000000000000000000
+  id_key_dig  = 00000000000000000000000000000000ed9fcf1d0c43408d87a9e72f9238c21b9b32140a41ff7d1b678e06363b5481b6
+  auth_key_dig= ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff01010104000000581a11000000000000
+
+=== 11. inspect bootorder + e820 fw_cfg + system-states fully ===
+--- bootorder ---
+/rom@genroms/linuxboot_dma.bin
+/pci@i0cf8/pci-bridge@1e/pci-bridge@4/scsi@1/channel@0/disk@0,0
+/pci@i0cf8/pci-bridge@1e/pci-bridge@4/scsi@1f/channel@0/disk@0,1e
+HALT 
+--- e820 ---
+00000000: 00c0 fffe 0000 0000 0040 0000 0000 0000  .........@......
+00000010: 0200 0000 0000 0000 fd00 0000 0000 0000  ................
+00000020: 0300 0000 0200 0000 0000 0000 0000 0000  ................
+00000030: 0000 0080 0000 0000 0100 0000 0000 0000  ................
+00000040: 0100 0000 0000 0080 0700 0000 0100 0000  ................
+--- system-states ---
+00000000: 8000 0001 0280                           ......
+
+=== 12. snpguest version + capabilities ===
+snpguest 0.10.0
+Report command to request an attestation report
+
+Usage: snpguest report [OPTIONS] <att-report-path> <request-file>
+
+Arguments:
+  <att-report-path>  File to write the attestation report to
+  <request-file>     Provide file with data for attestation-report request. If provided with random flag, then the random data will be written in the provided path
+
+Options:
+  -r, --random       Use random data for attestation report request. Writes data to ./random-request-file.txt by default, use --request to specify where to write data
+  -v, --vmpl <vmpl>  Specify an integer VMPL level between 0 and 3 that the Guest is running on [default: 1]
+  -p, --platform     Expect that the 64-byte report data will already be provided by the platform provider
+  -h, --help         Print help
+
+==============================================================================
+=== SUMMARY (post-probe analysis, 2026-05-03 evening) ===
+==============================================================================
+
+CONFIRMED:
+- Guest VMPL = 0 (read from /sys/devices/system/cpu/sev/vmpl).
+  snpguest --vmpl 0 succeeds → no SVSM hierarchy. The earlier "VMPL 1"
+  in the report was just snpguest's default (--vmpl defaults to 1).
+- No vTPM (`ima: No TPM chip found, activating TPM-bypass!`). systemd's
+  TPM-PCR services all skipped with ConditionSecurity=measured-uki unmet.
+- No SVSM in dmesg. SVSM_CAA section in OVMF is just OVMF being
+  SVSM-compatible; it is NOT active.
+- VPSBG uses `-kernel`-style boot path (linuxboot_dma.bin in fw_cfg
+  bootorder; VMMBootOrder0000 EFI variable set by VMM).
+- Determinism: 3 reports with random REPORT_DATA all yield identical
+  MEASUREMENT, HOST_DATA, ID_KEY_DIGEST, AUTH_KEY_DIGEST — chip is
+  deterministic across requests, as expected.
+
+NEW DATA POINT:
+- Current Slice 2 MEASUREMENT (rebuilt revert UKI bpir-slice2-revert.efi):
+    d7dad68c9b0dcb40de6f45b8d11bfed95f9f56da9fc1b353b794a7d187faa2b7800b1792ad8e0e38e1afc21ee767a906
+  Differs from the original Slice 2 baseline e522983f... because the
+  UKI was rebuilt during Slice 3 dev (different mtimes leak into cpio).
+
+REMAINING UNKNOWN:
+- How the UKI ends up in measured memory. The simple "QEMU -kernel
+  pre-loads kernel as NORMAL pages at address X" model fails for
+  every X tried (1 MB-aligned 1 MB to 4 GB, plus 4 KB-aligned near
+  the standard 1 MB / 16 MB / 256 MB Linux kernel load addresses).
+
+OUTSTANDING HYPOTHESES (in order of remaining plausibility):
+1. QEMU loads kernel at a non-standard address (off-by-N from
+   conventional spots). Brute-force at 4 KB granularity over wider
+   range possible but already exhaustive at 1 MB granularity.
+2. UKI loaded into measured memory in chunks (PE sections separately,
+   as EFI loaded image). Multi-region search infeasible without hint.
+3. Custom QEMU `args:` injection by VPSBG portal that doesn't fit
+   any standard mechanism.
+4. IGVM file describes the launch (Proxmox VE 9 supports this). With
+   IGVM, addresses + page types are arbitrary per-guest.
+
+NEXT STEP: VPSBG support email asking for either the IGVM file, the
+QEMU command line, or a `-trace kvm_sev_snp_launch_update` dump.

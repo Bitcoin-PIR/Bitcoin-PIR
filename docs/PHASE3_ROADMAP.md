@@ -417,16 +417,78 @@ ssh vpsbg-pir 'journalctl -u pir-vpsbg -p err --no-pager -n 20'
 ssh pir-hetzner 'systemctl start pir-secondary'
 ```
 
-## Open questions worth pinging VPSBG support about
+## Reproducibility status (2026-05-03 evening, post-investigation)
 
-1. **OVMF blob**: ask for the exact bytes of the OVMF firmware their
-   SEV-SNP guests boot with. Without it, `sev-snp-measure` can only
-   produce launch digests that diverge from the chip-reported one
-   (verified empirically: stock Ubuntu OVMF gives `2fe9ae9c…` but the
-   chip reports `cc68b431…` for the no-UKI baseline).
-2. **Tier of EPYC**: confirm the VM stays on the same physical chip
+**Layer 2 (operator-trusted) is what we ship today** — browsers enforce
+the operator-published MEASUREMENT pin via Web #3. Closing the gap to
+**Layer 3 (independently reproducible)** has progressed substantially
+this session:
+
+### What's now solved
+
+1. **OVMF identified.** VPSBG uses Proxmox's `pve-edk2-firmware-ovmf
+   4.2025.05-2 → OVMF_SEV_4M.fd` (sha256
+   `3f60a393e556580fbe45f085c2b2b035c2ded4d5ce3ed96c9c83faaa1b9c8cc3`).
+   Verified by reproducing the chip's "None"-UKI baseline MEASUREMENT
+   (`cc68b431b5399cb3…`) exactly via `sev-snp-measure` with the launch
+   parameters: 2 vCPUs, AMD EPYC 9745 Turin sig `0x00B10F10`,
+   guest-features `0x1`, vmm-type QEMU. Anyone can `apt install
+   pve-edk2-firmware-ovmf` from `download.proxmox.com/debian/pve trixie`
+   to obtain the byte-identical blob.
+2. **VPSBG is on Proxmox VE 9** (their public GitHub forks `pve-manager`
+   and `qemu-server` are essentially clones with only a README added,
+   indicating they don't customize Proxmox itself; their UKI portal
+   feature is layered on top).
+3. **Both kernel-hashes mechanisms are inactive in Proxmox's OVMF**:
+   `SNP_KERNEL_HASHES` section is absent and `SEV_HASH_TABLE_RV`
+   resolves to gpa 0 (`is_sev_hashes_table_supported: False`). So the
+   standard QEMU `-kernel <UKI>` path can't be what VPSBG uses.
+4. **Brute-force eliminated the simple `-device loader` model**: 1233
+   addresses (1 MB-aligned, 1 MB to 4 GB) × 3 chain positions = 3699
+   `sev-snp-measure` attempts, none matched the chip's
+   `2ad9490a…` MEASUREMENT. So the UKI isn't loaded as a contiguous
+   NORMAL-page block at any 1 MB-aligned address.
+5. **VMPL0 confirmed**: `dmesg` reports "SNP running at VMPL0", which
+   means there is NO Coconut-SVSM running above us. The `SVSM_CAA`
+   metadata section in OVMF is just OVMF being SVSM-compatible, not an
+   indication SVSM is in active use.
+
+### Strong remaining hypothesis: Proxmox VE 9 IGVM
+
+Per Proxmox VE 9 docs + QEMU IGVM docs, the *natural* Proxmox-stack way
+to launch a SEV-SNP guest with a custom UKI loaded into measured memory
+is via QEMU's `-object igvm-cfg,file=<file.igvm>`. IGVM declaratively
+describes every initial memory page (OVMF + UKI + standard SEV-SNP
+pages + per-vCPU VMSA) in one binary. EFI disks are explicitly NOT
+supported with SEV-SNP per Proxmox docs, so disk-based UKI loading is
+ruled out — IGVM is the documented path.
+
+If correct: with VPSBG's IGVM file, we run `igvmmeasure <file.igvm>`
+and get the chip-matching MEASUREMENT directly. No more guessing about
+addresses, page types, or chain positions — IGVM is fully self-describing.
+
+### Pending VPSBG support response
+
+Drafted question: "Does my VM launch via Proxmox VE 9's IGVM
+(`-object igvm-cfg,file=...`)? If so, can you share the IGVM file?
+Otherwise, which mechanism puts the UKI bytes into measured memory?"
+
+When VPSBG responds:
+- **If IGVM**: run `igvmmeasure` to verify; publish the verification
+  recipe (download IGVM + run measurement tool + compare to chip).
+- **If `-device loader,addr=X`**: extend brute-force at 4 KB granularity
+  near the answered address; should match within minutes.
+- **If something else**: re-evaluate.
+
+## Other open questions worth pinging VPSBG support about
+
+1. **Tier of EPYC**: confirm the VM stays on the same physical chip
    across reboots (chip ID is in the report; if it changes, the VM
    was migrated). Currently chip ID = `00 36 42 73 5D DC 6E 02`.
-3. **TCB updates**: SEV-SNP firmware version (FMC=1, SNP=4 in current
+2. **TCB updates**: SEV-SNP firmware version (FMC=1, SNP=4 in current
    report). When AMD publishes a new TCB, what's VPSBG's update
    cadence?
+3. **HOST_DATA conventions**: the SEV-SNP report's HOST_DATA[32] field
+   is host-set; do they use it for anything (launch ID, customer ID,
+   per-VM nonce)? If yes, having that documented helps verifiers
+   correlate published values with specific reports.
