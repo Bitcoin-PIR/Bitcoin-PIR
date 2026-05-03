@@ -65,16 +65,24 @@ export interface ServerAttestPin {
 }
 
 /**
- * pir2.chenweikeng.com — VPSBG Tier 3 (Slice 3 lockdown).
- * Pinned 2026-05-03 from the post-Slice-3 deploy (UKI sha
- * `afbc07f8…f8b8fe90`).
+ * pir2.chenweikeng.com — VPSBG Tier 3 (Slice 3 lockdown), v3 with the
+ * reproducibility sub-tasks 1 + 2 + 3(b) + 4 of
+ * docs/PHASE3_SLICE3_REPRO_PLAN.md applied.
+ * Pinned 2026-05-03 from the v3 deploy (UKI sha
+ * `774d88b1…fd78fe1a`). Differences vs v2:
+ *   - dracut module mtimes normalized to @0
+ *   - cloudflared tunnel.env loaded at runtime from
+ *     /home/pir/data/cloudflared/tunnel.env (NOT in MEASUREMENT)
+ *   - cargo build deterministic flags (codegen-units=1,
+ *     incremental=false, --remap-path-prefix, vendored deps)
+ *   - rust-toolchain.toml pins rustc 1.94.1 stable
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   measurementHex:
-    '2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5',
+    'f8fb6190b835b0a8ddfe950b7c1905c3531d33c565bbf3059b56b7e6a36dd80aa1b5fecd79d5efde63c091a47d186345',
   binarySha256Hex:
-    '324c3883510c56a344221ec379a6466c3089099f51e566e7ad9b1356156eee7e',
-  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI)',
+    '9029efaf5b58dc965f114d5c99ece20dee6c91aadc9057f76667f8209d997761',
+  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI v3)',
 };
 
 /**
