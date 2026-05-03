@@ -114,6 +114,12 @@ for mod in 96bpir-cloudflared 96bpir-unified-server 97bpir-tier3-init; do
     # non-.sh udhcpc-default.script that needs to come along.
     cp -fp "$src"/* "$dst/"
     chmod 0755 "$dst"/*
+    # Normalize mtimes to epoch 0. Without this the operator's `git clone`
+    # time propagates through `cp -fp` into the cpio archive — two operators
+    # with fresh clones at different times produce different UKI bytes (and
+    # therefore different MEASUREMENT) even with --reproducible +
+    # SOURCE_DATE_EPOCH=0. See docs/PHASE3_SLICE3_REPRO_PLAN.md sub-task 1.
+    find "$dst" -type f -exec touch -d @0 {} +
     echo "dracut module installed:  $dst"
 done
 

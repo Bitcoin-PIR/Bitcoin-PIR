@@ -99,6 +99,12 @@ mkdir -p "$DRACUT_MODULE_DST"
 # archive — breaking initrd determinism even with --reproducible below.
 cp -fp "$DRACUT_MODULE_SRC"/*.sh "$DRACUT_MODULE_DST/"
 chmod 0755 "$DRACUT_MODULE_DST"/*.sh
+# Normalize mtimes to epoch 0 — see docs/PHASE3_SLICE3_REPRO_PLAN.md sub-task 1.
+# `cp -fp` propagates the operator's git-clone mtime into the cpio archive,
+# so even with --reproducible two fresh clones at different times produce
+# different bytes. Touching to @0 closes that leak for cross-operator
+# reproducibility of the Slice 2 revert artifact too.
+find "$DRACUT_MODULE_DST" -type f -exec touch -d @0 {} +
 echo "dracut module installed:  $DRACUT_MODULE_DST"
 
 # ─── Compute the binary's SHA-256 (the value that ends up in cmdline) ────
