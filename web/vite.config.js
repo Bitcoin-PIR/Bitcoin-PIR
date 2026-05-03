@@ -17,6 +17,16 @@ export default defineConfig({
   build: {
     outDir: 'dist-web',
     sourcemap: true,
+    rollupOptions: {
+      input: {
+        // Main PIR client app.
+        main: 'index.html',
+        // Reproducibility recipe page — self-contained, explains how
+        // to verify the SEV-SNP MEASUREMENT pin against the chip-signed
+        // value via sev-snp-measure + bpir-admin attest.
+        reproduce: 'reproduce.html',
+      },
+    },
   },
   define: {
     global: 'globalThis',

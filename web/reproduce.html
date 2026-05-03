@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reproducing the MEASUREMENT — Bitcoin PIR</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+        :root {
+            --bg:        oklch(98.2% 0.004 80);
+            --panel:     oklch(99.5% 0.003 80);
+            --sunken:    oklch(96.2% 0.005 80);
+            --ink:       oklch(22% 0.01 80);
+            --ink-soft:  oklch(40% 0.01 80);
+            --ink-mute:  oklch(58% 0.008 80);
+            --line:      oklch(91% 0.006 80);
+            --line-soft: oklch(94% 0.005 80);
+            --accent:       oklch(70% 0.14 65);
+            --accent-ink:   oklch(42% 0.12 55);
+            --accent-wash:  oklch(96% 0.03 75);
+            --accent-line:  oklch(86% 0.08 70);
+            --ok:       oklch(64% 0.12 155);
+            --ok-wash:  oklch(95% 0.03 155);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: 'Inter', system-ui, sans-serif;
+            font-size: 15px;
+            line-height: 1.55;
+        }
+        code, pre, .mono { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; }
+        a { color: var(--accent-ink); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .topbar {
+            display: flex; align-items: center; gap: 14px;
+            padding: 12px 24px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+        }
+        .brand {
+            display: flex; align-items: center; gap: 8px;
+            font-weight: 600;
+        }
+        .brand-mark {
+            width: 14px; height: 14px; border-radius: 4px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-ink));
+        }
+        .topbar small { color: var(--ink-mute); font-weight: 400; margin-left: 4px; }
+        .topbar-spacer { flex: 1; }
+        .topbar-btn {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 6px 10px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            color: var(--ink-soft);
+            cursor: pointer;
+            font: inherit;
+            font-size: 13px;
+        }
+        .topbar-btn:hover { background: var(--sunken); }
+
+        main {
+            max-width: 880px;
+            margin: 32px auto;
+            padding: 0 24px 64px;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin: 0 0 8px;
+            letter-spacing: -0.01em;
+        }
+        h1 + p.lede {
+            font-size: 16px;
+            color: var(--ink-soft);
+            margin: 0 0 32px;
+        }
+        h2 {
+            font-size: 19px;
+            font-weight: 600;
+            margin: 36px 0 12px;
+            letter-spacing: -0.005em;
+        }
+        h3 {
+            font-size: 15px;
+            font-weight: 600;
+            margin: 20px 0 8px;
+            color: var(--ink-soft);
+        }
+        p { margin: 0 0 12px; }
+        ol, ul { padding-left: 22px; margin: 0 0 12px; }
+        li { margin-bottom: 6px; }
+
+        pre {
+            background: var(--sunken);
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            padding: 12px 14px;
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.5;
+            margin: 0 0 14px;
+        }
+        code {
+            background: var(--sunken);
+            padding: 1px 5px;
+            border-radius: 4px;
+            font-size: 0.92em;
+        }
+        pre code { background: transparent; padding: 0; }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin: 0 0 20px;
+        }
+        .panel.accent { border-color: var(--accent-line); background: var(--accent-wash); }
+        .panel.ok     { border-color: oklch(82% 0.08 155); background: var(--ok-wash); }
+
+        .pin-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin: 8px 0 0;
+        }
+        .pin-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--line-soft);
+            vertical-align: top;
+        }
+        .pin-table td:first-child {
+            color: var(--ink-mute);
+            white-space: nowrap;
+            font-weight: 500;
+        }
+        .pin-table td:last-child {
+            font-family: 'JetBrains Mono', ui-monospace, monospace;
+            font-size: 12px;
+            word-break: break-all;
+        }
+
+        .step {
+            margin: 0 0 24px;
+            padding: 0 0 0 32px;
+            position: relative;
+            counter-increment: step;
+        }
+        .step::before {
+            content: counter(step);
+            position: absolute;
+            left: 0; top: 0;
+            width: 24px; height: 24px;
+            border-radius: 50%;
+            background: var(--accent-wash);
+            color: var(--accent-ink);
+            border: 1px solid var(--accent-line);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 600; font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .steps { counter-reset: step; padding: 0; list-style: none; margin: 0; }
+
+        .download-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            background: var(--panel);
+            border: 1px solid var(--accent-line);
+            border-radius: 6px;
+            color: var(--accent-ink);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .download-link:hover { background: var(--accent-wash); text-decoration: none; }
+        .download-link::before { content: "↓"; font-weight: 700; }
+
+        .meta { font-size: 12px; color: var(--ink-mute); }
+
+        .chain-diagram {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.7;
+            color: var(--ink-soft);
+            white-space: pre;
+            background: var(--sunken);
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            padding: 14px 18px;
+            overflow-x: auto;
+        }
+
+        .badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+        .badge.ok { background: var(--ok-wash); color: oklch(38% 0.1 155); border: 1px solid oklch(82% 0.08 155); }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span>Bitcoin PIR</span>
+            <small>reproducibility</small>
+        </div>
+        <div class="topbar-spacer"></div>
+        <a class="topbar-btn" href="/">← Back to app</a>
+        <a class="topbar-btn" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2.2.5-2.7-1.1-2.7-1.1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8 0 1.2.8 1.2.8.7 1.2 1.9.9 2.4.7.1-.5.3-.9.5-1.1-1.8-.2-3.7-.9-3.7-4 0-.9.3-1.6.8-2.1-.1-.2-.3-1 .1-2.1 0 0 .7-.2 2.2.8a7.6 7.6 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.5.8 1.2.8 2.1 0 3.1-1.9 3.8-3.7 4 .3.2.5.7.5 1.5v2.2c0 .2.1.5.5.4A8 8 0 0 0 8 .2Z"/></svg>
+            Bitcoin-PIR/Bitcoin-PIR
+        </a>
+    </header>
+
+    <main>
+        <h1>Reproducing the SEV-SNP MEASUREMENT</h1>
+        <p class="lede">
+            Independently verify that <code>pir2.chenweikeng.com</code>'s
+            attestation report — signed by the AMD chip — actually corresponds
+            to the source code published in this repo. No need to trust the
+            operator's claimed MEASUREMENT.
+        </p>
+
+        <section>
+            <h2>Why this matters</h2>
+            <p>
+                When a client connects to <code>pir2</code>, the server returns
+                an SEV-SNP attestation report. AMD's PSP signs a
+                <code>MEASUREMENT</code> field that's a hash over the host's
+                launch context (firmware + kernel + initramfs + cmdline). The
+                client matches that signed value against a hardcoded pin
+                (<a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PIR2_TIER3_PIN</code></a>)
+                — if they don't match, the encrypted channel won't come up.
+            </p>
+            <p>
+                That alone establishes
+                <em>"the chip is running what the operator pinned."</em>
+                But how do you know the pinned value corresponds to the source
+                you can read on GitHub? You compute it yourself from the
+                published artifacts, and check against what the chip signs.
+            </p>
+        </section>
+
+        <section>
+            <h2>The trust chain</h2>
+<div class="chain-diagram">git commit  ──build──▶  unified_server binary
+       │
+       │             dracut + ukify
+       ▼                  │
+  pinned VPSBG OVMF   ────┘
+       │
+       └──┐         ┌── UKI bytes (kernel + initramfs + cmdline)
+          ▼         ▼
+        sev-snp-measure
+              │
+              ▼
+   predicted MEASUREMENT
+              │
+   ═══ compare to ═══
+              │
+              ▼
+   chip-signed MEASUREMENT  (from bpir-admin attest)</div>
+            <p style="margin-top:12px">
+                Each step has a published, verifiable input. If your computed
+                value matches the chip-signed value, the entire chain is
+                trustworthy down to the AMD ARK.
+            </p>
+        </section>
+
+        <section>
+            <h2>Currently pinned values <span class="badge ok">v4 — 2026-05-04</span></h2>
+            <div class="panel accent">
+                <table class="pin-table">
+                    <tr>
+                        <td>MEASUREMENT</td>
+                        <td>f6aa29156c63cae96dce8c33427489016dee86b5716b2aa3c9d9a67e47768fa010d5ad5468ada3f858931f53c6ae8bd9</td>
+                    </tr>
+                    <tr>
+                        <td>UKI sha256</td>
+                        <td>e835a516c3fadaf83c88880949758622b6866700f9f4b5d47e2628ccf8396da0</td>
+                    </tr>
+                    <tr>
+                        <td>binary sha256</td>
+                        <td>dc1b97b51360afa83cca47eb30870dcf4a5217c85ba1c26219aff1bb1dc16000</td>
+                    </tr>
+                    <tr>
+                        <td>OVMF sha256</td>
+                        <td>e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e</td>
+                    </tr>
+                    <tr>
+                        <td>AMD ARK fingerprint</td>
+                        <td>1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a</td>
+                    </tr>
+                </table>
+            </div>
+            <p class="meta">
+                Source of truth: <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts</code></a>.
+                These values change with every Tier 3 UKI redeploy; this page
+                tracks the current pin.
+            </p>
+        </section>
+
+        <section>
+            <h2>Verify via published artifacts</h2>
+            <p>
+                The fast path: download the UKI bytes the operator published,
+                download the OVMF VPSBG provided, run
+                <code>sev-snp-measure</code>, compare the result to the chip's
+                signed value via <code>bpir-admin attest</code>.
+            </p>
+
+            <ol class="steps">
+                <li class="step">
+                    <h3>Get the OVMF</h3>
+                    <p>
+                        VPSBG's custom EDK2 build, used when "Measured Boot" is
+                        enabled in the portal. Same binary across all VPSBG
+                        SEV-SNP customers; sha-pinned.
+                    </p>
+                    <a class="download-link" href="/ovmf/OVMF_SEV_MEASUREDBOOT_4M.fd" download>OVMF_SEV_MEASUREDBOOT_4M.fd <span class="meta">(4.0&nbsp;MB)</span></a>
+                    <p class="meta" style="margin-top: 6px;">
+                        Verify: <code>sha256sum OVMF_SEV_MEASUREDBOOT_4M.fd</code> →
+                        <code>e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e</code>
+                    </p>
+                </li>
+
+                <li class="step">
+                    <h3>Get the UKI</h3>
+                    <p>
+                        The operator-built unified kernel image — kernel +
+                        initramfs (with <code>unified_server</code> baked in) +
+                        cmdline, packaged as a single PE/EFI file.
+                    </p>
+                    <a class="download-link" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/releases/download/tier3-v4/bpir-tier3-v4.efi">bpir-tier3-v4.efi <span class="meta">(104&nbsp;MB, GitHub release)</span></a>
+                    <p class="meta" style="margin-top: 6px;">
+                        Verify: <code>sha256sum bpir-tier3-v4.efi</code> →
+                        <code>e835a516c3fadaf83c88880949758622b6866700f9f4b5d47e2628ccf8396da0</code>
+                    </p>
+                    <p class="meta" style="margin-top: 6px;">
+                        Or rebuild from source — see
+                        <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/PHASE3_SLICE3_REPRO_PLAN.md#reproducibility-recipe-post-sub-tasks-1--2--3b--4" target="_blank" rel="noopener">the recipe</a>.
+                        <code>scripts/build_unified_server.sh</code> +
+                        <code>sudo scripts/build_uki_tier3.sh</code> from a
+                        clone at the canonical path
+                        <code>/home/pir/BitcoinPIR</code>.
+                    </p>
+                </li>
+
+                <li class="step">
+                    <h3>Predict the MEASUREMENT</h3>
+                    <p>
+                        Install
+                        <a href="https://github.com/virtee/sev-snp-measure" target="_blank" rel="noopener"><code>sev-snp-measure</code></a>
+                        (<code>pipx install sev-snp-measure</code>), then:
+                    </p>
+<pre><code>sev-snp-measure \
+    --mode snp \
+    --vcpus 2 \
+    --vcpu-sig 0x00B10F10 \
+    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
+    --kernel bpir-tier3-v4.efi \
+    --guest-features 0x1</code></pre>
+                    <p>
+                        Output should be the same hex as the
+                        <code>MEASUREMENT</code> in the pinned-values table
+                        above. The launch parameters
+                        (<code>vcpus=2</code>, <code>vcpu-sig=0x00B10F10</code>
+                        for AMD Turin, <code>guest-features=0x1</code>) come
+                        from VPSBG's confirmed Proxmox QEMU command line.
+                    </p>
+                </li>
+
+                <li class="step">
+                    <h3>Verify against the live chip</h3>
+                    <p>
+                        Build
+                        <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/tree/main/bpir-admin" target="_blank" rel="noopener"><code>bpir-admin</code></a>
+                        (in this repo) and ask <code>pir2</code> for a fresh
+                        attestation report. The chip's signed
+                        <code>Launch MEASUREMENT</code> field should equal
+                        what you computed in step 3:
+                    </p>
+<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
+./target/release/bpir-admin attest wss://pir2.chenweikeng.com \
+    --expect-measurement f6aa29156c63cae96dce8c33427489016dee86b5716b2aa3c9d9a67e47768fa010d5ad5468ada3f858931f53c6ae8bd9 \
+    --expect-binary      dc1b97b51360afa83cca47eb30870dcf4a5217c85ba1c26219aff1bb1dc16000</code></pre>
+                    <p>
+                        Three checkmarks:
+                        <code>SEV-SNP REPORT_DATA binding verified</code>,
+                        <code>binary_sha256 matches expected</code>,
+                        <code>Launch MEASUREMENT matches expected</code>.
+                    </p>
+                </li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>What this proves</h2>
+            <ul>
+                <li>The bytes loaded into pir2's confidential VM are exactly
+                    the bytes you can rebuild from the source git commit.</li>
+                <li>The chip signs over those bytes, with a key chained to
+                    AMD's ARK — a value whose root you also have pinned
+                    (<code>1f084161…3dd3f6a</code>) and can independently
+                    fetch from
+                    <a href="https://kdsintf.amd.com/vcek/v1/Turin/cert_chain" target="_blank" rel="noopener">AMD KDS</a>.</li>
+                <li>The web client refuses to upgrade to the encrypted channel
+                    if the pinned values don't match what the chip reports —
+                    so a tampered server is silent, not silently-trusted.</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Out of scope</h2>
+            <ul>
+                <li>The custom OVMF binary itself is binary-pinned, not built
+                    from EDK2 source by us. <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/PHASE3_SLICE3_REPRO_PLAN.md" target="_blank" rel="noopener">PHASE3_SLICE3_REPRO_PLAN.md</a>
+                    documents this gap.</li>
+                <li>Cross-path determinism (operators building from different
+                    repo-clone paths get different binaries) is closed only
+                    with the <code>/home/pir/BitcoinPIR</code> path
+                    convention; full closure is sub-task 5 (hermetic env).</li>
+                <li>AMD's signing keys themselves are trust roots (we can't
+                    verify "AMD didn't sign this maliciously"). Mitigated by
+                    pinning the ARK fingerprint locally.</li>
+            </ul>
+        </section>
+    </main>
+</body>
+</html>

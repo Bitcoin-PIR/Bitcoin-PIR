@@ -884,6 +884,7 @@
         <div class="topbar-spacer"></div>
         <button id="localhostToggle" class="topbar-btn" title="Switch all server URLs between remote and localhost">🌐 Remote</button>
         <button id="residencyBtn" class="topbar-btn" title="Check server mmap page residency (warmup status)">Server Warmup</button>
+        <a class="topbar-btn" href="/reproduce.html" title="How to independently verify the SEV-SNP MEASUREMENT pin">Reproducibility</a>
         <a class="topbar-btn" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2.2.5-2.7-1.1-2.7-1.1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8 0 1.2.8 1.2.8.7 1.2 1.9.9 2.4.7.1-.5.3-.9.5-1.1-1.8-.2-3.7-.9-3.7-4 0-.9.3-1.6.8-2.1-.1-.2-.3-1 .1-2.1 0 0 .7-.2 2.2.8a7.6 7.6 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.5.8 1.2.8 2.1 0 3.1-1.9 3.8-3.7 4 .3.2.5.7.5 1.5v2.2c0 .2.1.5.5.4A8 8 0 0 0 8 .2Z"/></svg>
             Bitcoin-PIR/Bitcoin-PIR
@@ -3389,7 +3390,32 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         let hpClient = null;
         let hpHintsLoaded = false;
         let hpCurrentPrp = 0;
-        let hpSwitchingDb = false;
+
+        // ── Serialization queue for `hpClient` access ───────────────────────
+        // `WasmHarmonyClient` exposes `&mut self` async methods (e.g.
+        // `verifyMerkleBatch`, `fetchHintsWithProgress`); wasm-bindgen's
+        // runtime borrow check panics with "recursive use of an object
+        // detected which would lead to unsafe aliasing in rust" if any
+        // method is called while a `&mut self` future is suspended at an
+        // `await`. The Merkle-verify flow is the trigger we hit in
+        // practice: a fire-and-forget prewarm walks every sync step and
+        // calls `hpSwitchDb` + `verifyMerkleBatch`, while the user's
+        // per-step Verify Merkle button click can land mid-flight on a
+        // *different* dbId — and the per-dbId `siblingPrewarms` await
+        // doesn't cover the cross-dbId case. Wrapping every multi-step
+        // hpClient transaction in `hpExclusive` serialises them through
+        // a single-slot promise queue so the recursive-use case can't
+        // arise. Within a transaction the body runs to completion before
+        // the next queued task starts. (Use `hpExclusive` from the
+        // *outermost* caller; `hpSwitchDb` is intentionally not
+        // self-wrapping so callers can compose `hpSwitchDb` +
+        // `verifyMerkleBatch` atomically inside a single `hpExclusive`.)
+        let hpTaskTail = Promise.resolve();
+        function hpExclusive(asyncFn) {
+            const result = hpTaskTail.then(asyncFn, asyncFn);
+            hpTaskTail = result.then(() => {}, () => {});
+            return result;
+        }
 
         // HarmonyPIR SyncController — owns snapshot cache + lastSyncedHeight
         // for the HarmonyPIR tab. The beforeStep hook delegates to hpSwitchDb,
@@ -3462,12 +3488,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             advancedDetails.style.display = 'block';
         }
 
+        // Caller contract: must run inside `hpExclusive` (or be the only
+        // hpClient task in flight). The queue is what guarantees no two
+        // db-switches overlap and no other hpClient method is suspended
+        // at an `.await` while we mutate state here.
         async function hpSwitchDb(newDbId) {
-            if (!hpClient || hpSwitchingDb) return;
+            if (!hpClient) return;
             if (newDbId === hpClient.getDbId()) return;
-            if (hpSwitchingPrp) { log('HarmonyPIR: PRP switch in progress, please retry.', 'error'); return; }
 
-            hpSwitchingDb = true;
             const statusDiv = document.getElementById('hp-status');
             const prevStatusClass = statusDiv.className;
             document.getElementById('hp-queryBtn').disabled = true;
@@ -3509,7 +3537,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 statusDiv.textContent = 'Status: Error switching database';
                 statusDiv.className = prevStatusClass;
             } finally {
-                hpSwitchingDb = false;
                 document.getElementById('hp-queryBtn').disabled = false;
             }
         }
@@ -3869,40 +3896,48 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             try {
                 const { merged, verifiableSteps, preStepSnapshots } = await hpSync.execute(plan, {
                     scriptHashes,
-                    beforeStep: async (step, si) => {
-                        // HarmonyPIR has strict per-(dbId, PRP) hint state.
-                        // Switching DBs triggers hpSwitchDb which either hits
-                        // the hint cache (instant) or re-downloads hints
-                        // (slower — progress shows in #hp-offlineContainer).
-                        if (hpClient.getDbId() !== step.dbId) {
-                            const stepLabel = describeStep(step, si + 1, plan.steps.length);
-                            hpSetProgress(5, `${stepLabel} \u2014 switching DB / loading hints...`);
-                            await hpSwitchDb(step.dbId);
-                            if (!hpHintsLoaded) {
-                                throw new Error(`HarmonyPIR: hint load failed for db ${step.dbId}`);
-                            }
-                        }
-                    },
+                    // beforeStep is intentionally omitted: the (dbId-switch
+                    // + queryBatch) pair must be atomic w.r.t. the hpClient
+                    // queue. A fire-and-forget Merkle prewarm IIFE from a
+                    // *previous* sync may still be running and could squeeze
+                    // a hpSwitchDb between our switch and our query if they
+                    // were split across two queue slots, leading to a
+                    // queryBatch on the wrong dbId. Folding both into
+                    // queryStep guarantees nothing else interleaves.
                     queryStep: async (step, si) => {
                         const stepLabel = describeStep(step, si + 1, plan.steps.length);
                         log(`HarmonyPIR: ${stepLabel}`, 'info');
-                        hpSetProgress(10, stepLabel);
-                        // HarmonyPIR queryBatch takes addresses OR scriptPubKey hex;
-                        // we pass the hex `lines`. Returns Map<qi, HarmonyQueryResult>.
-                        const resultMap = await hpClient.queryBatch(lines, (phase, detail) => {
-                            let pct = 10;
-                            if (phase === 'Level 1') pct = 30;
-                            else if (phase === 'Level 2') pct = 60;
-                            else if (phase === 'Reassemble') pct = 90;
-                            hpSetProgress(pct, `${stepLabel} \u2014 ${phase}: ${detail}`);
+                        // Run the entire step (db-switch-if-needed +
+                        // queryBatch) inside one hpClient queue slot so
+                        // nothing else (e.g. a leftover Merkle prewarm
+                        // IIFE from a prior sync) can interleave between
+                        // the switch and the query.
+                        return hpExclusive(async () => {
+                            if (hpClient.getDbId() !== step.dbId) {
+                                hpSetProgress(5, `${stepLabel} \u2014 switching DB / loading hints...`);
+                                await hpSwitchDb(step.dbId);
+                                if (!hpHintsLoaded) {
+                                    throw new Error(`HarmonyPIR: hint load failed for db ${step.dbId}`);
+                                }
+                            }
+                            hpSetProgress(10, stepLabel);
+                            // HarmonyPIR queryBatch takes addresses OR scriptPubKey hex;
+                            // we pass the hex `lines`. Returns Map<qi, HarmonyQueryResult>.
+                            const resultMap = await hpClient.queryBatch(lines, (phase, detail) => {
+                                let pct = 10;
+                                if (phase === 'Level 1') pct = 30;
+                                else if (phase === 'Level 2') pct = 60;
+                                else if (phase === 'Reassemble') pct = 90;
+                                hpSetProgress(pct, `${stepLabel} \u2014 ${phase}: ${detail}`);
+                            });
+                            // Convert Map<qi, HarmonyQueryResult> → (HarmonyQueryResult|null)[]
+                            // in scripthash order for the SyncController's merge loop.
+                            const arr = new Array(N).fill(null);
+                            for (let qi = 0; qi < N; qi++) {
+                                arr[qi] = resultMap.get(qi) ?? null;
+                            }
+                            return arr;
                         });
-                        // Convert Map<qi, HarmonyQueryResult> → (HarmonyQueryResult|null)[]
-                        // in scripthash order for the SyncController's merge loop.
-                        const arr = new Array(N).fill(null);
-                        for (let qi = 0; qi < N; qi++) {
-                            arr[qi] = resultMap.get(qi) ?? null;
-                        }
-                        return arr;
                     },
                     mergeStep: (snapshot, delta) =>
                         mergeDeltaIntoHarmonySnapshot(snapshot, delta, (msg) => log(msg, 'error')),
@@ -3994,32 +4029,47 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         addBatchMerkleButton(resultsContainer, verifiable, prefix,
                             async (results, onProg) => {
                                 // If a background prewarm for this dbId
-                                // is still in flight, wait for it first.
-                                // After the prewarm resolves, sibling
-                                // hints are already loaded + persisted,
-                                // so our DB-switch (if needed) is a
-                                // cache hit and the verify only does
-                                // the small sibling-proof query (~1-2s).
+                                // is still in flight, wait for it first
+                                // (UI hint only — strict serialisation is
+                                // enforced by hpExclusive below). After
+                                // the prewarm resolves sibling hints are
+                                // loaded + persisted, so our DB-switch
+                                // (if needed) hits the IndexedDB cache.
                                 const prewarm = siblingPrewarms.get(step.dbId);
                                 if (prewarm) {
                                     onProg?.('Prewarm', `awaiting background sibling-hint load for db ${step.dbId}…`);
                                     try { await prewarm; } catch { /* fall through; we'll surface our own error */ }
                                 }
-                                if (hpClient.getDbId() !== step.dbId) {
-                                    // Surface the DB-switch progress to the
-                                    // per-button status span so the user
-                                    // doesn't see an empty "⏳ Verifying…"
-                                    // bar while hpSwitchDb is doing 100s of
-                                    // MB of IndexedDB I/O behind the
-                                    // statusDiv panel.
-                                    onProg?.('DB switch', `caching db ${hpClient.getDbId()} hints + loading db ${step.dbId}…`);
-                                    await hpSwitchDb(step.dbId);
-                                    if (!hpHintsLoaded) {
-                                        throw new Error(`hint load failed for db ${step.dbId}`);
+                                // Run the (hpSwitchDb + verifyMerkleBatch)
+                                // pair atomically through the hpClient
+                                // queue. Without this, a click on the
+                                // db=X button can race with the prewarm
+                                // step for db=Y (Y ≠ X): the per-dbId
+                                // `siblingPrewarms[X]` await is already
+                                // resolved, but the prewarm's wasm-side
+                                // `verifyMerkleBatch` for db=Y is still
+                                // suspended on `&mut self` — and any
+                                // method call here (including the sync
+                                // `setDbId` inside `hpSwitchDb`) trips
+                                // wasm-bindgen's recursive-use guard.
+                                return hpExclusive(async () => {
+                                    if (hpClient.getDbId() !== step.dbId) {
+                                        // Surface the DB-switch progress to
+                                        // the per-button status span so
+                                        // the user doesn't see an empty
+                                        // "⏳ Verifying…" bar while
+                                        // hpSwitchDb is doing 100s of MB
+                                        // of IndexedDB I/O behind the
+                                        // statusDiv panel.
+                                        onProg?.('DB switch', `caching db ${hpClient.getDbId()} hints + loading db ${step.dbId}…`);
+                                        await hpSwitchDb(step.dbId);
+                                        if (!hpHintsLoaded) {
+                                            throw new Error(`hint load failed for db ${step.dbId}`);
+                                        }
+                                        onProg?.('DB switch', `done — ready for db ${step.dbId} merkle proofs`);
                                     }
-                                    onProg?.('DB switch', `done — ready for db ${step.dbId} merkle proofs`);
-                                }
-                                return hpClient.verifyMerkleBatch(results, onProg);
+                                    return hpClient.verifyMerkleBatch(results, onProg);
+                                });
                             },
                             () => hpClient.getMerkleRootHex(),
                             label);
@@ -4043,12 +4093,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     // than the dbId observed at prewarm-start. Reason:
                     // prewarm runs concurrently with sync's outer
                     // `finally` block which is also calling
-                    // hpSwitchDb(savedDbId); whichever wins the
-                    // hpSwitchingDb guard, prewarm's tail must aim
-                    // for the correct end state.
+                    // hpSwitchDb(savedDbId); both go through hpExclusive
+                    // so whichever runs second is a no-op (dbId already
+                    // matches), but the prewarm's tail must aim for the
+                    // correct end state.
                     (async () => {
                         for (const { step, verifiable } of merkleSteps) {
-                            const stepPromise = (async () => {
+                            // Run the entire (hpSwitchDb + verifyMerkleBatch)
+                            // step inside the hpClient queue so it can't
+                            // overlap a button click for a different dbId
+                            // (which would otherwise call into the wasm
+                            // client while a `&mut self` future from this
+                            // step is suspended at an `.await`).
+                            const stepPromise = hpExclusive(async () => {
                                 if (hpClient.getDbId() !== step.dbId) {
                                     await hpSwitchDb(step.dbId);
                                     if (!hpHintsLoaded) {
@@ -4060,7 +4117,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 // ensure_sibling_groups_ready ran and
                                 // persisted to IndexedDB.
                                 await hpClient.verifyMerkleBatch(verifiable);
-                            })();
+                            });
                             siblingPrewarms.set(step.dbId, stepPromise);
                             try {
                                 await stepPromise;
@@ -4071,9 +4128,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         }
                         // Restore user-facing dbId so the next query /
                         // db-selector interaction starts from the same
-                        // dbId the user expected.
+                        // dbId the user expected. Goes through the queue
+                        // so the restoring switch waits for any pending
+                        // user-clicked verify to drain first.
                         if (hpClient.getDbId() !== savedDbId) {
-                            try { await hpSwitchDb(savedDbId); } catch { /* best-effort */ }
+                            try {
+                                await hpExclusive(() => hpSwitchDb(savedDbId));
+                            } catch { /* best-effort */ }
                         }
                     })();
                 }
@@ -4089,9 +4150,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 hpHideProgress();
             } finally {
                 // Restore the user-facing active DB if possible. hpSwitchDb
-                // handles the hint cache / re-download automatically.
+                // handles the hint cache / re-download automatically. The
+                // background Merkle prewarm IIFE may still be running here
+                // — go through the queue so the restoring switch waits
+                // for any in-flight prewarm step / user verify to drain
+                // (otherwise we'd race the wasm client's `&mut self`).
                 if (hpClient && hpClient.getDbId() !== savedDbId) {
-                    try { await hpSwitchDb(savedDbId); } catch {}
+                    try {
+                        await hpExclusive(() => hpSwitchDb(savedDbId));
+                    } catch {}
                 }
                 document.getElementById('hp-syncBtn').disabled = !hpClient || !hpHintsLoaded;
                 document.getElementById('hp-queryBtn').disabled = false;
@@ -4159,13 +4226,16 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 hpSetProgress(5, `Batching ${N} queries...`);
 
                 // Pass hex scriptPubKeys — queryBatch now accepts both hex and addresses.
-                const results = await hpClient.queryBatch(lines, (phase, detail) => {
+                // Goes through the hpClient queue: a sync's fire-and-forget Merkle
+                // prewarm IIFE may still be running when the user lands here, and
+                // the wasm client's `&mut self` would otherwise be contended.
+                const results = await hpExclusive(() => hpClient.queryBatch(lines, (phase, detail) => {
                     let pct = 5;
                     if (phase === 'Level 1') pct = 25;
                     else if (phase === 'Level 2') pct = 55;
                     else if (phase === 'Reassemble') pct = 90;
                     hpSetProgress(pct, `${phase}: ${detail}`);
-                });
+                }));
 
                 // Store inspector data for the Inspect button.
                 hpInspectorDataMap = hpClient.lastInspectorData;
@@ -4192,7 +4262,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         ? undefined
                         : `db ${hpActiveDbId}`;
                     addBatchMerkleButton(resultsContainer, hpVerifiable, 'harmonypir',
-                        (results, onProg) => hpClient.verifyMerkleBatch(results, onProg),
+                        (results, onProg) => hpExclusive(() => hpClient.verifyMerkleBatch(results, onProg)),
                         () => hpClient.getMerkleRootHex(),
                         dbLabel);
                 }
@@ -4223,50 +4293,65 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (hpSwitchingPrp) return; // already switching
 
             const statusDiv = document.getElementById('hp-status');
+            // Flip hpSwitchingPrp synchronously (before yielding to the
+            // queue) so any synchronous-path checks elsewhere — e.g.
+            // `hpSwitchDb`'s early-out and `hpQueryBatch`'s in-flight
+            // guard — see "PRP switch in progress" right away rather
+            // than only after our queue slot starts running.
             hpSwitchingPrp = true;
             try {
-                // Save current hints to cache before switching.
-                if (hpHintsLoaded) {
-                    statusDiv.textContent = 'Status: Saving hints...';
-                    await hpClient.saveHintsToCache();
-                }
-
-                // Tear down old pool (different WASM binary needed).
-                hpClient.disconnectQueryServer();
-                hpClient.terminatePool();
-                hpHintsLoaded = false;
-
-                // Load new WASM + reconnect.
-                statusDiv.textContent = 'Status: Loading ' + names[newPrp] + '...';
-                statusDiv.className = 'status connecting';
-                hpClient.updatePrpBackend(newPrp);
-                await hpClient.loadWasm();
-                await hpClient.connectQueryServer();
-                await hpClient.fetchServerInfo();
-
-                // Try restoring cached hints for the new backend.
-                if (await hpClient.restoreHintsFromCache(newPrp)) {
-                    hpHintsLoaded = true;
-                    statusDiv.textContent = 'Status: Ready';
-                    statusDiv.className = 'status connected';
-                    hpSetButtons(true);
-                    const offlineLabel = document.getElementById('hp-offlineLabel');
-                    if (offlineLabel) {
-                        offlineLabel.textContent = 'Hints restored from cache (~' + hpClient.estimateHintSize() + ' MB). Ready for queries.';
-                    }
-                    log(`HarmonyPIR: Restored cached ${names[newPrp]} hints`, 'success');
-                } else {
-                    // No cache — download fresh hints.
-                    await hpClient.initGroups();
-                    document.getElementById('hp-offlineContainer').style.display = 'block';
-                    statusDiv.textContent = 'Status: Connected (downloading hints...)';
-                    statusDiv.className = 'status connected';
-                    hpSetButtons(true);
-                    await hpFetchHints();
+                // Run the entire PRP swap (saveHintsToCache → tear-down
+                // → loadWasm → reconnect → restore-or-fetch hints)
+                // through the hpClient queue. Without this, a Merkle
+                // prewarm IIFE that's still running from a prior sync
+                // could be suspended inside `verifyMerkleBatch` (holding
+                // `&mut self`) when the user flips the PRP dropdown,
+                // and the very first await here would trip wasm-
+                // bindgen's recursive-use guard.
+                await hpExclusive(async () => {
+                    // Save current hints to cache before switching.
                     if (hpHintsLoaded) {
-                        statusDiv.textContent = 'Status: Ready';
+                        statusDiv.textContent = 'Status: Saving hints...';
+                        await hpClient.saveHintsToCache();
                     }
-                }
+
+                    // Tear down old pool (different WASM binary needed).
+                    hpClient.disconnectQueryServer();
+                    hpClient.terminatePool();
+                    hpHintsLoaded = false;
+
+                    // Load new WASM + reconnect.
+                    statusDiv.textContent = 'Status: Loading ' + names[newPrp] + '...';
+                    statusDiv.className = 'status connecting';
+                    hpClient.updatePrpBackend(newPrp);
+                    await hpClient.loadWasm();
+                    await hpClient.connectQueryServer();
+                    await hpClient.fetchServerInfo();
+
+                    // Try restoring cached hints for the new backend.
+                    if (await hpClient.restoreHintsFromCache(newPrp)) {
+                        hpHintsLoaded = true;
+                        statusDiv.textContent = 'Status: Ready';
+                        statusDiv.className = 'status connected';
+                        hpSetButtons(true);
+                        const offlineLabel = document.getElementById('hp-offlineLabel');
+                        if (offlineLabel) {
+                            offlineLabel.textContent = 'Hints restored from cache (~' + hpClient.estimateHintSize() + ' MB). Ready for queries.';
+                        }
+                        log(`HarmonyPIR: Restored cached ${names[newPrp]} hints`, 'success');
+                    } else {
+                        // No cache — download fresh hints.
+                        await hpClient.initGroups();
+                        document.getElementById('hp-offlineContainer').style.display = 'block';
+                        statusDiv.textContent = 'Status: Connected (downloading hints...)';
+                        statusDiv.className = 'status connected';
+                        hpSetButtons(true);
+                        await hpFetchHints();
+                        if (hpHintsLoaded) {
+                            statusDiv.textContent = 'Status: Ready';
+                        }
+                    }
+                });
             } catch (error) {
                 log(`HarmonyPIR PRP switch failed: ${error.message}`, 'error');
                 statusDiv.textContent = 'Status: Disconnected';
