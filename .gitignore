@@ -7,8 +7,14 @@ target/
 # electrum_plugin/harmonypir-python) shouldn't be tracked — Cargo writes
 # a single root lockfile for the workspace, and excluded sub-projects
 # have their own reproducibility story.
+#
+# vendor/**/Cargo.lock IS tracked: cargo vendor emits a per-crate
+# Cargo.lock and each vendored crate's .cargo-checksum.json references
+# its hash. Dropping these breaks fresh-clone offline builds with
+# "failed to calculate checksum of: vendor/<crate>/Cargo.lock".
 Cargo.lock
 !/Cargo.lock
+!vendor/**/Cargo.lock
 
 # IDE files
 .vscode/
