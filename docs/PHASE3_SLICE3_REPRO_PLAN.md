@@ -48,11 +48,32 @@ Progress log:
   content) → both produce binary sha
   f5ea19dcea883ec9c99de8c906e1f6be3efc3c67e758c0dfe9fd725ef2126fce.
   This closes the cross-path leak that the convention papered over.
-  Open Phase 2 follow-up: pre-fetch HEXL via fetchFromGitHub +
-  patch SEAL's `FetchContent_Declare(hexl ...)` to use it (override-by-
-  first-declared rule). With that, USE_HEXL=ON works inside the strict
-  sandbox and the Nix-built binary matches production's HEXL-on
-  performance profile.
+  Open Phase 2 follow-ups (both attempted in a follow-on session,
+  blocked at deeper layers — see flake.nix comments + git history for
+  the spike work):
+  - **HEXL pre-fetch via Nix** (so USE_HEXL=ON works without network):
+    `fetchFromGitHub` + `FETCHCONTENT_SOURCE_DIR_HEXL` injection works
+    for HEXL itself, but HEXL's transitive `cmake/third-party/cpu-features/`
+    uses CMake's `ExternalProject_Add` (not `FetchContent`) which has no
+    SOURCE_DIR override. Requires either upstreaming a HEXL patch
+    converting cpu-features to FetchContent, or bundling cpu-features
+    into the pre-fetched HEXL source at the ExternalProject_Add expected
+    location. Phase 2 ships USE_HEXL=OFF for now (slower SEAL paths,
+    functionally correct).
+  - **`packages.tier3-uki` derivation** (extend Phase 2 to produce the
+    full UKI from Nix): dracut's auto-included default modules (base,
+    udev-rules, qemu, etc.) walk PATH and try to install ~hundreds of
+    Nix-store-pathed binaries via `inst_simple`, creating broken
+    symlinks (`/initramfs/nix/store/<hash>-busybox/bin/wc → /nix/store/...`)
+    that Nix's sandbox rejects. Closing this needs either (a) replace
+    dracut with NixOS's native initrd builder (`make-initrd-ng` or
+    `lib/build-support/initrd.nix`), rewriting bpir-* module-setup.sh
+    as Nix expressions; (b) patch/wrap dracut to handle Nix-store paths
+    natively; or (c) keep `scripts/build_uki_tier3.sh` as the UKI build
+    path and use Nix only for `unified_server` (operator runs UKI build
+    inside `nix develop` shell — sacrifices the cross-path sandbox for
+    UKI bytes specifically). flake.nix's tier3-uki section preserved
+    as documentation comments.
 - ✅ Sub-task 2 — cargo bit-determinism (partial). Pinned via:
     1. `rust-toolchain.toml` → channel = "1.94.1"
     2. `Cargo.toml [profile.release]` → codegen-units = 1, incremental = false
@@ -391,15 +412,23 @@ Tier 3 UKI from source as of commit `d0ff6f40`. Following it on a
 clean Ubuntu 24.04 host produces a byte-identical
 `unified_server` binary and Tier 3 UKI to the production deploy.
 
-**Path convention (load-bearing).** Operators MUST clone the repo to
-`/home/pir/BitcoinPIR`. Cross-path determinism is blocked by C++
-source paths embedded via `__FILE__` in OnionPIR's CMake-built
-`libonionpir.a` + `libseal-4.1.a` (rustc's `--remap-path-prefix`
-covers Rust but not C++; OnionPIR's build.rs deliberately
-`env_remove`s `CXXFLAGS` so we can't inject `-ffile-prefix-map`).
-Cloning to a different path produces a different binary and therefore
-a different MEASUREMENT. Sub-task 5 (hermetic env mounting at a fixed
-path inside a container) is the proper fix; for now, convention.
+**Two paths to reproducibility:**
+
+1. **Convention-based (default)**: clone to `/home/pir/BitcoinPIR`,
+   run `./scripts/build_unified_server.sh` + `sudo
+   ./scripts/build_uki_tier3.sh`. Recipe steps below assume this path.
+   Cross-path determinism is convention-only here — different clone
+   paths produce different binaries because OnionPIR's CMake-built
+   C++ libs leak source paths via `__FILE__`.
+
+2. **Nix flake (`unified_server` only, fully path-independent)**: with
+   the OnionPIR upstream restructure (rev `350ccc4+`), `nix build
+   .#unified-server` produces byte-identical bytes from any clone path
+   (sub-task 5 Phase 2 / commit `88691dfc`). Replaces step 2 of the
+   recipe below with `nix build .#unified-server && cp result/bin/
+   unified_server target/release/unified_server`. The UKI build (step 3)
+   still uses the convention-path-rooted scripts — `nix build` for
+   `tier3-uki` is a tracked follow-up (dracut-Nix integration gap).
 
 **Step 0 — host setup** (one-time per build host):
 

@@ -32,6 +32,19 @@
     # so cargo's git fetcher pulls it as part of the onionpir crate's
     # own submodules. No separate seal-src needed.
 
+    # HEXL pre-fetch attempted via fetchFromGitHub + FETCHCONTENT_SOURCE_DIR_HEXL
+    # injection (see git history of this file for the working approach).
+    # Blocker: HEXL's cmake/third-party/cpu-features/ uses ExternalProject_Add
+    # to fetch google/cpu_features at build time — no SOURCE_DIR override
+    # like FetchContent has, so it still hits the network and fails in
+    # strict sandbox. Closing this requires either:
+    #   - upstreaming a patch to HEXL converting cpu-features to FetchContent
+    #     (then we can FETCHCONTENT_SOURCE_DIR_CPU_FEATURES it too), or
+    #   - bundling cpu-features into our pre-fetched HEXL source at the
+    #     ExternalProject_Add expected location.
+    # Phase 2 ships with USE_HEXL=OFF (forced via build.rs sed below) —
+    # SEAL's scalar fallback paths, slower but functionally correct.
+
   in {
     # ─── packages.unified-server ───────────────────────────────────────
     # Phase 2 of sub-task 5: build inside Nix's sandbox so the source
@@ -43,6 +56,51 @@
     #
     # Use: `nix build .#unified-server` → ./result/bin/unified_server
     packages.${system} = {
+      # ─── packages.tier3-uki — NOT YET WIRED UP ─────────────────────
+      # Phase 2 extension to produce the full Tier 3 UKI (kernel +
+      # initramfs + cmdline as a single PE/EFI) was attempted but hit a
+      # dracut/Nix integration gap that needs more design than this
+      # session's scope. Sketch + findings:
+      #
+      # - dracut has no `--modules-dir` flag; modules must live inside
+      #   `dracutbasedir/modules.d/`. Workable: build a writable basedir
+      #   under $NIX_BUILD_TOP, copy Nix's dracut tree + our patched
+      #   bpir-* modules in, point dracut at it via `--conf` with
+      #   `dracutbasedir="..."`. This part works.
+      #
+      # - dracut's auto-included default modules (`base`, `udev-rules`,
+      #   `qemu`, network, etc.) walk PATH and try to install ~hundreds
+      #   of binaries via `inst_multiple` / `inst_simple`. For each, it
+      #   creates symlinks INSIDE the initramfs at the binary's full
+      #   path (`/initramfs/nix/store/<hash>-busybox/bin/wc` →
+      #   `/nix/store/<hash>-busybox/bin/wc`). The symlink target paths
+      #   are absolute Nix-store paths that don't exist at the relative
+      #   target dirs dracut expects. Hundreds of `ln: failed to create
+      #   symbolic link` errors, then `Cannot find [systemd-]udevd
+      #   binary` aborts the build. Restricting modules with
+      #   `-m "base bpir-cloudflared bpir-unified-server bpir-tier3-init"`
+      #   reduces but doesn't eliminate the issue (dracut still
+      #   auto-includes udev-rules under any base config).
+      #
+      # - Closing this requires either:
+      #     (a) Replace dracut entirely with NixOS's `make-initrd-ng` or
+      #         `lib/build-support/initrd.nix`, which natively handles
+      #         /nix/store paths (it copies binaries into the initramfs
+      #         root, doesn't try to symlink them via host paths). Big
+      #         architectural change; means rewriting the bpir-*
+      #         module-setup.sh logic as Nix expressions.
+      #     (b) Patch dracut (or write a wrapper) that translates Nix
+      #         store paths to relative initramfs paths during inst_simple.
+      #         Requires deep dracut knowledge.
+      #     (c) Keep the existing scripts/build_uki_tier3.sh path for UKI
+      #         building; use the Nix flake only for unified_server.
+      #         Operator runs both inside `nix develop` shell. Pragmatic
+      #         middle ground; sacrifices the cross-path sandbox property
+      #         for the UKI bytes specifically.
+      #
+      # Phase 2 ships unified-server as the deterministic deliverable;
+      # tier3-uki is tracked as the next major Phase 2 follow-up.
+
       unified-server = pkgs.rustPlatform.buildRustPackage {
         pname = "unified-server";
         version = "0.1.0";
@@ -91,13 +149,11 @@
           # entries, and cargo errors on duplicate source definitions.
           sed -i '/^\[source\.crates-io\]/,$d' .cargo/config.toml
 
-          # Force USE_HEXL=OFF in the vendored OnionPIR build.rs.
-          # HEXL's FetchContent_Declare hits the network at CMake configure
-          # time, which the strict Nix sandbox blocks. SEAL falls back to
-          # its scalar paths — slower but functionally correct, suitable
-          # for the Phase 2 spike. Re-enable later by pre-fetching HEXL
-          # via fetchFromGitHub and patching SEAL's FetchContent_Declare
-          # (override-by-first-declared rule).
+          # Force USE_HEXL=OFF in vendored OnionPIR build.rs. HEXL's
+          # FetchContent_Declare hits network at configure time (via its
+          # own transitive ExternalProject of cpu_features), which the
+          # strict Nix sandbox blocks. SEAL's scalar fallback paths get
+          # used instead — slower but functionally correct.
           sed -i 's|let use_hexl = .*$|let use_hexl = false;|' \
               "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.1.0/build.rs"
         '';
