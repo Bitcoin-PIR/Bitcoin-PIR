@@ -48,32 +48,41 @@ Progress log:
   content) → both produce binary sha
   f5ea19dcea883ec9c99de8c906e1f6be3efc3c67e758c0dfe9fd725ef2126fce.
   This closes the cross-path leak that the convention papered over.
-  Open Phase 2 follow-ups (both attempted in a follow-on session,
-  blocked at deeper layers — see flake.nix comments + git history for
-  the spike work):
-  - **HEXL pre-fetch via Nix** (so USE_HEXL=ON works without network):
-    `fetchFromGitHub` + `FETCHCONTENT_SOURCE_DIR_HEXL` injection works
-    for HEXL itself, but HEXL's transitive `cmake/third-party/cpu-features/`
-    uses CMake's `ExternalProject_Add` (not `FetchContent`) which has no
-    SOURCE_DIR override. Requires either upstreaming a HEXL patch
-    converting cpu-features to FetchContent, or bundling cpu-features
-    into the pre-fetched HEXL source at the ExternalProject_Add expected
-    location. Phase 2 ships USE_HEXL=OFF for now (slower SEAL paths,
-    functionally correct).
-  - **`packages.tier3-uki` derivation** (extend Phase 2 to produce the
-    full UKI from Nix): dracut's auto-included default modules (base,
-    udev-rules, qemu, etc.) walk PATH and try to install ~hundreds of
-    Nix-store-pathed binaries via `inst_simple`, creating broken
-    symlinks (`/initramfs/nix/store/<hash>-busybox/bin/wc → /nix/store/...`)
-    that Nix's sandbox rejects. Closing this needs either (a) replace
-    dracut with NixOS's native initrd builder (`make-initrd-ng` or
-    `lib/build-support/initrd.nix`), rewriting bpir-* module-setup.sh
-    as Nix expressions; (b) patch/wrap dracut to handle Nix-store paths
-    natively; or (c) keep `scripts/build_uki_tier3.sh` as the UKI build
-    path and use Nix only for `unified_server` (operator runs UKI build
-    inside `nix develop` shell — sacrifices the cross-path sandbox for
-    UKI bytes specifically). flake.nix's tier3-uki section preserved
-    as documentation comments.
+  Both Phase 2 follow-ups now closed:
+  - ✅ **HEXL pre-fetch via Nix** (commit f4e20093): bundled
+    `google/cpu_features` at the rev HEXL pins (32b49eb5...), patched
+    HEXL's `cmake/third-party/cpu-features/CMakeLists.txt` to use
+    `file(COPY)` from the Nix-fetched source instead of
+    `ExternalProject_Add`. HEXL itself injected via
+    `-DFETCHCONTENT_SOURCE_DIR_HEXL=$writable_hexl` into the vendored
+    onionpir build.rs's CMake configure. USE_HEXL=ON works inside
+    strict Nix sandbox; binary sha 1d684db1d0489271197b3e2e44f746f0ac
+    5a57333a3ec28b5632b28061d98881; cross-path determinism verified.
+  - ✅ **`packages.tier3-uki` derivation**: replaced dracut with
+    NixOS's `makeInitrdNG` (handles Nix-store paths natively, no
+    inst_simple symlink farm). `bpir-*` module install logic
+    translated into a `contents` list of `{ source, target }` items.
+    UKI assembly bypasses ukify (broken in current nixpkgs
+    systemdUkify) and uses `objcopy` directly on the
+    `linuxx64.efi.stub` from `pkgs.systemd`. `nix build .#tier3-uki`
+    produces a 39MB `bpir-tier3.efi`; cross-path determinism verified
+    (UKI sha 64845c92b2e308f62937dd69e95f9173318084ab10be04470c0f132a8b7aaad4
+    from /home/pir/BitcoinPIR vs /tmp/bpir_alt6).
+
+  Caveats on the Nix-built UKI (not blockers for L4 reproducibility,
+  but worth flagging before any v6 deploy attempt):
+  - Kernel: Nix `linuxPackages_6_12.kernel` (6.12.85), not Ubuntu's
+    7.0.0-15-generic. Different kernel → different UKI sha → would
+    require a fresh `web/src/attest-pin.ts` MEASUREMENT pin.
+  - bpir-tier3-init.sh hardcodes paths like `/usr/bin/runsvdir`,
+    `/sbin/udhcpc` from the dracut-style layout; these need patching
+    to use Nix-store binaries (or PATH) before the UKI actually boots.
+  - Kernel modules (virtio_*, ccp, sev-guest, tsm_report) aren't
+    bundled — Nix kernel needs to be configured with =y for these
+    drivers, or a modules tree added to `contents`.
+  Phase 2 acceptance is "deterministic across operators", which is
+  proven; "boots end-to-end on production" is a separate v6
+  productionization step.
 - ✅ Sub-task 2 — cargo bit-determinism (partial). Pinned via:
     1. `rust-toolchain.toml` → channel = "1.94.1"
     2. `Cargo.toml [profile.release]` → codegen-units = 1, incremental = false

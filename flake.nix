@@ -112,50 +112,107 @@
     #
     # Use: `nix build .#unified-server` → ./result/bin/unified_server
     packages.${system} = {
-      # ─── packages.tier3-uki — NOT YET WIRED UP ─────────────────────
-      # Phase 2 extension to produce the full Tier 3 UKI (kernel +
-      # initramfs + cmdline as a single PE/EFI) was attempted but hit a
-      # dracut/Nix integration gap that needs more design than this
-      # session's scope. Sketch + findings:
+      # ─── packages.tier3-uki ────────────────────────────────────────
+      # Phase 2 extension: produce the Tier 3 UKI inside Nix's sandbox.
+      # Replaces dracut entirely with NixOS's `makeInitrdNG` (which
+      # natively handles /nix/store paths — copies whole derivations
+      # into the initramfs at their store path, sets up symlinks at
+      # target paths). The bpir-* dracut modules' install() functions
+      # are translated into a `contents` list below.
       #
-      # - dracut has no `--modules-dir` flag; modules must live inside
-      #   `dracutbasedir/modules.d/`. Workable: build a writable basedir
-      #   under $NIX_BUILD_TOP, copy Nix's dracut tree + our patched
-      #   bpir-* modules in, point dracut at it via `--conf` with
-      #   `dracutbasedir="..."`. This part works.
+      # The kernel image baked here is Nix's, NOT the Ubuntu kernel
+      # production runs. Different kernel → different UKI sha →
+      # different MEASUREMENT. A v5+ production deploy via this flake
+      # would update web/src/attest-pin.ts after re-deriving the
+      # MEASUREMENT.
       #
-      # - dracut's auto-included default modules (`base`, `udev-rules`,
-      #   `qemu`, network, etc.) walk PATH and try to install ~hundreds
-      #   of binaries via `inst_multiple` / `inst_simple`. For each, it
-      #   creates symlinks INSIDE the initramfs at the binary's full
-      #   path (`/initramfs/nix/store/<hash>-busybox/bin/wc` →
-      #   `/nix/store/<hash>-busybox/bin/wc`). The symlink target paths
-      #   are absolute Nix-store paths that don't exist at the relative
-      #   target dirs dracut expects. Hundreds of `ln: failed to create
-      #   symbolic link` errors, then `Cannot find [systemd-]udevd
-      #   binary` aborts the build. Restricting modules with
-      #   `-m "base bpir-cloudflared bpir-unified-server bpir-tier3-init"`
-      #   reduces but doesn't eliminate the issue (dracut still
-      #   auto-includes udev-rules under any base config).
-      #
-      # - Closing this requires either:
-      #     (a) Replace dracut entirely with NixOS's `make-initrd-ng` or
-      #         `lib/build-support/initrd.nix`, which natively handles
-      #         /nix/store paths (it copies binaries into the initramfs
-      #         root, doesn't try to symlink them via host paths). Big
-      #         architectural change; means rewriting the bpir-*
-      #         module-setup.sh logic as Nix expressions.
-      #     (b) Patch dracut (or write a wrapper) that translates Nix
-      #         store paths to relative initramfs paths during inst_simple.
-      #         Requires deep dracut knowledge.
-      #     (c) Keep the existing scripts/build_uki_tier3.sh path for UKI
-      #         building; use the Nix flake only for unified_server.
-      #         Operator runs both inside `nix develop` shell. Pragmatic
-      #         middle ground; sacrifices the cross-path sandbox property
-      #         for the UKI bytes specifically.
-      #
-      # Phase 2 ships unified-server as the deterministic deliverable;
-      # tier3-uki is tracked as the next major Phase 2 follow-up.
+      # WIP CAVEATS — initial spike. Things still needing attention to
+      # produce a fully bootable Tier 3 v5 UKI:
+      #   - bpir-tier3-init.sh hardcodes /usr/bin/runsvdir, /sbin/udhcpc,
+      #     etc. With Nix paths these don't exist. Either patch the script
+      #     in the contents list or set up symlinks via PATH-bind.
+      #   - Kernel modules: makeInitrdNG doesn't auto-include /lib/modules.
+      #     For SEV-SNP guest we need virtio_*, ccp, sev-guest, tsm_report
+      #     — production currently expects to modprobe these. Either
+      #     ensure they're built INTO the kernel (=y instead of =m) or
+      #     bundle the modules tree into contents.
+      #   - tunnel.env loaded at runtime from rootfs (per sub-task 3b),
+      #     no change needed here.
+      tier3-uki = let
+        kernel = pkgs.linuxPackages_6_12.kernel;
+        unifiedServer = self.packages.${system}.unified-server;
+
+        # Scripts from scripts/dracut/97bpir-tier3-init/, copied verbatim
+        # into the initramfs at the paths the boot flow expects.
+        bpirInitScript      = ./scripts/dracut/97bpir-tier3-init/bpir-tier3-init.sh;
+        cloudflaredRun      = ./scripts/dracut/97bpir-tier3-init/cloudflared-run.sh;
+        unifiedServerRun    = ./scripts/dracut/97bpir-tier3-init/unified-server-run.sh;
+        udhcpcDefaultScript = ./scripts/dracut/97bpir-tier3-init/udhcpc-default.script;
+
+        initrd = pkgs.makeInitrdNG {
+          name = "bpir-tier3-initrd";
+          # Each `source` is copied into the initramfs at its /nix/store
+          # path. Where target is given, a symlink at that path resolves
+          # back to the in-initramfs Nix-store path. Closures (library
+          # deps) get pulled in automatically by makeInitrdNG's reference
+          # walk.
+          contents = [
+            # Binaries (whole derivations → all of /bin is reachable)
+            { source = pkgs.cloudflared;  target = "/bin/cloudflared"; }
+            { source = unifiedServer;     target = "/bin/unified_server"; }
+            { source = pkgs.runit;        target = "/bin/runit"; }
+            { source = pkgs.busybox;      target = "/bin/busybox"; }
+            { source = pkgs.iproute2;     target = "/bin/ip"; }
+            { source = pkgs.kmod;         target = "/bin/modprobe"; }
+            { source = pkgs.util-linux;   target = "/bin/mount"; }
+
+            # Static scripts (no symlink needed — placed at target directly)
+            { source = bpirInitScript;      target = "/sbin/bpir-tier3-init"; }
+            { source = cloudflaredRun;      target = "/etc/sv/cloudflared/run"; }
+            { source = unifiedServerRun;    target = "/etc/sv/unified_server/run"; }
+            { source = udhcpcDefaultScript; target = "/etc/udhcpc/default.script"; }
+          ];
+        };
+
+      in pkgs.runCommand "bpir-tier3-uki" {
+        # ukify isn't reliably available in nixpkgs (`systemdUkify`
+        # build is broken on current nixos-unstable). Bypass ukify and
+        # use objcopy directly — that's all ukify does fundamentally
+        # (assemble PE/EFI sections via the linuxx64.efi.stub, which IS
+        # in pkgs.systemd at /lib/systemd/boot/efi/).
+        nativeBuildInputs = with pkgs; [ binutils ];
+        passthru = { inherit initrd kernel; };
+      } ''
+        mkdir -p $out
+        STUB=${pkgs.systemd}/lib/systemd/boot/efi/linuxx64.efi.stub
+        [ -f "$STUB" ] || { echo "ERROR: $STUB not found"; exit 1; }
+
+        # Write cmdline + os-release as small section payloads.
+        printf '%s' \
+            "rdinit=/sbin/bpir-tier3-init console=ttyS0,115200 console=tty1 loglevel=7" \
+            > cmdline
+        printf 'NAME="bpir"\nVERSION_ID="tier3-v5-nix"\n' > os-release
+
+        # objcopy adds PE sections to the stub. VMAs must be page-
+        # aligned (4 KiB) and non-overlapping. Addresses below are the
+        # canonical layout systemd's ukify uses (sufficient gaps for
+        # multi-MiB initrd payloads).
+        objcopy \
+            --add-section .osrel=os-release    --change-section-vma .osrel=0x20000 \
+            --add-section .cmdline=cmdline     --change-section-vma .cmdline=0x30000 \
+            --add-section .linux=${kernel}/bzImage \
+            --change-section-vma .linux=0x2000000 \
+            --add-section .initrd=${initrd}/initrd \
+            --change-section-vma .initrd=0x3000000 \
+            $STUB \
+            $out/bpir-tier3.efi
+
+        sha256sum $out/bpir-tier3.efi | tee $out/bpir-tier3.efi.sha256
+        echo
+        echo "kernel: ${kernel}/bzImage"
+        echo "initrd: ${initrd}/initrd"
+        echo "binary inside initrd: ${unifiedServer}/bin/unified_server"
+      '';
 
       unified-server = pkgs.rustPlatform.buildRustPackage {
         pname = "unified-server";
