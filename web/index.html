@@ -823,6 +823,51 @@
         .residency-size { width: 90px; text-align: right; font-family: var(--mono); color: var(--ink-mute); flex-shrink: 0; }
         .residency-total { font-weight: 600; border-top: 1px solid var(--line); padding-top: 4px; margin-top: 4px; }
         .residency-error { color: var(--err); font-style: italic; }
+
+        /* Slice 3 attestation badge — persistent per-server status panel
+           shown under each server URL input. Populated by the
+           onAttestation callback via renderAttestBadge(). */
+        .attest-badge {
+            margin: 4px 0 10px 0;
+            padding: 8px 10px;
+            border-radius: 4px;
+            font-family: var(--mono);
+            font-size: 11.5px;
+            line-height: 1.5;
+            border-left: 3px solid var(--ink-mute);
+            background: var(--bg);
+        }
+        .attest-badge .ab-state {
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 4px;
+            display: block;
+        }
+        .attest-badge .ab-row {
+            display: flex;
+            gap: 6px;
+            color: var(--ink-soft);
+        }
+        .attest-badge .ab-row .ab-label {
+            color: var(--ink-mute);
+            min-width: 70px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .attest-badge .ab-row .ab-val {
+            font-family: var(--mono);
+            color: var(--ink);
+            cursor: help;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .attest-badge-verified-vcek { border-left-color: #2e7d32; background: #f0fdf4; }
+        .attest-badge-verified      { border-left-color: #f57f17; background: #fffbe6; }
+        .attest-badge-mismatch      { border-left-color: var(--err); background: #fef2f2; }
+        .attest-badge-plaintext     { border-left-color: var(--ink-mute); background: var(--bg); }
+        .attest-badge-unattested    { border-left-color: var(--ink-mute); background: var(--bg); color: var(--ink-mute); }
     </style>
     <script src="/wasm/onionpir_client.js"></script>
     <!-- HarmonyPIR WASM loaded dynamically in loadWasm() based on PRP selection -->
@@ -1053,10 +1098,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             <label for="server0Url">Server 0</label>
                             <input type="text" id="server0Url" class="input" value="wss://pir1.chenweikeng.com" spellcheck="false">
                         </div>
+                        <div id="attestBadge0" class="attest-badge attest-badge-unattested" data-server="0" style="display: none;"></div>
+
                         <div class="status-row">
                             <label for="server1Url">Server 1</label>
                             <input type="text" id="server1Url" class="input" value="wss://pir2.chenweikeng.com" spellcheck="false">
                         </div>
+                        <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
 
                         <div id="syncStateRow" style="display: none; margin-top: 14px;">
                             <span>Sync state:</span>
@@ -1381,10 +1429,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             <label for="hp-hintServerUrl">Hint server</label>
                             <input type="text" id="hp-hintServerUrl" class="input" value="wss://pir1.chenweikeng.com" spellcheck="false">
                         </div>
+                        <div id="hp-attestBadgeHint" class="attest-badge attest-badge-unattested" style="display: none;"></div>
+
                         <div class="status-row">
                             <label for="hp-queryServerUrl">Query server</label>
                             <input type="text" id="hp-queryServerUrl" class="input" value="wss://pir2.chenweikeng.com" spellcheck="false">
                         </div>
+                        <div id="hp-attestBadgeQuery" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                         <div class="status-row">
                             <label for="hp-prpSelect">PRP backend</label>
                             <div style="display: flex; align-items: center; gap: 10px;">
@@ -1478,7 +1529,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     <button class="fab-tweaks" id="fabTweaks">Tweaks</button>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN } from './src/index.ts';
         import { fetchResidency } from './src/server-info.ts';
 
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
@@ -1568,6 +1619,62 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         function setButtons(connected) {
             document.getElementById('connectBtn').disabled = connected;
             document.getElementById('disconnectBtn').disabled = !connected;
+        }
+
+        // Slice 3: persistent attestation badge per server. Called from
+        // the onAttestation callback once the per-server attest call
+        // resolves. Hides until the first call (display:none → block),
+        // then mutates content + state class on every subsequent call.
+        function renderAttestBadge(idElem, serverTag, info) {
+            const el = typeof idElem === 'string' ? document.getElementById(idElem) : idElem;
+            if (!el) return;
+            const truncate = (hex, n = 16) =>
+                hex && hex.length > n ? `${hex.slice(0, n)}…` : (hex || '—');
+            const stateLabel = {
+                'verified-vcek': '✓ Verified — AMD VCEK chain validated',
+                'verified':      '✓ Verified — V2 binding only (no chain)',
+                'mismatch':      '⚠ Mismatch — channel binding failed',
+                'plaintext':     '⚪ Plaintext — server has no channel pubkey',
+                'unattested':    '⏸ Unattested',
+            }[info.state] || info.state;
+
+            // Re-class for color.
+            el.className = `attest-badge attest-badge-${info.state}`;
+            el.style.display = 'block';
+
+            const rows = [];
+            rows.push(`<span class="ab-state">${stateLabel}</span>`);
+            if (info.binarySha256Hex) {
+                rows.push(`<div class="ab-row"><span class="ab-label">binary</span><span class="ab-val" title="${info.binarySha256Hex}">${truncate(info.binarySha256Hex, 24)}</span></div>`);
+            }
+            if (info.launchMeasurementHex) {
+                rows.push(`<div class="ab-row"><span class="ab-label">measurement</span><span class="ab-val" title="${info.launchMeasurementHex}">${truncate(info.launchMeasurementHex, 24)}</span></div>`);
+            }
+            if (info.serverStaticPubHex) {
+                rows.push(`<div class="ab-row"><span class="ab-label">channel pk</span><span class="ab-val" title="${info.serverStaticPubHex}">${truncate(info.serverStaticPubHex, 24)}</span></div>`);
+            }
+            if (info.gitRev) {
+                rows.push(`<div class="ab-row"><span class="ab-label">git rev</span><span class="ab-val" title="${info.gitRev}">${truncate(info.gitRev, 12)}</span></div>`);
+            }
+            if (info.vcekChain) {
+                const chainLabel = info.vcekChain === 'pass' ? '✓ chain validated'
+                                 : info.vcekChain === 'fail' ? `✗ chain failed: ${info.vcekChainError || 'unknown'}`
+                                 : info.vcekChain === 'skipped' ? '— chain not bundled by server'
+                                 : info.vcekChain;
+                rows.push(`<div class="ab-row"><span class="ab-label">vcek</span><span class="ab-val">${chainLabel}</span></div>`);
+            }
+            if (info.pinStatus) {
+                const pinLabel = info.pinStatus === 'match' ? '🔒 build-time pin matched'
+                               : info.pinStatus === 'measurement-mismatch' ? `⚠ ${info.pinError || 'MEASUREMENT pin mismatch'}`
+                               : info.pinStatus === 'binary-mismatch' ? `⚠ ${info.pinError || 'binary sha pin mismatch'}`
+                               : info.pinStatus === 'no-pin' ? '— no build-time pin configured'
+                               : info.pinStatus;
+                rows.push(`<div class="ab-row"><span class="ab-label">pin</span><span class="ab-val" title="${info.pinError || ''}">${pinLabel}</span></div>`);
+            }
+            if (info.sevStatus) {
+                rows.push(`<div class="ab-row"><span class="ab-label">sev status</span><span class="ab-val">${info.sevStatus}</span></div>`);
+            }
+            el.innerHTML = rows.join('');
         }
 
         function setProgress(percent, label) {
@@ -2052,6 +2159,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     server0Url,
                     server1Url,
                     expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                    // Slice 3 build-time pins. Production topology: server0=pir1
+                    // (Hetzner, no SEV — only binary sha pinnable), server1=pir2
+                    // (VPSBG Tier 3 — both MEASUREMENT + binary sha pinned).
+                    // Update PIR1_PIN / PIR2_TIER3_PIN in src/attest-pin.ts when
+                    // the operator re-bakes + republishes.
+                    expectedServer0Pin: PIR1_PIN,
+                    expectedServer1Pin: PIR2_TIER3_PIN,
                     onAttestation: (idx, info) => {
                         const tag = `server${idx}`;
                         if (info.state === 'verified-vcek') {
@@ -2061,6 +2175,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         } else if (info.state === 'mismatch' && info.vcekChainError) {
                             log(`✗ ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
                         }
+                        // Slice 3: persistent badge under the server URL input
+                        // surfacing binary sha + MEASUREMENT + channel pk + git rev.
+                        renderAttestBadge(`attestBadge${idx}`, tag, info);
                     },
                     onConnectionStateChange: (state, message) => {
                         log(`Connection: ${state}${message ? ' - ' + message : ''}`,
@@ -3497,6 +3614,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     queryServerUrl,
                     prpBackend: hpCurrentPrp,
                     expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                    // Slice 3 pins. Hint server = pir1 (no SEV), query server = pir2 (Tier 3).
+                    expectedServer0Pin: PIR1_PIN,
+                    expectedServer1Pin: PIR2_TIER3_PIN,
                     onAttestation: (idx, info) => {
                         const tag = idx === 0 ? 'hint' : 'query';
                         if (info.state === 'verified-vcek') {
@@ -3506,6 +3626,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         } else if (info.state === 'mismatch' && info.vcekChainError) {
                             log(`✗ HarmonyPIR ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
                         }
+                        // Slice 3: persistent badge under each server URL.
+                        const badgeId = idx === 0 ? 'hp-attestBadgeHint' : 'hp-attestBadgeQuery';
+                        renderAttestBadge(badgeId, `HarmonyPIR ${tag}`, info);
                     },
                     onProgress: (msg) => {
                         log(`HarmonyPIR: ${msg}`);

@@ -118,6 +118,15 @@ export interface HarmonyPirClientConfig {
    * flips state to `'verified-vcek'` on chain validation success.
    */
   expectedArkFingerprint?: Uint8Array | null;
+  /**
+   * Slice 3 build-time pins for the per-server attested values.
+   * See `BatchPirClientConfig.expectedServer{0,1}Pin` for full doc.
+   * Index 0 = hint server, 1 = query server. For the production
+   * topology (pir1 hint, pir2 query): set hint=PIR1_PIN,
+   * query=PIR2_TIER3_PIN.
+   */
+  expectedServer0Pin?: import('./attest-pin.js').ServerAttestPin;
+  expectedServer1Pin?: import('./attest-pin.js').ServerAttestPin;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -204,7 +213,10 @@ export class HarmonyPirClientAdapter {
 
     const expectedArkFp = this.config.expectedArkFingerprint ?? null;
 
-    const summarise = (att: WasmAttestVerification | null): ServerAttestation => {
+    const summarise = (
+      idx: 0 | 1,
+      att: WasmAttestVerification | null,
+    ): ServerAttestation => {
       if (!att) return { state: 'mismatch' };
       const allZero = att.serverStaticPub.every((b) => b === 0);
       const matched = att.sevStatus === 'reportDataMatch';
@@ -220,6 +232,7 @@ export class HarmonyPirClientAdapter {
         serverStaticPubHex: att.serverStaticPubHex,
         binarySha256Hex: att.binarySha256Hex,
         gitRev: att.gitRev,
+        launchMeasurementHex: att.launchMeasurementHex,
       };
       // Slice D.3 chain validation. Same gating logic as the DPF
       // adapter — see dpf-adapter.ts::attestAndUpgrade for rationale.
@@ -243,11 +256,43 @@ export class HarmonyPirClientAdapter {
       } else if (state === 'verified' && matched && !att.hasVcekChain) {
         result.vcekChain = 'skipped';
       }
+      // Slice 3 build-time pin enforcement. See dpf-adapter.ts::summarise
+      // for the rationale + same shape.
+      const pin =
+        idx === 0 ? this.config.expectedServer0Pin : this.config.expectedServer1Pin;
+      if (pin) {
+        const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
+        if (stateOk) {
+          if (
+            pin.measurementHex &&
+            att.launchMeasurementHex &&
+            pin.measurementHex.toLowerCase() !== att.launchMeasurementHex.toLowerCase()
+          ) {
+            result.pinStatus = 'measurement-mismatch';
+            result.pinError = `MEASUREMENT pin mismatch — expected ${pin.measurementHex.slice(0, 16)}…, got ${att.launchMeasurementHex.slice(0, 16)}…`;
+            result.state = 'mismatch';
+            this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
+          } else if (
+            pin.binarySha256Hex &&
+            att.binarySha256Hex &&
+            pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
+          ) {
+            result.pinStatus = 'binary-mismatch';
+            result.pinError = `binary_sha256 pin mismatch — expected ${pin.binarySha256Hex.slice(0, 16)}…, got ${att.binarySha256Hex.slice(0, 16)}…`;
+            result.state = 'mismatch';
+            this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
+          } else {
+            result.pinStatus = 'match';
+          }
+        }
+      } else {
+        result.pinStatus = 'no-pin';
+      }
       return result;
     };
 
-    this.attestation.hint = summarise(hintAtt);
-    this.attestation.query = summarise(queryAtt);
+    this.attestation.hint = summarise(0, hintAtt);
+    this.attestation.query = summarise(1, queryAtt);
     this.config.onAttestation?.(0, this.attestation.hint);
     this.config.onAttestation?.(1, this.attestation.query);
 

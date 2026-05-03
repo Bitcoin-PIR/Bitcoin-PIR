@@ -465,6 +465,31 @@ impl WasmAttestVerification {
         hex_encode(&self.inner.expected_report_data_hash)
     }
 
+    /// Hex-encoded launch MEASUREMENT — the 48-byte hash that AMD's
+    /// PSP signs into every SEV-SNP report, covering OVMF + the loaded
+    /// UKI bytes (kernel + initramfs + cmdline). For Tier 3 deployments
+    /// this is the operator-published value that pins the running
+    /// software stack: any change to the binary inside the initramfs
+    /// flips the MEASUREMENT, so a verifier comparing against a pinned
+    /// value can detect substitution.
+    ///
+    /// Returns the empty string when the server is not on a SEV-SNP
+    /// host (i.e. `sev_snp_report` is empty) — there's no MEASUREMENT
+    /// to extract from a non-existent report.
+    ///
+    /// Offset 0x90, length 48 within the SEV-SNP attestation report
+    /// (matches `bpir-admin attest`'s `MEASUREMENT_OFFSET` constant).
+    #[wasm_bindgen(getter, js_name = launchMeasurementHex)]
+    pub fn launch_measurement_hex(&self) -> String {
+        const MEASUREMENT_OFFSET: usize = 0x90;
+        const MEASUREMENT_LEN: usize = 48;
+        let report = &self.inner.response.sev_snp_report;
+        if report.len() < MEASUREMENT_OFFSET + MEASUREMENT_LEN {
+            return String::new();
+        }
+        hex_encode(&report[MEASUREMENT_OFFSET..MEASUREMENT_OFFSET + MEASUREMENT_LEN])
+    }
+
     // ── Slice D.2 cert chain accessors ──────────────────────────────
     //
     // PEM-encoded ARK / ASK / VCEK certs the server bundled in its

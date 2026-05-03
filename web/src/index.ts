@@ -117,6 +117,9 @@ export {
 export {
   AMD_TURIN_ARK_FINGERPRINT,
   AMD_TURIN_ARK_FINGERPRINT_HEX,
+  PIR1_PIN,
+  PIR2_TIER3_PIN,
+  type ServerAttestPin,
 } from './attest-pin.js';
 
 export type {

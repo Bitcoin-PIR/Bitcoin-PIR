@@ -181,6 +181,13 @@ export interface WasmAttestVerification {
   /** Hex-encoded REPORT_DATA preimage hash the client recomputed
    *  locally. Compare against `sevSnpReport[0x50..0x70]`. */
   readonly expectedReportDataHashHex: string;
+  /** Hex-encoded launch MEASUREMENT — the 48-byte hash AMD's PSP
+   *  signs into every SEV-SNP report, covering OVMF + the loaded
+   *  UKI bytes (kernel + initramfs + cmdline). Empty string when
+   *  the server isn't on a SEV-SNP host. Compare against an
+   *  operator-published value to detect substitution of the
+   *  running stack. */
+  readonly launchMeasurementHex: string;
 
   // ── Slice D.2 + D.3 cert chain ──────────────────────────────────
   /** Raw PEM bytes of the AMD ARK (Root Key) cert, as bundled by

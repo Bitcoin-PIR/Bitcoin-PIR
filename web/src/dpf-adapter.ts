@@ -96,6 +96,11 @@ export interface ServerAttestation {
   binarySha256Hex?: string;
   /** Git commit baked into the running server binary. */
   gitRev?: string;
+  /** Hex-encoded launch MEASUREMENT (96 chars / 48 bytes) — the
+   *  digest AMD's PSP signs into every SEV-SNP report, covering OVMF
+   *  + the loaded UKI bytes. Empty when not on a SEV-SNP host.
+   *  Hardware-backed iff `sevStatus === 'reportDataMatch'`. */
+  launchMeasurementHex?: string;
   /** When VCEK chain validation was attempted: 'pass' / 'fail' /
    *  'skipped' (server didn't bundle a chain — pre-Slice-D.2 server
    *  or `--vcek-dir` unset). Filled in by the adapter after the
@@ -104,6 +109,15 @@ export interface ServerAttestation {
   /** When `vcekChain === 'fail'`, the diagnostic from
    *  `pir_attest_verify::VerifyError`. */
   vcekChainError?: string;
+  /** Slice 3 build-time pin enforcement status:
+   *   - `'no-pin'`: no pin configured for this server.
+   *   - `'match'`: configured pin(s) matched the attested values.
+   *   - `'measurement-mismatch'`: launchMeasurementHex didn't match.
+   *   - `'binary-mismatch'`: binarySha256Hex didn't match.
+   * On any mismatch, `state` is demoted to `'mismatch'` and
+   * `pinError` carries a human-readable diagnostic. */
+  pinStatus?: 'no-pin' | 'match' | 'measurement-mismatch' | 'binary-mismatch';
+  pinError?: string;
 }
 
 export interface BatchPirClientConfig {
@@ -147,6 +161,23 @@ export interface BatchPirClientConfig {
    * (the second PEM block).
    */
   expectedArkFingerprint?: Uint8Array | null;
+  /**
+   * Slice 3 build-time pins for the per-server attested values.
+   * When a pin is set for a server, the adapter enforces it after
+   * the SEV-SNP / VCEK chain checks pass: any mismatch on
+   * `measurementHex` or `binarySha256Hex` demotes that server's
+   * `state` to `'mismatch'` and carries a `pinError` diagnostic.
+   *
+   * Both fields are optional per server. Skipping a field skips
+   * that check (e.g. omit `measurementHex` for non-SEV servers
+   * like pir1 — they have no MEASUREMENT to compare).
+   *
+   * Pin values come from operator-published constants in
+   * [`./attest-pin.ts`] — see `PIR2_TIER3_PIN` and `PIR1_PIN`.
+   * Update those constants whenever the operator re-bakes + republishes.
+   */
+  expectedServer0Pin?: import('./attest-pin.js').ServerAttestPin;
+  expectedServer1Pin?: import('./attest-pin.js').ServerAttestPin;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -521,6 +552,7 @@ export class BatchPirClientAdapter {
         serverStaticPubHex: att.serverStaticPubHex,
         binarySha256Hex: att.binarySha256Hex,
         gitRev: att.gitRev,
+        launchMeasurementHex: att.launchMeasurementHex,
       };
 
       // Slice D.3: AMD VCEK chain validation. Only attempt when the
@@ -550,6 +582,46 @@ export class BatchPirClientAdapter {
         }
       } else if (state === 'verified' && matched && !att.hasVcekChain) {
         result.vcekChain = 'skipped';
+      }
+
+      // Slice 3 build-time pin enforcement. Runs AFTER chain
+      // validation so the pin only kicks in when the report is
+      // already internally consistent. A mismatch demotes state to
+      // 'mismatch' regardless of how clean the chain validation was —
+      // the operator pinned a specific (UKI, binary), and the server
+      // is reporting something else.
+      const pin =
+        idx === 0 ? this.config.expectedServer0Pin : this.config.expectedServer1Pin;
+      if (pin) {
+        // Only enforce when state is verified-ish AND the report is
+        // internally consistent. Skipping pin check on a 'mismatch'
+        // would be misleading anyway — the channel is already broken.
+        const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
+        if (stateOk) {
+          if (
+            pin.measurementHex &&
+            att.launchMeasurementHex &&
+            pin.measurementHex.toLowerCase() !== att.launchMeasurementHex.toLowerCase()
+          ) {
+            result.pinStatus = 'measurement-mismatch';
+            result.pinError = `MEASUREMENT pin mismatch — expected ${pin.measurementHex.slice(0, 16)}…, got ${att.launchMeasurementHex.slice(0, 16)}…`;
+            result.state = 'mismatch';
+            this.log(`server${idx}: ${result.pinError}`, 'error');
+          } else if (
+            pin.binarySha256Hex &&
+            att.binarySha256Hex &&
+            pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
+          ) {
+            result.pinStatus = 'binary-mismatch';
+            result.pinError = `binary_sha256 pin mismatch — expected ${pin.binarySha256Hex.slice(0, 16)}…, got ${att.binarySha256Hex.slice(0, 16)}…`;
+            result.state = 'mismatch';
+            this.log(`server${idx}: ${result.pinError}`, 'error');
+          } else {
+            result.pinStatus = 'match';
+          }
+        }
+      } else {
+        result.pinStatus = 'no-pin';
       }
       return result;
     };
