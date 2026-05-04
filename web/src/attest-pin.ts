@@ -73,13 +73,13 @@ export interface ServerAttestPin {
  * Pinned 2026-05-04 from the v4 deploy (UKI sha `e835a516…f8396da0`).
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // FIXME: measurement needs re-capture after UKI rebuild (--pool-size added to cmdline).
+  // FIXME: measurement needs re-capture after UKI v5 deploy.
   // Run: bpir-admin attest wss://pir2.chenweikeng.com to get the new measurement.
   measurementHex:
     'f6aa29156c63cae96dce8c33427489016dee86b5716b2aa3c9d9a67e47768fa010d5ad5468ada3f858931f53c6ae8bd9',
   binarySha256Hex:
-    'eb625c68afc81d8d81e3d2a8bea9363282c32477c26c34093b41b918b9c678b6',
-  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI v4)',
+    '5877e304ee1447fa3747073f5f8f2783abe24c1d459c123d39e30860829ed256',
+  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI v5)',
 };
 
 /**
