@@ -46,20 +46,4 @@ The standalone hint server now handles `REQ_HARMONY_HINTS_V2`:
 - Removed unused `config: HintPoolConfig` field from `HintPool` struct
 - Removed unused `tag_seed: u64` field from `DbParams` struct
 
-## Pending
-
-### 1. Capture new pir2 MEASUREMENT
-The VPSBG UKI initramfs changed (`--pool-size 8` added to runit script + SEV module hardening), so the SEV-SNP MEASUREMENT changed. After rebuilding and redeploying the UKI:
-```
-bpir-admin attest wss://pir2.chenweikeng.com
-```
-This will return the new 96-char measurement hex. Then update `PIR2_TIER3_PIN.measurementHex` in `web/src/attest-pin.ts`.
-
-### 5. Rebuild UKI on VPSBG
-Pull the updated scripts, rebuild, and deploy:
-```
-ssh vpsbg-pir 'cd /home/pir/BitcoinPIR && git pull'
-ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
-scp vpsbg-pir:/tmp/bpir-tier3.efi ./bpir-tier3.efi
-# VPSBG portal → Measured Boot → UKI → Upload → Save & Reboot
-```
+## Completed (all items resolved 2026-05-04)
