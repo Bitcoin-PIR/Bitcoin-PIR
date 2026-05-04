@@ -34,7 +34,16 @@ mount -t devpts   devpts   /dev/pts  2>/dev/null || true
 [ -d /run ] || mkdir -p /run
 mount -t tmpfs    tmpfs    /run      2>/dev/null || true
 
-# ── 2. Network bring-up (STATIC, matching VPSBG netplan) ───────────
+# ── 2. Disable kernel console input vectors ──────────────────────
+# /proc must be mounted first. With no getty and no shell on the
+# serial console, the host admin cannot get interactive access — but
+# the kernel still handles Ctrl-Alt-Del (reboot) and Magic SysRq
+# keys by default. Disable both. The host can still force-stop or
+# reset the VM through the hypervisor (subject to SEV-SNP protection).
+echo 0 > /proc/sys/kernel/sysrq           || true
+echo 0 > /proc/sys/kernel/ctrl-alt-del    || true
+
+# ── 3. Network bring-up (STATIC, matching VPSBG netplan) ───────────
 # DISCOVERED Phase 3.1 v3: VPSBG uses STATIC IP via cloud-init / netplan,
 # NOT DHCP. Slice 2's /etc/netplan/50-cloud-init.yaml hardcodes:
 #   addresses: 87.120.8.198/32
@@ -89,7 +98,7 @@ cat /etc/resolv.conf 2>/dev/null || echo "[bpir-tier3-init] WARN: still no /etc/
 echo "--- routes ---"
 ip route show
 
-# ── 3. Mount rootfs + bind /home/pir/data ──────────────────────────
+# ── 4. Mount rootfs + bind /home/pir/data ──────────────────────────
 # Phase 3.2: unified_server reads /home/pir/data/databases.toml and
 # mmaps the per-DB checkpoint files referenced from there. The DBs
 # (~14 GB) can't live in the initramfs, so we mount the existing
@@ -149,7 +158,7 @@ else
     echo "[bpir-tier3-init] WARN: rootfs mount failed — no /home/pir/data available, unified_server will not run, but cloudflared will still come up so we keep observability" >&2
 fi
 
-# ── 4. /dev/sev-guest ─────────────────────────────────────────────
+# ── 5. /dev/sev-guest ─────────────────────────────────────────────
 # Required by unified_server for SEV-SNP attestation. The kernel
 # modules `ccp` (AMD Crypto Coprocessor) + `sev-guest` (which depends
 # on tsm_report) auto-load via udev on Slice 2; Tier 3 has no udev,
@@ -177,12 +186,12 @@ fi
         echo "[bpir-tier3-init] modules may not have been baked into initramfs — check UKI build log"
     fi
 
-# ── 5. Service tree ────────────────────────────────────────────────
+# ── 6. Service tree ────────────────────────────────────────────────
 mkdir -p /etc/service
 ln -sf /etc/sv/unified_server /etc/service/unified_server
 ln -sf /etc/sv/cloudflared    /etc/service/cloudflared
 
-# ── 6. Hand off to runsvdir ────────────────────────────────────────
+# ── 7. Hand off to runsvdir ────────────────────────────────────────
 # runsvdir watches /etc/service/, spawns runsv per service, restarts
 # them on exit. As PID 1 it also reaps zombies. Replaces this script.
 # unified_server starts immediately; cloudflared waits on port 8091
