@@ -12,6 +12,7 @@
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
 use runtime::eval::{self, GroupTiming};
+use runtime::hint_pool;
 use runtime::protocol::*;
 use runtime::onionpir::*;
 use runtime::config::ServerConfig;
@@ -108,6 +109,10 @@ struct CliArgs {
     /// changes (kernel update, microcode update) — see
     /// docs/PHASE3_ROADMAP.md.
     vcek_dir: Option<PathBuf>,
+    /// HarmonyPIR V2 hint pool size (0 = pool disabled, use V1 on-demand).
+    pool_size: usize,
+    /// Directory for pool file persistence.
+    pool_dir: Option<PathBuf>,
 }
 
 fn parse_args() -> CliArgs {
@@ -122,6 +127,8 @@ fn parse_args() -> CliArgs {
     let mut admin_pubkey_hex: Option<String> = None;
     let mut disable_onion = false;
     let mut vcek_dir: Option<PathBuf> = None;
+    let mut pool_size: usize = 0; // 0 = pool disabled
+    let mut pool_dir: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -190,12 +197,22 @@ fn parse_args() -> CliArgs {
                 }
                 i += 1;
             }
+            "--pool-size" => {
+                pool_size = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                i += 1;
+            }
+            "--pool-dir" => {
+                if let Some(dir) = args.get(i + 1) {
+                    pool_dir = Some(PathBuf::from(dir));
+                }
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -408,6 +425,8 @@ struct UnifiedServerData {
     /// `channel_keypair.new_handshake()` in the dispatch loop's
     /// REQ_HANDSHAKE branch.
     channel_keypair: pir_runtime_core::channel::ChannelKeypair,
+    /// Pre-computed HarmonyPIR V2 hint pool (None if pool_size=0).
+    hint_pool: Option<hint_pool::HintPool>,
 }
 
 impl UnifiedServerData {
@@ -1847,6 +1866,28 @@ async fn main() {
     };
     println!("  Data root: {}", data_root.display());
 
+    // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
+    let hint_pool = if args.pool_size > 0 {
+        let pool_config = hint_pool::HintPoolConfig {
+            pool_size: args.pool_size,
+            prp_backend: harmonypir_wasm::PRP_ALF,
+            pool_dir: args.pool_dir.clone(),
+        };
+        let main_db = state.get_db(0).expect("main database must be loaded");
+        if let Some(ref dir) = pool_config.pool_dir {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        println!(
+            "  HarmonyPIR V2 hint pool: size={}, backend=ALF, dir={}",
+            pool_config.pool_size,
+            pool_config.pool_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "memory-only".into())
+        );
+        Some(hint_pool::HintPool::new(pool_config, main_db))
+    } else {
+        println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
+        None
+    };
+
     let server = Arc::new(UnifiedServerData {
         state,
         role: args.role,
@@ -1857,6 +1898,7 @@ async fn main() {
         admin_config,
         data_root,
         channel_keypair,
+        hint_pool,
     });
 
     // ── Accept WebSocket connections ────────────────────────────────────
@@ -2384,6 +2426,91 @@ async fn main() {
                             }
                             println!("[harmony-hint] db={} L{} {}/{} groups in {:.2?}", db_id, level, sent, num, t_start.elapsed());
                         }
+                    }
+                    REQ_HARMONY_HINTS_V2 => {
+                        // V2: server generates PRP key, serves pre-computed frames from pool.
+                        let t_start = Instant::now();
+                        let v2_req = match Request::decode(payload) {
+                            Ok(Request::HarmonyHintsV2(h)) => h,
+                            Ok(other) => {
+                                let resp = Response::Error(format!("unexpected request type for V2 hints: {:?}", other));
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                                continue;
+                            }
+                            Err(e) => {
+                                let resp = Response::Error(format!("V2 hint request decode error: {}", e));
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                                continue;
+                            }
+                        };
+                        let db_id = v2_req.db_id;
+                        if server.state.get_db(db_id).is_none() {
+                            let resp = Response::Error(format!("unknown db_id {}", db_id));
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            continue;
+                        }
+
+                        let pool = match &server.hint_pool {
+                            Some(p) => p,
+                            None => {
+                                let resp = Response::Error(
+                                    "V2 hints not available: start server with --pool-size to enable".into()
+                                );
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                                continue;
+                            }
+                        };
+
+                        let entry = match pool.take() {
+                            Some(e) => e,
+                            None => {
+                                let resp = Response::Error("server shutting down".into());
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                                continue;
+                            }
+                        };
+
+                        // 1. Send key preamble frame.
+                        if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), entry.key_preamble.clone()).await {
+                            eprintln!("[{}] V2 preamble send error: {}", peer, e);
+                            continue;
+                        }
+
+                        // 2. Send all INDEX frames.
+                        let mut sent = 0usize;
+                        for frame in &entry.index_frames {
+                            if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), frame.clone()).await {
+                                eprintln!("[{}] V2 index frame send error: {}", peer, e);
+                                break;
+                            }
+                            sent += 1;
+                        }
+
+                        // 3. Send all CHUNK frames.
+                        for frame in &entry.chunk_frames {
+                            if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), frame.clone()).await {
+                                eprintln!("[{}] V2 chunk frame send error: {}", peer, e);
+                                break;
+                            }
+                            sent += 1;
+                        }
+
+                        // 4. Terminal sentinel: group_id=0xFF signals end-of-stream.
+                        let terminal_len: u32 = 1 + 1; // variant + group_id
+                        let mut terminal = Vec::with_capacity(4 + terminal_len as usize);
+                        terminal.extend_from_slice(&terminal_len.to_le_bytes());
+                        terminal.push(RESP_HARMONY_HINTS);
+                        terminal.push(0xFFu8);
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), terminal).await;
+
+                        let elapsed = t_start.elapsed();
+                        println!(
+                            "[harmony-hint-v2] db={} {} groups served from pool (prp_key={:02x?}...) in {:.2?}",
+                            db_id,
+                            sent,
+                            &entry.prp_key[..4],
+                            elapsed,
+                        );
                     }
                     REQ_HARMONY_QUERY => {
                         if let Ok(Request::HarmonyQuery(q)) = Request::decode(payload) {

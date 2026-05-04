@@ -17,5 +17,6 @@ pub use pir_runtime_core::{eval, handler, protocol, table};
 // Binary-only modules. These stay here because only `src/bin/*` reaches
 // for them.
 pub mod config;
+pub mod hint_pool;
 pub mod onionpir;
 pub mod warmup;

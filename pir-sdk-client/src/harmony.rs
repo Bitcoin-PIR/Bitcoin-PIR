@@ -64,6 +64,11 @@ const RESP_HARMONY_INFO: u8 = 0x40;
 const REQ_HARMONY_HINTS: u8 = 0x41;
 const RESP_HARMONY_HINTS: u8 = 0x41;
 
+/// V2: server generates the PRP key. Request variant.
+const REQ_HARMONY_HINTS_V2: u8 = 0x44;
+/// V2: key preamble response variant.
+const RESP_HARMONY_HINTS_KEY: u8 = 0x44;
+
 const REQ_HARMONY_BATCH_QUERY: u8 = 0x43;
 const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
 
@@ -513,6 +518,10 @@ pub struct HarmonyClient {
     /// 0 for the query server and 1 for the hint server. Independent
     /// of `metrics_recorder` — install neither, either, or both.
     leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
+    /// If true, use V2 hint protocol: server generates the PRP key.
+    /// Default: true for new clients. Set to false for V1 fallback
+    /// (client generates key, sends in request).
+    use_v2_protocol: bool,
 }
 
 impl HarmonyClient {
@@ -547,6 +556,7 @@ impl HarmonyClient {
             state_listener: None,
             metrics_recorder: None,
             leakage_recorder: None,
+            use_v2_protocol: true,
         }
     }
 
@@ -846,6 +856,17 @@ impl HarmonyClient {
     pub fn set_prp_backend(&mut self, backend: u8) {
         if backend != self.prp_backend {
             self.prp_backend = backend;
+            self.invalidate_groups();
+        }
+    }
+
+    /// Enable or disable V2 hint protocol (server-generated PRP key).
+    ///
+    /// Default: `true` for new clients. Set to `false` to fall back to V1
+    /// (client sends PRP key in hint request — needed for older servers).
+    pub fn set_use_v2_protocol(&mut self, v2: bool) {
+        if v2 != self.use_v2_protocol {
+            self.use_v2_protocol = v2;
             self.invalidate_groups();
         }
     }
@@ -1305,6 +1326,10 @@ impl HarmonyClient {
             return Ok(());
         }
 
+        if self.use_v2_protocol {
+            return self.ensure_groups_ready_v2(db_info, progress).await;
+        }
+
         let k_index = db_info.index_k as usize;
         let k_chunk = db_info.chunk_k as usize;
 
@@ -1383,6 +1408,205 @@ impl HarmonyClient {
                 e
             );
         }
+        Ok(())
+    }
+
+    /// V2 hint fetch: single round-trip for both INDEX and CHUNK levels.
+    ///
+    /// Sends `REQ_HARMONY_HINTS_V2`, receives the key preamble (server-
+    /// generated PRP key + backend), creates HarmonyGroup instances, then
+    /// receives all per-group frames from the pool.
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", v2 = true, db_id = db_info.db_id))]
+    async fn ensure_groups_ready_v2(
+        &mut self,
+        db_info: &DatabaseInfo,
+        progress: Option<&dyn HintProgress>,
+    ) -> PirResult<()> {
+        let k_index = db_info.index_k as usize;
+        let k_chunk = db_info.chunk_k as usize;
+        let total = (k_index + k_chunk) as u32;
+        let db_id = db_info.db_id;
+
+        // ── 1. Send V2 request ──────────────────────────────────────────
+        let mut payload = Vec::with_capacity(4);
+        payload.push(0xFFu8); // level_sentinel: all levels
+        payload.push(0x00u8); // reserved
+        if db_id != 0 {
+            payload.push(db_id);
+        }
+        // Trailing db_id byte
+        let request = crate::protocol::encode_request(REQ_HARMONY_HINTS_V2, &payload);
+        let request_bytes = request.len() as u64;
+
+        let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
+        conn.send(request).await?;
+
+        // ── 2. Receive key preamble ─────────────────────────────────────
+        let preamble = conn.recv().await?;
+        if preamble.len() < 5 {
+            return Err(PirError::Protocol("truncated V2 key preamble".into()));
+        }
+        let body = &preamble[4..]; // strip outer length prefix
+        if body.is_empty() || body[0] != RESP_HARMONY_HINTS_KEY {
+            if !body.is_empty() && body[0] == RESP_ERROR {
+                let reason = String::from_utf8_lossy(&body[1..]).to_string();
+                return Err(PirError::ServerError(reason));
+            }
+            return Err(PirError::Protocol(format!(
+                "expected V2 key preamble (0x{:02x}), got 0x{:02x}",
+                RESP_HARMONY_HINTS_KEY,
+                body.first().copied().unwrap_or(0),
+            )));
+        }
+        // Layout: [RESP_HARMONY_HINTS_KEY=0x44][1B prp_backend][1B level_sentinel=0xFF][1B total_groups][16B prp_key]
+        if body.len() < 20 {
+            return Err(PirError::Protocol("V2 key preamble truncated".into()));
+        }
+        let prp_backend = body[1];
+        // body[2] = level_sentinel, body[3] = total_groups (informational)
+        let mut prp_key = [0u8; 16];
+        prp_key.copy_from_slice(&body[4..20]);
+
+        self.prp_backend = prp_backend;
+        self.master_prp_key = prp_key;
+
+        // ── 3. Create HarmonyGroup instances with the server-assigned key ──
+        let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
+        let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
+
+        for g in 0..k_index {
+            let group = HarmonyGroup::new_with_backend(
+                db_info.index_bins,
+                index_w as u32,
+                0,
+                &self.master_prp_key,
+                g as u32,
+                self.prp_backend,
+            )
+            .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
+            self.index_groups.insert(g as u8, group);
+        }
+
+        for g in 0..k_chunk {
+            let group = HarmonyGroup::new_with_backend(
+                db_info.chunk_bins,
+                chunk_w as u32,
+                0,
+                &self.master_prp_key,
+                (k_index + g) as u32,
+                self.prp_backend,
+            )
+            .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
+            self.chunk_groups.insert(g as u8, group);
+        }
+
+        // ── 4. Receive per-group INDEX frames ───────────────────────────
+        let mut done: u32 = 0;
+        let mut total_response_bytes: u64 = 0;
+        for g in 0..k_index {
+            let msg = conn.recv().await?;
+            total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
+            if msg.len() < 5 {
+                return Err(PirError::Protocol("truncated V2 hint frame".into()));
+            }
+            let body = &msg[4..];
+            if body.is_empty() {
+                return Err(PirError::Protocol("empty V2 hint frame body".into()));
+            }
+            if body[0] == RESP_ERROR {
+                let reason = String::from_utf8_lossy(&body[1..]).to_string();
+                return Err(PirError::ServerError(reason));
+            }
+            if body[0] != RESP_HARMONY_HINTS {
+                return Err(PirError::Protocol(format!(
+                    "expected RESP_HARMONY_HINTS, got 0x{:02x}",
+                    body[0]
+                )));
+            }
+            if body.len() < 14 {
+                return Err(PirError::Protocol("V2 hint frame header truncated".into()));
+            }
+            let group_id = body[1];
+            let hints_data = &body[14..];
+
+            let group = self.index_groups.get_mut(&group_id).ok_or_else(|| {
+                PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
+            })?;
+            group
+                .load_hints(hints_data)
+                .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
+
+            done += 1;
+            if let Some(p) = progress {
+                p.on_group_complete(done, total, "index");
+            }
+        }
+
+        // ── 5. Receive per-group CHUNK frames ───────────────────────────
+        for g in 0..k_chunk {
+            let msg = conn.recv().await?;
+            total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
+            if msg.len() < 5 {
+                return Err(PirError::Protocol("truncated V2 hint frame".into()));
+            }
+            let body = &msg[4..];
+            if body.is_empty() {
+                return Err(PirError::Protocol("empty V2 hint frame body".into()));
+            }
+            if body[0] == RESP_ERROR {
+                let reason = String::from_utf8_lossy(&body[1..]).to_string();
+                return Err(PirError::ServerError(reason));
+            }
+            if body[0] != RESP_HARMONY_HINTS {
+                return Err(PirError::Protocol(format!(
+                    "expected RESP_HARMONY_HINTS, got 0x{:02x}",
+                    body[0]
+                )));
+            }
+            if body.len() < 14 {
+                return Err(PirError::Protocol("V2 hint frame header truncated".into()));
+            }
+            let group_id = body[1];
+            let hints_data = &body[14..];
+
+            // CHUNK groups are stored under the local offset (0..79),
+            // matching the wire group_id byte.
+            let group = self.chunk_groups.get_mut(&group_id).ok_or_else(|| {
+                PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
+            })?;
+            group
+                .load_hints(hints_data)
+                .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
+
+            done += 1;
+            if let Some(p) = progress {
+                p.on_group_complete(done, total, "chunk");
+            }
+        }
+
+        // ── 6. Receive terminal sentinel ────────────────────────────────
+        let _terminal = conn.recv().await?;
+
+        self.loaded_db_id = Some(db_info.db_id);
+
+        // Record the round.
+        self.record_round(RoundProfile {
+            kind: RoundKind::HarmonyHintRefresh,
+            server_id: 1,
+            db_id: Some(db_id),
+            request_bytes,
+            response_bytes: total_response_bytes,
+            items: vec![1u32; total as usize],
+        });
+
+        // Persist to cache.
+        if let Err(e) = self.persist_hints_to_cache(db_info) {
+            log::warn!(
+                "[PIR-AUDIT] HarmonyPIR V2: failed to persist main hints to cache: {}",
+                e
+            );
+        }
+
         Ok(())
     }
 

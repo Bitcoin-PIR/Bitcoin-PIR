@@ -24,6 +24,8 @@ pub const REQ_HARMONY_GET_INFO: u8 = 0x40;
 pub const REQ_HARMONY_HINTS: u8 = 0x41;
 pub const REQ_HARMONY_QUERY: u8 = 0x42;
 pub const REQ_HARMONY_BATCH_QUERY: u8 = 0x43;
+/// V2 hint request: server generates the PRP key (client does not send one).
+pub const REQ_HARMONY_HINTS_V2: u8 = 0x44;
 
 // ─── Extended request variants (multi-database) ────────────────────────────
 
@@ -146,6 +148,8 @@ pub const RESP_HARMONY_INFO: u8 = 0x40;
 pub const RESP_HARMONY_HINTS: u8 = 0x41;
 pub const RESP_HARMONY_QUERY: u8 = 0x42;
 pub const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
+/// Key preamble sent before per-group hint frames in V2 protocol.
+pub const RESP_HARMONY_HINTS_KEY: u8 = 0x44;
 
 // ─── Request types ──────────────────────────────────────────────────────────
 
@@ -177,6 +181,19 @@ pub struct HarmonyHintRequest {
     pub group_ids: Vec<u8>,
     /// Database ID (0 = main UTXO, 1+ = delta databases).
     /// Defaults to 0 for backward compatibility.
+    pub db_id: u8,
+}
+
+/// HarmonyPIR V2 hint request: server generates the PRP key.
+///
+/// Wire: [1B level_sentinel=0xFF][1B reserved=0x00]
+///       [optional trailing 1B db_id, only when non-zero — backward compatible]
+///
+/// The server always returns ALL groups for both INDEX and CHUNK levels.
+/// The level sentinel 0xFF signals "both levels."
+#[derive(Clone, Debug)]
+pub struct HarmonyHintRequestV2 {
+    /// Database ID (0 = main UTXO, 1+ = delta databases).
     pub db_id: u8,
 }
 
@@ -307,6 +324,7 @@ pub enum Request {
     BucketMerkleSibBatch(BatchQuery),
     HarmonyGetInfo,
     HarmonyHints(HarmonyHintRequest),
+    HarmonyHintsV2(HarmonyHintRequestV2),
     HarmonyQuery(HarmonyQuery),
     HarmonyBatchQuery(HarmonyBatchQuery),
 }
@@ -577,6 +595,14 @@ impl Request {
                     payload.push(h.db_id);
                 }
             }
+            Request::HarmonyHintsV2(h) => {
+                payload.push(REQ_HARMONY_HINTS_V2);
+                payload.push(0xFFu8); // level_sentinel: all levels
+                payload.push(0x00u8); // reserved
+                if h.db_id != 0 {
+                    payload.push(h.db_id);
+                }
+            }
             Request::HarmonyQuery(q) => {
                 payload.push(REQ_HARMONY_QUERY);
                 payload.push(q.level);
@@ -712,6 +738,10 @@ impl Request {
             REQ_HARMONY_HINTS => {
                 let h = decode_harmony_hint_request(&data[1..])?;
                 Ok(Request::HarmonyHints(h))
+            }
+            REQ_HARMONY_HINTS_V2 => {
+                let h = decode_harmony_hint_request_v2(&data[1..])?;
+                Ok(Request::HarmonyHintsV2(h))
             }
             REQ_HARMONY_QUERY => {
                 let q = decode_harmony_query(&data[1..])?;
@@ -1101,6 +1131,29 @@ fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
         group_ids,
         db_id,
     })
+}
+
+/// V2 hint request wire format:
+/// [1B level_sentinel=0xFF][1B reserved=0x00]
+/// [optional trailing 1B db_id]
+fn decode_harmony_hint_request_v2(data: &[u8]) -> io::Result<HarmonyHintRequestV2> {
+    // Minimum: level_sentinel (1) + reserved (1)
+    if data.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "V2 hint request too short",
+        ));
+    }
+    let level_sentinel = data[0];
+    if level_sentinel != 0xFF {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("V2 hint request expected level_sentinel 0xFF, got 0x{:02x}", level_sentinel),
+        ));
+    }
+    // data[1] is reserved, ignored.
+    let db_id = if data.len() > 2 { data[2] } else { 0 };
+    Ok(HarmonyHintRequestV2 { db_id })
 }
 
 // ─── HarmonyPIR batch encoding helpers ─────────────────────────────────────
