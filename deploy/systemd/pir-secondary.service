@@ -1,0 +1,44 @@
+[Unit]
+Description=BitcoinPIR unified server (secondary: DPF-1 + HarmonyPIR hint)
+Documentation=https://github.com/Bitcoin-PIR/Bitcoin-PIR
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pir
+Group=pir
+WorkingDirectory=/home/pir/BitcoinPIR
+ExecStart=/home/pir/BitcoinPIR/target/release/unified_server \
+    --port 8092 \
+    --role secondary \
+    --pool-size 8 \
+    --config /home/pir/data/databases.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65535
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pir/BitcoinPIR /home/pir/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pir-secondary
+
+[Install]
+WantedBy=multi-user.target
