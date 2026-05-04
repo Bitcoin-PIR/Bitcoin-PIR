@@ -214,16 +214,12 @@ echo "initrd:                   $CUSTOM_INITRD ($(du -h "$CUSTOM_INITRD" | cut -
 # guards against missing source .ko files, but this second gate catches
 # dependency-resolution failures, dracut bugs, or accidental filter changes.
 echo "verifying SEV modules in initramfs…"
-# Try multiple listing methods — initramfs may be uncompressed (cpio directly),
-# gzip'd, or zstd'd. lsinitrd handles all of them but may not be in PATH on
-# minimal systems.
-INITRD_LISTING=""
-if lsinitrd "$CUSTOM_INITRD" >/dev/null 2>&1; then
-    INITRD_LISTING=$(lsinitrd "$CUSTOM_INITRD" 2>/dev/null)
-elif cpio -t < "$CUSTOM_INITRD" >/dev/null 2>&1; then
-    INITRD_LISTING=$(cpio -t < "$CUSTOM_INITRD" 2>/dev/null)
-elif zcat "$CUSTOM_INITRD" 2>/dev/null | cpio -t >/dev/null 2>&1; then
-    INITRD_LISTING=$(zcat "$CUSTOM_INITRD" 2>/dev/null | cpio -t 2>/dev/null)
+# lsinitrd handles all compression formats (zstd/gzip/raw).
+# Capture listing and check for the three SEV-SNP modules.
+INITRD_LISTING=$(/usr/bin/lsinitrd "$CUSTOM_INITRD" 2>/dev/null)
+if [ -z "$INITRD_LISTING" ]; then
+    echo "ERROR: lsinitrd failed — cannot inspect initramfs" >&2
+    exit 1
 fi
 MISSING_MODS=""
 for mod in ccp sev-guest tsm_report; do
