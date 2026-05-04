@@ -253,7 +253,7 @@ echo "SEV modules confirmed in initramfs: ccp, sev-guest, tsm_report"
 #
 # NOTE: no `root=` parameter — we don't pivot to a rootfs. dracut /init
 # would refuse to proceed without it, but rdinit= bypasses /init entirely.
-CMDLINE="rdinit=/sbin/bpir-tier3-init console=ttyS0,115200 console=tty1 loglevel=7"
+CMDLINE="rdinit=/sbin/bpir-tier3-init console=ttyS0,115200 console=tty1 quiet loglevel=3"
 
 echo "cmdline:                  $CMDLINE"
 echo

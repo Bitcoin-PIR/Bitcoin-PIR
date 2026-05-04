@@ -12,15 +12,12 @@
 #   3. Wire up the runit service tree.
 #   4. exec runsvdir as the long-lived PID 1.
 #
-# If anything fails before runsvdir takes over, we drop to a /bin/sh
-# loop on the console — no other recovery path exists (no SSH from
-# initramfs, no VNC on this host). Operator recovery = portal "None"
-# UKI fallback → boot stock Ubuntu rootfs → SSH back in → fix.
+# If anything fails before runsvdir takes over, we halt the VM — the
+# serial console is readable by the host admin (VPSBG staff), so we
+# MUST NOT drop to an interactive shell. Operator recovery = portal
+# "None" UKI fallback → boot stock Ubuntu rootfs → SSH back in → fix.
 
 # shellcheck shell=sh
-
-set -x  # Phase 3.1: verbose console logging for debugging the first boot.
-        # Drop this in Phase 3.3 once the path is stable.
 
 PATH=/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
 export PATH
@@ -64,10 +61,9 @@ while [ ! -d /sys/class/net/eth0 ] && [ "$i" -lt 60 ]; do
     i=$((i + 1))
 done
 if [ ! -d /sys/class/net/eth0 ]; then
-    echo "[bpir-tier3-init] FATAL: eth0 never appeared after 12s" >&2
-    echo "[bpir-tier3-init] available interfaces:" >&2
-    ls /sys/class/net/ >&2
-    exec /bin/sh
+    echo "[bpir-tier3-init] FATAL: eth0 never appeared after 12s — rebooting" >&2
+    sleep 2
+    reboot -f
 fi
 
 # Bring eth0 up + assign static IP.
