@@ -223,7 +223,10 @@ if [ -z "$INITRD_LISTING" ]; then
 fi
 MISSING_MODS=""
 for mod in ccp sev-guest tsm_report; do
-    if ! echo "$INITRD_LISTING" | grep -q "${mod}\.ko"; then
+    # Use here-string instead of pipe to avoid SIGPIPE under set -o pipefail:
+    # grep -q exits on first match, closing the pipe, echo gets SIGPIPE (141),
+    # pipefail propagates that as the pipeline's exit status.
+    if ! grep -q "${mod}\.ko" <<< "$INITRD_LISTING"; then
         MISSING_MODS="$MISSING_MODS $mod"
     fi
 done
