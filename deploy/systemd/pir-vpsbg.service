@@ -1,0 +1,61 @@
+[Unit]
+Description=BitcoinPIR unified server on VPSBG (DPF + HarmonyPIR hint, attest-enabled, no OnionPIR)
+Documentation=https://github.com/Bitcoin-PIR/Bitcoin-PIR
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pir
+Group=pir
+WorkingDirectory=/home/pir/BitcoinPIR
+# Role=secondary serves DPF query + HarmonyPIR hint (offline preprocessing).
+# Secondary role NEVER loads OnionPIR — that's a primary-only protocol
+# and the data isn't useful here. The OnionPIR files were intentionally
+# excluded from the Hetzner→VPSBG rsync to keep this server focused.
+#
+# --admin-pubkey-hex enables REQ_ADMIN_* (auth + DB upload). The
+# matching ed25519 secret lives only on the operator's laptop at
+# ~/.config/bpir-admin/admin.key.
+# Grant pir group access to /dev/sev-guest before the binary opens it.
+# The udev rule at /etc/udev/rules.d/99-sev-guest.rules is supposed to
+# do this at boot but doesn't fire reliably (KERNEL=="sev-guest" rule
+# loses out to default root:root 0600 from devtmpfs init order). The
+# `+` prefix runs the command as root regardless of User=pir below.
+ExecStartPre=+/bin/chgrp pir /dev/sev-guest
+ExecStartPre=+/bin/chmod 0660 /dev/sev-guest
+ExecStart=/home/pir/BitcoinPIR/target/release/unified_server \
+    --port 8091 \
+    --role secondary \
+    --pool-size 8 \
+    --config /home/pir/data/databases.toml \
+    --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
+    --vcek-dir /home/pir/data/vcek
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65535
+
+# Security hardening (mirrors Hetzner pir-secondary.service, with
+# device-cgroup left at default `auto` so /dev/sev-guest is reachable
+# for SEV-SNP attestation).
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+DevicePolicy=auto
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pir/BitcoinPIR /home/pir/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
