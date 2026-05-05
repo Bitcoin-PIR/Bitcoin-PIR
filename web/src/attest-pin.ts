@@ -92,6 +92,6 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
   binarySha256Hex:
-    '11f0860bee3c00da478ecddb43a9431393b27c78952a0bd69f0561d7d509452d',
+    'f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c',
   description: 'pir1.chenweikeng.com (Hetzner i7-8700, no SEV)',
 };

@@ -250,23 +250,23 @@
 
         <section>
             <h2>The trust chain</h2>
-<div class="chain-diagram">git commit  ──build──▶  unified_server binary
-       │
-       │             dracut + ukify
-       ▼                  │
-  pinned VPSBG OVMF   ────┘
-       │
-       └──┐         ┌── UKI bytes (kernel + initramfs + cmdline)
-          ▼         ▼
-        sev-snp-measure
-              │
-              ▼
-   predicted MEASUREMENT
-              │
-   ═══ compare to ═══
-              │
-              ▼
-   chip-signed MEASUREMENT  (from bpir-admin attest)</div>
+	<div class="chain-diagram">git commit  ──build──▶  unified_server binary
+	       │
+	       │             dracut + ukify
+	       ▼                  │
+	  pinned VPSBG OVMF   ────┘
+	       │
+	       └──┐         ┌── UKI bytes (kernel + initramfs + cmdline)
+	          ▼         ▼
+	        sev-snp-measure
+	              │
+	              ▼
+	   predicted MEASUREMENT
+	              │
+	   ═══ compare to ═══
+	              │
+	              ▼
+	   chip-signed MEASUREMENT  (from bpir-admin attest)</div>
             <p style="margin-top:12px">
                 Each step has a published, verifiable input. If your computed
                 value matches the chip-signed value, the entire chain is
@@ -275,20 +275,20 @@
         </section>
 
         <section>
-            <h2>Currently pinned values <span class="badge ok">v4 — 2026-05-04</span></h2>
+            <h2>Currently pinned values <span class="badge ok">v11 — 2026-05-05</span></h2>
             <div class="panel accent">
                 <table class="pin-table">
                     <tr>
                         <td>MEASUREMENT</td>
-                        <td>f6aa29156c63cae96dce8c33427489016dee86b5716b2aa3c9d9a67e47768fa010d5ad5468ada3f858931f53c6ae8bd9</td>
+                        <td>0662adca3ef25ead88ae763684b6a7261e6d71e75e0a197f26c2439a3b6511c86019968bbd4a44c049ea8e6eb636c346</td>
                     </tr>
                     <tr>
                         <td>UKI sha256</td>
-                        <td>e835a516c3fadaf83c88880949758622b6866700f9f4b5d47e2628ccf8396da0</td>
+                        <td>bd243f817d463114dea187630fa8b0911ccd99cb7b37d39177b9f22e27cc7330</td>
                     </tr>
                     <tr>
                         <td>binary sha256</td>
-                        <td>dc1b97b51360afa83cca47eb30870dcf4a5217c85ba1c26219aff1bb1dc16000</td>
+                        <td>f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</td>
                     </tr>
                     <tr>
                         <td>OVMF sha256</td>
@@ -338,18 +338,19 @@
                         initramfs (with <code>unified_server</code> baked in) +
                         cmdline, packaged as a single PE/EFI file.
                     </p>
-                    <a class="download-link" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/releases/download/tier3-v4/bpir-tier3-v4.efi">bpir-tier3-v4.efi <span class="meta">(104&nbsp;MB, GitHub release)</span></a>
+                    <a class="download-link" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/releases/download/tier3-v11/bpir-tier3-v11.efi">bpir-tier3-v11.efi <span class="meta">(287&nbsp;MB, GitHub release)</span></a>
                     <p class="meta" style="margin-top: 6px;">
-                        Verify: <code>sha256sum bpir-tier3-v4.efi</code> →
-                        <code>e835a516c3fadaf83c88880949758622b6866700f9f4b5d47e2628ccf8396da0</code>
+                        Verify: <code>sha256sum bpir-tier3-v11.efi</code> →
+                        <code>bd243f817d463114dea187630fa8b0911ccd99cb7b37d39177b9f22e27cc7330</code>
                     </p>
                     <p class="meta" style="margin-top: 6px;">
                         Or rebuild from source — see
                         <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/PHASE3_SLICE3_REPRO_PLAN.md#reproducibility-recipe-post-sub-tasks-1--2--3b--4" target="_blank" rel="noopener">the recipe</a>.
                         <code>scripts/build_unified_server.sh</code> +
-                        <code>sudo scripts/build_uki_tier3.sh</code> from a
+                        <code>sudo KERNEL=/boot/vmlinuz-7.0.0-15-generic scripts/build_uki_tier3.sh</code> from a
                         clone at the canonical path
-                        <code>/home/pir/BitcoinPIR</code>.
+                        <code>/home/pir/BitcoinPIR</code>. Requires kernel 7.0.0-15, kmod 34.2, dracut 110
+                        (backported from Ubuntu 25.04 plucky).
                     </p>
                 </li>
 
@@ -360,13 +361,13 @@
                         <a href="https://github.com/virtee/sev-snp-measure" target="_blank" rel="noopener"><code>sev-snp-measure</code></a>
                         (<code>pipx install sev-snp-measure</code>), then:
                     </p>
-<pre><code>sev-snp-measure \
-    --mode snp \
-    --vcpus 2 \
-    --vcpu-sig 0x00B10F10 \
-    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-    --kernel bpir-tier3-v4.efi \
-    --guest-features 0x1</code></pre>
+	<pre><code>sev-snp-measure \
+	    --mode snp \
+	    --vcpus 2 \
+	    --vcpu-sig 0x00B10F10 \
+	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
+	    --kernel bpir-tier3-v11.efi \
+	    --guest-features 0x1</code></pre>
                     <p>
                         Output should be the same hex as the
                         <code>MEASUREMENT</code> in the pinned-values table
@@ -387,10 +388,10 @@
                         <code>Launch MEASUREMENT</code> field should equal
                         what you computed in step 3:
                     </p>
-<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
-./target/release/bpir-admin attest wss://pir2.chenweikeng.com \
-    --expect-measurement f6aa29156c63cae96dce8c33427489016dee86b5716b2aa3c9d9a67e47768fa010d5ad5468ada3f858931f53c6ae8bd9 \
-    --expect-binary      dc1b97b51360afa83cca47eb30870dcf4a5217c85ba1c26219aff1bb1dc16000</code></pre>
+	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
+	./target/release/bpir-admin attest wss://pir2.chenweikeng.com \
+	    --expect-measurement 0662adca3ef25ead88ae763684b6a7261e6d71e75e0a197f26c2439a3b6511c86019968bbd4a44c049ea8e6eb636c346 \
+	    --expect-binary      f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</code></pre>
                     <p>
                         Three checkmarks:
                         <code>SEV-SNP REPORT_DATA binding verified</code>,
@@ -402,17 +403,55 @@
         </section>
 
         <section>
+            <h2>pir1 verification (Hetzner, no SEV)</h2>
+            <p>
+                <code>pir1.chenweikeng.com</code> runs the <strong>same</strong>
+                <code>unified_server</code> binary as pir2, on a Hetzner i7-8700
+                (Intel, no SEV-SNP). Without a hardware root of trust, the
+                client verifies the server's self-reported <code>binary_sha256</code>
+                against a pinned value. This detects accidental drift between
+                what the operator claims is deployed and what's actually running.
+            </p>
+            <p>
+                The binary pin is in
+                <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PIR1_PIN</code></a>:
+            </p>
+            <div class="panel accent">
+                <table class="pin-table">
+                    <tr>
+                        <td>binary sha256</td>
+                        <td>f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</td>
+                    </tr>
+                </table>
+            </div>
+            <p>
+                Verify with:
+            </p>
+	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
+	./target/release/bpir-admin attest wss://pir1.chenweikeng.com \
+	    --expect-binary f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</code></pre>
+            <p>
+                Or directly: <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>
+                on the Hetzner host should return the same hash.
+            </p>
+        </section>
+
+        <section>
             <h2>What this proves</h2>
             <ul>
-                <li>The bytes loaded into pir2's confidential VM are exactly
-                    the bytes you can rebuild from the source git commit.</li>
-                <li>The chip signs over those bytes, with a key chained to
-                    AMD's ARK — a value whose root you also have pinned
-                    (<code>1f084161…3dd3f6a</code>) and can independently
-                    fetch from
+                <li>The same <code>unified_server</code> binary serves both pir1
+                    and pir2 — built once from the same source commit on the
+                    Hetzner build host, with identical hash on both machines.</li>
+                <li>For pir2: the bytes loaded into the confidential VM are exactly
+                    the bytes you can rebuild from the source git commit. The AMD
+                    chip signs over those bytes, with a key chained to
+                    AMD's ARK — pinned at
+                    <code>1f084161…3dd3f6a</code> and independently verifiable at
                     <a href="https://kdsintf.amd.com/vcek/v1/Turin/cert_chain" target="_blank" rel="noopener">AMD KDS</a>.</li>
+                <li>For pir1: the binary hash is cross-checked against the same
+                    pinned value, ensuring the same code runs on both servers.</li>
                 <li>The web client refuses to upgrade to the encrypted channel
-                    if the pinned values don't match what the chip reports —
+                    if the pinned values don't match what the server reports —
                     so a tampered server is silent, not silently-trusted.</li>
             </ul>
         </section>
