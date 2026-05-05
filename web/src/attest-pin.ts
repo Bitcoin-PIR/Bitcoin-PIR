@@ -73,12 +73,13 @@ export interface ServerAttestPin {
  * Pinned 2026-05-04 from the v4 deploy (UKI sha `e835a516…f8396da0`).
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 UKI v5 — 2026-05-04. Includes V2 hint pool, hardened SEV module validation.
+  // Tier 3 UKI v11 — 2026-05-05. Built on Hetzner with VPSBG-matched
+  // kernel (7.0.0-15), kmod 34.2, dracut 110. Console-hardened.
   measurementHex:
-    'ac03dde40f5496051a580d062934d879e132e8ba7db7b18670ccc457f6655dad8d7111565b25ccfaa154167faf626304',
+    '0662adca3ef25ead88ae763684b6a7261e6d71e75e0a197f26c2439a3b6511c86019968bbd4a44c049ea8e6eb636c346',
   binarySha256Hex:
-    '5877e304ee1447fa3747073f5f8f2783abe24c1d459c123d39e30860829ed256',
-  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI v5)',
+    'f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c',
+  description: 'pir2.chenweikeng.com (VPSBG, SEV-SNP, Tier 3 UKI v11)',
 };
 
 /**
