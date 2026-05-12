@@ -94,3 +94,37 @@ A complete UTXO lookup requires two rounds of batch PIR:
 \textbf{Web client (TypeScript).} Browser-compatible library using WebSocket connections. Implements DPF key generation, cuckoo hashing, and PBC placement in pure TypeScript. Supports Bitcoin address input (P2PKH, P2SH, P2WPKH, P2WSH, P2TR) with automatic conversion to ScriptPubKey.
 
 \textbf{Electrum plugin (Python).} Integration with the Electrum Bitcoin wallet \cite{electrum} that replaces its native synchronizer with PIR-based UTXO discovery. See Section~\ref{sec:deployment} for details on all client implementations.
+
+\subsection{Reducing the Non-Collusion Assumption with TEEs}
+\label{sec:tee}
+
+The security of DPF-PIR rests on the assumption that the two servers do not collude. In a decentralized setting such as Bitcoin's P2P network, a user can select two independent full nodes and hope that they are operated by unrelated parties. This is a reasonable assumption in many cases but not a provable one, and the consequences of a violation are severe: two colluding servers can simply XOR their DPF evaluations and recover the client's query.
+
+A Trusted Execution Environment (TEE) \cite{amdsev} provides hardware-enforced guarantees that can eliminate the need to trust one of the two server operators. A TEE is a processor feature (e.g., AMD SEV-SNP, Intel TDX) that creates an encrypted virtual machine whose memory is inaccessible to the host operating system, the hypervisor, and anyone with physical access to the machine. A TEE also supports \emph{remote attestation}: a signed report, rooted in a vendor-provisioned key fused into the processor at manufacturing time, that binds a measurement of the VM's initial state (firmware, kernel, and userspace binary) to a client-supplied nonce.
+
+\subsubsection{Attestation Flow}
+
+Before sending any PIR traffic, the client performs a one-round attestation handshake with the TEE-hosted server:
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item The client generates a fresh 32-byte nonce and sends it to the server.
+    \item The TEE firmware produces a signed attestation report containing a \texttt{REPORT\_DATA} field set to $\mathsf{SHA256}(\text{``BPIR-ATTEST-V2''} \| \text{nonce} \| R^* \| \mathsf{SHA256}(\text{binary}) \| \text{pubkey} \| \text{git\_rev})$, where $R^*$ is the database super-root (Section~\ref{sec:merkle}) and \texttt{pubkey} is a long-lived X25519 key generated inside the TEE at boot.
+    \item The client recomputes the expected \texttt{REPORT\_DATA} from its own nonce, the operator-published binary hash and super-root, and the server's returned public key, and verifies it against the signed report.
+\end{enumerate}
+
+If verification succeeds, the client knows three things: (1) the exact expected PIR server binary is executing inside a genuine AMD SEV-SNP TEE; (2) the server is serving the database committed by the published super-root $R^*$; and (3) subsequent DPF shares can be encrypted to the TEE-resident key, guaranteeing they cannot be intercepted by the host.
+
+\subsubsection{What the TEE Changes}
+
+With one DPF server inside a TEE, the trust model for DPF-PIR improves as follows:
+
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Before:} The client trusts that two independent server operators do not collude. Each operator has full access to the DPF key share and XOR-sum response on their machine.
+    \item \textbf{After:} The client trusts one independent operator (Server~1) plus the TEE vendor's root of trust (Server~2). The operator of Server~2 is removed from the trust base---they cannot inspect TEE memory, modify the running binary, or substitute the database without detection. Collusion between Server~1 and Server~2's operator is harmless because Server~2's operator has no visibility into the TEE.
+\end{itemize}
+
+The TEE also provides a practical deployment benefit. In our production setup, the TEE-hosted server (Server~2) runs on a commodity cloud VM with AMD SEV-SNP enabled, while the primary server (Server~1) is operated as a community resource. The attestation measurement pins are published alongside each binary release, so any client can verify the TEE independently before connecting.
+
+\subsubsection{Scope and Limitations}
+
+The TEE does not eliminate all trust assumptions. The client still trusts: the TEE vendor (AMD) and its supply chain; the correctness of the SEV-SNP firmware and hardware implementation; and the operator of Server~1. Side-channel attacks (cache timing, power analysis) against SEV-SNP are an active research area and are not addressed by the attestation mechanism. Finally, the TEE protects only the server side of the protocol; the client's own machine remains outside any hardware trust boundary.

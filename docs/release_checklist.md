@@ -18,7 +18,7 @@
 - [ ] **OnionPIR numbers** (3840 B entry, ~815K entries, ~95.9% packing, 24 GB with shared store). These weren't touched in this pass, but they are easy to let drift — worth re-verifying against the current build output.
 
 ## Protocol & wire format
-- [ ] **Wire codes table.** The deployment section now lists every code `0x01, 0x02, 0x04, 0x11, 0x21, 0x33, 0x34, 0x40–0x43, 0x51–0x56`. Grep `runtime/src/protocol.rs` and `runtime/src/onionpir.rs` for any new codes added since and update.
+- [ ] **Wire codes table.** The deployment section now lists every code `0x01, 0x02, 0x04, 0x05, 0x06, 0x11, 0x21, 0x33, 0x34, 0x40–0x44, 0x51–0x56, 0x80, 0x81`. Grep `pir-runtime-core/src/protocol.rs` for any new codes added since and update.
 - [ ] **`db_id` byte backward compatibility.** The paper claims "requests without the trailing byte are routed to `db_id=0`". Verify this is actually true for all relevant handlers in `unified_server.rs` (INDEX_BATCH, CHUNK_BATCH, `0x33`, `0x34`).
 - [ ] **Catalog entry fields.** Make sure the paper's list of `DatabaseCatalogEntry` fields matches `runtime/src/protocol.rs` exactly (and matches `web/src/server-info.ts`).
 - [ ] **`GET_INFO` `"databases"` array.** Re-read `server_info_json()` in `unified_server.rs` and confirm the field names (arity, level sizes, per-group roots, super-root, tree-top hash) are what the paper says.

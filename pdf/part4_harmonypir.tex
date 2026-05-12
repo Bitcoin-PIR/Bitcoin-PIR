@@ -60,7 +60,7 @@ Each online query involves sending $O(T) = O(\sqrt{N})$ indices and receiving $w
 
 To prevent the server from distinguishing real queries from padding, the client generates \emph{synthetic dummy} queries for PBC groups that do not hold a real query in a given round.
 
-A synthetic dummy is constructed by sampling a count $c \sim \text{Binomial}(T, 0.5)$ and then choosing $c$ indices uniformly at random from $[N]$. The resulting request has the same format as a real query but does not modify the client's hint state. This ensures that the distribution of request sizes and content is statistically indistinguishable from real queries to the server.
+A synthetic dummy sends exactly $T - 1$ sorted distinct $\mathsf{u32}$ indices drawn uniformly at random from $[0, \text{real}_n)$, where $\text{real}_n$ is the group's database size. The resulting request has the same format and length as a real query but does not modify the client's hint state; the corresponding response entries are discarded via XOR-cancellation during response processing. Sending a fixed count of indices---identical to the count in every real query---closes the per-group request-count side channel that would otherwise allow the server to distinguish the real-query slot from padding dummies by tracking which group's request size drifts as hints are consumed.
 
 \subsection{Integration with Batch PIR}
 \label{sec:harmony-batch}

@@ -1,0 +1,123 @@
+\section{Anonymous Rate Limiting}
+\label{sec:ratelimit}
+
+A PIR server that answers queries without restriction is vulnerable to \emph{query exhaustion}: a malicious client can issue unlimited queries and gradually reconstruct large portions of the database, undermining the very purpose of PIR. Traditional rate limiting---by IP address, API key, or account---forces the client to reveal its identity, destroying the privacy that PIR is designed to provide. This tension between abuse prevention and user anonymity is inherent to any privacy-preserving service.
+
+This section describes two cryptographic mechanisms that resolve the tension: \emph{Anonymous Rate-limited Credentials} (ARC) \cite{arc} and Cashu's Blind Authentication (NUT-22) \cite{cashu}. Both allow a server to enforce a per-client query budget without learning which client is making which queries.
+
+\subsection{The Problem: Anonymous Rate Limiting}
+
+We want a server to enforce a limit of $L$ queries per authorized client, while satisfying three properties:
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item \textbf{Privacy:} The server cannot link a query to the client's identity, nor can it link two queries from the same client.
+    \item \textbf{Rate enforcement:} A client who has exhausted its budget cannot produce a valid query that the server will accept.
+    \item \textbf{Unforgeability:} A client without a valid authorization cannot produce a query that the server will accept.
+\end{enumerate}
+
+The solution is to separate the protocol into two phases: an \emph{authorization phase}, where the client proves its right to access the service (possibly revealing its identity once), and a \emph{query phase}, where the client presents anonymous credentials derived from that authorization with each batch of PIR queries. The server verifies the credential, deducts from the budget, and processes the PIR query---all without learning which authorized client performed the query.
+
+\subsection{Anonymous Rate-Limited Credentials (ARC)}
+
+ARC \cite{arc} is an IETF Privacy Pass protocol (ciphersuite \texttt{ARCV1-P256}) that issues a single multi-show credential to a client, which the client can then present up to a predetermined limit $L$ times without the presentations being linkable to each other or to the issuance.
+
+\subsubsection{Cryptographic Building Blocks}
+
+ARC operates over the P-256 elliptic curve and combines three primitives:
+
+\begin{itemize}[nolistsep,leftmargin=*]
+    \item \textbf{Algebraic MAC (MAC\_GGM):} The server's signature on the blinded credential is an algebraic message authentication code rather than a simple Diffie--Hellman exponentiation. This enables the server to embed structured data (the rate limit) into the credential.
+    \item \textbf{Schnorr proofs:} Both the client (during issuance) and the server (during signing) attach zero-knowledge Schnorr proofs of knowledge of their respective secrets, ensuring that neither party can cheat in the blind exchange.
+    \item \textbf{Per-bit Pedersen range proofs:} During presentation, the client proves that a hidden nonce $\nu \in [0, L)$ without revealing $\nu$. The proof decomposes the nonce bit-by-bit and commits to each bit with a Pedersen commitment, then proves each commitment encodes a bit and that the bits reconstruct a value in range.
+\end{itemize}
+
+\subsubsection{Issuance Protocol}
+
+The issuance is a three-message blind exchange between the client and an \emph{issuer} (which may be the PIR server itself or a separate authorization service):
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item \textbf{Client request.} The client generates a random secret, blinds it together with a \texttt{request\_context} (e.g., a session identifier or the hash of an out-of-band authorization token), and produces a Schnorr proof of knowledge of the blinded values. The server receives only blinded data.
+    \item \textbf{Server response.} The server verifies the client's Schnorr proof, performs an out-of-band authorization check (e.g., the client has paid for a subscription or passed a CAPTCHA), and, if authorized, signs the blinded credential with its MAC key. It attaches its own Schnorr proof of correct signing.
+    \item \textbf{Client finalization.} The client verifies the server's proof, unblinds the response, and obtains a plaintext credential. The server never sees the unblinded credential and cannot link it to the issuance session.
+\end{enumerate}
+
+The credential embeds a \texttt{presentation\_limit} $L$ chosen by the server during issuance.
+
+\subsubsection{Presentation Protocol (Multi-Show)}
+
+To make a query, the client creates a presentation from the credential, a \texttt{presentation\_context} (binding the presentation to the specific query or epoch), and a nonce $\nu$ that increments from $0$ to $L-1$:
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item The client generates a per-bit Pedersen range proof showing $\nu \in [0, L)$ without revealing $\nu$.
+    \item The client produces a Schnorr proof of knowledge of the credential.
+    \item The server verifies both proofs and computes a deterministic \emph{tag} from $(\text{credential}, \nu, \text{presentation\_context})$.
+    \item The server checks whether this tag has been seen before in the current presentation context; if so, it rejects the request (double-spend detection).
+    \item If the tag is fresh, the server stores it and processes the query.
+\end{enumerate}
+
+After $L$ valid presentations, the client's internal nonce counter reaches $L$ and the credential is exhausted. Any attempt to present with $\nu \geq L$ fails the range proof. Any attempt to reuse a nonce fails the tag uniqueness check.
+
+\subsubsection{Integration with PIR}
+
+For each batch of PIR queries, the client attaches a fresh ARC presentation. The server verifies the presentation before evaluating any DPF keys or HarmonyPIR requests. If verification fails (exhausted credential, invalid proof, duplicate tag), the server drops the connection without processing the PIR payload.
+
+Because the presentation is zero-knowledge and the tag is a deterministic function of hidden values, the server learns only that the request carries a valid, unexhausted credential---not which credential, which client, or which previous queries belong to the same credential. The rate limit is enforced cryptographically without deanonymization.
+
+\subsection{Cashu Blind Authentication (NUT-22)}
+
+Cashu \cite{cashu} is a Chaumian ecash system for Bitcoin built on blind signatures over secp256k1. Its Blind Authentication extension (NUT-22) adapts the same ecash primitives to provide anonymous authentication tokens.
+
+\subsubsection{Cryptographic Building Blocks: BDHKE}
+
+Cashu's core blind signature scheme is the Blind Diffie--Hellman Key Exchange (BDHKE) over secp256k1. The mint holds a private key $k$ and publishes public key $K = kG$. To obtain a blind signature on a secret message $x$:
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item The client maps $x$ to a curve point $Y = \mathsf{hash\_to\_curve}(x)$ using a domain-separated hash-to-curve.
+    \item The client picks a random blinding factor $r$ and computes the blinded message $B' = Y + rG$, sending $B'$ to the mint.
+    \item The mint signs the blinded point: $C' = k B'$.
+    \item The client unblinds: $C = C' - rK = kY + krG - krG = kY$.
+\end{enumerate}
+
+The pair $(x, C)$ forms an ecash token. The mint can verify $C \stackrel{?}{=} k \cdot \mathsf{hash\_to\_curve}(x)$ at redemption time but cannot link the unblinded token back to the blinded signing request.
+
+\subsubsection{Two-Layer Authentication Flow}
+
+Cashu Blind Auth uses a two-layer design:
+
+\begin{enumerate}[nolistsep,leftmargin=*]
+    \item \textbf{Clear authentication (NUT-21).} The client authenticates once to an external identity provider (e.g., via OpenID Connect) and obtains a Clear Authentication Token (CAT). The CAT is a bearer token that proves the client passed an authorization check but is itself linkable---every use of the same CAT reveals the same identity.
+    \item \textbf{Blind auth token minting (NUT-22).} The client uses the CAT to mint multiple Blind Authentication Tokens (BATs) from the mint, via the standard BDHKE blind signature protocol. The BATs use a special keyset where the unit is \texttt{auth} and only a single amount value is supported. The mint signs blinded BATs, the client unblinds them, and the resulting tokens are indistinguishable from each other to the mint.
+\end{enumerate}
+
+Each BAT is a single-show token: presenting it consumes it. The mint adds the token's secret to its spent list and rejects any subsequent presentation.
+
+\subsubsection{Integration with PIR}
+
+A client mints a batch of BATs upfront (using a CAT obtained through whatever authorization policy the server requires). Before each PIR query batch, the client attaches a fresh BAT. The server verifies the BAT against its auth keyset and checks that it has not been spent, then processes the PIR request. The BAT is consumed irrespective of whether the PIR query succeeds.
+
+The mint publishes which API endpoints require blind auth and caps the number of BATs that can be minted per CAT request (\texttt{bat\_max\_mint}), providing a server-configurable query budget per authorization event.
+
+\subsection{Comparison}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Property} & \textbf{ARC} & \textbf{Cashu Blind Auth} \\
+\hline
+Curve & P-256 & secp256k1 \\
+Core primitive & Algebraic MAC + range proofs & BDHKE blind signatures \\
+Credential type & Multi-show (up to $L$) & Single-show (one per BAT) \\
+Rate limit enforcement & Cryptographic (range proof $+$ tag) & Ecological (mint a fixed batch of BATs) \\
+Round trips per $L$ queries & 1 issuance $+$ $L$ presentations & 1 CAT $+$ 1 BAT minting batch $+$ $L$ presentations \\
+Zero-knowledge presentations & Yes (Schnorr $+$ range proof) & No (secret revealed at spend) \\
+Standardization & IETF Privacy Pass draft & Cashu NUT specification \\
+\hline
+\end{tabular}
+\caption{Comparison of ARC and Cashu Blind Auth for anonymous rate limiting. ARC uses range proofs to encode the rate limit directly into a single multi-show credential; Cashu issues a batch of single-show tokens.}
+\label{tab:ratelimit-comparison}
+\end{table}
+
+The two approaches represent different points on the design spectrum. ARC embeds the rate limit \emph{inside} the credential using zero-knowledge range proofs, giving the server a single tag to track per presentation context and requiring no re-issuance until the limit is exhausted. Cashu separates the rate limit from the credential: each BAT authorizes exactly one query, and the rate limit is enforced by the number of BATs the server is willing to issue in response to a single CAT. This makes Cashu's per-query verification simpler (a single BDHKE signature check) but requires the client to manage a pool of single-use tokens.
+
+Both mechanisms integrate with all three PIR backends (DPF, HarmonyPIR, OnionPIR) without protocol changes: the anonymous credential is verified at the transport or application layer before the PIR handler is invoked, so the PIR server itself need not be aware of the rate-limiting scheme.

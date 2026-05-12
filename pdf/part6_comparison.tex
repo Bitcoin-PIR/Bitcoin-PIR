@@ -6,11 +6,11 @@ We compare the three PIR instantiations across five dimensions: trust model, com
 \subsection{Trust Models}
 
 \begin{itemize}[nolistsep,leftmargin=*]
-    \item \textbf{DPF-PIR} requires two servers that do not collude. Privacy is \emph{information-theoretic}: if the servers do not communicate, neither learns anything about the query, regardless of computational power. However, if the two servers collude, the client's query is immediately revealed.
+    \item \textbf{DPF-PIR} requires two servers that do not collude. Privacy is \emph{information-theoretic}: if the servers do not communicate, neither learns anything about the query, regardless of computational power. However, if the two servers collude, the client's query is immediately revealed. Running one of the two servers inside a TEE (Section~\ref{sec:tee}) refines this requirement: the TEE-hosted server's operator is removed from the trust base because TEE memory encryption and remote attestation prevent the operator from reading DPF shares or tampering with the server binary. The effective trust model becomes one trusted operator plus the TEE vendor's hardware root of trust, rather than two trusted operators.
 
-    \item \textbf{HarmonyPIR} also requires two non-colluding servers (a hint server and a query server), providing the same information-theoretic privacy guarantee. The hint server and query server need not be the same pair of servers---any two servers that hold the database and do not collude can be used.
+    \item \textbf{HarmonyPIR} also requires two non-colluding servers (a hint server and a query server), providing the same information-theoretic privacy guarantee. The hint server and query server need not be the same pair of servers---any two servers that hold the database and do not collude can be used. The same TEE approach applies: running either the hint server or query server inside a TEE removes its operator from the trust base.
 
-    \item \textbf{OnionPIR} requires only a single server. Privacy is \emph{computational}: the query is encrypted under a lattice-based FHE scheme, and the server cannot distinguish queries even with unlimited time, assuming the hardness of the Ring Learning with Errors (RLWE) problem. This eliminates the non-colluding assumption entirely.
+    \item \textbf{OnionPIR} requires only a single server. Privacy is \emph{computational}: the query is encrypted under a lattice-based FHE scheme, and the server cannot distinguish queries even with unlimited time, assuming the hardness of the Ring Learning with Errors (RLWE) problem. This eliminates the non-colluding assumption entirely. A TEE provides no additional privacy benefit for OnionPIR since there is no second server to collude with; integrity and correct computation are the remaining motivations for TEE use with OnionPIR.
 \end{itemize}
 
 \subsection{Communication Costs}

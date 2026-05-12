@@ -197,3 +197,8 @@ export {
   sdkDeriveChunkGroups,
   sdkCuckooHashInt,
 } from './sdk-bridge.js';
+
+// ARC anonymous rate limiting
+export { ArcCredentialManager, ARC_LOW_WARNING } from './credential-manager.js';
+export type { ArcCredentialState } from './credential-manager.js';
+export { sendArcPresentation } from './arc-present.js';

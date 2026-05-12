@@ -141,6 +141,16 @@ export const RESP_BUCKET_MERKLE_SIB_BATCH = 0x33;
 export const REQ_BUCKET_MERKLE_TREE_TOPS = 0x34;
 export const RESP_BUCKET_MERKLE_TREE_TOPS = 0x34;
 
+// ─── ARC (Anonymous Rate-limited Credentials) ─────────────────────────────
+
+export const REQ_CREDENTIAL_PRESENT = 0x08;
+export const RESP_CREDENTIAL_OK = 0x08;
+
+// ─── Cashu Blind Auth (NUT-22) ───────────────────────────────────────────
+
+export const REQ_CASHU_BAT_PRESENT = 0x09;
+export const RESP_CASHU_BAT_OK = 0x09;
+
 /** Branching factor for per-bucket bin Merkle */
 export const BUCKET_MERKLE_ARITY = 8;
 
