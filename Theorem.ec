@@ -84,11 +84,11 @@
  * Or via the Makefile:
  *   make -C proofs/easycrypt check
  *
- * Successful typecheck of the spec, with all 14 lemmas closed
- * (zero `admit`), pins down (a) the leakage record, (b) the
- * protocol's per-section structure, (c) the exact proof obligations
- * that close the simulator argument, and (d) a mechanically verified
- * proof of those obligations.
+ * Successful typecheck of the spec, with all lemmas closed
+ * (zero `admit`; 31 across all files, 16 in this file), pins down
+ * (a) the leakage record, (b) the protocol's per-section structure,
+ * (c) the exact proof obligations that close the simulator argument,
+ * and (d) a mechanically verified proof of those obligations.
  * --------------------------------------------------------------------- *)
 
 require import Common Leakage Protocol Simulator.
