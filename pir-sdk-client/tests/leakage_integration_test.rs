@@ -600,6 +600,61 @@ async fn dpf_simulator_property_multi_query_collision() {
 
 // ─── Harmony tests ──────────────────────────────────────────────────────────
 
+/// Empirical amortization benchmark: 1 fresh session, sequential
+/// queries with growing batch sizes. Demonstrates that HarmonyPIR's
+/// per-query cost is *not* the cold-session number — it's the
+/// per-scripthash work after the one-time hint load amortizes.
+#[tokio::test]
+#[ignore = "requires running PIR servers"]
+async fn harmony_amortization_bench() {
+    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
+    client.connect().await.expect("connect");
+    let catalog = client.fetch_catalog().await.expect("catalog");
+    let db_id = catalog.databases[0].db_id;
+
+    // 10 distinct not-found scripthashes (one byte differs each).
+    let scripthashes: Vec<ScriptHash> = (0..10u8)
+        .map(|i| {
+            let mut sh = [0u8; 20];
+            sh[0] = i;
+            sh[1] = 0x42;
+            sh
+        })
+        .collect();
+
+    let t0 = std::time::Instant::now();
+    let _ = client
+        .query_batch(&scripthashes[..1], db_id)
+        .await
+        .expect("1st query");
+    let cold = t0.elapsed();
+    println!("[BENCH] 1st query (cold session, hint download): {:.2?}", cold);
+
+    let t1 = std::time::Instant::now();
+    let _ = client
+        .query_batch(&scripthashes[1..2], db_id)
+        .await
+        .expect("2nd query");
+    let warm_single = t1.elapsed();
+    println!("[BENCH] 2nd query (hints cached): {:.2?}", warm_single);
+
+    let t2 = std::time::Instant::now();
+    let _ = client
+        .query_batch(&scripthashes[2..], db_id)
+        .await
+        .expect("8-batch query");
+    let batch_of_8 = t2.elapsed();
+    println!("[BENCH] 8-batch query (hints cached): {:.2?}", batch_of_8);
+    println!(
+        "[BENCH] per-scripthash amortized: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
+        cold,
+        warm_single,
+        batch_of_8 / 8,
+    );
+
+    client.disconnect().await.unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn harmony_per_message_invariants_not_found() {
