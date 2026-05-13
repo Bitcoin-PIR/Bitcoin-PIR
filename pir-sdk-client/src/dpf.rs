@@ -837,6 +837,19 @@ impl DpfClient {
                 );
             }
 
+            // [DBG_HEX] Hex-dump raw bytes for offline varint trace.
+            if std::env::var("PIR_DUMP_RAW_CHUNKS").is_ok() {
+                let preview_len = std::cmp::min(real_data.len(), 80);
+                let preview: String = real_data[..preview_len]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                eprintln!(
+                    "[DBG_HEX] DPF query #{} real_count={} real_data_len={} (raw chunk_data_len={}) bytes[0..{}]={}",
+                    i, real_count, real_data.len(), chunk_data.len(), preview_len, preview,
+                );
+            }
+
             let entries = decode_utxo_entries(&real_data);
 
             results.push(Some(QueryResult {

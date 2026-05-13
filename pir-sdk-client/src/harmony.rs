@@ -1670,8 +1670,10 @@ impl HarmonyClient {
         let request = encode_request(REQ_HARMONY_HINTS, &payload);
         let request_bytes = request.len() as u64;
 
+        let t_send = std::time::Instant::now();
         let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
         conn.send(request).await?;
+        let dt_send = t_send.elapsed();
 
         // The hint server streams `num_groups` separate response frames.
         // Sum their sizes for a single `HarmonyHintRefresh` round event —
@@ -1681,8 +1683,17 @@ impl HarmonyClient {
         // (matches the early-error semantics of the other rounds).
         let mut received = 0u32;
         let mut total_response_bytes: u64 = 0;
+        let t_first_byte = std::time::Instant::now();
+        let mut dt_first: Option<std::time::Duration> = None;
+        let mut dt_recv_total = std::time::Duration::ZERO;
+        let mut dt_load_total = std::time::Duration::ZERO;
         while received < num_groups as u32 {
+            let t_msg = std::time::Instant::now();
             let msg = conn.recv().await?;
+            dt_recv_total += t_msg.elapsed();
+            if dt_first.is_none() {
+                dt_first = Some(t_first_byte.elapsed());
+            }
             total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
             if msg.len() < 5 {
                 return Err(PirError::Protocol("truncated hint response".into()));
@@ -1727,15 +1738,27 @@ impl HarmonyClient {
                     group_id, level
                 ))
             })?;
+            let t_load = std::time::Instant::now();
             group
                 .load_hints(hints_data)
                 .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
+            dt_load_total += t_load.elapsed();
 
             if let Some(cb) = on_group.as_deref_mut() {
                 cb(group_id);
             }
 
             received += 1;
+        }
+
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]     fetch_and_load_hints(level={:02}): send={:?} first_byte={:?} recv_total={:?} load_total={:?} groups={} bytes={}",
+                level, dt_send,
+                dt_first.unwrap_or_default(),
+                dt_recv_total, dt_load_total,
+                num_groups, total_response_bytes,
+            );
         }
 
         self.record_round(RoundProfile {
@@ -1929,6 +1952,21 @@ impl HarmonyClient {
                 log::warn!(
                     "[PIR-AUDIT] HarmonyPIR CHUNK closure: query #{} matched a non-whale INDEX entry with num_chunks=0; treating as whale",
                     i,
+                );
+            }
+
+            // [DBG_HEX] Hex-dump the raw chunk bytes the server returned, so
+            // we can manually trace the varint parse and confirm the decoder
+            // is reading the right bytes. Gated on env to avoid noise.
+            if std::env::var("PIR_DUMP_RAW_CHUNKS").is_ok() {
+                let preview_len = std::cmp::min(real_data.len(), 80);
+                let preview: String = real_data[..preview_len]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                eprintln!(
+                    "[DBG_HEX] HarmonyPIR query #{} real_count={} real_data_len={} (raw chunk_data_len={}) bytes[0..{}]={}",
+                    i, real_count, real_data.len(), chunk_data.len(), preview_len, preview,
                 );
             }
 
@@ -2970,6 +3008,7 @@ impl HarmonyClient {
         db_info: &DatabaseInfo,
         tree_tops: &[TreeTop],
     ) -> PirResult<()> {
+        let _t_sib_start = std::time::Instant::now();
         let k_index = db_info.index_k as usize;
         let k_chunk = db_info.chunk_k as usize;
         if tree_tops.len() < k_index + k_chunk {
@@ -3024,6 +3063,7 @@ impl HarmonyClient {
         for sl in 0..index_sib_levels {
             let level_n = nodes.div_ceil(arity);
             nodes = level_n;
+            let t_init = std::time::Instant::now();
             for g in 0..k_index {
                 let group = HarmonyGroup::new_with_backend(
                     level_n as u32,
@@ -3041,6 +3081,8 @@ impl HarmonyClient {
                 })?;
                 self.index_sib_groups.insert((sl, g as u8), group);
             }
+            let dt_init = t_init.elapsed();
+            let t_fetch = std::time::Instant::now();
             self.fetch_and_load_hints_into(
                 db_info.db_id,
                 10 + sl as u8,
@@ -3049,6 +3091,13 @@ impl HarmonyClient {
                 None,
             )
             .await?;
+            let dt_fetch = t_fetch.elapsed();
+            if std::env::var("HARMONY_BENCH").is_ok() {
+                eprintln!(
+                    "[HARMONY_BENCH]   sib INDEX L{}: group_init={:?}  fetch+load_hints={:?}  (k={}, level_n={})",
+                    sl, dt_init, dt_fetch, k_index, level_n,
+                );
+            }
             log::info!(
                 "[PIR-AUDIT] HarmonyPIR INDEX sib L{}: loaded hints for {} groups (n={})",
                 sl, k_index, level_n
@@ -3060,6 +3109,7 @@ impl HarmonyClient {
         for sl in 0..chunk_sib_levels {
             let level_n = nodes.div_ceil(arity);
             nodes = level_n;
+            let t_init = std::time::Instant::now();
             for g in 0..k_chunk {
                 let group = HarmonyGroup::new_with_backend(
                     level_n as u32,
@@ -3081,6 +3131,8 @@ impl HarmonyClient {
                 })?;
                 self.chunk_sib_groups.insert((sl, g as u8), group);
             }
+            let dt_init = t_init.elapsed();
+            let t_fetch = std::time::Instant::now();
             self.fetch_and_load_hints_into(
                 db_info.db_id,
                 20 + sl as u8,
@@ -3089,6 +3141,13 @@ impl HarmonyClient {
                 None,
             )
             .await?;
+            let dt_fetch = t_fetch.elapsed();
+            if std::env::var("HARMONY_BENCH").is_ok() {
+                eprintln!(
+                    "[HARMONY_BENCH]   sib CHUNK L{}: group_init={:?}  fetch+load_hints={:?}  (k={}, level_n={})",
+                    sl, dt_init, dt_fetch, k_chunk, level_n,
+                );
+            }
             log::info!(
                 "[PIR-AUDIT] HarmonyPIR CHUNK sib L{}: loaded hints for {} groups (n={})",
                 sl, k_chunk, level_n
@@ -3771,12 +3830,22 @@ impl HarmonyClient {
             });
         }
 
+        let t_build = std::time::Instant::now();
         let request = encode_batch_query(1, round_id, db_id, &batch_items);
+        let dt_build = t_build.elapsed();
         let request_bytes = request.len() as u64;
         let items_per_group: Vec<u32> =
             batch_items.iter().map(|it| it.indices.len() as u32).collect();
         let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        let t_wire = std::time::Instant::now();
         let response = conn.roundtrip(&request).await?;
+        let dt_wire = t_wire.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   CHUNK round (h={}, round_id={}): build {:?}  wire RTT {:?}  (req {}B resp {}B, k_chunk={})",
+                hash_fn, round_id, dt_build, dt_wire, request_bytes, response.len() + 4, k_chunk,
+            );
+        }
         self.record_round(RoundProfile {
             kind: RoundKind::Chunk,
             server_id: 0,
@@ -3785,6 +3854,7 @@ impl HarmonyClient {
             response_bytes: (response.len() as u64).saturating_add(4),
             items: items_per_group,
         });
+        let t_decode = std::time::Instant::now();
         let raw_results = decode_batch_response(&response)?;
 
         // Decode only the groups the role list marks as Real — same set
@@ -3806,6 +3876,13 @@ impl HarmonyClient {
                 PirError::BackendState(format!("process_response (chunk): {:?}", e))
             })?;
             out.insert(g, answer);
+        }
+        let dt_decode = t_decode.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   CHUNK round decode: {:?}  ({} real groups)",
+                dt_decode, out.len(),
+            );
         }
         Ok(out)
     }
@@ -4460,7 +4537,15 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
         // so a test can assert the invariant directly.
         let items_per_group: Vec<u32> =
             batch_items.iter().map(|it| it.indices.len() as u32).collect();
+        let t_send = std::time::Instant::now();
         let response = self.query_conn.roundtrip(&request).await?;
+        let dt_wire = t_send.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   Merkle pass (table={}, level={}): wire RTT {:?} (req {}B resp {}B)",
+                table_type, level, dt_wire, request_bytes, response.len() + 4,
+            );
+        }
         if let Some(rec) = &self.leakage_recorder {
             let kind = match table_type {
                 1 => RoundKind::ChunkMerkleSiblings { level: level as u8 },

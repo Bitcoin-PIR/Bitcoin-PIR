@@ -1611,3 +1611,72 @@ fn _unused_url_helpers() {
 // when building with no feature.
 #[allow(dead_code)]
 fn _unused_round_profile(_p: &RoundProfile) {}
+
+// ─── Data-correctness diagnostic (2026-05-13) ───────────────────────────────
+//
+// The user reported that web-client HarmonyPIR queries return wrong UTXO
+// data even after the varint decoder fix (7e078db0) and the fastprp feature
+// fix (cccad8d6). This test runs the Rust HarmonyClient against the same
+// production servers, queries the two known-found scripthashes
+// (`found_pair()`), and prints the raw chunk bytes + decoded entries in a
+// format that can be eyeballed against an on-chain UTXO oracle.
+//
+// Run with:
+//   PIR_DUMP_RAW_CHUNKS=1 cargo test -p pir-sdk-client --features fastprp \
+//       --test leakage_integration_test -- --ignored --nocapture \
+//       harmony_data_correctness_diagnostic
+//
+// Cross-check the printed `txid` (REVERSED) + `vout` + `amount` against
+// `https://mempool.space/api/address/<addr>/utxo` for:
+//   - SPK `76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac` (P2PKH)
+//   - SPK `0014528aa6fb623acd8f574abc89508e0a42cde57b8b` (P2WPKH)
+//
+// If the printed entries are still wrong, the issue is upstream of the
+// varint decoder (likely in chunk_data assembly or PRP backend state).
+#[tokio::test]
+#[ignore = "requires running PIR servers + correctness verification by eye"]
+async fn harmony_data_correctness_diagnostic() {
+    let (sh_a, sh_b) = found_pair();
+    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
+    client.connect().await.expect("harmony connect");
+    let catalog = client.fetch_catalog().await.expect("harmony fetch_catalog");
+    let db_id = catalog.databases[0].db_id;
+    eprintln!(
+        "[DBG_CORR] DB synced_height={} index_bins={} chunk_bins={}",
+        catalog.databases[0].height,
+        catalog.databases[0].index_bins,
+        catalog.databases[0].chunk_bins,
+    );
+    let results = client
+        .query_batch(&[sh_a, sh_b], db_id)
+        .await
+        .expect("harmony query_batch");
+    client.disconnect().await.unwrap();
+
+    let labels = [
+        ("sh_a (HASH160 of 76a914...88ac, P2PKH)", sh_a),
+        ("sh_b (HASH160 of 0014...7b8b, P2WPKH)",  sh_b),
+    ];
+    for (i, res) in results.iter().enumerate() {
+        let (label, sh) = labels[i];
+        let sh_hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
+        eprintln!("[DBG_CORR] query #{} {} sh={}", i, label, sh_hex);
+        match res {
+            None => eprintln!("    -> None (not-found)"),
+            Some(qr) => {
+                eprintln!(
+                    "    -> entries={} merkle_verified={} is_whale={}",
+                    qr.entries.len(), qr.merkle_verified, qr.is_whale,
+                );
+                for (j, e) in qr.entries.iter().enumerate() {
+                    let txid_internal: String = e.txid.iter().map(|b| format!("{:02x}", b)).collect();
+                    let txid_display: String = e.txid.iter().rev().map(|b| format!("{:02x}", b)).collect();
+                    eprintln!(
+                        "      entry[{}] txid_internal={} txid_display={} vout={} amount_sats={}",
+                        j, txid_internal, txid_display, e.vout, e.amount_sats,
+                    );
+                }
+            }
+        }
+    }
+}
