@@ -1990,9 +1990,15 @@ async fn main() {
         if let Some(ref dir) = pool_config.pool_dir {
             let _ = std::fs::create_dir_all(dir);
         }
+        let backend_name = match pool_config.prp_backend {
+            harmonypir_wasm::PRP_HMR12 => "HMR12",
+            harmonypir_wasm::PRP_FASTPRP => "FastPRP",
+            _ => "unknown",
+        };
         println!(
-            "  HarmonyPIR V2 hint pool: size={}, backend=ALF, dir={}",
+            "  HarmonyPIR V2 hint pool: size={}, backend={}, dir={}",
             pool_config.pool_size,
+            backend_name,
             pool_config.pool_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "memory-only".into())
         );
         Some(hint_pool::HintPool::new(pool_config, main_db))

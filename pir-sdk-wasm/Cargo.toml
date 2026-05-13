@@ -17,7 +17,18 @@ categories = ["cryptography", "cryptography::cryptocurrencies", "wasm", "web-pro
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+# `fastprp` enables PRP_FASTPRP support in the harmonypir-wasm runtime,
+# matching the runtime server's default PRP backend
+# (`runtime/src/bin/unified_server.rs:1986` →
+# `harmonypir_wasm::PRP_FASTPRP`). Without this feature the WASM client
+# silently falls back to HMR12 for PRP_FASTPRP backends
+# (`harmonypir-wasm/src/lib.rs:98-104`), producing garbage recoveries
+# because server hint state and client decode state use different
+# permutations. Symptom: HarmonyPIR queries return wrong UTXO data
+# AND Merkle verification fails (bin_content doesn't match leaf hashes).
+# Added 2026-05-13 alongside the v15 production rollout.
+default = ["fastprp"]
+fastprp = ["pir-sdk-client/fastprp"]
 
 [dependencies]
 pir-sdk = { version = "0.1.0", path = "../pir-sdk" }
