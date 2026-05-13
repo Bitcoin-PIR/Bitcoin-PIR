@@ -783,6 +783,163 @@ pub async fn verify_bucket_merkle_batch_generic(
     Ok(result)
 }
 
+/// Two-querier parallel variant of [`verify_bucket_merkle_batch_generic`].
+///
+/// Identical semantics, but runs INDEX and CHUNK sub-tree verification
+/// **concurrently** by polling both `verify_sibling_levels` futures via
+/// `tokio::try_join!` (or `futures::future::try_join` on wasm32). The
+/// two trees share no state — different sibling group maps, different
+/// `tree_tops` slices, different per-table_type wire bytes — so they
+/// can run on independent connections without any synchronization.
+///
+/// This unlocks ~3 s wall-time savings against a far-away client where
+/// each socket is bandwidth-delay-product-capped. With single-socket
+/// pipelining, INDEX and CHUNK Merkle responses serialize on one TCP
+/// congestion window; with two sockets they each get their own.
+///
+/// `index_querier` is expected to serve `table_type = 0` only;
+/// `chunk_querier` is expected to serve `table_type = 1` only. The
+/// callers are responsible for constructing queriers that hold the
+/// appropriate sibling group state — see HarmonyClient's
+/// `verify_merkle_items` for the production wiring.
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_bucket_merkle_batch_parallel(
+    index_querier: &mut dyn BucketMerkleSiblingQuerier,
+    chunk_querier: &mut dyn BucketMerkleSiblingQuerier,
+    items: &[BucketMerkleItem],
+    index_bins: u32,
+    chunk_bins: u32,
+    index_k: usize,
+    chunk_k: usize,
+    db_id: u8,
+    tree_tops: &[TreeTop],
+) -> PirResult<Vec<bool>> {
+    if tree_tops.len() < index_k + chunk_k {
+        return Err(PirError::ProtocolSkew {
+            expected: format!(
+                "at least {} tree-top entries (K_INDEX={}, K_CHUNK={})",
+                index_k + chunk_k,
+                index_k,
+                chunk_k
+            ),
+            actual: format!("{} tree-top entries", tree_tops.len()),
+        });
+    }
+
+    log::info!(
+        "[PIR-AUDIT] Merkle verify (parallel): {} items (K_INDEX={}, K_CHUNK={}, arity={})",
+        items.len(),
+        index_k,
+        chunk_k,
+        BUCKET_MERKLE_ARITY
+    );
+
+    // ── Build INDEX + CHUNK sub-item lists up front ────────────────────
+    let index_sub_items: Vec<SubItem> = items
+        .iter()
+        .map(|it| SubItem {
+            pbc_group: it.index_pbc_group,
+            bin_index: it.index_bin_index,
+            bin_content: it.index_bin_content.clone(),
+        })
+        .collect();
+
+    let mut chunk_sub_items: Vec<SubItem> = Vec::new();
+    let mut chunk_item_map: Vec<(usize, usize)> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        for c in 0..it.chunk_pbc_groups.len() {
+            chunk_sub_items.push(SubItem {
+                pbc_group: it.chunk_pbc_groups[c],
+                bin_index: it.chunk_bin_indices[c],
+                bin_content: it.chunk_bin_contents[c].clone(),
+            });
+            chunk_item_map.push((i, c));
+        }
+    }
+
+    log::info!(
+        "[PIR-AUDIT] Merkle parallel: INDEX={} bins/{} groups, CHUNK={} bins/{} groups",
+        index_sub_items.len(),
+        index_k,
+        chunk_sub_items.len(),
+        chunk_k,
+    );
+
+    // ── Run both sub-trees in parallel ─────────────────────────────────
+    // `tree_tops[..index_k]` and `tree_tops[index_k..index_k+chunk_k]`
+    // are disjoint subslices — two shared borrows are fine. The two
+    // queriers have disjoint &mut state (different connections,
+    // different sibling group maps), so polling both futures
+    // concurrently is sound.
+    let index_tree_tops = &tree_tops[..index_k];
+    let chunk_tree_tops = &tree_tops[index_k..index_k + chunk_k];
+
+    let index_fut = verify_sibling_levels(
+        index_querier,
+        &index_sub_items,
+        index_bins,
+        index_k,
+        0, // table_type = INDEX
+        index_tree_tops,
+        db_id,
+    );
+    let chunk_fut = async {
+        if chunk_sub_items.is_empty() {
+            Ok::<_, PirError>(Vec::<bool>::new())
+        } else {
+            verify_sibling_levels(
+                chunk_querier,
+                &chunk_sub_items,
+                chunk_bins,
+                chunk_k,
+                1, // table_type = CHUNK
+                chunk_tree_tops,
+                db_id,
+            )
+            .await
+        }
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let (index_verified, chunk_verified) = tokio::try_join!(index_fut, chunk_fut)?;
+    #[cfg(target_arch = "wasm32")]
+    let (index_verified, chunk_verified) =
+        futures::future::try_join(index_fut, chunk_fut).await?;
+
+    // ── Combine results ────────────────────────────────────────────────
+    let mut result = vec![true; items.len()];
+    for (i, ok) in index_verified.iter().enumerate() {
+        if !ok {
+            result[i] = false;
+        }
+    }
+    for (j, ok) in chunk_verified.iter().enumerate() {
+        if !ok {
+            let (i, _) = chunk_item_map[j];
+            result[i] = false;
+        }
+    }
+
+    let passed = result.iter().filter(|&&v| v).count();
+    let failed = result.len() - passed;
+    if failed == 0 {
+        log::info!(
+            "[PIR-AUDIT] Merkle verify (parallel): {}/{} PASSED",
+            passed,
+            result.len()
+        );
+    } else {
+        log::warn!(
+            "[PIR-AUDIT] Merkle verify (parallel): {}/{} passed, {} FAILED",
+            passed,
+            result.len(),
+            failed
+        );
+    }
+
+    Ok(result)
+}
+
 // ─── Per-table-type sibling walk ────────────────────────────────────────────
 
 /// A flattened (pbc_group, bin_index, bin_content) triple used internally.

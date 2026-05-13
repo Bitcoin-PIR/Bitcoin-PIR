@@ -33,7 +33,8 @@
 use crate::connection::WsConnection;
 use crate::hint_cache;
 use crate::merkle_verify::{
-    fetch_tree_tops, verify_bucket_merkle_batch_generic, BucketMerkleItem,
+    fetch_tree_tops, verify_bucket_merkle_batch_generic,
+    verify_bucket_merkle_batch_parallel, BucketMerkleItem,
     BucketMerkleSiblingQuerier, TreeTop, BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
 };
 use crate::transport::PirTransport;
@@ -466,6 +467,24 @@ pub struct HarmonyClient {
     query_server_url: String,
     hint_conn: Option<Box<dyn PirTransport>>,
     query_conn: Option<Box<dyn PirTransport>>,
+    /// Secondary query-server WebSocket, used to split parallel rounds
+    /// (CHUNK h=0/h=1 pair, INDEX/CHUNK Merkle sub-trees) across two
+    /// sockets so we can saturate the path's bandwidth-delay product
+    /// instead of being capped by a single-TCP-stream limit. `None`
+    /// means single-socket fallback (identical behaviour to pre-pool
+    /// code).
+    ///
+    /// Opened in parallel with [`query_conn`] at [`connect`] time when
+    /// the `HARMONY_QUERY_POOL_SIZE` env var is set to 2 (default) or
+    /// higher. Pool size 1 leaves this `None` and all rounds run on
+    /// `query_conn` alone.
+    ///
+    /// Privacy invariants are preserved per socket — the wire shape of
+    /// each round is unchanged. The server can't distinguish a
+    /// two-socket client from two single-socket clients running back
+    /// to back: each socket is its own connection and gets its own
+    /// stateless K-padded batch queries.
+    query_conn_secondary: Option<Box<dyn PirTransport>>,
     catalog: Option<DatabaseCatalog>,
     prp_backend: u8,
     master_prp_key: [u8; 16],
@@ -544,6 +563,7 @@ impl HarmonyClient {
             query_server_url: query_server_url.to_string(),
             hint_conn: None,
             query_conn: None,
+            query_conn_secondary: None,
             catalog: None,
             prp_backend: PRP_HMR12,
             master_prp_key,
@@ -582,6 +602,9 @@ impl HarmonyClient {
             c.set_metrics_recorder(recorder.clone(), "harmony");
         }
         if let Some(ref mut c) = self.query_conn {
+            c.set_metrics_recorder(recorder.clone(), "harmony");
+        }
+        if let Some(ref mut c) = self.query_conn_secondary {
             c.set_metrics_recorder(recorder, "harmony");
         }
     }
@@ -785,6 +808,16 @@ impl HarmonyClient {
 
         self.hint_conn = Some(Box::new(wrapped_hint));
         self.query_conn = Some(Box::new(wrapped_query));
+
+        // Drop the secondary query socket on secure-channel upgrade —
+        // the channel handshake is single-socket today, and parallel
+        // round-fanout would have to re-handshake the secondary too.
+        // Single-socket fallback is correct (just slower) under
+        // secure-channel mode; ship parallel-pool channel as a
+        // follow-up if real users hit this combination.
+        if let Some(ref mut c) = self.query_conn_secondary.take() {
+            let _ = c.close().await;
+        }
         Ok(())
     }
 
@@ -1589,6 +1622,13 @@ impl HarmonyClient {
         let _terminal = conn.recv().await?;
 
         self.loaded_db_id = Some(db_info.db_id);
+
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   V2 main hint stream: req {}B  resp_total {}B  (k_index={}, k_chunk={})",
+                request_bytes, total_response_bytes, k_index, k_chunk,
+            );
+        }
 
         // Record the round.
         self.record_round(RoundProfile {
@@ -2589,23 +2629,71 @@ impl HarmonyClient {
             .collect();
 
         // ── Pipelined network round-trip ──
-        // Send both requests before awaiting either response. The
-        // WebSocket sink delivers them in order; the server processes
-        // requests sequentially per connection and responses arrive in
-        // the same order. The two RTTs collapse into one (one send-first,
-        // both flights overlap, both recvs in order).
+        // Same fan-out treatment as `run_chunk_round_pair`: if a
+        // secondary query socket is connected, send h=0 on conn0 and
+        // h=1 on conn1 in parallel via `tokio::try_join!`. Each
+        // socket gets its own TCP BDP budget at high RTT — the wire
+        // saving is smaller for INDEX (~4 MB per side, ~1-2 s
+        // typical) than for CHUNK (~15 MB per side, ~3 s) but the
+        // logic is identical.
         //
         // Note: `conn.recv()` returns the raw frame INCLUDING the 4-byte
         // length prefix (unlike `conn.roundtrip()`, which strips it).
-        // We strip with `[4..]` here, mirroring `dpf.rs:1442-1443`. The
-        // saturating-prefix-len check guards against a too-short frame —
-        // a missing prefix is a server protocol violation, not a normal
-        // case.
-        let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        conn.send(request_h0).await?;
-        conn.send(request_h1).await?;
-        let response_h0 = conn.recv().await?;
-        let response_h1 = conn.recv().await?;
+        // We strip with `[4..]` below, mirroring `dpf.rs:1442-1443`.
+        let t_wire = std::time::Instant::now();
+        let (response_h0, response_h1) = if self.query_conn_secondary.is_some() {
+            let conn0 = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+            let conn1 = self
+                .query_conn_secondary
+                .as_mut()
+                .expect("checked is_some above");
+            #[cfg(not(target_arch = "wasm32"))]
+            let (r0, r1) = tokio::try_join!(
+                async {
+                    conn0.send(request_h0).await?;
+                    conn0.recv().await
+                },
+                async {
+                    conn1.send(request_h1).await?;
+                    conn1.recv().await
+                },
+            )?;
+            #[cfg(target_arch = "wasm32")]
+            let (r0, r1) = futures::future::try_join(
+                async {
+                    conn0.send(request_h0).await?;
+                    conn0.recv().await
+                },
+                async {
+                    conn1.send(request_h1).await?;
+                    conn1.recv().await
+                },
+            )
+            .await?;
+            (r0, r1)
+        } else {
+            let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+            conn.send(request_h0).await?;
+            conn.send(request_h1).await?;
+            let r0 = conn.recv().await?;
+            let r1 = conn.recv().await?;
+            (r0, r1)
+        };
+        let dt_wire = t_wire.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            let mode = if self.query_conn_secondary.is_some() {
+                "parallel-2-socket"
+            } else {
+                "pipelined-1-socket"
+            };
+            eprintln!(
+                "[HARMONY_BENCH]   INDEX pair (round_tags={}/{}, {}): wire RTT {:?}  (req {}B+{}B resp {}B+{}B, k_index={})",
+                round_tag_h0, round_tag_h1, mode, dt_wire,
+                request_h0_bytes, request_h1_bytes,
+                response_h0.len(), response_h1.len(),
+                k_index,
+            );
+        }
         if response_h0.len() < 4 || response_h1.len() < 4 {
             return Err(PirError::Protocol(
                 "INDEX pair response too short to carry length prefix".into(),
@@ -3336,7 +3424,50 @@ impl HarmonyClient {
         let mut index_sib_groups = std::mem::take(&mut self.index_sib_groups);
         let mut chunk_sib_groups = std::mem::take(&mut self.chunk_sib_groups);
 
-        let per_item = {
+        let per_item = if self.query_conn_secondary.is_some() {
+            // ── Parallel path: split INDEX and CHUNK sib trees across
+            // the two sockets. Each querier holds the full map for
+            // its table_type, plus an empty placeholder for the other
+            // (it will never be accessed because the parallel verifier
+            // only ever calls table_type=0 on q_index and table_type=1
+            // on q_chunk).
+            let mut empty_chunk_placeholder: HashMap<(usize, u8), HarmonyGroup> = HashMap::new();
+            let mut empty_index_placeholder: HashMap<(usize, u8), HarmonyGroup> = HashMap::new();
+
+            // Disjoint borrows on the two `Option` fields.
+            let conn0 = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+            let conn1 = self
+                .query_conn_secondary
+                .as_mut()
+                .expect("checked is_some above");
+
+            let mut q_index = HarmonySiblingQuerier {
+                query_conn: conn0,
+                index_sib_groups: &mut index_sib_groups,
+                chunk_sib_groups: &mut empty_chunk_placeholder,
+                leakage_recorder: leakage.clone(),
+            };
+            let mut q_chunk = HarmonySiblingQuerier {
+                query_conn: conn1,
+                index_sib_groups: &mut empty_index_placeholder,
+                chunk_sib_groups: &mut chunk_sib_groups,
+                leakage_recorder: leakage.clone(),
+            };
+
+            verify_bucket_merkle_batch_parallel(
+                &mut q_index,
+                &mut q_chunk,
+                items,
+                db_info.index_bins,
+                db_info.chunk_bins,
+                index_k,
+                chunk_k,
+                db_info.db_id,
+                &tree_tops,
+            )
+            .await
+        } else {
+            // ── Single-socket fallback: original code path, unchanged.
             let query_conn = self
                 .query_conn
                 .as_mut()
@@ -4023,21 +4154,68 @@ impl HarmonyClient {
             .collect();
 
         // ── Pipelined network round-trip ──
-        // Same shape as `run_index_round_pair`: send both requests
-        // before awaiting either response. The WebSocket sink delivers
-        // them in order; the server processes them sequentially per
-        // connection and responses arrive in the same order.
+        // Pool path: when a secondary query socket is connected, fan
+        // h=0 onto conn0 and h=1 onto conn1 in parallel via
+        // `tokio::try_join!`. Each socket gets its own TCP
+        // bandwidth-delay-product budget — at high RTT this roughly
+        // halves wall time vs. single-socket pipelining because the
+        // two ~15 MB responses transfer concurrently instead of
+        // sharing one stream's congestion window.
+        //
+        // Single-socket fallback: send both requests then recv both
+        // (unchanged from pre-pool behaviour, kept identical so the
+        // pool-size=1 code path is bit-for-bit equivalent).
         let t_wire = std::time::Instant::now();
-        let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        conn.send(request_h0).await?;
-        conn.send(request_h1).await?;
-        let response_h0 = conn.recv().await?;
-        let response_h1 = conn.recv().await?;
+        let (response_h0, response_h1) = if self.query_conn_secondary.is_some() {
+            // Disjoint borrows on different `Option` fields → safe to
+            // hold both `&mut` simultaneously.
+            let conn0 = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+            let conn1 = self
+                .query_conn_secondary
+                .as_mut()
+                .expect("checked is_some above");
+            #[cfg(not(target_arch = "wasm32"))]
+            let (r0, r1) = tokio::try_join!(
+                async {
+                    conn0.send(request_h0).await?;
+                    conn0.recv().await
+                },
+                async {
+                    conn1.send(request_h1).await?;
+                    conn1.recv().await
+                },
+            )?;
+            #[cfg(target_arch = "wasm32")]
+            let (r0, r1) = futures::future::try_join(
+                async {
+                    conn0.send(request_h0).await?;
+                    conn0.recv().await
+                },
+                async {
+                    conn1.send(request_h1).await?;
+                    conn1.recv().await
+                },
+            )
+            .await?;
+            (r0, r1)
+        } else {
+            let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+            conn.send(request_h0).await?;
+            conn.send(request_h1).await?;
+            let r0 = conn.recv().await?;
+            let r1 = conn.recv().await?;
+            (r0, r1)
+        };
         let dt_wire = t_wire.elapsed();
         if std::env::var("HARMONY_BENCH").is_ok() {
+            let mode = if self.query_conn_secondary.is_some() {
+                "parallel-2-socket"
+            } else {
+                "pipelined-1-socket"
+            };
             eprintln!(
-                "[HARMONY_BENCH]   CHUNK pair (round_ids={}/{}): pipelined wire RTT {:?}  (req {}B+{}B resp {}B+{}B, k_chunk={})",
-                round_id_h0, round_id_h1, dt_wire,
+                "[HARMONY_BENCH]   CHUNK pair (round_ids={}/{}, {}): wire RTT {:?}  (req {}B+{}B resp {}B+{}B, k_chunk={})",
+                round_id_h0, round_id_h1, mode, dt_wire,
                 request_h0_bytes, request_h1_bytes,
                 response_h0.len(), response_h1.len(),
                 k_chunk,
@@ -4124,37 +4302,90 @@ impl PirClient for HarmonyClient {
         );
         self.notify_state(ConnectionState::Connecting);
 
+        // Pool size: 1 = single-socket (legacy behaviour); 2 = open a
+        // secondary query socket too so parallel paths can fan rounds
+        // across A/B. We cap at 2 today — the structurally parallel
+        // axis count maxes out at 3 (CHUNK pair × INDEX-Merkle pass-pair
+        // × CHUNK-Merkle level), and within-level fan-out beyond the
+        // current pipelining gives diminishing returns. Default is 2
+        // because the iperf data on the public deployment shows
+        // ~3× wall-time savings vs single socket.
+        let pool_size: usize = std::env::var("HARMONY_QUERY_POOL_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2)
+            .clamp(1, 2);
+
         // Native → tokio::try_join! over tokio-tungstenite; WASM →
         // futures::future::try_join over web-sys WebSocket. See `DpfClient`
-        // for the same pattern with an explanation.
+        // for the same pattern with an explanation. The secondary
+        // query socket is dialled in parallel with the primary two so
+        // the cold-connect cost is one RTT, not three.
         #[cfg(not(target_arch = "wasm32"))]
-        let dial_result: PirResult<(Box<dyn PirTransport>, Box<dyn PirTransport>)> = async {
-            let (h, q) = tokio::try_join!(
-                WsConnection::connect(&self.hint_server_url),
-                WsConnection::connect(&self.query_server_url),
-            )?;
-            Ok((
-                Box::new(h) as Box<dyn PirTransport>,
-                Box::new(q) as Box<dyn PirTransport>,
-            ))
+        let dial_result: PirResult<(
+            Box<dyn PirTransport>,
+            Box<dyn PirTransport>,
+            Option<Box<dyn PirTransport>>,
+        )> = async {
+            if pool_size >= 2 {
+                let (h, q1, q2) = tokio::try_join!(
+                    WsConnection::connect(&self.hint_server_url),
+                    WsConnection::connect(&self.query_server_url),
+                    WsConnection::connect(&self.query_server_url),
+                )?;
+                Ok((
+                    Box::new(h) as Box<dyn PirTransport>,
+                    Box::new(q1) as Box<dyn PirTransport>,
+                    Some(Box::new(q2) as Box<dyn PirTransport>),
+                ))
+            } else {
+                let (h, q) = tokio::try_join!(
+                    WsConnection::connect(&self.hint_server_url),
+                    WsConnection::connect(&self.query_server_url),
+                )?;
+                Ok((
+                    Box::new(h) as Box<dyn PirTransport>,
+                    Box::new(q) as Box<dyn PirTransport>,
+                    None,
+                ))
+            }
         }
         .await;
         #[cfg(target_arch = "wasm32")]
-        let dial_result: PirResult<(Box<dyn PirTransport>, Box<dyn PirTransport>)> = async {
+        let dial_result: PirResult<(
+            Box<dyn PirTransport>,
+            Box<dyn PirTransport>,
+            Option<Box<dyn PirTransport>>,
+        )> = async {
             use crate::wasm_transport::WasmWebSocketTransport;
-            let (h, q) = futures::future::try_join(
-                WasmWebSocketTransport::connect(&self.hint_server_url),
-                WasmWebSocketTransport::connect(&self.query_server_url),
-            )
-            .await?;
-            Ok((
-                Box::new(h) as Box<dyn PirTransport>,
-                Box::new(q) as Box<dyn PirTransport>,
-            ))
+            if pool_size >= 2 {
+                let (h, q1, q2) = futures::future::try_join3(
+                    WasmWebSocketTransport::connect(&self.hint_server_url),
+                    WasmWebSocketTransport::connect(&self.query_server_url),
+                    WasmWebSocketTransport::connect(&self.query_server_url),
+                )
+                .await?;
+                Ok((
+                    Box::new(h) as Box<dyn PirTransport>,
+                    Box::new(q1) as Box<dyn PirTransport>,
+                    Some(Box::new(q2) as Box<dyn PirTransport>),
+                ))
+            } else {
+                let (h, q) = futures::future::try_join(
+                    WasmWebSocketTransport::connect(&self.hint_server_url),
+                    WasmWebSocketTransport::connect(&self.query_server_url),
+                )
+                .await?;
+                Ok((
+                    Box::new(h) as Box<dyn PirTransport>,
+                    Box::new(q) as Box<dyn PirTransport>,
+                    None,
+                ))
+            }
         }
         .await;
 
-        let (hint_conn, query_conn) = match dial_result {
+        let (hint_conn, query_conn, query_conn_secondary) = match dial_result {
             Ok(v) => v,
             Err(e) => {
                 // Handshake failed — fall back to `Disconnected`, not
@@ -4167,6 +4398,7 @@ impl PirClient for HarmonyClient {
 
         self.hint_conn = Some(hint_conn);
         self.query_conn = Some(query_conn);
+        self.query_conn_secondary = query_conn_secondary;
 
         // Propagate any installed recorder to the fresh transports so
         // per-frame byte counts start flowing immediately. Done after
@@ -4177,13 +4409,22 @@ impl PirClient for HarmonyClient {
                 c.set_metrics_recorder(Some(rec.clone()), "harmony");
             }
             if let Some(ref mut c) = self.query_conn {
+                c.set_metrics_recorder(Some(rec.clone()), "harmony");
+            }
+            if let Some(ref mut c) = self.query_conn_secondary {
                 c.set_metrics_recorder(Some(rec), "harmony");
             }
         }
 
-        log::info!("Connected to both HarmonyPIR servers");
+        log::info!(
+            "Connected to HarmonyPIR servers (query pool size {})",
+            if self.query_conn_secondary.is_some() { 2 } else { 1 },
+        );
         self.fire_connect(&self.hint_server_url);
         self.fire_connect(&self.query_server_url);
+        if self.query_conn_secondary.is_some() {
+            self.fire_connect(&self.query_server_url);
+        }
         self.notify_state(ConnectionState::Connected);
         Ok(())
     }
@@ -4196,8 +4437,12 @@ impl PirClient for HarmonyClient {
         if let Some(ref mut conn) = self.query_conn {
             let _ = conn.close().await;
         }
+        if let Some(ref mut conn) = self.query_conn_secondary {
+            let _ = conn.close().await;
+        }
         self.hint_conn = None;
         self.query_conn = None;
+        self.query_conn_secondary = None;
         self.catalog = None;
         self.invalidate_groups();
         self.fire_disconnect();
