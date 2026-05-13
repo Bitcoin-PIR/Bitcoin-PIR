@@ -50,8 +50,15 @@ jobs:
       # env block to hit a different deployment.
       PIR_DPF_SERVER0_URL: wss://pir1.chenweikeng.com
       PIR_DPF_SERVER1_URL: wss://pir2.chenweikeng.com
-      PIR_HARMONY_HINT_URL: wss://pir2.chenweikeng.com
-      PIR_HARMONY_QUERY_URL: wss://pir1.chenweikeng.com
+      # Production topology (per CLAUDE.md /
+      # project_pir1_hint_pir2_query_split.md):
+      #   pir1 = Hetzner, no-SEV   → HINT server  (--serve-hints + --pool-size)
+      #   pir2 = VPSBG,   SEV-SNP  → QUERY server (--serve-queries)
+      # The HINT_URL and QUERY_URL env vars were reversed in this
+      # workflow before 2026-05-13 — fixed here so the CI
+      # integration tests hit the correct role on each endpoint.
+      PIR_HARMONY_HINT_URL: wss://pir1.chenweikeng.com
+      PIR_HARMONY_QUERY_URL: wss://pir2.chenweikeng.com
 
     steps:
       - name: Checkout
