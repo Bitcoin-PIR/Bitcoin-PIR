@@ -411,6 +411,45 @@ pub trait BucketMerkleSiblingQuerier: Send {
         pass_targets: &[Option<u32>],
         db_id: u8,
     ) -> PirResult<Vec<Option<Vec<u8>>>>;
+
+    /// Pipelined batch of passes at the same `(table_type, level)`.
+    ///
+    /// All passes share `level_bins_per_table` and a single PBC-group
+    /// partitioning per level — they only differ in `pass_targets`
+    /// (which child each item under each group walks). Passes at the
+    /// same level are INDEPENDENT (each item appears in exactly one
+    /// pass, items in different passes have different `node_idx` at
+    /// this level), so they can be sent back-to-back over the same
+    /// transport without changing the result.
+    ///
+    /// The default implementation falls back to one
+    /// [`query_pass`](Self::query_pass) call per pass, preserving the
+    /// pre-2026-05-13 wire shape for any impl that doesn't override.
+    /// Overriding impls (e.g. `HarmonySiblingQuerier`) issue all sends
+    /// before reading any response, collapsing N sequential RTTs into
+    /// one wall-clock RTT plus N server-walks pipelined on the same
+    /// socket.
+    ///
+    /// Returns one `Vec<Option<Vec<u8>>>` per pass, in the same order
+    /// as `passes`. The order MUST match — callers walk both vectors
+    /// in lockstep.
+    async fn query_passes(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        level_bins_per_table: u32,
+        passes: &[Vec<Option<u32>>],
+        db_id: u8,
+    ) -> PirResult<Vec<Vec<Option<Vec<u8>>>>> {
+        let mut out = Vec::with_capacity(passes.len());
+        for pass_targets in passes {
+            let rows = self
+                .query_pass(table_type, level, level_bins_per_table, pass_targets, db_id)
+                .await?;
+            out.push(rows);
+        }
+        Ok(out)
+    }
 }
 
 // ─── DPF sibling querier ────────────────────────────────────────────────────
@@ -805,20 +844,35 @@ async fn verify_sibling_levels(
         }
     }
 
-    // For each sibling level, run `max_items_per_group` passes. Each pass is
-    // itself K-padded: the querier sends one (real or dummy) sub-request per
-    // group for every slot.
+    // For each sibling level, run `max_items_per_group` passes pipelined
+    // through the querier in a single batch. Each pass is itself
+    // K-padded: the querier sends one (real or dummy) sub-request per
+    // group for every slot. Within a level, passes are INDEPENDENT
+    // (different items use different group slots, all sourced from the
+    // SAME pre-pass `node_idx`), so sending all of them back-to-back
+    // on one socket and draining the responses pipelined is identical
+    // to running them sequentially — except N RTTs collapse into
+    // ~one wall-clock RTT.
+    //
+    // The hash-update step that divides `node_idx[i] /= arity` is
+    // deferred until ALL passes at this level return — passes' targets
+    // were already computed off the level-L node_idx before the batch
+    // was issued, so the division would have no effect on this level's
+    // requests but it WOULD invalidate the next level's. We therefore
+    // collect per-pass (item, parent_hash, parent_idx) updates first,
+    // then apply them as a batch after the level completes.
     for (level, &groups_at_level) in level_groups_count.iter().enumerate() {
+        // Build all pass_targets for this level using the CURRENT
+        // node_idx (level-L view).
+        let mut all_passes: Vec<Vec<Option<u32>>> = Vec::with_capacity(max_items_per_group);
+        let mut pass_groups: Vec<HashMap<usize, usize>> = Vec::with_capacity(max_items_per_group);
         for pass in 0..max_items_per_group {
-            // Select the item handled in this pass for each group.
             let mut pass_group_to_item: HashMap<usize, usize> = HashMap::new();
             for (&g, arr) in &items_by_group {
                 if pass < arr.len() {
                     pass_group_to_item.insert(g, arr[pass]);
                 }
             }
-
-            // Build per-group targets: Some(target_child_idx) or None for padding.
             let pass_targets: Vec<Option<u32>> = (0..table_k)
                 .map(|g| {
                     pass_group_to_item
@@ -826,14 +880,29 @@ async fn verify_sibling_levels(
                         .map(|&item_idx| node_idx[item_idx] / arity as u32)
                 })
                 .collect();
+            all_passes.push(pass_targets);
+            pass_groups.push(pass_group_to_item);
+        }
 
-            // Send one K-padded pass via the querier.
-            let rows = querier
-                .query_pass(table_type, level, groups_at_level, &pass_targets, db_id)
-                .await?;
+        // One pipelined batch over the querier — implementations that
+        // override the default `query_passes` (Harmony today) collapse
+        // these into one wall-clock RTT.
+        let batch_rows = querier
+            .query_passes(table_type, level, groups_at_level, &all_passes, db_id)
+            .await?;
+        if batch_rows.len() != max_items_per_group {
+            return Err(PirError::Protocol(format!(
+                "Merkle L{}: querier returned {} pass results, expected {}",
+                level,
+                batch_rows.len(),
+                max_items_per_group
+            )));
+        }
 
-            // ── Update running hashes for this pass ────────────────────
-            for (&g, &item_idx) in &pass_group_to_item {
+        // ── Update running hashes for ALL passes at this level ────────
+        for (pass, rows) in batch_rows.into_iter().enumerate() {
+            let pass_group_to_item = &pass_groups[pass];
+            for (&g, &item_idx) in pass_group_to_item {
                 let row_opt = rows.get(g).and_then(|r| r.as_ref());
                 let Some(row) = row_opt else {
                     log::warn!(

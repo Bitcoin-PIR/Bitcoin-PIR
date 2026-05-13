@@ -2909,63 +2909,91 @@ impl HarmonyClient {
         let mut chunk_traces: HashMap<(usize, usize), ChunkBinTrace> = HashMap::new();
         let mut recovered: std::collections::HashSet<usize> = std::collections::HashSet::new(); // flat_idx
 
+        // For each PBC round, pipeline the two cuckoo positions via
+        // `run_chunk_round_pair`. The pre-2026-05-13 serial path looped
+        // over `h ∈ 0..CHUNK_CUCKOO_NUM_HASHES` and filtered out
+        // already-recovered chunks at h=1 — we lose that
+        // "retry-only-missed-chunks" optimization here, but K_CHUNK
+        // padding makes every wire round identical in shape anyway, so
+        // bandwidth is unchanged. The benefit: one RTT + one
+        // server-walk pipelined into the other, ~3 s of wall-time
+        // saved per query batch against the public Hetzner deployment
+        // (see `[HARMONY_BENCH]` numbers in
+        // `docs/PLAN_HARMONY_PERF_AUDIT.md`).
+        //
+        // We assert `CHUNK_CUCKOO_NUM_HASHES == 2` here — pair-mode
+        // would need generalisation to 3+ cuckoo positions. The
+        // constant is fixed at 2 in `pir-core::params` so this is a
+        // compile-time invariant; the assertion catches any future
+        // params change.
+        debug_assert_eq!(
+            CHUNK_CUCKOO_NUM_HASHES, 2,
+            "run_chunk_round_pair assumes exactly 2 cuckoo positions",
+        );
         for (round_id, round) in rounds.iter().enumerate() {
-            for h in 0..CHUNK_CUCKOO_NUM_HASHES {
-                // Filter out chunks already recovered at h=0 (or earlier
-                // PBC rounds) so subsequent cuckoo positions only retry
-                // the ones that missed.
-                let still_pending: Vec<(usize, u8)> = round
-                    .iter()
-                    .filter(|&&(flat_idx, _)| !recovered.contains(&flat_idx))
-                    .map(|&(flat_idx, pbc_group)| (flat_idx, pbc_group as u8))
-                    .collect();
-                if still_pending.is_empty() {
-                    break;
-                }
+            let still_pending: Vec<(usize, u8)> = round
+                .iter()
+                .map(|&(flat_idx, pbc_group)| (flat_idx, pbc_group as u8))
+                .collect();
+            if still_pending.is_empty() {
+                continue;
+            }
 
-                let placements: Vec<(u32, u8)> = still_pending
-                    .iter()
-                    .map(|&(flat_idx, pbc_group)| {
-                        let (_, _, cid) = flat[flat_idx];
-                        (cid, pbc_group)
-                    })
-                    .collect();
+            let placements: Vec<(u32, u8)> = still_pending
+                .iter()
+                .map(|&(flat_idx, pbc_group)| {
+                    let (_, _, cid) = flat[flat_idx];
+                    (cid, pbc_group)
+                })
+                .collect();
 
-                let round_tag = (round_id * CHUNK_CUCKOO_NUM_HASHES + h) as u16;
-                let round_answers = self
-                    .run_chunk_round(
-                        db_info.db_id,
-                        &placements,
-                        chunk_bins,
+            let round_tag_h0 = (round_id * CHUNK_CUCKOO_NUM_HASHES) as u16;
+            let round_tag_h1 = (round_id * CHUNK_CUCKOO_NUM_HASHES + 1) as u16;
+            let (answers_h0, answers_h1) = self
+                .run_chunk_round_pair(
+                    db_info.db_id,
+                    &placements,
+                    chunk_bins,
+                    round_tag_h0,
+                    round_tag_h1,
+                )
+                .await?;
+
+            // Decode + reattribute to (sh_idx, slot). The chunk_id's
+            // cuckoo placement deterministically picks ONE of h=0 / h=1
+            // — try h=0 first, then h=1. The other position will
+            // contain a different bin that doesn't have our chunk_id
+            // slot (so `find_chunk_in_result` returns None), and we
+            // skip it. If neither has the chunk, it's missing (e.g.
+            // server lacks the entry).
+            for &(flat_idx, pbc_group) in &still_pending {
+                let (sh_idx, slot, cid) = flat[flat_idx];
+                for h in 0..CHUNK_CUCKOO_NUM_HASHES {
+                    let answers = if h == 0 { &answers_h0 } else { &answers_h1 };
+                    let Some(answer) = answers.get(&pbc_group) else {
+                        continue;
+                    };
+                    let Some(data) = find_chunk_in_result(answer, cid) else {
+                        continue;
+                    };
+                    let key = pir_core::hash::derive_cuckoo_key(
+                        CHUNK_PARAMS.master_seed,
+                        pbc_group as usize,
                         h,
-                        round_tag,
-                    )
-                    .await?;
-
-                // Decode + reattribute to (sh_idx, slot).
-                for &(flat_idx, pbc_group) in &still_pending {
-                    let (sh_idx, slot, cid) = flat[flat_idx];
-                    if let Some(answer) = round_answers.get(&pbc_group) {
-                        if let Some(data) = find_chunk_in_result(answer, cid) {
-                            let key = pir_core::hash::derive_cuckoo_key(
-                                CHUNK_PARAMS.master_seed,
-                                pbc_group as usize,
-                                h,
-                            );
-                            let bin_index =
-                                pir_core::hash::cuckoo_hash_int(cid, key, chunk_bins) as u32;
-                            chunk_data.insert((sh_idx, slot), data.to_vec());
-                            chunk_traces.insert(
-                                (sh_idx, slot),
-                                ChunkBinTrace {
-                                    pbc_group: pbc_group as usize,
-                                    bin_index,
-                                    bin_content: answer.clone(),
-                                },
-                            );
-                            recovered.insert(flat_idx);
-                        }
-                    }
+                    );
+                    let bin_index =
+                        pir_core::hash::cuckoo_hash_int(cid, key, chunk_bins) as u32;
+                    chunk_data.insert((sh_idx, slot), data.to_vec());
+                    chunk_traces.insert(
+                        (sh_idx, slot),
+                        ChunkBinTrace {
+                            pbc_group: pbc_group as usize,
+                            bin_index,
+                            bin_content: answer.clone(),
+                        },
+                    );
+                    recovered.insert(flat_idx);
+                    break;
                 }
             }
         }
@@ -3886,6 +3914,199 @@ impl HarmonyClient {
         }
         Ok(out)
     }
+
+    /// Pipelined two-cuckoo-position CHUNK wire round, mirror of
+    /// [`run_index_round_pair`](Self::run_index_round_pair).
+    ///
+    /// Performs the same work as two sequential [`run_chunk_round`] calls
+    /// (one at `hash_fn = 0`, one at `hash_fn = 1`) for the SAME
+    /// `real_queries` set, but pipelines the two requests so the two
+    /// RTTs collapse into one — `conn.send(req_h0); conn.send(req_h1);
+    /// conn.recv(); conn.recv();`. Privacy + wire-shape invariants are
+    /// unchanged: each round is K_CHUNK-padded, every group emits
+    /// either a real (T-1 sorted distinct indices) or synthetic
+    /// (still T-1 indices) request.
+    ///
+    /// Bandwidth note: pair-mode always sends BOTH `h=0` and `h=1` for
+    /// every group in `real_queries`. The serial path's "retry only
+    /// missed chunks at h=1" optimization is removed — but K_CHUNK
+    /// padding means the wire shape is invariant anyway, so the only
+    /// real cost is the redundant decode of one extra response per
+    /// real group. The wall-time saving (one RTT + one server walk
+    /// pipelined into the other) typically dominates the decode
+    /// overhead by ~3x.
+    ///
+    /// State invariant: every real group's `HarmonyGroup` consumes two
+    /// hints (one per cuckoo position), exactly matching the serial
+    /// path's `query_count += 2` semantics. The pair API (upstream
+    /// `harmonypir`) is bit-for-bit equivalent to two sequential
+    /// `build_request` + `process_response` cycles given the same RNG
+    /// seed — see `harmonypir-wasm::test_pair_equiv_sequential_*`.
+    ///
+    /// Returns `(out_h0, out_h1)` — two `HashMap<group_id, answer>`
+    /// maps keyed by PBC group, containing the `process_response_pair`
+    /// answers for the real groups only. Dummies are not surfaced.
+    /// Callers run `find_chunk_in_result` on each map to extract the
+    /// chunk_id slot from whichever cuckoo position actually held it.
+    async fn run_chunk_round_pair(
+        &mut self,
+        db_id: u8,
+        real_queries: &[(u32, u8)],
+        chunk_bins: usize,
+        round_id_h0: u16,
+        round_id_h1: u16,
+    ) -> PirResult<(HashMap<u8, Vec<u8>>, HashMap<u8, Vec<u8>>)> {
+        let k_chunk = self.chunk_groups.len() as u8;
+        let roles = classify_chunk_groups(real_queries, k_chunk);
+
+        let mut batch_items_h0: Vec<BatchItem> = Vec::with_capacity(k_chunk as usize);
+        let mut batch_items_h1: Vec<BatchItem> = Vec::with_capacity(k_chunk as usize);
+
+        for g in 0..k_chunk {
+            let role = roles[g as usize];
+            let group = self
+                .chunk_groups
+                .get_mut(&g)
+                .ok_or_else(|| PirError::InvalidState(format!("missing CHUNK group {}", g)))?;
+            let (bytes_h0, bytes_h1) = match role {
+                ChunkGroupRole::Real(cid) => {
+                    let key_h0 = pir_core::hash::derive_cuckoo_key(
+                        CHUNK_PARAMS.master_seed,
+                        g as usize,
+                        0,
+                    );
+                    let key_h1 = pir_core::hash::derive_cuckoo_key(
+                        CHUNK_PARAMS.master_seed,
+                        g as usize,
+                        1,
+                    );
+                    let bin_h0 = pir_core::hash::cuckoo_hash_int(cid, key_h0, chunk_bins) as u32;
+                    let bin_h1 = pir_core::hash::cuckoo_hash_int(cid, key_h1, chunk_bins) as u32;
+                    let pair = group.build_request_pair(bin_h0, bin_h1).map_err(|e| {
+                        PirError::BackendState(format!("build_request_pair (chunk): {:?}", e))
+                    })?;
+                    let (req_1, req_2) = pair.into_parts();
+                    (req_1.request(), req_2.request())
+                }
+                ChunkGroupRole::Dummy => {
+                    // Two independent K-padded synthetic dummies — one
+                    // per wire round. Matches the dummy emission shape
+                    // of the sequential path (`run_chunk_round` called
+                    // twice would also issue two dummies for a Dummy
+                    // role).
+                    let d_h0 = group.build_synthetic_dummy();
+                    let d_h1 = group.build_synthetic_dummy();
+                    (d_h0, d_h1)
+                }
+            };
+            batch_items_h0.push(BatchItem {
+                group_id: g,
+                indices: bytes_to_u32_vec(&bytes_h0)?,
+            });
+            batch_items_h1.push(BatchItem {
+                group_id: g,
+                indices: bytes_to_u32_vec(&bytes_h1)?,
+            });
+        }
+
+        let request_h0 = encode_batch_query(1, round_id_h0, db_id, &batch_items_h0);
+        let request_h1 = encode_batch_query(1, round_id_h1, db_id, &batch_items_h1);
+        let request_h0_bytes = request_h0.len() as u64;
+        let request_h1_bytes = request_h1.len() as u64;
+        let items_per_group_h0: Vec<u32> = batch_items_h0
+            .iter()
+            .map(|it| it.indices.len() as u32)
+            .collect();
+        let items_per_group_h1: Vec<u32> = batch_items_h1
+            .iter()
+            .map(|it| it.indices.len() as u32)
+            .collect();
+
+        // ── Pipelined network round-trip ──
+        // Same shape as `run_index_round_pair`: send both requests
+        // before awaiting either response. The WebSocket sink delivers
+        // them in order; the server processes them sequentially per
+        // connection and responses arrive in the same order.
+        let t_wire = std::time::Instant::now();
+        let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        conn.send(request_h0).await?;
+        conn.send(request_h1).await?;
+        let response_h0 = conn.recv().await?;
+        let response_h1 = conn.recv().await?;
+        let dt_wire = t_wire.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   CHUNK pair (round_ids={}/{}): pipelined wire RTT {:?}  (req {}B+{}B resp {}B+{}B, k_chunk={})",
+                round_id_h0, round_id_h1, dt_wire,
+                request_h0_bytes, request_h1_bytes,
+                response_h0.len(), response_h1.len(),
+                k_chunk,
+            );
+        }
+        if response_h0.len() < 4 || response_h1.len() < 4 {
+            return Err(PirError::Protocol(
+                "CHUNK pair response too short to carry length prefix".into(),
+            ));
+        }
+
+        // Record both wire rounds in the leakage profile separately —
+        // wire-observable shape is unchanged from the sequential path.
+        self.record_round(RoundProfile {
+            kind: RoundKind::Chunk,
+            server_id: 0,
+            db_id: Some(db_id),
+            request_bytes: request_h0_bytes,
+            response_bytes: response_h0.len() as u64,
+            items: items_per_group_h0,
+        });
+        self.record_round(RoundProfile {
+            kind: RoundKind::Chunk,
+            server_id: 0,
+            db_id: Some(db_id),
+            request_bytes: request_h1_bytes,
+            response_bytes: response_h1.len() as u64,
+            items: items_per_group_h1,
+        });
+
+        let raw_results_h0 = decode_batch_response(&response_h0[4..])?;
+        let raw_results_h1 = decode_batch_response(&response_h1[4..])?;
+
+        // Decode only real groups, via the pair API.
+        let t_decode = std::time::Instant::now();
+        let mut out_h0 = HashMap::new();
+        let mut out_h1 = HashMap::new();
+        for g in 0..k_chunk {
+            if !matches!(roles[g as usize], ChunkGroupRole::Real(_)) {
+                continue;
+            }
+            let data_h0 = raw_results_h0.get(&g).ok_or_else(|| {
+                PirError::Protocol(format!("no CHUNK pair response (h=0) for group {}", g))
+            })?;
+            let data_h1 = raw_results_h1.get(&g).ok_or_else(|| {
+                PirError::Protocol(format!("no CHUNK pair response (h=1) for group {}", g))
+            })?;
+            let group = self
+                .chunk_groups
+                .get_mut(&g)
+                .ok_or_else(|| PirError::InvalidState("missing CHUNK real group".into()))?;
+            let answer_pair =
+                group.process_response_pair(data_h0, data_h1).map_err(|e| {
+                    PirError::BackendState(format!("process_response_pair (chunk): {:?}", e))
+                })?;
+            let (answer_h0, answer_h1) = answer_pair.into_parts();
+            out_h0.insert(g, answer_h0);
+            out_h1.insert(g, answer_h1);
+        }
+        let dt_decode = t_decode.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   CHUNK pair decode: {:?}  ({} real groups × 2)",
+                dt_decode, out_h0.len(),
+            );
+        }
+
+        Ok((out_h0, out_h1))
+    }
 }
 
 #[async_trait]
@@ -4598,6 +4819,377 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
         }
 
         Ok(out)
+    }
+
+    /// Pipelined override for the same-level pass batch.
+    ///
+    /// Within a sibling level, different passes may hit the SAME PBC
+    /// group with different items (e.g. INDEX Merkle at the INDEX
+    /// Merkle Group-Symmetry collision case: two scripthashes whose
+    /// cuckoo positions collide on the same PBC group). For those
+    /// groups, the call pattern across passes is
+    /// `build_request → build_request → process_response →
+    /// process_response`, which corrupts the single-query `last_*`
+    /// state slots inside `HarmonyGroup` (the second `build_request`
+    /// overwrites the first's state before `process_response` ever
+    /// reads it).
+    ///
+    /// To pipeline safely, we classify each group by its (pass0,
+    /// pass1) Real/Dummy pattern and emit calls per-group:
+    /// * **RealReal**  → `build_request_pair` + `process_response_pair`.
+    ///   The pair API stashes both states in `pending_pair` and
+    ///   consumes both atomically — exact equivalent of two sequential
+    ///   `build_request`+`process_response` cycles given the same RNG
+    ///   seed (verified by `harmonypir-wasm::test_pair_equiv_sequential_*`).
+    /// * **RealDummy** → `build_request(t)` then `build_synthetic_dummy()`.
+    ///   The dummy doesn't touch `last_*`, so pass 0's `process_response`
+    ///   reads the real state correctly. Pass 1's dummy slot in
+    ///   `pass_out` stays `None`.
+    /// * **DummyReal** → `build_synthetic_dummy()` then `build_request(t)`.
+    ///   Symmetric to the above; pass 0's slot is `None`, pass 1's is
+    ///   the real row.
+    /// * **DummyDummy** → two synthetic dummies, no `process_response`
+    ///   at all. Both slots stay `None`.
+    ///
+    /// Currently specialised for `passes.len() == 2` (INDEX Merkle's
+    /// `max_items_per_group_per_level = 2`). For other arities we fall
+    /// back to the default serial implementation.
+    async fn query_passes(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        _level_bins_per_table: u32,
+        passes: &[Vec<Option<u32>>],
+        db_id: u8,
+    ) -> PirResult<Vec<Vec<Option<Vec<u8>>>>> {
+        if passes.is_empty() {
+            return Ok(Vec::new());
+        }
+        if passes.len() == 1 {
+            // Single-pass case: just call query_pass.
+            let rows = self
+                .query_pass(table_type, level, _level_bins_per_table, &passes[0], db_id)
+                .await?;
+            return Ok(vec![rows]);
+        }
+        if passes.len() != 2 {
+            // Fallback for >2 passes — not exercised by current
+            // production layouts. Default impl serialises.
+            let mut out = Vec::with_capacity(passes.len());
+            for p in passes {
+                let rows = self
+                    .query_pass(table_type, level, _level_bins_per_table, p, db_id)
+                    .await?;
+                out.push(rows);
+            }
+            return Ok(out);
+        }
+
+        let wire_level: u8 = match table_type {
+            0 => 10u8.checked_add(level as u8).ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "INDEX sib level {} does not fit in wire byte",
+                    level
+                ))
+            })?,
+            1 => 20u8.checked_add(level as u8).ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "CHUNK sib level {} does not fit in wire byte",
+                    level
+                ))
+            })?,
+            other => {
+                return Err(PirError::InvalidState(format!(
+                    "unknown sibling table_type {}",
+                    other
+                )))
+            }
+        };
+
+        let table_k = passes[0].len();
+        if passes[1].len() != table_k {
+            return Err(PirError::InvalidState(format!(
+                "Merkle pipelined passes: pass 0 has {} targets but pass 1 has {}",
+                table_k,
+                passes[1].len()
+            )));
+        }
+
+        // Per-group dispatch classification for the 2-pass case.
+        #[derive(Clone, Copy)]
+        enum PassPattern {
+            RealReal(u32, u32),
+            RealDummy(u32),
+            DummyReal(u32),
+            DummyDummy,
+        }
+        let mut patterns: Vec<PassPattern> = Vec::with_capacity(table_k);
+        for g in 0..table_k {
+            let p0 = passes[0][g];
+            let p1 = passes[1][g];
+            patterns.push(match (p0, p1) {
+                (Some(t0), Some(t1)) => PassPattern::RealReal(t0, t1),
+                (Some(t0), None) => PassPattern::RealDummy(t0),
+                (None, Some(t1)) => PassPattern::DummyReal(t1),
+                (None, None) => PassPattern::DummyDummy,
+            });
+        }
+
+        // ── Build per-group request bytes for both passes ──
+        let mut bytes_h0: Vec<Vec<u8>> = Vec::with_capacity(table_k);
+        let mut bytes_h1: Vec<Vec<u8>> = Vec::with_capacity(table_k);
+
+        for (g_idx, pat) in patterns.iter().enumerate() {
+            let g = g_idx as u8;
+            let group = match table_type {
+                0 => self.index_sib_groups.get_mut(&(level, g)),
+                1 => self.chunk_sib_groups.get_mut(&(level, g)),
+                _ => None,
+            };
+            let group = group.ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "missing {} sib group ({}, {})",
+                    if table_type == 0 { "INDEX" } else { "CHUNK" },
+                    level,
+                    g
+                ))
+            })?;
+
+            match *pat {
+                PassPattern::RealReal(t0, t1) => {
+                    let pair = group.build_request_pair(t0, t1).map_err(|e| {
+                        PirError::BackendState(format!(
+                            "sib build_request_pair: {:?}",
+                            e
+                        ))
+                    })?;
+                    let (req_1, req_2) = pair.into_parts();
+                    bytes_h0.push(req_1.request());
+                    bytes_h1.push(req_2.request());
+                }
+                PassPattern::RealDummy(t0) => {
+                    let req = group.build_request(t0).map_err(|e| {
+                        PirError::BackendState(format!("sib build_request: {:?}", e))
+                    })?;
+                    bytes_h0.push(req.request());
+                    bytes_h1.push(group.build_synthetic_dummy());
+                }
+                PassPattern::DummyReal(t1) => {
+                    bytes_h0.push(group.build_synthetic_dummy());
+                    let req = group.build_request(t1).map_err(|e| {
+                        PirError::BackendState(format!("sib build_request: {:?}", e))
+                    })?;
+                    bytes_h1.push(req.request());
+                }
+                PassPattern::DummyDummy => {
+                    bytes_h0.push(group.build_synthetic_dummy());
+                    bytes_h1.push(group.build_synthetic_dummy());
+                }
+            }
+        }
+
+        // Assemble BatchItem lists and encode both wire requests.
+        let batch_items_h0: Vec<BatchItem> = bytes_h0
+            .iter()
+            .enumerate()
+            .map(|(g_idx, b)| {
+                Ok(BatchItem {
+                    group_id: g_idx as u8,
+                    indices: bytes_to_u32_vec(b)?,
+                })
+            })
+            .collect::<PirResult<Vec<_>>>()?;
+        let batch_items_h1: Vec<BatchItem> = bytes_h1
+            .iter()
+            .enumerate()
+            .map(|(g_idx, b)| {
+                Ok(BatchItem {
+                    group_id: g_idx as u8,
+                    indices: bytes_to_u32_vec(b)?,
+                })
+            })
+            .collect::<PirResult<Vec<_>>>()?;
+
+        // round_id encodes (table_type, level, pass_idx) so audit logs
+        // can disambiguate the two passes.
+        let round_id_h0 = (table_type as u16) * 1000 + (level as u16) * 10;
+        let round_id_h1 = round_id_h0 + 1;
+        let request_h0 = encode_batch_query(wire_level, round_id_h0, db_id, &batch_items_h0);
+        let request_h1 = encode_batch_query(wire_level, round_id_h1, db_id, &batch_items_h1);
+        let request_h0_bytes = request_h0.len() as u64;
+        let request_h1_bytes = request_h1.len() as u64;
+        let items_per_group_h0: Vec<u32> = batch_items_h0
+            .iter()
+            .map(|it| it.indices.len() as u32)
+            .collect();
+        let items_per_group_h1: Vec<u32> = batch_items_h1
+            .iter()
+            .map(|it| it.indices.len() as u32)
+            .collect();
+
+        // ── Pipelined send / recv ──
+        let t_wire = std::time::Instant::now();
+        self.query_conn.send(request_h0).await?;
+        self.query_conn.send(request_h1).await?;
+        let resp_h0_raw = self.query_conn.recv().await?;
+        let resp_h1_raw = self.query_conn.recv().await?;
+        let dt_wire = t_wire.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   Merkle pipelined passes (table={}, level={}, n_passes=2): wire {:?} (req {}B+{}B, resp {}B+{}B)",
+                table_type, level, dt_wire,
+                request_h0_bytes, request_h1_bytes,
+                resp_h0_raw.len(), resp_h1_raw.len(),
+            );
+        }
+        if resp_h0_raw.len() < 4 || resp_h1_raw.len() < 4 {
+            return Err(PirError::Protocol(
+                "Merkle pipelined sib response too short to carry length prefix".into(),
+            ));
+        }
+
+        // Record per-pass leakage profile.
+        if let Some(rec) = &self.leakage_recorder {
+            let kind = match table_type {
+                1 => RoundKind::ChunkMerkleSiblings { level: level as u8 },
+                _ => RoundKind::IndexMerkleSiblings { level: level as u8 },
+            };
+            rec.record_round(
+                "harmony",
+                RoundProfile {
+                    kind: kind.clone(),
+                    server_id: 0,
+                    db_id: Some(db_id),
+                    request_bytes: request_h0_bytes,
+                    response_bytes: resp_h0_raw.len() as u64,
+                    items: items_per_group_h0,
+                },
+            );
+            rec.record_round(
+                "harmony",
+                RoundProfile {
+                    kind,
+                    server_id: 0,
+                    db_id: Some(db_id),
+                    request_bytes: request_h1_bytes,
+                    response_bytes: resp_h1_raw.len() as u64,
+                    items: items_per_group_h1,
+                },
+            );
+        }
+
+        let raw_results_h0 = decode_batch_response(&resp_h0_raw[4..])?;
+        let raw_results_h1 = decode_batch_response(&resp_h1_raw[4..])?;
+
+        // ── Decode responses per-group via the matching API ──
+        let mut out_h0: Vec<Option<Vec<u8>>> = vec![None; table_k];
+        let mut out_h1: Vec<Option<Vec<u8>>> = vec![None; table_k];
+
+        for (g_idx, pat) in patterns.iter().enumerate() {
+            let g = g_idx as u8;
+            let group = match table_type {
+                0 => self.index_sib_groups.get_mut(&(level, g)),
+                1 => self.chunk_sib_groups.get_mut(&(level, g)),
+                _ => None,
+            };
+            let group = group.ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "sib group vanished mid-batch ({}, {})",
+                    level, g
+                ))
+            })?;
+
+            match *pat {
+                PassPattern::RealReal(_, _) => {
+                    let data_h0 = raw_results_h0.get(&g).ok_or_else(|| {
+                        PirError::Protocol(format!(
+                            "no pipelined sib h=0 response for group {} (table={}, level={})",
+                            g, table_type, level
+                        ))
+                    })?;
+                    let data_h1 = raw_results_h1.get(&g).ok_or_else(|| {
+                        PirError::Protocol(format!(
+                            "no pipelined sib h=1 response for group {} (table={}, level={})",
+                            g, table_type, level
+                        ))
+                    })?;
+                    let pair = group
+                        .process_response_pair(data_h0, data_h1)
+                        .map_err(|e| {
+                            PirError::BackendState(format!(
+                                "sib process_response_pair: {:?}",
+                                e
+                            ))
+                        })?;
+                    let (row0, row1) = pair.into_parts();
+                    if row0.len() != BUCKET_MERKLE_SIB_ROW_SIZE
+                        || row1.len() != BUCKET_MERKLE_SIB_ROW_SIZE
+                    {
+                        return Err(PirError::Protocol(format!(
+                            "pipelined sib pair response has {}/{} bytes, expected {}",
+                            row0.len(),
+                            row1.len(),
+                            BUCKET_MERKLE_SIB_ROW_SIZE
+                        )));
+                    }
+                    out_h0[g_idx] = Some(row0);
+                    out_h1[g_idx] = Some(row1);
+                }
+                PassPattern::RealDummy(_) => {
+                    let data_h0 = raw_results_h0.get(&g).ok_or_else(|| {
+                        PirError::Protocol(format!(
+                            "no pipelined sib h=0 response for real-dummy group {} (table={}, level={})",
+                            g, table_type, level
+                        ))
+                    })?;
+                    let row = group.process_response(data_h0).map_err(|e| {
+                        PirError::BackendState(format!(
+                            "sib process_response (h=0 of real-dummy): {:?}",
+                            e
+                        ))
+                    })?;
+                    if row.len() != BUCKET_MERKLE_SIB_ROW_SIZE {
+                        return Err(PirError::Protocol(format!(
+                            "pipelined sib (real-dummy) response has {} bytes, expected {}",
+                            row.len(),
+                            BUCKET_MERKLE_SIB_ROW_SIZE
+                        )));
+                    }
+                    out_h0[g_idx] = Some(row);
+                    // out_h1 stays None.
+                }
+                PassPattern::DummyReal(_) => {
+                    let data_h1 = raw_results_h1.get(&g).ok_or_else(|| {
+                        PirError::Protocol(format!(
+                            "no pipelined sib h=1 response for dummy-real group {} (table={}, level={})",
+                            g, table_type, level
+                        ))
+                    })?;
+                    let row = group.process_response(data_h1).map_err(|e| {
+                        PirError::BackendState(format!(
+                            "sib process_response (h=1 of dummy-real): {:?}",
+                            e
+                        ))
+                    })?;
+                    if row.len() != BUCKET_MERKLE_SIB_ROW_SIZE {
+                        return Err(PirError::Protocol(format!(
+                            "pipelined sib (dummy-real) response has {} bytes, expected {}",
+                            row.len(),
+                            BUCKET_MERKLE_SIB_ROW_SIZE
+                        )));
+                    }
+                    out_h1[g_idx] = Some(row);
+                    // out_h0 stays None.
+                }
+                PassPattern::DummyDummy => {
+                    // Both slots stay None — caller treats this group as
+                    // not participating at this level. The default
+                    // implementation does the same thing.
+                }
+            }
+        }
+
+        Ok(vec![out_h0, out_h1])
     }
 }
 
