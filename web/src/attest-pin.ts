@@ -96,9 +96,13 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Bumped 2026-05-12 to v13 alongside pir2 — same binary on both
-  // servers. v13 drops PRP_ALF (sibling-table panic fix).
+  // Bumped 2026-05-13 alongside the `--serve-hints` / `--serve-queries`
+  // mode-flag landing (commit fb8b8a64). pir1 (Hetzner) now runs the
+  // mode-pinned binary explicitly serving both hints (V2 pool) and
+  // queries (DPF-0 + OnionPIR + Harmony query phase). pir2 (VPSBG)
+  // still runs the v13 binary `d65b720...` until VPSBG redeploys to
+  // include the mode flags — see PIR2_TIER3_PIN below for that one.
   binarySha256Hex:
-    'd65b72050ae11ea9fdbe0da604d155caa40badb7af19e8e9f80e93bc854889a3',
+    '4d95eb53429a5ebbdc58bfea2e620d66c2ea6045d643557a872b80377866cd4e',
   description: 'pir1.chenweikeng.com (Hetzner i7-8700, no SEV)',
 };
