@@ -1375,8 +1375,37 @@ impl HarmonyClient {
             return Ok(());
         }
 
-        if self.use_v2_protocol {
+        // Important: we do NOT route to V1-parallel for main hints,
+        // even when a secondary hint socket is available. V1 requests
+        // trigger server-side on-the-fly hint generation via
+        // `compute_hints_for_group` (~50 µs × K hints per group,
+        // multiple seconds total). V2 uses the pre-computed hint pool
+        // (`pool.take()` in `unified_server.rs:2759`) which is
+        // essentially zero server CPU. Even on two parallel V1
+        // sockets, the wall time is `max(INDEX_compute, CHUNK_compute)`
+        // — measured at 45+ seconds against the public Hetzner
+        // deployment in 2026-05, vs. ~9 seconds for V2 single-stream.
+        // The V2 single-stream transfer caps on bandwidth-delay
+        // product but that's still well below the V1 server-compute
+        // floor.
+        //
+        // A future server protocol variant that splits the V2 pool
+        // entry into INDEX-half and CHUNK-half streams (so two
+        // parallel V2-half requests can each grab from the pool) would
+        // give the per-stream BDP saving without paying V1's compute
+        // cost — see follow-ups in `ensure_groups_ready_v1_parallel`'s
+        // docstring. Not implemented today.
+        //
+        // The V1-parallel path is kept available behind
+        // `HARMONY_USE_V1_PARALLEL=1` for benchmark / fallback use,
+        // but is NOT the default even when pool size is 2.
+        if self.use_v2_protocol
+            && !matches!(std::env::var("HARMONY_USE_V1_PARALLEL").as_deref(), Ok("1"))
+        {
             return self.ensure_groups_ready_v2(db_info, progress).await;
+        }
+        if self.hint_conn_secondary.is_some() {
+            return self.ensure_groups_ready_v1_parallel(db_info, progress).await;
         }
 
         let k_index = db_info.index_k as usize;
@@ -1663,6 +1692,160 @@ impl HarmonyClient {
             );
         }
 
+        Ok(())
+    }
+
+    /// V1-protocol parallel main hint fetch.
+    ///
+    /// Sends `REQ_HARMONY_HINTS` at level=0 (INDEX) on the primary
+    /// hint socket and level=1 (CHUNK) on the secondary, awaited
+    /// concurrently via `tokio::try_join!`. Each level's response is
+    /// a stream of K independent hint frames; the two streams transfer
+    /// in parallel on disjoint TCP connections, each getting its own
+    /// bandwidth-delay-product budget.
+    ///
+    /// Functional contract identical to [`ensure_groups_ready_v2`]:
+    /// `self.index_groups` and `self.chunk_groups` are populated with
+    /// hint-loaded `HarmonyGroup` instances, `loaded_db_id` is set,
+    /// and (on success) the combined state is persisted to cache.
+    ///
+    /// The client uses its own `master_prp_key` (set at `new()` time)
+    /// rather than a server-generated key — see the dispatch comment
+    /// in `ensure_groups_ready` for the threat-model rationale.
+    #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", v1_parallel = true, db_id = db_info.db_id))]
+    async fn ensure_groups_ready_v1_parallel(
+        &mut self,
+        db_info: &DatabaseInfo,
+        progress: Option<&dyn HintProgress>,
+    ) -> PirResult<()> {
+        let k_index = db_info.index_k as usize;
+        let k_chunk = db_info.chunk_k as usize;
+
+        let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
+        let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
+
+        // Build groups (CPU work; serial within each tree). The two
+        // trees could be built in parallel via rayon on native but the
+        // gain is small relative to the hint-download wall time, and
+        // wasm32 is single-threaded anyway. Keep serial.
+        for g in 0..k_index {
+            let group = HarmonyGroup::new_with_backend(
+                db_info.index_bins,
+                index_w as u32,
+                0,
+                &self.master_prp_key,
+                g as u32,
+                self.prp_backend,
+            )
+            .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
+            self.index_groups.insert(g as u8, group);
+        }
+        for g in 0..k_chunk {
+            let group = HarmonyGroup::new_with_backend(
+                db_info.chunk_bins,
+                chunk_w as u32,
+                0,
+                &self.master_prp_key,
+                (k_index + g) as u32,
+                self.prp_backend,
+            )
+            .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
+            self.chunk_groups.insert(g as u8, group);
+        }
+
+        // Move state into the two parallel futures so each holds
+        // disjoint mutable borrows. Restored after the join.
+        let mut index_groups = std::mem::take(&mut self.index_groups);
+        let mut chunk_groups = std::mem::take(&mut self.chunk_groups);
+        let mut hint_primary = self.hint_conn.take().ok_or(PirError::NotConnected)?;
+        let mut hint_secondary = self
+            .hint_conn_secondary
+            .take()
+            .expect("only called when hint_conn_secondary is_some");
+        let master_prp_key = self.master_prp_key;
+        let prp_backend = self.prp_backend;
+        let db_id = db_info.db_id;
+
+        let t_main_start = std::time::Instant::now();
+
+        let index_fut = async {
+            let profile = fetch_and_load_main_hints_into_map(
+                hint_primary.as_mut(),
+                &mut index_groups,
+                db_id,
+                0, // wire_level = 0 → INDEX main
+                k_index as u8,
+                &master_prp_key,
+                prp_backend,
+            )
+            .await?;
+            Ok::<_, PirError>((hint_primary, index_groups, profile))
+        };
+
+        let chunk_fut = async {
+            let profile = fetch_and_load_main_hints_into_map(
+                hint_secondary.as_mut(),
+                &mut chunk_groups,
+                db_id,
+                1, // wire_level = 1 → CHUNK main
+                k_chunk as u8,
+                &master_prp_key,
+                prp_backend,
+            )
+            .await?;
+            Ok::<_, PirError>((hint_secondary, chunk_groups, profile))
+        };
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let (idx_out, chk_out) = tokio::try_join!(index_fut, chunk_fut)?;
+        #[cfg(target_arch = "wasm32")]
+        let (idx_out, chk_out) = futures::future::try_join(index_fut, chunk_fut).await?;
+
+        let (hp, idx_groups, idx_profile) = idx_out;
+        let (hs, chk_groups, chk_profile) = chk_out;
+
+        let dt_main = t_main_start.elapsed();
+        if std::env::var("HARMONY_BENCH").is_ok() {
+            eprintln!(
+                "[HARMONY_BENCH]   V1 parallel main hint stream: total {:?} (req INDEX+CHUNK in parallel on 2 sockets, k_index={}, k_chunk={})",
+                dt_main, k_index, k_chunk,
+            );
+        }
+
+        // Restore state to self.
+        self.hint_conn = Some(hp);
+        self.hint_conn_secondary = Some(hs);
+        self.index_groups = idx_groups;
+        self.chunk_groups = chk_groups;
+
+        // Record the two rounds (deferred from inside the parallel
+        // futures because `record_round` needs `&mut self`).
+        self.record_round(idx_profile);
+        self.record_round(chk_profile);
+
+        self.loaded_db_id = Some(db_info.db_id);
+
+        // Emit one terminal progress tick — V1 parallel doesn't easily
+        // surface per-group ticks since both streams are interleaved.
+        // A future improvement would thread a per-group `on_group_complete`
+        // callback through the free helper; not worth the API
+        // complexity for the wall-time win.
+        if let Some(p) = progress {
+            let total = (k_index + k_chunk) as u32;
+            if total > 0 {
+                p.on_group_complete(total, total, "chunk");
+            }
+        }
+
+        // Persist freshly-fetched main hints to disk cache so a warm
+        // restart skips the download entirely. Errors are logged and
+        // ignored — a read-only cache must never wedge live queries.
+        if let Err(e) = self.persist_hints_to_cache(db_info) {
+            log::warn!(
+                "[PIR-AUDIT] HarmonyPIR V1 parallel: failed to persist main hints to cache: {}",
+                e
+            );
+        }
         Ok(())
     }
 
@@ -4462,6 +4645,119 @@ impl HarmonyClient {
 
         Ok((out_h0, out_h1))
     }
+}
+
+/// Free-function variant of [`HarmonyClient::fetch_and_load_hints_into`]
+/// for MAIN hints (INDEX or CHUNK level, not sibling). Same structure
+/// as [`fetch_and_load_sib_hints_into_map`] but the map key is just
+/// `group_id: u8` (not `(sib_level, group_id)`).
+///
+/// Used by the parallel V1-protocol main hint path in
+/// [`HarmonyClient::ensure_groups_ready_v1_parallel`]: client sends
+/// `REQ_HARMONY_HINTS` at level=0 (INDEX) on the primary hint socket
+/// and level=1 (CHUNK) on the secondary in parallel via
+/// `tokio::try_join!`, so the two ~7-10 MB streams transfer
+/// concurrently instead of sharing one TCP congestion window.
+#[allow(clippy::too_many_arguments)]
+async fn fetch_and_load_main_hints_into_map(
+    conn: &mut dyn PirTransport,
+    main_groups: &mut HashMap<u8, HarmonyGroup>,
+    db_id: u8,
+    wire_level: u8,
+    num_groups: u8,
+    master_prp_key: &[u8; 16],
+    prp_backend: u8,
+) -> PirResult<RoundProfile> {
+    let mut payload = Vec::with_capacity(16 + 1 + 1 + 1 + num_groups as usize + 1);
+    payload.extend_from_slice(master_prp_key);
+    payload.push(prp_backend);
+    payload.push(wire_level);
+    payload.push(num_groups);
+    for g in 0..num_groups {
+        payload.push(g);
+    }
+    if db_id != 0 {
+        payload.push(db_id);
+    }
+    let request = encode_request(REQ_HARMONY_HINTS, &payload);
+    let request_bytes = request.len() as u64;
+
+    let t_send = std::time::Instant::now();
+    conn.send(request).await?;
+    let dt_send = t_send.elapsed();
+
+    let mut received = 0u32;
+    let mut total_response_bytes: u64 = 0;
+    let t_first_byte = std::time::Instant::now();
+    let mut dt_first: Option<std::time::Duration> = None;
+    let mut dt_recv_total = std::time::Duration::ZERO;
+    let mut dt_load_total = std::time::Duration::ZERO;
+    while received < num_groups as u32 {
+        let t_msg = std::time::Instant::now();
+        let msg = conn.recv().await?;
+        dt_recv_total += t_msg.elapsed();
+        if dt_first.is_none() {
+            dt_first = Some(t_first_byte.elapsed());
+        }
+        total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
+        if msg.len() < 5 {
+            return Err(PirError::Protocol("truncated main hint response".into()));
+        }
+        let body = &msg[4..];
+        if body.is_empty() {
+            return Err(PirError::Protocol("empty main hint response body".into()));
+        }
+        if body[0] == RESP_ERROR {
+            let reason = if body.len() > 1 {
+                String::from_utf8_lossy(&body[1..]).to_string()
+            } else {
+                "hint server error".into()
+            };
+            return Err(PirError::ServerError(reason));
+        }
+        if body[0] != RESP_HARMONY_HINTS {
+            return Err(PirError::Protocol(format!(
+                "unexpected main hint response byte: 0x{:02x}",
+                body[0]
+            )));
+        }
+        if body.len() < 14 {
+            return Err(PirError::Protocol("main hint response header truncated".into()));
+        }
+        let group_id = body[1];
+        let hints_data = &body[14..];
+        let group = main_groups.get_mut(&group_id).ok_or_else(|| {
+            PirError::Protocol(format!(
+                "main hint for unknown group {} at wire level {}",
+                group_id, wire_level
+            ))
+        })?;
+        let t_load = std::time::Instant::now();
+        group
+            .load_hints(hints_data)
+            .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
+        dt_load_total += t_load.elapsed();
+        received += 1;
+    }
+
+    if std::env::var("HARMONY_BENCH").is_ok() {
+        eprintln!(
+            "[HARMONY_BENCH]   main_fetch(level={:02}): send={:?} first_byte={:?} recv_total={:?} load_total={:?} groups={} bytes={}",
+            wire_level, dt_send,
+            dt_first.unwrap_or_default(),
+            dt_recv_total, dt_load_total,
+            num_groups, total_response_bytes,
+        );
+    }
+
+    Ok(RoundProfile {
+        kind: RoundKind::HarmonyHintRefresh,
+        server_id: 1,
+        db_id: Some(db_id),
+        request_bytes,
+        response_bytes: total_response_bytes,
+        items: vec![1u32; num_groups as usize],
+    })
 }
 
 /// Free-function variant of [`HarmonyClient::fetch_and_load_hints_into`]
