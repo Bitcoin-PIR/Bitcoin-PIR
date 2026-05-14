@@ -1839,10 +1839,21 @@ async fn main() {
                         // OnionPIRv2 port: `set_shared_database` returns
                         // bool now (false on validation failure). Wrap in
                         // assert! so silent failures don't ship.
+                        // OnionPIRv2 port (commit 3a): pass
+                        // `num_plaintexts` (compile-time DB shape) as
+                        // `shared_num_entries`, not the pre-port
+                        // `num_packed_entries` (dataset size). The NTT
+                        // store from gen_2_onion's post-port save_db
+                        // payload is sized for the full num_plaintexts
+                        // slot count; passing the smaller
+                        // num_packed_entries would lie about the layout.
+                        // Cuckoo placement only assigns to
+                        // [0, num_packed_entries) so empty slots beyond
+                        // that range are never queried.
                         assert!(
                             server.set_shared_database(
                                 ntt_u64_slice,
-                                ch.num_packed_entries as u64,
+                                p_chunk.num_plaintexts,
                                 &index_table,
                             ),
                             "set_shared_database failed (chunk worker {} group {})",
@@ -1913,10 +1924,14 @@ async fn main() {
                         }
                         unsafe {
                             // OnionPIRv2 port: see chunk-server block above.
+                            // OnionPIRv2 port (commit 3a): see chunk
+                            // block above. sibling NTT store is also
+                            // sized for num_plaintexts (the
+                            // compile-time DB shape).
                             assert!(
                                 server.set_shared_database(
                                     sib_ntt_slice,
-                                    sib.num_groups as u64,
+                                    p_sib.num_plaintexts,
                                     &index_table,
                                 ),
                                 "set_shared_database failed (sibling L{} group {})",

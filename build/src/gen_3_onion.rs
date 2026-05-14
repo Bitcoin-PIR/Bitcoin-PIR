@@ -579,6 +579,29 @@ fn main() {
     println!("  Physical size per group: {:.2} MB", p.physical_size_mb);
     println!("  Total for {} groups: {:.2} GB", K, p.physical_size_mb * K as f64 / 1024.0);
 
+    // OnionPIRv2 port (commit 3b): per-group build now uses
+    // `push_plaintexts` + `save_db`. The pre-port `push_chunk` +
+    // `preprocess` pair is gone; NTT runs inside push_plaintexts. The
+    // chunk-loop structure is preserved (one push call per `fst_dim`-
+    // sized batch) for memory efficiency on multi-thousand-bin groups.
+    let poly_degree = p.poly_degree as usize;
+    // `entry_size` (3328 default) is the per-plaintext payload byte cap;
+    // `ONIONPIR_ENTRY_SIZE` (3840) is what `serialize_cuckoo_bin`
+    // produces. When entry_size < ONIONPIR_ENTRY_SIZE we truncate
+    // the tail bytes — a documented commit-5 problem (loses cuckoo
+    // slots 222-255 per INDEX bin at the default config). gen_3_onion
+    // compiles + runs; downstream Merkle hashes will diverge from
+    // pre-port until commit 5 reconciles the INDEX slot count with
+    // params.entry_size.
+    let take_bytes_per_entry = entry_size.min(ONIONPIR_ENTRY_SIZE);
+    if entry_size < ONIONPIR_ENTRY_SIZE {
+        println!(
+            "  WARNING: entry_size ({}) < ONIONPIR_ENTRY_SIZE ({}) — \
+             {} bytes per INDEX bin truncated (commit-5 work).",
+            entry_size, ONIONPIR_ENTRY_SIZE, ONIONPIR_ENTRY_SIZE - entry_size
+        );
+    }
+
     // Process groups sequentially (OnionPIR Server is not Send)
     for (group_id, table, _) in &cuckoo_results {
         let preproc_path = output_dir.join(format!("group_{}.bin", group_id));
@@ -598,30 +621,44 @@ fn main() {
 
         let t_group = Instant::now();
 
-        // Populate: each cuckoo bin → one OnionPIR entry
-        let chunk_size = fst_dim * entry_size;
+        // Populate: each cuckoo bin → one OnionPIR plaintext (N pre-NTT
+        // coefficients packed from the bin's slot byte stream).
         for chunk_idx in 0..other_dim {
-            let mut chunk_data = vec![0u8; chunk_size];
+            let mut batch_coeffs: Vec<u64> = Vec::with_capacity(fst_dim * poly_degree);
             for i in 0..fst_dim {
                 let global_bin = chunk_idx * fst_dim + i;
-                if global_bin < bins_per_table {
-                    let entry_bytes = serialize_cuckoo_bin(table, global_bin, mmap_slice);
-                    let offset = i * entry_size;
-                    chunk_data[offset..offset + entry_size].copy_from_slice(&entry_bytes);
-                }
+                let entry_bytes_full = if global_bin < bins_per_table {
+                    serialize_cuckoo_bin(table, global_bin, mmap_slice)
+                } else {
+                    [0u8; ONIONPIR_ENTRY_SIZE]
+                };
+                let coeffs = pir_core::onion_unpack::pack_bytes_into_coefficients(
+                    &entry_bytes_full[..take_bytes_per_entry],
+                    entry_size,
+                    poly_degree,
+                );
+                batch_coeffs.extend_from_slice(&coeffs);
             }
-            // FIXME(onionpir-port-commit-3): `push_chunk` removed upstream.
-            // Replacement: bit-pack chunk_data into u64 coefficients (recipe
-            // in INTEGRATION.md §1.4) and call `push_plaintexts(...)`. Stub
-            // is a no-op so gen_3_onion compiles; running it will produce
-            // an EMPTY preprocessed_db.bin. Production builds blocked.
-            let _ = (&chunk_data, chunk_idx, &server);
+            let plaintext_offset = (chunk_idx * fst_dim) as u64;
+            let ok = server.push_plaintexts(
+                &batch_coeffs,
+                fst_dim as u64,
+                plaintext_offset,
+                &[],
+            );
+            assert!(
+                ok,
+                "push_plaintexts failed (group={} chunk_idx={} offset={})",
+                group_id, chunk_idx, plaintext_offset
+            );
         }
 
-        // FIXME(onionpir-port-commit-3): `preprocess()` removed; NTT is
-        // now run inside `push_plaintexts` automatically.
-        // server.preprocess();  // removed upstream
-        server.save_db(preproc_path.to_str().unwrap());
+        assert!(
+            server.save_db(preproc_path.to_str().unwrap()),
+            "save_db failed for group {} → {:?}",
+            group_id,
+            preproc_path
+        );
 
         if *group_id % 10 == 0 || *group_id + 1 == K {
             eprintln!("  Group {}/{} preprocessed in {:.2?}", group_id + 1, K, t_group.elapsed());
