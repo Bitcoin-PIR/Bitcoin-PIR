@@ -1802,12 +1802,27 @@ async fn main() {
 
             // Spawn PIR worker thread (one per DB)
             std::thread::spawn(move || {
-                let mut key_store = Box::new(KeyStore::new(0));
+                // OnionPIRv2 port: KeyStore::new() takes no args now.
+                let mut key_store = Box::new(KeyStore::new());
 
                 // Set up chunk servers
                 let p_chunk = onionpir::params_info(chunk_bins as u64);
                 let padded_chunk = p_chunk.num_entries as usize;
-                let ntt_u64_ptr = ntt_mmap.as_ptr() as *const u64;
+                // OnionPIRv2 port: `set_shared_database` now takes
+                // `&[u64]` rather than a raw `*const u64` + count. The
+                // unsafe slice construction below is sound for the same
+                // reason the old raw-pointer call was: `ntt_mmap` is
+                // captured by-move into this worker-thread closure and
+                // outlives every `PirServer` we attach to it.
+                //
+                // SAFETY: `ntt_mmap` is a `&[u8]` with `len() % 8 == 0`
+                // (preprocessed_db.bin payload is u64-aligned by build).
+                let ntt_u64_slice: &[u64] = unsafe {
+                    std::slice::from_raw_parts(
+                        ntt_mmap.as_ptr() as *const u64,
+                        ntt_mmap.len() / 8,
+                    )
+                };
 
                 let mut chunk_index_tables: Vec<Vec<u32>> = Vec::with_capacity(k_chunk);
                 let mut chunk_servers: Vec<PirServer> = Vec::with_capacity(k_chunk);
@@ -1821,8 +1836,21 @@ async fn main() {
                         }
                     }
                     unsafe {
-                        server.set_shared_database(ntt_u64_ptr, ch.num_packed_entries, &index_table);
-                        server.set_key_store(&key_store);
+                        // OnionPIRv2 port: `set_shared_database` returns
+                        // bool now (false on validation failure). Wrap in
+                        // assert! so silent failures don't ship.
+                        assert!(
+                            server.set_shared_database(
+                                ntt_u64_slice,
+                                ch.num_packed_entries as u64,
+                                &index_table,
+                            ),
+                            "set_shared_database failed (chunk worker {} group {})",
+                            worker_label,
+                            g,
+                        );
+                        // OnionPIRv2 port: `set_key_store` takes Option now.
+                        server.set_key_store(Some(&key_store));
                     }
                     chunk_index_tables.push(index_table);
                     chunk_servers.push(server);
@@ -1846,11 +1874,12 @@ async fn main() {
                     // munmap the borrowed buffer on drop (fd = -1 path inside
                     // load_db_from_borrowed).
                     assert!(
-                        unsafe { server.load_db_from_bytes(slice) },
+                        unsafe { server.load_db_from_borrowed(slice) },
                         "Failed to load index group {} from consolidated index_all (offset {}, len {})",
                         b, off, slice.len(),
                     );
-                    unsafe { server.set_key_store(&key_store); }
+                    // OnionPIRv2 port: `set_key_store` takes Option now.
+                    unsafe { server.set_key_store(Some(&key_store)); }
                     index_servers.push(server);
                 }
                 println!("  [OnionPIR:{}] {} index servers ready (via onion_index_all.bin mmap)", worker_label, k_index);
@@ -1862,7 +1891,13 @@ async fn main() {
                 for (li, sib) in sibling_levels.iter().enumerate() {
                     let p_sib = onionpir::params_info(sib.bins_per_table as u64);
                     let padded = p_sib.num_entries as usize;
-                    let sib_ntt_ptr = sib.ntt_mmap.as_ptr() as *const u64;
+                    // OnionPIRv2 port: see comment on chunk-server slice above.
+                    let sib_ntt_slice: &[u64] = unsafe {
+                        std::slice::from_raw_parts(
+                            sib.ntt_mmap.as_ptr() as *const u64,
+                            sib.ntt_mmap.len() / 8,
+                        )
+                    };
 
                     let mut level_index_tables: Vec<Vec<u32>> = Vec::with_capacity(sib.k);
                     let mut level_servers: Vec<PirServer> = Vec::with_capacity(sib.k);
@@ -1877,8 +1912,18 @@ async fn main() {
                             }
                         }
                         unsafe {
-                            server.set_shared_database(sib_ntt_ptr, sib.num_groups, &index_table);
-                            server.set_key_store(&key_store);
+                            // OnionPIRv2 port: see chunk-server block above.
+                            assert!(
+                                server.set_shared_database(
+                                    sib_ntt_slice,
+                                    sib.num_groups as u64,
+                                    &index_table,
+                                ),
+                                "set_shared_database failed (sibling L{} group {})",
+                                li,
+                                g,
+                            );
+                            server.set_key_store(Some(&key_store));
                         }
                         level_index_tables.push(index_table);
                         level_servers.push(server);
@@ -1893,7 +1938,7 @@ async fn main() {
                     match cmd {
                         PirCommand::RegisterKeys { client_id, galois_keys, gsw_keys, reply } => {
                             let t = Instant::now();
-                            key_store.set_galois_key(client_id, &galois_keys);
+                            key_store.set_galois_keys(client_id, &galois_keys);
                             key_store.set_gsw_key(client_id, &gsw_keys);
                             println!("  [OnionPIR:{}] client {} keys registered in {:.2?}", worker_label, client_id, t.elapsed());
                             let _ = reply.send(());

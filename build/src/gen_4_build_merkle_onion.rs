@@ -261,7 +261,11 @@ fn build_sibling_level(
     let one_pct = num_groups.max(1) / 100;
     for entry_id in 0..num_groups {
         let raw = &packed_mmap[entry_id * PACKED_ENTRY_SIZE..(entry_id + 1) * PACKED_ENTRY_SIZE];
-        let coeffs = expander.ntt_expand_entry(raw, coeff_val_cnt);
+        // FIXME(onionpir-port-commit-3): `ntt_expand_entry` removed
+        // upstream — see gen_2_onion for the replacement plan. Stub is
+        // all-zero coefficients so the binary compiles.
+        let _ = raw;
+        let coeffs: Vec<u64> = vec![0u64; coeff_val_cnt];
 
         let ntt_u64: &mut [u64] = unsafe {
             std::slice::from_raw_parts_mut(ntt_mmap.as_mut_ptr() as *mut u64, coeff_val_cnt * num_groups)

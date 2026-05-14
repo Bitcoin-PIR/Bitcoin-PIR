@@ -845,11 +845,21 @@ async fn verify_sub_tree(
             // Wrap the FFI client in `SibSendClient` so the enclosing future
             // stays `Send` across the roundtrip `.await` below — the raw
             // `onionpir::Client` holds a `*mut c_void` which is `!Send`.
-            let mut sib_client = SibSendClient(onionpir::Client::new_from_secret_key(
-                level_info.bins_per_table as u64,
-                client_id,
-                secret_key,
-            ));
+            // OnionPIRv2 port: rename + return type changed to `Option<Self>`.
+            let mut sib_client = SibSendClient(
+                onionpir::Client::from_secret_key(
+                    level_info.bins_per_table as u64,
+                    client_id,
+                    secret_key,
+                )
+                .ok_or_else(|| {
+                    PirError::InvalidState(format!(
+                        "OnionPIR sib Client::from_secret_key failed \
+                         (bins_per_table={}, client_id={})",
+                        level_info.bins_per_table, client_id
+                    ))
+                })?,
+            );
             let mut queries = Vec::with_capacity(level_info.k);
             for b in 0..level_info.k {
                 let bin = if let Some(a) = group_info.get(&b) {
@@ -917,9 +927,12 @@ async fn verify_sub_tree(
                     }
                     continue;
                 }
-                let decrypted = sib_client
-                    .0
-                    .decrypt_response(assigned.target_bin as u64, &batch[pbc_group]);
+                // FIXME(onionpir-port-commit-2): `decrypt_response` now returns
+                // the raw plaintext, not bit-unpacked entry bytes. The
+                // `sibling_data` map will hold raw plaintext bytes until the
+                // unpack helper lands.
+                let _ = assigned.target_bin; // no longer an arg
+                let decrypted = sib_client.0.decrypt_response(&batch[pbc_group]);
                 sibling_data.insert(assigned.gid, decrypted);
             }
         }

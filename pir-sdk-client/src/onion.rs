@@ -243,20 +243,25 @@ struct OnionDbParams {
 // ─── Audit: what Rust methods `SendClient` exposes ──────────────────────────
 //
 // The full public API of `onionpir::Client` (upstream
-// `rust/onionpir/src/lib.rs` @ rev `946550a`, pinned in our Cargo.toml) is:
+// `rust/onionpir/src/lib.rs` @ rev `92fceb01`, pinned in our Cargo.toml) is:
 //
 //     new(num_entries: u64) -> Self                                 [ctor]
-//     new_from_secret_key(num_entries, client_id, sk) -> Self       [ctor]
+//     from_secret_key(num_entries, client_id, sk) -> Option<Self>   [ctor]
 //     export_secret_key(&self) -> Vec<u8>                           [&self]
 //     id(&self) -> u64                                              [&self]
-//     generate_galois_keys(&mut self) -> Vec<u8>                    [&mut]
-//     generate_gsw_keys(&mut self) -> Vec<u8>                       [&mut]
-//     generate_query(&mut self, entry_index: u64) -> Vec<u8>        [&mut]
-//     decrypt_response(&mut self, entry_index, response) -> Vec<u8> [&mut]
+//     galois_keys(&self) -> Vec<u8>                                 [&self]
+//     gsw_key(&self) -> Vec<u8>                                     [&self]
+//     generate_query(&self, pt_idx: u64) -> Vec<u8>                 [&self]
+//     decrypt_response(&self, response: &[u8]) -> Vec<u8>           [&self]
 //     Drop::drop(&mut self)                                         [&mut]
 //
-// Only two methods take `&self`: `id` and `export_secret_key`. Everything
-// else (including all query generation and decryption) requires `&mut self`.
+// Note: post-port (92fceb01), the renames are `*_keys` → `_keys` /
+// `_key` (galois plural, gsw singular), `new_from_secret_key` →
+// `from_secret_key` (returns Option now), and `decrypt_response`
+// dropped the entry-index argument and returns the *raw plaintext*
+// (`[u32 N][u64 coeff_i]…`) — app code must bit-unpack with
+// `bits_per_coeff = entry_size * 8 / poly_degree` to recover the
+// original payload bytes.
 //
 // ─── Send safety ────────────────────────────────────────────────────────────
 //
@@ -1011,17 +1016,26 @@ impl OnionClient {
         // Allocate a temporary `Client` just for keygen + secret-key export,
         // then drop it. Per-level clients are created lazily from the exported
         // secret key as queries come in.
-        let mut keygen = onionpir::Client::new_from_secret_key(
+        // OnionPIRv2 port (commit 1, 2026-05-14):
+        //   * renamed `new_from_secret_key` → `from_secret_key`
+        //   * return type changed from `Self` to `Option<Self>` (size/format check).
+        // `.expect()` is fine here because we just generated the secret key via
+        // `Client::new(...).export_secret_key()` on the line below — it cannot
+        // be malformed.
+        let mut keygen = onionpir::Client::from_secret_key(
             num_entries as u64,
             client_id,
             &onionpir::Client::new(num_entries as u64).export_secret_key(),
-        );
+        )
+        .expect("freshly-exported secret key must round-trip");
         // The above pattern (new + export + new_from_sk) is what the reference
         // onionpir_client does to decouple key ownership from num_entries.
         // We create one keygen client with our client_id bound to the newly
         // generated secret key, then pull keys + sk out of it.
-        let galois_keys = keygen.generate_galois_keys();
-        let gsw_keys = keygen.generate_gsw_keys();
+        // OnionPIRv2 port: renamed `generate_galois_keys` → `galois_keys`,
+        // `generate_gsw_keys` → `gsw_key` (singular).
+        let galois_keys = keygen.galois_keys();
+        let gsw_keys = keygen.gsw_key();
         let secret_key = keygen.export_secret_key();
 
         self.fhe = Some(FheState {
@@ -1239,11 +1253,19 @@ impl OnionClient {
             .ok_or_else(|| PirError::InvalidState("FHE not initialised".into()))?;
 
         if !fhe.level_clients.contains_key(&key) {
-            let client = onionpir::Client::new_from_secret_key(
+            // OnionPIRv2 port: rename + return type changed to `Option<Self>`.
+            let client = onionpir::Client::from_secret_key(
                 num_entries,
                 fhe.client_id,
                 &fhe.secret_key,
-            );
+            )
+            .ok_or_else(|| {
+                PirError::InvalidState(format!(
+                    "OnionPIR Client::from_secret_key failed (num_entries={}, client_id={}); \
+                     secret key may be from a different fork rev",
+                    num_entries, fhe.client_id
+                ))
+            })?;
             fhe.level_clients.insert(key, SendClient(client));
         }
         Ok(&mut fhe.level_clients.get_mut(&key).unwrap().0)
@@ -1351,7 +1373,15 @@ impl OnionClient {
                         )));
                     }
                     let bin = query_bins[qi];
-                    let entry = index_client.decrypt_response(bin, &batch[qi]);
+                    // FIXME(onionpir-port-commit-2): `decrypt_response` now
+                    // returns the raw plaintext as
+                    // `[u32 N (LE)][u64 coeff_0 (LE)]…[u64 coeff_{N-1} (LE)]`,
+                    // NOT the bit-unpacked entry bytes. Until the unpack helper
+                    // lands, `entry` here is wire bytes that the downstream
+                    // `entry[..PACKED_ENTRY_SIZE]` slice will misinterpret.
+                    // Compiles, but the resulting Merkle hashes are garbage.
+                    let _ = bin; // bin is no longer needed for decrypt_response
+                    let entry = index_client.decrypt_response(&batch[qi]);
 
                     // Emit a Merkle trace for EVERY probed bin (not just the
                     // matching one). Leaf position matches the server's
@@ -1576,7 +1606,12 @@ impl OnionClient {
                         batch.len()
                     )));
                 }
-                let bytes = chunk_client.decrypt_response(q.bin as u64, &batch[q.group]);
+                // FIXME(onionpir-port-commit-2): see comment above on
+                // `decrypt_response` — return type is raw plaintext now;
+                // need a bit-unpack helper before the PACKED_ENTRY_SIZE slice
+                // is meaningful.
+                let _ = q.bin; // bin is no longer an argument to decrypt_response
+                let bytes = chunk_client.decrypt_response(&batch[q.group]);
                 if bytes.len() < PACKED_ENTRY_SIZE {
                     return Err(PirError::Protocol(format!(
                         "decrypted chunk shorter than PACKED_ENTRY_SIZE: {} < {}",

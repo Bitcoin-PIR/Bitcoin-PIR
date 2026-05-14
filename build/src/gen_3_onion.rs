@@ -610,10 +610,17 @@ fn main() {
                     chunk_data[offset..offset + entry_size].copy_from_slice(&entry_bytes);
                 }
             }
-            server.push_chunk(&chunk_data, chunk_idx);
+            // FIXME(onionpir-port-commit-3): `push_chunk` removed upstream.
+            // Replacement: bit-pack chunk_data into u64 coefficients (recipe
+            // in INTEGRATION.md §1.4) and call `push_plaintexts(...)`. Stub
+            // is a no-op so gen_3_onion compiles; running it will produce
+            // an EMPTY preprocessed_db.bin. Production builds blocked.
+            let _ = (&chunk_data, chunk_idx, &server);
         }
 
-        server.preprocess();
+        // FIXME(onionpir-port-commit-3): `preprocess()` removed; NTT is
+        // now run inside `push_plaintexts` automatically.
+        // server.preprocess();  // removed upstream
         server.save_db(preproc_path.to_str().unwrap());
 
         if *group_id % 10 == 0 || *group_id + 1 == K {
@@ -718,12 +725,14 @@ fn main() {
 
     let mut client = PirClient::new(bins_per_table as u64);
     let client_id = client.id();
-    server.set_galois_key(client_id, &client.generate_galois_keys());
-    server.set_gsw_key(client_id, &client.generate_gsw_keys());
+    server.set_galois_keys(client_id, &client.galois_keys());
+    server.set_gsw_key(client_id, &client.gsw_key());
 
     let query = client.generate_query(test_bin as u64);
     let response = server.answer_query(client_id, &query);
-    let decrypted = client.decrypt_response(test_bin as u64, &response);
+    // OnionPIRv2 port: see gen_2_onion for the decrypt_response semantic.
+    let _ = test_bin;
+    let decrypted = client.decrypt_response(&response);
 
     // The decrypted data is a 3840-byte bin with 256 × 15-byte slots.
     // Scan for our tag.

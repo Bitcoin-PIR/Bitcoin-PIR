@@ -254,12 +254,21 @@ fn main() {
 
     // Use a temporary Server just for ntt_expand_entry
     let expander = PirServer::new(num_entries as u64);
+    let _ = expander; // OnionPIRv2 port: ntt_expand_entry removed upstream
 
     let t_ntt = Instant::now();
     let one_percent = num_entries.max(1) / 100;
     for entry_id in 0..num_entries {
         let raw = &packed_mmap[entry_id * PACKED_ENTRY_SIZE..(entry_id + 1) * PACKED_ENTRY_SIZE];
-        let coeffs = expander.ntt_expand_entry(raw, coeff_val_cnt);
+        // FIXME(onionpir-port-commit-3): `Server::ntt_expand_entry` was
+        // removed in the upstream port. The replacement path is to bit-
+        // pack the raw bytes into `&[u64]` coefficients (recipe:
+        // INTEGRATION.md §1.4) and feed them via `push_plaintexts`. For
+        // now stub with zeros so the build pipeline compiles; running
+        // gen_2_onion will produce an all-zero NTT store. Production
+        // builds are blocked on commit 3.
+        let _ = raw;
+        let coeffs: Vec<u64> = vec![0u64; coeff_val_cnt];
 
         // Scatter to level-major: store[level * num_entries + entry_id]
         let ntt_u64: &mut [u64] = unsafe {
@@ -434,20 +443,28 @@ fn main() {
 
     let mut server = PirServer::new(bins_per_table as u64);
     unsafe {
-        server.set_shared_database(ntt_u64.as_ptr(), num_entries, &index_table);
+        // OnionPIRv2 port: signature change. Slice + u64 count + bool return.
+        assert!(
+            server.set_shared_database(ntt_u64, num_entries as u64, &index_table),
+            "set_shared_database failed in gen_2_onion sanity check"
+        );
     }
 
     // Create client, generate keys, query
     let mut client = PirClient::new(bins_per_table as u64);
     let client_id = client.id();
-    let galois = client.generate_galois_keys();
-    let gsw = client.generate_gsw_keys();
-    server.set_galois_key(client_id, &galois);
+    let galois = client.galois_keys();
+    let gsw = client.gsw_key();
+    server.set_galois_keys(client_id, &galois);
     server.set_gsw_key(client_id, &gsw);
 
     let query = client.generate_query(test_bin as u64);
     let response = server.answer_query(client_id, &query);
-    let decrypted = client.decrypt_response(test_bin as u64, &response);
+    // OnionPIRv2 port: `decrypt_response` dropped the index arg. FIXME
+    // (commit-2): result is raw plaintext now; downstream byte compare
+    // will fail until bit-unpack helper lands.
+    let _ = test_bin;
+    let decrypted = client.decrypt_response(&response);
 
     // Compare with original packed entry
     let expected = &packed_mmap[test_entry_id as usize * PACKED_ENTRY_SIZE

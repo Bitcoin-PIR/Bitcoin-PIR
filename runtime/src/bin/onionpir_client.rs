@@ -606,18 +606,22 @@ async fn main() {
     let key_start = Instant::now();
     let mut keygen_client = PirClient::new(index_bins as u64);
     let client_id = keygen_client.id();
-    let galois = keygen_client.generate_galois_keys();
-    let gsw = keygen_client.generate_gsw_keys();
+    let galois = keygen_client.galois_keys();
+    let gsw = keygen_client.gsw_key();
     let secret_key = keygen_client.export_secret_key();
     println!("  Key generation: {:.2?}", key_start.elapsed());
 
-    // Create per-level clients sharing the same secret key
-    let mut index_client = PirClient::new_from_secret_key(
+    // Create per-level clients sharing the same secret key.
+    // OnionPIRv2 port: rename `new_from_secret_key` → `from_secret_key`,
+    // returns `Option<Self>` now.
+    let mut index_client = PirClient::from_secret_key(
         index_bins as u64, client_id, &secret_key,
-    );
-    let mut chunk_client = PirClient::new_from_secret_key(
+    )
+    .expect("freshly-generated secret key must round-trip (index)");
+    let mut chunk_client = PirClient::from_secret_key(
         chunk_bins as u64, client_id, &secret_key,
-    );
+    )
+    .expect("freshly-generated secret key must round-trip (chunk)");
 
     // Register keys once — shared across all levels
     let reg_msg = RegisterKeysMsg {
@@ -701,8 +705,11 @@ async fn main() {
             for h in 0..INDEX_CUCKOO_NUM_HASHES {
                 let qi = group * 2 + h;
                 let bin = query_bins[qi];
+                // FIXME(onionpir-port-commit-2): `decrypt_response` now returns
+                // raw plaintext; downstream `entry_bytes[..PACKED_ENTRY_SIZE]`
+                // slice will misinterpret without bit-unpacking.
+                let _ = bin; // no longer a decrypt_response argument
                 let entry_bytes = index_client.decrypt_response(
-                    bin,
                     &result_batch.results[qi],
                 );
 
@@ -841,8 +848,9 @@ async fn main() {
 
         // Decrypt and store entries
         for cq in &chunk_queries {
+            // FIXME(onionpir-port-commit-2): raw plaintext, see comment above.
+            let _ = cq.bin; // no longer a decrypt_response argument
             let entry_bytes = chunk_client.decrypt_response(
-                cq.bin as u64,
                 &result_batch.results[cq.group],
             );
             decrypted_entries.insert(cq.entry_id, entry_bytes[..PACKED_ENTRY_SIZE].to_vec());
@@ -1053,9 +1061,11 @@ async fn main() {
                         group_info.insert(pbc_group, (gid, target_bin));
                     }
 
-                    let mut sib_client = PirClient::new_from_secret_key(
+                    // OnionPIRv2 port: rename + Option<Self> return.
+                    let mut sib_client = PirClient::from_secret_key(
                         li.bins_per_table as u64, client_id, &secret_key,
-                    );
+                    )
+                    .expect("freshly-generated secret key must round-trip (sibling)");
                     let mut sib_queries = Vec::with_capacity(li.k);
                     for b in 0..li.k {
                         let bin = if let Some(&(_, target_bin)) = group_info.get(&b) {
@@ -1075,8 +1085,10 @@ async fn main() {
                     let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode sibling");
 
                     for (&pbc_group, &(gid, target_bin)) in &group_info {
+                        // FIXME(onionpir-port-commit-2): raw plaintext.
+                        let _ = target_bin; // no longer a decrypt_response arg
                         let decrypted = sib_client.decrypt_response(
-                            target_bin as u64, &result_batch.results[pbc_group],
+                            &result_batch.results[pbc_group],
                         );
                         sibling_data.insert(gid, decrypted);
                     }
