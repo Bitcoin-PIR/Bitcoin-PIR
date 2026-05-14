@@ -460,11 +460,20 @@ fn main() {
 
     let query = client.generate_query(test_bin as u64);
     let response = server.answer_query(client_id, &query);
-    // OnionPIRv2 port: `decrypt_response` dropped the index arg. FIXME
-    // (commit-2): result is raw plaintext now; downstream byte compare
-    // will fail until bit-unpack helper lands.
+    // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext returned
+    // by `decrypt_response`. `decrypted.len()` is now `params.entry_size`
+    // (3328 default), not PACKED_ENTRY_SIZE (3840) — the comparison
+    // below will only succeed once the build pipeline regenerates DBs
+    // with entry_size-aligned packing (commit 3 / 5).
     let _ = test_bin;
-    let decrypted = client.decrypt_response(&response);
+    let raw_pt = client.decrypt_response(&response);
+    let pinfo = onionpir::params_info(bins_per_table as u64);
+    let decrypted = pir_core::onion_unpack::unpack_onion_plaintext(
+        &raw_pt,
+        pinfo.poly_degree as usize,
+        pinfo.entry_size as usize,
+    )
+    .expect("onion_unpack rejected gen_2_onion plaintext");
 
     // Compare with original packed entry
     let expected = &packed_mmap[test_entry_id as usize * PACKED_ENTRY_SIZE

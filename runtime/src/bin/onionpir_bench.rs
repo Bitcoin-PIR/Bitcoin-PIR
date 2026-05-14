@@ -189,11 +189,17 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
     // ── 9. Decrypt and verify ───────────────────────────────────────────────
     println!("\n[8] Decrypting response...");
     let t_dec = Instant::now();
-    // OnionPIRv2 port: `decrypt_response` dropped the entry-index arg.
-    // Result is raw plaintext now (FIXME commit 2: needs bit-unpacking
-    // for byte-level verify; size comparison below remains meaningful).
-    let _ = test_index; // no longer a decrypt_response argument
-    let decrypted = client.decrypt_response(&response);
+    // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext for a
+    // byte-level verify. `decrypted` is now `params.entry_size` bytes.
+    let _ = test_index;
+    let raw_pt = client.decrypt_response(&response);
+    let pinfo = onionpir::params_info(INDEX_NUM_ENTRIES);
+    let decrypted = pir_core::onion_unpack::unpack_onion_plaintext(
+        &raw_pt,
+        pinfo.poly_degree as usize,
+        pinfo.entry_size as usize,
+    )
+    .expect("onion_unpack rejected bench plaintext");
     let dec_time = t_dec.elapsed();
     println!(
         "  decrypted size:  {} (time: {:.2?})",

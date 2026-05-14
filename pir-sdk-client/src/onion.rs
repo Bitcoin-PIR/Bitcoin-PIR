@@ -1373,15 +1373,30 @@ impl OnionClient {
                         )));
                     }
                     let bin = query_bins[qi];
-                    // FIXME(onionpir-port-commit-2): `decrypt_response` now
-                    // returns the raw plaintext as
-                    // `[u32 N (LE)][u64 coeff_0 (LE)]…[u64 coeff_{N-1} (LE)]`,
-                    // NOT the bit-unpacked entry bytes. Until the unpack helper
-                    // lands, `entry` here is wire bytes that the downstream
-                    // `entry[..PACKED_ENTRY_SIZE]` slice will misinterpret.
-                    // Compiles, but the resulting Merkle hashes are garbage.
-                    let _ = bin; // bin is no longer needed for decrypt_response
-                    let entry = index_client.decrypt_response(&batch[qi]);
+                    // OnionPIRv2 port (commit 2): unpack the raw plaintext
+                    // returned by `decrypt_response`. Replaces the
+                    // pre-port API which returned entry bytes for the
+                    // given bin index directly. `entry` is now
+                    // `params.entry_size` bytes (3328 with the default
+                    // post-port config; was 3840 pre-port). Downstream
+                    // PACKED_ENTRY_SIZE-based slicing remains until
+                    // commit 5 sweeps capacity math.
+                    let _ = bin;
+                    let raw_pt = index_client.decrypt_response(&batch[qi]);
+                    let pinfo = onionpir::params_info(bins as u64);
+                    let entry = pir_core::onion_unpack::unpack_onion_plaintext(
+                        &raw_pt,
+                        pinfo.poly_degree as usize,
+                        pinfo.entry_size as usize,
+                    )
+                    .ok_or_else(|| {
+                        PirError::Protocol(format!(
+                            "onion_unpack rejected INDEX plaintext (len={} N={} es={})",
+                            raw_pt.len(),
+                            pinfo.poly_degree,
+                            pinfo.entry_size
+                        ))
+                    })?;
 
                     // Emit a Merkle trace for EVERY probed bin (not just the
                     // matching one). Leaf position matches the server's
@@ -1606,12 +1621,24 @@ impl OnionClient {
                         batch.len()
                     )));
                 }
-                // FIXME(onionpir-port-commit-2): see comment above on
-                // `decrypt_response` — return type is raw plaintext now;
-                // need a bit-unpack helper before the PACKED_ENTRY_SIZE slice
-                // is meaningful.
-                let _ = q.bin; // bin is no longer an argument to decrypt_response
-                let bytes = chunk_client.decrypt_response(&batch[q.group]);
+                // OnionPIRv2 port (commit 2): see INDEX block above —
+                // unpack the raw plaintext.
+                let _ = q.bin;
+                let raw_pt = chunk_client.decrypt_response(&batch[q.group]);
+                let pinfo = onionpir::params_info(chunk_bins as u64);
+                let bytes = pir_core::onion_unpack::unpack_onion_plaintext(
+                    &raw_pt,
+                    pinfo.poly_degree as usize,
+                    pinfo.entry_size as usize,
+                )
+                .ok_or_else(|| {
+                    PirError::Protocol(format!(
+                        "onion_unpack rejected CHUNK plaintext (len={} N={} es={})",
+                        raw_pt.len(),
+                        pinfo.poly_degree,
+                        pinfo.entry_size
+                    ))
+                })?;
                 if bytes.len() < PACKED_ENTRY_SIZE {
                     return Err(PirError::Protocol(format!(
                         "decrypted chunk shorter than PACKED_ENTRY_SIZE: {} < {}",

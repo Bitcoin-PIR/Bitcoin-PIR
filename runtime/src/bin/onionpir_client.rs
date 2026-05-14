@@ -19,6 +19,7 @@ use build::common::*;
 use futures_util::{SinkExt, StreamExt};
 use onionpir::Client as PirClient;
 use pir_core::merkle;
+use pir_core::onion_unpack;
 use std::collections::HashMap;
 use std::time::Instant;
 use tokio_tungstenite::connect_async;
@@ -705,13 +706,23 @@ async fn main() {
             for h in 0..INDEX_CUCKOO_NUM_HASHES {
                 let qi = group * 2 + h;
                 let bin = query_bins[qi];
-                // FIXME(onionpir-port-commit-2): `decrypt_response` now returns
-                // raw plaintext; downstream `entry_bytes[..PACKED_ENTRY_SIZE]`
-                // slice will misinterpret without bit-unpacking.
-                let _ = bin; // no longer a decrypt_response argument
-                let entry_bytes = index_client.decrypt_response(
+                // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext
+                // returned by `decrypt_response`. `entry_bytes` is now
+                // `params.entry_size` bytes (3328 with default config,
+                // was 3840 pre-port). Downstream PACKED_ENTRY_SIZE
+                // slicing will produce wrong-but-non-panicking bytes
+                // until commit 5 (capacity math) lands.
+                let _ = bin;
+                let raw_pt = index_client.decrypt_response(
                     &result_batch.results[qi],
                 );
+                let pinfo = onionpir::params_info(index_bins as u64);
+                let entry_bytes = onion_unpack::unpack_onion_plaintext(
+                    &raw_pt,
+                    pinfo.poly_degree as usize,
+                    pinfo.entry_size as usize,
+                )
+                .expect("onion_unpack rejected INDEX plaintext from server");
 
                 if let Some(ir) = scan_index_bin(&entry_bytes, addr_infos[addr_idx].tag, index_slots_per_bin, index_slot_size) {
                     // Per-bin Merkle: hash the full decrypted bin, record leaf position
@@ -848,11 +859,18 @@ async fn main() {
 
         // Decrypt and store entries
         for cq in &chunk_queries {
-            // FIXME(onionpir-port-commit-2): raw plaintext, see comment above.
-            let _ = cq.bin; // no longer a decrypt_response argument
-            let entry_bytes = chunk_client.decrypt_response(
+            // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext.
+            let _ = cq.bin;
+            let raw_pt = chunk_client.decrypt_response(
                 &result_batch.results[cq.group],
             );
+            let pinfo = onionpir::params_info(chunk_bins as u64);
+            let entry_bytes = onion_unpack::unpack_onion_plaintext(
+                &raw_pt,
+                pinfo.poly_degree as usize,
+                pinfo.entry_size as usize,
+            )
+            .expect("onion_unpack rejected CHUNK plaintext from server");
             decrypted_entries.insert(cq.entry_id, entry_bytes[..PACKED_ENTRY_SIZE].to_vec());
             // Per-bin Merkle: hash the full decrypted data bin
             data_bin_hashes.insert(cq.entry_id, merkle::sha256(&entry_bytes[..PACKED_ENTRY_SIZE]));
@@ -1085,11 +1103,18 @@ async fn main() {
                     let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode sibling");
 
                     for (&pbc_group, &(gid, target_bin)) in &group_info {
-                        // FIXME(onionpir-port-commit-2): raw plaintext.
-                        let _ = target_bin; // no longer a decrypt_response arg
-                        let decrypted = sib_client.decrypt_response(
+                        // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext.
+                        let _ = target_bin;
+                        let raw_pt = sib_client.decrypt_response(
                             &result_batch.results[pbc_group],
                         );
+                        let pinfo = onionpir::params_info(li.bins_per_table as u64);
+                        let decrypted = onion_unpack::unpack_onion_plaintext(
+                            &raw_pt,
+                            pinfo.poly_degree as usize,
+                            pinfo.entry_size as usize,
+                        )
+                        .expect("onion_unpack rejected sibling plaintext from server");
                         sibling_data.insert(gid, decrypted);
                     }
                     println!("    {} L{} PBC round {}/{}: {} groups ✓",

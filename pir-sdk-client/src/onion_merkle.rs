@@ -927,12 +927,27 @@ async fn verify_sub_tree(
                     }
                     continue;
                 }
-                // FIXME(onionpir-port-commit-2): `decrypt_response` now returns
-                // the raw plaintext, not bit-unpacked entry bytes. The
-                // `sibling_data` map will hold raw plaintext bytes until the
-                // unpack helper lands.
-                let _ = assigned.target_bin; // no longer an arg
-                let decrypted = sib_client.0.decrypt_response(&batch[pbc_group]);
+                // OnionPIRv2 port (commit 2): unpack the raw plaintext
+                // returned by `decrypt_response`. `decrypted` is
+                // `params.entry_size` bytes (no longer the pre-port
+                // PACKED_ENTRY_SIZE = 3840). Downstream Merkle code
+                // hashes the whole buffer regardless of length.
+                let _ = assigned.target_bin;
+                let raw_pt = sib_client.0.decrypt_response(&batch[pbc_group]);
+                let pinfo = onionpir::params_info(level_info.bins_per_table as u64);
+                let decrypted = pir_core::onion_unpack::unpack_onion_plaintext(
+                    &raw_pt,
+                    pinfo.poly_degree as usize,
+                    pinfo.entry_size as usize,
+                )
+                .ok_or_else(|| {
+                    PirError::Protocol(format!(
+                        "onion_unpack rejected sibling plaintext (len={} N={} es={})",
+                        raw_pt.len(),
+                        pinfo.poly_degree,
+                        pinfo.entry_size
+                    ))
+                })?;
                 sibling_data.insert(assigned.gid, decrypted);
             }
         }

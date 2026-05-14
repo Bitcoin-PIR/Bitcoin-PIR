@@ -730,9 +730,16 @@ fn main() {
 
     let query = client.generate_query(test_bin as u64);
     let response = server.answer_query(client_id, &query);
-    // OnionPIRv2 port: see gen_2_onion for the decrypt_response semantic.
+    // OnionPIRv2 port (commit 2): bit-unpack — see gen_2_onion.
     let _ = test_bin;
-    let decrypted = client.decrypt_response(&response);
+    let raw_pt = client.decrypt_response(&response);
+    let pinfo = onionpir::params_info(bins_per_table as u64);
+    let decrypted = pir_core::onion_unpack::unpack_onion_plaintext(
+        &raw_pt,
+        pinfo.poly_degree as usize,
+        pinfo.entry_size as usize,
+    )
+    .expect("onion_unpack rejected gen_3_onion plaintext");
 
     // The decrypted data is a 3840-byte bin with 256 × 15-byte slots.
     // Scan for our tag.
