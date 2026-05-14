@@ -21,10 +21,10 @@ that. This is the BitcoinPIR-specific punch list.
   ✅ §2 Commit 4         — audit (no persistence to invalidate) + TS bit-unpack helper + diagnostic-friendly error messages
   🟨 §2 Commit 5         — capacity math; client-side done (f0399024), build-side pending
   ⬜ §2 Commit 6         — SharedKeyStore / QueryQueue (optional polish)
-  ⬜ §2 Commit 7         — WASM client A/B decision
+  ✅ §2 Commit 7         — WASM swap (post-port .mjs) + TS API rename + unpack wiring
 
 Branch: `worktree-feat+onionpir-port-migration` at
-`.claude/worktrees/feat+onionpir-port-migration/`. Seven commits ahead of
+`.claude/worktrees/feat+onionpir-port-migration/`. Nine commits ahead of
 `d6c333de`. **Not pushed to BitcoinPIR's origin/main.**
 
 `cargo check --workspace` is green. End-to-end smoke (build a real
@@ -335,7 +335,79 @@ which is more polished — verify behavior, then optionally migrate to
 the async `QueryQueue` for the unified-server hot path. Not a
 correctness requirement; an optimization.
 
-### Commit 7 — WASM client decision (special)
+### Commit 7 — WASM client A/B — **LANDED (Option B)**
+
+Picked Option B (port the hand-rolled TS to the new wire formats)
+because `web/src/onionpir_client.ts` carries BitcoinPIR-specific
+cuckoo-planning + protocol-encode logic layered on top of the
+OnionPIR primitive. Option A ("replace TS entirely with upstream
+WASM") would have required reimplementing all of that.
+
+What landed:
+
+1. **WASM artifact swap.** `web/public/wasm/onionpir_client.js` (pre-
+   port, UMD with `globalThis.createOnionPirModule` factory) replaced
+   by `onionpir_client.mjs` (post-port, ES module with default-export
+   factory). `.wasm` blob refreshed. `.d.ts` swapped to match
+   upstream's hand-written declarations (post-port `OnionPirClient`,
+   `paramsInfo()`, `createClientFromSecretKey`).
+
+2. **Module loader rewrite.** The `<script src="/wasm/onionpir_client.js">`
+   tag in `web/index.html` is gone; `web/src/onionpir_client.ts::loadWasmModule`
+   now dynamic-imports the `.mjs` at runtime (with a
+   `globalThis.__onionpirWasmFactory` test hook for node tests).
+
+3. **API-rename sweep across `web/src/onionpir_client.ts`** (~14 sites):
+   * `new OnionPirClient(numEntries)` → `new OnionPirClient()` (3 sites)
+   * `createClientFromSecretKey(numEntries, clientId, sk)` → `createClientFromSecretKey(clientId, sk)` (3 sites — now `OnionPirClient | null`, with explicit null-check at each call)
+   * `paramsInfo(numEntries)` → `paramsInfo()` (3 fresh calls inside the decrypt loops)
+   * `generateGaloisKeys()` → `galoisKeys()`
+   * `generateGswKeys()` → `gswKey()`
+   * `decryptResponse(idx, response)` → `decryptResponse(response)` (3 sites — caller now bit-unpacks)
+
+4. **Cuckoo key encoding flip.** Upstream's post-port
+   `buildCuckooBs1` accepts `Float64Array` (treated as u64 bytes)
+   instead of `Uint32Array` lo/hi pairs. New helper
+   `buildCuckooKeysFloat64()` writes via `BigUint64Array` over a
+   shared `ArrayBuffer`, returns a `Float64Array` view of the same
+   bytes. The Merkle sibling cuckoo block uses the same idiom inline.
+
+5. **`unpackOnionPlaintext` wired into all three `decryptResponse`
+   sites** (INDEX bin, CHUNK bin, sibling Merkle bin) using the
+   TS port from commit 4. The runtime
+   `wasmParams.polyDegree` / `wasmParams.entrySize` are read fresh
+   per-round so the byte-stream interpretation tracks whatever
+   ACTIVE_CONFIG the WASM was built with. The legacy
+   `PACKED_ENTRY_SIZE = 3840` constant is retained as a defensive
+   upper bound: actual slice lengths are `min(entryBytes.length,
+   PACKED_ENTRY_SIZE)`, so e.g. `CONFIG_N2048_K1`'s 3328-byte
+   bins don't read past the end.
+
+6. **Node-test loader update.**
+   `web/src/__tests__/onion_leakage_diff.test.ts` switched from
+   `createRequire()` + `globalThis.createOnionPirModule` to
+   `await import(file://...)` + `globalThis.__onionpirWasmFactory`
+   (matching the runtime hook). Test is still skipped without
+   `RUN_LIVE_DIFF=1` — same skip semantics as pre-port.
+
+Verification:
+  `cargo check --workspace`           ✅
+  `npx tsc --noEmit` in web/          ✅
+  `npx vitest run` in web/             158/160 ok (2 skipped: live diff)
+
+Not touched in this commit (still open):
+
+  * **Commit 5b**: build-pipeline capacity math sweep (gen_1's
+    hardcoded `PACKED_ENTRY_SIZE = 3840` + gen_3's fixed-size
+    array). Truncation issue remains.
+  * **Commit 6**: SharedKeyStore / QueryQueue migration on the
+    server side — optional.
+  * **WASM rebuild on Hetzner-deployed binary**: the runtime crate
+    is already on post-port via the cargo dep bump in commit 1; the
+    .wasm copied here is for the web client only.
+
+Original design notes below:
+
 
 Pre-port the situation was: SEAL didn't compile to wasm32, so BitcoinPIR
 shipped a hand-rolled TS reimplementation at `web/src/onionpir_client.ts`.
