@@ -846,6 +846,12 @@ async fn verify_sub_tree(
             // stays `Send` across the roundtrip `.await` below — the raw
             // `onionpir::Client` holds a `*mut c_void` which is `!Send`.
             // OnionPIRv2 port: rename + return type changed to `Option<Self>`.
+            // The caller (`OnionMerkleVerifier`) provides `secret_key`
+            // from the parent `OnionClient::fhe.secret_key`, which was
+            // generated this session by `Client::new`. A None return
+            // here means the same as in pir-sdk-client/onion.rs's
+            // `get_level_client` — see the analogous error there for
+            // the recovery procedure.
             let mut sib_client = SibSendClient(
                 onionpir::Client::from_secret_key(
                     level_info.bins_per_table as u64,
@@ -854,9 +860,14 @@ async fn verify_sub_tree(
                 )
                 .ok_or_else(|| {
                     PirError::InvalidState(format!(
-                        "OnionPIR sib Client::from_secret_key failed \
-                         (bins_per_table={}, client_id={})",
-                        level_info.bins_per_table, client_id
+                        "OnionPIR sib Client::from_secret_key returned None \
+                         (bins_per_table={}, client_id={}, sk_len={}). \
+                         Likely cause: onionpir rev / ACTIVE_CONFIG drift \
+                         between this binary and the session-master key. \
+                         Recovery: drop FheState + restart the session.",
+                        level_info.bins_per_table,
+                        client_id,
+                        secret_key.len()
                     ))
                 })?,
             );

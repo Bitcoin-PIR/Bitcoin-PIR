@@ -18,13 +18,13 @@ that. This is the BitcoinPIR-specific punch list.
   ✅ §2 Commit 1         — rev bump + mechanical renames (4e12d0d9)
   ✅ §2 Commit 2         — bit-unpack helper + every decrypt_response wired (0cf7ac21)
   ✅ §2 Commit 3         — gen_2/3/4 push_plaintexts + save_db + runtime num_plaintexts (8e3dcddf)
-  ⬜ §2 Commit 4         — re-key clients (browser cache; Rust side already handled)
+  ✅ §2 Commit 4         — audit (no persistence to invalidate) + TS bit-unpack helper + diagnostic-friendly error messages
   🟨 §2 Commit 5         — capacity math; client-side done (f0399024), build-side pending
   ⬜ §2 Commit 6         — SharedKeyStore / QueryQueue (optional polish)
   ⬜ §2 Commit 7         — WASM client A/B decision
 
 Branch: `worktree-feat+onionpir-port-migration` at
-`.claude/worktrees/feat+onionpir-port-migration/`. Five commits ahead of
+`.claude/worktrees/feat+onionpir-port-migration/`. Seven commits ahead of
 `d6c333de`. **Not pushed to BitcoinPIR's origin/main.**
 
 `cargo check --workspace` is green. End-to-end smoke (build a real
@@ -197,19 +197,52 @@ files. Production rebuild required — affects:
 
 Re-run the build pipeline before deploying.
 
-### Commit 4 — Re-key clients — **NOT STARTED** (Rust side already handled)
+### Commit 4 — Re-key clients — **LANDED**
 
-Status update after commits 1-3: the Rust-side impact is already
-covered. `Client::from_secret_key` returns `Option<Self>`; pir-sdk-
-client wraps it in `.ok_or_else(|| PirError::InvalidState(...))?` so a
-stale SEAL-serialized secret key surfaces as a typed error, not a
-panic. Runtime CLI binaries use `.expect(...)` because they're not in
-a graceful-recovery context.
+The plan was concerned with persisted galois / GSW / secret-key blobs
+becoming unparseable across the port. The audit showed that **no
+component in the BitcoinPIR codebase actually persists those blobs
+across a process or page lifecycle**:
 
-The remaining work is web-side: `web/src/onionpir_client.ts` and
-whatever caches secret keys in browser localStorage need a version
-bump and a "re-key required" path. That's entangled with Commit 7
-(WASM client A/B) — defer until that decision lands.
+| Layer | Persistence | Impact |
+|---|---|---|
+| `pir-sdk-client::onion::FheState` | in-memory `Vec<u8>`, dropped on session close | none |
+| `runtime/src/bin/onionpir_client.rs` | freshly generated per CLI invocation | none |
+| `web/src/onionpir_client.ts::fheSecretKey` | in-memory only; not written to localStorage / IndexedDB / sessionStorage | none |
+| `pir-sdk-client/tests/` | tests generate keys at runtime; no committed blob fixtures | none |
+| `web/src/__tests__/` | same — no committed key fixtures | none |
+
+So the original "design a re-key UX" task is structurally moot. What
+actually shipped in this commit:
+
+1. **Diagnostic-friendly error messages** at the two `from_secret_key`
+   sites (`pir-sdk-client/src/onion.rs::get_level_client` and
+   `pir-sdk-client/src/onion_merkle.rs`). The post-commit-1 messages
+   said only "secret key may be from a different fork rev"; commit 4
+   spells out the three likely causes (ACTIVE_CONFIG drift, blob
+   truncation, stale persisted key) plus a recovery procedure
+   ("drop FheState + restart the session") so a future debugger of
+   a failing `OnionPIR Client::from_secret_key returned None ...`
+   doesn't have to retrace this audit.
+
+2. **TS port of `pir_core::onion_unpack`** at `web/src/onion-unpack.ts`.
+   The web client's WASM module is currently pre-port and ships its
+   own `decryptResponse(idx, response) → entry bytes` API; when
+   Commit 7 rebuilds that WASM from upstream's post-port
+   `wasm/bindings.cpp`, `decryptResponse` will start returning the raw
+   `[u32 N][u64 coeff_i...]` plaintext and this helper takes over the
+   unpack-to-bytes step. Using BigInt for the rolling buffer (39-bit
+   coefficient case requires >53 bits of state, which JS `number`
+   cannot hold). Eight vitest cases mirror the eight Rust unit tests
+   in `pir-core/src/onion_unpack.rs` — both pass green.
+
+3. **Migration plan updated** to capture the audit findings so a
+   future session doesn't re-design re-key flows that aren't needed.
+
+Anything web-side that ISN'T touched here (notably the
+`web/src/onionpir_client.ts` API rename from `generateGaloisKeys()` →
+`galoisKeys()`, the wire-format switch, and the `.wasm` rebuild) is
+explicitly Commit 7 work.
 
 Original design notes below:
 
