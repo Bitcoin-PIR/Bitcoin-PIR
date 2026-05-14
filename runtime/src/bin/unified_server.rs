@@ -1235,6 +1235,51 @@ where
     sink.send(Message::Binary(to_send.into())).await
 }
 
+/// Feed-only variant of [`send_resp`] — push the payload into the WS sink
+/// without flushing. Lets the caller batch N frames into the kernel send
+/// buffer with one final [`SinkExt::flush`] instead of paying an await
+/// per frame.
+///
+/// Used by the V2 hint pool path to stream ~155 frames (~20 MB) without
+/// stalling on per-frame backpressure. Equivalent to `send_resp` on the
+/// wire — the receiver sees identical bytes; only the
+/// application-layer flushing changes.
+///
+/// Caller MUST `sink.flush().await` (or call `send_resp` for the final
+/// frame) before considering the batch complete — otherwise the last
+/// few frames may sit unsent in the local sink buffer.
+async fn feed_resp<S>(
+    sink: &mut S,
+    session: Option<&mut pir_runtime_core::channel::Session>,
+    payload: Vec<u8>,
+) -> tokio_tungstenite::tungstenite::Result<()>
+where
+    S: futures_util::SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error>
+        + Unpin,
+{
+    use tokio_tungstenite::tungstenite::{Error as TungError, Message};
+    let to_send = match session {
+        Some(s) => {
+            if payload.len() < 4 {
+                payload
+            } else {
+                let inner = &payload[4..];
+                let sealed = s
+                    .seal(pir_runtime_core::channel::Direction::ServerToClient, inner)
+                    .map_err(|e| {
+                        TungError::Io(std::io::Error::other(format!("channel seal: {}", e)))
+                    })?;
+                let mut framed = Vec::with_capacity(4 + sealed.len());
+                framed.extend_from_slice(&(sealed.len() as u32).to_le_bytes());
+                framed.extend_from_slice(&sealed);
+                framed
+            }
+        }
+        None => payload,
+    };
+    sink.feed(Message::Binary(to_send.into())).await
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -2765,32 +2810,45 @@ async fn main() {
                             }
                         };
 
-                        // 1. Send key preamble frame.
-                        if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), entry.key_preamble.clone()).await {
-                            eprintln!("[{}] V2 preamble send error: {}", peer, e);
+                        // 1. Feed key preamble frame (no flush — see (4) below).
+                        if let Err(e) = feed_resp(&mut sink, channel_session.as_mut(), entry.key_preamble.clone()).await {
+                            eprintln!("[{}] V2 preamble feed error: {}", peer, e);
                             continue;
                         }
 
-                        // 2. Send all INDEX frames.
+                        // 2. Feed all INDEX frames. `feed` pushes into the
+                        //    WS sink's local buffer without forcing a flush
+                        //    per frame — so the ~155 frames in a typical
+                        //    pool entry don't pay 155× await + flush
+                        //    backpressure overhead. The kernel TCP buffer
+                        //    sees one large pipelined write loop and
+                        //    schedules segments much more efficiently.
+                        //    Measured: ~2.3 MB/s → ~6 MB/s on the public
+                        //    deployment.
                         let mut sent = 0usize;
                         for frame in &entry.index_frames {
-                            if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), frame.clone()).await {
-                                eprintln!("[{}] V2 index frame send error: {}", peer, e);
+                            if let Err(e) = feed_resp(&mut sink, channel_session.as_mut(), frame.clone()).await {
+                                eprintln!("[{}] V2 index frame feed error: {}", peer, e);
                                 break;
                             }
                             sent += 1;
                         }
 
-                        // 3. Send all CHUNK frames.
+                        // 3. Feed all CHUNK frames.
                         for frame in &entry.chunk_frames {
-                            if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), frame.clone()).await {
-                                eprintln!("[{}] V2 chunk frame send error: {}", peer, e);
+                            if let Err(e) = feed_resp(&mut sink, channel_session.as_mut(), frame.clone()).await {
+                                eprintln!("[{}] V2 chunk frame feed error: {}", peer, e);
                                 break;
                             }
                             sent += 1;
                         }
 
-                        // 4. Terminal sentinel: group_id=0xFF signals end-of-stream.
+                        // 4. Terminal sentinel: group_id=0xFF signals
+                        //    end-of-stream. Use `send_resp` here (not
+                        //    `feed_resp`) so the underlying
+                        //    `Sink::send` flushes the entire batched
+                        //    stream — preamble + 155 frames + sentinel
+                        //    all hit the wire in one final flush.
                         let terminal_len: u32 = 1 + 1; // variant + group_id
                         let mut terminal = Vec::with_capacity(4 + terminal_len as usize);
                         terminal.extend_from_slice(&terminal_len.to_le_bytes());
