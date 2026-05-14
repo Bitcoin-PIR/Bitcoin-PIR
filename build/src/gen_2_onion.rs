@@ -63,7 +63,14 @@ fn resolve_paths() -> (String, String, String, String) {
     }
 }
 
-const PACKED_ENTRY_SIZE: usize = 3840;
+// OnionPIRv2 port (commit 5b): the on-disk packed entry size is now
+// `onionpir::params_info(0).entry_size` (3328 for the default
+// CONFIG_N2048_K1, was 3840 pre-port at PlainMod=15). Read once in
+// main() and flowed through per-call-site. The const definition is
+// gone; usages take a local `packed_entry_size` parameter.
+fn onion_entry_size() -> usize {
+    onionpir::params_info(0).entry_size as usize
+}
 
 /// PBC parameters (same as production)
 const K_CHUNK: usize = 80;
@@ -223,12 +230,23 @@ fn main() {
     println!();
 
     // ── 1. Read packed entries ───────────────────────────────────────────
+    //
+    // OnionPIRv2 port (commit 5b): `packed_entry_size` is pulled from
+    // the linked onionpir crate at startup (matches gen_1_onion's
+    // packing size). The pre-port hardcoded `PACKED_ENTRY_SIZE = 3840`
+    // is gone.
+    let packed_entry_size = onion_entry_size();
     println!("[1] Memory-mapping packed entries: {}", packed_file_path);
     let packed_file = File::open(&packed_file_path).expect("open packed entries file");
     let packed_mmap = unsafe { Mmap::map(&packed_file) }.expect("mmap packed entries");
-    let num_entries = packed_mmap.len() / PACKED_ENTRY_SIZE;
-    assert_eq!(packed_mmap.len() % PACKED_ENTRY_SIZE, 0, "packed file not aligned");
-    println!("  {} entries ({:.2} GB)", num_entries, packed_mmap.len() as f64 / 1e9);
+    assert_eq!(
+        packed_mmap.len() % packed_entry_size, 0,
+        "packed file not aligned: {} bytes, packed_entry_size={}",
+        packed_mmap.len(), packed_entry_size
+    );
+    let num_entries = packed_mmap.len() / packed_entry_size;
+    println!("  {} entries ({:.2} GB), entry_size={} B", num_entries,
+        packed_mmap.len() as f64 / 1e9, packed_entry_size);
 
     // ── 2. Get OnionPIR params ──────────────────────────────────────────
     let p = onionpir::params_info(num_entries as u64);
@@ -241,15 +259,12 @@ fn main() {
     println!("  entry_size:       {} B (payload per plaintext)", entry_size_pt);
     println!("  num_plaintexts:   {} (compiled-in DB slot count)", num_plaintexts);
     println!("  coeff_val_cnt:    {} (post-NTT coeff count per plaintext)", coeff_val_cnt);
-    if entry_size_pt < PACKED_ENTRY_SIZE {
-        eprintln!(
-            "  WARNING: entry_size ({}) < PACKED_ENTRY_SIZE ({}). The last \
-             {} bytes of each {}-byte packed entry will be TRUNCATED. \
-             Commit 5 will harmonize gen_1_onion to pack at entry_size \
-             bytes; production builds remain blocked until then.",
-            entry_size_pt, PACKED_ENTRY_SIZE, PACKED_ENTRY_SIZE - entry_size_pt, PACKED_ENTRY_SIZE
-        );
-    }
+    assert_eq!(
+        entry_size_pt, packed_entry_size,
+        "params_info.entry_size ({}) != packed_entry_size ({}); a stale \
+         packed.bin produced by a different onionpir rev is being read",
+        entry_size_pt, packed_entry_size
+    );
     if num_entries > num_plaintexts {
         panic!(
             "num_entries ({}) > num_plaintexts ({}). Compile-time DB shape \
@@ -293,20 +308,22 @@ fn main() {
     let t_ntt = Instant::now();
     let mut server = PirServer::new(num_entries as u64);
     let one_percent = num_entries.max(1) / 100;
-    let take_bytes_per_entry = entry_size_pt.min(PACKED_ENTRY_SIZE);
+    // OnionPIRv2 port (commit 5b): the commit-3 `take_bytes_per_entry`
+    // truncation guard is gone — gen_1's packed entry size matches
+    // `params_info.entry_size` exactly (asserted above), so the full
+    // entry packs cleanly into one plaintext.
 
     let mut entry_id = 0;
     while entry_id < num_entries {
         let n_this_batch = PUSH_BATCH_ENTRIES.min(num_entries - entry_id);
         let mut batch_coeffs: Vec<u64> = Vec::with_capacity(n_this_batch * poly_degree);
         for i in 0..n_this_batch {
-            let off = (entry_id + i) * PACKED_ENTRY_SIZE;
-            let raw = &packed_mmap[off..off + PACKED_ENTRY_SIZE];
-            // FIXME(commit-5): if entry_size_pt < PACKED_ENTRY_SIZE we silently
-            // truncate the tail. gen_1_onion will be reworked in commit 5
-            // to pack at entry_size_pt bytes per entry, eliminating the gap.
+            let off = (entry_id + i) * packed_entry_size;
+            let raw = &packed_mmap[off..off + packed_entry_size];
+            // OnionPIRv2 port (commit 5b): no truncation — `raw.len() ==
+            // packed_entry_size == entry_size_pt` by the earlier assert.
             let coeffs = pir_core::onion_unpack::pack_bytes_into_coefficients(
-                &raw[..take_bytes_per_entry],
+                raw,
                 entry_size_pt,
                 poly_degree,
             );
@@ -457,7 +474,9 @@ fn main() {
     println!("\n[7] Computing DATA bin hashes for per-bin Merkle...");
     let t_hash = Instant::now();
     {
-        let zero_entry = [0u8; PACKED_ENTRY_SIZE];
+        // OnionPIRv2 port (commit 5b): zero_entry is `packed_entry_size`
+        // bytes (was a fixed `[u8; 3840]` array pre-port).
+        let zero_entry = vec![0u8; packed_entry_size];
         let total_bins = K_CHUNK * bins_per_table;
         let mut bin_hashes = Vec::with_capacity(total_bins * 32);
 
@@ -468,8 +487,8 @@ fn main() {
                 let bin_bytes: &[u8] = if entry_id == EMPTY {
                     &zero_entry
                 } else {
-                    let off = entry_id as usize * PACKED_ENTRY_SIZE;
-                    &packed_mmap[off..off + PACKED_ENTRY_SIZE]
+                    let off = entry_id as usize * packed_entry_size;
+                    &packed_mmap[off..off + packed_entry_size]
                 };
                 let hash = pir_core::merkle::sha256(bin_bytes);
                 bin_hashes.extend_from_slice(&hash);
@@ -571,11 +590,13 @@ fn main() {
     )
     .expect("onion_unpack rejected gen_2_onion plaintext");
 
-    // Compare with original packed entry
-    let expected = &packed_mmap[test_entry_id as usize * PACKED_ENTRY_SIZE
-        ..(test_entry_id as usize + 1) * PACKED_ENTRY_SIZE];
+    // Compare with original packed entry. Post-commit-5b `decrypted.len() ==
+    // packed_entry_size == params.entry_size`, so the comparison is a
+    // direct byte-for-byte equality with no truncation.
+    let expected = &packed_mmap[test_entry_id as usize * packed_entry_size
+        ..(test_entry_id as usize + 1) * packed_entry_size];
 
-    if decrypted.len() >= PACKED_ENTRY_SIZE && decrypted[..PACKED_ENTRY_SIZE] == *expected {
+    if decrypted.len() == packed_entry_size && decrypted[..] == *expected {
         println!("  Verification: PASS (decrypted matches original entry)");
     } else if decrypted.len() >= 8 && decrypted[..8] == expected[..8] {
         println!("  Verification: PASS (first 8 bytes match)");

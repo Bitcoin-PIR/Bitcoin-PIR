@@ -19,13 +19,20 @@ that. This is the BitcoinPIR-specific punch list.
   ✅ §2 Commit 2         — bit-unpack helper + every decrypt_response wired (0cf7ac21)
   ✅ §2 Commit 3         — gen_2/3/4 push_plaintexts + save_db + runtime num_plaintexts (8e3dcddf)
   ✅ §2 Commit 4         — audit (no persistence to invalidate) + TS bit-unpack helper + diagnostic-friendly error messages
-  🟨 §2 Commit 5         — capacity math; client-side done (f0399024), build-side pending
+  ✅ §2 Commit 5a        — client-side PACKED_ENTRY_SIZE → runtime params (f0399024)
+  ✅ §2 Commit 5b        — gen_1/3/4 hardcoded constants → runtime params (this commit; truncation gone)
   ⬜ §2 Commit 6         — SharedKeyStore / QueryQueue (optional polish)
   ✅ §2 Commit 7         — WASM swap (post-port .mjs) + TS API rename + unpack wiring
 
 Branch: `worktree-feat+onionpir-port-migration` at
-`.claude/worktrees/feat+onionpir-port-migration/`. Nine commits ahead of
+`.claude/worktrees/feat+onionpir-port-migration/`. Ten commits ahead of
 `d6c333de`. **Not pushed to BitcoinPIR's origin/main.**
+
+After 5b lands, the **build pipeline is correctness-complete** — no
+more silent truncation. Production cut-over (rebuild every
+preprocessed_db.bin + onion_index_all.bin + Merkle tree-tops, rsync
+to pir1, swap via databases.toml, smoke a known-good scripthash)
+is unblocked.
 
 `cargo check --workspace` is green. End-to-end smoke (build a real
 packed.bin → gen_2 → gen_3 → unified_server → pir-sdk-client query)
@@ -272,26 +279,79 @@ with `packed_entry_size()` helpers that read
 `pinfo.entry_size` bytes, so the pre-port "if len ≥ PACKED_ENTRY_SIZE
 then trim else full" guard collapses to just hashing the full slice.
 
-### Commit 5b — Build-pipeline capacity math — **NOT STARTED**
+### Commit 5b — Build-pipeline capacity math — **LANDED**
 
-Build-side files still hardcode 3840:
+Removed the four hardcoded `3840` constants from the build pipeline
+and replaced them with runtime reads of
+`onionpir::params_info(0).entry_size`. After this commit, every
+on-disk artifact (`onion_packed_entries.bin`,
+`onion_shared_ntt.bin`, per-group `preprocessed_db.bin`, Merkle
+tree-tops, sibling level NTT stores) is sized for whatever
+`ACTIVE_CONFIG` the linked `onionpir` crate was built with:
 
-  build/src/gen_1_onion.rs              `const PACKED_ENTRY_SIZE: usize = 3840;`
-  build/src/gen_3_onion.rs              `const ONIONPIR_ENTRY_SIZE: usize = 3840;`
-                                        + `SLOTS_PER_BIN = 256` (256 × 15 = 3840)
-  build/src/gen_4_build_merkle_onion.rs `const PACKED_ENTRY_SIZE: usize = 3840;`
+  CONFIG_N2048_K1 (default post-port): 3328 B/entry, 221 slots/INDEX bin, ARITY=104
+  pre-port (PlainMod=15):              3840 B/entry, 256 slots/INDEX bin, ARITY=120
 
-The thorny piece: `serialize_cuckoo_bin -> [u8; ONIONPIR_ENTRY_SIZE]`
-in gen_3 uses the constant as a fixed-size array length, which
-requires `const` not `fn` — would need a `Vec<u8>` conversion. And
-gen_1's downstream packing logic is woven through ~500 lines of code
-that all assume a single per-entry size. Changing it invalidates every
-`onion_packed_entries.bin` already on disk — Hetzner's `pir1` plus any
-delta-build host. That's coordinated work, not a sed-style sweep.
+Specific changes:
 
-Tracking this as a separate commit (Commit 5b) so the runtime-side
-correctness improvement in 5a can land independently. The gen_2/3/4
-truncation noted in Commit 3 stays a documented limitation until 5b.
+* **gen_1_onion.rs** — `const PACKED_ENTRY_SIZE: usize = 3840` →
+  `fn onion_entry_size()` helper. `Packer` gained an `entry_size`
+  field plumbed through its ctor; all internal slicing /
+  flush-on-full logic uses `self.entry_size`. Display strings
+  updated.
+
+* **gen_3_onion.rs** — `const ONIONPIR_ENTRY_SIZE` + `SLOTS_PER_BIN`
+  removed. `serialize_cuckoo_bin` return type flipped from
+  `[u8; ONIONPIR_ENTRY_SIZE]` (fixed-size array, needs const) to
+  `Vec<u8>` (length = `entry_size`). `build_index_cuckoo` now takes
+  `slots_per_bin` as a parameter. Metadata file writes the runtime
+  `slots_per_bin` value (downstream readers — runtime + sdk-client —
+  already consume this as runtime data).
+
+* **gen_4_build_merkle_onion.rs** — `const ARITY: usize = 120` →
+  `fn onion_merkle_arity()` (= `entry_size / 32`). Pinning ARITY to
+  the OnionPIR plaintext size ensures each internal Merkle node's
+  ARITY × 32 child hashes fit in exactly one plaintext. Default
+  config: ARITY=104. Tree depth, sibling-proof shape, and
+  tree-top cache layout all flow from the new arity. The metadata
+  writeout publishes the runtime arity so client-side
+  `parse_onionpir_merkle` picks it up automatically.
+
+* **gen_2_onion.rs** — commit-3's truncation guard
+  (`take_bytes_per_entry = entry_size_pt.min(PACKED_ENTRY_SIZE)`)
+  removed. Replaced with an `assert_eq!(packed_entry_size,
+  entry_size_pt)` cross-check; a mismatch means a stale `packed.bin`
+  from a different `onionpir` rev is being read. Same hardening
+  applied to gen_4's push loop.
+
+Surviving hardcoded 3840 / ARITY=120:
+
+  build/src/test_merkle_verify_onion.rs — test-only binary that
+  verifies pre-built Merkle output. It still has
+  `const ARITY: usize = 120` + `const PACKED_ENTRY_SIZE: usize = 3840`.
+  Reading those from the tree-top metadata file (which `gen_4` now
+  writes correctly with the runtime arity) is a future tidy-up;
+  outside the production cut-over critical path.
+
+Verification:
+
+  cargo check --workspace                     ✅
+  cargo test -p pir-core --lib                45/45 ok
+  cargo check -p build --bin {gen_1,gen_2,gen_3,gen_4_build_merkle}_onion ✅
+  npx vitest run in web/                      158/160 ok
+
+Production rollout (what to do once this branch merges):
+
+  1. Build the post-port `unified_server` on Hetzner pir1 via the
+     existing `pir-hetzner` skill's deploy recipe.
+  2. On a build host (NOT pir1 — needs the Bitcoin chainstate),
+     re-run gen_1 → gen_2 → gen_3 → gen_4 to produce a fresh
+     `checkpoints/<height>/` tree with entry_size=3328 artifacts.
+  3. `rsync` the new tree to pir1; edit
+     `/home/pir/data/databases.toml` to point at the new checkpoint.
+  4. `systemctl restart pir-primary pir-secondary`.
+  5. Smoke a known-good scripthash via pir.chenweikeng.com against
+     the post-port WASM (already deployed by commit 7).
 
 Original design notes below:
 
