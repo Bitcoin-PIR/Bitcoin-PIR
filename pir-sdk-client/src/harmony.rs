@@ -1777,16 +1777,35 @@ impl HarmonyClient {
             .take()
             .expect("only called when hint_conn_secondary is_some");
 
-        // Per-half receive loop: reads key preamble + N frames + sentinel.
-        // Returns (prp_backend, prp_key, frames, total_response_bytes).
-        // Mirrors the body of `ensure_groups_ready_v2` but is parameterised
-        // by the expected number of frames so it can be reused for both
-        // halves.
-        async fn drain_half(
+        let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
+        let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
+
+        // Per-half receive+build+load loop.
+        //
+        // The receive logic is identical to the V2-full path
+        // (preamble → K frames → sentinel) but as soon as the preamble
+        // arrives — i.e. as soon as the key is known — the loop builds
+        // all this half's `HarmonyGroup` instances and then loads
+        // hints into them per-frame as they stream in. This INTERLEAVES
+        // the per-group PRP setup (~10–20 ms × K, single-thread CPU)
+        // with the network wait time, instead of stacking them serial
+        // after the join. Matches V2-full's wire-vs-CPU interleaving.
+        //
+        // Returns `(prp_backend, prp_key, built_groups, total_bytes)`.
+        // The shared-key check on the call site runs against the
+        // returned `prp_key`s; the built groups are then moved into
+        // `self.{index,chunk}_groups`.
+        #[allow(clippy::too_many_arguments)]
+        async fn drain_half_build(
             conn: &mut Box<dyn PirTransport>,
             num_groups: u8,
             label: &str,
-        ) -> PirResult<(u8, [u8; 16], Vec<(u8, Vec<u8>)>, u64)> {
+            // Group construction params (same for every group at this
+            // level — only the per-group offset varies).
+            bins: u32,
+            slot_size: u32,
+            base_offset: usize, // 0 for INDEX, k_index for CHUNK
+        ) -> PirResult<(u8, [u8; 16], HashMap<u8, HarmonyGroup>, u64)> {
             // 1. Receive key preamble.
             let preamble = conn.recv().await?;
             let mut total_resp: u64 = preamble.len() as u64;
@@ -1821,8 +1840,30 @@ impl HarmonyClient {
             let mut prp_key = [0u8; 16];
             prp_key.copy_from_slice(&body[4..20]);
 
-            // 2. Receive N per-group frames.
-            let mut frames: Vec<(u8, Vec<u8>)> = Vec::with_capacity(num_groups as usize);
+            // 2. Build all `num_groups` HarmonyGroup instances using
+            //    the just-received key. This is the CPU-heavy part —
+            //    overlapped with the upcoming `recv()` waits.
+            let mut groups: HashMap<u8, HarmonyGroup> =
+                HashMap::with_capacity(num_groups as usize);
+            for g in 0..num_groups {
+                let group = HarmonyGroup::new_with_backend(
+                    bins,
+                    slot_size,
+                    0,
+                    &prp_key,
+                    (base_offset + g as usize) as u32,
+                    prp_backend,
+                )
+                .map_err(|e| {
+                    PirError::BackendState(format!(
+                        "{}: HarmonyGroup init: {:?}",
+                        label, e
+                    ))
+                })?;
+                groups.insert(g, group);
+            }
+
+            // 3. Receive N per-group frames and load hints in-place.
             for _ in 0..num_groups {
                 let msg = conn.recv().await?;
                 total_resp = total_resp.saturating_add(msg.len() as u64);
@@ -1857,26 +1898,50 @@ impl HarmonyClient {
                 }
                 let group_id = body[1];
                 // bytes 2..14 = (n, t, m) metadata — unused
-                let hints_data = body[14..].to_vec();
-                frames.push((group_id, hints_data));
+                let hints_data = &body[14..];
+                let group = groups.get_mut(&group_id).ok_or_else(|| {
+                    PirError::Protocol(format!(
+                        "{}: unexpected group {}",
+                        label, group_id
+                    ))
+                })?;
+                group
+                    .load_hints(hints_data)
+                    .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
             }
 
-            // 3. Receive terminal sentinel.
+            // 4. Receive terminal sentinel.
             let _terminal = conn.recv().await?;
 
-            Ok((prp_backend, prp_key, frames, total_resp))
+            Ok((prp_backend, prp_key, groups, total_resp))
         }
 
-        let t_half_start = std::time::Instant::now();
+        let t_half_start = Instant::now();
 
         let index_fut = async {
             hint_primary.send(request_index).await?;
-            let r = drain_half(&mut hint_primary, k_index as u8, "V2-half INDEX").await?;
+            let r = drain_half_build(
+                &mut hint_primary,
+                k_index as u8,
+                "V2-half INDEX",
+                db_info.index_bins,
+                index_w as u32,
+                0, // base_offset for INDEX groups
+            )
+            .await?;
             Ok::<_, PirError>((hint_primary, r))
         };
         let chunk_fut = async {
             hint_secondary.send(request_chunk).await?;
-            let r = drain_half(&mut hint_secondary, k_chunk as u8, "V2-half CHUNK").await?;
+            let r = drain_half_build(
+                &mut hint_secondary,
+                k_chunk as u8,
+                "V2-half CHUNK",
+                db_info.chunk_bins,
+                chunk_w as u32,
+                k_index, // base_offset for CHUNK groups
+            )
+            .await?;
             Ok::<_, PirError>((hint_secondary, r))
         };
 
@@ -1897,8 +1962,8 @@ impl HarmonyClient {
             }
         };
 
-        let (hp, (idx_backend, idx_key, idx_frames, idx_bytes)) = idx_out;
-        let (hs, (chk_backend, chk_key, chk_frames, chk_bytes)) = chk_out;
+        let (hp, (idx_backend, idx_key, idx_groups, idx_bytes)) = idx_out;
+        let (hs, (chk_backend, chk_key, chk_groups, chk_bytes)) = chk_out;
 
         self.hint_conn = Some(hp);
         self.hint_conn_secondary = Some(hs);
@@ -1922,7 +1987,7 @@ impl HarmonyClient {
         let dt_wire = t_half_start.elapsed();
         if std::env::var("HARMONY_BENCH").is_ok() {
             eprintln!(
-                "[HARMONY_BENCH]   V2-half parallel hint: total wire {:?} (req {}B+{}B, resp {}B+{}B, k_index={}, k_chunk={})",
+                "[HARMONY_BENCH]   V2-half parallel hint+build: total {:?} (req {}B+{}B, resp {}B+{}B, k_index={}, k_chunk={})",
                 dt_wire,
                 request_index_bytes, request_chunk_bytes,
                 idx_bytes, chk_bytes,
@@ -1933,62 +1998,16 @@ impl HarmonyClient {
         self.prp_backend = idx_backend;
         self.master_prp_key = idx_key;
 
-        // Build HarmonyGroup instances using the (shared) PRP key.
-        let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
-        let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
-        for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend(
-                db_info.index_bins,
-                index_w as u32,
-                0,
-                &self.master_prp_key,
-                g as u32,
-                self.prp_backend,
-            )
-            .map_err(|e| {
-                PirError::BackendState(format!("V2-half HarmonyGroup init (INDEX): {:?}", e))
-            })?;
-            self.index_groups.insert(g as u8, group);
-        }
-        for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend(
-                db_info.chunk_bins,
-                chunk_w as u32,
-                0,
-                &self.master_prp_key,
-                (k_index + g) as u32,
-                self.prp_backend,
-            )
-            .map_err(|e| {
-                PirError::BackendState(format!("V2-half HarmonyGroup init (CHUNK): {:?}", e))
-            })?;
-            self.chunk_groups.insert(g as u8, group);
-        }
+        // Move the already-built + hint-loaded groups into self.
+        self.index_groups = idx_groups;
+        self.chunk_groups = chk_groups;
 
-        // Load hints into groups from the received frames.
-        let mut done: u32 = 0;
-        for (group_id, hints_data) in idx_frames {
-            let group = self.index_groups.get_mut(&group_id).ok_or_else(|| {
-                PirError::Protocol(format!("V2-half: unexpected INDEX group {}", group_id))
-            })?;
-            group
-                .load_hints(&hints_data)
-                .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
-            done += 1;
-            if let Some(p) = progress {
-                p.on_group_complete(done, total, "index");
-            }
-        }
-        for (group_id, hints_data) in chk_frames {
-            let group = self.chunk_groups.get_mut(&group_id).ok_or_else(|| {
-                PirError::Protocol(format!("V2-half: unexpected CHUNK group {}", group_id))
-            })?;
-            group
-                .load_hints(&hints_data)
-                .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
-            done += 1;
-            if let Some(p) = progress {
-                p.on_group_complete(done, total, "chunk");
+        // Surface a single terminal progress tick — per-group ticks
+        // are buried inside the parallel build loops and the API
+        // doesn't currently thread a callback through `drain_half_build`.
+        if let Some(p) = progress {
+            if total > 0 {
+                p.on_group_complete(total, total, "chunk");
             }
         }
 
