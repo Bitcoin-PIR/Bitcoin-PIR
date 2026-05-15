@@ -52,34 +52,75 @@ under Hetzner pir1's 954 GB budget; ~30 GB rsync to deploy.
 Pre-port preserved at `/Volumes/Bitcoin/data/preport_backup_2026-05-14/`
 (56 GB) for rollback.
 
-## What's blocking deploy from here
+## Deployment status (2026-05-15)
 
-**Nothing on the build side.** The post-port checkpoint is on disk and
-ready to rsync. Deploy gates:
+**Deploy steps DONE on Hetzner pir1:**
 
-1. Build the post-port `unified_server` on Hetzner pir1 via the
-   existing `pir-hetzner` skill's deploy recipe.
-2. `rsync` `/Volumes/Bitcoin/data/checkpoints/948454/` (44 GB) →
-   `/home/pir/data/checkpoints/948454/` on pir1.
-3. Edit `/home/pir/data/databases.toml` if the height/path changed
-   (it didn't — same height 948454, same checkpoint dir name).
-4. `systemctl restart pir-primary pir-secondary` on pir1.
-5. Smoke a known-good scripthash via pir.chenweikeng.com against the
-   post-port WASM (already deployed in commit 7).
+1. ✅ Branch `feat/onionpir-port-migration` pushed to origin.
+2. ✅ `unified_server` rebuilt on pir1 from the post-port branch
+   (`cargo build --release -p runtime --bin unified_server`).
+3. ✅ Checkpoint rsync'd: `/Volumes/Bitcoin/.../checkpoints/948454/`
+   (44 GB) → `/home/pir/data/checkpoints/948454/`, atomic swap
+   completed (pre-port preserved as `948454.preport-2026-05-15/`).
+4. ✅ `MANIFEST.toml` regenerated to match the new onion files
+   (`scripts/build_db_manifest.sh`).
+5. ✅ Pre-port delta `delta_940611_948454` dropped from
+   `/home/pir/data/databases.toml` (post-port delta rebuild
+   pending — see below).
+6. ✅ `pir-primary` + `pir-secondary` restarted, both `active`,
+   listening on `:8091` + `:8092`.
+7. ✅ End-to-end OnionPIR query (`test_onion_client_query_batch`)
+   **PASSES via direct SSH tunnel `ws://127.0.0.1:18091`** in
+   400.16 s. Server worker reports `empty=0/N` for every
+   `AnswerBatch` (INDEX, CHUNK, all sibling levels); the WASM /
+   FFI plaintext-decryption pipeline reconstructs the expected
+   "not-found" result for the test scripthash. The diagnostic
+   logging added in this commit prints
+   `empty=…/…, nonempty_total=…B, resp_len=…B, client_id=…` per
+   batch, so future client-side `SessionEvicted("…all-empty
+   batch…")` reports can be triaged from server logs alone.
 
-Delta rebuilds (`delta_gen_1_onion` + downstream) can land after the
-main checkpoint cuts over — the delta files in
-`/Volumes/Bitcoin/data/deltas/940611_948454/` were also moved aside
-to the preport_backup_2026-05-14 directory and need re-generating.
-`delta_gen_1_onion.rs` was updated in this session to match the
-runtime-num_pt pattern; the downstream delta pipeline still needs
-running.
+**Known gap: Cloudflare idle-timeout on `wss://pir1.chenweikeng.com`.**
 
-`cargo check --workspace` is green. End-to-end smoke (build a real
-packed.bin → gen_2 → gen_3 → unified_server → pir-sdk-client query)
-has NOT been run; requires a full chainstate input plus a 5-10 minute
-CMake/HEXL build of libonionpir.a. The Hetzner pir1 box still serves
-the pre-port binary.
+The same test against the public CF-fronted URL fails after ~127 s
+with `ConnectionClosed("Connection reset without closing handshake")`.
+The OnionPIR INDEX phase on pir1 currently takes **~162 s of
+server-side matmul** for the K=75 INDEX-bin DB (the per-group
+servers process queries sequentially in the worker thread). That
+exceeds Cloudflare Free's ~100 s WebSocket idle timeout.
+
+Two independent fixes will close this gap:
+
+(a) **Parallelize the per-group `answer_query` calls inside the
+    worker thread.** pir1 is an i7-8700 with 6 cores; sequential
+    processing of 75 INDEX groups × ~1.1 s each ≈ 80 s, dropping
+    to ~14 s with a `rayon::par_iter()` fan-out. CHUNK (80 ×
+    ~2 s ≈ 160 s sequential) drops similarly. Below the 100 s
+    threshold without any protocol change.
+
+(b) **Server-side keepalive while processing long batches** — emit
+    a `Message::Pong(empty)` from the unified-server WS loop every
+    ~30 s while a `PirCommand::AnswerBatch` is outstanding. CF
+    sees activity, keeps the tunnel open. No client change.
+
+Either fix unblocks `wss://pir1.chenweikeng.com`. (a) is the
+better one — wall-time improvement benefits every client, not just
+CF-fronted ones. Tracked as a separate follow-up so it doesn't
+blow up the migration commit.
+
+**Delta rebuild pending.** `delta_gen_1_onion.rs` already builds
+under the post-port shape (verified in commit 5b's build-pipeline
+sweep), but the on-disk `delta_940611_948454/` files were the
+pre-port format and have been dropped from `databases.toml`.
+Re-running `scripts/build_delta_onion.sh` (locally, then rsync to
+pir1) will regenerate the post-port delta; restore the
+`[[database]]` entry in `databases.toml` and `systemctl restart
+pir-primary`. The pre-port `databases.toml` is saved as
+`databases.toml.preport-2026-05-15` on pir1 for reference.
+
+`cargo check --workspace` is green. `cargo test -p pir-sdk-client
+--features onion --test integration_test test_onion_client_query_batch
+-- --ignored --nocapture` passes against pir1 via SSH tunnel.
 
 ## 0. Blocking step (operator) — DONE
 

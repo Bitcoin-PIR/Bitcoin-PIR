@@ -2049,13 +2049,22 @@ async fn main() {
                                 eprintln!("[OnionPIR:{}] unknown level {}", worker_label, level);
                                 ("unknown", Vec::new())
                             };
+                            // OnionPIRv2 port: report empty/nonempty result split
+                            // alongside the existing wall-clock log so a future
+                            // "all-empty batch" client-side report (see
+                            // `pir-sdk-client/src/onion.rs::batch_looks_evicted`)
+                            // can be triaged from server logs alone — either the
+                            // C++ answer_query catch fired (empty=N/N, fast wall
+                            // time → keystore drift or query malformed) or the
+                            // matmul completed (empty=0/N, full wall time →
+                            // client decode / decryption-noise bug).
                             let empty_count = results.iter().filter(|r| r.is_empty()).count();
                             let nonempty_bytes: usize = results.iter().filter(|r| !r.is_empty()).map(|r| r.len()).sum();
-                            let nonempty_lens: Vec<usize> = results.iter().filter(|r| !r.is_empty()).take(3).map(|r| r.len()).collect();
+                            let first_resp_len = results.iter().find(|r| !r.is_empty()).map(|r| r.len()).unwrap_or(0);
                             println!(
-                                "  [OnionPIR:{}] {} r{} {} queries in {:.2?} (empty={}/{}, nonempty_total={}B, first_lens={:?}, client_id={})",
+                                "  [OnionPIR:{}] {} r{} {} queries in {:.2?} (empty={}/{}, nonempty_total={}B, resp_len={}B, client_id={})",
                                 worker_label, name, round_id, queries.len(), t.elapsed(),
-                                empty_count, results.len(), nonempty_bytes, nonempty_lens, client_id,
+                                empty_count, results.len(), nonempty_bytes, first_resp_len, client_id,
                             );
                             let _ = reply.send(results);
                         }
