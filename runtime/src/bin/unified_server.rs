@@ -1326,6 +1326,83 @@ where
     sink.feed(Message::Binary(to_send.into())).await
 }
 
+// ─── Transport-level message chunking (Cloudflare large-message workaround) ──
+//
+// Cloudflare's WebSocket proxy silently corrupts single messages above
+// ~1 MB (a 3.1 MB OnionPIR RegisterKeys upload arrives truncated — see
+// docs/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
+// split into `[4B len][CHUNK_MAGIC][seq:u16][total:u16][piece]` frames;
+// the peer reassembles. These constants MUST stay in sync with
+// `pir-sdk-client/src/connection.rs` (CHUNK_MAGIC / CHUNK_SIZE) and
+// `web/src/onionpir_client.ts`.
+const CHUNK_MAGIC: u8 = 0xc7;
+const CHUNK_SIZE: usize = 256 * 1024;
+const CHUNK_HDR: usize = 1 + 2 + 2; // magic + seq + total
+const MAX_REASSEMBLED: usize = 64 * 1024 * 1024;
+
+/// Like [`send_resp`], but when `allow_chunk` is set and the framed
+/// message exceeds `CHUNK_SIZE`, splits it into chunk frames the client
+/// reassembles. Used for the large OnionPIR result messages
+/// (INDEX/CHUNK batches ~1–2 MB, Merkle tree-tops ~1 MB) sent to
+/// chunk-capable clients. `allow_chunk` is the per-connection
+/// `client_supports_chunks` flag — false for legacy / WASM DPF/Harmony
+/// clients, which never receive a large enough OnionPIR message anyway.
+async fn send_resp_chunked<S>(
+    sink: &mut S,
+    session: Option<&mut pir_runtime_core::channel::Session>,
+    payload: Vec<u8>,
+    allow_chunk: bool,
+) -> tokio_tungstenite::tungstenite::Result<()>
+where
+    S: futures_util::SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error>
+        + Unpin,
+{
+    use tokio_tungstenite::tungstenite::{Error as TungError, Message};
+    // Frame (and optionally seal) exactly like send_resp.
+    let to_send = match session {
+        Some(s) => {
+            if payload.len() < 4 {
+                payload
+            } else {
+                let inner = &payload[4..];
+                let sealed = s
+                    .seal(pir_runtime_core::channel::Direction::ServerToClient, inner)
+                    .map_err(|e| {
+                        TungError::Io(std::io::Error::other(format!("channel seal: {}", e)))
+                    })?;
+                let mut framed = Vec::with_capacity(4 + sealed.len());
+                framed.extend_from_slice(&(sealed.len() as u32).to_le_bytes());
+                framed.extend_from_slice(&sealed);
+                framed
+            }
+        }
+        None => payload,
+    };
+    if !allow_chunk || to_send.len() <= CHUNK_SIZE {
+        return sink.send(Message::Binary(to_send.into())).await;
+    }
+    let total = to_send.len().div_ceil(CHUNK_SIZE);
+    if total > u16::MAX as usize {
+        return Err(TungError::Io(std::io::Error::other(format!(
+            "response too large to chunk: {} bytes",
+            to_send.len()
+        ))));
+    }
+    for seq in 0..total {
+        let start = seq * CHUNK_SIZE;
+        let end = (start + CHUNK_SIZE).min(to_send.len());
+        let piece = &to_send[start..end];
+        let mut frame = Vec::with_capacity(4 + CHUNK_HDR + piece.len());
+        frame.extend_from_slice(&((CHUNK_HDR + piece.len()) as u32).to_le_bytes());
+        frame.push(CHUNK_MAGIC);
+        frame.extend_from_slice(&(seq as u16).to_le_bytes());
+        frame.extend_from_slice(&(total as u16).to_le_bytes());
+        frame.extend_from_slice(piece);
+        sink.send(Message::Binary(frame.into())).await?;
+    }
+    Ok(())
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -2395,17 +2472,68 @@ async fn main() {
             let mut arc_pres_ctx: Option<Vec<u8>> = None;
             let mut cashu_ok: bool = false;
 
+            // Per-connection transport-level chunk reassembly state. A
+            // client that sends a multi-MB message (OnionPIR RegisterKeys
+            // / query batches) splits it into CHUNK_MAGIC frames; we
+            // reassemble before dispatch. `client_supports_chunks` flips
+            // true on the first chunk frame seen and gates whether the
+            // server chunks its (large) responses back.
+            let mut chunk_acc: Vec<u8> = Vec::new();
+            let mut chunk_expected: u16 = 0;
+            let mut chunk_total: u16 = 0;
+            let mut client_supports_chunks = false;
+
             while let Some(msg) = ws_stream.next().await {
                 let msg = match msg {
                     Ok(m) => m,
                     Err(e) => { eprintln!("[{}] Read error: {}", peer, e); break; }
                 };
 
-                let bin = match msg {
+                let raw_bin = match msg {
                     Message::Binary(b) => b,
                     Message::Ping(p) => { let _ = sink.send(Message::Pong(p)).await; continue; }
                     Message::Close(_) => break,
                     _ => continue,
+                };
+
+                // Transport-level chunk reassembly. A chunk frame is
+                // `[4B len][CHUNK_MAGIC][seq:u16][total:u16][piece]`; a
+                // normal message never carries CHUNK_MAGIC at offset 4.
+                let bin: Vec<u8> = if raw_bin.len() >= 4 + CHUNK_HDR && raw_bin[4] == CHUNK_MAGIC {
+                    client_supports_chunks = true;
+                    let seq = u16::from_le_bytes([raw_bin[5], raw_bin[6]]);
+                    let total = u16::from_le_bytes([raw_bin[7], raw_bin[8]]);
+                    if total == 0 || seq != chunk_expected {
+                        eprintln!("[{}] bad chunk frame (seq={} total={} expected={}) — resetting", peer, seq, total, chunk_expected);
+                        chunk_acc.clear();
+                        chunk_expected = 0;
+                        continue;
+                    }
+                    if seq == 0 {
+                        chunk_total = total;
+                        chunk_acc.clear();
+                    } else if total != chunk_total {
+                        eprintln!("[{}] chunk total changed mid-stream — resetting", peer);
+                        chunk_acc.clear();
+                        chunk_expected = 0;
+                        continue;
+                    }
+                    let piece = &raw_bin[4 + CHUNK_HDR..];
+                    if chunk_acc.len() + piece.len() > MAX_REASSEMBLED {
+                        eprintln!("[{}] reassembled message exceeds cap — resetting", peer);
+                        chunk_acc.clear();
+                        chunk_expected = 0;
+                        continue;
+                    }
+                    chunk_acc.extend_from_slice(piece);
+                    chunk_expected += 1;
+                    if chunk_expected < chunk_total {
+                        continue; // wait for the next chunk frame
+                    }
+                    chunk_expected = 0;
+                    std::mem::take(&mut chunk_acc)
+                } else {
+                    raw_bin.to_vec()
                 };
 
                 if bin.len() < 5 { continue; }
@@ -3369,7 +3497,7 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_INDEX_RESULT)).await;
+                            let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_INDEX_RESULT), client_supports_chunks).await;
                         }
                     }
                     REQ_ONIONPIR_CHUNK_QUERY if server.has_any_onionpir() => {
@@ -3390,7 +3518,7 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_CHUNK_RESULT)).await;
+                            let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_CHUNK_RESULT), client_supports_chunks).await;
                         }
                     }
                     REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP if server.has_any_onionpir_merkle() => {
@@ -3410,7 +3538,7 @@ async fn main() {
                         msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                         msg.push(RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP);
                         msg.extend_from_slice(top);
-                        let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
+                        let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), msg, client_supports_chunks).await;
                         println!("[onion-merkle-index-top] db={} sent {} bytes", db_id, top.len());
                     }
                     REQ_ONIONPIR_MERKLE_DATA_TREE_TOP if server.has_any_onionpir_merkle() => {
@@ -3430,7 +3558,7 @@ async fn main() {
                         msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
                         msg.push(RESP_ONIONPIR_MERKLE_DATA_TREE_TOP);
                         msg.extend_from_slice(top);
-                        let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
+                        let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), msg, client_supports_chunks).await;
                         println!("[onion-merkle-data-top] db={} sent {} bytes", db_id, top.len());
                     }
                     REQ_ONIONPIR_MERKLE_INDEX_SIBLING if server.has_any_onionpir() => {
@@ -3460,7 +3588,7 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_MERKLE_INDEX_SIBLING)).await;
+                            let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_MERKLE_INDEX_SIBLING), client_supports_chunks).await;
                         }
                     }
                     REQ_ONIONPIR_MERKLE_DATA_SIBLING if server.has_any_onionpir() && server.has_any_onionpir_merkle() => {
@@ -3493,7 +3621,7 @@ async fn main() {
                             }).await;
                             let results = reply_rx.await.unwrap();
                             let result_msg = OnionPirBatchResult { round_id: batch.round_id, results };
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_MERKLE_DATA_SIBLING)).await;
+                            let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), result_msg.encode(RESP_ONIONPIR_MERKLE_DATA_SIBLING), client_supports_chunks).await;
                         }
                     }
 
