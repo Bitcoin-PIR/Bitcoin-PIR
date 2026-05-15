@@ -1,87 +1,115 @@
-# RESOLVED: the OnionPIR "2402b16 regression" was a contaminated incremental C++ build
+# OnionPIR `RegisterKeys` over Cloudflare: the 3.1 MB key upload is corrupted in transit
 
-**Status:** RESOLVED 2026-05-15. This file previously theorised a
-"transport truncation" bug. **That was wrong.** The real cause —
-proven with end-to-end byte-level instrumentation — is a contaminated
-incremental build of the `onionpir` crate's C++ library
-(`libonionpir.a`). The filename is kept for git continuity; treat the
-content below as the authoritative post-mortem.
+**Status:** root cause confirmed 2026-05-16. This doc went through
+several wrong drafts during a long debugging session; this is the
+final, correct, consolidated version.
 
-## TL;DR
+## The short version
 
-Flipping the `onionpir` git rev in the three `Cargo.toml`s back and
-forth (`fb14f4e` ↔ `2402b16`, ~5 times in one debugging session)
-left the cargo/cmake **incremental** build of `libonionpir.a` in an
-inconsistent state. A contaminated `libonionpir.a` made the *client's*
-`Client::galois_keys()` emit a **malformed, undersized** BV-galois-key
-blob (379 KB of garbage instead of the correct 2,621,564 B). The
-server's `deserialize_bv_galois_keys` then read a bogus `num_keys`
-(`0x0410a15e` ≈ 68 M) from the garbage and spent ~60 s in a
-memset/malloc/free loop — the "60 s key registration" symptom.
+OnionPIR key registration sends a **single ~3.1 MB WebSocket message**
+(2.6 MB BV-galois keys + 0.5 MB GSW key + framing). That message:
 
-**Fix:** wipe the onionpir build artifacts and rebuild clean whenever
-the pinned rev changes:
+- **survives a raw TCP / SSH-tunnel transport intact** → server
+  registers keys in ~1 ms, full query smoke test passes in 79 s;
+- **is corrupted when proxied through Cloudflare**
+  (`wss://pir1.chenweikeng.com`) → the server's
+  `deserialize_bv_galois_keys` reads a garbage length and burns
+  ~55–60 s, then every `answer_query` returns empty → client sees
+  `SessionEvicted`.
 
-```bash
-rm -rf target/release/build/onionpir-* \
-       target/release/deps/*onionpir* \
-       target/release/.fingerprint/onionpir-*
-cargo build --release -p pir-sdk-client --features onion   # or -p runtime
-```
+Proven by elimination: the **same** clean-built test binary
+(`integration_test-3399053ae28c1fbd`, verified clean by a 994 µs
+registration over the SSH tunnel) fails with a 55.9 s registration
+when the only thing changed is `PIR_ONION_URL` from
+`ws://127.0.0.1:18091` to `wss://pir1.chenweikeng.com`.
 
-(`cargo clean -p onionpir` is the tidy equivalent but the explicit
-`rm -rf` is what was verified.)
+## Three distinct issues were found (don't conflate them)
 
-## Proof
+This single symptom — "slow registration, empty queries" — had
+**three independent causes**, discovered one at a time:
 
-End-to-end instrumentation (client `register_keys` + server WS-loop),
-two consecutive test runs against the *same* pir1 server:
+1. **Contaminated incremental `onionpir` C++ build.** Flipping the
+   `onionpir` pinned git rev fb14f4e↔2402b16 repeatedly without a
+   clean rebuild left `libonionpir.a` inconsistent → the *client*
+   emitted a malformed galois blob. Fixed by always doing a clean
+   rebuild of the `onionpir` crate after a rev change (`cargo clean`
+   or `rm -rf target/release/build/onionpir-*`). Affected both
+   transports. **Resolved.**
 
-| Run | Client `onionpir` build | `ws_bin` at server | `body_head` (galois_len) | Registration |
-|---|---|---|---|---|
-| contaminated | incremental, after rev-flips | 710,595 B | `8e c8 05 00` = 379,022 (garbage) | **56 s** ❌ |
-| clean | `rm -rf onionpir-*` + rebuild | 3,145,873 B | `7c 00 28 00` = 2,621,564 ✓ | **1.12 ms** ✓ |
+2. **Hint-pool startup CPU thrashing.** `pir-primary` +
+   `pir-secondary` both run `--pool-size 8` HarmonyPIR V2 hint
+   generation at boot, saturating the 6-core host for ~2 min. A
+   client connecting in that window starves the OnionPIR worker
+   thread. Fixed by the systemd stagger
+   (`deploy/systemd/pir-secondary.service`:
+   `After=pir-primary.service` + `ExecStartPre=/bin/sleep 90`).
+   **Resolved.**
 
-The server code, the transport, and the WebSocket layer never
-changed between those two runs — only the client's `libonionpir.a`
-was rebuilt clean. `3,145,873 B` is exactly the well-formed
-`encode_register_keys` size (`4 + 1 + 4 + 2,621,564 + 4 + 524,296`);
-`710,595 B` is exactly the *garbage-consistent* size the contaminated
-build produced. The bug was 100 % client-side key serialization.
+3. **Cloudflare corrupts the 3.1 MB `RegisterKeys` message.** The
+   subject of this doc. **OPEN.**
 
-## Why earlier theories were wrong
+The original Cloudflare problem this whole effort started from — the
+OnionPIR INDEX *query* taking 162 s, exceeding CF's ~100 s WebSocket
+idle timeout — **is fixed**: the rayon-parallel `AnswerBatch`
+(`unified_server.rs`, rev 2402b16) drops INDEX to ~20 s and CHUNK to
+~36 s, each well under 100 s. Issue 3 is a *separate* CF limitation
+on a single large *message*, not idle time.
 
-* **"2402b16 thread-safety patch regressed it"** — no. The macOS repro
-  agent built a *clean* `2402b16` and registration was 0.21 ms. The
-  patch is sound; `parallel_answer_query_via_shared_keystore` passes.
-* **"Hint-pool CPU thrashing"** — that *is* a real, separate startup
-  issue (fixed by the systemd stagger in
-  [`deploy/systemd/pir-secondary.service`](../deploy/systemd/pir-secondary.service)),
-  but it only slowed registration to ~100 s *while the CPU was
-  saturated*; the 55–60 s on a *quiesced* host was the contaminated
-  build.
-* **"Transport truncates the 3.1 MB message"** — no. The full
-  3,145,873 B arrives intact (`ws_bin=3145873B` above). The
-  contaminated build simply made the client *construct* a smaller,
-  garbage message.
+## Evidence for issue 3
 
-## Process lesson
+| transport | client binary | registration | result |
+|---|---|---|---|
+| `ws://127.0.0.1:18091` (SSH tunnel) | 3399053a (clean) | **0.99 ms** | full smoke PASS, 79 s |
+| `wss://pir1.chenweikeng.com` (CF) | 3399053a (clean, *same binary*) | **55.9 s / 58.1 s** | SessionEvicted |
 
-The `onionpir` crate wraps a CMake C++ build via `build.rs`. CMake
-incremental builds key off file mtimes and a configured build dir.
-When cargo switches the git rev, it uses a *different* checkout but
-can reuse build-script fingerprints / output dirs in ways that don't
-always force a full C++ recompile. The symptom (silently-wrong
-serialization, no compile error) is nasty. **Any change to the
-`onionpir` pinned rev must be followed by a clean rebuild of that
-crate** — add this to the migration runbook.
+Server-side instrumentation on the SSH-tunnel path showed the
+message arriving intact (`ws_bin=3145873B`, galois_len=2,621,564,
+`body_head=[7c 00 28 00 0a 00 00 00 …]` — a correct
+`encode_register_keys` frame). cloudflared's own logs show nothing —
+the corruption is silent.
 
-## Residual hardening (low priority)
+`pir-channel::seal` (the encrypted-channel layer) does **not** chunk:
+it AEAD-encrypts the whole plaintext into one
+`[magic][seq:8][ct+tag]` frame → still one giant WebSocket message.
+So routing `RegisterKeys` through the encrypted channel would not
+help.
 
-A robust `deserialize_bv_galois_keys` should never spend 60 s on
-malformed input. The optional upstream bounds-check ask in
-[`UPSTREAM_REQUEST_2402b16_REGRESSION.md`](UPSTREAM_REQUEST_2402b16_REGRESSION.md)
-still stands as defense-in-depth — had it been there, this would have
-been a 1-second "deserialize threw: implausible num_keys" instead of
-a multi-hour hunt — but it is no longer urgent, because no real
-(clean-built) client ever emits a malformed blob.
+## Recommended fix: chunk the key upload
+
+`encode_register_keys` (`pir-sdk-client/src/onion.rs:2170`) currently
+builds one `[payload_len][REQ_REGISTER_KEYS][galois_len][galois][gsw_len][gsw][db_id?]`
+buffer and `conn.roundtrip()`s it as a single WebSocket message.
+Split it into a sequence of bounded (e.g. 256 KB) chunk messages:
+
+- New wire ops: `REQ_REGISTER_KEYS_CHUNK { seq, total, bytes }` +
+  a terminal `REQ_REGISTER_KEYS_COMMIT`.
+- Server (`unified_server.rs`) accumulates chunks per connection,
+  then assembles + dispatches the existing
+  `PirCommand::RegisterKeys` once `COMMIT` arrives.
+- Mirror the chunking in `web/src/onionpir_client.ts` (the
+  standalone TS client — SEAL doesn't compile to wasm32) so browser
+  clients work through CF.
+
+Precedent: HarmonyPIR already streams its large V2 hint payloads in
+pieces (recent `perf(harmony): V2-half protocol — split V2 main
+hint stream across 2 sockets` / `feed+flush` commits). OnionPIR's
+`RegisterKeys` is the one remaining un-chunked multi-MB upload.
+
+256 KB is a safe chunk size — well under any plausible CF WebSocket
+message limit, and the existing OnionPIR query/response messages
+(~11 KB each, batched ≤ ~1 MB) already traverse CF fine.
+
+A defense-in-depth companion (already filed upstream in
+[`UPSTREAM_REQUEST_2402b16_REGRESSION.md`](UPSTREAM_REQUEST_2402b16_REGRESSION.md)):
+`deserialize_bv_galois_keys` should bounds-check its length fields so
+a corrupt blob throws instantly instead of looping 60 s.
+
+## Current production state
+
+`pir1` (Hetzner) runs `2402b16 + rayon-parallel` (commit
+`37957a86`), serving 2 databases (`main` + `delta_940611_948454`).
+OnionPIR works end-to-end **directly** (SSH tunnel: 79 s full smoke
+PASS). OnionPIR over **`wss://pir1.chenweikeng.com`** is broken at
+the key-registration step until the chunked upload lands. DPF and
+HarmonyPIR over CF are unaffected (their messages are small / already
+chunked).
