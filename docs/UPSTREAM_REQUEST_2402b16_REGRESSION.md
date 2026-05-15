@@ -1,6 +1,27 @@
 # Bug report to OnionPIRv2: 2402b16 thread-safety patch regressed BitcoinPIR's pir1 deploy
 
-**Status:** authored 2026-05-15. Filed after applying the
+> ## WITHDRAWN 2026-05-15 (same day)
+>
+> The 2402b16 patch is **sound**. The slow-registration + all-empty-
+> answer_query symptom I attributed to it was actually a pir1
+> deployment ordering issue: both `pir-primary.service` and
+> `pir-secondary.service` auto-start at boot and burst the
+> 6-core i7-8700 to 1172 % CPU together for ~2 minutes generating
+> HarmonyPIR V2 hint-pool entries. Tests that connect during this
+> window see the OnionPIR mpsc worker thread starve.
+>
+> Root cause + workaround filed at
+> [`docs/PIR1_STARTUP_HINT_POOL_THRASHING.md`](PIR1_STARTUP_HINT_POOL_THRASHING.md).
+> The earlier
+> [`UPSTREAM_REQUEST_THREAD_SAFETY.md`](UPSTREAM_REQUEST_THREAD_SAFETY.md)
+> remains valid — 2402b16 was a real, useful patch even though I
+> haven't yet exercised the parallel `answer_query` path it unlocks.
+>
+> Sorry for the noise. The investigation note below is preserved for
+> archaeology — it documents a debug session that chased a symptom
+> through several false leads before correlating it with system load.
+
+**Original status (now superseded):** authored 2026-05-15. Filed after applying the
 2402b16 thread-safety patch (per
 [REQUEST_THREAD_SAFETY_FROM_BITCOIN_PIR.md](REQUEST_THREAD_SAFETY_FROM_BITCOIN_PIR.md))
 on BitcoinPIR's pir1 Hetzner host (Intel i7-8700, Ubuntu 24.04) and
