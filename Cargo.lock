@@ -1735,6 +1735,7 @@ name = "pir-sdk-client"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bitcoin",
  "ed25519-dalek",
  "env_logger",
  "futures",

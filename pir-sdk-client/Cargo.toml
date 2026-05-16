@@ -158,6 +158,10 @@ futures-channel = "0.3"
 [dev-dependencies]
 env_logger = "0.11"
 hex = "0.4"
+# Address → scriptPubKey → HASH160 derivation for the `fetch_addresses`
+# example. Matches the build pipeline (build/src/gen_0_utxo_set.rs), which
+# also keys the DB by `HASH160(scriptPubKey)` via `bitcoin::hashes`.
+bitcoin = "0.32"
 # Used by pir-sdk-client::channel tests to mint test ephemeral keys
 # and probe handshake-mismatch behaviour against a fake server.
 rand_core = { version = "0.6", features = ["getrandom"] }
