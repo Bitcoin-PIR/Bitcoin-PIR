@@ -85,13 +85,13 @@ const RESP_ONIONPIR_CHUNK_RESULT  = 0x52;
 // hand-written .d.ts at web/public/wasm/onionpir_client.d.ts). The
 // onionpir_client.wasm in web/public/wasm/ is rebuilt from this rev:
 //
-//   * `OnionPirClient` ctor takes no args (DB shape is compile-time, not
-//     a runtime parameter).
-//   * `createClientFromSecretKey(clientId, secretKey)` drops the
-//     `numEntries` first arg and now returns `OnionPirClient | null`
-//     (per upstream Rust: `from_secret_key -> Option<Self>`).
-//   * `paramsInfo()` drops its `numEntries` arg; returns a fully-
-//     populated `OnionPirParamsInfo` with all compile-time fields.
+//   * `OnionPirClient(numEntries)`, `createClientFromSecretKey(numEntries,
+//     clientId, secretKey)` and `paramsInfo(numEntries)` each take the
+//     per-database `numEntries` (un-padded entry count): the FHE query
+//     hypercube is sized from it, so INDEX / CHUNK / Merkle-sibling
+//     clients each pass their own database's size.
+//     `createClientFromSecretKey` returns `OnionPirClient | null` (per
+//     upstream Rust: `from_secret_key -> Option<Self>`).
 //   * Method renames: `generateGaloisKeys` → `galoisKeys`,
 //     `generateGswKeys` → `gswKey`, `decryptResponse(idx, resp)` →
 //     `decryptResponse(resp)` (caller now bit-unpacks via
@@ -114,9 +114,9 @@ interface OnionPirParamsInfo {
 }
 
 interface OnionPirModule {
-  OnionPirClient: { new(): WasmPirClient };
-  createClientFromSecretKey(clientId: number, secretKey: Uint8Array): WasmPirClient | null;
-  paramsInfo(): OnionPirParamsInfo;
+  OnionPirClient: { new(numEntries: number): WasmPirClient };
+  createClientFromSecretKey(numEntries: number, clientId: number, secretKey: Uint8Array): WasmPirClient | null;
+  paramsInfo(numEntries: number): OnionPirParamsInfo;
   splitmix64(x: number): number;
   cuckooHashInt(entryId: number, key: number, numBins: number): number;
   buildCuckooBs1(entries: Uint32Array, keys: Uint32Array, numBins: number): Uint32Array;
@@ -997,13 +997,16 @@ export class OnionPirWebClient {
     this.log(`[PIR-AUDIT] Query parameters: K=${this.indexK} index groups, K_CHUNK=${this.chunkK} chunk groups, INDEX_CUCKOO_NUM_HASHES=${INDEX_CUCKOO_NUM_HASHES}`);
 
     // ── Generate keys and create per-level clients ─────────────────────
-    // Post-port (commit 7): `OnionPirClient` ctor + `createClientFromSecretKey`
-    // no longer take `numEntries` — the DB shape is fixed at WASM compile
-    // time (upstream `params_info()`'s `num_plaintexts`). All level clients
-    // share the same BV/GSW keys and the index/chunk PIR queries select
-    // plaintext slots by absolute index.
+    // `OnionPirClient` / `createClientFromSecretKey` / `paramsInfo` take the
+    // per-database `numEntries` (un-padded entry count). INDEX, CHUNK and each
+    // Merkle-sibling level are separate OnionPIR databases of different sizes,
+    // and the FHE query hypercube dimensions are derived from `numEntries` —
+    // so every client MUST be sized to the database it queries (mirrors the
+    // native onion.rs::num_entries_for_level). The keygen client uses the
+    // INDEX size; the secret key it exports is size-independent and re-seeds
+    // per-level clients of any size.
     progress('Setup', 'Creating PIR client...');
-    const keygenClient = new this.wasmModule.OnionPirClient();
+    const keygenClient = new this.wasmModule.OnionPirClient(this.indexBins);
     const clientId = keygenClient.id();
     const galoisKeys = keygenClient.galoisKeys();
     const gswKeys = keygenClient.gswKey();
@@ -1014,7 +1017,7 @@ export class OnionPirWebClient {
     this.fheClientId = clientId;
     this.fheSecretKey = secretKey;
 
-    const indexClient = this.wasmModule.createClientFromSecretKey(clientId, secretKey);
+    const indexClient = this.wasmModule.createClientFromSecretKey(this.indexBins, clientId, secretKey);
     if (!indexClient) {
       // Upstream's `from_secret_key` returns `Option<Self>` and the WASM
       // binding maps None → null. None can only fire on size/format
@@ -1155,7 +1158,7 @@ export class OnionPirWebClient {
           // Post-port (commit 7): query `paramsInfo()` once per
           // round; we need polyDegree + entrySize to unpack the
           // raw plaintext bytes.
-          const wasmParams = this.wasmModule.paramsInfo();
+          const wasmParams = this.wasmModule.paramsInfo(this.indexBins);
           for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
             const qi = group * 2 + h;
             const bin = queryBins[qi];
@@ -1306,7 +1309,7 @@ export class OnionPirWebClient {
         // Post-port (commit 7): no `numEntries` arg; null check on stale-key.
         progress('Level 2', 'Setting up chunk phase...');
         await yieldToMain();
-        chunkClient = this.wasmModule!.createClientFromSecretKey(clientId, secretKey);
+        chunkClient = this.wasmModule!.createClientFromSecretKey(this.chunkBins, clientId, secretKey);
         if (!chunkClient) {
           throw new Error(
             `OnionPIR chunk createClientFromSecretKey returned null ` +
@@ -1395,7 +1398,7 @@ export class OnionPirWebClient {
           let chunkDecrypted = 0;
           // Post-port (commit 7): unpack the raw plaintext exactly as
           // in the INDEX block above.
-          const chunkWasmParams = this.wasmModule!.paramsInfo();
+          const chunkWasmParams = this.wasmModule!.paramsInfo(this.chunkBins);
           for (const qi of queryInfos) {
             const rawPt = chunkClient!.decryptResponse(results[qi.group]);
             const entryBytes = unpackOnionPlaintext(
@@ -1794,10 +1797,11 @@ export class OnionPirWebClient {
           await yieldToMain();
         }
 
-        // Generate K FHE queries.
-        // Post-port (commit 7): no `numEntries` arg; null check on stale-key.
+        // Generate K FHE queries. The sibling client is sized to this
+        // Merkle level's database (`bins_per_table`) — every OnionPIR client
+        // must match the database it queries; see the keygen block above.
         const sibClient = this.wasmModule!.createClientFromSecretKey(
-          this.fheClientId, this.fheSecretKey!,
+          levelInfo.bins_per_table, this.fheClientId, this.fheSecretKey!,
         );
         if (!sibClient) {
           throw new Error(
@@ -1805,10 +1809,6 @@ export class OnionPirWebClient {
             `(clientId=${this.fheClientId}, sk.len=${this.fheSecretKey!.length})`
           );
         }
-        // `levelInfo.bins_per_table` was used pre-port to size the
-        // OnionPirClient; post-port the DB shape is compile-time so
-        // this is informational only.
-        void levelInfo.bins_per_table;
         try {
           const queries: Uint8Array[] = [];
           for (let b = 0; b < levelInfo.k; b++) {
@@ -1840,7 +1840,7 @@ export class OnionPirWebClient {
           const { results: sibResults } = decodeBatchResult(respPayload, 1);
 
           // Post-port (commit 7): unpack raw plaintext to bytes.
-          const sibWasmParams = this.wasmModule!.paramsInfo();
+          const sibWasmParams = this.wasmModule!.paramsInfo(levelInfo.bins_per_table);
           for (const [pbcGroup, info] of groupInfo) {
             const rawPt = sibClient.decryptResponse(sibResults[pbcGroup]);
             const decrypted = unpackOnionPlaintext(

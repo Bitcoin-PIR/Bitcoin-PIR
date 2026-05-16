@@ -5,8 +5,8 @@
 //
 //   import createOnionPir from "./onionpir_client.mjs";
 //   const m = await createOnionPir();
-//   const info = m.paramsInfo();
-//   const client = new m.OnionPirClient();
+//   const info = m.paramsInfo(numEntries);
+//   const client = new m.OnionPirClient(numEntries);
 
 export interface OnionPirParamsInfo {
     numEntries:     number;
@@ -53,21 +53,31 @@ export interface OnionPirClient {
 }
 
 export interface OnionPirClientConstructor {
-    new(): OnionPirClient;
+    /**
+     * `numEntries`: un-padded entry count of the OnionPIR database this
+     * client will query. INDEX, CHUNK and each Merkle-sibling level are
+     * separate databases of different sizes — the FHE query hypercube is
+     * derived from `numEntries`, so each client must match its database.
+     * Pass `0` to use the compiled-in DBConsts default.
+     */
+    new(numEntries: number): OnionPirClient;
 }
 
 export interface OnionPirModule {
-    /** Inspect the compiled-in PIR shape. */
-    paramsInfo(): OnionPirParamsInfo;
+    /** PIR shape for a database of `numEntries` entries (`0` → default). */
+    paramsInfo(numEntries: number): OnionPirParamsInfo;
 
     /** PIR client class. */
     OnionPirClient: OnionPirClientConstructor;
 
     /**
      * Reconstruct a client from a previously-exported secret key and the id
-     * the server already knows. Returns `null` on size / format mismatch.
+     * the server already knows. `numEntries` sizes the client to the
+     * OnionPIR database it will query (see `OnionPirClientConstructor`).
+     * Returns `null` on size / format mismatch.
      */
     createClientFromSecretKey(
+        numEntries: number,
         clientId: number,
         secretKey: Uint8Array,
     ): OnionPirClient | null;
