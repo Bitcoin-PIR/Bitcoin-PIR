@@ -1,43 +1,67 @@
-//! OnionPIR per-bin Merkle verification.
+//! OnionPIR per-group Merkle verification.
 //!
 //! This is a *different* Merkle subsystem from the per-bucket Merkle that
-//! powers DPF / Harmony verification in [`crate::merkle_verify`]:
+//! powers DPF / Harmony verification in [`crate::merkle_verify`], but since
+//! the Phase-3 per-group redesign (PLAN_MERKLE_CODING.md /
+//! MERKLE_COLOCATION_REVIEW.md §2–§6) the two are *structurally identical* —
+//! one independent Merkle tree per PBC group, anchored by a single
+//! `super_root`. They differ only in the sibling-fetch primitive:
 //!
-//! | Aspect                  | per-bucket Merkle (DPF/Harmony) | OnionPIR Merkle (this module) |
-//! |-------------------------|---------------------------------|-------------------------------|
-//! | Tree(s)                 | one per PBC bucket, super-root  | two flat trees: INDEX + DATA  |
-//! | Leaf hash               | `SHA256(bin_idx_u32_LE ∥ bin)`  | `SHA256(decrypted_bin_bytes)` |
-//! | Sibling cuckoo hashes   | K=1 DPF key per group           | 6-hash cuckoo, 1 slot per bin |
-//! | Sibling query           | DPF (`0x33`) / Harmony (`0x43`) | FHE (`0x53` INDEX / `0x55` DATA) |
-//! | Tree-top request        | `0x34`                          | `0x54` INDEX / `0x56` DATA    |
+//! | Aspect                  | per-bucket Merkle (DPF/Harmony)   | OnionPIR Merkle (this module)      |
+//! |-------------------------|-----------------------------------|------------------------------------|
+//! | Tree(s)                 | one per PBC group, super-root     | one per PBC group, super-root      |
+//! | Leaf hash               | `SHA256(bin_idx_u32_LE ∥ bin)`    | `SHA256(decrypted_bin_bytes)` (§2e)|
+//! | Sibling levels          | DPF/Harmony, possibly multi-level | FHE, **one** level (leaf→level-1)  |
+//! | Sibling query           | DPF (`0x33`) / Harmony (`0x43`)   | FHE (`0x53` INDEX / `0x55` DATA)   |
+//! | Tree-top request        | `0x34`                            | `0x54` INDEX / `0x56` DATA         |
 //!
-//! The protocol mirrors the reference implementations in
-//! `runtime/src/bin/onionpir_client.rs` and
-//! `web/src/onionpir_client.ts` (`verifyMerkleBatch`).
+//! Each PBC group `g` has its own arity-`arity` (`≈ entry_size/32`) tree over
+//! that group's cuckoo bins. The leaf level is the single PIR sibling level;
+//! every level above it is held in the public per-group tree-top cache. A
+//! sibling pass = **one FHE-PIR query per group** into that group's tiny
+//! sibling DB (whose plaintexts are the level-1 parent rows). The verifier
+//! then walks the cached tree-top to the per-group root.
+//!
+//! The flat per-table trees — and the `gid`-cuckoo + `pbc_plan_rounds`-over-
+//! gids machinery their sibling fetch needed (the batch-size leak,
+//! MERKLE_COLOCATION_REVIEW.md §1) — are **gone**.
+//!
+//! # Trust model
+//!
+//! The pinned trust anchor is `super_root` = `SHA256` of the 155 concatenated
+//! per-group roots (§2f). The 155 roots themselves ride in the *untrusted*,
+//! server-supplied tree-top blob. [`check_tree_top_anchor`] binds that blob
+//! to `super_root` — **this is the soundness-critical check**. Skip or weaken
+//! it and a malicious server can fabricate a self-consistent blob + sibling
+//! responses, and every leaf "verifies" against forged roots.
 //!
 //! # Privacy invariants preserved
 //!
-//! * **K padding** — every sibling PBC round sends exactly `K` FHE queries
-//!   (one per PBC group), with random-bin dummies filling empty groups.
-//! * **INDEX leaf symmetry** — the caller is expected to submit
-//!   `INDEX_CUCKOO_NUM_HASHES = 2` INDEX leaves per query (both probed cuckoo
-//!   positions), regardless of match outcome. This matches CLAUDE.md's
-//!   "Merkle INDEX item-count symmetry" requirement.
+//! * **K padding** — every sibling pass sends exactly `K` (INDEX) /
+//!   `K_CHUNK` (DATA) FHE queries, one per PBC group; empty groups send a
+//!   random-row dummy, indistinguishable under FHE.
+//! * **CHUNK-Merkle round-presence** — [`verify_onion_merkle_batch`] always
+//!   verifies *both* sub-trees. A not-found / whale batch contributes 0 DATA
+//!   leaves, but `verify_sub_tree` still issues one all-dummy K_CHUNK sibling
+//!   pass, so found-vs-not-found cannot be inferred from CHUNK-Merkle traffic
+//!   (CLAUDE.md "CHUNK Round-Presence Symmetry"; PLAN_MERKLE_CODING.md C.1).
+//! * **INDEX leaf symmetry** — the caller submits `INDEX_CUCKOO_NUM_HASHES = 2`
+//!   INDEX leaves per query (both probed cuckoo positions), regardless of
+//!   outcome (CLAUDE.md "Merkle INDEX item-count symmetry").
 //!
 //! The module is only compiled under the `onion` feature flag because it
-//! creates per-level FHE clients (`onionpir::Client`) for sibling decryption.
+//! creates an FHE client (`onionpir::Client`) for sibling decryption.
 
 #![cfg(feature = "onion")]
 
+use crate::merkle_verify::SimpleRng;
 use crate::transport::PirTransport;
-use pir_core::hash::{cuckoo_hash_int, derive_cuckoo_key, derive_int_groups_3, splitmix64, GOLDEN_RATIO};
-use pir_core::merkle::{compute_parent_n, sha256, Hash256};
-use pir_core::pbc::pbc_plan_rounds;
+use pir_core::merkle::{compute_parent_n, sha256, Hash256, ZERO_HASH};
 use pir_sdk::{LeakageRecorder, PirError, PirResult, RoundKind, RoundProfile};
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-// ─── Wire codes (match runtime/src/onionpir.rs) ─────────────────────────────
+// ─── Wire codes (match runtime/src/onionpir.rs — UNCHANGED by Phase 3) ──────
 
 /// Request: fetch INDEX tree-top cache.
 pub const REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP: u8 = 0x54;
@@ -55,22 +79,6 @@ pub const RESP_ONIONPIR_MERKLE_DATA_TREE_TOP: u8 = 0x56;
 pub const REQ_ONIONPIR_MERKLE_DATA_SIBLING: u8 = 0x55;
 /// Response: batched encrypted DATA-tree sibling results.
 pub const RESP_ONIONPIR_MERKLE_DATA_SIBLING: u8 = 0x55;
-
-// ─── Layout constants ───────────────────────────────────────────────────────
-
-/// Sibling cuckoo: 6 hash functions, 1 slot per bin (matches server layout).
-pub const ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES: usize = 6;
-
-const SIB_CUCKOO_MAX_KICKS: usize = 10000;
-const EMPTY: u32 = u32::MAX;
-const NUM_PBC_HASHES: usize = 3;
-
-/// Master seed base for INDEX-tree sibling cuckoo derivation.
-/// The per-level master seed is `INDEX_SIBLING_SEED_BASE + level`.
-pub const INDEX_SIBLING_SEED_BASE: u64 = 0xBA7C_51B1_FEED_0100;
-/// Master seed base for DATA-tree sibling cuckoo derivation.
-/// The per-level master seed is `DATA_SIBLING_SEED_BASE + level`.
-pub const DATA_SIBLING_SEED_BASE: u64 = 0xBA7C_51B1_FEED_0200;
 
 // ─── Send wrapper for onionpir::Client ─────────────────────────────────────
 //
@@ -103,10 +111,10 @@ const _: fn() = || {
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-/// Which of the two OnionPIR Merkle trees a leaf belongs to.
+/// Which of the two OnionPIR Merkle tree kinds a leaf belongs to.
 ///
-/// `Hash` is required so `(OnionTreeKind, leaf_pos)` can be a `HashMap` key
-/// in the verdict map returned by `verify_onion_merkle_batch`.
+/// `Hash` is required so `(OnionTreeKind, pbc_group, bin)` can be a `HashMap`
+/// key in the verdict map returned by [`verify_onion_merkle_batch`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OnionTreeKind {
     Index,
@@ -114,13 +122,6 @@ pub enum OnionTreeKind {
 }
 
 impl OnionTreeKind {
-    fn seed_base(self) -> u64 {
-        match self {
-            OnionTreeKind::Index => INDEX_SIBLING_SEED_BASE,
-            OnionTreeKind::Data => DATA_SIBLING_SEED_BASE,
-        }
-    }
-
     fn req_tree_top(self) -> u8 {
         match self {
             OnionTreeKind::Index => REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
@@ -157,134 +158,151 @@ impl OnionTreeKind {
     }
 }
 
-/// Parameters for one sibling level of an OnionPIR Merkle sub-tree.
-#[derive(Clone, Debug)]
-pub struct OnionMerkleLevelInfo {
+/// Per-kind sibling-DB parameters (one for INDEX, one for DATA).
+#[derive(Clone, Copy, Debug)]
+pub struct OnionMerkleKindInfo {
+    /// Number of PBC groups = number of per-group trees = number of FHE
+    /// queries in one sibling pass.
     pub k: usize,
-    pub bins_per_table: usize,
-    pub num_groups: usize,
+    /// Plaintexts in each per-group sibling DB (= the level-1 parent-row
+    /// count of the per-group tree). The sibling FHE `Client` is sized to
+    /// this; `generate_query`'s row index is in `[0, num_pt)`.
+    pub num_pt: usize,
 }
 
-/// One of the two OnionPIR per-bin Merkle trees.
-#[derive(Clone, Debug)]
-pub struct OnionMerkleSubTree {
-    /// Per-level sibling-cuckoo layout (level 0 = closest to the leaves).
-    pub levels: Vec<OnionMerkleLevelInfo>,
-    /// Expected root hash (`Hash256`) to compare the walk against.
-    pub root: Hash256,
-}
-
-/// Container for both OnionPIR Merkle sub-trees (INDEX + DATA).
+/// Per-group OnionPIR Merkle metadata for one DB, parsed from the server's
+/// `onionpir_merkle` JSON section.
 #[derive(Clone, Debug)]
 pub struct OnionMerkleInfo {
-    /// Merkle arity (number of children per internal node) — same for both sub-trees.
+    /// Merkle arity (children per internal node) — `≈ entry_size / 32`,
+    /// same for every per-group tree.
     pub arity: usize,
-    pub index_tree: OnionMerkleSubTree,
-    pub data_tree: OnionMerkleSubTree,
+    /// **The pinned trust anchor** — `SHA256` of the 155 concatenated
+    /// per-group roots (MERKLE_COLOCATION_REVIEW.md §2f). The 155 roots
+    /// themselves ride in the (untrusted) tree-top blob; binding the blob
+    /// to this value is the soundness-critical check (see
+    /// [`check_tree_top_anchor`]).
+    pub super_root: Hash256,
+    /// `SHA256` of the whole `merkle_onion_tree_tops.bin` blob — a
+    /// JSON-declared integrity value. `super_root` is the cryptographic
+    /// anchor; this is a cheap belt-and-suspenders check that catches blob
+    /// truncation / corruption with a clearer diagnostic.
+    pub tree_tops_hash: Hash256,
+    /// Byte length of the tree-top blob, as declared in the JSON.
+    pub tree_tops_size: usize,
+    /// INDEX per-group sibling-DB parameters.
+    pub index: OnionMerkleKindInfo,
+    /// DATA per-group sibling-DB parameters.
+    pub data: OnionMerkleKindInfo,
+}
+
+impl OnionMerkleInfo {
+    fn kind(&self, tree: OnionTreeKind) -> &OnionMerkleKindInfo {
+        match tree {
+            OnionTreeKind::Index => &self.index,
+            OnionTreeKind::Data => &self.data,
+        }
+    }
 }
 
 /// One leaf to be verified.
 #[derive(Clone, Debug)]
 pub struct OnionMerkleLeaf {
-    /// Which tree this leaf lives in.
+    /// Which tree kind this leaf lives in.
     pub tree: OnionTreeKind,
-    /// `leaf_pos` in the leaf level — for INDEX, `pbc_group * bins_per_table + bin`;
-    /// for DATA, `chunk_pbc_group * chunk_bins + chunk_bin`.
-    pub leaf_pos: usize,
-    /// `SHA256(decrypted_bin_bytes)` — the leaf hash the server committed to.
+    /// PBC group index (`0..k`) — selects the per-group tree.
+    pub pbc_group: usize,
+    /// Cuckoo bin index within the group = the leaf index in that group's
+    /// per-group Merkle tree.
+    pub bin: u32,
+    /// `SHA256(decrypted_bin_bytes)` — the leaf hash the server committed to
+    /// (OnionPIR's no-prefix leaf hash, §2e).
     pub hash: Hash256,
     /// Back-reference to the query this leaf belongs to, so callers can
     /// aggregate per-query verification verdicts.
     pub result_idx: usize,
 }
 
-/// Parsed tree-top cache (for one sub-tree).
+/// Parsed tree-top cache for **one** per-group Merkle tree.
 #[derive(Clone, Debug)]
 pub struct OnionTreeTopCache {
-    /// Sibling-level depth below the first cached level.
+    /// Tree-level index of the first cached level (always `1` in the
+    /// per-group design — the leaf level is the single PIR sibling level).
     ///
-    /// Parse-only metadata in the current OnionPIR walker — the walker derives
-    /// its stop depth from `levels.len()` directly. Kept in the struct to
-    /// preserve parse-shape symmetry with the shared per-bucket tree-top
-    /// schema (see `pir-sdk-client/src/merkle_verify.rs`, where the same field
-    /// IS consumed by the walker) and to leave the door open for a future
-    /// walker that needs to correlate absolute level indices across proofs.
+    /// Parse-only metadata: the walker derives its stop depth from
+    /// `levels.len()` directly. Kept to preserve parse-shape symmetry with
+    /// the shared per-bucket tree-top schema (`crate::merkle_verify`).
     #[allow(dead_code)]
     pub cache_from_level: usize,
-    /// Merkle arity (number of children per internal node).
+    /// Merkle arity recorded in this tree's header — cross-checked against
+    /// `OnionMerkleInfo::arity` by [`check_tree_top_anchor`].
     pub arity: usize,
-    /// Cached hashes, bottom-up. Last level is `[root]` (length 1).
+    /// Cached hashes, bottom-up. `levels[0]` is the first cached level
+    /// (level-1 nodes); the last level is `[root]` (length 1).
     pub levels: Vec<Vec<Hash256>>,
 }
 
-// ─── JSON parsing (mirrors runtime/src/bin/onionpir_client.rs) ───────────────
+impl OnionTreeTopCache {
+    /// The per-group root = the single hash in the last cached level.
+    pub fn root(&self) -> Option<Hash256> {
+        self.levels.last().and_then(|lvl| lvl.first().copied())
+    }
+}
+
+// ─── JSON parsing (mirrors unified_server.rs::append_onionpir_merkle_json) ───
 
 /// Parse the `onionpir_merkle` section from the server's JSON info.
 ///
-/// Returns `None` if the server doesn't expose OnionPIR per-bin Merkle for
-/// this DB.
+/// Per-group schema (Phase 3):
+/// ```json
+/// "onionpir_merkle": {
+///   "arity": 104,
+///   "super_root": "<64 hex>",
+///   "tree_tops_hash": "<64 hex>",
+///   "tree_tops_size": 1245184,
+///   "index": {"k": 75, "num_pt": 99},
+///   "data":  {"k": 80, "num_pt": 364}
+/// }
+/// ```
+///
+/// Returns `None` if the server doesn't expose per-group OnionPIR Merkle for
+/// this DB, or if any required field is missing / malformed — callers treat
+/// `None` as "skip verification" (analogous to `has_bucket_merkle = false`).
+/// A missing / zero-length `super_root` therefore makes the verifier
+/// fail-safe: no anchor ⇒ no verification, rather than verifying against a
+/// zero anchor.
 pub fn parse_onionpir_merkle(json: &str) -> Option<OnionMerkleInfo> {
     let section = extract_json_object(json, "onionpir_merkle")?;
     let arity = json_u64(section, "arity")? as usize;
+    if arity == 0 {
+        // arity=0 would divide-by-zero every Merkle walk.
+        return None;
+    }
+    let super_root = json_hex32(section, "super_root")?;
+    let tree_tops_hash = json_hex32(section, "tree_tops_hash")?;
+    let tree_tops_size = json_u64(section, "tree_tops_size")? as usize;
 
-    let index_section = extract_json_object(section, "index")?;
-    let data_section = extract_json_object(section, "data")?;
+    let index = parse_kind_info(extract_json_object(section, "index")?)?;
+    let data = parse_kind_info(extract_json_object(section, "data")?)?;
 
     Some(OnionMerkleInfo {
         arity,
-        index_tree: parse_sub_tree(index_section)?,
-        data_tree: parse_sub_tree(data_section)?,
+        super_root,
+        tree_tops_hash,
+        tree_tops_size,
+        index,
+        data,
     })
 }
 
-fn parse_sub_tree(section: &str) -> Option<OnionMerkleSubTree> {
-    let num_levels = json_u64(section, "sibling_levels")? as usize;
-
-    // Root as a hex string. Tolerate whitespace between the colon and the
-    // opening quote so JSON pretty-printed by serde / hand-written test data
-    // both parse — same convention as `json_u64`.
-    let root_needle = "\"root\":";
-    let root_key_pos = section.find(root_needle)?;
-    let after_colon = section[root_key_pos + root_needle.len()..].trim_start();
-    let after_quote = after_colon.strip_prefix('"')?;
-    let inner_end = after_quote.find('"')?;
-    let root_hex = &after_quote[..inner_end];
-    if root_hex.len() != 64 {
+fn parse_kind_info(section: &str) -> Option<OnionMerkleKindInfo> {
+    let k = json_u64(section, "k")? as usize;
+    let num_pt = json_u64(section, "num_pt")? as usize;
+    if k == 0 || num_pt == 0 {
+        // A degenerate / broken sibling DB — fail safe to "skip".
         return None;
     }
-    let mut root = [0u8; 32];
-    for i in 0..32 {
-        root[i] = u8::from_str_radix(&root_hex[i * 2..i * 2 + 2], 16).ok()?;
-    }
-
-    let mut levels = Vec::with_capacity(num_levels);
-    // Tolerate whitespace between `"levels":` and `[` for the same reason as
-    // `"root":`.
-    let levels_needle = "\"levels\":";
-    if let Some(levels_pos) = section.find(levels_needle) {
-        let after_colon = section[levels_pos + levels_needle.len()..].trim_start();
-        let levels_section = after_colon.strip_prefix('[').unwrap_or(after_colon);
-        let mut pos = 0usize;
-        for _ in 0..num_levels {
-            let obj_start = match levels_section[pos..].find('{') {
-                Some(p) => p + pos,
-                None => break,
-            };
-            let obj_end = match levels_section[obj_start..].find('}') {
-                Some(p) => obj_start + p + 1,
-                None => break,
-            };
-            let obj = &levels_section[obj_start..obj_end];
-            levels.push(OnionMerkleLevelInfo {
-                k: json_u64(obj, "k")? as usize,
-                bins_per_table: json_u64(obj, "bins_per_table")? as usize,
-                num_groups: json_u64(obj, "num_groups")? as usize,
-            });
-            pos = obj_end;
-        }
-    }
-
-    Some(OnionMerkleSubTree { levels, root })
+    Some(OnionMerkleKindInfo { k, num_pt })
 }
 
 fn json_u64(json: &str, key: &str) -> Option<u64> {
@@ -302,6 +320,26 @@ fn json_u64(json: &str, key: &str) -> Option<u64> {
             .unwrap_or(rest.len());
         rest[..end].parse().ok()
     }
+}
+
+/// Parse a 64-hex-character string-valued JSON field into a `Hash256`.
+/// Tolerates whitespace between the colon and the opening quote so
+/// serde-pretty-printed and hand-written test JSON both parse.
+fn json_hex32(json: &str, key: &str) -> Option<Hash256> {
+    let needle = format!("\"{}\":", key);
+    let pos = json.find(&needle)?;
+    let after_colon = json[pos + needle.len()..].trim_start();
+    let after_quote = after_colon.strip_prefix('"')?;
+    let inner_end = after_quote.find('"')?;
+    let hex = &after_quote[..inner_end];
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = ZERO_HASH;
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 fn extract_json_object<'a>(json: &'a str, key: &str) -> Option<&'a str> {
@@ -326,65 +364,92 @@ fn extract_json_object<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     Some(&json[brace..end])
 }
 
-// ─── Tree-top cache parsing ─────────────────────────────────────────────────
+// ─── Tree-top blob parsing ──────────────────────────────────────────────────
 
-/// Parse an OnionPIR tree-top cache blob.
+/// Parse the consolidated 155-tree tree-top blob `merkle_onion_tree_tops.bin`.
 ///
-/// Wire format (single tree, unlike the multi-tree per-bucket blob):
+/// The whole blob is served on either TREE_TOP opcode (`0x54` / `0x56`); the
+/// caller parses all 155 trees — 75 INDEX trees first, then 80 DATA trees
+/// (the same order `gen_4_build_merkle_onion` writes them).
+///
+/// Wire format (identical to the shared per-bucket tree-tops blob —
+/// `crate::merkle_verify::parse_tree_tops`):
 ///
 /// ```text
-/// [1B cache_from_level]
-/// [4B total_nodes LE]       (informational, ignored)
-/// [2B arity LE]
-/// [1B num_cached_levels]
-/// per cached level:
-///   [4B num_nodes LE]
-///   [num_nodes × 32B hashes]
+/// [4B num_trees LE]
+/// per tree:
+///   [1B cache_from_level]
+///   [4B total_nodes LE]      (informational, ignored)
+///   [2B arity LE]
+///   [1B num_cached_levels]
+///   per cached level:
+///     [4B num_nodes LE]
+///     [num_nodes × 32B hashes]
 /// ```
-pub fn parse_onion_tree_top_cache(data: &[u8]) -> PirResult<OnionTreeTopCache> {
-    if data.len() < 8 {
+pub fn parse_onion_tree_top_cache(data: &[u8]) -> PirResult<Vec<OnionTreeTopCache>> {
+    if data.len() < 4 {
         return Err(PirError::Decode(
-            "onionpir tree-top cache blob too short".into(),
+            "onionpir tree-tops blob too short (need 4B num_trees)".into(),
         ));
     }
-    let cache_from_level = data[0] as usize;
-    let arity = u16::from_le_bytes(data[5..7].try_into().unwrap()) as usize;
-    let num_levels = data[7] as usize;
-    if arity == 0 {
-        return Err(PirError::Decode("onionpir tree-top cache: arity=0".into()));
-    }
+    let num_trees = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+    let mut off = 4usize;
+    let mut out = Vec::with_capacity(num_trees);
 
-    let mut off = 8usize;
-    let mut levels = Vec::with_capacity(num_levels);
-    for l in 0..num_levels {
-        if off + 4 > data.len() {
+    for t in 0..num_trees {
+        if off + 8 > data.len() {
             return Err(PirError::Decode(format!(
-                "onionpir tree-top cache: truncated header for level {}",
-                l
+                "onionpir tree-tops: truncated header for tree {}",
+                t
             )));
         }
-        let n = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+        let cache_from_level = data[off] as usize;
+        off += 1;
+        let _total_nodes = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
         off += 4;
-        if off + n * 32 > data.len() {
+        let arity = u16::from_le_bytes(data[off..off + 2].try_into().unwrap()) as usize;
+        off += 2;
+        let num_levels = data[off] as usize;
+        off += 1;
+        if arity == 0 {
             return Err(PirError::Decode(format!(
-                "onionpir tree-top cache: truncated hashes for level {}",
-                l
+                "onionpir tree-tops: tree {} has arity=0",
+                t
             )));
         }
-        let mut nodes = Vec::with_capacity(n);
-        for _ in 0..n {
-            let mut h = [0u8; 32];
-            h.copy_from_slice(&data[off..off + 32]);
-            nodes.push(h);
-            off += 32;
+
+        let mut levels = Vec::with_capacity(num_levels);
+        for l in 0..num_levels {
+            if off + 4 > data.len() {
+                return Err(PirError::Decode(format!(
+                    "onionpir tree-tops: truncated level-{} count for tree {}",
+                    l, t
+                )));
+            }
+            let n = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            if off + n * 32 > data.len() {
+                return Err(PirError::Decode(format!(
+                    "onionpir tree-tops: truncated hashes for tree {} level {}",
+                    t, l
+                )));
+            }
+            let mut nodes = Vec::with_capacity(n);
+            for _ in 0..n {
+                let mut h = ZERO_HASH;
+                h.copy_from_slice(&data[off..off + 32]);
+                nodes.push(h);
+                off += 32;
+            }
+            levels.push(nodes);
         }
-        levels.push(nodes);
+        out.push(OnionTreeTopCache {
+            cache_from_level,
+            arity,
+            levels,
+        });
     }
-    Ok(OnionTreeTopCache {
-        cache_from_level,
-        arity,
-        levels,
-    })
+    Ok(out)
 }
 
 // ─── Wire encoders ──────────────────────────────────────────────────────────
@@ -402,7 +467,11 @@ pub fn encode_tree_top_request(variant: u8, db_id: u8) -> Vec<u8> {
 }
 
 /// Encode an FHE sibling batch query.
-/// Same wire format as `REQ_ONIONPIR_INDEX_QUERY` / `REQ_ONIONPIR_CHUNK_QUERY`.
+/// Same wire format as `REQ_ONIONPIR_INDEX_QUERY` / `REQ_ONIONPIR_CHUNK_QUERY`
+/// (`OnionPirBatchQuery` in `runtime/src/onionpir.rs` — UNCHANGED by Phase 3).
+///
+/// `round_id` is vestigial under the per-group design (the server no longer
+/// decodes a sibling level from `round_id / 100`); callers pass `0`.
 pub fn encode_sibling_batch_query(
     variant: u8,
     round_id: u16,
@@ -452,187 +521,179 @@ pub fn decode_sibling_batch_result(data: &[u8]) -> PirResult<Vec<Vec<u8>>> {
     Ok(results)
 }
 
-// ─── Sibling-cuckoo helpers (6-hash, slots_per_bin=1) ────────────────────────
+// ─── Trust-anchor check (SOUNDNESS-CRITICAL) ────────────────────────────────
 
-/// Level master seed for a `(tree, level)` pair.
-#[inline]
-pub fn sib_level_master_seed(tree: OnionTreeKind, level: usize) -> u64 {
-    tree.seed_base().wrapping_add(level as u64)
-}
-
-/// 6-hash sibling-cuckoo bin placement (matches runtime/server).
-#[inline]
-pub fn sib_derive_cuckoo_key(master_seed: u64, group_id: usize, hash_fn: usize) -> u64 {
-    // Matches `pir_core::hash::derive_cuckoo_key` for consistency.
-    derive_cuckoo_key(master_seed, group_id, hash_fn)
-}
-
-#[inline]
-pub fn sib_cuckoo_hash(entry_id: u32, key: u64, num_bins: usize) -> usize {
-    cuckoo_hash_int(entry_id, key, num_bins)
-}
-
-/// Build the sibling cuckoo table for a single PBC group at a given level.
+/// Bind the fetched tree-top blob to the pinned trust anchor.
 ///
-/// Returns a `vec![EMPTY; bins_per_table]`, with `entries` slotted via the
-/// 6-hash cuckoo. Mirrors the server's construction exactly so bin placements
-/// agree.
-pub fn build_sib_cuckoo_for_group(
-    tree: OnionTreeKind,
-    level: usize,
-    group_id: usize,
-    entries: &[u32],
-    bins_per_table: usize,
-) -> Vec<u32> {
-    let master_seed = sib_level_master_seed(tree, level);
-    let mut keys = [0u64; ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES];
-    for (h, k) in keys.iter_mut().enumerate() {
-        *k = sib_derive_cuckoo_key(master_seed, group_id, h);
+/// **SOUNDNESS-CRITICAL.** The 155 per-group roots ride in the (untrusted,
+/// server-supplied) tree-top blob; `info.super_root` is the pinned anchor
+/// (`SHA256` of the 155 concatenated roots — MERKLE_COLOCATION_REVIEW.md §2f).
+/// If this check is skipped or weakened, a malicious server can fabricate a
+/// self-consistent tree-top blob + sibling responses and every leaf
+/// "verifies" against forged roots.
+///
+/// Returns `true` iff the blob is bound to the anchor. Three checks, all
+/// required:
+///
+/// 1. The blob has exactly `index.k + data.k` trees.
+/// 2. The blob length / `SHA256` match the JSON-declared `tree_tops_size` /
+///    `tree_tops_hash` (integrity — both come from the same trusted JSON as
+///    `super_root`; this just yields a clearer diagnostic on corruption).
+/// 3. **`SHA256(concat of the 155 per-group roots) == super_root`** — the
+///    load-bearing cryptographic anchor check.
+fn check_tree_top_anchor(
+    info: &OnionMerkleInfo,
+    blob: &[u8],
+    all_tops: &[OnionTreeTopCache],
+) -> bool {
+    let expected_trees = info.index.k + info.data.k;
+    if all_tops.len() != expected_trees {
+        log::error!(
+            "[PIR-AUDIT] OnionPIR Merkle: tree-top blob has {} trees, \
+             expected {} (index_k={} + data_k={}) — REJECTING ALL LEAVES",
+            all_tops.len(),
+            expected_trees,
+            info.index.k,
+            info.data.k,
+        );
+        return false;
     }
 
-    let mut table = vec![EMPTY; bins_per_table];
-    for &entry_id in entries {
-        // Try primary placements.
-        let mut placed = false;
-        for &key in keys.iter() {
-            let bin = sib_cuckoo_hash(entry_id, key, bins_per_table);
-            if table[bin] == EMPTY {
-                table[bin] = entry_id;
-                placed = true;
-                break;
-            }
-        }
-        if placed {
-            continue;
-        }
+    // Integrity: blob size + hash vs the JSON-declared values.
+    if blob.len() != info.tree_tops_size {
+        log::error!(
+            "[PIR-AUDIT] OnionPIR Merkle: tree-top blob is {} B, JSON \
+             declared tree_tops_size={} — REJECTING ALL LEAVES",
+            blob.len(),
+            info.tree_tops_size,
+        );
+        return false;
+    }
+    if sha256(blob) != info.tree_tops_hash {
+        log::error!(
+            "[PIR-AUDIT] OnionPIR Merkle: tree-top blob hash != JSON \
+             tree_tops_hash — REJECTING ALL LEAVES (blob corrupt or server lied)",
+        );
+        return false;
+    }
 
-        // Kick loop — matches runtime/src/bin/onionpir_client.rs exactly.
-        let mut current_id = entry_id;
-        let mut current_hash_fn = 0usize;
-        let mut current_bin = sib_cuckoo_hash(entry_id, keys[0], bins_per_table);
-        let mut success = false;
-        for kick in 0..SIB_CUCKOO_MAX_KICKS {
-            let evicted = table[current_bin];
-            table[current_bin] = current_id;
-            for h in 0..ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES {
-                let try_h = (current_hash_fn + 1 + h) % ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES;
-                let bin = sib_cuckoo_hash(evicted, keys[try_h], bins_per_table);
-                if bin == current_bin {
-                    continue;
-                }
-                if table[bin] == EMPTY {
-                    table[bin] = evicted;
-                    success = true;
-                    break;
-                }
-            }
-            if success {
-                break;
-            }
-            let alt_h = (current_hash_fn + 1 + kick % (ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES - 1))
-                % ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES;
-            let alt_bin = sib_cuckoo_hash(evicted, keys[alt_h], bins_per_table);
-            let final_bin = if alt_bin == current_bin {
-                sib_cuckoo_hash(
-                    evicted,
-                    keys[(alt_h + 1) % ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES],
-                    bins_per_table,
-                )
-            } else {
-                alt_bin
-            };
-            current_id = evicted;
-            current_hash_fn = alt_h;
-            current_bin = final_bin;
-        }
-        if !success {
-            // Don't panic — caller handles as a verification failure.
+    // Per-tree arity must match the JSON arity (build/JSON drift guard).
+    for (t, top) in all_tops.iter().enumerate() {
+        if top.arity != info.arity {
             log::error!(
-                "OnionPIR sibling cuckoo failed for entry_id={} group={} level={}",
-                entry_id,
-                group_id,
-                level
+                "[PIR-AUDIT] OnionPIR Merkle: tree {} arity {} != JSON \
+                 arity {} — REJECTING ALL LEAVES",
+                t,
+                top.arity,
+                info.arity,
             );
+            return false;
         }
     }
-    table
-}
 
-/// Find which bin in a sibling cuckoo table holds `entry_id`.
-pub fn find_in_sib_cuckoo(
-    table: &[u32],
-    entry_id: u32,
-    tree: OnionTreeKind,
-    level: usize,
-    group_id: usize,
-    bins_per_table: usize,
-) -> Option<usize> {
-    let master_seed = sib_level_master_seed(tree, level);
-    for h in 0..ONIONPIR_MERKLE_SIBLING_CUCKOO_NUM_HASHES {
-        let key = sib_derive_cuckoo_key(master_seed, group_id, h);
-        let bin = sib_cuckoo_hash(entry_id, key, bins_per_table);
-        if table[bin] == entry_id {
-            return Some(bin);
+    // SOUNDNESS-CRITICAL: the 155 per-group roots must hash to super_root.
+    let mut preimage: Vec<u8> = Vec::with_capacity(all_tops.len() * 32);
+    for (t, top) in all_tops.iter().enumerate() {
+        match top.root() {
+            Some(r) => preimage.extend_from_slice(&r),
+            None => {
+                log::error!(
+                    "[PIR-AUDIT] OnionPIR Merkle: tree-top {} has no root \
+                     level — REJECTING ALL LEAVES",
+                    t,
+                );
+                return false;
+            }
         }
     }
-    None
+    let computed = sha256(&preimage);
+    if computed != info.super_root {
+        log::error!(
+            "[PIR-AUDIT] OnionPIR Merkle: SUPER-ROOT MISMATCH — computed \
+             {:02x}{:02x}{:02x}{:02x}.. from {} per-group roots, pinned \
+             anchor is {:02x}{:02x}{:02x}{:02x}.. — REJECTING ALL LEAVES",
+            computed[0],
+            computed[1],
+            computed[2],
+            computed[3],
+            all_tops.len(),
+            info.super_root[0],
+            info.super_root[1],
+            info.super_root[2],
+            info.super_root[3],
+        );
+        return false;
+    }
+    true
 }
 
-/// Collect the full list of (Merkle) group-IDs at `level` that are assigned
-/// to PBC sibling group `pbc_group` via the 3-way PBC hash.
-fn entries_in_sib_pbc_group(
-    pbc_group: usize,
-    num_merkle_groups: usize,
-    k: usize,
-) -> Vec<u32> {
-    let mut out = Vec::new();
-    for g in 0..num_merkle_groups as u32 {
-        let groups = derive_int_groups_3(g, k);
-        if groups.contains(&pbc_group) {
-            out.push(g);
+// ─── Tree-top walk ──────────────────────────────────────────────────────────
+
+/// Walk a per-group tree-top from a known internal node up to the group root.
+///
+/// `start_hash` is the hash of the level-`cache_from_level` (= level-1) node
+/// that the FHE sibling pass reconstructed; `start_idx` is its index within
+/// that level. `top.levels[0]` holds that level's nodes, `top.levels[ci]`
+/// the next cached levels, and `top.levels[last]` is `[root]`.
+///
+/// At each step the running hash replaces the child at `idx % arity` of its
+/// parent's `arity` children (the rest read from the cached level), the
+/// parent is recomputed via `SHA256` of the concatenated children, and `idx`
+/// advances to the parent. Returns the reconstructed root.
+fn walk_tree_top_to_root(
+    start_hash: Hash256,
+    start_idx: u32,
+    top: &OnionTreeTopCache,
+    arity: usize,
+) -> Hash256 {
+    let mut hash = start_hash;
+    let mut idx = start_idx;
+    // Walk every cached level except the last (which IS the root).
+    for ci in 0..top.levels.len().saturating_sub(1) {
+        let level_nodes = &top.levels[ci];
+        let parent_start = (idx / arity as u32) * arity as u32;
+        let child_pos = (idx as usize) % arity;
+        let mut children: Vec<Hash256> = Vec::with_capacity(arity);
+        for c in 0..arity {
+            let node_i = parent_start as usize + c;
+            if c == child_pos {
+                children.push(hash);
+            } else if node_i < level_nodes.len() {
+                children.push(level_nodes[node_i]);
+            } else {
+                children.push(ZERO_HASH);
+            }
         }
+        hash = compute_parent_n(&children);
+        idx /= arity as u32;
     }
-    out
-}
-
-// ─── Tiny RNG for dummy-query bin selection ─────────────────────────────────
-
-struct SibRng {
-    state: u64,
-}
-
-impl SibRng {
-    fn new() -> Self {
-        let seed = crate::platform_time::seed_nanos();
-        Self {
-            state: splitmix64(seed),
-        }
-    }
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(GOLDEN_RATIO);
-        splitmix64(self.state)
-    }
+    hash
 }
 
 // ─── Verifier ───────────────────────────────────────────────────────────────
 
-/// Per-leaf verification verdict: `(tree_kind, leaf_pos) → verified`.
+/// Per-leaf verification verdict: `(tree_kind, pbc_group, bin) → verified`.
 ///
-/// `verified == true` means the leaf hash reconstructed to the sub-tree root.
-pub type OnionMerkleVerdicts = HashMap<(OnionTreeKind, usize), bool>;
+/// `verified == true` means the leaf hash reconstructed to the per-group
+/// root, and that per-group root is bound to the pinned `super_root`.
+pub type OnionMerkleVerdicts = HashMap<(OnionTreeKind, usize, u32), bool>;
 
 /// Verify all OnionPIR Merkle leaves across both INDEX and DATA sub-trees.
 ///
 /// * `conn` — the same WebSocket used for the regular queries. The caller
 ///   must have already registered FHE keys for `db_id`.
-/// * `info` — parsed `OnionMerkleInfo` for the current DB.
+/// * `info` — parsed [`OnionMerkleInfo`] for the current DB.
 /// * `leaves` — one entry per probed leaf, pre-populated with
-///   `(tree_kind, leaf_pos, hash, result_idx)`. Duplicates (same
-///   `(tree_kind, leaf_pos)`) are deduplicated internally.
+///   `(tree, pbc_group, bin, hash, result_idx)`. Duplicates (same
+///   `(tree, pbc_group, bin)`) are deduplicated internally.
 /// * `client_id`, `secret_key` — FHE state from the `OnionClient`'s
-///   `FheState`. Each sibling PBC round creates fresh per-level clients
-///   from these.
+///   `FheState`. The sibling FHE client is created from these.
 /// * `db_id` — DB under verification.
+///
+/// **Both** sub-trees are always verified, even when one has no leaves —
+/// `verify_sub_tree` issues one all-dummy K-padded sibling pass for an empty
+/// sub-tree so a not-found / whale batch (0 DATA leaves) is wire-
+/// indistinguishable from a found batch (CHUNK-Merkle round-presence).
 ///
 /// On decode / protocol error the function propagates; on individual leaf
 /// verification failure the verdict map entry is `false` (not an error).
@@ -656,64 +717,75 @@ pub async fn verify_onion_merkle_batch(
         .filter(|l| l.tree == OnionTreeKind::Data)
         .collect();
 
-    if !index_leaves.is_empty() {
-        let per_leaf = verify_sub_tree(
-            conn,
-            OnionTreeKind::Index,
-            &info.index_tree,
-            info.arity,
-            &index_leaves,
-            client_id,
-            secret_key,
-            db_id,
-            leakage_recorder.as_ref(),
-        )
-        .await?;
-        for (lp, ok) in per_leaf {
-            verdicts.insert((OnionTreeKind::Index, lp), ok);
-        }
+    // Verify the INDEX sub-tree.
+    let index_verdicts = verify_sub_tree(
+        conn,
+        OnionTreeKind::Index,
+        info,
+        &index_leaves,
+        client_id,
+        secret_key,
+        db_id,
+        leakage_recorder.as_ref(),
+    )
+    .await?;
+    for ((g, b), ok) in index_verdicts {
+        verdicts.insert((OnionTreeKind::Index, g, b), ok);
     }
 
-    if !data_leaves.is_empty() {
-        let per_leaf = verify_sub_tree(
-            conn,
-            OnionTreeKind::Data,
-            &info.data_tree,
-            info.arity,
-            &data_leaves,
-            client_id,
-            secret_key,
-            db_id,
-            leakage_recorder.as_ref(),
-        )
-        .await?;
-        for (lp, ok) in per_leaf {
-            verdicts.insert((OnionTreeKind::Data, lp), ok);
-        }
+    // Verify the DATA sub-tree — ALWAYS, even with zero DATA leaves. An
+    // all-not-found / whale batch contributes 0 DATA leaves; `verify_sub_tree`
+    // still issues one all-dummy K_CHUNK sibling pass, so found-vs-not-found
+    // cannot be inferred from CHUNK-Merkle traffic (CLAUDE.md "CHUNK
+    // Round-Presence Symmetry"; PLAN_MERKLE_CODING.md cross-cutting C.1).
+    let data_verdicts = verify_sub_tree(
+        conn,
+        OnionTreeKind::Data,
+        info,
+        &data_leaves,
+        client_id,
+        secret_key,
+        db_id,
+        leakage_recorder.as_ref(),
+    )
+    .await?;
+    for ((g, b), ok) in data_verdicts {
+        verdicts.insert((OnionTreeKind::Data, g, b), ok);
     }
 
     Ok(verdicts)
 }
 
-/// Verify a single sub-tree (INDEX or DATA). Returns `leaf_pos → verified`.
+/// Verify a single sub-tree (INDEX or DATA). Returns `(pbc_group, bin) → verified`.
+///
+/// Per-group walk: fetch + anchor-check the tree-top blob, then for each
+/// "pass" issue one K-padded FHE sibling round (one query per PBC group,
+/// real-row for groups with a leaf, random-row dummy for the rest), fold the
+/// decrypted sibling row into the leaf's running hash, and walk the cached
+/// per-group tree-top to the group root.
+///
+/// `max(1, max_items_per_group)` passes run: ≥1 even for an empty sub-tree
+/// (round-presence) and one extra per within-group collision (e.g. the two
+/// INDEX cuckoo positions of a not-found query land in the same group).
 #[allow(clippy::too_many_arguments)]
 async fn verify_sub_tree(
     conn: &mut dyn PirTransport,
     tree: OnionTreeKind,
-    sub_tree: &OnionMerkleSubTree,
-    arity: usize,
+    info: &OnionMerkleInfo,
     leaves: &[&OnionMerkleLeaf],
     client_id: u64,
     secret_key: &[u8],
     db_id: u8,
     leakage_recorder: Option<&Arc<dyn LeakageRecorder>>,
-) -> PirResult<HashMap<usize, bool>> {
-    let mut out: HashMap<usize, bool> = HashMap::new();
-    if leaves.is_empty() {
-        return Ok(out);
-    }
+) -> PirResult<HashMap<(usize, u32), bool>> {
+    let arity = info.arity;
+    let kind = *info.kind(tree);
+    let k = kind.k;
+    let num_pt = kind.num_pt;
 
-    // ── 1. Fetch tree-top cache ─────────────────────────────────────────
+    let mut out: HashMap<(usize, u32), bool> = HashMap::new();
+
+    // ── 1. Fetch the consolidated 155-tree tree-top blob ────────────────
     let req = encode_tree_top_request(tree.req_tree_top(), db_id);
     let request_bytes = req.len() as u64;
     let resp = conn.roundtrip(&req).await?;
@@ -738,294 +810,261 @@ async fn verify_sub_tree(
             resp.first().copied().unwrap_or(0),
         )));
     }
-    let tree_top = parse_onion_tree_top_cache(&resp[1..])?;
+    let blob = &resp[1..];
+    let all_tops = parse_onion_tree_top_cache(blob)?;
     log::info!(
-        "[PIR-AUDIT] OnionPIR Merkle {} tree-top: {} cached levels, arity={}",
+        "[PIR-AUDIT] OnionPIR Merkle {} tree-top: {} trees parsed (arity={})",
         tree.name(),
-        tree_top.levels.len(),
-        tree_top.arity,
+        all_tops.len(),
+        arity,
     );
 
-    // ── 2. Deduplicate leaves by leaf_pos ───────────────────────────────
-    let mut unique: HashMap<usize, Hash256> = HashMap::new();
-    for l in leaves {
-        unique.entry(l.leaf_pos).or_insert(l.hash);
+    // ── 2. Bind the blob to the pinned super-root (SOUNDNESS-CRITICAL) ──
+    //
+    // A super-root mismatch means the server's whole Merkle commitment is
+    // untrusted (malicious server, or a DB-version skew). Every probed leaf
+    // fails; the sibling rounds would prove nothing, so skip them.
+    if !check_tree_top_anchor(info, blob, &all_tops) {
+        for l in leaves {
+            out.insert((l.pbc_group, l.bin), false);
+        }
+        return Ok(out);
     }
-    let leaf_pos_arr: Vec<usize> = unique.keys().copied().collect();
-    let n = leaf_pos_arr.len();
-    let mut current_hash: Vec<Hash256> = leaf_pos_arr.iter().map(|lp| unique[lp]).collect();
-    let mut node_idx: Vec<usize> = leaf_pos_arr.clone();
+    let index_k = info.index.k;
+
+    // ── 3. Deduplicate leaves by (pbc_group, bin) ───────────────────────
+    let mut unique: HashMap<(usize, u32), Hash256> = HashMap::new();
+    for l in leaves {
+        unique.entry((l.pbc_group, l.bin)).or_insert(l.hash);
+    }
+    let keys: Vec<(usize, u32)> = unique.keys().copied().collect();
+    let n = keys.len();
+    // Per-leaf running state.
+    let mut current_hash: Vec<Hash256> = keys.iter().map(|k| unique[k]).collect();
+    let mut node_idx: Vec<u32> = keys.iter().map(|(_, bin)| *bin).collect();
     let mut failed: Vec<bool> = vec![false; n];
 
     log::info!(
-        "[PIR-AUDIT] OnionPIR Merkle {}: verifying {} unique leaves across {} sibling levels",
+        "[PIR-AUDIT] OnionPIR Merkle {}: verifying {} unique leaves (k={})",
         tree.name(),
         n,
-        sub_tree.levels.len(),
+        k,
     );
 
-    let mut rng = SibRng::new();
+    // ── 4. Group leaves by PBC group ────────────────────────────────────
+    // Multiple leaves share a group only for the INDEX-not-found case
+    // (both cuckoo positions) or batch collisions; each surplus leaf
+    // becomes one extra pass, each pass itself fully K-padded.
+    let mut items_by_group: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, &(g, _)) in keys.iter().enumerate() {
+        items_by_group.entry(g).or_default().push(i);
+    }
+    // ≥1: an empty sub-tree still issues one all-dummy pass (round-presence).
+    let max_items_per_group = items_by_group
+        .values()
+        .map(|v| v.len())
+        .max()
+        .unwrap_or(0)
+        .max(1);
 
-    // ── 3. Walk sibling levels with FHE queries ─────────────────────────
-    for (level, level_info) in sub_tree.levels.iter().enumerate() {
-        // Group leaves by the Merkle-group they need at this level.
-        let mut group_to_items: HashMap<u32, Vec<usize>> = HashMap::new();
-        for i in 0..n {
-            if failed[i] {
+    // ── 5. FHE sibling client (one per sub-tree — fixed num_pt) ─────────
+    let sib_client = SibSendClient(
+        onionpir::Client::from_secret_key(num_pt as u64, client_id, secret_key).ok_or_else(
+            || {
+                PirError::InvalidState(format!(
+                    "OnionPIR sib Client::from_secret_key returned None \
+                     (num_pt={}, client_id={}, sk_len={}). \
+                     Likely cause: onionpir rev / ACTIVE_CONFIG drift \
+                     between this binary and the session-master key. \
+                     Recovery: drop FheState + restart the session.",
+                    num_pt,
+                    client_id,
+                    secret_key.len()
+                ))
+            },
+        )?,
+    );
+    let pinfo = onionpir::params_info(num_pt as u64);
+    if pinfo.entry_size as usize != arity * 32 {
+        return Err(PirError::Protocol(format!(
+            "OnionPIR Merkle {}: sibling DB entry_size {} != arity*32 ({}) \
+             — onionpir rev / build-shape drift",
+            tree.name(),
+            pinfo.entry_size,
+            arity * 32,
+        )));
+    }
+    let mut rng = SimpleRng::new();
+
+    // ── 6. Sibling passes: one K-padded FHE round per pass ──────────────
+    //
+    // There is exactly ONE PIR sibling level (leaf → level-1). Each pass
+    // handles at most one leaf per group, and every leaf is in exactly one
+    // pass, so per-pass updates of `node_idx` / `current_hash` never
+    // interfere — no deferred-update bookkeeping is needed (unlike the
+    // multi-level per-bucket walk in `crate::merkle_verify`).
+    for pass in 0..max_items_per_group {
+        // Which leaf (if any) each group contributes at this pass.
+        let mut pass_group_to_item: HashMap<usize, usize> = HashMap::new();
+        for (&g, arr) in &items_by_group {
+            if let Some(&item) = arr.get(pass) {
+                pass_group_to_item.insert(g, item);
+            }
+        }
+
+        // K FHE queries — real row for a group with a pass-`pass` leaf,
+        // random-row dummy for the rest. K-padding: the server sees K
+        // indistinguishable FHE queries every pass, regardless of how many
+        // leaves are real (privacy requirement, CLAUDE.md "Query Padding").
+        let mut queries: Vec<Vec<u8>> = Vec::with_capacity(k);
+        for g in 0..k {
+            let row = match pass_group_to_item.get(&g) {
+                Some(&item) => node_idx[item] as u64 / arity as u64,
+                None => rng.next_u64() % num_pt as u64,
+            };
+            queries.push(sib_client.0.generate_query(row));
+        }
+
+        // round_id is vestigial under the per-group design — send 0.
+        let msg = encode_sibling_batch_query(tree.req_sibling(), 0, &queries, db_id);
+        let request_bytes = msg.len() as u64;
+        let resp = conn.roundtrip(&msg).await?;
+        if let Some(rec) = leakage_recorder {
+            // One PIR sibling level ⇒ level is always 0.
+            let kind = match tree {
+                OnionTreeKind::Index => RoundKind::IndexMerkleSiblings { level: 0 },
+                OnionTreeKind::Data => RoundKind::ChunkMerkleSiblings { level: 0 },
+            };
+            // K FHE queries, one per PBC group — items[g] = 1 each.
+            rec.record_round(
+                "onion",
+                RoundProfile {
+                    kind,
+                    server_id: 0,
+                    db_id: Some(db_id),
+                    request_bytes,
+                    response_bytes: (resp.len() as u64).saturating_add(4),
+                    items: vec![1u32; k],
+                },
+            );
+        }
+        if resp.is_empty() || resp[0] != tree.resp_sibling() {
+            return Err(PirError::Protocol(format!(
+                "expected {} sibling response (0x{:02x}), got variant 0x{:02x}",
+                tree.name(),
+                tree.resp_sibling(),
+                resp.first().copied().unwrap_or(0),
+            )));
+        }
+        let batch = decode_sibling_batch_result(&resp[1..])?;
+
+        // Fold each real group's decrypted sibling row into its leaf.
+        for (&g, &item) in &pass_group_to_item {
+            if failed[item] {
                 continue;
             }
-            let gid = (node_idx[i] / arity) as u32;
-            group_to_items.entry(gid).or_default().push(i);
-        }
-        let unique_gids: Vec<u32> = group_to_items.keys().copied().collect();
-        if unique_gids.is_empty() {
-            break;
-        }
-
-        // PBC-place unique gids into this level's sibling PBC groups.
-        let cand_groups: Vec<[usize; NUM_PBC_HASHES]> = unique_gids
-            .iter()
-            .map(|&gid| derive_int_groups_3(gid, level_info.k))
-            .collect();
-        let pbc_rounds = pbc_plan_rounds(&cand_groups, level_info.k, NUM_PBC_HASHES, 500);
-        let mut sibling_data: HashMap<u32, Vec<u8>> = HashMap::new();
-
-        for (ri, pbc_round) in pbc_rounds.iter().enumerate() {
-            // Build cuckoo for each PBC group so we know which bin each gid lives in.
-            struct Assigned {
-                gid: u32,
-                target_bin: usize,
-            }
-            let mut group_info: HashMap<usize, Assigned> = HashMap::new();
-            for &(ugi, pbc_group) in pbc_round {
-                let gid = unique_gids[ugi];
-                let entries = entries_in_sib_pbc_group(
-                    pbc_group,
-                    level_info.num_groups,
-                    level_info.k,
-                );
-                let table = build_sib_cuckoo_for_group(
-                    tree,
-                    level,
-                    pbc_group,
-                    &entries,
-                    level_info.bins_per_table,
-                );
-                match find_in_sib_cuckoo(
-                    &table,
-                    gid,
-                    tree,
-                    level,
-                    pbc_group,
-                    level_info.bins_per_table,
-                ) {
-                    Some(bin) => {
-                        group_info.insert(pbc_group, Assigned { gid, target_bin: bin });
-                    }
-                    None => {
-                        // Mark all items under this gid as failed.
-                        if let Some(items) = group_to_items.get(&gid) {
-                            for &i in items {
-                                failed[i] = true;
-                            }
-                        }
-                        log::warn!(
-                            "[PIR-AUDIT] OnionPIR Merkle {} L{}: gid={} not in PBC group {} cuckoo table",
-                            tree.name(),
-                            level,
-                            gid,
-                            pbc_group,
-                        );
-                    }
-                }
-            }
-
-            // Generate K FHE queries (real + random-bin dummies).
-            //
-            // Wrap the FFI client in `SibSendClient` so the enclosing future
-            // stays `Send` across the roundtrip `.await` below — the raw
-            // `onionpir::Client` holds a `*mut c_void` which is `!Send`.
-            // OnionPIRv2 port: rename + return type changed to `Option<Self>`.
-            // The caller (`OnionMerkleVerifier`) provides `secret_key`
-            // from the parent `OnionClient::fhe.secret_key`, which was
-            // generated this session by `Client::new`. A None return
-            // here means the same as in pir-sdk-client/onion.rs's
-            // `get_level_client` — see the analogous error there for
-            // the recovery procedure.
-            let mut sib_client = SibSendClient(
-                onionpir::Client::from_secret_key(
-                    level_info.bins_per_table as u64,
-                    client_id,
-                    secret_key,
-                )
-                .ok_or_else(|| {
-                    PirError::InvalidState(format!(
-                        "OnionPIR sib Client::from_secret_key returned None \
-                         (bins_per_table={}, client_id={}, sk_len={}). \
-                         Likely cause: onionpir rev / ACTIVE_CONFIG drift \
-                         between this binary and the session-master key. \
-                         Recovery: drop FheState + restart the session.",
-                        level_info.bins_per_table,
-                        client_id,
-                        secret_key.len()
-                    ))
-                })?,
-            );
-            let mut queries = Vec::with_capacity(level_info.k);
-            for b in 0..level_info.k {
-                let bin = if let Some(a) = group_info.get(&b) {
-                    a.target_bin as u64
-                } else {
-                    rng.next_u64() % level_info.bins_per_table as u64
-                };
-                queries.push(sib_client.0.generate_query(bin));
-            }
-
-            let round_id = (level * 100 + ri) as u16;
-            let msg = encode_sibling_batch_query(tree.req_sibling(), round_id, &queries, db_id);
-            let request_bytes = msg.len() as u64;
-            let resp = conn.roundtrip(&msg).await?;
-            if let Some(rec) = leakage_recorder {
-                let kind = match tree {
-                    OnionTreeKind::Index => {
-                        RoundKind::IndexMerkleSiblings { level: level as u8 }
-                    }
-                    OnionTreeKind::Data => {
-                        RoundKind::ChunkMerkleSiblings { level: level as u8 }
-                    }
-                };
-                // OnionPIR sibling round: K (or K_CHUNK) FHE queries, one
-                // per PBC group — items[g] = 1 captures the wire shape.
-                let items_per_group: Vec<u32> =
-                    (0..level_info.k).map(|_| 1u32).collect();
-                rec.record_round(
-                    "onion",
-                    RoundProfile {
-                        kind,
-                        server_id: 0,
-                        db_id: Some(db_id),
-                        request_bytes,
-                        response_bytes: (resp.len() as u64).saturating_add(4),
-                        items: items_per_group,
-                    },
-                );
-            }
-            if resp.is_empty() || resp[0] != tree.resp_sibling() {
-                return Err(PirError::Protocol(format!(
-                    "expected {} sibling response (0x{:02x}), got variant 0x{:02x}",
+            if g >= batch.len() {
+                log::warn!(
+                    "[PIR-AUDIT] OnionPIR Merkle {} pass {}: result batch \
+                     truncated at group {} (len {})",
                     tree.name(),
-                    tree.resp_sibling(),
-                    resp.first().copied().unwrap_or(0),
-                )));
+                    pass,
+                    g,
+                    batch.len(),
+                );
+                failed[item] = true;
+                continue;
             }
-            let batch = decode_sibling_batch_result(&resp[1..])?;
+            let raw_pt = sib_client.0.decrypt_response(&batch[g]);
+            let row = pir_core::onion_unpack::unpack_onion_plaintext(
+                &raw_pt,
+                pinfo.poly_degree as usize,
+                pinfo.entry_size as usize,
+            )
+            .ok_or_else(|| {
+                PirError::Protocol(format!(
+                    "onion_unpack rejected {} sibling plaintext (len={} N={} es={})",
+                    tree.name(),
+                    raw_pt.len(),
+                    pinfo.poly_degree,
+                    pinfo.entry_size
+                ))
+            })?;
 
-            for (&pbc_group, assigned) in &group_info {
-                if pbc_group >= batch.len() {
-                    log::warn!(
-                        "[PIR-AUDIT] OnionPIR Merkle {} L{} round {}: result batch truncated at pbc_group={} (len={})",
-                        tree.name(),
-                        level,
-                        ri,
-                        pbc_group,
-                        batch.len()
-                    );
-                    // Mark items failed.
-                    if let Some(items) = group_to_items.get(&assigned.gid) {
-                        for &i in items {
-                            failed[i] = true;
-                        }
+            // Recompute the level-1 parent of bin `node_idx[item]`: the
+            // decrypted row holds that parent's `arity` leaf children;
+            // replace the child at `bin % arity` with the leaf's own
+            // committed hash, then hash the `arity` children. If the
+            // server lied about any sibling, the parent — and hence the
+            // root — will not match (root propagation, see §7).
+            let child_pos = (node_idx[item] as usize) % arity;
+            let mut children: Vec<Hash256> = Vec::with_capacity(arity);
+            for c in 0..arity {
+                if c == child_pos {
+                    children.push(current_hash[item]);
+                } else {
+                    let off = c * 32;
+                    let mut h = ZERO_HASH;
+                    if off + 32 <= row.len() {
+                        h.copy_from_slice(&row[off..off + 32]);
                     }
-                    continue;
+                    children.push(h);
                 }
-                // OnionPIRv2 port (commit 2): unpack the raw plaintext
-                // returned by `decrypt_response`. `decrypted` is
-                // `params.entry_size` bytes (no longer the pre-port
-                // PACKED_ENTRY_SIZE = 3840). Downstream Merkle code
-                // hashes the whole buffer regardless of length.
-                let _ = assigned.target_bin;
-                let raw_pt = sib_client.0.decrypt_response(&batch[pbc_group]);
-                let pinfo = onionpir::params_info(level_info.bins_per_table as u64);
-                let decrypted = pir_core::onion_unpack::unpack_onion_plaintext(
-                    &raw_pt,
-                    pinfo.poly_degree as usize,
-                    pinfo.entry_size as usize,
-                )
-                .ok_or_else(|| {
-                    PirError::Protocol(format!(
-                        "onion_unpack rejected sibling plaintext (len={} N={} es={})",
-                        raw_pt.len(),
-                        pinfo.poly_degree,
-                        pinfo.entry_size
-                    ))
-                })?;
-                sibling_data.insert(assigned.gid, decrypted);
             }
-        }
-
-        // ── 4. Combine each leaf's current hash with siblings at this level ─
-        for (&gid, items) in &group_to_items {
-            let decrypted = match sibling_data.get(&gid) {
-                Some(d) => d,
-                None => {
-                    for &i in items {
-                        failed[i] = true;
-                    }
-                    continue;
-                }
-            };
-            for &i in items {
-                if failed[i] {
-                    continue;
-                }
-                let child_pos = node_idx[i] % arity;
-                let mut children: Vec<Hash256> = Vec::with_capacity(arity);
-                for c in 0..arity {
-                    if c == child_pos {
-                        children.push(current_hash[i]);
-                    } else {
-                        let off = c * 32;
-                        let mut h = [0u8; 32];
-                        if off + 32 <= decrypted.len() {
-                            h.copy_from_slice(&decrypted[off..off + 32]);
-                        }
-                        children.push(h);
-                    }
-                }
-                current_hash[i] = compute_parent_n(&children);
-                node_idx[i] = gid as usize;
-            }
+            current_hash[item] = compute_parent_n(&children);
+            node_idx[item] /= arity as u32;
         }
     }
 
-    // ── 5. Walk tree-top cache up to root ───────────────────────────────
-    let cache_arity = tree_top.arity;
-    let num_cache_levels = tree_top.levels.len();
+    // ── 7. Walk each leaf's cached tree-top to its per-group root ───────
     for i in 0..n {
+        let (pbc_group, bin) = keys[i];
         if failed[i] {
-            out.insert(leaf_pos_arr[i], false);
+            out.insert((pbc_group, bin), false);
             continue;
         }
-        let mut hash = current_hash[i];
-        let mut idx = node_idx[i];
-        // All cached levels except the root (last level is `[root]`).
-        for ci in 0..num_cache_levels.saturating_sub(1) {
-            let level_nodes = &tree_top.levels[ci];
-            let parent_start = (idx / cache_arity) * cache_arity;
-            let mut children: Vec<Hash256> = Vec::with_capacity(cache_arity);
-            for c in 0..cache_arity {
-                let child_idx = parent_start + c;
-                children.push(if child_idx < level_nodes.len() {
-                    level_nodes[child_idx]
-                } else {
-                    [0u8; 32]
-                });
+        // 75 INDEX trees first, then 80 DATA trees.
+        let top_idx = match tree {
+            OnionTreeKind::Index => pbc_group,
+            OnionTreeKind::Data => index_k + pbc_group,
+        };
+        let top = match all_tops.get(top_idx) {
+            Some(t) => t,
+            None => {
+                log::warn!(
+                    "[PIR-AUDIT] OnionPIR Merkle {}: no tree-top for group {} \
+                     (leaf bin {})",
+                    tree.name(),
+                    pbc_group,
+                    bin,
+                );
+                out.insert((pbc_group, bin), false);
+                continue;
             }
-            hash = compute_parent_n(&children);
-            idx /= cache_arity;
+        };
+        let walked = walk_tree_top_to_root(current_hash[i], node_idx[i], top, arity);
+        // `top.root()` is `Some` here — `check_tree_top_anchor` already
+        // rejected any tree-top without a root level.
+        let expected = top.root().unwrap_or(ZERO_HASH);
+        let ok = walked == expected;
+        if !ok {
+            log::warn!(
+                "[PIR-AUDIT] OnionPIR Merkle {} group {} bin {}: root MISMATCH \
+                 (walked {:02x}{:02x}{:02x}{:02x}.., expected {:02x}{:02x}{:02x}{:02x}..)",
+                tree.name(),
+                pbc_group,
+                bin,
+                walked[0],
+                walked[1],
+                walked[2],
+                walked[3],
+                expected[0],
+                expected[1],
+                expected[2],
+                expected[3],
+            );
         }
-        let ok = hash == sub_tree.root;
-        out.insert(leaf_pos_arr[i], ok);
+        out.insert((pbc_group, bin), ok);
     }
 
     let verified = out.values().filter(|b| **b).count();
@@ -1041,14 +1080,14 @@ async fn verify_sub_tree(
 
 /// Convenience: hash a decrypted OnionPIR bin (`SHA256(bytes)`).
 ///
-/// OnionPIR leaves are raw `SHA256` over the first `PACKED_ENTRY_SIZE` bytes
-/// of the decrypted bin — no `bin_idx` prefix (that's the per-bucket
-/// convention, not OnionPIR's).
+/// OnionPIR leaves are raw `SHA256` over the decrypted bin bytes — no
+/// `bin_idx` prefix (that's the per-bucket convention, not OnionPIR's; see
+/// MERKLE_COLOCATION_REVIEW.md §2e).
 ///
-/// Not currently called from the in-crate walker (which inlines `sha256`
-/// directly on the packed bin bytes), but exported as part of the public
-/// onion Merkle API surface so external consumers of the `onion` feature
-/// can reproduce leaf hashing without reaching into `pir_core::merkle`.
+/// Not currently called from the in-crate verifier (which inlines `sha256`
+/// at the INDEX / CHUNK decrypt sites in `onion.rs`), but exported as part of
+/// the public onion Merkle API surface so external consumers of the `onion`
+/// feature can reproduce leaf hashing without reaching into `pir_core::merkle`.
 /// Exercised by `test_onion_leaf_hash_matches_sha256` in the tests module.
 #[allow(dead_code)]
 #[inline]
@@ -1062,81 +1101,127 @@ pub fn onion_leaf_hash(bin_bytes: &[u8]) -> Hash256 {
 mod tests {
     use super::*;
 
-    fn dummy_tree_top(arity: usize, leaves: &[Hash256]) -> (Vec<u8>, Hash256) {
-        // Build a Merkle tree with given `arity` bottom-up, emit as a tree-top
-        // with all levels cached and the final root appended.
-        let mut levels: Vec<Vec<Hash256>> = Vec::new();
-        levels.push(leaves.to_vec());
+    /// Build one per-group arity-`arity` Merkle tree over `leaves`, returning
+    /// `(all levels bottom-up, root)`. Incomplete groups pad with `ZERO_HASH`
+    /// — mirrors `gen_4_build_merkle_onion::build_group_tree`.
+    fn build_tree(arity: usize, leaves: &[Hash256]) -> (Vec<Vec<Hash256>>, Hash256) {
+        let mut levels: Vec<Vec<Hash256>> = vec![leaves.to_vec()];
         loop {
             let prev = levels.last().unwrap();
             if prev.len() <= 1 {
                 break;
             }
-            let mut next = Vec::new();
-            let mut i = 0;
-            while i < prev.len() {
-                let mut children = Vec::with_capacity(arity);
-                for c in 0..arity {
-                    children.push(if i + c < prev.len() {
-                        prev[i + c]
-                    } else {
-                        [0u8; 32]
-                    });
-                }
+            let next_len = prev.len().div_ceil(arity);
+            let mut next = Vec::with_capacity(next_len);
+            for i in 0..next_len {
+                let start = i * arity;
+                let end = (start + arity).min(prev.len());
+                let mut children: Vec<Hash256> = prev[start..end].to_vec();
+                children.resize(arity, ZERO_HASH);
                 next.push(compute_parent_n(&children));
-                i += arity;
             }
             levels.push(next);
         }
-
         let root = *levels.last().unwrap().first().unwrap();
-        // Encode: [1B cache_from_level=0][4B total_nodes=sum][2B arity][1B num_levels]
-        //         per level: [4B num_nodes][num_nodes*32B]
-        let mut blob = Vec::new();
-        blob.push(0u8); // cache_from_level
-        let total: u32 = levels.iter().map(|l| l.len() as u32).sum();
+        (levels, root)
+    }
+
+    /// Encode one tree-top (cached levels = `levels[cache_from..]`) into the
+    /// per-tree wire layout, appending to `blob`.
+    fn encode_one_tree_top(
+        blob: &mut Vec<u8>,
+        arity: usize,
+        cache_from: usize,
+        levels: &[Vec<Hash256>],
+    ) {
+        let cached = &levels[cache_from..];
+        let total: u32 = cached.iter().map(|l| l.len() as u32).sum();
+        blob.push(cache_from as u8);
         blob.extend_from_slice(&total.to_le_bytes());
         blob.extend_from_slice(&(arity as u16).to_le_bytes());
-        blob.push(levels.len() as u8);
-        for lvl in &levels {
+        blob.push(cached.len() as u8);
+        for lvl in cached {
             blob.extend_from_slice(&(lvl.len() as u32).to_le_bytes());
             for h in lvl {
                 blob.extend_from_slice(h);
             }
         }
-        (blob, root)
+    }
+
+    fn h(seed: u8) -> Hash256 {
+        let mut x = ZERO_HASH;
+        x[0] = seed;
+        x[31] = seed.wrapping_mul(7);
+        x
+    }
+
+    /// Build a full 155-tree-style blob with `n_index` + `n_data` identical
+    /// small trees, returning `(blob, super_root)`.
+    fn build_blob(
+        arity: usize,
+        leaves: &[Hash256],
+        n_index: usize,
+        n_data: usize,
+    ) -> (Vec<u8>, Hash256) {
+        let (levels, root) = build_tree(arity, leaves);
+        let num_trees = n_index + n_data;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&(num_trees as u32).to_le_bytes());
+        for _ in 0..num_trees {
+            encode_one_tree_top(&mut blob, arity, 1, &levels);
+        }
+        // super_root = SHA256(concat of all per-group roots). Every tree is
+        // identical here, so the preimage is `root` repeated `num_trees`x.
+        let mut preimage = Vec::new();
+        for _ in 0..num_trees {
+            preimage.extend_from_slice(&root);
+        }
+        (blob, sha256(&preimage))
     }
 
     #[test]
-    fn test_parse_onion_tree_top_cache_roundtrip() {
-        let leaves = (0..5u8)
-            .map(|i| {
-                let mut h = [0u8; 32];
-                h[0] = i;
-                h
-            })
-            .collect::<Vec<_>>();
-        let (blob, root) = dummy_tree_top(8, &leaves);
-        let parsed = parse_onion_tree_top_cache(&blob).unwrap();
-        assert_eq!(parsed.arity, 8);
-        assert_eq!(parsed.cache_from_level, 0);
-        assert!(parsed.levels.len() >= 2);
-        assert_eq!(parsed.levels.last().unwrap(), &vec![root]);
+    fn test_parse_onion_tree_top_cache_multi_tree() {
+        let leaves: Vec<Hash256> = (0..40u8).map(h).collect();
+        let (blob, _root) = build_blob(8, &leaves, 3, 2);
+        let tops = parse_onion_tree_top_cache(&blob).unwrap();
+        assert_eq!(tops.len(), 5);
+        for t in &tops {
+            assert_eq!(t.arity, 8);
+            assert_eq!(t.cache_from_level, 1);
+            // 40 leaves, arity 8 → levels [40, 5, 1]; cached from 1 → [5, 1].
+            assert_eq!(t.levels.len(), 2);
+            assert_eq!(t.levels[0].len(), 5);
+            assert_eq!(t.levels.last().unwrap().len(), 1);
+            assert!(t.root().is_some());
+        }
     }
 
     #[test]
     fn test_parse_onion_tree_top_cache_too_short() {
         assert!(parse_onion_tree_top_cache(&[]).is_err());
-        assert!(parse_onion_tree_top_cache(&[0u8; 7]).is_err());
+        assert!(parse_onion_tree_top_cache(&[0u8, 0, 0]).is_err());
     }
 
     #[test]
     fn test_parse_onion_tree_top_cache_arity_zero() {
-        // arity=0 is invalid and must be rejected (otherwise walks divide by zero).
-        let mut blob = vec![0u8; 8];
-        blob[0] = 0; // cache_from_level
-        // arity=0 at offset 5..7
-        blob[7] = 0; // num_cached_levels
+        // One tree, arity=0 — must be rejected (else walks divide by zero).
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&1u32.to_le_bytes()); // num_trees = 1
+        blob.push(1); // cache_from_level
+        blob.extend_from_slice(&0u32.to_le_bytes()); // total_nodes
+        blob.extend_from_slice(&0u16.to_le_bytes()); // arity = 0
+        blob.push(0); // num_cached_levels
+        assert!(parse_onion_tree_top_cache(&blob).is_err());
+    }
+
+    #[test]
+    fn test_parse_onion_tree_top_cache_truncated_tree() {
+        // Claims 2 trees but only encodes 1.
+        let leaves: Vec<Hash256> = (0..16u8).map(h).collect();
+        let (levels, _) = build_tree(8, &leaves);
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&2u32.to_le_bytes());
+        encode_one_tree_top(&mut blob, 8, 1, &levels);
         assert!(parse_onion_tree_top_cache(&blob).is_err());
     }
 
@@ -1144,32 +1229,26 @@ mod tests {
     fn test_parse_onionpir_merkle_basic() {
         let j = r#"{
             "onionpir_merkle": {
-                "arity": 8,
-                "index": {
-                    "sibling_levels": 1,
-                    "root": "0000000000000000000000000000000000000000000000000000000000000000",
-                    "levels": [{"k":10,"bins_per_table":128,"num_groups":50}]
-                },
-                "data": {
-                    "sibling_levels": 2,
-                    "root": "1111111111111111111111111111111111111111111111111111111111111111",
-                    "levels": [
-                        {"k":20,"bins_per_table":256,"num_groups":100},
-                        {"k":10,"bins_per_table":128,"num_groups":30}
-                    ]
-                }
+                "arity": 104,
+                "super_root": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                "tree_tops_hash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+                "tree_tops_size": 1245184,
+                "index": {"k": 75, "num_pt": 99},
+                "data":  {"k": 80, "num_pt": 364}
             }
         }"#;
         let info = parse_onionpir_merkle(j).unwrap();
-        assert_eq!(info.arity, 8);
-        assert_eq!(info.index_tree.levels.len(), 1);
-        assert_eq!(info.index_tree.levels[0].k, 10);
-        assert_eq!(info.index_tree.levels[0].bins_per_table, 128);
-        assert_eq!(info.index_tree.levels[0].num_groups, 50);
-        assert_eq!(info.data_tree.levels.len(), 2);
-        assert_eq!(info.data_tree.levels[1].k, 10);
-        assert_eq!(info.index_tree.root, [0u8; 32]);
-        assert_eq!(info.data_tree.root, [0x11u8; 32]);
+        assert_eq!(info.arity, 104);
+        assert_eq!(info.index.k, 75);
+        assert_eq!(info.index.num_pt, 99);
+        assert_eq!(info.data.k, 80);
+        assert_eq!(info.data.num_pt, 364);
+        assert_eq!(info.tree_tops_size, 1245184);
+        assert_eq!(info.super_root[0], 0x00);
+        assert_eq!(info.super_root[1], 0x11);
+        assert_eq!(info.super_root[31], 0xff);
+        assert_eq!(info.tree_tops_hash[0], 0xff);
+        assert_eq!(info.tree_tops_hash[31], 0x00);
     }
 
     #[test]
@@ -1178,91 +1257,146 @@ mod tests {
     }
 
     #[test]
-    fn test_sib_cuckoo_roundtrip_index() {
-        // Insert 10 entry_ids into the INDEX tree's sibling cuckoo at level 0,
-        // then find each back.
-        let bins_per_table = 128usize;
-        let group_id = 3usize;
-        let entries: Vec<u32> = (100..110).collect();
-        let table = build_sib_cuckoo_for_group(
-            OnionTreeKind::Index,
-            0,
-            group_id,
-            &entries,
-            bins_per_table,
-        );
-        for &e in &entries {
-            let bin = find_in_sib_cuckoo(
-                &table,
-                e,
-                OnionTreeKind::Index,
-                0,
-                group_id,
-                bins_per_table,
-            );
-            assert!(bin.is_some(), "entry_id {} not findable", e);
+    fn test_parse_onionpir_merkle_rejects_bad_super_root() {
+        // super_root not 64 hex chars → None (fail-safe: skip verification).
+        let j = r#"{"onionpir_merkle":{"arity":104,"super_root":"deadbeef",
+            "tree_tops_hash":"ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+            "tree_tops_size":10,"index":{"k":75,"num_pt":99},"data":{"k":80,"num_pt":364}}}"#;
+        assert!(parse_onionpir_merkle(j).is_none());
+    }
+
+    #[test]
+    fn test_parse_onionpir_merkle_rejects_arity_zero() {
+        let j = r#"{"onionpir_merkle":{"arity":0,
+            "super_root":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+            "tree_tops_hash":"ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+            "tree_tops_size":10,"index":{"k":75,"num_pt":99},"data":{"k":80,"num_pt":364}}}"#;
+        assert!(parse_onionpir_merkle(j).is_none());
+    }
+
+    fn merkle_info(arity: usize, super_root: Hash256, hash: Hash256, size: usize) -> OnionMerkleInfo {
+        OnionMerkleInfo {
+            arity,
+            super_root,
+            tree_tops_hash: hash,
+            tree_tops_size: size,
+            index: OnionMerkleKindInfo { k: 3, num_pt: 5 },
+            data: OnionMerkleKindInfo { k: 2, num_pt: 5 },
         }
     }
 
     #[test]
-    fn test_sib_cuckoo_roundtrip_data() {
-        // Same as above but DATA tree — different seed base.
-        let bins_per_table = 64usize;
-        let group_id = 7usize;
-        let entries: Vec<u32> = (0..12).collect();
-        let table = build_sib_cuckoo_for_group(
-            OnionTreeKind::Data,
-            2,
-            group_id,
-            &entries,
-            bins_per_table,
-        );
-        for &e in &entries {
-            assert!(
-                find_in_sib_cuckoo(
-                    &table,
-                    e,
-                    OnionTreeKind::Data,
-                    2,
-                    group_id,
-                    bins_per_table
-                )
-                .is_some(),
-                "entry_id {} not findable",
-                e
-            );
+    fn test_check_tree_top_anchor_accepts_matching_super_root() {
+        let leaves: Vec<Hash256> = (0..40u8).map(h).collect();
+        let (blob, super_root) = build_blob(8, &leaves, 3, 2);
+        let tops = parse_onion_tree_top_cache(&blob).unwrap();
+        let info = merkle_info(8, super_root, sha256(&blob), blob.len());
+        assert!(check_tree_top_anchor(&info, &blob, &tops));
+    }
+
+    #[test]
+    fn test_check_tree_top_anchor_rejects_wrong_super_root() {
+        // SOUNDNESS: a tampered super-root (server fabricated the blob) must
+        // be rejected even though the blob is internally consistent.
+        let leaves: Vec<Hash256> = (0..40u8).map(h).collect();
+        let (blob, super_root) = build_blob(8, &leaves, 3, 2);
+        let tops = parse_onion_tree_top_cache(&blob).unwrap();
+        let mut bad = super_root;
+        bad[0] ^= 0x01;
+        let info = merkle_info(8, bad, sha256(&blob), blob.len());
+        assert!(!check_tree_top_anchor(&info, &blob, &tops));
+    }
+
+    #[test]
+    fn test_check_tree_top_anchor_rejects_tampered_blob() {
+        // Flipping a byte inside the blob breaks tree_tops_hash even when the
+        // declared super_root happens to still match the parsed roots.
+        let leaves: Vec<Hash256> = (0..40u8).map(h).collect();
+        let (mut blob, super_root) = build_blob(8, &leaves, 3, 2);
+        let good_hash = sha256(&blob);
+        let size = blob.len();
+        // Tamper a hash byte deep in the blob (a leaf-of-an-internal-level).
+        let last = blob.len() - 1;
+        blob[last] ^= 0x01;
+        let tops = parse_onion_tree_top_cache(&blob).unwrap();
+        let info = merkle_info(8, super_root, good_hash, size);
+        assert!(!check_tree_top_anchor(&info, &blob, &tops));
+    }
+
+    #[test]
+    fn test_check_tree_top_anchor_rejects_wrong_tree_count() {
+        let leaves: Vec<Hash256> = (0..40u8).map(h).collect();
+        // Blob has 5 trees; info expects index.k + data.k = 3 + 2 = 5 — OK.
+        // Now make the blob have only 4 trees.
+        let (blob, super_root) = build_blob(8, &leaves, 2, 2);
+        let tops = parse_onion_tree_top_cache(&blob).unwrap();
+        let info = merkle_info(8, super_root, sha256(&blob), blob.len());
+        assert!(!check_tree_top_anchor(&info, &blob, &tops));
+    }
+
+    #[test]
+    fn test_check_tree_top_anchor_rejects_arity_drift() {
+        let leaves: Vec<Hash256> = (0..40u8).map(h).collect();
+        let (blob, super_root) = build_blob(8, &leaves, 3, 2);
+        let tops = parse_onion_tree_top_cache(&blob).unwrap();
+        // JSON arity (16) disagrees with the blob's per-tree arity (8).
+        let info = merkle_info(16, super_root, sha256(&blob), blob.len());
+        assert!(!check_tree_top_anchor(&info, &blob, &tops));
+    }
+
+    #[test]
+    fn test_walk_tree_top_to_root_good() {
+        // 64 leaves, arity 8 → levels [64, 8, 1]. Cache from level 1 → the
+        // tree-top is [[8 level-1 nodes], [root]]. Walking from each level-1
+        // node must reproduce the root.
+        let leaves: Vec<Hash256> = (0..64u8).map(h).collect();
+        let (levels, root) = build_tree(8, &leaves);
+        let top = OnionTreeTopCache {
+            cache_from_level: 1,
+            arity: 8,
+            levels: levels[1..].to_vec(),
+        };
+        for (idx, node) in levels[1].iter().enumerate() {
+            let walked = walk_tree_top_to_root(*node, idx as u32, &top, 8);
+            assert_eq!(walked, root, "level-1 node {} did not reach root", idx);
         }
     }
 
     #[test]
-    fn test_seed_bases_differ_per_tree_and_level() {
-        // INDEX and DATA trees must derive different keys, and each tree's levels
-        // must derive different keys. (If not, an INDEX level proof could be
-        // mis-replayed against a DATA level.)
-        let index_l0 = sib_level_master_seed(OnionTreeKind::Index, 0);
-        let index_l1 = sib_level_master_seed(OnionTreeKind::Index, 1);
-        let data_l0 = sib_level_master_seed(OnionTreeKind::Data, 0);
-        let data_l1 = sib_level_master_seed(OnionTreeKind::Data, 1);
-        assert_ne!(index_l0, index_l1);
-        assert_ne!(data_l0, data_l1);
-        assert_ne!(index_l0, data_l0);
-        assert_ne!(index_l1, data_l1);
+    fn test_walk_tree_top_to_root_tampered_fails() {
+        // A wrong level-1 node hash must NOT reconstruct the root.
+        let leaves: Vec<Hash256> = (0..64u8).map(h).collect();
+        let (levels, root) = build_tree(8, &leaves);
+        let top = OnionTreeTopCache {
+            cache_from_level: 1,
+            arity: 8,
+            levels: levels[1..].to_vec(),
+        };
+        let mut tampered = levels[1][3];
+        tampered[0] ^= 0x01;
+        let walked = walk_tree_top_to_root(tampered, 3, &top, 8);
+        assert_ne!(walked, root);
     }
 
     #[test]
-    fn test_entries_in_sib_pbc_group_covers_all() {
-        // Every gid should land in NUM_PBC_HASHES=3 PBC groups. Union of all
-        // groups should cover all gids exactly 3 times.
-        let k = 10usize;
-        let num_gids = 50usize;
-        let mut counts = vec![0usize; num_gids];
-        for g in 0..k {
-            for &gid in &entries_in_sib_pbc_group(g, num_gids, k) {
-                counts[gid as usize] += 1;
-            }
-        }
-        for c in counts {
-            assert_eq!(c, NUM_PBC_HASHES);
+    fn test_walk_tree_top_deep_tree() {
+        // 4096 leaves, arity 8 → levels [4096, 512, 64, 8, 1]. Cache from
+        // level 1 → tree-top [[512],[64],[8],[1]]. Exercises a 3-level walk.
+        let leaves: Vec<Hash256> = (0..255u8)
+            .cycle()
+            .take(4096)
+            .map(h)
+            .collect();
+        let (levels, root) = build_tree(8, &leaves);
+        assert_eq!(levels.len(), 5);
+        let top = OnionTreeTopCache {
+            cache_from_level: 1,
+            arity: 8,
+            levels: levels[1..].to_vec(),
+        };
+        for idx in [0usize, 1, 17, 200, 511] {
+            let walked = walk_tree_top_to_root(levels[1][idx], idx as u32, &top, 8);
+            assert_eq!(walked, root, "level-1 node {} did not reach root", idx);
         }
     }
 

@@ -742,7 +742,7 @@ impl OnionClient {
             .await?;
 
         let (chunk_data, data_merkle, chunk_owned_per_query) = self
-            .query_chunk_level(script_hashes, &index_results, db_info, &params)
+            .query_chunk_level(&index_results, db_info, &params)
             .await?;
 
         // Decode per-scripthash UTXOs from assembled raw bytes.
@@ -855,7 +855,7 @@ impl OnionClient {
         results: &mut [Option<QueryResult>],
         index_traces: &[IndexBinMerkle],
         _index_results: &[Option<IndexResult>],
-        data_merkle: &HashMap<u32, (Hash256, usize)>,
+        data_merkle: &HashMap<u32, (Hash256, usize, u32)>,
         chunk_owned_per_query: &[Vec<u32>],
         db_info: &DatabaseInfo,
     ) -> PirResult<()> {
@@ -871,23 +871,23 @@ impl OnionClient {
         for it in index_traces {
             leaves.push(OnionMerkleLeaf {
                 tree: OnionTreeKind::Index,
-                leaf_pos: it.leaf_pos,
+                pbc_group: it.pbc_group,
+                bin: it.bin,
                 hash: it.bin_hash,
                 result_idx: it.sh_idx,
             });
         }
 
-        // DATA leaves: per the `chunk_max_items_per_group_per_level`
-        // closure, every query (found / not-found / whale) owns
-        // exactly `CHUNK_MERKLE_ITEMS_PER_QUERY = M` entry_ids in
-        // `chunk_owned_per_query[idx]`. A query "passes" iff ALL M of
-        // its DATA leaves verify — synthetic entries are real
-        // commitments in the DB, so a server lying about any of them
-        // (even a synthetic) fails the query. The same entry_id may
-        // be owned by multiple queries when reals overlap or
-        // synthetics are shared across the batch; tracking all
-        // owners in `entry_id_to_result` ensures failures propagate
-        // to every owning query.
+        // DATA leaves: post-M=16-removal (Phase 3 / WS-A) every query owns
+        // its *real* chunk entry_ids in `chunk_owned_per_query[idx]` — N
+        // for a found-with-N query, 0 for not-found / whale. A query
+        // "passes" iff ALL of its real DATA leaves verify to the per-group
+        // root. The same entry_id may be owned by multiple queries when
+        // their real chunk ranges overlap; tracking every owner in
+        // `entry_id_to_result` ensures a failure propagates to each owning
+        // query. (Found-vs-not-found is not leaked by the now-variable DATA
+        // leaf count: the per-group verifier still issues ≥1 all-dummy
+        // CHUNK-Merkle pass for a 0-leaf DATA tree — round-presence.)
         let mut entry_id_to_result: HashMap<u32, Vec<usize>> = HashMap::new();
         for (idx, owned) in chunk_owned_per_query.iter().enumerate() {
             for &eid in owned {
@@ -895,7 +895,7 @@ impl OnionClient {
             }
         }
 
-        for (eid, &(hash, leaf_pos)) in data_merkle {
+        for (eid, &(hash, pbc_group, bin)) in data_merkle {
             let owners = match entry_id_to_result.get(eid) {
                 Some(o) => o,
                 None => continue, // entry fetched but no owning query — shouldn't happen
@@ -903,7 +903,8 @@ impl OnionClient {
             for &owner in owners {
                 leaves.push(OnionMerkleLeaf {
                     tree: OnionTreeKind::Data,
-                    leaf_pos,
+                    pbc_group,
+                    bin,
                     hash,
                     result_idx: owner,
                 });
@@ -952,7 +953,7 @@ impl OnionClient {
         for leaf in &leaves {
             per_query_touched[leaf.result_idx] = true;
             let ok = verdicts
-                .get(&(leaf.tree, leaf.leaf_pos))
+                .get(&(leaf.tree, leaf.pbc_group, leaf.bin))
                 .copied()
                 .unwrap_or(false);
             if !ok {
@@ -1433,8 +1434,9 @@ impl OnionClient {
                     })?;
 
                     // Emit a Merkle trace for EVERY probed bin (not just the
-                    // matching one). Leaf position matches the server's
-                    // flat-table ordering: `pbc_group * bins + bin`.
+                    // matching one). The Phase-3 per-group OnionPIR Merkle
+                    // keys leaves by `(pbc_group, bin)`: `group` selects the
+                    // per-group INDEX tree, `bin` is the leaf index in it.
                     //
                     // OnionPIRv2 port (commit 5): the bin is exactly
                     // `pinfo.entry_size` bytes after `onion_unpack`, so
@@ -1444,7 +1446,8 @@ impl OnionClient {
                     let entry_for_hash: &[u8] = &entry;
                     index_traces.push(IndexBinMerkle {
                         sh_idx,
-                        leaf_pos: group * bins + bin as usize,
+                        pbc_group: group,
+                        bin: bin as u32,
                         bin_hash: pir_core::merkle::sha256(entry_for_hash),
                     });
 
@@ -1471,105 +1474,96 @@ impl OnionClient {
     #[tracing::instrument(level = "trace", skip_all, fields(backend = "onion", db_id = db_info.db_id))]
     async fn query_chunk_level(
         &mut self,
-        script_hashes: &[ScriptHash],
         index_results: &[Option<IndexResult>],
         db_info: &DatabaseInfo,
         params: &OnionDbParams,
     ) -> PirResult<(
         HashMap<u32, Vec<u8>>,
-        HashMap<u32, (Hash256, usize)>,
+        HashMap<u32, (Hash256, usize, u32)>,
         Vec<Vec<u32>>,
     )> {
-        // Collect per-query owned entry_ids for the
-        // `chunk_max_items_per_group_per_level` axis closure
-        // (Phase 3 — DPF in 565ea47, Harmony in 08ec736, this commit
-        // ships OnionPIR). Every query (found / not-found / whale)
-        // owns exactly `CHUNK_MERKLE_ITEMS_PER_QUERY = M` entry_ids:
-        //   - Found with N real entries: N reals + (M - N) synthetic.
-        //   - Not-found / whale: M synthetic.
+        // Collect each query's *real* chunk entry_ids. Phase 3 / WS-A
+        // removed the M=16 chunk-Merkle padding (PLAN_MERKLE_CODING.md):
+        // a query now fetches its real chunk count — found-with-N → N
+        // reals, not-found / whale → 0. The newly-admitted leak (per-query
+        // real chunk count becomes observable) is intended and tracked in
+        // the leakage spec; ~99% of addresses have exactly 1 chunk.
         //
-        // Synthetic entry_ids are derived from a per-query SHA-256
-        // seed (scripthash || query_index), via
-        // `crate::dpf::pad_chunk_ids_to_m` (the same Kani-verified
-        // helper DPF and Harmony reuse — see `pir-core::params::CHUNK_MERKLE_ITEMS_PER_QUERY`).
-        // Reals & synthetics are valid `entry_id`s in
-        // `[0, total_packed)` for any production OnionPIR DB
-        // (total_packed = millions of packed entries).
-        //
-        // The previous round-presence dummy-injection (one random
-        // dummy per not-found / whale) is subsumed: M-padding both
-        // closes the chunk_max axis AND the FOUND-vs-NOT-FOUND
-        // wire-shape asymmetry where DATA Merkle traffic was emitted
-        // only for found queries. The scripthash-derived seed
-        // (vs the legacy deterministic `0..M`) prevents not-found
-        // queries from collapsing their synthetic IDs onto the same
-        // PBC candidate groups — restoring batched PBC packing
-        // efficiency for wallet syncs.
-        let m = pir_core::params::CHUNK_MERKLE_ITEMS_PER_QUERY;
+        // Round-presence is preserved *separately* from M-padding:
+        //   - CHUNK PIR round-presence — kept below: every non-empty batch
+        //     issues ≥1 K_CHUNK CHUNK PIR round even when all-not-found.
+        //   - CHUNK-Merkle round-presence — kept by the per-group verifier
+        //     (`onion_merkle::verify_sub_tree` always issues ≥1 all-dummy
+        //     sibling pass for the DATA tree).
+        // Together they keep found-vs-not-found hidden without M=16.
         let total_packed = params.total_packed.max(1) as u32;
 
         let mut unique: Vec<u32> = Vec::new();
         let mut seen: HashSet<u32> = HashSet::new();
         let mut owned_per_query: Vec<Vec<u32>> = Vec::with_capacity(index_results.len());
 
-        for (qi, ir_opt) in index_results.iter().enumerate() {
+        for ir_opt in index_results.iter() {
             let real_chunks: Vec<u32> = match ir_opt {
                 Some(ir) if ir.num_entries > 0 => {
                     (0..ir.num_entries as u32).map(|i| ir.entry_id + i).collect()
                 }
                 _ => Vec::new(),
             };
-            // Per-query seed: SHA-256("BPIR-CHUNK-PAD" || scripthash ||
-            // query_index_le). Distinct seeds across queries → distinct
-            // synthetic chunk sets → PBC planner can pack the batched
-            // CHUNK round densely (matching the DPF / Harmony fix).
-            let scripthash = &script_hashes[qi];
-            let pad_seed = crate::dpf::derive_chunk_pad_seed(scripthash, qi as u32);
-            // Pad to M; bound at `total_packed` so synthetic ids land
-            // in `[0, total_packed)` for any production OnionPIR DB.
-            let owned = crate::dpf::pad_chunk_ids_to_m(
-                &real_chunks,
-                m,
-                &pad_seed,
-                total_packed,
-            );
-            for &eid in &owned {
+            for &eid in &real_chunks {
                 if eid < total_packed && seen.insert(eid) {
                     unique.push(eid);
                 }
             }
-            owned_per_query.push(owned);
+            owned_per_query.push(real_chunks);
         }
 
         log::info!(
-            "[PIR-AUDIT] OnionPIR CHUNK chunk_max closure: {} queries × M={} owned each = {} unique fetched",
+            "[PIR-AUDIT] OnionPIR CHUNK: {} queries, {} unique real chunk entry_ids",
             index_results.len(),
-            m,
             unique.len(),
         );
 
         let mut decrypted: HashMap<u32, Vec<u8>> = HashMap::new();
-        // entry_id → (SHA256(decrypted_bin), pbc_group * chunk_bins + bin)
-        // Populated per DATA bin fetched — later fed to the OnionPIR per-bin
-        // Merkle verifier.
-        let mut data_merkle: HashMap<u32, (Hash256, usize)> = HashMap::new();
-        if unique.is_empty() {
-            // Empty batch (no queries to pad). Caller's no-op path.
+        // entry_id → (SHA256(decrypted_bin), pbc_group, bin) — the per-group
+        // OnionPIR Merkle leaf key. Populated per DATA bin fetched; later
+        // fed to the per-group Merkle verifier.
+        let mut data_merkle: HashMap<u32, (Hash256, usize, u32)> = HashMap::new();
+
+        // 🔒 CHUNK Round-Presence Symmetry (CLAUDE.md / PLAN_MERKLE_CODING.md
+        // cross-cutting invariant C.1). A genuinely empty batch (no
+        // scripthashes) has nothing to hide → no CHUNK round. But a batch
+        // whose scripthashes are *all* not-found / whale (`unique` empty)
+        // MUST still issue exactly one all-dummy K_CHUNK CHUNK PIR round —
+        // skipping it would leak found-vs-not-found via CHUNK round absence.
+        if index_results.is_empty() {
             return Ok((decrypted, data_merkle, owned_per_query));
         }
 
         let chunk_k = db_info.chunk_k as usize;
         let chunk_bins = db_info.chunk_bins as usize;
 
-        // Build per-group reverse index once — scales with total entries.
-        let reverse_index = build_chunk_reverse_index(params.total_packed, chunk_k);
+        // Plan PBC rounds over the real chunk entry_ids. An all-not-found
+        // batch has `unique` empty → no real PBC rounds; substitute a single
+        // empty round so exactly one all-dummy K_CHUNK CHUNK PIR round still
+        // goes out (round-presence, above). The round body handles an empty
+        // `round` natively — every group falls through to a random dummy.
+        let rounds: Vec<Vec<(usize, usize)>> = if unique.is_empty() {
+            vec![Vec::new()]
+        } else {
+            let entry_groups: Vec<[usize; NUM_HASHES]> = unique
+                .iter()
+                .map(|&eid| pir_core::hash::derive_int_groups_3(eid, chunk_k))
+                .collect();
+            pir_core::pbc::pbc_plan_rounds(&entry_groups, chunk_k, NUM_HASHES, 500)
+        };
 
-        // Plan PBC rounds.
-        let entry_groups: Vec<[usize; NUM_HASHES]> = unique
-            .iter()
-            .map(|&eid| pir_core::hash::derive_int_groups_3(eid, chunk_k))
-            .collect();
-        let rounds = pir_core::pbc::pbc_plan_rounds(&entry_groups, chunk_k, NUM_HASHES, 500);
+        // The reverse index only locates *real* entries; an all-not-found
+        // batch never indexes it, so skip the (total-entries-scale) build.
+        let reverse_index: Vec<Vec<u32>> = if unique.is_empty() {
+            Vec::new()
+        } else {
+            build_chunk_reverse_index(params.total_packed, chunk_k)
+        };
 
         let mut cuckoo_cache: HashMap<usize, Vec<u32>> = HashMap::new();
         let mut rng = SimpleRng::new();
@@ -1691,14 +1685,16 @@ impl OnionClient {
                 );
                 let packed: &[u8] = &bytes;
                 decrypted.insert(q.entry_id, packed.to_vec());
-                // DATA Merkle trace: one leaf per fetched entry_id. Leaf
-                // position matches server's flat-table layout
-                // (`pbc_group * chunk_bins + bin`).
+                // DATA Merkle trace: one leaf per fetched entry_id, keyed by
+                // `(pbc_group, bin)` for the per-group OnionPIR Merkle —
+                // `q.group` selects the per-group DATA tree, `q.bin` is the
+                // leaf index within it.
                 data_merkle.insert(
                     q.entry_id,
                     (
                         pir_core::merkle::sha256(packed),
-                        q.group * chunk_bins + q.bin,
+                        q.group,
+                        q.bin as u32,
                     ),
                 );
             }
@@ -1909,20 +1905,25 @@ struct IndexResult {
     num_entries: u8,
 }
 
-/// Per-bin Merkle trace entry from the INDEX or DATA level.
+/// Per-group INDEX Merkle trace entry.
 ///
 /// Emitted for **every** probed cuckoo bin so the INDEX leaf count is uniform
 /// across found / not-found / whale — see CLAUDE.md's
 /// "Merkle INDEX Item-Count Symmetry" invariant. One of these is pushed per
-/// bin we inspect (INDEX) or per entry_id we fetch (DATA).
+/// INDEX bin we inspect.
+///
+/// Keyed by `(pbc_group, bin)` for the Phase-3 per-group OnionPIR Merkle: the
+/// PBC group selects the per-group tree, `bin` is the leaf index within it.
 #[cfg(feature = "onion")]
 #[derive(Clone, Debug)]
 struct IndexBinMerkle {
     /// Back-reference to which scripthash (query index) this bin belongs to.
     sh_idx: usize,
-    /// `pbc_group * index_bins + bin` — leaf position in the flat INDEX tree.
-    leaf_pos: usize,
-    /// `SHA256(decrypted_bin[..PACKED_ENTRY_SIZE])`.
+    /// PBC group index (`0..index_k`) — selects the per-group INDEX tree.
+    pbc_group: usize,
+    /// Cuckoo bin within the group = leaf index in that group's per-group tree.
+    bin: u32,
+    /// `SHA256(decrypted_bin)` — OnionPIR's no-prefix leaf hash (§2e).
     bin_hash: Hash256,
 }
 
