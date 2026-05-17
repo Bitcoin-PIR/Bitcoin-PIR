@@ -2560,6 +2560,10 @@ fn plan_chunk_rounds(chunk_ids: &[u32], k: usize) -> Vec<Vec<(u32, usize)>> {
 ///
 /// This is pure: same inputs → same output, no I/O, no allocation
 /// beyond the SHA-256 hasher.
+// M=16 chunk-pad helper. DPF (Phase 1) and Harmony (Phase 2) dropped
+// M-padding; the only remaining caller is the `onion`-gated path
+// (onion.rs). Deleted in PLAN_MERKLE_CODING.md Phase 4.
+#[cfg_attr(not(feature = "onion"), allow(dead_code))]
 pub(crate) fn derive_chunk_pad_seed(scripthash: &[u8], query_index: u32) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -2614,6 +2618,9 @@ pub(crate) fn derive_chunk_pad_seed(scripthash: &[u8], query_index: u32) -> [u8;
 /// shape and per-query padding parameters) without knowing the real
 /// chunk content. See `proofs/easycrypt/Simulator.ec` for the formal
 /// argument.
+// M=16 chunk-pad helper — onion-only post-Phase-2 (see
+// `derive_chunk_pad_seed`); deleted in PLAN_MERKLE_CODING.md Phase 4.
+#[cfg_attr(not(feature = "onion"), allow(dead_code))]
 pub(crate) fn derive_synthetic_chunk_ids(
     seed: &[u8; 32],
     m: usize,
@@ -2719,6 +2726,9 @@ pub(crate) fn derive_synthetic_chunk_ids(
 /// DPF/Harmony pass `chunk_k * chunk_bins * CHUNK_SLOTS_PER_BIN` (the
 /// max chunk-id space implied by the table layout); for OnionPIR pass
 /// `total_packed`.
+// M=16 chunk-pad helper — onion-only post-Phase-2 (see
+// `derive_chunk_pad_seed`); deleted in PLAN_MERKLE_CODING.md Phase 4.
+#[cfg_attr(not(feature = "onion"), allow(dead_code))]
 pub(crate) fn pad_chunk_ids_to_m(
     real_chunks: &[u32],
     m: usize,

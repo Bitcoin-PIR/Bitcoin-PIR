@@ -875,14 +875,27 @@ async fn harmony_simulator_property_multi_query_collision() {
     );
 }
 
-/// Post-`chunk_max` closure (Harmony analog of
-/// `dpf_found_vs_not_found_have_byte_identical_profiles`): a FOUND
-/// query and a NOT-FOUND query must produce byte-identical leakage
-/// profiles. Pre-closure NOT-FOUND emitted 0 ChunkMerkleSiblings
-/// rounds vs ≥1 for FOUND (chunk-Merkle-presence leak); the M-padded
-/// closure pads every query to `CHUNK_MERKLE_ITEMS_PER_QUERY = 16`
-/// chunk Merkle items so the wire shape is identical across
-/// classifications.
+/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 2; Harmony
+/// analog of `dpf_found_vs_not_found_have_byte_identical_profiles`).
+/// A FOUND query with a SMALL chunk count (1 chunk — the common
+/// case) and a NOT-FOUND query still produce **byte-identical**
+/// leakage profiles, because:
+///   * round-presence — a not-found query still does one CHUNK round
+///     pair + one all-dummy CHUNK-Merkle pass. The CHUNK round pair
+///     comes from `query_chunk_phase_batched`'s all-empty branch (a
+///     full `run_chunk_round_pair`, not a single `run_chunk_round`);
+///     the CHUNK-Merkle pass from the guard in `merkle_verify.rs`
+///     (the `chunk_sub_items.is_empty()` skip removed in Phase 1).
+///   * each round/pass is K_CHUNK-padded, so its recorded `items` /
+///     `request_bytes` / `response_bytes` are fixed regardless of
+///     how many slots are real.
+/// A found address with MANY chunks diverges (more CHUNK rounds /
+/// CHUNK-Merkle passes) — the now-admitted per-query UTXO-count
+/// leak. The public `found_pair()` examples are small.
+///
+/// Primary guard: the not-found profile must contain >=1
+/// ChunkMerkleSiblings round — if 0, the found-vs-not-found guard
+/// regressed (the all-dummy CHUNK-Merkle pass was skipped).
 ///
 /// Known flake: HarmonyPIR runs against the public Hetzner deployment
 /// can intermittently time out on the hint-stream WebSocket — same
@@ -895,17 +908,26 @@ async fn harmony_found_vs_not_found_have_byte_identical_profiles() {
     let p_found = run_harmony_single_query(sh_found).await;
     let p_nf = run_harmony_single_query(sh_nf).await;
 
+    let nf_cms = p_nf.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
     println!(
         "harmony found-vs-not-found byte-identity: total={} vs {}, ChunkMerkleSiblings={} vs {}",
         p_found.rounds.len(),
         p_nf.rounds.len(),
         p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
-        p_nf.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
+        nf_cms,
     );
 
-    // Strongest possible assertion: every wire-recorded field on
-    // every round must match between the two profiles. Mirror of
-    // `dpf_found_vs_not_found_have_byte_identical_profiles`.
+    // Phase-2 found-vs-not-found guard: the not-found path must
+    // still emit a CHUNK-Merkle pass. If this is 0, the
+    // `chunk_sub_items.is_empty()` skip was reintroduced.
+    assert!(
+        nf_cms >= 1,
+        "not-found emitted 0 ChunkMerkleSiblings rounds — found-vs-not-found guard regressed",
+    );
+
+    // For a small (1-chunk) found example the full profiles are
+    // byte-identical. A large found example would diverge — the
+    // admitted UTXO-count leak (see the doc comment).
     assert_profiles_equivalent(&p_found, &p_nf);
 }
 

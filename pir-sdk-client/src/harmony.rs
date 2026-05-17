@@ -267,11 +267,17 @@ pub(crate) fn classify_index_groups(
 }
 
 /// Build `BucketMerkleItem`s for one query from its internal trace —
-/// emits one item per probed INDEX cuckoo bin, with CHUNK bins attached
-/// only to the matched INDEX item (or none, if not matched). This
-/// layout preserves the 🔒 Merkle INDEX Item-Count Symmetry invariant:
-/// every query contributes exactly `INDEX_CUCKOO_NUM_HASHES` items
-/// regardless of found / not-found / whale.
+/// emits one item per probed INDEX cuckoo bin, with the query's CHUNK
+/// bins attached to the first probed INDEX item (`bi == 0`). The layout
+/// preserves the 🔒 Merkle INDEX Item-Count Symmetry invariant: every
+/// query contributes exactly `INDEX_CUCKOO_NUM_HASHES` items regardless
+/// of found / not-found / whale.
+///
+/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 2): `trace.chunk_bins`
+/// now holds exactly the query's REAL chunk count — `N` for a found query,
+/// `0` for not-found / whale. The chunk-bin attachment stays unconditional
+/// (all on `bi == 0`); a not-found query simply attaches zero chunk items,
+/// and the per-bucket Merkle still issues >=1 all-dummy CHUNK-Merkle pass.
 fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
     trace
         .index_bins
@@ -286,13 +292,9 @@ fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
                 chunk_bin_indices: Vec::new(),
                 chunk_bin_contents: Vec::new(),
             };
-            // Post-`chunk_max` closure: chunk_bins attach to `bi == 0`
-            // unconditionally — matched_index_idx no longer gates the
-            // attachment because every query (found / not-found / whale)
-            // emits `CHUNK_MERKLE_ITEMS_PER_QUERY` chunk Merkle items
-            // via `pad_chunk_ids_to_m`. Mirrors `dpf::items_from_trace`
-            // post-closure shape; see `pir-core::params::CHUNK_MERKLE_ITEMS_PER_QUERY`
-            // and `dpf::pad_chunk_ids_to_m` for the M-padding helper.
+            // Attach all chunk Merkle items to the first INDEX item
+            // (`bi == 0`). A found query attaches its real chunks; a
+            // not-found / whale query attaches none.
             if bi == 0 {
                 for cb in &trace.chunk_bins {
                     it.chunk_pbc_groups.push(cb.pbc_group);
@@ -2420,36 +2422,24 @@ impl HarmonyClient {
             eprintln!("[HARMONY_BENCH] db={} INDEX phase: {:?}", db_info.db_id, t_index);
         }
 
-        // Phase 2: per-scripthash CHUNK + result assembly with the
-        // `chunk_max_items_per_group_per_level` closure. Every query
-        // (found / not-found / whale) pads its real-chunk list to
-        // `CHUNK_MERKLE_ITEMS_PER_QUERY = M` chunks via
-        // `crate::dpf::pad_chunk_ids_to_m`. The wire-observable
-        // `max_items_per_group_per_level` collapses to
-        // `ceil(M / K_CHUNK) = 1` for the production parameters,
-        // independent of UTXO count or found/not-found classification.
-        // CHUNK Round-Presence Symmetry is now subsumed by the
-        // closure: every query runs the M-padded chunk fetch with the
-        // same wire shape.
-        let chunk_pad_m = pir_core::params::CHUNK_MERKLE_ITEMS_PER_QUERY;
-        // Upper bound for synthetic CHUNK IDs — the chunk-id space
-        // implied by the server's CHUNK table layout (groups × bins ×
-        // slots). Scripthash-derived synthetics are drawn uniformly
-        // from `[0, num_chunks_space)` so the PBC planner can pack
-        // batched CHUNK rounds densely across not-found-heavy batches
-        // (previously the legacy `0..M` synthetics collapsed onto the
-        // same `derive_int_groups_3` candidate set, forcing the
-        // planner to emit 4 PBC rounds where 2 sufficed).
-        let num_chunks_space: u32 = (db_info.chunk_k as u32)
-            .saturating_mul(db_info.chunk_bins)
-            .saturating_mul(pir_core::params::CHUNK_SLOTS_PER_BIN as u32)
-            .max(chunk_pad_m as u32);
-
+        // Phase 2: per-scripthash CHUNK + result assembly. Each query
+        // fetches/verifies its REAL chunk count — found queries fetch
+        // their UTXO chunks, not-found / whale queries fetch none.
+        //
+        // M=16 chunk-Merkle padding REMOVED — 2026-05-17, see
+        // PLAN_MERKLE_CODING.md Phase 2 (mirrors the Phase 1 DPF
+        // change). Found-vs-not-found stays hidden: an all-not-found
+        // batch still emits one dummy K_CHUNK-padded CHUNK round pair
+        // (`query_chunk_phase_batched`'s all-empty branch), and the
+        // per-bucket Merkle always issues >=1 (all-dummy) CHUNK-Merkle
+        // pass (the `chunk_sub_items.is_empty()` skip was removed in
+        // merkle_verify.rs). The per-query chunk count is now an
+        // admitted leak — mild; ~99% of addresses have 1 chunk.
         let t_chunk_start = Instant::now();
 
         // Phase 2 PREPROCESS: project each scripthash's INDEX outcome into
-        // (real_count, is_whale, has_real_match, padded_chunk_ids) up
-        // front, in scripthash order. We need both lists indexable by
+        // (real_count, is_whale, has_real_match, real_chunk_ids) up
+        // front, in scripthash order. We need these lists indexable by
         // scripthash idx so the batched CHUNK fetch can run once and we
         // still emit per-scripthash QueryResults in original order.
         let outcomes: Vec<(Option<(u32, u8, bool)>, Vec<IndexBinTrace>, Option<usize>)> =
@@ -2457,8 +2447,8 @@ impl HarmonyClient {
         let mut per_q_real_count: Vec<usize> = Vec::with_capacity(outcomes.len());
         let mut per_q_is_whale: Vec<bool> = Vec::with_capacity(outcomes.len());
         let mut per_q_has_match: Vec<bool> = Vec::with_capacity(outcomes.len());
-        let mut per_q_padded_chunks: Vec<Vec<u32>> = Vec::with_capacity(outcomes.len());
-        for (i, (found_info, _ibins, _matched)) in outcomes.iter().enumerate() {
+        let mut per_q_real_chunks: Vec<Vec<u32>> = Vec::with_capacity(outcomes.len());
+        for (found_info, _ibins, _matched) in outcomes.iter() {
             let (real_chunk_ids, is_whale, has_real_match): (Vec<u32>, bool, bool) =
                 match found_info {
                     Some((start, num, whale)) if *num > 0 => (
@@ -2469,32 +2459,20 @@ impl HarmonyClient {
                     Some((_start, _num, whale)) => (Vec::new(), *whale, true),
                     None => (Vec::new(), false, false),
                 };
-            let real_count = real_chunk_ids.len();
-            // Per-query seed: SHA-256("BPIR-CHUNK-PAD" || scripthash ||
-            // query_index_le). Distinct seeds across queries → distinct
-            // synthetic chunk sets → PBC planner can pack the batched
-            // CHUNK round densely.
-            let pad_seed =
-                crate::dpf::derive_chunk_pad_seed(&script_hashes[i], i as u32);
-            let padded_chunk_ids = crate::dpf::pad_chunk_ids_to_m(
-                &real_chunk_ids,
-                chunk_pad_m,
-                &pad_seed,
-                num_chunks_space,
-            );
-            per_q_real_count.push(real_count);
+            per_q_real_count.push(real_chunk_ids.len());
             per_q_is_whale.push(is_whale);
             per_q_has_match.push(has_real_match);
-            per_q_padded_chunks.push(padded_chunk_ids);
+            per_q_real_chunks.push(real_chunk_ids);
         }
 
         // Phase 2: BATCHED CHUNK fetch — one PBC plan over all queries'
-        // M-padded chunk lists; ceil(N*M / K_CHUNK) PBC rounds × 2
-        // cuckoo positions of wire round-trips instead of N × 2. For
-        // typical wallet syncs (N ≫ 1) this is a 3-5× wall-time
-        // reduction on the CHUNK phase.
+        // REAL chunk lists; ceil(total_chunks / K_CHUNK) PBC rounds × 2
+        // cuckoo positions of wire round-trips. For typical wallet syncs
+        // (N ≫ 1) this batches every scripthash's chunks into shared
+        // K_CHUNK-padded rounds. An all-not-found batch still emits one
+        // dummy round pair (round-presence — see `query_chunk_phase_batched`).
         let chunk_results = self
-            .query_chunk_phase_batched(&per_q_padded_chunks, db_info)
+            .query_chunk_phase_batched(&per_q_real_chunks, db_info)
             .await?;
 
         for (i, ((_found_info, index_bins, matched_idx), (chunk_data, chunk_bins))) in
@@ -2509,16 +2487,13 @@ impl HarmonyClient {
             let is_whale = per_q_is_whale[i];
             let has_real_match = per_q_has_match[i];
             log::info!(
-                "[PIR-AUDIT] HarmonyPIR CHUNK chunk_max closure: query #{} real_chunks={} padded_to={} (M={})",
-                i,
-                real_count,
-                per_q_padded_chunks[i].len(),
-                chunk_pad_m,
+                "[PIR-AUDIT] HarmonyPIR CHUNK: query #{} fetching {} real chunk(s)",
+                i, real_count,
             );
 
-            // Decode only the first real_count chunks' payloads as
-            // genuine UTXO entries. Synthetic-slot payloads belong to
-            // other scripthashes and must not be surfaced.
+            // `chunk_data` holds exactly this scripthash's real chunks;
+            // `real_data_len` is its full length (the slice below is a
+            // defensive no-op unless the server dropped a chunk).
             let real_data_len = real_count * pir_core::params::CHUNK_SIZE;
             let real_data: Vec<u8> = if real_data_len <= chunk_data.len() {
                 chunk_data[..real_data_len].to_vec()
@@ -3450,9 +3425,10 @@ impl HarmonyClient {
     /// scripthash. Mirrors the [`query_index_phase_batched`] PBC
     /// pattern but for CHUNK queries.
     ///
-    /// `per_query_chunks[i]` is the M-padded chunk_id list for
-    /// scripthash i (length == `CHUNK_MERKLE_ITEMS_PER_QUERY` for all
-    /// queries — found / not-found / whale all carry the same shape).
+    /// `per_query_chunks[i]` is the REAL chunk_id list for scripthash
+    /// `i` — `N` ids for a found query with `N` UTXO chunks, empty for
+    /// not-found / whale. (M=16 padding removed — PLAN_MERKLE_CODING.md
+    /// Phase 2; the per-query chunk count is now an admitted leak.)
     ///
     /// Returns one `(chunk_data, chunk_bins)` pair per scripthash, in
     /// the same order — `chunk_data` is concatenated payload bytes
@@ -3470,9 +3446,10 @@ impl HarmonyClient {
     ///
     /// CHUNK Round-Presence Symmetry: when every per-scripthash list
     /// is empty (all not-found / whale in a "this DB has no found
-    /// queries" batch), this function still issues exactly one dummy
-    /// K_CHUNK-padded round, identical to the existing
-    /// `query_chunk_level(&[], ...)` fallback.
+    /// queries" batch), this function still issues one dummy
+    /// K_CHUNK-padded `run_chunk_round_pair` — byte-shape-identical to
+    /// a real single-PBC-round CHUNK fetch, so an all-not-found batch
+    /// is wire-indistinguishable from a found batch.
     async fn query_chunk_phase_batched(
         &mut self,
         per_query_chunks: &[Vec<u32>],
@@ -3482,13 +3459,22 @@ impl HarmonyClient {
         let chunk_bins = db_info.chunk_bins as usize;
         let n = per_query_chunks.len();
 
-        // Empty: still emit 1 dummy round for symmetry.
+        // Empty: still emit one dummy round pair for symmetry. With the
+        // M=16 padding removed (PLAN_MERKLE_CODING.md Phase 2) a
+        // not-found / whale query owns 0 real chunks, so an
+        // all-not-found batch reaches here. It must emit the SAME wire
+        // shape as a found batch's single PBC round —
+        // `run_chunk_round_pair`, two K_CHUNK-padded wire rounds
+        // (h=0, h=1) — not a single `run_chunk_round`, or
+        // found-vs-not-found would leak via the CHUNK round count.
         if per_query_chunks.iter().all(|cids| cids.is_empty()) {
             log::info!(
-                "[PIR-AUDIT] HarmonyPIR CHUNK batched: emitting 1 dummy K_CHUNK-padded round (no real chunks across {} queries)",
+                "[PIR-AUDIT] HarmonyPIR CHUNK batched: emitting 1 dummy K_CHUNK-padded round pair (no real chunks across {} queries)",
                 n,
             );
-            let _ = self.run_chunk_round(db_info.db_id, &[], chunk_bins, 0, 0).await?;
+            let _ = self
+                .run_chunk_round_pair(db_info.db_id, &[], chunk_bins, 0, 1)
+                .await?;
             return Ok((0..n).map(|_| (Vec::new(), Vec::new())).collect());
         }
 
@@ -7432,9 +7418,8 @@ mod tests {
         };
         let items = items_from_trace(&trace);
         assert_eq!(items.len(), INDEX_CUCKOO_NUM_HASHES);
-        // Post-`chunk_max` closure: chunks always live on items[0],
-        // regardless of which INDEX position matched. Mirrors the
-        // dpf::items_from_trace post-closure shape.
+        // Chunks always live on items[0], regardless of which INDEX
+        // position matched. Mirrors the dpf::items_from_trace shape.
         assert_eq!(items[0].chunk_bin_indices.len(), 1);
         assert_eq!(items[1].chunk_bin_indices.len(), 0);
     }
