@@ -734,20 +734,22 @@ pub async fn verify_bucket_merkle_batch_generic(
         chunk_k
     );
 
-    let chunk_verified = if chunk_sub_items.is_empty() {
-        Vec::new()
-    } else {
-        verify_sibling_levels(
-            querier,
-            &chunk_sub_items,
-            chunk_bins,
-            chunk_k,
-            /* table_type = */ 1,
-            &tree_tops[index_k..index_k + chunk_k],
-            db_id,
-        )
-        .await?
-    };
+    // Always run the CHUNK sibling walk — even with zero chunk items
+    // (an all-not-found batch). `verify_sibling_levels` then issues one
+    // all-dummy K_CHUNK-padded pass per sibling level, so found and
+    // not-found batches are wire-indistinguishable (found-vs-not-found
+    // round-presence). The old `if chunk_sub_items.is_empty()` skip was
+    // safe only while M=16 padding guaranteed >=1 item per query.
+    let chunk_verified = verify_sibling_levels(
+        querier,
+        &chunk_sub_items,
+        chunk_bins,
+        chunk_k,
+        /* table_type = */ 1,
+        &tree_tops[index_k..index_k + chunk_k],
+        db_id,
+    )
+    .await?;
 
     // ── Step 3: Combine results ────────────────────────────────────────
     let mut result = vec![true; items.len()];
@@ -883,22 +885,19 @@ pub async fn verify_bucket_merkle_batch_parallel(
         index_tree_tops,
         db_id,
     );
-    let chunk_fut = async {
-        if chunk_sub_items.is_empty() {
-            Ok::<_, PirError>(Vec::<bool>::new())
-        } else {
-            verify_sibling_levels(
-                chunk_querier,
-                &chunk_sub_items,
-                chunk_bins,
-                chunk_k,
-                1, // table_type = CHUNK
-                chunk_tree_tops,
-                db_id,
-            )
-            .await
-        }
-    };
+    // Always run the CHUNK sibling walk — see the note in
+    // `verify_bucket_merkle_batch_generic`. Zero chunk items still
+    // yields one all-dummy pass per level (found-vs-not-found
+    // round-presence).
+    let chunk_fut = verify_sibling_levels(
+        chunk_querier,
+        &chunk_sub_items,
+        chunk_bins,
+        chunk_k,
+        1, // table_type = CHUNK
+        chunk_tree_tops,
+        db_id,
+    );
 
     #[cfg(not(target_arch = "wasm32"))]
     let (index_verified, chunk_verified) = tokio::try_join!(index_fut, chunk_fut)?;

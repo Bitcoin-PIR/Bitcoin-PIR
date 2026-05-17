@@ -237,15 +237,11 @@ struct QueryTraces {
 /// query contributes exactly `INDEX_CUCKOO_NUM_HASHES` items regardless
 /// of found / not-found / whale.
 ///
-/// Post-Option-B `chunk_max_items_per_group_per_level` closure (this
-/// commit), `trace.chunk_bins` holds exactly
-/// `CHUNK_MERKLE_ITEMS_PER_QUERY = M` entries for *every* query
-/// classification — found queries pad real chunks to M with
-/// synthetic chunk_ids; not-found and whale queries pad with M
-/// synthetics. The chunk-bin attachment is therefore unconditional:
-/// the receiver picks `it.chunk_pbc_groups` etc. from `bi == 0` and
-/// ignores the matched_index_idx coupling that the pre-closure code
-/// used to gate the attachment.
+/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 1): `trace.chunk_bins`
+/// now holds exactly the query's REAL chunk count — `N` for a found query,
+/// `0` for not-found / whale. The chunk-bin attachment stays unconditional
+/// (all on `bi == 0`); a not-found query simply attaches zero chunk items,
+/// and the per-bucket Merkle still issues >=1 all-dummy CHUNK-Merkle pass.
 fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
     trace
         .index_bins
@@ -260,11 +256,9 @@ fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
                 chunk_bin_indices: Vec::new(),
                 chunk_bin_contents: Vec::new(),
             };
-            // Attach all chunk Merkle items to the first INDEX item.
-            // Pre-closure this was gated on `matched_index_idx == Some(bi)`
-            // so not-found/whale emitted zero CHUNK Merkle items; post-
-            // closure every query emits M CHUNK Merkle items so the wire
-            // round count is the same across found/not-found/whale.
+            // Attach all chunk Merkle items to the first INDEX item
+            // (`bi == 0`). A found query attaches its real chunks; a
+            // not-found / whale query attaches none.
             if bi == 0 {
                 for cb in &trace.chunk_bins {
                     it.chunk_pbc_groups.push(cb.pbc_group);
@@ -731,29 +725,15 @@ impl DpfClient {
         // queries fetch their chunks; not-found / whale queries still
         // emit a K_CHUNK-padded dummy CHUNK round (CHUNK Round-Presence
         // Symmetry).
-        // M = constant chunk-Merkle items every query contributes,
-        // independent of UTXO count or found/not-found. Drives the
-        // `chunk_max_items_per_group_per_level` axis closure: the
-        // wire-observable per-Merkle-level pass count becomes
-        // `ceil(M / K_CHUNK) = 1` for the production parameters
-        // `M = 16, K_CHUNK = 80`, so every query (found, not-found,
-        // whale) emits the same number of `ChunkMerkleSiblings`
-        // rounds. Closes the "chunk Merkle round absence reveals
-        // not-found" leak the pre-closure code admitted via the
-        // dummy-`query_chunk_level(&[])` round.
-        let chunk_pad_m = pir_core::params::CHUNK_MERKLE_ITEMS_PER_QUERY;
-        // Upper bound for synthetic CHUNK IDs — the chunk-id space
-        // implied by the server's CHUNK table layout (groups × bins ×
-        // slots). Scripthash-derived synthetics are drawn uniformly
-        // from `[0, num_chunks_space)` so the PBC planner can pack
-        // batched CHUNK rounds densely instead of collapsing onto the
-        // legacy `0..M` set. Even a generous overestimate is fine:
-        // `derive_int_groups_3` is hash-based, so any u32 in this
-        // range spreads uniformly across PBC groups.
-        let num_chunks_space: u32 = (db_info.chunk_k as u32)
-            .saturating_mul(db_info.chunk_bins)
-            .saturating_mul(pir_core::params::CHUNK_SLOTS_PER_BIN as u32)
-            .max(chunk_pad_m as u32);
+        // M=16 chunk-Merkle padding REMOVED — 2026-05-17, see
+        // PLAN_MERKLE_CODING.md Phase 1. A query now fetches/verifies
+        // its REAL chunk count. Found-vs-not-found stays hidden:
+        // `query_chunk_level(&[])` emits a K_CHUNK-padded dummy CHUNK
+        // round for not-found/whale, and the per-bucket Merkle always
+        // issues >=1 (all-dummy) CHUNK-Merkle pass (the
+        // `chunk_sub_items.is_empty()` skip was removed in
+        // merkle_verify.rs). The per-query chunk count is now an
+        // admitted leak — mild; ~99% of addresses have 1 chunk.
 
         for (i, (found_info, index_bins, matched_idx)) in index_outcomes.into_iter().enumerate() {
             let mut q_traces = QueryTraces {
@@ -764,9 +744,8 @@ impl DpfClient {
 
             // Resolve the real-chunk slice for this query. Found queries
             // contribute `start..start+num` real chunks; not-found and
-            // whale queries contribute none. The padded list always has
-            // length `M` so the wire shape of `query_chunk_level` is the
-            // same across all three classifications.
+            // whale queries contribute none — `query_chunk_level(&[])`
+            // then emits a dummy round-presence CHUNK round.
             let (real_chunk_ids, is_whale, has_real_match): (Vec<u32>, bool, bool) =
                 match found_info {
                     Some((start, num, whale)) if num > 0 => (
@@ -775,40 +754,25 @@ impl DpfClient {
                         true,
                     ),
                     Some((_start, _num, whale)) => {
-                        // Whale: matched but `num_chunks == 0`. Pad with
-                        // M synthetics; emit no real UTXO entries.
+                        // Whale: matched but `num_chunks == 0`. No real
+                        // chunks; emit no real UTXO entries.
                         (Vec::new(), whale, true)
                     }
                     None => (Vec::new(), false, false),
                 };
 
             let real_count = real_chunk_ids.len();
-            // Per-query seed: SHA-256("BPIR-CHUNK-PAD" || scripthash ||
-            // query_index_le). Distinct seeds across queries → distinct
-            // synthetic chunk sets → PBC planner can pack the batched
-            // CHUNK round densely.
-            let pad_seed = derive_chunk_pad_seed(&script_hashes[i], i as u32);
-            let padded_chunk_ids = pad_chunk_ids_to_m(
-                &real_chunk_ids,
-                chunk_pad_m,
-                &pad_seed,
-                num_chunks_space,
-            );
             log::info!(
-                "[PIR-AUDIT] CHUNK chunk_max closure: query #{} real_chunks={} padded_to={} (M={})",
-                i,
-                real_count,
-                padded_chunk_ids.len(),
-                chunk_pad_m,
+                "[PIR-AUDIT] CHUNK: query #{} fetching {} real chunk(s)",
+                i, real_count,
             );
             let (chunk_data, chunk_bins) =
-                self.query_chunk_level(&padded_chunk_ids, db_info).await?;
+                self.query_chunk_level(&real_chunk_ids, db_info).await?;
             q_traces.chunk_bins = chunk_bins;
 
-            // Decode only the first `real_count * CHUNK_SIZE` payload
-            // bytes — these are the genuine UTXO entries for THIS
-            // scripthash. Synthetic chunks were drawn from a deterministic
-            // pool and their payloads belong to other scripthashes.
+            // `chunk_data` holds exactly this scripthash's real chunks;
+            // `real_data_len` is its full length (the slice below is a
+            // defensive no-op unless the server dropped a chunk).
             let real_data_len = real_count * pir_core::params::CHUNK_SIZE;
             let real_data: Vec<u8> = if real_data_len <= chunk_data.len() {
                 chunk_data[..real_data_len].to_vec()
@@ -820,8 +784,9 @@ impl DpfClient {
             };
 
             if !has_real_match {
-                // Not-found: no UTXO entries; chunk_bins still holds M
-                // traces for the Merkle layer.
+                // Not-found: no UTXO entries, `chunk_bins` empty.
+                // Round-presence holds via the dummy CHUNK round +
+                // the all-dummy CHUNK-Merkle pass (merkle_verify.rs).
                 results.push(None);
                 traces.push(q_traces);
                 continue;

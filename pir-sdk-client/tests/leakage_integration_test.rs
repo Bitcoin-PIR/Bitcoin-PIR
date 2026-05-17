@@ -1271,28 +1271,36 @@ async fn dpf_found_vs_not_found_have_same_round_count() {
         found_chunks, not_found_chunks,
     );
 
-    // Post-`chunk_max` closure (commit landing this test): TOTAL
-    // round count also agrees. Pre-closure the FOUND path emitted
-    // ChunkMerkleSiblings rounds whose presence and per-level pass
-    // count revealed UTXO existence and approximate count; the
-    // closure pads every query (found / not-found / whale) to
-    // `CHUNK_MERKLE_ITEMS_PER_QUERY = 16` chunk Merkle items, so
-    // the wire-observable ChunkMerkleSiblings round count is now
-    // a constant function of the database parameters
-    // (`ceil(M / K_CHUNK) × n_servers × n_chunk_merkle_levels`).
+    // M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 1). The
+    // ChunkMerkleSiblings count still agrees across found and
+    // not-found via ROUND-PRESENCE: a not-found query does one
+    // all-dummy CHUNK-Merkle pass (the guard in merkle_verify.rs —
+    // the `chunk_sub_items.is_empty()` skip was removed), and a
+    // found query with a small chunk count (1 pass) matches it. A
+    // found address with many chunks would diverge — the
+    // now-admitted per-query UTXO-count leak; the public
+    // `found_pair()` examples are small so equality holds.
     let found_cms = p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
     let nf_cms = p_not_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
+    // The not-found path MUST still emit >=1 CHUNK-Merkle pass —
+    // this is the Phase-1 found-vs-not-found guard.
+    assert!(
+        nf_cms >= 1,
+        "not-found emitted 0 ChunkMerkleSiblings rounds — the \
+         found-vs-not-found guard regressed (the all-dummy \
+         CHUNK-Merkle pass was skipped)",
+    );
     assert_eq!(
         found_cms, nf_cms,
         "found and not-found ChunkMerkleSiblings round counts diverge \
-         ({} vs {}) — chunk_max axis closure regressed; the not-found \
-         path may have skipped the M-padded chunk fetch",
+         ({} vs {}) — either the round-presence guard regressed, or \
+         the found example has many chunks (admitted UTXO-count leak)",
         found_cms, nf_cms,
     );
     assert_eq!(
         p_found.rounds.len(), p_not_found.rounds.len(),
         "found and not-found total round counts diverge ({} vs {}) \
-         — chunk_max axis closure regressed",
+         — round-presence regressed, or the found example is large",
         p_found.rounds.len(), p_not_found.rounds.len(),
     );
 }
@@ -1331,23 +1339,23 @@ async fn dpf_round_count_is_function_of_batch_size_only() {
     );
 }
 
-/// Post-`chunk_max` closure: a FOUND query and a NOT-FOUND query
-/// must produce **byte-identical** leakage profiles. Pre-closure
-/// the FOUND path emitted CHUNK rounds with per-group item counts
-/// proportional to UTXO distribution and ChunkMerkleSiblings rounds
-/// scaled to per-query Merkle item count; both varied with the
-/// scripthash queried. Post-closure (every query pads to
-/// `CHUNK_MERKLE_ITEMS_PER_QUERY = 16` chunk Merkle items via the
-/// `pad_chunk_ids_to_m` helper) the wire shape of CHUNK PIR and
-/// ChunkMerkleSiblings rounds is the SAME across found, not-found,
-/// and whale paths — only DPF-key bytes differ, and those are
-/// hidden by the per-key fixed-length encoding.
+/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 1). A FOUND
+/// query with a SMALL chunk count (1 chunk — the common case) and a
+/// NOT-FOUND query still produce **byte-identical** leakage
+/// profiles, because:
+///   * round-presence — a not-found query still does one CHUNK
+///     round + one all-dummy CHUNK-Merkle pass (the guard in
+///     `merkle_verify.rs`);
+///   * each round/pass is K_CHUNK-padded, so its recorded `items` /
+///     `request_bytes` / `response_bytes` are fixed regardless of
+///     how many slots are real.
+/// A found address with MANY chunks diverges (more CHUNK rounds /
+/// CHUNK-Merkle passes) — the now-admitted per-query UTXO-count
+/// leak. The public `found_pair()` examples are small.
 ///
-/// This is the strongest regression guard for the chunk_max
-/// closure: any divergence in `request_bytes` / `response_bytes` /
-/// `items` for a CHUNK or ChunkMerkleSiblings round between found
-/// and not-found indicates the closure was undone (e.g., the
-/// not-found path stopped padding to M).
+/// Primary guard: the not-found profile must contain >=1
+/// ChunkMerkleSiblings round — if 0, the found-vs-not-found guard
+/// regressed (the all-dummy CHUNK-Merkle pass was skipped).
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn dpf_found_vs_not_found_have_byte_identical_profiles() {
@@ -1356,17 +1364,26 @@ async fn dpf_found_vs_not_found_have_byte_identical_profiles() {
     let p_found = run_dpf_single_query(sh_found).await;
     let p_nf = run_dpf_single_query(sh_nf).await;
 
+    let nf_cms = p_nf.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
     println!(
         "dpf found-vs-not-found byte-identity: total={} vs {}, ChunkMerkleSiblings={} vs {}",
         p_found.rounds.len(),
         p_nf.rounds.len(),
         p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
-        p_nf.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 }),
+        nf_cms,
     );
 
-    // Strongest possible assertion: every wire-recorded field on
-    // every round must match between the two profiles. If the
-    // closure regressed, this fires loudly.
+    // Phase-1 found-vs-not-found guard: the not-found path must
+    // still emit a CHUNK-Merkle pass. If this is 0, the
+    // `chunk_sub_items.is_empty()` skip was reintroduced.
+    assert!(
+        nf_cms >= 1,
+        "not-found emitted 0 ChunkMerkleSiblings rounds — found-vs-not-found guard regressed",
+    );
+
+    // For a small (1-chunk) found example the full profiles are
+    // byte-identical. A large found example would diverge — the
+    // admitted UTXO-count leak (see the doc comment).
     assert_profiles_equivalent(&p_found, &p_nf);
 }
 
