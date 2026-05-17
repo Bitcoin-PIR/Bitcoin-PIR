@@ -154,6 +154,10 @@ path = "src/test_merkle_verify_onion.rs"
 name = "test_pir_core_crosscheck"
 path = "src/test_pir_core_crosscheck.rs"
 
+[[bin]]
+name = "experiment_onion_sibling_pir"
+path = "src/experiment_onion_sibling_pir.rs"
+
 [dependencies]
 pir-core = { path = "../pir-core" }
 bitcoin = "0.32.7"
@@ -161,6 +165,6 @@ txoutset = "0.4"
 memmap2 = "0.9"
 rayon = "1.10"
 libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
-onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "f164451a6bc89694ec39e8b799def51ab1261285" }
+onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "aa7710d2493e97d7edef03e75d51ee05b0eab6c5" }
 brk_reader = "0.2"
 brk_rpc = "0.2"
