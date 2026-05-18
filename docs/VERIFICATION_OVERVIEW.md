@@ -232,7 +232,7 @@ Multi-query (curated colliding scripthash batches):
 |---|---|---|
 | DPF | A=B=33 / C=21 rounds; IndexMerkleSiblings 24 / 12 | A=B=C=19; IndexMerkleSiblings 12 |
 | HarmonyPIR | A=B=28 / C=22 rounds; IndexMerkleSiblings 12 / 6 | A=B=C=20; IndexMerkleSiblings 6 |
-| OnionPIR | A=B=C=7 (already structurally trivial) | unchanged |
+| OnionPIR | collision closure n/a (no fixed-`[0]` coupling) | A=B=C=10; IndexMerkleSiblings 2 (per-group Merkle, Phase 3) |
 
 ## Key files & commits
 

@@ -194,8 +194,10 @@ required.
   IndexMerkleSiblings A=B=C=12. Pre-closure: A=33 / C=21.
 - `harmony_simulator_property_multi_query_collision`: A=B=C=20 rounds,
   IndexMerkleSiblings A=B=C=6. Pre-closure: A=28 / C=22.
-- `onion_simulator_property_multi_query_collision`: A=B=C=7 rounds,
-  IndexMerkleSiblings A=B=C=1 (structurally trivial pre- and post-).
+- `onion_simulator_property_multi_query_collision`: A=B=C=10 rounds,
+  IndexMerkleSiblings A=B=C=2 (per-group Merkle since Phase 3: each
+  query's 2 INDEX cuckoo positions are 2 leaves in its per-group tree
+  → 2 passes; content-independent).
 
 ### CHUNK Merkle Item-Count — Documented Trade-off (NOT an invariant)
 

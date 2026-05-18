@@ -1060,38 +1060,36 @@ async fn run_onion_batch_query(scripthashes: &[ScriptHash]) -> LeakageProfile {
 /// **Why this asserts equivalence across ALL three batches** — including
 /// the non-colliding `batch_C`, where DPF and Harmony assert *non*-equivalence:
 ///
-/// 1. OnionPIR's INDEX query layer
-///    ([pir-sdk-client/src/onion.rs:1228-1232](pir-sdk-client/src/onion.rs:1228))
-///    calls `pbc_plan_rounds` over the scripthashes' `derive_groups_3`
-///    triples. When two scripthashes share `derive_groups_3[0]`, the
-///    planner re-routes one to its [1] or [2] within the same INDEX
-///    round — they land in different `group` slots, so their INDEX
-///    Merkle leaves do *not* accumulate in one PBC group the way DPF's
-///    do.
-/// 2. OnionPIR's INDEX Merkle layer
-///    ([pir-sdk-client/src/onion_merkle.rs:777-790](pir-sdk-client/src/onion_merkle.rs:777))
-///    buckets items by `gid = node_idx / arity` (post-cuckoo, *not* by
-///    `pbc_group`), then PBC-routes unique gids again via
-///    `derive_int_groups_3(gid, level_info.k)`. Wire emits
-///    `pbc_rounds.len()` rounds per level.
-/// 3. Concretely: ARITY = 120 for OnionPIR Merkle (see
-///    `build/src/gen_4_build_merkle_onion.rs:35`), and
-///    `level_info.k = adaptive_k(num_groups)` returns 25 for typical
-///    production sizes (same file, line 40-43). For batch=2 the upper
-///    bound on INDEX Merkle items is 4 → at most 4 unique gids →
-///    `pbc_plan_rounds(≤4 items, k=25, 3 candidates, 500 max_kicks)`
-///    always packs into 1 round.
+/// Since the Phase-3 per-group OnionPIR Merkle redesign
+/// (PLAN_MERKLE_CODING.md / MERKLE_COLOCATION_REVIEW.md) OnionPIR has
+/// one independent Merkle tree per PBC group — structurally identical
+/// to DPF/Harmony's per-bucket trees. The flat per-table tree and its
+/// gid-cuckoo `pbc_plan_rounds`-over-gids sibling fetch are gone.
 ///
-/// So the `index_max_items_per_group_per_level` axis is *structurally
-/// trivial on Onion at small batch*: `pbc_rounds.len() = 1` per level,
-/// regardless of any collision pattern in the inputs. The empirical
-/// witness here is the negation of what DPF shows — the curation that
-/// distinguishes DPF/Harmony profiles is a no-op on Onion.
+/// The per-group verifier `onion_merkle::verify_sub_tree` issues
+/// `max(1, max_items_per_group)` sibling passes per level, where
+/// `max_items_per_group` is the most INDEX Merkle leaves any single
+/// PBC group contributes. Each OnionPIR query probes
+/// `INDEX_CUCKOO_NUM_HASHES = 2` cuckoo positions, and both are bins
+/// within that query's one PBC-assigned group — so a query contributes
+/// 2 INDEX Merkle leaves to its own per-group tree. The data-INDEX
+/// `pbc_plan_rounds` routes the two curated scripthashes to distinct
+/// groups (re-routing one to its [1]/[2] candidate on a
+/// `derive_groups_3[0]` collision), so each query's 2 leaves stay in
+/// its own group: `max_items_per_group = 2`, hence 2
+/// `IndexMerkleSiblings` passes per level — a constant, independent of
+/// the inputs' collision pattern.
 ///
-/// If `level_info.k` ever drops to ≤ 4 (very small DB) or batch size
-/// grows past ~12, the per-level count assertion below fires and forces
-/// a re-think. The condition is pinned explicitly so a future server
-/// reconfiguration cannot silently invalidate the structural argument.
+/// So the `index_max_items_per_group_per_level` axis is a *content-
+/// independent constant* on Onion at batch=2: 2 passes per level. The
+/// empirical witness here is the negation of what DPF shows — the
+/// curation that distinguishes DPF/Harmony profiles is a no-op on Onion.
+///
+/// The per-level count is pinned at 2 below. The load-bearing
+/// assertion is `assert_profiles_equivalent` (A ≡ B ≡ C); the count
+/// pin is a secondary structural check — if the two scripthashes ever
+/// collide into the *same* PBC group (`max_items_per_group = 4`) or
+/// the per-group Merkle shape changes, it fires and forces a re-think.
 #[cfg(feature = "onion")]
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
@@ -1136,21 +1134,24 @@ async fn onion_simulator_property_multi_query_collision() {
     assert_profiles_equivalent(&profile_a, &profile_b);
     assert_profiles_equivalent(&profile_a, &profile_c);
 
-    // Pin the structural-triviality assumption per level. Each
-    // observed Merkle level must have emitted exactly 1 PBC round.
-    // If a future server reconfiguration shrinks `level_info.k` below
-    // ~5 (or batch size grows past ~12), this fires and the
-    // structural argument needs a re-think.
+    // Pin the per-group structural value per level: the per-group
+    // verifier issues `max_items_per_group` IndexMerkleSiblings passes,
+    // and each query's INDEX_CUCKOO_NUM_HASHES=2 cuckoo positions are
+    // 2 leaves in its one per-group tree -> 2 passes. The load-bearing
+    // assertion is `assert_profiles_equivalent` above; this is a
+    // secondary structural check.
     assert!(
         !hist_a.is_empty(),
         "expected ≥1 IndexMerkleSiblings level in OnionPIR profile (DB has Merkle?); got 0",
     );
     for (level, &count) in &hist_a {
         assert_eq!(
-            count, 1,
-            "batch=2 expected pbc_rounds.len()=1 at IndexMerkleSiblings L{}; got {} \
-             — server's level_info.k may have shrunk below the structural-triviality \
-             threshold; see the test header comment for context",
+            count, 2,
+            "batch=2 expected 2 IndexMerkleSiblings passes at L{} (per-group \
+             verifier: each query's 2 cuckoo positions are 2 leaves in its one \
+             per-group tree -> max_items_per_group=2); got {} — the two curated \
+             scripthashes may have collided into the same PBC group, or the \
+             per-group Merkle shape changed; see the test header comment",
             level, count,
         );
     }
