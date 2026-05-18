@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.13)
 
-# CMake 4.x compat: some bundled deps (e.g. older HEXL) still set 3.5-era policy
-# defaults. Allow them to keep building under newer cmake.
+# CMake 4.x compat: an installed HEXL package config (or another find_package'd
+# dependency) may still declare 3.5-era policy defaults. Allow them under a
+# newer cmake.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 # Set build type to Benchmark if not specified
@@ -18,49 +19,92 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)   # fail if the compiler can't do C++20
 set(CMAKE_CXX_EXTENSIONS  OFF)        # use -std=c++20, not gnu++20
 
-# Automatically enables all available optimizations for your local machine, including AVX2 and AVX512
-set(CMAKE_CXX_FLAGS "-O3 -MD -march=native -mtune=native")  # Enable all optimizations
-
-# Add perf when building in Debug mode
+# Arch-independent optimisation flags. The microarchitecture flag (-march) is
+# appended after project() below — it depends on CMAKE_SYSTEM_PROCESSOR, which
+# CMake only populates as part of project().
 if (CMAKE_BUILD_TYPE MATCHES Debug)
-    set(CMAKE_CXX_FLAGS "-O2 -MD -pg -march=native -mtune=native")  # Enable profiling flags
+    set(CMAKE_CXX_FLAGS "-O2 -MD -pg")   # -pg: profiling build
+else()
+    set(CMAKE_CXX_FLAGS "-O3 -MD")
+endif()
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
+
+set(IS_BENCHMARK_BUILD CMAKE_BUILD_TYPE STREQUAL "Benchmark")
+if (${IS_BENCHMARK_BUILD})
+    add_compile_definitions(_BENCHMARK)
+endif ()
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+project(Onion-PIR)
+
+# ============================================================================
+# The blocks below read CMAKE_SYSTEM_PROCESSOR, which CMake only populates as
+# part of project(). They MUST stay after project(): evaluated earlier,
+# CMAKE_SYSTEM_PROCESSOR is empty, the arch regex silently fails, and the
+# -march / HEXL / AVX detection all quietly take their non-x86 fallback —
+# disabling HEXL on x86_64 even when explicitly requested. (Past regression.)
+# ============================================================================
+
+# ---- Microarchitecture target ----------------------------------------------
+# -march=native bakes in the *build host's* instruction set: not reproducible,
+# and a latent SIGILL when the deploy CPU is older than the builder. Default to
+# a portable baseline instead. Override with -DONIONPIR_MARCH=<value> (e.g.
+# native, x86-64-v4, znver4, …); set it empty to omit -march entirely.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
+    set(_ONIONPIR_MARCH_DEFAULT "x86-64-v3")   # AVX2 + FMA + BMI; runs on any
+                                               # Haswell-or-newer Intel / Zen
+else()
+    set(_ONIONPIR_MARCH_DEFAULT "native")      # ARM/other: host tuning is fine
+endif()
+set(ONIONPIR_MARCH "${_ONIONPIR_MARCH_DEFAULT}" CACHE STRING
+    "Microarchitecture passed to -march (empty = omit the flag)")
+if (ONIONPIR_MARCH)
+    message(STATUS "Codegen target: -march=${ONIONPIR_MARCH}")
+    string(APPEND CMAKE_CXX_FLAGS " -march=${ONIONPIR_MARCH}")
 endif()
 
-
-# Intel HEXL is x86_64-only. Default ON for x86_64, OFF elsewhere (ARM, WASM).
-# When OFF, the build uses a scalar shim under cpp/hexl_compat/ that mimics
-# HEXL's API surface (NTT, Eltwise*, MinimalPrimitiveRoot) — see cpp/hexl_shim.cpp.
+# ---- Intel HEXL -------------------------------------------------------------
+# HEXL is x86_64-only. USE_HEXL defaults ON on x86_64, OFF elsewhere (ARM,
+# WASM). When HEXL is unavailable the build uses the scalar/SIMD shim under
+# cpp/hexl_compat/ (cpp/hexl_shim.cpp), which reimplements the subset of HEXL's
+# API the engine needs (NTT, Eltwise*, MinimalPrimitiveRoot).
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
     set(_USE_HEXL_DEFAULT ON)
 else()
     set(_USE_HEXL_DEFAULT OFF)
 endif()
-option(USE_HEXL "Enable Intel HEXL optimizations (x86_64 only)" ${_USE_HEXL_DEFAULT})
+option(USE_HEXL "Enable Intel HEXL acceleration (x86_64 only)" ${_USE_HEXL_DEFAULT})
 
+# ONIONPIR_HEXL_ACTIVE is the resolved decision — true only when HEXL is both
+# requested AND actually found. Everything downstream keys off this, so a
+# requested-but-missing HEXL degrades cleanly to the shim.
+set(ONIONPIR_HEXL_ACTIVE FALSE)
 if (USE_HEXL)
-    message(STATUS "HEXL support enabled.")
-    add_compile_definitions(ONIONPIR_USE_HEXL)
-
-    # HEXL_DIR can be overridden on the cmake line: -DHEXL_DIR=/path/to/cmake/hexl-1.2.6
-    if (NOT HEXL_DIR)
-        set(HEXL_DIR "/u/yuec12/OnionPIRv2/hexl_install/lib64/cmake/hexl-1.2.6")
-    endif()
-
-    find_package(HEXL REQUIRED)
-    if(HEXL_FOUND)
-        message(STATUS "HEXL found at: ${HEXL_DIR}")
+    # Locate an installed HEXL: pass -DHEXL_DIR=<dir with HEXLConfig.cmake> or
+    # -DCMAKE_PREFIX_PATH=<prefix>. Deliberately NOT REQUIRED — a missing HEXL
+    # must not break the build (e.g. cargo-vendored consumers that don't ship
+    # it); we fall back to the shim instead.
+    find_package(HEXL CONFIG)
+    if (HEXL_FOUND)
+        set(ONIONPIR_HEXL_ACTIVE TRUE)
+        message(STATUS "HEXL found (${HEXL_DIR}) — Intel HEXL acceleration enabled.")
     else()
-        message(FATAL_ERROR "HEXL not found. Set -DHEXL_DIR=<path>, or pass -DUSE_HEXL=OFF to use the scalar fallback.")
+        message(WARNING
+            "USE_HEXL=ON but no HEXL package was found — pass -DHEXL_DIR=<dir> "
+            "or -DCMAKE_PREFIX_PATH=<prefix>. Falling back to the scalar/SIMD "
+            "shim at cpp/hexl_compat/.")
     endif()
 else()
-    message(STATUS "HEXL support disabled — using scalar shim at cpp/hexl_compat/.")
+    message(STATUS "HEXL disabled — using scalar/SIMD shim at cpp/hexl_compat/.")
+endif()
+if (ONIONPIR_HEXL_ACTIVE)
+    add_compile_definitions(ONIONPIR_USE_HEXL)
 endif()
 
-
-# AVX-512 detection: -march=native already strips AVX-512 on CPUs that lack it,
-# but some compilers (or older HEXL probes) still emit AVX-512 codegen unless
-# explicitly disabled. Default NOAVX512=ON on non-x86 to avoid SIGILL on fresh
-# clones; users on AVX-512 hosts can flip it off.
+# ---- AVX-512 / AVX2 escape hatches ------------------------------------------
+# For hosts where -march pulls in instructions the deploy CPU lacks. With the
+# default ONIONPIR_MARCH=x86-64-v3 there is no AVX-512 to disable; NOAVX512
+# matters only when ONIONPIR_MARCH is bumped to an AVX-512 level.
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
     option(NOAVX512 "Disable AVX-512" OFF)
 else()
@@ -68,21 +112,13 @@ else()
 endif()
 option(NOAVX2 "Disable AVX2" OFF)
 if (NOAVX512 AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
-    message("Disabling AVX-512")
+    message(STATUS "Disabling AVX-512 (-mno-avx512f)")
     add_compile_options(-mno-avx512f)
 endif()
 if (NOAVX2 AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
-    message("Disabling AVX2")
+    message(STATUS "Disabling AVX2 (-mno-avx2)")
     add_compile_options(-mno-avx2)
 endif()
-
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
-set(IS_BENCHMARK_BUILD CMAKE_BUILD_TYPE STREQUAL "Benchmark")
-if (${IS_BENCHMARK_BUILD})
-    add_compile_definitions(_BENCHMARK)
-endif ()
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-project(Onion-PIR)
 
 # Build-time selector for the parameter set.
 # Override on the cmake line:
@@ -95,8 +131,8 @@ endif()
 
 
 # Source layout split for the two build targets:
-#   ONIONPIR_CORE_SRC  = library-eligible sources (PIR engine + scalar HEXL shim
-#                        if applicable). Excludes main.cpp / test scaffolding.
+#   ONIONPIR_CORE_SRC  = library-eligible sources (PIR engine + scalar/SIMD HEXL
+#                        shim if applicable). Excludes main.cpp / test scaffolding.
 #   ONIONPIR_FFI_SRC   = C-ABI wrapper for Rust / Java consumers.
 #   ONIONPIR_BIN_SRC   = additional sources for the Onion-PIR executable
 #                        (main.cpp and the in-tree test harness under cpp/tests/).
@@ -105,7 +141,7 @@ file(GLOB ONIONPIR_CORE_SRC
     cpp/matrix.cpp cpp/pir.cpp cpp/query_queue.cpp cpp/rlwe.cpp cpp/server.cpp
     cpp/shared_key_store.cpp cpp/utils.cpp
 )
-if (NOT USE_HEXL)
+if (NOT ONIONPIR_HEXL_ACTIVE)
     list(APPEND ONIONPIR_CORE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/cpp/hexl_shim.cpp")
 endif()
 
@@ -114,14 +150,14 @@ set(ONIONPIR_FFI_SRC "${CMAKE_CURRENT_SOURCE_DIR}/cpp/onion_ffi.cpp")
 
 # Common include dirs reused by all targets below.
 set(ONIONPIR_PUBLIC_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/cpp/includes")
-if (NOT USE_HEXL)
+if (NOT ONIONPIR_HEXL_ACTIVE)
     list(APPEND ONIONPIR_PUBLIC_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/cpp/hexl_compat")
 endif()
 
 # Executable target (Onion-PIR): core engine + test harness + main.
 add_executable(Onion-PIR ${ONIONPIR_CORE_SRC} ${ONIONPIR_BIN_SRC})
 target_include_directories(Onion-PIR PUBLIC ${ONIONPIR_PUBLIC_INCLUDES})
-if (USE_HEXL AND HEXL_FOUND)
+if (ONIONPIR_HEXL_ACTIVE)
     target_link_libraries(Onion-PIR PUBLIC HEXL::hexl)
 endif()
 # Land the executable in the top-level build dir (e.g. build/Onion-PIR) so
@@ -145,7 +181,7 @@ if (ONIONPIR_BUILD_FFI)
         add_library(onionpir STATIC ${ONIONPIR_CORE_SRC} ${ONIONPIR_FFI_SRC})
     endif()
     target_include_directories(onionpir PUBLIC ${ONIONPIR_PUBLIC_INCLUDES})
-    if (USE_HEXL AND HEXL_FOUND)
+    if (ONIONPIR_HEXL_ACTIVE)
         target_link_libraries(onionpir PUBLIC HEXL::hexl)
     endif()
     # PIC so the static lib can be linked into shared libraries downstream

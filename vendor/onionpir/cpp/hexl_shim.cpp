@@ -1,9 +1,10 @@
 // src/hexl_shim.cpp
 //
-// Scalar + (ARM) NEON fallback implementation of the tiny subset of Intel HEXL
-// that this codebase uses. Built only when HEXL is unavailable (ARM / WASM); on
-// x86_64 with HEXL enabled, the real library is used instead and this file is
-// not compiled.
+// Scalar + SIMD fallback implementation of the tiny subset of Intel HEXL that
+// this codebase uses — vectorised with NEON on AArch64 and with WebAssembly
+// SIMD128 under emscripten. Built only when HEXL is unavailable (ARM / WASM);
+// on x86_64 with HEXL enabled, the real library is used instead and this file
+// is not compiled.
 //
 // See hexl_compat/hexl/hexl.hpp for the public API and rationale.
 //
@@ -21,10 +22,11 @@
 //     single inverse round-trips an array, with the bit-reversed permutation
 //     cancelling out).
 //
-// EltwiseAddMod / EltwiseSubMod are vectorised with NEON on AArch64. The mul
-// paths (EltwiseMultMod, EltwiseFMAMod) remain scalar — a 64x64->128 SIMD
-// multiply doesn't exist on AArch64 and the split-mul rewrite isn't worth the
-// complexity at this scale.
+// EltwiseAddMod / EltwiseSubMod are vectorised with NEON on AArch64 and with
+// WebAssembly SIMD128 (v128 / i64x2) under emscripten. The mul paths
+// (EltwiseMultMod, EltwiseFMAMod) remain scalar — neither AArch64 NEON nor
+// WASM SIMD128 has a 64x64->128 multiply, and the split-mul rewrite isn't
+// worth the complexity at this scale.
 
 #include "hexl/hexl.hpp"
 
@@ -38,6 +40,15 @@
 #define ONIONPIR_HEXL_SHIM_HAS_NEON 1
 #else
 #define ONIONPIR_HEXL_SHIM_HAS_NEON 0
+#endif
+
+// WebAssembly SIMD128, available under emscripten when built with -msimd128
+// (which also #defines __wasm_simd128__). 128-bit vectors, two uint64 lanes.
+#if defined(__wasm_simd128__)
+#include <wasm_simd128.h>
+#define ONIONPIR_HEXL_SHIM_HAS_WASM_SIMD 1
+#else
+#define ONIONPIR_HEXL_SHIM_HAS_WASM_SIMD 0
 #endif
 
 namespace intel {
@@ -165,6 +176,19 @@ void EltwiseAddMod(std::uint64_t *out, const std::uint64_t *a,
     const uint64x2_t corr = vandq_u64(mask, q_vec);
     vst1q_u64(out + i, vsubq_u64(sum, corr));
   }
+#elif ONIONPIR_HEXL_SHIM_HAS_WASM_SIMD
+  // WebAssembly SIMD128. Inputs in [0, q), q < 2^62 ⇒ sum < 2q < 2^63, so the
+  // sign bit is always clear and the signed i64x2 compare matches an unsigned
+  // one. Same pattern as the NEON path, two uint64 lanes per iteration.
+  const v128_t q_vec = wasm_u64x2_splat(q);
+  for (; i + 2 <= n; i += 2) {
+    const v128_t av = wasm_v128_load(a + i);
+    const v128_t bv = wasm_v128_load(b + i);
+    const v128_t sum = wasm_i64x2_add(av, bv);
+    const v128_t mask = wasm_i64x2_ge(sum, q_vec);  // all-ones when sum >= q
+    const v128_t corr = wasm_v128_and(mask, q_vec);
+    wasm_v128_store(out + i, wasm_i64x2_sub(sum, corr));
+  }
 #endif
   for (; i < n; ++i) {
     out[i] = addmod(a[i], b[i], q);
@@ -187,6 +211,19 @@ void EltwiseSubMod(std::uint64_t *out, const std::uint64_t *a,
     const uint64x2_t corr = vandq_u64(borrow, q_vec);
     vst1q_u64(out + i, vaddq_u64(diff, corr));
   }
+#elif ONIONPIR_HEXL_SHIM_HAS_WASM_SIMD
+  // WebAssembly SIMD128. a, b in [0, q), q < 2^62 ⇒ every lane < 2^63, so the
+  // signed i64x2 compare matches an unsigned one. diff = a - b wraps mod 2^64;
+  // if b > a we underflowed — correct by adding q.
+  const v128_t q_vec = wasm_u64x2_splat(q);
+  for (; i + 2 <= n; i += 2) {
+    const v128_t av = wasm_v128_load(a + i);
+    const v128_t bv = wasm_v128_load(b + i);
+    const v128_t diff = wasm_i64x2_sub(av, bv);
+    const v128_t borrow = wasm_i64x2_gt(bv, av);  // all-ones when b > a
+    const v128_t corr = wasm_v128_and(borrow, q_vec);
+    wasm_v128_store(out + i, wasm_i64x2_add(diff, corr));
+  }
 #endif
   for (; i < n; ++i) {
     out[i] = submod(a[i], b[i], q);
@@ -196,8 +233,9 @@ void EltwiseSubMod(std::uint64_t *out, const std::uint64_t *a,
 void EltwiseMultMod(std::uint64_t *out, const std::uint64_t *a,
                     const std::uint64_t *b, std::uint64_t n, std::uint64_t q,
                     std::uint64_t /*in_mod_factor*/) {
-  // No NEON path: AArch64 lacks a 64x64->128 SIMD multiply. A split-and-fold
-  // implementation is possible but not worth the complexity at this site.
+  // No SIMD path: neither AArch64 NEON nor WASM SIMD128 has a 64x64->128
+  // multiply. A split-and-fold implementation is possible but not worth the
+  // complexity at this site.
   for (std::uint64_t i = 0; i < n; ++i) {
     out[i] = mulmod(a[i], b[i], q);
   }

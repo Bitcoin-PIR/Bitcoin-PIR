@@ -31,9 +31,9 @@ replace-with = "vendored-sources"
 # (The stale ALF git-source replacement was removed 2026-05-18 — the
 # ALF crate is no longer a dependency.)
 
-[source."git+https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git?rev=c7ed905aacd747cb01249a72b35a7c171d677345"]
+[source."git+https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git?rev=7ea020a7bd2cb87a508d14d86af554ee247e5cf0"]
 git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git"
-rev = "c7ed905aacd747cb01249a72b35a7c171d677345"
+rev = "7ea020a7bd2cb87a508d14d86af554ee247e5cf0"
 replace-with = "vendored-sources"
 
 [source."git+https://github.com/Bitcoin-PIR/fastprp.git?rev=eaf1ee787c051c1250329cbe645c157e085af6e2"]
