@@ -31,12 +31,11 @@
  *      `pbc_plan_rounds`-assigned group instead of always to `[0]`.
  *      Each scripthash's two INDEX Merkle items inherit a UNIQUE-per-
  *      batch `pbc_group`, so `max_items_per_group_per_level = 2`
- *      independently of the batch's collision pattern. OnionPIR was
- *      structurally trivial on this axis from the start (`pbc_plan_rounds`
- *      packs ≤4 unique Merkle gids into 1 round at batch=2 because
- *      ARITY=120 and `level_info.k=25` for the DPF/Harmony backends'
- *      ARITY=8 trees, OnionPIR's INDEX Merkle is differently
- *      parameterised — see below).
+ *      independently of the batch's collision pattern. Since the
+ *      Phase-3 per-group redesign (PLAN_MERKLE_CODING.md /
+ *      MERKLE_COLOCATION_REVIEW.md) OnionPIR's INDEX Merkle is the
+ *      same shape — one tree per PBC group — and realises this axis
+ *      identically (see below).
  *
  *      The axis is retained in the leakage record `L` for spec
  *      stability across DB and batch parameters; empirically every
@@ -47,20 +46,18 @@
  *      placement scheme is what makes the existing collision-test
  *      witness (DPF A=B=C=12, Harmony A=B=C=6) byte-identical.
  *
- *      OnionPIR realises the same axis as `pbc_rounds.len()` per
- *      Merkle level, computed over unique gids
- *      `(group * bins + bin) / arity` re-routed via
- *      `derive_int_groups_3(gid, level_info.k)`. The wire-observable
- *      axis (count of `IndexMerkleSiblings` rounds per level) is
- *      identical across backends; the per-backend computation
- *      differs because XOR-PIR (DPF, Harmony) uses sequential
- *      sibling passes within a single PBC group, while batched-FHE
- *      (OnionPIR) uses one round per PBC slot of unique gids and a
- *      different ARITY (120 vs. 8). At batch=2 with typical
- *      `level_info.k = 25`, the OnionPIR axis is structurally
- *      trivial: at most 4 unique gids, so `pbc_plan_rounds` always
- *      packs into 1 round. After the DPF/Harmony closure the
- *      empirical witnesses agree across all three backends:
+ *      OnionPIR realises the axis through the per-group Merkle
+ *      verifier `onion_merkle::verify_sub_tree`, which issues
+ *      `max(1, max_items_per_group)` sibling passes per level —
+ *      exactly the mechanism DPF/Harmony's per-bucket verifier uses.
+ *      Each OnionPIR query probes `INDEX_CUCKOO_NUM_HASHES = 2`
+ *      cuckoo positions, both bins within its one PBC-assigned group,
+ *      so a query contributes 2 INDEX Merkle leaves to its own
+ *      per-group tree: `max_items_per_group = 2`, hence 2
+ *      `IndexMerkleSiblings` passes per level — a content-independent
+ *      constant, like DPF/Harmony's. The pre-Phase-3 flat per-table
+ *      tree and its gid-cuckoo `pbc_plan_rounds`-over-gids fetch are
+ *      gone. The empirical witnesses agree across all three backends:
  *
  *        - `dpf_simulator_property_multi_query_collision` —
  *          `total rounds A=B=C=19, IndexMerkleSiblings A=B=C=12`
@@ -69,8 +66,8 @@
  *          `total rounds A=B=C=20, IndexMerkleSiblings A=B=C=6`
  *          (= 2 max × 1 server × 3 levels).
  *        - `onion_simulator_property_multi_query_collision` —
- *          `total rounds A=B=C=7, IndexMerkleSiblings A=B=C=1`
- *          (structural triviality).
+ *          `total rounds A=B=C=10, IndexMerkleSiblings A=B=C=2`
+ *          (= 2 per query × 1 server × 1 per-group Merkle level).
  *
  *   2. chunk_max_items_per_group_per_level : int
  *      A found query producing N total chunk Merkle items reveals the
