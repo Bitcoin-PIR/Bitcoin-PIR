@@ -225,18 +225,26 @@
         # first `nix build` will fail with the actual hash to substitute.
         cargoLock = {
           lockFile = ./Cargo.lock;
-          # Captured via lib.fakeSha256 → first-build error → real value.
-          # Re-capture whenever Cargo.lock's git rev for any dep changes.
-          # Note: onionpir's hash includes the SEAL submodule contents
+          # Content hashes for the git deps in Cargo.lock. The keys MUST
+          # be exactly the set of git dependencies in Cargo.lock — a
+          # stale key ("a hash was specified for X, but there is no
+          # corresponding git dependency") and a missing one both fail
+          # evaluation. Re-capture whenever a git rev or the dep set
+          # changes: set the entry to the all-A fake hash, run
+          # `nix build`, substitute the hash from the mismatch error.
+          # Note: onionpir's hash includes its bundled SEAL submodule
           # (cargo follows submodules during git dep fetch).
+          #
+          # 2026-05-18 re-sync: dropped `alf-nt` (HarmonyPIR's PRP
+          # backend no longer depends on the ALF crate); added `arc`
+          # (new git dep); bumped `onionpir-0.1.0` → `onionpir-0.2.0`
+          # (the OnionPIRv2-fork rev-aa7710d crate version bump).
           outputHashes = {
-            "alf-nt-0.1.0"     = "sha256-XfS1MTBqRJpAjvEE352J8vqSTwYOuXFJvrpXDmT8HmA=";
+            "arc-0.1.0"        = "sha256-tUyvnyJoNTlrXpudIZ3Er6Mqj8zmltBtY06kF9P6hp0=";
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
-            "harmonypir-0.1.0" = "sha256-uBflflGcvtQLcZJtekCwc5oB4IoyNhtrQmahav5KiR0=";
+            "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
-            # onionpir hash bumped after the upstream restructure (rev
-            # ac7082eb...) — now includes the bundled SEAL submodule.
-            "onionpir-0.1.0"   = "sha256-hRX15/D5rUlFAnVdeTWBB31hDgG9h3BfrtO6GG+K0oA=";
+            "onionpir-0.2.0"   = "sha256-AZmXA2k2/sbkt9RQ4UjXQ6Qn9NNivuuOP+3W1/FKBNA=";
           };
         };
 
@@ -278,7 +286,7 @@
           # reads it via if(DEFINED FETCHCONTENT_SOURCE_DIR_<UCNAME>),
           # not if(DEFINED ENV{...}).
           sed -i "s|.args(\[\"-DCMAKE_BUILD_TYPE=Release\"\])|.args([\"-DCMAKE_BUILD_TYPE=Release\"])\n        .arg(\"-DFETCHCONTENT_SOURCE_DIR_HEXL=$HEXL_RW\")|" \
-              "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.1.0/build.rs"
+              "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.2.0/build.rs"
         '';
         # Skip cargo test inside the build (live-server integration tests
         # require network + a running pir2; not appropriate for sandbox).
