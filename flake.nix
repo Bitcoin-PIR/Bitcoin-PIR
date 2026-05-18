@@ -41,8 +41,7 @@
         owner = "intel";
         repo = "hexl";
         rev = "v1.2.6";
-        # Fake hash — the first `nix build` reports the real one.
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        hash = "sha256-9DWQMmbvwl/UVyllNoixjJJsd7ksFztwKZ8gFlIBg+U=";
       };
       nativeBuildInputs = [ pkgs.cmake ];
       # cpu_features ships its CMake config package in the `dev` output;
@@ -204,7 +203,7 @@
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
             "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
-            "onionpir-0.2.0"   = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            "onionpir-0.2.0"   = "sha256-xYbCLV7z6hwqVllH77vJWhRVl4UZL6WirLWAnfKQMHk=";
           };
         };
 
