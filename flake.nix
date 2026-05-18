@@ -49,6 +49,14 @@
       # `find_package(CpuFeatures CONFIG)` resolves it instead of fetching.
       buildInputs = [ pkgs.cpu_features ];
       cmakeFlags = [
+        # nixpkgs' cmake hook sets CMAKE_INSTALL_INCLUDEDIR to an absolute
+        # path; HEXL's header install does
+        #   install(DESTINATION ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR})
+        # which then double-prefixes ($out/nix/store/...-hexl/include) and
+        # leaves HEXL::hexl's INTERFACE_INCLUDE_DIRECTORIES pointing at a
+        # non-existent $out/include. A relative includedir lands the
+        # headers at $out/include, where the exported config expects them.
+        "-DCMAKE_INSTALL_INCLUDEDIR=include"
         "-DHEXL_BENCHMARK=OFF"
         "-DHEXL_TESTING=OFF"
         "-DHEXL_SHARED_LIB=OFF"
