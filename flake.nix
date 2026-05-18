@@ -24,82 +24,15 @@
     # Both operators end up with byte-identical rustc binaries.
     rustToolchain = pkgs.rust-bin.stable."1.94.1".default;
 
-    # SEAL submodule used to be fetched separately + copied into the
-    # vendored onionpir at postPatch — that was needed when SEAL lived
-    # at OnionPIRv2-fork/extern/SEAL, OUTSIDE the rust/onionpir/ subcrate
-    # that cargo vendor would extract. The OnionPIR fork's restructure
-    # (rev ac7082eb...) now bundles SEAL at rust/onionpir/extern/SEAL,
-    # so cargo's git fetcher pulls it as part of the onionpir crate's
-    # own submodules. No separate seal-src needed.
-
-    # cpu_features — google's runtime CPU-detection library. HEXL's
-    # cmake/third-party/cpu-features/CMakeLists.txt uses ExternalProject_Add
-    # to fetch this at configure time, which the strict Nix sandbox blocks.
-    # We pre-fetch via Nix and rewrite HEXL's CMakeLists (in hexl-src
-    # below) to file(COPY) from this store path instead. Rev pin matches
-    # HEXL v1.2.5's CMakeLists.txt.in: GIT_TAG 32b49eb5...
-    cpu-features-src = pkgs.fetchFromGitHub {
-      owner = "google";
-      repo = "cpu_features";
-      rev = "32b49eb5e7809052a28422cfde2f2745fbb0eb76";
-      hash = "sha256-PGvk5x0MUZojmL3+zpoo0D2t4H5pfcBvMiCPx1Qbs/s=";
-    };
-
-    # HEXL is fetched at CMake configure time by SEAL's FetchContent
-    # (or by OnionPIR's superseding declaration in CMakeLists.txt). We
-    # pre-fetch via Nix + apply two patches:
-    #   1. Drop AVX-512 probes from HEXL's root CMakeLists (matches the
-    #      OnionPIR fork's PATCH_COMMAND — needed on AVX-512-capable
-    #      build hosts to prevent SIGILL on AVX-2-only runtime CPUs).
-    #   2. Replace cpu_features ExternalProject_Add with file(COPY) from
-    #      the Nix-fetched cpu-features-src above (closes the network
-    #      requirement that ExternalProject lacks a SOURCE_DIR override).
-    hexl-src = pkgs.applyPatches {
-      name = "hexl-source-patched";
-      src = pkgs.fetchFromGitHub {
-        owner = "intel";
-        repo = "hexl";
-        rev = "f95acf1";
-        hash = "sha256-AZAQ0l//WHHZW4rqyukldHjFLkm28e0zUfHFEGFy2h4=";
-      };
-      postPatch = ''
-        # 1. AVX-512 probe removal (same as OnionPIR's PATCH_COMMAND)
-        sed -i.bak "/hexl_check_compile_flag.*test-avx512/d" CMakeLists.txt
-        rm -f CMakeLists.txt.bak
-
-        # 2. Replace cpu-features download with file(COPY) from Nix-fetched
-        # source. Quoted heredoc to prevent bash from expanding the
-        # CMake variable references; sed substitutes the Nix store path
-        # for the placeholder.
-        cat > cmake/third-party/cpu-features/CMakeLists.txt <<'NIX_EOF'
-        # Patched by BitcoinPIR's flake.nix: cpu-features pre-fetched.
-        file(COPY @CPU_FEATURES_SRC@/ DESTINATION ''${CMAKE_CURRENT_BINARY_DIR}/cpu-features-src)
-
-        hexl_cache_variable(BUILD_SHARED_LIBS)
-        hexl_cache_variable(BUILD_PIC)
-        hexl_cache_variable(BUILD_TESTING)
-
-        set(BUILD_PIC ON CACHE BOOL "" FORCE)
-        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-
-        add_subdirectory(''${CMAKE_CURRENT_BINARY_DIR}/cpu-features-src
-                         ''${CMAKE_CURRENT_BINARY_DIR}/cpu-features-build
-                         EXCLUDE_FROM_ALL)
-
-        unset(BUILD_PIC CACHE)
-        unset(BUILD_SHARED_LIBS CACHE)
-        unset(BUILD_TESTING CACHE)
-
-        hexl_uncache_variable(BUILD_SHARED_LIBS)
-        hexl_uncache_variable(BUILD_PIC)
-        hexl_uncache_variable(BUILD_TESTING)
-        NIX_EOF
-
-        sed -i "s|@CPU_FEATURES_SRC@|${cpu-features-src}|g" \
-            cmake/third-party/cpu-features/CMakeLists.txt
-      '';
-    };
+    # OnionPIR (the `onionpir` git dep) builds a C++ engine through its
+    # crate-local CMake project. That engine has an optional Intel-HEXL
+    # fast path (x86_64 NTT) plus an in-crate scalar fallback shim. The
+    # Nix build forces the scalar shim: postPatch (below) injects
+    # `-DUSE_HEXL=OFF` into the vendored onionpir build.rs. That keeps the
+    # build fully hermetic — no HEXL fetch, no cpu_features, no CMake
+    # FetchContent network access — at the cost of x86 NTT speed. (The
+    # OnionPIRv2-fork has been SEAL-free since its BV-keyswitch rewrite,
+    # so there is also no SEAL submodule to vendor.)
 
   in {
     # ─── packages.unified-server ───────────────────────────────────────
@@ -107,8 +40,8 @@
     # gets content-addressed into /nix/store/<hash>-source/. Two operators
     # cloning to different host paths converge to the same /nix/store
     # path → C++ __FILE__ macros in OnionPIR's CMake-built libonionpir.a
-    # + libseal-4.1.a embed identical strings → cross-path determinism
-    # closes (the gap the convention-based recipe couldn't reach).
+    # embed identical strings → cross-path determinism closes (the gap
+    # the convention-based recipe couldn't reach).
     #
     # Use: `nix build .#unified-server` → ./result/bin/unified_server
     packages.${system} = {
@@ -232,19 +165,23 @@
           # evaluation. Re-capture whenever a git rev or the dep set
           # changes: set the entry to the all-A fake hash, run
           # `nix build`, substitute the hash from the mismatch error.
-          # Note: onionpir's hash includes its bundled SEAL submodule
-          # (cargo follows submodules during git dep fetch).
+          # Note: the onionpir crate is SEAL-free and submodule-free —
+          # its hash covers just the rust/onionpir/ crate tree (Rust src
+          # + the bundled cpp/ C++ engine + CMakeLists.txt).
           #
           # 2026-05-18 re-sync: dropped `alf-nt` (HarmonyPIR's PRP
           # backend no longer depends on the ALF crate); added `arc`
-          # (new git dep); bumped `onionpir-0.1.0` → `onionpir-0.2.0`
-          # (the OnionPIRv2-fork rev-aa7710d crate version bump).
+          # (new git dep); `onionpir-0.1.0` → `onionpir-0.2.0`.
+          # 2026-05-19 re-pin: onionpir aa7710d → c7ed905 — the
+          # OnionPIRv2-fork "self-contained crate" restructure moved the
+          # CMake project + cpp/ engine inside rust/onionpir/. New rev →
+          # new content hash (refreshed below via the fake-hash cycle).
           outputHashes = {
             "arc-0.1.0"        = "sha256-tUyvnyJoNTlrXpudIZ3Er6Mqj8zmltBtY06kF9P6hp0=";
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
             "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
-            "onionpir-0.2.0"   = "sha256-AZmXA2k2/sbkt9RQ4UjXQ6Qn9NNivuuOP+3W1/FKBNA=";
+            "onionpir-0.2.0"   = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
           };
         };
 
@@ -270,22 +207,16 @@
           # entries, and cargo errors on duplicate source definitions.
           sed -i '/^\[source\.crates-io\]/,$d' .cargo/config.toml
 
-          # Copy HEXL to a writable location: HEXL's CMakeLists writes
-          # .tmp files next to source during configure_package_config_file,
-          # which fails when the source is in read-only /nix/store.
-          HEXL_RW=$NIX_BUILD_TOP/hexl-rw
-          cp -r ${hexl-src} $HEXL_RW
-          chmod -R u+w $HEXL_RW
-
-          # Inject -DFETCHCONTENT_SOURCE_DIR_HEXL=<writable-hexl-path> into
-          # the vendored onionpir build.rs's CMake configure call, so
-          # SEAL's FetchContent for HEXL skips the network git clone
-          # and uses our pre-fetched + AVX-512-probe-patched +
-          # cpu_features-patched source instead. Must be a CMake
-          # variable (-D...), not env var — CMake's FetchContent.cmake
-          # reads it via if(DEFINED FETCHCONTENT_SOURCE_DIR_<UCNAME>),
-          # not if(DEFINED ENV{...}).
-          sed -i "s|.args(\[\"-DCMAKE_BUILD_TYPE=Release\"\])|.args([\"-DCMAKE_BUILD_TYPE=Release\"])\n        .arg(\"-DFETCHCONTENT_SOURCE_DIR_HEXL=$HEXL_RW\")|" \
+          # Build OnionPIR's C++ engine with the in-crate scalar shim
+          # instead of Intel HEXL. The onionpir crate's CMakeLists
+          # defaults USE_HEXL=ON on x86_64, then resolves HEXL through a
+          # hardcoded HEXL_DIR (an upstream author's absolute path) that
+          # does not exist in the sandbox — find_package(HEXL REQUIRED)
+          # would FATAL_ERROR. USE_HEXL=OFF selects cpp/hexl_compat/ +
+          # cpp/hexl_shim.cpp, bundled inside the crate, so the build
+          # needs no external HEXL. Inject the define into the vendored
+          # build.rs's cmake::Config chain.
+          sed -i 's|\.define("ONIONPIR_BUILD_FFI", "ON")|&\n        .define("USE_HEXL", "OFF")|' \
               "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.2.0/build.rs"
         '';
         # Skip cargo test inside the build (live-server integration tests
@@ -298,27 +229,24 @@
           gcc
           pkg-config
           gnumake
-          # OnionPIR's build.rs uses git submodule for SEAL. Since cargo
-          # already fetched the git dep with its submodules into the
-          # source store path, no separate fetch should be needed at
-          # build time.
+          # git: available to the sandbox build for any build script
+          # that shells out to it. The onionpir crate is SEAL-free and
+          # submodule-free, so it needs no git fetch of its own.
           git
         ];
 
-        # libgomp is linked by SEAL (OpenMP); libstdc++ comes from gcc.
+        # No extra buildInputs: the onionpir C++ engine links only the
+        # C++ runtime (libstdc++, from gcc) — no HEXL, no SEAL, no OpenMP.
         buildInputs = [ ];
 
         # Strip debug info reproducibly. cargo's release default already
         # omits debug; this is defense-in-depth.
         dontStrip = false;
 
-        # __noChroot DROPPED: it allowed network for HEXL FetchContent but
-        # also let CMake see /usr/bin/gcc, which references impure
-        # /usr/libexec/ paths the Nix ld-wrapper rejects. With strict
-        # sandbox, the only gcc visible is the Nix-provided one in PATH,
-        # but HEXL FetchContent will fail from no-network. Open Phase 2
-        # follow-up: pre-fetch HEXL via fetchFromGitHub and patch SEAL's
-        # FetchContent_Declare to use it (override-by-first-declared rule).
+        # Strict sandbox (no __noChroot): the build needs no network.
+        # USE_HEXL=OFF removes the only step that ever wanted it (HEXL's
+        # CMake FetchContent); every git dep is pre-fetched by Nix via
+        # cargoLock. The only gcc visible is the Nix-provided one.
       };
     };
 
@@ -330,12 +258,10 @@
         # ─── Rust / Cargo ──────────────────────────────────────────────
         # rustToolchain provides cargo + rustc + rustfmt + clippy.
 
-        # ─── C/C++ build chain (for OnionPIR's CMake-built SEAL) ───────
-        # OnionPIR's HEXL submodule has cmake_minimum_required(VERSION) below
-        # 3.5, which CMake 4.x rejects. nixpkgs's `cmake` tracks latest
-        # upstream; we'd need to either patch OnionPIR upstream or pin
-        # CMake to a 3.x branch here. For now use the current default and
-        # let `nix develop` surface the version; upgrade plan TBD.
+        # ─── C/C++ build chain (for OnionPIR's CMake-built C++ engine) ─
+        # The onionpir crate's CMakeLists sets CMAKE_POLICY_VERSION_MINIMUM,
+        # so it configures cleanly under CMake 4.x — nixpkgs's `cmake`
+        # (latest upstream) works as-is.
         cmake
         gnumake
         gcc
