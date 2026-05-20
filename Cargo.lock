@@ -1564,7 +1564,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "onionpir"
 version = "0.2.0"
-source = "git+https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git?rev=7ea020a7bd2cb87a508d14d86af554ee247e5cf0#7ea020a7bd2cb87a508d14d86af554ee247e5cf0"
+source = "git+https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git?rev=3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b#3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b"
 dependencies = [
  "cmake",
 ]

@@ -420,13 +420,18 @@
           # (new git dep); `onionpir-0.1.0` → `onionpir-0.2.0`.
           # 2026-05-19 re-pin: onionpir aa7710d → c7ed905 → 7ea020a — the
           # self-contained-crate restructure, then the HEXL / -march
-          # detection fix. New rev → new content hash (fake-hash cycle).
+          # detection fix.
+          # 2026-05-20 re-pin: 7ea020a → 3f815ba — build.rs now emits
+          # HEXL + cpu_features link directives natively (via the
+          # package's *Targets*.cmake IMPORTED_LOCATION, split-output
+          # safe), so the flake postPatch HEXL-link sed below is dropped.
+          # New rev → new content hash (fake-hash cycle).
           outputHashes = {
             "arc-0.1.0"        = "sha256-tUyvnyJoNTlrXpudIZ3Er6Mqj8zmltBtY06kF9P6hp0=";
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
             "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
-            "onionpir-0.2.0"   = "sha256-xYbCLV7z6hwqVllH77vJWhRVl4UZL6WirLWAnfKQMHk=";
+            "onionpir-0.2.0"   = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
           };
         };
 
@@ -464,17 +469,6 @@
           sed -i 's|\.define("ONIONPIR_BUILD_FFI", "ON")|&\n        .define("CMAKE_PREFIX_PATH", "${hexl};${pkgs.cpu_features.dev}")|' \
               "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.2.0/build.rs"
 
-          # onionpir's build.rs emits only `-l static=onionpir`. With HEXL
-          # active (ONIONPIR_USE_HEXL) the engine no longer compiles in the
-          # cpp/hexl_shim.cpp fallback, so libonionpir.a carries unresolved
-          # intel::hexl + cpu_features symbols — a static lib does not
-          # bundle its link deps. Append the transitive link directives so
-          # the final unified_server link resolves (order: onionpir -> hexl
-          # -> cpu_features). TODO: upstream this into onionpir's build.rs
-          # (it should emit HEXL link flags whenever CMake reports HEXL
-          # active) and drop this sed.
-          sed -i 's|    println!("cargo:rustc-link-lib=static=onionpir");|&\n    println!("cargo:rustc-link-search=native=${hexl}/lib");\n    println!("cargo:rustc-link-lib=static=hexl");\n    println!("cargo:rustc-link-search=native=${pkgs.cpu_features}/lib");\n    println!("cargo:rustc-link-lib=dylib=cpu_features");|' \
-              "$NIX_BUILD_TOP/cargo-vendor-dir/onionpir-0.2.0/build.rs"
         '';
         # Skip cargo test inside the build (live-server integration tests
         # require network + a running pir2; not appropriate for sandbox).
