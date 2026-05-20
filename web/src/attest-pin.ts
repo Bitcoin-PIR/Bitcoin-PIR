@@ -65,26 +65,28 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 UKI v17, pinned 2026-05-19.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 UKI v18, pinned 2026-05-20.
  * Built by the `packages.tier3-uki` flake derivation
  * (`nix build --impure .#tier3-uki`) on the Hetzner build host: VPSBG
  * kernel 7.0.0-15 + the reproducible `nix build .#unified-server`
  * binary, embedded via the full Nix closure.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 UKI v17 — 2026-05-19. The flake-built UKI (PR #3) embeds the
-  // reproducible Nix `unified_server` (`3925cc4d…`), so pir2 now runs
-  // the BYTE-IDENTICAL binary to pir1 — PIR1_PIN and PIR2_TIER3_PIN
-  // share `binarySha256Hex` again (the v16 `f63b3535…` drift is closed).
+  // Tier 3 UKI v18 — 2026-05-20. Rebaked from main @ 90bcaef4 to ship
+  // PRs #5/#6/#7 (web vendor cleanup, harmony_decode_counts wasm
+  // binding, Harmony hint coalescing). The flake-built UKI embeds the
+  // reproducible Nix `unified_server` (`2ba6e79c…`), and pir1 was
+  // installed with the SAME Nix-built binary so PIR1_PIN and
+  // PIR2_TIER3_PIN share `binarySha256Hex` again.
   // pir2 runs `--serve-queries` only (no hint pool) and does not serve
-  // OnionPIR. MEASUREMENT captured from the v17 deploy via
+  // OnionPIR. MEASUREMENT captured from the v18 deploy via
   // `bpir-admin attest wss://weikeng2.bitcoinpir.org` (SEV-SNP report
   // Status: ReportDataMatch — attestation verified on real hardware).
   measurementHex:
-    '6dcbfa45baa345ce5fabdddbc7386d43c31b3dbf1fd75402a112d303299c2428b2c0d0bf6a01325da87292ae69f2aa2a',
+    '53eb00331081ed7ee27df20a40c7d8d9be4c0a6a93cf043e876508a0f1fc74658987c03cceced379b5bf23e715a9435b',
   binarySha256Hex:
-    '3925cc4d5c4e45d8d3c8d798afb471905f909751d5c15ad5cccb22eb2631d2d5',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 UKI v17)',
+    '2ba6e79c388f54867988885785512f42864d5ceb3b88d1e1d5b8d24459d2f46c',
+  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 UKI v18)',
 };
 
 /**
