@@ -732,6 +732,19 @@ impl OnionClient {
         crate::attest::attest(conn.as_mut(), nonce).await
     }
 
+    /// Send REQ_ANNOUNCE and parse the operator-signed identity bundle.
+    /// See [`super::DpfClient::announce`] for full semantics.
+    pub async fn announce(
+        &mut self,
+    ) -> PirResult<crate::announce::AnnounceVerification> {
+        let conn = self
+            .shards
+            .get_mut(0)
+            .and_then(|s| s.conn.as_mut())
+            .ok_or_else(|| PirError::Protocol("announce: server not connected".into()))?;
+        crate::announce::announce(conn.as_mut()).await
+    }
+
     /// Replace the server connection with a secure-channel-wrapped
     /// version. See [`super::DpfClient::upgrade_to_secure_channel`]
     /// for the full semantics.
@@ -739,18 +752,33 @@ impl OnionClient {
         &mut self,
         server_static_pub: [u8; 32],
     ) -> PirResult<()> {
-        let raw = self
-            .shards
-            .get_mut(0)
-            .and_then(|s| s.conn.take())
-            .ok_or_else(|| PirError::Protocol("upgrade: server not connected".into()))?;
         let mut eph = [0u8; 32];
         let mut nonce = [0u8; 32];
         getrandom::getrandom(&mut eph)
             .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
         getrandom::getrandom(&mut nonce)
             .map_err(|e| PirError::Protocol(format!("getrandom: {}", e)))?;
-        let wrapped = crate::channel::establish(raw, server_static_pub, eph, nonce).await?;
+        self.upgrade_to_secure_channel_with_seeds(server_static_pub, eph, nonce)
+            .await
+    }
+
+    /// Binding-friendly overload: thread the same `eph_seed` you
+    /// passed to [`crate::attest::attest_with_eph_binding`] so the
+    /// attestation covers this exact handshake. `hs_nonce` is the HKDF
+    /// salt (CSPRNG-fresh per call).
+    pub async fn upgrade_to_secure_channel_with_seeds(
+        &mut self,
+        server_static_pub: [u8; 32],
+        eph_seed: [u8; 32],
+        hs_nonce: [u8; 32],
+    ) -> PirResult<()> {
+        let raw = self
+            .shards
+            .get_mut(0)
+            .and_then(|s| s.conn.take())
+            .ok_or_else(|| PirError::Protocol("upgrade: server not connected".into()))?;
+        let wrapped =
+            crate::channel::establish(raw, server_static_pub, eph_seed, hs_nonce).await?;
         self.shards[0].conn = Some(Box::new(wrapped));
         Ok(())
     }
