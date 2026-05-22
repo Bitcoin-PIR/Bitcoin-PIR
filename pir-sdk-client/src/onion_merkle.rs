@@ -963,50 +963,68 @@ async fn verify_sub_tree(
         }
 
         // Split the K positional sibling queries by each shard's group range
-        // for this tree, send each shard its slice, and merge the per-shard
+        // for this tree, send each shard its slice CONCURRENTLY (one roundtrip
+        // per shard, fanned out via `join_all`), and merge the per-shard
         // responses back into one K-length positional `batch` (group g at
         // index g). N=1 with a full range is a single roundtrip with
         // server_id 0 + items=[1;K] — byte-identical to the pre-sharding
         // path. round_id is vestigial under the per-group design — send 0.
-        let mut batch: Vec<Vec<u8>> = vec![Vec::new(); k];
-        for (shard_idx, shard) in shards.iter_mut().enumerate() {
+        let mut sends: Vec<(usize, usize, Vec<u8>)> = Vec::with_capacity(shards.len());
+        for shard in shards.iter() {
             let range = shard.range_for(tree);
             if range.end > k {
                 return Err(PirError::Protocol(format!(
-                    "merkle {} shard {} group range {}..{} exceeds tree group count {}",
+                    "merkle {} shard group range {}..{} exceeds tree group count {}",
                     tree.name(),
-                    shard_idx,
                     range.start,
                     range.end,
                     k,
                 )));
             }
-            if range.start >= range.end {
-                continue;
-            }
-            let sub: Vec<Vec<u8>> = queries[range.start..range.end].to_vec();
-            let msg = encode_sibling_batch_query(tree.req_sibling(), 0, &sub, db_id);
-            let request_bytes = msg.len() as u64;
-            let resp = shard.conn.roundtrip(&msg).await?;
-            if let Some(rec) = leakage_recorder {
-                // One PIR sibling level ⇒ level is always 0.
-                let kind = match tree {
-                    OnionTreeKind::Index => RoundKind::IndexMerkleSiblings { level: 0 },
-                    OnionTreeKind::Data => RoundKind::ChunkMerkleSiblings { level: 0 },
-                };
-                // One FHE query per PBC group in this shard's range — items[g]=1.
-                rec.record_round(
-                    "onion",
-                    RoundProfile {
-                        kind,
-                        server_id: shard_idx as u8,
-                        db_id: Some(db_id),
-                        request_bytes,
-                        response_bytes: (resp.len() as u64).saturating_add(4),
-                        items: vec![1u32; range.end - range.start],
-                    },
-                );
-            }
+            let msg =
+                encode_sibling_batch_query(tree.req_sibling(), 0, &queries[range.start..range.end], db_id);
+            sends.push((range.start, range.end, msg));
+        }
+        let rec_outer = leakage_recorder.cloned();
+        let futs = shards
+            .iter_mut()
+            .zip(sends.iter())
+            .enumerate()
+            .map(|(shard_idx, (shard, (start, end, msg)))| {
+                let rec = rec_outer.clone();
+                let request_bytes = msg.len() as u64;
+                let items_len = end - start;
+                async move {
+                    let resp = shard.conn.roundtrip(msg).await?;
+                    if let Some(r) = &rec {
+                        // One PIR sibling level ⇒ level is always 0; one FHE
+                        // query per PBC group in this shard's range.
+                        let kind = match tree {
+                            OnionTreeKind::Index => RoundKind::IndexMerkleSiblings { level: 0 },
+                            OnionTreeKind::Data => RoundKind::ChunkMerkleSiblings { level: 0 },
+                        };
+                        r.record_round(
+                            "onion",
+                            RoundProfile {
+                                kind,
+                                server_id: shard_idx as u8,
+                                db_id: Some(db_id),
+                                request_bytes,
+                                response_bytes: (resp.len() as u64).saturating_add(4),
+                                items: vec![1u32; items_len],
+                            },
+                        );
+                    }
+                    Ok::<Vec<u8>, PirError>(resp)
+                }
+            })
+            .collect::<Vec<_>>();
+        let raw: Vec<PirResult<Vec<u8>>> = futures_util::future::join_all(futs).await;
+
+        let mut batch: Vec<Vec<u8>> = vec![Vec::new(); k];
+        for (m, resp) in sends.iter().zip(raw.into_iter()) {
+            let (start, end) = (m.0, m.1);
+            let resp = resp?;
             if resp.is_empty() || resp[0] != tree.resp_sibling() {
                 return Err(PirError::Protocol(format!(
                     "expected {} sibling response (0x{:02x}), got variant 0x{:02x}",
@@ -1016,17 +1034,18 @@ async fn verify_sub_tree(
                 )));
             }
             let part = decode_sibling_batch_result(&resp[1..])?;
-            if part.len() != range.end - range.start {
+            if part.len() != end - start {
                 return Err(PirError::Protocol(format!(
-                    "merkle {} shard {} returned {} sibling results, expected {}",
+                    "merkle {} returned {} sibling results, expected {} for range {}..{}",
                     tree.name(),
-                    shard_idx,
                     part.len(),
-                    range.end - range.start,
+                    end - start,
+                    start,
+                    end,
                 )));
             }
             for (j, r) in part.into_iter().enumerate() {
-                batch[range.start + j] = r;
+                batch[start + j] = r;
             }
         }
 

@@ -1304,108 +1304,11 @@ impl OnionClient {
         }
     }
 
-    /// Send an OnionPIR `[REQ_ONIONPIR_INDEX_QUERY | REQ_ONIONPIR_CHUNK_QUERY]`
-    /// batch, parse the response, and transparently handle server-side
-    /// LRU eviction of our registered keys.
-    ///
-    /// If the server returns an all-empty batch (see
-    /// [`batch_looks_evicted`]), we treat it as eviction: mark
-    /// `db_id` as un-registered, call `register_keys(db_id)`, and retry
-    /// the exact same query once. A second all-empty response is
-    /// surfaced as a [`PirError::SessionEvicted`] — classified as
-    /// [`ErrorKind::SessionEvicted`], distinct from a generic
-    /// [`ErrorKind::ServerError`], so a caller can reconnect and
-    /// retry specifically on this cause without retrying on every
-    /// server error. A second straight eviction after re-registering
-    /// keys usually means FHE param drift or DB misconfig; the
-    /// reconnect logic should cap retries at that point rather than
-    /// spin.
-    ///
-    /// [`ErrorKind::SessionEvicted`]: pir_sdk::ErrorKind::SessionEvicted
-    /// [`ErrorKind::ServerError`]: pir_sdk::ErrorKind::ServerError
-    ///
-    /// This is the single chokepoint for both `query_index_level` and
-    /// `query_chunk_level`; keeping it in one place means the Merkle
-    /// verification path (which uses its own sibling-query path in
-    /// `onion_merkle.rs`) is the only OnionPIR code path still
-    /// vulnerable to silent LRU eviction. That path's failure mode is
-    /// "Merkle proof fails → result coerced to `Some(merkle_failed())`"
-    /// which is already conservative, so it's acceptable to leave it
-    /// uncovered here.
-    #[cfg(feature = "onion")]
-    async fn onionpir_batch_rpc(
-        &mut self,
-        shard_idx: usize,
-        msg: &[u8],
-        expected_variant: u8,
-        db_id: u8,
-        variant_name: &'static str,
-        round_kind: RoundKind,
-        items_per_group: &[u32],
-    ) -> PirResult<Vec<Vec<u8>>> {
-        let batch = self
-            .onionpir_batch_rpc_once(
-                shard_idx,
-                msg,
-                expected_variant,
-                variant_name,
-                round_kind,
-                items_per_group,
-                db_id,
-            )
-            .await?;
-        if !batch_looks_evicted(&batch) {
-            return Ok(batch);
-        }
-        log::warn!(
-            "[PIR-AUDIT] OnionPIR: all-empty {} for db_id={} on shard {} — \
-             assuming server LRU-evicted our keys. Re-registering and \
-             retrying once.",
-            variant_name,
-            db_id,
-            shard_idx,
-        );
-        // Drop the "already registered" flag so `register_keys` will
-        // actually re-register (otherwise a caller that calls
-        // `ensure_keys_registered` before this would be a no-op).
-        // Re-registers to ALL shards (cheap; eviction is rare) — the
-        // `registered` set is all-or-nothing across shards.
-        if let Some(fhe) = self.fhe.as_mut() {
-            fhe.registered.remove(&db_id);
-        }
-        self.register_keys(db_id).await?;
-        let batch = self
-            .onionpir_batch_rpc_once(
-                shard_idx,
-                msg,
-                expected_variant,
-                variant_name,
-                round_kind,
-                items_per_group,
-                db_id,
-            )
-            .await?;
-        if batch_looks_evicted(&batch) {
-            // Two consecutive empty batches ⇒ eviction signal even
-            // after re-registering. Classified as
-            // `ErrorKind::SessionEvicted` so a calling retry loop can
-            // reconnect + re-register and try again, distinct from a
-            // generic `ServerError` that a retry loop should NOT spin on.
-            return Err(PirError::SessionEvicted(format!(
-                "OnionPIR {} returned all-empty batch for db_id={} \
-                 even after re-registering keys — server may be \
-                 overloaded, or FHE params may have drifted",
-                variant_name, db_id,
-            )));
-        }
-        Ok(batch)
-    }
-
-    /// One-shot sender for `onionpir_batch_rpc`: single roundtrip, no retry.
-    /// Emits one `RoundProfile` per actual roundtrip — so an LRU-eviction
-    /// retry loop in [`onionpir_batch_rpc`](Self::onionpir_batch_rpc)
-    /// records two `Index` (or `Chunk`) rounds plus one `OnionKeyRegister`
-    /// in between, matching what the server sees on the wire.
+    /// One-shot per-shard sender: a single roundtrip to `shards[shard_idx]`,
+    /// no retry. Used by [`dispatch_sharded_batch`](Self::dispatch_sharded_batch)
+    /// for the sequential LRU-eviction retry path (the happy path inlines its
+    /// own concurrent roundtrips). Emits one `RoundProfile` per roundtrip
+    /// tagged with `server_id = shard_idx`.
     #[cfg(feature = "onion")]
     async fn onionpir_batch_rpc_once(
         &mut self,
@@ -1461,9 +1364,10 @@ impl OnionClient {
     /// split — global `K` / `K_CHUNK` is never reduced. N=1 with a full range
     /// is a single roundtrip, byte-identical to the pre-sharding path.
     ///
-    /// Dispatch is sequential (the per-shard LRU re-register retry in
-    /// [`onionpir_batch_rpc`](Self::onionpir_batch_rpc) needs `&mut self`);
-    /// concurrent dispatch across shards is a follow-up optimisation.
+    /// The per-shard roundtrips are fanned out **concurrently** via
+    /// `join_all` (each future owns a disjoint `&mut shard.conn`), so N shards
+    /// overlap rather than serialise. The rare LRU re-register retry runs
+    /// sequentially afterward (it needs `&mut self`).
     #[cfg(feature = "onion")]
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_sharded_batch(
@@ -1482,18 +1386,28 @@ impl OnionClient {
     ) -> PirResult<Vec<Vec<u8>>> {
         debug_assert_eq!(queries.len(), total_groups * stride);
         debug_assert_eq!(items_per_group.len(), total_groups);
-        let mut merged: Vec<Vec<u8>> = vec![Vec::new(); total_groups * stride];
-        for shard_idx in 0..self.shards.len() {
+
+        // 1. Per-shard plan (immutable borrow): group range → encoded message
+        //    + per-shard leakage items. `idx == position` in `self.shards`.
+        struct ShardSend {
+            idx: usize,
+            lo: usize,
+            hi: usize,
+            msg: Vec<u8>,
+            items: Vec<u32>,
+        }
+        let mut plan: Vec<ShardSend> = Vec::with_capacity(self.shards.len());
+        for (idx, shard) in self.shards.iter().enumerate() {
             let range = if chunk_level {
-                self.shards[shard_idx].chunk_range.clone()
+                shard.chunk_range.clone()
             } else {
-                self.shards[shard_idx].index_range.clone()
+                shard.index_range.clone()
             };
             if range.end > total_groups {
                 return Err(PirError::InvalidState(format!(
                     "shard {} {} range {}..{} exceeds this DB's group count {} — \
                      shard layout does not match the catalog K",
-                    shard_idx,
+                    idx,
                     if chunk_level { "chunk" } else { "index" },
                     range.start,
                     range.end,
@@ -1502,33 +1416,115 @@ impl OnionClient {
             }
             let lo = range.start * stride;
             let hi = range.end * stride;
-            let sub_queries: Vec<Vec<u8>> = queries[lo..hi].to_vec();
-            let sub_items: Vec<u32> = items_per_group[range.start..range.end].to_vec();
-            let msg = encode_onionpir_batch_query(variant, round_id, &sub_queries, db_id);
-            let shard_batch = self
-                .onionpir_batch_rpc(
-                    shard_idx,
-                    &msg,
-                    expected_variant,
-                    db_id,
-                    variant_name,
-                    round_kind,
-                    &sub_items,
-                )
-                .await?;
-            if shard_batch.len() != hi - lo {
+            let msg = encode_onionpir_batch_query(variant, round_id, &queries[lo..hi], db_id);
+            let items = items_per_group[range.start..range.end].to_vec();
+            plan.push(ShardSend { idx, lo, hi, msg, items });
+        }
+        if self.shards.iter().any(|s| s.conn.is_none()) {
+            return Err(PirError::NotConnected);
+        }
+
+        // 2. Fan out one roundtrip per shard CONCURRENTLY. Each future owns a
+        //    disjoint `&mut shard.conn` (no `&mut self` inside), so the N
+        //    shard requests overlap. The leakage recorder is an `Arc`, cloned
+        //    into each future. (N=1: one future → identical to a single
+        //    sequential roundtrip + record.)
+        let recorder = self.leakage_recorder.clone();
+        let futs = self
+            .shards
+            .iter_mut()
+            .zip(plan.iter())
+            .map(|(shard, p)| {
+                let conn = shard.conn.as_deref_mut().expect("conn present (checked)");
+                let rec = recorder.clone();
+                let request_bytes = p.msg.len() as u64;
+                async move {
+                    let resp = conn.roundtrip(&p.msg).await?;
+                    if let Some(r) = &rec {
+                        r.record_round(
+                            "onion",
+                            RoundProfile {
+                                kind: round_kind,
+                                server_id: p.idx as u8,
+                                db_id: Some(db_id),
+                                request_bytes,
+                                response_bytes: (resp.len() as u64).saturating_add(4),
+                                items: p.items.clone(),
+                            },
+                        );
+                    }
+                    Ok::<Vec<u8>, PirError>(resp)
+                }
+            })
+            .collect::<Vec<_>>();
+        let raw: Vec<PirResult<Vec<u8>>> = futures_util::future::join_all(futs).await;
+
+        // 3. Decode + merge; flag any shard whose batch looks LRU-evicted.
+        let mut merged: Vec<Vec<u8>> = vec![Vec::new(); total_groups * stride];
+        let mut evicted: Vec<usize> = Vec::new();
+        for (p, resp) in plan.iter().zip(raw.into_iter()) {
+            let resp = resp?;
+            if resp.is_empty() || resp[0] != expected_variant {
                 return Err(PirError::Protocol(format!(
-                    "shard {} returned {} {} results, expected {} for group range {}..{}",
-                    shard_idx,
-                    shard_batch.len(),
-                    variant_name,
-                    hi - lo,
-                    range.start,
-                    range.end,
+                    "shard {} expected {} (0x{:02x})",
+                    p.idx, variant_name, expected_variant,
                 )));
             }
-            for (j, r) in shard_batch.into_iter().enumerate() {
-                merged[lo + j] = r;
+            let part = decode_onionpir_batch_result(&resp[1..])?;
+            if part.len() != p.hi - p.lo {
+                return Err(PirError::Protocol(format!(
+                    "shard {} returned {} {} results, expected {} for slice {}..{}",
+                    p.idx, part.len(), variant_name, p.hi - p.lo, p.lo, p.hi,
+                )));
+            }
+            if batch_looks_evicted(&part) {
+                evicted.push(p.idx);
+            }
+            for (j, r) in part.into_iter().enumerate() {
+                merged[p.lo + j] = r;
+            }
+        }
+
+        // 4. LRU-eviction retry (rare, sequential — `register_keys` needs
+        //    `&mut self`). Re-register to ALL shards once, then re-send only
+        //    the evicted shards. (N=1: same re-register-then-resend sequence
+        //    the old single-conn path used.)
+        if !evicted.is_empty() {
+            log::warn!(
+                "[PIR-AUDIT] OnionPIR: all-empty {} for db_id={} on shard(s) {:?} — \
+                 assuming server LRU-evicted our keys. Re-registering + retrying once.",
+                variant_name, db_id, evicted,
+            );
+            if let Some(fhe) = self.fhe.as_mut() {
+                fhe.registered.remove(&db_id);
+            }
+            self.register_keys(db_id).await?;
+            for idx in evicted {
+                let (msg, items, lo, hi) = {
+                    let p = &plan[idx];
+                    (p.msg.clone(), p.items.clone(), p.lo, p.hi)
+                };
+                let part = self
+                    .onionpir_batch_rpc_once(
+                        idx, &msg, expected_variant, variant_name, round_kind, &items, db_id,
+                    )
+                    .await?;
+                if batch_looks_evicted(&part) {
+                    return Err(PirError::SessionEvicted(format!(
+                        "OnionPIR {} returned all-empty batch for db_id={} on shard {} \
+                         even after re-registering keys",
+                        variant_name, db_id, idx,
+                    )));
+                }
+                if part.len() != hi - lo {
+                    return Err(PirError::Protocol(format!(
+                        "shard {} retry returned {} {} results, expected {}",
+                        idx, part.len(), variant_name, hi - lo,
+                    )));
+                }
+                for (j, r) in part.into_iter().enumerate() {
+                    merged[lo + j] = r;
+                }
             }
         }
         Ok(merged)
