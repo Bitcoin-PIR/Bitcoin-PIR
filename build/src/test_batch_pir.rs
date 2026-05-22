@@ -185,7 +185,7 @@ fn main() {
     println!("[1] Loading data files...");
 
     let cuckoo_data = fs::read(CUCKOO_FILE).expect("read cuckoo file");
-    let (bins_per_table, tag_seed) = read_cuckoo_header(&cuckoo_data);
+    let (bins_per_table, header_master_seed, tag_seed) = read_cuckoo_header_full(&cuckoo_data);
     let dpf_n = pir_core::params::compute_dpf_n(bins_per_table);
     let table_byte_size = bins_per_table * SLOTS * SLOT_SIZE;
     println!("  Cuckoo: bins_per_table = {}, dpf_n = {}, tag_seed = 0x{:016x}", bins_per_table, dpf_n, tag_seed);
@@ -221,8 +221,8 @@ fn main() {
     for i in 0..num_queries {
         let sh = &query_data[i * SCRIPT_HASH_SIZE..(i + 1) * SCRIPT_HASH_SIZE];
         let b = query_group[i];
-        let key0 = derive_cuckoo_key(b, 0);
-        let key1 = derive_cuckoo_key(b, 1);
+        let key0 = pir_core::hash::derive_cuckoo_key(header_master_seed, b, 0);
+        let key1 = pir_core::hash::derive_cuckoo_key(header_master_seed, b, 1);
         let loc0 = cuckoo_hash(sh, key0, bins_per_table);
         let loc1 = cuckoo_hash(sh, key1, bins_per_table);
         query_locs.push((loc0, loc1));

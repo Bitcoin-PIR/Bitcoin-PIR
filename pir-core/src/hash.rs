@@ -231,30 +231,6 @@ pub fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
     bins
 }
 
-// ─── Backward-compatible wrappers ──────────────────────────────────────────
-// These use the legacy global constants so existing build/runtime code
-// can import from pir_core::hash::* without changing call sites.
-
-/// Derive 3 INDEX-level group indices (uses K=75).
-pub fn derive_groups_legacy(script_hash: &[u8]) -> [usize; 3] {
-    derive_groups_3(script_hash, crate::params::K)
-}
-
-/// Derive INDEX-level cuckoo key (uses MASTER_SEED).
-pub fn derive_cuckoo_key_legacy(group_id: usize, hash_fn: usize) -> u64 {
-    derive_cuckoo_key(crate::params::MASTER_SEED, group_id, hash_fn)
-}
-
-/// Derive 3 CHUNK-level group indices (uses K_CHUNK=80).
-pub fn derive_chunk_groups_legacy(chunk_id: u32) -> [usize; 3] {
-    derive_int_groups_3(chunk_id, crate::params::K_CHUNK)
-}
-
-/// Derive CHUNK-level cuckoo key (uses CHUNK_MASTER_SEED).
-pub fn derive_chunk_cuckoo_key_legacy(group_id: usize, hash_fn: usize) -> u64 {
-    derive_cuckoo_key(crate::params::CHUNK_MASTER_SEED, group_id, hash_fn)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,24 +270,6 @@ mod tests {
         for &g in &groups {
             assert!(g < 80);
         }
-    }
-
-    #[test]
-    fn test_legacy_compat() {
-        // Legacy wrappers should produce the same results as parameterized versions
-        let sh = [1u8; 20];
-        assert_eq!(
-            derive_groups_legacy(&sh),
-            derive_groups_3(&sh, 75)
-        );
-        assert_eq!(
-            derive_cuckoo_key_legacy(5, 0),
-            derive_cuckoo_key(0x71a2ef38b4c90d15, 5, 0)
-        );
-        assert_eq!(
-            derive_chunk_groups_legacy(100),
-            derive_int_groups_3(100, 80)
-        );
     }
 
     #[test]

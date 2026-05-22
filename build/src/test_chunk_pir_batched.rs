@@ -247,7 +247,7 @@ fn main() {
     // ── 2. Load cuckoo table + chunks data ───────────────────────────────
     println!("[2] Loading data files...");
     let cuckoo_data = fs::read(CHUNK_CUCKOO_FILE).expect("read chunk cuckoo");
-    let bins_per_table = read_chunk_cuckoo_header(&cuckoo_data);
+    let (bins_per_table, chunk_master_seed) = read_chunk_cuckoo_header_full(&cuckoo_data);
     let dpf_n = pir_core::params::compute_dpf_n(bins_per_table);
     println!("  Chunk cuckoo: bins_per_table = {}, dpf_n = {}", bins_per_table, dpf_n);
 
@@ -294,8 +294,8 @@ fn main() {
         let mut group_targets: Vec<Option<(u64, u64)>> = vec![None; K_CHUNK];
         for &(chunk_id, group_id) in round_plan {
             let b = group_id as usize;
-            let key0 = derive_chunk_cuckoo_key(b, 0);
-            let key1 = derive_chunk_cuckoo_key(b, 1);
+            let key0 = pir_core::hash::derive_cuckoo_key(chunk_master_seed, b, 0);
+            let key1 = pir_core::hash::derive_cuckoo_key(chunk_master_seed, b, 1);
             let loc0 = cuckoo_hash_int(chunk_id, key0, bins_per_table) as u64;
             let loc1 = cuckoo_hash_int(chunk_id, key1, bins_per_table) as u64;
             group_targets[b] = Some((loc0, loc1));

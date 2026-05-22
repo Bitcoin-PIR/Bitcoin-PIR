@@ -88,8 +88,8 @@ fn main() {
         eprintln!("Failed to read chunk cuckoo file: {}", e);
         std::process::exit(1);
     });
-    let bins_per_table = read_chunk_cuckoo_header(&cuckoo_data);
-    println!("  bins_per_table = {}", bins_per_table);
+    let (bins_per_table, master_seed) = read_chunk_cuckoo_header_full(&cuckoo_data);
+    println!("  bins_per_table = {}, master_seed = 0x{:016x}", bins_per_table, master_seed);
     println!();
 
     // ── 4. Compute candidate groups ─────────────────────────────────────
@@ -150,8 +150,8 @@ fn main() {
 
     for (i, &chunk_id) in chunk_queries.iter().enumerate() {
         let assigned_group = assignment[i];
-        let key0 = derive_chunk_cuckoo_key(assigned_group, 0);
-        let key1 = derive_chunk_cuckoo_key(assigned_group, 1);
+        let key0 = pir_core::hash::derive_cuckoo_key(master_seed, assigned_group, 0);
+        let key1 = pir_core::hash::derive_cuckoo_key(master_seed, assigned_group, 1);
         let loc0 = cuckoo_hash_int(chunk_id, key0, bins_per_table);
         let loc1 = cuckoo_hash_int(chunk_id, key1, bins_per_table);
 

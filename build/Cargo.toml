@@ -101,6 +101,10 @@ name = "gen_2_onion"
 path = "src/gen_2_onion.rs"
 
 [[bin]]
+name = "gen_2_onion_dense"
+path = "src/gen_2_onion_dense.rs"
+
+[[bin]]
 name = "gen_3_onion"
 path = "src/gen_3_onion.rs"
 

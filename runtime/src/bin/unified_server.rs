@@ -301,6 +301,38 @@ const ONION_INDEX_META_MAGIC: u64 = 0xBA7C_0010_0000_0002;
 const ONION_INDEX_ALL_MAGIC: u64 = 0xBA7C_0010_0000_0003;
 const ONION_INDEX_ALL_HEADER_BYTES: usize = 32;
 
+// Consolidated *dense* CHUNK file produced by gen_2_onion_dense. Same
+// per-group-dense layout as onion_index_all.bin (32-byte master header +
+// K_CHUNK per-group save_db payloads), so each group loads via
+// PirServer::load_db_from_borrowed — no shared NTT store, no query-time
+// gather (set_shared_database). When this file is present it supersedes
+// onion_shared_ntt.bin + onion_chunk_cuckoo's index_table path.
+const ONION_CHUNK_ALL_FILE: &str = "onion_chunk_all.bin";
+const ONION_CHUNK_ALL_MAGIC: u64 = 0xBA7C_0010_0000_0004;
+const ONION_CHUNK_ALL_HEADER_BYTES: usize = 32;
+
+/// XOR markers re-used from pir-core::cuckoo so v1 (legacy, no anchor)
+/// vs v2 (snapshot/delta anchor appended) are discriminated by the
+/// same bit pattern across all BitcoinPIR file formats.
+const ONION_MAGIC_SNAPSHOT_XOR: u64 = pir_core::cuckoo::ANCHOR_MAGIC_SNAPSHOT_XOR;
+const ONION_MAGIC_DELTA_XOR: u64 = pir_core::cuckoo::ANCHOR_MAGIC_DELTA_XOR;
+
+/// Recognise legacy + v2 magics for an onion file header. Returns the
+/// matched legacy magic (for downstream offset parsing) on success.
+/// `Err` if the magic is unrecognised.
+fn check_onion_magic(magic: u64, legacy: u64, file_label: &str) -> u64 {
+    let snap = legacy ^ ONION_MAGIC_SNAPSHOT_XOR;
+    let delta = legacy ^ ONION_MAGIC_DELTA_XOR;
+    if magic == legacy || magic == snap || magic == delta {
+        legacy
+    } else {
+        panic!(
+            "Bad {} magic: expected 0x{:016x} (legacy), 0x{:016x} (v2 snapshot), or 0x{:016x} (v2 delta); got 0x{:016x}",
+            file_label, legacy, snap, delta, magic
+        );
+    }
+}
+
 struct OnionChunkHeader {
     k_chunk: usize,
     bins_per_table: usize,
@@ -309,7 +341,9 @@ struct OnionChunkHeader {
 
 fn read_onion_chunk_header(data: &[u8]) -> OnionChunkHeader {
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    assert_eq!(magic, ONION_CHUNK_MAGIC, "Bad onion chunk cuckoo magic");
+    // Accept legacy and v2 (anchor appended at offset ≥ 40); skip the
+    // trailing anchor bytes — verification is a follow-up.
+    let _ = check_onion_magic(magic, ONION_CHUNK_MAGIC, "onion chunk cuckoo");
     OnionChunkHeader {
         k_chunk: u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize,
         bins_per_table: u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize,
@@ -327,7 +361,7 @@ struct OnionIndexMeta {
 
 fn read_onion_index_meta(data: &[u8]) -> OnionIndexMeta {
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    assert_eq!(magic, ONION_INDEX_META_MAGIC, "Bad onion index meta magic");
+    let _ = check_onion_magic(magic, ONION_INDEX_META_MAGIC, "onion index meta");
     OnionIndexMeta {
         k: u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize,
         bins_per_table: u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize,
@@ -1691,11 +1725,16 @@ async fn main() {
     if args.role == ServerRole::Primary && !args.disable_onion {
         for (db_id, db_label, db_dir) in &db_paths {
             let ntt_path = db_dir.join(ONION_NTT_FILE);
-            if !ntt_path.exists() {
-                println!("[OnionPIR:{}] Not available (no {} in {})", db_label, ONION_NTT_FILE, db_dir.display());
+            let chunk_all_path = db_dir.join(ONION_CHUNK_ALL_FILE);
+            // Prefer the dense per-group CHUNK layout when present.
+            let chunk_dense = chunk_all_path.exists();
+            if !ntt_path.exists() && !chunk_dense {
+                println!("[OnionPIR:{}] Not available (neither {} nor {} in {})",
+                    db_label, ONION_CHUNK_ALL_FILE, ONION_NTT_FILE, db_dir.display());
                 continue;
             }
-            println!("[OnionPIR:{}] Loading data...", db_label);
+            println!("[OnionPIR:{}] Loading data... (CHUNK: {})",
+                db_label, if chunk_dense { "dense per-group" } else { "shared NTT store" });
 
             let chunk_cuckoo_path = db_dir.join(ONION_CHUNK_CUCKOO_FILE);
             let index_all_path = db_dir.join(ONION_INDEX_ALL_FILE);
@@ -1729,30 +1768,76 @@ async fn main() {
                 index_slot_size: im.slot_size as u8,
             });
 
-            // Parse chunk cuckoo tables
-            let header_size = 36;
-            let mut chunk_tables: Vec<Vec<u32>> = Vec::with_capacity(ch.k_chunk);
-            for g in 0..ch.k_chunk {
-                let offset = header_size + g * ch.bins_per_table * 4;
-                let mut table = Vec::with_capacity(ch.bins_per_table);
-                for b in 0..ch.bins_per_table {
-                    let pos = offset + b * 4;
-                    let eid = u32::from_le_bytes(cuckoo_data[pos..pos + 4].try_into().unwrap());
-                    table.push(eid);
+            // Parse chunk cuckoo tables — only the shared-store path needs the
+            // per-group index_table. Dense per-group DBs already store bins in
+            // cuckoo order (gen_2_onion_dense pushed one plaintext per bin), so
+            // skip the parse in dense mode.
+            let chunk_tables: Vec<Vec<u32>> = if chunk_dense {
+                Vec::new()
+            } else {
+                let header_size = 36;
+                let mut tables: Vec<Vec<u32>> = Vec::with_capacity(ch.k_chunk);
+                for g in 0..ch.k_chunk {
+                    let offset = header_size + g * ch.bins_per_table * 4;
+                    let mut table = Vec::with_capacity(ch.bins_per_table);
+                    for b in 0..ch.bins_per_table {
+                        let pos = offset + b * 4;
+                        let eid = u32::from_le_bytes(cuckoo_data[pos..pos + 4].try_into().unwrap());
+                        table.push(eid);
+                    }
+                    tables.push(table);
                 }
-                chunk_tables.push(table);
-            }
+                tables
+            };
 
-            // Load NTT store
-            let ntt_file = std::fs::File::open(&ntt_path).expect("open NTT store");
-            let ntt_mmap = unsafe { Mmap::map(&ntt_file) }.expect("mmap NTT store");
-            println!("  NTT store: {:.2} GB", ntt_mmap.len() as f64 / 1e9);
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/{}", db_label, ONION_NTT_FILE),
-                ptr: ntt_mmap.as_ptr(),
-                len: ntt_mmap.len(),
-                priority: 1,
-            });
+            // Load the CHUNK data source. Dense (onion_chunk_all.bin) loads
+            // per-group DBs via load_db_from_borrowed, like INDEX — no shared
+            // store, no query-time gather. Otherwise the legacy shared NTT
+            // store (set_shared_database in the worker). Exactly one is Some.
+            let mut ntt_mmap_opt: Option<Mmap> = None;
+            let mut chunk_all_mmap_opt: Option<Mmap> = None;
+            let mut chunk_all_per_group: usize = 0;
+            if chunk_dense {
+                let f = std::fs::File::open(&chunk_all_path)
+                    .unwrap_or_else(|e| panic!("open {}: {}", chunk_all_path.display(), e));
+                let m = unsafe { Mmap::map(&f) }.expect("mmap onion_chunk_all.bin");
+                assert!(
+                    m.len() >= ONION_CHUNK_ALL_HEADER_BYTES,
+                    "{}: file too small ({} bytes) for chunk_all master header",
+                    chunk_all_path.display(), m.len(),
+                );
+                let magic = u64::from_le_bytes(m[0..8].try_into().unwrap());
+                let file_k = u64::from_le_bytes(m[8..16].try_into().unwrap()) as usize;
+                let per_group = u64::from_le_bytes(m[16..24].try_into().unwrap()) as usize;
+                assert_eq!(magic, ONION_CHUNK_ALL_MAGIC,
+                    "{}: bad master magic (expected {:#x}, got {:#x})",
+                    chunk_all_path.display(), ONION_CHUNK_ALL_MAGIC, magic);
+                assert_eq!(file_k, ch.k_chunk,
+                    "{}: K mismatch (file {}, chunk header {})",
+                    chunk_all_path.display(), file_k, ch.k_chunk);
+                assert_eq!(m.len(), ONION_CHUNK_ALL_HEADER_BYTES + file_k * per_group,
+                    "{}: size mismatch (32 + {}*{} != {})",
+                    chunk_all_path.display(), file_k, per_group, m.len());
+                println!("  CHUNK dense: K={}, per_group={:.2} MB, total={:.2} GB",
+                    file_k, per_group as f64 / 1e6, m.len() as f64 / 1e9);
+                mmap_regions.push(MmapRegion {
+                    name: format!("{}/{}", db_label, ONION_CHUNK_ALL_FILE),
+                    ptr: m.as_ptr(), len: m.len(), priority: 1,
+                });
+                chunk_all_per_group = per_group;
+                chunk_all_mmap_opt = Some(m);
+            } else {
+                let ntt_file = std::fs::File::open(&ntt_path).expect("open NTT store");
+                let ntt_mmap = unsafe { Mmap::map(&ntt_file) }.expect("mmap NTT store");
+                println!("  NTT store: {:.2} GB", ntt_mmap.len() as f64 / 1e9);
+                mmap_regions.push(MmapRegion {
+                    name: format!("{}/{}", db_label, ONION_NTT_FILE),
+                    ptr: ntt_mmap.as_ptr(),
+                    len: ntt_mmap.len(),
+                    priority: 1,
+                });
+                ntt_mmap_opt = Some(ntt_mmap);
+            }
 
             // Load consolidated INDEX file (onion_index_all.bin). Single mmap;
             // we parse the 32-byte master header here and hand per-group slices
@@ -1868,8 +1953,47 @@ async fn main() {
                 // OnionPIRv2 port: KeyStore::new() takes no args now.
                 let key_store = Box::new(KeyStore::new());
 
-                // Set up chunk servers.
-                //
+                // Set up chunk servers. Two paths:
+                //   - dense: per-group DBs in onion_chunk_all.bin, loaded via
+                //     load_db_from_borrowed (identical to INDEX). No shared
+                //     store, no query-time gather. (gen_2_onion_dense output.)
+                //   - shared: legacy onion_shared_ntt.bin + per-group
+                //     index_table via set_shared_database.
+                // Both live for the whole worker scope: chunk_servers is queried
+                // per request; chunk_index_tables holds the index_table buffers
+                // that set_shared_database aliases by raw pointer (shared path
+                // only — they MUST outlive the PirServers, so declare here, not
+                // inside the `if !chunk_dense` block).
+                let mut chunk_index_tables: Vec<Vec<u32>> = Vec::new();
+                let mut chunk_servers: Vec<PirServer> = Vec::with_capacity(k_chunk);
+
+                if chunk_dense {
+                    let m = chunk_all_mmap_opt.as_ref()
+                        .expect("dense chunk mmap present when chunk_dense");
+                    for g in 0..k_chunk {
+                        let off = ONION_CHUNK_ALL_HEADER_BYTES + g * chunk_all_per_group;
+                        let slice = &m[off..off + chunk_all_per_group];
+                        let mut server = PirServer::new(chunk_bins as u64);
+                        // SAFETY: `chunk_all_mmap_opt` is moved into this worker
+                        // thread and outlives every aliasing PirServer; the
+                        // borrowed-buffer path leaves fd=-1 (no munmap on drop).
+                        assert!(
+                            unsafe { server.load_db_from_borrowed(slice) },
+                            "load_db_from_borrowed failed (dense chunk group {}, off {}, len {})",
+                            g, off, slice.len(),
+                        );
+                        unsafe { server.set_key_store(Some(&key_store)); }
+                        chunk_servers.push(server);
+                    }
+                    println!(
+                        "  [OnionPIR:{}] {} chunk servers ready (dense, via onion_chunk_all.bin mmap)",
+                        worker_label, k_chunk,
+                    );
+                }
+
+                if !chunk_dense {
+                let ntt_mmap = ntt_mmap_opt.as_ref()
+                    .expect("shared NTT mmap present when !chunk_dense");
                 // OnionPIRv2 port (commit 6 / runtime-num_pt update): post the
                 // upstream `target_num_pt` refactor (`fb14f4e447b...`),
                 // `params_info(chunk_bins)` returns the LOCAL per-instance
@@ -1915,8 +2039,7 @@ async fn main() {
                 let chunk_shared_num_entries =
                     (ntt_u64_slice.len() / coeff_val_cnt) as u64;
 
-                let mut chunk_index_tables: Vec<Vec<u32>> = Vec::with_capacity(k_chunk);
-                let mut chunk_servers: Vec<PirServer> = Vec::with_capacity(k_chunk);
+                chunk_index_tables.reserve(k_chunk);
                 for g in 0..k_chunk {
                     let mut server = PirServer::new(chunk_bins as u64);
                     let mut index_table = vec![0u32; padded_chunk];
@@ -1962,7 +2085,8 @@ async fn main() {
                     chunk_index_tables.push(index_table);
                     chunk_servers.push(server);
                 }
-                println!("  [OnionPIR:{}] {} chunk servers ready", worker_label, k_chunk);
+                println!("  [OnionPIR:{}] {} chunk servers ready (shared NTT store)", worker_label, k_chunk);
+                } // end if !chunk_dense
 
                 // Set up index servers — each slices into the consolidated
                 // onion_index_all.bin mmap via load_db_from_bytes (zero-copy).

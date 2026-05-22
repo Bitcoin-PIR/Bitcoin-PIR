@@ -14,3 +14,4 @@ keywords = ["pir", "privacy", "bitcoin", "cryptography", "cuckoo"]
 categories = ["cryptography", "cryptography::cryptocurrencies", "no-std"]
 
 [dependencies]
+sha2 = { version = "0.10", default-features = false }

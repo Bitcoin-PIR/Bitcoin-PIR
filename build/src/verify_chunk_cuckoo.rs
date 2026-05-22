@@ -53,12 +53,13 @@ fn lookup_in_group(
     bins_per_table: usize,
     slots_per_bin: usize,
     num_cuckoo_hashes: usize,
+    master_seed: u64,
 ) -> bool {
     let slots_per_table = bins_per_table * slots_per_bin;
     let table_offset = CHUNK_HEADER_SIZE + group_id * slots_per_table * 4;
 
     for h in 0..num_cuckoo_hashes {
-        let key = derive_chunk_cuckoo_key(group_id, h);
+        let key = pir_core::hash::derive_cuckoo_key(master_seed, group_id, h);
         let bin = cuckoo_hash_int(chunk_id, key, bins_per_table);
         let base = table_offset + bin * slots_per_bin * 4;
         for s in 0..slots_per_bin {
@@ -105,7 +106,9 @@ fn main() {
     let num_hashes = read_u32(&cuckoo_mmap, 20) as usize;
     let master_seed = read_u64(&cuckoo_mmap, 24);
 
-    if magic != CHUNK_MAGIC {
+    let chunk_snap = CHUNK_MAGIC ^ pir_core::cuckoo::ANCHOR_MAGIC_SNAPSHOT_XOR;
+    let chunk_delta = CHUNK_MAGIC ^ pir_core::cuckoo::ANCHOR_MAGIC_DELTA_XOR;
+    if magic != CHUNK_MAGIC && magic != chunk_snap && magic != chunk_delta {
         eprintln!(
             "Bad magic: expected 0x{:016X}, got 0x{:016X}",
             CHUNK_MAGIC, magic
@@ -205,7 +208,7 @@ fn main() {
 
         let mut entry_found = false;
         for &group_id in &assigned {
-            if lookup_in_group(&cuckoo_mmap, group_id, chunk_id, bins_per_table, slots_per_bin, num_hashes) {
+            if lookup_in_group(&cuckoo_mmap, group_id, chunk_id, bins_per_table, slots_per_bin, num_hashes, master_seed) {
                 entry_found = true;
                 break;
             }
@@ -256,7 +259,7 @@ fn main() {
 
         let mut entry_found = false;
         for &group_id in &assigned {
-            if lookup_in_group(&cuckoo_mmap, group_id, chunk_id, bins_per_table, slots_per_bin, num_hashes) {
+            if lookup_in_group(&cuckoo_mmap, group_id, chunk_id, bins_per_table, slots_per_bin, num_hashes, master_seed) {
                 entry_found = true;
                 break;
             }

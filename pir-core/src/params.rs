@@ -44,6 +44,17 @@ impl TableParams {
     pub fn result_size(&self) -> usize {
         self.bin_size()
     }
+
+    /// Return a copy of these params with `master_seed` replaced.
+    ///
+    /// Used at build time to overlay a chain-derived seed
+    /// (`pir_core::seeds::SnapshotSeeds::derive(&anchor).index_master`,
+    /// etc.) onto the layout-only constants `INDEX_PARAMS` /
+    /// `CHUNK_PARAMS`.
+    pub const fn with_master_seed(mut self, master_seed: u64) -> Self {
+        self.master_seed = master_seed;
+        self
+    }
 }
 
 /// Compute the minimum DPF domain exponent such that 2^n >= bins_per_table.
@@ -84,10 +95,16 @@ pub const CHUNK_SLOT_SIZE: usize = 4 + CHUNK_SIZE; // 44
 pub const INDEX_RECORD_SIZE: usize = SCRIPT_HASH_SIZE + 4 + 1; // 25
 
 /// Standard INDEX-level parameters for the main UTXO database.
+///
+/// `master_seed: 0` is a sentinel — production callers must overlay
+/// the chain-derived value via [`TableParams::with_master_seed`] using
+/// [`pir_core::seeds::SnapshotSeeds::derive(&anchor).index_master`]
+/// (Phase B+). Build sites that read the seed from a cuckoo file
+/// header use the header value, not this constant.
 pub const INDEX_PARAMS: TableParams = TableParams {
     k: 75,
     num_hashes: 3,
-    master_seed: 0x71a2ef38b4c90d15,
+    master_seed: 0,
     slots_per_bin: 4,
     cuckoo_num_hashes: 2,
     slot_size: INDEX_SLOT_SIZE,
@@ -98,10 +115,12 @@ pub const INDEX_PARAMS: TableParams = TableParams {
 };
 
 /// Standard CHUNK-level parameters for the main UTXO database.
+///
+/// `master_seed: 0` is a sentinel — see [`INDEX_PARAMS`].
 pub const CHUNK_PARAMS: TableParams = TableParams {
     k: 80,
     num_hashes: 3,
-    master_seed: 0xa3f7c2d918e4b065,
+    master_seed: 0,
     slots_per_bin: 3,
     cuckoo_num_hashes: 2,
     slot_size: CHUNK_SLOT_SIZE,
@@ -144,8 +163,16 @@ pub const CHUNKS_PER_UNIT: usize = 1;
 pub const UNIT_DATA_SIZE: usize = CHUNKS_PER_UNIT * CHUNK_SIZE;
 
 // ─── Legacy constant aliases ────────────────────────────────────────────────
-// These exist so that code using the old `common::K`, `common::MASTER_SEED`,
-// etc. continues to compile without changes during migration.
+// Kept so legacy diagnostic binaries (e.g. test_batch_pir, verify,
+// assign_queries) that take the build-time master seed implicitly via
+// `use common::*;` keep compiling. They are NOT used by the production
+// build pipeline after Phase B — gen_0_extract_utxo_set / build_cuckoo_generic
+// / gen_2_onion / gen_3_onion all derive their cuckoo + tag seeds from
+// the chain anchor (see [`crate::seeds`]).
+//
+// `MASTER_SEED` and `CHUNK_MASTER_SEED` will be zeroed (or removed) in
+// Phase C step 2, blocked on migrating the diagnostic binaries to read
+// the seed from the cuckoo file header instead of importing the const.
 
 pub const K: usize = INDEX_PARAMS.k;
 pub const NUM_HASHES: usize = INDEX_PARAMS.num_hashes;

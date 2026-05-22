@@ -25,11 +25,14 @@
 
 use memmap2::Mmap;
 use onionpir::{self, Server as PirServer, Client as PirClient};
+use pir_core::cuckoo::{HeaderAnchor, ANCHOR_MAGIC_DELTA_XOR, ANCHOR_MAGIC_SNAPSHOT_XOR};
+use pir_core::seeds::{AnchorSeeds, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES};
 use rayon::prelude::*;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -65,12 +68,16 @@ struct GenArgs {
     /// remove output_dir). Used to retrofit existing preprocessed snapshots
     /// into the new single-file layout without re-running preprocessing.
     consolidate_only: bool,
+    /// Optional chain/delta anchor for chain-derived seeds. If absent,
+    /// LEGACY_MASTER_SEED + LEGACY_TAG_SEED are used with a warning.
+    anchor_file: Option<PathBuf>,
 }
 
 fn resolve_paths() -> GenArgs {
     let args: Vec<String> = env::args().collect();
     let mut data_dir: Option<String> = None;
     let mut consolidate_only = false;
+    let mut anchor_file: Option<PathBuf> = None;
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--data-dir" {
@@ -80,8 +87,24 @@ fn resolve_paths() -> GenArgs {
             }
         } else if args[i] == "--consolidate-only" {
             consolidate_only = true;
+        } else if args[i] == "--anchor" {
+            if let Some(v) = args.get(i + 1) {
+                anchor_file = Some(PathBuf::from(v));
+                i += 1;
+            }
         }
         i += 1;
+    }
+    if anchor_file.is_none() {
+        if let Some(d) = data_dir.as_ref() {
+            let chain = PathBuf::from(format!("{}/chain_anchor.bin", d));
+            let delta = PathBuf::from(format!("{}/delta_anchor.bin", d));
+            if chain.exists() {
+                anchor_file = Some(chain);
+            } else if delta.exists() {
+                anchor_file = Some(delta);
+            }
+        }
     }
     let paths = match data_dir {
         Some(d) => GenPaths {
@@ -99,7 +122,107 @@ fn resolve_paths() -> GenArgs {
             index_all_file: DEFAULT_INDEX_ALL_FILE.to_string(),
         },
     };
-    GenArgs { paths, consolidate_only }
+    GenArgs { paths, consolidate_only, anchor_file }
+}
+
+// ─── Chain-derived seeds (with legacy fallback) ─────────────────────────────
+
+/// Legacy fallbacks for the INDEX cuckoo master + tag seeds, used only
+/// when no `--anchor` is supplied. Match pre-chain-derivation builds.
+const LEGACY_INDEX_MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
+const LEGACY_INDEX_TAG_SEED: u64 = 0xd4e5f6a7b8c91023;
+
+static INDEX_MASTER_CELL: OnceLock<u64> = OnceLock::new();
+static INDEX_TAG_CELL: OnceLock<u64> = OnceLock::new();
+/// Chain anchor for embedding in the v2 onion_index_meta.bin header
+/// (Phase C2). `None` → emit legacy ONION_INDEX_META_MAGIC.
+static INDEX_ANCHOR_CELL: OnceLock<Option<HeaderAnchor>> = OnceLock::new();
+
+fn master_seed() -> u64 {
+    *INDEX_MASTER_CELL
+        .get()
+        .expect("INDEX_MASTER_CELL not initialised — call init_index_seeds first")
+}
+
+fn tag_seed() -> u64 {
+    *INDEX_TAG_CELL
+        .get()
+        .expect("INDEX_TAG_CELL not initialised — call init_index_seeds first")
+}
+
+fn index_anchor() -> Option<&'static HeaderAnchor> {
+    INDEX_ANCHOR_CELL
+        .get()
+        .expect("INDEX_ANCHOR_CELL not initialised — call init_index_seeds first")
+        .as_ref()
+}
+
+fn init_index_seeds(anchor: Option<&PathBuf>) {
+    let (master, tag, header_anchor): (u64, u64, Option<HeaderAnchor>) = match anchor {
+        Some(path) => {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| {
+                eprintln!("error: failed to read anchor {}: {}", path.display(), e);
+                std::process::exit(1);
+            });
+            match bytes.len() {
+                CHAIN_ANCHOR_BYTES => {
+                    let a = pir_core::seeds::ChainAnchor::from_bytes(&bytes).unwrap_or_else(|e| {
+                        eprintln!("error: bad ChainAnchor {}: {}", path.display(), e);
+                        std::process::exit(1);
+                    });
+                    let s = AnchorSeeds::Snapshot(pir_core::seeds::SnapshotSeeds::derive(&a));
+                    println!(
+                        "Anchor: {} (snapshot, height={})",
+                        path.display(),
+                        a.block_height
+                    );
+                    (s.index_master(), s.index_tag(), Some(HeaderAnchor::Snapshot(a)))
+                }
+                DELTA_ANCHOR_BYTES => {
+                    let a = pir_core::seeds::DeltaAnchor::from_bytes(&bytes).unwrap_or_else(|e| {
+                        eprintln!("error: bad DeltaAnchor {}: {}", path.display(), e);
+                        std::process::exit(1);
+                    });
+                    let s = AnchorSeeds::Delta(pir_core::seeds::DeltaSeeds::derive(&a));
+                    println!(
+                        "Anchor: {} (delta, {}→{})",
+                        path.display(),
+                        a.from.block_height,
+                        a.to.block_height
+                    );
+                    (s.index_master(), s.index_tag(), Some(HeaderAnchor::Delta(a)))
+                }
+                n => {
+                    eprintln!(
+                        "error: anchor {} has unknown size {} (expected {} or {})",
+                        path.display(),
+                        n,
+                        CHAIN_ANCHOR_BYTES,
+                        DELTA_ANCHOR_BYTES
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => {
+            eprintln!("WARNING: no --anchor supplied; using LEGACY hardcoded INDEX seeds.");
+            eprintln!("         Output is NOT reproducible against peers without coordination.");
+            (LEGACY_INDEX_MASTER_SEED, LEGACY_INDEX_TAG_SEED, None)
+        }
+    };
+    INDEX_MASTER_CELL.set(master).expect("init_index_seeds called twice");
+    INDEX_TAG_CELL.set(tag).expect("init_index_seeds called twice");
+    INDEX_ANCHOR_CELL
+        .set(header_anchor)
+        .expect("init_index_seeds called twice");
+}
+
+fn onion_index_meta_magic_with_anchor(legacy_magic: u64, anchor: Option<&HeaderAnchor>) -> u64 {
+    match anchor {
+        None => legacy_magic,
+        Some(HeaderAnchor::Snapshot(_)) => legacy_magic ^ ANCHOR_MAGIC_SNAPSHOT_XOR,
+        Some(HeaderAnchor::Delta(_)) => legacy_magic ^ ANCHOR_MAGIC_DELTA_XOR,
+    }
 }
 
 /// OnionPIR index entry from gen_1_onion: 20B script_hash + 4B entry_id + 2B offset + 1B num_entries
@@ -112,16 +235,12 @@ const INDEX_SLOT_SIZE: usize = 15;
 /// PBC parameters
 const K: usize = 75;
 const NUM_HASHES: usize = 3;
-const MASTER_SEED: u64 = 0x71a2ef38b4c90d15;
 
 /// Cuckoo parameters for index level
 const CUCKOO_NUM_HASHES: usize = 2;
 const CUCKOO_LOAD_FACTOR: f64 = 0.95;
 const CUCKOO_MAX_KICKS: usize = 5000;
 const EMPTY: u32 = u32::MAX;
-
-/// Tag seed for fingerprint computation
-const TAG_SEED: u64 = 0xd4e5f6a7b8c91023;
 
 /// OnionPIRv2 port (commit 5b): SLOTS_PER_BIN and ONIONPIR_ENTRY_SIZE are
 /// no longer compile-time constants. They derive from the linked
@@ -201,7 +320,7 @@ fn derive_groups(sh: &[u8]) -> [usize; NUM_HASHES] {
 #[inline]
 fn derive_cuckoo_key(group_id: usize, hash_fn: usize) -> u64 {
     splitmix64(
-        MASTER_SEED
+        master_seed()
             .wrapping_add((group_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
             .wrapping_add((hash_fn as u64).wrapping_mul(0x517cc1b727220a95)),
     )
@@ -357,7 +476,7 @@ fn serialize_cuckoo_bin(
         let sh = &mmap[entry_base..entry_base + SCRIPT_HASH_SIZE];
 
         // Tag (8 bytes)
-        let tag = compute_tag(TAG_SEED, sh);
+        let tag = compute_tag(tag_seed(), sh);
         entry[slot_offset..slot_offset + 8].copy_from_slice(&tag.to_le_bytes());
 
         // entry_id (4 bytes) + byte_offset (2 bytes) + num_entries (1 byte)
@@ -490,12 +609,19 @@ fn main() {
     let meta_file = &paths.meta_file;
     let bin_hashes_file = &paths.bin_hashes_file;
     let index_all_file = &paths.index_all_file;
+
+    // Initialise chain-derived INDEX cuckoo + tag seeds before any work
+    // that would call derive_cuckoo_key or compute_tag.
+    init_index_seeds(gen_args.anchor_file.as_ref());
+
     println!("Paths:");
     println!("  Input index:     {}", index_file_path);
     println!("  Scratch dir:     {}", output_dir.display());
     println!("  Output meta:     {}", meta_file);
     println!("  Output hashes:   {}", bin_hashes_file);
     println!("  Output all:      {}", index_all_file);
+    println!("  master_seed:     0x{:016x}", master_seed());
+    println!("  tag_seed:        0x{:016x}", tag_seed());
     if gen_args.consolidate_only {
         println!("  Mode:            --consolidate-only (skip steps 1\u{2013}7)");
     }
@@ -705,15 +831,27 @@ fn main() {
     {
         let meta_out = File::create(meta_file).expect("create meta file");
         let mut w = BufWriter::new(meta_out);
-        let magic: u64 = 0xBA7C_0010_0000_0002;
+        // Phase C2 v2: legacy magic XOR'd with snapshot/delta marker when
+        // a chain anchor is loaded, anchor bytes appended after the
+        // 44-byte legacy header section. Byte-identical to legacy when
+        // no --anchor.
+        const ONION_INDEX_META_MAGIC: u64 = 0xBA7C_0010_0000_0002;
+        let anchor = index_anchor();
+        let magic = onion_index_meta_magic_with_anchor(ONION_INDEX_META_MAGIC, anchor);
         w.write_all(&magic.to_le_bytes()).unwrap();
         w.write_all(&(K as u32).to_le_bytes()).unwrap();
         w.write_all(&(CUCKOO_NUM_HASHES as u32).to_le_bytes()).unwrap();
         w.write_all(&(slots_per_bin as u32).to_le_bytes()).unwrap();
         w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
-        w.write_all(&MASTER_SEED.to_le_bytes()).unwrap();
-        w.write_all(&TAG_SEED.to_le_bytes()).unwrap();
+        w.write_all(&master_seed().to_le_bytes()).unwrap();
+        w.write_all(&tag_seed().to_le_bytes()).unwrap();
         w.write_all(&(INDEX_SLOT_SIZE as u32).to_le_bytes()).unwrap();
+        if let Some(a) = anchor {
+            match a {
+                HeaderAnchor::Snapshot(c) => w.write_all(&c.to_bytes()).unwrap(),
+                HeaderAnchor::Delta(d) => w.write_all(&d.to_bytes()).unwrap(),
+            }
+        }
         w.flush().unwrap();
     }
     println!("  Done");
@@ -767,7 +905,7 @@ fn main() {
     let test_idx = test_idx.expect("no entries in group 0");
     let test_base = test_idx * ONION_INDEX_RECORD_SIZE;
     let test_sh = &mmap[test_base..test_base + SCRIPT_HASH_SIZE];
-    let test_tag = compute_tag(TAG_SEED, test_sh);
+    let test_tag = compute_tag(tag_seed(), test_sh);
 
     // Find which bin this entry is in
     let test_table = &cuckoo_results[0].1;

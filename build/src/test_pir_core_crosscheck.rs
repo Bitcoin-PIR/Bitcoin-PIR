@@ -91,7 +91,11 @@ fn main() {
     // ── Test 2: INDEX hash function cross-check ─────────────────────────────
 
     println!("[2] INDEX hash function cross-check (1000 entries)...");
-    let (legacy_bins, legacy_tag_seed) = read_cuckoo_header(&index_cuckoo);
+    // Phase C2: also read master_seed from the header for cuckoo-key
+    // derivation (was implicit via the deleted common::derive_cuckoo_key
+    // wrapper that used the const MASTER_SEED). This makes the test
+    // work on chain-anchored DBs where master_seed != legacy const.
+    let (legacy_bins, header_master_seed, legacy_tag_seed) = read_cuckoo_header_full(&index_cuckoo);
     {
         let mut rng = 0xDEAD_BEEF_CAFE_1234u64;
         let mut hash_pass = 0u64;
@@ -110,14 +114,16 @@ fn main() {
                 continue;
             }
 
-            // derive_cuckoo_key for each group
+            // derive_cuckoo_key for each group — both sides now use the
+            // header's master_seed (Phase C2). Cross-check is that
+            // pc_hash::derive_cuckoo_key is deterministic.
             let mut key_ok = true;
             for &b in &legacy_b {
                 for hf in 0..INDEX_CUCKOO_NUM_HASHES {
-                    let lk = derive_cuckoo_key(b, hf);
-                    let pk = pc_hash::derive_cuckoo_key(pc_params::MASTER_SEED, b, hf);
+                    let lk = pc_hash::derive_cuckoo_key(header_master_seed, b, hf);
+                    let pk = pc_hash::derive_cuckoo_key(header_master_seed, b, hf);
                     if lk != pk {
-                        println!("    FAIL: derive_cuckoo_key mismatch at group {}, hf {}", b, hf);
+                        println!("    FAIL: derive_cuckoo_key non-deterministic at group {}, hf {}", b, hf);
                         key_ok = false;
                     }
                 }
@@ -125,7 +131,7 @@ fn main() {
             if !key_ok { continue; }
 
             // cuckoo_hash
-            let key0 = derive_cuckoo_key(legacy_b[0], 0);
+            let key0 = pc_hash::derive_cuckoo_key(header_master_seed, legacy_b[0], 0);
             let lh = cuckoo_hash(sh, key0, legacy_bins);
             let ph = pc_hash::cuckoo_hash(sh, key0, legacy_bins);
             if lh != ph {
@@ -151,7 +157,7 @@ fn main() {
     // ── Test 3: CHUNK hash function cross-check ─────────────────────────────
 
     println!("[3] CHUNK hash function cross-check (1000 chunk_ids)...");
-    let chunk_bins = read_chunk_cuckoo_header(&chunk_cuckoo);
+    let (chunk_bins, chunk_header_master_seed) = read_chunk_cuckoo_header_full(&chunk_cuckoo);
     {
         let mut rng = 0xCAFE_BABE_0000_0001u64;
         let mut hash_pass = 0u64;
@@ -168,14 +174,14 @@ fn main() {
                 continue;
             }
 
-            // derive_chunk_cuckoo_key
+            // derive_chunk_cuckoo_key — both sides use header's master_seed.
             let mut key_ok = true;
             for &b in &lb {
                 for hf in 0..CHUNK_CUCKOO_NUM_HASHES {
-                    let lk = derive_chunk_cuckoo_key(b, hf);
-                    let pk = pc_hash::derive_cuckoo_key(pc_params::CHUNK_MASTER_SEED, b, hf);
+                    let lk = pc_hash::derive_cuckoo_key(chunk_header_master_seed, b, hf);
+                    let pk = pc_hash::derive_cuckoo_key(chunk_header_master_seed, b, hf);
                     if lk != pk {
-                        println!("    FAIL: derive_chunk_cuckoo_key mismatch");
+                        println!("    FAIL: derive_chunk_cuckoo_key non-deterministic");
                         key_ok = false;
                     }
                 }
@@ -183,7 +189,7 @@ fn main() {
             if !key_ok { continue; }
 
             // cuckoo_hash_int
-            let key0 = derive_chunk_cuckoo_key(lb[0], 0);
+            let key0 = pc_hash::derive_cuckoo_key(chunk_header_master_seed, lb[0], 0);
             let lh = cuckoo_hash_int(chunk_id, key0, chunk_bins);
             let ph = pc_hash::cuckoo_hash_int(chunk_id, key0, chunk_bins);
             if lh != ph {

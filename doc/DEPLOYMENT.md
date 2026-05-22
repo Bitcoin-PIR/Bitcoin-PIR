@@ -84,6 +84,41 @@ sudo chown $USER:$USER /data/pir
 #   /data/pir/utxo_chunks_cuckoo.bin  (~1.4 GB, cuckoo hash index)
 ```
 
+#### Reproducible database builds (Phase B / C)
+
+For **byte-reproducible builds** that any operator can independently
+rebuild and hash-compare, supply the chain anchor at build time:
+
+```bash
+# Snapshot build (full pipeline)
+bitcoin-cli dumptxoutset /tmp/utxo_948454.dat
+./scripts/build_full.sh /tmp/utxo_948454.dat 948454
+# → writes <intermediate_dir>/chain_anchor.bin (36 B)
+# → cuckoo files carry the anchor in their header (v2 MAGIC, Phase C)
+
+# Delta build
+./target/release/delta_gen_0 utxo_948454.dat /Volumes/Bitcoin/bitcoin \
+    948454 950000 --to-block-hash $(bitcoin-cli getblockhash 950000)
+./scripts/build_delta.sh 948454 950000
+# → writes delta_anchor_948454_950000.bin (72 B: from || to)
+```
+
+Without `--anchor-height` / `--to-block-hash`, the build still
+succeeds but each cuckoo binary prints a stderr warning
+("WARNING: no --anchor supplied; using LEGACY hardcoded seeds") and
+the resulting cuckoo files use the legacy MAGIC with no anchor
+embedded — meaning peer operators cannot reproduce them byte-for-byte.
+
+**Verification.** Clients can verify a cuckoo file's seeds are honestly
+derived from the embedded chain anchor via
+`pir_core::cuckoo::verify_anchor_seeds(&header, domain, tag_domain)`.
+A successful verification means: an attacker would have had to find a
+SHA-256 preimage to bias the cuckoo placement against the verifier —
+which is computationally infeasible.
+
+See [docs/BUILD_REPRODUCIBILITY.md](../docs/BUILD_REPRODUCIBILITY.md)
+for the full design + threat model.
+
 ### 1.4 Update Configuration
 
 Database paths are configured in `runtime/src/bin/server.rs`.

@@ -84,7 +84,13 @@ echo ""
 
 # ── Step 1: extract flat UTXO set ───────────────────────────────────────────
 echo "[1/10] gen_0_extract_utxo_set — reading dumptxoutset..."
-./target/release/gen_0_extract_utxo_set "$SNAPSHOT" --data-dir "$INTERMEDIATE_DIR"
+./target/release/gen_0_extract_utxo_set "$SNAPSHOT" \
+    --data-dir "$INTERMEDIATE_DIR" \
+    --anchor-height "$HEIGHT"
+# Stage chain_anchor.bin into the checkpoint dir so gen_2_onion / gen_3_onion
+# (--data-dir $CHECKPOINT_DIR) auto-detect it. build_cuckoo_generic below
+# reads it from $INTERMEDIATE_DIR explicitly.
+cp -f "$INTERMEDIATE_DIR/chain_anchor.bin" "$CHECKPOINT_DIR/chain_anchor.bin"
 echo ""
 
 # ── Step 2: pack into 80B chunks + 25B index ────────────────────────────────
@@ -94,12 +100,14 @@ echo ""
 
 # ── Step 3: INDEX cuckoo (DPF/HarmonyPIR) ───────────────────────────────────
 echo "[3/10] build_cuckoo_generic index — building INDEX cuckoo..."
-./target/release/build_cuckoo_generic index "$INDEX_INPUT" "$INDEX_CUCKOO_OUT"
+./target/release/build_cuckoo_generic index "$INDEX_INPUT" "$INDEX_CUCKOO_OUT" \
+    --anchor "$INTERMEDIATE_DIR/chain_anchor.bin"
 echo ""
 
 # ── Step 4: CHUNK cuckoo (DPF/HarmonyPIR) ───────────────────────────────────
 echo "[4/10] build_cuckoo_generic chunk — building CHUNK cuckoo..."
-./target/release/build_cuckoo_generic chunk "$CHUNKS_INPUT" "$INDEX_INPUT" "$CHUNK_CUCKOO_OUT"
+./target/release/build_cuckoo_generic chunk "$CHUNKS_INPUT" "$INDEX_INPUT" "$CHUNK_CUCKOO_OUT" \
+    --anchor "$INTERMEDIATE_DIR/chain_anchor.bin"
 echo ""
 
 # ── Step 5: per-bucket bin Merkle for DPF/Harmony ──────────────────────────

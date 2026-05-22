@@ -22,6 +22,7 @@
 //!   gen_1_utxo_set /path/to/utxo.dat
 
 use bitcoin::hashes::{ripemd160, sha256, Hash};
+use pir_core::seeds::{ChainAnchor, CHAIN_ANCHOR_FILENAME};
 use std::env;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -76,8 +77,17 @@ fn write_utxo_entry(
     Ok(())
 }
 
-/// Process the UTXO snapshot and write flat UTXO entries
-fn process_utxo_snapshot(snapshot_path: &Path, output_file: &Path) -> Result<(), String> {
+/// Process the UTXO snapshot and write flat UTXO entries.
+///
+/// If `anchor_height` is supplied, also writes a `chain_anchor.bin` file
+/// (36 bytes: 32B block_hash || 4B height LE) into the same directory as
+/// `output_file`. Downstream build stages consume this file to derive
+/// chain-anchored PRG seeds — see `docs/BUILD_REPRODUCIBILITY.md`.
+fn process_utxo_snapshot(
+    snapshot_path: &Path,
+    output_file: &Path,
+    anchor_height: Option<u32>,
+) -> Result<(), String> {
     println!();
     println!("[1] Opening UTXO snapshot...");
     println!("    Snapshot path: {}", snapshot_path.display());
@@ -96,6 +106,26 @@ fn process_utxo_snapshot(snapshot_path: &Path, output_file: &Path) -> Result<(),
 
     println!("    Block hash: {}", dump.block_hash);
     println!("    UTXO set size: {}", dump.utxo_set_size);
+
+    // Write chain_anchor.bin if the operator supplied the snapshot height.
+    // The `txoutset` crate does not expose the anchor block's height
+    // directly (only per-UTXO heights), so the operator must pass it via
+    // `--anchor-height`.
+    if let Some(height) = anchor_height {
+        let block_hash = dump.block_hash.to_byte_array();
+        let anchor = ChainAnchor { block_hash, block_height: height };
+        let anchor_path = output_file
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(CHAIN_ANCHOR_FILENAME);
+        anchor.save(&anchor_path).map_err(|e| {
+            format!("Failed to write {}: {}", anchor_path.display(), e)
+        })?;
+        println!("    Wrote chain anchor: {} (height {})", anchor_path.display(), height);
+    } else {
+        eprintln!("    WARNING: --anchor-height not supplied — chain_anchor.bin NOT written.");
+        eprintln!("    Downstream stages will fall back to legacy hardcoded seeds.");
+    }
 
     let total_entries = dump.utxo_set_size;
 
@@ -223,6 +253,7 @@ fn main() {
 
     let mut snapshot: Option<&str> = None;
     let mut data_dir: &str = DEFAULT_DATA_DIR;
+    let mut anchor_height: Option<u32> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -235,10 +266,26 @@ fn main() {
                 }
                 data_dir = &args[i];
             }
+            "--anchor-height" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --anchor-height requires an argument");
+                    std::process::exit(2);
+                }
+                anchor_height = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("error: --anchor-height must be a u32");
+                    std::process::exit(2);
+                }));
+            }
             "-h" | "--help" => {
-                println!("Usage: {} <utxo_snapshot_file> [--data-dir <dir>]", args[0]);
+                println!(
+                    "Usage: {} <utxo_snapshot_file> [--data-dir <dir>] [--anchor-height <H>]",
+                    args[0]
+                );
                 println!();
                 println!("Writes <dir>/utxo_set.bin (default dir: {}).", DEFAULT_DATA_DIR);
+                println!("With --anchor-height, also writes <dir>/chain_anchor.bin for");
+                println!("chain-derived seeds (see docs/BUILD_REPRODUCIBILITY.md).");
                 println!("Create a UTXO snapshot with: bitcoin-cli dumptxoutset <path>");
                 std::process::exit(0);
             }
@@ -254,7 +301,10 @@ fn main() {
     }
 
     let Some(snapshot) = snapshot else {
-        eprintln!("Usage: {} <utxo_snapshot_file> [--data-dir <dir>]", args[0]);
+        eprintln!(
+            "Usage: {} <utxo_snapshot_file> [--data-dir <dir>] [--anchor-height <H>]",
+            args[0]
+        );
         std::process::exit(1);
     };
 
@@ -266,7 +316,7 @@ fn main() {
     println!("Output:   {}", output_file.display());
     println!();
 
-    if let Err(e) = process_utxo_snapshot(snapshot_path, &output_file) {
+    if let Err(e) = process_utxo_snapshot(snapshot_path, &output_file, anchor_height) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }

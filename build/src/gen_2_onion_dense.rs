@@ -1,19 +1,34 @@
-//! Build OnionPIR main database: shared NTT store + per-group cuckoo tables.
+//! Build OnionPIR CHUNK database the DENSE way: per-group preprocessed
+//! OnionPIR DBs concatenated into a single `onion_chunk_all.bin`.
 //!
-//! Reads packed entries from gen_1_onion, NTT-expands them into a level-major
-//! shared store, builds 6-hash cuckoo tables (bs=1) for each of 80 PBC groups,
-//! and verifies the setup with a test query.
+//! This is the CHUNK-side analogue of `gen_3_onion` (the INDEX builder).
+//! Where `gen_2_onion` writes ONE shared NTT store
+//! (`onion_shared_ntt.bin`) plus per-group cuckoo tables and relies on a
+//! server-side gather (via `index_table`) at query time,
+//! `gen_2_onion_dense` precomputes each PBC group's DENSE preprocessed DB
+//! at build time — exactly like `gen_3_onion` does for INDEX. The
+//! server then mmaps `onion_chunk_all.bin` once and hands each group a
+//! slice, with no per-query gather.
+//!
+//! The cuckoo / PBC logic (group assignment, 6-hash bs=1 cuckoo,
+//! `bins_per_table` sizing) is COPIED VERBATIM from `gen_2_onion`. The
+//! per-group dense build loop + single-file consolidation is mirrored
+//! from `gen_3_onion`. CHUNK cuckoo is bs=1 (one entry per bin), so each
+//! bin maps to one packed entry's bytes (or zeros for an empty bin) — no
+//! `serialize_cuckoo_bin` slot-packing like INDEX.
 //!
 //! Output:
-//!   - onion_shared_ntt.bin: level-major NTT store (all entries, stored once)
+//!   - onion_chunk_all.bin: K_CHUNK per-group dense DBs + 32-byte master header
 //!   - onion_chunk_cuckoo.bin: per-group cuckoo tables (bin → entry_id mapping)
+//!   - onion_data_bin_hashes.bin: per-bin DATA hashes (for per-bin Merkle)
+//!
+//! Does NOT write `onion_shared_ntt.bin`.
 //!
 //! Usage:
-//!   cargo run --release -p build --bin gen_2_onion [-- --data-dir <dir>]
+//!   cargo run --release -p build --bin gen_2_onion_dense [-- --data-dir <dir>]
 //!
 //! With no flags, reads `/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin`
-//! and writes the NTT store, cuckoo table, and bin-hash sidecar to
-//! `/Volumes/Bitcoin/data/`.
+//! and writes outputs to `/Volumes/Bitcoin/data/`.
 //!
 //! With `--data-dir <D>`, reads `<D>/onion_packed_entries.bin` and writes
 //! all outputs under `<D>/`. Use this for delta DB builds.
@@ -23,8 +38,8 @@ use onionpir::{self, Client as PirClient, Server as PirServer};
 use pir_core::cuckoo::{HeaderAnchor, ANCHOR_MAGIC_DELTA_XOR, ANCHOR_MAGIC_SNAPSHOT_XOR};
 use pir_core::seeds::{CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES};
 use std::env;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -32,15 +47,28 @@ use std::time::Instant;
 // ─── Default paths (used when --data-dir is not specified) ──────────────────
 
 const DEFAULT_PACKED_FILE: &str = "/Volumes/Bitcoin/data/intermediate/onion_packed_entries.bin";
-const DEFAULT_NTT_STORE_FILE: &str = "/Volumes/Bitcoin/data/onion_shared_ntt.bin";
 const DEFAULT_CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/onion_chunk_cuckoo.bin";
 const DEFAULT_BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_data_bin_hashes.bin";
+const DEFAULT_CHUNK_ALL_FILE: &str = "/Volumes/Bitcoin/data/onion_chunk_all.bin";
+const DEFAULT_CHUNK_PIR_DIR: &str = "/Volumes/Bitcoin/data/onion_chunk_pir";
+
+/// Magic for the consolidated onion_chunk_all.bin file. The byte layout
+/// after this 32-byte master header is just K_CHUNK per-group
+/// preprocessed databases concatenated back-to-back, each in OnionPIR's
+/// standard save_db output format. The per-group size is identical
+/// because all groups share the same bins_per_table and OnionPIR params.
+///
+/// Distinct from ONION_INDEX_ALL_MAGIC (0xBA7C_0010_0000_0003): CHUNK
+/// uses the next discriminator (...0004).
+const ONION_CHUNK_ALL_MAGIC: u64 = 0xBA7C_0010_0000_0004;
+const ONION_CHUNK_ALL_HEADER_BYTES: usize = 32; // 4 * u64
 
 struct ResolvedPaths {
     packed_file: String,
-    ntt_store_file: String,
     cuckoo_file: String,
     bin_hashes_file: String,
+    chunk_all_file: String,
+    chunk_pir_dir: PathBuf, // per-group scratch dir
     /// Optional chain/delta anchor file for chain-derived seeds.
     /// If `--anchor <path>` is passed, that wins; otherwise we look for
     /// `<data_dir>/chain_anchor.bin` or `<data_dir>/delta_anchor.bin`.
@@ -81,16 +109,18 @@ fn resolve_paths() -> ResolvedPaths {
     match data_dir {
         Some(d) => ResolvedPaths {
             packed_file: format!("{}/onion_packed_entries.bin", d),
-            ntt_store_file: format!("{}/onion_shared_ntt.bin", d),
             cuckoo_file: format!("{}/onion_chunk_cuckoo.bin", d),
             bin_hashes_file: format!("{}/onion_data_bin_hashes.bin", d),
+            chunk_all_file: format!("{}/onion_chunk_all.bin", d),
+            chunk_pir_dir: PathBuf::from(format!("{}/onion_chunk_pir", d)),
             anchor_file,
         },
         None => ResolvedPaths {
             packed_file: DEFAULT_PACKED_FILE.to_string(),
-            ntt_store_file: DEFAULT_NTT_STORE_FILE.to_string(),
             cuckoo_file: DEFAULT_CUCKOO_FILE.to_string(),
             bin_hashes_file: DEFAULT_BIN_HASHES_FILE.to_string(),
+            chunk_all_file: DEFAULT_CHUNK_ALL_FILE.to_string(),
+            chunk_pir_dir: PathBuf::from(DEFAULT_CHUNK_PIR_DIR),
             anchor_file,
         },
     }
@@ -352,14 +382,15 @@ fn build_cuckoo_bs1(
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== gen_2_onion: Build OnionPIR Main Database ===\n");
+    println!("=== gen_2_onion_dense: Build OnionPIR CHUNK Database (per-group dense) ===\n");
     let total_start = Instant::now();
 
     let paths = resolve_paths();
     let packed_file_path = paths.packed_file;
-    let ntt_store_file = paths.ntt_store_file;
     let cuckoo_file = paths.cuckoo_file;
     let bin_hashes_file = paths.bin_hashes_file;
+    let chunk_all_file = paths.chunk_all_file;
+    let chunk_pir_dir = paths.chunk_pir_dir;
 
     // Initialise chain-derived seeds BEFORE any cuckoo work. Falls back
     // to LEGACY_CHUNK_MASTER_SEED with a warning if no anchor is found.
@@ -367,9 +398,10 @@ fn main() {
 
     println!("Paths:");
     println!("  Input packed:    {}", packed_file_path);
-    println!("  Output NTT:      {}", ntt_store_file);
     println!("  Output cuckoo:   {}", cuckoo_file);
     println!("  Output hashes:   {}", bin_hashes_file);
+    println!("  Output all:      {}", chunk_all_file);
+    println!("  Scratch dir:     {}", chunk_pir_dir.display());
     println!("  CHUNK master_seed: 0x{:016x}", chunk_master_seed());
     println!();
 
@@ -392,145 +424,8 @@ fn main() {
     println!("  {} entries ({:.2} GB), entry_size={} B", num_entries,
         packed_mmap.len() as f64 / 1e9, packed_entry_size);
 
-    // ── 2. Get OnionPIR params ──────────────────────────────────────────
-    let p = onionpir::params_info(num_entries as u64);
-    let coeff_val_cnt = p.coeff_val_cnt as usize;
-    let poly_degree = p.poly_degree as usize;
-    let entry_size_pt = p.entry_size as usize;
-    let num_plaintexts = p.num_plaintexts as usize;
-    println!("\n[2] OnionPIR params (post-port, BV key-switching):");
-    println!("  poly_degree:      {} (N — coeffs per pre-NTT plaintext)", poly_degree);
-    println!("  entry_size:       {} B (payload per plaintext)", entry_size_pt);
-    println!("  num_plaintexts:   {} (compiled-in DB slot count)", num_plaintexts);
-    println!("  coeff_val_cnt:    {} (post-NTT coeff count per plaintext)", coeff_val_cnt);
-    assert_eq!(
-        entry_size_pt, packed_entry_size,
-        "params_info.entry_size ({}) != packed_entry_size ({}); a stale \
-         packed.bin produced by a different onionpir rev is being read",
-        entry_size_pt, packed_entry_size
-    );
-    if num_entries > num_plaintexts {
-        panic!(
-            "num_entries ({}) > num_plaintexts ({}). Compile-time DB shape \
-             is too small for this dataset — rebuild onionpir with a larger \
-             DB_SIZE_MB.",
-            num_entries, num_plaintexts
-        );
-    }
-
-    // ── 3. Build shared NTT store via push_plaintexts + save_db ─────────
-    //
-    // OnionPIRv2 port (commit 3a): the old `ntt_expand_entry` + level-major
-    // mmap scatter is gone. The new flow is:
-    //
-    //   1. Bit-pack each entry's bytes into `poly_degree` pre-NTT u64
-    //      coefficients (see `pir_core::onion_unpack::pack_bytes_into_coefficients`).
-    //   2. Feed batches of coefficients to a temporary Server via
-    //      `push_plaintexts(coeffs, count, offset, &[])`. The server runs
-    //      NTT internally and stores the post-NTT level-major data.
-    //   3. `save_db(temp_path)` writes a file shaped:
-    //        [48-byte header][raw `[u64]` level-major payload]
-    //      Header layout per INTEGRATION.md §1.3 + upstream `PREPROC_*`
-    //      magic. The payload is exactly what the runtime needs to pass
-    //      to `set_shared_database`.
-    //   4. Strip the 48-byte header into the final `ntt_store_file`. The
-    //      stripped payload is `coeff_val_cnt × num_plaintexts × 8` bytes
-    //      — NOT `× num_entries` like pre-port — because save_db sizes
-    //      for the compile-time DB shape. The runtime adapts by passing
-    //      `num_plaintexts` (not `num_packed_entries`) as
-    //      `shared_num_entries` to `set_shared_database`.
-    //
-    //   Empty slots `[num_entries, num_plaintexts)` contain whatever
-    //   `Server::new` left them as (zeros in practice). The PBC cuckoo
-    //   planner only assigns to `[0, num_entries)`, so real queries never
-    //   land on those slots.
-    const PUSH_BATCH_ENTRIES: usize = 256;
-    println!(
-        "\n[3] Pushing {} plaintexts ({} per batch) and running NTT...",
-        num_entries, PUSH_BATCH_ENTRIES
-    );
-    let t_ntt = Instant::now();
-    let mut server = PirServer::new(num_entries as u64);
-    let one_percent = num_entries.max(1) / 100;
-    // OnionPIRv2 port (commit 5b): the commit-3 `take_bytes_per_entry`
-    // truncation guard is gone — gen_1's packed entry size matches
-    // `params_info.entry_size` exactly (asserted above), so the full
-    // entry packs cleanly into one plaintext.
-
-    let mut entry_id = 0;
-    while entry_id < num_entries {
-        let n_this_batch = PUSH_BATCH_ENTRIES.min(num_entries - entry_id);
-        let mut batch_coeffs: Vec<u64> = Vec::with_capacity(n_this_batch * poly_degree);
-        for i in 0..n_this_batch {
-            let off = (entry_id + i) * packed_entry_size;
-            let raw = &packed_mmap[off..off + packed_entry_size];
-            // OnionPIRv2 port (commit 5b): no truncation — `raw.len() ==
-            // packed_entry_size == entry_size_pt` by the earlier assert.
-            let coeffs = pir_core::onion_unpack::pack_bytes_into_coefficients(
-                raw,
-                entry_size_pt,
-                poly_degree,
-            );
-            batch_coeffs.extend_from_slice(&coeffs);
-        }
-        let ok = server.push_plaintexts(
-            &batch_coeffs,
-            n_this_batch as u64,
-            entry_id as u64,
-            &[],
-        );
-        assert!(
-            ok,
-            "push_plaintexts failed at entry_id={} (batch size {})",
-            entry_id, n_this_batch
-        );
-        entry_id += n_this_batch;
-        if one_percent > 0 && entry_id % (one_percent * 5).max(1) == 0 {
-            eprint!("\r  push_plaintexts: {}%", entry_id * 100 / num_entries.max(1));
-            let _ = std::io::stderr().flush();
-        }
-    }
-    eprintln!();
-    println!("  push_plaintexts + NTT: {:.2?}", t_ntt.elapsed());
-
-    // Save to a temp file, strip the 48-byte header into the final NTT
-    // store file. The header carries `[u64 magic][u64 version][u64 layout_id]
-    // [u64 num_pt][u64 coeff_val_cnt][u64 data_bytes]`.
-    let temp_path = format!("{}.savetmp", ntt_store_file);
-    let t_save = Instant::now();
-    assert!(server.save_db(&temp_path), "save_db failed for temp NTT store");
-    println!("  save_db: {:.2?}", t_save.elapsed());
-
-    let raw_save = std::fs::read(&temp_path).expect("read save_db output");
-    assert!(
-        raw_save.len() > 48,
-        "save_db output too small ({} bytes) — missing header / payload",
-        raw_save.len()
-    );
-    let payload = &raw_save[48..];
-    // Sanity-check the size against what set_shared_database expects:
-    // payload = `coeff_val_cnt × num_plaintexts × 8` bytes.
-    let expected_payload = coeff_val_cnt * num_plaintexts * 8;
-    assert_eq!(
-        payload.len(),
-        expected_payload,
-        "save_db payload size mismatch: got {}, expected {} = {} × {} × 8 \
-         (coeff_val_cnt × num_plaintexts × 8)",
-        payload.len(),
-        expected_payload,
-        coeff_val_cnt,
-        num_plaintexts
-    );
-    std::fs::write(&ntt_store_file, payload).expect("write NTT store file");
-    std::fs::remove_file(&temp_path).expect("rm save_db temp");
-    println!(
-        "  NTT store file: {} ({})",
-        ntt_store_file,
-        format_bytes(payload.len() as u64)
-    );
-
-    // ── 4. Assign entries to PBC groups ─────────────────────────────────
-    println!("\n[4] Assigning {} entries to {} PBC groups ({} copies each)...",
+    // ── 2. Assign entries to PBC groups ─────────────────────────────────
+    println!("\n[2] Assigning {} entries to {} PBC groups ({} copies each)...",
         num_entries, K_CHUNK, NUM_HASHES);
     let t_assign = Instant::now();
 
@@ -553,10 +448,10 @@ fn main() {
     println!("  Done in {:.2?}", t_assign.elapsed());
     println!("  Group sizes: min={}, max={}, avg={:.0}", min_group, max_group, avg_group);
 
-    // ── 5. Build cuckoo tables per group ────────────────────────────────
+    // ── 3. Build cuckoo tables per group ────────────────────────────────
     // Uniform bins_per_table from max group size
     let bins_per_table = (max_group as f64 / CUCKOO_LOAD_FACTOR).ceil() as usize;
-    println!("\n[5] Building cuckoo tables ({}-hash, bs=1, bins_per_table={})...",
+    println!("\n[3] Building cuckoo tables ({}-hash, bs=1, bins_per_table={})...",
         CUCKOO_NUM_HASHES, bins_per_table);
     let t_cuckoo = Instant::now();
 
@@ -584,8 +479,8 @@ fn main() {
     }
     println!("  Cuckoo tables built in {:.2?}", t_cuckoo.elapsed());
 
-    // ── 6. Save cuckoo tables to disk ───────────────────────────────────
-    println!("\n[6] Saving cuckoo tables to {}...", cuckoo_file);
+    // ── 4. Save cuckoo tables to disk ───────────────────────────────────
+    println!("\n[4] Saving cuckoo tables to {}...", cuckoo_file);
     {
         let cuckoo_out = File::create(&cuckoo_file).expect("create cuckoo file");
         let mut writer = BufWriter::with_capacity(1024 * 1024, cuckoo_out);
@@ -626,8 +521,8 @@ fn main() {
     println!("  Cuckoo file: {} (header 40B + {} groups × {} bins × 4B)",
         format_bytes(cuckoo_file_size as u64), K_CHUNK, bins_per_table);
 
-    // ── 7. Compute and write DATA bin hashes (for per-bin Merkle) ──────
-    println!("\n[7] Computing DATA bin hashes for per-bin Merkle...");
+    // ── 5. Compute and write DATA bin hashes (for per-bin Merkle) ──────
+    println!("\n[5] Computing DATA bin hashes for per-bin Merkle...");
     let t_hash = Instant::now();
     {
         // OnionPIRv2 port (commit 5b): zero_entry is `packed_entry_size`
@@ -664,8 +559,97 @@ fn main() {
             total_bins, 8 + total_bins * 32, bin_hashes_file, t_hash.elapsed());
     }
 
-    // ── 8. Verify with test query ───────────────────────────────────────
-    println!("\n[7] Verification: test query with shared NTT store...");
+    // ── 6. Build per-group dense OnionPIR databases ─────────────────────
+    //
+    // Mirrors gen_3_onion step 4: each PBC group becomes one dense
+    // OnionPIR preprocessed DB. CHUNK cuckoo is bs=1, so each cuckoo bin
+    // holds exactly one packed entry (or zeros for an empty bin) — there
+    // is no INDEX-style `serialize_cuckoo_bin` slot-packing. We feed the
+    // bin's packed bytes straight into one OnionPIR plaintext.
+    println!("\n[6] Building per-group dense OnionPIR databases (push_plaintexts → save_db)...");
+    fs::create_dir_all(&chunk_pir_dir).expect("create scratch dir");
+
+    let t_pir = Instant::now();
+    let p = onionpir::params_info(bins_per_table as u64);
+    let padded_num = p.num_entries as usize;
+    let entry_size = p.entry_size as usize;
+    let fst_dim = p.fst_dim_sz as usize;
+    let other_dim = p.other_dim_sz as usize;
+    let poly_degree = p.poly_degree as usize;
+
+    println!("  OnionPIR params: padded={}, entry_size={}, fst_dim={}, other_dim={}",
+        padded_num, entry_size, fst_dim, other_dim);
+    println!("  Physical size per group: {:.2} MB", p.physical_size_mb);
+    println!("  Total for {} groups: {:.2} GB", K_CHUNK, p.physical_size_mb * K_CHUNK as f64 / 1024.0);
+
+    // The gen_2_onion shared-store path relies on
+    // `params_info.entry_size == packed_entry_size`; keep that assert.
+    assert_eq!(
+        entry_size, packed_entry_size,
+        "params_info.entry_size ({}) != packed_entry_size ({}); a stale \
+         packed.bin produced by a different onionpir rev is being read",
+        entry_size, packed_entry_size
+    );
+
+    // Process groups sequentially (OnionPIR Server is not Send).
+    for (group_id, table) in all_cuckoo_tables.iter().enumerate().take(K_CHUNK) {
+        let preproc_path = chunk_pir_dir.join(format!("group_{}.bin", group_id));
+        let t_group = Instant::now();
+
+        let mut server = PirServer::new(bins_per_table as u64);
+
+        // Populate: each cuckoo bin → one OnionPIR plaintext (N pre-NTT
+        // coefficients packed from the bin's single packed entry, or
+        // zeros for an empty bin).
+        for chunk_idx in 0..other_dim {
+            let mut batch_coeffs: Vec<u64> = Vec::with_capacity(fst_dim * poly_degree);
+            for i in 0..fst_dim {
+                let global_bin = chunk_idx * fst_dim + i;
+                let entry_bytes: Vec<u8> = if global_bin < bins_per_table
+                    && table[global_bin] != EMPTY
+                {
+                    let entry_id = table[global_bin] as usize;
+                    let off = entry_id * packed_entry_size;
+                    packed_mmap[off..off + packed_entry_size].to_vec()
+                } else {
+                    vec![0u8; entry_size]
+                };
+                let coeffs = pir_core::onion_unpack::pack_bytes_into_coefficients(
+                    &entry_bytes,
+                    entry_size,
+                    poly_degree,
+                );
+                batch_coeffs.extend_from_slice(&coeffs);
+            }
+            let plaintext_offset = (chunk_idx * fst_dim) as u64;
+            let ok = server.push_plaintexts(
+                &batch_coeffs,
+                fst_dim as u64,
+                plaintext_offset,
+                &[],
+            );
+            assert!(
+                ok,
+                "push_plaintexts failed (group={} chunk_idx={} offset={})",
+                group_id, chunk_idx, plaintext_offset
+            );
+        }
+
+        assert!(
+            server.save_db(preproc_path.to_str().unwrap()),
+            "save_db failed for group {} → {:?}",
+            group_id,
+            preproc_path
+        );
+
+        if group_id % 10 == 0 || group_id + 1 == K_CHUNK {
+            eprintln!("  Group {}/{} preprocessed in {:.2?}", group_id + 1, K_CHUNK, t_group.elapsed());
+        }
+    }
+    println!("  All groups built in {:.2?}", t_pir.elapsed());
+
+    // ── 7. Verify with test query against group 0 ──────────────────────
+    println!("\n[7] Verification: test query against group 0 dense DB...");
 
     // Pick group 0, find a real entry in its cuckoo table
     let test_group = 0;
@@ -674,66 +658,20 @@ fn main() {
     let test_entry_id = test_table[test_bin];
     println!("  Test: group={}, bin={}, entry_id={}", test_group, test_bin, test_entry_id);
 
-    // Build index_table for this group (maps padded indices → shared store entry_ids)
-    let p_group = onionpir::params_info(bins_per_table as u64);
-    let padded_num = p_group.num_entries as usize;
-    let mut index_table = vec![0u32; padded_num]; // 0 for padding entries (all-zero data)
-    for bin in 0..bins_per_table {
-        let eid = test_table[bin];
-        if eid != EMPTY {
-            index_table[bin] = eid;
-        }
-        // else: index_table[bin] = 0, which maps to entry 0 in the shared store
-    }
-    // Pad remaining indices (bins_per_table..padded_num) with 0
-    // Already done by default initialization
-
-    // Set up server with shared database. The NTT store on disk is the
-    // post-port save_db payload (header stripped above); mmap it,
-    // reinterpret as `&[u64]`, and pass num_plaintexts as
-    // shared_num_entries — matching the upstream
-    // `shared_database_identity_index_table` test pattern.
-    let sanity_ntt_file = File::open(&ntt_store_file).expect("re-open NTT store");
-    let sanity_ntt_mmap = unsafe { Mmap::map(&sanity_ntt_file) }.expect("mmap NTT store");
-    assert_eq!(
-        sanity_ntt_mmap.len() % 8,
-        0,
-        "NTT store size {} is not u64-aligned",
-        sanity_ntt_mmap.len()
-    );
-    let ntt_u64: &[u64] = unsafe {
-        std::slice::from_raw_parts(
-            sanity_ntt_mmap.as_ptr() as *const u64,
-            sanity_ntt_mmap.len() / 8,
-        )
-    };
-
+    // Load the preprocessed dense database and query
+    let preproc_path = chunk_pir_dir.join("group_0.bin");
     let mut server = PirServer::new(bins_per_table as u64);
-    unsafe {
-        // OnionPIRv2 port (commit 3a): pass `num_plaintexts` as
-        // `shared_num_entries`. save_db sizes the payload for the compile-
-        // time DB shape, not for `num_entries`.
-        assert!(
-            server.set_shared_database(ntt_u64, num_plaintexts as u64, &index_table),
-            "set_shared_database failed in gen_2_onion sanity check"
-        );
-    }
+    assert!(server.load_db(preproc_path.to_str().unwrap()), "failed to load group_0.bin");
 
-    // Create client, generate keys, query
     let client = PirClient::new(bins_per_table as u64);
     let client_id = client.id();
-    let galois = client.galois_keys();
-    let gsw = client.gsw_key();
-    server.set_galois_keys(client_id, &galois);
-    server.set_gsw_key(client_id, &gsw);
+    server.set_galois_keys(client_id, &client.galois_keys());
+    server.set_gsw_key(client_id, &client.gsw_key());
 
     let query = client.generate_query(test_bin as u64);
     let response = server.answer_query(client_id, &query);
     // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext returned
-    // by `decrypt_response`. `decrypted.len()` is now `params.entry_size`
-    // (3328 default), not PACKED_ENTRY_SIZE (3840) — the comparison
-    // below will only succeed once the build pipeline regenerates DBs
-    // with entry_size-aligned packing (commit 3 / 5).
+    // by `decrypt_response`. `decrypted.len()` is now `params.entry_size`.
     let _ = test_bin;
     let raw_pt = client.decrypt_response(&response);
     let pinfo = onionpir::params_info(bins_per_table as u64);
@@ -742,11 +680,10 @@ fn main() {
         pinfo.poly_degree as usize,
         pinfo.entry_size as usize,
     )
-    .expect("onion_unpack rejected gen_2_onion plaintext");
+    .expect("onion_unpack rejected gen_2_onion_dense plaintext");
 
-    // Compare with original packed entry. Post-commit-5b `decrypted.len() ==
-    // packed_entry_size == params.entry_size`, so the comparison is a
-    // direct byte-for-byte equality with no truncation.
+    // Compare with original packed entry — direct byte-for-byte equality
+    // (no truncation, since decrypted.len() == packed_entry_size).
     let expected = &packed_mmap[test_entry_id as usize * packed_entry_size
         ..(test_entry_id as usize + 1) * packed_entry_size];
 
@@ -760,13 +697,80 @@ fn main() {
         println!("  Got first 16B:      {:?}", &decrypted[..16.min(decrypted.len())]);
     }
 
+    // ── 8. Consolidate per-group files into one onion_chunk_all.bin ─────
+    //
+    // Layout: [master header: 32B][group_0: per_group_bytes][group_1: ...]
+    //         ... [group_{K_CHUNK-1}: per_group_bytes]
+    // The 32-byte master header is [ONION_CHUNK_ALL_MAGIC u64 | K_CHUNK u64 |
+    // per_group_bytes u64 | reserved u64]. Each group payload is whatever
+    // OnionPIR's save_db produced — server-side mmaps the whole file once
+    // and passes a per-group slice to load_db_from_bytes().
+    println!("\n[8] Consolidating {} per-group files into {}...", K_CHUNK, chunk_all_file);
+    let t_consolidate = Instant::now();
+    {
+        // All groups have identical size because they share params.
+        // Read the first group's size and assert the rest match.
+        let first_path = chunk_pir_dir.join("group_0.bin");
+        let per_group_bytes = fs::metadata(&first_path)
+            .expect("stat group_0.bin")
+            .len() as usize;
+        println!("  Per-group bytes: {} ({})", per_group_bytes, format_bytes(per_group_bytes as u64));
+
+        let total_bytes = ONION_CHUNK_ALL_HEADER_BYTES + K_CHUNK * per_group_bytes;
+        println!("  Total output:    {} ({})", total_bytes, format_bytes(total_bytes as u64));
+
+        let out = File::create(&chunk_all_file).expect("create onion_chunk_all.bin");
+        let mut w = BufWriter::with_capacity(16 * 1024 * 1024, out);
+
+        // Master header (32 bytes)
+        w.write_all(&ONION_CHUNK_ALL_MAGIC.to_le_bytes()).unwrap();
+        w.write_all(&(K_CHUNK as u64).to_le_bytes()).unwrap();
+        w.write_all(&(per_group_bytes as u64).to_le_bytes()).unwrap();
+        w.write_all(&0u64.to_le_bytes()).unwrap();
+
+        // Append each group's preprocessed bytes in order.
+        let mut written: u64 = 0;
+        for b in 0..K_CHUNK {
+            let path = chunk_pir_dir.join(format!("group_{}.bin", b));
+            let meta = fs::metadata(&path).expect("stat group file");
+            assert_eq!(
+                meta.len() as usize,
+                per_group_bytes,
+                "group_{}.bin size mismatch: expected {}, got {}",
+                b, per_group_bytes, meta.len()
+            );
+            let bytes = fs::read(&path).expect("read group file");
+            w.write_all(&bytes).unwrap();
+            written += bytes.len() as u64;
+            if b % 10 == 0 || b + 1 == K_CHUNK {
+                eprint!("\r  Appending group {}/{}", b + 1, K_CHUNK);
+                let _ = io::stderr().flush();
+            }
+        }
+        eprintln!();
+        w.flush().unwrap();
+        drop(w);
+
+        let actual_size = fs::metadata(&chunk_all_file).expect("stat output").len() as usize;
+        assert_eq!(
+            actual_size, total_bytes,
+            "onion_chunk_all.bin size mismatch: expected {}, got {}",
+            total_bytes, actual_size
+        );
+
+        // Clean up the scratch per-group directory (mirror gen_3_onion).
+        println!("  Wrote {} bytes; removing scratch dir {}", written, chunk_pir_dir.display());
+        fs::remove_dir_all(&chunk_pir_dir).expect("remove per-group dir");
+    }
+    println!("  Consolidated in {:.2?}", t_consolidate.elapsed());
+
     // ── Summary ─────────────────────────────────────────────────────────
     println!("\n=== Summary ===");
     println!("Packed entries:    {} ({:.2} GB)", num_entries, packed_mmap.len() as f64 / 1e9);
-    println!("NTT store:         {} (level-major × num_plaintexts)",
-        format_bytes(
-            std::fs::metadata(&ntt_store_file).map(|m| m.len()).unwrap_or(0),
-        ));
+    println!("PBC groups:        {}", K_CHUNK);
+    println!("Bins per table:    {} (bs=1, {} B/bin)", bins_per_table, entry_size);
+    println!("OnionPIR per group: {:.2} MB (NTT-expanded)", p.physical_size_mb);
+    println!("Total NTT storage: {:.2} GB", p.physical_size_mb * K_CHUNK as f64 / 1024.0);
     println!("Cuckoo tables:     {} groups × {} bins = {}",
         K_CHUNK, bins_per_table, format_bytes(cuckoo_file_size as u64));
     println!("Total time:        {:.2?}", total_start.elapsed());

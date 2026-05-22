@@ -97,14 +97,23 @@ echo "[2/5] delta_gen_1 — packing into chunks + index..."
 ./target/release/delta_gen_1 "$START_HEIGHT" "$END_HEIGHT"
 echo ""
 
+# If delta_anchor_<A>_<B>.bin exists (delta_gen_0 was run with
+# --to-block-hash), feed it to the cuckoo builder for chain-derived seeds.
+# Otherwise legacy hardcoded seeds are used (with a warning from the binary).
+DELTA_ANCHOR="/Volumes/Bitcoin/data/intermediate/delta_anchor_${START_HEIGHT}_${END_HEIGHT}.bin"
+ANCHOR_FLAG=()
+if [[ -f "$DELTA_ANCHOR" ]]; then
+    ANCHOR_FLAG=(--anchor "$DELTA_ANCHOR")
+fi
+
 # ── Step 3: build INDEX cuckoo for the delta ────────────────────────────────
 echo "[3/5] build_cuckoo_generic index — building delta INDEX cuckoo..."
-./target/release/build_cuckoo_generic index "$DELTA_INDEX_FILE" "$INDEX_CUCKOO_OUT"
+./target/release/build_cuckoo_generic index "$DELTA_INDEX_FILE" "$INDEX_CUCKOO_OUT" "${ANCHOR_FLAG[@]}"
 echo ""
 
 # ── Step 4: build CHUNK cuckoo for the delta ────────────────────────────────
 echo "[4/5] build_cuckoo_generic chunk — building delta CHUNK cuckoo..."
-./target/release/build_cuckoo_generic chunk "$DELTA_CHUNKS_FILE" "$DELTA_INDEX_FILE" "$CHUNK_CUCKOO_OUT"
+./target/release/build_cuckoo_generic chunk "$DELTA_CHUNKS_FILE" "$DELTA_INDEX_FILE" "$CHUNK_CUCKOO_OUT" "${ANCHOR_FLAG[@]}"
 echo ""
 
 # ── Step 5: build per-bucket bin Merkle for the delta dir ───────────────────
