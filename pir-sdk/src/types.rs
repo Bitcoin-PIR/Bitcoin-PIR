@@ -117,6 +117,20 @@ pub struct DatabaseInfo {
     pub dpf_n_chunk: u8,
     /// Whether this database has per-bucket bin Merkle verification data.
     pub has_bucket_merkle: bool,
+    /// INDEX cuckoo master seed, delivered by the server (read from the
+    /// DB header). The client computes cuckoo placements with THIS value,
+    /// not a hardcoded constant — required since the build-side const was
+    /// zeroed in favour of chain-derived seeds.
+    pub index_master_seed: u64,
+    /// CHUNK cuckoo master seed, delivered by the server.
+    pub chunk_master_seed: u64,
+    /// Chain-anchor kind: 0 = none (legacy DB), 1 = snapshot, 2 = delta.
+    /// Stored as a primitive (+ `anchor_bytes`) rather than a typed
+    /// `HeaderAnchor` so `DatabaseInfo` stays trivially serde-serializable.
+    pub anchor_kind: u8,
+    /// Raw anchor bytes matching `anchor_kind` (empty / 36 / 72). Use
+    /// [`DatabaseInfo::chain_anchor`] to reconstruct the typed anchor.
+    pub anchor_bytes: Vec<u8>,
 }
 
 impl DatabaseInfo {
@@ -125,12 +139,84 @@ impl DatabaseInfo {
         self.kind.base_height()
     }
 
+    /// Reconstruct the typed chain anchor from `anchor_kind` + `anchor_bytes`.
+    /// `None` for legacy databases (kind 0) or malformed bytes.
+    pub fn chain_anchor(&self) -> Option<pir_core::cuckoo::HeaderAnchor> {
+        use pir_core::cuckoo::HeaderAnchor;
+        use pir_core::seeds::{ChainAnchor, DeltaAnchor};
+        match self.anchor_kind {
+            1 => ChainAnchor::from_bytes(&self.anchor_bytes)
+                .ok()
+                .map(HeaderAnchor::Snapshot),
+            2 => DeltaAnchor::from_bytes(&self.anchor_bytes)
+                .ok()
+                .map(HeaderAnchor::Delta),
+            _ => None,
+        }
+    }
+
+    /// Verify the server-delivered cuckoo seeds were honestly derived from
+    /// the chain anchor.
+    ///
+    /// For a v2 database (anchor present), recomputes the INDEX + CHUNK
+    /// master seeds (and the INDEX tag seed) from `(block_hash, height)`
+    /// and checks they equal the seeds the server sent. Returns `Ok(())`
+    /// for legacy databases (no anchor) or on a match; `Err(reason)` on
+    /// mismatch — callers should refuse to query.
+    ///
+    /// This proves the seeds are a deterministic function of the anchor.
+    /// To make it trustless, the caller must independently confirm the
+    /// anchor block hash (see [`DatabaseInfo::anchor_display`]) against
+    /// its own view of the Bitcoin chain.
+    pub fn verify_anchor_seeds(&self) -> Result<(), String> {
+        use pir_core::cuckoo::{verify_anchor_seeds, CuckooHeader};
+        use pir_core::seeds::domain;
+        let Some(anchor) = self.chain_anchor() else {
+            return Ok(()); // legacy DB — nothing to verify
+        };
+        let index_hdr = CuckooHeader {
+            bins_per_table: self.index_bins as usize,
+            master_seed: self.index_master_seed,
+            tag_seed: self.tag_seed,
+            anchor: Some(anchor),
+            header_size: 0,
+        };
+        verify_anchor_seeds(
+            &index_hdr,
+            domain::INDEX_CUCKOO_MASTER,
+            Some(domain::INDEX_TAG_FINGERPRINT),
+        )?;
+        let chunk_hdr = CuckooHeader {
+            bins_per_table: self.chunk_bins as usize,
+            master_seed: self.chunk_master_seed,
+            tag_seed: 0,
+            anchor: Some(anchor),
+            header_size: 0,
+        };
+        verify_anchor_seeds(&chunk_hdr, domain::CHUNK_CUCKOO_MASTER, None)?;
+        Ok(())
+    }
+
+    /// Human-readable chain anchor `(block_hash_hex, block_height)` for
+    /// surfacing to the user, who can independently confirm the block hash
+    /// (e.g. against a block explorer or their own node). `None` for
+    /// legacy databases. For deltas, returns the `to` (tip) endpoint.
+    pub fn anchor_display(&self) -> Option<(String, u32)> {
+        use pir_core::cuckoo::HeaderAnchor;
+        let (hash, height) = match self.chain_anchor()? {
+            HeaderAnchor::Snapshot(a) => (a.block_hash, a.block_height),
+            HeaderAnchor::Delta(d) => (d.to.block_hash, d.to.block_height),
+        };
+        let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+        Some((hex, height))
+    }
+
     /// Build TableParams for the INDEX level.
     pub fn index_params(&self) -> TableParams {
         TableParams {
             k: self.index_k as usize,
             num_hashes: 3,
-            master_seed: pir_core::params::INDEX_PARAMS.master_seed,
+            master_seed: self.index_master_seed,
             slots_per_bin: 4,
             cuckoo_num_hashes: 2,
             slot_size: pir_core::params::INDEX_SLOT_SIZE,
@@ -146,7 +232,7 @@ impl DatabaseInfo {
         TableParams {
             k: self.chunk_k as usize,
             num_hashes: 3,
-            master_seed: pir_core::params::CHUNK_PARAMS.master_seed,
+            master_seed: self.chunk_master_seed,
             slots_per_bin: 3,
             cuckoo_num_hashes: 2,
             slot_size: pir_core::params::CHUNK_SLOT_SIZE,

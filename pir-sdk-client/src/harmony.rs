@@ -44,8 +44,8 @@ use crate::protocol::{
 use async_trait::async_trait;
 use harmonypir_wasm::HarmonyGroup;
 use pir_core::params::{
-    CHUNK_CUCKOO_NUM_HASHES, CHUNK_PARAMS, CHUNK_SIZE, CHUNK_SLOT_SIZE, CHUNK_SLOTS_PER_BIN,
-    INDEX_CUCKOO_NUM_HASHES, INDEX_PARAMS, INDEX_SLOT_SIZE, INDEX_SLOTS_PER_BIN, NUM_HASHES, TAG_SIZE,
+    CHUNK_CUCKOO_NUM_HASHES, CHUNK_SIZE, CHUNK_SLOT_SIZE, CHUNK_SLOTS_PER_BIN,
+    INDEX_CUCKOO_NUM_HASHES, INDEX_SLOT_SIZE, INDEX_SLOTS_PER_BIN, NUM_HASHES, TAG_SIZE,
 };
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
@@ -1314,8 +1314,10 @@ impl HarmonyClient {
         let index_k = response[9];
         let chunk_k = response[10];
         let tag_seed = u64::from_le_bytes(response[11..19].try_into().unwrap());
+        let (index_master_seed, chunk_master_seed, anchor_kind, anchor_bytes) =
+            crate::protocol::parse_info_v2_tail(&response);
 
-        Ok(DatabaseInfo {
+        let db_info = DatabaseInfo {
             db_id: 0,
             kind: DatabaseKind::Full,
             name: "main".into(),
@@ -1328,7 +1330,15 @@ impl HarmonyClient {
             dpf_n_index: pir_core::params::compute_dpf_n(index_bins as usize),
             dpf_n_chunk: pir_core::params::compute_dpf_n(chunk_bins as usize),
             has_bucket_merkle: false,
-        })
+            index_master_seed,
+            chunk_master_seed,
+            anchor_kind,
+            anchor_bytes,
+        };
+        db_info
+            .verify_anchor_seeds()
+            .map_err(|e| PirError::Protocol(format!("chain-anchor seed verification failed: {}", e)))?;
+        Ok(db_info)
     }
 
     /// Ensure the per-group `HarmonyGroup` instances exist for `db_info`
@@ -2649,7 +2659,7 @@ impl HarmonyClient {
             for h in 0..INDEX_CUCKOO_NUM_HASHES {
                 for &(sh_idx, pbc_group) in round {
                     let key = pir_core::hash::derive_cuckoo_key(
-                        INDEX_PARAMS.master_seed,
+                        db_info.index_master_seed,
                         pbc_group,
                         h,
                     );
@@ -2692,7 +2702,7 @@ impl HarmonyClient {
                 for &(sh_idx, pbc_group) in round {
                     let g = pbc_group as u8;
                     let key = pir_core::hash::derive_cuckoo_key(
-                        INDEX_PARAMS.master_seed,
+                        db_info.index_master_seed,
                         pbc_group,
                         h,
                     );
@@ -2809,7 +2819,7 @@ impl HarmonyClient {
         // server-side still padded) on found@h=0 queries.
         for h in 0..INDEX_CUCKOO_NUM_HASHES {
             let key =
-                pir_core::hash::derive_cuckoo_key(INDEX_PARAMS.master_seed, real_group, h);
+                pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, real_group, h);
             let target_bin = pir_core::hash::cuckoo_hash(script_hash, key, index_bins);
 
             let placements = [(real_group as u8, target_bin as u32)];
@@ -3303,7 +3313,7 @@ impl HarmonyClient {
             log::info!(
                 "[PIR-AUDIT] HarmonyPIR CHUNK round-presence padding: emitting 1 dummy K_CHUNK-padded round (all-synthetic, no real chunks)"
             );
-            let _ = self.run_chunk_round(db_info.db_id, &[], chunk_bins, 0, 0).await?;
+            let _ = self.run_chunk_round(db_info.db_id, &[], chunk_bins, db_info.chunk_master_seed, 0, 0).await?;
             return Ok((Vec::new(), Vec::new()));
         }
 
@@ -3361,7 +3371,7 @@ impl HarmonyClient {
             }
 
             let round_answers = self
-                .run_chunk_round(db_info.db_id, &still_needed, chunk_bins, h, h as u16)
+                .run_chunk_round(db_info.db_id, &still_needed, chunk_bins, db_info.chunk_master_seed, h, h as u16)
                 .await?;
 
             for (cid, group_id) in &still_needed {
@@ -3371,7 +3381,7 @@ impl HarmonyClient {
                         // did, so our trace commits the server to the precise
                         // (group, bin) that served this chunk.
                         let key = pir_core::hash::derive_cuckoo_key(
-                            CHUNK_PARAMS.master_seed,
+                            db_info.chunk_master_seed,
                             *group_id as usize,
                             h,
                         );
@@ -3473,7 +3483,7 @@ impl HarmonyClient {
                 n,
             );
             let _ = self
-                .run_chunk_round_pair(db_info.db_id, &[], chunk_bins, 0, 1)
+                .run_chunk_round_pair(db_info.db_id, &[], chunk_bins, db_info.chunk_master_seed, 0, 1)
                 .await?;
             return Ok((0..n).map(|_| (Vec::new(), Vec::new())).collect());
         }
@@ -3572,6 +3582,7 @@ impl HarmonyClient {
                     db_info.db_id,
                     &placements,
                     chunk_bins,
+                    db_info.chunk_master_seed,
                     round_tag_h0,
                     round_tag_h1,
                 )
@@ -3595,7 +3606,7 @@ impl HarmonyClient {
                         continue;
                     };
                     let key = pir_core::hash::derive_cuckoo_key(
-                        CHUNK_PARAMS.master_seed,
+                        db_info.chunk_master_seed,
                         pbc_group as usize,
                         h,
                     );
@@ -4677,6 +4688,7 @@ impl HarmonyClient {
         db_id: u8,
         real_queries: &[(u32, u8)],
         chunk_bins: usize,
+        chunk_master_seed: u64,
         hash_fn: usize,
         round_id: u16,
     ) -> PirResult<HashMap<u8, Vec<u8>>> {
@@ -4694,7 +4706,7 @@ impl HarmonyClient {
             let bytes = match role {
                 ChunkGroupRole::Real(cid) => {
                     let key = pir_core::hash::derive_cuckoo_key(
-                        CHUNK_PARAMS.master_seed,
+                        chunk_master_seed,
                         g as usize,
                         hash_fn,
                     );
@@ -4807,6 +4819,7 @@ impl HarmonyClient {
         db_id: u8,
         real_queries: &[(u32, u8)],
         chunk_bins: usize,
+        chunk_master_seed: u64,
         round_id_h0: u16,
         round_id_h1: u16,
     ) -> PirResult<(HashMap<u8, Vec<u8>>, HashMap<u8, Vec<u8>>)> {
@@ -4825,12 +4838,12 @@ impl HarmonyClient {
             let (bytes_h0, bytes_h1) = match role {
                 ChunkGroupRole::Real(cid) => {
                     let key_h0 = pir_core::hash::derive_cuckoo_key(
-                        CHUNK_PARAMS.master_seed,
+                        chunk_master_seed,
                         g as usize,
                         0,
                     );
                     let key_h1 = pir_core::hash::derive_cuckoo_key(
-                        CHUNK_PARAMS.master_seed,
+                        chunk_master_seed,
                         g as usize,
                         1,
                     );
@@ -6728,6 +6741,10 @@ mod tests {
             dpf_n_index: 5,
             dpf_n_chunk: 5,
             has_bucket_merkle: false,
+            index_master_seed: 0xAAAA_BBBB_CCCC_DDDD,
+            chunk_master_seed: 0xEEEE_FFFF_0000_1111,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         }
     }
 

@@ -23,6 +23,10 @@ function entry(opts: {
     dpfNIndex: 10,
     dpfNChunk: 11,
     hasBucketMerkle: false,
+    indexMasterSeed: 0n,
+    chunkMasterSeed: 0n,
+    anchorKind: 0,
+    anchorHex: "",
   };
 }
 

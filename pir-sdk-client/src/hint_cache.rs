@@ -62,9 +62,10 @@ pub const FORMAT_VERSION: u16 = 1;
 /// to "v2" so old caches fail the [`decode_hints`] schema-hash check
 /// and get refetched transparently.
 const SCHEMA_STRING: &[u8] =
-    b"pir-sdk hint cache v1 (PSH1): \
+    b"pir-sdk hint cache v2 (PSH1): \
       [magic 4][fmt_ver u16][schema_hash 32][fp 16][backend u8][db_id u8][height u32]\
       [index_bins u32][chunk_bins u32][tag_seed u64][index_k u8][chunk_k u8]\
+      [index_master_seed u64][chunk_master_seed u64]\
       [num_main_index u32 (group_id u8, len u32, bytes)]\
       [num_main_chunk u32 (group_id u8, len u32, bytes)]\
       [has_sibling u8]\
@@ -93,6 +94,12 @@ pub struct CacheKey {
     pub tag_seed: u64,
     pub index_k: u8,
     pub chunk_k: u8,
+    /// Cuckoo master seeds (chain-derived for v2 DBs). Folded into the
+    /// fingerprint so a database rebuilt at a *different chain anchor*
+    /// invalidates a stale hint cache even if `height` is unchanged
+    /// (e.g. a reorg producing a different block hash at the same height).
+    pub index_master_seed: u64,
+    pub chunk_master_seed: u64,
 }
 
 impl CacheKey {
@@ -117,6 +124,8 @@ impl CacheKey {
             tag_seed: db_info.tag_seed,
             index_k: db_info.index_k,
             chunk_k: db_info.chunk_k,
+            index_master_seed: db_info.index_master_seed,
+            chunk_master_seed: db_info.chunk_master_seed,
         }
     }
 
@@ -130,7 +139,7 @@ impl CacheKey {
     /// shape.
     pub fn fingerprint(&self) -> [u8; 16] {
         let mut buf = Vec::with_capacity(64);
-        buf.extend_from_slice(b"pir-sdk hint cache v1 fingerprint");
+        buf.extend_from_slice(b"pir-sdk hint cache v2 fingerprint");
         buf.extend_from_slice(&self.master_prp_key);
         buf.push(self.prp_backend);
         buf.push(self.db_id);
@@ -140,6 +149,8 @@ impl CacheKey {
         buf.extend_from_slice(&self.tag_seed.to_le_bytes());
         buf.push(self.index_k);
         buf.push(self.chunk_k);
+        buf.extend_from_slice(&self.index_master_seed.to_le_bytes());
+        buf.extend_from_slice(&self.chunk_master_seed.to_le_bytes());
         let full = pir_core::merkle::sha256(&buf);
         let mut out = [0u8; 16];
         out.copy_from_slice(&full[..16]);
@@ -225,6 +236,8 @@ pub fn encode_hints(key: &CacheKey, bundle: &HintBundle) -> Vec<u8> {
     buf.extend_from_slice(&key.tag_seed.to_le_bytes());
     buf.push(key.index_k);
     buf.push(key.chunk_k);
+    buf.extend_from_slice(&key.index_master_seed.to_le_bytes());
+    buf.extend_from_slice(&key.chunk_master_seed.to_le_bytes());
 
     // Main INDEX groups, sorted by group_id for deterministic output.
     let mut idx_ids: Vec<u8> = bundle.main_index.keys().copied().collect();
@@ -307,7 +320,11 @@ pub fn decode_hints(
     //   backend(1) + db_id(1) + height(4) + index_bins(4) + chunk_bins(4) +
     //   tag_seed(8) + index_k(1) + chunk_k(1) + num_main_index(4) +
     //   num_main_chunk(4) + has_sibling(1) = 87 bytes.
-    const MIN_HEADER_BYTES: usize = 4 + 2 + 32 + 16 + 1 + 1 + 4 + 4 + 4 + 8 + 1 + 1 + 4 + 4 + 1;
+    // ...prefix... + index_k(1) + chunk_k(1) + index_master_seed(8)
+    // + chunk_master_seed(8) + main-index-count(4) + main-chunk-count(4)
+    // + has_sibling(1).
+    const MIN_HEADER_BYTES: usize =
+        4 + 2 + 32 + 16 + 1 + 1 + 4 + 4 + 4 + 8 + 1 + 1 + 8 + 8 + 4 + 4 + 1;
     if data.len() < MIN_HEADER_BYTES {
         return Err(PirError::Decode(format!(
             "hint cache: buffer too short ({} < {})",
@@ -374,6 +391,10 @@ pub fn decode_hints(
     pos += 1;
     let chunk_k = data[pos];
     pos += 1;
+    let index_master_seed = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+    pos += 8;
+    let chunk_master_seed = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+    pos += 8;
 
     // The master key is not on disk (security); callers re-attach.
     let key = CacheKey {
@@ -386,6 +407,8 @@ pub fn decode_hints(
         tag_seed,
         index_k,
         chunk_k,
+        index_master_seed,
+        chunk_master_seed,
     };
 
     // Per-group records: 1 byte id + 4 byte len + bytes (sibling records
@@ -589,6 +612,10 @@ mod tests {
             dpf_n_index: 10,
             dpf_n_chunk: 11,
             has_bucket_merkle: true,
+            index_master_seed: 0x_1111_2222_3333_4444,
+            chunk_master_seed: 0x_5555_6666_7777_8888,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         }
     }
 

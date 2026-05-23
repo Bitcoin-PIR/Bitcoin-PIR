@@ -357,6 +357,16 @@ export interface DatabaseCatalogEntry {
   dpfNChunk: number;
   /** Whether this database has per-bucket bin Merkle verification data. */
   hasBucketMerkle: boolean;
+  /**
+   * INDEX/CHUNK cuckoo master seeds delivered by the server (chain-derived
+   * for v2 DBs). 0n for a legacy server that doesn't emit the ext section.
+   */
+  indexMasterSeed: bigint;
+  chunkMasterSeed: bigint;
+  /** Chain-anchor kind: 0 = none (legacy), 1 = snapshot, 2 = delta. */
+  anchorKind: number;
+  /** Hex of the raw anchor bytes (36/72), or "" for legacy DBs. */
+  anchorHex: string;
 }
 
 export interface DatabaseCatalog {
@@ -407,7 +417,31 @@ export function decodeDatabaseCatalog(data: Uint8Array): DatabaseCatalog {
       indexBinsPerTable, chunkBinsPerTable,
       indexK, chunkK, tagSeed,
       dpfNIndex, dpfNChunk, hasBucketMerkle,
+      // Patched from the trailing ext section below; defaults for a
+      // legacy server that doesn't emit it.
+      indexMasterSeed: 0n, chunkMasterSeed: 0n, anchorKind: 0, anchorHex: "",
     });
+  }
+
+  // Trailing ext section (CATALOG_EXT_V1 = 0x01): per-entry master seeds
+  // + chain anchor. Mirrors runtime::protocol::encode_db_catalog. A
+  // pre-ext server stops after the entries above, leaving the defaults.
+  const CATALOG_EXT_V1 = 0x01;
+  if (pos < data.length && data[pos] === CATALOG_EXT_V1) {
+    pos++;
+    for (const db of databases) {
+      if (pos + 17 > data.length) break; // truncated ext — keep defaults
+      db.indexMasterSeed = dv.getBigUint64(pos, true); pos += 8;
+      db.chunkMasterSeed = dv.getBigUint64(pos, true); pos += 8;
+      const kind = data[pos++];
+      db.anchorKind = kind;
+      const n = kind === 1 ? 36 : kind === 2 ? 72 : 0;
+      if (n > 0 && pos + n <= data.length) {
+        const bytes = data.slice(pos, pos + n);
+        db.anchorHex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        pos += n;
+      }
+    }
   }
 
   return { databases };

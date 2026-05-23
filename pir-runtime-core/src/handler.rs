@@ -84,6 +84,9 @@ impl RequestHandler {
             index_k: self.main_db().index.params.k as u8,
             chunk_k: self.main_db().chunk.params.k as u8,
             tag_seed: self.main_db().index.tag_seed,
+            index_master_seed: self.main_db().index.master_seed,
+            chunk_master_seed: self.main_db().chunk.master_seed,
+            anchor: self.main_db().index.anchor,
         }
     }
 
@@ -112,6 +115,13 @@ impl RequestHandler {
                     dpf_n_index: params::compute_dpf_n(db.index.bins_per_table),
                     dpf_n_chunk: params::compute_dpf_n(db.chunk.bins_per_table),
                     has_bucket_merkle: db.has_bucket_merkle(),
+                    // Real on-disk cuckoo seeds (chain-derived for v2 DBs,
+                    // legacy const for older ones) so the client doesn't
+                    // depend on the now-zeroed build-side constant. The
+                    // anchor (if any) lets the client verify them.
+                    index_master_seed: db.index.master_seed,
+                    chunk_master_seed: db.chunk.master_seed,
+                    anchor: db.index.anchor,
                 })
                 .collect(),
         }

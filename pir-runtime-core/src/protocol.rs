@@ -401,6 +401,13 @@ pub struct ServerInfo {
     pub index_k: u8,
     pub chunk_k: u8,
     pub tag_seed: u64,
+    /// INDEX/CHUNK cuckoo master seeds (read from the main DB header).
+    /// Appended after `tag_seed` in the v2 RESP_INFO; older clients that
+    /// stop after `tag_seed` ignore them.
+    pub index_master_seed: u64,
+    pub chunk_master_seed: u64,
+    /// Chain anchor of the main DB, if it carries a v2 header.
+    pub anchor: Option<pir_core::cuckoo::HeaderAnchor>,
 }
 
 /// Info about a single database in the server's catalog.
@@ -432,6 +439,18 @@ pub struct DatabaseCatalogEntry {
     pub dpf_n_chunk: u8,
     /// Whether this database has per-bucket bin Merkle verification data.
     pub has_bucket_merkle: bool,
+    /// INDEX cuckoo master seed (read from the DB header). Delivered so
+    /// the client computes placements with the server's actual seed
+    /// rather than a hardcoded constant — required since the build-side
+    /// const was zeroed in favour of chain-derived seeds.
+    pub index_master_seed: u64,
+    /// CHUNK cuckoo master seed (read from the DB header).
+    pub chunk_master_seed: u64,
+    /// Chain anchor the seeds were derived from, if the DB carries a v2
+    /// header. `None` for legacy databases. Lets the client recompute
+    /// `derive_seed(anchor)` and confirm it matches the master/tag seeds,
+    /// and surface the block hash to the user for independent checking.
+    pub anchor: Option<pir_core::cuckoo::HeaderAnchor>,
 }
 
 /// Server's database catalog listing all available databases.
@@ -852,6 +871,10 @@ impl Response {
                 payload.push(info.index_k);
                 payload.push(info.chunk_k);
                 payload.extend_from_slice(&info.tag_seed.to_le_bytes());
+                // v2 trailing fields (older clients stop after tag_seed).
+                payload.extend_from_slice(&info.index_master_seed.to_le_bytes());
+                payload.extend_from_slice(&info.chunk_master_seed.to_le_bytes());
+                encode_anchor_ext(&mut payload, &info.anchor);
             }
             Response::DbCatalog(cat) => {
                 payload.push(RESP_DB_CATALOG);
@@ -922,6 +945,10 @@ impl Response {
                 payload.push(info.index_k);
                 payload.push(info.chunk_k);
                 payload.extend_from_slice(&info.tag_seed.to_le_bytes());
+                // v2 trailing fields (older clients stop after tag_seed).
+                payload.extend_from_slice(&info.index_master_seed.to_le_bytes());
+                payload.extend_from_slice(&info.chunk_master_seed.to_le_bytes());
+                encode_anchor_ext(&mut payload, &info.anchor);
             }
             Response::HarmonyQueryResult(r) => {
                 payload.push(RESP_HARMONY_QUERY);
@@ -958,12 +985,30 @@ impl Response {
                 if data.len() < 19 {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "info too short"));
                 }
+                // v2 trailing fields: index/chunk master seeds + anchor.
+                // Absent (len == 19) when talking to a pre-ext server.
+                let (index_master_seed, chunk_master_seed, anchor) = if data.len() >= 35 {
+                    let ims = u64::from_le_bytes(data[19..27].try_into().unwrap());
+                    let cms = u64::from_le_bytes(data[27..35].try_into().unwrap());
+                    let mut pos = 36;
+                    let anchor = if data.len() >= 36 {
+                        decode_anchor_ext(data[35], data, &mut pos)?
+                    } else {
+                        None
+                    };
+                    (ims, cms, anchor)
+                } else {
+                    (0, 0, None)
+                };
                 Ok(Response::Info(ServerInfo {
                     index_bins_per_table: u32::from_le_bytes(data[1..5].try_into().unwrap()),
                     chunk_bins_per_table: u32::from_le_bytes(data[5..9].try_into().unwrap()),
                     index_k: data[9],
                     chunk_k: data[10],
                     tag_seed: u64::from_le_bytes(data[11..19].try_into().unwrap()),
+                    index_master_seed,
+                    chunk_master_seed,
+                    anchor,
                 }))
             }
             RESP_DB_CATALOG => {
@@ -1051,12 +1096,28 @@ impl Response {
                 if data.len() < 19 {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony info too short"));
                 }
+                let (index_master_seed, chunk_master_seed, anchor) = if data.len() >= 35 {
+                    let ims = u64::from_le_bytes(data[19..27].try_into().unwrap());
+                    let cms = u64::from_le_bytes(data[27..35].try_into().unwrap());
+                    let mut pos = 36;
+                    let anchor = if data.len() >= 36 {
+                        decode_anchor_ext(data[35], data, &mut pos)?
+                    } else {
+                        None
+                    };
+                    (ims, cms, anchor)
+                } else {
+                    (0, 0, None)
+                };
                 Ok(Response::HarmonyInfo(ServerInfo {
                     index_bins_per_table: u32::from_le_bytes(data[1..5].try_into().unwrap()),
                     chunk_bins_per_table: u32::from_le_bytes(data[5..9].try_into().unwrap()),
                     index_k: data[9],
                     chunk_k: data[10],
                     tag_seed: u64::from_le_bytes(data[11..19].try_into().unwrap()),
+                    index_master_seed,
+                    chunk_master_seed,
+                    anchor,
                 }))
             }
             RESP_HARMONY_QUERY => {
@@ -1394,12 +1455,29 @@ fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
 
 // ─── Database catalog encoding helpers ─────────────────────────────────────
 
+/// Marker that begins the v1 trailing "ext" section appended after all
+/// catalog entries. A decoder that doesn't know about the section parses
+/// the entries and stops; one that does sees this byte and reads the
+/// per-entry master seeds + chain anchors.
+const CATALOG_EXT_V1: u8 = 0x01;
+
+/// Anchor-kind discriminator inside the ext section.
+const ANCHOR_KIND_NONE: u8 = 0;
+const ANCHOR_KIND_SNAPSHOT: u8 = 1;
+const ANCHOR_KIND_DELTA: u8 = 2;
+
 /// Wire format:
 ///   [1B num_databases]
-///   Per database:
-///     [1B db_id][1B name_len][name bytes][4B height]
+///   Per database (v1 entry):
+///     [1B db_id][1B db_type][1B name_len][name bytes][4B base_height][4B height]
 ///     [4B index_bins][4B chunk_bins][1B index_k][1B chunk_k]
-///     [8B tag_seed][1B dpf_n_index][1B dpf_n_chunk]
+///     [8B tag_seed][1B dpf_n_index][1B dpf_n_chunk][1B has_bucket_merkle]
+///   Trailing ext section (appended after ALL entries; older decoders
+///   stop after the entries above and ignore it):
+///     [1B CATALOG_EXT_V1]
+///     Per database, in the same order:
+///       [8B index_master_seed][8B chunk_master_seed][1B anchor_kind]
+///       anchor_kind 1 → [36B ChainAnchor]; 2 → [72B DeltaAnchor]; 0 → none
 fn encode_db_catalog(buf: &mut Vec<u8>, cat: &DatabaseCatalog) {
     buf.push(cat.databases.len() as u8);
     for entry in &cat.databases {
@@ -1418,6 +1496,13 @@ fn encode_db_catalog(buf: &mut Vec<u8>, cat: &DatabaseCatalog) {
         buf.push(entry.dpf_n_index);
         buf.push(entry.dpf_n_chunk);
         buf.push(if entry.has_bucket_merkle { 1 } else { 0 });
+    }
+    // Trailing ext section: per-entry master seeds + chain anchor.
+    buf.push(CATALOG_EXT_V1);
+    for entry in &cat.databases {
+        buf.extend_from_slice(&entry.index_master_seed.to_le_bytes());
+        buf.extend_from_slice(&entry.chunk_master_seed.to_le_bytes());
+        encode_anchor_ext(buf, &entry.anchor);
     }
 }
 
@@ -1488,9 +1573,82 @@ fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
             dpf_n_index,
             dpf_n_chunk,
             has_bucket_merkle,
+            // Filled from the trailing ext section below (defaults for a
+            // legacy server that doesn't emit it).
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor: None,
         });
     }
+
+    // Trailing ext section (CATALOG_EXT_V1): per-entry master seeds + anchor.
+    // Absent when talking to a pre-ext server — leave the defaults above.
+    if pos < data.len() && data[pos] == CATALOG_EXT_V1 {
+        pos += 1;
+        for entry in databases.iter_mut() {
+            if pos + 17 > data.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated catalog ext entry",
+                ));
+            }
+            entry.index_master_seed = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            entry.chunk_master_seed = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            let anchor_kind = data[pos];
+            pos += 1;
+            entry.anchor = decode_anchor_ext(anchor_kind, data, &mut pos)?;
+        }
+    }
     Ok(DatabaseCatalog { databases })
+}
+
+/// Encode one anchor record (kind byte + 0/36/72 bytes) into `buf`.
+fn encode_anchor_ext(buf: &mut Vec<u8>, anchor: &Option<pir_core::cuckoo::HeaderAnchor>) {
+    match anchor {
+        None => buf.push(ANCHOR_KIND_NONE),
+        Some(pir_core::cuckoo::HeaderAnchor::Snapshot(c)) => {
+            buf.push(ANCHOR_KIND_SNAPSHOT);
+            buf.extend_from_slice(&c.to_bytes());
+        }
+        Some(pir_core::cuckoo::HeaderAnchor::Delta(d)) => {
+            buf.push(ANCHOR_KIND_DELTA);
+            buf.extend_from_slice(&d.to_bytes());
+        }
+    }
+}
+
+/// Decode one anchor record from the catalog ext section, advancing `pos`.
+fn decode_anchor_ext(
+    kind: u8,
+    data: &[u8],
+    pos: &mut usize,
+) -> io::Result<Option<pir_core::cuckoo::HeaderAnchor>> {
+    use pir_core::seeds::{ChainAnchor, DeltaAnchor, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES};
+    match kind {
+        ANCHOR_KIND_NONE => Ok(None),
+        ANCHOR_KIND_SNAPSHOT => {
+            if *pos + CHAIN_ANCHOR_BYTES > data.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated snapshot anchor"));
+            }
+            let a = ChainAnchor::from_bytes(&data[*pos..*pos + CHAIN_ANCHOR_BYTES])?;
+            *pos += CHAIN_ANCHOR_BYTES;
+            Ok(Some(pir_core::cuckoo::HeaderAnchor::Snapshot(a)))
+        }
+        ANCHOR_KIND_DELTA => {
+            if *pos + DELTA_ANCHOR_BYTES > data.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated delta anchor"));
+            }
+            let a = DeltaAnchor::from_bytes(&data[*pos..*pos + DELTA_ANCHOR_BYTES])?;
+            *pos += DELTA_ANCHOR_BYTES;
+            Ok(Some(pir_core::cuckoo::HeaderAnchor::Delta(a)))
+        }
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown catalog anchor kind {}", other),
+        )),
+    }
 }
 
 // ─── Attestation encoding helpers ──────────────────────────────────────────

@@ -1317,7 +1317,7 @@ impl OnionClient {
         let k = db_info.index_k as usize;
         let bins = db_info.index_bins as usize;
         let tag_seed = db_info.tag_seed;
-        let master_seed = pir_core::params::INDEX_PARAMS.master_seed;
+        let master_seed = db_info.index_master_seed;
 
         // Plan PBC rounds.
         let groups_per_sh: Vec<[usize; NUM_HASHES]> = script_hashes
@@ -2457,6 +2457,13 @@ fn build_catalog(
                 dpf_n_index: pir_core::params::compute_dpf_n(opi_bins_idx as usize),
                 dpf_n_chunk: pir_core::params::compute_dpf_n(opi_bins_chunk as usize),
                 has_bucket_merkle: false,
+                // OnionPIR INDEX cuckoo uses the same INDEX_CUCKOO_MASTER
+                // domain + anchor as the main DB, so the catalog entry's
+                // master seed + anchor carry through unchanged.
+                index_master_seed: d.index_master_seed,
+                chunk_master_seed: d.chunk_master_seed,
+                anchor_kind: d.anchor_kind,
+                anchor_bytes: d.anchor_bytes.clone(),
             });
         }
         if !dbs.is_empty() {
@@ -2489,6 +2496,13 @@ fn build_catalog(
             dpf_n_index: pir_core::params::compute_dpf_n(bins_idx as usize),
             dpf_n_chunk: pir_core::params::compute_dpf_n(bins_chunk as usize),
             has_bucket_merkle: false,
+            // JSON-only fallback (no server catalog) — no wire master seed
+            // or anchor available. Queries on this degraded path require a
+            // real catalog; left zero/none here.
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
     }
 

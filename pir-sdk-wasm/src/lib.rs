@@ -420,6 +420,20 @@ impl WasmDatabaseCatalog {
                     .get("hasBucketMerkle")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
+                // Chain-anchored cuckoo seeds + anchor (from the binary
+                // catalog ext section, surfaced via JSON by the TS layer).
+                // Default to legacy (0 seeds, no anchor) when absent.
+                index_master_seed: parse_tag_seed(db_val.get("indexMasterSeed")),
+                chunk_master_seed: parse_tag_seed(db_val.get("chunkMasterSeed")),
+                anchor_kind: db_val
+                    .get("anchorKind")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u8,
+                anchor_bytes: db_val
+                    .get("anchorHex")
+                    .and_then(|v| v.as_str())
+                    .map(parse_hex_bytes)
+                    .unwrap_or_default(),
             });
         }
 
@@ -515,6 +529,14 @@ fn database_info_to_json(db: &DatabaseInfo) -> serde_json::Value {
         "dpfNIndex": db.dpf_n_index,
         "dpfNChunk": db.dpf_n_chunk,
         "hasBucketMerkle": db.has_bucket_merkle,
+        "indexMasterSeed": format!("0x{:016x}", db.index_master_seed),
+        "chunkMasterSeed": format!("0x{:016x}", db.chunk_master_seed),
+        // Chain anchor surfaced for the UI: the block hash + height the
+        // cuckoo seeds are derived from, plus whether the wire-delivered
+        // seeds verify against it. `anchorBlockHash` is null for legacy DBs.
+        "anchorBlockHash": db.anchor_display().map(|(h, _)| h),
+        "anchorHeight": db.anchor_display().map(|(_, ht)| ht),
+        "anchorVerified": db.verify_anchor_seeds().is_ok(),
     })
 }
 
@@ -530,6 +552,26 @@ fn parse_tag_seed(v: Option<&serde_json::Value>) -> u64 {
         }
         _ => 0,
     }
+}
+
+/// Decode a hex string (optional `0x` prefix) into bytes. Returns empty
+/// on malformed input — used for the optional `anchorHex` catalog field.
+fn parse_hex_bytes(s: &str) -> Vec<u8> {
+    let h = s.strip_prefix("0x").unwrap_or(s);
+    if h.len() % 2 != 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(h.len() / 2);
+    let bytes = h.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match u8::from_str_radix(&h[i..i + 2], 16) {
+            Ok(b) => out.push(b),
+            Err(_) => return Vec::new(),
+        }
+        i += 2;
+    }
+    out
 }
 
 // ─── Sync Plan ──────────────────────────────────────────────────────────────

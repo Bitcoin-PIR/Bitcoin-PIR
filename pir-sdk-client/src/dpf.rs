@@ -657,8 +657,11 @@ impl DpfClient {
         let index_k = response[9];
         let chunk_k = response[10];
         let tag_seed = u64::from_le_bytes(response[11..19].try_into().unwrap());
+        // v2 tail: index/chunk master seed + chain anchor.
+        let (index_master_seed, chunk_master_seed, anchor_kind, anchor_bytes) =
+            crate::protocol::parse_info_v2_tail(&response);
 
-        Ok(DatabaseInfo {
+        let db_info = DatabaseInfo {
             db_id: 0,
             kind: DatabaseKind::Full,
             name: "main".into(),
@@ -671,7 +674,17 @@ impl DpfClient {
             dpf_n_index: pir_core::params::compute_dpf_n(index_bins as usize),
             dpf_n_chunk: pir_core::params::compute_dpf_n(chunk_bins as usize),
             has_bucket_merkle: false,
-        })
+            index_master_seed,
+            chunk_master_seed,
+            anchor_kind,
+            anchor_bytes,
+        };
+        // Refuse to proceed if the server's seeds don't match the chain
+        // anchor it claims (no-op for legacy DBs).
+        db_info
+            .verify_anchor_seeds()
+            .map_err(|e| PirError::Protocol(format!("chain-anchor seed verification failed: {}", e)))?;
+        Ok(db_info)
     }
 
     /// Execute a single query step for a batch of script hashes.
@@ -1115,7 +1128,7 @@ impl DpfClient {
         let bins = db_info.index_bins as usize;
         let dpf_n = db_info.dpf_n_index;
         let tag_seed = db_info.tag_seed;
-        let master_seed = pir_core::params::INDEX_PARAMS.master_seed;
+        let master_seed = db_info.index_master_seed;
 
         // Compute candidate groups for our script hash.
         //
@@ -1327,7 +1340,7 @@ impl DpfClient {
         let bins = db_info.index_bins as usize;
         let dpf_n = db_info.dpf_n_index;
         let tag_seed = db_info.tag_seed;
-        let master_seed = pir_core::params::INDEX_PARAMS.master_seed;
+        let master_seed = db_info.index_master_seed;
         let n = script_hashes.len();
 
         // PBC plan over candidate groups. The placement view tells us
@@ -1523,7 +1536,7 @@ impl DpfClient {
         let k = db_info.chunk_k as usize;
         let bins = db_info.chunk_bins as usize;
         let dpf_n = db_info.dpf_n_chunk;
-        let master_seed = pir_core::params::CHUNK_PARAMS.master_seed;
+        let master_seed = db_info.chunk_master_seed;
 
         // Plan multi-round chunk retrieval. When the caller passed an
         // empty `chunk_ids` list (not-found or whale path), force one

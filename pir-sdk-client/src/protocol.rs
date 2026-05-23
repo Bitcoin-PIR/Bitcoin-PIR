@@ -45,6 +45,34 @@ pub(crate) fn encode_request(variant: u8, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// Parse the v2 trailing fields (index/chunk cuckoo master seed + chain
+/// anchor) from a `RESP_INFO` / `RESP_HARMONY_INFO` response body.
+///
+/// `resp` includes the leading RESP byte at index 0; the legacy fields
+/// occupy `[1..19]` and the v2 tail (if present) begins at offset 19:
+/// `[8B index_master_seed][8B chunk_master_seed][1B anchor_kind][0/36/72B anchor]`.
+/// Returns `(0, 0, 0, [])` when the tail is absent (pre-ext server).
+pub(crate) fn parse_info_v2_tail(resp: &[u8]) -> (u64, u64, u8, Vec<u8>) {
+    if resp.len() < 35 {
+        return (0, 0, 0, Vec::new());
+    }
+    let ims = u64::from_le_bytes(resp[19..27].try_into().unwrap());
+    let cms = u64::from_le_bytes(resp[27..35].try_into().unwrap());
+    if resp.len() < 36 {
+        return (ims, cms, 0, Vec::new());
+    }
+    let kind = resp[35];
+    let n = match kind {
+        1 => 36usize,
+        2 => 72usize,
+        _ => 0usize,
+    };
+    if n == 0 || resp.len() < 36 + n {
+        return (ims, cms, if n == 0 { 0 } else { kind }, Vec::new());
+    }
+    (ims, cms, kind, resp[36..36 + n].to_vec())
+}
+
 // ─── Catalog decoding ───────────────────────────────────────────────────────
 
 /// Decode a `DatabaseCatalog` from the body of a `RESP_DB_CATALOG` message.
@@ -130,7 +158,60 @@ pub(crate) fn decode_catalog(data: &[u8]) -> PirResult<DatabaseCatalog> {
             dpf_n_index,
             dpf_n_chunk,
             has_bucket_merkle,
+            // Patched from the trailing ext section below; defaults for a
+            // legacy server that doesn't emit it.
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
+    }
+
+    // Trailing ext section (CATALOG_EXT_V1): per-entry master seeds + anchor.
+    // Mirrors runtime::protocol::encode_db_catalog. Absent against a
+    // pre-ext server — leave the defaults above.
+    const CATALOG_EXT_V1: u8 = 0x01;
+    if pos < data.len() && data[pos] == CATALOG_EXT_V1 {
+        pos += 1;
+        for db in databases.iter_mut() {
+            if pos + 17 > data.len() {
+                return Err(PirError::Decode("truncated catalog ext entry".into()));
+            }
+            db.index_master_seed = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            db.chunk_master_seed = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            let kind = data[pos];
+            pos += 1;
+            let n = match kind {
+                0 => 0usize,
+                1 => 36usize,
+                2 => 72usize,
+                other => {
+                    return Err(PirError::Decode(format!(
+                        "unknown catalog anchor kind {}",
+                        other
+                    )))
+                }
+            };
+            if pos + n > data.len() {
+                return Err(PirError::Decode("truncated catalog anchor bytes".into()));
+            }
+            db.anchor_kind = kind;
+            db.anchor_bytes = data[pos..pos + n].to_vec();
+            pos += n;
+        }
+    }
+
+    // Refuse a database whose delivered seeds don't match its embedded
+    // chain anchor (no-op for legacy DBs without an anchor).
+    for db in &databases {
+        db.verify_anchor_seeds().map_err(|e| {
+            PirError::Protocol(format!(
+                "DB {} ({}) chain-anchor seed verification failed: {}",
+                db.db_id, db.name, e
+            ))
+        })?;
     }
     Ok(DatabaseCatalog { databases })
 }

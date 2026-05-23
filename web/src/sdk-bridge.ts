@@ -578,6 +578,10 @@ function catalogToSdkFormat(catalog: DatabaseCatalog): any {
       dpfNIndex: db.dpfNIndex,
       dpfNChunk: db.dpfNChunk,
       hasBucketMerkle: db.hasBucketMerkle,
+      indexMasterSeed: `0x${db.indexMasterSeed.toString(16)}`,
+      chunkMasterSeed: `0x${db.chunkMasterSeed.toString(16)}`,
+      anchorKind: db.anchorKind,
+      anchorHex: db.anchorHex,
     })),
   };
 }

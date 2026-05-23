@@ -753,6 +753,10 @@ mod tests {
             dpf_n_index: 10,
             dpf_n_chunk: 11,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
 
         let plan = compute_sync_plan(&catalog, Some(100)).unwrap();
@@ -776,6 +780,10 @@ mod tests {
             dpf_n_index: 10,
             dpf_n_chunk: 11,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
 
         let plan = compute_sync_plan(&catalog, None).unwrap();
@@ -808,6 +816,10 @@ mod tests {
             dpf_n_index: 10,
             dpf_n_chunk: 11,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
         let mut prev = base;
         for i in 0..num_deltas {
@@ -825,6 +837,10 @@ mod tests {
                 dpf_n_index: 8,
                 dpf_n_chunk: 9,
                 has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
             });
             prev = next;
         }
@@ -926,6 +942,10 @@ mod tests {
             dpf_n_index: 8,
             dpf_n_chunk: 9,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
         let planner = SyncPlanner::new(&catalog).unwrap();
         // last_height = None → fresh sync → NoSyncPath
@@ -955,6 +975,10 @@ mod tests {
             dpf_n_index: 10,
             dpf_n_chunk: 11,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
         // 3-step scenic route (1m → 1.005m → 1.010m → 1.020m).
         for (id, base, tip) in [(1, 1_000_000, 1_005_000), (2, 1_005_000, 1_010_000), (3, 1_010_000, 1_020_000)] {
@@ -971,6 +995,10 @@ mod tests {
                 dpf_n_index: 8,
                 dpf_n_chunk: 9,
                 has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
             });
         }
         // 1-step shortcut (1m → 1.020m).
@@ -987,6 +1015,10 @@ mod tests {
             dpf_n_index: 8,
             dpf_n_chunk: 9,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
 
         let plan = compute_sync_plan(&catalog, Some(1_000_000)).unwrap();
@@ -1017,6 +1049,10 @@ mod tests {
             dpf_n_index: 10,
             dpf_n_chunk: 11,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
         // Orphan delta (base height doesn't match anything in the
         // catalog reachable from last_height).
@@ -1033,6 +1069,10 @@ mod tests {
             dpf_n_index: 8,
             dpf_n_chunk: 9,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
 
         // last_height = 500_000 → no chain to tip → fresh sync.

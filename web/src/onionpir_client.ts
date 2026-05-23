@@ -8,7 +8,7 @@
 
 import {
   K, K_CHUNK, NUM_HASHES, INDEX_CUCKOO_NUM_HASHES,
-  CHUNK_MASTER_SEED,
+  CHUNK_MASTER_SEED, MASTER_SEED,
   REQ_ONIONPIR_MERKLE_INDEX_SIBLING, RESP_ONIONPIR_MERKLE_INDEX_SIBLING,
   REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP, RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP,
   REQ_ONIONPIR_MERKLE_DATA_SIBLING, RESP_ONIONPIR_MERKLE_DATA_SIBLING,
@@ -16,7 +16,7 @@ import {
 } from './constants.js';
 
 import {
-  deriveGroups, deriveCuckooKey, cuckooHash,
+  deriveGroups, deriveCuckooKeyGeneric, cuckooHash,
   deriveChunkGroups,
   splitmix64, computeTag,
   sha256,
@@ -186,9 +186,9 @@ function yieldToMain(): Promise<void> {
 
 // ─── Chunk cuckoo hash functions (BigInt for 64-bit precision) ────────────
 
-function chunkDeriveCuckooKey(groupId: number, hashFn: number): bigint {
+function chunkDeriveCuckooKey(masterSeed: bigint, groupId: number, hashFn: number): bigint {
   return splitmix64(
-    (CHUNK_MASTER_SEED
+    (masterSeed
       + ((BigInt(groupId) * 0x9e3779b97f4a7c15n) & MASK64)
       + ((BigInt(hashFn) * 0x517cc1b727220a95n) & MASK64)
     ) & MASK64
@@ -248,6 +248,7 @@ function buildChunkCuckooForGroup(
   groupId: number,
   reverseIndex: Map<number, number[]>,
   binsPerTable: number,
+  chunkMasterSeed: bigint,
 ): Uint32Array {
   const entries = reverseIndex.get(groupId) ?? [];
   // entries are already sorted since the reverse index is built in eid order
@@ -259,7 +260,7 @@ function buildChunkCuckooForGroup(
   // switched the key ABI to avoid double-precision loss.)
   const keys: bigint[] = [];
   for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
-    keys.push(chunkDeriveCuckooKey(groupId, h));
+    keys.push(chunkDeriveCuckooKey(chunkMasterSeed, groupId, h));
   }
   return wasmModule.buildCuckooBs1(
     new Uint32Array(entries),
@@ -737,6 +738,11 @@ export class OnionPirWebClient {
   private indexBins = 0;
   private chunkBins = 0;
   private tagSeed = 0n;
+  // Cuckoo master seeds. Default to the legacy build constants; overridden
+  // by the server's per-DB values (chain-derived for v2 DBs) when the
+  // OnionPIR info JSON carries them.
+  private indexMasterSeed = MASTER_SEED;
+  private chunkMasterSeed = CHUNK_MASTER_SEED;
   private totalPacked = 0;
   private indexSlotsPerBin = 0;
   private indexSlotSize = 0;
@@ -1160,7 +1166,7 @@ export class OnionPirWebClient {
           for (let h = 0; h < INDEX_CUCKOO_NUM_HASHES; h++) {
             let bin: number;
             if (addrIdx !== undefined) {
-              const key = deriveCuckooKey(g, h);
+              const key = deriveCuckooKeyGeneric(this.indexMasterSeed, g, h);
               bin = cuckooHash(scriptHashes[addrIdx], key, this.indexBins);
             } else {
               bin = Number(this.rng.nextU64() % BigInt(this.indexBins));
@@ -1389,7 +1395,7 @@ export class OnionPirWebClient {
             if (!cuckooCache.has(group)) {
               // A non-empty `round` implies `uniqueEntryIds.length > 0`,
               // so `reverseIndex` was built (non-null) above.
-              cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, reverseIndex!, this.chunkBins));
+              cuckooCache.set(group, buildChunkCuckooForGroup(this.wasmModule!, group, reverseIndex!, this.chunkBins, this.chunkMasterSeed));
               tablesBuilt++;
               progress('Level 2', `Chunk round ${ri + 1}/${chunkRounds.length}: built ${tablesBuilt} cuckoo tables...`);
               await yieldToMain();
@@ -1397,7 +1403,7 @@ export class OnionPirWebClient {
 
             const keys: bigint[] = [];
             for (let h = 0; h < CHUNK_CUCKOO_NUM_HASHES; h++) {
-              keys.push(chunkDeriveCuckooKey(group, h));
+              keys.push(chunkDeriveCuckooKey(this.chunkMasterSeed, group, h));
             }
             const bin = findEntryInCuckoo(cuckooCache.get(group)!, eid, keys, this.chunkBins);
             if (bin === null) throw new Error(`Entry ${eid} not in cuckoo table for group ${group}`);
