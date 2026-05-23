@@ -199,6 +199,11 @@ async fn main() {
     let mut index_bins = info.index_bins_per_table as usize;
     let mut chunk_bins = info.chunk_bins_per_table as usize;
     let mut tag_seed = info.tag_seed;
+    // Chain-derived cuckoo master seeds (Phase B+): the placement seeds are
+    // no longer a hardcoded constant — they come from the server over the
+    // wire (ServerInfo for db 0, catalog entry for deltas).
+    let mut index_master_seed = info.index_master_seed;
+    let mut chunk_master_seed = info.chunk_master_seed;
 
     // If db_id != 0, fetch catalog and override params from the delta entry
     if db_id != 0 {
@@ -210,6 +215,8 @@ async fn main() {
                     index_bins = entry.index_bins_per_table as usize;
                     chunk_bins = entry.chunk_bins_per_table as usize;
                     tag_seed = entry.tag_seed;
+                    index_master_seed = entry.index_master_seed;
+                    chunk_master_seed = entry.chunk_master_seed;
                     println!("  Catalog: db_id={} name=\"{}\" type={} base_height={} height={} has_bucket_merkle={}",
                         entry.db_id, entry.name,
                         if entry.db_type == 0 { "full" } else { "delta" },
@@ -248,7 +255,7 @@ async fn main() {
     // Compute cuckoo hash locations in the assigned group (INDEX_CUCKOO_NUM_HASHES = 2)
     let mut my_locs = Vec::new();
     for h in 0..INDEX_CUCKOO_NUM_HASHES {
-        let key = derive_cuckoo_key(assigned_group, h);
+        let key = pir_core::hash::derive_cuckoo_key(index_master_seed, assigned_group, h);
         my_locs.push(cuckoo_hash(&args.script_hash, key, index_bins) as u64);
     }
 
@@ -368,7 +375,7 @@ async fn main() {
             let b = group_id as usize;
             let locs: Vec<u64> = (0..CHUNK_CUCKOO_NUM_HASHES)
                 .map(|h| {
-                    let key = derive_chunk_cuckoo_key(b, h);
+                    let key = pir_core::hash::derive_cuckoo_key(chunk_master_seed, b, h);
                     cuckoo_hash_int(chunk_id, key, chunk_bins) as u64
                 })
                 .collect();
@@ -425,7 +432,7 @@ async fn main() {
 
                 if let Some(d) = eval::find_chunk_in_result(&result, chunk_id) {
                     recovered_chunks.insert(chunk_id, d.to_vec());
-                    let ck = derive_chunk_cuckoo_key(b, h);
+                    let ck = pir_core::hash::derive_cuckoo_key(chunk_master_seed, b, h);
                     let bin_idx = cuckoo_hash_int(chunk_id, ck, chunk_bins);
                     chunk_merkle_info.insert(chunk_id, (b, bin_idx, result));
                     found = true;

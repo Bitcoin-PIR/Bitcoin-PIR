@@ -176,8 +176,8 @@ fn json_u64(json: &str, key: &str) -> u64 {
 /// Parse the JSON server info response. Prefers the `onionpir` sub-object if present,
 /// falling back to top-level DPF params.
 ///
-/// Returns: (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, slots_per_bin, slot_size)
-fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize, usize, usize) {
+/// Returns: (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, slots_per_bin, slot_size, index_master_seed)
+fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize, usize, usize, u64) {
     // Check for OnionPIR sub-object
     if let Some(opi_start) = json.find("\"onionpir\"") {
         // Find the opening brace of the onionpir object
@@ -208,6 +208,7 @@ fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize
             json_u64(opi, "total_packed_entries") as usize,
             json_u64(opi, "index_slots_per_bin") as usize,
             json_u64(opi, "index_slot_size") as usize,
+            json_u64(opi, "index_master_seed"),
         )
     } else {
         // Fallback to top-level DPF params
@@ -220,6 +221,7 @@ fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize
             0,
             json_u64(json, "index_slots_per_bin") as usize,
             json_u64(json, "index_slot_size") as usize,
+            json_u64(json, "index_master_seed"),
         )
     }
 }
@@ -599,7 +601,7 @@ async fn main() {
     // Response: [4B len LE][1B variant=0x03][JSON bytes...]
     let json_str = std::str::from_utf8(&info_bytes[5..]).expect("invalid UTF-8 in server info JSON");
 
-    let (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, index_slots_per_bin, index_slot_size) =
+    let (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, index_slots_per_bin, index_slot_size, index_master_seed) =
         parse_server_info_json(json_str);
 
     println!("  Index: K={}, bins={}, slots_per_bin={}, slot_size={}",
@@ -690,7 +692,7 @@ async fn main() {
         for g in 0..index_k {
             for h in 0..INDEX_CUCKOO_NUM_HASHES {
                 let bin = if let Some(&addr_idx) = group_map.get(&g) {
-                    let key = derive_cuckoo_key(g, h);
+                    let key = pir_core::hash::derive_cuckoo_key(index_master_seed, g, h);
                     cuckoo_hash(&args.script_hashes[addr_idx], key, index_bins) as u64
                 } else {
                     rng.next_u64() % index_bins as u64

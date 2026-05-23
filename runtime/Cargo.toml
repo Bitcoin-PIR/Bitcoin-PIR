@@ -7,9 +7,9 @@ edition = "2021"
 # Not a library — not published to crates.io.
 publish = false
 
-[[bin]]
-name = "server"
-path = "src/bin/server.rs"
+# NOTE: the legacy `server` bin (single-DB DPF/Harmony reference server) was
+# removed — superseded by `unified_server`, which all production systemd
+# services and scripts/start_pir_servers.sh launch.
 
 [[bin]]
 name = "unified_server"
@@ -27,9 +27,8 @@ path = "src/bin/onionpir_client.rs"
 name = "onionpir_bench"
 path = "src/bin/onionpir_bench.rs"
 
-[[bin]]
-name = "harmonypir_hint_server"
-path = "src/bin/harmonypir_hint_server.rs"
+# NOTE: `harmonypir_hint_server` (standalone HarmonyPIR hint server) was
+# removed — superseded by `unified_server --serve-hints`.
 
 [[bin]]
 name = "harmonypir_e2e_test"
@@ -47,21 +46,11 @@ path = "src/bin/harmonypir_real_test.rs"
 name = "harmonypir_hint_bench"
 path = "src/bin/harmonypir_hint_bench.rs"
 
-[[bin]]
-name = "harmonypir_index_to_chunk_e2e"
-path = "src/bin/harmonypir_index_to_chunk_e2e.rs"
-
-[[bin]]
-name = "harmonypir_full_e2e"
-path = "src/bin/harmonypir_full_e2e.rs"
-
-[[bin]]
-name = "harmonypir_batch_e2e"
-path = "src/bin/harmonypir_batch_e2e.rs"
-
-[[bin]]
-name = "harmonypir_batch_trace"
-path = "src/bin/harmonypir_batch_trace.rs"
+# NOTE: the stale HarmonyPIR e2e/trace harnesses (harmonypir_index_to_chunk_e2e,
+# harmonypir_full_e2e, harmonypir_batch_e2e, harmonypir_batch_trace) were
+# removed — they were never migrated through the chain-derived-seed work
+# (called the pre-parameterization derive_*_cuckoo_key signatures) and are
+# superseded by the pir-sdk-client integration suite.
 
 [features]
 default = ["fastprp"]
