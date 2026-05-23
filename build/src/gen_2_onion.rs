@@ -20,9 +20,13 @@
 
 use memmap2::Mmap;
 use onionpir::{self, Client as PirClient, Server as PirServer};
+use pir_core::cuckoo::{HeaderAnchor, ANCHOR_MAGIC_DELTA_XOR, ANCHOR_MAGIC_SNAPSHOT_XOR};
+use pir_core::seeds::{CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES};
 use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 // ─── Default paths (used when --data-dir is not specified) ──────────────────
@@ -32,11 +36,22 @@ const DEFAULT_NTT_STORE_FILE: &str = "/Volumes/Bitcoin/data/onion_shared_ntt.bin
 const DEFAULT_CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/onion_chunk_cuckoo.bin";
 const DEFAULT_BIN_HASHES_FILE: &str = "/Volumes/Bitcoin/data/onion_data_bin_hashes.bin";
 
-/// Resolve input/output paths from optional `--data-dir <D>` argument.
-/// When `--data-dir` is given, all four paths live under that directory.
-fn resolve_paths() -> (String, String, String, String) {
+struct ResolvedPaths {
+    packed_file: String,
+    ntt_store_file: String,
+    cuckoo_file: String,
+    bin_hashes_file: String,
+    /// Optional chain/delta anchor file for chain-derived seeds.
+    /// If `--anchor <path>` is passed, that wins; otherwise we look for
+    /// `<data_dir>/chain_anchor.bin` or `<data_dir>/delta_anchor.bin`.
+    anchor_file: Option<PathBuf>,
+}
+
+/// Resolve input/output paths from `--data-dir <D>` and optional `--anchor <path>`.
+fn resolve_paths() -> ResolvedPaths {
     let args: Vec<String> = env::args().collect();
     let mut data_dir: Option<String> = None;
+    let mut anchor_file: Option<PathBuf> = None;
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--data-dir" {
@@ -44,22 +59,142 @@ fn resolve_paths() -> (String, String, String, String) {
                 data_dir = Some(v.clone());
                 i += 1;
             }
+        } else if args[i] == "--anchor" {
+            if let Some(v) = args.get(i + 1) {
+                anchor_file = Some(PathBuf::from(v));
+                i += 1;
+            }
         }
         i += 1;
     }
+    if anchor_file.is_none() {
+        if let Some(d) = data_dir.as_ref() {
+            let chain = PathBuf::from(format!("{}/chain_anchor.bin", d));
+            let delta = PathBuf::from(format!("{}/delta_anchor.bin", d));
+            if chain.exists() {
+                anchor_file = Some(chain);
+            } else if delta.exists() {
+                anchor_file = Some(delta);
+            }
+        }
+    }
     match data_dir {
-        Some(d) => (
-            format!("{}/onion_packed_entries.bin", d),
-            format!("{}/onion_shared_ntt.bin", d),
-            format!("{}/onion_chunk_cuckoo.bin", d),
-            format!("{}/onion_data_bin_hashes.bin", d),
-        ),
-        None => (
-            DEFAULT_PACKED_FILE.to_string(),
-            DEFAULT_NTT_STORE_FILE.to_string(),
-            DEFAULT_CUCKOO_FILE.to_string(),
-            DEFAULT_BIN_HASHES_FILE.to_string(),
-        ),
+        Some(d) => ResolvedPaths {
+            packed_file: format!("{}/onion_packed_entries.bin", d),
+            ntt_store_file: format!("{}/onion_shared_ntt.bin", d),
+            cuckoo_file: format!("{}/onion_chunk_cuckoo.bin", d),
+            bin_hashes_file: format!("{}/onion_data_bin_hashes.bin", d),
+            anchor_file,
+        },
+        None => ResolvedPaths {
+            packed_file: DEFAULT_PACKED_FILE.to_string(),
+            ntt_store_file: DEFAULT_NTT_STORE_FILE.to_string(),
+            cuckoo_file: DEFAULT_CUCKOO_FILE.to_string(),
+            bin_hashes_file: DEFAULT_BIN_HASHES_FILE.to_string(),
+            anchor_file,
+        },
+    }
+}
+
+/// Legacy fallback for CHUNK cuckoo master seed, used only when no
+/// anchor is supplied. Matches pre-chain-derivation builds.
+const LEGACY_CHUNK_MASTER_SEED: u64 = 0xa3f7c2d918e4b065;
+
+/// Process-wide CHUNK cuckoo master seed cell. Initialised exactly once
+/// at the top of `main` via `init_chunk_master_seed`.
+static CHUNK_MASTER_SEED_CELL: OnceLock<u64> = OnceLock::new();
+
+/// Process-wide chain anchor cell (parallel to CHUNK_MASTER_SEED_CELL).
+/// `None` means no anchor available → emit legacy ONION_CHUNK_MAGIC.
+/// `Some` means emit the v2 magic + appended anchor bytes.
+static CHUNK_ANCHOR_CELL: OnceLock<Option<HeaderAnchor>> = OnceLock::new();
+
+/// Read the configured CHUNK master seed. Panics if init wasn't called.
+fn chunk_master_seed() -> u64 {
+    *CHUNK_MASTER_SEED_CELL
+        .get()
+        .expect("CHUNK_MASTER_SEED_CELL not initialised — call init_chunk_master_seed first")
+}
+
+/// Read the configured chain anchor (or None). Panics if init wasn't called.
+fn chunk_anchor() -> Option<&'static HeaderAnchor> {
+    CHUNK_ANCHOR_CELL
+        .get()
+        .expect("CHUNK_ANCHOR_CELL not initialised — call init_chunk_master_seed first")
+        .as_ref()
+}
+
+/// Initialise CHUNK_MASTER_SEED_CELL + CHUNK_ANCHOR_CELL from the anchor
+/// file or fall back to legacy (no anchor, legacy magic).
+fn init_chunk_master_seed(anchor: Option<&PathBuf>) {
+    let (seed, header_anchor) = match anchor {
+        Some(path) => {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| {
+                eprintln!("error: failed to read anchor {}: {}", path.display(), e);
+                std::process::exit(1);
+            });
+            match bytes.len() {
+                CHAIN_ANCHOR_BYTES => {
+                    let a = pir_core::seeds::ChainAnchor::from_bytes(&bytes).unwrap_or_else(|e| {
+                        eprintln!("error: bad ChainAnchor {}: {}", path.display(), e);
+                        std::process::exit(1);
+                    });
+                    let s = pir_core::seeds::SnapshotSeeds::derive(&a);
+                    println!(
+                        "Anchor: {} (snapshot, height={})",
+                        path.display(),
+                        a.block_height
+                    );
+                    (s.chunk_master, Some(HeaderAnchor::Snapshot(a)))
+                }
+                DELTA_ANCHOR_BYTES => {
+                    let a = pir_core::seeds::DeltaAnchor::from_bytes(&bytes).unwrap_or_else(|e| {
+                        eprintln!("error: bad DeltaAnchor {}: {}", path.display(), e);
+                        std::process::exit(1);
+                    });
+                    let s = pir_core::seeds::DeltaSeeds::derive(&a);
+                    println!(
+                        "Anchor: {} (delta, {}→{})",
+                        path.display(),
+                        a.from.block_height,
+                        a.to.block_height
+                    );
+                    (s.chunk_master, Some(HeaderAnchor::Delta(a)))
+                }
+                n => {
+                    eprintln!(
+                        "error: anchor {} has unknown size {} (expected {} or {})",
+                        path.display(),
+                        n,
+                        CHAIN_ANCHOR_BYTES,
+                        DELTA_ANCHOR_BYTES
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => {
+            eprintln!("WARNING: no --anchor supplied; using LEGACY hardcoded CHUNK_MASTER_SEED.");
+            eprintln!("         Output is NOT reproducible against peers without coordination.");
+            (LEGACY_CHUNK_MASTER_SEED, None)
+        }
+    };
+    CHUNK_MASTER_SEED_CELL
+        .set(seed)
+        .expect("init_chunk_master_seed called twice");
+    CHUNK_ANCHOR_CELL
+        .set(header_anchor)
+        .expect("init_chunk_master_seed called twice");
+}
+
+/// Compute the on-disk magic for the OnionPIR chunk cuckoo file, given
+/// the loaded anchor. Uses the same XOR scheme as pir-core::cuckoo so
+/// the discriminator is shared across all v2 file formats.
+fn onion_chunk_magic_with_anchor(legacy_magic: u64, anchor: Option<&HeaderAnchor>) -> u64 {
+    match anchor {
+        None => legacy_magic,
+        Some(HeaderAnchor::Snapshot(_)) => legacy_magic ^ ANCHOR_MAGIC_SNAPSHOT_XOR,
+        Some(HeaderAnchor::Delta(_)) => legacy_magic ^ ANCHOR_MAGIC_DELTA_XOR,
     }
 }
 
@@ -75,7 +210,6 @@ fn onion_entry_size() -> usize {
 /// PBC parameters (same as production)
 const K_CHUNK: usize = 80;
 const NUM_HASHES: usize = 3; // each entry assigned to 3 groups
-const CHUNK_MASTER_SEED: u64 = 0xa3f7c2d918e4b065;
 
 /// Cuckoo parameters for main DB
 const CUCKOO_NUM_HASHES: usize = 6;
@@ -126,7 +260,7 @@ fn derive_chunk_groups(entry_id: u32) -> [usize; NUM_HASHES] {
 #[inline]
 fn derive_cuckoo_key(group_id: usize, hash_fn: usize) -> u64 {
     splitmix64(
-        CHUNK_MASTER_SEED
+        chunk_master_seed()
             .wrapping_add((group_id as u64).wrapping_mul(0x9e3779b97f4a7c15))
             .wrapping_add((hash_fn as u64).wrapping_mul(0x517cc1b727220a95)),
     )
@@ -221,12 +355,22 @@ fn main() {
     println!("=== gen_2_onion: Build OnionPIR Main Database ===\n");
     let total_start = Instant::now();
 
-    let (packed_file_path, ntt_store_file, cuckoo_file, bin_hashes_file) = resolve_paths();
+    let paths = resolve_paths();
+    let packed_file_path = paths.packed_file;
+    let ntt_store_file = paths.ntt_store_file;
+    let cuckoo_file = paths.cuckoo_file;
+    let bin_hashes_file = paths.bin_hashes_file;
+
+    // Initialise chain-derived seeds BEFORE any cuckoo work. Falls back
+    // to LEGACY_CHUNK_MASTER_SEED with a warning if no anchor is found.
+    init_chunk_master_seed(paths.anchor_file.as_ref());
+
     println!("Paths:");
     println!("  Input packed:    {}", packed_file_path);
     println!("  Output NTT:      {}", ntt_store_file);
     println!("  Output cuckoo:   {}", cuckoo_file);
     println!("  Output hashes:   {}", bin_hashes_file);
+    println!("  CHUNK master_seed: 0x{:016x}", chunk_master_seed());
     println!();
 
     // ── 1. Read packed entries ───────────────────────────────────────────
@@ -446,16 +590,28 @@ fn main() {
         let cuckoo_out = File::create(&cuckoo_file).expect("create cuckoo file");
         let mut writer = BufWriter::with_capacity(1024 * 1024, cuckoo_out);
 
-        // Header: magic, k_chunk, cuckoo_num_hashes, bins_per_table, master_seed, num_entries
-        let magic: u64 = 0xBA7C_0010_0000_0001;
+        // Header (Phase C2 v2): legacy magic XOR'd with snapshot/delta marker
+        // when a chain anchor is loaded, then anchor bytes (36 snapshot /
+        // 72 delta) appended after the 40-byte legacy header section.
+        // Without --anchor, emits byte-identical legacy format.
+        const ONION_CHUNK_MAGIC: u64 = 0xBA7C_0010_0000_0001;
+        let anchor = chunk_anchor();
+        let magic = onion_chunk_magic_with_anchor(ONION_CHUNK_MAGIC, anchor);
         writer.write_all(&magic.to_le_bytes()).unwrap();
         writer.write_all(&(K_CHUNK as u32).to_le_bytes()).unwrap();
         writer.write_all(&(CUCKOO_NUM_HASHES as u32).to_le_bytes()).unwrap();
         writer.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
-        writer.write_all(&CHUNK_MASTER_SEED.to_le_bytes()).unwrap();
+        writer.write_all(&chunk_master_seed().to_le_bytes()).unwrap();
         writer.write_all(&(num_entries as u32).to_le_bytes()).unwrap();
         // Padding to 40 bytes for alignment
         writer.write_all(&[0u8; 4]).unwrap();
+        // v2 anchor extension (Phase C2): 36 or 72 trailing bytes.
+        if let Some(a) = anchor {
+            match a {
+                HeaderAnchor::Snapshot(c) => writer.write_all(&c.to_bytes()).unwrap(),
+                HeaderAnchor::Delta(d) => writer.write_all(&d.to_bytes()).unwrap(),
+            }
+        }
 
         // Body: K_CHUNK tables, each bins_per_table × u32
         for table in &all_cuckoo_tables {

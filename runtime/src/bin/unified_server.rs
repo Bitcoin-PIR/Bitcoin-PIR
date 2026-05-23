@@ -301,6 +301,28 @@ const ONION_INDEX_META_MAGIC: u64 = 0xBA7C_0010_0000_0002;
 const ONION_INDEX_ALL_MAGIC: u64 = 0xBA7C_0010_0000_0003;
 const ONION_INDEX_ALL_HEADER_BYTES: usize = 32;
 
+/// XOR markers re-used from pir-core::cuckoo so v1 (legacy, no anchor)
+/// vs v2 (snapshot/delta anchor appended) are discriminated by the
+/// same bit pattern across all BitcoinPIR file formats.
+const ONION_MAGIC_SNAPSHOT_XOR: u64 = pir_core::cuckoo::ANCHOR_MAGIC_SNAPSHOT_XOR;
+const ONION_MAGIC_DELTA_XOR: u64 = pir_core::cuckoo::ANCHOR_MAGIC_DELTA_XOR;
+
+/// Recognise legacy + v2 magics for an onion file header. Returns the
+/// matched legacy magic (for downstream offset parsing) on success.
+/// `Err` if the magic is unrecognised.
+fn check_onion_magic(magic: u64, legacy: u64, file_label: &str) -> u64 {
+    let snap = legacy ^ ONION_MAGIC_SNAPSHOT_XOR;
+    let delta = legacy ^ ONION_MAGIC_DELTA_XOR;
+    if magic == legacy || magic == snap || magic == delta {
+        legacy
+    } else {
+        panic!(
+            "Bad {} magic: expected 0x{:016x} (legacy), 0x{:016x} (v2 snapshot), or 0x{:016x} (v2 delta); got 0x{:016x}",
+            file_label, legacy, snap, delta, magic
+        );
+    }
+}
+
 struct OnionChunkHeader {
     k_chunk: usize,
     bins_per_table: usize,
@@ -309,7 +331,9 @@ struct OnionChunkHeader {
 
 fn read_onion_chunk_header(data: &[u8]) -> OnionChunkHeader {
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    assert_eq!(magic, ONION_CHUNK_MAGIC, "Bad onion chunk cuckoo magic");
+    // Accept legacy and v2 (anchor appended at offset ≥ 40); skip the
+    // trailing anchor bytes — verification is a follow-up.
+    let _ = check_onion_magic(magic, ONION_CHUNK_MAGIC, "onion chunk cuckoo");
     OnionChunkHeader {
         k_chunk: u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize,
         bins_per_table: u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize,
@@ -327,7 +351,7 @@ struct OnionIndexMeta {
 
 fn read_onion_index_meta(data: &[u8]) -> OnionIndexMeta {
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    assert_eq!(magic, ONION_INDEX_META_MAGIC, "Bad onion index meta magic");
+    let _ = check_onion_magic(magic, ONION_INDEX_META_MAGIC, "onion index meta");
     OnionIndexMeta {
         k: u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize,
         bins_per_table: u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize,

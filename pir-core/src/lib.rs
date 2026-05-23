@@ -7,6 +7,7 @@
 
 pub mod attest;
 pub mod params;
+pub mod seeds;
 pub mod hash;
 pub mod codec;
 pub mod pbc;

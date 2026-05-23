@@ -19,6 +19,7 @@
 use bitcoin::hashes::{ripemd160, sha256, Hash};
 use brk_reader::Reader;
 use brk_rpc::{Auth, Client};
+use pir_core::seeds::{ChainAnchor, DeltaAnchor};
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
@@ -76,18 +77,62 @@ struct ScriptDelta {
     new_utxos: Vec<NewUtxo>,
 }
 
+/// Parse a 32-byte hex string into a block hash (32 bytes, network byte order).
+fn parse_block_hash(hex: &str) -> Result<[u8; 32], String> {
+    if hex.len() != 64 {
+        return Err(format!("expected 64 hex chars, got {}", hex.len()));
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| format!("invalid hex at byte {}: {}", i, e))?;
+    }
+    Ok(out)
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 5 {
-        eprintln!("Usage: {} <dumptxoutset_file> <bitcoin_datadir> <start_height> <end_height>", args[0]);
-        eprintln!("Example: {} /path/to/utxo.dat /Volumes/Bitcoin/bitcoin 938612 940612", args[0]);
+
+    // Required positional args + optional --to-block-hash <hex> for the
+    // chain-derived delta anchor.
+    let mut positional: Vec<&str> = Vec::new();
+    let mut to_block_hash_hex: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--to-block-hash" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --to-block-hash requires a 64-char hex argument");
+                    std::process::exit(2);
+                }
+                to_block_hash_hex = Some(args[i].clone());
+            }
+            other => positional.push(other),
+        }
+        i += 1;
+    }
+
+    if positional.len() != 4 {
+        eprintln!(
+            "Usage: {} <dumptxoutset_file> <bitcoin_datadir> <start_height> <end_height> [--to-block-hash <hex>]",
+            args[0]
+        );
+        eprintln!(
+            "Example: {} /path/to/utxo.dat /Volumes/Bitcoin/bitcoin 938612 940612 --to-block-hash $(bitcoin-cli getblockhash 940612)",
+            args[0]
+        );
+        eprintln!();
+        eprintln!("With --to-block-hash, also writes delta_anchor_<A>_<B>.bin (72 bytes:");
+        eprintln!("from-anchor || to-anchor) used by build_cuckoo_generic to derive chain-anchored");
+        eprintln!("PRG seeds. See docs/BUILD_REPRODUCIBILITY.md.");
         std::process::exit(1);
     }
 
-    let snapshot_path = PathBuf::from(&args[1]);
-    let bitcoin_dir = PathBuf::from(&args[2]);
-    let start_height: u64 = args[3].parse().expect("start_height must be a number");
-    let end_height: u64 = args[4].parse().expect("end_height must be a number");
+    let snapshot_path = PathBuf::from(positional[0]);
+    let bitcoin_dir = PathBuf::from(positional[1]);
+    let start_height: u64 = positional[2].parse().expect("start_height must be a number");
+    let end_height: u64 = positional[3].parse().expect("end_height must be a number");
 
     assert!(start_height < end_height, "start_height must be < end_height");
 
@@ -104,6 +149,8 @@ fn main() {
 
     let dump = Dump::new(&snapshot_path, txoutset::ComputeAddresses::No)
         .expect("Failed to open UTXO snapshot");
+    // Capture before iteration consumes `dump`.
+    let snapshot_block_hash: [u8; 32] = dump.block_hash.to_byte_array();
     println!("    Block hash: {}", dump.block_hash);
     println!("    UTXO set size: {}", dump.utxo_set_size);
 
@@ -303,6 +350,39 @@ fn main() {
 
     let file_size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
     println!("    Written: {} scripthashes, {:.2} MB", num_scripts, file_size as f64 / 1e6);
+
+    // ── Step 4: Write delta_anchor.bin for chain-derived seeds ──────────────
+    //
+    // Skipped if the operator didn't supply --to-block-hash. The
+    // downstream cuckoo builders fall back to legacy hardcoded seeds in
+    // that case (with a warning).
+    if let Some(hex) = to_block_hash_hex {
+        let to_hash = parse_block_hash(&hex).unwrap_or_else(|e| {
+            eprintln!("error: invalid --to-block-hash: {}", e);
+            std::process::exit(2);
+        });
+        let from = ChainAnchor {
+            block_hash: snapshot_block_hash,
+            block_height: start_height as u32,
+        };
+        let to = ChainAnchor {
+            block_hash: to_hash,
+            block_height: end_height as u32,
+        };
+        let anchor = DeltaAnchor { from, to };
+        let anchor_path = format!(
+            "{}/delta_anchor_{}_{}.bin",
+            OUTPUT_DIR, start_height, end_height
+        );
+        anchor
+            .save(std::path::Path::new(&anchor_path))
+            .expect("write delta_anchor");
+        println!("    Wrote delta anchor: {}", anchor_path);
+    } else {
+        eprintln!("    WARNING: --to-block-hash not supplied — delta_anchor_<A>_<B>.bin NOT written.");
+        eprintln!("    Downstream cuckoo builders will fall back to legacy hardcoded seeds.");
+    }
+
     println!();
     println!("Done. Total time: {}", format_duration(t.elapsed().as_secs_f64()));
 }

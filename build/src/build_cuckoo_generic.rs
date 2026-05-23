@@ -13,44 +13,152 @@
 //!   Reads chunks data + index file, builds K=80 cuckoo tables with inlined data.
 
 use memmap2::Mmap;
-use pir_core::cuckoo;
+use pir_core::cuckoo::{self, HeaderAnchor};
 use pir_core::hash;
 use pir_core::params::*;
+use pir_core::seeds::{ChainAnchor, DeltaAnchor, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES, SnapshotSeeds, DeltaSeeds};
 use rayon::prelude::*;
 use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-const TAG_SEED: u64 = 0xd4e5f6a7b8c91023;
+/// Legacy fallback seeds, used only when no --anchor is supplied.
+///
+/// These match the hardcoded values from pre-chain-derivation builds.
+/// New builds should always pass --anchor pointing at chain_anchor.bin
+/// (snapshot) or delta_anchor.bin (delta) so seeds are reproducible.
+mod legacy {
+    pub const INDEX_MASTER: u64 = 0x71a2ef38b4c90d15;
+    pub const CHUNK_MASTER: u64 = 0xa3f7c2d918e4b065;
+    pub const TAG_SEED: u64 = 0xd4e5f6a7b8c91023;
+}
+
+struct ResolvedAnchor {
+    /// Anchor to embed in the v2 cuckoo file header (Phase C). `None`
+    /// means the legacy MAGIC + hardcoded seeds path is used and the
+    /// output is byte-identical to a pre-Phase-C build.
+    anchor: Option<HeaderAnchor>,
+    index_master: u64,
+    chunk_master: u64,
+    index_tag: u64,
+}
+
+fn resolve_seeds(anchor_path: Option<&PathBuf>) -> ResolvedAnchor {
+    match anchor_path {
+        Some(path) => {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| {
+                eprintln!("error: failed to read anchor {}: {}", path.display(), e);
+                std::process::exit(1);
+            });
+            match bytes.len() {
+                CHAIN_ANCHOR_BYTES => {
+                    let a = ChainAnchor::from_bytes(&bytes).unwrap_or_else(|e| {
+                        eprintln!("error: bad ChainAnchor {}: {}", path.display(), e);
+                        std::process::exit(1);
+                    });
+                    let s = SnapshotSeeds::derive(&a);
+                    println!("Anchor: {} (snapshot, height={})", path.display(), a.block_height);
+                    ResolvedAnchor {
+                        anchor: Some(HeaderAnchor::Snapshot(a)),
+                        index_master: s.index_master,
+                        chunk_master: s.chunk_master,
+                        index_tag: s.index_tag,
+                    }
+                }
+                DELTA_ANCHOR_BYTES => {
+                    let a = DeltaAnchor::from_bytes(&bytes).unwrap_or_else(|e| {
+                        eprintln!("error: bad DeltaAnchor {}: {}", path.display(), e);
+                        std::process::exit(1);
+                    });
+                    let s = DeltaSeeds::derive(&a);
+                    println!("Anchor: {} (delta, {}→{})", path.display(),
+                        a.from.block_height, a.to.block_height);
+                    ResolvedAnchor {
+                        anchor: Some(HeaderAnchor::Delta(a)),
+                        index_master: s.index_master,
+                        chunk_master: s.chunk_master,
+                        index_tag: s.index_tag,
+                    }
+                }
+                n => {
+                    eprintln!("error: anchor {} has unknown size {} (expected {} or {})",
+                        path.display(), n, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES);
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => {
+            eprintln!("WARNING: --anchor not supplied; using LEGACY hardcoded seeds.");
+            eprintln!("         Output is NOT reproducible against peers without coordination.");
+            ResolvedAnchor {
+                anchor: None,
+                index_master: legacy::INDEX_MASTER,
+                chunk_master: legacy::CHUNK_MASTER,
+                index_tag: legacy::TAG_SEED,
+            }
+        }
+    }
+}
+
+fn print_usage(prog: &str) {
+    eprintln!("Usage:");
+    eprintln!("  {} index <index_file> <output_file> [--anchor <anchor.bin>]", prog);
+    eprintln!("  {} chunk <chunks_file> <index_file> <output_file> [--anchor <anchor.bin>]", prog);
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage:");
-        eprintln!("  {} index <index_file> <output_file>", args[0]);
-        eprintln!("  {} chunk <chunks_file> <index_file> <output_file>", args[0]);
+        print_usage(&args[0]);
         std::process::exit(1);
     }
 
-    match args[1].as_str() {
+    // Parse --anchor first, then collect positional args.
+    let mut positional: Vec<String> = Vec::new();
+    let mut anchor: Option<PathBuf> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--anchor" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --anchor requires a path argument");
+                    std::process::exit(2);
+                }
+                anchor = Some(PathBuf::from(&args[i]));
+            }
+            other => positional.push(other.to_string()),
+        }
+        i += 1;
+    }
+
+    if positional.is_empty() {
+        print_usage(&args[0]);
+        std::process::exit(1);
+    }
+
+    let seeds = resolve_seeds(anchor.as_ref());
+
+    match positional[0].as_str() {
         "index" => {
-            if args.len() != 4 {
-                eprintln!("Usage: {} index <index_file> <output_file>", args[0]);
+            if positional.len() != 3 {
+                eprintln!("Usage: {} index <index_file> <output_file> [--anchor <path>]", args[0]);
                 std::process::exit(1);
             }
-            build_index_cuckoo(&args[2], &args[3]);
+            build_index_cuckoo(&positional[1], &positional[2], &seeds);
         }
         "chunk" => {
-            if args.len() != 5 {
-                eprintln!("Usage: {} chunk <chunks_file> <index_file> <output_file>", args[0]);
+            if positional.len() != 4 {
+                eprintln!("Usage: {} chunk <chunks_file> <index_file> <output_file> [--anchor <path>]", args[0]);
                 std::process::exit(1);
             }
-            build_chunk_cuckoo(&args[2], &args[3], &args[4]);
+            build_chunk_cuckoo(&positional[1], &positional[2], &positional[3], &seeds);
         }
         _ => {
-            eprintln!("Unknown mode: {}. Use 'index' or 'chunk'.", args[1]);
+            eprintln!("Unknown mode: {}. Use 'index' or 'chunk'.", positional[0]);
             std::process::exit(1);
         }
     }
@@ -58,14 +166,17 @@ fn main() {
 
 // ─── INDEX-level cuckoo builder ─────────────────────────────────────────────
 
-fn build_index_cuckoo(index_file: &str, output_file: &str) {
-    let params = &INDEX_PARAMS;
+fn build_index_cuckoo(index_file: &str, output_file: &str, seeds: &ResolvedAnchor) {
+    let params = INDEX_PARAMS.with_master_seed(seeds.index_master);
+    let params = &params;
+    let tag_seed = seeds.index_tag;
 
     println!("=== Generic Index Cuckoo Builder ===");
     println!("Input:  {}", index_file);
     println!("Output: {}", output_file);
     println!("K={}, slots_per_bin={}, slot_size={}, num_hashes={}",
         params.k, params.slots_per_bin, params.slot_size, params.num_hashes);
+    println!("master_seed=0x{:016x}, tag_seed=0x{:016x}", params.master_seed, tag_seed);
     println!();
 
     // Memory-map input
@@ -124,7 +235,7 @@ fn build_index_cuckoo(index_file: &str, output_file: &str) {
     println!("[4] Serializing to {}...", output_file);
     let t = Instant::now();
 
-    let header = cuckoo::write_header(params, bins_per_table, TAG_SEED);
+    let header = cuckoo::write_header_with_anchor(params, bins_per_table, tag_seed, seeds.anchor.as_ref());
     let f = File::create(output_file).expect("create output file");
     let mut w = BufWriter::with_capacity(16 * 1024 * 1024, f);
     w.write_all(&header).unwrap();
@@ -143,7 +254,7 @@ fn build_index_cuckoo(index_file: &str, output_file: &str) {
                 let script_hash = &mmap[offset..offset + SCRIPT_HASH_SIZE];
 
                 // Write tagged entry: [8B tag][4B start_chunk_id][1B num_chunks]
-                let tag = hash::compute_tag(TAG_SEED, script_hash);
+                let tag = hash::compute_tag(tag_seed, script_hash);
                 w.write_all(&tag.to_le_bytes()).unwrap();
                 // start_chunk_id (4B) + num_chunks (1B)
                 w.write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_RECORD_SIZE]).unwrap();
@@ -160,14 +271,17 @@ fn build_index_cuckoo(index_file: &str, output_file: &str) {
 
 // ─── CHUNK-level cuckoo builder ─────────────────────────────────────────────
 
-fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str) {
-    let params = &CHUNK_PARAMS;
+fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str, seeds: &ResolvedAnchor) {
+    let _ = index_file; // referenced by the binary's CLI but currently unused here
+    let params = CHUNK_PARAMS.with_master_seed(seeds.chunk_master);
+    let params = &params;
 
     println!("=== Generic Chunk Cuckoo Builder ===");
     println!("Chunks: {}", chunks_file);
     println!("Index:  {}", index_file);
     println!("Output: {}", output_file);
     println!("K={}, slots_per_bin={}, num_hashes={}", params.k, params.slots_per_bin, params.num_hashes);
+    println!("master_seed=0x{:016x}", params.master_seed);
     println!();
 
     // Memory-map chunks data
@@ -219,7 +333,7 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str) {
     println!("[4] Serializing to {}...", output_file);
     let t = Instant::now();
 
-    let header = cuckoo::write_header(params, bins_per_table, 0);
+    let header = cuckoo::write_header_with_anchor(params, bins_per_table, 0, seeds.anchor.as_ref());
     let f = File::create(output_file).expect("create output file");
     let mut w = BufWriter::with_capacity(16 * 1024 * 1024, f);
     w.write_all(&header).unwrap();

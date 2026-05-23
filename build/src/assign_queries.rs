@@ -51,7 +51,7 @@ fn main() {
         eprintln!("Failed to read cuckoo file: {}", e);
         std::process::exit(1);
     });
-    let (bins_per_table, _tag_seed) = read_cuckoo_header(&cuckoo_data);
+    let (bins_per_table, master_seed, _tag_seed) = read_cuckoo_header_full(&cuckoo_data);
     println!("  bins_per_table = {}", bins_per_table);
     println!();
 
@@ -121,8 +121,8 @@ fn main() {
         let assigned_group = assignment[i];
 
         // Compute the two cuckoo bin locations within this group's table
-        let key0 = derive_cuckoo_key(assigned_group, 0);
-        let key1 = derive_cuckoo_key(assigned_group, 1);
+        let key0 = pir_core::hash::derive_cuckoo_key(master_seed, assigned_group, 0);
+        let key1 = pir_core::hash::derive_cuckoo_key(master_seed, assigned_group, 1);
         let loc0 = cuckoo_hash(sh, key0, bins_per_table);
         let loc1 = cuckoo_hash(sh, key1, bins_per_table);
 
