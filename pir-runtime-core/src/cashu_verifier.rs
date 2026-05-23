@@ -228,6 +228,10 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `ProjectivePoint::is_identity` comes from the `group::Group` trait
+    // (the non-test code at L197 calls it on an `AffinePoint`, covered by
+    // the already-imported `PrimeCurveAffine`).
+    use k256::elliptic_curve::Group;
 
     #[test]
     fn test_hash_to_curve_round_trip() {

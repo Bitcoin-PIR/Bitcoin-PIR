@@ -1926,6 +1926,90 @@ mod attest_wire_tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
+    fn sample_entry(db_id: u8, anchor: Option<pir_core::cuckoo::HeaderAnchor>) -> DatabaseCatalogEntry {
+        DatabaseCatalogEntry {
+            db_id,
+            db_type: 0,
+            name: format!("db{}", db_id),
+            base_height: 0,
+            height: 850_000,
+            index_bins_per_table: 1000,
+            chunk_bins_per_table: 2000,
+            index_k: 75,
+            chunk_k: 80,
+            tag_seed: 0xAABB_CCDD_EEFF_0011,
+            dpf_n_index: 20,
+            dpf_n_chunk: 21,
+            has_bucket_merkle: true,
+            index_master_seed: 0x1111_2222_3333_4444,
+            chunk_master_seed: 0x5555_6666_7777_8888,
+            anchor,
+        }
+    }
+
+    #[test]
+    fn db_catalog_ext_roundtrip_mixed_snapshot_and_legacy() {
+        use pir_core::cuckoo::HeaderAnchor;
+        use pir_core::seeds::ChainAnchor;
+        let snap = HeaderAnchor::Snapshot(ChainAnchor { block_hash: [0x42; 32], block_height: 850_000 });
+        let cat = DatabaseCatalog {
+            databases: vec![sample_entry(0, Some(snap)), sample_entry(1, None)],
+        };
+        let mut buf = Vec::new();
+        encode_db_catalog(&mut buf, &cat);
+        let decoded = decode_db_catalog(&buf).unwrap();
+        assert_eq!(decoded.databases.len(), 2);
+        // Anchored entry: seeds + anchor survive.
+        assert_eq!(decoded.databases[0].index_master_seed, 0x1111_2222_3333_4444);
+        assert_eq!(decoded.databases[0].chunk_master_seed, 0x5555_6666_7777_8888);
+        assert_eq!(decoded.databases[0].anchor, Some(snap));
+        // Legacy-anchor entry: seeds survive, anchor is None.
+        assert_eq!(decoded.databases[1].index_master_seed, 0x1111_2222_3333_4444);
+        assert_eq!(decoded.databases[1].anchor, None);
+    }
+
+    #[test]
+    fn db_catalog_without_ext_decodes_with_defaults() {
+        // A pre-ext server stops after the entries; the decoder must
+        // tolerate the absence and default the seeds/anchor.
+        let mut buf = Vec::new();
+        encode_db_catalog(&mut buf, &DatabaseCatalog { databases: vec![sample_entry(0, None)] });
+        // Truncate the trailing ext section (everything from CATALOG_EXT_V1 on).
+        // The legacy entry is fixed-shape: 1 num + (1+1+1+name + 28 + 1).
+        let name_len = 3; // "db0"
+        let legacy_len = 1 + (1 + 1 + 1 + name_len + 4 + 4 + 4 + 4 + 1 + 1 + 8 + 1 + 1 + 1);
+        let decoded = decode_db_catalog(&buf[..legacy_len]).unwrap();
+        assert_eq!(decoded.databases.len(), 1);
+        assert_eq!(decoded.databases[0].index_master_seed, 0);
+        assert_eq!(decoded.databases[0].anchor, None);
+    }
+
+    #[test]
+    fn server_info_v2_roundtrip() {
+        use pir_core::cuckoo::HeaderAnchor;
+        use pir_core::seeds::ChainAnchor;
+        let info = ServerInfo {
+            index_bins_per_table: 100,
+            chunk_bins_per_table: 200,
+            index_k: 75,
+            chunk_k: 80,
+            tag_seed: 0xCAFE_F00D,
+            index_master_seed: 0x0123_4567_89AB_CDEF,
+            chunk_master_seed: 0xFEDC_BA98_7654_3210,
+            anchor: Some(HeaderAnchor::Snapshot(ChainAnchor { block_hash: [7; 32], block_height: 42 })),
+        };
+        let encoded = Response::Info(info.clone()).encode();
+        match Response::decode(&encoded[4..]).unwrap() {
+            Response::Info(d) => {
+                assert_eq!(d.index_master_seed, info.index_master_seed);
+                assert_eq!(d.chunk_master_seed, info.chunk_master_seed);
+                assert_eq!(d.anchor, info.anchor);
+                assert_eq!(d.tag_seed, info.tag_seed);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
     #[test]
     fn attest_response_roundtrip_with_sev_report() {
         let r = AttestResult {
