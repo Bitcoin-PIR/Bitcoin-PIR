@@ -567,7 +567,6 @@ export class HarmonyPirClientAdapter {
     return (
       this.getBucketMerkleForDb(this.dbId)?.super_root
       ?? this.serverInfo?.merkle_bucket?.super_root
-      ?? this.serverInfo?.merkle?.root
     );
   }
 

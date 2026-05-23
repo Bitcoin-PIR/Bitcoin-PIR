@@ -17,7 +17,7 @@ describe('parseServerInfoJson', () => {
     role: 'primary',
   });
 
-  it('parses minimal JSON (no onionpir, no merkle)', () => {
+  it('parses minimal JSON (no onionpir)', () => {
     const info = parseServerInfoJson(MINIMAL_JSON);
     expect(info.index_bins_per_table).toBe(1048576);
     expect(info.chunk_bins_per_table).toBe(2097152);
@@ -32,7 +32,6 @@ describe('parseServerInfoJson', () => {
     expect(info.chunk_slot_size).toBe(44);
     expect(info.role).toBe('primary');
     expect(info.onionpir).toBeUndefined();
-    expect(info.merkle).toBeUndefined();
   });
 
   it('parses tag_seed as bigint from hex string', () => {
@@ -67,19 +66,6 @@ describe('parseServerInfoJson', () => {
         chunk_slots_per_bin: 1,
         chunk_slot_size: 3840,
       },
-      merkle: {
-        arity: 8,
-        sibling_levels: 4,
-        sibling_k: 75,
-        sibling_slots_per_bin: 4,
-        sibling_slot_size: 260,
-        levels: [
-          { dpf_n: 18, bins_per_table: 200000 },
-        ],
-        root: 'abcd1234',
-        tree_top_hash: 'ef567890',
-        tree_top_size: 1024,
-      },
     });
 
     const info = parseServerInfoJson(full);
@@ -95,9 +81,6 @@ describe('parseServerInfoJson', () => {
     expect(info.onionpir!.index_slot_size).toBe(15);
     expect(info.onionpir!.chunk_slots_per_bin).toBe(1);
     expect(info.onionpir!.chunk_slot_size).toBe(3840);
-    expect(info.merkle).toBeDefined();
-    expect(info.merkle!.arity).toBe(8);
-    expect(info.merkle!.root).toBe('abcd1234');
   });
 
   it('parses secondary role', () => {

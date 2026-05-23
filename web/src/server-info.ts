@@ -44,7 +44,6 @@ export interface ServerInfoJson {
   chunk_slot_size: number;
   role: 'primary' | 'secondary';
   onionpir?: OnionPirInfoJson;
-  merkle?: MerkleInfoJson;
   merkle_bucket?: BucketMerkleInfoJson;
   onionpir_merkle?: OnionPirMerkleInfoJson;
   /** Per-database info (Merkle availability). Present when server has >1 DB or any DB has bucket Merkle. */
@@ -66,22 +65,9 @@ export interface PerDatabaseInfoJson {
   onionpir_merkle?: OnionPirMerkleInfoJson;
 }
 
-export interface MerkleLevelInfo {
-  dpf_n: number;
-  bins_per_table: number;
-}
-
-export interface MerkleInfoJson {
-  arity: number;
-  sibling_levels: number;
-  sibling_k: number;
-  sibling_slots_per_bin: number;
-  sibling_slot_size: number;
-  levels: MerkleLevelInfo[];
-  root: string;             // hex (32 bytes)
-  tree_top_hash: string;   // SHA256 of tree-top cache blob (hex, 32 bytes)
-  tree_top_size: number;   // byte size of tree-top cache
-}
+// (The legacy global N-ary tree Merkle info — `MerkleInfoJson` / the
+// `merkle` field — was removed: the server no longer emits a `"merkle"`
+// section. Per-bucket bin Merkle below is the active scheme.)
 
 // ─── Per-bucket bin Merkle info ──────────────────────────────────────────
 
@@ -231,20 +217,6 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
 
   if (raw.onionpir_merkle && typeof raw.onionpir_merkle === 'object') {
     info.onionpir_merkle = parseOnionPirMerkle(raw.onionpir_merkle);
-  }
-
-  if (raw.merkle && typeof raw.merkle === 'object') {
-    info.merkle = {
-      arity: raw.merkle.arity,
-      sibling_levels: raw.merkle.sibling_levels,
-      sibling_k: raw.merkle.sibling_k,
-      sibling_slots_per_bin: raw.merkle.sibling_slots_per_bin,
-      sibling_slot_size: raw.merkle.sibling_slot_size,
-      levels: raw.merkle.levels,
-      root: raw.merkle.root ?? '',
-      tree_top_hash: raw.merkle.tree_top_hash ?? '',
-      tree_top_size: raw.merkle.tree_top_size ?? 0,
-    };
   }
 
   if (raw.merkle_bucket && typeof raw.merkle_bucket === 'object') {

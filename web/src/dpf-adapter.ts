@@ -350,7 +350,7 @@ export class BatchPirClientAdapter {
   }
 
   getMerkleRootHex(): string | undefined {
-    return this.serverInfo?.merkle_bucket?.super_root ?? this.serverInfo?.merkle?.root;
+    return this.serverInfo?.merkle_bucket?.super_root;
   }
 
   getMerkleRootHexForDb(dbId: number): string | undefined {
