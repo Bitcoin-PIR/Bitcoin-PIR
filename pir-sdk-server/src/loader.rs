@@ -41,6 +41,16 @@ impl DatabaseLoader {
 
         let mapped = MappedDatabase::load(&entry.path, descriptor);
 
+        // Chain anchor (Phase C): mirror the catalog wire convention —
+        // kind 0 = none, 1 = snapshot (36B ChainAnchor), 2 = delta (72B
+        // DeltaAnchor). The INDEX cuckoo header carries the authoritative
+        // anchor; MappedDatabase::load already cross-checks it against CHUNK.
+        let (anchor_kind, anchor_bytes) = match mapped.index.anchor {
+            None => (0u8, Vec::new()),
+            Some(pir_core::cuckoo::HeaderAnchor::Snapshot(c)) => (1u8, c.to_bytes().to_vec()),
+            Some(pir_core::cuckoo::HeaderAnchor::Delta(d)) => (2u8, d.to_bytes().to_vec()),
+        };
+
         // Build catalog entry
         let info = DatabaseInfo {
             db_id,
@@ -55,6 +65,12 @@ impl DatabaseLoader {
             dpf_n_index: pir_core::params::compute_dpf_n(mapped.index.bins_per_table),
             dpf_n_chunk: pir_core::params::compute_dpf_n(mapped.chunk.bins_per_table),
             has_bucket_merkle: mapped.has_bucket_merkle(),
+            // Chain-derived cuckoo master seeds delivered to clients so they
+            // can reproduce placement + verify against the anchor.
+            index_master_seed: mapped.index.master_seed,
+            chunk_master_seed: mapped.chunk.master_seed,
+            anchor_kind,
+            anchor_bytes,
         };
 
         self.databases.push(mapped);
