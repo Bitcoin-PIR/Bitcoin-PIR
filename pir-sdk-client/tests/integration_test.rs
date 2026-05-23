@@ -430,6 +430,10 @@ fn make_test_catalog() -> DatabaseCatalog {
                 dpf_n_index: 17,
                 dpf_n_chunk: 18,
                 has_bucket_merkle: false,
+                index_master_seed: 0,
+                chunk_master_seed: 0,
+                anchor_kind: 0,
+                anchor_bytes: Vec::new(),
             },
             DatabaseInfo {
                 db_id: 1,
@@ -444,6 +448,10 @@ fn make_test_catalog() -> DatabaseCatalog {
                 dpf_n_index: 14,
                 dpf_n_chunk: 15,
                 has_bucket_merkle: false,
+                index_master_seed: 0,
+                chunk_master_seed: 0,
+                anchor_kind: 0,
+                anchor_bytes: Vec::new(),
             },
             DatabaseInfo {
                 db_id: 2,
@@ -458,6 +466,10 @@ fn make_test_catalog() -> DatabaseCatalog {
                 dpf_n_index: 14,
                 dpf_n_chunk: 15,
                 has_bucket_merkle: false,
+                index_master_seed: 0,
+                chunk_master_seed: 0,
+                anchor_kind: 0,
+                anchor_bytes: Vec::new(),
             },
         ],
     }
