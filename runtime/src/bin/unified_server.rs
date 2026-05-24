@@ -435,18 +435,36 @@ struct OnionChunkHeader {
     /// CHUNK cuckoo master seed (chain-derived for v2 DBs). Layout:
     /// magic(8) k_chunk(4) cuckoo_hashes(4) bins(4) master_seed(8) ...
     master_seed: u64,
+    /// Byte offset where the per-group bin→entry-id tables begin. For a
+    /// v2 (chain-anchored) file the anchor is written BETWEEN the 36-byte
+    /// header and the tables (same convention as the DPF cuckoo files),
+    /// so the tables shift by the anchor length. The table reader MUST use
+    /// this — a hardcoded 36 reads the anchor bytes as entry-ids, which
+    /// then index out-of-bounds into the NTT store and segfault the query.
+    data_offset: usize,
 }
+
+/// Legacy onion chunk-cuckoo header size (before any v2 anchor).
+const ONION_CHUNK_HEADER_BYTES: usize = 36;
 
 fn read_onion_chunk_header(data: &[u8]) -> OnionChunkHeader {
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    // Accept legacy and v2 (anchor appended at offset ≥ 40); skip the
-    // trailing anchor bytes — verification is a follow-up.
     let _ = check_onion_magic(magic, ONION_CHUNK_MAGIC, "onion chunk cuckoo");
+    // The v2 anchor (if any) sits between the legacy header and the
+    // per-group tables — so the table data offset must skip it too.
+    let anchor_len = if magic == ONION_CHUNK_MAGIC ^ ONION_MAGIC_SNAPSHOT_XOR {
+        pir_core::seeds::CHAIN_ANCHOR_BYTES
+    } else if magic == ONION_CHUNK_MAGIC ^ ONION_MAGIC_DELTA_XOR {
+        pir_core::seeds::DELTA_ANCHOR_BYTES
+    } else {
+        0
+    };
     OnionChunkHeader {
         k_chunk: u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize,
         bins_per_table: u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize,
         master_seed: u64::from_le_bytes(data[20..28].try_into().unwrap()),
         num_packed_entries: u32::from_le_bytes(data[28..32].try_into().unwrap()) as usize,
+        data_offset: ONION_CHUNK_HEADER_BYTES + anchor_len,
     }
 }
 
@@ -1823,8 +1841,11 @@ async fn main() {
                 chunk_master_seed: ch.master_seed,
             });
 
-            // Parse chunk cuckoo tables
-            let header_size = 36;
+            // Parse chunk cuckoo tables. ch.data_offset accounts for the v2
+            // chain-anchor that sits between the header and the tables —
+            // hardcoding 36 here read the anchor bytes as entry-ids and
+            // segfaulted the onion query path (see OnionChunkHeader).
+            let header_size = ch.data_offset;
             let mut chunk_tables: Vec<Vec<u32>> = Vec::with_capacity(ch.k_chunk);
             for g in 0..ch.k_chunk {
                 let offset = header_size + g * ch.bins_per_table * 4;
