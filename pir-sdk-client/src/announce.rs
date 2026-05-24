@@ -165,7 +165,25 @@ pub async fn announce<T: PirTransport + ?Sized>(
 ) -> PirResult<AnnounceVerification> {
     let request = encode_request(REQ_ANNOUNCE, &[]);
     let response = transport.roundtrip(&request).await?;
+    parse_announce_response(&response)
+}
 
+/// Parse a raw RESP_ANNOUNCE wire payload (the response frame starting
+/// at the variant byte) into an [`AnnounceVerification`], running the
+/// in-bundle chain check. Operator-pubkey pinning
+/// ([`AnnounceVerification::check_pinned_operator`]) and channel binding
+/// ([`AnnounceVerification::check_channel_binding`]) are SEPARATE steps.
+///
+/// This is the synchronous core of [`announce`] (which is just a
+/// `roundtrip` + this). It's exposed so transports that aren't a
+/// [`PirTransport`] — e.g. the standalone TS `OnionPirWebClient`, via
+/// the WASM `verifyAnnounceResponse` binding — can reuse the exact same
+/// parsing + chain verification instead of reimplementing it.
+///
+/// A `RESP_ERROR` envelope surfaces as [`PirError::ServerError`] (e.g.
+/// "announce not configured"); a wire-format violation as
+/// [`PirError::Protocol`].
+pub fn parse_announce_response(response: &[u8]) -> PirResult<AnnounceVerification> {
     if response.is_empty() {
         return Err(PirError::Protocol("empty announce response".into()));
     }
@@ -613,5 +631,35 @@ mod tests {
             PirError::Protocol(m) => assert!(m.contains("does not match pinned operator")),
             other => panic!("expected Protocol(operator mismatch), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_announce_response_ok_runs_chain_check() {
+        // The synchronous core used by the WASM `verifyAnnounceResponse`
+        // binding (and thus the standalone TS OnionPirWebClient).
+        let wire = build_resp_announce(&build_bundle());
+        let v = parse_announce_response(&wire).expect("parse ok");
+        assert!(v.chain_verified);
+        assert_eq!(v.bundle.cert.server_id, "pir1");
+    }
+
+    #[test]
+    fn parse_announce_response_error_envelope_is_server_error() {
+        let mut reply = vec![RESP_ERROR];
+        let msg = b"announce not configured";
+        reply.extend_from_slice(&(msg.len() as u32).to_le_bytes());
+        reply.extend_from_slice(msg);
+        match parse_announce_response(&reply).unwrap_err() {
+            PirError::ServerError(m) => assert!(m.contains("not configured")),
+            other => panic!("expected ServerError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_announce_response_empty_is_protocol_error() {
+        assert!(matches!(
+            parse_announce_response(&[]).unwrap_err(),
+            PirError::Protocol(_)
+        ));
     }
 }

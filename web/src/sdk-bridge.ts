@@ -70,6 +70,19 @@ interface PirSdkWasm {
    * at module load (catches drift if the two ever diverge).
    */
   turinArkFingerprint(): Uint8Array;
+  /**
+   * Parse + verify a raw RESP_ANNOUNCE wire payload (the response frame
+   * starting at the variant byte) into a `WasmAnnounceVerification`,
+   * running the in-bundle chain check. Throws on a wire-format violation
+   * or a server `RESP_ERROR` envelope (e.g. "announce not configured").
+   *
+   * For transports that don't go through `WasmDpfClient` — the
+   * standalone `OnionPirWebClient` does its own REQ_ANNOUNCE round-trip
+   * and hands the response bytes here, reusing the exact Rust parsing +
+   * chain verification. Mirrors
+   * `pir_sdk_client::announce::parse_announce_response`.
+   */
+  verifyAnnounceResponse(respPayload: Uint8Array): WasmAnnounceVerification;
   // ARC (Anonymous Rate-limited Credentials) presentation state. Opaque
   // wrapper over the Rust `arc::PresentationState`; mirrored in TS by
   // `web/src/credential-manager.ts::ArcCredentialManager`. The constructor

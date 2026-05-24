@@ -261,9 +261,11 @@ await adapter.connect();
   returns "not configured").
 - ✅ `BatchPirClientAdapter` exposes a gated `operatorIdentity` snapshot
   (opt-in via `verifyOperatorIdentity`); `gateOperatorIdentity` unit-tested.
+- ✅ Standalone TS `OnionPirWebClient.announce()` — reuses the Rust
+  parser/chain check via the WASM `verifyAnnounceResponse` binding
+  (operator-pin + chain; channel-binding N/A — no attest/channel there).
 - ⏳ Playground still needs to render the badge from the snapshot;
-  `issued_at` freshness policy not enforced; standalone TS
-  `OnionPirWebClient` has no `announce()`.
+  `issued_at` freshness policy not enforced.
 
 ### Remaining work
 
@@ -274,5 +276,4 @@ await adapter.connect();
   `adapter.operatorIdentity.serverN.state` / `onOperatorIdentity`. The
   gating already lives in the adapter; the badge is the only remaining
   piece, in the playground repo.
-- **E** — add `announce()` to the standalone TS `OnionPirWebClient`.
 - **F** — enforce `valid_until` / `issued_at` freshness policy in clients.

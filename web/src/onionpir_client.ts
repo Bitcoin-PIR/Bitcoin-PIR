@@ -28,6 +28,7 @@ import { unpackOnionPlaintext } from './onion-unpack.js';
 import { findEntryInOnionPirIndexResult } from './scan.js';
 import { ManagedWebSocket } from './ws.js';
 import { fetchServerInfoJson } from './server-info.js';
+import { requireSdkWasm, type WasmAnnounceVerification } from './sdk-bridge.js';
 import { computeParentN, ZERO_HASH } from './merkle.js';
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './types.js';
@@ -62,6 +63,9 @@ const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
 // Protocol constants still used for OnionPIR-specific requests
 // (Ping/pong/info handled by ManagedWebSocket + fetchServerInfoJson)
+
+// Operator-signed identity (shared across all backends; 0x07).
+const REQ_ANNOUNCE              = 0x07;
 
 // NOTE: moved from 0x30-0x32 to 0x50-0x52 to avoid collision with
 // REQ_MERKLE_SIBLING_BATCH (0x31) and REQ_MERKLE_TREE_TOP (0x32).
@@ -950,6 +954,37 @@ export class OnionPirWebClient {
   private sendRaw(msg: Uint8Array): Promise<Uint8Array> {
     if (!this.ws) throw new Error('Not connected');
     return this.ws.sendRaw(msg);
+  }
+
+  // ─── Operator-signed identity (REQ_ANNOUNCE) ──────────────────────────
+
+  /**
+   * Fetch + verify this server's operator-signed identity bundle.
+   * Reuses the audited Rust parsing + in-bundle chain check via the WASM
+   * `verifyAnnounceResponse` binding (SEAL doesn't compile to wasm32, but
+   * Ed25519 verification does). Layer operator-pubkey pinning on the
+   * result with `v.checkPinnedOperator(pinnedOperatorPubkey, nowSecs)`.
+   *
+   * NOTE: this standalone client has no attest / encrypted-channel flow,
+   * so there is no attested `serverStaticPub` to bind against —
+   * `checkChannelBinding` is N/A here. The operator endorsement + chain
+   * check still apply (the connection itself is cleartext, so treat the
+   * result as operator provenance, not session binding).
+   *
+   * Throws on a server `RESP_ERROR` (e.g. "announce not configured" when
+   * the server lacks `--identity-*`) or a wire-format error.
+   */
+  async announce(): Promise<WasmAnnounceVerification> {
+    if (!this.ws) throw new Error('Not connected');
+    // REQ_ANNOUNCE (0x07), empty body. Frame: [u32 LE payloadLen=1][opcode].
+    const msg = new Uint8Array(5);
+    new DataView(msg.buffer).setUint32(0, 1, true);
+    msg[4] = REQ_ANNOUNCE;
+    // sendRaw resolves with the response payload (variant byte first,
+    // outer length already stripped) — exactly the shape
+    // verifyAnnounceResponse expects.
+    const resp = await this.sendRaw(msg);
+    return requireSdkWasm().verifyAnnounceResponse(resp);
   }
 
   // ─── Server info (delegates to shared server-info.ts) ──────────────────

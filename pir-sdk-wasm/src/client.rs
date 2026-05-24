@@ -918,6 +918,27 @@ impl WasmAnnounceVerification {
     }
 }
 
+/// Parse + verify a raw RESP_ANNOUNCE wire payload (the response frame
+/// starting at the variant byte) into a [`WasmAnnounceVerification`],
+/// running the in-bundle chain check. Throws on a wire-format violation
+/// or a server `RESP_ERROR` envelope (e.g. "announce not configured").
+///
+/// This is for transports that don't go through `WasmDpfClient` — the
+/// standalone TS `OnionPirWebClient` does its own REQ_ANNOUNCE
+/// round-trip over its WebSocket and hands the response bytes here, so
+/// it reuses the exact same Rust parsing + chain verification (and the
+/// `checkPinnedOperator` / `checkChannelBinding` methods on the result)
+/// instead of reimplementing Ed25519 verification in TS. Mirrors the
+/// Rust `pir_sdk_client::announce::parse_announce_response`.
+#[wasm_bindgen(js_name = verifyAnnounceResponse)]
+pub fn verify_announce_response(
+    resp_payload: &[u8],
+) -> Result<WasmAnnounceVerification, JsError> {
+    let inner = pir_sdk_client::announce::parse_announce_response(resp_payload)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(WasmAnnounceVerification { inner })
+}
+
 // ─── WasmDpfClient ──────────────────────────────────────────────────────────
 
 /// Two-server DPF-PIR client exposed to JavaScript.
