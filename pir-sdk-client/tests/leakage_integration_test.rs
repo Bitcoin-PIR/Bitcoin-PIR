@@ -46,7 +46,7 @@
 use std::sync::Arc;
 
 use pir_core::hash::derive_groups_3;
-use pir_sdk::{BufferingLeakageRecorder, LeakageProfile, RoundKind, RoundProfile};
+use pir_sdk::{BufferingLeakageRecorder, LeakageProfile, PirError, RoundKind, RoundProfile};
 use pir_sdk_client::{DpfClient, HarmonyClient, PirClient, ScriptHash};
 
 #[cfg(feature = "onion")]
@@ -237,6 +237,154 @@ fn assert_profiles_equivalent(a: &LeakageProfile, b: &LeakageProfile) {
     }
 }
 
+// ─── Transient-transport retry (privacy-safe flake suppression) ─────────────
+//
+// These tests drive long, sequential PIR query sequences against the
+// live production deployment through a cloudflared tunnel. Over a
+// multi-minute run a single TCP/WebSocket connection occasionally gets
+// reset ("Connection reset without closing handshake", os error 104),
+// surfacing as a `PirError` whose `ErrorKind` is `TransientNetwork`.
+// That is a network event — not a protocol or leakage event — and it
+// aborts the query *before* any profile is captured, so without retry it
+// produces a false-red even though the server (and the privacy profile)
+// are perfectly fine.
+//
+// `with_transport_retry` re-runs the whole connect → catalog → query →
+// take_profile sequence — with a FRESH recorder and FRESH connection on
+// every attempt — but ONLY when the failure classifies as
+// `TransientNetwork`.
+//
+// PRIVACY SAFETY — why this can never mask a real leakage finding:
+//   1. The retry gate is `PirError::is_transient_network()`
+//      (`ErrorKind::TransientNetwork`) ONLY. Every other category —
+//      `MerkleVerificationFailed`, `ProtocolSkew`, `ServerError`,
+//      `DataError`, `ClientError`, `SessionEvicted`, `Other` — is NOT
+//      retried and panics immediately, exactly as the prior
+//      `.expect(...)` did. A server serving bad data / bad proofs, a
+//      protocol-version skew, or a lost session still fails loudly.
+//   2. Each attempt rebuilds a fresh `BufferingLeakageRecorder`, so no
+//      partial transcript is ever observed, merged, or asserted on — the
+//      profile handed back is always from a single fully-successful query.
+//   3. The leakage assertions (`assert_profiles_equivalent`,
+//      `assert_pir_k_padding`, `assert_merkle_per_level_uniform`, …) run
+//      on the returned profile and are NOT inside the retry closure. A
+//      genuine profile difference is an assertion failure (a panic), which
+//      is not a `PirError` at all and therefore is never retried.
+//
+// Net: retry only ever converts a transport flake into another attempt at
+// observing the *true* profile; it can never turn a failing assertion
+// green.
+const TRANSPORT_RETRY_ATTEMPTS: usize = 4;
+
+async fn with_transport_retry<F, Fut, T>(what: &str, mut attempt: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, PirError>>,
+{
+    for n in 1..=TRANSPORT_RETRY_ATTEMPTS {
+        match attempt().await {
+            Ok(v) => return v,
+            // Transient transport blip with attempts left: reconnect & retry.
+            Err(e) if e.is_transient_network() && n < TRANSPORT_RETRY_ATTEMPTS => {
+                eprintln!(
+                    "[leakage-retry] {what}: transient transport error \
+                     (attempt {n}/{TRANSPORT_RETRY_ATTEMPTS}): {e} — reconnecting & retrying",
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(750 * n as u64)).await;
+            }
+            // Non-transient error, or transient with no attempts left:
+            // fail loudly (identical visibility to the prior `.expect`).
+            // Real findings are NEVER retried.
+            Err(e) => panic!("{what}: {e}"),
+        }
+    }
+    unreachable!("with_transport_retry always returns Ok(_) or panics");
+}
+
+/// A captured leakage profile plus the catalog-derived K values the
+/// per-message tests assert against. Produced by the per-backend
+/// `*_query_profile` helpers under `with_transport_retry`, so every
+/// caller gets transparent transport-flake retry.
+struct QueryProfile {
+    profile: LeakageProfile,
+    k_index: usize,
+    k_chunk: usize,
+}
+
+/// Run a DPF `query_batch` through a fresh client + recorder and return
+/// its leakage profile, retrying transient transport flakes.
+async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
+    with_transport_retry("dpf query_batch", move || async move {
+        let recorder = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
+        client.set_leakage_recorder(Some(recorder.clone()));
+        client.connect().await?;
+        let catalog = client.fetch_catalog().await?;
+        let main = &catalog.databases[0];
+        let (k_index, k_chunk, db_id) =
+            (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        client.query_batch(shs, db_id).await?;
+        client.disconnect().await.ok();
+        Ok(QueryProfile { profile: recorder.take_profile("dpf"), k_index, k_chunk })
+    })
+    .await
+}
+
+/// Harmony equivalent of [`dpf_query_profile`].
+async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
+    with_transport_retry("harmony query_batch", move || async move {
+        let recorder = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
+        client.set_leakage_recorder(Some(recorder.clone()));
+        client.connect().await?;
+        let catalog = client.fetch_catalog().await?;
+        let main = &catalog.databases[0];
+        let (k_index, k_chunk, db_id) =
+            (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        client.query_batch(shs, db_id).await?;
+        client.disconnect().await.ok();
+        Ok(QueryProfile { profile: recorder.take_profile("harmony"), k_index, k_chunk })
+    })
+    .await
+}
+
+/// OnionPIR equivalent of [`dpf_query_profile`].
+#[cfg(feature = "onion")]
+async fn onion_query_profile(shs: &[ScriptHash]) -> QueryProfile {
+    with_transport_retry("onion query_batch", move || async move {
+        let recorder = Arc::new(BufferingLeakageRecorder::new());
+        let mut client = OnionClient::new(&onion_url());
+        client.set_leakage_recorder(Some(recorder.clone()));
+        client.connect().await?;
+        let catalog = client.fetch_catalog().await?;
+        let main = &catalog.databases[0];
+        let (k_index, k_chunk, db_id) =
+            (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        client.query_batch(shs, db_id).await?;
+        client.disconnect().await.ok();
+        Ok(QueryProfile { profile: recorder.take_profile("onion"), k_index, k_chunk })
+    })
+    .await
+}
+
+/// Fetch just the catalog K values for OnionPIR (no query), retrying
+/// transient transport flakes. Used by the multi-query collision test,
+/// which needs `(k_index, k_chunk)` to assert K-padding on profiles it
+/// already captured via [`run_onion_batch_query`].
+#[cfg(feature = "onion")]
+async fn onion_catalog_k() -> (usize, usize) {
+    with_transport_retry("onion catalog probe", || async {
+        let mut client = OnionClient::new(&onion_url());
+        client.connect().await?;
+        let catalog = client.fetch_catalog().await?;
+        let main = &catalog.databases[0];
+        let k = (main.index_k as usize, main.chunk_k as usize);
+        client.disconnect().await.ok();
+        Ok(k)
+    })
+    .await
+}
+
 // ─── DPF tests ──────────────────────────────────────────────────────────────
 
 /// Empirical amortization benchmark for DPF — same shape as
@@ -247,75 +395,55 @@ fn assert_profiles_equivalent(a: &LeakageProfile, b: &LeakageProfile) {
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn dpf_amortization_bench() {
-    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.connect().await.expect("connect");
-    let catalog = client.fetch_catalog().await.expect("catalog");
-    let db_id = catalog.databases[0].db_id;
+    with_transport_retry("dpf amortization bench", || async {
+        let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
+        client.connect().await?;
+        let catalog = client.fetch_catalog().await?;
+        let db_id = catalog.databases[0].db_id;
 
-    // Same 10 distinct not-found scripthashes as the Harmony bench.
-    let scripthashes: Vec<ScriptHash> = (0..10u8)
-        .map(|i| {
-            let mut sh = [0u8; 20];
-            sh[0] = i;
-            sh[1] = 0x42;
-            sh
-        })
-        .collect();
+        // Same 10 distinct not-found scripthashes as the Harmony bench.
+        let scripthashes: Vec<ScriptHash> = (0..10u8)
+            .map(|i| {
+                let mut sh = [0u8; 20];
+                sh[0] = i;
+                sh[1] = 0x42;
+                sh
+            })
+            .collect();
 
-    let t0 = std::time::Instant::now();
-    let _ = client
-        .query_batch(&scripthashes[..1], db_id)
-        .await
-        .expect("1st query");
-    let cold = t0.elapsed();
-    println!("[BENCH] DPF 1st query (cold session): {:.2?}", cold);
+        let t0 = std::time::Instant::now();
+        client.query_batch(&scripthashes[..1], db_id).await?;
+        let cold = t0.elapsed();
+        println!("[BENCH] DPF 1st query (cold session): {:.2?}", cold);
 
-    let t1 = std::time::Instant::now();
-    let _ = client
-        .query_batch(&scripthashes[1..2], db_id)
-        .await
-        .expect("2nd query");
-    let warm_single = t1.elapsed();
-    println!("[BENCH] DPF 2nd query: {:.2?}", warm_single);
+        let t1 = std::time::Instant::now();
+        client.query_batch(&scripthashes[1..2], db_id).await?;
+        let warm_single = t1.elapsed();
+        println!("[BENCH] DPF 2nd query: {:.2?}", warm_single);
 
-    let t2 = std::time::Instant::now();
-    let _ = client
-        .query_batch(&scripthashes[2..], db_id)
-        .await
-        .expect("8-batch query");
-    let batch_of_8 = t2.elapsed();
-    println!("[BENCH] DPF 8-batch query: {:.2?}", batch_of_8);
-    println!(
-        "[BENCH] DPF per-scripthash: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
-        cold,
-        warm_single,
-        batch_of_8 / 8,
-    );
+        let t2 = std::time::Instant::now();
+        client.query_batch(&scripthashes[2..], db_id).await?;
+        let batch_of_8 = t2.elapsed();
+        println!("[BENCH] DPF 8-batch query: {:.2?}", batch_of_8);
+        println!(
+            "[BENCH] DPF per-scripthash: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
+            cold,
+            warm_single,
+            batch_of_8 / 8,
+        );
 
-    client.disconnect().await.unwrap();
+        client.disconnect().await.ok();
+        Ok::<(), PirError>(())
+    })
+    .await
 }
 
 /// Drive a single not-found DPF query and assert per-message invariants.
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn dpf_per_message_invariants_not_found() {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-
-    client.connect().await.expect("dpf connect");
-    let catalog = client.fetch_catalog().await.expect("dpf fetch_catalog");
-    let main = &catalog.databases[0];
-    let k_index = main.index_k as usize;
-    let k_chunk = main.chunk_k as usize;
-
     let (sh, _) = not_found_pair();
-    let _ = client
-        .query_batch(&[sh], main.db_id)
-        .await
-        .expect("dpf query_batch");
-
-    let profile = recorder.take_profile("dpf");
+    let QueryProfile { profile, k_index, k_chunk } = dpf_query_profile(&[sh]).await;
     println!(
         "dpf not-found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -384,17 +512,7 @@ async fn dpf_simulator_property_two_not_found() {
 }
 
 async fn run_dpf_single_query(sh: ScriptHash) -> LeakageProfile {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-    client.connect().await.expect("dpf connect");
-    let catalog = client.fetch_catalog().await.expect("dpf fetch_catalog");
-    let _ = client
-        .query_batch(&[sh], catalog.databases[0].db_id)
-        .await
-        .expect("dpf query_batch");
-    client.disconnect().await.unwrap();
-    recorder.take_profile("dpf")
+    dpf_query_profile(&[sh]).await.profile
 }
 
 // ─── Multi-query batch leakage observation ─────────────────────────────────
@@ -422,22 +540,8 @@ async fn run_dpf_single_query(sh: ScriptHash) -> LeakageProfile {
 #[ignore = "requires running PIR servers"]
 async fn dpf_per_message_invariants_batch_2_not_found() {
     let (sh_a, sh_b) = not_found_pair();
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-
-    client.connect().await.expect("dpf connect");
-    let catalog = client.fetch_catalog().await.expect("dpf fetch_catalog");
-    let main = &catalog.databases[0];
-    let k_index = main.index_k as usize;
-    let k_chunk = main.chunk_k as usize;
-
-    let _ = client
-        .query_batch(&[sh_a, sh_b], main.db_id)
-        .await
-        .expect("dpf query_batch");
-
-    let profile = recorder.take_profile("dpf");
+    let QueryProfile { profile, k_index, k_chunk } =
+        dpf_query_profile(&[sh_a, sh_b]).await;
     println!(
         "dpf 2-query not-found profile: {} rounds — kinds: {:?}",
         profile.rounds.len(),
@@ -553,17 +657,7 @@ fn assert_curated_collision_pattern(shs: &[ScriptHash; 6]) {
 /// `LeakageProfile`. Mirror of `run_dpf_single_query` for the multi-query
 /// case used by the simulator-property collision test.
 async fn run_dpf_batch_query(scripthashes: &[ScriptHash]) -> LeakageProfile {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-    client.connect().await.expect("dpf connect");
-    let catalog = client.fetch_catalog().await.expect("dpf fetch_catalog");
-    let _ = client
-        .query_batch(scripthashes, catalog.databases[0].db_id)
-        .await
-        .expect("dpf query_batch");
-    client.disconnect().await.unwrap();
-    recorder.take_profile("dpf")
+    dpf_query_profile(scripthashes).await.profile
 }
 
 /// Cheap, no-network sanity check that the pinned hex constants still
@@ -667,74 +761,54 @@ async fn dpf_simulator_property_multi_query_collision() {
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn harmony_amortization_bench() {
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.connect().await.expect("connect");
-    let catalog = client.fetch_catalog().await.expect("catalog");
-    let db_id = catalog.databases[0].db_id;
+    with_transport_retry("harmony amortization bench", || async {
+        let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
+        client.connect().await?;
+        let catalog = client.fetch_catalog().await?;
+        let db_id = catalog.databases[0].db_id;
 
-    // 10 distinct not-found scripthashes (one byte differs each).
-    let scripthashes: Vec<ScriptHash> = (0..10u8)
-        .map(|i| {
-            let mut sh = [0u8; 20];
-            sh[0] = i;
-            sh[1] = 0x42;
-            sh
-        })
-        .collect();
+        // 10 distinct not-found scripthashes (one byte differs each).
+        let scripthashes: Vec<ScriptHash> = (0..10u8)
+            .map(|i| {
+                let mut sh = [0u8; 20];
+                sh[0] = i;
+                sh[1] = 0x42;
+                sh
+            })
+            .collect();
 
-    let t0 = std::time::Instant::now();
-    let _ = client
-        .query_batch(&scripthashes[..1], db_id)
-        .await
-        .expect("1st query");
-    let cold = t0.elapsed();
-    println!("[BENCH] 1st query (cold session, hint download): {:.2?}", cold);
+        let t0 = std::time::Instant::now();
+        client.query_batch(&scripthashes[..1], db_id).await?;
+        let cold = t0.elapsed();
+        println!("[BENCH] 1st query (cold session, hint download): {:.2?}", cold);
 
-    let t1 = std::time::Instant::now();
-    let _ = client
-        .query_batch(&scripthashes[1..2], db_id)
-        .await
-        .expect("2nd query");
-    let warm_single = t1.elapsed();
-    println!("[BENCH] 2nd query (hints cached): {:.2?}", warm_single);
+        let t1 = std::time::Instant::now();
+        client.query_batch(&scripthashes[1..2], db_id).await?;
+        let warm_single = t1.elapsed();
+        println!("[BENCH] 2nd query (hints cached): {:.2?}", warm_single);
 
-    let t2 = std::time::Instant::now();
-    let _ = client
-        .query_batch(&scripthashes[2..], db_id)
-        .await
-        .expect("8-batch query");
-    let batch_of_8 = t2.elapsed();
-    println!("[BENCH] 8-batch query (hints cached): {:.2?}", batch_of_8);
-    println!(
-        "[BENCH] per-scripthash amortized: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
-        cold,
-        warm_single,
-        batch_of_8 / 8,
-    );
+        let t2 = std::time::Instant::now();
+        client.query_batch(&scripthashes[2..], db_id).await?;
+        let batch_of_8 = t2.elapsed();
+        println!("[BENCH] 8-batch query (hints cached): {:.2?}", batch_of_8);
+        println!(
+            "[BENCH] per-scripthash amortized: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
+            cold,
+            warm_single,
+            batch_of_8 / 8,
+        );
 
-    client.disconnect().await.unwrap();
+        client.disconnect().await.ok();
+        Ok::<(), PirError>(())
+    })
+    .await
 }
 
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn harmony_per_message_invariants_not_found() {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-
-    client.connect().await.expect("harmony connect");
-    let catalog = client.fetch_catalog().await.expect("harmony fetch_catalog");
-    let main = &catalog.databases[0];
-    let k_index = main.index_k as usize;
-    let k_chunk = main.chunk_k as usize;
-
     let (sh, _) = not_found_pair();
-    let _ = client
-        .query_batch(&[sh], main.db_id)
-        .await
-        .expect("harmony query_batch");
-
-    let profile = recorder.take_profile("harmony");
+    let QueryProfile { profile, k_index, k_chunk } = harmony_query_profile(&[sh]).await;
     println!(
         "harmony not-found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -790,31 +864,11 @@ async fn harmony_simulator_property_two_not_found() {
 }
 
 async fn run_harmony_single_query(sh: ScriptHash) -> LeakageProfile {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-    client.connect().await.expect("harmony connect");
-    let catalog = client.fetch_catalog().await.expect("harmony fetch_catalog");
-    let _ = client
-        .query_batch(&[sh], catalog.databases[0].db_id)
-        .await
-        .expect("harmony query_batch");
-    client.disconnect().await.unwrap();
-    recorder.take_profile("harmony")
+    harmony_query_profile(&[sh]).await.profile
 }
 
 async fn run_harmony_batch_query(scripthashes: &[ScriptHash]) -> LeakageProfile {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-    client.connect().await.expect("harmony connect");
-    let catalog = client.fetch_catalog().await.expect("harmony fetch_catalog");
-    let _ = client
-        .query_batch(scripthashes, catalog.databases[0].db_id)
-        .await
-        .expect("harmony query_batch");
-    client.disconnect().await.unwrap();
-    recorder.take_profile("harmony")
+    harmony_query_profile(scripthashes).await.profile
 }
 
 /// Multi-query simulator-property witness for HarmonyPIR — same
@@ -937,23 +991,8 @@ async fn harmony_found_vs_not_found_have_byte_identical_profiles() {
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn onion_per_message_invariants_not_found() {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = OnionClient::new(&onion_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-
-    client.connect().await.expect("onion connect");
-    let catalog = client.fetch_catalog().await.expect("onion fetch_catalog");
-    let main = &catalog.databases[0];
-    let k_index = main.index_k as usize;
-    let k_chunk = main.chunk_k as usize;
-
     let (sh, _) = not_found_pair();
-    let _ = client
-        .query_batch(&[sh], main.db_id)
-        .await
-        .expect("onion query_batch");
-
-    let profile = recorder.take_profile("onion");
+    let QueryProfile { profile, k_index, k_chunk } = onion_query_profile(&[sh]).await;
     println!(
         "onion not-found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -1025,32 +1064,12 @@ async fn onion_simulator_property_two_not_found() {
 
 #[cfg(feature = "onion")]
 async fn run_onion_single_query(sh: ScriptHash) -> LeakageProfile {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = OnionClient::new(&onion_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-    client.connect().await.expect("onion connect");
-    let catalog = client.fetch_catalog().await.expect("onion fetch_catalog");
-    let _ = client
-        .query_batch(&[sh], catalog.databases[0].db_id)
-        .await
-        .expect("onion query_batch");
-    client.disconnect().await.unwrap();
-    recorder.take_profile("onion")
+    onion_query_profile(&[sh]).await.profile
 }
 
 #[cfg(feature = "onion")]
 async fn run_onion_batch_query(scripthashes: &[ScriptHash]) -> LeakageProfile {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = OnionClient::new(&onion_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-    client.connect().await.expect("onion connect");
-    let catalog = client.fetch_catalog().await.expect("onion fetch_catalog");
-    let _ = client
-        .query_batch(scripthashes, catalog.databases[0].db_id)
-        .await
-        .expect("onion query_batch");
-    client.disconnect().await.unwrap();
-    recorder.take_profile("onion")
+    onion_query_profile(scripthashes).await.profile
 }
 
 /// Multi-query simulator-property witness for OnionPIR. Reuses the
@@ -1160,18 +1179,7 @@ async fn onion_simulator_property_multi_query_collision() {
     // values come from the catalog, not constants, so a server K-rebuild
     // doesn't silently break this assertion.
     {
-        let recorder_for_catalog = Arc::new(BufferingLeakageRecorder::new());
-        let mut client = OnionClient::new(&onion_url());
-        client.set_leakage_recorder(Some(recorder_for_catalog.clone()));
-        client.connect().await.expect("onion connect (catalog probe)");
-        let catalog = client
-            .fetch_catalog()
-            .await
-            .expect("onion fetch_catalog (catalog probe)");
-        let main = &catalog.databases[0];
-        let k_index = main.index_k as usize;
-        let k_chunk = main.chunk_k as usize;
-        client.disconnect().await.unwrap();
+        let (k_index, k_chunk) = onion_catalog_k().await;
         assert_pir_k_padding(&profile_a, k_index, k_chunk);
         assert_merkle_per_level_uniform(&profile_a);
     }
@@ -1187,23 +1195,8 @@ async fn onion_simulator_property_multi_query_collision() {
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn dpf_found_query_includes_chunk_rounds() {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-
-    client.connect().await.expect("dpf connect");
-    let catalog = client.fetch_catalog().await.expect("dpf fetch_catalog");
-    let main = &catalog.databases[0];
-    let k_index = main.index_k as usize;
-    let k_chunk = main.chunk_k as usize;
-
     let (sh, _) = found_pair();
-    let _ = client
-        .query_batch(&[sh], main.db_id)
-        .await
-        .expect("dpf query_batch");
-
-    let profile = recorder.take_profile("dpf");
+    let QueryProfile { profile, k_index, k_chunk } = dpf_query_profile(&[sh]).await;
     println!(
         "dpf found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -1473,23 +1466,8 @@ async fn dpf_two_found_queries_both_follow_found_shape() {
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn onion_found_query_includes_chunk_rounds() {
-    let recorder = Arc::new(BufferingLeakageRecorder::new());
-    let mut client = OnionClient::new(&onion_url());
-    client.set_leakage_recorder(Some(recorder.clone()));
-
-    client.connect().await.expect("onion connect");
-    let catalog = client.fetch_catalog().await.expect("onion fetch_catalog");
-    let main = &catalog.databases[0];
-    let k_index = main.index_k as usize;
-    let k_chunk = main.chunk_k as usize;
-
     let (sh, _) = found_pair();
-    let _ = client
-        .query_batch(&[sh], main.db_id)
-        .await
-        .expect("onion query_batch");
-
-    let profile = recorder.take_profile("onion");
+    let QueryProfile { profile, k_index, k_chunk } = onion_query_profile(&[sh]).await;
     println!(
         "onion found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -1702,21 +1680,23 @@ fn _unused_round_profile(_p: &RoundProfile) {}
 #[ignore = "requires running PIR servers + correctness verification by eye"]
 async fn harmony_data_correctness_diagnostic() {
     let (sh_a, sh_b) = found_pair();
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.connect().await.expect("harmony connect");
-    let catalog = client.fetch_catalog().await.expect("harmony fetch_catalog");
-    let db_id = catalog.databases[0].db_id;
-    eprintln!(
-        "[DBG_CORR] DB synced_height={} index_bins={} chunk_bins={}",
-        catalog.databases[0].height,
-        catalog.databases[0].index_bins,
-        catalog.databases[0].chunk_bins,
-    );
-    let results = client
-        .query_batch(&[sh_a, sh_b], db_id)
-        .await
-        .expect("harmony query_batch");
-    client.disconnect().await.unwrap();
+    // Returns query *results* (not a leakage profile), retrying transient
+    // transport flakes. The catalog stats print on each attempt.
+    let results = with_transport_retry("harmony correctness query", move || async move {
+        let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
+        client.connect().await?;
+        let catalog = client.fetch_catalog().await?;
+        let db = &catalog.databases[0];
+        let db_id = db.db_id;
+        eprintln!(
+            "[DBG_CORR] DB synced_height={} index_bins={} chunk_bins={}",
+            db.height, db.index_bins, db.chunk_bins,
+        );
+        let results = client.query_batch(&[sh_a, sh_b], db_id).await?;
+        client.disconnect().await.ok();
+        Ok(results)
+    })
+    .await;
 
     let labels = [
         ("sh_a (HASH160 of 76a914...88ac, P2PKH)", sh_a),
