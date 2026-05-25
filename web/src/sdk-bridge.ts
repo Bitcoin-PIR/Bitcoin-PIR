@@ -70,6 +70,19 @@ interface PirSdkWasm {
    * at module load (catches drift if the two ever diverge).
    */
   turinArkFingerprint(): Uint8Array;
+  /**
+   * Parse + verify a raw RESP_ANNOUNCE wire payload (the response frame
+   * starting at the variant byte) into a `WasmAnnounceVerification`,
+   * running the in-bundle chain check. Throws on a wire-format violation
+   * or a server `RESP_ERROR` envelope (e.g. "announce not configured").
+   *
+   * For transports that don't go through `WasmDpfClient` — the
+   * standalone `OnionPirWebClient` does its own REQ_ANNOUNCE round-trip
+   * and hands the response bytes here, reusing the exact Rust parsing +
+   * chain verification. Mirrors
+   * `pir_sdk_client::announce::parse_announce_response`.
+   */
+  verifyAnnounceResponse(respPayload: Uint8Array): WasmAnnounceVerification;
   // ARC (Anonymous Rate-limited Credentials) presentation state. Opaque
   // wrapper over the Rust `arc::PresentationState`; mirrored in TS by
   // `web/src/credential-manager.ts::ArcCredentialManager`. The constructor
@@ -295,6 +308,45 @@ export interface WasmPolicyRequirements {
   setExpectedImageId(bytes: Uint8Array): void;
 }
 
+/**
+ * JS-visible result of a `WasmDpfClient.announce()` call. Mirrors
+ * `pir_sdk_wasm::WasmAnnounceVerification`. Carries the parsed
+ * operator-signed bundle; the caller layers verification:
+ *   - `checkPinnedOperator(pin, now)` — operator pubkey match + cert
+ *     signature + validity + in-bundle chain check (do NOT settle for a
+ *     bare `operatorPubkeyHex` string-compare — it misses the signature),
+ *   - `checkChannelBinding(expected)` — `channelPub` equals the attested
+ *     `serverStaticPub` the channel handshook against.
+ * Both throw on failure. `i64` fields surface as `bigint` (wasm-bindgen).
+ */
+export interface WasmAnnounceVerification {
+  readonly serverId: string;
+  readonly operatorPubkeyHex: string;
+  readonly identityPubkeyHex: string;
+  readonly channelPub: Uint8Array;
+  readonly channelPubHex: string;
+  readonly binarySha256Hex: string;
+  readonly gitRev: string;
+  readonly validFrom: bigint;
+  readonly validUntil: bigint;
+  readonly issuedAt: bigint;
+  readonly chainVerified: boolean;
+  readonly chainError: string;
+  /** Operator pubkey match + `cert.verify()` signature + validity
+   *  (skipped when `nowUnixSeconds === 0n`) + chain check. Throws on
+   *  failure. */
+  checkPinnedOperator(pinnedOperatorPubkey: Uint8Array, nowUnixSeconds: bigint): void;
+  /** `channelPub === expectedChannelPub` (32 bytes). Throws on mismatch. */
+  checkChannelBinding(expectedChannelPub: Uint8Array): void;
+  /** Replay/staleness guard on `issuedAt`: throws if older than
+   *  `maxAgeSeconds` before `now` (stale) or >300s after it (future).
+   *  `issuedAt` is the server's boot time, so keep `maxAgeSeconds`
+   *  generous; `0n` skips the staleness arm, `nowUnixSeconds === 0n`
+   *  skips entirely. */
+  checkFreshness(nowUnixSeconds: bigint, maxAgeSeconds: bigint): void;
+  free(): void;
+}
+
 interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
@@ -306,6 +358,12 @@ interface WasmDpfClient {
    *  returned `serverStaticPub` (32 bytes) as input to
    *  `upgradeToSecureChannel`. */
   attest(serverIndex: number): Promise<WasmAttestVerification>;
+  /** Send REQ_ANNOUNCE to one of the connected servers (`serverIndex`
+   *  ∈ {0, 1}) and return the parsed operator-signed identity bundle.
+   *  Rejects with "announce not configured" when the server was started
+   *  without `--identity-*` flags. See `WasmAnnounceVerification` for the
+   *  verification methods to run on the result. */
+  announce(serverIndex: number): Promise<WasmAnnounceVerification>;
   /** Wrap both server connections with the encrypted-channel transport.
    *  Caller MUST first verify `pub0`/`pub1` came from a trustworthy
    *  source (call `attest` first; ideally also check the SEV-SNP report's

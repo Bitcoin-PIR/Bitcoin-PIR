@@ -818,6 +818,70 @@ impl WasmAnnounceVerification {
         hex_encode(&self.inner.bundle.manifest.channel_pub)
     }
 
+    /// Verify the bundle against a pinned operator pubkey: operator
+    /// pubkey match + the cert's operator **signature** (`cert.verify()`)
+    /// + validity window (skipped when `nowUnixSeconds == 0`) + the
+    /// in-bundle chain check. Throws on any failure or a non-32-byte
+    /// argument. A bare `operatorPubkeyHex` string-compare would miss
+    /// the signature check, so use this. Mirrors the Rust
+    /// `AnnounceVerification::check_pinned_operator`.
+    #[wasm_bindgen(js_name = checkPinnedOperator)]
+    pub fn check_pinned_operator(
+        &self,
+        pinned_operator_pubkey: &[u8],
+        now_unix_seconds: i64,
+    ) -> Result<(), JsError> {
+        let arr: [u8; 32] = pinned_operator_pubkey.try_into().map_err(|_| {
+            JsError::new(&format!(
+                "checkPinnedOperator: expected a 32-byte operator pubkey, got {} bytes",
+                pinned_operator_pubkey.len()
+            ))
+        })?;
+        self.inner
+            .check_pinned_operator(&arr, now_unix_seconds)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Bind the bundle to the encrypted session: verify that the
+    /// manifest's `channelPub` equals the X25519 key the channel
+    /// actually handshook against. Pass the *attested* key — i.e.
+    /// `attestVerification.serverStaticPub`, which the SEV-SNP report /
+    /// VCEK chain already vouches for. Throws on mismatch (the bundle
+    /// describes a different channel than the live session) or on a
+    /// non-32-byte argument. Mirrors the Rust
+    /// `AnnounceVerification::check_channel_binding` so web and native
+    /// share one implementation and error message.
+    #[wasm_bindgen(js_name = checkChannelBinding)]
+    pub fn check_channel_binding(&self, expected_channel_pub: &[u8]) -> Result<(), JsError> {
+        let arr: [u8; 32] = expected_channel_pub.try_into().map_err(|_| {
+            JsError::new(&format!(
+                "checkChannelBinding: expected a 32-byte channel pubkey, got {} bytes",
+                expected_channel_pub.len()
+            ))
+        })?;
+        self.inner
+            .check_channel_binding(&arr)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Replay / staleness guard on `manifest.issued_at`. Throws if the
+    /// bundle is older than `maxAgeSeconds` before `nowUnixSeconds`
+    /// (stale) or more than 300s after it (future-dated). NOTE:
+    /// `issued_at` is the server's boot time, so pick `maxAgeSeconds`
+    /// generously (≥ expected uptime); pass `0n` to skip the staleness
+    /// arm, or `nowUnixSeconds === 0n` to skip entirely. Mirrors the Rust
+    /// `AnnounceVerification::check_freshness`.
+    #[wasm_bindgen(js_name = checkFreshness)]
+    pub fn check_freshness(
+        &self,
+        now_unix_seconds: i64,
+        max_age_seconds: i64,
+    ) -> Result<(), JsError> {
+        self.inner
+            .check_freshness(now_unix_seconds, max_age_seconds)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// Hex-encoded binary SHA-256 the manifest claims (self-reported,
     /// trustworthy iff the chain check passed).
     #[wasm_bindgen(getter, js_name = binarySha256Hex)]
@@ -870,6 +934,27 @@ impl WasmAnnounceVerification {
             .map(|e| e.to_string())
             .unwrap_or_default()
     }
+}
+
+/// Parse + verify a raw RESP_ANNOUNCE wire payload (the response frame
+/// starting at the variant byte) into a [`WasmAnnounceVerification`],
+/// running the in-bundle chain check. Throws on a wire-format violation
+/// or a server `RESP_ERROR` envelope (e.g. "announce not configured").
+///
+/// This is for transports that don't go through `WasmDpfClient` — the
+/// standalone TS `OnionPirWebClient` does its own REQ_ANNOUNCE
+/// round-trip over its WebSocket and hands the response bytes here, so
+/// it reuses the exact same Rust parsing + chain verification (and the
+/// `checkPinnedOperator` / `checkChannelBinding` methods on the result)
+/// instead of reimplementing Ed25519 verification in TS. Mirrors the
+/// Rust `pir_sdk_client::announce::parse_announce_response`.
+#[wasm_bindgen(js_name = verifyAnnounceResponse)]
+pub fn verify_announce_response(
+    resp_payload: &[u8],
+) -> Result<WasmAnnounceVerification, JsError> {
+    let inner = pir_sdk_client::announce::parse_announce_response(resp_payload)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(WasmAnnounceVerification { inner })
 }
 
 // ─── WasmDpfClient ──────────────────────────────────────────────────────────

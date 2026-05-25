@@ -21,12 +21,14 @@
 //!   authentication should pass an `operator_pubkey` to
 //!   [`announce_with_pinned_operator`] once the publishing path is in
 //!   place — that variant runs the missing check.
-//! - **Cross-check `channel_pub` against the value the encrypted
-//!   channel handshake used.** The caller is responsible for taking
-//!   `bundle.manifest.channel_pub` and comparing it against
-//!   `AttestVerification::response.server_static_pub` (or whatever
-//!   key path it actually handshook against). This crate doesn't
-//!   know about the handshake state.
+//! - **Know the expected channel key on its own.** This crate doesn't
+//!   track handshake state, so the caller must supply the X25519 key
+//!   the channel actually handshook against (the attested
+//!   `AttestVerification::response.server_static_pub`). Given that key,
+//!   [`AnnounceVerification::check_channel_binding`] performs the
+//!   cross-check against `bundle.manifest.channel_pub`, and the
+//!   all-in-one [`announce_bound`] folds it together with operator
+//!   pinning + validity in one call.
 //! - **Validate `cert.valid_from` / `cert.valid_until`.** That's a
 //!   caller wall-clock policy. See
 //!   [`IdentityCert::check_validity`](pir_identity::IdentityCert::check_validity).
@@ -43,6 +45,11 @@ pub(crate) const REQ_ANNOUNCE: u8 = 0x07;
 pub(crate) const RESP_ANNOUNCE: u8 = 0x07;
 /// Generic server-side error envelope.
 const RESP_ERROR: u8 = 0xff;
+
+/// Clock-skew tolerance for the `issued_at` freshness check: a manifest
+/// timestamped up to this far in the future is accepted (covers modest
+/// client/server clock drift); beyond it is rejected as future-dated.
+pub const FRESHNESS_SKEW_SECS: i64 = 300;
 
 /// What [`announce`] returns: the parsed bundle plus its chain-check
 /// verdict. The bundle is always returned (decode succeeded), but
@@ -61,6 +68,126 @@ pub struct AnnounceVerification {
     pub chain_verified: bool,
     /// `Some(e)` if `chain_verified` is `false`, for diagnostics.
     pub chain_error: Option<IdentityError>,
+}
+
+impl AnnounceVerification {
+    /// Verify the already-fetched bundle is fully trustworthy under a
+    /// pinned operator pubkey. This is the synchronous core of
+    /// [`announce_with_pinned_operator`] (which is just `announce()` +
+    /// this), exposed so callers that already hold an
+    /// `AnnounceVerification` — e.g. the WASM client after
+    /// `WasmDpfClient.announce()` — can run the same check without a
+    /// second round-trip. Fails unless ALL hold:
+    /// - `cert.operator_pubkey == pinned_operator_pubkey`,
+    /// - the cert's operator signature verifies (`cert.verify()`) —
+    ///   note neither [`Self::chain_verified`] nor
+    ///   [`Self::check_channel_binding`] covers this, so a bare
+    ///   pubkey-equality compare would miss a forged cert signature,
+    /// - the cert is inside its validity window (skipped when
+    ///   `now_unix_seconds == 0`),
+    /// - the in-bundle chain check passed.
+    pub fn check_pinned_operator(
+        &self,
+        pinned_operator_pubkey: &[u8; 32],
+        now_unix_seconds: i64,
+    ) -> PirResult<()> {
+        if &self.bundle.cert.operator_pubkey != pinned_operator_pubkey {
+            return Err(PirError::Protocol(format!(
+                "announce: cert.operator_pubkey ({}) does not match pinned operator ({})",
+                short_hex(&self.bundle.cert.operator_pubkey),
+                short_hex(pinned_operator_pubkey),
+            )));
+        }
+        self.bundle
+            .cert
+            .verify()
+            .map_err(|e| PirError::Protocol(format!("announce: cert.verify failed: {}", e)))?;
+        if now_unix_seconds != 0 {
+            self.bundle
+                .cert
+                .check_validity(now_unix_seconds)
+                .map_err(|e| PirError::Protocol(format!("announce: cert outside validity: {}", e)))?;
+        }
+        if !self.chain_verified {
+            return Err(PirError::Protocol(format!(
+                "announce: chain check failed: {}",
+                self.chain_error
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )));
+        }
+        Ok(())
+    }
+
+    /// Bind the bundle to the encrypted session: check that the
+    /// operator-signed `manifest.channel_pub` equals the X25519 public
+    /// key the channel actually handshook against.
+    ///
+    /// Pass the *attested* `server_static_pub` — i.e. the value the
+    /// client verified via the SEV-SNP report / VCEK chain (V2 layout
+    /// commits the channel key to `REPORT_DATA`) and then ran
+    /// `REQ_HANDSHAKE` against. Equality closes the loop: the chip
+    /// vouches for the channel key, the operator vouches for the same
+    /// key, and the client confirms they agree. A mismatch means the
+    /// bundle describes a *different* channel than the one in use —
+    /// either a deploy bug or a relay splicing one server's bundle onto
+    /// another server's session — so trust nothing in the bundle.
+    ///
+    /// This is orthogonal to operator-pubkey pinning ([`announce_with_pinned_operator`])
+    /// and the in-bundle chain check ([`AnnounceVerification::chain_verified`]);
+    /// the full-trust path wants all three, which [`announce_bound`] runs
+    /// in one call.
+    pub fn check_channel_binding(&self, expected_channel_pub: &[u8; 32]) -> PirResult<()> {
+        if &self.bundle.manifest.channel_pub != expected_channel_pub {
+            return Err(PirError::Protocol(format!(
+                "announce: bundle channel_pub ({}) does not match the handshake key ({})",
+                short_hex(&self.bundle.manifest.channel_pub),
+                short_hex(expected_channel_pub),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Replay / staleness guard on `manifest.issued_at` (caller policy).
+    /// Rejects a bundle issued more than `max_age_seconds` before `now`
+    /// (stale), or more than [`FRESHNESS_SKEW_SECS`] *after* `now`
+    /// (future-dated — clock skew or forgery).
+    ///
+    /// **`issued_at` is the server's boot time**, not a per-request
+    /// nonce: the bundle is built once at startup and served unchanged
+    /// for the server's whole uptime. So pick `max_age_seconds`
+    /// generously (≥ expected max uptime) or you'll reject a
+    /// legitimately long-running server. For DPF / HarmonyPIR the
+    /// per-boot `channel_pub` + [`Self::check_channel_binding`] already
+    /// reject a replayed old bundle; this check mainly hardens the
+    /// standalone OnionPIR path, which has no channel binding.
+    ///
+    /// Pass `max_age_seconds == 0` to skip the staleness arm (the
+    /// future-dated arm still runs whenever `now_unix_seconds != 0`).
+    /// Pass `now_unix_seconds == 0` to skip the check entirely.
+    pub fn check_freshness(&self, now_unix_seconds: i64, max_age_seconds: i64) -> PirResult<()> {
+        if now_unix_seconds == 0 {
+            return Ok(());
+        }
+        let issued = self.bundle.manifest.issued_at;
+        if issued > now_unix_seconds + FRESHNESS_SKEW_SECS {
+            return Err(PirError::Protocol(format!(
+                "announce: manifest issued_at ({}) is in the future vs now ({}, skew {}s)",
+                issued, now_unix_seconds, FRESHNESS_SKEW_SECS
+            )));
+        }
+        if max_age_seconds != 0 {
+            let age = now_unix_seconds - issued;
+            if age > max_age_seconds {
+                return Err(PirError::Protocol(format!(
+                    "announce: manifest issued_at ({}) is {}s old, exceeds max age {}s",
+                    issued, age, max_age_seconds
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Send REQ_ANNOUNCE and parse the response.
@@ -83,7 +210,25 @@ pub async fn announce<T: PirTransport + ?Sized>(
 ) -> PirResult<AnnounceVerification> {
     let request = encode_request(REQ_ANNOUNCE, &[]);
     let response = transport.roundtrip(&request).await?;
+    parse_announce_response(&response)
+}
 
+/// Parse a raw RESP_ANNOUNCE wire payload (the response frame starting
+/// at the variant byte) into an [`AnnounceVerification`], running the
+/// in-bundle chain check. Operator-pubkey pinning
+/// ([`AnnounceVerification::check_pinned_operator`]) and channel binding
+/// ([`AnnounceVerification::check_channel_binding`]) are SEPARATE steps.
+///
+/// This is the synchronous core of [`announce`] (which is just a
+/// `roundtrip` + this). It's exposed so transports that aren't a
+/// [`PirTransport`] — e.g. the standalone TS `OnionPirWebClient`, via
+/// the WASM `verifyAnnounceResponse` binding — can reuse the exact same
+/// parsing + chain verification instead of reimplementing it.
+///
+/// A `RESP_ERROR` envelope surfaces as [`PirError::ServerError`] (e.g.
+/// "announce not configured"); a wire-format violation as
+/// [`PirError::Protocol`].
+pub fn parse_announce_response(response: &[u8]) -> PirResult<AnnounceVerification> {
     if response.is_empty() {
         return Err(PirError::Protocol("empty announce response".into()));
     }
@@ -163,32 +308,35 @@ pub async fn announce_with_pinned_operator<T: PirTransport + ?Sized>(
     now_unix_seconds: i64,
 ) -> PirResult<AnnounceVerification> {
     let v = announce(transport).await?;
-    if &v.bundle.cert.operator_pubkey != pinned_operator_pubkey {
-        return Err(PirError::Protocol(format!(
-            "announce: cert.operator_pubkey ({}) does not match pinned operator ({})",
-            short_hex(&v.bundle.cert.operator_pubkey),
-            short_hex(pinned_operator_pubkey),
-        )));
-    }
-    v.bundle
-        .cert
-        .verify()
-        .map_err(|e| PirError::Protocol(format!("announce: cert.verify failed: {}", e)))?;
-    if now_unix_seconds != 0 {
-        v.bundle
-            .cert
-            .check_validity(now_unix_seconds)
-            .map_err(|e| PirError::Protocol(format!("announce: cert outside validity: {}", e)))?;
-    }
-    if !v.chain_verified {
-        return Err(PirError::Protocol(format!(
-            "announce: chain check failed: {}",
-            v.chain_error
-                .as_ref()
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown".into())
-        )));
-    }
+    v.check_pinned_operator(pinned_operator_pubkey, now_unix_seconds)?;
+    Ok(v)
+}
+
+/// Full-trust announce: [`announce_with_pinned_operator`] **plus** the
+/// channel-binding cross-check ([`AnnounceVerification::check_channel_binding`]).
+///
+/// This is the call a production client should use once it has both a
+/// pinned operator pubkey and the attested channel key in hand. It
+/// fails unless ALL of the following hold:
+/// - the cert is signed by `pinned_operator_pubkey` and (if
+///   `now_unix_seconds != 0`) is inside its validity window,
+/// - the in-bundle chain check passes (manifest signed by the cert's
+///   identity key, server_id / identity_pubkey cross-refs match),
+/// - `bundle.manifest.channel_pub == expected_channel_pub` (the
+///   attested `server_static_pub` the channel handshook against).
+///
+/// `expected_channel_pub` is the X25519 key the caller verified through
+/// attestation and ran `REQ_HANDSHAKE` against. `now_unix_seconds` is
+/// the wall clock for the validity check; pass `0` to skip it.
+pub async fn announce_bound<T: PirTransport + ?Sized>(
+    transport: &mut T,
+    pinned_operator_pubkey: &[u8; 32],
+    expected_channel_pub: &[u8; 32],
+    now_unix_seconds: i64,
+) -> PirResult<AnnounceVerification> {
+    let v =
+        announce_with_pinned_operator(transport, pinned_operator_pubkey, now_unix_seconds).await?;
+    v.check_channel_binding(expected_channel_pub)?;
     Ok(v)
 }
 
@@ -415,6 +563,185 @@ mod tests {
         match err {
             Err(PirError::Protocol(m)) => assert!(m.contains("outside validity")),
             other => panic!("expected Protocol(outside validity), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn check_channel_binding_accepts_matching_key() {
+        // build_bundle()'s manifest commits channel_pub = [0xCC; 32].
+        let v = AnnounceVerification {
+            bundle: build_bundle(),
+            chain_verified: true,
+            chain_error: None,
+        };
+        v.check_channel_binding(&[0xCCu8; 32])
+            .expect("matching channel_pub must pass");
+    }
+
+    #[test]
+    fn check_channel_binding_rejects_mismatched_key() {
+        let v = AnnounceVerification {
+            bundle: build_bundle(),
+            chain_verified: true,
+            chain_error: None,
+        };
+        let err = v.check_channel_binding(&[0u8; 32]).unwrap_err();
+        match err {
+            PirError::Protocol(m) => assert!(m.contains("does not match the handshake key")),
+            other => panic!("expected Protocol(channel mismatch), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn announce_bound_happy_path() {
+        let bundle = build_bundle();
+        let pinned = bundle.cert.operator_pubkey;
+        let mut mock = MockTransport {
+            reply: build_resp_announce(&bundle),
+            last_request: Mutex::new(Vec::new()),
+        };
+        let v = announce_bound(&mut mock, &pinned, &[0xCCu8; 32], 0)
+            .await
+            .expect("correct operator + channel key must pass");
+        assert!(v.chain_verified);
+    }
+
+    #[tokio::test]
+    async fn announce_bound_rejects_wrong_channel_pub() {
+        // Operator pin is correct, but the bundle's channel_pub does not
+        // match the key the channel handshook against → reject.
+        let bundle = build_bundle();
+        let pinned = bundle.cert.operator_pubkey;
+        let mut mock = MockTransport {
+            reply: build_resp_announce(&bundle),
+            last_request: Mutex::new(Vec::new()),
+        };
+        let err = announce_bound(&mut mock, &pinned, &[0x99u8; 32], 0)
+            .await
+            .unwrap_err();
+        match err {
+            PirError::Protocol(m) => assert!(m.contains("does not match the handshake key")),
+            other => panic!("expected Protocol(channel mismatch), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn check_pinned_operator_accepts_correct_and_rejects_wrong() {
+        let bundle = build_bundle();
+        let pinned = bundle.cert.operator_pubkey;
+        let v = AnnounceVerification {
+            bundle,
+            chain_verified: true,
+            chain_error: None,
+        };
+        v.check_pinned_operator(&pinned, 0)
+            .expect("correct operator pin must pass");
+        let err = v.check_pinned_operator(&[0u8; 32], 0).unwrap_err();
+        match err {
+            PirError::Protocol(m) => assert!(m.contains("does not match pinned operator")),
+            other => panic!("expected Protocol(operator mismatch), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn check_pinned_operator_requires_chain_verified() {
+        // Right operator pin, but the in-bundle chain check failed → reject.
+        let bundle = build_bundle();
+        let pinned = bundle.cert.operator_pubkey;
+        let v = AnnounceVerification {
+            bundle,
+            chain_verified: false,
+            chain_error: None,
+        };
+        let err = v.check_pinned_operator(&pinned, 0).unwrap_err();
+        match err {
+            PirError::Protocol(m) => assert!(m.contains("chain check failed")),
+            other => panic!("expected Protocol(chain check failed), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn announce_bound_rejects_wrong_operator_even_with_right_channel() {
+        // A wrong operator pin must fail before the channel key is even
+        // considered (operator pinning is checked first).
+        let bundle = build_bundle();
+        let mut mock = MockTransport {
+            reply: build_resp_announce(&bundle),
+            last_request: Mutex::new(Vec::new()),
+        };
+        let err = announce_bound(&mut mock, &[0u8; 32], &[0xCCu8; 32], 0)
+            .await
+            .unwrap_err();
+        match err {
+            PirError::Protocol(m) => assert!(m.contains("does not match pinned operator")),
+            other => panic!("expected Protocol(operator mismatch), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_announce_response_ok_runs_chain_check() {
+        // The synchronous core used by the WASM `verifyAnnounceResponse`
+        // binding (and thus the standalone TS OnionPirWebClient).
+        let wire = build_resp_announce(&build_bundle());
+        let v = parse_announce_response(&wire).expect("parse ok");
+        assert!(v.chain_verified);
+        assert_eq!(v.bundle.cert.server_id, "pir1");
+    }
+
+    #[test]
+    fn parse_announce_response_error_envelope_is_server_error() {
+        let mut reply = vec![RESP_ERROR];
+        let msg = b"announce not configured";
+        reply.extend_from_slice(&(msg.len() as u32).to_le_bytes());
+        reply.extend_from_slice(msg);
+        match parse_announce_response(&reply).unwrap_err() {
+            PirError::ServerError(m) => assert!(m.contains("not configured")),
+            other => panic!("expected ServerError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_announce_response_empty_is_protocol_error() {
+        assert!(matches!(
+            parse_announce_response(&[]).unwrap_err(),
+            PirError::Protocol(_)
+        ));
+    }
+
+    fn verification_with_issued_at_1_7b() -> AnnounceVerification {
+        // build_bundle()'s manifest is signed with issued_at = 1_700_000_000.
+        AnnounceVerification {
+            bundle: build_bundle(),
+            chain_verified: true,
+            chain_error: None,
+        }
+    }
+
+    #[test]
+    fn check_freshness_accepts_within_window_and_skip_modes() {
+        let v = verification_with_issued_at_1_7b();
+        v.check_freshness(1_700_000_100, 3600).expect("recent → ok");
+        v.check_freshness(0, 1).expect("now=0 skips entirely");
+        v.check_freshness(1_900_000_000, 0).expect("max_age=0 skips staleness");
+    }
+
+    #[test]
+    fn check_freshness_rejects_stale() {
+        let v = verification_with_issued_at_1_7b();
+        // now is a day after issue, max age 1h → stale.
+        match v.check_freshness(1_700_000_000 + 86_400, 3600).unwrap_err() {
+            PirError::Protocol(m) => assert!(m.contains("exceeds max age")),
+            other => panic!("expected Protocol(stale), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn check_freshness_rejects_future_dated() {
+        let v = verification_with_issued_at_1_7b();
+        // now is 1000s before issue (beyond the 300s skew) → future-dated.
+        match v.check_freshness(1_700_000_000 - 1000, 0).unwrap_err() {
+            PirError::Protocol(m) => assert!(m.contains("in the future")),
+            other => panic!("expected Protocol(future), got {:?}", other),
         }
     }
 }
