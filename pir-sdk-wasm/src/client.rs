@@ -864,6 +864,24 @@ impl WasmAnnounceVerification {
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
+    /// Replay / staleness guard on `manifest.issued_at`. Throws if the
+    /// bundle is older than `maxAgeSeconds` before `nowUnixSeconds`
+    /// (stale) or more than 300s after it (future-dated). NOTE:
+    /// `issued_at` is the server's boot time, so pick `maxAgeSeconds`
+    /// generously (≥ expected uptime); pass `0n` to skip the staleness
+    /// arm, or `nowUnixSeconds === 0n` to skip entirely. Mirrors the Rust
+    /// `AnnounceVerification::check_freshness`.
+    #[wasm_bindgen(js_name = checkFreshness)]
+    pub fn check_freshness(
+        &self,
+        now_unix_seconds: i64,
+        max_age_seconds: i64,
+    ) -> Result<(), JsError> {
+        self.inner
+            .check_freshness(now_unix_seconds, max_age_seconds)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// Hex-encoded binary SHA-256 the manifest claims (self-reported,
     /// trustworthy iff the chain check passed).
     #[wasm_bindgen(getter, js_name = binarySha256Hex)]

@@ -338,6 +338,12 @@ export interface WasmAnnounceVerification {
   checkPinnedOperator(pinnedOperatorPubkey: Uint8Array, nowUnixSeconds: bigint): void;
   /** `channelPub === expectedChannelPub` (32 bytes). Throws on mismatch. */
   checkChannelBinding(expectedChannelPub: Uint8Array): void;
+  /** Replay/staleness guard on `issuedAt`: throws if older than
+   *  `maxAgeSeconds` before `now` (stale) or >300s after it (future).
+   *  `issuedAt` is the server's boot time, so keep `maxAgeSeconds`
+   *  generous; `0n` skips the staleness arm, `nowUnixSeconds === 0n`
+   *  skips entirely. */
+  checkFreshness(nowUnixSeconds: bigint, maxAgeSeconds: bigint): void;
   free(): void;
 }
 

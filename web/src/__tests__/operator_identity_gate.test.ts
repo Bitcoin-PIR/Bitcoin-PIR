@@ -8,7 +8,7 @@ import type { WasmAnnounceVerification } from '../sdk-bridge.js';
  * wasm-bindgen methods do) when `throwOn` selects them. The getters
  * stand in for a parsed bundle so we can assert the surfaced fields.
  */
-function fakeBundle(throwOn?: 'operator' | 'channel'): WasmAnnounceVerification {
+function fakeBundle(throwOn?: 'operator' | 'channel' | 'freshness'): WasmAnnounceVerification {
   return {
     serverId: 'pir1',
     operatorPubkeyHex: '47d98cb6'.padEnd(64, '0'),
@@ -34,6 +34,11 @@ function fakeBundle(throwOn?: 'operator' | 'channel'): WasmAnnounceVerification 
         throw new Error(
           'announce: bundle channel_pub (aa…) does not match the handshake key (bb…)',
         );
+      }
+    },
+    checkFreshness() {
+      if (throwOn === 'freshness') {
+        throw new Error('announce: manifest issued_at (…) is 99999s old, exceeds max age 1s');
       }
     },
     free() {},
@@ -65,5 +70,11 @@ describe('gateOperatorIdentity', () => {
     const r = gateOperatorIdentity(fakeBundle('channel'), PIN, CHANNEL, 0n);
     expect(r.state).toBe('unverified');
     expect(r.error).toMatch(/does not match the handshake key/);
+  });
+
+  it("returns 'unverified' when the freshness check throws (stale bundle)", () => {
+    const r = gateOperatorIdentity(fakeBundle('freshness'), PIN, CHANNEL, 1_700_000_000n, 1n);
+    expect(r.state).toBe('unverified');
+    expect(r.error).toMatch(/exceeds max age/);
   });
 });

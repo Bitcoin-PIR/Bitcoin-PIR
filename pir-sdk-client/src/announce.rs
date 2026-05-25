@@ -46,6 +46,11 @@ pub(crate) const RESP_ANNOUNCE: u8 = 0x07;
 /// Generic server-side error envelope.
 const RESP_ERROR: u8 = 0xff;
 
+/// Clock-skew tolerance for the `issued_at` freshness check: a manifest
+/// timestamped up to this far in the future is accepted (covers modest
+/// client/server clock drift); beyond it is rejected as future-dated.
+pub const FRESHNESS_SKEW_SECS: i64 = 300;
+
 /// What [`announce`] returns: the parsed bundle plus its chain-check
 /// verdict. The bundle is always returned (decode succeeded), but
 /// callers should consult `chain_verified` before trusting any of its
@@ -140,6 +145,46 @@ impl AnnounceVerification {
                 short_hex(&self.bundle.manifest.channel_pub),
                 short_hex(expected_channel_pub),
             )));
+        }
+        Ok(())
+    }
+
+    /// Replay / staleness guard on `manifest.issued_at` (caller policy).
+    /// Rejects a bundle issued more than `max_age_seconds` before `now`
+    /// (stale), or more than [`FRESHNESS_SKEW_SECS`] *after* `now`
+    /// (future-dated — clock skew or forgery).
+    ///
+    /// **`issued_at` is the server's boot time**, not a per-request
+    /// nonce: the bundle is built once at startup and served unchanged
+    /// for the server's whole uptime. So pick `max_age_seconds`
+    /// generously (≥ expected max uptime) or you'll reject a
+    /// legitimately long-running server. For DPF / HarmonyPIR the
+    /// per-boot `channel_pub` + [`Self::check_channel_binding`] already
+    /// reject a replayed old bundle; this check mainly hardens the
+    /// standalone OnionPIR path, which has no channel binding.
+    ///
+    /// Pass `max_age_seconds == 0` to skip the staleness arm (the
+    /// future-dated arm still runs whenever `now_unix_seconds != 0`).
+    /// Pass `now_unix_seconds == 0` to skip the check entirely.
+    pub fn check_freshness(&self, now_unix_seconds: i64, max_age_seconds: i64) -> PirResult<()> {
+        if now_unix_seconds == 0 {
+            return Ok(());
+        }
+        let issued = self.bundle.manifest.issued_at;
+        if issued > now_unix_seconds + FRESHNESS_SKEW_SECS {
+            return Err(PirError::Protocol(format!(
+                "announce: manifest issued_at ({}) is in the future vs now ({}, skew {}s)",
+                issued, now_unix_seconds, FRESHNESS_SKEW_SECS
+            )));
+        }
+        if max_age_seconds != 0 {
+            let age = now_unix_seconds - issued;
+            if age > max_age_seconds {
+                return Err(PirError::Protocol(format!(
+                    "announce: manifest issued_at ({}) is {}s old, exceeds max age {}s",
+                    issued, age, max_age_seconds
+                )));
+            }
         }
         Ok(())
     }
@@ -661,5 +706,42 @@ mod tests {
             parse_announce_response(&[]).unwrap_err(),
             PirError::Protocol(_)
         ));
+    }
+
+    fn verification_with_issued_at_1_7b() -> AnnounceVerification {
+        // build_bundle()'s manifest is signed with issued_at = 1_700_000_000.
+        AnnounceVerification {
+            bundle: build_bundle(),
+            chain_verified: true,
+            chain_error: None,
+        }
+    }
+
+    #[test]
+    fn check_freshness_accepts_within_window_and_skip_modes() {
+        let v = verification_with_issued_at_1_7b();
+        v.check_freshness(1_700_000_100, 3600).expect("recent → ok");
+        v.check_freshness(0, 1).expect("now=0 skips entirely");
+        v.check_freshness(1_900_000_000, 0).expect("max_age=0 skips staleness");
+    }
+
+    #[test]
+    fn check_freshness_rejects_stale() {
+        let v = verification_with_issued_at_1_7b();
+        // now is a day after issue, max age 1h → stale.
+        match v.check_freshness(1_700_000_000 + 86_400, 3600).unwrap_err() {
+            PirError::Protocol(m) => assert!(m.contains("exceeds max age")),
+            other => panic!("expected Protocol(stale), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn check_freshness_rejects_future_dated() {
+        let v = verification_with_issued_at_1_7b();
+        // now is 1000s before issue (beyond the 300s skew) → future-dated.
+        match v.check_freshness(1_700_000_000 - 1000, 0).unwrap_err() {
+            PirError::Protocol(m) => assert!(m.contains("in the future")),
+            other => panic!("expected Protocol(future), got {:?}", other),
+        }
     }
 }

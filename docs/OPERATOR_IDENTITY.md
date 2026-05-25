@@ -88,10 +88,15 @@ to the live session.
 
 - **Trust bottoms out at the pin.** Operator-pin assurance is only as
   good as the out-of-band pin in `attest-pin.ts` (today a DEV stand-in).
-- **Freshness/replay** (`manifest.issued_at`) and **validity**
-  (`now` arg) are caller policy. `announce_bound` enforces validity when
-  you pass a real `now`; replay-bounding via `issued_at` is not yet
-  enforced (backlog item F).
+- **Validity** (`valid_from` / `valid_until`) is enforced by
+  `check_pinned_operator` / `announce_bound` whenever you pass a real
+  `now` (≠ 0). **Replay/staleness** is `check_freshness(now, max_age)` —
+  but `issued_at` is the server's *boot time* (the bundle is built once
+  at startup), so set `max_age` ≥ expected uptime, and lean on
+  `check_channel_binding` (per-boot `channel_pub`) as the real
+  anti-replay for DPF/Harmony. `check_freshness` always rejects
+  future-dated bundles (300 s skew) and is the main staleness guard for
+  the channel-binding-less OnionPIR path.
 - **pir1 has no SEV.** Step 1 (hardware attestation) is absent;
   `binary_sha256` there is self-reported and pinned only for drift
   detection. Channel binding + operator endorsement still hold.
@@ -265,7 +270,8 @@ await adapter.connect();
   parser/chain check via the WASM `verifyAnnounceResponse` binding
   (operator-pin + chain; channel-binding N/A — no attest/channel there).
 - ⏳ Playground still needs to render the badge from the snapshot;
-  `issued_at` freshness policy not enforced.
+  `check_freshness(now, maxAge)` available (Rust + WASM + adapter
+  `maxAnnounceAgeSeconds`); validity enforced via real `now`.
 
 ### Remaining work
 
@@ -276,4 +282,3 @@ await adapter.connect();
   `adapter.operatorIdentity.serverN.state` / `onOperatorIdentity`. The
   gating already lives in the adapter; the badge is the only remaining
   piece, in the playground repo.
-- **F** — enforce `valid_until` / `issued_at` freshness policy in clients.

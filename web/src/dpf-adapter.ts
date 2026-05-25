@@ -174,11 +174,16 @@ export function gateOperatorIdentity(
   pinnedOperatorPubkey: Uint8Array,
   expectedChannelPub: Uint8Array,
   nowUnixSeconds: bigint,
+  maxAgeSeconds: bigint = 0n,
 ): OperatorIdentity {
   try {
     // checkPinnedOperator already requires chainVerified internally.
     v.checkPinnedOperator(pinnedOperatorPubkey, nowUnixSeconds);
     v.checkChannelBinding(expectedChannelPub);
+    // Replay/staleness guard. With maxAgeSeconds=0n only the future-dated
+    // arm runs (issued_at is the server's boot time, so a default
+    // staleness cap would wrongly reject long-uptime servers).
+    v.checkFreshness(nowUnixSeconds, maxAgeSeconds);
     return {
       state: 'verified',
       serverId: v.serverId,
@@ -271,6 +276,14 @@ export interface BatchPirClientConfig {
    * stand-in). Pass a real published key here, or update the constant.
    */
   pinnedOperatorPubkey?: Uint8Array;
+  /**
+   * Replay/staleness cap (seconds) on the announce bundle's `issuedAt`.
+   * `issuedAt` is the server's *boot time*, so set this generously
+   * (≥ expected max uptime). Default `0` = no staleness cap (the
+   * future-dated guard always runs). Only consulted when
+   * `verifyOperatorIdentity`.
+   */
+  maxAnnounceAgeSeconds?: number;
   /** Fires once per server after `connect()` resolves the per-server
    *  operator-identity check (only when `verifyOperatorIdentity`). Use to
    *  surface a "verified operator" badge — gate it on `state === 'verified'`. */
@@ -869,7 +882,8 @@ export class BatchPirClientAdapter {
     }
     try {
       const nowSecs = BigInt(Math.floor(Date.now() / 1000));
-      const result = gateOperatorIdentity(v, pin, att.serverStaticPub, nowSecs);
+      const maxAge = BigInt(this.config.maxAnnounceAgeSeconds ?? 0);
+      const result = gateOperatorIdentity(v, pin, att.serverStaticPub, nowSecs, maxAge);
       if (result.state === 'verified') {
         this.log(`server${idx}: operator identity verified (${result.serverId})`, 'success');
       } else {
