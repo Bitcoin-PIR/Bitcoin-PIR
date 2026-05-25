@@ -579,7 +579,11 @@ async fn test_announce_operator_identity_end_to_end() {
     let mut conn = WsConnection::connect(&url).await.expect("connect");
     let v = announce(&mut conn).await.expect("announce roundtrip");
     assert!(v.chain_verified, "chain check failed: {:?}", v.chain_error);
-    assert_eq!(v.bundle.cert.server_id, "pir-test");
+    // Expected server_id defaults to the local fixture's "pir-test"; override
+    // with PIR_ANNOUNCE_SERVER_ID to verify a real deployment (e.g. "pir1").
+    let expected_server_id =
+        std::env::var("PIR_ANNOUNCE_SERVER_ID").unwrap_or_else(|_| "pir-test".into());
+    assert_eq!(v.bundle.cert.server_id, expected_server_id);
     assert_eq!(
         v.bundle.cert.operator_pubkey, operator_pub,
         "cert's operator_pubkey should match the pinned operator"

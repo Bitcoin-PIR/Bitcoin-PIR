@@ -187,25 +187,28 @@ export const PIR1_PIN: ServerAttestPin = {
  * NOT a bare `operatorPubkeyHex` string-compare, which would miss the
  * cert's operator signature.
  *
- * ⚠️ DEV STAND-IN — NOT FOR PRODUCTION. The value below is the
- * throwaway keypair used by the announce end-to-end test
- * (`test_announce_operator_identity_end_to_end`), pinned so the path is
- * exercisable in dev. Before any deployment relies on operator identity:
- *   1. generate the real operator key offline,
- *   2. publish its pubkey out-of-band (build-time pin here is the MVP;
- *      DNSSEC/Nostr can layer on later), and
- *   3. replace the hex below + record provenance like the pins above.
- * Until then, callers should treat a passing operator-pin check as
- * dev-only and gate any "verified operator" UI on a real pin landing.
+ * Pinned 2026-05-25. Operator key generated offline via
+ * `bpir-admin generate-identity --purpose operator`; the SECRET lives
+ * only on the operator's workstation (`~/.config/bpir-admin/operator.key`,
+ * backed up out-of-band) and signs the pir1 / pir2 `IdentityCert`s
+ * (`bpir-admin sign-identity`, valid_until 2029-05).
  *
- * Full operator runbook + client trust model: docs/OPERATOR_IDENTITY.md.
+ * ⚠️ NOT YET LIVE END-TO-END. pir1/pir2 are *staged* with `--identity-*`
+ * (the bundle is built + logged "Identity announce: enabled"), but the
+ * deployed reproducible binary predates the REQ_ANNOUNCE *dispatch* arm,
+ * so the servers still answer "unsupported request 0x07". Announce goes
+ * live only once a binary carrying the dispatch arm is reproducibly
+ * rebuilt + deployed to pir1 AND baked into the pir2 Tier-3 UKI, with
+ * `binarySha256Hex` (both pins) + pir2 `measurementHex` re-pinned. Keep
+ * any "verified operator" UI gated until then. See
+ * docs/OPERATOR_IDENTITY.md §"Deployment status".
  */
 export const PIR_OPERATOR_PUBKEY_HEX =
-  '47d98cb6483b2b027e4b08e516e26ce414ebb719421a591f66272f9c97bad562';
+  '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a';
 
 /** Decoded 32-byte operator pubkey for
- *  `WasmAnnounceVerification.checkPinnedOperator`. See the loud
- *  DEV-STAND-IN warning on [`PIR_OPERATOR_PUBKEY_HEX`]. */
+ *  `WasmAnnounceVerification.checkPinnedOperator`. See provenance +
+ *  the "not yet live" note on [`PIR_OPERATOR_PUBKEY_HEX`]. */
 export const PIR_OPERATOR_PUBKEY: Uint8Array = (() => {
   const hex = PIR_OPERATOR_PUBKEY_HEX;
   if (hex.length !== 64) {

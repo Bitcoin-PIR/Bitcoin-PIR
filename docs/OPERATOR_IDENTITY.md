@@ -260,10 +260,11 @@ await adapter.connect();
   client `announce` / `announce_with_pinned_operator` / `announce_bound`
   / `check_pinned_operator` / `check_channel_binding`, WASM bindings.
 - ✅ Live-verified e2e (`test_announce_operator_identity_end_to_end`).
-- ✅ Build-time operator-pubkey pin scaffold (`attest-pin.ts`).
-- ⏳ **Pin value is a DEV stand-in** — replace with a real published key.
-- ⏳ **Not deployed** on pir1/pir2 (`--identity-*` flags unset → announce
-  returns "not configured").
+- ✅ Real operator key minted (2026-05-25) + pinned in `attest-pin.ts`
+  (`PIR_OPERATOR_PUBKEY_HEX = 256fb106…`; secret offline at
+  `~/.config/bpir-admin/operator.key`).
+- 🟡 pir1 **staged** with `--identity-*` (server_id=pir1, cert valid to
+  2029) — see Deployment status below. pir2 not yet staged.
 - ✅ `BatchPirClientAdapter` exposes a gated `operatorIdentity` snapshot
   (opt-in via `verifyOperatorIdentity`); `gateOperatorIdentity` unit-tested.
 - ✅ Standalone TS `OnionPirWebClient.announce()` — reuses the Rust
@@ -273,11 +274,41 @@ await adapter.connect();
   `check_freshness(now, maxAge)` available (Rust + WASM + adapter
   `maxAnnounceAgeSeconds`); validity enforced via real `now`.
 
+## Deployment status (2026-05-25)
+
+Operator-identity provisioning is **done**, but announce is **not yet
+functional in production** — the deployed reproducible binary
+(`binarySha256Hex 71a041ae…`, main @ ea4ee8c8) predates the REQ_ANNOUNCE
+**dispatch arm**. It builds + logs the bundle ("Identity announce:
+enabled") yet still answers `unsupported request 0x07`. Verified live:
+`announce()` against `wss://weikeng1.bitcoinpir.org` returns that error.
+
+Done:
+- Operator key + pir1/pir2 `IdentityCert`s signed (valid to 2029).
+- pir1: identity key/cert at `/home/pir/data/pir1-{identity.key,.cert}`;
+  `pir-primary` + `pir-secondary` carry `--identity-*` via systemd drop-in
+  overrides (`/etc/systemd/system/pir-{primary,secondary}.service.d/override.conf`).
+  Both restarted + verified `Identity announce: enabled (server_id=pir1)`.
+- Operator pubkey pinned in `attest-pin.ts`.
+
+To make it live (a coordinated **binary release**, not a flag flip):
+1. Merge the announce dispatch work (the `fb11a0ef` arm) to main.
+2. `nix build .#unified-server` (reproducible) from that commit → new
+   `binary_sha256`.
+3. Deploy the new binary to pir1; rebuild the pir2 Tier-3 UKI with it +
+   the pir2 identity key/cert + `--identity-server-id pir2` baked in.
+4. Re-pin `PIR1_PIN.binarySha256Hex` + `PIR2_TIER3_PIN.binarySha256Hex`
+   (new hash) and `PIR2_TIER3_PIN.measurementHex` (new UKI), capture via
+   `bpir-admin attest`.
+5. pir2 deploy needs the **VPSBG portal** (upload UKI → Save & Reboot;
+   pir2 is unreachable over SSH in Tier 3).
+6. Then flip the web `verifyOperatorIdentity` on / wire the playground badge.
+
 ### Remaining work
 
-- **C** — generate the real operator key + deploy `--identity-*` to
-  pir1/pir2 (replaces the DEV stand-in pin; flips `verifyOperatorIdentity`
-  default to on once live).
+- **C (binary release)** — the 6 steps above; needs a merge + reproducible
+  build + the VPSBG portal for pir2. pir1 identity is staged and will
+  activate the instant the dispatch-arm binary lands.
 - **D (playground)** — render the badge from
   `adapter.operatorIdentity.serverN.state` / `onOperatorIdentity`. The
   gating already lives in the adapter; the badge is the only remaining
