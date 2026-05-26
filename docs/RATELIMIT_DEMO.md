@@ -9,6 +9,10 @@ the user* — can be seen working, not just asserted. Every byte boundary is
 also covered by automated tests (see "What's tested" below); the demo is the
 human-visible capstone.
 
+> **This is a demo, not production rate limiting** (free issuance, dev gate,
+> servers ungated). For the gap to real rate limiting and a sequenced
+> integration plan, see [`RATELIMIT_INTEGRATION.md`](RATELIMIT_INTEGRATION.md).
+
 ## Run it
 
 Two processes, no Lightning, no PIR database:
