@@ -337,20 +337,20 @@
         </section>
 
         <section>
-            <h2>Currently pinned values <span class="badge ok">v11 — 2026-05-05</span></h2>
+            <h2>Currently pinned values <span class="badge ok">v23 — 2026-05-26</span></h2>
             <div class="panel accent">
                 <table class="pin-table">
                     <tr>
                         <td>MEASUREMENT</td>
-                        <td>0662adca3ef25ead88ae763684b6a7261e6d71e75e0a197f26c2439a3b6511c86019968bbd4a44c049ea8e6eb636c346</td>
+                        <td>4fb0ad57b28b7c33e6b2977f911fd6bf407ccf28bbab3ef9d24dceec579464a5961e10f5297a294c7dde24839eca4c6e</td>
                     </tr>
                     <tr>
                         <td>UKI sha256</td>
-                        <td>bd243f817d463114dea187630fa8b0911ccd99cb7b37d39177b9f22e27cc7330</td>
+                        <td>747988fb57b94eb2c26944c17b949a1e77060487ab71245893a725d4191117cd</td>
                     </tr>
                     <tr>
                         <td>binary sha256</td>
-                        <td>f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</td>
+                        <td>57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</td>
                     </tr>
                     <tr>
                         <td>OVMF sha256</td>
@@ -400,19 +400,22 @@
                         initramfs (with <code>unified_server</code> baked in) +
                         cmdline, packaged as a single PE/EFI file.
                     </p>
-                    <a class="download-link" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/releases/download/tier3-v11/bpir-tier3-v11.efi">bpir-tier3-v11.efi <span class="meta">(287&nbsp;MB, GitHub release)</span></a>
+                    <a class="download-link" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/releases/download/tier3-v23/bpir-tier3-v23.efi">bpir-tier3-v23.efi <span class="meta">(85&nbsp;MB, GitHub release)</span></a>
                     <p class="meta" style="margin-top: 6px;">
-                        Verify: <code>sha256sum bpir-tier3-v11.efi</code> →
-                        <code>bd243f817d463114dea187630fa8b0911ccd99cb7b37d39177b9f22e27cc7330</code>
+                        Verify: <code>sha256sum bpir-tier3-v23.efi</code> →
+                        <code>747988fb57b94eb2c26944c17b949a1e77060487ab71245893a725d4191117cd</code>
                     </p>
                     <p class="meta" style="margin-top: 6px;">
-                        Or rebuild from source — see
-                        <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/PHASE3_SLICE3_REPRO_PLAN.md#reproducibility-recipe-post-sub-tasks-1--2--3b--4" target="_blank" rel="noopener">the recipe</a>.
-                        <code>scripts/build_unified_server.sh</code> +
-                        <code>sudo KERNEL=/boot/vmlinuz-7.0.0-15-generic scripts/build_uki_tier3.sh</code> from a
-                        clone at the canonical path
-                        <code>/home/pir/BitcoinPIR</code>. Requires kernel 7.0.0-15, kmod 34.2, dracut 110
-                        (backported from Ubuntu 25.04 plucky).
+                        Or rebuild from source with Nix — the reproducible
+                        path (see <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/BUILD_REPRODUCIBILITY.md" target="_blank" rel="noopener">BUILD_REPRODUCIBILITY.md</a>):
+                        <code>nix build --impure .#tier3-uki</code> on the Hetzner
+                        UKI build host as root, which bakes in the bit-identical
+                        <code>nix build .#unified-server</code> binary via the
+                        full Nix closure. The build is content-addressed (so it
+                        converges across clone paths); <code>--impure</code> is
+                        needed only because the VPSBG-validated kernel
+                        7.0.0-15-generic is sourced from the build host's
+                        <code>/boot</code> + <code>/lib/modules</code>.
                     </p>
                 </li>
 
@@ -428,7 +431,7 @@
 	    --vcpus 2 \
 	    --vcpu-sig 0x00B10F10 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel bpir-tier3-v11.efi \
+	    --kernel bpir-tier3-v23.efi \
 	    --guest-features 0x1</code></pre>
                     <p>
                         Output should be the same hex as the
@@ -452,8 +455,8 @@
                     </p>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-	    --expect-measurement 0662adca3ef25ead88ae763684b6a7261e6d71e75e0a197f26c2439a3b6511c86019968bbd4a44c049ea8e6eb636c346 \
-	    --expect-binary      f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</code></pre>
+	    --expect-measurement 4fb0ad57b28b7c33e6b2977f911fd6bf407ccf28bbab3ef9d24dceec579464a5961e10f5297a294c7dde24839eca4c6e \
+	    --expect-binary      57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</code></pre>
                     <p>
                         Three checkmarks:
                         <code>SEV-SNP REPORT_DATA binding verified</code>,
@@ -482,7 +485,7 @@
                 <table class="pin-table">
                     <tr>
                         <td>binary sha256</td>
-                        <td>f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</td>
+                        <td>57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</td>
                     </tr>
                 </table>
             </div>
@@ -491,7 +494,7 @@
             </p>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng1.bitcoinpir.org \
-	    --expect-binary f9daecb103104c58c40440738557785febdfe2c9724de5b3506bca22a5265c9c</code></pre>
+	    --expect-binary 57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</code></pre>
             <p>
                 Or directly: <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>
                 on the Hetzner host should return the same hash.
@@ -524,10 +527,13 @@
                 <li>The custom OVMF binary itself is binary-pinned, not built
                     from EDK2 source by us. <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/PHASE3_SLICE3_REPRO_PLAN.md" target="_blank" rel="noopener">PHASE3_SLICE3_REPRO_PLAN.md</a>
                     documents this gap.</li>
-                <li>Cross-path determinism (operators building from different
-                    repo-clone paths get different binaries) is closed only
-                    with the <code>/home/pir/BitcoinPIR</code> path
-                    convention; full closure is sub-task 5 (hermetic env).</li>
+                <li>The <code>--impure</code> Nix build sources the VPSBG
+                    kernel (7.0.0-15-generic) from the build host's
+                    <code>/boot</code> rather than a pinned Nix input — a
+                    deliberate, documented break of hermeticity (it is the
+                    only VPSBG-SEV-validated kernel). Cross-path determinism
+                    itself is now closed by the content-addressed Nix
+                    sandbox.</li>
                 <li>AMD's signing keys themselves are trust roots (we can't
                     verify "AMD didn't sign this maliciously"). Mitigated by
                     pinning the ARK fingerprint locally.</li>
