@@ -1,0 +1,18 @@
+# cargo-audit configuration (read by .github/workflows/audit.yml).
+#
+# Each ignore entry must carry a justification and should be re-checked
+# when the dependency path changes.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — "Marvin Attack" timing side-channel in the
+    # `rsa` crate (no fixed release exists). Pulled in via
+    # sev → pir-attest-verify (bpir-admin, pir-sdk-wasm), where RSA is
+    # used ONLY to VERIFY the AMD SEV-SNP cert chain (ARK/ASK/VCEK
+    # RSA-PSS signatures). The Marvin oracle requires the attacker to
+    # time private-key operations (decryption/signing); no RSA private
+    # key exists anywhere in this codebase, so the advisory is not
+    # exploitable here. Re-evaluate if `rsa` ever appears outside the
+    # signature-verification path (cargo tree -i rsa).
+    "RUSTSEC-2023-0071",
+]
