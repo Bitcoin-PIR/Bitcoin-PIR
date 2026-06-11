@@ -46,8 +46,9 @@ git = "https://github.com/Bitcoin-PIR/harmonypir.git"
 rev = "60635d8e526629b2ba99ec5020a55d078a299660"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/weikengchen/libdpf.git"]
+[source."git+https://github.com/weikengchen/libdpf.git?rev=8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"]
 git = "https://github.com/weikengchen/libdpf.git"
+rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"
 replace-with = "vendored-sources"
 
 [source."git+https://github.com/Bitcoin-PIR/arc.git?rev=de6c1709eee0faa32985d5a452be11904ee95de4"]

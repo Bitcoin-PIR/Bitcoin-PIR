@@ -57,7 +57,7 @@ pir-identity = { version = "0.1.0", path = "../pir-identity" }
 getrandom = { version = "0.2", features = ["js"] }
 
 # DPF library — pure Rust, works on any target.
-libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
+libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 
 # HarmonyPIR stateful per-group wrapper (reusable native rlib).
 # Note: no `version` because harmonypir-wasm is not publishable to

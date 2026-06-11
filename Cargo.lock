@@ -1433,7 +1433,7 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 [[package]]
 name = "libdpf"
 version = "0.1.0"
-source = "git+https://github.com/weikengchen/libdpf.git#8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"
+source = "git+https://github.com/weikengchen/libdpf.git?rev=8ceb5903ae38c6f16a5ee92c0706dd50f5a42110#8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"
 dependencies = [
  "aes",
  "cipher",
