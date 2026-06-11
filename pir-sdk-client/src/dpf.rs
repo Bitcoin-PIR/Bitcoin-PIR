@@ -679,6 +679,10 @@ impl DpfClient {
             anchor_kind,
             anchor_bytes,
         };
+        // Reject geometry that would wedge the PBC planners (k < 3 →
+        // infinite rejection-sampling loop) or panic on bin hashing
+        // (0 bins) — see protocol::validate_db_geometry.
+        crate::protocol::validate_db_geometry(&db_info)?;
         // Refuse to proceed if the server's seeds don't match the chain
         // anchor it claims (no-op for legacy DBs).
         db_info
@@ -4028,9 +4032,12 @@ mod tests {
             chunk_bins: 32,
             // Small K keeps the DPF keygen cheap; the K-padding invariant
             // is a function of `index_k`/`chunk_k`, so the shape check is
-            // exercised identically to the production K=75/80.
-            index_k: 2,
-            chunk_k: 2,
+            // exercised identically to the production K=75/80. Must be
+            // >= 3: the PBC planners (`derive_groups_3`) rejection-sample
+            // 3 *distinct* groups mod K — K = 2 spins forever (this
+            // exact fixture hung the suite for 20+ minutes in CI).
+            index_k: 4,
+            chunk_k: 4,
             tag_seed: 0x1234,
             dpf_n_index: 10,
             dpf_n_chunk: 10,

@@ -84,6 +84,23 @@ of the Harmony handlers** were then given the S4/S5 treatment directly:
   amplifier, S5-adjacent).
 - 12 new tests in `unified_server.rs::harmony_dos_guard_tests`.
 
+**New finding closed in the same pass — C7 (major): client-side
+infinite loop on malicious catalog geometry.** Surfaced by this
+review's own C3 regression tests: the `tiny_db_info` fixture used
+`index_k = 2`, and the suite hung forever in CI (20-min job timeout)
+and locally. Root cause: `pir_core::hash::derive_groups_3` /
+`derive_int_groups_3` rejection-sample until they hold 3 **distinct**
+groups mod k — with k < 3 the loop never terminates. `index_k` /
+`chunk_k` are **server-supplied** (`DatabaseInfo` via catalog or
+GET_INFO), so a malicious server advertising k = 2 pinned any client
+(native or WASM — both decode through the same path) at 100 % CPU
+forever; zero `index_bins`/`chunk_bins` would likewise panic bin
+hashing (`h % bins`). Closed by `protocol::validate_db_geometry`
+(k ≥ 3, bins ≥ 1) called from both catalog and legacy-GET_INFO
+decodes, + fixture fixes (k = 4) and decode-rejection tests. The
+standalone TS client is not exposed (its `deriveGroups` uses the
+compile-time K; `deriveIntGroups3(id, k)` has no production callers).
+
 ---
 
 ## Architectural / trust-model (needs a decision)

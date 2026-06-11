@@ -6864,8 +6864,10 @@ mod tests {
             // exercise state round-trip, not PIR correctness.
             index_bins: 32,
             chunk_bins: 32,
-            index_k: 2,
-            chunk_k: 2,
+            // >= 3 so the fixture stays valid for PBC planning
+            // (`derive_groups_3` spins forever below 3 distinct groups).
+            index_k: 4,
+            chunk_k: 4,
             tag_seed: 0x1234_5678_9ABC_DEF0,
             dpf_n_index: 5,
             dpf_n_chunk: 5,
