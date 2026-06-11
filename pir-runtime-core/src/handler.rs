@@ -12,6 +12,22 @@ use pir_core::params;
 use rayon::prelude::*;
 use std::time::Duration;
 
+/// Parse one group's client-supplied DPF key blobs, rejecting malformed
+/// ones instead of panicking (S1). `DpfKey::from_bytes` is not
+/// panic-safe on adversarial bytes (`n - 7` u8 underflow for n < 7), so
+/// blobs are re-validated here even though `decode_batch_query` already
+/// screens wire traffic — handlers are also reachable with
+/// programmatically built `Request`s.
+fn parse_dpf_keys(group_keys: &[Vec<u8>]) -> Result<Vec<DpfKey>, String> {
+    group_keys
+        .iter()
+        .map(|k| {
+            validate_dpf_key_bytes(k).map_err(|e| format!("bad DPF key: {}", e))?;
+            DpfKey::from_bytes(k).map_err(|e| format!("bad DPF key: {}", e))
+        })
+        .collect()
+}
+
 /// Handles PIR requests against a set of loaded databases.
 pub struct RequestHandler {
     state: ServerState,
@@ -247,8 +263,10 @@ impl RequestHandler {
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
 
-        let (result, _dpf_time, _fetch_time) = self.process_index_batch(query, db);
-        Response::IndexBatch(result)
+        match self.process_index_batch(query, db) {
+            Ok((result, _dpf_time, _fetch_time)) => Response::IndexBatch(result),
+            Err(msg) => Response::Error(msg),
+        }
     }
 
     /// Handle a chunk-level DPF batch query.
@@ -258,8 +276,10 @@ impl RequestHandler {
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
 
-        let (result, _dpf_time, _fetch_time) = self.process_chunk_batch(query, db);
-        Response::ChunkBatch(result)
+        match self.process_chunk_batch(query, db) {
+            Ok((result, _dpf_time, _fetch_time)) => Response::ChunkBatch(result),
+            Err(msg) => Response::Error(msg),
+        }
     }
 
     /// Handle a Merkle sibling batch query.
@@ -301,8 +321,10 @@ impl RequestHandler {
             &db.bucket_merkle_chunk_siblings[sib_level]
         };
 
-        let (result, _dpf_time, _fetch_time) = self.process_generic_batch(query, table);
-        Response::BucketMerkleSibBatch(result)
+        match self.process_generic_batch(query, table) {
+            Ok((result, _dpf_time, _fetch_time)) => Response::BucketMerkleSibBatch(result),
+            Err(msg) => Response::Error(msg),
+        }
     }
 
     /// Handle a HarmonyPIR query (Query Server role).
@@ -318,8 +340,25 @@ impl RequestHandler {
             _ => return Response::Error("invalid level".into()),
         };
 
+        // S4: group_id comes straight off the wire — bounds-check it
+        // before slicing the mmap.
         let group_id = query.group_id as usize;
-        let table_bytes = sub_table.group_bytes(group_id);
+        let table_bytes = match sub_table.try_group_bytes(group_id) {
+            Some(b) => b,
+            None => return Response::Error(format!("group_id {} out of range", query.group_id)),
+        };
+
+        // S5: validate the index count before allocating. A legitimate
+        // query carries T − 1 distinct indices in [0, real_n), so more
+        // indices than bins is invalid — reject it instead of reserving
+        // indices.len() × entry_size bytes for an attacker-sized list.
+        if query.indices.len() > sub_table.bins_per_table {
+            return Response::Error(format!(
+                "too many indices: {} > bins_per_table {}",
+                query.indices.len(),
+                sub_table.bins_per_table
+            ));
+        }
 
         let mut data = Vec::with_capacity(query.indices.len() * entry_size);
         for &idx in &query.indices {
@@ -351,17 +390,32 @@ impl RequestHandler {
             _ => return Response::Error("invalid level".into()),
         };
 
-        let items: Vec<HarmonyBatchResultItem> = query
+        let items: Result<Vec<HarmonyBatchResultItem>, String> = query
             .items
             .par_iter()
             .map(|item| {
+                // S4: group_id comes straight off the wire — bounds-check
+                // it before slicing the mmap.
                 let group_id = item.group_id as usize;
-                let table_bytes = sub_table.group_bytes(group_id);
+                let table_bytes = sub_table.try_group_bytes(group_id).ok_or_else(|| {
+                    format!("group_id {} out of range", item.group_id)
+                })?;
 
-                let sub_results: Vec<Vec<u8>> = item
+                let sub_results: Result<Vec<Vec<u8>>, String> = item
                     .sub_queries
                     .iter()
                     .map(|indices| {
+                        // S5: validate the index count before allocating
+                        // (see handle_harmony_query). Out-of-range indices
+                        // within an accepted sub-query are still skipped,
+                        // preserving the existing wire behavior.
+                        if indices.len() > sub_table.bins_per_table {
+                            return Err(format!(
+                                "too many indices: {} > bins_per_table {}",
+                                indices.len(),
+                                sub_table.bins_per_table
+                            ));
+                        }
                         let mut data = Vec::with_capacity(indices.len() * entry_size);
                         for &idx in indices {
                             let idx_usize = idx as usize;
@@ -370,16 +424,21 @@ impl RequestHandler {
                                 data.extend_from_slice(&table_bytes[offset..offset + entry_size]);
                             }
                         }
-                        data
+                        Ok(data)
                     })
                     .collect();
 
-                HarmonyBatchResultItem {
+                Ok(HarmonyBatchResultItem {
                     group_id: item.group_id,
-                    sub_results,
-                }
+                    sub_results: sub_results?,
+                })
             })
             .collect();
+
+        let items = match items {
+            Ok(items) => items,
+            Err(msg) => return Response::Error(msg),
+        };
 
         Response::HarmonyBatchResult(HarmonyBatchResult {
             level: query.level,
@@ -395,17 +454,24 @@ impl RequestHandler {
         &self,
         query: &BatchQuery,
         db: &MappedDatabase,
-    ) -> (BatchResult, Duration, Duration) {
+    ) -> Result<(BatchResult, Duration, Duration), String> {
         let k = db.index.params.k;
         let num_groups = query.keys.len().min(k);
 
         let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b]
-                    .iter()
-                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
-                    .collect();
+                let dpf_keys = parse_dpf_keys(&query.keys[b])?;
+                // Need both cuckoo-position keys: anything less would
+                // index key_refs[0]/key_refs[1] out of bounds (S3).
+                if dpf_keys.len() < params::INDEX_CUCKOO_NUM_HASHES {
+                    return Err(format!(
+                        "INDEX group {} carries {} DPF keys, need {}",
+                        b,
+                        dpf_keys.len(),
+                        params::INDEX_CUCKOO_NUM_HASHES
+                    ));
+                }
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_bytes = db.index.group_bytes(b);
                 let (r0, r1, timing) = eval::process_index_group(
@@ -414,9 +480,9 @@ impl RequestHandler {
                     table_bytes,
                     db.index.bins_per_table,
                 );
-                (vec![r0, r1], timing)
+                Ok((vec![r0, r1], timing))
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
 
         let mut total_dpf = Duration::ZERO;
         let mut total_fetch = Duration::ZERO;
@@ -427,7 +493,7 @@ impl RequestHandler {
             results.push(r);
         }
 
-        (
+        Ok((
             BatchResult {
                 level: 0,
                 round_id: 0,
@@ -435,31 +501,38 @@ impl RequestHandler {
             },
             total_dpf,
             total_fetch,
-        )
+        ))
     }
 
     fn process_chunk_batch(
         &self,
         query: &BatchQuery,
         db: &MappedDatabase,
-    ) -> (BatchResult, Duration, Duration) {
+    ) -> Result<(BatchResult, Duration, Duration), String> {
         let k = db.chunk.params.k;
         let num_groups = query.keys.len().min(k);
 
         let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b]
-                    .iter()
-                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
-                    .collect();
+                let dpf_keys = parse_dpf_keys(&query.keys[b])?;
+                // The eval fast path tracks per-key bits in a fixed
+                // MAX_KEYS_PER_GROUP-slot array (S2).
+                if dpf_keys.len() > eval::MAX_KEYS_PER_GROUP {
+                    return Err(format!(
+                        "group {} carries {} DPF keys, max {}",
+                        b,
+                        dpf_keys.len(),
+                        eval::MAX_KEYS_PER_GROUP
+                    ));
+                }
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_bytes = db.chunk.group_bytes(b);
                 let (r, timing) =
                     eval::process_chunk_group(&key_refs, table_bytes, db.chunk.bins_per_table);
-                (r, timing)
+                Ok((r, timing))
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
 
         let mut total_dpf = Duration::ZERO;
         let mut total_fetch = Duration::ZERO;
@@ -470,7 +543,7 @@ impl RequestHandler {
             results.push(r);
         }
 
-        (
+        Ok((
             BatchResult {
                 level: 1,
                 round_id: query.round_id,
@@ -478,14 +551,14 @@ impl RequestHandler {
             },
             total_dpf,
             total_fetch,
-        )
+        ))
     }
 
     fn process_generic_batch(
         &self,
         query: &BatchQuery,
         table: &MappedSubTable,
-    ) -> (BatchResult, Duration, Duration) {
+    ) -> Result<(BatchResult, Duration, Duration), String> {
         let k = table.params.k;
         let result_size = table.params.bin_size();
         let num_groups = query.keys.len().min(k);
@@ -493,10 +566,17 @@ impl RequestHandler {
         let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b]
-                    .iter()
-                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
-                    .collect();
+                let dpf_keys = parse_dpf_keys(&query.keys[b])?;
+                // The eval fast path tracks per-key bits in a fixed
+                // MAX_KEYS_PER_GROUP-slot array (S2).
+                if dpf_keys.len() > eval::MAX_KEYS_PER_GROUP {
+                    return Err(format!(
+                        "group {} carries {} DPF keys, max {}",
+                        b,
+                        dpf_keys.len(),
+                        eval::MAX_KEYS_PER_GROUP
+                    ));
+                }
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_bytes = table.group_bytes(b);
                 let (r, timing) = eval::process_merkle_sibling_group(
@@ -505,9 +585,9 @@ impl RequestHandler {
                     table.bins_per_table,
                     result_size,
                 );
-                (r, timing)
+                Ok((r, timing))
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
 
         let mut total_dpf = Duration::ZERO;
         let mut total_fetch = Duration::ZERO;
@@ -518,7 +598,7 @@ impl RequestHandler {
             results.push(r);
         }
 
-        (
+        Ok((
             BatchResult {
                 level: query.level,
                 round_id: query.round_id,
@@ -526,6 +606,286 @@ impl RequestHandler {
             },
             total_dpf,
             total_fetch,
-        )
+        ))
+    }
+}
+
+#[cfg(test)]
+mod dos_guard_tests {
+    use super::*;
+    use crate::table::{DatabaseDescriptor, DatabaseType};
+    use libdpf::Dpf;
+    use pir_core::cuckoo::write_header_with_anchor;
+    use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
+    use std::io::Write as _;
+
+    /// bins_per_table for the synthetic test DB. 256 → DPF domain
+    /// n = 8 (`compute_dpf_n`), comfortably above libdpf's structural
+    /// minimum of n = 7.
+    const TEST_BINS: usize = 256;
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "handler_dos_{}_{}_{}.bin",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        p
+    }
+
+    /// Write a legacy (anchor-less) cuckoo file with k groups of
+    /// TEST_BINS bins, every byte of bin `b` in group `g` set to
+    /// `g ^ b`, then mmap it.
+    fn make_subtable(tag: &str, params: pir_core::params::TableParams) -> MappedSubTable {
+        let bin_size = params.bin_size();
+        let mut bytes = write_header_with_anchor(&params, TEST_BINS, 0, None);
+        for g in 0..params.k {
+            for bin in 0..TEST_BINS {
+                let marker = (g as u8) ^ (bin as u8);
+                bytes.extend(std::iter::repeat(marker).take(bin_size));
+            }
+        }
+        let path = temp_path(tag);
+        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        let st = MappedSubTable::load(&path, params);
+        // mmap keeps the inode alive; unlink immediately so failing
+        // tests don't leak temp files.
+        std::fs::remove_file(&path).ok();
+        st
+    }
+
+    fn make_handler() -> RequestHandler {
+        let db = MappedDatabase {
+            descriptor: DatabaseDescriptor {
+                name: "dos-test".into(),
+                db_type: DatabaseType::Full,
+                base_height: 0,
+                height: 0,
+                index_params: INDEX_PARAMS.clone(),
+                chunk_params: CHUNK_PARAMS.clone(),
+            },
+            index: make_subtable("idx", INDEX_PARAMS.clone()),
+            chunk: make_subtable("chk", CHUNK_PARAMS.clone()),
+            bucket_merkle_index_siblings: Vec::new(),
+            bucket_merkle_chunk_siblings: Vec::new(),
+            bucket_merkle_tree_tops: None,
+            bucket_merkle_roots: None,
+            bucket_merkle_root: None,
+            manifest_root: None,
+            manifest: None,
+        };
+        RequestHandler::new(vec![db])
+    }
+
+    fn expect_error(resp: Response, needle: &str) {
+        match resp {
+            Response::Error(msg) => {
+                assert!(msg.contains(needle), "error {:?} missing {:?}", msg, needle)
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    // ─── S1: malformed DPF key bytes ────────────────────────────────────
+
+    /// A garbage key blob used to hit `DpfKey::from_bytes(..).expect(..)`
+    /// → process abort. All-zero bytes additionally declare domain
+    /// n = 0, whose `n - 7` underflows inside libdpf in debug builds.
+    #[test]
+    fn index_batch_garbage_key_returns_error_not_panic() {
+        let h = make_handler();
+        let q = BatchQuery {
+            level: 0,
+            round_id: 0,
+            db_id: 0,
+            keys: vec![vec![vec![0u8; 32], vec![0u8; 32]]],
+        };
+        expect_error(h.handle_request(&Request::IndexBatch(q)), "DPF key");
+    }
+
+    #[test]
+    fn chunk_batch_short_key_returns_error_not_panic() {
+        let h = make_handler();
+        let q = BatchQuery {
+            level: 1,
+            round_id: 0,
+            db_id: 0,
+            keys: vec![vec![vec![0xAAu8; 5], vec![0xBBu8; 5]]],
+        };
+        expect_error(h.handle_request(&Request::ChunkBatch(q)), "DPF key");
+    }
+
+    // ─── S2/S3: key-count guards ────────────────────────────────────────
+
+    /// S3: fewer than INDEX_CUCKOO_NUM_HASHES keys per group used to
+    /// panic at `key_refs[1]`. Built programmatically to bypass the
+    /// decode-time guard and prove the handler's own check.
+    #[test]
+    fn index_batch_single_key_group_returns_error_not_panic() {
+        let h = make_handler();
+        let dpf = Dpf::with_default_key();
+        let q = BatchQuery {
+            level: 0,
+            round_id: 0,
+            db_id: 0,
+            keys: vec![vec![dpf.gen(3, 8).0.to_bytes()]],
+        };
+        expect_error(h.handle_request(&Request::IndexBatch(q)), "need 2");
+    }
+
+    /// S2: more keys than eval's fixed bit array used to write out of
+    /// bounds.
+    #[test]
+    fn chunk_batch_oversized_key_count_returns_error_not_panic() {
+        let h = make_handler();
+        let dpf = Dpf::with_default_key();
+        let keys: Vec<Vec<u8>> = (0..(eval::MAX_KEYS_PER_GROUP as u64 + 1))
+            .map(|i| dpf.gen(i, 8).0.to_bytes())
+            .collect();
+        let q = BatchQuery { level: 1, round_id: 0, db_id: 0, keys: vec![keys] };
+        expect_error(h.handle_request(&Request::ChunkBatch(q)), "max");
+    }
+
+    /// Happy path: a well-formed two-share INDEX query still XORs to the
+    /// addressed bin's content through the hardened path.
+    #[test]
+    fn index_batch_valid_keys_still_xor_to_bin_content() {
+        let h = make_handler();
+        let alpha = 5u64;
+        let n = params::compute_dpf_n(TEST_BINS);
+        let dpf = Dpf::with_default_key();
+        let (q0_s0, q0_s1) = dpf.gen(alpha, n);
+        let (q1_s0, q1_s1) = dpf.gen(7, n);
+
+        let run = |keys: Vec<Vec<Vec<u8>>>| -> BatchResult {
+            match h.handle_request(&Request::IndexBatch(BatchQuery {
+                level: 0,
+                round_id: 0,
+                db_id: 0,
+                keys,
+            })) {
+                Response::IndexBatch(r) => r,
+                other => panic!("expected IndexBatch, got {:?}", other),
+            }
+        };
+        let r_s0 = run(vec![vec![q0_s0.to_bytes(), q1_s0.to_bytes()]]);
+        let r_s1 = run(vec![vec![q0_s1.to_bytes(), q1_s1.to_bytes()]]);
+
+        // share0 ⊕ share1 of the q0 accumulator = group 0, bin 5.
+        let mut xored = r_s0.results[0][0].clone();
+        for (b, s) in xored.iter_mut().zip(&r_s1.results[0][0]) {
+            *b ^= s;
+        }
+        assert_eq!(xored, vec![5u8; eval::INDEX_RESULT_SIZE]);
+    }
+
+    // ─── S4: Harmony group_id bounds ────────────────────────────────────
+
+    #[test]
+    fn harmony_query_group_id_out_of_range_returns_error_not_panic() {
+        let h = make_handler();
+        let q = HarmonyQuery { level: 0, group_id: 250, round_id: 0, indices: vec![0], db_id: 0 };
+        expect_error(h.handle_request(&Request::HarmonyQuery(q)), "group_id");
+    }
+
+    #[test]
+    fn harmony_batch_query_group_id_out_of_range_returns_error_not_panic() {
+        let h = make_handler();
+        let q = HarmonyBatchQuery {
+            level: 1,
+            round_id: 0,
+            sub_queries_per_group: 1,
+            items: vec![HarmonyBatchItem { group_id: 200, sub_queries: vec![vec![0]] }],
+            db_id: 0,
+        };
+        expect_error(h.handle_request(&Request::HarmonyBatchQuery(q)), "group_id");
+    }
+
+    // ─── S5: index-count clamp before allocation ────────────────────────
+
+    #[test]
+    fn harmony_query_oversized_index_count_returns_error_not_panic() {
+        let h = make_handler();
+        let q = HarmonyQuery {
+            level: 1,
+            group_id: 0,
+            round_id: 0,
+            indices: vec![0u32; TEST_BINS + 1],
+            db_id: 0,
+        };
+        expect_error(h.handle_request(&Request::HarmonyQuery(q)), "too many indices");
+    }
+
+    #[test]
+    fn harmony_batch_query_oversized_subquery_returns_error_not_panic() {
+        let h = make_handler();
+        let q = HarmonyBatchQuery {
+            level: 0,
+            round_id: 0,
+            sub_queries_per_group: 1,
+            items: vec![HarmonyBatchItem {
+                group_id: 0,
+                sub_queries: vec![vec![0u32; TEST_BINS + 1]],
+            }],
+            db_id: 0,
+        };
+        expect_error(h.handle_request(&Request::HarmonyBatchQuery(q)), "too many indices");
+    }
+
+    // ─── Harmony happy paths stay intact ────────────────────────────────
+
+    #[test]
+    fn harmony_query_in_range_still_works() {
+        let h = make_handler();
+        let q = HarmonyQuery {
+            level: 0,
+            group_id: 74, // last valid INDEX group (k = 75)
+            round_id: 9,
+            indices: vec![0, 5],
+            db_id: 0,
+        };
+        match h.handle_request(&Request::HarmonyQuery(q)) {
+            Response::HarmonyQueryResult(r) => {
+                assert_eq!(r.group_id, 74);
+                assert_eq!(r.round_id, 9);
+                let entry = INDEX_PARAMS.bin_size();
+                assert_eq!(r.data.len(), 2 * entry);
+                assert!(r.data[..entry].iter().all(|&b| b == (74 ^ 0)));
+                assert!(r.data[entry..].iter().all(|&b| b == (74 ^ 5)));
+            }
+            other => panic!("expected HarmonyQueryResult, got {:?}", other),
+        }
+    }
+
+    /// Out-of-range indices inside an accepted batch sub-query keep the
+    /// existing skip semantics (no error, entry omitted).
+    #[test]
+    fn harmony_batch_query_in_range_still_works_and_skips_bad_indices() {
+        let h = make_handler();
+        let q = HarmonyBatchQuery {
+            level: 0,
+            round_id: 0,
+            sub_queries_per_group: 2,
+            items: vec![HarmonyBatchItem {
+                group_id: 3,
+                sub_queries: vec![vec![2], vec![300]], // 300 ≥ TEST_BINS → skipped
+            }],
+            db_id: 0,
+        };
+        match h.handle_request(&Request::HarmonyBatchQuery(q)) {
+            Response::HarmonyBatchResult(r) => {
+                assert_eq!(r.items.len(), 1);
+                let entry = INDEX_PARAMS.bin_size();
+                assert_eq!(r.items[0].sub_results[0].len(), entry);
+                assert!(r.items[0].sub_results[0].iter().all(|&b| b == (3 ^ 2)));
+                assert!(r.items[0].sub_results[1].is_empty());
+            }
+            other => panic!("expected HarmonyBatchResult, got {:?}", other),
+        }
     }
 }

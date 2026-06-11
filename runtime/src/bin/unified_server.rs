@@ -527,43 +527,99 @@ fn xor_into_hint(dst: &mut [u8], src: &[u8]) {
     }
 }
 
+/// Resolve a HarmonyPIR level byte to its sub-table, entry size, and
+/// hint-key group offset, or `None` if the level doesn't exist for this
+/// DB.
+///
+/// Level mapping (shared by the hint and batch-query paths):
+///   0 = INDEX, 1 = CHUNK
+///   10..10+N = bucket Merkle INDEX sibling L0, L1, ...
+///   20..20+N = bucket Merkle CHUNK sibling L0, L1, ...
+///
+/// The level byte arrives off the wire, so resolution must be total —
+/// an unknown level is a `None` (mapped to `Response::Error` at the
+/// call sites), never a panic: with the workspace-wide
+/// `panic = 'abort'`, a panic here kills the whole server (S4).
+fn harmony_level_table(db: &MappedDatabase, level: u8) -> Option<(&MappedSubTable, usize, u32)> {
+    let index_k = db.index.params.k as u32;
+    let chunk_k = db.chunk.params.k as u32;
+    match level {
+        0 => Some((&db.index, db.index.params.bin_size(), 0)),
+        1 => Some((&db.chunk, db.chunk.params.bin_size(), index_k)),
+        10..=19 => {
+            let sib_level = (level - 10) as usize;
+            let sib = db.bucket_merkle_index_siblings.get(sib_level)?;
+            // k_offset: after INDEX (75) + CHUNK (80) = 155, plus level offset
+            let offset = index_k + chunk_k + sib_level as u32 * index_k;
+            Some((sib, sib.params.bin_size(), offset))
+        }
+        20..=29 => {
+            let sib_level = (level - 20) as usize;
+            let sib = db.bucket_merkle_chunk_siblings.get(sib_level)?;
+            let index_sib_levels = db.bucket_merkle_index_siblings.len() as u32;
+            let offset =
+                index_k + chunk_k + index_sib_levels * index_k + sib_level as u32 * chunk_k;
+            Some((sib, sib.params.bin_size(), offset))
+        }
+        _ => None,
+    }
+}
+
+/// Reject a `REQ_HARMONY_HINTS` request whose level or group ids don't
+/// exist for this DB *before* any blocking hint work is spawned. Both
+/// fields are attacker-controlled. Pre-validating keeps the per-group
+/// streaming contract intact for valid requests (every requested group
+/// yields exactly one record) while turning invalid ones into a clean
+/// `Response::Error` instead of a panic inside the rayon pool (S4) —
+/// and caps the request at one hint per group, so a single frame cannot
+/// queue unbounded PRP work (S5).
+fn validate_harmony_hints_request(
+    db: &MappedDatabase,
+    level: u8,
+    group_ids: &[u8],
+) -> Result<(), String> {
+    let (sub_table, _, _) = harmony_level_table(db, level)
+        .ok_or_else(|| format!("invalid hint level {}", level))?;
+    let k = sub_table.params.k;
+    if group_ids.len() > k {
+        return Err(format!(
+            "too many group_ids: {} > k {} for level {}",
+            group_ids.len(),
+            k,
+            level
+        ));
+    }
+    for &gid in group_ids {
+        if gid as usize >= k {
+            return Err(format!(
+                "group_id {} out of range for level {} (k = {})",
+                gid, level, k
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn compute_hints_for_group(
     db: &MappedDatabase,
     prp_key: &[u8; 16],
     prp_backend: u8,
     level: u8,
     group_id: u8,
-) -> (u8, u32, u32, u32, Vec<u8>) {
-    // Level mapping:
-    //   0 = INDEX, 1 = CHUNK
-    //   10..10+N = bucket Merkle INDEX sibling L0, L1, ...
-    //   20..20+N = bucket Merkle CHUNK sibling L0, L1, ...
-    let (sub_table, entry_size, k_offset) = if level == 0 {
-        (&db.index, db.index.params.bin_size(), 0u32)
-    } else if level == 1 {
-        (&db.chunk, db.chunk.params.bin_size(), db.index.params.k as u32)
-    } else if (10..20).contains(&level) {
-        let sib_level = (level - 10) as usize;
-        if sib_level >= db.bucket_merkle_index_siblings.len() {
-            panic!("invalid bucket merkle index sibling level {}", sib_level);
-        }
-        let sib = &db.bucket_merkle_index_siblings[sib_level];
-        // k_offset: after INDEX (75) + CHUNK (80) = 155, plus level offset
-        let offset = (db.index.params.k + db.chunk.params.k) as u32 + sib_level as u32 * db.index.params.k as u32;
-        (sib, sib.params.bin_size(), offset)
-    } else if (20..30).contains(&level) {
-        let sib_level = (level - 20) as usize;
-        if sib_level >= db.bucket_merkle_chunk_siblings.len() {
-            panic!("invalid bucket merkle chunk sibling level {}", sib_level);
-        }
-        let sib = &db.bucket_merkle_chunk_siblings[sib_level];
-        let index_sib_levels = db.bucket_merkle_index_siblings.len();
-        let offset = (db.index.params.k + db.chunk.params.k) as u32
-            + (index_sib_levels * db.index.params.k + sib_level * db.chunk.params.k) as u32;
-        (sib, sib.params.bin_size(), offset)
-    } else {
-        panic!("invalid hint level {}", level);
-    };
+) -> Result<(u8, u32, u32, u32, Vec<u8>), String> {
+    // Requests are pre-screened by validate_harmony_hints_request, but
+    // stay total here too — an Err drops the group record, never the
+    // process.
+    let (sub_table, entry_size, k_offset) = harmony_level_table(db, level)
+        .ok_or_else(|| format!("invalid hint level {}", level))?;
+
+    // S4: group_id comes off the wire — bounds-check before slicing the
+    // mmap (group_id ≥ k would read past the table, and panic = 'abort'
+    // turns that into a full-process kill). Checked before the PRP work
+    // below so a rejected group costs nothing.
+    let table_bytes = sub_table
+        .try_group_bytes(group_id as usize)
+        .ok_or_else(|| format!("group_id {} out of range for level {}", group_id, level))?;
 
     let real_n = sub_table.bins_per_table;
     let w = entry_size;
@@ -597,7 +653,6 @@ fn compute_hints_for_group(
     };
 
     let mut hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w]).collect();
-    let table_bytes = sub_table.group_bytes(group_id as usize);
     for k in 0..pn {
         let segment = cell_of[k] / t;
         if k < real_n {
@@ -607,7 +662,114 @@ fn compute_hints_for_group(
     }
 
     let flat: Vec<u8> = hints.into_iter().flat_map(|h| h.into_iter()).collect();
-    (group_id, padded_n, t_val, m as u32, flat)
+    Ok((group_id, padded_n, t_val, m as u32, flat))
+}
+
+/// Serve a single HarmonyPIR query against `db`. Free-function seam for
+/// `UnifiedServerData::handle_harmony_query` so the S4/S5 guards are
+/// unit-testable without booting the multi-GB server state (same
+/// pattern as `build_announce_response`).
+fn harmony_query_response(db: &MappedDatabase, query: &HarmonyQuery) -> Response {
+    let (sub_table, entry_size) = match query.level {
+        0 => (&db.index, db.index.params.bin_size()),
+        1 => (&db.chunk, db.chunk.params.bin_size()),
+        _ => return Response::Error("invalid level".into()),
+    };
+
+    // S4: group_id comes straight off the wire — bounds-check it before
+    // slicing the mmap.
+    let group_id = query.group_id as usize;
+    let table_bytes = match sub_table.try_group_bytes(group_id) {
+        Some(b) => b,
+        None => return Response::Error(format!("group_id {} out of range", query.group_id)),
+    };
+
+    // S5: validate the index count before allocating. A legitimate
+    // query carries T − 1 distinct indices in [0, real_n), so more
+    // indices than bins is invalid — reject it instead of reserving
+    // indices.len() × entry_size bytes for an attacker-sized list.
+    if query.indices.len() > sub_table.bins_per_table {
+        return Response::Error(format!(
+            "too many indices: {} > bins_per_table {}",
+            query.indices.len(),
+            sub_table.bins_per_table
+        ));
+    }
+
+    let mut data = Vec::with_capacity(query.indices.len() * entry_size);
+    for &idx in &query.indices {
+        let idx_usize = idx as usize;
+        if idx_usize >= sub_table.bins_per_table {
+            return Response::Error(format!("index {} out of range", idx));
+        }
+        let offset = idx_usize * entry_size;
+        data.extend_from_slice(&table_bytes[offset..offset + entry_size]);
+    }
+
+    Response::HarmonyQueryResult(HarmonyQueryResult {
+        group_id: query.group_id,
+        round_id: query.round_id,
+        data,
+    })
+}
+
+/// Serve a HarmonyPIR batch query against `db`. Free-function seam for
+/// `UnifiedServerData::handle_harmony_batch_query` (see
+/// `harmony_query_response`). Unlike the single-query path this also
+/// serves the bucket-Merkle sibling levels, and zero-fills out-of-range
+/// indices inside an accepted sub-query (pre-existing wire behavior of
+/// this binary) rather than skipping them.
+fn harmony_batch_response(db: &MappedDatabase, query: &HarmonyBatchQuery) -> Response {
+    let (sub_table, entry_size, _) = match harmony_level_table(db, query.level) {
+        Some(t) => t,
+        None => return Response::Error(format!("invalid level {}", query.level)),
+    };
+
+    let result_items: Result<Vec<HarmonyBatchResultItem>, String> = query.items
+        .par_iter()
+        .map(|item| {
+            // S4: group_id comes straight off the wire — bounds-check
+            // it before slicing the mmap.
+            let table_bytes = sub_table
+                .try_group_bytes(item.group_id as usize)
+                .ok_or_else(|| format!("group_id {} out of range", item.group_id))?;
+            let sub_results: Result<Vec<Vec<u8>>, String> = item.sub_queries.iter().map(|indices| {
+                // S5: validate the index count before allocating (see
+                // harmony_query_response).
+                if indices.len() > sub_table.bins_per_table {
+                    return Err(format!(
+                        "too many indices: {} > bins_per_table {}",
+                        indices.len(),
+                        sub_table.bins_per_table
+                    ));
+                }
+                let mut data = Vec::with_capacity(indices.len() * entry_size);
+                for &idx in indices {
+                    let idx_usize = idx as usize;
+                    if idx_usize < sub_table.bins_per_table {
+                        let off = idx_usize * entry_size;
+                        data.extend_from_slice(&table_bytes[off..off + entry_size]);
+                    } else {
+                        data.extend(std::iter::repeat_n(0u8, entry_size));
+                    }
+                }
+                Ok(data)
+            }).collect();
+            Ok(HarmonyBatchResultItem { group_id: item.group_id, sub_results: sub_results? })
+        })
+        .collect();
+
+    let result_items = match result_items {
+        Ok(items) => items,
+        Err(msg) => return Response::Error(msg),
+    };
+
+    Response::HarmonyBatchResult(HarmonyBatchResult {
+        level: query.level,
+        round_id: query.round_id,
+        sub_results_per_group: query.sub_queries_per_group,
+        items: result_items,
+    })
 }
 
 // ─── Server state ───────────────────────────────────────────────────────────
@@ -1180,31 +1342,7 @@ impl UnifiedServerData {
             Some(d) => d,
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
-
-        let (sub_table, entry_size) = match query.level {
-            0 => (&db.index, db.index.params.bin_size()),
-            1 => (&db.chunk, db.chunk.params.bin_size()),
-            _ => return Response::Error("invalid level".into()),
-        };
-
-        let group_id = query.group_id as usize;
-        let table_bytes = sub_table.group_bytes(group_id);
-
-        let mut data = Vec::with_capacity(query.indices.len() * entry_size);
-        for &idx in &query.indices {
-            let idx_usize = idx as usize;
-            if idx_usize >= sub_table.bins_per_table {
-                return Response::Error(format!("index {} out of range", idx));
-            }
-            let offset = idx_usize * entry_size;
-            data.extend_from_slice(&table_bytes[offset..offset + entry_size]);
-        }
-
-        Response::HarmonyQueryResult(HarmonyQueryResult {
-            group_id: query.group_id,
-            round_id: query.round_id,
-            data,
-        })
+        harmony_query_response(db, query)
     }
 
     fn handle_harmony_batch_query(&self, query: &HarmonyBatchQuery) -> Response {
@@ -1212,60 +1350,7 @@ impl UnifiedServerData {
             Some(d) => d,
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
-
-        // Level mapping (same as hint levels):
-        //   0 = INDEX, 1 = CHUNK
-        //   10..10+N = bucket Merkle INDEX sibling L0, L1, ...
-        //   20..20+N = bucket Merkle CHUNK sibling L0, L1, ...
-        let (sub_table, entry_size) = if query.level == 0 {
-            (&db.index, db.index.params.bin_size())
-        } else if query.level == 1 {
-            (&db.chunk, db.chunk.params.bin_size())
-        } else if query.level >= 10 && query.level < 20 {
-            let sib_level = (query.level - 10) as usize;
-            if sib_level >= db.bucket_merkle_index_siblings.len() {
-                return Response::Error(format!("invalid bucket merkle index sib level {}", sib_level));
-            }
-            let sib = &db.bucket_merkle_index_siblings[sib_level];
-            (sib, sib.params.bin_size())
-        } else if query.level >= 20 && query.level < 30 {
-            let sib_level = (query.level - 20) as usize;
-            if sib_level >= db.bucket_merkle_chunk_siblings.len() {
-                return Response::Error(format!("invalid bucket merkle chunk sib level {}", sib_level));
-            }
-            let sib = &db.bucket_merkle_chunk_siblings[sib_level];
-            (sib, sib.params.bin_size())
-        } else {
-            return Response::Error(format!("invalid level {}", query.level));
-        };
-
-        let result_items: Vec<HarmonyBatchResultItem> = query.items
-            .par_iter()
-            .map(|item| {
-                let table_bytes = sub_table.group_bytes(item.group_id as usize);
-                let sub_results: Vec<Vec<u8>> = item.sub_queries.iter().map(|indices| {
-                    let mut data = Vec::with_capacity(indices.len() * entry_size);
-                    for &idx in indices {
-                        let idx_usize = idx as usize;
-                        if idx_usize < sub_table.bins_per_table {
-                            let off = idx_usize * entry_size;
-                            data.extend_from_slice(&table_bytes[off..off + entry_size]);
-                        } else {
-                            data.extend(std::iter::repeat_n(0u8, entry_size));
-                        }
-                    }
-                    data
-                }).collect();
-                HarmonyBatchResultItem { group_id: item.group_id, sub_results }
-            })
-            .collect();
-
-        Response::HarmonyBatchResult(HarmonyBatchResult {
-            level: query.level,
-            round_id: query.round_id,
-            sub_results_per_group: query.sub_queries_per_group,
-            items: result_items,
-        })
+        harmony_batch_response(db, query)
     }
 }
 
@@ -3293,11 +3378,24 @@ async fn main() {
                             let prp_backend = hint_req.prp_backend;
                             let group_ids = hint_req.group_ids.clone();
                             let db_id = hint_req.db_id;
-                            // Validate db_id before spawning blocking work.
-                            if server.state.get_db(db_id).is_none() {
-                                let resp = Response::Error(format!("unknown db_id {}", db_id));
-                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
-                                continue;
+                            // Validate db_id, level, and group_ids before
+                            // spawning blocking work — all three come off
+                            // the wire (S4: an out-of-range group_id or
+                            // unknown level previously panicked inside the
+                            // rayon pool, aborting the whole server).
+                            match server.state.get_db(db_id) {
+                                None => {
+                                    let resp = Response::Error(format!("unknown db_id {}", db_id));
+                                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                                    continue;
+                                }
+                                Some(db) => {
+                                    if let Err(msg) = validate_harmony_hints_request(db, level, &group_ids) {
+                                        let resp = Response::Error(msg);
+                                        let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                                        continue;
+                                    }
+                                }
                             }
                             let s = Arc::clone(&server);
 
@@ -3305,8 +3403,11 @@ async fn main() {
                             tokio::task::spawn_blocking(move || {
                                 let db = s.state.get_db(db_id).expect("db_id checked before spawn");
                                 group_ids.par_iter().for_each_with(tx, |tx, &bid| {
-                                    let result = compute_hints_for_group(db, &prp_key, prp_backend, level, bid);
-                                    let _ = tx.blocking_send(result);
+                                    // Validated above; an Err here would only
+                                    // drop this group's record, not the process.
+                                    if let Ok(result) = compute_hints_for_group(db, &prp_key, prp_backend, level, bid) {
+                                        let _ = tx.blocking_send(result);
+                                    }
                                 });
                             });
 
@@ -3959,5 +4060,297 @@ mod announce_dispatch_tests {
             ),
             other => panic!("expected Error, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod harmony_dos_guard_tests {
+    //! S4/S5 guards for this binary's own inline Harmony handlers —
+    //! the duplicates of `pir-runtime-core`'s `RequestHandler` paths
+    //! (whose twins live in that crate's `dos_guard_tests`), plus the
+    //! binary-only `REQ_HARMONY_HINTS` path. With the workspace-wide
+    //! `panic = 'abort'`, each unguarded path was a single-frame
+    //! unauthenticated full-process kill.
+    //!
+    //! Exercised through the free-function seams
+    //! (`harmony_query_response`, `harmony_batch_response`,
+    //! `validate_harmony_hints_request`, `compute_hints_for_group`)
+    //! because the full `UnifiedServerData` needs a multi-GB
+    //! checkpoint to boot — same pattern as `announce_dispatch_tests`.
+    use super::*;
+    use pir_core::cuckoo::write_header_with_anchor;
+    use std::io::Write as _;
+
+    /// bins_per_table for the synthetic test DB (mirrors the
+    /// pir-runtime-core dos_guard_tests geometry).
+    const TEST_BINS: usize = 256;
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "unified_dos_{}_{}_{}.bin",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        p
+    }
+
+    /// Write a legacy (anchor-less) cuckoo file with k groups of
+    /// TEST_BINS bins, every byte of bin `b` in group `g` set to
+    /// `g ^ b`, then mmap it.
+    fn make_subtable(tag: &str, params: pir_core::params::TableParams) -> MappedSubTable {
+        let bin_size = params.bin_size();
+        let mut bytes = write_header_with_anchor(&params, TEST_BINS, 0, None);
+        for g in 0..params.k {
+            for bin in 0..TEST_BINS {
+                let marker = (g as u8) ^ (bin as u8);
+                bytes.extend(std::iter::repeat(marker).take(bin_size));
+            }
+        }
+        let path = temp_path(tag);
+        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        let st = MappedSubTable::load(&path, params);
+        // mmap keeps the inode alive; unlink immediately so failing
+        // tests don't leak temp files.
+        std::fs::remove_file(&path).ok();
+        st
+    }
+
+    /// Synthetic DB with one bucket-Merkle INDEX sibling level so the
+    /// sibling branches of `harmony_level_table` are reachable.
+    fn make_db() -> MappedDatabase {
+        MappedDatabase {
+            descriptor: DatabaseDescriptor {
+                name: "dos-test".into(),
+                db_type: DatabaseType::Full,
+                base_height: 0,
+                height: 0,
+                index_params: INDEX_PARAMS.clone(),
+                chunk_params: CHUNK_PARAMS.clone(),
+            },
+            index: make_subtable("idx", INDEX_PARAMS.clone()),
+            chunk: make_subtable("chk", CHUNK_PARAMS.clone()),
+            bucket_merkle_index_siblings: vec![make_subtable("isib0", INDEX_PARAMS.clone())],
+            bucket_merkle_chunk_siblings: Vec::new(),
+            bucket_merkle_tree_tops: None,
+            bucket_merkle_roots: None,
+            bucket_merkle_root: None,
+            manifest_root: None,
+            manifest: None,
+        }
+    }
+
+    fn expect_error(resp: Response, needle: &str) {
+        match resp {
+            Response::Error(msg) => {
+                assert!(msg.contains(needle), "error {:?} missing {:?}", msg, needle)
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    // ─── S4: wire group_id slices the mmap ──────────────────────────────
+
+    #[test]
+    fn single_query_group_id_out_of_range_returns_error() {
+        // k = 75 for INDEX; group_id 250 previously sliced ~175 groups
+        // past the mmap end → panic → abort.
+        let db = make_db();
+        let q = HarmonyQuery { level: 0, group_id: 250, round_id: 0, indices: vec![0], db_id: 0 };
+        expect_error(harmony_query_response(&db, &q), "out of range");
+    }
+
+    #[test]
+    fn batch_query_group_id_out_of_range_returns_error() {
+        let db = make_db();
+        let q = HarmonyBatchQuery {
+            level: 1,
+            round_id: 7,
+            sub_queries_per_group: 1,
+            items: vec![HarmonyBatchItem { group_id: 250, sub_queries: vec![vec![0]] }],
+            db_id: 0,
+        };
+        expect_error(harmony_batch_response(&db, &q), "out of range");
+    }
+
+    #[test]
+    fn batch_query_unknown_level_returns_error() {
+        // Sibling levels that don't exist for this DB (INDEX sib L1,
+        // any CHUNK sib) and junk levels all map to a clean error.
+        let db = make_db();
+        for level in [2u8, 11, 19, 20, 29, 42, 255] {
+            let q = HarmonyBatchQuery {
+                level,
+                round_id: 0,
+                sub_queries_per_group: 1,
+                items: vec![HarmonyBatchItem { group_id: 0, sub_queries: vec![vec![0]] }],
+                db_id: 0,
+            };
+            expect_error(harmony_batch_response(&db, &q), "invalid level");
+        }
+    }
+
+    // ─── S5: index count drives the pre-allocation ───────────────────────
+
+    #[test]
+    fn single_query_too_many_indices_returns_error() {
+        // A legitimate query sends T − 1 < bins_per_table indices; an
+        // attacker-sized list previously reserved len × entry_size
+        // bytes before any range check ran.
+        let db = make_db();
+        let q = HarmonyQuery {
+            level: 0,
+            group_id: 0,
+            round_id: 0,
+            indices: vec![0; TEST_BINS + 1],
+            db_id: 0,
+        };
+        expect_error(harmony_query_response(&db, &q), "too many indices");
+    }
+
+    #[test]
+    fn batch_query_too_many_indices_returns_error() {
+        let db = make_db();
+        let q = HarmonyBatchQuery {
+            level: 0,
+            round_id: 0,
+            sub_queries_per_group: 1,
+            items: vec![HarmonyBatchItem { group_id: 0, sub_queries: vec![vec![0; TEST_BINS + 1]] }],
+            db_id: 0,
+        };
+        expect_error(harmony_batch_response(&db, &q), "too many indices");
+    }
+
+    // ─── Happy paths: legitimate traffic is byte-identical ───────────────
+
+    #[test]
+    fn single_query_returns_requested_bins() {
+        let db = make_db();
+        let bin_size = db.index.params.bin_size();
+        let q = HarmonyQuery { level: 0, group_id: 3, round_id: 9, indices: vec![0, 5, 7], db_id: 0 };
+        match harmony_query_response(&db, &q) {
+            Response::HarmonyQueryResult(r) => {
+                assert_eq!(r.group_id, 3);
+                assert_eq!(r.round_id, 9);
+                assert_eq!(r.data.len(), 3 * bin_size);
+                for (i, &bin) in [0u8, 5, 7].iter().enumerate() {
+                    let expect = 3u8 ^ bin;
+                    assert!(
+                        r.data[i * bin_size..(i + 1) * bin_size].iter().all(|&b| b == expect),
+                        "bin {} contents wrong", bin
+                    );
+                }
+            }
+            other => panic!("expected HarmonyQueryResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_query_index_out_of_range_returns_error() {
+        // Pre-existing behavior of the single-query path: an
+        // out-of-range index *value* is an error (the batch path
+        // zero-fills instead).
+        let db = make_db();
+        let q = HarmonyQuery {
+            level: 0,
+            group_id: 0,
+            round_id: 0,
+            indices: vec![TEST_BINS as u32],
+            db_id: 0,
+        };
+        expect_error(harmony_query_response(&db, &q), "out of range");
+    }
+
+    #[test]
+    fn batch_query_serves_main_and_sibling_levels_and_zero_fills() {
+        let db = make_db();
+        // level 10 = INDEX sibling L0 — exists in make_db.
+        for level in [0u8, 1, 10] {
+            let (sub_table, bin_size, _) = harmony_level_table(&db, level).unwrap();
+            assert_eq!(sub_table.bins_per_table, TEST_BINS);
+            let q = HarmonyBatchQuery {
+                level,
+                round_id: 4,
+                sub_queries_per_group: 1,
+                // One in-range index and one out-of-range *value*
+                // (zero-filled — pre-existing wire behavior).
+                items: vec![HarmonyBatchItem {
+                    group_id: 2,
+                    sub_queries: vec![vec![1, TEST_BINS as u32]],
+                }],
+                db_id: 0,
+            };
+            match harmony_batch_response(&db, &q) {
+                Response::HarmonyBatchResult(r) => {
+                    assert_eq!(r.level, level);
+                    assert_eq!(r.items.len(), 1);
+                    let data = &r.items[0].sub_results[0];
+                    assert_eq!(data.len(), 2 * bin_size);
+                    assert!(data[..bin_size].iter().all(|&b| b == 2u8 ^ 1u8));
+                    assert!(data[bin_size..].iter().all(|&b| b == 0));
+                }
+                other => panic!("level {}: expected HarmonyBatchResult, got {:?}", level, other),
+            }
+        }
+    }
+
+    // ─── REQ_HARMONY_HINTS pre-validation + total hint computation ──────
+
+    #[test]
+    fn hints_validation_rejects_bad_level_group_and_count() {
+        let db = make_db();
+        // Unknown levels (11 = INDEX sib L1 doesn't exist, 20 = no
+        // CHUNK sibs at all).
+        for level in [2u8, 11, 20, 42] {
+            assert!(validate_harmony_hints_request(&db, level, &[0]).is_err());
+        }
+        // group_id ≥ k (k = 75 for INDEX).
+        assert!(validate_harmony_hints_request(&db, 0, &[0, 74]).is_ok());
+        assert!(validate_harmony_hints_request(&db, 0, &[75]).is_err());
+        assert!(validate_harmony_hints_request(&db, 0, &[250]).is_err());
+        // More group_ids than groups (duplicate-amplification cap).
+        let too_many = vec![0u8; INDEX_PARAMS.k + 1];
+        assert!(validate_harmony_hints_request(&db, 0, &too_many).is_err());
+        // The full legitimate sweep 0..k is accepted for every level
+        // that exists.
+        for (level, k) in [(0u8, INDEX_PARAMS.k), (1, CHUNK_PARAMS.k), (10, INDEX_PARAMS.k)] {
+            let all: Vec<u8> = (0..k as u8).collect();
+            assert!(validate_harmony_hints_request(&db, level, &all).is_ok());
+        }
+    }
+
+    #[test]
+    fn compute_hints_invalid_level_returns_err_not_panic() {
+        // Previously `panic!("invalid hint level {}")` inside the rayon
+        // pool → abort.
+        let db = make_db();
+        let key = [7u8; 16];
+        assert!(compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 42, 0).is_err());
+        assert!(compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 11, 0).is_err());
+    }
+
+    #[test]
+    fn compute_hints_group_out_of_range_returns_err_not_panic() {
+        // Previously sliced the mmap at group 250 of 75 → panic → abort.
+        let db = make_db();
+        let key = [7u8; 16];
+        assert!(compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 0, 250).is_err());
+    }
+
+    #[test]
+    fn compute_hints_happy_path_still_serves() {
+        let db = make_db();
+        let key = [7u8; 16];
+        let (group_id, n, t, m, flat) =
+            compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 0, 3)
+                .expect("legitimate hint request must still be served");
+        assert_eq!(group_id, 3);
+        assert!(n as usize >= TEST_BINS);
+        assert!(t > 0 && m > 0);
+        assert_eq!(flat.len(), m as usize * db.index.params.bin_size());
     }
 }

@@ -1,0 +1,67 @@
+name: Security audit
+
+# RustSec advisory scan (review finding I7). `cargo audit` parses the
+# workspace Cargo.lock — the authoritative, fully-pinned dependency set
+# (docs/BUILD_REPRODUCIBILITY.md) — and reports any crate version with a
+# known RustSec advisory (vulnerabilities, unmaintained / yanked crates).
+#
+# This job is advisory-only by design — do NOT add it to the branch-
+# protection required checks:
+#   1. It needs network access to fetch the RustSec advisory DB, unlike
+#      the hermetic vendored/offline build everything else uses.
+#   2. New advisories appear without any code change, so a previously
+#      green commit can turn red overnight. The weekly scheduled run is
+#      the primary signal; the push/PR runs only catch Cargo.lock
+#      changes that introduce an already-known-vulnerable version.
+#
+# Git dependencies (libdpf, harmonypir, onionpir fork, arc, fastprp) are
+# not indexed by the advisory DB and are skipped — coverage here is for
+# the crates.io portion of the lockfile.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - '.github/workflows/audit.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - '.github/workflows/audit.yml'
+  workflow_dispatch:
+  # Weekly sweep — catches advisories published against versions already
+  # in the lockfile. Monday 06:23 UTC = off-peak, staggered from the
+  # daily 06:17 pir-sdk-integration canary.
+  schedule:
+    - cron: '23 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Plain `cargo install` (~2-3 min) instead of a cached or
+      # prebuilt-binary action: this job runs weekly + on lockfile
+      # changes only, and a stale cached binary would silently scan
+      # with an outdated advisory-matching engine.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Reads Cargo.lock directly (no build, no vendor/ access) and
+      # fetches the advisory DB from github.com/rustsec/advisory-db.
+      - name: Run cargo audit
+        run: cargo audit

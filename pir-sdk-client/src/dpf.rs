@@ -679,6 +679,10 @@ impl DpfClient {
             anchor_kind,
             anchor_bytes,
         };
+        // Reject geometry that would wedge the PBC planners (k < 3 →
+        // infinite rejection-sampling loop) or panic on bin hashing
+        // (0 bins) — see protocol::validate_db_geometry.
+        crate::protocol::validate_db_geometry(&db_info)?;
         // Refuse to proceed if the server's seeds don't match the chain
         // anchor it claims (no-op for legacy DBs).
         db_info
@@ -828,7 +832,7 @@ impl DpfClient {
                 );
             }
 
-            let entries = decode_utxo_entries(&real_data);
+            let entries = decode_utxo_entries(&real_data)?;
 
             results.push(Some(QueryResult {
                 entries,
@@ -1076,7 +1080,7 @@ impl DpfClient {
         traces.chunk_bins = chunk_bins;
 
         // Step 3: Decode UTXO entries
-        let entries = decode_utxo_entries(&chunk_data);
+        let entries = decode_utxo_entries(&chunk_data)?;
 
         Ok((
             Some(QueryResult {
@@ -1241,6 +1245,10 @@ impl DpfClient {
         // Parse responses
         let results0 = decode_batch_response(&resp0[4..])?; // skip length prefix
         let results1 = decode_batch_response(&resp1[4..])?;
+        // Server-declared shape must cover the K × INDEX_CUCKOO_NUM_HASHES
+        // request before the results[group][h] indexing below.
+        check_batch_response_shape(&results0, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server0")?;
+        check_batch_response_shape(&results1, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server1")?;
 
         // Compute expected tag
         let my_tag = pir_core::hash::compute_tag(tag_seed, script_hash);
@@ -1454,6 +1462,10 @@ impl DpfClient {
 
             let results0 = decode_batch_response(&resp0[4..])?;
             let results1 = decode_batch_response(&resp1[4..])?;
+            // Server-declared shape must cover the K × INDEX_CUCKOO_NUM_HASHES
+            // request before the results[group][h] indexing below.
+            check_batch_response_shape(&results0, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server0")?;
+            check_batch_response_shape(&results1, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server1")?;
 
             // Decode each scripthash placed in THIS round.
             for &(sh_idx, pbc_group) in round {
@@ -1657,6 +1669,10 @@ impl DpfClient {
             // Parse and XOR results
             let results0 = decode_batch_response(&resp0[4..])?;
             let results1 = decode_batch_response(&resp1[4..])?;
+            // Server-declared shape must cover the K × CHUNK_CUCKOO_NUM_HASHES
+            // request before the results[group][h] indexing below.
+            check_batch_response_shape(&results0, k, CHUNK_CUCKOO_NUM_HASHES, "CHUNK server0")?;
+            check_batch_response_shape(&results1, k, CHUNK_CUCKOO_NUM_HASHES, "CHUNK server1")?;
 
             // Extract chunk data for each chunk in this round
             for &(chunk_id, group_id) in round {
@@ -2538,6 +2554,44 @@ fn decode_batch_response(data: &[u8]) -> PirResult<Vec<Vec<Vec<u8>>>> {
     Ok(results)
 }
 
+/// Validate a decoded batch response against the shape the request
+/// demanded, before any `results[group][h]` double-indexing.
+///
+/// [`decode_batch_response`] faithfully reproduces whatever shape the
+/// server *declared* — `num_groups` / `results_per_group` are
+/// attacker-controlled wire bytes with no tie to the K-padded request.
+/// Without this check, a malicious server answering with fewer groups
+/// (or fewer per-group results) panics the client on the out-of-bounds
+/// index (C3, docs/CODE_REVIEW_2026-06.md). Under-delivery is a decode
+/// error; extra trailing groups/results are tolerated and ignored.
+fn check_batch_response_shape(
+    results: &[Vec<Vec<u8>>],
+    min_groups: usize,
+    min_results_per_group: usize,
+    context: &str,
+) -> PirResult<()> {
+    if results.len() < min_groups {
+        return Err(PirError::Decode(format!(
+            "{}: batch response has {} groups, expected at least {}",
+            context,
+            results.len(),
+            min_groups
+        )));
+    }
+    for (g, group) in results.iter().enumerate().take(min_groups) {
+        if group.len() < min_results_per_group {
+            return Err(PirError::Decode(format!(
+                "{}: batch response group {} has {} results, expected at least {}",
+                context,
+                g,
+                group.len(),
+                min_results_per_group
+            )));
+        }
+    }
+    Ok(())
+}
+
 // ─── PIR helpers ────────────────────────────────────────────────────────────
 
 /// XOR src into dst.
@@ -2642,12 +2696,17 @@ fn plan_chunk_rounds(chunk_ids: &[u32], k: usize) -> Vec<Vec<(u32, usize)>> {
 /// ranges that actually held the varint stream's continuation bytes.
 /// OnionPIR's decoder (`onion.rs:1892`) and `pir_core::codec::parse_utxo_data`
 /// were always correct; the regression only affected DPF + HarmonyPIR.
-fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
+///
+/// The chunk bytes are server-controlled and decoded *before* Merkle
+/// verification, so a malformed varint is a `PirError::Decode`, never a
+/// panic (C2, docs/CODE_REVIEW_2026-06.md).
+fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
     let mut entries = Vec::new();
     if data.is_empty() {
-        return entries;
+        return Ok(entries);
     }
-    let (count, mut pos) = pir_core::codec::read_varint(data);
+    let (count, mut pos) = pir_core::codec::try_read_varint(data)
+        .map_err(|e| PirError::Decode(format!("UTXO count varint: {}", e)))?;
     for _ in 0..count {
         if pos + 32 > data.len() {
             break;
@@ -2658,12 +2717,14 @@ fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
         if pos >= data.len() {
             break;
         }
-        let (vout, vr) = pir_core::codec::read_varint(&data[pos..]);
+        let (vout, vr) = pir_core::codec::try_read_varint(&data[pos..])
+            .map_err(|e| PirError::Decode(format!("UTXO vout varint: {}", e)))?;
         pos += vr;
         if pos >= data.len() {
             break;
         }
-        let (amount, ar) = pir_core::codec::read_varint(&data[pos..]);
+        let (amount, ar) = pir_core::codec::try_read_varint(&data[pos..])
+            .map_err(|e| PirError::Decode(format!("UTXO amount varint: {}", e)))?;
         pos += ar;
         entries.push(UtxoEntry {
             txid,
@@ -2671,7 +2732,7 @@ fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
             amount_sats: amount,
         });
     }
-    entries
+    Ok(entries)
 }
 
 /// Hex-format a 20-byte script hash as "aabbcc..eeff" (first and last 4 bytes).
@@ -3848,5 +3909,170 @@ mod tests {
         let snap = metrics.snapshot();
         assert!(snap.bytes_sent > 0);
         assert!(snap.bytes_received > 0);
+    }
+
+    // ─── Malicious-server robustness (C2/C3, docs/CODE_REVIEW_2026-06.md) ──
+
+    /// Malformed varints in server chunk data must surface as
+    /// `PirError::Decode`, never a panic — the bytes are decoded before
+    /// Merkle verification, so the server can make them anything.
+    #[test]
+    fn decode_utxo_entries_malformed_varint_is_decode_error() {
+        // Count varint runs past 64 bits (previously panicked).
+        let err = decode_utxo_entries(&[0xFF; 16]).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Count varint never terminates before the data ends.
+        let err = decode_utxo_entries(&[0x80]).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Valid count + txid, then a vout varint cut mid-stream.
+        let mut data = Vec::new();
+        pir_core::codec::write_varint(1, &mut data);
+        data.extend_from_slice(&[0xAB; 32]);
+        data.push(0x80); // dangling continuation bit
+        let err = decode_utxo_entries(&data).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+    }
+
+    /// Honest chunk data (including the build pipeline's zero padding
+    /// after the last entry) still decodes exactly as before.
+    #[test]
+    fn decode_utxo_entries_decodes_honest_data_with_padding() {
+        let mut data = Vec::new();
+        pir_core::codec::write_varint(2, &mut data);
+        data.extend_from_slice(&[0x11; 32]);
+        pir_core::codec::write_varint(0, &mut data); // vout
+        pir_core::codec::write_varint(50_000, &mut data); // amount
+        data.extend_from_slice(&[0x22; 32]);
+        pir_core::codec::write_varint(3, &mut data);
+        pir_core::codec::write_varint(123_456_789, &mut data);
+        data.extend_from_slice(&[0u8; 7]); // chunk padding, ignored
+
+        let entries = decode_utxo_entries(&data).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].txid, [0x11; 32]);
+        assert_eq!(entries[0].vout, 0);
+        assert_eq!(entries[0].amount_sats, 50_000);
+        assert_eq!(entries[1].txid, [0x22; 32]);
+        assert_eq!(entries[1].vout, 3);
+        assert_eq!(entries[1].amount_sats, 123_456_789);
+
+        assert!(decode_utxo_entries(&[]).unwrap().is_empty());
+    }
+
+    /// Encode a server batch response of an arbitrary (possibly
+    /// malicious) shape, matching `decode_batch_response`'s wire format.
+    fn make_batch_response_body(
+        num_groups: usize,
+        results_per_group: usize,
+        result: &[u8],
+    ) -> Vec<u8> {
+        let mut data = vec![0x91]; // variant byte (ignored by the decoder)
+        data.extend_from_slice(&0u16.to_le_bytes()); // round_id
+        data.push(num_groups as u8);
+        data.push(results_per_group as u8);
+        for _ in 0..num_groups {
+            for _ in 0..results_per_group {
+                data.extend_from_slice(&(result.len() as u16).to_le_bytes());
+                data.extend_from_slice(result);
+            }
+        }
+        data
+    }
+
+    /// A server declaring fewer groups (or fewer per-group results) than
+    /// the K-padded request demanded must fail the shape check — the old
+    /// `results[group][h]` double-index panicked on it.
+    #[test]
+    fn check_batch_response_shape_rejects_undersized_response() {
+        // num_groups = 1 against a K=75 request.
+        let one_group =
+            decode_batch_response(&make_batch_response_body(1, INDEX_CUCKOO_NUM_HASHES, &[0; 4]))
+                .unwrap();
+        let err = check_batch_response_shape(&one_group, 75, INDEX_CUCKOO_NUM_HASHES, "test")
+            .unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Full group count, but results_per_group = 1 instead of 2.
+        let short_groups =
+            decode_batch_response(&make_batch_response_body(75, 1, &[0; 4])).unwrap();
+        let err = check_batch_response_shape(&short_groups, 75, INDEX_CUCKOO_NUM_HASHES, "test")
+            .unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Empty response (num_groups = 0).
+        let empty = decode_batch_response(&make_batch_response_body(0, 0, &[])).unwrap();
+        assert!(check_batch_response_shape(&empty, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_err());
+    }
+
+    /// The exact shape an honest server sends passes; over-delivery is
+    /// tolerated (the callers index only the requested groups/results).
+    #[test]
+    fn check_batch_response_shape_accepts_honest_and_oversized() {
+        let full =
+            decode_batch_response(&make_batch_response_body(75, INDEX_CUCKOO_NUM_HASHES, &[0; 4]))
+                .unwrap();
+        assert!(check_batch_response_shape(&full, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_ok());
+
+        let oversized =
+            decode_batch_response(&make_batch_response_body(80, 3, &[0; 4])).unwrap();
+        assert!(
+            check_batch_response_shape(&oversized, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_ok()
+        );
+    }
+
+    fn tiny_db_info() -> DatabaseInfo {
+        DatabaseInfo {
+            db_id: 0,
+            kind: DatabaseKind::Full,
+            name: "test".into(),
+            height: 1,
+            index_bins: 32,
+            chunk_bins: 32,
+            // Small K keeps the DPF keygen cheap; the K-padding invariant
+            // is a function of `index_k`/`chunk_k`, so the shape check is
+            // exercised identically to the production K=75/80. Must be
+            // >= 3: the PBC planners (`derive_groups_3`) rejection-sample
+            // 3 *distinct* groups mod K — K = 2 spins forever (this
+            // exact fixture hung the suite for 20+ minutes in CI).
+            index_k: 4,
+            chunk_k: 4,
+            tag_seed: 0x1234,
+            dpf_n_index: 10,
+            dpf_n_chunk: 10,
+            has_bucket_merkle: false,
+            index_master_seed: 1,
+            chunk_master_seed: 2,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
+        }
+    }
+
+    /// End-to-end C3 regression: a malicious server answering an INDEX
+    /// query with `num_groups = 1` / `results_per_group = 1` produces a
+    /// `PirError::Decode`, not an out-of-bounds panic.
+    #[tokio::test]
+    async fn query_index_level_short_batch_response_is_decode_error_not_panic() {
+        let db_info = tiny_db_info();
+
+        // Full wire frame: 4-byte length prefix + undersized body.
+        let body = make_batch_response_body(1, 1, &[0u8; 4]);
+        let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&body);
+
+        let mut mock0 = MockTransport::new("wss://mock-0");
+        let mut mock1 = MockTransport::new("wss://mock-1");
+        mock0.enqueue_response(frame.clone());
+        mock1.enqueue_response(frame);
+
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.connect_with_transport(Box::new(mock0), Box::new(mock1));
+
+        let err = client
+            .query_index_level(&[0u8; 20], &db_info)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
     }
 }

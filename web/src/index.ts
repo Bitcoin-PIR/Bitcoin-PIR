@@ -88,13 +88,9 @@ export {
 } from './constants.js';
 
 export {
-  computeLeafHash,
   computeDataHash,
   computeParentN,
   computeBinLeafHash,
-  parseTreeTopCache,
-  verifyMerkleProof,
-  type TreeTopCache,
 } from './merkle.js';
 
 export {

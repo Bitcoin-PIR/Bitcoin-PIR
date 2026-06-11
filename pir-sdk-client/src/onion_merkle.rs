@@ -28,12 +28,27 @@
 //!
 //! # Trust model
 //!
-//! The pinned trust anchor is `super_root` = `SHA256` of the 155 concatenated
-//! per-group roots (§2f). The 155 roots themselves ride in the *untrusted*,
-//! server-supplied tree-top blob. [`check_tree_top_anchor`] binds that blob
-//! to `super_root` — **this is the soundness-critical check**. Skip or weaken
-//! it and a malicious server can fabricate a self-consistent blob + sibling
-//! responses, and every leaf "verifies" against forged roots.
+//! The verification anchor is `super_root` = `SHA256` of the 155 concatenated
+//! per-group roots (§2f). Both the anchor and the trees are
+//! **server-supplied**: `super_root` is parsed from the server's own info
+//! JSON ([`parse_onionpir_merkle`]) and the 155 roots ride in the tree-top
+//! blob fetched over the same connection. [`check_tree_top_anchor`] binds the
+//! blob to `super_root`, so a passing verification proves the served
+//! siblings / tree-tops / leaves are *internally consistent* with the root
+//! the server declared — catching corruption, truncation, DB-version skew,
+//! and mid-session equivocation against that declared root.
+//!
+//! It does **not** by itself prove soundness against a malicious server:
+//! nothing in this code path compares `super_root` to an independently
+//! trusted value — in particular it is never checked against the attested
+//! `manifest_roots` from `crate::attest` — so a cheating server can declare a
+//! forged root and serve a self-consistent blob + siblings under it
+//! (docs/CODE_REVIEW_2026-06.md, finding C1). End-to-end integrity against
+//! such a server currently rests on the attestation/pinning path instead
+//! (pinned SEV measurement / binary hash → trusted binary → the binary
+//! verifies its DB manifest at load). Anchoring `super_root` to the attested
+//! `manifest_roots` — an opt-in strict mode — is tracked follow-up work; see
+//! "Follow-up: strict verification mode" in docs/CODE_REVIEW_2026-06.md.
 //!
 //! # Privacy invariants preserved
 //!
@@ -177,16 +192,19 @@ pub struct OnionMerkleInfo {
     /// Merkle arity (children per internal node) — `≈ entry_size / 32`,
     /// same for every per-group tree.
     pub arity: usize,
-    /// **The pinned trust anchor** — `SHA256` of the 155 concatenated
-    /// per-group roots (MERKLE_COLOCATION_REVIEW.md §2f). The 155 roots
-    /// themselves ride in the (untrusted) tree-top blob; binding the blob
-    /// to this value is the soundness-critical check (see
-    /// [`check_tree_top_anchor`]).
+    /// The verification anchor — `SHA256` of the 155 concatenated
+    /// per-group roots (MERKLE_COLOCATION_REVIEW.md §2f). **Server-supplied,
+    /// not pinned**: it is parsed from the server's own info JSON and never
+    /// compared to the attested `manifest_roots` in this code path
+    /// (docs/CODE_REVIEW_2026-06.md C1). Binding the tree-top blob to this
+    /// value ([`check_tree_top_anchor`]) proves internal consistency with
+    /// the root the server declared — see the module-level trust-model
+    /// notes for what that does and does not guarantee.
     pub super_root: Hash256,
     /// `SHA256` of the whole `merkle_onion_tree_tops.bin` blob — a
-    /// JSON-declared integrity value. `super_root` is the cryptographic
-    /// anchor; this is a cheap belt-and-suspenders check that catches blob
-    /// truncation / corruption with a clearer diagnostic.
+    /// JSON-declared integrity value. `super_root` is the (server-declared)
+    /// verification anchor; this is a cheap belt-and-suspenders check that
+    /// catches blob truncation / corruption with a clearer diagnostic.
     pub tree_tops_hash: Hash256,
     /// Byte length of the tree-top blob, as declared in the JSON.
     pub tree_tops_size: usize,
@@ -521,26 +539,34 @@ pub fn decode_sibling_batch_result(data: &[u8]) -> PirResult<Vec<Vec<u8>>> {
     Ok(results)
 }
 
-// ─── Trust-anchor check (SOUNDNESS-CRITICAL) ────────────────────────────────
+// ─── Anchor-consistency check (server-declared super_root) ─────────────────
 
-/// Bind the fetched tree-top blob to the pinned trust anchor.
+/// Bind the fetched tree-top blob to the server-declared `super_root` anchor.
 ///
-/// **SOUNDNESS-CRITICAL.** The 155 per-group roots ride in the (untrusted,
-/// server-supplied) tree-top blob; `info.super_root` is the pinned anchor
-/// (`SHA256` of the 155 concatenated roots — MERKLE_COLOCATION_REVIEW.md §2f).
-/// If this check is skipped or weakened, a malicious server can fabricate a
-/// self-consistent tree-top blob + sibling responses and every leaf
-/// "verifies" against forged roots.
+/// **Scope of the guarantee.** `info.super_root` is itself **server-supplied**
+/// (parsed from the server's info JSON — `SHA256` of the 155 concatenated
+/// roots, MERKLE_COLOCATION_REVIEW.md §2f — and never compared to the
+/// attested `manifest_roots`; docs/CODE_REVIEW_2026-06.md C1). This check
+/// therefore proves the served tree-tops are *internally consistent* with
+/// the root the server declared: it catches corruption, truncation,
+/// DB-version skew, and a server that equivocates against its own declared
+/// root mid-session, and it is the check a future strict mode would point at
+/// an *attested* root. It does **not** by itself defeat a malicious server,
+/// which can declare a forged `super_root` and serve a self-consistent
+/// blob + siblings under it; soundness against that server currently rests
+/// on the attestation/pinning path (see the module-level trust-model notes).
 ///
-/// Returns `true` iff the blob is bound to the anchor. Three checks, all
-/// required:
+/// Returns `true` iff the blob is bound to the declared anchor. Three
+/// checks, all required:
 ///
 /// 1. The blob has exactly `index.k + data.k` trees.
 /// 2. The blob length / `SHA256` match the JSON-declared `tree_tops_size` /
-///    `tree_tops_hash` (integrity — both come from the same trusted JSON as
+///    `tree_tops_hash` (integrity — both come from the same server JSON as
 ///    `super_root`; this just yields a clearer diagnostic on corruption).
 /// 3. **`SHA256(concat of the 155 per-group roots) == super_root`** — the
-///    load-bearing cryptographic anchor check.
+///    anchor-consistency check proper. Do not skip or weaken it: without it
+///    even the internal-consistency guarantee collapses (any blob would
+///    pass), and a future attested anchor would have nothing to bind to.
 fn check_tree_top_anchor(
     info: &OnionMerkleInfo,
     blob: &[u8],
@@ -591,7 +617,8 @@ fn check_tree_top_anchor(
         }
     }
 
-    // SOUNDNESS-CRITICAL: the 155 per-group roots must hash to super_root.
+    // The load-bearing consistency check: the 155 per-group roots must hash
+    // to the (server-declared) super_root.
     let mut preimage: Vec<u8> = Vec::with_capacity(all_tops.len() * 32);
     for (t, top) in all_tops.iter().enumerate() {
         match top.root() {
@@ -675,7 +702,9 @@ fn walk_tree_top_to_root(
 /// Per-leaf verification verdict: `(tree_kind, pbc_group, bin) → verified`.
 ///
 /// `verified == true` means the leaf hash reconstructed to the per-group
-/// root, and that per-group root is bound to the pinned `super_root`.
+/// root, and that per-group root is bound to the server-declared
+/// `super_root` (internal consistency — see the module-level trust-model
+/// notes for what this does and does not guarantee).
 pub type OnionMerkleVerdicts = HashMap<(OnionTreeKind, usize, u32), bool>;
 
 /// Verify all OnionPIR Merkle leaves across both INDEX and DATA sub-trees.
@@ -819,11 +848,13 @@ async fn verify_sub_tree(
         arity,
     );
 
-    // ── 2. Bind the blob to the pinned super-root (SOUNDNESS-CRITICAL) ──
+    // ── 2. Bind the blob to the server-declared super-root ──────────────
     //
-    // A super-root mismatch means the server's whole Merkle commitment is
-    // untrusted (malicious server, or a DB-version skew). Every probed leaf
-    // fails; the sibling rounds would prove nothing, so skip them.
+    // A super-root mismatch means the blob contradicts the root the server
+    // itself declared (corruption, DB-version skew, or equivocation). Every
+    // probed leaf fails; the sibling rounds would prove nothing, so skip
+    // them. Note the anchor is server-supplied, not attested — see the
+    // module-level trust-model notes.
     if !check_tree_top_anchor(info, blob, &all_tops) {
         for l in leaves {
             out.insert((l.pbc_group, l.bin), false);
@@ -1296,8 +1327,10 @@ mod tests {
 
     #[test]
     fn test_check_tree_top_anchor_rejects_wrong_super_root() {
-        // SOUNDNESS: a tampered super-root (server fabricated the blob) must
-        // be rejected even though the blob is internally consistent.
+        // ANCHOR CONSISTENCY: a blob whose roots don't hash to the declared
+        // super-root must be rejected even though the blob is internally
+        // self-consistent. (The declared anchor is itself server-supplied
+        // today — see the module trust-model notes.)
         let leaves: Vec<Hash256> = (0..40u8).map(h).collect();
         let (blob, super_root) = build_blob(8, &leaves, 3, 2);
         let tops = parse_onion_tree_top_cache(&blob).unwrap();

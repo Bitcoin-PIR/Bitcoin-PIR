@@ -29,6 +29,24 @@
 //! (e.g. both cuckoo positions of a not-found query), we run multiple passes;
 //! each pass is itself fully padded to K. Never optimize this away — it is a
 //! privacy requirement, not an artifact.
+//!
+//! ## Trust model (what "verified" means here)
+//!
+//! The per-group roots this module compares against come from the **server's
+//! own tree-tops blob** ([`fetch_tree_tops`], server 0) and are trusted
+//! verbatim — they are never compared to the attested `manifest_roots` from
+//! `crate::attest` (docs/CODE_REVIEW_2026-06.md, finding C1). A passing
+//! verification therefore proves the served bins and sibling rows are
+//! *internally consistent* with the root the server declared — catching
+//! corruption, truncation, and a server that contradicts its own
+//! commitment — not soundness against a malicious server, which could
+//! commit to a forged database and serve a self-consistent tree. End-to-end
+//! integrity against such a server currently rests on the
+//! attestation/pinning path (pinned SEV measurement / binary hash → trusted
+//! binary → the binary verifies its DB manifest at load; see `crate::attest`).
+//! Anchoring the served roots to the attested `manifest_roots` — an opt-in
+//! strict mode — is tracked follow-up work; see "Follow-up: strict
+//! verification mode" in docs/CODE_REVIEW_2026-06.md.
 
 use crate::transport::PirTransport;
 use async_trait::async_trait;
@@ -315,6 +333,10 @@ pub fn decode_sibling_batch(data: &[u8]) -> PirResult<SiblingResults> {
 ///
 /// Returns all trees concatenated: indices `[0..K)` are INDEX trees,
 /// `[K..K+K_CHUNK)` are CHUNK trees (matching web client layout).
+///
+/// The blob — including the per-group roots the verifier later uses as its
+/// comparison anchor — is server-supplied and is not cross-checked against
+/// the attested `manifest_roots`; see the module-level trust-model note.
 ///
 /// Takes `&mut dyn PirTransport` so tests can drive this against a mock
 /// transport, and a future WASM build can plug in a `web-sys::WebSocket`
@@ -1142,6 +1164,14 @@ async fn verify_sibling_levels(
             idx /= arity as u32;
         }
 
+        // `top` comes from the server's own tree-tops blob (`fetch_tree_tops`,
+        // server 0) and is trusted verbatim — it is never compared to the
+        // attested `manifest_roots` (`crate::attest`). This equality is thus
+        // a self-consistency check against the root the server declared, not
+        // soundness against a malicious server; that currently rests on the
+        // attestation/pinning path. Anchoring this root to the attested
+        // manifest roots is tracked follow-up (docs/CODE_REVIEW_2026-06.md,
+        // C1 — opt-in strict mode).
         let expected_root = top.root().unwrap_or(ZERO_HASH);
         let ok = hash == expected_root;
         if !ok {

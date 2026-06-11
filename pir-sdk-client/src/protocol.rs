@@ -206,6 +206,7 @@ pub(crate) fn decode_catalog(data: &[u8]) -> PirResult<DatabaseCatalog> {
     // Refuse a database whose delivered seeds don't match its embedded
     // chain anchor (no-op for legacy DBs without an anchor).
     for db in &databases {
+        validate_db_geometry(db)?;
         db.verify_anchor_seeds().map_err(|e| {
             PirError::Protocol(format!(
                 "DB {} ({}) chain-anchor seed verification failed: {}",
@@ -214,6 +215,33 @@ pub(crate) fn decode_catalog(data: &[u8]) -> PirResult<DatabaseCatalog> {
         })?;
     }
     Ok(DatabaseCatalog { databases })
+}
+
+/// Reject server-supplied database geometry that would wedge or crash
+/// the client.
+///
+/// `index_k` / `chunk_k` feed the PBC planners (`derive_groups_3` /
+/// `derive_int_groups_3`), which rejection-sample until they collect
+/// 3 *distinct* groups mod k — with k < 3 that loop never terminates,
+/// so a malicious or corrupted catalog could pin the client at 100 %
+/// CPU forever (same trust boundary as the C2/C3 malicious-server
+/// findings; production values are 75/80). Zero bins would turn the
+/// downstream cuckoo bin hashing (`h % bins`) into a divide-by-zero
+/// panic.
+pub(crate) fn validate_db_geometry(db: &DatabaseInfo) -> PirResult<()> {
+    if db.index_k < 3 || db.chunk_k < 3 {
+        return Err(PirError::Decode(format!(
+            "DB {} ({}) k out of range: index_k={} chunk_k={} (PBC planning needs k >= 3)",
+            db.db_id, db.name, db.index_k, db.chunk_k
+        )));
+    }
+    if db.index_bins == 0 || db.chunk_bins == 0 {
+        return Err(PirError::Decode(format!(
+            "DB {} ({}) has zero bins: index_bins={} chunk_bins={}",
+            db.db_id, db.name, db.index_bins, db.chunk_bins
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -261,6 +289,65 @@ mod tests {
     fn decode_catalog_rejects_empty() {
         let err = decode_catalog(&[]).unwrap_err();
         assert!(matches!(err, PirError::Decode(_)));
+    }
+
+    /// Build the same well-formed single-entry catalog as
+    /// `decode_catalog_single_entry`, with caller-chosen geometry.
+    fn catalog_with_geometry(index_bins: u32, chunk_bins: u32, index_k: u8, chunk_k: u8) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.push(1u8); // num_dbs
+        buf.push(0u8); // db_id
+        buf.push(0u8); // db_type (full)
+        buf.push(4u8); // name_len
+        buf.extend_from_slice(b"main");
+        buf.extend_from_slice(&0u32.to_le_bytes()); // base_height
+        buf.extend_from_slice(&900_000u32.to_le_bytes()); // height
+        buf.extend_from_slice(&index_bins.to_le_bytes());
+        buf.extend_from_slice(&chunk_bins.to_le_bytes());
+        buf.push(index_k);
+        buf.push(chunk_k);
+        buf.extend_from_slice(&0xdead_beef_cafe_f00du64.to_le_bytes()); // tag_seed
+        buf.push(17u8); // dpf_n_index
+        buf.push(18u8); // dpf_n_chunk
+        buf.push(1u8); // has_bucket_merkle
+        buf
+    }
+
+    /// A malicious catalog advertising k < 3 must be rejected at decode
+    /// time: `derive_groups_3` / `derive_int_groups_3` rejection-sample
+    /// 3 *distinct* groups mod k, so k = 2 would otherwise pin the
+    /// client in an infinite 100 %-CPU loop on its first query.
+    #[test]
+    fn decode_catalog_rejects_k_below_pbc_minimum() {
+        for (ik, ck) in [(2u8, 80u8), (75, 2), (0, 0), (1, 1)] {
+            let err = decode_catalog(&catalog_with_geometry(750_000, 1_500_000, ik, ck))
+                .unwrap_err();
+            match err {
+                PirError::Decode(msg) => assert!(
+                    msg.contains("k out of range"),
+                    "index_k={ik} chunk_k={ck}: unexpected message {msg:?}"
+                ),
+                other => panic!("index_k={ik} chunk_k={ck}: expected Decode, got {other:?}"),
+            }
+        }
+        // k = 3 (the minimum) is accepted.
+        decode_catalog(&catalog_with_geometry(750_000, 1_500_000, 3, 3)).expect("k = 3 is valid");
+    }
+
+    /// Zero bins would turn downstream cuckoo bin hashing (`h % bins`)
+    /// into a divide-by-zero panic — rejected at decode time.
+    #[test]
+    fn decode_catalog_rejects_zero_bins() {
+        for (ib, cb) in [(0u32, 1_500_000u32), (750_000, 0), (0, 0)] {
+            let err = decode_catalog(&catalog_with_geometry(ib, cb, 75, 80)).unwrap_err();
+            match err {
+                PirError::Decode(msg) => assert!(
+                    msg.contains("zero bins"),
+                    "index_bins={ib} chunk_bins={cb}: unexpected message {msg:?}"
+                ),
+                other => panic!("index_bins={ib} chunk_bins={cb}: expected Decode, got {other:?}"),
+            }
+        }
     }
 
     #[test]

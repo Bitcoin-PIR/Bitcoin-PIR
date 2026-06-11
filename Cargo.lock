@@ -1433,7 +1433,7 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 [[package]]
 name = "libdpf"
 version = "0.1.0"
-source = "git+https://github.com/weikengchen/libdpf.git#8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"
+source = "git+https://github.com/weikengchen/libdpf.git?rev=8ceb5903ae38c6f16a5ee92c0706dd50f5a42110#8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"
 dependencies = [
  "aes",
  "cipher",
@@ -2254,9 +2254,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "ring",
  "rustls-pki-types",

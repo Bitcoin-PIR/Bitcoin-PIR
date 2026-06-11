@@ -63,7 +63,7 @@ fastprp = ["harmonypir/fastprp-prp", "harmonypir-wasm/fastprp"]
 pir-core = { path = "../pir-core" }
 pir-runtime-core = { path = "../pir-runtime-core" }
 build = { path = "../build" }
-libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
+libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b" }
 harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "60635d8e526629b2ba99ec5020a55d078a299660", default-features = false }
 harmonypir-wasm = { path = "../harmonypir-wasm" }

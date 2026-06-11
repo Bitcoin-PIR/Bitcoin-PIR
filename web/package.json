@@ -20,7 +20,6 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "aes-js": "^3.1.2",
     "buffer": "^6.0.3",
     "hash.js": "^1.1.7",
     "pir-sdk-wasm": "file:../pir-sdk-wasm/pkg"

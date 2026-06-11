@@ -674,14 +674,21 @@ export function classifyChunkSlots(slots: readonly ChunkSlotInput[]): ChunkSlotA
 }
 
 /**
- * Pure version of the unique-fetch collection logic in `queryBatch`.
+ * Pure model of the per-slot classify-then-dedup logic, parameterised on
+ * the dummy source so it's deterministic under test.
  *
- * Drives the same dedup loop the production code runs, but takes a
- * deterministic dummy generator (an iterator over u32) instead of
- * `crypto.getRandomValues`. The actual `queryBatch` path uses
- * `crypto.getRandomValues`, but the iteration logic and dedup
- * behaviour are otherwise identical — this helper is the
- * test-friendly analog.
+ * This is a test-friendly analog, not a byte-for-byte mirror of the
+ * production CHUNK path. Production `queryBatch` collects only the *real*
+ * chunk entry_ids into its `uniqueEntryIds` list (an all-not-found batch
+ * yields an empty list and substitutes the `[[]]` empty round); the
+ * K_CHUNK dummy padding is then injected later, per group, as random
+ * cuckoo *bin indices* drawn from `this.rng` (a `DummyRng` seeded from
+ * `splitmix64(Date.now())`), and every query — real or dummy — is
+ * FHE-encrypted via `generateQuery`. The bin-index RNG is NOT a privacy
+ * boundary: SEAL re-randomises each ciphertext with its own CSPRNG, so a
+ * dummy query is computationally unlinkable to its bin index regardless
+ * of how that index was chosen. This helper instead takes an explicit
+ * `dummyGen` so the dedup behaviour can be exercised without SEAL.
  *
  * **Returns** `{ unique, dummiesAdded }` where `unique` is the
  * deduplicated entry_id list and `dummiesAdded` is the count of
@@ -1099,12 +1106,25 @@ export class OnionPirWebClient {
     // INDEX size; the secret key it exports is size-independent and re-seeds
     // per-level clients of any size.
     progress('Setup', 'Creating PIR client...');
-    const keygenClient = new this.wasmModule.OnionPirClient(this.indexBins);
-    const clientId = keygenClient.id();
-    const galoisKeys = keygenClient.galoisKeys();
-    const gswKeys = keygenClient.gswKey();
-    const secretKey = keygenClient.exportSecretKey();
-    keygenClient.delete();
+    // Extract the keys inside a try/finally so the keygen client's WASM heap
+    // allocation is always reclaimed — without it, a throw from any of
+    // `id()` / `galoisKeys()` / `gswKey()` / `exportSecretKey()` would skip
+    // `delete()` and leak the underlying C++ object.
+    let clientId: number;
+    let galoisKeys: Uint8Array;
+    let gswKeys: Uint8Array;
+    let secretKey: Uint8Array;
+    {
+      const keygenClient = new this.wasmModule.OnionPirClient(this.indexBins);
+      try {
+        clientId = keygenClient.id();
+        galoisKeys = keygenClient.galoisKeys();
+        gswKeys = keygenClient.gswKey();
+        secretKey = keygenClient.exportSecretKey();
+      } finally {
+        keygenClient.delete();
+      }
+    }
 
     // Save FHE state for Merkle reuse (keys stay registered on the server for connection lifetime)
     this.fheClientId = clientId;
