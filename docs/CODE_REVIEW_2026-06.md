@@ -60,6 +60,30 @@ allowed) the server crashes are **unauthenticated**.
 - **W3**: `await this.wasmClient.disconnect()` before `free()` (make
   `teardown` async), or rely on `Drop` (which calls `detach_ws_handlers`).
 
+### Status update (2026-06-11): S1–S5 closed end-to-end
+
+S1–S5 were fixed in `pir-runtime-core` (decode-time key validation,
+eval guards, `try_group_bytes`, index-count caps — 24 new tests in that
+crate's `dos_guard_tests`). Because `unified_server.rs` parses frames
+via the shared `Request::decode`, the decode-time S1–S3 guards covered
+its duplicated DPF batch handlers automatically; its **private copies
+of the Harmony handlers** were then given the S4/S5 treatment directly:
+
+- `harmony_query_response` / `harmony_batch_response` (the inline
+  dispatch handlers, extracted to testable seams) now use
+  `MappedSubTable::try_group_bytes` and validate
+  `indices.len() <= bins_per_table` before allocating.
+- The binary-only `REQ_HARMONY_HINTS` path had the same S4 class:
+  client-controlled `level` hit `panic!("invalid hint level")` and
+  client-controlled `group_id` sliced the mmap unchecked inside the
+  rayon pool — one frame killed the **hint server (pir1)**.
+  `compute_hints_for_group` is now total (`Result`, shared
+  `harmony_level_table` resolution, `try_group_bytes`), and requests
+  are pre-screened by `validate_harmony_hints_request`, which also
+  caps `group_ids.len() <= k` (closing a 255×-duplicate PRP-work
+  amplifier, S5-adjacent).
+- 12 new tests in `unified_server.rs::harmony_dos_guard_tests`.
+
 ---
 
 ## Architectural / trust-model (needs a decision)
