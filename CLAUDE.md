@@ -399,7 +399,7 @@ Never use `echo "$var" | grep -q` under `set -o pipefail`. `grep -q` exits on fi
 - Inspect with `lsinitrd` (handles all compression); `cpio -t <` does NOT work on zstd
 - SEV modules: ccp, sev-guest, tsm_report — validated pre/post-build in `build_uki_tier3.sh`
 
-### Attestation pins (current as of 2026-05-19)
+### Attestation pins (current as of 2026-06-11)
 `web/src/attest-pin.ts` is the authoritative source — values below are a quick reference.
-- **pir1 (Hetzner)**: binary `3925cc4d...` (HEXL-accelerated server, commit `0845b060`, reproducible `nix build .#unified-server`) — no SEV, no measurement
-- **pir2 (VPSBG) Tier 3 v17**: binary `3925cc4d...` (same as pir1 — flake-built UKI `nix build --impure .#tier3-uki`, PR #3), measurement `6dcbfa45...` — fleet realigned; pir2 serves `--serve-queries` only, no OnionPIR
+- **pir1 (Hetzner)**: binary `bb2cf422...` (2026-06 security-review build, commit `6c7aa158`, reproducible `nix build .#unified-server`, PR #19) — no SEV, no measurement
+- **pir2 (VPSBG) Tier 3 v24**: binary `bb2cf422...` (same as pir1 — flake-built UKI `nix build --impure .#tier3-uki`, sha256 `4eefec07...`), measurement `59ab13f5...` — pir2 serves `--serve-queries` only, no OnionPIR
