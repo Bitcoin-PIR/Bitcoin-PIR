@@ -1,29 +1,23 @@
 /**
- * Client-side Merkle tree verification for PIR responses.
+ * Client-side Merkle tree hashing primitives for PIR responses.
  *
  * Uses SHA-256 from hash.js (same as the rest of the web client).
  * Implements the same N-ary Merkle tree logic as pir-core/src/merkle.rs.
+ *
+ * Only the hashing helpers live here. The actual proof walks are
+ * backend-specific: DPF / HarmonyPIR verify in Rust via the WASM
+ * `verifyBucketMerkleItem`; the standalone OnionPIR TS client walks tree
+ * tops to root in `onionpir_client.ts::walkTreeTopToRoot`. Both correctly
+ * splice the verified child into its parent at `idx % arity` — a property
+ * the previously-exported `verifyMerkleProof` did not have, so it was
+ * removed (it never bound the leaf into the recomputed root). See
+ * docs/CODE_REVIEW_2026-06.md W1.
  */
 
 import { sha256 } from './hash.js';
 
 /** 32-byte zero hash (padding for incomplete groups). */
 export const ZERO_HASH = new Uint8Array(32);
-
-/**
- * Compute a leaf hash: SHA256(scriptHash || treeLoc_u32_LE || dataHash).
- */
-export function computeLeafHash(
-  scriptHash: Uint8Array,
-  treeLoc: number,
-  dataHash: Uint8Array,
-): Uint8Array {
-  const preimage = new Uint8Array(20 + 4 + 32);
-  preimage.set(scriptHash, 0);
-  new DataView(preimage.buffer).setUint32(20, treeLoc, true);
-  preimage.set(dataHash, 24);
-  return sha256(preimage);
-}
 
 /**
  * Compute data hash: SHA256(chunkData).
@@ -56,94 +50,4 @@ export function computeParentN(children: Uint8Array[]): Uint8Array {
     preimage.set(children[i], i * 32);
   }
   return sha256(preimage);
-}
-
-/**
- * Parse the tree-top cache from a hex string (as provided by the server JSON info).
- *
- * Header: [1B cache_from_level][4B total_nodes LE][2B arity LE][1B num_cached_levels]
- * Per-level: [4B num_nodes LE] then [num_nodes x 32B hashes]
- */
-export interface TreeTopCache {
-  cacheFromLevel: number;
-  arity: number;
-  levels: Uint8Array[][]; // levels[0] = first cached level, levels[last] = [root]
-}
-
-export function parseTreeTopCache(data: Uint8Array): TreeTopCache {
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const cacheFromLevel = data[0];
-  // skip total_nodes at [1..5]
-  const arity = dv.getUint16(5, true);
-  const numCachedLevels = data[7];
-
-  let offset = 8;
-  const levels: Uint8Array[][] = [];
-  for (let i = 0; i < numCachedLevels; i++) {
-    const numNodes = dv.getUint32(offset, true);
-    offset += 4;
-    const level: Uint8Array[] = [];
-    for (let j = 0; j < numNodes; j++) {
-      level.push(data.slice(offset, offset + 32));
-      offset += 32;
-    }
-    levels.push(level);
-  }
-
-  return { cacheFromLevel, arity, levels };
-}
-
-/**
- * Verify a full Merkle proof given sibling groups and tree-top cache.
- *
- * @param scriptHash  - 20-byte script hash
- * @param treeLoc     - Leaf position in the Merkle tree
- * @param dataHash    - SHA256 of the raw chunk data
- * @param siblingGroups - Array of sibling groups per level (each is arity child hashes)
- * @param treeTopCache - Parsed tree-top cache
- * @param expectedRoot - 32-byte expected root hash
- * @returns true if the proof is valid
- */
-export function verifyMerkleProof(
-  scriptHash: Uint8Array,
-  treeLoc: number,
-  dataHash: Uint8Array,
-  siblingGroups: Uint8Array[][],
-  treeTopCache: TreeTopCache,
-  expectedRoot: Uint8Array,
-): boolean {
-  const arity = treeTopCache.arity;
-  const leafHash = computeLeafHash(scriptHash, treeLoc, dataHash);
-  let currentHash = leafHash;
-  let nodeIdx = treeLoc;
-
-  // Walk sibling levels (from PIR queries)
-  for (const children of siblingGroups) {
-    currentHash = computeParentN(children);
-    nodeIdx = Math.floor(nodeIdx / arity);
-  }
-
-  // Walk tree-top cache levels (excluding the last which is the root)
-  for (let i = 0; i < treeTopCache.levels.length - 1; i++) {
-    const levelNodes = treeTopCache.levels[i];
-    const parentStart = Math.floor(nodeIdx / arity) * arity;
-    const children: Uint8Array[] = [];
-    for (let c = 0; c < arity; c++) {
-      const childIdx = parentStart + c;
-      if (childIdx < levelNodes.length) {
-        children.push(levelNodes[childIdx]);
-      } else {
-        children.push(ZERO_HASH);
-      }
-    }
-    currentHash = computeParentN(children);
-    nodeIdx = Math.floor(nodeIdx / arity);
-  }
-
-  // Compare to expected root
-  if (currentHash.length !== expectedRoot.length) return false;
-  for (let i = 0; i < currentHash.length; i++) {
-    if (currentHash[i] !== expectedRoot[i]) return false;
-  }
-  return true;
 }

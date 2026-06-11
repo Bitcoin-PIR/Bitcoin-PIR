@@ -407,14 +407,24 @@ export class BatchPirClientAdapter {
       this.setState('connected');
     } catch (e) {
       this.log(`Connect failed: ${(e as Error)?.message ?? e}`, 'error');
-      this.teardown();
+      // Await teardown so the WASM client is fully freed before we rethrow,
+      // but swallow any teardown failure — the original connect error `e` is
+      // what the caller needs to see, not a secondary cleanup error.
+      await this.teardown().catch(() => { /* swallow */ });
       this.setState('disconnected', (e as Error)?.message);
       throw e;
     }
   }
 
   disconnect(): void {
-    this.teardown();
+    // `teardown()` is async (it awaits the WASM client's `disconnect()`
+    // before `free()` to avoid a wasm-bindgen borrow race). Existing
+    // callers invoke this fire-and-forget; the synchronous prefix of
+    // `teardown()` (socket close + handle null-out) has already run by the
+    // time this returns, so the observable "disconnected" effect is
+    // immediate. The async tail (WS close frame + `free()`) finishes on its
+    // own; swallow any rejection so it can't surface as an unhandled one.
+    void this.teardown().catch(() => { /* swallow */ });
     this.setState('disconnected');
   }
 
@@ -587,14 +597,25 @@ export class BatchPirClientAdapter {
 
   // ── Internal ──────────────────────────────────────────────────────────
 
-  private teardown(): void {
+  private async teardown(): Promise<void> {
     this.ws0.disconnect();
     this.ws1.disconnect();
-    if (this.wasmClient) {
-      // Best-effort async disconnect; `free()` is safe either way.
-      this.wasmClient.disconnect().catch(() => { /* swallow */ });
-      this.wasmClient.free();
+    const client = this.wasmClient;
+    if (client) {
+      // Null the handle first so a concurrent teardown can't double-free.
       this.wasmClient = null;
+      // `disconnect()` is a wasm-bindgen `async fn(&mut self)` — it holds
+      // the Rust borrow until its promise resolves. We MUST await it before
+      // `free()` (which takes ownership); calling `free()` while the borrow
+      // is live throws "attempted to take ownership of Rust value while it
+      // was borrowed". Awaiting also lets the WS close frame go out, which
+      // `Drop`'s `detach_ws_handlers` alone would not send.
+      try {
+        await client.disconnect();
+      } catch {
+        /* already closed / mid-flight — proceed to free regardless */
+      }
+      client.free();
     }
     this.connected = false;
   }

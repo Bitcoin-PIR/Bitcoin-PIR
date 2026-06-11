@@ -858,8 +858,11 @@
             <div class="sb-disclaimer" role="note">
                 <strong>Non-collusion via SEV-SNP attestation.</strong>
                 pir1 and pir2 are <em>different machines</em>, one
-                operator. pir2's chip-signed MEASUREMENT keeps that
-                operator honest.
+                operator. pir2's chip-signed MEASUREMENT is evidence the
+                operator is running the published binary. Attestation is
+                <em>advisory</em>: the result is shown in the per-server
+                badge, not enforced as a gate (pir1 has no SEV
+                measurement), so check the badge before you trust it.
                 <a href="/reproduce.html#non-collusion">How &amp; verify yourself</a>.
             </div>
 

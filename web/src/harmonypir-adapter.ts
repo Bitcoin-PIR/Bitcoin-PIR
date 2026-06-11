@@ -896,15 +896,36 @@ export class HarmonyPirClientAdapter {
     return out;
   }
 
+  /**
+   * Await the WASM client's `disconnect()` before `free()`, then drop the
+   * handle. `disconnect()` is a wasm-bindgen `async fn(&mut self)` and holds
+   * the Rust borrow until its promise resolves; calling `free()` (which takes
+   * ownership) while that borrow is live throws "attempted to take ownership
+   * of Rust value while it was borrowed". Awaiting also lets the WS close
+   * frame go out, which `Drop`'s `detach_ws_handlers` alone would not send.
+   * Nulls the handle up front so a concurrent call can't double-free.
+   */
+  private async freeWasmClient(): Promise<void> {
+    const client = this.wasmClient;
+    if (!client) return;
+    this.wasmClient = null;
+    try {
+      await client.disconnect();
+    } catch {
+      /* already closed / mid-flight — proceed to free regardless */
+    }
+    client.free();
+  }
+
   /** Full teardown — closes transports and frees WASM state. */
   disconnect(): void {
     this.queryWs?.disconnect();
     this.queryWs = null;
-    if (this.wasmClient) {
-      this.wasmClient.disconnect().catch(() => { /* swallow */ });
-      this.wasmClient.free();
-      this.wasmClient = null;
-    }
+    // `freeWasmClient()` is async (awaits the WASM `disconnect()` before
+    // `free()`); callers invoke `disconnect()` fire-and-forget, and the
+    // synchronous prefix above (socket close + handle null-out) has already
+    // taken effect. Swallow any rejection from the async tail.
+    void this.freeWasmClient().catch(() => { /* swallow */ });
     this.hintsLoaded = false;
   }
 
@@ -914,11 +935,7 @@ export class HarmonyPirClientAdapter {
    * so `updatePrpBackend` + `loadWasm` starts fresh.
    */
   terminatePool(): void {
-    if (this.wasmClient) {
-      this.wasmClient.disconnect().catch(() => { /* swallow */ });
-      this.wasmClient.free();
-      this.wasmClient = null;
-    }
+    void this.freeWasmClient().catch(() => { /* swallow */ });
     this.hintsLoaded = false;
   }
 
