@@ -850,15 +850,19 @@ impl Request {
                 Ok(Request::AdminDbActivate { name, target_path })
             }
             REQ_INDEX_BATCH => {
-                let q = decode_batch_query(&data[1..])?;
+                // INDEX groups must carry both cuckoo-position keys.
+                let q = decode_batch_query(
+                    &data[1..],
+                    pir_core::params::INDEX_CUCKOO_NUM_HASHES,
+                )?;
                 Ok(Request::IndexBatch(q))
             }
             REQ_CHUNK_BATCH => {
-                let q = decode_batch_query(&data[1..])?;
+                let q = decode_batch_query(&data[1..], 0)?;
                 Ok(Request::ChunkBatch(q))
             }
             REQ_BUCKET_MERKLE_SIB_BATCH => {
-                let q = decode_batch_query(&data[1..])?;
+                let q = decode_batch_query(&data[1..], 0)?;
                 Ok(Request::BucketMerkleSibBatch(q))
             }
             REQ_HARMONY_GET_INFO => Ok(Request::HarmonyGetInfo),
@@ -1191,6 +1195,52 @@ impl Response {
 
 // ─── Batch encoding helpers ─────────────────────────────────────────────────
 
+/// Bounds on the declared DPF domain exponent (`n`, byte 0 of a
+/// serialized key) accepted from clients.
+///
+/// libdpf keys structurally require `n ≥ 7`: `DpfKey::from_bytes`
+/// computes `max_layer = n - 7` in u8 arithmetic, which underflows
+/// below that (a panic in debug builds, a bogus 200+-layer key in
+/// release). The upper bound caps the tree depth a client can make
+/// the server walk and keeps the `1 << (n - 7)` domain-size shifts
+/// in libdpf's eval sound. Real tables use `compute_dpf_n` ≈ 20–21;
+/// 32 (a 2^32-bin domain) leaves ample headroom for any future table.
+pub const MIN_DPF_DOMAIN_N: u8 = 7;
+pub const MAX_DPF_DOMAIN_N: u8 = 32;
+
+/// Validate the framing of a client-supplied serialized DPF key
+/// without constructing a `DpfKey`.
+///
+/// Mirrors the layout checks of `libdpf::DpfKey::from_bytes`
+/// (`[1B n][16B s0][1B t0][18B × (n−7) layers][16B final]`) plus the
+/// domain bounds above, so downstream `from_bytes` + `eval_partial`
+/// calls on an accepted blob cannot panic. Key *content* (seeds and
+/// correction words) is necessarily opaque — any value is a valid PRG
+/// seed.
+pub fn validate_dpf_key_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 18 {
+        return Err(format!("key too short: {} bytes", bytes.len()));
+    }
+    let n = bytes[0];
+    if !(MIN_DPF_DOMAIN_N..=MAX_DPF_DOMAIN_N).contains(&n) {
+        return Err(format!(
+            "domain n={} outside [{}, {}]",
+            n, MIN_DPF_DOMAIN_N, MAX_DPF_DOMAIN_N
+        ));
+    }
+    let max_layer = (n - 7) as usize; // safe: n ≥ MIN_DPF_DOMAIN_N = 7
+    let expected_size = 1 + 16 + 1 + 18 * max_layer + 16;
+    if bytes.len() < expected_size {
+        return Err(format!(
+            "key length {} below expected {} for n={}",
+            bytes.len(),
+            expected_size,
+            n
+        ));
+    }
+    Ok(())
+}
+
 /// Wire format:
 ///   [2B round_id][1B num_groups][1B keys_per_group]
 ///   For each group:
@@ -1213,7 +1263,12 @@ fn encode_batch_query(buf: &mut Vec<u8>, q: &BatchQuery) {
     }
 }
 
-fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
+/// `min_keys_per_group` lets the opcode-aware caller enforce a per-level
+/// floor: INDEX batches must carry both cuckoo-position keys per group
+/// (`INDEX_CUCKOO_NUM_HASHES = 2`), or the eval path would index
+/// `key_refs[0]`/`key_refs[1]` out of bounds. CHUNK and Merkle sibling
+/// batches pass 0 (any count up to the cap is processable).
+fn decode_batch_query(data: &[u8], min_keys_per_group: usize) -> io::Result<BatchQuery> {
     let mut pos = 0;
     if data.len() < 4 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "batch query too short"));
@@ -1224,6 +1279,32 @@ fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
     pos += 1;
     let keys_per_group = data[pos] as usize;
     pos += 1;
+    // Cap the attacker-controlled keys_per_group at decode time (S2/S3):
+    // the DPF eval fast path tracks per-key bits in a fixed
+    // [bool; MAX_KEYS_PER_GROUP] array, so larger counts are unsound
+    // downstream. Legitimate clients send 2 keys per group (INDEX/CHUNK
+    // cuckoo hashes) or 1 (Merkle sibling batches). `num_groups` needs
+    // no extra cap: it is a single wire byte (≤ 255) and handlers clamp
+    // it to the table's k.
+    if keys_per_group > crate::eval::MAX_KEYS_PER_GROUP {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "keys_per_group {} exceeds maximum {}",
+                keys_per_group,
+                crate::eval::MAX_KEYS_PER_GROUP
+            ),
+        ));
+    }
+    if num_groups > 0 && keys_per_group < min_keys_per_group {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "keys_per_group {} below required {}",
+                keys_per_group, min_keys_per_group
+            ),
+        ));
+    }
     let mut keys = Vec::with_capacity(num_groups);
     for _ in 0..num_groups {
         let mut group_keys = Vec::with_capacity(keys_per_group);
@@ -1236,7 +1317,14 @@ fn decode_batch_query(data: &[u8]) -> io::Result<BatchQuery> {
             if pos + len > data.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key data"));
             }
-            group_keys.push(data[pos..pos + len].to_vec());
+            let key = &data[pos..pos + len];
+            // Reject malformed DPF key blobs at decode time (S1):
+            // `DpfKey::from_bytes` is not panic-safe on adversarial
+            // bytes, and the eval layer assumes well-framed keys.
+            validate_dpf_key_bytes(key).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("bad DPF key: {}", e))
+            })?;
+            group_keys.push(key.to_vec());
             pos += len;
         }
         keys.push(group_keys);
@@ -2243,6 +2331,123 @@ mod attest_wire_tests {
             Response::Error(msg) => assert!(msg.contains("announce not configured")),
             other => panic!("expected Error, got {:?}", other),
         }
+    }
+
+    // ─── Batch-query DoS guards (S1–S3) ─────────────────────────────────
+
+    fn valid_key_bytes(n: u8) -> Vec<u8> {
+        libdpf::Dpf::with_default_key().gen(1, n).0.to_bytes()
+    }
+
+    /// S2: an uncapped keys_per_group used to flow straight into the
+    /// eval layer's fixed 8-slot bit array (OOB write).
+    #[test]
+    fn decode_batch_query_rejects_oversized_keys_per_group() {
+        // [variant][2B round_id][1B num_groups = 1][1B keys_per_group = 200]
+        let payload = vec![REQ_CHUNK_BATCH, 0, 0, 1, 200];
+        let err = Request::decode(&payload).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("keys_per_group"), "got: {}", err);
+    }
+
+    /// S3: an INDEX batch group with fewer than INDEX_CUCKOO_NUM_HASHES
+    /// keys used to panic at key_refs[1] in the handler.
+    #[test]
+    fn decode_index_batch_rejects_fewer_than_two_keys_per_group() {
+        let key = valid_key_bytes(8);
+        let mut payload = vec![REQ_INDEX_BATCH, 0, 0, 1, 1];
+        payload.extend_from_slice(&(key.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&key);
+        let err = Request::decode(&payload).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("below required"), "got: {}", err);
+    }
+
+    /// S1: a garbage key blob (declared domain n = 0) used to reach
+    /// `DpfKey::from_bytes(..).expect(..)` in the handler.
+    #[test]
+    fn decode_batch_query_rejects_garbage_key_blob() {
+        let mut payload = vec![REQ_CHUNK_BATCH, 0, 0, 1, 2];
+        for _ in 0..2 {
+            payload.extend_from_slice(&20u16.to_le_bytes());
+            payload.extend_from_slice(&[0u8; 20]);
+        }
+        let err = Request::decode(&payload).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("bad DPF key"), "got: {}", err);
+    }
+
+    /// A key whose declared domain implies more bytes than supplied
+    /// must be rejected (mirrors from_bytes' length check).
+    #[test]
+    fn decode_batch_query_rejects_truncated_key_for_domain() {
+        // n = 20 needs 1+16+1+18×13+16 = 268 bytes; send only 30.
+        let mut blob = vec![20u8];
+        blob.extend_from_slice(&[0u8; 29]);
+        let mut payload = vec![REQ_CHUNK_BATCH, 0, 0, 1, 1];
+        payload.extend_from_slice(&(blob.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&blob);
+        let err = Request::decode(&payload).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// What the real DPF client sends (2 keys per group, n = 20)
+    /// must keep decoding unchanged.
+    #[test]
+    fn decode_batch_query_accepts_legitimate_index_batch() {
+        let g: Vec<Vec<u8>> = vec![valid_key_bytes(20), valid_key_bytes(20)];
+        let q = BatchQuery { level: 0, round_id: 0, db_id: 0, keys: vec![g.clone(); 3] };
+        let encoded = Request::IndexBatch(q).encode();
+        match Request::decode(&encoded[4..]).unwrap() {
+            Request::IndexBatch(d) => {
+                assert_eq!(d.keys.len(), 3);
+                assert_eq!(d.keys[0], g);
+            }
+            other => panic!("wrong variant: {:?}", other),
+        }
+    }
+
+    /// Merkle sibling batches legitimately carry 1 key per group — the
+    /// INDEX-only minimum must not reject them.
+    #[test]
+    fn decode_sibling_batch_accepts_single_key_groups() {
+        let q = BatchQuery {
+            level: 0,
+            round_id: 100,
+            db_id: 0,
+            keys: vec![vec![valid_key_bytes(14)]; 2],
+        };
+        let encoded = Request::BucketMerkleSibBatch(q).encode();
+        assert!(matches!(
+            Request::decode(&encoded[4..]).unwrap(),
+            Request::BucketMerkleSibBatch(_)
+        ));
+    }
+
+    /// An empty batch (0 groups) has nothing to process — stays accepted.
+    #[test]
+    fn decode_index_batch_accepts_empty_batch() {
+        let payload = vec![REQ_INDEX_BATCH, 0, 0, 0, 0];
+        assert!(matches!(
+            Request::decode(&payload).unwrap(),
+            Request::IndexBatch(_)
+        ));
+    }
+
+    #[test]
+    fn validate_dpf_key_bytes_bounds() {
+        assert!(validate_dpf_key_bytes(&valid_key_bytes(MIN_DPF_DOMAIN_N)).is_ok());
+        assert!(validate_dpf_key_bytes(&valid_key_bytes(MAX_DPF_DOMAIN_N)).is_ok());
+        // Too short for any key.
+        assert!(validate_dpf_key_bytes(&[0u8; 17]).is_err());
+        // Domain below the libdpf structural minimum (n − 7 underflow).
+        let mut k = valid_key_bytes(8);
+        k[0] = MIN_DPF_DOMAIN_N - 1;
+        assert!(validate_dpf_key_bytes(&k).is_err());
+        // Domain above the cap.
+        let mut k = valid_key_bytes(MAX_DPF_DOMAIN_N);
+        k[0] = MAX_DPF_DOMAIN_N + 1;
+        assert!(validate_dpf_key_bytes(&k).is_err());
     }
 
     #[test]

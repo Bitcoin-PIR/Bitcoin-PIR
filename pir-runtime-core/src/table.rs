@@ -132,9 +132,33 @@ impl MappedSubTable {
     }
 
     /// Get the byte slice for a specific group's sub-table.
+    ///
+    /// Panics if `group_id` maps past the mmap — callers must iterate
+    /// within `0..params.k` (the batch paths do). For ids that arrive
+    /// off the wire, use [`Self::try_group_bytes`] instead.
     pub fn group_bytes(&self, group_id: usize) -> &[u8] {
         let offset = self.data_offset + group_id * self.table_byte_size;
         &self.mmap[offset..offset + self.table_byte_size]
+    }
+
+    /// Bounds-checked variant of [`Self::group_bytes`] for group ids
+    /// that arrive off the wire (HarmonyPIR query paths, S4). Returns
+    /// `None` when `group_id >= params.k` or when the computed range
+    /// would overrun the mmap (possible for legacy anchor-less files,
+    /// whose on-disk size is not asserted at load) — a panic here would
+    /// abort the whole server under the workspace-wide `panic = 'abort'`.
+    pub fn try_group_bytes(&self, group_id: usize) -> Option<&[u8]> {
+        if group_id >= self.params.k {
+            return None;
+        }
+        let offset = self
+            .data_offset
+            .checked_add(group_id.checked_mul(self.table_byte_size)?)?;
+        let end = offset.checked_add(self.table_byte_size)?;
+        if end > self.mmap.len() {
+            return None;
+        }
+        Some(&self.mmap[offset..end])
     }
 
     /// Self-verify that this table's header seeds were honestly derived
@@ -592,6 +616,55 @@ mod tests {
         let g0 = st.group_bytes(0);
         assert_eq!(g0.len(), table_byte_size);
         assert_eq!(g0[0], 0x5A, "group_bytes(0) must start at real table data, past the anchor");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// S4: wire-supplied group ids must be bounds-checked. With k groups
+    /// on disk, ids ≥ k (e.g. the 250 a crafted Harmony frame can carry)
+    /// return None instead of panicking on an out-of-range mmap slice.
+    #[test]
+    fn try_group_bytes_rejects_out_of_range_group_id() {
+        let params = INDEX_PARAMS;
+        let k = params.k;
+        let bins_per_table = 1usize;
+        let table_byte_size = params.table_byte_size(bins_per_table);
+
+        let mut bytes = write_header_with_anchor(&params, bins_per_table, 0, None);
+        bytes.extend_from_slice(&vec![0u8; k * table_byte_size]);
+
+        let path = temp_path("tgb_range");
+        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        let st = MappedSubTable::load(&path, params);
+
+        assert_eq!(st.try_group_bytes(0).unwrap(), st.group_bytes(0));
+        assert!(st.try_group_bytes(k - 1).is_some());
+        assert!(st.try_group_bytes(k).is_none());
+        assert!(st.try_group_bytes(250).is_none());
+        assert!(st.try_group_bytes(usize::MAX).is_none());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A legacy (anchor-less) file's size is not asserted at load, so a
+    /// group id that is < k but maps past the end of the mmap must also
+    /// be refused.
+    #[test]
+    fn try_group_bytes_rejects_mmap_overrun_on_undersized_legacy_file() {
+        let params = INDEX_PARAMS;
+        let bins_per_table = 1usize;
+        let table_byte_size = params.table_byte_size(bins_per_table);
+
+        // Only ONE group's worth of table data despite params.k = 75.
+        let mut bytes = write_header_with_anchor(&params, bins_per_table, 0, None);
+        bytes.extend_from_slice(&vec![0u8; table_byte_size]);
+
+        let path = temp_path("tgb_short");
+        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        let st = MappedSubTable::load(&path, params);
+
+        assert!(st.try_group_bytes(0).is_some());
+        assert!(st.try_group_bytes(1).is_none(), "id < k but past mmap end");
 
         std::fs::remove_file(&path).ok();
     }

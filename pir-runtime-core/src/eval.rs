@@ -77,6 +77,16 @@ pub fn xor_into(dst: &mut [u8], src: &[u8]) {
 /// Issue prefetch for bin N+LOOKAHEAD while processing bin N.
 const PREFETCH_LOOKAHEAD: usize = 4;
 
+/// Maximum number of DPF keys a single group may carry.
+///
+/// `process_group_generic` tracks per-key DPF bits in a fixed
+/// `[bool; MAX_KEYS_PER_GROUP]` on the hot path (no per-bin heap
+/// allocation), so any larger count would write out of bounds.
+/// `protocol::decode_batch_query` rejects frames above this cap;
+/// legitimate clients send at most INDEX/CHUNK_CUCKOO_NUM_HASHES (2)
+/// keys per group, and 1 for Merkle sibling batches.
+pub const MAX_KEYS_PER_GROUP: usize = 8;
+
 /// Per-group timing breakdown.
 pub struct GroupTiming {
     pub dpf_eval: Duration,
@@ -97,11 +107,25 @@ fn process_group_generic(
     let dpf = Dpf::with_default_key();
     let num_keys = keys.len();
 
+    // Defense-in-depth (S2): never read `evals[0]` of an empty batch or
+    // index `bits[i]` past the fixed array below. Decode + handler
+    // validation make these unreachable from the wire; programmatic
+    // callers get zero-filled accumulators instead of a panic
+    // (panic = 'abort' workspace-wide would kill the whole server).
+    if num_keys == 0 || num_keys > MAX_KEYS_PER_GROUP {
+        let accs = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
+        return (accs, GroupTiming { dpf_eval: Duration::ZERO, fetch_xor: Duration::ZERO });
+    }
+
     let t_dpf = Instant::now();
     let evals: Vec<Vec<Block>> = keys.iter().map(|k| dpf.eval_partial(k, bins_per_table as u64)).collect();
     let dpf_eval = t_dpf.elapsed();
 
-    let num_blocks = evals[0].len();
+    // Use the shortest eval vector: a key declaring a smaller DPF domain
+    // than the table's yields fewer blocks, and indexing
+    // `evals[i][block_idx]` beyond it would panic. Legitimate keys all
+    // share the table's domain, so this equals `evals[0].len()` for them.
+    let num_blocks = evals.iter().map(|e| e.len()).min().unwrap_or(0);
 
     let t_fetch = Instant::now();
     let mut accs: Vec<Vec<u8>> = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
@@ -130,7 +154,7 @@ fn process_group_generic(
 
             // Check which keys have bit set
             let mut any_set = false;
-            let mut bits = [false; 8]; // max 8 keys
+            let mut bits = [false; MAX_KEYS_PER_GROUP];
             for i in 0..num_keys {
                 bits[i] = get_dpf_bit(&evals[i][block_idx], bit_within);
                 if bits[i] { any_set = true; }
@@ -303,4 +327,57 @@ pub fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod dpf_eval_guard_tests {
+    use super::*;
+    use libdpf::Dpf;
+
+    /// 256 bins → DPF domain n = 8, two 128-bin eval blocks.
+    const BINS: usize = 256;
+
+    fn chunk_table() -> Vec<u8> {
+        vec![0xA5u8; BINS * CHUNK_RESULT_SIZE]
+    }
+
+    /// S2 regression: `evals[0]` used to panic on an empty key list.
+    #[test]
+    fn process_chunk_group_with_zero_keys_returns_empty() {
+        let table = chunk_table();
+        let (accs, _t) = process_chunk_group(&[], &table, BINS);
+        assert!(accs.is_empty());
+    }
+
+    /// S2 regression: more than MAX_KEYS_PER_GROUP keys used to write
+    /// past the fixed `bits` array. Now yields zero-filled accumulators.
+    #[test]
+    fn process_chunk_group_with_too_many_keys_returns_zero_fills() {
+        let dpf = Dpf::with_default_key();
+        let keys: Vec<DpfKey> = (0..(MAX_KEYS_PER_GROUP as u64 + 1))
+            .map(|i| dpf.gen(i, 8).0)
+            .collect();
+        let refs: Vec<&DpfKey> = keys.iter().collect();
+        let table = chunk_table();
+        let (accs, _t) = process_chunk_group(&refs, &table, BINS);
+        assert_eq!(accs.len(), MAX_KEYS_PER_GROUP + 1);
+        assert!(accs.iter().all(|a| a.len() == CHUNK_RESULT_SIZE));
+        assert!(accs.iter().all(|a| a.iter().all(|&b| b == 0)));
+    }
+
+    /// Keys with mismatched DPF domains produce eval vectors of
+    /// different lengths: n=8 yields 2 blocks for 256 bins, n=7 yields
+    /// 1. The old `evals[0].len()` block count indexed past the short
+    /// key's vector.
+    #[test]
+    fn ragged_key_domains_do_not_panic() {
+        let dpf = Dpf::with_default_key();
+        let k_long = dpf.gen(5, 8).0;
+        let k_short = dpf.gen(5, 7).0;
+        let refs = [&k_long, &k_short];
+        let table = chunk_table();
+        let (accs, _t) = process_chunk_group(&refs[..], &table, BINS);
+        assert_eq!(accs.len(), 2);
+        assert!(accs.iter().all(|a| a.len() == CHUNK_RESULT_SIZE));
+    }
 }
