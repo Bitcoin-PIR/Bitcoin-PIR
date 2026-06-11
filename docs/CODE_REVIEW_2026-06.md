@@ -151,3 +151,58 @@ the live demo** (pir1/Hetzner has no SEV measurement).
   derivation (fully wired client-side).
 - **The recent WASM closure-teardown fix is complete and correct**
   (detaches handlers on both `close()` and `Drop`, idempotent).
+
+---
+
+## Follow-up: strict verification mode (tracked)
+
+*Appended 2026-06-09 after the C1/W2 documentation pass. This is a
+tracking note, not an implementation.*
+
+**Decision.** C1/W2 are documented as the current (advisory) trust model
+rather than fixed in this pass — fail-closed by default would break the
+live pir1 demo, which has no SEV measurement to pin against. The wording
+fixes landed in `pir-sdk-client/src/merkle_verify.rs` and
+`pir-sdk-client/src/onion_merkle.rs` (comments only) and `README.md`;
+behavior is unchanged. (Line references in the C1 row above are as of
+the review commit; the added comments shift lines in both files.) The
+proper closure is an **opt-in strict verification mode**, scoped as:
+
+- **Plumb the attested roots into Merkle verification.**
+  `attest.rs::AttestResponse` already carries
+  `manifest_roots: Vec<Hash256>` (per-DB, db_id order; folded into SEV
+  REPORT_DATA as `combined_root` via the V2 preimage). Thread the
+  relevant attested root into the DPF/Harmony verifier
+  (`fetch_tree_tops` / `verify_bucket_merkle_batch_*`) and into
+  `OnionMerkleInfo` construction (OnionPIR), so the served commitment
+  (per-group `top.root()` / `super_root`) is checked against an anchor
+  the query server cannot choose.
+- **Fail closed on mismatch.** With strict mode on, refuse to verify
+  (all leaves fail) — or refuse to query at all — when the served root
+  is not endorsed by the attested manifest root. Refusing to query is
+  the stronger posture and also closes W2's "queries proceed on
+  attestation mismatch" gap; failing verification is the minimum.
+- **Gate on attestation quality.** The anchor is only as strong as the
+  attestation behind it: require `SevStatus::ReportDataMatch` (plus VCEK
+  chain validation where available) before treating `manifest_roots` as
+  trusted. On `ReportDataMismatch`, strict mode must refuse — never fall
+  back to the self-reported value.
+- **Opt-in, default off.** Default stays today's advisory behavior so
+  the unattested pir1 demo (no SEV; self-reported binary hash) keeps
+  working. Suggested surface: a `strict_verification` flag on the client
+  builders and the WASM / TS constructors, off unless explicitly set.
+- **Open design points** (settle at implementation time):
+  - *Root binding.* `manifest_roots[db]` is `SHA-256(MANIFEST.toml)`,
+    which commits to per-file hashes (including the tree-tops blobs) —
+    not directly to `top.root()` / `super_root`. Strict mode needs
+    either the manifest body client-side (check the fetched tree-tops
+    blob hash against its manifest entry) or a manifest/attest schema
+    extension that surfaces the Merkle roots directly.
+  - *Root rotation.* Delta sync changes the DB ⇒ the attested root
+    changes. Strict mode must re-attest on epoch change rather than
+    permanently reject the new root.
+  - *pir1 story.* Without SEV, the strongest available pin is the
+    reproducible-build binary hash plus operator-published roots —
+    weaker than pir2's measurement but better than verbatim trust.
+    Decide whether strict mode admits that tier or refuses non-SEV
+    hosts outright.
