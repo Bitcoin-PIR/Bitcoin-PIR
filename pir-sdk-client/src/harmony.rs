@@ -569,16 +569,23 @@ pub struct HarmonyClient {
 impl HarmonyClient {
     /// Create a new HarmonyPIR client.
     ///
-    /// The master PRP key is derived from the current wall-clock time;
-    /// use [`HarmonyClient::set_master_key`] to pin a specific key
+    /// The master PRP key is drawn from the OS CSPRNG; use
+    /// [`HarmonyClient::set_master_key`] to pin a specific key
     /// (useful for tests and for reusing cached hint state).
     pub fn new(hint_server_url: &str, query_server_url: &str) -> Self {
+        // 🔒 C4 (docs/CODE_REVIEW_2026-06.md): this key determines the
+        // real-vs-dummy slot pattern inside every T−1 request (V1
+        // protocol + cache fingerprints), so it must be unpredictable to
+        // the query server. The previous splitmix64(wall-clock)
+        // derivation was brute-forceable from a timestamp guess —
+        // especially on wasm32, where the clock is millisecond-coarse
+        // and JS-observable. `getrandom` works on native and wasm32 (via
+        // the `js` feature); failure means the platform has no entropy
+        // source at all — unrecoverable and not server-triggerable, so
+        // panicking in this infallible constructor is acceptable.
         let mut master_prp_key = [0u8; 16];
-        let seed = crate::platform_time::seed_nanos();
-        for i in 0..2 {
-            let h = pir_core::hash::splitmix64(seed.wrapping_add(i as u64));
-            master_prp_key[i * 8..(i + 1) * 8].copy_from_slice(&h.to_le_bytes());
-        }
+        getrandom::getrandom(&mut master_prp_key)
+            .expect("OS entropy source unavailable for HarmonyPIR master PRP key");
 
         Self {
             hint_server_url: hint_server_url.to_string(),
@@ -2598,7 +2605,7 @@ impl HarmonyClient {
                 );
             }
 
-            let entries = decode_utxo_entries(&real_data);
+            let entries = decode_utxo_entries(&real_data)?;
 
             results.push(Some(QueryResult {
                 entries,
@@ -2978,7 +2985,7 @@ impl HarmonyClient {
         let (chunk_data, chunk_bins) = self.query_chunk_level(&chunk_ids, db_info).await?;
         traces.chunk_bins = chunk_bins;
 
-        let entries = decode_utxo_entries(&chunk_data);
+        let entries = decode_utxo_entries(&chunk_data)?;
         Ok((
             Some(QueryResult {
                 entries,
@@ -5937,12 +5944,17 @@ fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
 /// continuation bytes. OnionPIR's decoder (`onion.rs:1892`) and
 /// `pir_core::codec::parse_utxo_data` were always correct; the
 /// regression only affected DPF + HarmonyPIR.
-fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
+///
+/// The chunk bytes are server-controlled and decoded *before* Merkle
+/// verification, so a malformed varint is a `PirError::Decode`, never a
+/// panic (C2, docs/CODE_REVIEW_2026-06.md).
+fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
     let mut entries = Vec::new();
     if data.is_empty() {
-        return entries;
+        return Ok(entries);
     }
-    let (count, mut pos) = pir_core::codec::read_varint(data);
+    let (count, mut pos) = pir_core::codec::try_read_varint(data)
+        .map_err(|e| PirError::Decode(format!("UTXO count varint: {}", e)))?;
     for _ in 0..count {
         if pos + 32 > data.len() {
             break;
@@ -5953,12 +5965,14 @@ fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
         if pos >= data.len() {
             break;
         }
-        let (vout, vr) = pir_core::codec::read_varint(&data[pos..]);
+        let (vout, vr) = pir_core::codec::try_read_varint(&data[pos..])
+            .map_err(|e| PirError::Decode(format!("UTXO vout varint: {}", e)))?;
         pos += vr;
         if pos >= data.len() {
             break;
         }
-        let (amount, ar) = pir_core::codec::read_varint(&data[pos..]);
+        let (amount, ar) = pir_core::codec::try_read_varint(&data[pos..])
+            .map_err(|e| PirError::Decode(format!("UTXO amount varint: {}", e)))?;
         pos += ar;
         entries.push(UtxoEntry {
             txid,
@@ -5966,7 +5980,7 @@ fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
             amount_sats: amount,
         });
     }
-    entries
+    Ok(entries)
 }
 
 /// Hex-format a 20-byte script hash as "aabbcc..eeff" (first and last 4 bytes).
@@ -6726,6 +6740,20 @@ mod tests {
         assert_eq!(client.prp_backend, PRP_HMR12);
     }
 
+    /// C4 (docs/CODE_REVIEW_2026-06.md): the master PRP key comes from
+    /// the OS CSPRNG. Two fresh clients must hold distinct non-zero keys
+    /// — the old splitmix64(wall-clock) derivation could collide for
+    /// clients created in the same clock tick and was brute-forceable
+    /// from a timestamp guess.
+    #[test]
+    fn test_master_prp_key_is_random_per_client() {
+        let a = HarmonyClient::new("wss://h", "wss://q");
+        let b = HarmonyClient::new("wss://h", "wss://q");
+        assert_ne!(a.master_prp_key, [0u8; 16]);
+        assert_ne!(b.master_prp_key, [0u8; 16]);
+        assert_ne!(a.master_prp_key, b.master_prp_key);
+    }
+
     #[test]
     fn test_set_master_key_invalidates_groups() {
         let mut client = HarmonyClient::new("ws://localhost:8080", "ws://localhost:8081");
@@ -6762,6 +6790,48 @@ mod tests {
         let v = bytes_to_u32_vec(&bytes).unwrap();
         assert_eq!(v, vec![1u32, 2u32]);
         assert!(bytes_to_u32_vec(&[1, 2, 3]).is_err());
+    }
+
+    /// C2 (docs/CODE_REVIEW_2026-06.md): malformed varints in
+    /// server-controlled chunk data must surface as `PirError::Decode`,
+    /// never a panic — mirrors the equivalent test in `dpf.rs`.
+    #[test]
+    fn test_decode_utxo_entries_malformed_varint_is_decode_error() {
+        // Count varint runs past 64 bits (previously panicked).
+        let err = decode_utxo_entries(&[0xFF; 16]).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Count varint never terminates before the data ends.
+        let err = decode_utxo_entries(&[0x80]).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Valid count + txid, then a vout varint cut mid-stream.
+        let mut data = Vec::new();
+        pir_core::codec::write_varint(1, &mut data);
+        data.extend_from_slice(&[0xAB; 32]);
+        data.push(0x80); // dangling continuation bit
+        let err = decode_utxo_entries(&data).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+    }
+
+    /// Honest chunk data (including trailing zero padding) still decodes
+    /// exactly as before the panic-free rework.
+    #[test]
+    fn test_decode_utxo_entries_decodes_honest_data() {
+        let mut data = Vec::new();
+        pir_core::codec::write_varint(1, &mut data);
+        data.extend_from_slice(&[0x33; 32]);
+        pir_core::codec::write_varint(7, &mut data); // vout
+        pir_core::codec::write_varint(987_654, &mut data); // amount
+        data.extend_from_slice(&[0u8; 5]); // chunk padding, ignored
+
+        let entries = decode_utxo_entries(&data).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].txid, [0x33; 32]);
+        assert_eq!(entries[0].vout, 7);
+        assert_eq!(entries[0].amount_sats, 987_654);
+
+        assert!(decode_utxo_entries(&[]).unwrap().is_empty());
     }
 
     /// Demonstrates the test-injection escape hatch: a client built with a

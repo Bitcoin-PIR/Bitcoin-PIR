@@ -808,7 +808,7 @@ impl OnionClient {
                 }
                 Some(ir) => {
                     let raw = assemble_entry_bytes(ir, &chunk_data, db_info.db_id)?;
-                    let entries = decode_utxo_entries(&raw);
+                    let entries = decode_utxo_entries(&raw)?;
                     log::info!(
                         "[PIR-AUDIT] OnionPIR scripthash {}: FOUND {} UTXOs \
                          (entry_id={}, num_entries={}, byte_offset={})",
@@ -2023,14 +2023,19 @@ fn assemble_entry_bytes(
 /// Decode UTXO entries from assembled entry bytes (varint-encoded).
 ///
 /// Layout: `varint(num_utxos) | [txid(32) | varint(vout) | varint(amount)] * N`.
+///
+/// The entry bytes are server-controlled and decoded *before* Merkle
+/// verification, so a malformed varint is a `PirError::Decode`, never a
+/// panic (C2, docs/CODE_REVIEW_2026-06.md).
 #[cfg(feature = "onion")]
-fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
+fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
     let mut entries = Vec::new();
     if data.is_empty() {
-        return entries;
+        return Ok(entries);
     }
     let mut pos = 0;
-    let (num_utxos, vr) = pir_core::codec::read_varint(&data[pos..]);
+    let (num_utxos, vr) = pir_core::codec::try_read_varint(&data[pos..])
+        .map_err(|e| PirError::Decode(format!("UTXO count varint: {}", e)))?;
     pos += vr;
 
     for _ in 0..num_utxos {
@@ -2044,12 +2049,14 @@ fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
         if pos >= data.len() {
             break;
         }
-        let (vout, vr) = pir_core::codec::read_varint(&data[pos..]);
+        let (vout, vr) = pir_core::codec::try_read_varint(&data[pos..])
+            .map_err(|e| PirError::Decode(format!("UTXO vout varint: {}", e)))?;
         pos += vr;
         if pos >= data.len() {
             break;
         }
-        let (amount, ar) = pir_core::codec::read_varint(&data[pos..]);
+        let (amount, ar) = pir_core::codec::try_read_varint(&data[pos..])
+            .map_err(|e| PirError::Decode(format!("UTXO amount varint: {}", e)))?;
         pos += ar;
 
         entries.push(UtxoEntry {
@@ -2059,7 +2066,7 @@ fn decode_utxo_entries(data: &[u8]) -> Vec<UtxoEntry> {
         });
     }
 
-    entries
+    Ok(entries)
 }
 
 // ─── Client-side CHUNK cuckoo (6-hash, slots_per_bin=1) ─────────────────────
@@ -3029,6 +3036,42 @@ mod tests {
         for h in handles {
             h.join().expect("thread panicked — possible data race in &self FFI path");
         }
+    }
+
+    /// C2 (docs/CODE_REVIEW_2026-06.md): malformed varints in
+    /// server-controlled entry bytes must surface as `PirError::Decode`,
+    /// never a panic — mirrors the equivalent tests in `dpf.rs` /
+    /// `harmony.rs`.
+    #[cfg(feature = "onion")]
+    #[test]
+    fn test_decode_utxo_entries_malformed_varint_is_decode_error() {
+        // Count varint runs past 64 bits (previously panicked).
+        let err = decode_utxo_entries(&[0xFF; 16]).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Count varint never terminates before the data ends.
+        let err = decode_utxo_entries(&[0x80]).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Valid count + txid, then a vout varint cut mid-stream.
+        let mut data = Vec::new();
+        pir_core::codec::write_varint(1, &mut data);
+        data.extend_from_slice(&[0xAB; 32]);
+        data.push(0x80); // dangling continuation bit
+        let err = decode_utxo_entries(&data).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        // Honest data still decodes.
+        let mut data = Vec::new();
+        pir_core::codec::write_varint(1, &mut data);
+        data.extend_from_slice(&[0x44; 32]);
+        pir_core::codec::write_varint(2, &mut data); // vout
+        pir_core::codec::write_varint(31_337, &mut data); // amount
+        let entries = decode_utxo_entries(&data).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].vout, 2);
+        assert_eq!(entries[0].amount_sats, 31_337);
+        assert!(decode_utxo_entries(&[]).unwrap().is_empty());
     }
 
     /// Demonstrates the test-injection escape hatch: a client built with a
