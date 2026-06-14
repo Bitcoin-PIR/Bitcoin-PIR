@@ -124,24 +124,36 @@ fn main() {
         );
         eprintln!();
         eprintln!("With --to-block-hash, also writes delta_anchor_<A>_<B>.bin (72 bytes:");
-        eprintln!("from-anchor || to-anchor) used by build_cuckoo_generic to derive chain-anchored");
+        eprintln!(
+            "from-anchor || to-anchor) used by build_cuckoo_generic to derive chain-anchored"
+        );
         eprintln!("PRG seeds. See docs/BUILD_REPRODUCIBILITY.md.");
         std::process::exit(1);
     }
 
     let snapshot_path = PathBuf::from(positional[0]);
     let bitcoin_dir = PathBuf::from(positional[1]);
-    let start_height: u64 = positional[2].parse().expect("start_height must be a number");
+    let start_height: u64 = positional[2]
+        .parse()
+        .expect("start_height must be a number");
     let end_height: u64 = positional[3].parse().expect("end_height must be a number");
 
-    assert!(start_height < end_height, "start_height must be < end_height");
+    assert!(
+        start_height < end_height,
+        "start_height must be < end_height"
+    );
 
     // ── Step 1: Load dumptxoutset@A into (txid, vout) → scripthash map ──────
 
     println!("=== Delta Gen 0: Compute Grouped Delta ===");
     println!("Snapshot:     {}", snapshot_path.display());
     println!("Bitcoin dir:  {}", bitcoin_dir.display());
-    println!("Range:        {} → {} ({} blocks)", start_height, end_height, end_height - start_height);
+    println!(
+        "Range:        {} → {} ({} blocks)",
+        start_height,
+        end_height,
+        end_height - start_height
+    );
     println!();
 
     println!("[1] Loading dumptxoutset into memory...");
@@ -156,7 +168,8 @@ fn main() {
 
     // Map: (txid_bytes, vout) → scripthash
     // This takes ~10-15 GB RAM for ~180M UTXOs.
-    let mut utxo_map: HashMap<([u8; 32], u32), [u8; 20]> = HashMap::with_capacity(dump.utxo_set_size as usize);
+    let mut utxo_map: HashMap<([u8; 32], u32), [u8; 20]> =
+        HashMap::with_capacity(dump.utxo_set_size as usize);
     let mut loaded: u64 = 0;
     let total = dump.utxo_set_size;
 
@@ -177,27 +190,49 @@ fn main() {
             let pct = 100.0 * loaded as f64 / total as f64;
             let elapsed = t.elapsed().as_secs_f64();
             let eta = elapsed / (loaded as f64 / total as f64) - elapsed;
-            print!("\r    Loaded {}/{} ({:.1}%) | ETA: {}   ",
-                loaded, total, pct, format_duration(eta));
+            print!(
+                "\r    Loaded {}/{} ({:.1}%) | ETA: {}   ",
+                loaded,
+                total,
+                pct,
+                format_duration(eta)
+            );
             io::stdout().flush().ok();
         }
     }
 
-    println!("\r    Loaded {} UTXOs in {}                              ",
-        loaded, format_duration(t.elapsed().as_secs_f64()));
-    println!("    Map memory: ~{:.1} GB (estimated)",
-        (utxo_map.len() as f64 * (32.0 + 4.0 + 20.0 + 40.0)) / 1e9); // key+value+overhead
+    println!(
+        "\r    Loaded {} UTXOs in {}                              ",
+        loaded,
+        format_duration(t.elapsed().as_secs_f64())
+    );
+    println!(
+        "    Map memory: ~{:.1} GB (estimated)",
+        (utxo_map.len() as f64 * (32.0 + 4.0 + 20.0 + 40.0)) / 1e9
+    ); // key+value+overhead
 
     // ── Step 2: Replay blocks, compute per-scripthash delta ─────────────────
 
     println!();
-    println!("[2] Replaying blocks {} → {} ...", start_height + 1, end_height);
+    println!(
+        "[2] Replaying blocks {} → {} ...",
+        start_height + 1,
+        end_height
+    );
 
     let blocks_dir = bitcoin_dir.join("blocks");
-    assert!(blocks_dir.exists(), "blocks directory not found: {:?}", blocks_dir);
+    assert!(
+        blocks_dir.exists(),
+        "blocks directory not found: {:?}",
+        blocks_dir
+    );
 
     let cookie_path = bitcoin_dir.join(".cookie");
-    assert!(cookie_path.exists(), "Cookie file not found: {:?}", cookie_path);
+    assert!(
+        cookie_path.exists(),
+        "Cookie file not found: {:?}",
+        cookie_path
+    );
 
     let client = Client::new("http://127.0.0.1:8332", Auth::CookieFile(cookie_path))
         .expect("Failed to create RPC client");
@@ -205,7 +240,7 @@ fn main() {
     let reader = Reader::new(blocks_dir, &client);
     let receiver = reader.read(
         Some(((start_height + 1) as u32).into()), // start replaying AFTER height A
-        Some(((end_height + 1) as u32).into()),    // exclusive end
+        Some(((end_height + 1) as u32).into()),   // exclusive end
     );
 
     // Track new outputs created in range (may be spent within range)
@@ -260,10 +295,7 @@ fn main() {
                 let hash160 = ripemd160::Hash::hash(&sha256_hash.to_byte_array());
                 let script_hash: [u8; 20] = hash160.to_byte_array();
 
-                in_range_created.insert(
-                    (txid_bytes, vout as u32),
-                    (script_hash, amount),
-                );
+                in_range_created.insert((txid_bytes, vout as u32), (script_hash, amount));
             }
         }
 
@@ -271,30 +303,51 @@ fn main() {
         if last_print.elapsed().as_millis() >= 500 || blocks_done == num_blocks {
             let elapsed = t2.elapsed().as_secs_f64();
             let rate = blocks_done as f64 / elapsed;
-            let eta = if rate > 0.0 { (num_blocks - blocks_done) as f64 / rate } else { 0.0 };
-            print!("\r    {}/{} blocks ({:.1}%) | {:.0} blk/s | ETA {:.0}s | scripts: {}   ",
-                blocks_done, num_blocks,
+            let eta = if rate > 0.0 {
+                (num_blocks - blocks_done) as f64 / rate
+            } else {
+                0.0
+            };
+            print!(
+                "\r    {}/{} blocks ({:.1}%) | {:.0} blk/s | ETA {:.0}s | scripts: {}   ",
+                blocks_done,
+                num_blocks,
                 100.0 * blocks_done as f64 / num_blocks as f64,
-                rate, eta, deltas.len());
+                rate,
+                eta,
+                deltas.len()
+            );
             io::stdout().flush().ok();
             last_print = Instant::now();
         }
     }
 
-    // Remaining in_range_created are PLUS (new UTXOs still unspent at B)
+    // Remaining in_range_created are PLUS (new UTXOs still unspent at B).
+    // Sort them before grouping so delta files are independent of HashMap
+    // random iteration order.
     let plus_before_dust = in_range_created.len();
-    for ((txid_bytes, vout), (script_hash, amount)) in in_range_created.drain() {
+    let mut remaining_created: Vec<_> = in_range_created.into_iter().collect();
+    remaining_created.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    for ((txid_bytes, vout), (script_hash, amount)) in remaining_created {
         if amount <= DUST_THRESHOLD {
             continue;
         }
         let delta = deltas.entry(script_hash).or_default();
-        delta.new_utxos.push(NewUtxo { txid: txid_bytes, vout, amount });
+        delta.new_utxos.push(NewUtxo {
+            txid: txid_bytes,
+            vout,
+            amount,
+        });
     }
 
-    let dust_filtered = plus_before_dust - deltas.values().map(|d| d.new_utxos.len()).sum::<usize>();
+    let dust_filtered =
+        plus_before_dust - deltas.values().map(|d| d.new_utxos.len()).sum::<usize>();
 
-    println!("\r    Processed {} blocks in {}                                                  ",
-        blocks_done, format_duration(t2.elapsed().as_secs_f64()));
+    println!(
+        "\r    Processed {} blocks in {}                                                  ",
+        blocks_done,
+        format_duration(t2.elapsed().as_secs_f64())
+    );
     println!();
 
     // ── Summary ─────────────────────────────────────────────────────────────
@@ -316,17 +369,34 @@ fn main() {
 
     // ── Step 3: Write grouped delta file ────────────────────────────────────
 
-    let output_path = format!("{}/delta_grouped_{}_{}.bin", OUTPUT_DIR, start_height, end_height);
+    let output_path = format!(
+        "{}/delta_grouped_{}_{}.bin",
+        OUTPUT_DIR, start_height, end_height
+    );
     println!("[3] Writing grouped delta to {} ...", output_path);
 
     let f = File::create(&output_path).expect("create delta file");
     let mut w = BufWriter::with_capacity(4 * 1024 * 1024, f);
 
     // Header: number of scripthashes
-    let num_scripts = deltas.len() as u32;
+    let mut delta_groups: Vec<_> = deltas.into_iter().collect();
+    delta_groups.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    for (_script_hash, delta) in &mut delta_groups {
+        delta
+            .spent
+            .sort_unstable_by(|a, b| a.txid.cmp(&b.txid).then_with(|| a.vout.cmp(&b.vout)));
+        delta.new_utxos.sort_unstable_by(|a, b| {
+            a.txid
+                .cmp(&b.txid)
+                .then_with(|| a.vout.cmp(&b.vout))
+                .then_with(|| a.amount.cmp(&b.amount))
+        });
+    }
+
+    let num_scripts = delta_groups.len() as u32;
     w.write_all(&num_scripts.to_le_bytes()).unwrap();
 
-    for (script_hash, delta) in &deltas {
+    for (script_hash, delta) in &delta_groups {
         // Write scripthash
         w.write_all(script_hash).unwrap();
 
@@ -348,8 +418,14 @@ fn main() {
 
     w.flush().unwrap();
 
-    let file_size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
-    println!("    Written: {} scripthashes, {:.2} MB", num_scripts, file_size as f64 / 1e6);
+    let file_size = std::fs::metadata(&output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    println!(
+        "    Written: {} scripthashes, {:.2} MB",
+        num_scripts,
+        file_size as f64 / 1e6
+    );
 
     // ── Step 4: Write delta_anchor.bin for chain-derived seeds ──────────────
     //
@@ -379,10 +455,15 @@ fn main() {
             .expect("write delta_anchor");
         println!("    Wrote delta anchor: {}", anchor_path);
     } else {
-        eprintln!("    WARNING: --to-block-hash not supplied — delta_anchor_<A>_<B>.bin NOT written.");
+        eprintln!(
+            "    WARNING: --to-block-hash not supplied — delta_anchor_<A>_<B>.bin NOT written."
+        );
         eprintln!("    Downstream cuckoo builders will fall back to legacy hardcoded seeds.");
     }
 
     println!();
-    println!("Done. Total time: {}", format_duration(t.elapsed().as_secs_f64()));
+    println!(
+        "Done. Total time: {}",
+        format_duration(t.elapsed().as_secs_f64())
+    );
 }
