@@ -185,6 +185,11 @@ impl RequestHandler {
             }
             Request::HarmonyQuery(query) => self.handle_harmony_query(query),
             Request::HarmonyBatchQuery(query) => self.handle_harmony_batch_query(query),
+            Request::OramLookup(_) => {
+                Response::Error(
+                    "ORAM lookup requires unified_server cuckoo-oram state and encrypted-channel gating".into(),
+                )
+            }
             Request::Attest { nonce } => Response::Attest(self.handle_attest(*nonce)),
             Request::Announce => match &self.state.announcement_bundle {
                 Some(bytes) => Response::Announce(bytes.clone()),
