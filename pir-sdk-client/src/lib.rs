@@ -69,6 +69,7 @@ mod merkle_verify;
 mod onion;
 #[cfg(feature = "onion")]
 mod onion_merkle;
+mod oram;
 mod platform_time;
 mod protocol;
 mod transport;
@@ -87,6 +88,7 @@ pub use db_proof::{
 pub use dpf::DpfClient;
 pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
 pub use onion::OnionClient;
+pub use oram::{OramClient, OramLookupItem, OramLookupResult};
 pub use transport::PirTransport;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_transport::WasmWebSocketTransport;
