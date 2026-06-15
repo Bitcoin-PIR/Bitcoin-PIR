@@ -53,6 +53,11 @@ ANCHOR_HEIGHT=<height>
 CORE_VERSION=<bitcoind-version-string>
 RUN_ID=mainnet_<height>_sev_snp
 MIN_FREE_KB=50000000
+# Optional read-only progress API while the UKI is running.
+# PROGRESS_HTTP=1
+# PROGRESS_HTTP_PORT=18080
+# PROGRESS_INTERVAL_SECONDS=15
+# PROGRESS_LOG_LINES=120
 CONFIG
 ```
 
@@ -68,6 +73,42 @@ The baked runner exports `ROOTS_ONLY=1`, `STAGE_SERVER_DB=0`, and
 `RUN_ONION_FFI=0`. The build still creates transient cuckoo/bin-hash files while
 computing the commitments, but Merkle sibling/tree-top artifacts are skipped and
 large intermediate files are removed as soon as their roots no longer need them.
+
+## Optional Read-Only Progress API
+
+For long mainnet runs, the UKI can expose a tiny read-only status surface. Enable
+it in `config.env` before booting the UKI:
+
+```bash
+PROGRESS_HTTP=1
+PROGRESS_HTTP_PORT=18080
+PROGRESS_INTERVAL_SECONDS=15
+PROGRESS_LOG_LINES=120
+```
+
+When DHCP succeeds in the initramfs, the UKI serves static files on:
+
+```bash
+http://<vpsbg-ip>:18080/status.json
+http://<vpsbg-ip>:18080/status.txt
+http://<vpsbg-ip>:18080/log-tail.txt
+```
+
+The endpoint is intentionally static and read-only: it has no shell, no control
+commands, no upload path, and no write API. A background heartbeat refreshes the
+files under `/run/bpir-builder-progress/www` and also updates the persistent
+status file under `/home/pir/data/attested-builder-runs/`.
+
+Example polling command:
+
+```bash
+watch -n 15 'curl -fsS http://87.120.8.198:18080/status.json || true'
+```
+
+This is a best-effort observability path. If VPSBG does not expose networking to
+the temporary UKI, the builder still proceeds normally; use the VPSBG console
+heartbeat during the run and inspect `builder-tier3-*.status` plus
+`builder-tier3-init.log` after switching back to Slice 2.
 
 ## Boot and Recover
 

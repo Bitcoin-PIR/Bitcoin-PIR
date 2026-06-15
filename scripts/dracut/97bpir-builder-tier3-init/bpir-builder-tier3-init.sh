@@ -103,6 +103,7 @@ mount_rootfs_data
 load_sev_snp
 
 LOG=/home/pir/data/attested-builder-runs/builder-tier3-init.log
+export BPIR_BUILDER_LOG=$LOG
 echo "[bpir-builder-tier3-init] starting builder runner; log=$LOG"
 set +e
 /usr/local/bin/bpir-builder-run 2>&1 | tee -a "$LOG"

@@ -186,7 +186,7 @@ echo "attested-builder sha256:    $ATTESTED_BUILDER_BIN_SHA256"
 echo "SEV modules:                $REQUIRED_SEV_MODS"
 echo
 
-DRIVER_LIST="virtio_blk $SEV_DRIVER_LIST"
+DRIVER_LIST="virtio_blk virtio_pci virtio_net $SEV_DRIVER_LIST"
 echo "generating attested-builder Tier 3 initrd..."
 SOURCE_DATE_EPOCH=0 dracut --force --no-hostonly --reproducible --nostrip \
     --add "bpir-attested-builder bpir-builder-tier3-init" \
@@ -203,6 +203,7 @@ MISSING_ITEMS=""
 for item in \
     "usr/local/bin/pir-attested-builder" \
     "usr/local/bin/bpir-builder-run" \
+    "usr/local/bin/bpir-udhcpc-script" \
     "usr/local/lib/attested-builder/scripts/build-snapshot-database.sh" \
     "sbin/bpir-builder-tier3-init" \
     "etc/bpir-builder/baked.env"; do
@@ -250,6 +251,11 @@ ANCHOR_HEIGHT=<height>
 CORE_VERSION=<bitcoind-version-string>
 RUN_ID=mainnet_<height>_sev_snp
 MIN_FREE_KB=50000000
+# Optional read-only progress API while the UKI is running.
+# PROGRESS_HTTP=1
+# PROGRESS_HTTP_PORT=18080
+# PROGRESS_INTERVAL_SECONDS=15
+# PROGRESS_LOG_LINES=120
 CONFIG
 
 Upload $OUT in VPSBG Measured Boot as a temporary UKI and reboot.
