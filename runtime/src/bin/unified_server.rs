@@ -41,6 +41,16 @@ use harmonypir::prp::hoang::HoangPrp;
 use memmap2::Mmap;
 use onionpir::{self, Server as PirServer, KeyStore};
 
+#[cfg(feature = "cuckoo-oram")]
+use bitcoinpir_oram::{
+    circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitCuckooBinReader,
+    CircuitOram, CircuitOramState, CuckooLevel, CuckooTableInfo, FilePageStore,
+    FrontCachedPageStore, OramParams, PageStore, AEAD_OVERHEAD,
+};
+
+#[cfg(all(feature = "cuckoo-oram", test))]
+use bitcoinpir_oram::CuckooPackedBlockReader;
+
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 /// Loosely-coupled flag controlling **only OnionPIR loading** at startup.
@@ -155,6 +165,23 @@ struct CliArgs {
     /// loaded from `--identity-cert-path`. Required if either of the
     /// identity flags is set.
     identity_server_id: Option<String>,
+    /// Optional Circuit ORAM image directory for the two-level cuckoo tables
+    /// (db_id=0, levels 0/1 only). Built by `oramctl build-circuit`.
+    cuckoo_oram_dir: Option<PathBuf>,
+    /// Consecutive cuckoo bins packed into one ORAM logical block.
+    cuckoo_oram_pack: usize,
+    /// Public deterministic evictions drained after each ORAM bin read.
+    cuckoo_oram_drain_per_access: u64,
+    /// Whether ORAM metadata/payload page files are AEAD wrapped.
+    cuckoo_oram_encrypted: bool,
+    /// 32-byte hex key for encrypted ORAM page files.
+    cuckoo_oram_key_hex: Option<String>,
+    /// 32-byte hex key for encrypted ORAM controller state.
+    cuckoo_oram_state_key_hex: Option<String>,
+    /// Public top-tree levels cached in trusted memory.
+    cuckoo_oram_cache_levels: usize,
+    /// Do not persist trusted ORAM state after query responses.
+    cuckoo_oram_no_save: bool,
 }
 
 fn parse_args() -> CliArgs {
@@ -180,6 +207,14 @@ fn parse_args() -> CliArgs {
     let mut identity_key_path: Option<PathBuf> = None;
     let mut identity_cert_path: Option<PathBuf> = None;
     let mut identity_server_id: Option<String> = None;
+    let mut cuckoo_oram_dir: Option<PathBuf> = None;
+    let mut cuckoo_oram_pack: usize = 16;
+    let mut cuckoo_oram_drain_per_access: u64 = 2;
+    let mut cuckoo_oram_encrypted = false;
+    let mut cuckoo_oram_key_hex: Option<String> = None;
+    let mut cuckoo_oram_state_key_hex: Option<String> = None;
+    let mut cuckoo_oram_cache_levels: usize = 0;
+    let mut cuckoo_oram_no_save = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -304,12 +339,50 @@ fn parse_args() -> CliArgs {
                 }
                 i += 1;
             }
+            "--cuckoo-oram-dir" | "--harmony-oram-dir" => {
+                if let Some(p) = args.get(i + 1) {
+                    cuckoo_oram_dir = Some(PathBuf::from(p));
+                }
+                i += 1;
+            }
+            "--cuckoo-oram-pack" | "--harmony-oram-pack" => {
+                cuckoo_oram_pack = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(16);
+                i += 1;
+            }
+            "--cuckoo-oram-drain-per-access" | "--harmony-oram-drain-per-access" => {
+                cuckoo_oram_drain_per_access =
+                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2);
+                i += 1;
+            }
+            "--cuckoo-oram-encrypted" | "--harmony-oram-encrypted" => {
+                cuckoo_oram_encrypted = true;
+            }
+            "--cuckoo-oram-key-hex" | "--harmony-oram-key-hex" => {
+                if let Some(hex) = args.get(i + 1) {
+                    cuckoo_oram_key_hex = Some(hex.clone());
+                }
+                i += 1;
+            }
+            "--cuckoo-oram-state-key-hex" | "--harmony-oram-state-key-hex" => {
+                if let Some(hex) = args.get(i + 1) {
+                    cuckoo_oram_state_key_hex = Some(hex.clone());
+                }
+                i += 1;
+            }
+            "--cuckoo-oram-cache-levels" | "--harmony-oram-cache-levels" => {
+                cuckoo_oram_cache_levels =
+                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                i += 1;
+            }
+            "--cuckoo-oram-no-save" | "--harmony-oram-no-save" => {
+                cuckoo_oram_no_save = true;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_no_save }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -565,6 +638,690 @@ fn harmony_level_table(db: &MappedDatabase, level: u8) -> Option<(&MappedSubTabl
     }
 }
 
+/// Narrow read interface for BitcoinPIR cuckoo-table rows.
+///
+/// The mmap implementation below preserves the current behavior exactly. The
+/// shape is intentionally smaller than `MappedSubTable` so an ORAM-backed table
+/// can serve the same `group_id + index` requests without exposing full group
+/// slices. HarmonyPIR is the first caller because its query protocol already
+/// sends explicit bin indices; a native ORAM backend can reuse the same layer.
+trait CuckooTableAccess: Sync {
+    fn bins_per_table(&self) -> usize;
+    fn entry_size(&self) -> usize;
+    fn group_exists(&self, group_id: usize) -> bool;
+    fn append_entry(&self, group_id: usize, idx: usize, dst: &mut Vec<u8>) -> Result<(), String>;
+
+    fn append_entries(
+        &self,
+        group_id: usize,
+        indices: &[u32],
+        zero_fill_oob: bool,
+        dst: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        for &idx in indices {
+            let idx_usize = idx as usize;
+            if idx_usize < self.bins_per_table() {
+                self.append_entry(group_id, idx_usize, dst)?;
+            } else if zero_fill_oob {
+                dst.extend(std::iter::repeat_n(0u8, self.entry_size()));
+            } else {
+                return Err(format!("index {} out of range", idx));
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_request(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct MmapCuckooTable<'a> {
+    sub_table: &'a MappedSubTable,
+    entry_size: usize,
+}
+
+impl<'a> MmapCuckooTable<'a> {
+    const fn new(sub_table: &'a MappedSubTable, entry_size: usize) -> Self {
+        Self { sub_table, entry_size }
+    }
+}
+
+impl CuckooTableAccess for MmapCuckooTable<'_> {
+    fn bins_per_table(&self) -> usize {
+        self.sub_table.bins_per_table
+    }
+
+    fn entry_size(&self) -> usize {
+        self.entry_size
+    }
+
+    fn group_exists(&self, group_id: usize) -> bool {
+        self.sub_table.try_group_bytes(group_id).is_some()
+    }
+
+    fn append_entry(&self, group_id: usize, idx: usize, dst: &mut Vec<u8>) -> Result<(), String> {
+        let table_bytes = self
+            .sub_table
+            .try_group_bytes(group_id)
+            .ok_or_else(|| format!("group_id {} out of range", group_id))?;
+        if idx >= self.sub_table.bins_per_table {
+            return Err(format!("index {} out of range", idx));
+        }
+        let offset = idx * self.entry_size;
+        dst.extend_from_slice(&table_bytes[offset..offset + self.entry_size]);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+type CuckooOramStore = Box<dyn PageStore + Send>;
+
+#[cfg(feature = "cuckoo-oram")]
+type CuckooOramBinReader = CircuitCuckooBinReader<CuckooOramStore, CuckooOramStore>;
+
+#[cfg(feature = "cuckoo-oram")]
+struct CuckooOramTable {
+    reader: std::sync::Mutex<CuckooOramBinReader>,
+    k: usize,
+    bins_per_table: usize,
+    entry_size: usize,
+    state_path: PathBuf,
+    state_key: Option<[u8; 32]>,
+    drain_per_access: u64,
+    save_state: bool,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl CuckooOramTable {
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        db_dir: &std::path::Path,
+        oram_dir: &std::path::Path,
+        level: CuckooLevel,
+        pack: usize,
+        drain_per_access: u64,
+        encrypted: bool,
+        key_hex: Option<&str>,
+        state_key_hex: Option<&str>,
+        cache_levels: usize,
+        save_state: bool,
+    ) -> Result<Self, String> {
+        if pack == 0 {
+            return Err("--cuckoo-oram-pack must be > 0".into());
+        }
+        let table = CuckooTableInfo::from_file(level, db_dir.join(level.filename()))
+            .map_err(|e| e.to_string())?;
+        let paths = CuckooOramPaths::new(oram_dir, level);
+        let state_key = parse_optional_32_hex(state_key_hex)?;
+        let loaded = match state_key {
+            Some(key) => {
+                CircuitOramState::load_encrypted(&paths.state, key).map_err(|e| e.to_string())?
+            }
+            None => CircuitOramState::load(&paths.state).map_err(|e| e.to_string())?,
+        };
+        let params = loaded.params.clone();
+        let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
+        let meta_store = open_existing_oram_store(
+            &paths.meta_image,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+            encrypted,
+            key_hex,
+            cached_pages,
+        )?;
+        let payload_store = open_existing_oram_store(
+            &paths.payload_image,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+            encrypted,
+            key_hex,
+            cached_pages,
+        )?;
+        let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
+            .map_err(|e| e.to_string())?;
+        let reader = CircuitCuckooBinReader::new(&table, pack, oram).map_err(|e| e.to_string())?;
+
+        println!(
+            "  Cuckoo ORAM {}: dir={}, pack={}, bins={}, bin_size={}, logical_blocks={}, cache_levels={}, save_state={}",
+            level,
+            oram_dir.display(),
+            pack,
+            table.total_bins(),
+            table.bin_size(),
+            reader.oram().params().logical_blocks,
+            cache_levels,
+            save_state,
+        );
+
+        Ok(Self {
+            reader: std::sync::Mutex::new(reader),
+            k: table.k,
+            bins_per_table: table.bins_per_table,
+            entry_size: table.bin_size(),
+            state_path: paths.state,
+            state_key,
+            drain_per_access,
+            save_state,
+        })
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl CuckooTableAccess for CuckooOramTable {
+    fn bins_per_table(&self) -> usize {
+        self.bins_per_table
+    }
+
+    fn entry_size(&self) -> usize {
+        self.entry_size
+    }
+
+    fn group_exists(&self, group_id: usize) -> bool {
+        group_id < self.k
+    }
+
+    fn append_entry(&self, group_id: usize, idx: usize, dst: &mut Vec<u8>) -> Result<(), String> {
+        self.append_entries(group_id, &[idx as u32], false, dst)
+    }
+
+    fn append_entries(
+        &self,
+        group_id: usize,
+        indices: &[u32],
+        zero_fill_oob: bool,
+        dst: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        if !self.group_exists(group_id) {
+            return Err(format!("group_id {} out of range", group_id));
+        }
+        for &idx in indices {
+            let idx_usize = idx as usize;
+            if idx_usize >= self.bins_per_table && !zero_fill_oob {
+                return Err(format!("index {} out of range", idx));
+            }
+        }
+
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| "Cuckoo ORAM reader mutex poisoned".to_string())?;
+        for &idx in indices {
+            let idx_usize = idx as usize;
+            if idx_usize >= self.bins_per_table {
+                dst.extend(std::iter::repeat_n(0u8, self.entry_size));
+                continue;
+            }
+            let bin_id = group_id
+                .checked_mul(self.bins_per_table)
+                .and_then(|base| base.checked_add(idx_usize))
+                .ok_or_else(|| "global ORAM bin id overflow".to_string())?;
+            let got = reader
+                .read_bin(bin_id, self.drain_per_access)
+                .map_err(|e| e.to_string())?;
+            if got.payload.len() != self.entry_size {
+                return Err(format!(
+                    "ORAM bin {} returned {} bytes, expected {}",
+                    bin_id,
+                    got.payload.len(),
+                    self.entry_size
+                ));
+            }
+            dst.extend_from_slice(&got.payload);
+        }
+        Ok(())
+    }
+
+    fn finish_request(&self) -> Result<(), String> {
+        if !self.save_state {
+            return Ok(());
+        }
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| "Cuckoo ORAM reader mutex poisoned".to_string())?;
+        reader.oram_mut().flush().map_err(|e| e.to_string())?;
+        let snapshot = reader.oram().snapshot();
+        match self.state_key {
+            Some(key) => snapshot
+                .save_encrypted_atomic(&self.state_path, key)
+                .map_err(|e| e.to_string()),
+            None => snapshot
+                .save_atomic(&self.state_path)
+                .map_err(|e| e.to_string()),
+        }
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+struct CuckooOramTables {
+    index: CuckooOramTable,
+    chunk: CuckooOramTable,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl CuckooOramTables {
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        db_dir: &std::path::Path,
+        oram_dir: &std::path::Path,
+        pack: usize,
+        drain_per_access: u64,
+        encrypted: bool,
+        key_hex: Option<&str>,
+        state_key_hex: Option<&str>,
+        cache_levels: usize,
+        save_state: bool,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            index: CuckooOramTable::open(
+                db_dir,
+                oram_dir,
+                CuckooLevel::Index,
+                pack,
+                drain_per_access,
+                encrypted,
+                key_hex,
+                state_key_hex,
+                cache_levels,
+                save_state,
+            )?,
+            chunk: CuckooOramTable::open(
+                db_dir,
+                oram_dir,
+                CuckooLevel::Chunk,
+                pack,
+                drain_per_access,
+                encrypted,
+                key_hex,
+                state_key_hex,
+                cache_levels,
+                save_state,
+            )?,
+        })
+    }
+
+    fn table_for_level(&self, level: u8) -> Option<&CuckooOramTable> {
+        match level {
+            0 => Some(&self.index),
+            1 => Some(&self.chunk),
+            _ => None,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+struct CuckooNativeLookupConfig {
+    index_k: usize,
+    chunk_k: usize,
+    index_master_seed: u64,
+    chunk_master_seed: u64,
+    tag_seed: u64,
+}
+
+#[allow(dead_code)]
+impl CuckooNativeLookupConfig {
+    const fn from_db(db: &MappedDatabase) -> Self {
+        Self {
+            index_k: db.index.params.k,
+            chunk_k: db.chunk.params.k,
+            index_master_seed: db.index.master_seed,
+            chunk_master_seed: db.chunk.master_seed,
+            tag_seed: db.index.tag_seed,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CuckooBinRead {
+    pbc_group: u32,
+    bin_index: u32,
+    bin_content: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CuckooNativeLookupResult {
+    found: bool,
+    whale: bool,
+    start_chunk_id: Option<u32>,
+    num_chunks: u8,
+    raw_chunk_data: Vec<u8>,
+    index_bin_reads: Vec<CuckooBinRead>,
+    chunk_bin_reads: Vec<CuckooBinRead>,
+}
+
+#[allow(dead_code)]
+fn cuckoo_native_lookup_batch_mmap(
+    db: &MappedDatabase,
+    script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+) -> Result<Vec<CuckooNativeLookupResult>, String> {
+    let index_table = MmapCuckooTable::new(&db.index, db.index.params.bin_size());
+    let chunk_table = MmapCuckooTable::new(&db.chunk, db.chunk.params.bin_size());
+    cuckoo_native_lookup_batch_from_tables(
+        &index_table,
+        &chunk_table,
+        CuckooNativeLookupConfig::from_db(db),
+        script_hashes,
+    )
+}
+
+#[allow(dead_code)]
+fn cuckoo_native_lookup_batch_from_tables<I, C>(
+    index_table: &I,
+    chunk_table: &C,
+    config: CuckooNativeLookupConfig,
+    script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+) -> Result<Vec<CuckooNativeLookupResult>, String>
+where
+    I: CuckooTableAccess,
+    C: CuckooTableAccess,
+{
+    cuckoo_native_lookup_batch_from_tables_with_dummy(
+        index_table,
+        chunk_table,
+        config,
+        script_hashes,
+        rand::random::<u32>,
+    )
+}
+
+#[allow(dead_code)]
+fn cuckoo_native_lookup_batch_from_tables_with_dummy<I, C>(
+    index_table: &I,
+    chunk_table: &C,
+    config: CuckooNativeLookupConfig,
+    script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+    mut next_dummy_chunk_id: impl FnMut() -> u32,
+) -> Result<Vec<CuckooNativeLookupResult>, String>
+where
+    I: CuckooTableAccess,
+    C: CuckooTableAccess,
+{
+    if config.index_k < pir_core::params::NUM_HASHES
+        || config.chunk_k < pir_core::params::NUM_HASHES
+    {
+        return Err(format!(
+            "invalid cuckoo lookup geometry: index_k={}, chunk_k={} (need >= {})",
+            config.index_k,
+            config.chunk_k,
+            pir_core::params::NUM_HASHES,
+        ));
+    }
+    if index_table.bins_per_table() == 0 || chunk_table.bins_per_table() == 0 {
+        return Err("cuckoo lookup table has zero bins".into());
+    }
+
+    let mut out = Vec::with_capacity(script_hashes.len());
+    for script_hash in script_hashes {
+        out.push(cuckoo_native_lookup_one(
+            index_table,
+            chunk_table,
+            config,
+            script_hash,
+            &mut next_dummy_chunk_id,
+        )?);
+    }
+
+    index_table.finish_request()?;
+    chunk_table.finish_request()?;
+    Ok(out)
+}
+
+fn cuckoo_native_lookup_one<I, C>(
+    index_table: &I,
+    chunk_table: &C,
+    config: CuckooNativeLookupConfig,
+    script_hash: &[u8; pir_core::params::SCRIPT_HASH_SIZE],
+    next_dummy_chunk_id: &mut impl FnMut() -> u32,
+) -> Result<CuckooNativeLookupResult, String>
+where
+    I: CuckooTableAccess,
+    C: CuckooTableAccess,
+{
+    let index_group = pir_core::hash::derive_groups_3(script_hash, config.index_k)[0];
+    let expected_tag = pir_core::hash::compute_tag(config.tag_seed, script_hash);
+    let mut index_bin_reads = Vec::with_capacity(INDEX_PARAMS.cuckoo_num_hashes);
+    let mut found_entry: Option<(u32, u8)> = None;
+
+    for h in 0..INDEX_PARAMS.cuckoo_num_hashes {
+        let key = pir_core::hash::derive_cuckoo_key(config.index_master_seed, index_group, h);
+        let bin = pir_core::hash::cuckoo_hash(script_hash, key, index_table.bins_per_table());
+        let bin_content = read_cuckoo_bin(index_table, index_group, bin)?;
+        if found_entry.is_none() {
+            found_entry = find_entry_in_index_bin(&bin_content, expected_tag);
+        }
+        index_bin_reads.push(CuckooBinRead {
+            pbc_group: checked_u32(index_group, "index group")?,
+            bin_index: checked_u32(bin, "index bin")?,
+            bin_content,
+        });
+    }
+
+    let (start_chunk_id, num_chunks) = found_entry.unwrap_or((0, 0));
+    let found = found_entry.is_some();
+    let whale = found && num_chunks == 0;
+    let mut real_chunk_ids = Vec::new();
+    if found && num_chunks > 0 {
+        let end = start_chunk_id
+            .checked_add(num_chunks as u32)
+            .ok_or_else(|| "INDEX entry chunk range overflows u32".to_string())?;
+        real_chunk_ids.extend(start_chunk_id..end);
+    }
+
+    // CHUNK round-presence analogue for TEE/ORAM: even not-found and
+    // whale results issue one full two-position dummy chunk probe, so the
+    // host does not learn found-vs-not-found from zero CHUNK ORAM reads.
+    let (probe_ids, dummy_probe) = if real_chunk_ids.is_empty() {
+        (vec![next_dummy_chunk_id()], true)
+    } else {
+        (real_chunk_ids.clone(), false)
+    };
+
+    let mut chunk_bin_reads = Vec::with_capacity(probe_ids.len() * CHUNK_PARAMS.cuckoo_num_hashes);
+    let mut raw_chunk_data = Vec::with_capacity(real_chunk_ids.len() * pir_core::params::CHUNK_SIZE);
+    for chunk_id in probe_ids {
+        let chunk_group = pir_core::hash::derive_int_groups_3(chunk_id, config.chunk_k)[0];
+        let mut recovered: Option<Vec<u8>> = None;
+        for h in 0..CHUNK_PARAMS.cuckoo_num_hashes {
+            let key = pir_core::hash::derive_cuckoo_key(config.chunk_master_seed, chunk_group, h);
+            let bin = pir_core::hash::cuckoo_hash_int(chunk_id, key, chunk_table.bins_per_table());
+            let bin_content = read_cuckoo_bin(chunk_table, chunk_group, bin)?;
+            if !dummy_probe && recovered.is_none() {
+                if let Some(data) = find_chunk_in_bin(&bin_content, chunk_id) {
+                    recovered = Some(data.to_vec());
+                }
+            }
+            chunk_bin_reads.push(CuckooBinRead {
+                pbc_group: checked_u32(chunk_group, "chunk group")?,
+                bin_index: checked_u32(bin, "chunk bin")?,
+                bin_content,
+            });
+        }
+        if !dummy_probe {
+            let data =
+                recovered.ok_or_else(|| format!("chunk_id {} missing from cuckoo table", chunk_id))?;
+            raw_chunk_data.extend_from_slice(&data);
+        }
+    }
+
+    Ok(CuckooNativeLookupResult {
+        found,
+        whale,
+        start_chunk_id: found.then_some(start_chunk_id),
+        num_chunks,
+        raw_chunk_data,
+        index_bin_reads,
+        chunk_bin_reads,
+    })
+}
+
+fn checked_u32(value: usize, label: &str) -> Result<u32, String> {
+    u32::try_from(value).map_err(|_| format!("{label} {} does not fit in u32", value))
+}
+
+fn read_cuckoo_bin<T: CuckooTableAccess>(
+    table: &T,
+    group_id: usize,
+    bin_index: usize,
+) -> Result<Vec<u8>, String> {
+    let mut bin = Vec::with_capacity(table.entry_size());
+    table.append_entry(group_id, bin_index, &mut bin)?;
+    if bin.len() != table.entry_size() {
+        return Err(format!(
+            "cuckoo bin read returned {} bytes, expected {}",
+            bin.len(),
+            table.entry_size(),
+        ));
+    }
+    Ok(bin)
+}
+
+fn find_entry_in_index_bin(result: &[u8], expected_tag: u64) -> Option<(u32, u8)> {
+    for slot in 0..INDEX_PARAMS.slots_per_bin {
+        let base = slot * INDEX_PARAMS.slot_size;
+        if base + INDEX_PARAMS.slot_size > result.len() {
+            break;
+        }
+        let slot_tag =
+            u64::from_le_bytes(result[base..base + pir_core::params::TAG_SIZE].try_into().ok()?);
+        if slot_tag == expected_tag {
+            let start = base + pir_core::params::TAG_SIZE;
+            let start_chunk_id =
+                u32::from_le_bytes(result[start..start + 4].try_into().ok()?);
+            let num_chunks = result[start + 4];
+            return Some((start_chunk_id, num_chunks));
+        }
+    }
+    None
+}
+
+fn find_chunk_in_bin(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
+    let target = chunk_id.to_le_bytes();
+    for slot in 0..CHUNK_PARAMS.slots_per_bin {
+        let base = slot * CHUNK_PARAMS.slot_size;
+        if base + CHUNK_PARAMS.slot_size > result.len() {
+            break;
+        }
+        if result[base..base + 4] == target {
+            return Some(&result[base + 4..base + CHUNK_PARAMS.slot_size]);
+        }
+    }
+    None
+}
+
+#[cfg(feature = "cuckoo-oram")]
+struct CuckooOramPaths {
+    meta_image: PathBuf,
+    payload_image: PathBuf,
+    state: PathBuf,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl CuckooOramPaths {
+    fn new(oram_dir: &std::path::Path, level: CuckooLevel) -> Self {
+        let label = level.label();
+        Self {
+            meta_image: oram_dir.join(format!("{label}.meta.oram")),
+            payload_image: oram_dir.join(format!("{label}.payload.oram")),
+            state: oram_dir.join(format!("{label}.state")),
+        }
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn open_existing_oram_store(
+    path: &std::path::Path,
+    page_count: usize,
+    plaintext_page_size: usize,
+    encrypted: bool,
+    key_hex: Option<&str>,
+    cached_pages: usize,
+) -> Result<Box<dyn PageStore + Send>, String> {
+    let backing_page_size = plaintext_page_size + if encrypted { AEAD_OVERHEAD } else { 0 };
+    let expected_len = page_count
+        .checked_mul(backing_page_size)
+        .ok_or_else(|| "ORAM image length overflow".to_string())?;
+    let actual_len = std::fs::metadata(path)
+        .map_err(|e| format!("open ORAM image {}: {}", path.display(), e))?
+        .len() as usize;
+    if actual_len != expected_len {
+        return Err(format!(
+            "ORAM image {} has {} bytes, expected {}",
+            path.display(),
+            actual_len,
+            expected_len
+        ));
+    }
+
+    let store: Box<dyn PageStore + Send> = if encrypted {
+        let key = parse_required_32_hex(key_hex, "--cuckoo-oram-key-hex")?;
+        let file = FilePageStore::open(path, page_count, backing_page_size)
+            .map_err(|e| e.to_string())?;
+        Box::new(AeadPageStore::new(file, key, plaintext_page_size).map_err(|e| e.to_string())?)
+    } else {
+        Box::new(
+            FilePageStore::open(path, page_count, plaintext_page_size).map_err(|e| e.to_string())?,
+        )
+    };
+
+    if cached_pages == 0 {
+        Ok(store)
+    } else {
+        Ok(Box::new(
+            FrontCachedPageStore::new(store, cached_pages).map_err(|e| e.to_string())?,
+        ))
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn cached_pages_for_oram_levels(params: &OramParams, cache_levels: usize) -> Result<usize, String> {
+    if cache_levels == 0 {
+        return Ok(0);
+    }
+    if cache_levels > params.height() {
+        return Err(format!(
+            "--cuckoo-oram-cache-levels {} > ORAM tree height {}",
+            cache_levels,
+            params.height()
+        ));
+    }
+    Ok((1usize << cache_levels) - 1)
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn parse_optional_32_hex(input: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    match input {
+        Some(input) => parse_32_hex(input).map(Some),
+        None => Ok(None),
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn parse_required_32_hex(input: Option<&str>, flag: &str) -> Result<[u8; 32], String> {
+    let input = input.ok_or_else(|| format!("{flag} is required"))?;
+    parse_32_hex(input)
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn parse_32_hex(input: &str) -> Result<[u8; 32], String> {
+    if input.len() != 64 {
+        return Err(format!(
+            "expected 32-byte hex string (64 chars), got {} chars",
+            input.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let start = i * 2;
+        *byte = u8::from_str_radix(&input[start..start + 2], 16)
+            .map_err(|_| format!("invalid hex byte at offset {}", start))?;
+    }
+    Ok(out)
+}
+
 /// Reject a `REQ_HARMONY_HINTS` request whose level or group ids don't
 /// exist for this DB *before* any blocking hint work is spawned. Both
 /// fields are attacker-controlled. Pre-validating keeps the per-group
@@ -675,35 +1432,39 @@ fn harmony_query_response(db: &MappedDatabase, query: &HarmonyQuery) -> Response
         1 => (&db.chunk, db.chunk.params.bin_size()),
         _ => return Response::Error("invalid level".into()),
     };
+    let table = MmapCuckooTable::new(sub_table, entry_size);
+    harmony_query_response_from_table(&table, query)
+}
 
+fn harmony_query_response_from_table<T: CuckooTableAccess>(
+    table: &T,
+    query: &HarmonyQuery,
+) -> Response {
     // S4: group_id comes straight off the wire — bounds-check it before
     // slicing the mmap.
     let group_id = query.group_id as usize;
-    let table_bytes = match sub_table.try_group_bytes(group_id) {
-        Some(b) => b,
-        None => return Response::Error(format!("group_id {} out of range", query.group_id)),
-    };
+    if !table.group_exists(group_id) {
+        return Response::Error(format!("group_id {} out of range", query.group_id));
+    }
 
     // S5: validate the index count before allocating. A legitimate
     // query carries T − 1 distinct indices in [0, real_n), so more
     // indices than bins is invalid — reject it instead of reserving
     // indices.len() × entry_size bytes for an attacker-sized list.
-    if query.indices.len() > sub_table.bins_per_table {
+    if query.indices.len() > table.bins_per_table() {
         return Response::Error(format!(
             "too many indices: {} > bins_per_table {}",
             query.indices.len(),
-            sub_table.bins_per_table
+            table.bins_per_table()
         ));
     }
 
-    let mut data = Vec::with_capacity(query.indices.len() * entry_size);
-    for &idx in &query.indices {
-        let idx_usize = idx as usize;
-        if idx_usize >= sub_table.bins_per_table {
-            return Response::Error(format!("index {} out of range", idx));
-        }
-        let offset = idx_usize * entry_size;
-        data.extend_from_slice(&table_bytes[offset..offset + entry_size]);
+    let mut data = Vec::with_capacity(query.indices.len() * table.entry_size());
+    if let Err(msg) = table.append_entries(group_id, &query.indices, false, &mut data) {
+        return Response::Error(msg);
+    }
+    if let Err(msg) = table.finish_request() {
+        return Response::Error(msg);
     }
 
     Response::HarmonyQueryResult(HarmonyQueryResult {
@@ -724,35 +1485,35 @@ fn harmony_batch_response(db: &MappedDatabase, query: &HarmonyBatchQuery) -> Res
         Some(t) => t,
         None => return Response::Error(format!("invalid level {}", query.level)),
     };
+    let table = MmapCuckooTable::new(sub_table, entry_size);
+    harmony_batch_response_from_table(&table, query)
+}
 
+fn harmony_batch_response_from_table<T: CuckooTableAccess>(
+    table: &T,
+    query: &HarmonyBatchQuery,
+) -> Response {
     let result_items: Result<Vec<HarmonyBatchResultItem>, String> = query.items
         .par_iter()
         .map(|item| {
             // S4: group_id comes straight off the wire — bounds-check
             // it before slicing the mmap.
-            let table_bytes = sub_table
-                .try_group_bytes(item.group_id as usize)
-                .ok_or_else(|| format!("group_id {} out of range", item.group_id))?;
+            let group_id = item.group_id as usize;
+            if !table.group_exists(group_id) {
+                return Err(format!("group_id {} out of range", item.group_id));
+            }
             let sub_results: Result<Vec<Vec<u8>>, String> = item.sub_queries.iter().map(|indices| {
                 // S5: validate the index count before allocating (see
                 // harmony_query_response).
-                if indices.len() > sub_table.bins_per_table {
+                if indices.len() > table.bins_per_table() {
                     return Err(format!(
                         "too many indices: {} > bins_per_table {}",
                         indices.len(),
-                        sub_table.bins_per_table
+                        table.bins_per_table()
                     ));
                 }
-                let mut data = Vec::with_capacity(indices.len() * entry_size);
-                for &idx in indices {
-                    let idx_usize = idx as usize;
-                    if idx_usize < sub_table.bins_per_table {
-                        let off = idx_usize * entry_size;
-                        data.extend_from_slice(&table_bytes[off..off + entry_size]);
-                    } else {
-                        data.extend(std::iter::repeat_n(0u8, entry_size));
-                    }
-                }
+                let mut data = Vec::with_capacity(indices.len() * table.entry_size());
+                table.append_entries(group_id, indices, true, &mut data)?;
                 Ok(data)
             }).collect();
             Ok(HarmonyBatchResultItem { group_id: item.group_id, sub_results: sub_results? })
@@ -763,6 +1524,10 @@ fn harmony_batch_response(db: &MappedDatabase, query: &HarmonyBatchQuery) -> Res
         Ok(items) => items,
         Err(msg) => return Response::Error(msg),
     };
+
+    if let Err(msg) = table.finish_request() {
+        return Response::Error(msg);
+    }
 
     Response::HarmonyBatchResult(HarmonyBatchResult {
         level: query.level,
@@ -841,6 +1606,11 @@ struct UnifiedServerData {
     channel_keypair: pir_runtime_core::channel::ChannelKeypair,
     /// Pre-computed HarmonyPIR V2 hint pool (None if pool_size=0).
     hint_pool: Option<hint_pool::HintPool>,
+    /// Optional ORAM-backed INDEX/CHUNK cuckoo-table access for db_id=0.
+    /// Currently used by HarmonyPIR's query phase. Hints, DPF scans, and
+    /// Merkle sibling levels remain mmap-backed.
+    #[cfg(feature = "cuckoo-oram")]
+    cuckoo_oram: Option<CuckooOramTables>,
     /// Pending half-stream pool entries, keyed by client-supplied
     /// session token. The first arriving half of a logical V2-half
     /// session allocates a pool entry into this map; the second
@@ -1342,6 +2112,16 @@ impl UnifiedServerData {
             Some(d) => d,
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
+        #[cfg(feature = "cuckoo-oram")]
+        if query.db_id == 0 {
+            if let Some(table) = self
+                .cuckoo_oram
+                .as_ref()
+                .and_then(|oram| oram.table_for_level(query.level))
+            {
+                return harmony_query_response_from_table(table, query);
+            }
+        }
         harmony_query_response(db, query)
     }
 
@@ -1350,7 +2130,74 @@ impl UnifiedServerData {
             Some(d) => d,
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
+        #[cfg(feature = "cuckoo-oram")]
+        if query.db_id == 0 {
+            if let Some(table) = self
+                .cuckoo_oram
+                .as_ref()
+                .and_then(|oram| oram.table_for_level(query.level))
+            {
+                return harmony_batch_response_from_table(table, query);
+            }
+        }
         harmony_batch_response(db, query)
+    }
+
+    fn handle_oram_lookup(&self, query: &OramLookupRequest) -> Response {
+        #[cfg(feature = "cuckoo-oram")]
+        {
+            if query.db_id != 0 {
+                return Response::Error(format!(
+                    "Cuckoo ORAM currently supports only db_id=0, got {}",
+                    query.db_id
+                ));
+            }
+            let db = match self.state.get_db(query.db_id) {
+                Some(d) => d,
+                None => return Response::Error(format!("unknown db_id {}", query.db_id)),
+            };
+            let Some(tables) = self.cuckoo_oram.as_ref() else {
+                return Response::Error(
+                    "Cuckoo ORAM not configured; start with --cuckoo-oram-dir".into(),
+                );
+            };
+            let t = Instant::now();
+            let lookup = match cuckoo_native_lookup_batch_from_tables(
+                &tables.index,
+                &tables.chunk,
+                CuckooNativeLookupConfig::from_db(db),
+                &query.script_hashes,
+            ) {
+                Ok(v) => v,
+                Err(e) => return Response::Error(format!("ORAM lookup failed: {}", e)),
+            };
+            println!(
+                "[oram-lookup] db={} {} scripthash(es) in {:.2?}",
+                query.db_id,
+                query.script_hashes.len(),
+                t.elapsed(),
+            );
+            Response::OramLookupResult(OramLookupResult {
+                db_id: query.db_id,
+                items: lookup
+                    .into_iter()
+                    .map(|item| OramLookupItem {
+                        found: item.found,
+                        whale: item.whale,
+                        start_chunk_id: item.start_chunk_id.unwrap_or(0),
+                        num_chunks: item.num_chunks,
+                        raw_chunk_data: item.raw_chunk_data,
+                    })
+                    .collect(),
+            })
+        }
+        #[cfg(not(feature = "cuckoo-oram"))]
+        {
+            let _ = query;
+            Response::Error(
+                "ORAM lookup requires building unified_server with --features cuckoo-oram".into(),
+            )
+        }
     }
 }
 
@@ -1703,9 +2550,6 @@ async fn main() {
     // every loaded DB and look for its OnionPIR files.
     let mut db_paths: Vec<(u8, String, PathBuf)> = Vec::new();
 
-    // The data_dir for OnionPIR / Merkle files = first database's directory.
-    let main_data_dir: PathBuf;
-
     if let Some(ref config_path) = args.config_path {
         let config = ServerConfig::load(config_path);
         println!("[config] Loaded {} databases from {}", config.databases.len(), config_path.display());
@@ -1746,8 +2590,6 @@ async fn main() {
             all_databases.push(db);
         }
 
-        // First database's directory is used for OnionPIR / Merkle files.
-        main_data_dir = config.db_path(0);
     } else {
         // Legacy CLI mode: --data-dir + --checkpoint + --delta
 
@@ -1816,13 +2658,69 @@ async fn main() {
             db_paths.push((all_databases.len() as u8, name, path.clone()));
             all_databases.push(db);
         }
-
-        main_data_dir = args.data_dir.clone();
     }
 
     let main_db = &all_databases[0];
     let index_k = main_db.index.params.k;
     let chunk_k = main_db.chunk.params.k;
+
+    #[cfg(not(feature = "cuckoo-oram"))]
+    {
+        let _ = (
+            args.cuckoo_oram_pack,
+            args.cuckoo_oram_drain_per_access,
+            args.cuckoo_oram_encrypted,
+            args.cuckoo_oram_key_hex.as_ref(),
+            args.cuckoo_oram_state_key_hex.as_ref(),
+            args.cuckoo_oram_cache_levels,
+            args.cuckoo_oram_no_save,
+        );
+        if args.cuckoo_oram_dir.is_some() {
+            eprintln!(
+                "ERROR: --cuckoo-oram-dir requires building unified_server with \
+                 --features cuckoo-oram (legacy alias: --features harmony-oram)"
+            );
+            std::process::exit(2);
+        }
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    let cuckoo_oram = match args.cuckoo_oram_dir.as_ref() {
+        Some(oram_dir) => {
+            if db_paths.len() > 1 {
+                eprintln!(
+                    "  Cuckoo ORAM: WARNING — only db_id=0 is ORAM-backed; {} additional DB(s) remain mmap-backed",
+                    db_paths.len() - 1
+                );
+            }
+            println!(
+                "  Cuckoo ORAM: enabled for db_id=0, dir={}, pack={}, drain_per_access={}, encrypted={}, cache_levels={}",
+                oram_dir.display(),
+                args.cuckoo_oram_pack,
+                args.cuckoo_oram_drain_per_access,
+                args.cuckoo_oram_encrypted,
+                args.cuckoo_oram_cache_levels,
+            );
+            Some(
+                CuckooOramTables::open(
+                    &db_paths[0].2,
+                    oram_dir,
+                    args.cuckoo_oram_pack,
+                    args.cuckoo_oram_drain_per_access,
+                    args.cuckoo_oram_encrypted,
+                    args.cuckoo_oram_key_hex.as_deref(),
+                    args.cuckoo_oram_state_key_hex.as_deref(),
+                    args.cuckoo_oram_cache_levels,
+                    !args.cuckoo_oram_no_save,
+                )
+                .unwrap_or_else(|e| panic!("failed to open Cuckoo ORAM: {}", e)),
+            )
+        }
+        None => {
+            println!("  Cuckoo ORAM: disabled (use --cuckoo-oram-dir to enable)");
+            None
+        }
+    };
 
     // ── Set up OnionPIR per-DB (primary only, if data available) ──────────
     //
@@ -2668,6 +3566,8 @@ async fn main() {
         data_root,
         channel_keypair,
         hint_pool,
+        #[cfg(feature = "cuckoo-oram")]
+        cuckoo_oram,
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         arc_verifier,
         require_arc,
@@ -2857,7 +3757,9 @@ async fn main() {
                 // If the magic appears but no session is established, that's
                 // a protocol error (clients must REQ_HANDSHAKE first).
                 let decrypted: Vec<u8>;
-                let payload: &[u8] = if outer_payload.first() == Some(&pir_runtime_core::channel::ENCRYPTED_FRAME_MAGIC) {
+                let request_was_encrypted =
+                    outer_payload.first() == Some(&pir_runtime_core::channel::ENCRYPTED_FRAME_MAGIC);
+                let payload: &[u8] = if request_was_encrypted {
                     match channel_session.as_mut() {
                         Some(s) => {
                             match s.open(pir_runtime_core::channel::Direction::ClientToServer, outer_payload) {
@@ -2900,6 +3802,7 @@ async fn main() {
                         | REQ_BUCKET_MERKLE_TREE_TOPS
                         | REQ_HARMONY_QUERY
                         | REQ_HARMONY_BATCH_QUERY
+                        | REQ_ORAM_LOOKUP
                         | REQ_REGISTER_KEYS
                         | REQ_ONIONPIR_INDEX_QUERY
                         | REQ_ONIONPIR_CHUNK_QUERY
@@ -2943,6 +3846,7 @@ async fn main() {
                         | REQ_BUCKET_MERKLE_TREE_TOPS
                         | REQ_HARMONY_QUERY
                         | REQ_HARMONY_BATCH_QUERY
+                        | REQ_ORAM_LOOKUP
                         | REQ_REGISTER_KEYS
                         | REQ_ONIONPIR_INDEX_QUERY
                         | REQ_ONIONPIR_CHUNK_QUERY
@@ -3821,6 +4725,38 @@ async fn main() {
                             let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
+                    REQ_ORAM_LOOKUP => {
+                        if !request_was_encrypted {
+                            let resp = Response::Error(
+                                "REQ_ORAM_LOOKUP must be sent inside the encrypted channel".into(),
+                            );
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            continue;
+                        }
+                        match Request::decode(payload) {
+                            Ok(Request::OramLookup(q)) => {
+                                let s = Arc::clone(&server);
+                                let resp = tokio::task::spawn_blocking(move || {
+                                    s.handle_oram_lookup(&q)
+                                })
+                                .await
+                                .unwrap();
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            }
+                            Ok(other) => {
+                                let resp = Response::Error(format!(
+                                    "unexpected request type for ORAM lookup: {:?}",
+                                    other
+                                ));
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            }
+                            Err(e) => {
+                                let resp =
+                                    Response::Error(format!("ORAM lookup decode error: {}", e));
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            }
+                        }
+                    }
 
                     // ── OnionPIR (primary only, if available) ────────────
                     REQ_REGISTER_KEYS if server.has_any_onionpir() => {
@@ -4085,34 +5021,243 @@ mod harmony_dos_guard_tests {
     /// pir-runtime-core dos_guard_tests geometry).
     const TEST_BINS: usize = 256;
 
-    fn temp_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "unified_dos_{}_{}_{}.bin",
-            tag,
+    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn temp_suffix() -> String {
+        let n = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!(
+            "{}_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
-        ));
+                .as_nanos(),
+            n,
+        )
+    }
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("unified_dos_{}_{}.bin", tag, temp_suffix()));
         p
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("unified_dos_{}_{}", tag, temp_suffix()));
+        p
+    }
+
+    fn write_subtable_file(
+        path: &std::path::Path,
+        params: &pir_core::params::TableParams,
+        bins_per_table: usize,
+    ) {
+        let bin_size = params.bin_size();
+        let mut bytes = write_header_with_anchor(params, bins_per_table, 0, None);
+        for g in 0..params.k {
+            for bin in 0..bins_per_table {
+                let marker = (g as u8) ^ (bin as u8);
+                bytes.extend(std::iter::repeat(marker).take(bin_size));
+            }
+        }
+        std::fs::File::create(path).unwrap().write_all(&bytes).unwrap();
+    }
+
+    #[derive(Clone)]
+    struct LookupFixture {
+        found_sh: [u8; pir_core::params::SCRIPT_HASH_SIZE],
+        whale_sh: [u8; pir_core::params::SCRIPT_HASH_SIZE],
+        missing_sh: [u8; pir_core::params::SCRIPT_HASH_SIZE],
+        chunk_payloads: Vec<Vec<u8>>,
+    }
+
+    const LOOKUP_TEST_BINS: usize = 64;
+    const LOOKUP_INDEX_MASTER_SEED: u64 = 0x1111_2222_3333_4444;
+    const LOOKUP_CHUNK_MASTER_SEED: u64 = 0x5555_6666_7777_8888;
+    const LOOKUP_TAG_SEED: u64 = 0x9999_aaaa_bbbb_cccc;
+    const LOOKUP_START_CHUNK_ID: u32 = 7;
+    const LOOKUP_WHALE_START_CHUNK_ID: u32 = 900;
+
+    fn deterministic_dummy(mut next: u32) -> impl FnMut() -> u32 {
+        move || {
+            let out = next;
+            next = next.wrapping_add(1);
+            out
+        }
+    }
+
+    fn lookup_index_params() -> pir_core::params::TableParams {
+        INDEX_PARAMS.with_master_seed(LOOKUP_INDEX_MASTER_SEED)
+    }
+
+    fn lookup_chunk_params() -> pir_core::params::TableParams {
+        CHUNK_PARAMS.with_master_seed(LOOKUP_CHUNK_MASTER_SEED)
+    }
+
+    fn empty_lookup_table_bytes(
+        params: &pir_core::params::TableParams,
+        bins_per_table: usize,
+        tag_seed: u64,
+    ) -> Vec<u8> {
+        let mut bytes = write_header_with_anchor(params, bins_per_table, tag_seed, None);
+        bytes.resize(
+            bytes.len() + params.k * params.table_byte_size(bins_per_table),
+            0,
+        );
+        bytes
+    }
+
+    fn slot_offset(
+        header_len: usize,
+        params: &pir_core::params::TableParams,
+        bins_per_table: usize,
+        group_id: usize,
+        bin_index: usize,
+        slot: usize,
+    ) -> usize {
+        header_len
+            + group_id * params.table_byte_size(bins_per_table)
+            + bin_index * params.bin_size()
+            + slot * params.slot_size
+    }
+
+    fn insert_slot(
+        table: &mut [u8],
+        header_len: usize,
+        params: &pir_core::params::TableParams,
+        bins_per_table: usize,
+        group_id: usize,
+        bin_index: usize,
+        slot_bytes: &[u8],
+    ) {
+        assert_eq!(slot_bytes.len(), params.slot_size);
+        for slot in 0..params.slots_per_bin {
+            let off = slot_offset(header_len, params, bins_per_table, group_id, bin_index, slot);
+            if table[off..off + params.slot_size].iter().all(|&b| b == 0) {
+                table[off..off + params.slot_size].copy_from_slice(slot_bytes);
+                return;
+            }
+        }
+        panic!("test cuckoo bin is full: group={group_id}, bin={bin_index}");
+    }
+
+    fn insert_index_record(
+        table: &mut [u8],
+        params: &pir_core::params::TableParams,
+        bins_per_table: usize,
+        script_hash: &[u8; pir_core::params::SCRIPT_HASH_SIZE],
+        start_chunk_id: u32,
+        num_chunks: u8,
+    ) {
+        let tag = pir_core::hash::compute_tag(LOOKUP_TAG_SEED, script_hash);
+        let mut slot = Vec::with_capacity(params.slot_size);
+        slot.extend_from_slice(&tag.to_le_bytes());
+        slot.extend_from_slice(&start_chunk_id.to_le_bytes());
+        slot.push(num_chunks);
+        let header_len = params.header_size;
+        for group_id in pir_core::hash::derive_groups_3(script_hash, params.k) {
+            let key = pir_core::hash::derive_cuckoo_key(params.master_seed, group_id, 0);
+            let bin_index = pir_core::hash::cuckoo_hash(script_hash, key, bins_per_table);
+            insert_slot(table, header_len, params, bins_per_table, group_id, bin_index, &slot);
+        }
+    }
+
+    fn insert_chunk_record(
+        table: &mut [u8],
+        params: &pir_core::params::TableParams,
+        bins_per_table: usize,
+        chunk_id: u32,
+        payload: &[u8],
+    ) {
+        assert_eq!(payload.len(), pir_core::params::CHUNK_SIZE);
+        let mut slot = Vec::with_capacity(params.slot_size);
+        slot.extend_from_slice(&chunk_id.to_le_bytes());
+        slot.extend_from_slice(payload);
+        let header_len = params.header_size;
+        for group_id in pir_core::hash::derive_int_groups_3(chunk_id, params.k) {
+            let key = pir_core::hash::derive_cuckoo_key(params.master_seed, group_id, 0);
+            let bin_index = pir_core::hash::cuckoo_hash_int(chunk_id, key, bins_per_table);
+            insert_slot(table, header_len, params, bins_per_table, group_id, bin_index, &slot);
+        }
+    }
+
+    fn write_lookup_db_files(db_dir: &std::path::Path) -> LookupFixture {
+        std::fs::create_dir_all(db_dir).unwrap();
+        let index_params = lookup_index_params();
+        let chunk_params = lookup_chunk_params();
+        let found_sh = [0x42u8; pir_core::params::SCRIPT_HASH_SIZE];
+        let whale_sh = [0x24u8; pir_core::params::SCRIPT_HASH_SIZE];
+        let missing_sh = [0x99u8; pir_core::params::SCRIPT_HASH_SIZE];
+        let chunk_payloads = vec![
+            vec![0xA7u8; pir_core::params::CHUNK_SIZE],
+            vec![0xB8u8; pir_core::params::CHUNK_SIZE],
+        ];
+
+        let mut index_bytes =
+            empty_lookup_table_bytes(&index_params, LOOKUP_TEST_BINS, LOOKUP_TAG_SEED);
+        insert_index_record(
+            &mut index_bytes,
+            &index_params,
+            LOOKUP_TEST_BINS,
+            &found_sh,
+            LOOKUP_START_CHUNK_ID,
+            chunk_payloads.len() as u8,
+        );
+        insert_index_record(
+            &mut index_bytes,
+            &index_params,
+            LOOKUP_TEST_BINS,
+            &whale_sh,
+            LOOKUP_WHALE_START_CHUNK_ID,
+            0,
+        );
+
+        let mut chunk_bytes = empty_lookup_table_bytes(&chunk_params, LOOKUP_TEST_BINS, 0);
+        for (i, payload) in chunk_payloads.iter().enumerate() {
+            insert_chunk_record(
+                &mut chunk_bytes,
+                &chunk_params,
+                LOOKUP_TEST_BINS,
+                LOOKUP_START_CHUNK_ID + i as u32,
+                payload,
+            );
+        }
+
+        std::fs::write(db_dir.join("batch_pir_cuckoo.bin"), index_bytes).unwrap();
+        std::fs::write(db_dir.join("chunk_pir_cuckoo.bin"), chunk_bytes).unwrap();
+
+        LookupFixture { found_sh, whale_sh, missing_sh, chunk_payloads }
+    }
+
+    fn load_lookup_db(db_dir: &std::path::Path) -> MappedDatabase {
+        MappedDatabase {
+            descriptor: DatabaseDescriptor {
+                name: "lookup-test".into(),
+                db_type: DatabaseType::Full,
+                base_height: 0,
+                height: 0,
+                index_params: lookup_index_params(),
+                chunk_params: lookup_chunk_params(),
+            },
+            index: MappedSubTable::load(&db_dir.join("batch_pir_cuckoo.bin"), lookup_index_params()),
+            chunk: MappedSubTable::load(&db_dir.join("chunk_pir_cuckoo.bin"), lookup_chunk_params()),
+            bucket_merkle_index_siblings: Vec::new(),
+            bucket_merkle_chunk_siblings: Vec::new(),
+            bucket_merkle_tree_tops: None,
+            bucket_merkle_roots: None,
+            bucket_merkle_root: None,
+            manifest_root: None,
+            manifest: None,
+        }
     }
 
     /// Write a legacy (anchor-less) cuckoo file with k groups of
     /// TEST_BINS bins, every byte of bin `b` in group `g` set to
     /// `g ^ b`, then mmap it.
     fn make_subtable(tag: &str, params: pir_core::params::TableParams) -> MappedSubTable {
-        let bin_size = params.bin_size();
-        let mut bytes = write_header_with_anchor(&params, TEST_BINS, 0, None);
-        for g in 0..params.k {
-            for bin in 0..TEST_BINS {
-                let marker = (g as u8) ^ (bin as u8);
-                bytes.extend(std::iter::repeat(marker).take(bin_size));
-            }
-        }
         let path = temp_path(tag);
-        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        write_subtable_file(&path, &params, TEST_BINS);
         let st = MappedSubTable::load(&path, params);
         // mmap keeps the inode alive; unlink immediately so failing
         // tests don't leak temp files.
@@ -4151,6 +5296,254 @@ mod harmony_dos_guard_tests {
             }
             other => panic!("expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn mmap_table_access_matches_direct_group_slice() {
+        let db = make_db();
+        let access = MmapCuckooTable::new(&db.chunk, db.chunk.params.bin_size());
+        let group_id = 4usize;
+        let indices = [0usize, 17, TEST_BINS - 1];
+
+        let mut via_access = Vec::new();
+        for idx in indices {
+            access.append_entry(group_id, idx, &mut via_access).unwrap();
+        }
+
+        let entry_size = db.chunk.params.bin_size();
+        let group_bytes = db.chunk.group_bytes(group_id);
+        let mut direct = Vec::new();
+        for idx in indices {
+            let off = idx * entry_size;
+            direct.extend_from_slice(&group_bytes[off..off + entry_size]);
+        }
+
+        assert_eq!(via_access, direct);
+    }
+
+    #[test]
+    fn native_lookup_mmap_reads_expected_data_and_presence_padding() {
+        let db_dir = temp_dir("lookup_mmap");
+        let fixture = write_lookup_db_files(&db_dir);
+        let db = load_lookup_db(&db_dir);
+        let script_hashes = [fixture.found_sh, fixture.missing_sh, fixture.whale_sh];
+
+        let index_table = MmapCuckooTable::new(&db.index, db.index.params.bin_size());
+        let chunk_table = MmapCuckooTable::new(&db.chunk, db.chunk.params.bin_size());
+        let got = cuckoo_native_lookup_batch_from_tables_with_dummy(
+            &index_table,
+            &chunk_table,
+            CuckooNativeLookupConfig::from_db(&db),
+            &script_hashes,
+            deterministic_dummy(1_000),
+        )
+        .unwrap();
+
+        assert_eq!(got.len(), 3);
+
+        let mut expected_payload = Vec::new();
+        expected_payload.extend_from_slice(&fixture.chunk_payloads[0]);
+        expected_payload.extend_from_slice(&fixture.chunk_payloads[1]);
+        assert!(got[0].found);
+        assert!(!got[0].whale);
+        assert_eq!(got[0].start_chunk_id, Some(LOOKUP_START_CHUNK_ID));
+        assert_eq!(got[0].num_chunks, 2);
+        assert_eq!(got[0].raw_chunk_data, expected_payload);
+        assert_eq!(got[0].index_bin_reads.len(), INDEX_PARAMS.cuckoo_num_hashes);
+        assert_eq!(
+            got[0].chunk_bin_reads.len(),
+            CHUNK_PARAMS.cuckoo_num_hashes * got[0].num_chunks as usize,
+        );
+
+        assert!(!got[1].found);
+        assert!(!got[1].whale);
+        assert_eq!(got[1].start_chunk_id, None);
+        assert_eq!(got[1].raw_chunk_data.len(), 0);
+        assert_eq!(got[1].index_bin_reads.len(), INDEX_PARAMS.cuckoo_num_hashes);
+        assert_eq!(got[1].chunk_bin_reads.len(), CHUNK_PARAMS.cuckoo_num_hashes);
+
+        assert!(got[2].found);
+        assert!(got[2].whale);
+        assert_eq!(got[2].start_chunk_id, Some(LOOKUP_WHALE_START_CHUNK_ID));
+        assert_eq!(got[2].raw_chunk_data.len(), 0);
+        assert_eq!(got[2].index_bin_reads.len(), INDEX_PARAMS.cuckoo_num_hashes);
+        assert_eq!(got[2].chunk_bin_reads.len(), CHUNK_PARAMS.cuckoo_num_hashes);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn oram_table_access_matches_direct_group_slice() {
+        let db_dir = temp_dir("oram_db");
+        let oram_dir = temp_dir("oram_img");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        std::fs::create_dir_all(&oram_dir).unwrap();
+
+        let bins_per_table = 16usize;
+        let chunk_path = db_dir.join(CuckooLevel::Chunk.filename());
+        write_subtable_file(&chunk_path, &CHUNK_PARAMS, bins_per_table);
+        let table = CuckooTableInfo::from_file(CuckooLevel::Chunk, &chunk_path).unwrap();
+        let pack = 4usize;
+        let source = CuckooPackedBlockReader::open(table.clone(), pack).unwrap();
+        let params = OramParams::with_leaves(
+            source.logical_blocks(),
+            source.block_payload_bytes(),
+            source.logical_blocks().max(2).next_power_of_two(),
+        )
+        .unwrap()
+        .with_bucket_size(2)
+        .unwrap()
+        .with_stash_capacity(128)
+        .unwrap();
+        let meta_path = oram_dir.join("chunk.meta.oram");
+        let payload_path = oram_dir.join("chunk.payload.oram");
+        let state_path = oram_dir.join("chunk.state");
+        let meta_store = FilePageStore::open(
+            &meta_path,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = FilePageStore::open(
+            &payload_path,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let mut oram =
+            CircuitOram::build_trusted_from_source(params, meta_store, payload_store, source, [9; 32])
+                .unwrap();
+        oram.flush().unwrap();
+        oram.snapshot().save_atomic(&state_path).unwrap();
+        drop(oram);
+
+        let access = CuckooOramTable::open(
+            &db_dir,
+            &oram_dir,
+            CuckooLevel::Chunk,
+            pack,
+            2,
+            false,
+            None,
+            None,
+            0,
+            true,
+        )
+        .unwrap();
+
+        let group_id = 3usize;
+        let indices = [0u32, 5, (bins_per_table - 1) as u32];
+        let mut via_oram = Vec::new();
+        access
+            .append_entries(group_id, &indices, false, &mut via_oram)
+            .unwrap();
+        access.finish_request().unwrap();
+
+        let mut direct_reader = CuckooPackedBlockReader::open(table, pack).unwrap();
+        let mut direct = Vec::new();
+        for idx in indices {
+            direct.extend_from_slice(
+                &direct_reader
+                    .read_bin(group_id * bins_per_table + idx as usize)
+                    .unwrap(),
+            );
+        }
+
+        assert_eq!(via_oram, direct);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    fn build_test_oram_image(
+        db_dir: &std::path::Path,
+        oram_dir: &std::path::Path,
+        level: CuckooLevel,
+        pack: usize,
+    ) {
+        let table = CuckooTableInfo::from_file(level, db_dir.join(level.filename())).unwrap();
+        let source = CuckooPackedBlockReader::open(table, pack).unwrap();
+        let params = OramParams::with_leaves(
+            source.logical_blocks(),
+            source.block_payload_bytes(),
+            source.logical_blocks().max(2).next_power_of_two(),
+        )
+        .unwrap()
+        .with_bucket_size(2)
+        .unwrap()
+        .with_stash_capacity(128)
+        .unwrap();
+        let paths = CuckooOramPaths::new(oram_dir, level);
+        let meta_store = FilePageStore::open(
+            &paths.meta_image,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = FilePageStore::open(
+            &paths.payload_image,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let mut oram =
+            CircuitOram::build_trusted_from_source(params, meta_store, payload_store, source, [3; 32])
+                .unwrap();
+        oram.flush().unwrap();
+        oram.snapshot().save_atomic(&paths.state).unwrap();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn native_lookup_oram_matches_mmap_lookup() {
+        let db_dir = temp_dir("lookup_oram_db");
+        let oram_dir = temp_dir("lookup_oram_img");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        let fixture = write_lookup_db_files(&db_dir);
+        let db = load_lookup_db(&db_dir);
+        let script_hashes = [fixture.found_sh, fixture.missing_sh, fixture.whale_sh];
+        let pack = 4usize;
+        build_test_oram_image(&db_dir, &oram_dir, CuckooLevel::Index, pack);
+        build_test_oram_image(&db_dir, &oram_dir, CuckooLevel::Chunk, pack);
+
+        let mmap_index = MmapCuckooTable::new(&db.index, db.index.params.bin_size());
+        let mmap_chunk = MmapCuckooTable::new(&db.chunk, db.chunk.params.bin_size());
+        let expected = cuckoo_native_lookup_batch_from_tables_with_dummy(
+            &mmap_index,
+            &mmap_chunk,
+            CuckooNativeLookupConfig::from_db(&db),
+            &script_hashes,
+            deterministic_dummy(2_000),
+        )
+        .unwrap();
+
+        let oram_tables = CuckooOramTables::open(
+            &db_dir,
+            &oram_dir,
+            pack,
+            2,
+            false,
+            None,
+            None,
+            0,
+            true,
+        )
+        .unwrap();
+        let actual = cuckoo_native_lookup_batch_from_tables_with_dummy(
+            &oram_tables.index,
+            &oram_tables.chunk,
+            CuckooNativeLookupConfig::from_db(&db),
+            &script_hashes,
+            deterministic_dummy(2_000),
+        )
+        .unwrap();
+
+        assert_eq!(actual, expected);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
     }
 
     // ─── S4: wire group_id slices the mmap ──────────────────────────────
