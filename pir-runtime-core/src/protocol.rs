@@ -45,6 +45,17 @@ pub const REQ_HARMONY_HINTS_V2: u8 = 0x44;
 ///        backward compatible]
 pub const REQ_HARMONY_HINTS_V2_HALF: u8 = 0x46;
 
+// ─── TEE ORAM request variants ─────────────────────────────────────────────
+
+/// Native TEE + ORAM lookup over the existing INDEX + CHUNK cuckoo tables.
+///
+/// This request carries plaintext scripthashes and therefore must be sent only
+/// inside the attested encrypted channel (`REQ_HANDSHAKE` first, then an
+/// encrypted frame). The server rejects cleartext ORAM lookup frames.
+///
+/// Wire: [1B db_id][2B count LE][count × 20B scripthash]
+pub const REQ_ORAM_LOOKUP: u8 = 0x60;
+
 // ─── Extended request variants (multi-database) ────────────────────────────
 
 pub const REQ_GET_DB_CATALOG: u8 = 0x02;
@@ -209,6 +220,7 @@ pub const RESP_HARMONY_QUERY: u8 = 0x42;
 pub const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
 /// Key preamble sent before per-group hint frames in V2 protocol.
 pub const RESP_HARMONY_HINTS_KEY: u8 = 0x44;
+pub const RESP_ORAM_LOOKUP: u8 = 0x60;
 
 // ─── Request types ──────────────────────────────────────────────────────────
 
@@ -362,6 +374,36 @@ pub struct HarmonyBatchResultItem {
     pub sub_results: Vec<Vec<u8>>,
 }
 
+/// Maximum scripthashes accepted in one native ORAM lookup request.
+///
+/// This is a request-memory and response-size guard, not a privacy parameter.
+/// The ORAM leakage model admits `batch_len`; callers that need fixed batches
+/// can pad at the client layer before using this opcode.
+pub const MAX_ORAM_LOOKUP_SCRIPTHASHES: usize = 256;
+
+#[derive(Clone, Debug)]
+pub struct OramLookupRequest {
+    pub db_id: u8,
+    pub script_hashes: Vec<[u8; pir_core::params::SCRIPT_HASH_SIZE]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OramLookupItem {
+    pub found: bool,
+    pub whale: bool,
+    pub start_chunk_id: u32,
+    pub num_chunks: u8,
+    /// Raw concatenated 40-byte chunk payloads in chunk-id order. Empty for
+    /// not-found and whale results.
+    pub raw_chunk_data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OramLookupResult {
+    pub db_id: u8,
+    pub items: Vec<OramLookupItem>,
+}
+
 #[derive(Clone, Debug)]
 pub enum Request {
     Ping,
@@ -419,6 +461,7 @@ pub enum Request {
     HarmonyHintsV2Half(HarmonyHintRequestV2Half),
     HarmonyQuery(HarmonyQuery),
     HarmonyBatchQuery(HarmonyBatchQuery),
+    OramLookup(OramLookupRequest),
     /// Operator-signed identity announce. Body is empty — the server
     /// returns its cached, pre-encoded `pir_identity::AnnouncementBundle`
     /// in `Response::Announce`. Servers that lack the on-disk identity
@@ -628,6 +671,7 @@ pub enum Response {
     HarmonyInfo(ServerInfo),
     HarmonyQueryResult(HarmonyQueryResult),
     HarmonyBatchResult(HarmonyBatchResult),
+    OramLookupResult(OramLookupResult),
     /// ARC credential presentation verified (status=0x00).
     ArcCredentialOk,
     /// Cashu BAT presentation verified.
@@ -748,6 +792,10 @@ impl Request {
             Request::HarmonyBatchQuery(q) => {
                 payload.push(REQ_HARMONY_BATCH_QUERY);
                 encode_harmony_batch_query(&mut payload, q);
+            }
+            Request::OramLookup(q) => {
+                payload.push(REQ_ORAM_LOOKUP);
+                encode_oram_lookup_request(&mut payload, q);
             }
             Request::Announce => {
                 payload.push(REQ_ANNOUNCE);
@@ -886,6 +934,10 @@ impl Request {
                 let q = decode_harmony_batch_query(&data[1..])?;
                 Ok(Request::HarmonyBatchQuery(q))
             }
+            REQ_ORAM_LOOKUP => {
+                let q = decode_oram_lookup_request(&data[1..])?;
+                Ok(Request::OramLookup(q))
+            }
             REQ_ANNOUNCE => Ok(Request::Announce),
             v => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -998,6 +1050,10 @@ impl Response {
             Response::HarmonyBatchResult(r) => {
                 payload.push(RESP_HARMONY_BATCH_QUERY);
                 encode_harmony_batch_result(&mut payload, r);
+            }
+            Response::OramLookupResult(r) => {
+                payload.push(RESP_ORAM_LOOKUP);
+                encode_oram_lookup_result(&mut payload, r);
             }
             Response::ArcCredentialOk => {
                 payload.push(RESP_CREDENTIAL_OK);
@@ -1184,6 +1240,10 @@ impl Response {
             RESP_HARMONY_BATCH_QUERY => {
                 let r = decode_harmony_batch_result(&data[1..])?;
                 Ok(Response::HarmonyBatchResult(r))
+            }
+            RESP_ORAM_LOOKUP => {
+                let r = decode_oram_lookup_result(&data[1..])?;
+                Ok(Response::OramLookupResult(r))
             }
             v => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1586,6 +1646,105 @@ fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
         items.push(HarmonyBatchResultItem { group_id, sub_results });
     }
     Ok(HarmonyBatchResult { level, round_id, sub_results_per_group, items })
+}
+
+// ─── TEE ORAM encoding helpers ─────────────────────────────────────────────
+
+fn encode_oram_lookup_request(buf: &mut Vec<u8>, q: &OramLookupRequest) {
+    debug_assert!(q.script_hashes.len() <= u16::MAX as usize);
+    buf.push(q.db_id);
+    buf.extend_from_slice(&(q.script_hashes.len() as u16).to_le_bytes());
+    for sh in &q.script_hashes {
+        buf.extend_from_slice(sh);
+    }
+}
+
+fn decode_oram_lookup_request(data: &[u8]) -> io::Result<OramLookupRequest> {
+    if data.len() < 3 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "ORAM lookup request too short"));
+    }
+    let db_id = data[0];
+    let count = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
+    if count > MAX_ORAM_LOOKUP_SCRIPTHASHES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "ORAM lookup request count {} exceeds maximum {}",
+                count, MAX_ORAM_LOOKUP_SCRIPTHASHES
+            ),
+        ));
+    }
+    let expected = 3 + count * pir_core::params::SCRIPT_HASH_SIZE;
+    if data.len() < expected {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated ORAM scripthash list"));
+    }
+    let mut script_hashes = Vec::with_capacity(count);
+    let mut pos = 3;
+    for _ in 0..count {
+        let mut sh = [0u8; pir_core::params::SCRIPT_HASH_SIZE];
+        sh.copy_from_slice(&data[pos..pos + pir_core::params::SCRIPT_HASH_SIZE]);
+        script_hashes.push(sh);
+        pos += pir_core::params::SCRIPT_HASH_SIZE;
+    }
+    Ok(OramLookupRequest { db_id, script_hashes })
+}
+
+fn encode_oram_lookup_result(buf: &mut Vec<u8>, r: &OramLookupResult) {
+    debug_assert!(r.items.len() <= u16::MAX as usize);
+    buf.push(r.db_id);
+    buf.extend_from_slice(&(r.items.len() as u16).to_le_bytes());
+    for item in &r.items {
+        let mut flags = 0u8;
+        if item.found {
+            flags |= 0x01;
+        }
+        if item.whale {
+            flags |= 0x02;
+        }
+        buf.push(flags);
+        buf.extend_from_slice(&item.start_chunk_id.to_le_bytes());
+        buf.push(item.num_chunks);
+        buf.extend_from_slice(&(item.raw_chunk_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&item.raw_chunk_data);
+    }
+}
+
+fn decode_oram_lookup_result(data: &[u8]) -> io::Result<OramLookupResult> {
+    if data.len() < 3 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "ORAM lookup result too short"));
+    }
+    let db_id = data[0];
+    let count = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
+    let mut pos = 3;
+    let mut items = Vec::with_capacity(count);
+    for _ in 0..count {
+        if pos + 10 > data.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated ORAM lookup item"));
+        }
+        let flags = data[pos];
+        pos += 1;
+        let start_chunk_id = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        let num_chunks = data[pos];
+        pos += 1;
+        let data_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        if pos + data_len > data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated ORAM lookup chunk data",
+            ));
+        }
+        items.push(OramLookupItem {
+            found: flags & 0x01 != 0,
+            whale: flags & 0x02 != 0,
+            start_chunk_id,
+            num_chunks,
+            raw_chunk_data: data[pos..pos + data_len].to_vec(),
+        });
+        pos += data_len;
+    }
+    Ok(OramLookupResult { db_id, items })
 }
 
 // ─── Database catalog encoding helpers ─────────────────────────────────────
@@ -2143,6 +2302,58 @@ mod attest_wire_tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn oram_lookup_request_and_response_roundtrip() {
+        let req = OramLookupRequest {
+            db_id: 7,
+            script_hashes: vec![[0x11; pir_core::params::SCRIPT_HASH_SIZE], [0x22; pir_core::params::SCRIPT_HASH_SIZE]],
+        };
+        let encoded = Request::OramLookup(req.clone()).encode();
+        assert_eq!(encoded[4], REQ_ORAM_LOOKUP);
+        match Request::decode(&encoded[4..]).unwrap() {
+            Request::OramLookup(decoded) => {
+                assert_eq!(decoded.db_id, req.db_id);
+                assert_eq!(decoded.script_hashes, req.script_hashes);
+            }
+            other => panic!("wrong variant: {:?}", other),
+        }
+
+        let result = OramLookupResult {
+            db_id: 7,
+            items: vec![
+                OramLookupItem {
+                    found: true,
+                    whale: false,
+                    start_chunk_id: 42,
+                    num_chunks: 2,
+                    raw_chunk_data: vec![0xAA; 2 * pir_core::params::CHUNK_SIZE],
+                },
+                OramLookupItem {
+                    found: false,
+                    whale: false,
+                    start_chunk_id: 0,
+                    num_chunks: 0,
+                    raw_chunk_data: Vec::new(),
+                },
+            ],
+        };
+        let encoded = Response::OramLookupResult(result.clone()).encode();
+        assert_eq!(encoded[4], RESP_ORAM_LOOKUP);
+        match Response::decode(&encoded[4..]).unwrap() {
+            Response::OramLookupResult(decoded) => assert_eq!(decoded, result),
+            other => panic!("wrong variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn oram_lookup_rejects_oversized_batch() {
+        let mut payload = vec![REQ_ORAM_LOOKUP, 0];
+        payload.extend_from_slice(&((MAX_ORAM_LOOKUP_SCRIPTHASHES as u16 + 1).to_le_bytes()));
+        let err = Request::decode(&payload).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds maximum"), "got: {}", err);
     }
 
     #[test]
