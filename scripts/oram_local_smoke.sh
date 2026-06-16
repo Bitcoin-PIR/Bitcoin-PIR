@@ -3,7 +3,7 @@ set -euo pipefail
 
 # End-to-end local smoke for the TEE ORAM backend:
 #   1. build a tiny INDEX+CHUNK cuckoo DB fixture,
-#   2. build split-store Circuit ORAM images with oramctl,
+#   2. build authenticated split-store Circuit ORAM images with oramctl,
 #   3. start unified_server with --features cuckoo-oram,
 #   4. verify cleartext ORAM lookup is rejected,
 #   5. verify encrypted-channel ORAM lookup returns found / missing / whale.
@@ -89,12 +89,14 @@ WHALE_HASH="$(awk -F= '/^whale_script_hash=/{print $2}' <<< "${fixture_output}")
     --pack 4 \
     --leaf-divisor 4 \
     --bucket-size 2 \
-    --stash-capacity 128
+    --stash-capacity 128 \
+    --auth-store
   cargo run -q --bin oramctl -- verify-circuit-bins \
     --db-dir "${DB_DIR}" \
     --oram-dir "${ORAM_DIR}" \
     --pack 4 \
-    --bins 32
+    --bins 32 \
+    --auth-store
 )
 
 cd "${REPO_ROOT}"
@@ -107,6 +109,7 @@ cargo build -q -p runtime --features cuckoo-oram --bin unified_server
   --disable-onion \
   --cuckoo-oram-dir "${ORAM_DIR}" \
   --cuckoo-oram-pack 4 \
+  --cuckoo-oram-auth-store \
   --cuckoo-oram-no-save \
   >"${SERVER_LOG}" 2>&1 &
 SERVER_PID="$!"
