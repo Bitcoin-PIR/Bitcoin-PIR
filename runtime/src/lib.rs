@@ -12,7 +12,7 @@
 // Re-exports of the publishable server primitives. Binaries keep their
 // pre-refactor import paths (`use runtime::protocol::*`, etc.) so
 // nothing in `src/bin/` needs to move.
-pub use pir_runtime_core::{eval, handler, protocol, table};
+pub use pir_runtime_core::{db_proof, eval, handler, protocol, table};
 
 // Binary-only modules. These stay here because only `src/bin/*` reaches
 // for them.

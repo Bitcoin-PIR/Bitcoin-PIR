@@ -5,6 +5,7 @@
 //! multiple databases with different parameters.
 
 use crate::manifest::{hex_encode, DbManifest};
+use crate::protocol::DatabaseProofBundle;
 use memmap2::Mmap;
 use pir_core::merkle::Hash256;
 use pir_core::params::{
@@ -263,6 +264,9 @@ pub struct MappedDatabase {
     /// hashes to the client without re-reading the file). `None` iff
     /// `manifest_root` is `None`.
     pub manifest: Option<DbManifest>,
+    /// Optional attested-builder proof sidecar served via REQ_GET_DB_PROOF.
+    /// The runtime only transports this bundle; clients/admin tooling verify it.
+    pub db_proof: Option<DatabaseProofBundle>,
 }
 
 impl MappedDatabase {
@@ -402,6 +406,7 @@ impl MappedDatabase {
             bucket_merkle_index_siblings, bucket_merkle_chunk_siblings,
             bucket_merkle_tree_tops, bucket_merkle_roots, bucket_merkle_root,
             manifest, manifest_root,
+            db_proof: None,
         }
     }
 

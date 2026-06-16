@@ -309,6 +309,7 @@ dependencies = [
  "hex",
  "pir-attest-verify",
  "pir-core",
+ "pir-db-attest",
  "pir-identity",
  "pir-runtime-core",
  "pir-sdk",
@@ -1727,6 +1728,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pir-db-attest"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rootbundle",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "pir-identity"
 version = "0.1.0"
 dependencies = [
@@ -1793,6 +1805,7 @@ dependencies = [
  "onionpir",
  "pir-channel",
  "pir-core",
+ "pir-db-attest",
  "pir-identity",
  "pir-sdk",
  "rand 0.8.5",
@@ -2176,6 +2189,14 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rootbundle"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
 ]
 
 [[package]]
