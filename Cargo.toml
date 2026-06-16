@@ -5,6 +5,7 @@ members = [
     "pir-channel",
     "pir-identity",
     "pir-attest-verify",
+    "pir-db-attest",
     "pir-sdk",
     "pir-runtime-core",
     "pir-sdk-server",

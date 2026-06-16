@@ -14,6 +14,9 @@ pub struct DatabaseEntry {
     pub db_type: String,
     /// Path to the database directory.
     pub path: PathBuf,
+    /// Optional attested-builder proof directory for this database.
+    #[serde(default)]
+    pub proof_dir: Option<PathBuf>,
     /// Starting height (0 for full snapshots, start height for deltas).
     #[serde(default)]
     pub base_height: u32,
@@ -35,6 +38,7 @@ impl DatabaseEntry {
             name: name.into(),
             db_type: "full".into(),
             path: path.into(),
+            proof_dir: None,
             base_height: 0,
             height,
             priority: default_priority(),
@@ -52,6 +56,7 @@ impl DatabaseEntry {
             name: name.into(),
             db_type: "delta".into(),
             path: path.into(),
+            proof_dir: None,
             base_height,
             height: tip_height,
             priority: default_priority(),
@@ -149,6 +154,11 @@ impl ServerConfig {
             if db.path.is_relative() {
                 db.path = base_dir.join(&db.path);
             }
+            if let Some(proof_dir) = db.proof_dir.as_mut() {
+                if proof_dir.is_relative() {
+                    *proof_dir = base_dir.join(&proof_dir);
+                }
+            }
         }
 
         Ok(config)
@@ -214,4 +224,49 @@ pub enum ConfigError {
     ParseError(String, String),
     #[error("invalid configuration: {0}")]
     Invalid(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bpir-sdk-server-config-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn load_resolves_relative_database_and_proof_paths_against_config_dir() {
+        let dir = temp_dir();
+        let config_path = dir.join("databases.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[[database]]
+name = "delta_940611_948454"
+type = "delta"
+path = "deltas/940611_948454_canonical_20260615"
+proof_dir = "attestations/delta_940611_948454_sev_snp"
+base_height = 940611
+height = 948454
+"#,
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(&config_path).unwrap();
+        let db = &config.databases[0];
+
+        assert_eq!(db.path, dir.join("deltas/940611_948454_canonical_20260615"));
+        assert_eq!(
+            db.proof_dir.as_ref().unwrap(),
+            &dir.join("attestations/delta_940611_948454_sev_snp")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

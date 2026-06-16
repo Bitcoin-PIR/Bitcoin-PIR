@@ -55,12 +55,13 @@
 // `wasm32-unknown-unknown`. On wasm32 the equivalent role is played by
 // [`wasm_transport::WasmWebSocketTransport`], which wraps `web_sys::WebSocket`
 // and bridges its callback-driven API to `async/.await` via an mpsc channel.
-#[cfg(not(target_arch = "wasm32"))]
-mod connection;
 pub mod admin;
 pub mod announce;
 pub mod attest;
 pub mod channel;
+#[cfg(not(target_arch = "wasm32"))]
+mod connection;
+pub mod db_proof;
 mod dpf;
 mod harmony;
 pub mod hint_cache;
@@ -79,6 +80,10 @@ pub use connection::{
     RetryPolicy, WsConnection, DEFAULT_CONNECT_TIMEOUT, DEFAULT_INITIAL_BACKOFF_DELAY,
     DEFAULT_MAX_BACKOFF_DELAY, DEFAULT_MAX_CONNECT_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT,
 };
+pub use db_proof::{
+    fetch_database_proof, verify_database_proof, DatabaseProofBundle, DatabaseProofPolicy,
+    VerifiedDatabaseRoots,
+};
 pub use dpf::DpfClient;
 pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
 pub use onion::OnionClient;
@@ -89,6 +94,6 @@ pub use wasm_transport::WasmWebSocketTransport;
 // Re-export SDK types
 pub use pir_sdk::{
     compute_sync_plan, merge_delta, merge_delta_batch, DatabaseCatalog, DatabaseInfo,
-    PirBackendType, PirClient, PirClientConfig, PirError, PirResult, QueryResult,
-    ScriptHash, SyncPlan, SyncResult,
+    PirBackendType, PirClient, PirClientConfig, PirError, PirResult, QueryResult, ScriptHash,
+    SyncPlan, SyncResult,
 };

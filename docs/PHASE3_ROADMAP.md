@@ -37,10 +37,10 @@ to whichever slice you want to start on.
 | | |
 |---|---|
 | `weikeng1.bitcoinpir.org` | Hetzner i7-8700, role=primary, DPF + OnionPIR + HarmonyPIR query, 125 GB RAM, 944 GB disk. Cloudflared tunnel terminates here. **Not** SEV-attested (Intel chip). |
-| `weikeng2.bitcoinpir.org` | VPSBG EPYC 9745 (Zen 5), role=secondary, DPF + HarmonyPIR hint, **SEV-SNP active** at VMPL0, **Tier 3 UKI loaded**: `unified_server` runs from initramfs, no rootfs pivot for the service, sshd gone. cloudflared also runs from initramfs (supervised by runit alongside unified_server). Rootfs is mounted (rw) only to expose `/home/pir/data` for DBs + VCEK chain. 48 GB disk, 22 GB used. |
+| `weikeng2.bitcoinpir.org` | VPSBG EPYC 9745 (Zen 5), role=secondary, query-only (`--serve-queries`), **SEV-SNP active** at VMPL0, **Tier 3 UKI loaded**: `unified_server` runs from initramfs, no rootfs pivot for the service, sshd gone. cloudflared also runs from initramfs (supervised by runit alongside unified_server). Rootfs is mounted (rw) only to expose `/home/pir/data` for DBs + VCEK chain. |
 | Cloudflare tunnels | Two: Hetzner (existing) for pir1, VPSBG (new) for pir2. Both healthy. |
-| DBs in production | `main` (height 940611), `delta_940611_944000`. Both have `MANIFEST.toml`. |
-| Hetzner `pir-secondary.service` | Stopped + disabled (port 8092 free). Unit file kept for hot-spare revival via `systemctl start pir-secondary`. |
+| DBs in production | `main` (height 948454), `delta_940611_948454`. Both have `MANIFEST.toml`; the delta DB also has the SEV-SNP builder proof sidecar at `attestations/delta_940611_948454_sev_snp`. |
+| Hetzner `pir-secondary.service` | Running as a local secondary/hot-spare on port 8092. Public `weikeng2.bitcoinpir.org` routes to VPSBG, not this service. |
 
 ### Attested values published (operator: weikengchen) — Tier 3 (Slice 3) baseline
 
@@ -53,17 +53,17 @@ Launch MEASUREMENT (covers OVMF + Tier 3 UKI bytes — UKI now contains
 the unified_server BINARY itself in initramfs, NOT just a cmdline hash
 pin. So this digest authenticates the literal binary bytes the box is
 running, not "a binary the box claims matches a hash"):
-  2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5
+  892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013
 
-UKI bytes sha256 (built by scripts/build_uki_tier3.sh on vpsbg-pir;
+UKI bytes sha256 (built by scripts/build_uki_tier3.sh on pir-hetzner;
 includes initramfs with unified_server + cloudflared + runit + the
 sev-guest/ccp/tsm_report kernel modules baked in):
-  afbc07f8ea8df7f24e0d92980184bcc61e8762dbe3bbf0e161ef08bdf8b8fe90
+  01d0dc3f3fbff98886e8ba8bd9108a5a13fd55305806eeaeffeafe7307e68aab
 
 unified_server binary sha256 (computed at build time AND attested at
 runtime via /proc/self/exe — the two match because dracut was invoked
 with --nostrip; verifiers pin via --expect-binary on bpir-admin attest):
-  324c3883510c56a344221ec379a6466c3089099f51e566e7ad9b1356156eee7e
+  d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a
 
 ARK fingerprint (AMD Turin family root certificate — pinned in
 web/src/attest-pin.ts and used by --expect-ark-fingerprint to anchor
@@ -71,11 +71,11 @@ the ARK→ASK→VCEK chain):
   1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 DB manifest roots (db_id order):
-  main (940611):              8911588dde20282726b5f2ae8e2c3152c673d636dc6a10295d9b9037e36fba11
-  delta_940611_944000:        b1822802cfb193b80c57974e43388d2389c11715eb7b3d56fcd062c348f03f3a
+  main (948454):              d13ae468118366c1c1ad05bd069092cd7fa079ac205c9043d38e2954efdd7848
+  delta_940611_948454:        c816f067117bca98256ee246c4469591ee8f537b2271d65b38d1536a70887963
 
 Server git rev (per /attest, captured at unified_server build time):
-  616f7839dcc6744638f9451f0489a79aa6947329
+  1c21d341502c2986d04b3df5c65e29a5f7d2bb36-dirty
 ```
 
 NOTE on the X25519 channel pubkey: it's "long-lived" relative to per-
@@ -83,15 +83,15 @@ session ECDH (which is fresh per handshake), but it IS regenerated on
 every server-process start (i.e. every reboot). Verifiers should NOT
 pin it across reboots — they observe it dynamically via attest and
 cross-check the REPORT_DATA binding. The current value as of last
-boot is `08224ddcc2288cb5fec9a7cd2c9d5a69bca6287d9da34203ad231f6b9d739e05`
+boot is `131c7a38dce3daa65e90ad7de12c053c393ab095c65313da8cf2875684c22718`
 but it'll be different next reboot.
 
 Verifiers can cross-check end-to-end with:
 ```bash
 # Static checks: report binding + binary + measurement + ARK chain
 bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5 \
-    --expect-binary 324c3883510c56a344221ec379a6466c3089099f51e566e7ad9b1356156eee7e
+    --expect-measurement 892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013 \
+    --expect-binary d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a
 
 # Live encrypted channel + AMD VCEK chain validation
 bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
@@ -252,8 +252,8 @@ back in.
 
 ✅ **Done.** `unified_server` runs from inside the UKI's initramfs
 (MEASUREMENT covers the binary bytes directly), sshd is gone, operator
-access is `bpir-admin` over WSS only. New MEASUREMENT
-`2ad9490a…3709c4018faf161f52eb3c6063c1e241f19fd6fe5` published above.
+access is `bpir-admin` over WSS only. Current db-proof deployment
+MEASUREMENT `892bb625…d1ce1013` is published above.
 
 For the architectural decisions + four-iteration post-mortem (cloudflared
 arg-order bug, cloudflared env-var bug, missing DNS, VPSBG-uses-static-IP
@@ -433,7 +433,7 @@ reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
 
 # Attest VPSBG (verifies SEV-SNP report + binds X25519 channel pubkey)
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-binary 324c3883510c56a344221ec379a6466c3089099f51e566e7ad9b1356156eee7e
+    --expect-binary d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a
 
 # End-to-end channel test with ARK-rooted chain validation
 ./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
