@@ -44,8 +44,9 @@ use onionpir::{self, Server as PirServer, KeyStore};
 #[cfg(feature = "cuckoo-oram")]
 use bitcoinpir_oram::{
     circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitCuckooBinReader,
-    CircuitOram, CircuitOramState, CuckooLevel, CuckooTableInfo, FilePageStore,
-    FrontCachedPageStore, OramParams, PageStore, AEAD_OVERHEAD,
+    CircuitOram, CircuitOramState, CircuitStoreAuthState, CuckooLevel, CuckooTableInfo,
+    FilePageStore, FrontCachedPageStore, OramParams, PageStore, TieredMerklePageStore,
+    TieredMerkleState, AEAD_OVERHEAD,
 };
 
 #[cfg(all(feature = "cuckoo-oram", test))]
@@ -180,6 +181,8 @@ struct CliArgs {
     cuckoo_oram_state_key_hex: Option<String>,
     /// Public top-tree levels cached in trusted memory.
     cuckoo_oram_cache_levels: usize,
+    /// Authenticate disk-backed ORAM page images with split Merkle stores.
+    cuckoo_oram_auth_store: bool,
     /// Do not persist trusted ORAM state after query responses.
     cuckoo_oram_no_save: bool,
 }
@@ -214,6 +217,7 @@ fn parse_args() -> CliArgs {
     let mut cuckoo_oram_key_hex: Option<String> = None;
     let mut cuckoo_oram_state_key_hex: Option<String> = None;
     let mut cuckoo_oram_cache_levels: usize = 0;
+    let mut cuckoo_oram_auth_store = false;
     let mut cuckoo_oram_no_save = false;
 
     let mut i = 1;
@@ -374,6 +378,9 @@ fn parse_args() -> CliArgs {
                     args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
                 i += 1;
             }
+            "--cuckoo-oram-auth-store" | "--harmony-oram-auth-store" => {
+                cuckoo_oram_auth_store = true;
+            }
             "--cuckoo-oram-no-save" | "--harmony-oram-no-save" => {
                 cuckoo_oram_no_save = true;
             }
@@ -382,7 +389,7 @@ fn parse_args() -> CliArgs {
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_no_save }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_auth_store, cuckoo_oram_no_save }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -674,6 +681,8 @@ trait CuckooTableAccess: Sync {
     fn finish_request(&self) -> Result<(), String> {
         Ok(())
     }
+
+    fn abort_request(&self, _reason: &str) {}
 }
 
 struct MmapCuckooTable<'a> {
@@ -723,10 +732,14 @@ type CuckooOramBinReader = CircuitCuckooBinReader<CuckooOramStore, CuckooOramSto
 #[cfg(feature = "cuckoo-oram")]
 struct CuckooOramTable {
     reader: std::sync::Mutex<CuckooOramBinReader>,
+    poisoned: std::sync::Mutex<Option<String>>,
+    dirty: std::sync::atomic::AtomicBool,
+    level: CuckooLevel,
     k: usize,
     bins_per_table: usize,
     entry_size: usize,
     state_path: PathBuf,
+    auth_state_path: Option<PathBuf>,
     state_key: Option<[u8; 32]>,
     drain_per_access: u64,
     save_state: bool,
@@ -745,6 +758,7 @@ impl CuckooOramTable {
         key_hex: Option<&str>,
         state_key_hex: Option<&str>,
         cache_levels: usize,
+        auth_store: bool,
         save_state: bool,
     ) -> Result<Self, String> {
         if pack == 0 {
@@ -762,28 +776,22 @@ impl CuckooOramTable {
         };
         let params = loaded.params.clone();
         let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
-        let meta_store = open_existing_oram_store(
-            &paths.meta_image,
-            params.bucket_count(),
-            circuit_meta_page_bytes(params.bucket_size),
+        let (meta_store, payload_store) = open_existing_circuit_oram_stores(
+            &paths,
+            level,
+            &params,
             encrypted,
             key_hex,
             cached_pages,
-        )?;
-        let payload_store = open_existing_oram_store(
-            &paths.payload_image,
-            params.bucket_count(),
-            circuit_payload_page_bytes(params.bucket_size, params.block_size),
-            encrypted,
-            key_hex,
-            cached_pages,
+            auth_store,
+            state_key,
         )?;
         let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
             .map_err(|e| e.to_string())?;
         let reader = CircuitCuckooBinReader::new(&table, pack, oram).map_err(|e| e.to_string())?;
 
         println!(
-            "  Cuckoo ORAM {}: dir={}, pack={}, bins={}, bin_size={}, logical_blocks={}, cache_levels={}, save_state={}",
+            "  Cuckoo ORAM {}: dir={}, pack={}, bins={}, bin_size={}, logical_blocks={}, cache_levels={}, auth_store={}, save_state={}",
             level,
             oram_dir.display(),
             pack,
@@ -791,19 +799,53 @@ impl CuckooOramTable {
             table.bin_size(),
             reader.oram().params().logical_blocks,
             cache_levels,
+            auth_store,
             save_state,
         );
 
         Ok(Self {
             reader: std::sync::Mutex::new(reader),
+            poisoned: std::sync::Mutex::new(None),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            level,
             k: table.k,
             bins_per_table: table.bins_per_table,
             entry_size: table.bin_size(),
             state_path: paths.state,
+            auth_state_path: auth_store.then_some(paths.auth_state),
             state_key,
             drain_per_access,
             save_state,
         })
+    }
+
+    fn check_not_poisoned(&self) -> Result<(), String> {
+        let poisoned = self
+            .poisoned
+            .lock()
+            .map_err(|_| format!("Cuckoo ORAM {} poison mutex poisoned", self.level))?;
+        if let Some(reason) = poisoned.as_ref() {
+            Err(format!("Cuckoo ORAM {} table is poisoned: {}", self.level, reason))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn poison(&self, reason: impl Into<String>) {
+        let reason = reason.into();
+        eprintln!("Cuckoo ORAM {} table poisoned: {}", self.level, reason);
+        if let Ok(mut poisoned) = self.poisoned.lock() {
+            if poisoned.is_none() {
+                *poisoned = Some(reason);
+            }
+        }
+    }
+
+    fn poison_after_dirty(&self, reason: impl Into<String>) {
+        let reason = reason.into();
+        if self.dirty.load(std::sync::atomic::Ordering::SeqCst) {
+            self.poison(reason);
+        }
     }
 }
 
@@ -832,6 +874,7 @@ impl CuckooTableAccess for CuckooOramTable {
         zero_fill_oob: bool,
         dst: &mut Vec<u8>,
     ) -> Result<(), String> {
+        self.check_not_poisoned()?;
         if !self.group_exists(group_id) {
             return Err(format!("group_id {} out of range", group_id));
         }
@@ -856,16 +899,24 @@ impl CuckooTableAccess for CuckooOramTable {
                 .checked_mul(self.bins_per_table)
                 .and_then(|base| base.checked_add(idx_usize))
                 .ok_or_else(|| "global ORAM bin id overflow".to_string())?;
-            let got = reader
-                .read_bin(bin_id, self.drain_per_access)
-                .map_err(|e| e.to_string())?;
+            self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+            let got = match reader.read_bin(bin_id, self.drain_per_access) {
+                Ok(got) => got,
+                Err(e) => {
+                    let msg = format!("ORAM bin {} read failed after mutation: {}", bin_id, e);
+                    self.poison(msg.clone());
+                    return Err(msg);
+                }
+            };
             if got.payload.len() != self.entry_size {
-                return Err(format!(
+                let msg = format!(
                     "ORAM bin {} returned {} bytes, expected {}",
                     bin_id,
                     got.payload.len(),
                     self.entry_size
-                ));
+                );
+                self.poison(msg.clone());
+                return Err(msg);
             }
             dst.extend_from_slice(&got.payload);
         }
@@ -873,23 +924,66 @@ impl CuckooTableAccess for CuckooOramTable {
     }
 
     fn finish_request(&self) -> Result<(), String> {
+        self.check_not_poisoned()?;
+        if !self.dirty.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
         if !self.save_state {
+            self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
             return Ok(());
         }
         let mut reader = self
             .reader
             .lock()
             .map_err(|_| "Cuckoo ORAM reader mutex poisoned".to_string())?;
-        reader.oram_mut().flush().map_err(|e| e.to_string())?;
+        if let Err(e) = reader.oram_mut().flush() {
+            let msg = format!("ORAM flush failed after mutation: {}", e);
+            drop(reader);
+            self.poison(msg.clone());
+            return Err(msg);
+        }
         let snapshot = reader.oram().snapshot();
-        match self.state_key {
+        let auth_snapshot = match self.auth_state_path.as_ref() {
+            Some(_) => match reader.oram().store_auth_state() {
+                Some(state) => Some(state),
+                None => {
+                    let msg = "ORAM auth-store state unavailable after mutation".to_string();
+                    drop(reader);
+                    self.poison(msg.clone());
+                    return Err(msg);
+                }
+            },
+            None => None,
+        };
+        drop(reader);
+        let saved = match self.state_key {
             Some(key) => snapshot
                 .save_encrypted_atomic(&self.state_path, key)
                 .map_err(|e| e.to_string()),
             None => snapshot
                 .save_atomic(&self.state_path)
                 .map_err(|e| e.to_string()),
+        };
+        if let Err(e) = saved {
+            let msg = format!("ORAM state save failed after mutation: {}", e);
+            self.poison(msg.clone());
+            return Err(msg);
         }
+        if let (Some(path), Some(auth_snapshot)) =
+            (self.auth_state_path.as_ref(), auth_snapshot.as_ref())
+        {
+            if let Err(e) = save_circuit_store_auth(auth_snapshot, path, self.state_key) {
+                let msg = format!("ORAM auth state save failed after mutation: {}", e);
+                self.poison(msg.clone());
+                return Err(msg);
+            }
+        }
+        self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn abort_request(&self, reason: &str) {
+        self.poison_after_dirty(format!("request aborted after ORAM mutation: {}", reason));
     }
 }
 
@@ -911,6 +1005,7 @@ impl CuckooOramTables {
         key_hex: Option<&str>,
         state_key_hex: Option<&str>,
         cache_levels: usize,
+        auth_store: bool,
         save_state: bool,
     ) -> Result<Self, String> {
         Ok(Self {
@@ -924,6 +1019,7 @@ impl CuckooOramTables {
                 key_hex,
                 state_key_hex,
                 cache_levels,
+                auth_store,
                 save_state,
             )?,
             chunk: CuckooOramTable::open(
@@ -936,6 +1032,7 @@ impl CuckooOramTables {
                 key_hex,
                 state_key_hex,
                 cache_levels,
+                auth_store,
                 save_state,
             )?,
         })
@@ -1056,16 +1153,26 @@ where
 
     let mut out = Vec::with_capacity(script_hashes.len());
     for script_hash in script_hashes {
-        out.push(cuckoo_native_lookup_one(
+        match cuckoo_native_lookup_one(
             index_table,
             chunk_table,
             config,
             script_hash,
             &mut next_dummy_chunk_id,
-        )?);
+        ) {
+            Ok(item) => out.push(item),
+            Err(e) => {
+                index_table.abort_request(&e);
+                chunk_table.abort_request(&e);
+                return Err(e);
+            }
+        }
     }
 
-    index_table.finish_request()?;
+    if let Err(e) = index_table.finish_request() {
+        chunk_table.abort_request(&e);
+        return Err(e);
+    }
     chunk_table.finish_request()?;
     Ok(out)
 }
@@ -1216,7 +1323,10 @@ fn find_chunk_in_bin(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
 struct CuckooOramPaths {
     meta_image: PathBuf,
     payload_image: PathBuf,
+    meta_hash_image: PathBuf,
+    payload_hash_image: PathBuf,
     state: PathBuf,
+    auth_state: PathBuf,
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -1226,7 +1336,10 @@ impl CuckooOramPaths {
         Self {
             meta_image: oram_dir.join(format!("{label}.meta.oram")),
             payload_image: oram_dir.join(format!("{label}.payload.oram")),
+            meta_hash_image: oram_dir.join(format!("{label}.meta.hash.oram")),
+            payload_hash_image: oram_dir.join(format!("{label}.payload.hash.oram")),
             state: oram_dir.join(format!("{label}.state")),
+            auth_state: oram_dir.join(format!("{label}.auth.state")),
         }
     }
 }
@@ -1273,6 +1386,131 @@ fn open_existing_oram_store(
         Ok(Box::new(
             FrontCachedPageStore::new(store, cached_pages).map_err(|e| e.to_string())?,
         ))
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+#[allow(clippy::too_many_arguments)]
+fn open_existing_circuit_oram_stores(
+    paths: &CuckooOramPaths,
+    level: CuckooLevel,
+    params: &OramParams,
+    encrypted: bool,
+    key_hex: Option<&str>,
+    cached_pages: usize,
+    auth_store: bool,
+    state_key: Option<[u8; 32]>,
+) -> Result<(CuckooOramStore, CuckooOramStore), String> {
+    let meta_store = open_existing_oram_store(
+        &paths.meta_image,
+        params.bucket_count(),
+        circuit_meta_page_bytes(params.bucket_size),
+        encrypted,
+        key_hex,
+        cached_pages,
+    )?;
+    let payload_store = open_existing_oram_store(
+        &paths.payload_image,
+        params.bucket_count(),
+        circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        encrypted,
+        key_hex,
+        cached_pages,
+    )?;
+    if !auth_store {
+        return Ok((meta_store, payload_store));
+    }
+
+    let auth = load_circuit_store_auth(&paths.auth_state, state_key)?;
+    let expected_meta_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Meta);
+    let expected_payload_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Payload);
+    if auth.meta.store_id != expected_meta_id || auth.payload.store_id != expected_payload_id {
+        return Err(format!(
+            "Cuckoo ORAM {} auth sidecar store_id does not match expected level/store domains",
+            level
+        ));
+    }
+
+    let meta_hash_store =
+        open_existing_hash_store(&paths.meta_hash_image, &auth.meta, encrypted, key_hex)?;
+    let payload_hash_store =
+        open_existing_hash_store(&paths.payload_hash_image, &auth.payload, encrypted, key_hex)?;
+    let meta =
+        TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
+            .map_err(|e| e.to_string())?;
+    let payload = TieredMerklePageStore::from_trusted_state(
+        payload_store,
+        payload_hash_store,
+        auth.payload,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((Box::new(meta), Box::new(payload)))
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn open_existing_hash_store(
+    path: &std::path::Path,
+    auth: &TieredMerkleState,
+    encrypted: bool,
+    key_hex: Option<&str>,
+) -> Result<CuckooOramStore, String> {
+    let hash_pages = tiered_hash_pages(auth.page_count, auth.hash_page_size, auth.trusted_levels)?;
+    open_existing_oram_store(path, hash_pages, auth.hash_page_size, encrypted, key_hex, 0)
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn tiered_hash_pages(
+    data_pages: usize,
+    hash_page_size: usize,
+    trusted_levels: usize,
+) -> Result<usize, String> {
+    TieredMerklePageStore::<CuckooOramStore, CuckooOramStore>::required_hash_pages(
+        data_pages,
+        hash_page_size,
+        trusted_levels,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn load_circuit_store_auth(
+    path: &std::path::Path,
+    state_key: Option<[u8; 32]>,
+) -> Result<CircuitStoreAuthState, String> {
+    match state_key {
+        Some(key) => CircuitStoreAuthState::load_encrypted(path, key).map_err(|e| e.to_string()),
+        None => CircuitStoreAuthState::load(path).map_err(|e| e.to_string()),
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn save_circuit_store_auth(
+    state: &CircuitStoreAuthState,
+    path: &std::path::Path,
+    state_key: Option<[u8; 32]>,
+) -> Result<(), String> {
+    match state_key {
+        Some(key) => state
+            .save_encrypted_atomic(path, key)
+            .map_err(|e| e.to_string()),
+        None => state.save_atomic(path).map_err(|e| e.to_string()),
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+#[derive(Clone, Copy)]
+enum CircuitAuthStoreKind {
+    Meta,
+    Payload,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn circuit_auth_store_id(level: CuckooLevel, kind: CircuitAuthStoreKind) -> [u8; 16] {
+    match (level, kind) {
+        (CuckooLevel::Index, CircuitAuthStoreKind::Meta) => *b"bpir-idx-meta-v1",
+        (CuckooLevel::Index, CircuitAuthStoreKind::Payload) => *b"bpir-idx-data-v1",
+        (CuckooLevel::Chunk, CircuitAuthStoreKind::Meta) => *b"bpir-chk-meta-v1",
+        (CuckooLevel::Chunk, CircuitAuthStoreKind::Payload) => *b"bpir-chk-data-v1",
     }
 }
 
@@ -1461,6 +1699,7 @@ fn harmony_query_response_from_table<T: CuckooTableAccess>(
 
     let mut data = Vec::with_capacity(query.indices.len() * table.entry_size());
     if let Err(msg) = table.append_entries(group_id, &query.indices, false, &mut data) {
+        table.abort_request(&msg);
         return Response::Error(msg);
     }
     if let Err(msg) = table.finish_request() {
@@ -1522,7 +1761,10 @@ fn harmony_batch_response_from_table<T: CuckooTableAccess>(
 
     let result_items = match result_items {
         Ok(items) => items,
-        Err(msg) => return Response::Error(msg),
+        Err(msg) => {
+            table.abort_request(&msg);
+            return Response::Error(msg);
+        }
     };
 
     if let Err(msg) = table.finish_request() {
@@ -2673,6 +2915,7 @@ async fn main() {
             args.cuckoo_oram_key_hex.as_ref(),
             args.cuckoo_oram_state_key_hex.as_ref(),
             args.cuckoo_oram_cache_levels,
+            args.cuckoo_oram_auth_store,
             args.cuckoo_oram_no_save,
         );
         if args.cuckoo_oram_dir.is_some() {
@@ -2694,12 +2937,13 @@ async fn main() {
                 );
             }
             println!(
-                "  Cuckoo ORAM: enabled for db_id=0, dir={}, pack={}, drain_per_access={}, encrypted={}, cache_levels={}",
+                "  Cuckoo ORAM: enabled for db_id=0, dir={}, pack={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
                 oram_dir.display(),
                 args.cuckoo_oram_pack,
                 args.cuckoo_oram_drain_per_access,
                 args.cuckoo_oram_encrypted,
                 args.cuckoo_oram_cache_levels,
+                args.cuckoo_oram_auth_store,
             );
             Some(
                 CuckooOramTables::open(
@@ -2711,6 +2955,7 @@ async fn main() {
                     args.cuckoo_oram_key_hex.as_deref(),
                     args.cuckoo_oram_state_key_hex.as_deref(),
                     args.cuckoo_oram_cache_levels,
+                    args.cuckoo_oram_auth_store,
                     !args.cuckoo_oram_no_save,
                 )
                 .unwrap_or_else(|e| panic!("failed to open Cuckoo ORAM: {}", e)),
@@ -5428,6 +5673,7 @@ mod harmony_dos_guard_tests {
             None,
             None,
             0,
+            false,
             true,
         )
         .unwrap();
@@ -5454,6 +5700,55 @@ mod harmony_dos_guard_tests {
 
         std::fs::remove_dir_all(&db_dir).ok();
         std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn oram_table_poisoned_after_failed_state_save() {
+        let db_dir = temp_dir("oram_poison_db");
+        let oram_dir = temp_dir("oram_poison_img");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        std::fs::create_dir_all(&oram_dir).unwrap();
+
+        let bins_per_table = 16usize;
+        let chunk_path = db_dir.join(CuckooLevel::Chunk.filename());
+        write_subtable_file(&chunk_path, &CHUNK_PARAMS, bins_per_table);
+        let pack = 4usize;
+        build_test_oram_image(&db_dir, &oram_dir, CuckooLevel::Chunk, pack);
+
+        let access = CuckooOramTable::open(
+            &db_dir,
+            &oram_dir,
+            CuckooLevel::Chunk,
+            pack,
+            2,
+            false,
+            None,
+            None,
+            0,
+            false,
+            true,
+        )
+        .unwrap();
+
+        let mut first = Vec::new();
+        access.append_entries(3, &[0], false, &mut first).unwrap();
+
+        // Keep opened page-image descriptors alive, but make the state-file
+        // commit impossible. A failed commit after mutation must poison the
+        // table instead of allowing later reads to continue.
+        std::fs::remove_dir_all(&oram_dir).unwrap();
+        let err = access.finish_request().unwrap_err();
+        assert!(
+            err.contains("state save failed"),
+            "unexpected finish_request error: {err}"
+        );
+
+        let mut second = Vec::new();
+        let err = access.append_entries(3, &[1], false, &mut second).unwrap_err();
+        assert!(err.contains("poisoned"), "unexpected poisoned error: {err}");
+
+        std::fs::remove_dir_all(&db_dir).ok();
     }
 
     #[cfg(feature = "cuckoo-oram")]
@@ -5496,6 +5791,143 @@ mod harmony_dos_guard_tests {
     }
 
     #[cfg(feature = "cuckoo-oram")]
+    fn build_test_oram_auth_store(
+        oram_dir: &std::path::Path,
+        level: CuckooLevel,
+        trusted_levels: usize,
+    ) {
+        let paths = CuckooOramPaths::new(oram_dir, level);
+        let state = CircuitOramState::load(&paths.state).unwrap();
+        let params = state.params.clone();
+        let hash_page_size = 4096usize;
+        let meta_store = FilePageStore::open(
+            &paths.meta_image,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = FilePageStore::open(
+            &paths.payload_image,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let meta_hash_store = FilePageStore::open(
+            &paths.meta_hash_image,
+            tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels).unwrap(),
+            hash_page_size,
+        )
+        .unwrap();
+        let payload_hash_store = FilePageStore::open(
+            &paths.payload_hash_image,
+            tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels).unwrap(),
+            hash_page_size,
+        )
+        .unwrap();
+        let mut meta = TieredMerklePageStore::build(
+            meta_store,
+            meta_hash_store,
+            circuit_auth_store_id(level, CircuitAuthStoreKind::Meta),
+            trusted_levels,
+        )
+        .unwrap();
+        let mut payload = TieredMerklePageStore::build(
+            payload_store,
+            payload_hash_store,
+            circuit_auth_store_id(level, CircuitAuthStoreKind::Payload),
+            trusted_levels,
+        )
+        .unwrap();
+        meta.flush().unwrap();
+        payload.flush().unwrap();
+        CircuitStoreAuthState::new(meta.trusted_state(), payload.trusted_state())
+            .save_atomic(&paths.auth_state)
+            .unwrap();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn oram_table_auth_store_reopens_after_mutating_read() {
+        let db_dir = temp_dir("oram_auth_db");
+        let oram_dir = temp_dir("oram_auth_img");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        std::fs::create_dir_all(&oram_dir).unwrap();
+
+        let bins_per_table = 16usize;
+        let chunk_path = db_dir.join(CuckooLevel::Chunk.filename());
+        write_subtable_file(&chunk_path, &CHUNK_PARAMS, bins_per_table);
+        let pack = 4usize;
+        build_test_oram_image(&db_dir, &oram_dir, CuckooLevel::Chunk, pack);
+        build_test_oram_auth_store(&oram_dir, CuckooLevel::Chunk, 2);
+
+        let group_id = 3usize;
+        let indices = [0u32, 5, (bins_per_table - 1) as u32];
+        let direct_table = CuckooTableInfo::from_file(
+            CuckooLevel::Chunk,
+            db_dir.join(CuckooLevel::Chunk.filename()),
+        )
+        .unwrap();
+        let mut direct_reader = CuckooPackedBlockReader::open(direct_table, pack).unwrap();
+        let mut expected = Vec::new();
+        for idx in indices {
+            expected.extend_from_slice(
+                &direct_reader
+                    .read_bin(group_id * bins_per_table + idx as usize)
+                    .unwrap(),
+            );
+        }
+
+        {
+            let access = CuckooOramTable::open(
+                &db_dir,
+                &oram_dir,
+                CuckooLevel::Chunk,
+                pack,
+                2,
+                false,
+                None,
+                None,
+                0,
+                true,
+                true,
+            )
+            .unwrap();
+            let mut via_oram = Vec::new();
+            access
+                .append_entries(group_id, &indices, false, &mut via_oram)
+                .unwrap();
+            access.finish_request().unwrap();
+            assert_eq!(via_oram, expected);
+        }
+
+        {
+            let reopened = CuckooOramTable::open(
+                &db_dir,
+                &oram_dir,
+                CuckooLevel::Chunk,
+                pack,
+                2,
+                false,
+                None,
+                None,
+                0,
+                true,
+                true,
+            )
+            .unwrap();
+            let mut via_oram = Vec::new();
+            reopened
+                .append_entries(group_id, &indices, false, &mut via_oram)
+                .unwrap();
+            reopened.finish_request().unwrap();
+            assert_eq!(via_oram, expected);
+        }
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
     #[test]
     fn native_lookup_oram_matches_mmap_lookup() {
         let db_dir = temp_dir("lookup_oram_db");
@@ -5528,6 +5960,7 @@ mod harmony_dos_guard_tests {
             None,
             None,
             0,
+            false,
             true,
         )
         .unwrap();
