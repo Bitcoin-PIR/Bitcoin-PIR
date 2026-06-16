@@ -160,6 +160,14 @@ impl RequestHandler {
             Request::Ping => Response::Pong,
             Request::GetInfo => Response::Info(self.server_info()),
             Request::GetDbCatalog => Response::DbCatalog(self.build_catalog()),
+            Request::GetDbProof { db_id } => match self
+                .state
+                .get_db(*db_id)
+                .and_then(|db| db.db_proof.as_ref())
+            {
+                Some(bundle) => Response::DbProof(bundle.clone()),
+                None => Response::Error(format!("db proof not configured for db_id {}", db_id)),
+            },
             Request::IndexBatch(query) => self.handle_index_batch(query),
             Request::ChunkBatch(query) => self.handle_chunk_batch(query),
             Request::BucketMerkleSibBatch(query) => self.handle_bucket_merkle_sib_batch(query),
@@ -665,6 +673,10 @@ mod dos_guard_tests {
     }
 
     fn make_handler() -> RequestHandler {
+        make_handler_with_proof(None)
+    }
+
+    fn make_handler_with_proof(db_proof: Option<DatabaseProofBundle>) -> RequestHandler {
         let db = MappedDatabase {
             descriptor: DatabaseDescriptor {
                 name: "dos-test".into(),
@@ -683,8 +695,21 @@ mod dos_guard_tests {
             bucket_merkle_root: None,
             manifest_root: None,
             manifest: None,
+            db_proof,
         };
         RequestHandler::new(vec![db])
+    }
+
+    fn sample_db_proof() -> DatabaseProofBundle {
+        DatabaseProofBundle {
+            db_id: 0,
+            build_evidence: b"evidence".to_vec(),
+            root_bundle_payload: b"payload".to_vec(),
+            sev_snp_report: b"report".to_vec(),
+            database_manifest_sha256: b"database-sha".to_vec(),
+            all_artifacts_manifest_sha256: b"all-sha".to_vec(),
+            server_db_manifest_toml: b"manifest".to_vec(),
+        }
     }
 
     fn expect_error(resp: Response, needle: &str) {
@@ -694,6 +719,27 @@ mod dos_guard_tests {
             }
             other => panic!("expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn get_db_proof_returns_configured_bundle() {
+        let bundle = sample_db_proof();
+        let h = make_handler_with_proof(Some(bundle.clone()));
+
+        match h.handle_request(&Request::GetDbProof { db_id: 0 }) {
+            Response::DbProof(actual) => assert_eq!(actual, bundle),
+            other => panic!("expected DbProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn get_db_proof_without_bundle_returns_error() {
+        let h = make_handler();
+
+        expect_error(
+            h.handle_request(&Request::GetDbProof { db_id: 0 }),
+            "db proof not configured",
+        );
     }
 
     // ─── S1: malformed DPF key bytes ────────────────────────────────────

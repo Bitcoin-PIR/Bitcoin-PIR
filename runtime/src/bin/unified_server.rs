@@ -11,11 +11,12 @@
 //!     [--checkpoint /path/to/checkpoint <height>]...
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
+use runtime::config::ServerConfig;
+use runtime::db_proof::load_database_proof_bundle;
 use runtime::eval::{self, GroupTiming};
 use runtime::hint_pool;
-use runtime::protocol::*;
 use runtime::onionpir::*;
-use runtime::config::ServerConfig;
+use runtime::protocol::*;
 use runtime::table::{MappedDatabase, MappedSubTable, DatabaseDescriptor, DatabaseType, ServerState};
 use runtime::warmup::{self, MmapRegion};
 
@@ -2802,7 +2803,7 @@ async fn main() {
                 _ => DatabaseType::Full,
             };
             let db_path = config.db_path(i);
-            let db = MappedDatabase::load(&db_path, DatabaseDescriptor {
+            let mut db = MappedDatabase::load(&db_path, DatabaseDescriptor {
                 name: db_cfg.name.clone(),
                 db_type,
                 base_height: db_cfg.base_height,
@@ -2810,6 +2811,24 @@ async fn main() {
                 index_params: INDEX_PARAMS,
                 chunk_params: CHUNK_PARAMS,
             });
+            if let Some(proof_dir) = db_cfg.proof_dir.as_ref() {
+                db.db_proof = Some(
+                    load_database_proof_bundle(i as u8, proof_dir).unwrap_or_else(|e| {
+                        panic!(
+                            "[config] failed to load proof_dir for db {} from {}: {}",
+                            db_cfg.name,
+                            proof_dir.display(),
+                            e
+                        )
+                    }),
+                );
+                println!(
+                    "[config] DB proof loaded for db_id={} name={} from {}",
+                    i,
+                    db_cfg.name,
+                    proof_dir.display()
+                );
+            }
             let type_label = if db_type == DatabaseType::Delta {
                 format!("Delta:{}→{}", db_cfg.base_height, db_cfg.height)
             } else {
@@ -4125,6 +4144,28 @@ async fn main() {
                     // All clients should use 0x03 (JSON) instead.
                     REQ_GET_DB_CATALOG => {
                         let _ = send_resp(&mut sink, channel_session.as_mut(), Response::DbCatalog(server.build_catalog()).encode()).await;
+                    }
+                    REQ_GET_DB_PROOF => {
+                        if body.len() != 1 {
+                            let resp = Response::Error(
+                                "malformed REQ_GET_DB_PROOF: expected one db_id byte".into(),
+                            );
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            continue;
+                        }
+                        let db_id = body[0];
+                        let resp = match server
+                            .state
+                            .get_db(db_id)
+                            .and_then(|db| db.db_proof.as_ref())
+                        {
+                            Some(bundle) => Response::DbProof(bundle.clone()),
+                            None => Response::Error(format!(
+                                "db proof not configured for db_id {}",
+                                db_id
+                            )),
+                        };
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                     }
                     REQ_CREDENTIAL_PRESENT => {
                         // Wire format:
@@ -5494,6 +5535,7 @@ mod harmony_dos_guard_tests {
             bucket_merkle_root: None,
             manifest_root: None,
             manifest: None,
+            db_proof: None,
         }
     }
 
@@ -5531,6 +5573,7 @@ mod harmony_dos_guard_tests {
             bucket_merkle_root: None,
             manifest_root: None,
             manifest: None,
+            db_proof: None,
         }
     }
 

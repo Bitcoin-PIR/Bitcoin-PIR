@@ -125,31 +125,28 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 UKI v24, pinned 2026-06-11.
- * Built by the `packages.tier3-uki` flake derivation
- * (`nix build --impure .#tier3-uki`) on the Hetzner build host: VPSBG
- * kernel 7.0.0-15 + the reproducible `nix build .#unified-server`
- * binary, embedded via the full Nix closure.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 db-proof UKI, pinned 2026-06-16.
+ * Built by `scripts/build_uki_tier3.sh` on the Hetzner build host:
+ * VPSBG kernel 7.0.0-15 + the db-proof-enabled `unified_server`
+ * binary baked into the initramfs.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 UKI v24 — 2026-06-11. Rebuilt from the 2026-06 security
-  // review branch @ 6c7aa158 (docs/CODE_REVIEW_2026-06.md): S1–S5
-  // server DoS hardening incl. unified_server's own Harmony handlers
-  // + hint path, client C2–C4/C7 malicious-server hardening, libdpf
-  // rev pin, rustls-webpki 0.103.13. New reproducible Nix
-  // `unified_server` (`bb2cf422…`); pir1 runs the SAME binary so
-  // PIR1_PIN and PIR2_TIER3_PIN share `binarySha256Hex`. pir2 runs
-  // `--serve-queries` (no hint pool, no OnionPIR) plus `--identity-*`
-  // (operator-signed identity, server_id=pir2). MEASUREMENT captured
-  // from the v24 deploy via `bpir-admin attest
-  // wss://weikeng2.bitcoinpir.org` (SEV-SNP REPORT_DATA binding
-  // verified on real hardware; UKI sha256 `4eefec07…`).
-  // (v23 = `57ac525b…` anchor-offset binary, measurement `4fb0ad57…`.)
+  // Tier 3 db-proof UKI — 2026-06-16. Built from the db-proof server
+  // integration worktree (`git_rev` reported as 1c21d341...-dirty):
+  // unified_server serves the DB proof sidecar for
+  // delta_940611_948454 and still runs as pir2 query-only
+  // (`--serve-queries`, no hint pool, no OnionPIR) plus
+  // `--identity-*` (operator-signed identity, server_id=pir2).
+  // pir1 runs the SAME binary so PIR1_PIN and PIR2_TIER3_PIN share
+  // `binarySha256Hex`. MEASUREMENT captured from the live Tier 3
+  // deploy via `bpir-admin attest wss://weikeng2.bitcoinpir.org`
+  // (SEV-SNP REPORT_DATA binding verified on real hardware; UKI
+  // sha256 `01d0dc3f...`).
   measurementHex:
-    '59ab13f573e170febe49dd24cea5e3674da35a4662c060404e1fc8cb500e45520fa1330789f64849bb1ef41ffc44c70c',
+    '892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013',
   binarySha256Hex:
-    'bb2cf422f90ab8f8033ba42203cb95af3e0d3fd45ad3480ec8fb0f7a54922439',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 UKI v24)',
+    'd01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a',
+  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 db-proof UKI)',
 };
 
 /**
@@ -161,16 +158,14 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Bumped 2026-06-11 (v24): pir1 redeployed from the 2026-06 security
-  // review branch @ 6c7aa158 (S1–S5 server DoS hardening incl. the
-  // REQ_HARMONY_HINTS path pir1 serves, client C2–C4/C7, libdpf pin,
-  // rustls-webpki 0.103.13). Binary is the reproducible
-  // `nix build .#unified-server` output (`bb2cf422…`) — the same Nix
-  // binary embedded in the v24 Tier-3 UKI for pir2, so PIR1_PIN and
-  // PIR2_TIER3_PIN share `binarySha256Hex` (shared-binary invariant
-  // preserved).
+  // Bumped 2026-06-16: pir1 redeployed to the db-proof-enabled
+  // unified_server (`git_rev` reported as 1c21d341...-dirty), serving
+  // the same delta_940611_948454 proof sidecar as pir2. This is the
+  // same binary embedded in the pir2 Tier-3 db-proof UKI, so PIR1_PIN
+  // and PIR2_TIER3_PIN share `binarySha256Hex` (shared-binary
+  // invariant preserved).
   binarySha256Hex:
-    'bb2cf422f90ab8f8033ba42203cb95af3e0d3fd45ad3480ec8fb0f7a54922439',
+    'd01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a',
   description: 'weikeng1.bitcoinpir.org (Hetzner i7-8700, no SEV)',
 };
 
@@ -199,7 +194,7 @@ export const PIR1_PIN: ServerAttestPin = {
  *
  * LIVE END-TO-END (verified 2026-05-28). pir1 + pir2 both serve
  * REQ_ANNOUNCE on the announce-enabled binary (v22 `f7df82d0…` → current
- * v24 `bb2cf422…`); `announce()` against either returns an
+ * db-proof deploy `d01e5b7a…`); `announce()` against either returns an
  * operator-endorsed bundle that verifies under this pinned key
  * (operator-pin + cert signature + validity + chain + channel binding).
  * The "verified operator" badge is wired into the DPF + HarmonyPIR cards

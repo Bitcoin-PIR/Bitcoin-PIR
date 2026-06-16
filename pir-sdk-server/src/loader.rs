@@ -1,8 +1,9 @@
 //! Database loading utilities.
 
 use crate::config::DatabaseEntry;
-use pir_sdk::{DatabaseCatalog, DatabaseInfo, PirResult};
+use pir_runtime_core::db_proof::load_database_proof_bundle;
 use pir_runtime_core::table::{DatabaseDescriptor, DatabaseType, MappedDatabase};
+use pir_sdk::{DatabaseCatalog, DatabaseInfo, PirError, PirResult};
 use std::path::Path;
 
 /// Loads PIR databases from disk.
@@ -39,7 +40,17 @@ impl DatabaseLoader {
             chunk_params: pir_core::params::CHUNK_PARAMS.clone(),
         };
 
-        let mapped = MappedDatabase::load(&entry.path, descriptor);
+        let mut mapped = MappedDatabase::load(&entry.path, descriptor);
+        if let Some(proof_dir) = entry.proof_dir.as_ref() {
+            mapped.db_proof = Some(load_database_proof_bundle(db_id, proof_dir).map_err(|e| {
+                PirError::Config(format!(
+                    "failed to load db proof for {} from {}: {}",
+                    entry.name,
+                    proof_dir.display(),
+                    e
+                ))
+            })?);
+        }
 
         // Chain anchor (Phase C): mirror the catalog wire convention —
         // kind 0 = none, 1 = snapshot (36B ChainAnchor), 2 = delta (72B

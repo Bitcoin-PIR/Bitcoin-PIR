@@ -48,6 +48,9 @@ pir-core = { version = "0.1.0", path = "../pir-core" }
 # (pir-runtime-core::channel). Compiles to wasm32 (verified — uses
 # RustCrypto's pure-Rust x25519-dalek + chacha20poly1305 + hkdf).
 pir-channel = { version = "0.1.0", path = "../pir-channel" }
+# Attested-builder DB proof verifier. Pure parsing/hash logic; the runtime
+# server only transports proof bytes, clients decide policy.
+pir-db-attest = { path = "../pir-db-attest" }
 # Operator-signed identity bundle (REQ_ANNOUNCE response parser).
 # Pure-crypto Ed25519 — compiles to wasm32 without modification.
 pir-identity = { version = "0.1.0", path = "../pir-identity" }
@@ -101,6 +104,9 @@ tracing = { version = "0.1", features = ["log"] }
 
 # Error handling
 thiserror = "1.0"
+
+# Human-readable hash mismatch messages for DB proof policy failures.
+hex = "0.4"
 
 # Scripthash-derived synthetic CHUNK padding (dpf::derive_synthetic_chunk_ids).
 # Pulls a SHA-256 KDF instead of the legacy deterministic `0..M` synthetic
