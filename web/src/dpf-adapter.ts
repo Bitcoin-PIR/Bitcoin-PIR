@@ -52,6 +52,13 @@ import {
   type WasmDpfClient,
   type WasmQueryResult,
 } from './sdk-bridge.js';
+import {
+  databaseProofUnavailable,
+  verifiedDatabaseProofFromWasm,
+  verifyDatabaseProofAgainstPin,
+  type DatabaseProofPin,
+  type DatabaseProofStatus,
+} from './db-proof.js';
 import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
@@ -288,6 +295,12 @@ export interface BatchPirClientConfig {
    *  operator-identity check (only when `verifyOperatorIdentity`). Use to
    *  surface a "verified operator" badge — gate it on `state === 'verified'`. */
   onOperatorIdentity?: (serverIndex: 0 | 1, info: OperatorIdentity) => void;
+  /** Database proof pins the frontend should fetch and verify after the
+   * catalog is loaded. Empty/default means no db-proof UI check. */
+  databaseProofPins?: DatabaseProofPin[];
+  /** Fires once per configured database proof pin after verification,
+   * mismatch, or "not configured" is known. */
+  onDatabaseProof?: (dbId: number, info: DatabaseProofStatus) => void;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -337,6 +350,9 @@ export class BatchPirClientAdapter {
     server0: { state: 'not-checked' },
     server1: { state: 'not-checked' },
   };
+
+  /** Per-database attested-builder proof status, keyed by db_id. */
+  databaseProofs: Map<number, DatabaseProofStatus> = new Map();
 
   constructor(config: BatchPirClientConfig) {
     this.config = config;
@@ -400,6 +416,7 @@ export class BatchPirClientAdapter {
       // in-memory catalog to resolve `db_id` against. The side-channel
       // fetch above only populates the TS-side `this.catalog`.
       await this.wasmClient.fetchCatalog();
+      await this.verifyConfiguredDatabaseProofs();
       this.connected = true;
       // Emit a final `connected` in case the native client's own
       // `onStateChange` fired before we registered the listener or got
@@ -467,6 +484,10 @@ export class BatchPirClientAdapter {
 
   getCatalogEntry(dbId: number): DatabaseCatalogEntry | undefined {
     return this.catalog?.databases.find((d) => d.dbId === dbId);
+  }
+
+  getDatabaseProofStatus(dbId: number): DatabaseProofStatus | undefined {
+    return this.databaseProofs.get(dbId);
   }
 
   // ── Merkle accessors (all read cached server info) ────────────────────
@@ -618,6 +639,45 @@ export class BatchPirClientAdapter {
       client.free();
     }
     this.connected = false;
+  }
+
+  private async verifyConfiguredDatabaseProofs(): Promise<void> {
+    if (!this.wasmClient) return;
+    const pins = this.config.databaseProofPins ?? [];
+    for (const pin of pins) {
+      let status: DatabaseProofStatus;
+      try {
+        const proofHandle = await this.wasmClient.verifyDatabaseProof(
+          pin.dbId,
+          pin.paramsHashHex,
+          pin.builderBinarySha256Hex,
+          pin.builderGitCommit,
+        );
+        try {
+          const proof = verifiedDatabaseProofFromWasm(proofHandle);
+          status = verifyDatabaseProofAgainstPin(proof, pin);
+        } finally {
+          proofHandle.free();
+        }
+      } catch (e) {
+        status = databaseProofUnavailable(pin, e);
+      }
+      this.databaseProofs.set(pin.dbId, status);
+      this.config.onDatabaseProof?.(pin.dbId, status);
+      if (status.state === 'verified') {
+        this.log(
+          `DB proof db ${pin.dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
+          'success',
+        );
+      } else if (status.state === 'unavailable') {
+        this.log(`DB proof db ${pin.dbId}: unavailable (${status.error})`, 'info');
+      } else {
+        this.log(
+          `DB proof db ${pin.dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
+          'error',
+        );
+      }
+    }
   }
 
   private setState(state: ConnectionState, message?: string): void {

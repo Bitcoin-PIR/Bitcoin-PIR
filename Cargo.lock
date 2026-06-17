@@ -1835,6 +1835,7 @@ dependencies = [
  "pir-attest-verify",
  "pir-channel",
  "pir-core",
+ "pir-db-attest",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",

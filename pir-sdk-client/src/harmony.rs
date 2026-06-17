@@ -31,6 +31,9 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
+use crate::db_proof::{
+    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+};
 use crate::hint_cache;
 use crate::merkle_verify::{
     fetch_tree_tops, verify_bucket_merkle_batch_generic,
@@ -609,6 +612,36 @@ impl HarmonyClient {
             leakage_recorder: None,
             use_v2_protocol: true,
         }
+    }
+
+    /// Fetch and verify the attested-builder proof bundle for `db_id`.
+    ///
+    /// The proof is checked against the cached database catalog, fetching the
+    /// catalog first if needed. Harmony servers answer the catalog/proof
+    /// requests before role-specific hint/query dispatch, so the hint
+    /// connection is sufficient and keeps this method consistent with
+    /// `fetch_catalog`.
+    pub async fn verify_database_proof(
+        &mut self,
+        db_id: u8,
+        policy: &DatabaseProofPolicy,
+    ) -> PirResult<VerifiedDatabaseRoots> {
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
+        let catalog = match &self.catalog {
+            Some(c) => c.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        let db_info = catalog
+            .databases
+            .iter()
+            .find(|db| db.db_id == db_id)
+            .cloned()
+            .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
+        let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
+        let bundle = fetch_database_proof(conn.as_mut(), db_id).await?;
+        verify_database_proof(&db_info, &bundle, policy)
     }
 
     // ─── Metrics recorder ──────────────────────────────────────────────────

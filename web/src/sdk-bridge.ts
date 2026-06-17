@@ -360,7 +360,25 @@ export interface WasmAnnounceVerification {
   free(): void;
 }
 
-interface WasmDpfClient {
+export interface WasmDatabaseProof {
+  free(): void;
+  readonly dbId: number;
+  readonly buildKind: 'snapshot' | 'delta' | string;
+  readonly fromHeight: number;
+  readonly fromBlockHashHex: string;
+  readonly height: number;
+  readonly blockHashHex: string;
+  readonly muhashHex: string;
+  readonly bucketSuperRootHex: string;
+  readonly onionSuperRootHex: string;
+  readonly paramsHashHex: string;
+  readonly networkMagicHex: string;
+  readonly builderBinarySha256Hex: string;
+  readonly builderGitCommit: string;
+  toJson(): any;
+}
+
+export interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
   connect(): Promise<void>;
@@ -392,6 +410,15 @@ interface WasmDpfClient {
    * (which go through `query_batch_with_inspector`) can resolve `db_id`
    * against an in-memory catalog. Returns the freshly fetched catalog. */
   fetchCatalog(): Promise<unknown>;
+  /** Fetch and verify an attested-builder database proof against the
+   * native catalog. Optional string policy pins may be `undefined` or empty.
+   * Mainnet network magic is always enforced by the WASM method. */
+  verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof>;
   /** Inspector-path batch query. Returns an `Array<WasmQueryResult>` of
    * length `N` (one per packed scripthash). Every slot is non-null —
    * not-found queries are synthesised as empty inspector-populated
@@ -436,7 +463,7 @@ interface WasmSyncPlan {
  * superset (notably `queryBatch` + `fetchCatalog`, which the adapter doesn't
  * need because PIR rounds go through `queryBatchRaw`).
  */
-interface WasmHarmonyClient {
+export interface WasmHarmonyClient {
   free(): void;
   readonly isConnected: boolean;
   connect(): Promise<void>;
@@ -456,6 +483,13 @@ interface WasmHarmonyClient {
    *  caller can pass back into `fetchHintsWithProgress` / `loadHints`
    *  / `fingerprint`. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
+  /** Same as `WasmDpfClient.verifyDatabaseProof`. */
+  verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof>;
   serverUrls(): [string, string];
   /** Returns the active `db_id`, or `undefined` if no hints are loaded. */
   dbId(): number | undefined;
@@ -656,7 +690,7 @@ interface WasmAtomicMetrics {
   snapshot(): AtomicMetricsSnapshot;
 }
 
-interface WasmQueryResult {
+export interface WasmQueryResult {
   free(): void;
   readonly entryCount: number;
   readonly totalBalance: bigint;
@@ -1221,7 +1255,7 @@ export function requireSdkWasm(): PirSdkWasm {
 // Re-export the adapter-facing interface types so `dpf-adapter.ts` can
 // import them without having to reach into this module's type-only
 // `PirSdkWasm` shape.
-export type { WasmDpfClient, WasmHarmonyClient, WasmQueryResult, WasmDatabaseCatalog };
+export type { WasmDatabaseCatalog };
 
 // ─── Metrics bridge (Phase 2+ observability) ───────────────────────────────
 //
