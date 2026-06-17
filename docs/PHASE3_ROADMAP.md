@@ -361,64 +361,54 @@ recovery checklist.
 
 ## Web frontend updates
 
-The web client (`web/`) has two relevant concerns this work introduces:
+The web client (`web/`) now shows two separate trust checks:
 
-### 1. Display attestation status in the UI
+### 1. Runtime attestation status
 
-Right now the SDK has the attestation primitives
-(`pir_sdk_client::attest::attest`) but the web wrapper doesn't expose
-them. Add a small UI element to the existing client page (`web/src/`):
+DPF and HarmonyPIR adapters call the WASM attestation surface after connect.
+The UI renders:
 
-- Periodic background `/attest` against pir1 + pir2.
-- For pir1 (Hetzner, no SEV): green badge "self-reported attestation
-  (no hardware backing)" with binary_sha256 + git_rev visible.
-- For pir2 (VPSBG, SEV-SNP): green badge "✓ Verified via SEV-SNP"
-  showing the launch MEASUREMENT and a tooltip explaining what was
-  attested. Cross-check against operator-published values baked into
-  the page bundle at build time (so any divergence is immediately
-  visible).
+- pir1 (Hetzner, no SEV): binary-hash/operator-identity status only.
+- pir2 (VPSBG, SEV-SNP Tier 3): launch MEASUREMENT, binary hash, AMD ARK/VCEK
+  chain validation, encrypted-channel upgrade, and operator identity.
 
-Implementation surface:
-- New `web/src/attest-badge.ts` (or similar) — runs the attest call
-  via the existing `WasmDpfClient` connection, parses the response,
-  renders status.
-- Add a build-time constant for expected MEASUREMENT (like
-  `VITE_BPIR_EXPECTED_MEASUREMENT_PIR2=f568fc1f…`).
-- Document the publication flow: when the operator uploads a new UKI
-  to VPSBG, they:
-  1. Re-bake UKI, capture new MEASUREMENT.
-  2. Update `VITE_BPIR_EXPECTED_MEASUREMENT_PIR2` in `.env`.
-  3. Rebuild + redeploy the web client.
+Pins live in `web/src/attest-pin.ts` as `PIR1_PIN`, `PIR2_TIER3_PIN`, and
+`AMD_TURIN_ARK_FINGERPRINT_HEX`.
 
-### 2. AMD VCEK chain verification (optional, deferred)
+### 2. Database build attestation status
 
-Currently `bpir-admin attest` (and the analogous browser flow) trust
-that the SEV-SNP report's signature is valid. To be truly
-independent, the verifier should:
-- Fetch AMD's ARK + ASK + VCEK for the chip from
-  `https://kdsintf.amd.com/vcek/v1/Turin/<chip-id>?...`
-- Verify the cert chain: ARK self-signed → ARK signs ASK → ASK signs VCEK.
-- Verify the SEV report's ECDSA-P384 signature against the VCEK.
+DPF and HarmonyPIR adapters also fetch `REQ_GET_DB_PROOF = 0x0a` for configured
+`databaseProofPins`, verify the attested-builder bundle in WASM, compare the
+result against `PRODUCTION_DB_PROOF_PINS`, and render a separate DB proof badge.
 
-Doing this in browser context requires either:
-- A WASM build of the verification code (cleanest; reuses
-  `pir_core::attest` + ed25519/ECDSA crates compiled to wasm32).
-- A Cloudflare Worker that does the verification and returns a
-  signed assertion (more centralized, less ideal).
+Current production DB proof pin:
 
-Recommend: WASM build, ship as part of the SDK. Estimate ~3 days.
+| Field | Value |
+|---|---|
+| DB | `delta_940611_948454` (`db_id = 1`) |
+| from block | `940611`, `000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99` |
+| to block | `948454`, `00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4` |
+| MuHash | `cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee` |
+| bucket super-root | `e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a` |
+| onion super-root | `f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997` |
+| builder binary | `34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a` |
+| builder commit | `01e8db91d76037cd5562fce85c40e832ad156431` |
+
+Open work: strict query-path root installation still needs to make DPF/Harmony
+Merkle checks consume the verified bucket root directly, and standalone
+OnionPIR still needs the direct `REQ_GET_DB_PROOF` verifier plus UI badge.
 
 ### 3. Confirm `--role secondary` doesn't break existing client flows
 
 The web client expects:
-- pir1 (Hetzner primary) handles `REQ_HARMONY_QUERY` and `REQ_HARMONY_BATCH_QUERY` (online).
-- pir2 (VPSBG, now also primary's-equivalent in topology) handles `REQ_HARMONY_HINTS` (offline).
+- pir1 (Hetzner primary) handles HarmonyPIR hints/offline preprocessing.
+- pir2 (VPSBG Tier 3) handles HarmonyPIR online queries.
+- DPF uses pir1 as server 0 and pir2 as server 1.
 
-This is the existing topology. `--role secondary` on VPSBG matches.
-
-After today's `e68df9b` dual-stack bind fix, the connection should
-succeed. **Open**: actually run the web client end-to-end with a real
-HarmonyPIR query and confirm.
+This is the existing production topology. **Open**: after every new web build,
+run one real DPF and one real HarmonyPIR query and confirm that runtime
+attestation, operator identity, and DB proof badges all settle before the
+query path proceeds.
 
 ---
 

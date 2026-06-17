@@ -4,6 +4,12 @@
 
 The PIR system uses WebSocket for all client-server communication. This enables direct browser connections without any intermediary.
 
+Current browser flows use the Rust SDK through `pir-sdk-wasm` for DPF and
+HarmonyPIR. The TypeScript adapters are responsible for UI state, IndexedDB hint
+storage, address parsing, and status badges; padding, Merkle verification,
+runtime attestation, encrypted-channel setup, and database-build proof
+verification live below the WASM boundary.
+
 ## Architecture
 
 ```
@@ -49,14 +55,37 @@ runtime/src/
 └── lib.rs                 # Module exports
 
 web/src/
-├── client.ts              # Browser WebSocket PIR client
-├── dpf.ts                 # DPF key generation
-├── hash.ts                # HASH160, cuckoo hash functions
-├── constants.ts           # Database IDs and parameters
-├── bincode.ts             # Binary serialization
-├── sbp.ts                 # Simple Binary Protocol codec
-└── index.ts               # Main entry point
+├── dpf-adapter.ts         # DPF UI adapter over WasmDpfClient
+├── harmonypir-adapter.ts  # HarmonyPIR UI adapter over WasmHarmonyClient
+├── db-proof.ts            # Browser-side DB proof status/pin helpers
+├── attest-pin.ts          # Runtime + DB proof production pins
+├── sdk-bridge.ts          # pir-sdk-wasm loader/type bridge
+├── hash.ts                # Address/script hashing helpers
+├── server-info.ts         # Catalog, server-info, residency helpers
+└── index.ts               # Public web exports
 ```
+
+## Runtime and Database Attestation
+
+The browser renders two distinct badges:
+
+- Runtime attestation: DPF and HarmonyPIR call the WASM attestation API against
+  pir1 and pir2. pir2 is checked against the SEV-SNP Tier 3 measurement,
+  binary hash, AMD ARK/VCEK chain, encrypted-channel binding, and operator
+  identity pins in `web/src/attest-pin.ts`.
+- Database build attestation: DPF and HarmonyPIR fetch `REQ_GET_DB_PROOF`
+  (`0x0a`) for each configured `PRODUCTION_DB_PROOF_PINS` entry, verify the
+  attested-builder evidence in WASM, and compare the result to the pinned block
+  range, Bitcoin Core MuHash, bucket Merkle root, onion Merkle root, builder
+  binary hash, builder commit, network magic, and params hash.
+
+The current production DB proof is `delta_940611_948454` (`db_id = 1`) with
+MuHash `cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee`
+at block `948454`
+(`00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4`).
+This is advisory in the UI today; the remaining strict-mode work is to make
+query-path Merkle verification consume the verified roots directly and to add
+the same proof path to standalone OnionPIR.
 
 ## Running the System
 

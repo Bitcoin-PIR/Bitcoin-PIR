@@ -58,6 +58,9 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # back to AMD's known root without talking to kdsintf.amd.com
 # (CORS-blocked from browser context).
 pir-attest-verify = { version = "0.1.0", path = "../pir-attest-verify" }
+# JS-facing DB proof summaries use the same build-kind labels and hash display
+# helpers as the native verifier.
+pir-db-attest = { path = "../pir-db-attest" }
 # Per-handshake nonce + ephemeral seed in `WasmDpfClient::attest`. The
 # "js" feature lets it use `crypto.getRandomValues` on wasm32; on
 # native (used only by `cargo test`) it reads /dev/urandom.

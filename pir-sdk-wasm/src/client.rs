@@ -34,9 +34,11 @@
 use js_sys::{Array, Uint8Array};
 use pir_sdk::{PirClient, QueryResult, ScriptHash, SyncResult};
 use pir_sdk_client::attest::{AttestVerification, SevStatus};
-use pir_sdk_client::{DpfClient, HarmonyClient, PRP_FASTPRP, PRP_HMR12};
 #[cfg(target_arch = "wasm32")]
 use pir_sdk_client::HintProgress;
+use pir_sdk_client::{
+    DatabaseProofPolicy, DpfClient, HarmonyClient, VerifiedDatabaseRoots, PRP_FASTPRP, PRP_HMR12,
+};
 use wasm_bindgen::prelude::*;
 
 use crate::{
@@ -117,6 +119,71 @@ fn err_to_js(e: pir_sdk::PirError) -> JsError {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn parse_optional_hex_array<const N: usize>(
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<[u8; N]>, JsError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let bytes =
+        hex::decode(value).map_err(|e| JsError::new(&format!("{field}: invalid hex: {e}")))?;
+    let arr: [u8; N] = bytes.as_slice().try_into().map_err(|_| {
+        JsError::new(&format!(
+            "{field}: expected {} bytes ({} hex chars), got {} bytes",
+            N,
+            N * 2,
+            bytes.len()
+        ))
+    })?;
+    Ok(Some(arr))
+}
+
+fn database_proof_policy(
+    expected_params_hash_hex: Option<String>,
+    allowed_builder_binary_sha256_hex: Option<String>,
+    allowed_builder_git_commit: Option<String>,
+) -> Result<DatabaseProofPolicy, JsError> {
+    let mut policy = DatabaseProofPolicy::mainnet();
+    policy.expected_params_hash =
+        parse_optional_hex_array::<32>("expectedParamsHashHex", expected_params_hash_hex)?;
+    if let Some(hash) = parse_optional_hex_array::<32>(
+        "allowedBuilderBinarySha256Hex",
+        allowed_builder_binary_sha256_hex,
+    )? {
+        policy.allowed_builder_binary_sha256.push(hash);
+    }
+    if let Some(commit) = allowed_builder_git_commit {
+        let commit = commit.trim();
+        if !commit.is_empty() {
+            policy.allowed_builder_git_commits.push(commit.to_owned());
+        }
+    }
+    Ok(policy)
+}
+
+fn database_proof_json(roots: &VerifiedDatabaseRoots) -> serde_json::Value {
+    serde_json::json!({
+        "dbId": roots.db_id,
+        "buildKind": pir_db_attest::build_kind_label(roots.build_kind),
+        "fromHeight": roots.from_height,
+        "fromBlockHashHex": roots.from_block_hash_hex(),
+        "height": roots.height,
+        "blockHashHex": roots.block_hash_hex(),
+        "muhashHex": roots.muhash_hex(),
+        "bucketSuperRootHex": roots.bucket_super_root_hex(),
+        "onionSuperRootHex": roots.onion_super_root_hex(),
+        "paramsHashHex": hex_encode(&roots.params_hash),
+        "networkMagicHex": hex_encode(&roots.network_magic),
+        "builderBinarySha256Hex": hex_encode(&roots.builder_binary_sha256),
+        "builderGitCommit": roots.builder_git_commit,
+    })
 }
 
 /// Build the JS-facing JSON shape of a `SyncResult`. Mirrors
@@ -757,6 +824,93 @@ pub fn turin_ark_fingerprint() -> Uint8Array {
     Uint8Array::from(&pir_attest_verify::TURIN_ARK_FINGERPRINT_SHA256[..])
 }
 
+// ─── WasmDatabaseProof ─────────────────────────────────────────────────────
+
+/// JS-visible summary of a verified attested-builder database proof.
+///
+/// The Rust side has already checked the proof bundle against the database
+/// catalog and policy before constructing this object. Hex values are display
+/// oriented: block hashes and MuHash use Bitcoin Core display order; Merkle
+/// roots and SHA-256 values are raw hex.
+#[wasm_bindgen]
+pub struct WasmDatabaseProof {
+    inner: VerifiedDatabaseRoots,
+}
+
+#[wasm_bindgen]
+impl WasmDatabaseProof {
+    #[wasm_bindgen(getter, js_name = dbId)]
+    pub fn db_id(&self) -> u8 {
+        self.inner.db_id
+    }
+
+    #[wasm_bindgen(getter, js_name = buildKind)]
+    pub fn build_kind(&self) -> String {
+        pir_db_attest::build_kind_label(self.inner.build_kind).to_owned()
+    }
+
+    #[wasm_bindgen(getter, js_name = fromHeight)]
+    pub fn from_height(&self) -> u32 {
+        self.inner.from_height
+    }
+
+    #[wasm_bindgen(getter, js_name = fromBlockHashHex)]
+    pub fn from_block_hash_hex(&self) -> String {
+        self.inner.from_block_hash_hex()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.inner.height
+    }
+
+    #[wasm_bindgen(getter, js_name = blockHashHex)]
+    pub fn block_hash_hex(&self) -> String {
+        self.inner.block_hash_hex()
+    }
+
+    #[wasm_bindgen(getter, js_name = muhashHex)]
+    pub fn muhash_hex(&self) -> String {
+        self.inner.muhash_hex()
+    }
+
+    #[wasm_bindgen(getter, js_name = bucketSuperRootHex)]
+    pub fn bucket_super_root_hex(&self) -> String {
+        self.inner.bucket_super_root_hex()
+    }
+
+    #[wasm_bindgen(getter, js_name = onionSuperRootHex)]
+    pub fn onion_super_root_hex(&self) -> String {
+        self.inner.onion_super_root_hex()
+    }
+
+    #[wasm_bindgen(getter, js_name = paramsHashHex)]
+    pub fn params_hash_hex(&self) -> String {
+        hex_encode(&self.inner.params_hash)
+    }
+
+    #[wasm_bindgen(getter, js_name = networkMagicHex)]
+    pub fn network_magic_hex(&self) -> String {
+        hex_encode(&self.inner.network_magic)
+    }
+
+    #[wasm_bindgen(getter, js_name = builderBinarySha256Hex)]
+    pub fn builder_binary_sha256_hex(&self) -> String {
+        hex_encode(&self.inner.builder_binary_sha256)
+    }
+
+    #[wasm_bindgen(getter, js_name = builderGitCommit)]
+    pub fn builder_git_commit(&self) -> String {
+        self.inner.builder_git_commit.clone()
+    }
+
+    /// Convert to a plain JS object for UI state and callbacks.
+    #[wasm_bindgen(js_name = toJson)]
+    pub fn to_json(&self) -> JsValue {
+        to_js_object(&database_proof_json(&self.inner))
+    }
+}
+
 // ─── WasmAnnounceVerification ──────────────────────────────────────────────
 
 /// JS-visible result of a `WasmDpfClient.announce()` (or
@@ -949,9 +1103,7 @@ impl WasmAnnounceVerification {
 /// instead of reimplementing Ed25519 verification in TS. Mirrors the
 /// Rust `pir_sdk_client::announce::parse_announce_response`.
 #[wasm_bindgen(js_name = verifyAnnounceResponse)]
-pub fn verify_announce_response(
-    resp_payload: &[u8],
-) -> Result<WasmAnnounceVerification, JsError> {
+pub fn verify_announce_response(resp_payload: &[u8]) -> Result<WasmAnnounceVerification, JsError> {
     let inner = pir_sdk_client::announce::parse_announce_response(resp_payload)
         .map_err(|e| JsError::new(&e.to_string()))?;
     Ok(WasmAnnounceVerification { inner })
@@ -1030,6 +1182,34 @@ impl WasmDpfClient {
     pub async fn fetch_catalog(&mut self) -> Result<WasmDatabaseCatalog, JsError> {
         let catalog = self.inner.fetch_catalog().await.map_err(err_to_js)?;
         Ok(WasmDatabaseCatalog::from_native(catalog))
+    }
+
+    /// Fetch and verify the attested-builder proof bundle for `dbId`.
+    ///
+    /// The proof is checked against the database catalog plus the supplied
+    /// production policy pins. `expectedParamsHashHex`,
+    /// `allowedBuilderBinarySha256Hex`, and `allowedBuilderGitCommit` may be
+    /// `undefined` / empty to skip that particular policy check. Mainnet
+    /// network magic is always enforced.
+    #[wasm_bindgen(js_name = verifyDatabaseProof)]
+    pub async fn verify_database_proof(
+        &mut self,
+        db_id: u8,
+        expected_params_hash_hex: Option<String>,
+        allowed_builder_binary_sha256_hex: Option<String>,
+        allowed_builder_git_commit: Option<String>,
+    ) -> Result<WasmDatabaseProof, JsError> {
+        let policy = database_proof_policy(
+            expected_params_hash_hex,
+            allowed_builder_binary_sha256_hex,
+            allowed_builder_git_commit,
+        )?;
+        let roots = self
+            .inner
+            .verify_database_proof(db_id, &policy)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseProof { inner: roots })
     }
 
     /// End-to-end sync: fetch catalog, plan, execute all steps, merge
@@ -1142,10 +1322,7 @@ impl WasmDpfClient {
     /// the cached seed (the prior eph is dropped). Callers should call
     /// `attest` for *both* servers before `upgradeToSecureChannel`.
     #[wasm_bindgen(js_name = attest)]
-    pub async fn attest(
-        &mut self,
-        server_index: u8,
-    ) -> Result<WasmAttestVerification, JsError> {
+    pub async fn attest(&mut self, server_index: u8) -> Result<WasmAttestVerification, JsError> {
         if server_index >= 2 {
             return Err(JsError::new(&format!(
                 "attest: serverIndex must be 0 or 1, got {}",
@@ -1191,11 +1368,7 @@ impl WasmDpfClient {
                 server_index
             )));
         }
-        let v = self
-            .inner
-            .announce(server_index)
-            .await
-            .map_err(err_to_js)?;
+        let v = self.inner.announce(server_index).await.map_err(err_to_js)?;
         Ok(WasmAnnounceVerification { inner: v })
     }
 
@@ -1553,6 +1726,31 @@ impl WasmHarmonyClient {
         Ok(WasmDatabaseCatalog::from_native(catalog))
     }
 
+    /// Fetch and verify the attested-builder proof bundle for `dbId`.
+    ///
+    /// See [`WasmDpfClient::verify_database_proof`] for policy argument
+    /// semantics. Mainnet network magic is always enforced.
+    #[wasm_bindgen(js_name = verifyDatabaseProof)]
+    pub async fn verify_database_proof(
+        &mut self,
+        db_id: u8,
+        expected_params_hash_hex: Option<String>,
+        allowed_builder_binary_sha256_hex: Option<String>,
+        allowed_builder_git_commit: Option<String>,
+    ) -> Result<WasmDatabaseProof, JsError> {
+        let policy = database_proof_policy(
+            expected_params_hash_hex,
+            allowed_builder_binary_sha256_hex,
+            allowed_builder_git_commit,
+        )?;
+        let roots = self
+            .inner
+            .verify_database_proof(db_id, &policy)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseProof { inner: roots })
+    }
+
     /// End-to-end sync. See [`WasmDpfClient::sync`] for argument
     /// semantics — the wire path differs but the JS-facing shape is
     /// identical.
@@ -1638,10 +1836,7 @@ impl WasmHarmonyClient {
     /// the bound-nonce derivation that ties this attestation to the
     /// subsequent handshake).
     #[wasm_bindgen(js_name = attest)]
-    pub async fn attest(
-        &mut self,
-        server_index: u8,
-    ) -> Result<WasmAttestVerification, JsError> {
+    pub async fn attest(&mut self, server_index: u8) -> Result<WasmAttestVerification, JsError> {
         if server_index >= 2 {
             return Err(JsError::new(&format!(
                 "attest: serverIndex must be 0 or 1, got {}",
@@ -1679,11 +1874,7 @@ impl WasmHarmonyClient {
                 server_index
             )));
         }
-        let v = self
-            .inner
-            .announce(server_index)
-            .await
-            .map_err(err_to_js)?;
+        let v = self.inner.announce(server_index).await.map_err(err_to_js)?;
         Ok(WasmAnnounceVerification { inner: v })
     }
 
@@ -1922,7 +2113,9 @@ impl WasmHarmonyClient {
             .inner()
             .get(db_id)
             .ok_or_else(|| JsError::new(&format!("no database with db_id={}", db_id)))?;
-        self.inner.load_hints_bytes(bytes, db_info).map_err(err_to_js)
+        self.inner
+            .load_hints_bytes(bytes, db_info)
+            .map_err(err_to_js)
     }
 
     /// Install a [`WasmAtomicMetrics`] recorder.
@@ -2217,10 +2410,7 @@ mod tests {
 
         let json = sync_result_to_json(&sync);
         assert_eq!(json["results"][0]["merkleVerified"], false);
-        assert_eq!(
-            json["results"][0]["entries"].as_array().unwrap().len(),
-            0
-        );
+        assert_eq!(json["results"][0]["entries"].as_array().unwrap().len(), 0);
     }
 
     // Note: we deliberately don't have a unit test that calls `err_to_js`

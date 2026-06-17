@@ -108,10 +108,22 @@ export {
 export {
   AMD_TURIN_ARK_FINGERPRINT,
   AMD_TURIN_ARK_FINGERPRINT_HEX,
+  DELTA_940611_948454_DB_PROOF_PIN,
   PIR1_PIN,
   PIR2_TIER3_PIN,
+  PRODUCTION_DB_PROOF_PINS,
   type ServerAttestPin,
 } from './attest-pin.js';
+
+export {
+  databaseProofAnchorLabel,
+  databaseProofUnavailable,
+  verifiedDatabaseProofFromWasm,
+  verifyDatabaseProofAgainstPin,
+  type DatabaseProofPin,
+  type DatabaseProofStatus,
+  type VerifiedDatabaseProof,
+} from './db-proof.js';
 
 export type {
   HarmonyQueryResult,

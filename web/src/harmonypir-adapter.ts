@@ -72,6 +72,13 @@ import {
   type WasmHarmonyClient,
   type WasmQueryResult,
 } from './sdk-bridge.js';
+import {
+  databaseProofUnavailable,
+  verifiedDatabaseProofFromWasm,
+  verifyDatabaseProofAgainstPin,
+  type DatabaseProofPin,
+  type DatabaseProofStatus,
+} from './db-proof.js';
 import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
 import { gateOperatorIdentity, type OperatorIdentity, type ServerAttestation } from './dpf-adapter.js';
 import type {
@@ -149,6 +156,12 @@ export interface HarmonyPirClientConfig {
    *  check (only when `verifyOperatorIdentity`). Index 0 = hint, 1 = query.
    *  Gate any "verified operator" badge on `state === 'verified'`. */
   onOperatorIdentity?: (serverIndex: 0 | 1, info: OperatorIdentity) => void;
+  /** Database proof pins the frontend should fetch and verify after the
+   * catalog is loaded. Empty/default means no db-proof UI check. */
+  databaseProofPins?: DatabaseProofPin[];
+  /** Fires once per configured database proof pin after verification,
+   * mismatch, or "not configured" is known. */
+  onDatabaseProof?: (dbId: number, info: DatabaseProofStatus) => void;
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -191,6 +204,8 @@ export class HarmonyPirClientAdapter {
     hint: { state: 'not-checked' },
     query: { state: 'not-checked' },
   };
+  /** Per-database attested-builder proof status, keyed by db_id. */
+  databaseProofs: Map<number, DatabaseProofStatus> = new Map();
   /**
    * Inspector data populated by the most recent `queryBatch`. The native
    * `HarmonyClient` doesn't surface placement-round / per-chunk timing
@@ -496,6 +511,7 @@ export class HarmonyPirClientAdapter {
     // `db_id`. The side-channel `fetchServerInfo` below only populates
     // the TS-side `this.catalog`. Matches the DPF adapter pattern.
     await this.wasmClient.fetchCatalog();
+    await this.verifyConfiguredDatabaseProofs();
 
     // Side-channel for residency / server-info JSON requests.
     this.queryWs = new ManagedWebSocket({
@@ -581,6 +597,47 @@ export class HarmonyPirClientAdapter {
 
   getCatalogEntry(dbId: number): DatabaseCatalogEntry | undefined {
     return this.catalog?.databases.find((d) => d.dbId === dbId);
+  }
+
+  getDatabaseProofStatus(dbId: number): DatabaseProofStatus | undefined {
+    return this.databaseProofs.get(dbId);
+  }
+
+  private async verifyConfiguredDatabaseProofs(): Promise<void> {
+    if (!this.wasmClient) return;
+    const pins = this.config.databaseProofPins ?? [];
+    for (const pin of pins) {
+      let status: DatabaseProofStatus;
+      try {
+        const proofHandle = await this.wasmClient.verifyDatabaseProof(
+          pin.dbId,
+          pin.paramsHashHex,
+          pin.builderBinarySha256Hex,
+          pin.builderGitCommit,
+        );
+        try {
+          const proof = verifiedDatabaseProofFromWasm(proofHandle);
+          status = verifyDatabaseProofAgainstPin(proof, pin);
+        } finally {
+          proofHandle.free();
+        }
+      } catch (e) {
+        status = databaseProofUnavailable(pin, e);
+      }
+      this.databaseProofs.set(pin.dbId, status);
+      this.config.onDatabaseProof?.(pin.dbId, status);
+      if (status.state === 'verified') {
+        this.log(
+          `DB proof db ${pin.dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
+        );
+      } else if (status.state === 'unavailable') {
+        this.log(`DB proof db ${pin.dbId}: unavailable (${status.error})`);
+      } else {
+        this.log(
+          `DB proof db ${pin.dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
+        );
+      }
+    }
   }
 
   // ══ Query path ═══════════════════════════════════════════════════════

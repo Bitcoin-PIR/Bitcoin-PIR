@@ -1,4 +1,5 @@
 import { requireSdkWasm } from './sdk-bridge.js';
+import type { DatabaseProofPin } from './db-proof.js';
 
 /**
  * Operator-pinned 32-byte SHA-256 fingerprint of the AMD ARK (Root
@@ -168,6 +169,43 @@ export const PIR1_PIN: ServerAttestPin = {
     'd01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a',
   description: 'weikeng1.bitcoinpir.org (Hetzner i7-8700, no SEV)',
 };
+
+/**
+ * Production database proof pins.
+ *
+ * These are not server-binary pins. They are the public chain/database anchor
+ * the browser expects the attested-builder proof to reproduce. The live proof
+ * must first verify in WASM, then match these exact values before the frontend
+ * marks the DB/MuHash binding as verified.
+ */
+export const DELTA_940611_948454_DB_PROOF_PIN: DatabaseProofPin = {
+  dbId: 1,
+  buildKind: 'delta',
+  fromHeight: 940611,
+  height: 948454,
+  fromBlockHashHex:
+    '000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99',
+  blockHashHex:
+    '00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4',
+  muhashHex:
+    'cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee',
+  bucketSuperRootHex:
+    'e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a',
+  onionSuperRootHex:
+    'f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997',
+  paramsHashHex:
+    '2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39',
+  networkMagicHex: 'f9beb4d9',
+  builderBinarySha256Hex:
+    '34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a',
+  builderGitCommit: '01e8db91d76037cd5562fce85c40e832ad156431',
+  description:
+    'delta_940611_948454: Bitcoin Core MuHash and PIR Merkle roots from the SEV-SNP attested builder',
+};
+
+export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
+  DELTA_940611_948454_DB_PROOF_PIN,
+];
 
 /**
  * Operator identity pin (Tier-1) for the REQ_ANNOUNCE operator-signed
