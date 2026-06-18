@@ -31,6 +31,30 @@ use std::sync::Arc;
 const REQ_ORAM_LOOKUP: u8 = 0x60;
 const RESP_ORAM_LOOKUP: u8 = 0x60;
 const MAX_ORAM_LOOKUP_SCRIPTHASHES: usize = 256;
+const ORAM_LOOKUP_PADDED_MARKER: u16 = u16::MAX;
+
+/// One request slot in a padded ORAM lookup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OramLookupSlot {
+    pub script_hash: ScriptHash,
+    pub present: bool,
+}
+
+impl OramLookupSlot {
+    pub const fn present(script_hash: ScriptHash) -> Self {
+        Self {
+            script_hash,
+            present: true,
+        }
+    }
+
+    pub const fn empty() -> Self {
+        Self {
+            script_hash: [0u8; SCRIPT_HASH_SIZE],
+            present: false,
+        }
+    }
+}
 
 /// One decoded item from `RESP_ORAM_LOOKUP`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,8 +218,7 @@ impl OramClient {
         eph_seed: [u8; 32],
         random_32: [u8; 32],
     ) -> PirResult<crate::attest::AttestVerification> {
-        crate::attest::attest_with_eph_binding(self.conn_mut()?.as_mut(), eph_seed, random_32)
-            .await
+        crate::attest::attest_with_eph_binding(self.conn_mut()?.as_mut(), eph_seed, random_32).await
     }
 
     /// Run REQ_ANNOUNCE on the current connection.
@@ -265,6 +288,26 @@ impl OramClient {
         Ok(result)
     }
 
+    /// Send one raw padded ORAM lookup request and return the decoded padded
+    /// response. Empty slots are explicit, so the TEE can spend the same INDEX
+    /// access schedule without interpreting padding as real script hashes.
+    pub async fn lookup_raw_slots(
+        &mut self,
+        slots: &[OramLookupSlot],
+        db_id: u8,
+    ) -> PirResult<OramLookupResult> {
+        let request = encode_oram_lookup_slots_request(db_id, slots)?;
+        let response = self.conn_mut()?.roundtrip(&request).await?;
+        let result = decode_oram_lookup_response(&response)?;
+        if result.db_id != db_id {
+            return Err(PirError::Decode(format!(
+                "ORAM response db_id {} does not match request db_id {}",
+                result.db_id, db_id
+            )));
+        }
+        Ok(result)
+    }
+
     /// Query a database and decode found results into SDK `QueryResult`s.
     pub async fn query_batch(
         &mut self,
@@ -285,6 +328,42 @@ impl OramClient {
         }
         raw.items
             .into_iter()
+            .map(lookup_item_to_query_result)
+            .collect()
+    }
+
+    /// Query a database with a fixed padded slot count and decode only the
+    /// real input script hashes. If more script hashes are needed, callers
+    /// should split into another padded request.
+    pub async fn query_batch_padded(
+        &mut self,
+        script_hashes: &[ScriptHash],
+        padded_slots: usize,
+        db_id: u8,
+    ) -> PirResult<Vec<Option<QueryResult>>> {
+        if script_hashes.len() > padded_slots {
+            return Err(PirError::Protocol(format!(
+                "ORAM padded query has {} real script hashes but only {} padded slots",
+                script_hashes.len(),
+                padded_slots
+            )));
+        }
+        let started_at = self.fire_query_start(db_id, padded_slots);
+        let slots = padded_lookup_slots(script_hashes, padded_slots)?;
+        let raw = self.lookup_raw_slots(&slots, db_id).await;
+        let success = raw.is_ok();
+        self.fire_query_end(db_id, padded_slots, success, started_at);
+        let raw = raw?;
+        if raw.items.len() != padded_slots {
+            return Err(PirError::Decode(format!(
+                "ORAM padded response item count {} does not match padded slot count {}",
+                raw.items.len(),
+                padded_slots
+            )));
+        }
+        raw.items
+            .into_iter()
+            .take(script_hashes.len())
             .map(lookup_item_to_query_result)
             .collect()
     }
@@ -343,6 +422,58 @@ fn encode_oram_lookup_request(db_id: u8, script_hashes: &[ScriptHash]) -> PirRes
         payload.extend_from_slice(sh);
     }
     Ok(encode_request(REQ_ORAM_LOOKUP, &payload))
+}
+
+fn encode_oram_lookup_slots_request(db_id: u8, slots: &[OramLookupSlot]) -> PirResult<Vec<u8>> {
+    if slots.len() > MAX_ORAM_LOOKUP_SCRIPTHASHES {
+        return Err(PirError::Protocol(format!(
+            "ORAM lookup slot count {} exceeds maximum {}",
+            slots.len(),
+            MAX_ORAM_LOOKUP_SCRIPTHASHES
+        )));
+    }
+    if slots.iter().all(|slot| slot.present) {
+        let script_hashes = slots
+            .iter()
+            .map(|slot| slot.script_hash)
+            .collect::<Vec<_>>();
+        return encode_oram_lookup_request(db_id, &script_hashes);
+    }
+
+    let mut payload = Vec::with_capacity(5 + slots.len() * (1 + SCRIPT_HASH_SIZE));
+    payload.push(db_id);
+    payload.extend_from_slice(&ORAM_LOOKUP_PADDED_MARKER.to_le_bytes());
+    payload.extend_from_slice(&(slots.len() as u16).to_le_bytes());
+    for slot in slots {
+        payload.push(u8::from(slot.present));
+    }
+    for slot in slots {
+        payload.extend_from_slice(&slot.script_hash);
+    }
+    Ok(encode_request(REQ_ORAM_LOOKUP, &payload))
+}
+
+fn padded_lookup_slots(
+    script_hashes: &[ScriptHash],
+    padded_slots: usize,
+) -> PirResult<Vec<OramLookupSlot>> {
+    if padded_slots > MAX_ORAM_LOOKUP_SCRIPTHASHES {
+        return Err(PirError::Protocol(format!(
+            "ORAM padded slot count {} exceeds maximum {}",
+            padded_slots, MAX_ORAM_LOOKUP_SCRIPTHASHES
+        )));
+    }
+    if script_hashes.len() > padded_slots {
+        return Err(PirError::Protocol(format!(
+            "ORAM padded slot count {} smaller than real script hash count {}",
+            padded_slots,
+            script_hashes.len()
+        )));
+    }
+    let mut slots = Vec::with_capacity(padded_slots);
+    slots.extend(script_hashes.iter().copied().map(OramLookupSlot::present));
+    slots.resize(padded_slots, OramLookupSlot::empty());
+    Ok(slots)
 }
 
 fn decode_oram_lookup_response(response: &[u8]) -> PirResult<OramLookupResult> {
@@ -531,6 +662,28 @@ mod tests {
         assert_eq!(&encoded[28..48], &b);
     }
 
+    #[test]
+    fn encode_padded_lookup_request_marks_empty_slots() {
+        let a = [1u8; SCRIPT_HASH_SIZE];
+        let b = [2u8; SCRIPT_HASH_SIZE];
+        let slots = [
+            OramLookupSlot::present(a),
+            OramLookupSlot::empty(),
+            OramLookupSlot::present(b),
+        ];
+        let encoded = encode_oram_lookup_slots_request(4, &slots).unwrap();
+
+        assert_eq!(&encoded[..4], &(69u32).to_le_bytes());
+        assert_eq!(encoded[4], REQ_ORAM_LOOKUP);
+        assert_eq!(encoded[5], 4);
+        assert_eq!(&encoded[6..8], &ORAM_LOOKUP_PADDED_MARKER.to_le_bytes());
+        assert_eq!(&encoded[8..10], &3u16.to_le_bytes());
+        assert_eq!(&encoded[10..13], &[1, 0, 1]);
+        assert_eq!(&encoded[13..33], &a);
+        assert_eq!(&encoded[33..53], &[0u8; SCRIPT_HASH_SIZE]);
+        assert_eq!(&encoded[53..73], &b);
+    }
+
     #[tokio::test]
     async fn query_batch_decodes_utxos_and_preserves_raw_chunk_data() {
         let script_hash = [9u8; SCRIPT_HASH_SIZE];
@@ -559,6 +712,61 @@ mod tests {
         assert_eq!(qr.entries[0].vout, 2);
         assert_eq!(qr.entries[0].amount_sats, 50_000);
         assert_eq!(qr.raw_chunk_data.as_ref(), Some(&raw));
+    }
+
+    #[tokio::test]
+    async fn query_batch_padded_strips_empty_slot_results() {
+        let a = [9u8; SCRIPT_HASH_SIZE];
+        let b = [10u8; SCRIPT_HASH_SIZE];
+        let raw_a = pir_core::codec::serialize_utxo_data(&[pir_core::codec::UtxoEntry {
+            txid: [0xab; 32],
+            vout: 2,
+            amount: 50_000,
+        }]);
+        let mut mock = MockTransport::new("mock://oram");
+        mock.enqueue_response(encode_test_response(
+            0,
+            &[
+                OramLookupItem {
+                    found: true,
+                    whale: false,
+                    start_chunk_id: 11,
+                    num_chunks: 1,
+                    raw_chunk_data: raw_a.clone(),
+                },
+                OramLookupItem {
+                    found: false,
+                    whale: false,
+                    start_chunk_id: 0,
+                    num_chunks: 0,
+                    raw_chunk_data: Vec::new(),
+                },
+                OramLookupItem {
+                    found: false,
+                    whale: false,
+                    start_chunk_id: 0,
+                    num_chunks: 0,
+                    raw_chunk_data: Vec::new(),
+                },
+            ],
+        ));
+
+        let mut client = OramClient::new("mock://oram");
+        client.connect_with_transport(Box::new(mock));
+        let results = client.query_batch_padded(&[a, b], 3, 0).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_some());
+        assert!(results[1].is_none());
+    }
+
+    #[test]
+    fn padded_lookup_slots_rejects_too_many_real_hashes() {
+        let script_hashes = [[1u8; SCRIPT_HASH_SIZE], [2u8; SCRIPT_HASH_SIZE]];
+        match padded_lookup_slots(&script_hashes, 1) {
+            Err(PirError::Protocol(msg)) => assert!(msg.contains("smaller than real")),
+            other => panic!("expected padded slot protocol error, got {:?}", other),
+        }
     }
 
     #[tokio::test]

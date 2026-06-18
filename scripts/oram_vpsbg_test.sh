@@ -73,6 +73,7 @@ BUCKET_SIZE="${BUCKET_SIZE:-2}"
 STASH_CAPACITY="${STASH_CAPACITY:-128}"
 DRAIN_PER_ACCESS="${DRAIN_PER_ACCESS:-2}"
 DIRECT_ACCESS_BUDGET="${DIRECT_ACCESS_BUDGET:-50}"
+PADDED_SLOTS="${PADDED_SLOTS:-}"
 CACHE_LEVELS="${CACHE_LEVELS:-0}"
 LEVEL="${LEVEL:-all}"
 DIRECT_INDEX_SLOTS_PER_BIN="${DIRECT_INDEX_SLOTS_PER_BIN:-4}"
@@ -682,6 +683,11 @@ server_smoke() {
     smoke_db_ids=(0)
   fi
   local first_db_id="${smoke_db_ids[0]}"
+  local padded_args=()
+  if [[ -n "${PADDED_SLOTS}" ]]; then
+    padded_args=(--padded-slots "${PADDED_SLOTS}")
+    log "encrypted ORAM smoke will use padded_slots=${PADDED_SLOTS}"
+  fi
   log "checking cleartext ORAM rejection"
   (
     cd "${REPO_ROOT}"
@@ -699,6 +705,7 @@ server_smoke() {
       cargo run -q -p pir-sdk-client --example oram_local_smoke -- \
         --server "${server_url}" \
         --db-id "${db_id}" \
+        "${padded_args[@]}" \
         ${SCRIPT_HASHES}
     ) | tee "${LOG_DIR}/server-smoke-encrypted-db${db_id}.log"
   done

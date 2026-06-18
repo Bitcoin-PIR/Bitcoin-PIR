@@ -92,42 +92,47 @@ Add a native ORAM batch endpoint with a fixed public access budget:
 ```text
 OramDirectBatchRequest {
     db_id,
-    script_hashes[],
-    access_budget = 50,
+    padded_slots[],
+    slot_present[],
+    access_budget,
 }
 ```
 
 The server should execute a fixed schedule:
 
-1. For each script hash, perform a fixed number of direct-index ORAM reads
-   against candidate direct-index bins.
-2. Decode matches inside the TEE.
+1. For each padded slot, perform a fixed number of direct-index ORAM reads.
+   Real slots probe the candidate direct-index bins; explicit empty slots spend
+   the same count as random dummy INDEX ORAM path accesses.
+2. Decode matches inside the TEE only for real slots.
 3. Build a private list of required chunk IDs.
 4. Execute up to the remaining fixed chunk-read budget.
-5. Fill unused access slots with deterministic dummy reads.
+5. Fill unused CHUNK access slots with dummy CHUNK ORAM path accesses.
 6. If real chunks exceed the budget, return a continuation token/state so the
    client can request another fixed-budget batch.
 
-For a single-address lookup with two direct-index candidates, a 50-access budget
-gives up to 48 chunk reads. For a multi-address batch, the budget should be
-allocated as:
+The important distinction is that the public padding width is the number of
+script-hash slots, while the server access budget is the number of ORAM path
+accesses. Empty slots do not read a logical INDEX element and therefore do not
+create CHUNK demand, but they still read/rewrite random ORAM paths and add the
+usual eviction debt.
+
+For a padded request with two direct-index candidates per slot, the budget is:
 
 ```text
-index_reads = direct_index_candidates * script_hashes.len()
-chunk_budget = access_budget - index_reads
+padded_index_reads = direct_index_candidates * padded_slots.len()
+chunk_budget = access_budget - padded_index_reads
 ```
 
-The request should reject or split batches when `index_reads > access_budget`.
+The request should reject or split batches when
+`padded_index_reads > access_budget`.
 
-With the current `hash_fns=2` and `access_budget=50`:
+With the current `hash_fns=2`:
 
-- one script hash leaves 48 CHUNK reads;
-- 10 script hashes leave 30 CHUNK reads shared by all found results;
-- 20 script hashes leave 10 CHUNK reads;
-- 24 script hashes leaves 2 CHUNK reads, which is suitable only for mostly
-  not-found or known-small lookups;
-- 25 script hashes consumes the whole budget on INDEX reads and can only serve
-  an all-not-found batch.
+- `padded_slots=50` spends 100 INDEX ORAM path accesses before any CHUNK read.
+- `access_budget=120` leaves 20 CHUNK reads for those 50 slots.
+- `access_budget=150` leaves 50 CHUNK reads for those 50 slots.
+- The old `access_budget=50` can only support 25 padded slots with no CHUNK
+  budget, or fewer padded slots if found results need CHUNK reads.
 
 The implemented first cut keeps the request length public and fixed-fills only
 within that request's access budget. If real CHUNK demand exceeds the remaining
@@ -140,17 +145,19 @@ DPF/Harmony PBC batch planner:
 
 ```ts
 planOramScriptHashBatches(scriptHashes, {
-  accessBudget: 50,
+  accessBudget: 120,
   indexReadsPerScriptHash: 2,
   expectedChunkReadsPerScriptHash: 1,
+  paddedSlotCount: 50,
   chunkReadReserve: 0,
 });
 ```
 
-This example derives 16 script hashes per request because each hash is modeled
-as two INDEX reads plus one expected CHUNK read. For mostly-not-found scans,
-`expectedChunkReadsPerScriptHash: 0` derives 25 script hashes. For safer
-ordinary wallet sync, keep a chunk reserve or an explicit
+This example sends every request as 50 explicit slots and derives 20 real
+script hashes per request because 100 ORAM accesses are reserved for INDEX and
+20 remain for expected CHUNK reads. If the operator wants up to 50 real
+script-hash slots with one expected CHUNK each, set `accessBudget` to at least
+150. For safer ordinary wallet sync, keep a chunk reserve or an explicit
 `maxScriptHashesPerRequest` cap.
 
 ## Engineering sequence

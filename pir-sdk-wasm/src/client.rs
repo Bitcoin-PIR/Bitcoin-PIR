@@ -2330,6 +2330,29 @@ impl WasmOramClient {
         Ok(to_js_object(&query_results_to_json(&results)))
     }
 
+    /// Low-level ORAM batch query padded to `paddedSlots`.
+    ///
+    /// The JS input contains only real script hashes. The native ORAM client
+    /// appends explicit empty slots before sending `REQ_ORAM_LOOKUP`, so the
+    /// TEE spends the same INDEX schedule without treating padding as keys.
+    /// The returned JSON array contains only the real input results.
+    #[wasm_bindgen(js_name = queryBatchPadded)]
+    pub async fn query_batch_padded(
+        &mut self,
+        script_hashes: &Uint8Array,
+        db_id: u8,
+        padded_slots: usize,
+    ) -> Result<JsValue, JsError> {
+        let packed = script_hashes.to_vec();
+        let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
+        let results = self
+            .inner
+            .query_batch_padded(&script_hashes, padded_slots, db_id)
+            .await
+            .map_err(err_to_js)?;
+        Ok(to_js_object(&query_results_to_json(&results)))
+    }
+
     /// Return the configured server URL.
     #[wasm_bindgen(js_name = serverUrl)]
     pub fn server_url(&self) -> String {
