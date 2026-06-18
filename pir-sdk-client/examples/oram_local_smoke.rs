@@ -12,6 +12,7 @@ struct Args {
     db_id: u8,
     script_hashes: Vec<ScriptHash>,
     expect_cleartext_reject: bool,
+    padded_slots: Option<usize>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -19,6 +20,7 @@ fn parse_args() -> Result<Args, String> {
     let mut db_id = 0u8;
     let mut script_hashes = Vec::new();
     let mut expect_cleartext_reject = false;
+    let mut padded_slots = None;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -39,9 +41,18 @@ fn parse_args() -> Result<Args, String> {
             "--expect-cleartext-reject" => {
                 expect_cleartext_reject = true;
             }
+            "--padded-slots" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| "--padded-slots requires a number".to_string())?;
+                padded_slots = Some(
+                    raw.parse::<usize>()
+                        .map_err(|e| format!("invalid --padded-slots `{raw}`: {e}"))?,
+                );
+            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: oram_local_smoke [--server <url>] [--db-id <n>] [--expect-cleartext-reject] <script_hash_hex>..."
+                    "Usage: oram_local_smoke [--server <url>] [--db-id <n>] [--expect-cleartext-reject] [--padded-slots <n>] <script_hash_hex>..."
                 );
                 std::process::exit(0);
             }
@@ -60,11 +71,13 @@ fn parse_args() -> Result<Args, String> {
         db_id,
         script_hashes,
         expect_cleartext_reject,
+        padded_slots,
     })
 }
 
 fn parse_script_hash(value: &str) -> Result<ScriptHash, String> {
-    let bytes = hex::decode(value).map_err(|e| format!("invalid script hash hex `{value}`: {e}"))?;
+    let bytes =
+        hex::decode(value).map_err(|e| format!("invalid script hash hex `{value}`: {e}"))?;
     if bytes.len() != 20 {
         return Err(format!(
             "script hash `{value}` decoded to {} bytes, expected 20",
@@ -84,11 +97,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db_id,
         script_hashes,
         expect_cleartext_reject,
+        padded_slots,
     } = parse_args()?;
 
     println!("server={server}");
     println!("db_id={db_id}");
     println!("query_count={}", script_hashes.len());
+    if let Some(padded_slots) = padded_slots {
+        println!("padded_slots={padded_slots}");
+    }
 
     let mut client = OramClient::new(&server);
     client.connect().await?;
@@ -139,7 +156,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("secure_channel=established");
 
-    let results = client.query_batch(&script_hashes, db_id).await?;
+    let results = if let Some(padded_slots) = padded_slots {
+        client
+            .query_batch_padded(&script_hashes, padded_slots, db_id)
+            .await?
+    } else {
+        client.query_batch(&script_hashes, db_id).await?
+    };
     for (i, (script_hash, result)) in script_hashes.iter().zip(results.iter()).enumerate() {
         println!("result[{i}].script_hash={}", hex::encode(script_hash));
         match result {

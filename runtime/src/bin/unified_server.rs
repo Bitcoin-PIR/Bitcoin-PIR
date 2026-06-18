@@ -17,12 +17,14 @@ use runtime::eval::{self, GroupTiming};
 use runtime::hint_pool;
 use runtime::onionpir::*;
 use runtime::protocol::*;
-use runtime::table::{MappedDatabase, MappedSubTable, DatabaseDescriptor, DatabaseType, ServerState};
+use runtime::table::{
+    DatabaseDescriptor, DatabaseType, MappedDatabase, MappedSubTable, ServerState,
+};
 use runtime::warmup::{self, MmapRegion};
 
 use futures_util::{SinkExt, StreamExt};
 use libdpf::DpfKey;
-use pir_core::params::{self, INDEX_PARAMS, CHUNK_PARAMS};
+use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
 use rayon::prelude::*;
 #[cfg(feature = "cuckoo-oram")]
 use std::collections::BTreeMap;
@@ -42,7 +44,7 @@ use harmonypir::prp::hoang::HoangPrp;
 
 // OnionPIR imports
 use memmap2::Mmap;
-use onionpir::{self, Server as PirServer, KeyStore};
+use onionpir::{self, KeyStore, Server as PirServer};
 
 #[cfg(feature = "cuckoo-oram")]
 use bitcoinpir_oram::{
@@ -50,7 +52,7 @@ use bitcoinpir_oram::{
     CircuitDirectChunkReader, CircuitDirectIndexReader, CircuitOram, CircuitOramState,
     CircuitStoreAuthState, CuckooLevel, CuckooTableInfo, DirectLevel, DirectTableMetadata,
     FilePageStore, FrontCachedPageStore, OramParams, PageStore, TieredMerklePageStore,
-    TieredMerkleState, DIRECT_CHUNK_RECORD_SIZE, AEAD_OVERHEAD,
+    TieredMerkleState, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE,
 };
 
 #[cfg(all(feature = "cuckoo-oram", test))]
@@ -221,8 +223,7 @@ struct CliArgs {
 fn parse_cuckoo_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
     let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
         return Err(
-            "--cuckoo-oram-db expects <db_id>=<dir> (legacy alias: --harmony-oram-db)"
-                .into(),
+            "--cuckoo-oram-db expects <db_id>=<dir> (legacy alias: --harmony-oram-db)".into(),
         );
     };
     let db_id = db_id_raw
@@ -523,7 +524,49 @@ fn parse_args() -> CliArgs {
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_dbs, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_auth_store, cuckoo_oram_no_save, direct_oram_dir, direct_oram_dbs, direct_oram_drain_per_access, direct_oram_access_budget, direct_oram_encrypted, direct_oram_key_hex, direct_oram_state_key_hex, direct_oram_cache_levels, direct_oram_auth_store, direct_oram_no_save }
+    CliArgs {
+        port,
+        data_dir,
+        role,
+        warmup,
+        config_path,
+        checkpoints,
+        deltas,
+        admin_pubkey_hex,
+        disable_onion,
+        vcek_dir,
+        pool_size,
+        pool_dir,
+        require_arc,
+        arc_key_path,
+        require_cashu,
+        cashu_keysets,
+        serve_hints,
+        serve_queries,
+        identity_key_path,
+        identity_cert_path,
+        identity_server_id,
+        cuckoo_oram_dir,
+        cuckoo_oram_dbs,
+        cuckoo_oram_pack,
+        cuckoo_oram_drain_per_access,
+        cuckoo_oram_encrypted,
+        cuckoo_oram_key_hex,
+        cuckoo_oram_state_key_hex,
+        cuckoo_oram_cache_levels,
+        cuckoo_oram_auth_store,
+        cuckoo_oram_no_save,
+        direct_oram_dir,
+        direct_oram_dbs,
+        direct_oram_drain_per_access,
+        direct_oram_access_budget,
+        direct_oram_encrypted,
+        direct_oram_key_hex,
+        direct_oram_state_key_hex,
+        direct_oram_cache_levels,
+        direct_oram_auth_store,
+        direct_oram_no_save,
+    }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -649,7 +692,9 @@ fn verify_onion_anchor_seeds(
         );
     }
     match anchor {
-        pir_core::cuckoo::HeaderAnchor::Snapshot(a) => check(a, im_master, im_tag, ch_master, label),
+        pir_core::cuckoo::HeaderAnchor::Snapshot(a) => {
+            check(a, im_master, im_tag, ch_master, label)
+        }
         pir_core::cuckoo::HeaderAnchor::Delta(a) => check(a, im_master, im_tag, ch_master, label),
     }
 }
@@ -826,7 +871,10 @@ struct MmapCuckooTable<'a> {
 
 impl<'a> MmapCuckooTable<'a> {
     const fn new(sub_table: &'a MappedSubTable, entry_size: usize) -> Self {
-        Self { sub_table, entry_size }
+        Self {
+            sub_table,
+            entry_size,
+        }
     }
 }
 
@@ -959,7 +1007,10 @@ impl CuckooOramTable {
             .lock()
             .map_err(|_| format!("Cuckoo ORAM {} poison mutex poisoned", self.level))?;
         if let Some(reason) = poisoned.as_ref() {
-            Err(format!("Cuckoo ORAM {} table is poisoned: {}", self.level, reason))
+            Err(format!(
+                "Cuckoo ORAM {} table is poisoned: {}",
+                self.level, reason
+            ))
         } else {
             Ok(())
         }
@@ -1171,7 +1222,6 @@ impl CuckooOramTables {
             )?,
         })
     }
-
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -1258,8 +1308,9 @@ impl DirectOramTables {
     fn lookup_batch(
         &self,
         script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+        slot_present: &[bool],
     ) -> Result<Vec<DirectNativeLookupResult>, String> {
-        direct_native_lookup_batch(self, script_hashes)
+        direct_native_lookup_slots(self, script_hashes, slot_present)
     }
 }
 
@@ -1349,6 +1400,26 @@ impl DirectOramIndexTable {
         }
     }
 
+    fn lookup_dummy(&self) -> Result<(), String> {
+        self.check_not_poisoned()?;
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| "Direct ORAM index reader mutex poisoned".to_string())?;
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+        match reader.lookup_dummy(self.drain_per_access) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!(
+                    "Direct ORAM index dummy lookup failed after mutation: {}",
+                    e
+                );
+                self.poison(msg.clone());
+                Err(msg)
+            }
+        }
+    }
+
     fn finish_request(&self) -> Result<(), String> {
         finish_direct_oram_request(
             "index",
@@ -1363,7 +1434,10 @@ impl DirectOramIndexTable {
     }
 
     fn abort_request(&self, reason: &str) {
-        self.poison_after_dirty(format!("request aborted after direct index mutation: {}", reason));
+        self.poison_after_dirty(format!(
+            "request aborted after direct index mutation: {}",
+            reason
+        ));
     }
 
     fn check_not_poisoned(&self) -> Result<(), String> {
@@ -1456,7 +1530,10 @@ impl DirectOramChunkTable {
         let got = match reader.read_chunk(chunk_id, self.drain_per_access) {
             Ok(got) => got,
             Err(e) => {
-                let msg = format!("Direct ORAM chunk {} read failed after mutation: {}", chunk_id, e);
+                let msg = format!(
+                    "Direct ORAM chunk {} read failed after mutation: {}",
+                    chunk_id, e
+                );
                 self.poison(msg.clone());
                 return Err(msg);
             }
@@ -1478,7 +1555,20 @@ impl DirectOramChunkTable {
         if self.total_chunks == 0 {
             return Err("direct ORAM chunk table is empty; cannot issue dummy read".into());
         }
-        self.read_chunk(0).map(|_| ())
+        self.check_not_poisoned()?;
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| "Direct ORAM chunk reader mutex poisoned".to_string())?;
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+        match reader.read_dummy(self.drain_per_access) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("Direct ORAM chunk dummy read failed after mutation: {}", e);
+                self.poison(msg.clone());
+                Err(msg)
+            }
+        }
     }
 
     fn finish_request(&self) -> Result<(), String> {
@@ -1495,7 +1585,10 @@ impl DirectOramChunkTable {
     }
 
     fn abort_request(&self, reason: &str) {
-        self.poison_after_dirty(format!("request aborted after direct chunk mutation: {}", reason));
+        self.poison_after_dirty(format!(
+            "request aborted after direct chunk mutation: {}",
+            reason
+        ));
     }
 
     fn check_not_poisoned(&self) -> Result<(), String> {
@@ -1585,7 +1678,8 @@ fn finish_direct_oram_request<R: DirectReaderState>(
         Some(_) => match reader.auth_state() {
             Some(state) => Some(state),
             None => {
-                let msg = format!("Direct ORAM {label} auth-store state unavailable after mutation");
+                let msg =
+                    format!("Direct ORAM {label} auth-store state unavailable after mutation");
                 drop(reader);
                 poison_direct(label, poisoned, msg.clone());
                 return Err(msg);
@@ -1652,10 +1746,28 @@ struct DirectNativeLookupResult {
 }
 
 #[cfg(feature = "cuckoo-oram")]
+#[cfg(test)]
 fn direct_native_lookup_batch(
     tables: &DirectOramTables,
     script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
 ) -> Result<Vec<DirectNativeLookupResult>, String> {
+    let slot_present = vec![true; script_hashes.len()];
+    direct_native_lookup_slots(tables, script_hashes, &slot_present)
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn direct_native_lookup_slots(
+    tables: &DirectOramTables,
+    script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+    slot_present: &[bool],
+) -> Result<Vec<DirectNativeLookupResult>, String> {
+    if slot_present.len() != script_hashes.len() {
+        return Err(format!(
+            "direct ORAM slot-present length {} does not match script hash count {}",
+            slot_present.len(),
+            script_hashes.len(),
+        ));
+    }
     let index_budget = tables
         .index
         .hash_fns
@@ -1672,20 +1784,40 @@ fn direct_native_lookup_batch(
     let chunk_budget = tables.access_budget - index_budget;
 
     let mut lookups = Vec::with_capacity(script_hashes.len());
-    for &script_hash in script_hashes {
-        match tables.index.lookup(script_hash) {
-            Ok(lookup) => lookups.push(lookup),
-            Err(e) => {
+    for (&script_hash, &present) in script_hashes.iter().zip(slot_present.iter()) {
+        if present {
+            match tables.index.lookup(script_hash) {
+                Ok(lookup) => lookups.push(Some(lookup)),
+                Err(e) => {
+                    tables.index.abort_request(&e);
+                    tables.chunk.abort_request(&e);
+                    return Err(e);
+                }
+            }
+        } else {
+            if let Err(e) = tables.index.lookup_dummy() {
                 tables.index.abort_request(&e);
                 tables.chunk.abort_request(&e);
                 return Err(e);
             }
+            lookups.push(None);
         }
     }
 
     let mut chunk_plan: Vec<(usize, u32)> = Vec::new();
     let mut out = Vec::with_capacity(lookups.len());
     for lookup in &lookups {
+        let Some(lookup) = lookup else {
+            out.push(DirectNativeLookupResult {
+                found: false,
+                whale: false,
+                start_chunk_id: None,
+                num_chunks: 0,
+                raw_chunk_data: Vec::new(),
+            });
+            continue;
+        };
+
         let found = lookup.found;
         let whale = found && lookup.num_chunks == 0;
         if found && lookup.num_chunks > 0 {
@@ -1942,7 +2074,8 @@ where
     };
 
     let mut chunk_bin_reads = Vec::with_capacity(probe_ids.len() * CHUNK_PARAMS.cuckoo_num_hashes);
-    let mut raw_chunk_data = Vec::with_capacity(real_chunk_ids.len() * pir_core::params::CHUNK_SIZE);
+    let mut raw_chunk_data =
+        Vec::with_capacity(real_chunk_ids.len() * pir_core::params::CHUNK_SIZE);
     for chunk_id in probe_ids {
         let chunk_group = pir_core::hash::derive_int_groups_3(chunk_id, config.chunk_k)[0];
         let mut recovered: Option<Vec<u8>> = None;
@@ -1962,8 +2095,8 @@ where
             });
         }
         if !dummy_probe {
-            let data =
-                recovered.ok_or_else(|| format!("chunk_id {} missing from cuckoo table", chunk_id))?;
+            let data = recovered
+                .ok_or_else(|| format!("chunk_id {} missing from cuckoo table", chunk_id))?;
             raw_chunk_data.extend_from_slice(&data);
         }
     }
@@ -2006,12 +2139,14 @@ fn find_entry_in_index_bin(result: &[u8], expected_tag: u64) -> Option<(u32, u8)
         if base + INDEX_PARAMS.slot_size > result.len() {
             break;
         }
-        let slot_tag =
-            u64::from_le_bytes(result[base..base + pir_core::params::TAG_SIZE].try_into().ok()?);
+        let slot_tag = u64::from_le_bytes(
+            result[base..base + pir_core::params::TAG_SIZE]
+                .try_into()
+                .ok()?,
+        );
         if slot_tag == expected_tag {
             let start = base + pir_core::params::TAG_SIZE;
-            let start_chunk_id =
-                u32::from_le_bytes(result[start..start + 4].try_into().ok()?);
+            let start_chunk_id = u32::from_le_bytes(result[start..start + 4].try_into().ok()?);
             let num_chunks = result[start + 4];
             return Some((start_chunk_id, num_chunks));
         }
@@ -2113,12 +2248,13 @@ fn open_existing_oram_store(
 
     let store: Box<dyn PageStore + Send> = if encrypted {
         let key = parse_required_32_hex(key_hex, key_flag)?;
-        let file = FilePageStore::open(path, page_count, backing_page_size)
-            .map_err(|e| e.to_string())?;
+        let file =
+            FilePageStore::open(path, page_count, backing_page_size).map_err(|e| e.to_string())?;
         Box::new(AeadPageStore::new(file, key, plaintext_page_size).map_err(|e| e.to_string())?)
     } else {
         Box::new(
-            FilePageStore::open(path, page_count, plaintext_page_size).map_err(|e| e.to_string())?,
+            FilePageStore::open(path, page_count, plaintext_page_size)
+                .map_err(|e| e.to_string())?,
         )
     };
 
@@ -2189,15 +2325,11 @@ fn open_existing_circuit_oram_stores(
         key_hex,
         "--cuckoo-oram-key-hex",
     )?;
-    let meta =
-        TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
+    let meta = TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
+        .map_err(|e| e.to_string())?;
+    let payload =
+        TieredMerklePageStore::from_trusted_state(payload_store, payload_hash_store, auth.payload)
             .map_err(|e| e.to_string())?;
-    let payload = TieredMerklePageStore::from_trusted_state(
-        payload_store,
-        payload_hash_store,
-        auth.payload,
-    )
-    .map_err(|e| e.to_string())?;
     Ok((Box::new(meta), Box::new(payload)))
 }
 
@@ -2259,15 +2391,11 @@ fn open_existing_direct_oram_stores(
         key_hex,
         "--direct-oram-key-hex",
     )?;
-    let meta =
-        TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
+    let meta = TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
+        .map_err(|e| e.to_string())?;
+    let payload =
+        TieredMerklePageStore::from_trusted_state(payload_store, payload_hash_store, auth.payload)
             .map_err(|e| e.to_string())?;
-    let payload = TieredMerklePageStore::from_trusted_state(
-        payload_store,
-        payload_hash_store,
-        auth.payload,
-    )
-    .map_err(|e| e.to_string())?;
     Ok((Box::new(meta), Box::new(payload)))
 }
 
@@ -2441,8 +2569,8 @@ fn validate_harmony_hints_request(
     level: u8,
     group_ids: &[u8],
 ) -> Result<(), String> {
-    let (sub_table, _, _) = harmony_level_table(db, level)
-        .ok_or_else(|| format!("invalid hint level {}", level))?;
+    let (sub_table, _, _) =
+        harmony_level_table(db, level).ok_or_else(|| format!("invalid hint level {}", level))?;
     let k = sub_table.params.k;
     if group_ids.len() > k {
         return Err(format!(
@@ -2473,8 +2601,8 @@ fn compute_hints_for_group(
     // Requests are pre-screened by validate_harmony_hints_request, but
     // stay total here too — an Err drops the group record, never the
     // process.
-    let (sub_table, entry_size, k_offset) = harmony_level_table(db, level)
-        .ok_or_else(|| format!("invalid hint level {}", level))?;
+    let (sub_table, entry_size, k_offset) =
+        harmony_level_table(db, level).ok_or_else(|| format!("invalid hint level {}", level))?;
 
     // S4: group_id comes off the wire — bounds-check before slicing the
     // mmap (group_id ≥ k would read past the table, and panic = 'abort'
@@ -2499,8 +2627,8 @@ fn compute_hints_for_group(
     let domain = 2 * pn;
     let r = harmonypir_wasm::compute_rounds(padded_n);
 
-    use harmonypir::prp::BatchPrp;
     use harmonypir::prp::fast::FastPrpWrapper;
+    use harmonypir::prp::BatchPrp;
     // PRP_ALF (= 2) was removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36
     // and pir-sdk-client/src/harmony.rs:81 for the rationale (panic on
     // domain<65536 crashed pir-vpsbg in a tight loop).
@@ -2600,7 +2728,8 @@ fn harmony_batch_response_from_table<T: CuckooTableAccess>(
     table: &T,
     query: &HarmonyBatchQuery,
 ) -> Response {
-    let result_items: Result<Vec<HarmonyBatchResultItem>, String> = query.items
+    let result_items: Result<Vec<HarmonyBatchResultItem>, String> = query
+        .items
         .par_iter()
         .map(|item| {
             // S4: group_id comes straight off the wire — bounds-check
@@ -2609,21 +2738,28 @@ fn harmony_batch_response_from_table<T: CuckooTableAccess>(
             if !table.group_exists(group_id) {
                 return Err(format!("group_id {} out of range", item.group_id));
             }
-            let sub_results: Result<Vec<Vec<u8>>, String> = item.sub_queries.iter().map(|indices| {
-                // S5: validate the index count before allocating (see
-                // harmony_query_response).
-                if indices.len() > table.bins_per_table() {
-                    return Err(format!(
-                        "too many indices: {} > bins_per_table {}",
-                        indices.len(),
-                        table.bins_per_table()
-                    ));
-                }
-                let mut data = Vec::with_capacity(indices.len() * table.entry_size());
-                table.append_entries(group_id, indices, true, &mut data)?;
-                Ok(data)
-            }).collect();
-            Ok(HarmonyBatchResultItem { group_id: item.group_id, sub_results: sub_results? })
+            let sub_results: Result<Vec<Vec<u8>>, String> = item
+                .sub_queries
+                .iter()
+                .map(|indices| {
+                    // S5: validate the index count before allocating (see
+                    // harmony_query_response).
+                    if indices.len() > table.bins_per_table() {
+                        return Err(format!(
+                            "too many indices: {} > bins_per_table {}",
+                            indices.len(),
+                            table.bins_per_table()
+                        ));
+                    }
+                    let mut data = Vec::with_capacity(indices.len() * table.entry_size());
+                    table.append_entries(group_id, indices, true, &mut data)?;
+                    Ok(data)
+                })
+                .collect();
+            Ok(HarmonyBatchResultItem {
+                group_id: item.group_id,
+                sub_results: sub_results?,
+            })
         })
         .collect();
 
@@ -2772,13 +2908,17 @@ impl UnifiedServerData {
     /// Look up the OnionPIR worker channel for a specific db_id.
     /// Returns `None` if the db_id is out of range or if that DB has no OnionPIR data.
     fn onionpir_tx_for(&self, db_id: u8) -> Option<&Arc<mpsc::Sender<PirCommand>>> {
-        self.onionpir_txs.get(db_id as usize).and_then(|o| o.as_ref())
+        self.onionpir_txs
+            .get(db_id as usize)
+            .and_then(|o| o.as_ref())
     }
 
     /// Look up the OnionPIR per-bin Merkle info for a specific db_id.
     /// Returns `None` if the db_id is out of range or if that DB has no Merkle data.
     fn onionpir_merkle_for(&self, db_id: u8) -> Option<&OnionPirMerkleInfo> {
-        self.onionpir_merkle.get(db_id as usize).and_then(|o| o.as_ref())
+        self.onionpir_merkle
+            .get(db_id as usize)
+            .and_then(|o| o.as_ref())
     }
 
     /// Whether ANY database has OnionPIR Merkle data loaded.
@@ -2839,7 +2979,10 @@ impl UnifiedServerData {
             r#"{{"arity":{},"super_root":"{}","tree_tops_hash":"{}","tree_tops_size":{}"#,
             om.arity,
             om.super_root_hex,
-            top_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            top_hash
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
             om.tree_tops.len(),
         ));
         json.push_str(&format!(
@@ -2861,7 +3004,6 @@ impl UnifiedServerData {
         }
     }
 
-
     /// Build a JSON server info string covering all protocols.
     fn server_info_json(&self) -> String {
         let mut json = format!(
@@ -2877,7 +3019,10 @@ impl UnifiedServerData {
             self.main_db().index.params.slot_size,
             self.main_db().chunk.params.slots_per_bin,
             self.main_db().chunk.params.slot_size,
-            match self.role { ServerRole::Primary => "primary", ServerRole::Secondary => "secondary" },
+            match self.role {
+                ServerRole::Primary => "primary",
+                ServerRole::Secondary => "secondary",
+            },
         );
 
         if let Some(Some(ref opi)) = self.onionpir_infos.first() {
@@ -2908,8 +3053,15 @@ impl UnifiedServerData {
 
             // INDEX sibling levels
             json.push_str(r#""index_levels":["#);
-            for (i, sib) in self.main_db().bucket_merkle_index_siblings.iter().enumerate() {
-                if i > 0 { json.push(','); }
+            for (i, sib) in self
+                .main_db()
+                .bucket_merkle_index_siblings
+                .iter()
+                .enumerate()
+            {
+                if i > 0 {
+                    json.push(',');
+                }
                 json.push_str(&format!(
                     r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
                     params::compute_dpf_n(sib.bins_per_table),
@@ -2920,8 +3072,15 @@ impl UnifiedServerData {
 
             // CHUNK sibling levels
             json.push_str(r#""chunk_levels":["#);
-            for (i, sib) in self.main_db().bucket_merkle_chunk_siblings.iter().enumerate() {
-                if i > 0 { json.push(','); }
+            for (i, sib) in self
+                .main_db()
+                .bucket_merkle_chunk_siblings
+                .iter()
+                .enumerate()
+            {
+                if i > 0 {
+                    json.push(',');
+                }
                 json.push_str(&format!(
                     r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
                     params::compute_dpf_n(sib.bins_per_table),
@@ -2937,20 +3096,28 @@ impl UnifiedServerData {
 
                 json.push_str(r#""index_roots":["#);
                 for g in 0..index_k {
-                    if g > 0 { json.push(','); }
+                    if g > 0 {
+                        json.push(',');
+                    }
                     let root = &roots_data[g * 32..(g + 1) * 32];
                     json.push('"');
-                    for b in root { json.push_str(&format!("{:02x}", b)); }
+                    for b in root {
+                        json.push_str(&format!("{:02x}", b));
+                    }
                     json.push('"');
                 }
                 json.push_str("],");
 
                 json.push_str(r#""chunk_roots":["#);
                 for g in 0..chunk_k {
-                    if g > 0 { json.push(','); }
+                    if g > 0 {
+                        json.push(',');
+                    }
                     let root = &roots_data[(index_k + g) * 32..(index_k + g + 1) * 32];
                     json.push('"');
-                    for b in root { json.push_str(&format!("{:02x}", b)); }
+                    for b in root {
+                        json.push_str(&format!("{:02x}", b));
+                    }
                     json.push('"');
                 }
                 json.push_str("],");
@@ -2958,16 +3125,23 @@ impl UnifiedServerData {
 
             // Super-root
             if let Some(ref sr) = self.main_db().bucket_merkle_root {
-                json.push_str(&format!(r#""super_root":"{}","#,
-                    sr.iter().map(|b| format!("{:02x}", b)).collect::<String>()));
+                json.push_str(&format!(
+                    r#""super_root":"{}","#,
+                    sr.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                ));
             }
 
             // Tree-tops hash and size
             if let Some(ref tops) = self.main_db().bucket_merkle_tree_tops {
                 let tops_hash = pir_core::merkle::sha256(tops);
-                json.push_str(&format!(r#""tree_tops_hash":"{}","tree_tops_size":{}"#,
-                    tops_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-                    tops.len()));
+                json.push_str(&format!(
+                    r#""tree_tops_hash":"{}","tree_tops_size":{}"#,
+                    tops_hash
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>(),
+                    tops.len()
+                ));
             }
 
             json.push('}');
@@ -2980,9 +3154,15 @@ impl UnifiedServerData {
         {
             json.push_str(r#","databases":["#);
             for (i, db) in self.state.databases.iter().enumerate() {
-                if i > 0 { json.push(','); }
+                if i > 0 {
+                    json.push(',');
+                }
                 let has_onionpir_merkle = self.onionpir_merkle_for(i as u8).is_some();
-                let has_onionpir = self.onionpir_txs.get(i).map(|o| o.is_some()).unwrap_or(false);
+                let has_onionpir = self
+                    .onionpir_txs
+                    .get(i)
+                    .map(|o| o.is_some())
+                    .unwrap_or(false);
                 json.push_str(&format!(
                     r#"{{"db_id":{},"has_bucket_merkle":{},"has_onionpir":{},"has_onionpir_merkle":{}"#,
                     i, db.has_bucket_merkle(), has_onionpir, has_onionpir_merkle
@@ -3006,7 +3186,9 @@ impl UnifiedServerData {
                     // INDEX sibling levels
                     json.push_str(r#""index_levels":["#);
                     for (li, sib) in db.bucket_merkle_index_siblings.iter().enumerate() {
-                        if li > 0 { json.push(','); }
+                        if li > 0 {
+                            json.push(',');
+                        }
                         json.push_str(&format!(
                             r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
                             params::compute_dpf_n(sib.bins_per_table),
@@ -3018,7 +3200,9 @@ impl UnifiedServerData {
                     // CHUNK sibling levels
                     json.push_str(r#""chunk_levels":["#);
                     for (li, sib) in db.bucket_merkle_chunk_siblings.iter().enumerate() {
-                        if li > 0 { json.push(','); }
+                        if li > 0 {
+                            json.push(',');
+                        }
                         json.push_str(&format!(
                             r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
                             params::compute_dpf_n(sib.bins_per_table),
@@ -3034,35 +3218,50 @@ impl UnifiedServerData {
 
                         json.push_str(r#""index_roots":["#);
                         for g in 0..index_k {
-                            if g > 0 { json.push(','); }
+                            if g > 0 {
+                                json.push(',');
+                            }
                             let root = &roots_data[g * 32..(g + 1) * 32];
                             json.push('"');
-                            for b in root { json.push_str(&format!("{:02x}", b)); }
+                            for b in root {
+                                json.push_str(&format!("{:02x}", b));
+                            }
                             json.push('"');
                         }
                         json.push_str("],");
 
                         json.push_str(r#""chunk_roots":["#);
                         for g in 0..chunk_k {
-                            if g > 0 { json.push(','); }
+                            if g > 0 {
+                                json.push(',');
+                            }
                             let root = &roots_data[(index_k + g) * 32..(index_k + g + 1) * 32];
                             json.push('"');
-                            for b in root { json.push_str(&format!("{:02x}", b)); }
+                            for b in root {
+                                json.push_str(&format!("{:02x}", b));
+                            }
                             json.push('"');
                         }
                         json.push_str("],");
                     }
 
                     if let Some(ref sr) = db.bucket_merkle_root {
-                        json.push_str(&format!(r#""super_root":"{}","#,
-                            sr.iter().map(|b| format!("{:02x}", b)).collect::<String>()));
+                        json.push_str(&format!(
+                            r#""super_root":"{}","#,
+                            sr.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                        ));
                     }
 
                     if let Some(ref tops) = db.bucket_merkle_tree_tops {
                         let tops_hash = pir_core::merkle::sha256(tops);
-                        json.push_str(&format!(r#""tree_tops_hash":"{}","tree_tops_size":{}"#,
-                            tops_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-                            tops.len()));
+                        json.push_str(&format!(
+                            r#""tree_tops_hash":"{}","tree_tops_size":{}"#,
+                            tops_hash
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>(),
+                            tops.len()
+                        ));
                     }
 
                     json.push('}'); // close merkle_bucket
@@ -3097,8 +3296,12 @@ impl UnifiedServerData {
 
     fn build_catalog(&self) -> DatabaseCatalog {
         DatabaseCatalog {
-            databases: self.state.databases.iter().enumerate().map(|(i, db)| {
-                DatabaseCatalogEntry {
+            databases: self
+                .state
+                .databases
+                .iter()
+                .enumerate()
+                .map(|(i, db)| DatabaseCatalogEntry {
                     db_id: i as u8,
                     db_type: match db.descriptor.db_type {
                         DatabaseType::Full => 0,
@@ -3118,24 +3321,30 @@ impl UnifiedServerData {
                     index_master_seed: db.index.master_seed,
                     chunk_master_seed: db.chunk.master_seed,
                     anchor: db.index.anchor,
-                }
-            }).collect(),
+                })
+                .collect(),
         }
     }
 
-    fn process_index_batch(&self, query: &BatchQuery, db: &MappedDatabase) -> (BatchResult, std::time::Duration, std::time::Duration) {
+    fn process_index_batch(
+        &self,
+        query: &BatchQuery,
+        db: &MappedDatabase,
+    ) -> (BatchResult, std::time::Duration, std::time::Duration) {
         let k = db.index.params.k;
         let num_groups = query.keys.len().min(k);
         let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
+                let dpf_keys: Vec<DpfKey> = query.keys[b]
+                    .iter()
                     .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
                     .collect();
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_bytes = db.index.group_bytes(b);
                 let (r0, r1, timing) = eval::process_index_group(
-                    key_refs[0], key_refs[1],
+                    key_refs[0],
+                    key_refs[1],
                     table_bytes,
                     db.index.bins_per_table,
                 );
@@ -3151,25 +3360,35 @@ impl UnifiedServerData {
             total_fetch += t.fetch_xor;
             results.push(r);
         }
-        (BatchResult { level: 0, round_id: 0, results }, total_dpf, total_fetch)
+        (
+            BatchResult {
+                level: 0,
+                round_id: 0,
+                results,
+            },
+            total_dpf,
+            total_fetch,
+        )
     }
 
-    fn process_chunk_batch(&self, query: &BatchQuery, db: &MappedDatabase) -> (BatchResult, std::time::Duration, std::time::Duration) {
+    fn process_chunk_batch(
+        &self,
+        query: &BatchQuery,
+        db: &MappedDatabase,
+    ) -> (BatchResult, std::time::Duration, std::time::Duration) {
         let k = db.chunk.params.k;
         let num_groups = query.keys.len().min(k);
         let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
+                let dpf_keys: Vec<DpfKey> = query.keys[b]
+                    .iter()
                     .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
                     .collect();
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
                 let table_bytes = db.chunk.group_bytes(b);
-                let (r, timing) = eval::process_chunk_group(
-                    &key_refs,
-                    table_bytes,
-                    db.chunk.bins_per_table,
-                );
+                let (r, timing) =
+                    eval::process_chunk_group(&key_refs, table_bytes, db.chunk.bins_per_table);
                 (r, timing)
             })
             .collect();
@@ -3182,13 +3401,23 @@ impl UnifiedServerData {
             total_fetch += t.fetch_xor;
             results.push(r);
         }
-        (BatchResult { level: 1, round_id: query.round_id, results }, total_dpf, total_fetch)
+        (
+            BatchResult {
+                level: 1,
+                round_id: query.round_id,
+                results,
+            },
+            total_dpf,
+            total_fetch,
+        )
     }
 
     /// Generic DPF batch evaluation against any MappedSubTable.
-    fn process_generic_batch(&self, query: &BatchQuery, table: &MappedSubTable)
-        -> (BatchResult, std::time::Duration, std::time::Duration)
-    {
+    fn process_generic_batch(
+        &self,
+        query: &BatchQuery,
+        table: &MappedSubTable,
+    ) -> (BatchResult, std::time::Duration, std::time::Duration) {
         let k = table.params.k;
         let result_size = table.params.bin_size();
         let num_groups = query.keys.len().min(k);
@@ -3196,7 +3425,8 @@ impl UnifiedServerData {
         let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
             .into_par_iter()
             .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b].iter()
+                let dpf_keys: Vec<DpfKey> = query.keys[b]
+                    .iter()
                     .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
                     .collect();
                 let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
@@ -3219,7 +3449,15 @@ impl UnifiedServerData {
             total_fetch += t.fetch_xor;
             results.push(r);
         }
-        (BatchResult { level: query.level, round_id: query.round_id, results }, total_dpf, total_fetch)
+        (
+            BatchResult {
+                level: query.level,
+                round_id: query.round_id,
+                results,
+            },
+            total_dpf,
+            total_fetch,
+        )
     }
 
     fn handle_harmony_query(&self, query: &HarmonyQuery) -> Response {
@@ -3246,13 +3484,14 @@ impl UnifiedServerData {
             }
             if let Some(tables) = self.direct_oram.get(&query.db_id) {
                 let t = Instant::now();
-                let lookup = match tables.lookup_batch(&query.script_hashes) {
+                let lookup = match tables.lookup_batch(&query.script_hashes, &query.slot_present) {
                     Ok(v) => v,
                     Err(e) => return Response::Error(format!("Direct ORAM lookup failed: {}", e)),
                 };
                 println!(
-                    "[direct-oram-lookup] db={} {} scripthash(es), budget={} in {:.2?}",
+                    "[direct-oram-lookup] db={} {}/{} present scripthash slot(s), budget={} in {:.2?}",
                     query.db_id,
+                    query.present_count(),
                     query.script_hashes.len(),
                     tables.access_budget,
                     t.elapsed(),
@@ -3283,6 +3522,11 @@ impl UnifiedServerData {
                 ));
             };
             let t = Instant::now();
+            if query.present_count() != query.script_hashes.len() {
+                return Response::Error(
+                    "padded empty ORAM slots require --direct-oram-db; legacy cuckoo ORAM fallback does not support explicit empty slots".into(),
+                );
+            }
             let lookup = match cuckoo_native_lookup_batch_from_tables(
                 &tables.index,
                 &tables.chunk,
@@ -3418,8 +3662,10 @@ async fn send_resp<S>(
     payload: Vec<u8>,
 ) -> tokio_tungstenite::tungstenite::Result<()>
 where
-    S: futures_util::SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error>
-        + Unpin,
+    S: futures_util::SinkExt<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
 {
     use tokio_tungstenite::tungstenite::{Error as TungError, Message};
     let to_send = match session {
@@ -3475,8 +3721,10 @@ async fn send_resp_batch<S>(
     records: Vec<Vec<u8>>,
 ) -> tokio_tungstenite::tungstenite::Result<()>
 where
-    S: futures_util::SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error>
-        + Unpin,
+    S: futures_util::SinkExt<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
 {
     use tokio_tungstenite::tungstenite::{Error as TungError, Message};
     if records.is_empty() {
@@ -3488,7 +3736,13 @@ where
     // so a tight upper-bound stays correct without re-allocating.
     let total_estimate: usize = records
         .iter()
-        .map(|r| if r.len() < 4 { r.len() } else { 4 + (r.len() - 4) + 25 })
+        .map(|r| {
+            if r.len() < 4 {
+                r.len()
+            } else {
+                4 + (r.len() - 4) + 25
+            }
+        })
         .sum();
     let mut buf: Vec<u8> = Vec::with_capacity(total_estimate);
     for payload in records {
@@ -3562,8 +3816,10 @@ async fn send_resp_chunked<S>(
     allow_chunk: bool,
 ) -> tokio_tungstenite::tungstenite::Result<()>
 where
-    S: futures_util::SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error>
-        + Unpin,
+    S: futures_util::SinkExt<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
 {
     use tokio_tungstenite::tungstenite::{Error as TungError, Message};
     // Frame (and optionally seal) exactly like send_resp.
@@ -3673,7 +3929,11 @@ async fn main() {
 
     if let Some(ref config_path) = args.config_path {
         let config = ServerConfig::load(config_path);
-        println!("[config] Loaded {} databases from {}", config.databases.len(), config_path.display());
+        println!(
+            "[config] Loaded {} databases from {}",
+            config.databases.len(),
+            config_path.display()
+        );
 
         for (i, db_cfg) in config.databases.iter().enumerate() {
             let db_type = match db_cfg.db_type.as_str() {
@@ -3681,14 +3941,17 @@ async fn main() {
                 _ => DatabaseType::Full,
             };
             let db_path = config.db_path(i);
-            let mut db = MappedDatabase::load(&db_path, DatabaseDescriptor {
-                name: db_cfg.name.clone(),
-                db_type,
-                base_height: db_cfg.base_height,
-                height: db_cfg.height,
-                index_params: INDEX_PARAMS,
-                chunk_params: CHUNK_PARAMS,
-            });
+            let mut db = MappedDatabase::load(
+                &db_path,
+                DatabaseDescriptor {
+                    name: db_cfg.name.clone(),
+                    db_type,
+                    base_height: db_cfg.base_height,
+                    height: db_cfg.height,
+                    index_params: INDEX_PARAMS,
+                    chunk_params: CHUNK_PARAMS,
+                },
+            );
             if let Some(proof_dir) = db_cfg.proof_dir.as_ref() {
                 db.db_proof = Some(
                     load_database_proof_bundle(i as u8, proof_dir).unwrap_or_else(|e| {
@@ -3712,61 +3975,92 @@ async fn main() {
             } else {
                 format!("Full:{}", db_cfg.height)
             };
-            println!("[{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}, priority={}",
-                type_label, db.index.bins_per_table, db.chunk.bins_per_table,
+            println!(
+                "[{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}, priority={}",
+                type_label,
+                db.index.bins_per_table,
+                db.chunk.bins_per_table,
                 params::compute_dpf_n(db.index.bins_per_table),
                 params::compute_dpf_n(db.chunk.bins_per_table),
-                db_cfg.priority);
+                db_cfg.priority
+            );
             mmap_regions.push(MmapRegion {
                 name: format!("{}/batch_pir_cuckoo.bin", db_cfg.name),
-                ptr: db.index.mmap.as_ptr(), len: db.index.mmap.len(), priority: db_cfg.priority,
+                ptr: db.index.mmap.as_ptr(),
+                len: db.index.mmap.len(),
+                priority: db_cfg.priority,
             });
             mmap_regions.push(MmapRegion {
                 name: format!("{}/chunk_pir_cuckoo.bin", db_cfg.name),
-                ptr: db.chunk.mmap.as_ptr(), len: db.chunk.mmap.len(), priority: db_cfg.priority,
+                ptr: db.chunk.mmap.as_ptr(),
+                len: db.chunk.mmap.len(),
+                priority: db_cfg.priority,
             });
             db_paths.push((i as u8, db_cfg.name.clone(), db_path));
             all_databases.push(db);
         }
-
     } else {
         // Legacy CLI mode: --data-dir + --checkpoint + --delta
 
-        let main_db = MappedDatabase::load(&args.data_dir, DatabaseDescriptor {
-            name: "main".to_string(),
-            db_type: DatabaseType::Full,
-            base_height: 0,
-            height: 0,
-            index_params: INDEX_PARAMS,
-            chunk_params: CHUNK_PARAMS,
-        });
+        let main_db = MappedDatabase::load(
+            &args.data_dir,
+            DatabaseDescriptor {
+                name: "main".to_string(),
+                db_type: DatabaseType::Full,
+                base_height: 0,
+                height: 0,
+                index_params: INDEX_PARAMS,
+                chunk_params: CHUNK_PARAMS,
+            },
+        );
 
-        mmap_regions.push(MmapRegion { name: "batch_pir_cuckoo.bin".into(), ptr: main_db.index.mmap.as_ptr(), len: main_db.index.mmap.len(), priority: 1 });
-        mmap_regions.push(MmapRegion { name: "chunk_pir_cuckoo.bin".into(), ptr: main_db.chunk.mmap.as_ptr(), len: main_db.chunk.mmap.len(), priority: 1 });
+        mmap_regions.push(MmapRegion {
+            name: "batch_pir_cuckoo.bin".into(),
+            ptr: main_db.index.mmap.as_ptr(),
+            len: main_db.index.mmap.len(),
+            priority: 1,
+        });
+        mmap_regions.push(MmapRegion {
+            name: "chunk_pir_cuckoo.bin".into(),
+            ptr: main_db.chunk.mmap.as_ptr(),
+            len: main_db.chunk.mmap.len(),
+            priority: 1,
+        });
         db_paths.push((0u8, "main".to_string(), args.data_dir.clone()));
         all_databases.push(main_db);
 
         for (path, height) in &args.checkpoints {
             let name = format!("checkpoint_{}", height);
-            let db = MappedDatabase::load(path, DatabaseDescriptor {
-                name: name.clone(),
-                db_type: DatabaseType::Full,
-                base_height: 0,
-                height: *height,
-                index_params: INDEX_PARAMS,
-                chunk_params: CHUNK_PARAMS,
-            });
-            println!("[Checkpoint:{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
-                height, db.index.bins_per_table, db.chunk.bins_per_table,
+            let db = MappedDatabase::load(
+                path,
+                DatabaseDescriptor {
+                    name: name.clone(),
+                    db_type: DatabaseType::Full,
+                    base_height: 0,
+                    height: *height,
+                    index_params: INDEX_PARAMS,
+                    chunk_params: CHUNK_PARAMS,
+                },
+            );
+            println!(
+                "[Checkpoint:{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
+                height,
+                db.index.bins_per_table,
+                db.chunk.bins_per_table,
                 params::compute_dpf_n(db.index.bins_per_table),
-                params::compute_dpf_n(db.chunk.bins_per_table));
+                params::compute_dpf_n(db.chunk.bins_per_table)
+            );
             mmap_regions.push(MmapRegion {
                 name: format!("{}/batch_pir_cuckoo.bin", name),
-                ptr: db.index.mmap.as_ptr(), len: db.index.mmap.len(), priority: 5,
+                ptr: db.index.mmap.as_ptr(),
+                len: db.index.mmap.len(),
+                priority: 5,
             });
             mmap_regions.push(MmapRegion {
                 name: format!("{}/chunk_pir_cuckoo.bin", name),
-                ptr: db.chunk.mmap.as_ptr(), len: db.chunk.mmap.len(), priority: 5,
+                ptr: db.chunk.mmap.as_ptr(),
+                len: db.chunk.mmap.len(),
+                priority: 5,
             });
             db_paths.push((all_databases.len() as u8, name, path.clone()));
             all_databases.push(db);
@@ -3774,25 +4068,37 @@ async fn main() {
 
         for (path, base, tip) in &args.deltas {
             let name = format!("delta_{}_{}", base, tip);
-            let db = MappedDatabase::load(path, DatabaseDescriptor {
-                name: name.clone(),
-                db_type: DatabaseType::Delta,
-                base_height: *base,
-                height: *tip,
-                index_params: INDEX_PARAMS,
-                chunk_params: CHUNK_PARAMS,
-            });
-            println!("[Delta:{}→{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
-                base, tip, db.index.bins_per_table, db.chunk.bins_per_table,
+            let db = MappedDatabase::load(
+                path,
+                DatabaseDescriptor {
+                    name: name.clone(),
+                    db_type: DatabaseType::Delta,
+                    base_height: *base,
+                    height: *tip,
+                    index_params: INDEX_PARAMS,
+                    chunk_params: CHUNK_PARAMS,
+                },
+            );
+            println!(
+                "[Delta:{}→{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
+                base,
+                tip,
+                db.index.bins_per_table,
+                db.chunk.bins_per_table,
                 params::compute_dpf_n(db.index.bins_per_table),
-                params::compute_dpf_n(db.chunk.bins_per_table));
+                params::compute_dpf_n(db.chunk.bins_per_table)
+            );
             mmap_regions.push(MmapRegion {
                 name: format!("{}/batch_pir_cuckoo.bin", name),
-                ptr: db.index.mmap.as_ptr(), len: db.index.mmap.len(), priority: 10,
+                ptr: db.index.mmap.as_ptr(),
+                len: db.index.mmap.len(),
+                priority: 10,
             });
             mmap_regions.push(MmapRegion {
                 name: format!("{}/chunk_pir_cuckoo.bin", name),
-                ptr: db.chunk.mmap.as_ptr(), len: db.chunk.mmap.len(), priority: 10,
+                ptr: db.chunk.mmap.as_ptr(),
+                len: db.chunk.mmap.len(),
+                priority: 10,
             });
             db_paths.push((all_databases.len() as u8, name, path.clone()));
             all_databases.push(db);
@@ -3858,8 +4164,9 @@ async fn main() {
         } else {
             let mut opened = HashMap::new();
             for (db_id, oram_dir) in requested {
-                let Some((_, db_label, db_path)) =
-                    db_paths.iter().find(|(candidate, _, _)| *candidate == db_id)
+                let Some((_, db_label, db_path)) = db_paths
+                    .iter()
+                    .find(|(candidate, _, _)| *candidate == db_id)
                 else {
                     eprintln!(
                         "ERROR: Cuckoo ORAM configured for unknown db_id={} (loaded db_ids: {:?})",
@@ -3938,8 +4245,9 @@ async fn main() {
         } else {
             let mut opened = HashMap::new();
             for (db_id, oram_dir) in requested {
-                let Some((_, db_label, _db_path)) =
-                    db_paths.iter().find(|(candidate, _, _)| *candidate == db_id)
+                let Some((_, db_label, _db_path)) = db_paths
+                    .iter()
+                    .find(|(candidate, _, _)| *candidate == db_id)
                 else {
                     eprintln!(
                         "ERROR: Direct ORAM configured for unknown db_id={} (loaded db_ids: {:?})",
@@ -4062,14 +4370,24 @@ async fn main() {
             len: mmap.len(),
             priority: 2,
         });
-        Some(OnionSibFile { k, num_pt, blob_len, mmap })
+        Some(OnionSibFile {
+            k,
+            num_pt,
+            blob_len,
+            mmap,
+        })
     }
 
     if args.role == ServerRole::Primary && !args.disable_onion {
         for (db_id, db_label, db_dir) in &db_paths {
             let ntt_path = db_dir.join(ONION_NTT_FILE);
             if !ntt_path.exists() {
-                println!("[OnionPIR:{}] Not available (no {} in {})", db_label, ONION_NTT_FILE, db_dir.display());
+                println!(
+                    "[OnionPIR:{}] Not available (no {} in {})",
+                    db_label,
+                    ONION_NTT_FILE,
+                    db_dir.display()
+                );
                 continue;
             }
             println!("[OnionPIR:{}] Loading data...", db_label);
@@ -4092,13 +4410,25 @@ async fn main() {
             let meta_data = std::fs::read(&index_meta_path).expect("read onion index meta");
             let im = read_onion_index_meta(&meta_data);
 
-            println!("  Chunk: K={}, bins={}, packed={}", ch.k_chunk, ch.bins_per_table, ch.num_packed_entries);
-            println!("  Index: K={}, bins={}, slots_per_bin={}", im.k, im.bins_per_table, im.slots_per_bin);
+            println!(
+                "  Chunk: K={}, bins={}, packed={}",
+                ch.k_chunk, ch.bins_per_table, ch.num_packed_entries
+            );
+            println!(
+                "  Index: K={}, bins={}, slots_per_bin={}",
+                im.k, im.bins_per_table, im.slots_per_bin
+            );
 
             // Phase: self-verify onion seeds against the chain anchor embedded
             // in onion_index_meta.bin (v2 header). No-op for legacy onion DBs.
             if let Some(anchor) = im.anchor {
-                verify_onion_anchor_seeds(&anchor, im.master_seed, im.tag_seed, ch.master_seed, db_label);
+                verify_onion_anchor_seeds(
+                    &anchor,
+                    im.master_seed,
+                    im.tag_seed,
+                    ch.master_seed,
+                    db_label,
+                );
                 println!("  anchor verified: onion INDEX/CHUNK seeds match chain-derived values");
             }
 
@@ -4149,24 +4479,29 @@ async fn main() {
             // `PirServer::load_db_from_bytes` (zero-copy aliased pointer).
             let index_all_file = std::fs::File::open(&index_all_path)
                 .unwrap_or_else(|e| panic!("open {}: {}", index_all_path.display(), e));
-            let index_all_mmap = unsafe { Mmap::map(&index_all_file) }
-                .expect("mmap onion_index_all.bin");
+            let index_all_mmap =
+                unsafe { Mmap::map(&index_all_file) }.expect("mmap onion_index_all.bin");
             {
                 if index_all_mmap.len() < ONION_INDEX_ALL_HEADER_BYTES {
                     panic!(
                         "{}: file too small ({} bytes) for index_all master header",
-                        index_all_path.display(), index_all_mmap.len(),
+                        index_all_path.display(),
+                        index_all_mmap.len(),
                     );
                 }
                 let magic = u64::from_le_bytes(index_all_mmap[0..8].try_into().unwrap());
                 let file_k = u64::from_le_bytes(index_all_mmap[8..16].try_into().unwrap()) as usize;
-                let file_per_group = u64::from_le_bytes(index_all_mmap[16..24].try_into().unwrap()) as usize;
+                let file_per_group =
+                    u64::from_le_bytes(index_all_mmap[16..24].try_into().unwrap()) as usize;
                 // Accept legacy + v2 (anchor trailer) magic.
                 let _ = check_onion_magic(magic, ONION_INDEX_ALL_MAGIC, "onion index-all master");
                 assert_eq!(
-                    file_k, im.k,
+                    file_k,
+                    im.k,
                     "{}: K mismatch (file says {}, meta says {})",
-                    index_all_path.display(), file_k, im.k,
+                    index_all_path.display(),
+                    file_k,
+                    im.k,
                 );
                 // The K per-group payloads occupy [HEADER .. HEADER + K*per_group);
                 // a v2 file then appends the chain anchor as a trailer.
@@ -4184,9 +4519,12 @@ async fn main() {
                         }
                     };
                 assert_eq!(
-                    index_all_mmap.len(), expected_len,
+                    index_all_mmap.len(),
+                    expected_len,
                     "{}: total size mismatch (expected {}, got {})",
-                    index_all_path.display(), expected_len, index_all_mmap.len(),
+                    index_all_path.display(),
+                    expected_len,
+                    index_all_mmap.len(),
                 );
                 // Cross-file consistency: onion_index_all's trailer anchor must
                 // match the one embedded in onion_index_meta.bin — catches a
@@ -4217,10 +4555,8 @@ async fn main() {
             // Load the per-group OnionPIR Merkle sidecars (Phase 3
             // per-group redesign). A DB ships these only if
             // `gen_4_build_merkle_onion` has been run for it.
-            let index_sib_file =
-                load_onion_sib_file(db_dir, db_label, "index", &mut mmap_regions);
-            let data_sib_file =
-                load_onion_sib_file(db_dir, db_label, "data", &mut mmap_regions);
+            let index_sib_file = load_onion_sib_file(db_dir, db_label, "index", &mut mmap_regions);
+            let data_sib_file = load_onion_sib_file(db_dir, db_label, "data", &mut mmap_regions);
 
             let merkle_tree_tops: Option<Vec<u8>> = {
                 let p = db_dir.join("merkle_onion_tree_tops.bin");
@@ -4241,9 +4577,8 @@ async fn main() {
 
             // A DB has OnionPIR Merkle iff the full per-group set is on
             // disk: both consolidated sibling files plus the tree-top blob.
-            let has_merkle_data = index_sib_file.is_some()
-                && data_sib_file.is_some()
-                && merkle_tree_tops.is_some();
+            let has_merkle_data =
+                index_sib_file.is_some() && data_sib_file.is_some() && merkle_tree_tops.is_some();
             if has_merkle_data {
                 let idx = index_sib_file.as_ref().unwrap();
                 let dat = data_sib_file.as_ref().unwrap();
@@ -4297,10 +4632,7 @@ async fn main() {
                 // SAFETY: `ntt_mmap` is a `&[u8]` with `len() % 8 == 0`
                 // (preprocessed_db.bin payload is u64-aligned by build).
                 let ntt_u64_slice: &[u64] = unsafe {
-                    std::slice::from_raw_parts(
-                        ntt_mmap.as_ptr() as *const u64,
-                        ntt_mmap.len() / 8,
-                    )
+                    std::slice::from_raw_parts(ntt_mmap.as_ptr() as *const u64, ntt_mmap.len() / 8)
                 };
 
                 // Shared store's `num_pt` — what gen_2_onion's builder
@@ -4312,18 +4644,15 @@ async fn main() {
                 // one is wrong here. Derive from the NTT store file size
                 // instead — `len() / 8 / coeff_val_cnt` is the count of
                 // plaintext slots the builder saved.
-                let coeff_val_cnt =
-                    onionpir::params_info(0).coeff_val_cnt as usize;
+                let coeff_val_cnt = onionpir::params_info(0).coeff_val_cnt as usize;
                 assert!(
-                    coeff_val_cnt > 0
-                        && ntt_u64_slice.len().is_multiple_of(coeff_val_cnt),
+                    coeff_val_cnt > 0 && ntt_u64_slice.len().is_multiple_of(coeff_val_cnt),
                     "chunk NTT store len ({} u64s) not divisible by \
                      coeff_val_cnt ({}); file is the wrong shape",
                     ntt_u64_slice.len(),
                     coeff_val_cnt,
                 );
-                let chunk_shared_num_entries =
-                    (ntt_u64_slice.len() / coeff_val_cnt) as u64;
+                let chunk_shared_num_entries = (ntt_u64_slice.len() / coeff_val_cnt) as u64;
 
                 let mut chunk_index_tables: Vec<Vec<u32>> = Vec::with_capacity(k_chunk);
                 let mut chunk_servers: Vec<PirServer> = Vec::with_capacity(k_chunk);
@@ -4372,7 +4701,10 @@ async fn main() {
                     chunk_index_tables.push(index_table);
                     chunk_servers.push(server);
                 }
-                println!("  [OnionPIR:{}] {} chunk servers ready", worker_label, k_chunk);
+                println!(
+                    "  [OnionPIR:{}] {} chunk servers ready",
+                    worker_label, k_chunk
+                );
 
                 // Set up index servers — each slices into the consolidated
                 // onion_index_all.bin mmap via load_db_from_bytes (zero-copy).
@@ -4396,10 +4728,15 @@ async fn main() {
                         b, off, slice.len(),
                     );
                     // OnionPIRv2 port: `set_key_store` takes Option now.
-                    unsafe { server.set_key_store(Some(&key_store)); }
+                    unsafe {
+                        server.set_key_store(Some(&key_store));
+                    }
                     index_servers.push(server);
                 }
-                println!("  [OnionPIR:{}] {} index servers ready (via onion_index_all.bin mmap)", worker_label, k_index);
+                println!(
+                    "  [OnionPIR:{}] {} index servers ready (via onion_index_all.bin mmap)",
+                    worker_label, k_index
+                );
 
                 // Set up per-group OnionPIR Merkle sibling servers — one
                 // PirServer per group, each zero-copy aliasing its
@@ -4417,10 +4754,16 @@ async fn main() {
                             unsafe { server.load_db_from_borrowed(slice) },
                             "[OnionPIR:{}] load_db_from_borrowed failed for {} \
                              sibling group {} (offset {}, len {})",
-                            worker_label, kind, g, off, slice.len(),
+                            worker_label,
+                            kind,
+                            g,
+                            off,
+                            slice.len(),
                         );
                         // OnionPIRv2 port: `set_key_store` takes Option now.
-                        unsafe { server.set_key_store(Some(&key_store)); }
+                        unsafe {
+                            server.set_key_store(Some(&key_store));
+                        }
                         servers.push(server);
                     }
                     println!(
@@ -4441,14 +4784,30 @@ async fn main() {
                 // Event loop
                 while let Some(cmd) = pir_rx.blocking_recv() {
                     match cmd {
-                        PirCommand::RegisterKeys { client_id, galois_keys, gsw_keys, reply } => {
+                        PirCommand::RegisterKeys {
+                            client_id,
+                            galois_keys,
+                            gsw_keys,
+                            reply,
+                        } => {
                             let t = Instant::now();
                             key_store.set_galois_keys(client_id, &galois_keys);
                             key_store.set_gsw_key(client_id, &gsw_keys);
-                            println!("  [OnionPIR:{}] client {} keys registered in {:.2?}", worker_label, client_id, t.elapsed());
+                            println!(
+                                "  [OnionPIR:{}] client {} keys registered in {:.2?}",
+                                worker_label,
+                                client_id,
+                                t.elapsed()
+                            );
                             let _ = reply.send(());
                         }
-                        PirCommand::AnswerBatch { client_id, level, round_id, queries, reply } => {
+                        PirCommand::AnswerBatch {
+                            client_id,
+                            level,
+                            round_id,
+                            queries,
+                            reply,
+                        } => {
                             let t = Instant::now();
                             // OnionPIRv2 port (2402b16): rayon-parallel `answer_query`
                             // across the per-group PirServer Vec. Safe after upstream
@@ -4501,10 +4860,18 @@ async fn main() {
                                     .enumerate()
                                     .map(|(b, server)| {
                                         match std::panic::catch_unwind(
-                                            std::panic::AssertUnwindSafe(|| server.answer_query(client_id, &queries_ref[b])),
+                                            std::panic::AssertUnwindSafe(|| {
+                                                server.answer_query(client_id, &queries_ref[b])
+                                            }),
                                         ) {
                                             Ok(r) => r,
-                                            Err(e) => { eprintln!("[OnionPIR:{}] panic in chunk group {}: {:?}", worker_label, b, e); Vec::new() }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "[OnionPIR:{}] panic in chunk group {}: {:?}",
+                                                    worker_label, b, e
+                                                );
+                                                Vec::new()
+                                            }
                                         }
                                     })
                                     .collect();
@@ -4522,10 +4889,18 @@ async fn main() {
                                     .enumerate()
                                     .map(|(b, server)| {
                                         match std::panic::catch_unwind(
-                                            std::panic::AssertUnwindSafe(|| server.answer_query(client_id, &queries_ref[b])),
+                                            std::panic::AssertUnwindSafe(|| {
+                                                server.answer_query(client_id, &queries_ref[b])
+                                            }),
                                         ) {
                                             Ok(r) => r,
-                                            Err(e) => { eprintln!("[OnionPIR:{}] panic in {} group {}: {:?}", worker_label, kind, b, e); Vec::new() }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "[OnionPIR:{}] panic in {} group {}: {:?}",
+                                                    worker_label, kind, b, e
+                                                );
+                                                Vec::new()
+                                            }
                                         }
                                     })
                                     .collect();
@@ -4544,8 +4919,16 @@ async fn main() {
                             // matmul completed (empty=0/N, full wall time →
                             // client decode / decryption-noise bug).
                             let empty_count = results.iter().filter(|r| r.is_empty()).count();
-                            let nonempty_bytes: usize = results.iter().filter(|r| !r.is_empty()).map(|r| r.len()).sum();
-                            let first_resp_len = results.iter().find(|r| !r.is_empty()).map(|r| r.len()).unwrap_or(0);
+                            let nonempty_bytes: usize = results
+                                .iter()
+                                .filter(|r| !r.is_empty())
+                                .map(|r| r.len())
+                                .sum();
+                            let first_resp_len = results
+                                .iter()
+                                .find(|r| !r.is_empty())
+                                .map(|r| r.len())
+                                .unwrap_or(0);
                             println!(
                                 "  [OnionPIR:{}] {} r{} {} queries in {:.2?} (empty={}/{}, nonempty_total={}B, resp_len={}B, client_id={})",
                                 worker_label, name, round_id, queries.len(), t.elapsed(),
@@ -4593,7 +4976,10 @@ async fn main() {
     let channel_pubkey = channel_keypair.public_bytes();
     println!(
         "  Channel pubkey: {}",
-        channel_pubkey.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        channel_pubkey
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     );
 
     // ── Load AMD VCEK chain (optional) ───────────────────────────────────
@@ -4640,12 +5026,9 @@ async fn main() {
         args.identity_server_id.as_deref(),
     ) {
         (Some(key_path), Some(cert_path), Some(server_id)) => {
-            match pir_runtime_core::identity::load_identity_key(key_path)
-                .and_then(|sk| {
-                    pir_runtime_core::identity::load_identity_cert(cert_path)
-                        .map(|cert| (sk, cert))
-                })
-            {
+            match pir_runtime_core::identity::load_identity_key(key_path).and_then(|sk| {
+                pir_runtime_core::identity::load_identity_cert(cert_path).map(|cert| (sk, cert))
+            }) {
                 Ok((sk, cert)) => {
                     // Manifest roots in db_id order — same as the V2
                     // attest layout, so the bundle and the SEV report
@@ -4671,9 +5054,7 @@ async fn main() {
                         issued_at,
                     ) {
                         Ok(id) => {
-                            let id_short: String = id
-                                .cert
-                                .identity_pubkey[..8]
+                            let id_short: String = id.cert.identity_pubkey[..8]
                                 .iter()
                                 .map(|b| format!("{:02x}", b))
                                 .collect();
@@ -4740,7 +5121,10 @@ async fn main() {
     // data_root = directory of databases.toml (where DB subdirs live)
     // when --config is given; otherwise fall back to --data-dir.
     let data_root = match args.config_path.as_ref() {
-        Some(p) => p.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")),
+        Some(p) => p
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".")),
         None => args.data_dir.clone(),
     };
     println!("  Data root: {}", data_root.display());
@@ -4750,7 +5134,9 @@ async fn main() {
         let verifier = match &args.arc_key_path {
             Some(path) => {
                 let v = pir_runtime_core::arc_verifier::ArcVerifier::from_secret_key_file(path)
-                    .unwrap_or_else(|e| panic!("failed to load ARC key from {}: {e}", path.display()));
+                    .unwrap_or_else(|e| {
+                        panic!("failed to load ARC key from {}: {e}", path.display())
+                    });
                 println!(
                     "  ARC: enabled — verification required (shared key loaded from {})",
                     path.display()
@@ -4777,9 +5163,13 @@ async fn main() {
         if args.cashu_keysets.is_empty() {
             panic!("--require-cashu requires at least one --cashu-keyset <id>:<hex_sk>");
         }
-        let verifier = pir_runtime_core::cashu_verifier::CashuVerifier::from_keys(&args.cashu_keysets)
-            .expect("valid Cashu keysets");
-        println!("  Cashu: enabled — {} keyset(s) loaded", verifier.keyset_count());
+        let verifier =
+            pir_runtime_core::cashu_verifier::CashuVerifier::from_keys(&args.cashu_keysets)
+                .expect("valid Cashu keysets");
+        println!(
+            "  Cashu: enabled — {} keyset(s) loaded",
+            verifier.keyset_count()
+        );
         (Some(std::sync::Mutex::new(verifier)), true)
     } else {
         println!("  Cashu: disabled (use --require-cashu to enable)");
@@ -4808,7 +5198,11 @@ async fn main() {
             "  HarmonyPIR V2 hint pool: size={}, backend={}, dir={}",
             pool_config.pool_size,
             backend_name,
-            pool_config.pool_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "memory-only".into())
+            pool_config
+                .pool_dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "memory-only".into())
         );
         Some(hint_pool::HintPool::new(pool_config, main_db))
     } else {
@@ -4850,8 +5244,8 @@ async fn main() {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                let cutoff = Instant::now()
-                    .checked_sub(Duration::from_secs(V2_HALF_PENDING_TTL_SECS));
+                let cutoff =
+                    Instant::now().checked_sub(Duration::from_secs(V2_HALF_PENDING_TTL_SECS));
                 let Some(cutoff) = cutoff else { continue };
                 let mut map = pending.lock().await;
                 let before = map.len();
@@ -4880,8 +5274,16 @@ async fn main() {
     let listener = TcpListener::bind(addr).await.expect("bind");
     println!("Listening on ws://{}", addr);
     println!("  Role: {}", role_name);
-    println!("  Index: K={}, bins_per_table={}", index_k, server.main_db().index.bins_per_table);
-    println!("  Chunk: K={}, bins_per_table={}", chunk_k, server.main_db().chunk.bins_per_table);
+    println!(
+        "  Index: K={}, bins_per_table={}",
+        index_k,
+        server.main_db().index.bins_per_table
+    );
+    println!(
+        "  Chunk: K={}, bins_per_table={}",
+        chunk_k,
+        server.main_db().chunk.bins_per_table
+    );
     println!("  Databases: {}", num_databases);
     println!(
         "  OnionPIR: {}",
@@ -4899,7 +5301,9 @@ async fn main() {
         ServerRole::Primary => println!("  HarmonyPIR: query server"),
         ServerRole::Secondary => println!("  HarmonyPIR: hint server"),
     }
-    if server.main_db().has_bucket_merkle() { println!("  Merkle: available (per-bucket)"); }
+    if server.main_db().has_bucket_merkle() {
+        println!("  Merkle: available (per-bucket)");
+    }
     println!();
 
     let client_counter = std::sync::atomic::AtomicU64::new(1);
@@ -4907,7 +5311,10 @@ async fn main() {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(conn) => conn,
-            Err(e) => { eprintln!("Accept error: {}", e); continue; }
+            Err(e) => {
+                eprintln!("Accept error: {}", e);
+                continue;
+            }
         };
 
         let client_id = client_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4916,7 +5323,10 @@ async fn main() {
         tokio::spawn(async move {
             let ws = match accept_async(stream).await {
                 Ok(ws) => ws,
-                Err(e) => { eprintln!("[{}] Handshake failed: {}", peer, e); return; }
+                Err(e) => {
+                    eprintln!("[{}] Handshake failed: {}", peer, e);
+                    return;
+                }
             };
             println!("[{}] Connected (id={})", peer, client_id);
             let (mut sink, mut ws_stream) = ws.split();
@@ -4961,12 +5371,18 @@ async fn main() {
             while let Some(msg) = ws_stream.next().await {
                 let msg = match msg {
                     Ok(m) => m,
-                    Err(e) => { eprintln!("[{}] Read error: {}", peer, e); break; }
+                    Err(e) => {
+                        eprintln!("[{}] Read error: {}", peer, e);
+                        break;
+                    }
                 };
 
                 let raw_bin = match msg {
                     Message::Binary(b) => b,
-                    Message::Ping(p) => { let _ = sink.send(Message::Pong(p)).await; continue; }
+                    Message::Ping(p) => {
+                        let _ = sink.send(Message::Pong(p)).await;
+                        continue;
+                    }
                     Message::Close(_) => break,
                     _ => continue,
                 };
@@ -4979,7 +5395,10 @@ async fn main() {
                     let seq = u16::from_le_bytes([raw_bin[5], raw_bin[6]]);
                     let total = u16::from_le_bytes([raw_bin[7], raw_bin[8]]);
                     if total == 0 || seq != chunk_expected {
-                        eprintln!("[{}] bad chunk frame (seq={} total={} expected={}) — resetting", peer, seq, total, chunk_expected);
+                        eprintln!(
+                            "[{}] bad chunk frame (seq={} total={} expected={}) — resetting",
+                            peer, seq, total, chunk_expected
+                        );
                         chunk_acc.clear();
                         chunk_expected = 0;
                         continue;
@@ -5011,7 +5430,9 @@ async fn main() {
                     raw_bin.to_vec()
                 };
 
-                if bin.len() < 5 { continue; }
+                if bin.len() < 5 {
+                    continue;
+                }
                 let outer_payload = &bin[4..];
 
                 // Encrypted-frame demux. If the first byte is the channel
@@ -5020,28 +5441,41 @@ async fn main() {
                 // If the magic appears but no session is established, that's
                 // a protocol error (clients must REQ_HANDSHAKE first).
                 let decrypted: Vec<u8>;
-                let request_was_encrypted =
-                    outer_payload.first() == Some(&pir_runtime_core::channel::ENCRYPTED_FRAME_MAGIC);
+                let request_was_encrypted = outer_payload.first()
+                    == Some(&pir_runtime_core::channel::ENCRYPTED_FRAME_MAGIC);
                 let payload: &[u8] = if request_was_encrypted {
                     match channel_session.as_mut() {
                         Some(s) => {
-                            match s.open(pir_runtime_core::channel::Direction::ClientToServer, outer_payload) {
+                            match s.open(
+                                pir_runtime_core::channel::Direction::ClientToServer,
+                                outer_payload,
+                            ) {
                                 Ok(buf) => {
                                     decrypted = buf;
                                     decrypted.as_slice()
                                 }
                                 Err(e) => {
                                     eprintln!("[{}] channel open failed: {}", peer, e);
-                                    let err = Response::Error(format!("channel open failed: {}", e));
-                                    let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
+                                    let err =
+                                        Response::Error(format!("channel open failed: {}", e));
+                                    let _ = send_resp(
+                                        &mut sink,
+                                        channel_session.as_mut(),
+                                        err.encode(),
+                                    )
+                                    .await;
                                     continue;
                                 }
                             }
                         }
                         None => {
-                            eprintln!("[{}] received encrypted frame without established session", peer);
+                            eprintln!(
+                                "[{}] received encrypted frame without established session",
+                                peer
+                            );
                             let err = Response::Error("encrypted frame received but no session established (run REQ_HANDSHAKE first)".into());
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
+                            let _ =
+                                send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
                             continue;
                         }
                     }
@@ -5049,7 +5483,9 @@ async fn main() {
                     outer_payload
                 };
 
-                if payload.is_empty() { continue; }
+                if payload.is_empty() {
+                    continue;
+                }
                 let variant = payload[0];
                 let body = &payload[1..];
 
@@ -5074,9 +5510,11 @@ async fn main() {
                         | REQ_ONIONPIR_MERKLE_DATA_SIBLING
                         | REQ_ONIONPIR_MERKLE_DATA_TREE_TOP => {
                             let resp = Response::Error(
-                                "ARC credential required — send REQ_CREDENTIAL_PRESENT first".into(),
+                                "ARC credential required — send REQ_CREDENTIAL_PRESENT first"
+                                    .into(),
                             );
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            let _ =
+                                send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             continue;
                         }
                         _ => {}
@@ -5095,7 +5533,8 @@ async fn main() {
                             let resp = Response::Error(
                                 "server not configured to serve hints — start with --serve-hints (see deploy/systemd/*.service)".into(),
                             );
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            let _ =
+                                send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             continue;
                         }
                         _ => {}
@@ -5120,7 +5559,8 @@ async fn main() {
                             let resp = Response::Error(
                                 "server not configured to answer queries — start with --serve-queries (see deploy/systemd/*.service)".into(),
                             );
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            let _ =
+                                send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             continue;
                         }
                         _ => {}
@@ -6346,7 +6786,10 @@ mod harmony_dos_guard_tests {
                 bytes.extend(std::iter::repeat(marker).take(bin_size));
             }
         }
-        std::fs::File::create(path).unwrap().write_all(&bytes).unwrap();
+        std::fs::File::create(path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
     }
 
     #[derive(Clone)]
@@ -6418,7 +6861,14 @@ mod harmony_dos_guard_tests {
     ) {
         assert_eq!(slot_bytes.len(), params.slot_size);
         for slot in 0..params.slots_per_bin {
-            let off = slot_offset(header_len, params, bins_per_table, group_id, bin_index, slot);
+            let off = slot_offset(
+                header_len,
+                params,
+                bins_per_table,
+                group_id,
+                bin_index,
+                slot,
+            );
             if table[off..off + params.slot_size].iter().all(|&b| b == 0) {
                 table[off..off + params.slot_size].copy_from_slice(slot_bytes);
                 return;
@@ -6444,7 +6894,15 @@ mod harmony_dos_guard_tests {
         for group_id in pir_core::hash::derive_groups_3(script_hash, params.k) {
             let key = pir_core::hash::derive_cuckoo_key(params.master_seed, group_id, 0);
             let bin_index = pir_core::hash::cuckoo_hash(script_hash, key, bins_per_table);
-            insert_slot(table, header_len, params, bins_per_table, group_id, bin_index, &slot);
+            insert_slot(
+                table,
+                header_len,
+                params,
+                bins_per_table,
+                group_id,
+                bin_index,
+                &slot,
+            );
         }
     }
 
@@ -6463,7 +6921,15 @@ mod harmony_dos_guard_tests {
         for group_id in pir_core::hash::derive_int_groups_3(chunk_id, params.k) {
             let key = pir_core::hash::derive_cuckoo_key(params.master_seed, group_id, 0);
             let bin_index = pir_core::hash::cuckoo_hash_int(chunk_id, key, bins_per_table);
-            insert_slot(table, header_len, params, bins_per_table, group_id, bin_index, &slot);
+            insert_slot(
+                table,
+                header_len,
+                params,
+                bins_per_table,
+                group_id,
+                bin_index,
+                &slot,
+            );
         }
     }
 
@@ -6512,7 +6978,12 @@ mod harmony_dos_guard_tests {
         std::fs::write(db_dir.join("batch_pir_cuckoo.bin"), index_bytes).unwrap();
         std::fs::write(db_dir.join("chunk_pir_cuckoo.bin"), chunk_bytes).unwrap();
 
-        LookupFixture { found_sh, whale_sh, missing_sh, chunk_payloads }
+        LookupFixture {
+            found_sh,
+            whale_sh,
+            missing_sh,
+            chunk_payloads,
+        }
     }
 
     fn load_lookup_db(db_dir: &std::path::Path) -> MappedDatabase {
@@ -6525,8 +6996,14 @@ mod harmony_dos_guard_tests {
                 index_params: lookup_index_params(),
                 chunk_params: lookup_chunk_params(),
             },
-            index: MappedSubTable::load(&db_dir.join("batch_pir_cuckoo.bin"), lookup_index_params()),
-            chunk: MappedSubTable::load(&db_dir.join("chunk_pir_cuckoo.bin"), lookup_chunk_params()),
+            index: MappedSubTable::load(
+                &db_dir.join("batch_pir_cuckoo.bin"),
+                lookup_index_params(),
+            ),
+            chunk: MappedSubTable::load(
+                &db_dir.join("chunk_pir_cuckoo.bin"),
+                lookup_chunk_params(),
+            ),
             bucket_merkle_index_siblings: Vec::new(),
             bucket_merkle_chunk_siblings: Vec::new(),
             bucket_merkle_tree_tops: None,
@@ -6698,9 +7175,14 @@ mod harmony_dos_guard_tests {
             circuit_payload_page_bytes(params.bucket_size, params.block_size),
         )
         .unwrap();
-        let mut oram =
-            CircuitOram::build_trusted_from_source(params, meta_store, payload_store, source, [9; 32])
-                .unwrap();
+        let mut oram = CircuitOram::build_trusted_from_source(
+            params,
+            meta_store,
+            payload_store,
+            source,
+            [9; 32],
+        )
+        .unwrap();
         oram.flush().unwrap();
         oram.snapshot().save_atomic(&state_path).unwrap();
         drop(oram);
@@ -6787,7 +7269,9 @@ mod harmony_dos_guard_tests {
         );
 
         let mut second = Vec::new();
-        let err = access.append_entries(3, &[1], false, &mut second).unwrap_err();
+        let err = access
+            .append_entries(3, &[1], false, &mut second)
+            .unwrap_err();
         assert!(err.contains("poisoned"), "unexpected poisoned error: {err}");
 
         std::fs::remove_dir_all(&db_dir).ok();
@@ -6825,9 +7309,14 @@ mod harmony_dos_guard_tests {
             circuit_payload_page_bytes(params.bucket_size, params.block_size),
         )
         .unwrap();
-        let mut oram =
-            CircuitOram::build_trusted_from_source(params, meta_store, payload_store, source, [3; 32])
-                .unwrap();
+        let mut oram = CircuitOram::build_trusted_from_source(
+            params,
+            meta_store,
+            payload_store,
+            source,
+            [3; 32],
+        )
+        .unwrap();
         oram.flush().unwrap();
         oram.snapshot().save_atomic(&paths.state).unwrap();
     }
@@ -6885,7 +7374,12 @@ mod harmony_dos_guard_tests {
         std::fs::write(db_dir.join("utxo_chunks_index_nodust.bin"), index_bytes).unwrap();
         std::fs::write(db_dir.join("utxo_chunks_nodust.bin"), chunk_bytes).unwrap();
 
-        DirectLookupFixture { found_sh, whale_sh, missing_sh, chunks }
+        DirectLookupFixture {
+            found_sh,
+            whale_sh,
+            missing_sh,
+            chunks,
+        }
     }
 
     #[cfg(feature = "cuckoo-oram")]
@@ -6910,9 +7404,8 @@ mod harmony_dos_guard_tests {
                 build_test_direct_oram_from_source(oram_dir, level, metadata, source);
             }
             DirectLevel::Chunk => {
-                let info =
-                    DirectTableInfo::from_chunks_file(db_dir.join("utxo_chunks_nodust.bin"))
-                        .unwrap();
+                let info = DirectTableInfo::from_chunks_file(db_dir.join("utxo_chunks_nodust.bin"))
+                    .unwrap();
                 let source = DirectChunkPackedBlockReader::open(info, pack).unwrap();
                 let metadata = source.metadata().clone();
                 build_test_direct_oram_from_source(oram_dir, level, metadata, source);
@@ -6950,9 +7443,14 @@ mod harmony_dos_guard_tests {
             circuit_payload_page_bytes(params.bucket_size, params.block_size),
         )
         .unwrap();
-        let mut oram =
-            CircuitOram::build_trusted_from_source(params, meta_store, payload_store, source, [5; 32])
-                .unwrap();
+        let mut oram = CircuitOram::build_trusted_from_source(
+            params,
+            meta_store,
+            payload_store,
+            source,
+            [5; 32],
+        )
+        .unwrap();
         oram.flush().unwrap();
         oram.snapshot().save_atomic(&paths.state).unwrap();
         metadata.save(&paths.metadata).unwrap();
@@ -6970,10 +7468,8 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
 
-        let tables = DirectOramTables::open(
-            &oram_dir, 2, 8, false, None, None, 0, false, true,
-        )
-        .unwrap();
+        let tables =
+            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, false, true).unwrap();
         let got = direct_native_lookup_batch(
             &tables,
             &[fixture.found_sh, fixture.missing_sh, fixture.whale_sh],
@@ -7007,6 +7503,47 @@ mod harmony_dos_guard_tests {
 
     #[cfg(feature = "cuckoo-oram")]
     #[test]
+    fn direct_oram_lookup_spends_dummy_index_reads_for_empty_slots() {
+        let db_dir = temp_dir("direct_lookup_padded_db");
+        let oram_dir = temp_dir("direct_lookup_padded_img");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        let fixture = write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
+
+        let tables =
+            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, false, true).unwrap();
+        let got = direct_native_lookup_slots(
+            &tables,
+            &[
+                fixture.found_sh,
+                [0u8; pir_core::params::SCRIPT_HASH_SIZE],
+                fixture.missing_sh,
+            ],
+            &[true, false, true],
+        )
+        .unwrap();
+
+        let mut expected_payload = Vec::new();
+        expected_payload.extend_from_slice(&fixture.chunks[3]);
+        expected_payload.extend_from_slice(&fixture.chunks[4]);
+
+        assert_eq!(got.len(), 3);
+        assert!(got[0].found);
+        assert_eq!(got[0].raw_chunk_data, expected_payload);
+        assert!(!got[1].found);
+        assert_eq!(got[1].num_chunks, 0);
+        assert_eq!(got[1].raw_chunk_data.len(), 0);
+        assert!(!got[2].found);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
     fn direct_oram_lookup_rejects_when_index_reads_exceed_budget() {
         let db_dir = temp_dir("direct_lookup_db");
         let oram_dir = temp_dir("direct_lookup_img");
@@ -7017,10 +7554,8 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
 
-        let tables = DirectOramTables::open(
-            &oram_dir, 2, 1, false, None, None, 0, false, true,
-        )
-        .unwrap();
+        let tables =
+            DirectOramTables::open(&oram_dir, 2, 1, false, None, None, 0, false, true).unwrap();
         let err = direct_native_lookup_batch(&tables, &[fixture.found_sh]).unwrap_err();
         assert!(err.contains("access budget 1 too small"));
 
@@ -7040,10 +7575,8 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
 
-        let tables = DirectOramTables::open(
-            &oram_dir, 2, 3, false, None, None, 0, false, true,
-        )
-        .unwrap();
+        let tables =
+            DirectOramTables::open(&oram_dir, 2, 3, false, None, None, 0, false, true).unwrap();
         let err = direct_native_lookup_batch(&tables, &[fixture.found_sh]).unwrap_err();
         assert!(err.contains("chunk demand 2 exceeds remaining access budget 1"));
 
@@ -7213,16 +7746,7 @@ mod harmony_dos_guard_tests {
         .unwrap();
 
         let oram_tables = CuckooOramTables::open(
-            &db_dir,
-            &oram_dir,
-            pack,
-            2,
-            false,
-            None,
-            None,
-            0,
-            false,
-            true,
+            &db_dir, &oram_dir, pack, 2, false, None, None, 0, false, true,
         )
         .unwrap();
         let actual = cuckoo_native_lookup_batch_from_tables_with_dummy(
@@ -7247,7 +7771,13 @@ mod harmony_dos_guard_tests {
         // k = 75 for INDEX; group_id 250 previously sliced ~175 groups
         // past the mmap end → panic → abort.
         let db = make_db();
-        let q = HarmonyQuery { level: 0, group_id: 250, round_id: 0, indices: vec![0], db_id: 0 };
+        let q = HarmonyQuery {
+            level: 0,
+            group_id: 250,
+            round_id: 0,
+            indices: vec![0],
+            db_id: 0,
+        };
         expect_error(harmony_query_response(&db, &q), "out of range");
     }
 
@@ -7258,7 +7788,10 @@ mod harmony_dos_guard_tests {
             level: 1,
             round_id: 7,
             sub_queries_per_group: 1,
-            items: vec![HarmonyBatchItem { group_id: 250, sub_queries: vec![vec![0]] }],
+            items: vec![HarmonyBatchItem {
+                group_id: 250,
+                sub_queries: vec![vec![0]],
+            }],
             db_id: 0,
         };
         expect_error(harmony_batch_response(&db, &q), "out of range");
@@ -7274,7 +7807,10 @@ mod harmony_dos_guard_tests {
                 level,
                 round_id: 0,
                 sub_queries_per_group: 1,
-                items: vec![HarmonyBatchItem { group_id: 0, sub_queries: vec![vec![0]] }],
+                items: vec![HarmonyBatchItem {
+                    group_id: 0,
+                    sub_queries: vec![vec![0]],
+                }],
                 db_id: 0,
             };
             expect_error(harmony_batch_response(&db, &q), "invalid level");
@@ -7306,7 +7842,10 @@ mod harmony_dos_guard_tests {
             level: 0,
             round_id: 0,
             sub_queries_per_group: 1,
-            items: vec![HarmonyBatchItem { group_id: 0, sub_queries: vec![vec![0; TEST_BINS + 1]] }],
+            items: vec![HarmonyBatchItem {
+                group_id: 0,
+                sub_queries: vec![vec![0; TEST_BINS + 1]],
+            }],
             db_id: 0,
         };
         expect_error(harmony_batch_response(&db, &q), "too many indices");
@@ -7318,7 +7857,13 @@ mod harmony_dos_guard_tests {
     fn single_query_returns_requested_bins() {
         let db = make_db();
         let bin_size = db.index.params.bin_size();
-        let q = HarmonyQuery { level: 0, group_id: 3, round_id: 9, indices: vec![0, 5, 7], db_id: 0 };
+        let q = HarmonyQuery {
+            level: 0,
+            group_id: 3,
+            round_id: 9,
+            indices: vec![0, 5, 7],
+            db_id: 0,
+        };
         match harmony_query_response(&db, &q) {
             Response::HarmonyQueryResult(r) => {
                 assert_eq!(r.group_id, 3);
@@ -7327,8 +7872,11 @@ mod harmony_dos_guard_tests {
                 for (i, &bin) in [0u8, 5, 7].iter().enumerate() {
                     let expect = 3u8 ^ bin;
                     assert!(
-                        r.data[i * bin_size..(i + 1) * bin_size].iter().all(|&b| b == expect),
-                        "bin {} contents wrong", bin
+                        r.data[i * bin_size..(i + 1) * bin_size]
+                            .iter()
+                            .all(|&b| b == expect),
+                        "bin {} contents wrong",
+                        bin
                     );
                 }
             }
@@ -7380,7 +7928,10 @@ mod harmony_dos_guard_tests {
                     assert!(data[..bin_size].iter().all(|&b| b == 2u8 ^ 1u8));
                     assert!(data[bin_size..].iter().all(|&b| b == 0));
                 }
-                other => panic!("level {}: expected HarmonyBatchResult, got {:?}", level, other),
+                other => panic!(
+                    "level {}: expected HarmonyBatchResult, got {:?}",
+                    level, other
+                ),
             }
         }
     }
@@ -7404,7 +7955,11 @@ mod harmony_dos_guard_tests {
         assert!(validate_harmony_hints_request(&db, 0, &too_many).is_err());
         // The full legitimate sweep 0..k is accepted for every level
         // that exists.
-        for (level, k) in [(0u8, INDEX_PARAMS.k), (1, CHUNK_PARAMS.k), (10, INDEX_PARAMS.k)] {
+        for (level, k) in [
+            (0u8, INDEX_PARAMS.k),
+            (1, CHUNK_PARAMS.k),
+            (10, INDEX_PARAMS.k),
+        ] {
             let all: Vec<u8> = (0..k as u8).collect();
             assert!(validate_harmony_hints_request(&db, level, &all).is_ok());
         }

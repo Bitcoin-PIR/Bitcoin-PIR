@@ -6,44 +6,46 @@ It is not a checked proof. The checked proof tree in this checkout is
 
 ## Backend Model
 
-The TEE receives plaintext scripthashes over an attested encrypted channel.
+The TEE receives plaintext scripthashes and explicit empty-slot markers over an
+attested encrypted channel.
 The untrusted host may observe:
 
 - request and response sizes,
 - ORAM image sizes and public ORAM parameters,
-- the number of logical ORAM bin reads,
+- the fixed number of logical ORAM path accesses,
 - public deterministic eviction work per read,
 - state/image file reads and writes.
 
-The host must not learn the INDEX group/bin or CHUNK group/bin selected by a
-query. That address privacy is delegated to the Circuit ORAM implementation.
+The host must not learn the INDEX bin or CHUNK id selected by a query. That
+address privacy is delegated to the Circuit ORAM implementation.
 
 ## Current Lookup Shape
 
-For each scripthash, the native lookup over the existing INDEX + CHUNK cuckoo
-tables does:
+For each padded request, the direct ORAM lookup over `INDEX + CHUNK` direct
+entry images does:
 
-1. Choose one valid INDEX PBC group with `derive_groups_3(scripthash, K)[0]`.
-   The same scripthash is replicated to all three candidate groups at build
-   time, so any one candidate group is sufficient for correctness.
-2. Read exactly both INDEX cuckoo positions from that group. There is no early
-   exit when position 0 matches.
-3. Decode `[tag, start_chunk_id, num_chunks]` inside the TEE.
-4. If `num_chunks > 0`, read exactly both CHUNK cuckoo positions for every real
-   chunk id in `[start_chunk_id, start_chunk_id + num_chunks)`.
-5. If the INDEX entry is missing or is a whale (`num_chunks == 0`), read exactly
-   both CHUNK cuckoo positions for one fresh dummy chunk id and discard the
-   result.
+1. Read a fixed number of direct INDEX ORAM paths for every padded slot.
+   Present slots probe the direct INDEX candidate bins; explicit empty slots
+   spend the same count as random dummy INDEX path accesses and do not select a
+   logical element.
+2. Decode `[start_chunk_id, num_chunks]` inside the TEE only for present slots.
+3. Build a private list of required CHUNK ids.
+4. Read the real CHUNK ORAM paths if the demand fits the remaining public
+   access budget.
+5. Fill the rest of the budget with random dummy CHUNK ORAM path accesses.
 
-So the ORAM logical read count per query is:
+With `hash_fns=2`, the fixed access shape is:
 
 ```text
-INDEX reads = 2
-CHUNK reads = 2 * max(real_num_chunks, 1)
+INDEX accesses = 2 * padded_slot_count
+CHUNK accesses = access_budget - INDEX accesses
 ```
 
-This mirrors the existing PIR decision: zero-CHUNK round presence is closed,
-while approximate UTXO count remains an admitted axis.
+For example, `padded_slot_count=50` requires at least 100 INDEX ORAM accesses;
+`access_budget=120` leaves 20 CHUNK accesses, while `access_budget=150` leaves
+50 CHUNK accesses. This mirrors the existing PIR decision that request width is
+padded, while aggregate CHUNK demand and response size remain admitted axes
+unless a later response-padding layer is added.
 
 ## Leakage Record Candidate
 
@@ -54,8 +56,9 @@ wire rounds:
 ```text
 type oram_leakage = {
   query_db_id;
-  batch_len;
-  chunk_probe_count_per_query;  // max(real_num_chunks, 1)
+  padded_slot_count;
+  access_budget;
+  aggregate_chunk_payload_bytes;
   session_query_index;          // if state checkpoint cadence is visible
   public_oram_geometry;         // tree size, pack, cache levels, drain count
 }
@@ -64,16 +67,17 @@ type oram_leakage = {
 Axes intended to remain closed:
 
 - scripthash bytes,
-- INDEX group/bin,
+- real script-hash count up to the padded slot width,
+- INDEX bin,
 - INDEX cuckoo match position,
-- CHUNK group/bin,
-- zero-CHUNK found/not-found presence.
+- CHUNK id,
+- empty-slot positions.
 
 Axes intentionally admitted for now:
 
-- batch size,
+- padded request size,
 - database id,
-- approximate per-query UTXO count through `chunk_probe_count_per_query`,
+- aggregate result size / approximate UTXO count,
 - timing and persistence cadence unless separately padded.
 
 ## Deployment Artifact Boundary
@@ -95,9 +99,10 @@ or state encryption is enabled.
 
 The current Rust witness is in `runtime/src/bin/unified_server.rs`:
 
-- `cuckoo_native_lookup_batch_from_tables_with_dummy` implements the access
-  shape above over the shared `CuckooTableAccess` trait.
-- `native_lookup_mmap_reads_expected_data_and_presence_padding` checks found,
-  not-found, and whale shapes against a synthetic cuckoo DB.
-- `native_lookup_oram_matches_mmap_lookup` checks the same lookup through
-  `CircuitOram` returns the same result as the mmap baseline.
+- `direct_native_lookup_slots` implements the padded-slot direct ORAM shape.
+- `direct_oram_lookup_spends_dummy_index_reads_for_empty_slots` checks that
+  empty slots consume dummy INDEX accesses, return not-found items, and do not
+  create CHUNK demand.
+- `native_lookup_mmap_reads_expected_data_and_presence_padding` and
+  `native_lookup_oram_matches_mmap_lookup` remain as legacy cuckoo/PBC ORAM
+  witnesses.

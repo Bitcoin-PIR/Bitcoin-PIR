@@ -562,6 +562,8 @@ export interface WasmHarmonyClient {
  * attestation/channel upgrade, then fixed-budget server-side ORAM lookup.
  * `queryBatch` returns plain `QueryResult` JSON objects or `null`, matching
  * the decoded shape used by the DPF/Harmony high-level wrappers.
+ * `queryBatchPadded` sends the same real script hashes padded with explicit
+ * empty slots inside the TEE ORAM request, and returns only real results.
  */
 export interface WasmOramClient {
   free(): void;
@@ -579,6 +581,7 @@ export interface WasmOramClient {
     allowedBuilderGitCommit?: string | null,
   ): Promise<WasmDatabaseProof>;
   queryBatch(scriptHashes: Uint8Array, dbId: number): Promise<any[]>;
+  queryBatchPadded(scriptHashes: Uint8Array, dbId: number, paddedSlots: number): Promise<any[]>;
   serverUrl(): string;
   setMetricsRecorder(metrics: WasmAtomicMetrics): void;
   clearMetricsRecorder(): void;
