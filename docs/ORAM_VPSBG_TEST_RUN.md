@@ -290,32 +290,42 @@ cd /home/pir/BitcoinPIR
 ORAM_REPO=/home/pir/bitcoin-pir/oram \
 ORAM_LAYOUT=direct \
 POS_MAP_SIZES=82808,531611,885445,5061532 \
-BENCH_OPS=200 POS_MAP_WARMUP_OPS=20 \
+BENCH_OPS=2000 POS_MAP_WARMUP_OPS=200 \
 CARGO_JOBS=1 CARGO_TOOLCHAIN=stable \
 ./scripts/oram_vpsbg_test.sh pos-map-bench
 ```
 
-Measured on VPSBG with the current direct dimensions:
+Measured on VPSBG with the current canonical direct dimensions:
 
 ```text
-82,813-entry map, 0.316 MiB: scan ~= 14.4 us, scan+update ~= 28.1 us
-531,673-entry map, 2.028 MiB: scan ~= 93.7 us, scan+update ~= 180.0 us
+82,808-entry map, 0.316 MiB: scan ~= 14.5 us, scan+update ~= 28.3 us
+531,611-entry map, 2.028 MiB: scan ~= 92.6 us, scan+update ~= 178.7 us
 885,445-entry map, 3.378 MiB: scan ~= 154.3 us, scan+update ~= 301.5 us
-5,061,532-entry map, 19.308 MiB: scan ~= 812.0 us, scan+update ~= 1.72 ms
+5,061,532-entry map, 19.308 MiB: scan ~= 877.9 us, scan+update ~= 1.71 ms
 ```
 
-These are, respectively, the staging DELTA index/chunk and FULL index/chunk
-position-map sizes with `pack=16`; the canonical DELTA sizes are nearly
-identical at 82,808 and 531,611 entries. The scan cost is low enough for the
-current 50-access ORAM batch plan. It would become too expensive if every
-40-byte chunk were its own ORAM logical block, because the CHUNK position map
-would grow by about 16x.
+These are, respectively, the canonical DELTA index/chunk and FULL index/chunk
+position-map sizes with `pack=16`. The scan cost is low enough for the current
+50-access ORAM batch plan. It would become too expensive if every 40-byte chunk
+were its own ORAM logical block, because the CHUNK position map would grow by
+about 16x.
 
 The web ORAM adapter does not use the DPF/Harmony PBC batch planner. By
 default it sends one script hash per fixed-budget ORAM request, so each lookup
 gets the full remaining chunk budget after its direct INDEX probes. The adapter
-has `maxScriptHashesPerRequest` for measured deployments that want to batch
-multiple script hashes into one 50-access server request.
+has `maxScriptHashesPerRequest` for manual caps and an opt-in fixed-budget
+planner that derives batch sizes from:
+
+```text
+index_reads = indexReadsPerScriptHash * script_hashes.len()
+expected_chunk_reads = expectedChunkReadsPerScriptHash * script_hashes.len()
+index_reads + expected_chunk_reads + chunkReadReserve <= accessBudget
+```
+
+With the deployed direct images, `accessBudget=50` and
+`indexReadsPerScriptHash=2`: mostly-not-found scans can use 25 script hashes,
+one expected chunk per script hash derives 16, and reserving 10 chunk reads
+derives 20 for mostly-not-found queries.
 
 ## Production-Shaped Server Smoke
 

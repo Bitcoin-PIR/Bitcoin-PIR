@@ -106,11 +106,17 @@ export {
 } from './harmonypir-adapter.js';
 
 export {
+  DEFAULT_ORAM_ACCESS_BUDGET,
+  DEFAULT_ORAM_INDEX_READS_PER_SCRIPT_HASH,
   DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST,
   OramPirClientAdapter,
   createOramPirClientAdapter,
   oramJsonResultToQueryResult,
+  planOramScriptHashBatches,
+  resolveOramBatchPlan,
   splitOramScriptHashBatches,
+  type OramBatchPlan,
+  type OramBatchPlannerConfig,
   type OramLayoutInfo,
   type OramPirClientConfig,
 } from './oram-adapter.js';
