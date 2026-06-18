@@ -24,6 +24,8 @@ use futures_util::{SinkExt, StreamExt};
 use libdpf::DpfKey;
 use pir_core::params::{self, INDEX_PARAMS, CHUNK_PARAMS};
 use rayon::prelude::*;
+#[cfg(feature = "cuckoo-oram")]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -168,8 +170,11 @@ struct CliArgs {
     /// identity flags is set.
     identity_server_id: Option<String>,
     /// Optional Circuit ORAM image directory for the two-level cuckoo tables
-    /// (db_id=0, levels 0/1 only). Built by `oramctl build-circuit`.
+    /// (legacy alias for db_id=0, levels 0/1 only). Built by `oramctl build-circuit`.
     cuckoo_oram_dir: Option<PathBuf>,
+    /// Optional per-database Circuit ORAM image directories.
+    /// Repeatable as `--cuckoo-oram-db <db_id>=<dir>`.
+    cuckoo_oram_dbs: Vec<(u8, PathBuf)>,
     /// Consecutive cuckoo bins packed into one ORAM logical block.
     cuckoo_oram_pack: usize,
     /// Public deterministic evictions drained after each ORAM bin read.
@@ -186,6 +191,27 @@ struct CliArgs {
     cuckoo_oram_auth_store: bool,
     /// Do not persist trusted ORAM state after query responses.
     cuckoo_oram_no_save: bool,
+}
+
+fn parse_cuckoo_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
+    let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
+        return Err(
+            "--cuckoo-oram-db expects <db_id>=<dir> (legacy alias: --harmony-oram-db)"
+                .into(),
+        );
+    };
+    let db_id = db_id_raw
+        .parse::<u8>()
+        .map_err(|e| format!("invalid --cuckoo-oram-db db_id `{}`: {}", db_id_raw, e))?;
+    if dir_raw.is_empty() {
+        return Err("--cuckoo-oram-db requires a non-empty directory".into());
+    }
+    Ok((db_id, PathBuf::from(dir_raw)))
+}
+
+fn fatal_cli(msg: impl AsRef<str>) -> ! {
+    eprintln!("ERROR: {}", msg.as_ref());
+    std::process::exit(2);
 }
 
 fn parse_args() -> CliArgs {
@@ -212,6 +238,7 @@ fn parse_args() -> CliArgs {
     let mut identity_cert_path: Option<PathBuf> = None;
     let mut identity_server_id: Option<String> = None;
     let mut cuckoo_oram_dir: Option<PathBuf> = None;
+    let mut cuckoo_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut cuckoo_oram_pack: usize = 16;
     let mut cuckoo_oram_drain_per_access: u64 = 2;
     let mut cuckoo_oram_encrypted = false;
@@ -350,6 +377,14 @@ fn parse_args() -> CliArgs {
                 }
                 i += 1;
             }
+            "--cuckoo-oram-db" | "--harmony-oram-db" => {
+                let spec = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--cuckoo-oram-db requires <db_id>=<dir>");
+                });
+                let parsed = parse_cuckoo_oram_db_arg(spec).unwrap_or_else(|e| fatal_cli(e));
+                cuckoo_oram_dbs.push(parsed);
+                i += 1;
+            }
             "--cuckoo-oram-pack" | "--harmony-oram-pack" => {
                 cuckoo_oram_pack = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(16);
                 i += 1;
@@ -390,7 +425,7 @@ fn parse_args() -> CliArgs {
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_auth_store, cuckoo_oram_no_save }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_dbs, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_auth_store, cuckoo_oram_no_save }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -1849,11 +1884,11 @@ struct UnifiedServerData {
     channel_keypair: pir_runtime_core::channel::ChannelKeypair,
     /// Pre-computed HarmonyPIR V2 hint pool (None if pool_size=0).
     hint_pool: Option<hint_pool::HintPool>,
-    /// Optional ORAM-backed INDEX/CHUNK cuckoo-table access for db_id=0.
+    /// Optional ORAM-backed INDEX/CHUNK cuckoo-table access indexed by db_id.
     /// Currently used by HarmonyPIR's query phase. Hints, DPF scans, and
     /// Merkle sibling levels remain mmap-backed.
     #[cfg(feature = "cuckoo-oram")]
-    cuckoo_oram: Option<CuckooOramTables>,
+    cuckoo_oram: HashMap<u8, CuckooOramTables>,
     /// Pending half-stream pool entries, keyed by client-supplied
     /// session token. The first arriving half of a logical V2-half
     /// session allocates a pool entry into this map; the second
@@ -2356,14 +2391,12 @@ impl UnifiedServerData {
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
         #[cfg(feature = "cuckoo-oram")]
-        if query.db_id == 0 {
-            if let Some(table) = self
-                .cuckoo_oram
-                .as_ref()
-                .and_then(|oram| oram.table_for_level(query.level))
-            {
-                return harmony_query_response_from_table(table, query);
-            }
+        if let Some(table) = self
+            .cuckoo_oram
+            .get(&query.db_id)
+            .and_then(|oram| oram.table_for_level(query.level))
+        {
+            return harmony_query_response_from_table(table, query);
         }
         harmony_query_response(db, query)
     }
@@ -2374,14 +2407,12 @@ impl UnifiedServerData {
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
         #[cfg(feature = "cuckoo-oram")]
-        if query.db_id == 0 {
-            if let Some(table) = self
-                .cuckoo_oram
-                .as_ref()
-                .and_then(|oram| oram.table_for_level(query.level))
-            {
-                return harmony_batch_response_from_table(table, query);
-            }
+        if let Some(table) = self
+            .cuckoo_oram
+            .get(&query.db_id)
+            .and_then(|oram| oram.table_for_level(query.level))
+        {
+            return harmony_batch_response_from_table(table, query);
         }
         harmony_batch_response(db, query)
     }
@@ -2389,20 +2420,15 @@ impl UnifiedServerData {
     fn handle_oram_lookup(&self, query: &OramLookupRequest) -> Response {
         #[cfg(feature = "cuckoo-oram")]
         {
-            if query.db_id != 0 {
-                return Response::Error(format!(
-                    "Cuckoo ORAM currently supports only db_id=0, got {}",
-                    query.db_id
-                ));
-            }
             let db = match self.state.get_db(query.db_id) {
                 Some(d) => d,
                 None => return Response::Error(format!("unknown db_id {}", query.db_id)),
             };
-            let Some(tables) = self.cuckoo_oram.as_ref() else {
-                return Response::Error(
-                    "Cuckoo ORAM not configured; start with --cuckoo-oram-dir".into(),
-                );
+            let Some(tables) = self.cuckoo_oram.get(&query.db_id) else {
+                return Response::Error(format!(
+                    "Cuckoo ORAM not configured for db_id {}; start with --cuckoo-oram-db {}=<dir>",
+                    query.db_id, query.db_id
+                ));
             };
             let t = Instant::now();
             let lookup = match cuckoo_native_lookup_batch_from_tables(
@@ -2937,9 +2963,9 @@ async fn main() {
             args.cuckoo_oram_auth_store,
             args.cuckoo_oram_no_save,
         );
-        if args.cuckoo_oram_dir.is_some() {
+        if args.cuckoo_oram_dir.is_some() || !args.cuckoo_oram_dbs.is_empty() {
             eprintln!(
-                "ERROR: --cuckoo-oram-dir requires building unified_server with \
+                "ERROR: --cuckoo-oram-dir/--cuckoo-oram-db require building unified_server with \
                  --features cuckoo-oram (legacy alias: --features harmony-oram)"
             );
             std::process::exit(2);
@@ -2947,27 +2973,52 @@ async fn main() {
     }
 
     #[cfg(feature = "cuckoo-oram")]
-    let cuckoo_oram = match args.cuckoo_oram_dir.as_ref() {
-        Some(oram_dir) => {
-            if db_paths.len() > 1 {
+    let cuckoo_oram = {
+        let mut requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
+        if let Some(oram_dir) = args.cuckoo_oram_dir.as_ref() {
+            requested.insert(0, oram_dir.clone());
+        }
+        for (db_id, oram_dir) in &args.cuckoo_oram_dbs {
+            if requested.insert(*db_id, oram_dir.clone()).is_some() {
                 eprintln!(
-                    "  Cuckoo ORAM: WARNING — only db_id=0 is ORAM-backed; {} additional DB(s) remain mmap-backed",
-                    db_paths.len() - 1
+                    "ERROR: duplicate Cuckoo ORAM configuration for db_id={}",
+                    db_id
                 );
+                std::process::exit(2);
             }
-            println!(
-                "  Cuckoo ORAM: enabled for db_id=0, dir={}, pack={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
-                oram_dir.display(),
-                args.cuckoo_oram_pack,
-                args.cuckoo_oram_drain_per_access,
-                args.cuckoo_oram_encrypted,
-                args.cuckoo_oram_cache_levels,
-                args.cuckoo_oram_auth_store,
-            );
-            Some(
-                CuckooOramTables::open(
-                    &db_paths[0].2,
-                    oram_dir,
+        }
+
+        if requested.is_empty() {
+            println!("  Cuckoo ORAM: disabled (use --cuckoo-oram-db <db_id>=<dir> to enable)");
+            HashMap::new()
+        } else {
+            let mut opened = HashMap::new();
+            for (db_id, oram_dir) in requested {
+                let Some((_, db_label, db_path)) =
+                    db_paths.iter().find(|(candidate, _, _)| *candidate == db_id)
+                else {
+                    eprintln!(
+                        "ERROR: Cuckoo ORAM configured for unknown db_id={} (loaded db_ids: {:?})",
+                        db_id,
+                        db_paths.iter().map(|(id, _, _)| *id).collect::<Vec<_>>()
+                    );
+                    std::process::exit(2);
+                };
+
+                println!(
+                    "  Cuckoo ORAM: enabled for db_id={} name={}, dir={}, pack={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
+                    db_id,
+                    db_label,
+                    oram_dir.display(),
+                    args.cuckoo_oram_pack,
+                    args.cuckoo_oram_drain_per_access,
+                    args.cuckoo_oram_encrypted,
+                    args.cuckoo_oram_cache_levels,
+                    args.cuckoo_oram_auth_store,
+                );
+                let tables = CuckooOramTables::open(
+                    db_path,
+                    &oram_dir,
                     args.cuckoo_oram_pack,
                     args.cuckoo_oram_drain_per_access,
                     args.cuckoo_oram_encrypted,
@@ -2977,12 +3028,27 @@ async fn main() {
                     args.cuckoo_oram_auth_store,
                     !args.cuckoo_oram_no_save,
                 )
-                .unwrap_or_else(|e| panic!("failed to open Cuckoo ORAM: {}", e)),
-            )
-        }
-        None => {
-            println!("  Cuckoo ORAM: disabled (use --cuckoo-oram-dir to enable)");
-            None
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "failed to open Cuckoo ORAM for db_id={} ({}): {}",
+                        db_id, db_label, e
+                    )
+                });
+                opened.insert(db_id, tables);
+            }
+
+            let mmap_fallbacks: Vec<String> = db_paths
+                .iter()
+                .filter(|(db_id, _, _)| !opened.contains_key(db_id))
+                .map(|(db_id, label, _)| format!("{}:{}", db_id, label))
+                .collect();
+            if !mmap_fallbacks.is_empty() {
+                eprintln!(
+                    "  Cuckoo ORAM: WARNING — DB(s) without ORAM config remain mmap-backed for Harmony queries: {}",
+                    mmap_fallbacks.join(", ")
+                );
+            }
+            opened
         }
     };
 
