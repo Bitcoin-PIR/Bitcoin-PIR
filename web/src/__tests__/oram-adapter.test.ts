@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_ORAM_ACCESS_BUDGET,
+  DEFAULT_ORAM_INDEX_READS_PER_SCRIPT_HASH,
   DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST,
   OramPirClientAdapter,
   oramJsonResultToQueryResult,
+  planOramScriptHashBatches,
+  resolveOramBatchPlan,
   splitOramScriptHashBatches,
 } from '../oram-adapter.js';
 
@@ -55,8 +59,41 @@ describe('ORAM adapter', () => {
     expect(splitOramScriptHashBatches([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
   });
 
+  it('plans fixed-budget direct ORAM batches from access counts', () => {
+    expect(DEFAULT_ORAM_ACCESS_BUDGET).toBe(50);
+    expect(DEFAULT_ORAM_INDEX_READS_PER_SCRIPT_HASH).toBe(2);
+
+    expect(resolveOramBatchPlan()).toMatchObject({
+      maxScriptHashesPerRequest: 25,
+      chunkReadsAvailableAtMax: 0,
+    });
+    expect(resolveOramBatchPlan({ expectedChunkReadsPerScriptHash: 1 })).toMatchObject({
+      maxScriptHashesPerRequest: 16,
+      chunkReadsAvailableAtMax: 18,
+    });
+    expect(resolveOramBatchPlan({ chunkReadReserve: 10 })).toMatchObject({
+      maxScriptHashesPerRequest: 20,
+      chunkReadsAvailableAtMax: 10,
+    });
+    expect(resolveOramBatchPlan({ maxScriptHashesPerRequest: 7 })).toMatchObject({
+      maxScriptHashesPerRequest: 7,
+      chunkReadsAvailableAtMax: 36,
+    });
+  });
+
+  it('splits batches with the fixed-budget planner', () => {
+    expect(
+      planOramScriptHashBatches(
+        Array.from({ length: 41 }, (_, i) => i),
+        { expectedChunkReadsPerScriptHash: 1 },
+      ).map((b) => b.length),
+    ).toEqual([16, 16, 9]);
+  });
+
   it('rejects invalid direct ORAM per-request batch sizes', () => {
     expect(() => splitOramScriptHashBatches([1], 0)).toThrow(/positive integer/);
     expect(() => splitOramScriptHashBatches([1], 1.5)).toThrow(/positive integer/);
+    expect(() => resolveOramBatchPlan({ accessBudget: 0 })).toThrow(/positive integer/);
+    expect(() => resolveOramBatchPlan({ chunkReadReserve: 50 })).toThrow(/smaller than accessBudget/);
   });
 });

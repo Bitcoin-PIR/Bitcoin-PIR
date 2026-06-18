@@ -50,6 +50,44 @@ export interface OramLayoutInfo {
 }
 
 export const DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST = 1;
+export const DEFAULT_ORAM_ACCESS_BUDGET = 50;
+export const DEFAULT_ORAM_INDEX_READS_PER_SCRIPT_HASH = 2;
+
+export interface OramBatchPlannerConfig {
+  /**
+   * Fixed server-side direct ORAM access budget for one lookup frame.
+   */
+  accessBudget?: number;
+  /**
+   * Direct INDEX ORAM reads needed for one script hash. This is the direct
+   * index cuckoo hash count in the deployed image metadata.
+   */
+  indexReadsPerScriptHash?: number;
+  /**
+   * Expected CHUNK ORAM reads per script hash. Use 0 for mostly-not-found
+   * scans, 1 for ordinary small UTXO lookups, and a higher value for known
+   * dense wallets.
+   */
+  expectedChunkReadsPerScriptHash?: number;
+  /**
+   * Extra CHUNK reads to leave unused by the planner in each fixed-budget
+   * request. This gives the server room for unexpectedly found chunks.
+   */
+  chunkReadReserve?: number;
+  /**
+   * Optional operator/client cap after applying the access-budget model.
+   */
+  maxScriptHashesPerRequest?: number;
+}
+
+export interface OramBatchPlan {
+  accessBudget: number;
+  indexReadsPerScriptHash: number;
+  expectedChunkReadsPerScriptHash: number;
+  chunkReadReserve: number;
+  maxScriptHashesPerRequest: number;
+  chunkReadsAvailableAtMax: number;
+}
 
 export interface OramPirClientConfig {
   serverUrl: string;
@@ -77,6 +115,11 @@ export interface OramPirClientConfig {
    * this after measuring their direct-index hash count and chunk overflow rate.
    */
   maxScriptHashesPerRequest?: number;
+  /**
+   * Opt-in direct ORAM fixed-budget planner. When unset, the adapter preserves
+   * the conservative `maxScriptHashesPerRequest` split behavior.
+   */
+  batchPlanner?: OramBatchPlannerConfig;
 }
 
 export class OramPirClientAdapter {
@@ -232,10 +275,14 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     if (!this.wasmClient) throw new Error('Not connected');
-    const maxPerRequest = resolveMaxScriptHashesPerRequest(
-      this.config.maxScriptHashesPerRequest,
-    );
-    const batches = splitOramScriptHashBatches(scriptHashes, maxPerRequest);
+    const batches = this.config.batchPlanner
+      ? planOramScriptHashBatches(scriptHashes, {
+          ...this.config.batchPlanner,
+          maxScriptHashesPerRequest:
+            this.config.batchPlanner.maxScriptHashesPerRequest ??
+            this.config.maxScriptHashesPerRequest,
+        })
+      : splitOramScriptHashBatches(scriptHashes, this.config.maxScriptHashesPerRequest);
     const results: (QueryResult | null)[] = [];
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
@@ -514,12 +561,93 @@ export function splitOramScriptHashBatches<T>(
   return out;
 }
 
+export function planOramScriptHashBatches<T>(
+  items: readonly T[],
+  config: OramBatchPlannerConfig = {},
+): T[][] {
+  const plan = resolveOramBatchPlan(config);
+  return splitOramScriptHashBatches(items, plan.maxScriptHashesPerRequest);
+}
+
+export function resolveOramBatchPlan(config: OramBatchPlannerConfig = {}): OramBatchPlan {
+  const accessBudget = resolvePositiveInteger(
+    'accessBudget',
+    config.accessBudget,
+    DEFAULT_ORAM_ACCESS_BUDGET,
+  );
+  const indexReadsPerScriptHash = resolvePositiveInteger(
+    'indexReadsPerScriptHash',
+    config.indexReadsPerScriptHash,
+    DEFAULT_ORAM_INDEX_READS_PER_SCRIPT_HASH,
+  );
+  const expectedChunkReadsPerScriptHash = resolveNonNegativeInteger(
+    'expectedChunkReadsPerScriptHash',
+    config.expectedChunkReadsPerScriptHash,
+    0,
+  );
+  const chunkReadReserve = resolveNonNegativeInteger(
+    'chunkReadReserve',
+    config.chunkReadReserve,
+    0,
+  );
+  if (chunkReadReserve >= accessBudget) {
+    throw new Error(
+      `chunkReadReserve must be smaller than accessBudget (got ${chunkReadReserve} >= ${accessBudget})`,
+    );
+  }
+
+  const perScriptHashCost =
+    indexReadsPerScriptHash + expectedChunkReadsPerScriptHash;
+  const budgetAfterReserve = accessBudget - chunkReadReserve;
+  const budgetMax = Math.floor(budgetAfterReserve / perScriptHashCost);
+  const cappedMax = config.maxScriptHashesPerRequest === undefined
+    ? budgetMax
+    : Math.min(
+        budgetMax,
+        resolveMaxScriptHashesPerRequest(config.maxScriptHashesPerRequest),
+      );
+  if (cappedMax < 1) {
+    throw new Error(
+      `ORAM batch planner cannot fit one script hash in access budget ${accessBudget}`,
+    );
+  }
+
+  return {
+    accessBudget,
+    indexReadsPerScriptHash,
+    expectedChunkReadsPerScriptHash,
+    chunkReadReserve,
+    maxScriptHashesPerRequest: cappedMax,
+    chunkReadsAvailableAtMax: accessBudget - cappedMax * indexReadsPerScriptHash,
+  };
+}
+
 function resolveMaxScriptHashesPerRequest(value?: number): number {
   const max = value ?? DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST;
   if (!Number.isInteger(max) || max < 1) {
     throw new Error(`maxScriptHashesPerRequest must be a positive integer, got ${value}`);
   }
   return max;
+}
+
+function resolvePositiveInteger(name: string, value: number | undefined, fallback: number): number {
+  const resolved = value ?? fallback;
+  if (!Number.isInteger(resolved) || resolved < 1) {
+    throw new Error(`${name} must be a positive integer, got ${value}`);
+  }
+  return resolved;
+}
+
+function resolveNonNegativeInteger(
+  name: string,
+  value: number | undefined,
+  fallback: number,
+): number {
+  const resolved = value ?? fallback;
+  if (!Number.isInteger(resolved) || resolved < 0) {
+    throw new Error(`${name} must be a non-negative integer, got ${value}`);
+  }
+  return resolved;
 }
 
 export function oramJsonResultToQueryResult(value: any): QueryResult | null {
