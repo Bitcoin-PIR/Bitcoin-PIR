@@ -46,6 +46,30 @@ noncanonical staging image:
 - direct INDEX: 82,808 logical blocks;
 - direct CHUNK: 531,611 logical blocks.
 
+A local macOS development-machine run against the canonical direct dimensions
+used a temporary standalone ORAM checkout outside the main BitcoinPIR cargo
+vendor override:
+
+```text
+cargo run --release --bin oramctl -- \
+  bench-pos-map --sizes 82808,531611,885445,5061532 \
+  --ops 1000 --warmup-ops 100
+```
+
+| Direct table | Packed ORAM blocks | Map size | Scan | Scan + update |
+| --- | ---: | ---: | ---: | ---: |
+| Canonical DELTA direct index | 82,808 | 0.316 MiB | 46.4 us | 38.5 us |
+| Canonical DELTA direct chunks | 531,611 | 2.028 MiB | 195.4 us | 235.8 us |
+| FULL direct index | 885,445 | 3.378 MiB | 328.1 us | 414.6 us |
+| FULL direct chunks | 5,061,532 | 19.308 MiB | 1.87 ms | 3.43 ms |
+
+The VPSBG numbers are the production-relevant ones. The local run is still a
+useful guardrail: even on the slower local path, full CHUNK map scan+update is
+single-digit milliseconds for `pack=16`, so it is not the dominant term in the
+current server-smoke timings. Do not reduce `pack` to 1 for CHUNK without
+redoing this benchmark, because that would grow the CHUNK position map by about
+16x.
+
 ## Direct-entry layout
 
 Keep separate direct ORAM tables:
@@ -101,6 +125,22 @@ chunk_budget = access_budget - index_reads
 
 The request should reject or split batches when `index_reads > access_budget`.
 
+With the current `hash_fns=2` and `access_budget=50`:
+
+- one script hash leaves 48 CHUNK reads;
+- 10 script hashes leave 30 CHUNK reads shared by all found results;
+- 20 script hashes leave 10 CHUNK reads;
+- 24 script hashes leaves 2 CHUNK reads, which is suitable only for mostly
+  not-found or known-small lookups;
+- 25 script hashes consumes the whole budget on INDEX reads and can only serve
+  an all-not-found batch.
+
+The implemented first cut keeps the request length public and fixed-fills only
+within that request's access budget. If real CHUNK demand exceeds the remaining
+budget, the server drains the remaining dummy chunk budget, persists the mutated
+ORAM state, and returns an error. A production wallet-sync planner should split
+such batches ahead of time or add an explicit continuation token.
+
 ## Engineering sequence
 
 1. Add direct table builders in the standalone ORAM repo:
@@ -114,10 +154,15 @@ The request should reject or split batches when `index_reads > access_budget`.
    the main repo worktree; built and smoked from the VPSBG test checkout.)
 5. Add a native direct batch request/response type in `pir-sdk-client` and
    `unified_server`. (Done in the main repo worktree.)
-6. Benchmark fixed budgets: 16, 32, 50, 64 ORAM accesses. (Pending beyond the
+6. Keep HarmonyPIR/DPF on their mmap-backed PBC databases. ORAM lookup is a
+   separate `REQ_ORAM_LOOKUP` path; legacy PBC-cuckoo ORAM should be only a
+   compatibility fallback for that ORAM opcode.
+7. Benchmark fixed budgets: 16, 32, 50, 64 ORAM accesses. (Pending beyond the
    50-access synthetic smoke.)
-7. Once direct lookup is verified, make PBC-cuckoo ORAM a compatibility mode
-   rather than the primary ORAM backend.
+8. Add client-side batch planning: choose `script_hashes.len()` so
+   `hash_fns * len + expected_chunks <= access_budget`, split otherwise, and
+   later replace overflow errors with continuation tokens if large wallets need
+   it.
 
 ## VPSBG smoke status
 

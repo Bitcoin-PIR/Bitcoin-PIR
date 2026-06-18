@@ -18,7 +18,7 @@ members = [
     "block_reader",
     "dev-issuer",
 ]
-exclude = ["electrum_plugin/harmonypir-python"]
+exclude = ["electrum_plugin/harmonypir-python", "vendor/bitcoinpir-oram"]
 
 [profile.release]
 opt-level = 3

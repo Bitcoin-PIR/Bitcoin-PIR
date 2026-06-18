@@ -281,7 +281,7 @@ cd /home/pir/BitcoinPIR
 
 ORAM_REPO=/home/pir/bitcoin-pir/oram \
 ORAM_LAYOUT=direct \
-POS_MAP_SIZES=82813,531673,885445,5061532 \
+POS_MAP_SIZES=82808,531611,885445,5061532 \
 BENCH_OPS=200 POS_MAP_WARMUP_OPS=20 \
 CARGO_JOBS=1 CARGO_TOOLCHAIN=stable \
 ./scripts/oram_vpsbg_test.sh pos-map-bench
@@ -296,11 +296,12 @@ Measured on VPSBG with the current direct dimensions:
 5,061,532-entry map, 19.308 MiB: scan ~= 812.0 us, scan+update ~= 1.72 ms
 ```
 
-These are, respectively, noncanonical DELTA index/chunk and FULL index/chunk
-position-map sizes with `pack=16`. The scan cost is low enough for the current
-50-access ORAM batch plan. It would become too expensive if every 40-byte chunk
-were its own ORAM logical block, because the CHUNK position map would grow by
-about 16x.
+These are, respectively, the staging DELTA index/chunk and FULL index/chunk
+position-map sizes with `pack=16`; the canonical DELTA sizes are nearly
+identical at 82,808 and 531,611 entries. The scan cost is low enough for the
+current 50-access ORAM batch plan. It would become too expensive if every
+40-byte chunk were its own ORAM logical block, because the CHUNK position map
+would grow by about 16x.
 
 The web ORAM adapter does not use the DPF/Harmony PBC batch planner. By
 default it sends one script hash per fixed-budget ORAM request, so each lookup

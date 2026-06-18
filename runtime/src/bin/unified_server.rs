@@ -1172,13 +1172,6 @@ impl CuckooOramTables {
         })
     }
 
-    fn table_for_level(&self, level: u8) -> Option<&CuckooOramTable> {
-        match level {
-            0 => Some(&self.index),
-            1 => Some(&self.chunk),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -2723,9 +2716,10 @@ struct UnifiedServerData {
     channel_keypair: pir_runtime_core::channel::ChannelKeypair,
     /// Pre-computed HarmonyPIR V2 hint pool (None if pool_size=0).
     hint_pool: Option<hint_pool::HintPool>,
-    /// Optional ORAM-backed INDEX/CHUNK cuckoo-table access indexed by db_id.
-    /// Currently used by HarmonyPIR's query phase. Hints, DPF scans, and
-    /// Merkle sibling levels remain mmap-backed.
+    /// Optional legacy ORAM-backed INDEX/CHUNK cuckoo-table access indexed by
+    /// db_id. This is kept only as a compatibility fallback for
+    /// REQ_ORAM_LOOKUP; HarmonyPIR queries stay mmap-backed so ORAM state
+    /// mutation cannot interfere with the ordinary PBC service path.
     #[cfg(feature = "cuckoo-oram")]
     cuckoo_oram: HashMap<u8, CuckooOramTables>,
     /// Optional direct-entry ORAM lookup tables indexed by db_id. These bypass
@@ -3233,14 +3227,6 @@ impl UnifiedServerData {
             Some(d) => d,
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
-        #[cfg(feature = "cuckoo-oram")]
-        if let Some(table) = self
-            .cuckoo_oram
-            .get(&query.db_id)
-            .and_then(|oram| oram.table_for_level(query.level))
-        {
-            return harmony_query_response_from_table(table, query);
-        }
         harmony_query_response(db, query)
     }
 
@@ -3249,14 +3235,6 @@ impl UnifiedServerData {
             Some(d) => d,
             None => return Response::Error(format!("unknown db_id {}", query.db_id)),
         };
-        #[cfg(feature = "cuckoo-oram")]
-        if let Some(table) = self
-            .cuckoo_oram
-            .get(&query.db_id)
-            .and_then(|oram| oram.table_for_level(query.level))
-        {
-            return harmony_batch_response_from_table(table, query);
-        }
         harmony_batch_response(db, query)
     }
 
