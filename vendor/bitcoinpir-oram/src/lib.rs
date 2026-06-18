@@ -10,6 +10,7 @@ pub mod block;
 pub mod circuit;
 pub mod ct;
 pub mod cuckoo;
+pub mod direct;
 pub mod error;
 pub mod merkle;
 pub mod oram;
@@ -28,6 +29,15 @@ pub use cuckoo::{
     locate_packed_cuckoo_bin, CircuitCuckooBinRead, CircuitCuckooBinReader, CuckooLevel,
     CuckooOramEstimate, CuckooOramSizing, CuckooPackedBlockReader, CuckooTableInfo,
     PackedCuckooBinLocation,
+};
+pub use direct::{
+    direct_index_candidate_bins, locate_packed_direct_item, CircuitDirectChunkReader,
+    CircuitDirectIndexReader, DirectChunkPackedBlockReader, DirectChunkRead, DirectIndexLookup,
+    DirectIndexPackedBlockReader, DirectLevel, DirectOramEstimate, DirectOramSizing,
+    DirectTableInfo, DirectTableMetadata, PackedDirectItemLocation, DIRECT_CHUNKS_INPUT_FILE,
+    DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS, DIRECT_INDEX_DEFAULT_LOAD_FACTOR,
+    DIRECT_INDEX_DEFAULT_SEED, DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_FILE,
+    DIRECT_INDEX_INPUT_RECORD_SIZE, DIRECT_INDEX_SLOT_SIZE, DIRECT_SCRIPT_HASH_SIZE,
 };
 pub use error::{Error, Result};
 pub use merkle::{MerklePageStore, TieredMerklePageStore, TieredMerkleState};

@@ -32,6 +32,13 @@
 #   /Volumes/Bitcoin/data/deltas/940611_944000/merkle_bucket_tree_tops.bin
 #   /Volumes/Bitcoin/data/deltas/940611_944000/merkle_bucket_roots.bin
 #   /Volumes/Bitcoin/data/deltas/940611_944000/merkle_bucket_root.bin
+#
+# Optional ORAM direct-input preservation:
+#   KEEP_ORAM_DIRECT_INPUTS=1 copies delta_index/chunks into
+#   /Volumes/Bitcoin/data/oram-inputs/deltas/<A>_<B>/ using the canonical
+#   direct ORAM names `utxo_chunks_index_nodust.bin` and
+#   `utxo_chunks_nodust.bin`. Keep them outside the runtime delta dir so
+#   MANIFEST.toml and server startup do not hash these ORAM-build inputs.
 
 set -euo pipefail
 
@@ -52,6 +59,7 @@ END_HEIGHT="$4"
 DATA_DIR="/Volumes/Bitcoin/data"
 INTERMEDIATE_DIR="$DATA_DIR/intermediate"
 DELTA_OUT_DIR="$DATA_DIR/deltas/${START_HEIGHT}_${END_HEIGHT}"
+ORAM_DIRECT_INPUT_DIR="${ORAM_DIRECT_INPUT_DIR:-$DATA_DIR/oram-inputs/deltas/${START_HEIGHT}_${END_HEIGHT}}"
 
 DELTA_INDEX_FILE="$INTERMEDIATE_DIR/delta_index_${START_HEIGHT}_${END_HEIGHT}.bin"
 DELTA_CHUNKS_FILE="$INTERMEDIATE_DIR/delta_chunks_${START_HEIGHT}_${END_HEIGHT}.bin"
@@ -95,6 +103,13 @@ echo ""
 # ── Step 2: pack into chunks + index ────────────────────────────────────────
 echo "[2/5] delta_gen_1 — packing into chunks + index..."
 ./target/release/delta_gen_1 "$START_HEIGHT" "$END_HEIGHT"
+if [[ "${KEEP_ORAM_DIRECT_INPUTS:-0}" == "1" ]]; then
+    echo "[2/5] Preserving direct ORAM inputs..."
+    mkdir -p "$ORAM_DIRECT_INPUT_DIR"
+    cp -f "$DELTA_INDEX_FILE" "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_index_nodust.bin"
+    cp -f "$DELTA_CHUNKS_FILE" "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_nodust.bin"
+    du -sh "$ORAM_DIRECT_INPUT_DIR"
+fi
 echo ""
 
 # If delta_anchor_<A>_<B>.bin exists (delta_gen_0 was run with

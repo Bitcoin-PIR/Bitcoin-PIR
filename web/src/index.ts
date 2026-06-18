@@ -106,6 +106,16 @@ export {
 } from './harmonypir-adapter.js';
 
 export {
+  DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST,
+  OramPirClientAdapter,
+  createOramPirClientAdapter,
+  oramJsonResultToQueryResult,
+  splitOramScriptHashBatches,
+  type OramLayoutInfo,
+  type OramPirClientConfig,
+} from './oram-adapter.js';
+
+export {
   AMD_TURIN_ARK_FINGERPRINT,
   AMD_TURIN_ARK_FINGERPRINT_HEX,
   DELTA_940611_948454_DB_PROOF_PIN,

@@ -37,7 +37,8 @@ use pir_sdk_client::attest::{AttestVerification, SevStatus};
 #[cfg(target_arch = "wasm32")]
 use pir_sdk_client::HintProgress;
 use pir_sdk_client::{
-    DatabaseProofPolicy, DpfClient, HarmonyClient, VerifiedDatabaseRoots, PRP_FASTPRP, PRP_HMR12,
+    DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, VerifiedDatabaseRoots, PRP_FASTPRP,
+    PRP_HMR12,
 };
 use wasm_bindgen::prelude::*;
 
@@ -193,28 +194,7 @@ fn sync_result_to_json(sync: &SyncResult) -> serde_json::Value {
     let results: Vec<serde_json::Value> = sync
         .results
         .iter()
-        .map(|r| match r {
-            None => serde_json::Value::Null,
-            Some(qr) => {
-                let entries: Vec<serde_json::Value> = qr
-                    .entries
-                    .iter()
-                    .map(|e| {
-                        serde_json::json!({
-                            "txid": hex_encode(&e.txid),
-                            "vout": e.vout,
-                            "amountSats": e.amount_sats,
-                        })
-                    })
-                    .collect();
-                serde_json::json!({
-                    "entries": entries,
-                    "isWhale": qr.is_whale,
-                    "totalBalance": qr.total_balance(),
-                    "merkleVerified": qr.merkle_verified,
-                })
-            }
-        })
+        .map(query_result_option_to_json)
         .collect();
 
     serde_json::json!({
@@ -222,6 +202,35 @@ fn sync_result_to_json(sync: &SyncResult) -> serde_json::Value {
         "syncedHeight": sync.synced_height,
         "wasFreshSync": sync.was_fresh_sync,
     })
+}
+
+fn query_result_option_to_json(result: &Option<QueryResult>) -> serde_json::Value {
+    match result {
+        None => serde_json::Value::Null,
+        Some(qr) => {
+            let entries: Vec<serde_json::Value> = qr
+                .entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "txid": hex_encode(&e.txid),
+                        "vout": e.vout,
+                        "amountSats": e.amount_sats,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "entries": entries,
+                "isWhale": qr.is_whale,
+                "totalBalance": qr.total_balance(),
+                "merkleVerified": qr.merkle_verified,
+            })
+        }
+    }
+}
+
+fn query_results_to_json(results: &[Option<QueryResult>]) -> Vec<serde_json::Value> {
+    results.iter().map(query_result_option_to_json).collect()
 }
 
 // ─── JS callback bridges (wasm32-only) ─────────────────────────────────────
@@ -2222,6 +2231,182 @@ impl WasmHarmonyClient {
     }
 }
 
+// ─── WasmOramClient ─────────────────────────────────────────────────────────
+
+/// Single-server ORAM client exposed to JavaScript.
+///
+/// This is the TEE backend path: JavaScript authenticates one attested server,
+/// upgrades that WebSocket to the encrypted channel, then sends plaintext
+/// script hashes inside the channel. Server-side ORAM hides the INDEX and
+/// CHUNK address trace. Unlike DPF/Harmony, this path does not use the PBC
+/// cuckoo-bucket layout on the client boundary; `queryBatch` returns decoded
+/// direct-entry CHUNK results.
+#[wasm_bindgen]
+pub struct WasmOramClient {
+    inner: OramClient,
+    attest_eph_seed: Option<[u8; 32]>,
+}
+
+#[wasm_bindgen]
+impl WasmOramClient {
+    /// Create a new ORAM client. No network I/O happens until `connect`.
+    #[wasm_bindgen(constructor)]
+    pub fn new(server_url: &str) -> Self {
+        Self {
+            inner: OramClient::new(server_url),
+            attest_eph_seed: None,
+        }
+    }
+
+    /// Open the WebSocket connection.
+    #[wasm_bindgen(js_name = connect)]
+    pub async fn connect(&mut self) -> Result<(), JsError> {
+        self.inner.connect().await.map_err(err_to_js)
+    }
+
+    /// Close the WebSocket connection and clear cached catalog state.
+    #[wasm_bindgen(js_name = disconnect)]
+    pub async fn disconnect(&mut self) -> Result<(), JsError> {
+        self.inner.disconnect().await.map_err(err_to_js)
+    }
+
+    /// True while the single ORAM server connection is live.
+    #[wasm_bindgen(getter, js_name = isConnected)]
+    pub fn is_connected(&self) -> bool {
+        self.inner.is_connected()
+    }
+
+    /// Fetch the database catalog from the ORAM server.
+    #[wasm_bindgen(js_name = fetchCatalog)]
+    pub async fn fetch_catalog(&mut self) -> Result<WasmDatabaseCatalog, JsError> {
+        let catalog = self.inner.fetch_catalog().await.map_err(err_to_js)?;
+        Ok(WasmDatabaseCatalog::from_native(catalog))
+    }
+
+    /// Fetch and verify the attested-builder proof bundle for `dbId`.
+    ///
+    /// Uses the same production policy pins and catalog cross-check as
+    /// `WasmDpfClient.verifyDatabaseProof` and
+    /// `WasmHarmonyClient.verifyDatabaseProof`.
+    #[wasm_bindgen(js_name = verifyDatabaseProof)]
+    pub async fn verify_database_proof(
+        &mut self,
+        db_id: u8,
+        expected_params_hash_hex: Option<String>,
+        allowed_builder_binary_sha256_hex: Option<String>,
+        allowed_builder_git_commit: Option<String>,
+    ) -> Result<WasmDatabaseProof, JsError> {
+        let policy = database_proof_policy(
+            expected_params_hash_hex,
+            allowed_builder_binary_sha256_hex,
+            allowed_builder_git_commit,
+        )?;
+        let roots = self
+            .inner
+            .verify_database_proof(db_id, &policy)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    /// Low-level ORAM batch query against one database.
+    ///
+    /// Returns a JSON array of length `N`, each element either `null`
+    /// (not found) or the same `QueryResult` JSON object returned by the
+    /// DPF/Harmony wrappers.
+    #[wasm_bindgen(js_name = queryBatch)]
+    pub async fn query_batch(
+        &mut self,
+        script_hashes: &Uint8Array,
+        db_id: u8,
+    ) -> Result<JsValue, JsError> {
+        let packed = script_hashes.to_vec();
+        let script_hashes = unpack_script_hashes(&packed).map_err(|e| JsError::new(&e))?;
+        let results = self
+            .inner
+            .query_batch(&script_hashes, db_id)
+            .await
+            .map_err(err_to_js)?;
+        Ok(to_js_object(&query_results_to_json(&results)))
+    }
+
+    /// Return the configured server URL.
+    #[wasm_bindgen(js_name = serverUrl)]
+    pub fn server_url(&self) -> String {
+        self.inner.server_url().to_owned()
+    }
+
+    /// Send REQ_ATTEST and return the parsed verification result.
+    ///
+    /// The nonce is bound to the X25519 ephemeral public key that
+    /// `upgradeToSecureChannel` will use next, matching the DPF/Harmony
+    /// bound-attestation flow.
+    #[wasm_bindgen(js_name = attest)]
+    pub async fn attest(&mut self) -> Result<WasmAttestVerification, JsError> {
+        let mut eph_seed = [0u8; 32];
+        let mut random_32 = [0u8; 32];
+        getrandom::getrandom(&mut eph_seed)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        getrandom::getrandom(&mut random_32)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        let client_eph_pub = pir_channel::eph_pub_from_seed(eph_seed);
+        let nonce = pir_core::attest::derive_attest_nonce(client_eph_pub, random_32);
+        let v = self.inner.attest(nonce).await.map_err(err_to_js)?;
+        self.attest_eph_seed = Some(eph_seed);
+        Ok(WasmAttestVerification { inner: v })
+    }
+
+    /// Send REQ_ANNOUNCE and return the parsed operator-signed identity
+    /// bundle.
+    #[wasm_bindgen(js_name = announce)]
+    pub async fn announce(&mut self) -> Result<WasmAnnounceVerification, JsError> {
+        let v = self.inner.announce().await.map_err(err_to_js)?;
+        Ok(WasmAnnounceVerification { inner: v })
+    }
+
+    /// Wrap the single server connection with the encrypted-channel transport.
+    ///
+    /// `serverStaticPub` must be the 32-byte key from a verified attestation
+    /// or announcement. `attest()` must be called first so the channel
+    /// ephemeral key is bound into the SEV-SNP report nonce.
+    #[wasm_bindgen(js_name = upgradeToSecureChannel)]
+    pub async fn upgrade_to_secure_channel(
+        &mut self,
+        server_static_pub: &[u8],
+    ) -> Result<(), JsError> {
+        let server_pub: [u8; 32] = server_static_pub
+            .try_into()
+            .map_err(|_| JsError::new("serverStaticPub must be exactly 32 bytes"))?;
+        let eph_seed = self.attest_eph_seed.ok_or_else(|| {
+            JsError::new(
+                "upgradeToSecureChannel: must call attest() first (eph_seed binding required)",
+            )
+        })?;
+        let mut hs_nonce = [0u8; 32];
+        getrandom::getrandom(&mut hs_nonce)
+            .map_err(|e| JsError::new(&format!("getrandom: {}", e)))?;
+        self.inner
+            .upgrade_to_secure_channel_with_seeds(server_pub, eph_seed, hs_nonce)
+            .await
+            .map_err(err_to_js)?;
+        self.attest_eph_seed = None;
+        Ok(())
+    }
+
+    /// Install a [`WasmAtomicMetrics`] recorder.
+    #[wasm_bindgen(js_name = setMetricsRecorder)]
+    pub fn set_metrics_recorder(&mut self, metrics: &WasmAtomicMetrics) {
+        self.inner
+            .set_metrics_recorder(Some(metrics.recorder_handle()));
+    }
+
+    /// Uninstall the currently-registered metrics recorder.
+    #[wasm_bindgen(js_name = clearMetricsRecorder)]
+    pub fn clear_metrics_recorder(&mut self) {
+        self.inner.set_metrics_recorder(None);
+    }
+}
+
 // ─── PRP backend constants (re-exported as JS number constants) ─────────────
 
 /// PRP backend constant for the reference `HMR12` implementation.
@@ -2287,6 +2472,13 @@ mod tests {
     fn wasm_harmony_client_construct_and_introspect() {
         let client = WasmHarmonyClient::new("ws://hint:1", "ws://query:2");
         assert!(!client.is_connected());
+    }
+
+    #[test]
+    fn wasm_oram_client_construct_and_introspect() {
+        let client = WasmOramClient::new("ws://oram:1");
+        assert!(!client.is_connected());
+        assert_eq!(client.inner.server_url(), "ws://oram:1");
     }
 
     // ─── Session 5: WasmHarmonyClient surface tests (native-safe only) ──────
