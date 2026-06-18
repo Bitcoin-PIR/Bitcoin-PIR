@@ -119,7 +119,7 @@ impl DirectTableInfo {
 
         let path = path.as_ref();
         let file_bytes = fs::metadata(path)?.len();
-        if file_bytes as usize % DIRECT_INDEX_INPUT_RECORD_SIZE != 0 {
+        if !(file_bytes as usize).is_multiple_of(DIRECT_INDEX_INPUT_RECORD_SIZE) {
             return Err(Error::InvalidInput(format!(
                 "direct index file {} has {} bytes, not a multiple of {}",
                 path.display(),
@@ -148,7 +148,7 @@ impl DirectTableInfo {
     pub fn from_chunks_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let file_bytes = fs::metadata(path)?.len();
-        if file_bytes as usize % DIRECT_CHUNK_RECORD_SIZE != 0 {
+        if !(file_bytes as usize).is_multiple_of(DIRECT_CHUNK_RECORD_SIZE) {
             return Err(Error::InvalidInput(format!(
                 "direct chunks file {} has {} bytes, not a multiple of {}",
                 path.display(),
@@ -1388,7 +1388,7 @@ mod tests {
     fn write_chunks(path: &Path, chunks: usize) {
         let mut file = File::create(path).unwrap();
         for idx in 0..chunks {
-            file.write_all(&vec![idx as u8; DIRECT_CHUNK_RECORD_SIZE])
+            file.write_all(&[idx as u8; DIRECT_CHUNK_RECORD_SIZE])
                 .unwrap();
         }
     }
