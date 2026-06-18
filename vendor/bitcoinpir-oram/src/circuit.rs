@@ -658,6 +658,19 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
         self.access(logical_id, |_| {})
     }
 
+    /// Perform one dummy ORAM access on a random leaf path.
+    ///
+    /// This has the online trace shape of a real path access and records the
+    /// same public eviction debt, but it does not select or reassign any
+    /// logical block. Callers use this for explicit padded/empty query slots:
+    /// the access schedule remains fixed while no user key is interpreted.
+    pub fn dummy_access(&mut self) -> Result<()> {
+        let leaf = random_leaf(&self.params, &mut self.rng);
+        self.read_and_rewrite_path(leaf)?;
+        self.schedule.record_access()?;
+        self.check_stash()
+    }
+
     /// Read and update a logical block. Eviction is delayed until
     /// `drain_evictions` is called.
     pub fn access<F>(&mut self, logical_id: u64, update: F) -> Result<Vec<u8>>
@@ -753,6 +766,21 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
                 payload_bucket.encode(self.params.bucket_size, self.params.block_size)?;
             self.meta_store.write_page(node_idx, &encoded_meta)?;
             self.payload_store.write_page(node_idx, &encoded_payload)?;
+        }
+        Ok(())
+    }
+
+    fn read_and_rewrite_path(&mut self, leaf: u32) -> Result<()> {
+        let path = self.params.path_nodes(leaf);
+        let mut meta_buf = vec![0u8; circuit_meta_page_bytes(self.params.bucket_size)];
+        let mut payload_buf =
+            vec![0u8; circuit_payload_page_bytes(self.params.bucket_size, self.params.block_size)];
+
+        for node_idx in path {
+            self.meta_store.read_page(node_idx, &mut meta_buf)?;
+            self.payload_store.read_page(node_idx, &mut payload_buf)?;
+            self.meta_store.write_page(node_idx, &meta_buf)?;
+            self.payload_store.write_page(node_idx, &payload_buf)?;
         }
         Ok(())
     }
@@ -1548,5 +1576,24 @@ mod tests {
         assert!(payload_evict[params.height()..]
             .iter()
             .all(|event| matches!(event, TraceEvent::Write(_))));
+
+        let pos_map_before_dummy = oram.position_map().to_vec();
+        assert_eq!(oram.pending_evictions().unwrap(), 1);
+        oram.meta_store.take_trace();
+        oram.payload_store.take_trace();
+
+        oram.dummy_access().unwrap();
+        assert_eq!(oram.position_map(), pos_map_before_dummy.as_slice());
+        assert_eq!(oram.pending_evictions().unwrap(), 3);
+        let meta_dummy = oram.meta_store.take_trace();
+        let payload_dummy = oram.payload_store.take_trace();
+        assert_eq!(meta_dummy.len(), params.height() * 2);
+        assert_eq!(payload_dummy.len(), params.height() * 2);
+        assert!(meta_dummy
+            .chunks_exact(2)
+            .all(|chunk| matches!(chunk, [TraceEvent::Read(_), TraceEvent::Write(_)])));
+        assert!(payload_dummy
+            .chunks_exact(2)
+            .all(|chunk| matches!(chunk, [TraceEvent::Read(_), TraceEvent::Write(_)])));
     }
 }

@@ -836,6 +836,21 @@ impl<M: PageStore, P: PageStore> CircuitDirectIndexReader<M, P> {
             drained_evictions,
         })
     }
+
+    /// Spend one fixed-shape INDEX candidate read on a random dummy path.
+    pub fn read_dummy_candidate(&mut self, drain_per_read: u64) -> Result<u64> {
+        self.oram.dummy_access()?;
+        self.oram.drain_evictions(drain_per_read)
+    }
+
+    /// Spend the same number of INDEX reads as a real direct lookup.
+    pub fn lookup_dummy(&mut self, drain_per_read: u64) -> Result<u64> {
+        let mut drained_evictions = 0u64;
+        for _ in 0..self.metadata.hash_fns {
+            drained_evictions += self.read_dummy_candidate(drain_per_read)?;
+        }
+        Ok(drained_evictions)
+    }
 }
 
 /// Result of reading one direct chunk through Circuit ORAM.
@@ -910,6 +925,12 @@ impl<M: PageStore, P: PageStore> CircuitDirectChunkReader<M, P> {
             payload,
             drained_evictions,
         })
+    }
+
+    /// Spend one fixed-shape CHUNK read on a random dummy path.
+    pub fn read_dummy(&mut self, drain_per_access: u64) -> Result<u64> {
+        self.oram.dummy_access()?;
+        self.oram.drain_evictions(drain_per_access)
     }
 }
 
