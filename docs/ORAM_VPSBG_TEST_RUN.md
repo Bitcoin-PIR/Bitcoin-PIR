@@ -173,16 +173,17 @@ ORAM_DB_SPECS='0=/home/pir/data/oram/checkpoints/948454-pack16-z2-div2-stash128-
 SMOKE_DB_IDS='0 1' \
 PACK=16 DRAIN_PER_ACCESS=2 CACHE_LEVELS=0 \
 AUTH_STORE=1 \
-PATCH_LOCAL_ORAM=1 \
 SERVER_STARTUP_WAIT_SECS=240 \
 PORT=18091 \
 CARGO_JOBS=1 \
 ./scripts/oram_vpsbg_test.sh server-smoke
 ```
 
-`PATCH_LOCAL_ORAM=1` temporarily patches the runtime's `bitcoinpir-oram`
-dependency to `ORAM_REPO` for the smoke build and restores `.cargo/config.toml`
-and `Cargo.lock` before exit.
+The `bitcoinpir-oram` crate is vendored through `.cargo/config.toml`, so this
+build does not require GitHub credentials on VPSBG. For local ORAM repo
+experiments, `PATCH_LOCAL_ORAM=1` temporarily patches the runtime dependency to
+`ORAM_REPO` for the smoke build and restores `.cargo/config.toml` and
+`Cargo.lock` before exit.
 
 Expected evidence:
 
