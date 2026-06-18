@@ -165,12 +165,17 @@ The noncanonical DELTA image is not suitable for production db_id=1 while
 Runtime status:
 
 ```text
-As of 2026-06-18, live pir-vpsbg is back on the ordinary mmap-backed
-DPF/Harmony query path; legacy --cuckoo-oram-* flags were removed from
-/etc/systemd/system/pir-vpsbg.service.
+As of 2026-06-18 12:40 UTC, live pir-vpsbg runs the merged main binary
+with direct ORAM enabled for db_id=0 and db_id=1. DPF/Harmony query traffic
+still uses the ordinary mmap-backed PBC database path; ORAM is only the
+dedicated encrypted REQ_ORAM_LOOKUP path.
 
-Direct-capable runtime was built and smoked separately from:
-  /home/pir/BitcoinPIR-oram-direct-test
+The VPSBG base unit has no legacy --cuckoo-oram-* flags. Direct ORAM is
+enabled by the local drop-in:
+  /etc/systemd/system/pir-vpsbg.service.d/10-direct-oram.conf
+
+The direct ORAM image directories are owned by pir:pir because ORAM reads
+mutate page/state/auth-state files.
 ```
 
 ## Safety Boundary
@@ -423,7 +428,8 @@ $LOG_DIR/server-smoke-encrypted-db1.log
 
 ## Production Flags
 
-The production service should use explicit per-db flags:
+The production service uses explicit per-db flags via
+`/etc/systemd/system/pir-vpsbg.service.d/10-direct-oram.conf`:
 
 ```bash
 --direct-oram-db 0=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth
