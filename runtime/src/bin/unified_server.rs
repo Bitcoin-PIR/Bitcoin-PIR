@@ -47,13 +47,17 @@ use onionpir::{self, Server as PirServer, KeyStore};
 #[cfg(feature = "cuckoo-oram")]
 use bitcoinpir_oram::{
     circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitCuckooBinReader,
-    CircuitOram, CircuitOramState, CircuitStoreAuthState, CuckooLevel, CuckooTableInfo,
+    CircuitDirectChunkReader, CircuitDirectIndexReader, CircuitOram, CircuitOramState,
+    CircuitStoreAuthState, CuckooLevel, CuckooTableInfo, DirectLevel, DirectTableMetadata,
     FilePageStore, FrontCachedPageStore, OramParams, PageStore, TieredMerklePageStore,
-    TieredMerkleState, AEAD_OVERHEAD,
+    TieredMerkleState, DIRECT_CHUNK_RECORD_SIZE, AEAD_OVERHEAD,
 };
 
 #[cfg(all(feature = "cuckoo-oram", test))]
-use bitcoinpir_oram::CuckooPackedBlockReader;
+use bitcoinpir_oram::{
+    CuckooPackedBlockReader, DirectChunkPackedBlockReader, DirectIndexPackedBlockReader,
+    DirectTableInfo, DIRECT_INDEX_INPUT_RECORD_SIZE,
+};
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
@@ -191,6 +195,27 @@ struct CliArgs {
     cuckoo_oram_auth_store: bool,
     /// Do not persist trusted ORAM state after query responses.
     cuckoo_oram_no_save: bool,
+    /// Optional direct-entry ORAM image directory for db_id=0.
+    direct_oram_dir: Option<PathBuf>,
+    /// Optional per-database direct-entry ORAM image directories.
+    /// Repeatable as `--direct-oram-db <db_id>=<dir>`.
+    direct_oram_dbs: Vec<(u8, PathBuf)>,
+    /// Public deterministic evictions drained after each direct ORAM read.
+    direct_oram_drain_per_access: u64,
+    /// Fixed direct ORAM access budget per ORAM lookup request.
+    direct_oram_access_budget: usize,
+    /// Whether direct ORAM metadata/payload page files are AEAD wrapped.
+    direct_oram_encrypted: bool,
+    /// 32-byte hex key for encrypted direct ORAM page files.
+    direct_oram_key_hex: Option<String>,
+    /// 32-byte hex key for encrypted direct ORAM controller state.
+    direct_oram_state_key_hex: Option<String>,
+    /// Public top-tree levels cached in trusted memory.
+    direct_oram_cache_levels: usize,
+    /// Authenticate disk-backed direct ORAM page images with split Merkle stores.
+    direct_oram_auth_store: bool,
+    /// Do not persist trusted direct ORAM state after query responses.
+    direct_oram_no_save: bool,
 }
 
 fn parse_cuckoo_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
@@ -205,6 +230,19 @@ fn parse_cuckoo_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
         .map_err(|e| format!("invalid --cuckoo-oram-db db_id `{}`: {}", db_id_raw, e))?;
     if dir_raw.is_empty() {
         return Err("--cuckoo-oram-db requires a non-empty directory".into());
+    }
+    Ok((db_id, PathBuf::from(dir_raw)))
+}
+
+fn parse_direct_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
+    let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
+        return Err("--direct-oram-db expects <db_id>=<dir>".into());
+    };
+    let db_id = db_id_raw
+        .parse::<u8>()
+        .map_err(|e| format!("invalid --direct-oram-db db_id `{}`: {}", db_id_raw, e))?;
+    if dir_raw.is_empty() {
+        return Err("--direct-oram-db requires a non-empty directory".into());
     }
     Ok((db_id, PathBuf::from(dir_raw)))
 }
@@ -247,6 +285,16 @@ fn parse_args() -> CliArgs {
     let mut cuckoo_oram_cache_levels: usize = 0;
     let mut cuckoo_oram_auth_store = false;
     let mut cuckoo_oram_no_save = false;
+    let mut direct_oram_dir: Option<PathBuf> = None;
+    let mut direct_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
+    let mut direct_oram_drain_per_access: u64 = 2;
+    let mut direct_oram_access_budget: usize = 50;
+    let mut direct_oram_encrypted = false;
+    let mut direct_oram_key_hex: Option<String> = None;
+    let mut direct_oram_state_key_hex: Option<String> = None;
+    let mut direct_oram_cache_levels: usize = 0;
+    let mut direct_oram_auth_store = false;
+    let mut direct_oram_no_save = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -420,12 +468,62 @@ fn parse_args() -> CliArgs {
             "--cuckoo-oram-no-save" | "--harmony-oram-no-save" => {
                 cuckoo_oram_no_save = true;
             }
+            "--direct-oram-dir" => {
+                if let Some(p) = args.get(i + 1) {
+                    direct_oram_dir = Some(PathBuf::from(p));
+                }
+                i += 1;
+            }
+            "--direct-oram-db" => {
+                let spec = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--direct-oram-db requires <db_id>=<dir>");
+                });
+                let parsed = parse_direct_oram_db_arg(spec).unwrap_or_else(|e| fatal_cli(e));
+                direct_oram_dbs.push(parsed);
+                i += 1;
+            }
+            "--direct-oram-drain-per-access" => {
+                direct_oram_drain_per_access =
+                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2);
+                i += 1;
+            }
+            "--direct-oram-access-budget" => {
+                direct_oram_access_budget =
+                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(50);
+                i += 1;
+            }
+            "--direct-oram-encrypted" => {
+                direct_oram_encrypted = true;
+            }
+            "--direct-oram-key-hex" => {
+                if let Some(hex) = args.get(i + 1) {
+                    direct_oram_key_hex = Some(hex.clone());
+                }
+                i += 1;
+            }
+            "--direct-oram-state-key-hex" => {
+                if let Some(hex) = args.get(i + 1) {
+                    direct_oram_state_key_hex = Some(hex.clone());
+                }
+                i += 1;
+            }
+            "--direct-oram-cache-levels" => {
+                direct_oram_cache_levels =
+                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                i += 1;
+            }
+            "--direct-oram-auth-store" => {
+                direct_oram_auth_store = true;
+            }
+            "--direct-oram-no-save" => {
+                direct_oram_no_save = true;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_dbs, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_auth_store, cuckoo_oram_no_save }
+    CliArgs { port, data_dir, role, warmup, config_path, checkpoints, deltas, admin_pubkey_hex, disable_onion, vcek_dir, pool_size, pool_dir, require_arc, arc_key_path, require_cashu, cashu_keysets, serve_hints, serve_queries, identity_key_path, identity_cert_path, identity_server_id, cuckoo_oram_dir, cuckoo_oram_dbs, cuckoo_oram_pack, cuckoo_oram_drain_per_access, cuckoo_oram_encrypted, cuckoo_oram_key_hex, cuckoo_oram_state_key_hex, cuckoo_oram_cache_levels, cuckoo_oram_auth_store, cuckoo_oram_no_save, direct_oram_dir, direct_oram_dbs, direct_oram_drain_per_access, direct_oram_access_budget, direct_oram_encrypted, direct_oram_key_hex, direct_oram_state_key_hex, direct_oram_cache_levels, direct_oram_auth_store, direct_oram_no_save }
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -1083,6 +1181,593 @@ impl CuckooOramTables {
     }
 }
 
+#[cfg(feature = "cuckoo-oram")]
+type DirectOramIndexReader = CircuitDirectIndexReader<CuckooOramStore, CuckooOramStore>;
+
+#[cfg(feature = "cuckoo-oram")]
+type DirectOramChunkReader = CircuitDirectChunkReader<CuckooOramStore, CuckooOramStore>;
+
+#[cfg(feature = "cuckoo-oram")]
+struct DirectOramIndexTable {
+    reader: std::sync::Mutex<DirectOramIndexReader>,
+    poisoned: std::sync::Mutex<Option<String>>,
+    dirty: std::sync::atomic::AtomicBool,
+    hash_fns: usize,
+    state_path: PathBuf,
+    auth_state_path: Option<PathBuf>,
+    state_key: Option<[u8; 32]>,
+    drain_per_access: u64,
+    save_state: bool,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+struct DirectOramChunkTable {
+    reader: std::sync::Mutex<DirectOramChunkReader>,
+    poisoned: std::sync::Mutex<Option<String>>,
+    dirty: std::sync::atomic::AtomicBool,
+    total_chunks: usize,
+    state_path: PathBuf,
+    auth_state_path: Option<PathBuf>,
+    state_key: Option<[u8; 32]>,
+    drain_per_access: u64,
+    save_state: bool,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+struct DirectOramTables {
+    index: DirectOramIndexTable,
+    chunk: DirectOramChunkTable,
+    access_budget: usize,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl DirectOramTables {
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        oram_dir: &std::path::Path,
+        drain_per_access: u64,
+        access_budget: usize,
+        encrypted: bool,
+        key_hex: Option<&str>,
+        state_key_hex: Option<&str>,
+        cache_levels: usize,
+        auth_store: bool,
+        save_state: bool,
+    ) -> Result<Self, String> {
+        if access_budget == 0 {
+            return Err("--direct-oram-access-budget must be > 0".into());
+        }
+        Ok(Self {
+            index: DirectOramIndexTable::open(
+                oram_dir,
+                drain_per_access,
+                encrypted,
+                key_hex,
+                state_key_hex,
+                cache_levels,
+                auth_store,
+                save_state,
+            )?,
+            chunk: DirectOramChunkTable::open(
+                oram_dir,
+                drain_per_access,
+                encrypted,
+                key_hex,
+                state_key_hex,
+                cache_levels,
+                auth_store,
+                save_state,
+            )?,
+            access_budget,
+        })
+    }
+
+    fn lookup_batch(
+        &self,
+        script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+    ) -> Result<Vec<DirectNativeLookupResult>, String> {
+        direct_native_lookup_batch(self, script_hashes)
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl DirectOramIndexTable {
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        oram_dir: &std::path::Path,
+        drain_per_access: u64,
+        encrypted: bool,
+        key_hex: Option<&str>,
+        state_key_hex: Option<&str>,
+        cache_levels: usize,
+        auth_store: bool,
+        save_state: bool,
+    ) -> Result<Self, String> {
+        let paths = DirectOramPaths::new(oram_dir, DirectLevel::Index);
+        let metadata = DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
+        if metadata.level != DirectLevel::Index {
+            return Err(format!(
+                "direct index metadata {} has level {}",
+                paths.metadata.display(),
+                metadata.level
+            ));
+        }
+        let state_key = parse_optional_32_hex(state_key_hex)?;
+        let loaded = load_circuit_oram_state(&paths.state, state_key)?;
+        let params = loaded.params.clone();
+        let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
+        let (meta_store, payload_store) = open_existing_direct_oram_stores(
+            &paths,
+            DirectLevel::Index,
+            &params,
+            encrypted,
+            key_hex,
+            cached_pages,
+            auth_store,
+            state_key,
+        )?;
+        let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
+            .map_err(|e| e.to_string())?;
+        let reader =
+            CircuitDirectIndexReader::new(metadata.clone(), oram).map_err(|e| e.to_string())?;
+
+        println!(
+            "  Direct ORAM index: dir={}, items={}, pack={}, logical_blocks={}, hash_fns={}, cache_levels={}, auth_store={}, save_state={}",
+            oram_dir.display(),
+            metadata.total_items,
+            metadata.items_per_block,
+            reader.oram().params().logical_blocks,
+            metadata.hash_fns,
+            cache_levels,
+            auth_store,
+            save_state,
+        );
+
+        Ok(Self {
+            reader: std::sync::Mutex::new(reader),
+            poisoned: std::sync::Mutex::new(None),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            hash_fns: metadata.hash_fns,
+            state_path: paths.state,
+            auth_state_path: auth_store.then_some(paths.auth_state),
+            state_key,
+            drain_per_access,
+            save_state,
+        })
+    }
+
+    fn lookup(
+        &self,
+        script_hash: [u8; pir_core::params::SCRIPT_HASH_SIZE],
+    ) -> Result<bitcoinpir_oram::DirectIndexLookup, String> {
+        self.check_not_poisoned()?;
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| "Direct ORAM index reader mutex poisoned".to_string())?;
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+        match reader.lookup(script_hash, self.drain_per_access) {
+            Ok(got) => Ok(got),
+            Err(e) => {
+                let msg = format!("Direct ORAM index lookup failed after mutation: {}", e);
+                self.poison(msg.clone());
+                Err(msg)
+            }
+        }
+    }
+
+    fn finish_request(&self) -> Result<(), String> {
+        finish_direct_oram_request(
+            "index",
+            &self.reader,
+            &self.dirty,
+            &self.poisoned,
+            &self.state_path,
+            self.auth_state_path.as_deref(),
+            self.state_key,
+            self.save_state,
+        )
+    }
+
+    fn abort_request(&self, reason: &str) {
+        self.poison_after_dirty(format!("request aborted after direct index mutation: {}", reason));
+    }
+
+    fn check_not_poisoned(&self) -> Result<(), String> {
+        check_direct_poisoned("index", &self.poisoned)
+    }
+
+    fn poison(&self, reason: impl Into<String>) {
+        poison_direct("index", &self.poisoned, reason);
+    }
+
+    fn poison_after_dirty(&self, reason: impl Into<String>) {
+        if self.dirty.load(std::sync::atomic::Ordering::SeqCst) {
+            self.poison(reason);
+        }
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl DirectOramChunkTable {
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        oram_dir: &std::path::Path,
+        drain_per_access: u64,
+        encrypted: bool,
+        key_hex: Option<&str>,
+        state_key_hex: Option<&str>,
+        cache_levels: usize,
+        auth_store: bool,
+        save_state: bool,
+    ) -> Result<Self, String> {
+        let paths = DirectOramPaths::new(oram_dir, DirectLevel::Chunk);
+        let metadata = DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
+        if metadata.level != DirectLevel::Chunk {
+            return Err(format!(
+                "direct chunk metadata {} has level {}",
+                paths.metadata.display(),
+                metadata.level
+            ));
+        }
+        let state_key = parse_optional_32_hex(state_key_hex)?;
+        let loaded = load_circuit_oram_state(&paths.state, state_key)?;
+        let params = loaded.params.clone();
+        let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
+        let (meta_store, payload_store) = open_existing_direct_oram_stores(
+            &paths,
+            DirectLevel::Chunk,
+            &params,
+            encrypted,
+            key_hex,
+            cached_pages,
+            auth_store,
+            state_key,
+        )?;
+        let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
+            .map_err(|e| e.to_string())?;
+        let reader =
+            CircuitDirectChunkReader::new(metadata.clone(), oram).map_err(|e| e.to_string())?;
+
+        println!(
+            "  Direct ORAM chunk: dir={}, chunks={}, pack={}, logical_blocks={}, cache_levels={}, auth_store={}, save_state={}",
+            oram_dir.display(),
+            metadata.total_items,
+            metadata.items_per_block,
+            reader.oram().params().logical_blocks,
+            cache_levels,
+            auth_store,
+            save_state,
+        );
+
+        Ok(Self {
+            reader: std::sync::Mutex::new(reader),
+            poisoned: std::sync::Mutex::new(None),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            total_chunks: metadata.total_items,
+            state_path: paths.state,
+            auth_state_path: auth_store.then_some(paths.auth_state),
+            state_key,
+            drain_per_access,
+            save_state,
+        })
+    }
+
+    fn read_chunk(&self, chunk_id: usize) -> Result<Vec<u8>, String> {
+        self.check_not_poisoned()?;
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| "Direct ORAM chunk reader mutex poisoned".to_string())?;
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+        let got = match reader.read_chunk(chunk_id, self.drain_per_access) {
+            Ok(got) => got,
+            Err(e) => {
+                let msg = format!("Direct ORAM chunk {} read failed after mutation: {}", chunk_id, e);
+                self.poison(msg.clone());
+                return Err(msg);
+            }
+        };
+        if got.payload.len() != DIRECT_CHUNK_RECORD_SIZE {
+            let msg = format!(
+                "Direct ORAM chunk {} returned {} bytes, expected {}",
+                chunk_id,
+                got.payload.len(),
+                DIRECT_CHUNK_RECORD_SIZE
+            );
+            self.poison(msg.clone());
+            return Err(msg);
+        }
+        Ok(got.payload)
+    }
+
+    fn read_dummy(&self) -> Result<(), String> {
+        if self.total_chunks == 0 {
+            return Err("direct ORAM chunk table is empty; cannot issue dummy read".into());
+        }
+        self.read_chunk(0).map(|_| ())
+    }
+
+    fn finish_request(&self) -> Result<(), String> {
+        finish_direct_oram_request(
+            "chunk",
+            &self.reader,
+            &self.dirty,
+            &self.poisoned,
+            &self.state_path,
+            self.auth_state_path.as_deref(),
+            self.state_key,
+            self.save_state,
+        )
+    }
+
+    fn abort_request(&self, reason: &str) {
+        self.poison_after_dirty(format!("request aborted after direct chunk mutation: {}", reason));
+    }
+
+    fn check_not_poisoned(&self) -> Result<(), String> {
+        check_direct_poisoned("chunk", &self.poisoned)
+    }
+
+    fn poison(&self, reason: impl Into<String>) {
+        poison_direct("chunk", &self.poisoned, reason);
+    }
+
+    fn poison_after_dirty(&self, reason: impl Into<String>) {
+        if self.dirty.load(std::sync::atomic::Ordering::SeqCst) {
+            self.poison(reason);
+        }
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+trait DirectReaderState {
+    fn flush_oram(&mut self) -> Result<(), String>;
+    fn snapshot_oram(&self) -> CircuitOramState;
+    fn auth_state(&self) -> Option<CircuitStoreAuthState>;
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl DirectReaderState for DirectOramIndexReader {
+    fn flush_oram(&mut self) -> Result<(), String> {
+        self.oram_mut().flush().map_err(|e| e.to_string())
+    }
+
+    fn snapshot_oram(&self) -> CircuitOramState {
+        self.oram().snapshot()
+    }
+
+    fn auth_state(&self) -> Option<CircuitStoreAuthState> {
+        self.oram().store_auth_state()
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl DirectReaderState for DirectOramChunkReader {
+    fn flush_oram(&mut self) -> Result<(), String> {
+        self.oram_mut().flush().map_err(|e| e.to_string())
+    }
+
+    fn snapshot_oram(&self) -> CircuitOramState {
+        self.oram().snapshot()
+    }
+
+    fn auth_state(&self) -> Option<CircuitStoreAuthState> {
+        self.oram().store_auth_state()
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+#[allow(clippy::too_many_arguments)]
+fn finish_direct_oram_request<R: DirectReaderState>(
+    label: &str,
+    reader: &std::sync::Mutex<R>,
+    dirty: &std::sync::atomic::AtomicBool,
+    poisoned: &std::sync::Mutex<Option<String>>,
+    state_path: &std::path::Path,
+    auth_state_path: Option<&std::path::Path>,
+    state_key: Option<[u8; 32]>,
+    save_state: bool,
+) -> Result<(), String> {
+    check_direct_poisoned(label, poisoned)?;
+    if !dirty.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
+    if !save_state {
+        dirty.store(false, std::sync::atomic::Ordering::SeqCst);
+        return Ok(());
+    }
+
+    let mut reader = reader
+        .lock()
+        .map_err(|_| format!("Direct ORAM {label} reader mutex poisoned"))?;
+    if let Err(e) = reader.flush_oram() {
+        let msg = format!("Direct ORAM {label} flush failed after mutation: {e}");
+        drop(reader);
+        poison_direct(label, poisoned, msg.clone());
+        return Err(msg);
+    }
+    let snapshot = reader.snapshot_oram();
+    let auth_snapshot = match auth_state_path {
+        Some(_) => match reader.auth_state() {
+            Some(state) => Some(state),
+            None => {
+                let msg = format!("Direct ORAM {label} auth-store state unavailable after mutation");
+                drop(reader);
+                poison_direct(label, poisoned, msg.clone());
+                return Err(msg);
+            }
+        },
+        None => None,
+    };
+    drop(reader);
+
+    if let Err(e) = save_circuit_oram_state(&snapshot, state_path, state_key) {
+        let msg = format!("Direct ORAM {label} state save failed after mutation: {e}");
+        poison_direct(label, poisoned, msg.clone());
+        return Err(msg);
+    }
+    if let (Some(path), Some(auth_snapshot)) = (auth_state_path, auth_snapshot.as_ref()) {
+        if let Err(e) = save_circuit_store_auth(auth_snapshot, path, state_key) {
+            let msg = format!("Direct ORAM {label} auth state save failed after mutation: {e}");
+            poison_direct(label, poisoned, msg.clone());
+            return Err(msg);
+        }
+    }
+    dirty.store(false, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn check_direct_poisoned(
+    label: &str,
+    poisoned: &std::sync::Mutex<Option<String>>,
+) -> Result<(), String> {
+    let poisoned = poisoned
+        .lock()
+        .map_err(|_| format!("Direct ORAM {label} poison mutex poisoned"))?;
+    if let Some(reason) = poisoned.as_ref() {
+        Err(format!("Direct ORAM {label} table is poisoned: {reason}"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn poison_direct(
+    label: &str,
+    poisoned: &std::sync::Mutex<Option<String>>,
+    reason: impl Into<String>,
+) {
+    let reason = reason.into();
+    eprintln!("Direct ORAM {label} table poisoned: {reason}");
+    if let Ok(mut poisoned) = poisoned.lock() {
+        if poisoned.is_none() {
+            *poisoned = Some(reason);
+        }
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DirectNativeLookupResult {
+    found: bool,
+    whale: bool,
+    start_chunk_id: Option<u32>,
+    num_chunks: u8,
+    raw_chunk_data: Vec<u8>,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn direct_native_lookup_batch(
+    tables: &DirectOramTables,
+    script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+) -> Result<Vec<DirectNativeLookupResult>, String> {
+    let index_budget = tables
+        .index
+        .hash_fns
+        .checked_mul(script_hashes.len())
+        .ok_or_else(|| "direct ORAM index budget overflow".to_string())?;
+    if index_budget > tables.access_budget {
+        return Err(format!(
+            "direct ORAM access budget {} too small for {} script hashes and {} index reads each",
+            tables.access_budget,
+            script_hashes.len(),
+            tables.index.hash_fns,
+        ));
+    }
+    let chunk_budget = tables.access_budget - index_budget;
+
+    let mut lookups = Vec::with_capacity(script_hashes.len());
+    for &script_hash in script_hashes {
+        match tables.index.lookup(script_hash) {
+            Ok(lookup) => lookups.push(lookup),
+            Err(e) => {
+                tables.index.abort_request(&e);
+                tables.chunk.abort_request(&e);
+                return Err(e);
+            }
+        }
+    }
+
+    let mut chunk_plan: Vec<(usize, u32)> = Vec::new();
+    let mut out = Vec::with_capacity(lookups.len());
+    for lookup in &lookups {
+        let found = lookup.found;
+        let whale = found && lookup.num_chunks == 0;
+        if found && lookup.num_chunks > 0 {
+            let end = match lookup.start_chunk_id.checked_add(lookup.num_chunks as u32) {
+                Some(end) => end,
+                None => {
+                    let msg = "direct INDEX entry chunk range overflows u32".to_string();
+                    tables.index.abort_request(&msg);
+                    tables.chunk.abort_request(&msg);
+                    return Err(msg);
+                }
+            };
+            for chunk_id in lookup.start_chunk_id..end {
+                chunk_plan.push((out.len(), chunk_id));
+            }
+        }
+        out.push(DirectNativeLookupResult {
+            found,
+            whale,
+            start_chunk_id: found.then_some(lookup.start_chunk_id),
+            num_chunks: lookup.num_chunks,
+            raw_chunk_data: Vec::new(),
+        });
+    }
+
+    if chunk_plan.len() > chunk_budget {
+        for _ in 0..chunk_budget {
+            if let Err(e) = tables.chunk.read_dummy() {
+                tables.index.abort_request(&e);
+                tables.chunk.abort_request(&e);
+                return Err(e);
+            }
+        }
+        let msg = format!(
+            "direct ORAM chunk demand {} exceeds remaining access budget {}",
+            chunk_plan.len(),
+            chunk_budget,
+        );
+        if let Err(e) = tables.index.finish_request() {
+            tables.chunk.abort_request(&e);
+            return Err(e);
+        }
+        if let Err(e) = tables.chunk.finish_request() {
+            return Err(e);
+        }
+        return Err(msg);
+    }
+
+    let real_reads = chunk_plan.len();
+    for (result_idx, chunk_id) in chunk_plan {
+        match tables.chunk.read_chunk(chunk_id as usize) {
+            Ok(payload) => out[result_idx].raw_chunk_data.extend_from_slice(&payload),
+            Err(e) => {
+                tables.index.abort_request(&e);
+                tables.chunk.abort_request(&e);
+                return Err(e);
+            }
+        }
+    }
+    for _ in real_reads..chunk_budget {
+        if let Err(e) = tables.chunk.read_dummy() {
+            tables.index.abort_request(&e);
+            tables.chunk.abort_request(&e);
+            return Err(e);
+        }
+    }
+
+    if let Err(e) = tables.index.finish_request() {
+        tables.chunk.abort_request(&e);
+        return Err(e);
+    }
+    tables.chunk.finish_request()?;
+    Ok(out)
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 struct CuckooNativeLookupConfig {
@@ -1381,12 +2066,40 @@ impl CuckooOramPaths {
 }
 
 #[cfg(feature = "cuckoo-oram")]
+struct DirectOramPaths {
+    meta_image: PathBuf,
+    payload_image: PathBuf,
+    meta_hash_image: PathBuf,
+    payload_hash_image: PathBuf,
+    state: PathBuf,
+    auth_state: PathBuf,
+    metadata: PathBuf,
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl DirectOramPaths {
+    fn new(oram_dir: &std::path::Path, level: DirectLevel) -> Self {
+        let label = format!("direct-{}", level.label());
+        Self {
+            meta_image: oram_dir.join(format!("{label}.meta.oram")),
+            payload_image: oram_dir.join(format!("{label}.payload.oram")),
+            meta_hash_image: oram_dir.join(format!("{label}.meta.hash.oram")),
+            payload_hash_image: oram_dir.join(format!("{label}.payload.hash.oram")),
+            state: oram_dir.join(format!("{label}.state")),
+            auth_state: oram_dir.join(format!("{label}.auth.state")),
+            metadata: oram_dir.join(format!("{label}.metadata")),
+        }
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
 fn open_existing_oram_store(
     path: &std::path::Path,
     page_count: usize,
     plaintext_page_size: usize,
     encrypted: bool,
     key_hex: Option<&str>,
+    key_flag: &str,
     cached_pages: usize,
 ) -> Result<Box<dyn PageStore + Send>, String> {
     let backing_page_size = plaintext_page_size + if encrypted { AEAD_OVERHEAD } else { 0 };
@@ -1406,7 +2119,7 @@ fn open_existing_oram_store(
     }
 
     let store: Box<dyn PageStore + Send> = if encrypted {
-        let key = parse_required_32_hex(key_hex, "--cuckoo-oram-key-hex")?;
+        let key = parse_required_32_hex(key_hex, key_flag)?;
         let file = FilePageStore::open(path, page_count, backing_page_size)
             .map_err(|e| e.to_string())?;
         Box::new(AeadPageStore::new(file, key, plaintext_page_size).map_err(|e| e.to_string())?)
@@ -1443,6 +2156,7 @@ fn open_existing_circuit_oram_stores(
         circuit_meta_page_bytes(params.bucket_size),
         encrypted,
         key_hex,
+        "--cuckoo-oram-key-hex",
         cached_pages,
     )?;
     let payload_store = open_existing_oram_store(
@@ -1451,6 +2165,7 @@ fn open_existing_circuit_oram_stores(
         circuit_payload_page_bytes(params.bucket_size, params.block_size),
         encrypted,
         key_hex,
+        "--cuckoo-oram-key-hex",
         cached_pages,
     )?;
     if !auth_store {
@@ -1467,10 +2182,90 @@ fn open_existing_circuit_oram_stores(
         ));
     }
 
-    let meta_hash_store =
-        open_existing_hash_store(&paths.meta_hash_image, &auth.meta, encrypted, key_hex)?;
-    let payload_hash_store =
-        open_existing_hash_store(&paths.payload_hash_image, &auth.payload, encrypted, key_hex)?;
+    let meta_hash_store = open_existing_hash_store(
+        &paths.meta_hash_image,
+        &auth.meta,
+        encrypted,
+        key_hex,
+        "--cuckoo-oram-key-hex",
+    )?;
+    let payload_hash_store = open_existing_hash_store(
+        &paths.payload_hash_image,
+        &auth.payload,
+        encrypted,
+        key_hex,
+        "--cuckoo-oram-key-hex",
+    )?;
+    let meta =
+        TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
+            .map_err(|e| e.to_string())?;
+    let payload = TieredMerklePageStore::from_trusted_state(
+        payload_store,
+        payload_hash_store,
+        auth.payload,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((Box::new(meta), Box::new(payload)))
+}
+
+#[cfg(feature = "cuckoo-oram")]
+#[allow(clippy::too_many_arguments)]
+fn open_existing_direct_oram_stores(
+    paths: &DirectOramPaths,
+    level: DirectLevel,
+    params: &OramParams,
+    encrypted: bool,
+    key_hex: Option<&str>,
+    cached_pages: usize,
+    auth_store: bool,
+    state_key: Option<[u8; 32]>,
+) -> Result<(CuckooOramStore, CuckooOramStore), String> {
+    let meta_store = open_existing_oram_store(
+        &paths.meta_image,
+        params.bucket_count(),
+        circuit_meta_page_bytes(params.bucket_size),
+        encrypted,
+        key_hex,
+        "--direct-oram-key-hex",
+        cached_pages,
+    )?;
+    let payload_store = open_existing_oram_store(
+        &paths.payload_image,
+        params.bucket_count(),
+        circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        encrypted,
+        key_hex,
+        "--direct-oram-key-hex",
+        cached_pages,
+    )?;
+    if !auth_store {
+        return Ok((meta_store, payload_store));
+    }
+
+    let auth = load_circuit_store_auth(&paths.auth_state, state_key)?;
+    let expected_meta_id = direct_auth_store_id(level, CircuitAuthStoreKind::Meta);
+    let expected_payload_id = direct_auth_store_id(level, CircuitAuthStoreKind::Payload);
+    if auth.meta.store_id != expected_meta_id || auth.payload.store_id != expected_payload_id {
+        return Err(format!(
+            "Direct ORAM {} auth sidecar store_id does not match expected level/store domains",
+            level
+        ));
+    }
+
+    let meta_hash_store = open_existing_hash_store(
+        &paths.meta_hash_image,
+        &auth.meta,
+        encrypted,
+        key_hex,
+        "--direct-oram-key-hex",
+    )?;
+    let payload_hash_store = open_existing_hash_store(
+        &paths.payload_hash_image,
+        &auth.payload,
+        encrypted,
+        key_hex,
+        "--direct-oram-key-hex",
+    )?;
     let meta =
         TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
             .map_err(|e| e.to_string())?;
@@ -1489,9 +2284,18 @@ fn open_existing_hash_store(
     auth: &TieredMerkleState,
     encrypted: bool,
     key_hex: Option<&str>,
+    key_flag: &str,
 ) -> Result<CuckooOramStore, String> {
     let hash_pages = tiered_hash_pages(auth.page_count, auth.hash_page_size, auth.trusted_levels)?;
-    open_existing_oram_store(path, hash_pages, auth.hash_page_size, encrypted, key_hex, 0)
+    open_existing_oram_store(
+        path,
+        hash_pages,
+        auth.hash_page_size,
+        encrypted,
+        key_hex,
+        key_flag,
+        0,
+    )
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -1516,6 +2320,31 @@ fn load_circuit_store_auth(
     match state_key {
         Some(key) => CircuitStoreAuthState::load_encrypted(path, key).map_err(|e| e.to_string()),
         None => CircuitStoreAuthState::load(path).map_err(|e| e.to_string()),
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn load_circuit_oram_state(
+    path: &std::path::Path,
+    state_key: Option<[u8; 32]>,
+) -> Result<CircuitOramState, String> {
+    match state_key {
+        Some(key) => CircuitOramState::load_encrypted(path, key).map_err(|e| e.to_string()),
+        None => CircuitOramState::load(path).map_err(|e| e.to_string()),
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn save_circuit_oram_state(
+    state: &CircuitOramState,
+    path: &std::path::Path,
+    state_key: Option<[u8; 32]>,
+) -> Result<(), String> {
+    match state_key {
+        Some(key) => state
+            .save_encrypted_atomic(path, key)
+            .map_err(|e| e.to_string()),
+        None => state.save_atomic(path).map_err(|e| e.to_string()),
     }
 }
 
@@ -1547,6 +2376,16 @@ fn circuit_auth_store_id(level: CuckooLevel, kind: CircuitAuthStoreKind) -> [u8;
         (CuckooLevel::Index, CircuitAuthStoreKind::Payload) => *b"bpir-idx-data-v1",
         (CuckooLevel::Chunk, CircuitAuthStoreKind::Meta) => *b"bpir-chk-meta-v1",
         (CuckooLevel::Chunk, CircuitAuthStoreKind::Payload) => *b"bpir-chk-data-v1",
+    }
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn direct_auth_store_id(level: DirectLevel, kind: CircuitAuthStoreKind) -> [u8; 16] {
+    match (level, kind) {
+        (DirectLevel::Index, CircuitAuthStoreKind::Meta) => *b"bpir-diridx-meta",
+        (DirectLevel::Index, CircuitAuthStoreKind::Payload) => *b"bpir-diridx-data",
+        (DirectLevel::Chunk, CircuitAuthStoreKind::Meta) => *b"bpir-dirchk-meta",
+        (DirectLevel::Chunk, CircuitAuthStoreKind::Payload) => *b"bpir-dirchk-data",
     }
 }
 
@@ -1889,6 +2728,10 @@ struct UnifiedServerData {
     /// Merkle sibling levels remain mmap-backed.
     #[cfg(feature = "cuckoo-oram")]
     cuckoo_oram: HashMap<u8, CuckooOramTables>,
+    /// Optional direct-entry ORAM lookup tables indexed by db_id. These bypass
+    /// the PBC-expanded cuckoo DB entirely and are used only by REQ_ORAM_LOOKUP.
+    #[cfg(feature = "cuckoo-oram")]
+    direct_oram: HashMap<u8, DirectOramTables>,
     /// Pending half-stream pool entries, keyed by client-supplied
     /// session token. The first arriving half of a logical V2-half
     /// session allocates a pool entry into this map; the second
@@ -2420,13 +3263,44 @@ impl UnifiedServerData {
     fn handle_oram_lookup(&self, query: &OramLookupRequest) -> Response {
         #[cfg(feature = "cuckoo-oram")]
         {
-            let db = match self.state.get_db(query.db_id) {
-                Some(d) => d,
-                None => return Response::Error(format!("unknown db_id {}", query.db_id)),
-            };
+            if self.state.get_db(query.db_id).is_none() {
+                return Response::Error(format!("unknown db_id {}", query.db_id));
+            }
+            if let Some(tables) = self.direct_oram.get(&query.db_id) {
+                let t = Instant::now();
+                let lookup = match tables.lookup_batch(&query.script_hashes) {
+                    Ok(v) => v,
+                    Err(e) => return Response::Error(format!("Direct ORAM lookup failed: {}", e)),
+                };
+                println!(
+                    "[direct-oram-lookup] db={} {} scripthash(es), budget={} in {:.2?}",
+                    query.db_id,
+                    query.script_hashes.len(),
+                    tables.access_budget,
+                    t.elapsed(),
+                );
+                return Response::OramLookupResult(OramLookupResult {
+                    db_id: query.db_id,
+                    items: lookup
+                        .into_iter()
+                        .map(|item| OramLookupItem {
+                            found: item.found,
+                            whale: item.whale,
+                            start_chunk_id: item.start_chunk_id.unwrap_or(0),
+                            num_chunks: item.num_chunks,
+                            raw_chunk_data: item.raw_chunk_data,
+                        })
+                        .collect(),
+                });
+            }
+            let db = self
+                .state
+                .get_db(query.db_id)
+                .expect("unknown db_id checked above");
             let Some(tables) = self.cuckoo_oram.get(&query.db_id) else {
                 return Response::Error(format!(
-                    "Cuckoo ORAM not configured for db_id {}; start with --cuckoo-oram-db {}=<dir>",
+                    "ORAM not configured for db_id {}; start with --direct-oram-db {}=<dir> or --cuckoo-oram-db {}=<dir>",
+                    query.db_id,
                     query.db_id, query.db_id
                 ));
             };
@@ -2962,11 +3836,23 @@ async fn main() {
             args.cuckoo_oram_cache_levels,
             args.cuckoo_oram_auth_store,
             args.cuckoo_oram_no_save,
+            args.direct_oram_drain_per_access,
+            args.direct_oram_access_budget,
+            args.direct_oram_encrypted,
+            args.direct_oram_key_hex.as_ref(),
+            args.direct_oram_state_key_hex.as_ref(),
+            args.direct_oram_cache_levels,
+            args.direct_oram_auth_store,
+            args.direct_oram_no_save,
         );
-        if args.cuckoo_oram_dir.is_some() || !args.cuckoo_oram_dbs.is_empty() {
+        if args.cuckoo_oram_dir.is_some()
+            || !args.cuckoo_oram_dbs.is_empty()
+            || args.direct_oram_dir.is_some()
+            || !args.direct_oram_dbs.is_empty()
+        {
             eprintln!(
-                "ERROR: --cuckoo-oram-dir/--cuckoo-oram-db require building unified_server with \
-                 --features cuckoo-oram (legacy alias: --features harmony-oram)"
+                "ERROR: ORAM flags require building unified_server with --features cuckoo-oram \
+                 (legacy alias: --features harmony-oram)"
             );
             std::process::exit(2);
         }
@@ -3047,6 +3933,73 @@ async fn main() {
                     "  Cuckoo ORAM: WARNING — DB(s) without ORAM config remain mmap-backed for Harmony queries: {}",
                     mmap_fallbacks.join(", ")
                 );
+            }
+            opened
+        }
+    };
+
+    #[cfg(feature = "cuckoo-oram")]
+    let direct_oram = {
+        let mut requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
+        if let Some(oram_dir) = args.direct_oram_dir.as_ref() {
+            requested.insert(0, oram_dir.clone());
+        }
+        for (db_id, oram_dir) in &args.direct_oram_dbs {
+            if requested.insert(*db_id, oram_dir.clone()).is_some() {
+                eprintln!(
+                    "ERROR: duplicate Direct ORAM configuration for db_id={}",
+                    db_id
+                );
+                std::process::exit(2);
+            }
+        }
+
+        if requested.is_empty() {
+            println!("  Direct ORAM: disabled (use --direct-oram-db <db_id>=<dir> to enable)");
+            HashMap::new()
+        } else {
+            let mut opened = HashMap::new();
+            for (db_id, oram_dir) in requested {
+                let Some((_, db_label, _db_path)) =
+                    db_paths.iter().find(|(candidate, _, _)| *candidate == db_id)
+                else {
+                    eprintln!(
+                        "ERROR: Direct ORAM configured for unknown db_id={} (loaded db_ids: {:?})",
+                        db_id,
+                        db_paths.iter().map(|(id, _, _)| *id).collect::<Vec<_>>()
+                    );
+                    std::process::exit(2);
+                };
+
+                println!(
+                    "  Direct ORAM: enabled for db_id={} name={}, dir={}, access_budget={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
+                    db_id,
+                    db_label,
+                    oram_dir.display(),
+                    args.direct_oram_access_budget,
+                    args.direct_oram_drain_per_access,
+                    args.direct_oram_encrypted,
+                    args.direct_oram_cache_levels,
+                    args.direct_oram_auth_store,
+                );
+                let tables = DirectOramTables::open(
+                    &oram_dir,
+                    args.direct_oram_drain_per_access,
+                    args.direct_oram_access_budget,
+                    args.direct_oram_encrypted,
+                    args.direct_oram_key_hex.as_deref(),
+                    args.direct_oram_state_key_hex.as_deref(),
+                    args.direct_oram_cache_levels,
+                    args.direct_oram_auth_store,
+                    !args.direct_oram_no_save,
+                )
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "failed to open Direct ORAM for db_id={} ({}): {}",
+                        db_id, db_label, e
+                    )
+                });
+                opened.insert(db_id, tables);
             }
             opened
         }
@@ -3898,6 +4851,8 @@ async fn main() {
         hint_pool,
         #[cfg(feature = "cuckoo-oram")]
         cuckoo_oram,
+        #[cfg(feature = "cuckoo-oram")]
+        direct_oram,
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         arc_verifier,
         require_arc,
@@ -5898,6 +6853,225 @@ mod harmony_dos_guard_tests {
                 .unwrap();
         oram.flush().unwrap();
         oram.snapshot().save_atomic(&paths.state).unwrap();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    struct DirectLookupFixture {
+        found_sh: [u8; pir_core::params::SCRIPT_HASH_SIZE],
+        whale_sh: [u8; pir_core::params::SCRIPT_HASH_SIZE],
+        missing_sh: [u8; pir_core::params::SCRIPT_HASH_SIZE],
+        chunks: Vec<Vec<u8>>,
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    fn direct_chunk_record(txid_byte: u8, vout: u32, amount: u64) -> Vec<u8> {
+        let mut raw = pir_core::codec::serialize_utxo_data(&[pir_core::codec::UtxoEntry {
+            txid: [txid_byte; 32],
+            vout,
+            amount,
+        }]);
+        assert!(raw.len() <= DIRECT_CHUNK_RECORD_SIZE);
+        raw.resize(DIRECT_CHUNK_RECORD_SIZE, 0);
+        raw
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    fn write_direct_lookup_files(db_dir: &std::path::Path) -> DirectLookupFixture {
+        std::fs::create_dir_all(db_dir).unwrap();
+
+        let found_sh = [0x51u8; pir_core::params::SCRIPT_HASH_SIZE];
+        let whale_sh = [0x52u8; pir_core::params::SCRIPT_HASH_SIZE];
+        let missing_sh = [0x53u8; pir_core::params::SCRIPT_HASH_SIZE];
+
+        let mut index_bytes = Vec::new();
+        index_bytes.extend_from_slice(&found_sh);
+        index_bytes.extend_from_slice(&3u32.to_le_bytes());
+        index_bytes.push(2);
+        index_bytes.extend_from_slice(&whale_sh);
+        index_bytes.extend_from_slice(&1u32.to_le_bytes());
+        index_bytes.push(0);
+        assert_eq!(index_bytes.len(), 2 * DIRECT_INDEX_INPUT_RECORD_SIZE);
+
+        let chunks = vec![
+            vec![0u8; DIRECT_CHUNK_RECORD_SIZE],
+            vec![0u8; DIRECT_CHUNK_RECORD_SIZE],
+            vec![0u8; DIRECT_CHUNK_RECORD_SIZE],
+            direct_chunk_record(0xA1, 1, 42),
+            direct_chunk_record(0xB2, 2, 77),
+            vec![0u8; DIRECT_CHUNK_RECORD_SIZE],
+        ];
+        let mut chunk_bytes = Vec::new();
+        for chunk in &chunks {
+            chunk_bytes.extend_from_slice(chunk);
+        }
+
+        std::fs::write(db_dir.join("utxo_chunks_index_nodust.bin"), index_bytes).unwrap();
+        std::fs::write(db_dir.join("utxo_chunks_nodust.bin"), chunk_bytes).unwrap();
+
+        DirectLookupFixture { found_sh, whale_sh, missing_sh, chunks }
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    fn build_test_direct_oram_image(
+        db_dir: &std::path::Path,
+        oram_dir: &std::path::Path,
+        level: DirectLevel,
+        pack: usize,
+    ) {
+        match level {
+            DirectLevel::Index => {
+                let info = DirectTableInfo::from_index_file(
+                    db_dir.join("utxo_chunks_index_nodust.bin"),
+                    4,
+                    2,
+                    0.20,
+                    0x6469_7265_6374_0001,
+                )
+                .unwrap();
+                let source = DirectIndexPackedBlockReader::build(info, pack).unwrap();
+                let metadata = source.metadata().clone();
+                build_test_direct_oram_from_source(oram_dir, level, metadata, source);
+            }
+            DirectLevel::Chunk => {
+                let info =
+                    DirectTableInfo::from_chunks_file(db_dir.join("utxo_chunks_nodust.bin"))
+                        .unwrap();
+                let source = DirectChunkPackedBlockReader::open(info, pack).unwrap();
+                let metadata = source.metadata().clone();
+                build_test_direct_oram_from_source(oram_dir, level, metadata, source);
+            }
+        }
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    fn build_test_direct_oram_from_source<S: bitcoinpir_oram::TrustedBlockSource>(
+        oram_dir: &std::path::Path,
+        level: DirectLevel,
+        metadata: DirectTableMetadata,
+        source: S,
+    ) {
+        let params = OramParams::with_leaves(
+            source.logical_blocks(),
+            source.block_size(),
+            source.logical_blocks().max(2).next_power_of_two(),
+        )
+        .unwrap()
+        .with_bucket_size(2)
+        .unwrap()
+        .with_stash_capacity(128)
+        .unwrap();
+        let paths = DirectOramPaths::new(oram_dir, level);
+        let meta_store = FilePageStore::open(
+            &paths.meta_image,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = FilePageStore::open(
+            &paths.payload_image,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let mut oram =
+            CircuitOram::build_trusted_from_source(params, meta_store, payload_store, source, [5; 32])
+                .unwrap();
+        oram.flush().unwrap();
+        oram.snapshot().save_atomic(&paths.state).unwrap();
+        metadata.save(&paths.metadata).unwrap();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_lookup_reads_direct_entries_without_pbc() {
+        let db_dir = temp_dir("direct_lookup_db");
+        let oram_dir = temp_dir("direct_lookup_img");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        let fixture = write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
+
+        let tables = DirectOramTables::open(
+            &oram_dir, 2, 8, false, None, None, 0, false, true,
+        )
+        .unwrap();
+        let got = direct_native_lookup_batch(
+            &tables,
+            &[fixture.found_sh, fixture.missing_sh, fixture.whale_sh],
+        )
+        .unwrap();
+
+        let mut expected_payload = Vec::new();
+        expected_payload.extend_from_slice(&fixture.chunks[3]);
+        expected_payload.extend_from_slice(&fixture.chunks[4]);
+
+        assert_eq!(got.len(), 3);
+        assert!(got[0].found);
+        assert!(!got[0].whale);
+        assert_eq!(got[0].start_chunk_id, Some(3));
+        assert_eq!(got[0].num_chunks, 2);
+        assert_eq!(got[0].raw_chunk_data, expected_payload);
+
+        assert!(!got[1].found);
+        assert!(!got[1].whale);
+        assert_eq!(got[1].raw_chunk_data.len(), 0);
+
+        assert!(got[2].found);
+        assert!(got[2].whale);
+        assert_eq!(got[2].start_chunk_id, Some(1));
+        assert_eq!(got[2].num_chunks, 0);
+        assert_eq!(got[2].raw_chunk_data.len(), 0);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_lookup_rejects_when_index_reads_exceed_budget() {
+        let db_dir = temp_dir("direct_lookup_db");
+        let oram_dir = temp_dir("direct_lookup_img");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        let fixture = write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
+
+        let tables = DirectOramTables::open(
+            &oram_dir, 2, 1, false, None, None, 0, false, true,
+        )
+        .unwrap();
+        let err = direct_native_lookup_batch(&tables, &[fixture.found_sh]).unwrap_err();
+        assert!(err.contains("access budget 1 too small"));
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_lookup_rejects_when_chunk_demand_exceeds_remaining_budget() {
+        let db_dir = temp_dir("direct_lookup_db");
+        let oram_dir = temp_dir("direct_lookup_img");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        let fixture = write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
+
+        let tables = DirectOramTables::open(
+            &oram_dir, 2, 3, false, None, None, 0, false, true,
+        )
+        .unwrap();
+        let err = direct_native_lookup_batch(&tables, &[fixture.found_sh]).unwrap_err();
+        assert!(err.contains("chunk demand 2 exceeds remaining access budget 1"));
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
     }
 
     #[cfg(feature = "cuckoo-oram")]

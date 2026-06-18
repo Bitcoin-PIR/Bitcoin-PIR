@@ -59,7 +59,7 @@ pub mod arc;
 /// returned signature into a single-use BAT.
 pub mod cashu;
 
-/// Async PIR clients (`WasmDpfClient` / `WasmHarmonyClient`) wrapping the
+/// Async PIR clients (`WasmDpfClient` / `WasmHarmonyClient` / `WasmOramClient`) wrapping the
 /// native `pir-sdk-client` structs. On wasm32 they use
 /// `WasmWebSocketTransport` under the hood; on native (for unit tests)
 /// they use the tokio-tungstenite transport from `pir-sdk-client`.
@@ -68,7 +68,9 @@ pub mod cashu;
 /// depends on C++/SEAL which does not compile to wasm32. Browsers that
 /// want OnionPIR must keep the TypeScript client for now.
 pub mod client;
-pub use client::{WasmDatabaseProof, WasmDpfClient, WasmHarmonyClient, WasmSyncResult};
+pub use client::{
+    WasmDatabaseProof, WasmDpfClient, WasmHarmonyClient, WasmOramClient, WasmSyncResult,
+};
 
 /// Phase 2+ observability bridge — exposes `pir_sdk::AtomicMetrics` to
 /// JavaScript so a browser tools panel / dashboard can poll live PIR

@@ -6,9 +6,14 @@ set -euo pipefail
 # Modes:
 #   tiny-smoke   Build a tiny fixture and run the existing end-to-end smoke.
 #   preflight    Print host/service/DB/ORAM-dir readiness checks.
-#   real-build   Build authenticated Circuit ORAM images from a real DB dir.
-#   real-verify  Verify random cuckoo bins through existing ORAM images.
+#   real-build   Build authenticated ORAM images from a real DB dir.
+#   real-extract-direct-chunks
+#                Reconstruct direct utxo_chunks_nodust.bin from chunk_pir_cuckoo.bin.
+#   real-verify  Verify existing ORAM images. Direct layout does structural checks;
+#                cuckoo layout verifies random cuckoo bins.
 #   real-bench   Benchmark existing ORAM images, optionally against DB bytes.
+#   pos-map-bench
+#                Benchmark branchless trusted position-map scans.
 #   real-all     preflight + real-build + real-verify.
 #   server-smoke Start a local ORAM-enabled unified_server against one DB dir
 #                or CONFIG_PATH plus per-db ORAM specs.
@@ -38,6 +43,23 @@ if ! command -v cargo >/dev/null 2>&1 && [[ -x /home/pir/.cargo/bin/cargo ]]; th
 fi
 DB_DIR="${DB_DIR:-/home/pir/data/checkpoints/940611}"
 CONFIG_PATH="${CONFIG_PATH:-}"
+ORAM_LAYOUT="${ORAM_LAYOUT:-direct}"
+DEFAULT_DIRECT_SOURCE_DIR="${DB_DIR}"
+if [[ ! -f "${DB_DIR}/utxo_chunks_index_nodust.bin" && ! -f "${DB_DIR}/utxo_chunks_nodust.bin" ]]; then
+  case "${DB_DIR}" in
+    */checkpoints/*)
+      DATA_ROOT="${DB_DIR%/checkpoints/*}"
+      DEFAULT_DIRECT_SOURCE_DIR="${DATA_ROOT}/oram-inputs/checkpoints/$(basename "${DB_DIR}")"
+      ;;
+    */deltas/*)
+      DATA_ROOT="${DB_DIR%/deltas/*}"
+      DEFAULT_DIRECT_SOURCE_DIR="${DATA_ROOT}/oram-inputs/deltas/$(basename "${DB_DIR}")"
+      ;;
+  esac
+fi
+DIRECT_SOURCE_DIR="${DIRECT_SOURCE_DIR:-${DEFAULT_DIRECT_SOURCE_DIR}}"
+DIRECT_INDEX_FILE="${DIRECT_INDEX_FILE:-${DIRECT_SOURCE_DIR}/utxo_chunks_index_nodust.bin}"
+DIRECT_CHUNKS_FILE="${DIRECT_CHUNKS_FILE:-${DIRECT_SOURCE_DIR}/utxo_chunks_nodust.bin}"
 ORAM_DIR="${ORAM_DIR:-/home/pir/data/oram-test/$(basename "${DB_DIR}")-pack16-z2-div2-stash128-auth}"
 ORAM_DB_SPECS="${ORAM_DB_SPECS:-}"
 ORAM_DB0_DIR="${ORAM_DB0_DIR:-}"
@@ -50,8 +72,13 @@ LEAF_DIVISOR="${LEAF_DIVISOR:-2}"
 BUCKET_SIZE="${BUCKET_SIZE:-2}"
 STASH_CAPACITY="${STASH_CAPACITY:-128}"
 DRAIN_PER_ACCESS="${DRAIN_PER_ACCESS:-2}"
+DIRECT_ACCESS_BUDGET="${DIRECT_ACCESS_BUDGET:-50}"
 CACHE_LEVELS="${CACHE_LEVELS:-0}"
 LEVEL="${LEVEL:-all}"
+DIRECT_INDEX_SLOTS_PER_BIN="${DIRECT_INDEX_SLOTS_PER_BIN:-4}"
+DIRECT_INDEX_HASH_FNS="${DIRECT_INDEX_HASH_FNS:-2}"
+DIRECT_INDEX_LOAD_FACTOR="${DIRECT_INDEX_LOAD_FACTOR:-0.95}"
+DIRECT_INDEX_SEED="${DIRECT_INDEX_SEED:-8030603977422561841}"
 
 AUTH_STORE="${AUTH_STORE:-1}"
 AUTH_TRUSTED_LEVELS="${AUTH_TRUSTED_LEVELS:-1}"
@@ -62,7 +89,12 @@ STATE_KEY_HEX="${STATE_KEY_HEX:-737373737373737373737373737373737373737373737373
 
 VERIFY_BINS="${VERIFY_BINS:-1000}"
 BENCH_OPS="${BENCH_OPS:-1000}"
+POS_MAP_SIZES="${POS_MAP_SIZES:-3370000,5070000}"
+POS_MAP_WARMUP_OPS="${POS_MAP_WARMUP_OPS:-50}"
 CARGO_JOBS="${CARGO_JOBS:-1}"
+CARGO_TOOLCHAIN="${CARGO_TOOLCHAIN:-stable}"
+ORAMCTL_BIN="${ORAMCTL_BIN:-}"
+ORAMCTL_BUILD="${ORAMCTL_BUILD:-1}"
 REAL_MIN_FREE_GIB="${REAL_MIN_FREE_GIB:-80}"
 SERVER_MIN_MEM_GIB="${SERVER_MIN_MEM_GIB:-16}"
 SERVER_STARTUP_WAIT_SECS="${SERVER_STARTUP_WAIT_SECS:-180}"
@@ -90,11 +122,20 @@ Important env:
   ORAM_DB_SPECS='0=/home/pir/data/oram/full 1=/home/pir/data/oram/delta'
   SMOKE_DB_IDS='0 1'
   ORAM_REPO=/home/pir/bitcoin-pir/oram
+  ORAM_LAYOUT=direct          direct (default, non-PBC) or cuckoo (legacy PBC table wrapper)
+  DIRECT_SOURCE_DIR=/path/to/oram-inputs/checkpoints/940611
+  DIRECT_INDEX_FILE=/path/to/utxo_chunks_index_nodust.bin
+  DIRECT_CHUNKS_FILE=/path/to/utxo_chunks_nodust.bin
   PACK=16 LEAF_DIVISOR=2 BUCKET_SIZE=2 STASH_CAPACITY=128
+  DIRECT_ACCESS_BUDGET=50
   PATCH_LOCAL_ORAM=1          temporarily patch runtime to ORAM_REPO for server-smoke
   AUTH_STORE=1 AUTH_TRUSTED_LEVELS=1
   ENCRYPTED=0 PAGE_KEY_HEX=<32-byte hex> STATE_KEY_HEX=<32-byte hex>
   VERIFY_BINS=1000 BENCH_OPS=1000 CARGO_JOBS=1
+  POS_MAP_SIZES=3370000,5070000 POS_MAP_WARMUP_OPS=50
+  CARGO_TOOLCHAIN=stable          use CARGO_TOOLCHAIN=none for a non-rustup cargo
+  ORAMCTL_BIN=/path/to/oramctl   optional prebuilt oramctl binary
+  ORAMCTL_BUILD=1                build oramctl before running it
 
 Safety overrides:
   ALLOW_PIR_SERVICE_ACTIVE=1  permit real modes while pir-vpsbg is active
@@ -187,7 +228,11 @@ print_host_state() {
   log "mode=${MODE}"
   log "repo_root=${REPO_ROOT}"
   log "oram_repo=${ORAM_REPO}"
+  log "oram_layout=${ORAM_LAYOUT}"
   log "db_dir=${DB_DIR}"
+  log "direct_source_dir=${DIRECT_SOURCE_DIR}"
+  log "direct_index_file=${DIRECT_INDEX_FILE}"
+  log "direct_chunks_file=${DIRECT_CHUNKS_FILE}"
   log "config_path=${CONFIG_PATH:-<unset>}"
   log "oram_dir=${ORAM_DIR}"
   log "oram_db_specs=${ORAM_DB_SPECS:-<unset>}"
@@ -195,8 +240,10 @@ print_host_state() {
   log "oram_db1_dir=${ORAM_DB1_DIR:-<unset>}"
   log "smoke_db_ids=${SMOKE_DB_IDS}"
   log "pack=${PACK} leaf_divisor=${LEAF_DIVISOR} bucket_size=${BUCKET_SIZE} stash_capacity=${STASH_CAPACITY}"
+  log "direct_access_budget=${DIRECT_ACCESS_BUDGET} direct_index_hash_fns=${DIRECT_INDEX_HASH_FNS} direct_index_load_factor=${DIRECT_INDEX_LOAD_FACTOR}"
   log "auth_store=${AUTH_STORE} encrypted=${ENCRYPTED} cache_levels=${CACHE_LEVELS} drain_per_access=${DRAIN_PER_ACCESS}"
-  log "cargo_jobs=${CARGO_JOBS}"
+  log "bench_ops=${BENCH_OPS} pos_map_sizes=${POS_MAP_SIZES} pos_map_warmup_ops=${POS_MAP_WARMUP_OPS}"
+  log "cargo_jobs=${CARGO_JOBS} cargo_toolchain=${CARGO_TOOLCHAIN} oramctl_build=${ORAMCTL_BUILD} oramctl_bin=${ORAMCTL_BIN:-<auto>}"
   log "mem_available_gib=$(available_mem_gib)"
   log "disk_free_gib_for_oram_dir=$(free_disk_gib_for "${ORAM_DIR}")"
   if pir_service_active; then
@@ -213,25 +260,79 @@ require_oram_repo() {
   require_file "${ORAM_REPO}/Cargo.toml"
 }
 
-require_db_dir() {
+require_cuckoo_db_dir() {
   require_dir "${DB_DIR}"
   require_file "${DB_DIR}/batch_pir_cuckoo.bin"
   require_file "${DB_DIR}/chunk_pir_cuckoo.bin"
+}
+
+require_direct_sources() {
+  require_file "${DIRECT_INDEX_FILE}"
+  require_file "${DIRECT_CHUNKS_FILE}"
+}
+
+require_direct_oram_image() {
+  require_dir "${ORAM_DIR}"
+  for prefix in direct-index direct-chunk; do
+    require_file "${ORAM_DIR}/${prefix}.meta.oram"
+    require_file "${ORAM_DIR}/${prefix}.payload.oram"
+    require_file "${ORAM_DIR}/${prefix}.state"
+    require_file "${ORAM_DIR}/${prefix}.metadata"
+    if [[ "${AUTH_STORE}" == "1" ]]; then
+      require_file "${ORAM_DIR}/${prefix}.meta.hash.oram"
+      require_file "${ORAM_DIR}/${prefix}.payload.hash.oram"
+      require_file "${ORAM_DIR}/${prefix}.auth.state"
+    fi
+  done
+}
+
+require_cuckoo_oram_image() {
+  require_dir "${ORAM_DIR}"
+  for prefix in index chunk; do
+    require_file "${ORAM_DIR}/${prefix}.meta.oram"
+    require_file "${ORAM_DIR}/${prefix}.payload.oram"
+    require_file "${ORAM_DIR}/${prefix}.state"
+    if [[ "${AUTH_STORE}" == "1" ]]; then
+      require_file "${ORAM_DIR}/${prefix}.meta.hash.oram"
+      require_file "${ORAM_DIR}/${prefix}.payload.hash.oram"
+      require_file "${ORAM_DIR}/${prefix}.auth.state"
+    fi
+  done
 }
 
 require_runtime_source() {
   if [[ -n "${CONFIG_PATH}" ]]; then
     require_file "${CONFIG_PATH}"
   else
-    require_db_dir
+    require_cuckoo_db_dir
   fi
 }
 
 cargo_oramctl() {
   (
     cd "${ORAM_REPO}"
-    cargo run -j "${CARGO_JOBS}" --release --bin oramctl -- "$@"
+    local target_root="${CARGO_TARGET_DIR:-${ORAM_REPO}/target}"
+    local oramctl_bin="${ORAMCTL_BIN:-${target_root}/release/oramctl}"
+    local cargo_toolchain_arg=()
+    if [[ -n "${CARGO_TOOLCHAIN}" && "${CARGO_TOOLCHAIN}" != "none" ]]; then
+      cargo_toolchain_arg=("+${CARGO_TOOLCHAIN}")
+    fi
+    if [[ "${ORAMCTL_BUILD}" == "1" || ! -x "${oramctl_bin}" ]]; then
+      cargo "${cargo_toolchain_arg[@]}" build -j "${CARGO_JOBS}" --release --bin oramctl
+    fi
+    "${oramctl_bin}" "$@"
   )
+}
+
+pos_map_bench() {
+  require_oram_repo
+  check_pir_service_inactive
+  mkdir -p "${LOG_DIR}"
+  log "benchmarking position-map scan sizes=${POS_MAP_SIZES} ops=${BENCH_OPS} warmup_ops=${POS_MAP_WARMUP_OPS}"
+  cargo_oramctl bench-pos-map \
+    --sizes "${POS_MAP_SIZES}" \
+    --ops "${BENCH_OPS}" \
+    --warmup-ops "${POS_MAP_WARMUP_OPS}" | tee "${LOG_DIR}/bench-pos-map.log"
 }
 
 warn_if_no_save() {
@@ -242,7 +343,17 @@ warn_if_no_save() {
 
 preflight_real() {
   require_oram_repo
-  require_db_dir
+  case "${ORAM_LAYOUT}" in
+    direct)
+      require_direct_sources
+      ;;
+    cuckoo)
+      require_cuckoo_db_dir
+      ;;
+    *)
+      die "ORAM_LAYOUT must be direct or cuckoo, got ${ORAM_LAYOUT}"
+      ;;
+  esac
   check_pir_service_inactive
   mkdir -p "${ORAM_DIR}" "${LOG_DIR}"
   local mem_gib
@@ -303,26 +414,60 @@ tiny_smoke() {
 
 real_build() {
   preflight_real
-  log "running size-cuckoo"
-  cargo_oramctl size-cuckoo \
-    --db-dir "${DB_DIR}" \
-    --packs "${PACK}" \
-    --leaf-divisors "${LEAF_DIVISOR}" \
-    --bucket-size "${BUCKET_SIZE}" \
-    --stash-capacity "${STASH_CAPACITY}" \
-    --cache-levels "${CACHE_LEVELS}" | tee "${LOG_DIR}/size-cuckoo.log"
+  local build_cmd=()
+  if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+    log "running size-direct"
+    cargo_oramctl size-direct \
+      --index-file "${DIRECT_INDEX_FILE}" \
+      --chunks-file "${DIRECT_CHUNKS_FILE}" \
+      --packs "${PACK}" \
+      --leaf-divisors "${LEAF_DIVISOR}" \
+      --bucket-size "${BUCKET_SIZE}" \
+      --stash-capacity "${STASH_CAPACITY}" \
+      --cache-levels "${CACHE_LEVELS}" \
+      --index-slots-per-bin "${DIRECT_INDEX_SLOTS_PER_BIN}" \
+      --index-hash-fns "${DIRECT_INDEX_HASH_FNS}" \
+      --index-load-factor "${DIRECT_INDEX_LOAD_FACTOR}" \
+      --index-seed "${DIRECT_INDEX_SEED}" | tee "${LOG_DIR}/size-direct.log"
 
-  local build_cmd=(
-    build-circuit
-    --db-dir "${DB_DIR}" \
-    --out-dir "${ORAM_DIR}" \
-    --level "${LEVEL}" \
-    --pack "${PACK}" \
-    --leaf-divisor "${LEAF_DIVISOR}" \
-    --bucket-size "${BUCKET_SIZE}" \
-    --stash-capacity "${STASH_CAPACITY}" \
-    --cache-levels "${CACHE_LEVELS}"
-  )
+    build_cmd=(
+      build-direct
+      --index-file "${DIRECT_INDEX_FILE}"
+      --chunks-file "${DIRECT_CHUNKS_FILE}"
+      --out-dir "${ORAM_DIR}"
+      --level "${LEVEL}"
+      --pack "${PACK}"
+      --leaf-divisor "${LEAF_DIVISOR}"
+      --bucket-size "${BUCKET_SIZE}"
+      --stash-capacity "${STASH_CAPACITY}"
+      --cache-levels "${CACHE_LEVELS}"
+      --index-slots-per-bin "${DIRECT_INDEX_SLOTS_PER_BIN}"
+      --index-hash-fns "${DIRECT_INDEX_HASH_FNS}"
+      --index-load-factor "${DIRECT_INDEX_LOAD_FACTOR}"
+      --index-seed "${DIRECT_INDEX_SEED}"
+    )
+  else
+    log "running size-cuckoo"
+    cargo_oramctl size-cuckoo \
+      --db-dir "${DB_DIR}" \
+      --packs "${PACK}" \
+      --leaf-divisors "${LEAF_DIVISOR}" \
+      --bucket-size "${BUCKET_SIZE}" \
+      --stash-capacity "${STASH_CAPACITY}" \
+      --cache-levels "${CACHE_LEVELS}" | tee "${LOG_DIR}/size-cuckoo.log"
+
+    build_cmd=(
+      build-circuit
+      --db-dir "${DB_DIR}"
+      --out-dir "${ORAM_DIR}"
+      --level "${LEVEL}"
+      --pack "${PACK}"
+      --leaf-divisor "${LEAF_DIVISOR}"
+      --bucket-size "${BUCKET_SIZE}"
+      --stash-capacity "${STASH_CAPACITY}"
+      --cache-levels "${CACHE_LEVELS}"
+    )
+  fi
   if [[ "${AUTH_STORE}" == "1" ]]; then
     build_cmd+=(--auth-store --auth-trusted-levels "${AUTH_TRUSTED_LEVELS}" --auth-hash-page-size "${AUTH_HASH_PAGE_SIZE}")
   fi
@@ -330,15 +475,37 @@ real_build() {
     build_cmd+=(--encrypted --key-hex "${PAGE_KEY_HEX}" --state-key-hex "${STATE_KEY_HEX}")
   fi
 
-  log "building Circuit ORAM images"
-  cargo_oramctl "${build_cmd[@]}" | tee "${LOG_DIR}/build-circuit.log"
+  log "building ${ORAM_LAYOUT} Circuit ORAM images"
+  cargo_oramctl "${build_cmd[@]}" | tee "${LOG_DIR}/build-${ORAM_LAYOUT}.log"
 
   du -sh "${ORAM_DIR}" | tee "${LOG_DIR}/du-after-build.log"
+}
+
+real_extract_direct_chunks() {
+  require_oram_repo
+  require_cuckoo_db_dir
+  check_pir_service_inactive
+  mkdir -p "${DIRECT_SOURCE_DIR}" "${LOG_DIR}"
+  check_threshold "free disk near direct source dir" "$(free_disk_gib_for "${DIRECT_SOURCE_DIR}")" "${REAL_MIN_FREE_GIB}" "${ALLOW_LOW_DISK}"
+  log "extracting direct CHUNK source from ${DB_DIR}/chunk_pir_cuckoo.bin"
+  cargo_oramctl extract-direct-chunks \
+    --chunk-cuckoo-file "${DB_DIR}/chunk_pir_cuckoo.bin" \
+    --out-file "${DIRECT_CHUNKS_FILE}" | tee "${LOG_DIR}/extract-direct-chunks.log"
 }
 
 real_verify() {
   preflight_real
   warn_if_no_save
+  if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+    require_direct_oram_image
+    log "direct ORAM image structure verified; use server-smoke for behavioral direct lookup verification"
+    {
+      echo "verify_direct_structure=true"
+      ls "${ORAM_DIR}"/direct-index.* "${ORAM_DIR}"/direct-chunk.* 2>/dev/null | sort
+    } | tee "${LOG_DIR}/verify-direct-structure.log"
+    return 0
+  fi
+
   local verify_cmd=(
     verify-circuit-bins
     --db-dir "${DB_DIR}"
@@ -364,8 +531,13 @@ real_verify() {
 }
 
 real_bench() {
+  if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+    pos_map_bench
+    return 0
+  fi
   preflight_real
   warn_if_no_save
+
   local bench_cmd=(
     bench-circuit
     --db-dir "${DB_DIR}"
@@ -411,10 +583,22 @@ server_smoke() {
     --role secondary
     --serve-queries
     --disable-onion
-    --cuckoo-oram-pack "${PACK}"
-    --cuckoo-oram-drain-per-access "${DRAIN_PER_ACCESS}"
-    --cuckoo-oram-cache-levels "${CACHE_LEVELS}"
   )
+  if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+    server_args+=(
+      --direct-oram-drain-per-access "${DRAIN_PER_ACCESS}"
+      --direct-oram-access-budget "${DIRECT_ACCESS_BUDGET}"
+      --direct-oram-cache-levels "${CACHE_LEVELS}"
+    )
+  elif [[ "${ORAM_LAYOUT}" == "cuckoo" ]]; then
+    server_args+=(
+      --cuckoo-oram-pack "${PACK}"
+      --cuckoo-oram-drain-per-access "${DRAIN_PER_ACCESS}"
+      --cuckoo-oram-cache-levels "${CACHE_LEVELS}"
+    )
+  else
+    die "ORAM_LAYOUT must be direct or cuckoo, got ${ORAM_LAYOUT}"
+  fi
   if [[ -n "${CONFIG_PATH}" ]]; then
     server_args+=(--config "${CONFIG_PATH}")
   else
@@ -436,17 +620,33 @@ server_smoke() {
     oram_specs+=("0=${ORAM_DIR}")
   fi
   for spec in "${oram_specs[@]}"; do
-    server_args+=(--cuckoo-oram-db "${spec}")
+    if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+      server_args+=(--direct-oram-db "${spec}")
+    else
+      server_args+=(--cuckoo-oram-db "${spec}")
+    fi
   done
 
   if [[ "${AUTH_STORE}" == "1" ]]; then
-    server_args+=(--cuckoo-oram-auth-store)
+    if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+      server_args+=(--direct-oram-auth-store)
+    else
+      server_args+=(--cuckoo-oram-auth-store)
+    fi
   fi
   if [[ "${ENCRYPTED}" == "1" ]]; then
-    server_args+=(--cuckoo-oram-encrypted --cuckoo-oram-key-hex "${PAGE_KEY_HEX}" --cuckoo-oram-state-key-hex "${STATE_KEY_HEX}")
+    if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+      server_args+=(--direct-oram-encrypted --direct-oram-key-hex "${PAGE_KEY_HEX}" --direct-oram-state-key-hex "${STATE_KEY_HEX}")
+    else
+      server_args+=(--cuckoo-oram-encrypted --cuckoo-oram-key-hex "${PAGE_KEY_HEX}" --cuckoo-oram-state-key-hex "${STATE_KEY_HEX}")
+    fi
   fi
   if [[ "${NO_SAVE}" == "1" ]]; then
-    server_args+=(--cuckoo-oram-no-save)
+    if [[ "${ORAM_LAYOUT}" == "direct" ]]; then
+      server_args+=(--direct-oram-no-save)
+    else
+      server_args+=(--cuckoo-oram-no-save)
+    fi
   fi
 
   log "starting local unified_server on ws://127.0.0.1:${PORT}"
@@ -519,11 +719,17 @@ case "${MODE}" in
   real-build)
     real_build
     ;;
+  real-extract-direct-chunks)
+    real_extract_direct_chunks
+    ;;
   real-verify)
     real_verify
     ;;
   real-bench)
     real_bench
+    ;;
+  pos-map-bench)
+    pos_map_bench
     ;;
   real-all)
     print_host_state
