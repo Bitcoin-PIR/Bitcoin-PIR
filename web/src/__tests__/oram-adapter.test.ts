@@ -64,20 +64,33 @@ describe('ORAM adapter', () => {
     expect(DEFAULT_ORAM_INDEX_READS_PER_SCRIPT_HASH).toBe(2);
 
     expect(resolveOramBatchPlan()).toMatchObject({
+      paddedSlotCount: 25,
       maxScriptHashesPerRequest: 25,
       chunkReadsAvailableAtMax: 0,
     });
     expect(resolveOramBatchPlan({ expectedChunkReadsPerScriptHash: 1 })).toMatchObject({
+      paddedSlotCount: 16,
       maxScriptHashesPerRequest: 16,
       chunkReadsAvailableAtMax: 18,
     });
     expect(resolveOramBatchPlan({ chunkReadReserve: 10 })).toMatchObject({
+      paddedSlotCount: 20,
       maxScriptHashesPerRequest: 20,
       chunkReadsAvailableAtMax: 10,
     });
     expect(resolveOramBatchPlan({ maxScriptHashesPerRequest: 7 })).toMatchObject({
+      paddedSlotCount: 25,
       maxScriptHashesPerRequest: 7,
-      chunkReadsAvailableAtMax: 36,
+      chunkReadsAvailableAtMax: 0,
+    });
+    expect(resolveOramBatchPlan({
+      accessBudget: 120,
+      paddedSlotCount: 50,
+      expectedChunkReadsPerScriptHash: 1,
+    })).toMatchObject({
+      paddedSlotCount: 50,
+      maxScriptHashesPerRequest: 20,
+      chunkReadsAvailableAtMax: 20,
     });
   });
 
@@ -94,6 +107,6 @@ describe('ORAM adapter', () => {
     expect(() => splitOramScriptHashBatches([1], 0)).toThrow(/positive integer/);
     expect(() => splitOramScriptHashBatches([1], 1.5)).toThrow(/positive integer/);
     expect(() => resolveOramBatchPlan({ accessBudget: 0 })).toThrow(/positive integer/);
-    expect(() => resolveOramBatchPlan({ chunkReadReserve: 50 })).toThrow(/smaller than accessBudget/);
+    expect(() => resolveOramBatchPlan({ paddedSlotCount: 50 })).toThrow(/exceeding access budget/);
   });
 });

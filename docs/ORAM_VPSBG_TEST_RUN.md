@@ -311,21 +311,41 @@ were its own ORAM logical block, because the CHUNK position map would grow by
 about 16x.
 
 The web ORAM adapter does not use the DPF/Harmony PBC batch planner. By
-default it sends one script hash per fixed-budget ORAM request, so each lookup
-gets the full remaining chunk budget after its direct INDEX probes. The adapter
-has `maxScriptHashesPerRequest` for manual caps and an opt-in fixed-budget
-planner that derives batch sizes from:
+default it preserves the conservative compact behavior and sends one script
+hash per fixed-budget ORAM request, so each lookup gets the full remaining
+chunk budget after its direct INDEX probes. Production padding is enabled by
+the opt-in planner: it sends a fixed number of explicit script-hash slots, marks
+empty slots inside the encrypted request, and has the server spend dummy INDEX
+ORAM path accesses for those empty slots.
+
+The padded planner derives real batch size from:
 
 ```text
-index_reads = indexReadsPerScriptHash * script_hashes.len()
-expected_chunk_reads = expectedChunkReadsPerScriptHash * script_hashes.len()
-index_reads + expected_chunk_reads + chunkReadReserve <= accessBudget
+padded_index_reads = indexReadsPerScriptHash * paddedSlotCount
+expected_chunk_reads = expectedChunkReadsPerScriptHash * real_script_hashes.len()
+padded_index_reads + expected_chunk_reads + chunkReadReserve <= accessBudget
 ```
 
-With the deployed direct images, `accessBudget=50` and
-`indexReadsPerScriptHash=2`: mostly-not-found scans can use 25 script hashes,
-one expected chunk per script hash derives 16, and reserving 10 chunk reads
-derives 20 for mostly-not-found queries.
+With the deployed direct images, `indexReadsPerScriptHash=2`. A 50-slot padded
+request therefore spends 100 INDEX ORAM accesses before CHUNK reads. The
+current VPSBG service drop-in uses `--direct-oram-access-budget 50`, which is
+fine for compact one-script-hash smokes but cannot support 50 padded slots.
+
+Useful padded-50 examples:
+
+```text
+accessBudget=120, paddedSlotCount=50, expectedChunkReadsPerScriptHash=1
+  => 20 real script hashes per request, 20 CHUNK reads available
+
+accessBudget=150, paddedSlotCount=50, expectedChunkReadsPerScriptHash=1
+  => 50 real script hashes per request, 50 CHUNK reads available
+```
+
+Switching VPSBG to padded-50 therefore requires raising
+`--direct-oram-access-budget` and matching the web/native client planner
+settings. If a real request's CHUNK demand still exceeds the remaining budget,
+the server burns the remaining dummy CHUNK reads, persists ORAM state, and
+returns an error so the client can split/retry with fewer real hashes.
 
 ## Production-Shaped Server Smoke
 
@@ -349,6 +369,17 @@ PORT=18091 \
 CARGO_JOBS=1 \
 ./scripts/oram_vpsbg_test.sh server-smoke
 ```
+
+To exercise explicit padded empty slots, raise the server budget and add
+`PADDED_SLOTS`. For example:
+
+```bash
+DIRECT_ACCESS_BUDGET=120 PADDED_SLOTS=50 ./scripts/oram_vpsbg_test.sh server-smoke
+```
+
+The script passes `--padded-slots` only to encrypted ORAM smokes. The
+cleartext-rejection smoke intentionally stays compact because the server should
+reject the opcode before parsing the ORAM body.
 
 The `bitcoinpir-oram` crate is vendored through `.cargo/config.toml`, so this
 build does not require GitHub credentials on VPSBG. For local ORAM repo

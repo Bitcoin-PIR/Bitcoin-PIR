@@ -78,6 +78,13 @@ export interface OramBatchPlannerConfig {
    * Optional operator/client cap after applying the access-budget model.
    */
   maxScriptHashesPerRequest?: number;
+  /**
+   * Fixed script-hash slot width sent to the TEE. Empty slots are explicit,
+   * so the server can spend dummy INDEX ORAM accesses instead of treating
+   * padding as real keys. If omitted, it is derived from the access budget and
+   * expected chunk count.
+   */
+  paddedSlotCount?: number;
 }
 
 export interface OramBatchPlan {
@@ -85,6 +92,7 @@ export interface OramBatchPlan {
   indexReadsPerScriptHash: number;
   expectedChunkReadsPerScriptHash: number;
   chunkReadReserve: number;
+  paddedSlotCount: number;
   maxScriptHashesPerRequest: number;
   chunkReadsAvailableAtMax: number;
 }
@@ -118,6 +126,7 @@ export interface OramPirClientConfig {
   /**
    * Opt-in direct ORAM fixed-budget planner. When unset, the adapter preserves
    * the conservative `maxScriptHashesPerRequest` split behavior.
+   * When set, every request is sent with explicit padded empty slots.
    */
   batchPlanner?: OramBatchPlannerConfig;
 }
@@ -275,13 +284,17 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     if (!this.wasmClient) throw new Error('Not connected');
-    const batches = this.config.batchPlanner
-      ? planOramScriptHashBatches(scriptHashes, {
+    const plannerConfig = this.config.batchPlanner
+      ? {
           ...this.config.batchPlanner,
           maxScriptHashesPerRequest:
             this.config.batchPlanner.maxScriptHashesPerRequest ??
             this.config.maxScriptHashesPerRequest,
-        })
+        }
+      : null;
+    const plan = plannerConfig ? resolveOramBatchPlan(plannerConfig) : null;
+    const batches = plan
+      ? splitOramScriptHashBatches(scriptHashes, plan.maxScriptHashesPerRequest)
       : splitOramScriptHashBatches(scriptHashes, this.config.maxScriptHashesPerRequest);
     const results: (QueryResult | null)[] = [];
 
@@ -289,10 +302,14 @@ export class OramPirClientAdapter {
       const batch = batches[batchIdx];
       onProgress?.(
         'ORAM',
-        `fixed-budget lookup ${batchIdx + 1}/${batches.length} (${batch.length} script hash${batch.length === 1 ? '' : 'es'})`,
+        plan
+          ? `fixed-budget lookup ${batchIdx + 1}/${batches.length} (${batch.length}/${plan.paddedSlotCount} real slot${batch.length === 1 ? '' : 's'})`
+          : `fixed-budget lookup ${batchIdx + 1}/${batches.length} (${batch.length} script hash${batch.length === 1 ? '' : 'es'})`,
       );
       const packed = packScriptHashes(batch);
-      const raw = await this.wasmClient.queryBatch(packed, dbId);
+      const raw = plan
+        ? await this.wasmClient.queryBatchPadded(packed, dbId, plan.paddedSlotCount)
+        : await this.wasmClient.queryBatch(packed, dbId);
       if (raw.length !== batch.length) {
         throw new Error(
           `ORAM response length ${raw.length} does not match request length ${batch.length}`,
@@ -590,25 +607,46 @@ export function resolveOramBatchPlan(config: OramBatchPlannerConfig = {}): OramB
     config.chunkReadReserve,
     0,
   );
-  if (chunkReadReserve >= accessBudget) {
+  const explicitPaddedSlotCount =
+    config.paddedSlotCount === undefined
+      ? undefined
+      : resolvePositiveInteger('paddedSlotCount', config.paddedSlotCount, 1);
+  const paddedSlotCount =
+    explicitPaddedSlotCount ??
+    Math.floor(
+      (accessBudget - chunkReadReserve) /
+        (indexReadsPerScriptHash + expectedChunkReadsPerScriptHash),
+    );
+  if (paddedSlotCount < 1) {
     throw new Error(
-      `chunkReadReserve must be smaller than accessBudget (got ${chunkReadReserve} >= ${accessBudget})`,
+      `ORAM batch planner cannot fit one padded slot in access budget ${accessBudget}`,
     );
   }
 
-  const perScriptHashCost =
-    indexReadsPerScriptHash + expectedChunkReadsPerScriptHash;
-  const budgetAfterReserve = accessBudget - chunkReadReserve;
-  const budgetMax = Math.floor(budgetAfterReserve / perScriptHashCost);
+  const indexBudget = paddedSlotCount * indexReadsPerScriptHash;
+  if (indexBudget + chunkReadReserve > accessBudget) {
+    throw new Error(
+      `ORAM padded slot count ${paddedSlotCount} needs ${indexBudget} INDEX reads plus ${chunkReadReserve} reserved CHUNK reads, exceeding access budget ${accessBudget}`,
+    );
+  }
+
+  const chunkBudgetAfterReserve = accessBudget - indexBudget - chunkReadReserve;
+  const chunkLimitedMax =
+    expectedChunkReadsPerScriptHash === 0
+      ? paddedSlotCount
+      : Math.min(
+          paddedSlotCount,
+          Math.floor(chunkBudgetAfterReserve / expectedChunkReadsPerScriptHash),
+        );
   const cappedMax = config.maxScriptHashesPerRequest === undefined
-    ? budgetMax
+    ? chunkLimitedMax
     : Math.min(
-        budgetMax,
+        chunkLimitedMax,
         resolveMaxScriptHashesPerRequest(config.maxScriptHashesPerRequest),
       );
   if (cappedMax < 1) {
     throw new Error(
-      `ORAM batch planner cannot fit one script hash in access budget ${accessBudget}`,
+      `ORAM batch planner cannot fit one real script hash in access budget ${accessBudget}`,
     );
   }
 
@@ -617,8 +655,9 @@ export function resolveOramBatchPlan(config: OramBatchPlannerConfig = {}): OramB
     indexReadsPerScriptHash,
     expectedChunkReadsPerScriptHash,
     chunkReadReserve,
+    paddedSlotCount,
     maxScriptHashesPerRequest: cappedMax,
-    chunkReadsAvailableAtMax: accessBudget - cappedMax * indexReadsPerScriptHash,
+    chunkReadsAvailableAtMax: accessBudget - paddedSlotCount * indexReadsPerScriptHash,
   };
 }
 

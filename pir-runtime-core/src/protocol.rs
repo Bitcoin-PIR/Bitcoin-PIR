@@ -384,14 +384,45 @@ pub struct HarmonyBatchResultItem {
 /// Maximum scripthashes accepted in one native ORAM lookup request.
 ///
 /// This is a request-memory and response-size guard, not a privacy parameter.
-/// The ORAM leakage model admits `batch_len`; callers that need fixed batches
-/// can pad at the client layer before using this opcode.
+/// New clients should use explicit empty slots to keep request width fixed.
 pub const MAX_ORAM_LOOKUP_SCRIPTHASHES: usize = 256;
+const ORAM_LOOKUP_PADDED_MARKER: u16 = u16::MAX;
 
 #[derive(Clone, Debug)]
 pub struct OramLookupRequest {
     pub db_id: u8,
     pub script_hashes: Vec<[u8; pir_core::params::SCRIPT_HASH_SIZE]>,
+    /// One presence bit per script-hash slot. Missing entries are treated as
+    /// present for compatibility with pre-padding clients.
+    pub slot_present: Vec<bool>,
+}
+
+impl OramLookupRequest {
+    pub fn compact(
+        db_id: u8,
+        script_hashes: Vec<[u8; pir_core::params::SCRIPT_HASH_SIZE]>,
+    ) -> Self {
+        Self {
+            db_id,
+            slot_present: vec![true; script_hashes.len()],
+            script_hashes,
+        }
+    }
+
+    pub fn slot_present(&self, idx: usize) -> bool {
+        self.slot_present.get(idx).copied().unwrap_or(true)
+    }
+
+    pub fn all_slots_present(&self) -> bool {
+        self.slot_present.len() == self.script_hashes.len()
+            && self.slot_present.iter().all(|&present| present)
+    }
+
+    pub fn present_count(&self) -> usize {
+        (0..self.script_hashes.len())
+            .filter(|&idx| self.slot_present(idx))
+            .count()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -438,7 +469,9 @@ pub enum Request {
     },
     /// Attestation request — 32-byte client-supplied nonce gets folded
     /// into REPORT_DATA so the response is anti-replay.
-    Attest { nonce: [u8; 32] },
+    Attest {
+        nonce: [u8; 32],
+    },
     /// Encrypted-channel handshake — sent in cleartext as the first
     /// channel-establishing message. After the server replies with its
     /// `server_eph_pub`, both sides derive a session key per
@@ -455,7 +488,9 @@ pub enum Request {
     AdminAuthChallenge,
     /// Admin auth step 2 — client returns ed25519 signature over
     /// `ADMIN_AUTH_DOMAIN_TAG || nonce`.
-    AdminAuthResponse { signature: [u8; 64] },
+    AdminAuthResponse {
+        signature: [u8; 64],
+    },
     /// Start a new DB upload — server creates `data_root/.staging/<name>/`
     /// and writes `MANIFEST.toml` from `manifest_toml`.
     AdminDbUploadBegin {
@@ -729,7 +764,10 @@ impl Request {
                 payload.push(REQ_ATTEST);
                 payload.extend_from_slice(nonce);
             }
-            Request::Handshake { client_eph_pub, nonce } => {
+            Request::Handshake {
+                client_eph_pub,
+                nonce,
+            } => {
                 payload.push(REQ_HANDSHAKE);
                 payload.extend_from_slice(client_eph_pub);
                 payload.extend_from_slice(nonce);
@@ -741,13 +779,21 @@ impl Request {
                 payload.push(REQ_ADMIN_AUTH_RESPONSE);
                 payload.extend_from_slice(signature);
             }
-            Request::AdminDbUploadBegin { name, manifest_toml } => {
+            Request::AdminDbUploadBegin {
+                name,
+                manifest_toml,
+            } => {
                 payload.push(REQ_ADMIN_DB_UPLOAD_BEGIN);
                 encode_lp_string(&mut payload, name);
                 payload.extend_from_slice(&(manifest_toml.len() as u32).to_le_bytes());
                 payload.extend_from_slice(manifest_toml);
             }
-            Request::AdminDbUploadChunk { name, file_path, offset, data } => {
+            Request::AdminDbUploadChunk {
+                name,
+                file_path,
+                offset,
+                data,
+            } => {
                 payload.push(REQ_ADMIN_DB_UPLOAD_CHUNK);
                 encode_lp_string(&mut payload, name);
                 encode_lp_string(&mut payload, file_path);
@@ -879,7 +925,10 @@ impl Request {
                 client_eph_pub.copy_from_slice(&data[1..33]);
                 let mut nonce = [0u8; 32];
                 nonce.copy_from_slice(&data[33..65]);
-                Ok(Request::Handshake { client_eph_pub, nonce })
+                Ok(Request::Handshake {
+                    client_eph_pub,
+                    nonce,
+                })
             }
             REQ_ADMIN_AUTH_CHALLENGE => Ok(Request::AdminAuthChallenge),
             REQ_ADMIN_AUTH_RESPONSE => {
@@ -897,15 +946,24 @@ impl Request {
                 let mut pos = 1;
                 let name = decode_lp_string(data, &mut pos)?;
                 if pos + 4 > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "missing manifest len"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "missing manifest len",
+                    ));
                 }
-                let mlen = u32::from_le_bytes(data[pos..pos+4].try_into().unwrap()) as usize;
+                let mlen = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
                 pos += 4;
                 if pos + mlen > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated manifest_toml"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "truncated manifest_toml",
+                    ));
                 }
-                let manifest_toml = data[pos..pos+mlen].to_vec();
-                Ok(Request::AdminDbUploadBegin { name, manifest_toml })
+                let manifest_toml = data[pos..pos + mlen].to_vec();
+                Ok(Request::AdminDbUploadBegin {
+                    name,
+                    manifest_toml,
+                })
             }
             REQ_ADMIN_DB_UPLOAD_CHUNK => {
                 let mut pos = 1;
@@ -914,18 +972,29 @@ impl Request {
                 if pos + 8 > data.len() {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "missing offset"));
                 }
-                let offset = u64::from_le_bytes(data[pos..pos+8].try_into().unwrap());
+                let offset = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
                 pos += 8;
                 if pos + 4 > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "missing data len"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "missing data len",
+                    ));
                 }
-                let dlen = u32::from_le_bytes(data[pos..pos+4].try_into().unwrap()) as usize;
+                let dlen = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
                 pos += 4;
                 if pos + dlen > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated chunk data"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "truncated chunk data",
+                    ));
                 }
-                let data_bytes = data[pos..pos+dlen].to_vec();
-                Ok(Request::AdminDbUploadChunk { name, file_path, offset, data: data_bytes })
+                let data_bytes = data[pos..pos + dlen].to_vec();
+                Ok(Request::AdminDbUploadChunk {
+                    name,
+                    file_path,
+                    offset,
+                    data: data_bytes,
+                })
             }
             REQ_ADMIN_DB_UPLOAD_FINALIZE => {
                 let mut pos = 1;
@@ -940,10 +1009,7 @@ impl Request {
             }
             REQ_INDEX_BATCH => {
                 // INDEX groups must carry both cuckoo-position keys.
-                let q = decode_batch_query(
-                    &data[1..],
-                    pir_core::params::INDEX_CUCKOO_NUM_HASHES,
-                )?;
+                let q = decode_batch_query(&data[1..], pir_core::params::INDEX_CUCKOO_NUM_HASHES)?;
                 Ok(Request::IndexBatch(q))
             }
             REQ_CHUNK_BATCH => {
@@ -1215,17 +1281,27 @@ impl Response {
             }
             RESP_ADMIN_DB_UPLOAD_FINALIZE => {
                 if data.len() < 1 + 1 + 2 + 32 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "finalize result too short"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "finalize result too short",
+                    ));
                 }
                 let ok = data[1] != 0;
                 let msg_len = u16::from_le_bytes(data[2..4].try_into().unwrap()) as usize;
                 if 4 + msg_len + 32 > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "finalize result truncated"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "finalize result truncated",
+                    ));
                 }
                 let msg = String::from_utf8_lossy(&data[4..4 + msg_len]).to_string();
                 let mut manifest_root = [0u8; 32];
                 manifest_root.copy_from_slice(&data[4 + msg_len..4 + msg_len + 32]);
-                Ok(Response::AdminDbUploadFinalize(AdminFinalizeResult { ok, msg, manifest_root }))
+                Ok(Response::AdminDbUploadFinalize(AdminFinalizeResult {
+                    ok,
+                    msg,
+                    manifest_root,
+                }))
             }
             RESP_ADMIN_DB_ACTIVATE => {
                 let (ok, msg) = decode_admin_ack_payload(&data[1..])?;
@@ -1250,7 +1326,10 @@ impl Response {
             }
             RESP_HARMONY_INFO => {
                 if data.len() < 19 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony info too short"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "harmony info too short",
+                    ));
                 }
                 let (index_master_seed, chunk_master_seed, anchor) = if data.len() >= 35 {
                     let ims = u64::from_le_bytes(data[19..27].try_into().unwrap());
@@ -1278,7 +1357,10 @@ impl Response {
             }
             RESP_HARMONY_QUERY => {
                 if data.len() < 4 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony query result too short"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "harmony query result too short",
+                    ));
                 }
                 Ok(Response::HarmonyQueryResult(HarmonyQueryResult {
                     group_id: data[1],
@@ -1380,7 +1462,10 @@ fn encode_batch_query(buf: &mut Vec<u8>, q: &BatchQuery) {
 fn decode_batch_query(data: &[u8], min_keys_per_group: usize) -> io::Result<BatchQuery> {
     let mut pos = 0;
     if data.len() < 4 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "batch query too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "batch query too short",
+        ));
     }
     let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
     pos += 2;
@@ -1424,7 +1509,10 @@ fn decode_batch_query(data: &[u8], min_keys_per_group: usize) -> io::Result<Batc
             let len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
             pos += 2;
             if pos + len > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key data"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated key data",
+                ));
             }
             let key = &data[pos..pos + len];
             // Reject malformed DPF key blobs at decode time (S1):
@@ -1464,7 +1552,10 @@ fn encode_batch_result(buf: &mut Vec<u8>, r: &BatchResult) {
 fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
     let mut pos = 0;
     if data.len() < 4 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "batch result too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "batch result too short",
+        ));
     }
     let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
     pos += 2;
@@ -1477,12 +1568,18 @@ fn decode_batch_result(data: &[u8]) -> io::Result<BatchResult> {
         let mut group_results = Vec::with_capacity(results_per_group);
         for _ in 0..results_per_group {
             if pos + 2 > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated result",
+                ));
             }
             let len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
             pos += 2;
             if pos + len > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated result data"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated result data",
+                ));
             }
             group_results.push(data[pos..pos + len].to_vec());
             pos += len;
@@ -1502,7 +1599,10 @@ fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
     // [16B prp_key][1B prp_backend][1B level][1B num_groups][per group: 1B id]
     // [optional trailing 1B db_id, only when non-zero — backward compatible]
     if data.len() < 19 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony hint request too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "harmony hint request too short",
+        ));
     }
     let mut prp_key = [0u8; 16];
     prp_key.copy_from_slice(&data[0..16]);
@@ -1511,7 +1611,10 @@ fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
     let num_groups = data[18] as usize;
     let pos = 19 + num_groups;
     if data.len() < pos {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated group list"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated group list",
+        ));
     }
     let group_ids = data[19..pos].to_vec();
     // Read trailing db_id if present (backward compatible: old clients don't send it).
@@ -1540,7 +1643,10 @@ fn decode_harmony_hint_request_v2(data: &[u8]) -> io::Result<HarmonyHintRequestV
     if level_sentinel != 0xFF {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("V2 hint request expected level_sentinel 0xFF, got 0x{:02x}", level_sentinel),
+            format!(
+                "V2 hint request expected level_sentinel 0xFF, got 0x{:02x}",
+                level_sentinel
+            ),
         ));
     }
     // data[1] is reserved, ignored.
@@ -1610,7 +1716,10 @@ pub fn encode_harmony_batch_query(buf: &mut Vec<u8>, q: &HarmonyBatchQuery) {
 /// share one parser definition with the server side.
 pub fn decode_harmony_batch_query(data: &[u8]) -> io::Result<HarmonyBatchQuery> {
     if data.len() < 6 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony batch query too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "harmony batch query too short",
+        ));
     }
     let level = data[0];
     let round_id = u16::from_le_bytes(data[1..3].try_into().unwrap());
@@ -1620,19 +1729,28 @@ pub fn decode_harmony_batch_query(data: &[u8]) -> io::Result<HarmonyBatchQuery> 
     let mut items = Vec::with_capacity(num_groups);
     for _ in 0..num_groups {
         if pos >= data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch group"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated batch group",
+            ));
         }
         let group_id = data[pos];
         pos += 1;
         let mut sub_queries = Vec::with_capacity(sub_queries_per_group as usize);
         for _ in 0..sub_queries_per_group {
             if pos + 4 > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch sub-query count"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated batch sub-query count",
+                ));
             }
             let count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             if pos + count * 4 > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch indices"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated batch indices",
+                ));
             }
             let mut indices = Vec::with_capacity(count);
             for i in 0..count {
@@ -1642,11 +1760,20 @@ pub fn decode_harmony_batch_query(data: &[u8]) -> io::Result<HarmonyBatchQuery> 
             pos += count * 4;
             sub_queries.push(indices);
         }
-        items.push(HarmonyBatchItem { group_id, sub_queries });
+        items.push(HarmonyBatchItem {
+            group_id,
+            sub_queries,
+        });
     }
     // Read trailing db_id if present (backward compatible: old clients don't send it).
     let db_id = if pos < data.len() { data[pos] } else { 0 };
-    Ok(HarmonyBatchQuery { level, round_id, sub_queries_per_group, items, db_id })
+    Ok(HarmonyBatchQuery {
+        level,
+        round_id,
+        sub_queries_per_group,
+        items,
+        db_id,
+    })
 }
 
 fn encode_harmony_batch_result(buf: &mut Vec<u8>, r: &HarmonyBatchResult) {
@@ -1665,7 +1792,10 @@ fn encode_harmony_batch_result(buf: &mut Vec<u8>, r: &HarmonyBatchResult) {
 
 fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
     if data.len() < 6 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony batch result too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "harmony batch result too short",
+        ));
     }
     let level = data[0];
     let round_id = u16::from_le_bytes(data[1..3].try_into().unwrap());
@@ -1675,26 +1805,43 @@ fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
     let mut items = Vec::with_capacity(num_groups);
     for _ in 0..num_groups {
         if pos >= data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch result group"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated batch result group",
+            ));
         }
         let group_id = data[pos];
         pos += 1;
         let mut sub_results = Vec::with_capacity(sub_results_per_group as usize);
         for _ in 0..sub_results_per_group {
             if pos + 4 > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch result len"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated batch result len",
+                ));
             }
             let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             if pos + len > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated batch result data"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated batch result data",
+                ));
             }
             sub_results.push(data[pos..pos + len].to_vec());
             pos += len;
         }
-        items.push(HarmonyBatchResultItem { group_id, sub_results });
+        items.push(HarmonyBatchResultItem {
+            group_id,
+            sub_results,
+        });
     }
-    Ok(HarmonyBatchResult { level, round_id, sub_results_per_group, items })
+    Ok(HarmonyBatchResult {
+        level,
+        round_id,
+        sub_results_per_group,
+        items,
+    })
 }
 
 // ─── TEE ORAM encoding helpers ─────────────────────────────────────────────
@@ -1702,7 +1849,16 @@ fn decode_harmony_batch_result(data: &[u8]) -> io::Result<HarmonyBatchResult> {
 fn encode_oram_lookup_request(buf: &mut Vec<u8>, q: &OramLookupRequest) {
     debug_assert!(q.script_hashes.len() <= u16::MAX as usize);
     buf.push(q.db_id);
-    buf.extend_from_slice(&(q.script_hashes.len() as u16).to_le_bytes());
+    if q.all_slots_present() {
+        buf.extend_from_slice(&(q.script_hashes.len() as u16).to_le_bytes());
+    } else {
+        debug_assert_eq!(q.slot_present.len(), q.script_hashes.len());
+        buf.extend_from_slice(&ORAM_LOOKUP_PADDED_MARKER.to_le_bytes());
+        buf.extend_from_slice(&(q.script_hashes.len() as u16).to_le_bytes());
+        for idx in 0..q.script_hashes.len() {
+            buf.push(u8::from(q.slot_present(idx)));
+        }
+    }
     for sh in &q.script_hashes {
         buf.extend_from_slice(sh);
     }
@@ -1710,10 +1866,45 @@ fn encode_oram_lookup_request(buf: &mut Vec<u8>, q: &OramLookupRequest) {
 
 fn decode_oram_lookup_request(data: &[u8]) -> io::Result<OramLookupRequest> {
     if data.len() < 3 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "ORAM lookup request too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ORAM lookup request too short",
+        ));
     }
     let db_id = data[0];
-    let count = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
+    let raw_count = u16::from_le_bytes(data[1..3].try_into().unwrap());
+    let (count, slot_present, mut pos) = if raw_count == ORAM_LOOKUP_PADDED_MARKER {
+        if data.len() < 5 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "padded ORAM lookup request too short",
+            ));
+        }
+        let count = u16::from_le_bytes(data[3..5].try_into().unwrap()) as usize;
+        if data.len() < 5 + count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated ORAM padded slot flags",
+            ));
+        }
+        let mut flags = Vec::with_capacity(count);
+        for &flag in &data[5..5 + count] {
+            match flag {
+                0 => flags.push(false),
+                1 => flags.push(true),
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid ORAM padded slot flag {other}"),
+                    ));
+                }
+            }
+        }
+        (count, flags, 5 + count)
+    } else {
+        let count = raw_count as usize;
+        (count, vec![true; count], 3)
+    };
     if count > MAX_ORAM_LOOKUP_SCRIPTHASHES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1723,19 +1914,25 @@ fn decode_oram_lookup_request(data: &[u8]) -> io::Result<OramLookupRequest> {
             ),
         ));
     }
-    let expected = 3 + count * pir_core::params::SCRIPT_HASH_SIZE;
+    let expected = pos + count * pir_core::params::SCRIPT_HASH_SIZE;
     if data.len() < expected {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated ORAM scripthash list"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated ORAM scripthash list",
+        ));
     }
     let mut script_hashes = Vec::with_capacity(count);
-    let mut pos = 3;
     for _ in 0..count {
         let mut sh = [0u8; pir_core::params::SCRIPT_HASH_SIZE];
         sh.copy_from_slice(&data[pos..pos + pir_core::params::SCRIPT_HASH_SIZE]);
         script_hashes.push(sh);
         pos += pir_core::params::SCRIPT_HASH_SIZE;
     }
-    Ok(OramLookupRequest { db_id, script_hashes })
+    Ok(OramLookupRequest {
+        db_id,
+        script_hashes,
+        slot_present,
+    })
 }
 
 fn encode_oram_lookup_result(buf: &mut Vec<u8>, r: &OramLookupResult) {
@@ -1760,7 +1957,10 @@ fn encode_oram_lookup_result(buf: &mut Vec<u8>, r: &OramLookupResult) {
 
 fn decode_oram_lookup_result(data: &[u8]) -> io::Result<OramLookupResult> {
     if data.len() < 3 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "ORAM lookup result too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ORAM lookup result too short",
+        ));
     }
     let db_id = data[0];
     let count = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
@@ -1768,7 +1968,10 @@ fn decode_oram_lookup_result(data: &[u8]) -> io::Result<OramLookupResult> {
     let mut items = Vec::with_capacity(count);
     for _ in 0..count {
         if pos + 10 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated ORAM lookup item"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated ORAM lookup item",
+            ));
         }
         let flags = data[pos];
         pos += 1;
@@ -1851,14 +2054,20 @@ fn encode_db_catalog(buf: &mut Vec<u8>, cat: &DatabaseCatalog) {
 
 fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
     if data.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "catalog too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "catalog too short",
+        ));
     }
     let num_dbs = data[0] as usize;
     let mut pos = 1;
     let mut databases = Vec::with_capacity(num_dbs);
     for _ in 0..num_dbs {
         if pos + 3 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated catalog entry"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated catalog entry",
+            ));
         }
         let db_id = data[pos];
         pos += 1;
@@ -1867,14 +2076,20 @@ fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
         let name_len = data[pos] as usize;
         pos += 1;
         if pos + name_len > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated catalog name"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated catalog name",
+            ));
         }
         let name = String::from_utf8_lossy(&data[pos..pos + name_len]).to_string();
         pos += name_len;
         // base_height(4) + height(4) + index_bins(4) + chunk_bins(4) + index_k(1) + chunk_k(1) + tag_seed(8) + dpf_n_index(1) + dpf_n_chunk(1) = 28
         // + has_bucket_merkle(1) = 29 (optional for backward compat)
         if pos + 28 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated catalog fields"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated catalog fields",
+            ));
         }
         let base_height = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
         pos += 4;
@@ -1977,8 +2192,7 @@ fn decode_db_proof_bundle(data: &[u8]) -> io::Result<DatabaseProofBundle> {
     let db_id = data[2];
     let mut pos = 3;
     let build_evidence = decode_lp_bytes_u32_required(data, &mut pos, "build_evidence")?;
-    let root_bundle_payload =
-        decode_lp_bytes_u32_required(data, &mut pos, "root_bundle_payload")?;
+    let root_bundle_payload = decode_lp_bytes_u32_required(data, &mut pos, "root_bundle_payload")?;
     let sev_snp_report = decode_lp_bytes_u32_required(data, &mut pos, "sev_snp_report")?;
     let database_manifest_sha256 =
         decode_lp_bytes_u32_required(data, &mut pos, "database_manifest_sha256")?;
@@ -2029,7 +2243,10 @@ fn decode_anchor_ext(
         ANCHOR_KIND_NONE => Ok(None),
         ANCHOR_KIND_SNAPSHOT => {
             if *pos + CHAIN_ANCHOR_BYTES > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated snapshot anchor"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated snapshot anchor",
+                ));
             }
             let a = ChainAnchor::from_bytes(&data[*pos..*pos + CHAIN_ANCHOR_BYTES])?;
             *pos += CHAIN_ANCHOR_BYTES;
@@ -2037,7 +2254,10 @@ fn decode_anchor_ext(
         }
         ANCHOR_KIND_DELTA => {
             if *pos + DELTA_ANCHOR_BYTES > data.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated delta anchor"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated delta anchor",
+                ));
             }
             let a = DeltaAnchor::from_bytes(&data[*pos..*pos + DELTA_ANCHOR_BYTES])?;
             *pos += DELTA_ANCHOR_BYTES;
@@ -2207,7 +2427,11 @@ fn decode_lp_bytes_u32_or_empty(data: &[u8], pos: &mut usize) -> Result<Vec<u8>,
     let n = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
     *pos += 4;
     if *pos + n > data.len() {
-        return Err(format!("body truncated: claimed {} bytes, have {}", n, data.len() - *pos));
+        return Err(format!(
+            "body truncated: claimed {} bytes, have {}",
+            n,
+            data.len() - *pos
+        ));
     }
     let body = data[*pos..*pos + n].to_vec();
     *pos += n;
@@ -2279,21 +2503,33 @@ fn encode_admin_ack_payload(buf: &mut Vec<u8>, ok: bool, msg: &str) {
 
 fn decode_admin_ack_payload(data: &[u8]) -> io::Result<(bool, String)> {
     if data.len() < 3 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "admin ack too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "admin ack too short",
+        ));
     }
     let ok = data[0] != 0;
     let msg_len = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
     if 3 + msg_len > data.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "admin ack truncated msg"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "admin ack truncated msg",
+        ));
     }
-    Ok((ok, String::from_utf8_lossy(&data[3..3 + msg_len]).to_string()))
+    Ok((
+        ok,
+        String::from_utf8_lossy(&data[3..3 + msg_len]).to_string(),
+    ))
 }
 
 fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
     // [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE]
     // [optional trailing 1B db_id, only when non-zero — backward compatible]
     if data.len() < 8 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "harmony query too short"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "harmony query too short",
+        ));
     }
     let level = data[0];
     let group_id = data[1];
@@ -2301,7 +2537,10 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
     let count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
     let expected = 8 + count * 4;
     if data.len() < expected {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated harmony query indices"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated harmony query indices",
+        ));
     }
     let mut indices = Vec::with_capacity(count);
     for i in 0..count {
@@ -2309,7 +2548,11 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
         indices.push(u32::from_le_bytes(data[off..off + 4].try_into().unwrap()));
     }
     // Read trailing db_id if present (backward compatible: old clients don't send it).
-    let db_id = if expected < data.len() { data[expected] } else { 0 };
+    let db_id = if expected < data.len() {
+        data[expected]
+    } else {
+        0
+    };
     Ok(HarmonyQuery {
         level,
         group_id,
@@ -2349,7 +2592,10 @@ mod attest_wire_tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
-    fn sample_entry(db_id: u8, anchor: Option<pir_core::cuckoo::HeaderAnchor>) -> DatabaseCatalogEntry {
+    fn sample_entry(
+        db_id: u8,
+        anchor: Option<pir_core::cuckoo::HeaderAnchor>,
+    ) -> DatabaseCatalogEntry {
         DatabaseCatalogEntry {
             db_id,
             db_type: 0,
@@ -2374,7 +2620,10 @@ mod attest_wire_tests {
     fn db_catalog_ext_roundtrip_mixed_snapshot_and_legacy() {
         use pir_core::cuckoo::HeaderAnchor;
         use pir_core::seeds::ChainAnchor;
-        let snap = HeaderAnchor::Snapshot(ChainAnchor { block_hash: [0x42; 32], block_height: 850_000 });
+        let snap = HeaderAnchor::Snapshot(ChainAnchor {
+            block_hash: [0x42; 32],
+            block_height: 850_000,
+        });
         let cat = DatabaseCatalog {
             databases: vec![sample_entry(0, Some(snap)), sample_entry(1, None)],
         };
@@ -2383,11 +2632,20 @@ mod attest_wire_tests {
         let decoded = decode_db_catalog(&buf).unwrap();
         assert_eq!(decoded.databases.len(), 2);
         // Anchored entry: seeds + anchor survive.
-        assert_eq!(decoded.databases[0].index_master_seed, 0x1111_2222_3333_4444);
-        assert_eq!(decoded.databases[0].chunk_master_seed, 0x5555_6666_7777_8888);
+        assert_eq!(
+            decoded.databases[0].index_master_seed,
+            0x1111_2222_3333_4444
+        );
+        assert_eq!(
+            decoded.databases[0].chunk_master_seed,
+            0x5555_6666_7777_8888
+        );
         assert_eq!(decoded.databases[0].anchor, Some(snap));
         // Legacy-anchor entry: seeds survive, anchor is None.
-        assert_eq!(decoded.databases[1].index_master_seed, 0x1111_2222_3333_4444);
+        assert_eq!(
+            decoded.databases[1].index_master_seed,
+            0x1111_2222_3333_4444
+        );
         assert_eq!(decoded.databases[1].anchor, None);
     }
 
@@ -2396,7 +2654,12 @@ mod attest_wire_tests {
         // A pre-ext server stops after the entries; the decoder must
         // tolerate the absence and default the seeds/anchor.
         let mut buf = Vec::new();
-        encode_db_catalog(&mut buf, &DatabaseCatalog { databases: vec![sample_entry(0, None)] });
+        encode_db_catalog(
+            &mut buf,
+            &DatabaseCatalog {
+                databases: vec![sample_entry(0, None)],
+            },
+        );
         // Truncate the trailing ext section (everything from CATALOG_EXT_V1 on).
         // The legacy entry is fixed-shape: 1 num + (1+1+1+name + 28 + 1).
         let name_len = 3; // "db0"
@@ -2446,7 +2709,10 @@ mod attest_wire_tests {
             tag_seed: 0xCAFE_F00D,
             index_master_seed: 0x0123_4567_89AB_CDEF,
             chunk_master_seed: 0xFEDC_BA98_7654_3210,
-            anchor: Some(HeaderAnchor::Snapshot(ChainAnchor { block_hash: [7; 32], block_height: 42 })),
+            anchor: Some(HeaderAnchor::Snapshot(ChainAnchor {
+                block_hash: [7; 32],
+                block_height: 42,
+            })),
         };
         let encoded = Response::Info(info.clone()).encode();
         match Response::decode(&encoded[4..]).unwrap() {
@@ -2462,16 +2728,20 @@ mod attest_wire_tests {
 
     #[test]
     fn oram_lookup_request_and_response_roundtrip() {
-        let req = OramLookupRequest {
-            db_id: 7,
-            script_hashes: vec![[0x11; pir_core::params::SCRIPT_HASH_SIZE], [0x22; pir_core::params::SCRIPT_HASH_SIZE]],
-        };
+        let req = OramLookupRequest::compact(
+            7,
+            vec![
+                [0x11; pir_core::params::SCRIPT_HASH_SIZE],
+                [0x22; pir_core::params::SCRIPT_HASH_SIZE],
+            ],
+        );
         let encoded = Request::OramLookup(req.clone()).encode();
         assert_eq!(encoded[4], REQ_ORAM_LOOKUP);
         match Request::decode(&encoded[4..]).unwrap() {
             Request::OramLookup(decoded) => {
                 assert_eq!(decoded.db_id, req.db_id);
                 assert_eq!(decoded.script_hashes, req.script_hashes);
+                assert_eq!(decoded.slot_present, vec![true, true]);
             }
             other => panic!("wrong variant: {:?}", other),
         }
@@ -2499,6 +2769,34 @@ mod attest_wire_tests {
         assert_eq!(encoded[4], RESP_ORAM_LOOKUP);
         match Response::decode(&encoded[4..]).unwrap() {
             Response::OramLookupResult(decoded) => assert_eq!(decoded, result),
+            other => panic!("wrong variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn padded_oram_lookup_request_roundtrip() {
+        let req = OramLookupRequest {
+            db_id: 8,
+            script_hashes: vec![
+                [0x11; pir_core::params::SCRIPT_HASH_SIZE],
+                [0x00; pir_core::params::SCRIPT_HASH_SIZE],
+                [0x22; pir_core::params::SCRIPT_HASH_SIZE],
+            ],
+            slot_present: vec![true, false, true],
+        };
+        let encoded = Request::OramLookup(req.clone()).encode();
+        assert_eq!(encoded[4], REQ_ORAM_LOOKUP);
+        assert_eq!(&encoded[6..8], &ORAM_LOOKUP_PADDED_MARKER.to_le_bytes());
+        assert_eq!(&encoded[8..10], &3u16.to_le_bytes());
+        assert_eq!(&encoded[10..13], &[1, 0, 1]);
+
+        match Request::decode(&encoded[4..]).unwrap() {
+            Request::OramLookup(decoded) => {
+                assert_eq!(decoded.db_id, req.db_id);
+                assert_eq!(decoded.script_hashes, req.script_hashes);
+                assert_eq!(decoded.slot_present, req.slot_present);
+                assert_eq!(decoded.present_count(), 2);
+            }
             other => panic!("wrong variant: {:?}", other),
         }
     }
@@ -2607,7 +2905,7 @@ mod attest_wire_tests {
         payload.extend_from_slice(&[0u8; 32]); // server_static_pub
         payload.extend_from_slice(&3u16.to_le_bytes()); // git_rev len
         payload.extend_from_slice(b"abc"); // git_rev
-        // INTENTIONALLY no cert fields — pre-D.2 server behavior.
+                                           // INTENTIONALLY no cert fields — pre-D.2 server behavior.
 
         let decoded = Response::decode(&payload).unwrap();
         match decoded {
@@ -2680,8 +2978,8 @@ mod attest_wire_tests {
     fn announce_handler_returns_bundle_when_configured() {
         use crate::handler::RequestHandler;
         let bundle_bytes = vec![1u8, 2, 3, 4, 5];
-        let handler = RequestHandler::new(vec![])
-            .with_announcement_bundle(Some(bundle_bytes.clone()));
+        let handler =
+            RequestHandler::new(vec![]).with_announcement_bundle(Some(bundle_bytes.clone()));
         let resp = handler.handle_request(&Request::Announce);
         match resp {
             Response::Announce(bytes) => assert_eq!(bytes, bundle_bytes),
@@ -2763,7 +3061,12 @@ mod attest_wire_tests {
     #[test]
     fn decode_batch_query_accepts_legitimate_index_batch() {
         let g: Vec<Vec<u8>> = vec![valid_key_bytes(20), valid_key_bytes(20)];
-        let q = BatchQuery { level: 0, round_id: 0, db_id: 0, keys: vec![g.clone(); 3] };
+        let q = BatchQuery {
+            level: 0,
+            round_id: 0,
+            db_id: 0,
+            keys: vec![g.clone(); 3],
+        };
         let encoded = Request::IndexBatch(q).encode();
         match Request::decode(&encoded[4..]).unwrap() {
             Request::IndexBatch(d) => {
@@ -2842,8 +3145,8 @@ mod attest_wire_tests {
         );
         let bundle = pir_identity::AnnouncementBundle { cert, manifest };
         let encoded_bundle = bundle.encode();
-        let handler = RequestHandler::new(vec![])
-            .with_announcement_bundle(Some(encoded_bundle.clone()));
+        let handler =
+            RequestHandler::new(vec![]).with_announcement_bundle(Some(encoded_bundle.clone()));
 
         // Server-side: produce the RESP_ANNOUNCE wire bytes.
         let resp = handler.handle_request(&Request::Announce);
