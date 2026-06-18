@@ -15,6 +15,10 @@
 #                       without it the binary exits code 2 → runit crash-loop.)
 #   --config /home/pir/data/databases.toml   (loaded from rootfs via
 #                                             bpir-tier3-init's bind mount)
+#   --direct-oram-db 0=... / 1=...
+#                       direct ORAM images stay on the bind-mounted rootfs, but
+#                       these paths and ORAM runtime parameters are baked into
+#                       the measured UKI run script.
 #   --admin-pubkey-hex <op key>   (auth for REQ_ADMIN_DB_UPLOAD etc.)
 #
 # Runs as root — Tier 3 initramfs has no /etc/passwd, so dropping
@@ -39,11 +43,28 @@ if [ ! -r /home/pir/data/databases.toml ]; then
     exit 1
 fi
 
+ORAM_FULL_DIR=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth
+ORAM_DELTA_DIR=/home/pir/data/oram/deltas/940611_948454_canonical-direct-pack16-z2-div2-stash128-auth
+
+for dir in "$ORAM_FULL_DIR" "$ORAM_DELTA_DIR"; do
+    if [ ! -d "$dir" ]; then
+        echo "[unified-server-run] FATAL: direct ORAM image directory missing: $dir" >&2
+        sleep 5
+        exit 1
+    fi
+done
+
 exec /usr/local/bin/unified_server \
     --port 8091 \
     --role secondary \
     --serve-queries \
     --config /home/pir/data/databases.toml \
+    --direct-oram-db "0=$ORAM_FULL_DIR" \
+    --direct-oram-db "1=$ORAM_DELTA_DIR" \
+    --direct-oram-drain-per-access 2 \
+    --direct-oram-access-budget 75 \
+    --direct-oram-cache-levels 0 \
+    --direct-oram-auth-store \
     --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
     --vcek-dir /home/pir/data/vcek \
     --identity-key-path /home/pir/data/pir2-identity.key \

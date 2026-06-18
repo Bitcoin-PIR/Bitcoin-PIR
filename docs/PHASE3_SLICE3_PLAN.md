@@ -74,6 +74,7 @@ Browser auto-flips to `verified-vcek` on connect — see
 | sshd | available | **gone** |
 | Operator access | `ssh vpsbg-pir` | `bpir-admin` over WSS only (cf. `bpir-admin upload` for DBs) |
 | DB storage | `/home/pir/data/checkpoints/`, `/home/pir/data/deltas/` (rootfs, mutable) | Same — DBs (~14 GB) can't be in UKI; need a writable mount |
+| ORAM storage | not enabled in the original Slice 3 notes | ORAM images stay in `/home/pir/data/oram`, while the direct ORAM flags are baked into `/etc/sv/unified_server/run` inside the UKI |
 | VCEK chain | `/home/pir/data/vcek/{cert_chain.pem,vcek.pem}` (rootfs) | Same — operator-refreshable on TCB updates |
 | Binary update cadence | `cargo build && systemctl restart pir-vpsbg` | `cargo build → re-bake UKI → upload via portal → reboot` (every change) |
 | Recovery if UKI bricks | Portal "None" UKI fallback + SSH back in + cp .bak | **Portal "None" UKI fallback only** — no SSH to recover from |
@@ -430,7 +431,9 @@ initramfs alongside the binary itself.
   layer unchanged.
 - DB integrity — manifest roots in attestation already cover this;
   DBs continue to live on the writable mount with the same upload
-  path (`bpir-admin upload`).
+  path (`bpir-admin upload`). Direct ORAM image files also live on the
+  writable mount; the UKI measurement covers the ORAM-enabled binary and
+  fixed direct ORAM startup flags, not the mutable ORAM image bytes.
 - VCEK chain refresh — operator workflow stays the same
   (`snpguest fetch vcek` + replace files in `/data/vcek/`).
 - Web bundle / browser — `verified-vcek` flow keeps working; the

@@ -85,7 +85,7 @@ done
 BINARY=${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}
 [ -x "$BINARY" ] || {
     echo "error: $BINARY not executable" >&2
-    echo "       run: cargo build --release -p unified_server" >&2
+    echo "       run: cargo build --release -p runtime --features cuckoo-oram --bin unified_server" >&2
     exit 1
 }
 
