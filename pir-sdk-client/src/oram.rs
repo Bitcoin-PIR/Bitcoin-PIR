@@ -2,14 +2,20 @@
 //!
 //! This client speaks the `REQ_ORAM_LOOKUP` opcode exposed by
 //! `unified_server` when it is built with the `cuckoo-oram` feature and
-//! configured with ORAM-backed INDEX + CHUNK cuckoo tables. The request carries
-//! plaintext scripthashes, so callers must authenticate the server and upgrade
-//! the transport to the encrypted channel before calling [`OramClient::lookup_raw`]
+//! configured with ORAM-backed INDEX + CHUNK tables. The current production
+//! direction is the direct-entry layout (`utxo_chunks_index_nodust.bin` plus
+//! `utxo_chunks_nodust.bin`), while the server still supports the older
+//! PBC-expanded cuckoo image for comparison. The request carries plaintext
+//! scripthashes, so callers must authenticate the server and upgrade the
+//! transport to the encrypted channel before calling [`OramClient::lookup_raw`]
 //! or [`OramClient::query_batch`]. The server rejects cleartext ORAM lookup
 //! frames as a second line of defense.
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
+use crate::db_proof::{
+    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+};
 use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
@@ -117,6 +123,10 @@ impl OramClient {
         self.conn.is_some()
     }
 
+    pub fn server_url(&self) -> &str {
+        &self.server_url
+    }
+
     /// Fetch and cache the server catalog. This may be called before or after
     /// encrypted-channel upgrade; it does not reveal a queried scripthash.
     pub async fn fetch_catalog(&mut self) -> PirResult<DatabaseCatalog> {
@@ -139,6 +149,33 @@ impl OramClient {
         }
     }
 
+    /// Fetch and verify the attested-builder proof bundle for `db_id`.
+    ///
+    /// ORAM uses the same catalog and proof envelope as the DPF/Harmony
+    /// backends; this method keeps the single-server browser path on the
+    /// same attested-root policy surface.
+    pub async fn verify_database_proof(
+        &mut self,
+        db_id: u8,
+        policy: &DatabaseProofPolicy,
+    ) -> PirResult<VerifiedDatabaseRoots> {
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
+        let catalog = match &self.catalog {
+            Some(c) => c.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        let db_info = catalog
+            .databases
+            .iter()
+            .find(|db| db.db_id == db_id)
+            .cloned()
+            .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
+        let bundle = fetch_database_proof(self.conn_mut()?.as_mut(), db_id).await?;
+        verify_database_proof(&db_info, &bundle, policy)
+    }
+
     pub fn cached_catalog(&self) -> Option<&DatabaseCatalog> {
         self.catalog.as_ref()
     }
@@ -159,6 +196,11 @@ impl OramClient {
     ) -> PirResult<crate::attest::AttestVerification> {
         crate::attest::attest_with_eph_binding(self.conn_mut()?.as_mut(), eph_seed, random_32)
             .await
+    }
+
+    /// Run REQ_ANNOUNCE on the current connection.
+    pub async fn announce(&mut self) -> PirResult<crate::announce::AnnounceVerification> {
+        crate::announce::announce(self.conn_mut()?.as_mut()).await
     }
 
     /// Upgrade the existing connection to the encrypted channel.
