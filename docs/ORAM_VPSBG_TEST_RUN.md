@@ -496,6 +496,59 @@ The production service uses explicit per-db flags via
 The legacy `--cuckoo-oram-*` flags remain accepted for comparison runs only.
 `--cuckoo-oram-dir <dir>` maps to db_id 0.
 
+## Tier 3 UKI Wiring
+
+The ORAM image directories are too large and too mutable to bake into the UKI.
+For Tier 3, the UKI should instead measure:
+
+- the ORAM-enabled `unified_server` binary;
+- the runit service script that starts it;
+- the explicit direct ORAM flags and image paths.
+
+The bulk ORAM metadata/payload/hash/state files stay under the bind-mounted
+`/home/pir/data/oram/...` directories. The current measured startup script is:
+
+```text
+scripts/dracut/97bpir-tier3-init/unified-server-run.sh
+```
+
+It starts `/usr/local/bin/unified_server` with:
+
+```text
+--direct-oram-db 0=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth
+--direct-oram-db 1=/home/pir/data/oram/deltas/940611_948454_canonical-direct-pack16-z2-div2-stash128-auth
+--direct-oram-drain-per-access 2
+--direct-oram-access-budget 75
+--direct-oram-cache-levels 0
+--direct-oram-auth-store
+```
+
+Build the binary that will be copied into the UKI with ORAM support enabled:
+
+```bash
+cd /home/pir/BitcoinPIR
+cargo build --release -p runtime --features cuckoo-oram --bin unified_server
+sudo ./scripts/build_uki_tier3.sh
+```
+
+After uploading the new UKI in the VPSBG portal and rebooting, capture the new
+SEV-SNP MEASUREMENT and run:
+
+```bash
+bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
+  --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+
+PADDED_SLOTS=25 ./scripts/oram_vpsbg_test.sh server-smoke
+```
+
+The attestation/communication story is unchanged by ORAM: the client verifies
+the SEV-SNP VCEK chain and launch measurement, then checks that `REPORT_DATA`
+binds the ephemeral encrypted-channel key it is about to use. Since the UKI
+measurement covers the ORAM-enabled binary plus the fixed run script, a
+successful attestation proves the encrypted ORAM request channel terminates in
+that measured code path. Database-build proofs and ORAM page authentication
+remain separate evidence layers for data correctness and disk tamper detection.
+
 ## Memory And Disk Planning
 
 Disk:
