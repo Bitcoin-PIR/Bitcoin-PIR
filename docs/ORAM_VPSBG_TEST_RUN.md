@@ -165,8 +165,11 @@ The noncanonical DELTA image is not suitable for production db_id=1 while
 Runtime status:
 
 ```text
-Live /home/pir/BitcoinPIR systemd binary still uses legacy --cuckoo-oram-db.
-Direct-capable runtime was built and smoked from:
+As of 2026-06-18, live pir-vpsbg is back on the ordinary mmap-backed
+DPF/Harmony query path; legacy --cuckoo-oram-* flags were removed from
+/etc/systemd/system/pir-vpsbg.service.
+
+Direct-capable runtime was built and smoked separately from:
   /home/pir/BitcoinPIR-oram-direct-test
 ```
 
