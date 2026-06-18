@@ -23,6 +23,13 @@
 # Layout:
 #   /Volumes/Bitcoin/data/intermediate/full_<H>/   — raw UTXO + chunks + index (large; safe to delete after build)
 #   /Volumes/Bitcoin/data/checkpoints/<H>/         — final artifacts the server consumes (~40 GB)
+#
+# Optional ORAM direct-input preservation:
+#   KEEP_ORAM_DIRECT_INPUTS=1 copies the direct INDEX+CHUNK source tables into
+#   /Volumes/Bitcoin/data/oram-inputs/checkpoints/<H>/ by default. Keep these
+#   outside the checkpoint dir so MANIFEST.toml and server startup do not hash
+#   or verify multi-GB intermediate files that are only needed for ORAM image
+#   construction.
 
 set -euo pipefail
 
@@ -45,6 +52,7 @@ fi
 DATA_DIR="/Volumes/Bitcoin/data"
 INTERMEDIATE_DIR="$DATA_DIR/intermediate/full_${HEIGHT}"
 CHECKPOINT_DIR="$DATA_DIR/checkpoints/${HEIGHT}"
+ORAM_DIRECT_INPUT_DIR="${ORAM_DIRECT_INPUT_DIR:-$DATA_DIR/oram-inputs/checkpoints/${HEIGHT}}"
 
 INDEX_INPUT="$INTERMEDIATE_DIR/utxo_chunks_index_nodust.bin"
 CHUNKS_INPUT="$INTERMEDIATE_DIR/utxo_chunks_nodust.bin"
@@ -96,6 +104,13 @@ echo ""
 # ── Step 2: pack into 80B chunks + 25B index ────────────────────────────────
 echo "[2/10] gen_1_build_utxo_chunks — packing into chunks + index..."
 ./target/release/gen_1_build_utxo_chunks --data-dir "$INTERMEDIATE_DIR"
+if [[ "${KEEP_ORAM_DIRECT_INPUTS:-0}" == "1" ]]; then
+    echo "[2/10] Preserving direct ORAM inputs..."
+    mkdir -p "$ORAM_DIRECT_INPUT_DIR"
+    cp -f "$INDEX_INPUT" "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_index_nodust.bin"
+    cp -f "$CHUNKS_INPUT" "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_nodust.bin"
+    du -sh "$ORAM_DIRECT_INPUT_DIR"
+fi
 echo ""
 
 # ── Step 3: INDEX cuckoo (DPF/HarmonyPIR) ───────────────────────────────────

@@ -43,6 +43,13 @@ interface PirSdkWasm {
   WasmHarmonyClient: {
     new(hintServerUrl: string, queryServerUrl: string): WasmHarmonyClient;
   };
+  // Native-WASM ORAM client — single-server TEE backend. Constructed
+  // with one attested query server URL. Unlike DPF/Harmony, this backend
+  // does not expose PBC inspector results; it returns decoded direct-entry
+  // ORAM query results from `queryBatch`.
+  WasmOramClient: {
+    new(serverUrl: string): WasmOramClient;
+  };
   // Phase 2+ observability bridge — lock-free atomic counters shared between
   // JavaScript and any client that has the recorder installed. See the
   // `WasmAtomicMetrics` interface below for the JS-facing surface.
@@ -545,6 +552,35 @@ export interface WasmHarmonyClient {
    *  installed on multiple clients to aggregate counters across them. */
   setMetricsRecorder(metrics: WasmAtomicMetrics): void;
   /** Remove any installed metrics recorder on this client. */
+  clearMetricsRecorder(): void;
+}
+
+/**
+ * Native-WASM ORAM client. See `pir-sdk-wasm/src/client.rs::WasmOramClient`.
+ *
+ * This is the direct TEE backend surface: one server connection, one
+ * attestation/channel upgrade, then fixed-budget server-side ORAM lookup.
+ * `queryBatch` returns plain `QueryResult` JSON objects or `null`, matching
+ * the decoded shape used by the DPF/Harmony high-level wrappers.
+ */
+export interface WasmOramClient {
+  free(): void;
+  readonly isConnected: boolean;
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+  attest(): Promise<WasmAttestVerification>;
+  announce(): Promise<WasmAnnounceVerification>;
+  upgradeToSecureChannel(serverStaticPub: Uint8Array): Promise<void>;
+  fetchCatalog(): Promise<WasmDatabaseCatalog>;
+  verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof>;
+  queryBatch(scriptHashes: Uint8Array, dbId: number): Promise<any[]>;
+  serverUrl(): string;
+  setMetricsRecorder(metrics: WasmAtomicMetrics): void;
   clearMetricsRecorder(): void;
 }
 
