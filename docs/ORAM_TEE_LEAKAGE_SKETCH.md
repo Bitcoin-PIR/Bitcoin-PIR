@@ -41,9 +41,11 @@ INDEX accesses = 2 * padded_slot_count
 CHUNK accesses = access_budget - INDEX accesses
 ```
 
-For example, `padded_slot_count=50` requires at least 100 INDEX ORAM accesses;
-`access_budget=120` leaves 20 CHUNK accesses, while `access_budget=150` leaves
-50 CHUNK accesses. This mirrors the existing PIR decision that request width is
+For the current deployment target, `padded_slot_count=25` and
+`access_budget=75` spend 50 accesses on INDEX and leave 25 accesses for CHUNK.
+A future `padded_slot_count=50` setting requires at least 100 INDEX accesses;
+`access_budget=120` would leave 20 CHUNK accesses, while `access_budget=150`
+would leave 50. This mirrors the existing PIR decision that request width is
 padded, while aggregate CHUNK demand and response size remain admitted axes
 unless a later response-padding layer is added.
 

@@ -289,7 +289,7 @@ fn parse_args() -> CliArgs {
     let mut direct_oram_dir: Option<PathBuf> = None;
     let mut direct_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut direct_oram_drain_per_access: u64 = 2;
-    let mut direct_oram_access_budget: usize = 50;
+    let mut direct_oram_access_budget: usize = 75;
     let mut direct_oram_encrypted = false;
     let mut direct_oram_key_hex: Option<String> = None;
     let mut direct_oram_state_key_hex: Option<String> = None;
@@ -490,7 +490,7 @@ fn parse_args() -> CliArgs {
             }
             "--direct-oram-access-budget" => {
                 direct_oram_access_budget =
-                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(50);
+                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(75);
                 i += 1;
             }
             "--direct-oram-encrypted" => {
