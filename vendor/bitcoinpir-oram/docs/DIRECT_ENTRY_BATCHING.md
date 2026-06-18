@@ -128,6 +128,8 @@ The request should reject or split batches when
 
 With the current `hash_fns=2`:
 
+- `padded_slots=25` spends 50 INDEX ORAM path accesses before any CHUNK read.
+- `access_budget=75` leaves 25 CHUNK reads for those 25 slots.
 - `padded_slots=50` spends 100 INDEX ORAM path accesses before any CHUNK read.
 - `access_budget=120` leaves 20 CHUNK reads for those 50 slots.
 - `access_budget=150` leaves 50 CHUNK reads for those 50 slots.
@@ -145,20 +147,19 @@ DPF/Harmony PBC batch planner:
 
 ```ts
 planOramScriptHashBatches(scriptHashes, {
-  accessBudget: 120,
+  accessBudget: 75,
   indexReadsPerScriptHash: 2,
   expectedChunkReadsPerScriptHash: 1,
-  paddedSlotCount: 50,
+  paddedSlotCount: 25,
   chunkReadReserve: 0,
 });
 ```
 
-This example sends every request as 50 explicit slots and derives 20 real
-script hashes per request because 100 ORAM accesses are reserved for INDEX and
-20 remain for expected CHUNK reads. If the operator wants up to 50 real
-script-hash slots with one expected CHUNK each, set `accessBudget` to at least
-150. For safer ordinary wallet sync, keep a chunk reserve or an explicit
-`maxScriptHashesPerRequest` cap.
+This example sends every request as 25 explicit slots. The server spends 50
+ORAM accesses on INDEX probes and leaves 25 accesses for CHUNK reads. If the
+operator wants up to 50 real script-hash slots with one expected CHUNK each, set
+`accessBudget` to at least 150. For safer ordinary wallet sync, keep a chunk
+reserve or an explicit `maxScriptHashesPerRequest` cap.
 
 ## Engineering sequence
 

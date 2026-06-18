@@ -34,13 +34,19 @@ Z = 2
 leaf_divisor = 2
 stash_capacity = 128
 drain_per_access = 2
-direct_access_budget = 50
+padded_slots = 25
+direct_access_budget = 75
 direct_index_slots_per_bin = 4
 direct_index_hash_fns = 2
 direct_index_load_factor = 0.95
 auth_store = 1
 cache_levels = 0
 ```
+
+`drain_per_access=2` is the conservative deployment target for the current
+built images because their persisted schedule records two public eviction paths
+per access. Testing `evictions_per_access=1, drain_per_access=1` belongs in the
+standalone ORAM repo before it is promoted into this deployment path.
 
 Direct images are built from the raw Harmony/DPF source tables. Keep these
 outside the runtime checkpoint/delta dirs so `MANIFEST.toml` and server startup
@@ -246,7 +252,7 @@ ORAM_LAYOUT=direct \
 DIRECT_SOURCE_DIR=/home/pir/data/oram-inputs/checkpoints/948454 \
 ORAM_DIR=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth \
 ORAM_REPO=/home/pir/bitcoin-pir/oram \
-PACK=16 LEAF_DIVISOR=2 BUCKET_SIZE=2 STASH_CAPACITY=128 DIRECT_ACCESS_BUDGET=50 \
+PACK=16 LEAF_DIVISOR=2 BUCKET_SIZE=2 STASH_CAPACITY=128 DIRECT_ACCESS_BUDGET=75 \
 CARGO_JOBS=1 \
 ./scripts/oram_vpsbg_test.sh real-build
 ```
@@ -259,7 +265,7 @@ ORAM_LAYOUT=direct \
 DIRECT_SOURCE_DIR=/home/pir/data/oram-inputs/deltas/940611_948454_canonical_20260615 \
 ORAM_DIR=/home/pir/data/oram/deltas/940611_948454_canonical-direct-pack16-z2-div2-stash128-auth \
 ORAM_REPO=/home/pir/bitcoin-pir/oram \
-PACK=16 LEAF_DIVISOR=2 BUCKET_SIZE=2 STASH_CAPACITY=128 DIRECT_ACCESS_BUDGET=50 \
+PACK=16 LEAF_DIVISOR=2 BUCKET_SIZE=2 STASH_CAPACITY=128 DIRECT_ACCESS_BUDGET=75 \
 CARGO_JOBS=1 \
 ./scripts/oram_vpsbg_test.sh real-build
 ```
@@ -326,10 +332,17 @@ expected_chunk_reads = expectedChunkReadsPerScriptHash * real_script_hashes.len(
 padded_index_reads + expected_chunk_reads + chunkReadReserve <= accessBudget
 ```
 
-With the deployed direct images, `indexReadsPerScriptHash=2`. A 50-slot padded
-request therefore spends 100 INDEX ORAM accesses before CHUNK reads. The
-current VPSBG service drop-in uses `--direct-oram-access-budget 50`, which is
-fine for compact one-script-hash smokes but cannot support 50 padded slots.
+With the deployed direct images, `indexReadsPerScriptHash=2`. The current
+production target is 25 padded slots and 25 CHUNK reads:
+
+```text
+accessBudget=75, paddedSlotCount=25
+  => 50 INDEX ORAM accesses plus 25 CHUNK ORAM accesses
+```
+
+The earlier smoke-only budget of 50 is fine for compact one-script-hash smokes,
+but with 25 padded slots it spends the whole budget on INDEX probes and leaves
+no CHUNK budget.
 
 Useful padded-50 examples:
 
@@ -341,8 +354,8 @@ accessBudget=150, paddedSlotCount=50, expectedChunkReadsPerScriptHash=1
   => 50 real script hashes per request, 50 CHUNK reads available
 ```
 
-Switching VPSBG to padded-50 therefore requires raising
-`--direct-oram-access-budget` and matching the web/native client planner
+Switching VPSBG beyond padded-25, for example to padded-50, requires raising
+`--direct-oram-access-budget` again and matching the web/native client planner
 settings. If a real request's CHUNK demand still exceeds the remaining budget,
 the server burns the remaining dummy CHUNK reads, persists ORAM state, and
 returns an error so the client can split/retry with fewer real hashes.
@@ -362,7 +375,7 @@ ORAM_REPO=/home/pir/bitcoin-pir/oram \
 ORAM_DIR=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth \
 ORAM_DB_SPECS='0=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth 1=/home/pir/data/oram/deltas/940611_948454_canonical-direct-pack16-z2-div2-stash128-auth' \
 SMOKE_DB_IDS='0 1' \
-PACK=16 DRAIN_PER_ACCESS=2 DIRECT_ACCESS_BUDGET=50 CACHE_LEVELS=0 \
+PACK=16 DRAIN_PER_ACCESS=2 DIRECT_ACCESS_BUDGET=75 CACHE_LEVELS=0 \
 AUTH_STORE=1 \
 SERVER_STARTUP_WAIT_SECS=240 \
 PORT=18091 \
@@ -370,11 +383,10 @@ CARGO_JOBS=1 \
 ./scripts/oram_vpsbg_test.sh server-smoke
 ```
 
-To exercise explicit padded empty slots, raise the server budget and add
-`PADDED_SLOTS`. For example:
+To exercise explicit padded empty slots, add `PADDED_SLOTS`. For example:
 
 ```bash
-DIRECT_ACCESS_BUDGET=120 PADDED_SLOTS=50 ./scripts/oram_vpsbg_test.sh server-smoke
+PADDED_SLOTS=25 ./scripts/oram_vpsbg_test.sh server-smoke
 ```
 
 The script passes `--padded-slots` only to encrypted ORAM smokes. The
@@ -476,7 +488,7 @@ The production service uses explicit per-db flags via
 --direct-oram-db 0=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth
 --direct-oram-db 1=/home/pir/data/oram/deltas/940611_948454_canonical-direct-pack16-z2-div2-stash128-auth
 --direct-oram-drain-per-access 2
---direct-oram-access-budget 50
+--direct-oram-access-budget 75
 --direct-oram-cache-levels 0
 --direct-oram-auth-store
 ```
