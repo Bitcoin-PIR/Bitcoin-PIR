@@ -85,6 +85,7 @@ ATTESTED_BUILDER_GIT_COMMIT=${ATTESTED_BUILDER_GIT_COMMIT:-}
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DRACUT_MODULE_DIR="$SCRIPT_DIR/dracut"
+ARCHIVE_SCRIPT="$SCRIPT_DIR/archive_uki_artifact.sh"
 
 for tool in ukify dracut sha256sum awk sed find sort grep lsinitrd; do
     require_tool "$tool"
@@ -236,6 +237,12 @@ UKI_SHA=$(hash_one "$OUT")
 echo
 echo "wrote builder Tier 3 UKI:   $OUT ($SIZE)"
 echo "builder Tier 3 UKI sha256:  $UKI_SHA"
+"$ARCHIVE_SCRIPT" attested-builder "$OUT" \
+    "kernel=$KERNEL" \
+    "kernel_version=$KVER" \
+    "builder_repo=$ATTESTED_BUILDER_REPO" \
+    "builder_git_commit=$ATTESTED_BUILDER_GIT_COMMIT" \
+    "builder_binary_sha256=$ATTESTED_BUILDER_BIN_SHA256"
 echo
 cat <<EOF
 Before booting this UKI, provision runtime inputs on VPSBG Slice 2:
@@ -263,4 +270,12 @@ The UKI will power off after completion. Then switch Measured Boot back to
 
 This UKI runs ROOTS_ONLY=1. server-db/MANIFEST.toml is an evidence manifest,
 not a server-loadable database manifest.
+
+Archive policy:
+
+  The UKI was copied into the configured archive directory. If this build host
+  is not the durable Hetzner host, set UKI_ARCHIVE_REMOTE before building, for
+  example:
+
+    UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/attested-builder
 EOF

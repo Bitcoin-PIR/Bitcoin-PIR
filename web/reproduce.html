@@ -42,6 +42,7 @@
             padding: 12px 24px;
             background: var(--panel);
             border-bottom: 1px solid var(--line);
+            overflow-x: auto;
         }
         .brand {
             display: flex; align-items: center; gap: 8px;
@@ -55,6 +56,7 @@
         .topbar-spacer { flex: 1; }
         .topbar-btn {
             display: inline-flex; align-items: center; gap: 6px;
+            flex: 0 0 auto;
             padding: 6px 10px;
             background: var(--panel);
             border: 1px solid var(--line);
@@ -63,13 +65,83 @@
             cursor: pointer;
             font: inherit;
             font-size: 13px;
+            white-space: nowrap;
         }
         .topbar-btn:hover { background: var(--sunken); }
 
         main {
-            max-width: 880px;
-            margin: 32px auto;
+            max-width: 1120px;
+            margin: 28px auto;
             padding: 0 24px 64px;
+        }
+        .page-shell {
+            display: grid;
+            grid-template-columns: 240px minmax(0, 1fr);
+            gap: 28px;
+            align-items: start;
+        }
+        .tab-sidebar {
+            position: sticky;
+            top: 16px;
+            display: grid;
+            gap: 6px;
+            padding: 8px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+        .tab-sidebar-title {
+            padding: 8px 10px 4px;
+            color: var(--ink-mute);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .tab-button {
+            width: 100%;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--ink-soft);
+            cursor: pointer;
+            display: grid;
+            gap: 2px;
+            font: inherit;
+            padding: 9px 10px;
+            text-align: left;
+        }
+        .tab-button:hover {
+            background: var(--sunken);
+            color: var(--ink);
+        }
+        .tab-button[aria-selected="true"] {
+            background: var(--accent-wash);
+            border-color: var(--accent-line);
+            color: var(--accent-ink);
+        }
+        .tab-button strong {
+            font-size: 13px;
+            font-weight: 650;
+        }
+        .tab-button span {
+            color: var(--ink-mute);
+            font-size: 12px;
+        }
+        .tab-button[aria-selected="true"] span {
+            color: var(--accent-ink);
+        }
+        .tab-content {
+            min-width: 0;
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+        .page-intro {
+            margin: 0 0 22px;
         }
         h1 {
             font-size: 28px;
@@ -80,14 +152,15 @@
         h1 + p.lede {
             font-size: 16px;
             color: var(--ink-soft);
-            margin: 0 0 32px;
+            margin: 0 0 0;
         }
         h2 {
             font-size: 19px;
             font-weight: 600;
-            margin: 36px 0 12px;
+            margin: 0 0 12px;
             letter-spacing: -0.005em;
         }
+        section + section { margin-top: 28px; }
         h3 {
             font-size: 15px;
             font-weight: 600;
@@ -119,7 +192,7 @@
         .panel {
             background: var(--panel);
             border: 1px solid var(--line);
-            border-radius: 10px;
+            border-radius: 8px;
             padding: 18px 20px;
             margin: 0 0 20px;
         }
@@ -202,6 +275,27 @@
 
         .badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
         .badge.ok { background: var(--ok-wash); color: oklch(38% 0.1 155); border: 1px solid oklch(82% 0.08 155); }
+
+        @media (max-width: 820px) {
+            .topbar { padding: 10px 16px; }
+            .topbar small { display: none; }
+            main { padding: 0 16px 48px; }
+            .page-shell {
+                grid-template-columns: 1fr;
+                gap: 18px;
+            }
+            .tab-sidebar {
+                position: static;
+                display: flex;
+                gap: 8px;
+                overflow-x: auto;
+                padding: 8px;
+            }
+            .tab-sidebar-title { display: none; }
+            .tab-button {
+                min-width: 170px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -220,100 +314,135 @@
     </header>
 
     <main>
-        <h1>Reproducing runtime and database attestation</h1>
-        <p class="lede">
-            Independently verify that <code>weikeng2.bitcoinpir.org</code>'s
-            attestation report — signed by the AMD chip — actually corresponds
-            to the source code published in this repo, then verify that the
-            served database roots bind to a Bitcoin Core MuHash at the pinned
-            block range. No need to trust the operator's claimed MEASUREMENT
-            or database anchor.
-        </p>
+        <div class="page-shell">
+            <nav class="tab-sidebar" role="tablist" aria-label="Reproducibility sections">
+                <div class="tab-sidebar-title">Sections</div>
+                <button id="tab-overview" class="tab-button" type="button" role="tab" aria-selected="true" aria-controls="overview" data-tab-target="overview">
+                    <strong>Overview</strong>
+                    <span>What is being proved</span>
+                </button>
+                <button id="tab-runtime-pins" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="runtime-pins" data-tab-target="runtime-pins">
+                    <strong>Runtime pins</strong>
+                    <span>Expected measurements</span>
+                </button>
+                <button id="tab-runtime-verify" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="runtime-verify" data-tab-target="runtime-verify">
+                    <strong>Runtime verify</strong>
+                    <span>Reproduce the UKI proof</span>
+                </button>
+                <button id="tab-db-proof" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="db-proof" data-tab-target="db-proof">
+                    <strong>Database proof</strong>
+                    <span>MuHash and Merkle roots</span>
+                </button>
+                <button id="tab-oram-source" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="oram-source" data-tab-target="oram-source">
+                    <strong>ORAM source</strong>
+                    <span>Strict direct rebuild</span>
+                </button>
+                <button id="tab-bitcoin-anchor" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="bitcoin-anchor" data-tab-target="bitcoin-anchor">
+                    <strong>Bitcoin anchor</strong>
+                    <span>BHTM leaf and SNP quote</span>
+                </button>
+                <button id="tab-artifacts" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="artifacts" data-tab-target="artifacts">
+                    <strong>Artifacts</strong>
+                    <span>Static proof files</span>
+                </button>
+                <button id="tab-pir1" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="pir1" data-tab-target="pir1">
+                    <strong>pir1</strong>
+                    <span>Hetzner, no SEV</span>
+                </button>
+                <button id="tab-scope" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="scope" data-tab-target="scope">
+                    <strong>Scope</strong>
+                    <span>Guarantees and limits</span>
+                </button>
+            </nav>
 
-        <section id="non-collusion">
-            <h2>The non-collusion argument</h2>
-            <p>
-                The two-server PIR security model needs two
-                <em>non-colluding</em> servers to keep query content
-                private. <code>weikeng1.bitcoinpir.org</code> and
-                <code>weikeng2.bitcoinpir.org</code> run on different
-                physical machines — Hetzner i7-8700 and VPSBG AMD EPYC
-                respectively — but they share <em>one operator</em>.
-                So the deployment doesn't literally satisfy
-                non-collusion at the trust-boundary level.
-            </p>
-            <p>
-                SEV-SNP attestation closes that gap. The two hosts
-                deliberately play asymmetric roles:
-            </p>
-            <ul>
-                <li>
-                    <strong>pir1 (Hetzner, no SEV)</strong> serves the
-                    HarmonyPIR <em>hint</em> phase (offline
-                    preprocessing) plus DPF server-0 and OnionPIR
-                    queries. Its binary hash is pinned at build time
-                    (see <code>PIR1_PIN</code>) but there's no
-                    hardware-backed proof that the running code matches.
-                </li>
-                <li>
-                    <strong>pir2 (VPSBG, SEV-SNP, Tier 3 UKI)</strong>
-                    serves the HarmonyPIR <em>query</em> phase plus
-                    DPF server-1. It boots in a measured-boot UKI
-                    environment; AMD's PSP signs a <code>MEASUREMENT</code>
-                    over the loaded image and the client's
-                    pre-negotiated channel pubkey (REPORT_DATA binding
-                    via <code>pir_core::attest::build_report_data</code>).
-                </li>
-            </ul>
-            <p>
-                Wire-level enforcement: each server explicitly opts in
-                to its role via <code>--serve-hints</code> /
-                <code>--serve-queries</code> CLI flags
-                (<a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/runtime/src/bin/unified_server.rs" target="_blank" rel="noopener"><code>runtime/src/bin/unified_server.rs</code></a>).
-                A client mistakenly asking <code>pir2</code> for
-                hints gets a clean wire-level rejection
-                (<em>"server not configured to serve hints"</em>)
-                rather than a silent fall-through to whichever box
-                the cloudflared tunnel happens to point at.
-            </p>
-            <p>
-                Combined: a malicious operator can't silently route
-                <code>pir2</code> traffic through <code>pir1</code>
-                (or any other unattested box) without either
-                <strong>flipping the pinned MEASUREMENT</strong> the
-                client checks against the chip's signed report, or
-                <strong>flipping the SEV STATUS</strong> from
-                <code>reportDataMatch</code> to something else. Both
-                are observable in the browser's attestation badge,
-                and both are version-controlled in
-                <code>web/src/attest-pin.ts</code>. The rest of this
-                page documents how to reproduce the pinned runtime value
-                and how to check the database/MuHash proof yourself.
-            </p>
-        </section>
+            <div class="tab-content">
+                <header class="page-intro">
+                    <h1>Reproducing runtime and database attestation</h1>
+                    <p class="lede">
+                        Verify four connected claims: <code>weikeng2.bitcoinpir.org</code>
+                        is running the pinned SEV-SNP runtime, the served
+                        database roots bind to a Bitcoin Core MuHash, the direct
+                        ORAM rebuild is source-bound to the attested database inputs,
+                        and the block anchor is checked by the blockhash-to-muhash proof.
+                    </p>
+                </header>
 
-        <section>
-            <h2>Why this matters</h2>
-            <p>
-                When a client connects to <code>pir2</code>, the server returns
-                an SEV-SNP attestation report. AMD's PSP signs a
-                <code>MEASUREMENT</code> field that's a hash over the host's
-                launch context (firmware + kernel + initramfs + cmdline). The
-                client matches that signed value against a hardcoded pin
-                (<a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PIR2_TIER3_PIN</code></a>)
-                — if they don't match, the encrypted channel won't come up.
-            </p>
-            <p>
-                That alone establishes
-                <em>"the chip is running what the operator pinned."</em>
-                But how do you know the pinned value corresponds to the source
-                you can read on GitHub? You compute it yourself from the
-                published artifacts, and check against what the chip signs.
-            </p>
-        </section>
+                <section id="overview" class="tab-panel active" role="tabpanel" aria-labelledby="tab-overview">
+                    <section>
+                        <h2>Four proofs, four failure modes</h2>
+                        <div class="panel accent">
+                            <ul>
+                                <li>
+                                    <strong>Runtime attestation</strong> checks the live
+                                    server binary, launch MEASUREMENT, channel binding,
+                                    and AMD VCEK chain. A red measurement mismatch in the
+                                    app belongs to this layer.
+                                </li>
+                                <li>
+                                    <strong>Database build attestation</strong> checks the
+                                    attested-builder evidence, Bitcoin Core MuHash, and
+                                    PIR Merkle roots. A blue verified DB proof badge belongs
+                                    to this layer.
+                                </li>
+                                <li>
+                                    <strong>Bitcoin/MuHash anchor proof</strong> checks that
+                                    the database proof's block hash and MuHash appear as a
+                                    blockhash-to-muhash Merkle leaf under a SEV-SNP-attested
+                                    chunk root. A green Bitcoin anchor badge belongs to this
+                                    layer.
+                                </li>
+                                <li>
+                                    <strong>ORAM source binding</strong> checks that
+                                    <code>oramctl build-direct --strict-source-binding</code>
+                                    consumed the preserved roots-only direct inputs from the
+                                    attested builder and emitted the pinned direct ORAM image
+                                    hashes and controller authentication roots.
+                                </li>
+                            </ul>
+                        </div>
+                    </section>
 
-        <section>
-            <h2>The trust chain</h2>
+                    <section id="non-collusion">
+                        <h2>The non-collusion argument</h2>
+                        <p>
+                            The two-server PIR security model needs two
+                            <em>non-colluding</em> servers to keep query content
+                            private. <code>weikeng1.bitcoinpir.org</code> and
+                            <code>weikeng2.bitcoinpir.org</code> run on different
+                            physical machines, but they share one operator.
+                        </p>
+                        <p>
+                            SEV-SNP attestation is the deployment's answer to that
+                            operator-trust gap. The two hosts play asymmetric roles:
+                        </p>
+                        <ul>
+                            <li>
+                                <strong>pir1 (Hetzner, no SEV)</strong> serves the
+                                HarmonyPIR hint phase plus DPF server-0 and OnionPIR
+                                queries. Its binary hash is pinned, but there is no
+                                hardware-backed proof that the running code matches.
+                            </li>
+                            <li>
+                                <strong>pir2 (VPSBG, SEV-SNP, Tier 3 UKI)</strong>
+                                serves the HarmonyPIR query phase, DPF server-1,
+                                and the direct ORAM lookup path.
+                                AMD's PSP signs a <code>MEASUREMENT</code> over the
+                                loaded image and the client's pre-negotiated channel
+                                pubkey via REPORT_DATA binding.
+                            </li>
+                        </ul>
+                        <p>
+                            Wire-level enforcement keeps the roles explicit:
+                            <code>--serve-hints</code> and <code>--serve-queries</code>
+                            are checked by
+                            <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/runtime/src/bin/unified_server.rs" target="_blank" rel="noopener"><code>runtime/src/bin/unified_server.rs</code></a>.
+                            A client asking <code>pir2</code> for hints gets a clean
+                            wire-level rejection rather than a silent fall-through.
+                        </p>
+                    </section>
+
+                    <section>
+                        <h2>The runtime trust chain</h2>
 	<div class="chain-diagram">git commit  ──build──▶  unified_server binary
 	       │
 	       │             dracut + ukify
@@ -331,215 +460,245 @@
 	              │
 	              ▼
 	   chip-signed MEASUREMENT  (from bpir-admin attest)</div>
-            <p style="margin-top:12px">
-                Each step has a published, verifiable input. If your computed
-                value matches the chip-signed value, the entire chain is
-                trustworthy down to the AMD ARK.
-            </p>
-        </section>
+                        <p style="margin-top:12px">
+                            If your computed value matches the chip-signed value,
+                            the runtime claim is anchored down to the AMD ARK.
+                        </p>
+                    </section>
+                </section>
 
-        <section>
-            <h2>Currently pinned runtime values <span class="badge ok">db-proof UKI — 2026-06-16</span></h2>
-            <div class="panel accent">
-                <table class="pin-table">
-                    <tr>
-                        <td>MEASUREMENT</td>
-                        <td>892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013</td>
-                    </tr>
-                    <tr>
-                        <td>UKI sha256</td>
-                        <td>01d0dc3f3fbff98886e8ba8bd9108a5a13fd55305806eeaeffeafe7307e68aab</td>
-                    </tr>
-                    <tr>
-                        <td>binary sha256</td>
-                        <td>d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</td>
-                    </tr>
-                    <tr>
-                        <td>OVMF sha256</td>
-                        <td>e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e</td>
-                    </tr>
-                    <tr>
-                        <td>AMD ARK fingerprint</td>
-                        <td>1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a</td>
-                    </tr>
-                </table>
-            </div>
-            <p class="meta">
-                Source of truth: <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts</code></a>.
-                These values change with every Tier 3 UKI redeploy; this page
-                tracks the current pin.
-            </p>
-        </section>
+                <section id="runtime-pins" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-pins">
+                    <section>
+                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-06-27</span></h2>
+                        <p>
+                            These are the values the browser bundle expects for
+                            pir2. They are not a live-status feed. If the app shows
+                            a measurement mismatch, first confirm which VPSBG UKI or
+                            boot slice is actually running; only rotate these pins
+                            after intentionally deploying and verifying a new UKI.
+                        </p>
+                        <div class="panel accent">
+                            <table class="pin-table">
+                                <tr>
+                                    <td>MEASUREMENT</td>
+                                    <td>f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0</td>
+                                </tr>
+                                <tr>
+                                    <td>UKI sha256</td>
+                                    <td>3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60</td>
+                                </tr>
+                                <tr>
+                                    <td>binary sha256</td>
+                                    <td>233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3</td>
+                                </tr>
+                                <tr>
+                                    <td>server git rev</td>
+                                    <td>f402466af1ee21d02e0a65b457ad338ceb1216c0</td>
+                                </tr>
+                                <tr>
+                                    <td>OVMF sha256</td>
+                                    <td>e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e</td>
+                                </tr>
+                                <tr>
+                                    <td>AMD ARK fingerprint</td>
+                                    <td>1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a</td>
+                                </tr>
+                            </table>
+                        </div>
+                        <p class="meta">
+                            Source of truth:
+                            <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PIR2_TIER3_PIN</code></a>.
+                        </p>
+                    </section>
 
-        <section>
-            <h2>Currently pinned database proof <span class="badge ok">delta 940611 to 948454</span></h2>
-            <p>
-                Runtime attestation proves which server binary is running.
-                Database build attestation proves that the served PIR Merkle
-                roots were produced by the SEV-SNP attested builder from the
-                claimed Bitcoin Core UTXO snapshots.
-            </p>
-            <div class="panel accent">
-                <table class="pin-table">
-                    <tr>
-                        <td>db_id</td>
-                        <td>1</td>
-                    </tr>
-                    <tr>
-                        <td>build kind</td>
-                        <td>delta</td>
-                    </tr>
-                    <tr>
-                        <td>from block</td>
-                        <td>940611 · 000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99</td>
-                    </tr>
-                    <tr>
-                        <td>to block</td>
-                        <td>948454 · 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4</td>
-                    </tr>
-                    <tr>
-                        <td>MuHash</td>
-                        <td>cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee</td>
-                    </tr>
-                    <tr>
-                        <td>bucket root</td>
-                        <td>e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a</td>
-                    </tr>
-                    <tr>
-                        <td>onion root</td>
-                        <td>f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997</td>
-                    </tr>
-                    <tr>
-                        <td>builder binary</td>
-                        <td>34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a</td>
-                    </tr>
-                    <tr>
-                        <td>builder commit</td>
-                        <td>01e8db91d76037cd5562fce85c40e832ad156431</td>
-                    </tr>
-                    <tr>
-                        <td>params hash</td>
-                        <td>2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39</td>
-                    </tr>
-                </table>
-            </div>
-            <p class="meta">
-                Source of truth: <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PRODUCTION_DB_PROOF_PINS</code></a>
-                and <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/DB_BUILD_ATTESTATION_PLAN.md" target="_blank" rel="noopener"><code>docs/DB_BUILD_ATTESTATION_PLAN.md</code></a>.
-            </p>
-        </section>
+                    <section>
+                        <h2>What a mismatch means</h2>
+                        <p>
+                            A red runtime badge with <code>MEASUREMENT pin mismatch</code>
+                            means the server returned a valid SEV-SNP report, but the
+                            launch MEASUREMENT does not equal the frontend pin. That is
+                            different from <code>noSevHost</code>, and also different
+                            from DB proof failure.
+                        </p>
+                        <div class="panel">
+                            <ol>
+                                <li>Check the VPSBG measured-boot selection and active UKI.</li>
+                                <li>Run <code>bpir-admin attest</code> to capture the live measurement and binary hash.</li>
+                                <li>Only update <code>PIR2_TIER3_PIN</code> if the new UKI is intended and externally reproducible.</li>
+                            </ol>
+                        </div>
+                    </section>
+                </section>
 
-        <section>
-            <h2>Verify via published artifacts</h2>
-            <p>
-                The fast path: download the UKI bytes the operator published,
-                download the OVMF VPSBG provided, run
-                <code>sev-snp-measure</code>, compare the result to the chip's
-                signed value via <code>bpir-admin attest</code>.
-            </p>
+                <section id="runtime-verify" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-verify">
+                    <section>
+                        <h2>Verify via published artifacts</h2>
+                        <p>
+                            Download the OVMF, obtain or rebuild the ORAM Tier 3 UKI
+                            bytes, run <code>sev-snp-measure</code>, then compare the
+                            predicted value to the chip-signed value from
+                            <code>bpir-admin attest</code>.
+                        </p>
 
-            <ol class="steps">
-                <li class="step">
-                    <h3>Get the OVMF</h3>
-                    <p>
-                        VPSBG's custom EDK2 build, used when "Measured Boot" is
-                        enabled in the portal. Same binary across all VPSBG
-                        SEV-SNP customers; sha-pinned.
-                    </p>
-                    <a class="download-link" href="/ovmf/OVMF_SEV_MEASUREDBOOT_4M.fd" download>OVMF_SEV_MEASUREDBOOT_4M.fd <span class="meta">(4.0&nbsp;MB)</span></a>
-                    <p class="meta" style="margin-top: 6px;">
-                        Verify: <code>sha256sum OVMF_SEV_MEASUREDBOOT_4M.fd</code> →
-                        <code>e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e</code>
-                    </p>
-                </li>
+                        <ol class="steps">
+                            <li class="step">
+                                <h3>Get the OVMF</h3>
+                                <p>
+                                    VPSBG's custom EDK2 build is used when measured boot
+                                    is enabled in the portal.
+                                </p>
+                                <a class="download-link" href="/ovmf/OVMF_SEV_MEASUREDBOOT_4M.fd" download>OVMF_SEV_MEASUREDBOOT_4M.fd <span class="meta">(4.0&nbsp;MB)</span></a>
+                                <p class="meta" style="margin-top: 6px;">
+                                    Verify: <code>sha256sum OVMF_SEV_MEASUREDBOOT_4M.fd</code> →
+                                    <code>e4ac90be71f3b455922ebc7106c5630536bf67027de585e34319b0a42fcd716e</code>
+                                </p>
+                            </li>
 
-                <li class="step">
-                    <h3>Get the UKI</h3>
-                    <p>
-                        The operator-built unified kernel image — kernel +
-                        initramfs (with <code>unified_server</code> baked in) +
-                        cmdline, packaged as a single PE/EFI file.
-                    </p>
-                    <p>
-                        The current operator-published artifact is
-                        <code>bpir-tier3-dbproof-d01e5b7a.efi</code>, the
-                        Tier 3 UKI that serves the database-proof sidecar.
-                    </p>
-                    <p class="meta" style="margin-top: 6px;">
-                        Verify: <code>sha256sum bpir-tier3-dbproof-d01e5b7a.efi</code> →
-                        <code>01d0dc3f3fbff98886e8ba8bd9108a5a13fd55305806eeaeffeafe7307e68aab</code>
-                    </p>
-                    <p class="meta" style="margin-top: 6px;">
-                        Or rebuild from source with Nix — the reproducible
-                        path (see <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/BUILD_REPRODUCIBILITY.md" target="_blank" rel="noopener">BUILD_REPRODUCIBILITY.md</a>):
-                        <code>nix build --impure .#tier3-uki</code> on the Hetzner
-                        UKI build host as root, which bakes in the bit-identical
-                        <code>nix build .#unified-server</code> binary via the
-                        full Nix closure. The build is content-addressed (so it
-                        converges across clone paths); <code>--impure</code> is
-                        needed only because the VPSBG-validated kernel
-                        7.0.0-15-generic is sourced from the build host's
-                        <code>/boot</code> + <code>/lib/modules</code>.
-                    </p>
-                </li>
+                            <li class="step">
+                                <h3>Get or rebuild the UKI</h3>
+                                <p>
+                                    The current operator-published artifact is
+                                    <code>bpir-tier3-oram-f402466a.efi</code>, the
+                                    ORAM-enabled Tier 3 UKI that serves the database
+                                    proof sidecar and direct ORAM lookups for db_id 0/1.
+                                    It is a large runtime artifact, so this page pins the
+                                    exact bytes by hash and records the rebuild route
+                                    rather than inlining the UKI into the static proof
+                                    bundle.
+                                </p>
+                                <p class="meta" style="margin-top: 6px;">
+                                    Verify: <code>sha256sum bpir-tier3-oram-f402466a.efi</code> →
+                                    <code>3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60</code>
+                                </p>
+<pre><code>scp pir-hetzner:/home/pir/uki-archive/tier3/oram-f402466a/bpir-oram-runtime-f402466.bundle .
+git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git BitcoinPIR-oram-repro
+cd BitcoinPIR-oram-repro
+git checkout a8863f82cd880d911fe49a7186b0ad4c0b6139d7
+git fetch ../bpir-oram-runtime-f402466.bundle \
+    refs/heads/codex/oram-runtime-5f36649:refs/heads/codex/oram-runtime-5f36649
+git checkout f402466af1ee21d02e0a65b457ad338ceb1216c0
+RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=$HOME=/build" \
+SOURCE_DATE_EPOCH=0 cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
+strip --strip-debug target/release/unified_server
 
-                <li class="step">
-                    <h3>Predict the MEASUREMENT</h3>
-                    <p>
-                        Install
-                        <a href="https://github.com/virtee/sev-snp-measure" target="_blank" rel="noopener"><code>sev-snp-measure</code></a>
-                        (<code>pipx install sev-snp-measure</code>), then:
-                    </p>
+OUT=/tmp/bpir-tier3-oram-f402466a.efi \
+BINARY="$PWD/target/release/unified_server" \
+BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
+./scripts/build_uki_tier3.sh</code></pre>
+                                <p class="meta" style="margin-top: 6px;">
+                                    The operator-side recipe, build-host archive paths,
+                                    and validation gates are recorded in
+                                    <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/ORAM_TIER3_PRODUCTION_HANDOFF.md" target="_blank" rel="noopener"><code>docs/ORAM_TIER3_PRODUCTION_HANDOFF.md</code></a>.
+                                </p>
+                            </li>
+
+                            <li class="step">
+                                <h3>Predict the MEASUREMENT</h3>
 	<pre><code>sev-snp-measure \
 	    --mode snp \
 	    --vcpus 2 \
 	    --vcpu-sig 0x00B10F10 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel bpir-tier3-dbproof-d01e5b7a.efi \
+	    --kernel bpir-tier3-oram-f402466a.efi \
 	    --guest-features 0x1</code></pre>
-                    <p>
-                        Output should be the same hex as the
-                        <code>MEASUREMENT</code> in the pinned-values table
-                        above. The launch parameters
-                        (<code>vcpus=2</code>, <code>vcpu-sig=0x00B10F10</code>
-                        for AMD Turin, <code>guest-features=0x1</code>) come
-                        from VPSBG's confirmed Proxmox QEMU command line.
-                    </p>
-                </li>
+                            </li>
 
-                <li class="step">
-                    <h3>Verify against the live chip</h3>
-                    <p>
-                        Build
-                        <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/tree/main/bpir-admin" target="_blank" rel="noopener"><code>bpir-admin</code></a>
-                        (in this repo) and ask <code>pir2</code> for a fresh
-                        attestation report. The chip's signed
-                        <code>Launch MEASUREMENT</code> field should equal
-                        what you computed in step 3:
-                    </p>
+                            <li class="step">
+                                <h3>Verify against the live chip</h3>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
-	./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-	    --expect-measurement 892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013 \
-	    --expect-binary      d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</code></pre>
-                    <p>
-                        Three checkmarks:
-                        <code>SEV-SNP REPORT_DATA binding verified</code>,
-                        <code>binary_sha256 matches expected</code>,
-                        <code>Launch MEASUREMENT matches expected</code>.
-                    </p>
-                </li>
-            </ol>
-        </section>
+./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
+    --expect-measurement f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0 \
+    --expect-binary      233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3</code></pre>
+                                <p>
+                                    Expected checkmarks:
+                                    <code>SEV-SNP REPORT_DATA binding verified</code>,
+                                    <code>binary_sha256 matches expected</code>, and
+                                    <code>Launch MEASUREMENT matches expected</code>.
+                                </p>
+                            </li>
 
-        <section>
-            <h2>Verify the database proof</h2>
-            <p>
-                The live servers also serve the attested-builder proof bundle
-                for <code>delta_940611_948454</code>. The verifier checks the
-                SEV-SNP report-data binding, builder evidence, root bundle,
-                live catalog chain anchors, Bitcoin Core MuHash, and the
-                bucket/onion Merkle roots.
-            </p>
+                            <li class="step">
+                                <h3>Smoke the ORAM path</h3>
+	<pre><code>HASH=4242424242424242424242424242424242424242
+	cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+	    --server wss://weikeng2.bitcoinpir.org --db-id 0 --padded-slots 25 "$HASH"
+	cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+	    --server wss://weikeng2.bitcoinpir.org --db-id 1 --padded-slots 25 "$HASH"</code></pre>
+                                <p>
+                                    Expected runtime signal:
+                                    <code>sev_status=ReportDataMatch</code>,
+                                    <code>secure_channel=established</code>, and
+                                    <code>found=false</code> for the all-<code>42</code>
+                                    smoke hash.
+                                </p>
+                            </li>
+                        </ol>
+                    </section>
+                </section>
+
+                <section id="db-proof" class="tab-panel" role="tabpanel" aria-labelledby="tab-db-proof">
+                    <section>
+                        <h2>Pinned database proof <span class="badge ok">delta 940611 to 948454</span></h2>
+                        <p>
+                            Runtime attestation proves which server binary is running.
+                            Database build attestation proves that the served PIR Merkle
+                            roots were produced by the SEV-SNP attested builder from the
+                            claimed Bitcoin Core UTXO snapshots.
+                        </p>
+                        <div class="panel accent">
+                            <table class="pin-table">
+                                <tr>
+                                    <td>db_id</td>
+                                    <td>1</td>
+                                </tr>
+                                <tr>
+                                    <td>build kind</td>
+                                    <td>delta</td>
+                                </tr>
+                                <tr>
+                                    <td>from block</td>
+                                    <td>940611 · 000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99</td>
+                                </tr>
+                                <tr>
+                                    <td>to block</td>
+                                    <td>948454 · 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4</td>
+                                </tr>
+                                <tr>
+                                    <td>MuHash</td>
+                                    <td>cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee</td>
+                                </tr>
+                                <tr>
+                                    <td>bucket root</td>
+                                    <td>e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a</td>
+                                </tr>
+                                <tr>
+                                    <td>onion root</td>
+                                    <td>f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997</td>
+                                </tr>
+                                <tr>
+                                    <td>builder binary</td>
+                                    <td>34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a</td>
+                                </tr>
+                                <tr>
+                                    <td>builder commit</td>
+                                    <td>01e8db91d76037cd5562fce85c40e832ad156431</td>
+                                </tr>
+                                <tr>
+                                    <td>params hash</td>
+                                    <td>2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39</td>
+                                </tr>
+                            </table>
+                        </div>
+                        <p class="meta">
+                            Source of truth:
+                            <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PRODUCTION_DB_PROOF_PINS</code></a>
+                            and
+                            <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/DB_BUILD_ATTESTATION_PLAN.md" target="_blank" rel="noopener"><code>docs/DB_BUILD_ATTESTATION_PLAN.md</code></a>.
+                        </p>
+                    </section>
+
+                    <section>
+                        <h2>Verify the live database proof</h2>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin db-proof verify-live \
 	    --server wss://weikeng2.bitcoinpir.org \
@@ -556,93 +715,341 @@
 	    --expect-builder-git-commit 01e8db91d76037cd5562fce85c40e832ad156431 \
 	    --expect-network-magic f9beb4d9 \
 	    --expect-params-hash 2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39</code></pre>
-            <p>
-                Repeat with <code>--server wss://weikeng1.bitcoinpir.org</code>
-                to confirm both hosts serve the same self-verifying proof
-                bundle.
-            </p>
-        </section>
+                        <p>
+                            Repeat with <code>--server wss://weikeng1.bitcoinpir.org</code>
+                            to confirm both hosts serve the same self-verifying proof bundle.
+                        </p>
+                    </section>
+                </section>
 
-        <section>
-            <h2>pir1 verification (Hetzner, no SEV)</h2>
-            <p>
-                <code>weikeng1.bitcoinpir.org</code> runs the <strong>same</strong>
-                <code>unified_server</code> binary as pir2, on a Hetzner i7-8700
-                (Intel, no SEV-SNP). Without a hardware root of trust, the
-                client verifies the server's self-reported <code>binary_sha256</code>
-                against a pinned value. This detects accidental drift between
-                what the operator claims is deployed and what's actually running.
-            </p>
-            <p>
-                The binary pin is in
-                <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PIR1_PIN</code></a>:
-            </p>
-            <div class="panel accent">
-                <table class="pin-table">
-                    <tr>
-                        <td>binary sha256</td>
-                        <td>d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</td>
-                    </tr>
-                </table>
-            </div>
-            <p>
-                Verify with:
-            </p>
+                <section id="oram-source" class="tab-panel" role="tabpanel" aria-labelledby="tab-oram-source">
+                    <section>
+                        <h2>ORAM source binding <span class="badge ok">snapshot 948454</span></h2>
+                        <p>
+                            The ORAM client that builds and uses the direct ORAM image
+                            runs in the TEE. The remaining public question is whether
+                            it used the right source database files. This proof binds
+                            the direct ORAM build to the preserved roots-only inputs
+                            emitted by the SEV-SNP attested builder for Bitcoin Core
+                            snapshot <code>948454</code>.
+                        </p>
+                        <div class="panel accent">
+                            <table class="pin-table">
+                                <tr>
+                                    <td>manifest</td>
+                                    <td>/proofs/oram-source/mainnet_948454.json</td>
+                                </tr>
+                                <tr>
+                                    <td>builder UKI sha256</td>
+                                    <td>49f452c9b95f1562002ad74364cf43f68244a5dd2a9073bf32279cb2f83d9d3b</td>
+                                </tr>
+                                <tr>
+                                    <td>builder MEASUREMENT</td>
+                                    <td>69ca84b97943370dab01c673da7e2a06e4e8ded5125aac91cba0749c4e967fe6677e7b5471d4db2d058bc02abce93b21</td>
+                                </tr>
+                                <tr>
+                                    <td>builder commit</td>
+                                    <td>b692aec18b9c20ac92cb9fe22588e96ff96ad27d</td>
+                                </tr>
+                                <tr>
+                                    <td>builder binary</td>
+                                    <td>d4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427</td>
+                                </tr>
+                                <tr>
+                                    <td>snapshot MuHash</td>
+                                    <td>cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee</td>
+                                </tr>
+                                <tr>
+                                    <td>index source</td>
+                                    <td>d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c · 1,345,875,975 bytes</td>
+                                </tr>
+                                <tr>
+                                    <td>chunk source</td>
+                                    <td>9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521 · 3,239,380,480 bytes</td>
+                                </tr>
+                                <tr>
+                                    <td>ORAM repo commit</td>
+                                    <td>5f366492504d8e853cbd60d25a6adbf021a78746</td>
+                                </tr>
+                                <tr>
+                                    <td>oramctl sha256</td>
+                                    <td>d3958944592d2bf425f54dd6fcae7f542f6ac54a93dc4d1df8f11483dfaf96ef</td>
+                                </tr>
+                                <tr>
+                                    <td>index seed</td>
+                                    <td>8030603977422561841 · 0x6f726fc4fe1c6231</td>
+                                </tr>
+                                <tr>
+                                    <td>large image archive</td>
+                                    <td>/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section>
+                        <h2>What the browser verifier checks</h2>
+                        <ul>
+                            <li>The ORAM source manifest and every compact artifact match their pinned SHA-256 and size.</li>
+                            <li>The raw SNP report's <code>REPORT_DATA</code> and <code>MEASUREMENT</code> match the attested builder proof.</li>
+                            <li><code>oram-build-evidence.json</code> has <code>strict_source_binding=true</code> and cites the same DB evidence and root bundle payload.</li>
+                            <li><code>direct-inputs.sha256</code> matches the index and chunk source hashes embedded in the ORAM evidence.</li>
+                            <li>The exact 64-bit <code>index_seed</code> is compared as text, not as a rounded JavaScript number.</li>
+                            <li>The output image hashes in <code>SHA256SUMS</code> match the output hashes embedded in the ORAM evidence.</li>
+                            <li>The controller authentication roots for index and chunk metadata/payload match the pinned manifest roots.</li>
+                        </ul>
+                    </section>
+
+                    <section>
+                        <h2>Strict rebuild command</h2>
+                        <p>
+                            On a host with the archived direct inputs, the strict rebuild
+                            was produced with the command below. The static web bundle
+                            publishes the compact evidence and hashes; it does not publish
+                            the 4.3&nbsp;GiB direct inputs or 15&nbsp;GiB ORAM images.
+                        </p>
+	<pre><code>oramctl build-direct \
+	    --index-file /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin \
+	    --chunks-file /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin \
+	    --out-dir /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict \
+	    --level all \
+	    --pack 16 \
+	    --leaf-divisor 2 \
+	    --bucket-size 2 \
+	    --stash-capacity 128 \
+	    --cache-levels 0 \
+	    --index-slots-per-bin 4 \
+	    --index-hash-fns 2 \
+	    --index-load-factor 0.95 \
+	    --index-seed 8030603977422561841 \
+	    --auth-store \
+	    --auth-trusted-levels 1 \
+	    --auth-hash-page-size 4096 \
+	    --db-build-evidence /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/build-evidence.bin \
+	    --root-bundle-payload /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/root-bundle-payload.bin \
+	    --expected-muhash cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee \
+	    --expected-index-sha256 d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c \
+	    --expected-chunks-sha256 9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521 \
+	    --strict-source-binding</code></pre>
+                    </section>
+
+                    <section>
+                        <h2>Controller authentication roots</h2>
+                        <div class="panel">
+                            <table class="pin-table">
+                                <tr>
+                                    <td>index meta</td>
+                                    <td>de2a8cbca84776aa14c04d4227d72295f8effb85048e89cfaa76561899ebeaa7</td>
+                                </tr>
+                                <tr>
+                                    <td>index payload</td>
+                                    <td>1ddf087c995947d245f04c323b85a06e799981650227ef64dd649fbb7c83c37d</td>
+                                </tr>
+                                <tr>
+                                    <td>chunk meta</td>
+                                    <td>1bc1ed8a2b219ed06712db91b613704c26c474ea19182aaf3832efecaa9bc241</td>
+                                </tr>
+                                <tr>
+                                    <td>chunk payload</td>
+                                    <td>4f059feddacf0e5f9160e03e16ceb06293f55b656a151a4a851daaa36fdfc9d7</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section>
+                        <h2>Deployment boundary</h2>
+                        <div class="panel">
+                            <p>
+                                This page verifies the strict source-bound rebuild and records
+                                the live pir2 runtime that consumes it. The pinned pir2 runtime
+                                commit
+                                <code>f402466af1ee21d02e0a65b457ad338ceb1216c0</code>
+                                vendors <code>bitcoinpir-oram</code> at
+                                <code>5f366492504d8e853cbd60d25a6adbf021a78746</code>.
+                            </p>
+                            <p>
+                                Live verification on the refreshed measured UKI passed
+                                <code>bpir-admin attest</code>, <code>channel-test</code>, and
+                                padded direct ORAM smoke requests for both db_id 0 and db_id 1.
+                                The UKI bytes are archived on Hetzner at
+                                <code>/home/pir/uki-archive/tier3/oram-f402466a/</code>.
+                            </p>
+                        </div>
+                    </section>
+                </section>
+
+                <section id="bitcoin-anchor" class="tab-panel" role="tabpanel" aria-labelledby="tab-bitcoin-anchor">
+                    <section>
+                        <h2>Bitcoin/MuHash anchor proof <span class="badge ok">height 948454</span></h2>
+                        <p>
+                            The database proof uses Bitcoin Core's MuHash at block
+                            <code>948454</code>. The anchor proof checks that the same
+                            <code>height</code>, <code>block_hash</code>, and Core-display
+                            <code>MuHash</code> are present in the
+                            <code>mainnet-900000-954920</code> blockhash-to-muhash chunk.
+                        </p>
+                        <div class="panel accent">
+                            <table class="pin-table">
+                                <tr>
+                                    <td>block</td>
+                                    <td>948454 · 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4</td>
+                                </tr>
+                                <tr>
+                                    <td>MuHash</td>
+                                    <td>cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee</td>
+                                </tr>
+                                <tr>
+                                    <td>BHTM chunk</td>
+                                    <td>mainnet-900000-954920</td>
+                                </tr>
+                                <tr>
+                                    <td>leaf</td>
+                                    <td>index 48454 · 0171a475dc43b97db594c7512039d12f5213d270b42e56babfa44d65359eeaaf</td>
+                                </tr>
+                                <tr>
+                                    <td>tree root</td>
+                                    <td>babeea635812c3b1a2d5f352ab0a5d1ee8a4e9c668c43c05d6603ef3c3766ba6</td>
+                                </tr>
+                                <tr>
+                                    <td>BHTM UKI measurement</td>
+                                    <td>652f8c813382abb0c09a7bdc6528e6a3494f9f0833eb087349ad5dac76dec140532763fec8eeaf3fa52723b6a5de8279</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section>
+                        <h2>What the browser checks</h2>
+                        <ul>
+                            <li>The BHTM leaf proof recomputes the leaf hash and Merkle path to the pinned chunk tree root.</li>
+                            <li><code>report-data.bin</code> equals <code>SHA512("BitcoinPIR/blockhash-to-muhash/report-data/v2" || attestation.bin)</code>.</li>
+                            <li>The SNP report's raw <code>REPORT_DATA</code> field equals <code>report-data.bin</code>.</li>
+                            <li>The SNP report's raw <code>MEASUREMENT</code> field equals the pinned BHTM UKI measurement.</li>
+                            <li>The AMD VCEK chain and report signature verify through the same WASM verifier used for runtime attestation.</li>
+                            <li>The DB proof anchor equals the BHTM leaf's height, block hash, and Core-display MuHash.</li>
+                        </ul>
+                    </section>
+                </section>
+
+                <section id="artifacts" class="tab-panel" role="tabpanel" aria-labelledby="tab-artifacts">
+                    <section>
+                        <h2>Published proof artifacts</h2>
+                        <p>
+                            The production frontend loads the manifest below, verifies each
+                            artifact's SHA-256 and size, then verifies the DB/BHTM chain.
+                        </p>
+                        <div class="panel">
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454.json" target="_blank" rel="noopener">trust-chain manifest</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json" target="_blank" rel="noopener">BHTM leaf proof JSON</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/sev-snp-report.bin" download>BHTM SEV-SNP report</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/db/build-evidence.bin" download>DB build evidence</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454.json" target="_blank" rel="noopener">ORAM source-binding manifest</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/oram/oram-build-evidence.json" target="_blank" rel="noopener">ORAM build evidence JSON</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/source/direct-inputs.sha256" target="_blank" rel="noopener">direct input hashes</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/oram/SHA256SUMS" target="_blank" rel="noopener">strict ORAM rebuild SHA256SUMS</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet_948454/db/build-evidence.sev-snp-report.bin" download>ORAM source DB SEV-SNP report</a></p>
+                        </div>
+                    </section>
+                </section>
+
+                <section id="pir1" class="tab-panel" role="tabpanel" aria-labelledby="tab-pir1">
+                    <section>
+                        <h2>pir1 verification (Hetzner, no SEV)</h2>
+                        <p>
+                            <code>weikeng1.bitcoinpir.org</code> runs the db-proof
+                            <code>unified_server</code> binary on a Hetzner i7-8700.
+                            It is intentionally pinned independently from pir2's ORAM
+                            Tier 3 UKI. Without a hardware root of trust, the client
+                            verifies pir1's self-reported
+                            <code>binary_sha256</code> against a pinned value.
+                        </p>
+                        <div class="panel accent">
+                            <table class="pin-table">
+                                <tr>
+                                    <td>binary sha256</td>
+                                    <td>d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section>
+                        <h2>Verify pir1</h2>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng1.bitcoinpir.org \
 	    --expect-binary d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</code></pre>
-            <p>
-                Or directly: <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>
-                on the Hetzner host should return the same hash.
-            </p>
-        </section>
+                        <p>
+                            You can also check
+                            <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>
+                            directly on the Hetzner host.
+                        </p>
+                    </section>
+                </section>
 
-        <section>
-            <h2>What this proves</h2>
-            <ul>
-                <li>The same <code>unified_server</code> binary serves both pir1
-                    and pir2 — built once from the same source commit on the
-                    Hetzner build host, with identical hash on both machines.</li>
-                <li>For pir2: the bytes loaded into the confidential VM are exactly
-                    the bytes you can rebuild from the source git commit. The AMD
-                    chip signs over those bytes, with a key chained to
-                    AMD's ARK — pinned at
-                    <code>1f084161…3dd3f6a</code> and independently verifiable at
-                    <a href="https://kdsintf.amd.com/vcek/v1/Turin/cert_chain" target="_blank" rel="noopener">AMD KDS</a>.</li>
-                <li>For pir1: the binary hash is cross-checked against the same
-                    pinned value, ensuring the same code runs on both servers.</li>
-                <li>The database proof binds <code>delta_940611_948454</code>'s
-                    bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash
-                    at block <code>948454</code>, with the claimed delta base at
-                    block <code>940611</code>.</li>
-                <li>The web client refuses to upgrade to the encrypted channel
-                    if the pinned values don't match what the server reports —
-                    so a tampered server is silent, not silently-trusted.</li>
-            </ul>
-        </section>
+                <section id="scope" class="tab-panel" role="tabpanel" aria-labelledby="tab-scope">
+                    <section>
+                        <h2>What this proves</h2>
+                        <ul>
+                            <li>pir1 and pir2 have independent binary pins; pir2 is additionally bound to the ORAM Tier 3 UKI MEASUREMENT.</li>
+                            <li>For pir2, AMD signs the loaded confidential-VM runtime and channel binding.</li>
+                            <li>For pir1, binary-hash pinning detects drift but does not provide a hardware root of trust.</li>
+                            <li>The database proof binds <code>delta_940611_948454</code>'s bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash at block <code>948454</code>.</li>
+                            <li>The ORAM source-binding proof binds a strict direct ORAM rebuild to roots-only snapshot inputs preserved by the SEV-SNP attested builder for block <code>948454</code>.</li>
+                            <li>The Bitcoin anchor proof binds that same block hash and MuHash to a blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
+                            <li>The web client refuses to upgrade to the encrypted channel if runtime pins do not match what the server reports.</li>
+                            <li>The ORAM smoke route confirms the live attested binary accepts padded direct ORAM requests for both production databases.</li>
+                        </ul>
+                    </section>
 
-        <section>
-            <h2>Out of scope</h2>
-            <ul>
-                <li>The custom OVMF binary itself is binary-pinned, not built
-                    from EDK2 source by us. <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/PHASE3_SLICE3_REPRO_PLAN.md" target="_blank" rel="noopener">PHASE3_SLICE3_REPRO_PLAN.md</a>
-                    documents this gap.</li>
-                <li>The <code>--impure</code> Nix build sources the VPSBG
-                    kernel (7.0.0-15-generic) from the build host's
-                    <code>/boot</code> rather than a pinned Nix input — a
-                    deliberate, documented break of hermeticity (it is the
-                    only VPSBG-SEV-validated kernel). Cross-path determinism
-                    itself is now closed by the content-addressed Nix
-                    sandbox.</li>
-                <li>AMD's signing keys themselves are trust roots (we can't
-                    verify "AMD didn't sign this maliciously"). Mitigated by
-                    pinning the ARK fingerprint locally.</li>
-                <li>The web DB proof badge is advisory today for DPF and
-                    HarmonyPIR. Strict mode still needs to wire verified roots
-                    directly into query-path Merkle verification, and standalone
-                    OnionPIR still needs its browser-side DB proof verifier.</li>
-            </ul>
-        </section>
+                    <section>
+                        <h2>Out of scope</h2>
+                        <ul>
+                            <li>The custom OVMF binary is binary-pinned, not rebuilt from EDK2 source by this project.</li>
+                            <li>The <code>--impure</code> Nix build sources VPSBG's validated kernel from the build host.</li>
+                            <li>AMD's signing keys are trust roots; the project pins the AMD ARK fingerprint but cannot remove AMD from the trust base.</li>
+                            <li>The BHTM proof is an attested MuHash transition from Core-style stripped deltas. It checks header linkage and txid Merkle commitments; it is not a full Bitcoin consensus validator inside the TEE.</li>
+                            <li>The strict ORAM source-binding proof is not yet a live-image byte-match claim. The current pir2 runtime vendors an older ORAM commit, so a refreshed ORAM runtime/data deployment is still required for that stronger statement.</li>
+                            <li>The web DB proof badge is advisory today for DPF and HarmonyPIR. Strict mode still needs to wire verified roots directly into query-path Merkle verification, and standalone OnionPIR still needs its browser-side DB proof verifier.</li>
+                        </ul>
+                    </section>
+                </section>
+            </div>
+        </div>
     </main>
+
+    <script>
+        const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
+        const tabPanels = Array.from(document.querySelectorAll('.tab-panel'));
+
+        function activateTab(panelId, updateHash = true) {
+            const next = document.getElementById(panelId) || document.getElementById('overview');
+            if (!next) return;
+            tabPanels.forEach(panel => panel.classList.toggle('active', panel === next));
+            tabButtons.forEach(button => {
+                button.setAttribute('aria-selected', button.dataset.tabTarget === next.id ? 'true' : 'false');
+            });
+            if (updateHash) {
+                history.replaceState(null, '', `#${next.id}`);
+            }
+        }
+
+        tabButtons.forEach(button => {
+            button.addEventListener('click', () => activateTab(button.dataset.tabTarget));
+        });
+
+        function activateHashTarget() {
+            if (!location.hash) return;
+            const target = document.getElementById(location.hash.slice(1));
+            const panel = target?.classList.contains('tab-panel') ? target : target?.closest('.tab-panel');
+            if (panel) {
+                activateTab(panel.id, false);
+                target.scrollIntoView({ block: 'start' });
+            }
+        }
+
+        activateHashTarget();
+        window.addEventListener('hashchange', activateHashTarget);
+    </script>
 </body>
 </html>

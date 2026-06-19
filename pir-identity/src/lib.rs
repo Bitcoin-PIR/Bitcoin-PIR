@@ -44,7 +44,7 @@
 //! REQ_ANNOUNCE) lives in `pir-runtime-core`. Operator tooling for
 //! offline signing lives in `bpir-admin`.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 /// Length of an Ed25519 public key (RFC 8032).
 pub const ED25519_PUBKEY_LEN: usize = 32;
@@ -208,7 +208,7 @@ impl IdentityCert {
             self.valid_from,
             self.valid_until,
         );
-        pk.verify(&preimage, &sig)
+        pk.verify_strict(&preimage, &sig)
             .map_err(|_| IdentityError::BadSignature)
     }
 
@@ -430,7 +430,7 @@ impl ChannelManifest {
             &self.manifest_roots,
             self.issued_at,
         );
-        pk.verify(&preimage, &sig)
+        pk.verify_strict(&preimage, &sig)
             .map_err(|_| IdentityError::BadSignature)
     }
 

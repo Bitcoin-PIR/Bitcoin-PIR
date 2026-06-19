@@ -29,6 +29,24 @@ The output UKI is:
 /tmp/bpir-attested-builder-tier3.efi
 ```
 
+The script also archives every successful UKI build under:
+
+```bash
+/home/pir/uki-archive/attested-builder/
+```
+
+The archive copy includes the `.efi`, a `.sha256` file, and a `.meta` file with
+the builder binary hash, builder git commit, kernel, and kernel version. Treat
+`/tmp` as disposable; the archive copy is the retention copy.
+
+If the UKI is generated on a host other than the durable Hetzner host, mirror it
+to Hetzner during the build:
+
+```bash
+sudo UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/attested-builder \
+  ./scripts/build_uki_attested_builder_tier3.sh
+```
+
 Useful overrides:
 
 ```bash

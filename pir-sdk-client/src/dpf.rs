@@ -1107,7 +1107,15 @@ impl DpfClient {
         }
 
         // Step 2: Chunk-level PIR queries (multi-round)
-        let chunk_ids: Vec<u32> = (start_chunk_id..start_chunk_id + num_chunks as u32).collect();
+        let end_chunk_id = start_chunk_id
+            .checked_add(num_chunks as u32)
+            .ok_or_else(|| {
+                PirError::Decode(format!(
+                    "chunk id range overflow: start={} count={}",
+                    start_chunk_id, num_chunks
+                ))
+            })?;
+        let chunk_ids: Vec<u32> = (start_chunk_id..end_chunk_id).collect();
         let (chunk_data, chunk_bins) = self.query_chunk_level(&chunk_ids, db_info).await?;
         traces.chunk_bins = chunk_bins;
 

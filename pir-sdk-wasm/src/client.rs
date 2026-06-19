@@ -833,6 +833,47 @@ pub fn turin_ark_fingerprint() -> Uint8Array {
     Uint8Array::from(&pir_attest_verify::TURIN_ARK_FINGERPRINT_SHA256[..])
 }
 
+/// Verify a standalone SEV-SNP report and PEM certificate chain.
+///
+/// This is the static-artifact companion to
+/// [`WasmAttestVerification::verify_full`]. Live runtime attestation gets
+/// its report and VCEK chain from the server response; database-authenticity
+/// proof pages load the same shape from `/proofs/...` static files instead.
+#[wasm_bindgen(js_name = verifyRawSnpReport)]
+pub fn verify_raw_snp_report(
+    report_bytes: &[u8],
+    ark_pem: &str,
+    ask_pem: &str,
+    vcek_pem: &str,
+    expected_ark_fingerprint: Option<Box<[u8]>>,
+    policy: &WasmPolicyRequirements,
+) -> Result<(), JsError> {
+    let pin = match expected_ark_fingerprint {
+        None => None,
+        Some(bytes) => {
+            if bytes.len() != 32 {
+                return Err(JsError::new(&format!(
+                    "expectedArkFingerprint must be exactly 32 bytes, got {}",
+                    bytes.len()
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(arr)
+        }
+    };
+    pir_attest_verify::verify_full(
+        report_bytes,
+        ark_pem.as_bytes(),
+        ask_pem.as_bytes(),
+        vcek_pem.as_bytes(),
+        pin,
+        &policy.inner,
+    )
+    .map_err(|e| JsError::new(&format!("{}", e)))?;
+    Ok(())
+}
+
 // ─── WasmDatabaseProof ─────────────────────────────────────────────────────
 
 /// JS-visible summary of a verified attested-builder database proof.

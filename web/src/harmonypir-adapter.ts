@@ -330,10 +330,14 @@ export class HarmonyPirClientAdapter {
       if (pin) {
         const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
         if (stateOk) {
-          if (
+          if (pin.measurementHex && !att.launchMeasurementHex) {
+            result.pinStatus = 'measurement-mismatch';
+            result.pinError = `MEASUREMENT pin required (${pin.measurementHex.slice(0, 16)}…) but server report omitted launch MEASUREMENT`;
+            result.state = 'mismatch';
+            this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
+          } else if (
             pin.measurementHex &&
-            att.launchMeasurementHex &&
-            pin.measurementHex.toLowerCase() !== att.launchMeasurementHex.toLowerCase()
+            pin.measurementHex.toLowerCase() !== att.launchMeasurementHex!.toLowerCase()
           ) {
             result.pinStatus = 'measurement-mismatch';
             result.pinError = `MEASUREMENT pin mismatch — expected ${pin.measurementHex.slice(0, 16)}…, got ${att.launchMeasurementHex.slice(0, 16)}…`;

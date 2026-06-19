@@ -110,11 +110,7 @@ fn main() {
             if pct > last_pct && pct <= 100 {
                 eprint!(
                     "\r  {}% ({}/{})  unique: {} | dust skipped: {}",
-                    pct,
-                    i + 1,
-                    n,
-                    map.len(),
-                    total_dust_utxos
+                    pct, i + 1, n, map.len(), total_dust_utxos
                 );
                 let _ = io::stderr().flush();
                 last_pct = pct;
@@ -141,11 +137,7 @@ fn main() {
         if pct > last_pct && pct <= 100 {
             eprint!(
                 "\r  {}% ({}/{})  unique: {} | dust skipped: {}",
-                pct,
-                i + 1,
-                n,
-                map.len(),
-                total_dust_utxos
+                pct, i + 1, n, map.len(), total_dust_utxos
             );
             let _ = io::stderr().flush();
             last_pct = pct;
@@ -163,10 +155,7 @@ fn main() {
         group_start.elapsed(),
         num_groups
     );
-    println!(
-        "  Dust UTXOs skipped:   {} (amount <= {} sats)",
-        total_dust_utxos, DUST_THRESHOLD
-    );
+    println!("  Dust UTXOs skipped:   {} (amount <= {} sats)", total_dust_utxos, DUST_THRESHOLD);
     println!(
         "  Dust-only addresses:  {} (all UTXOs were dust, excluded entirely)",
         dust_only_count
@@ -194,7 +183,7 @@ fn main() {
     let mut done = 0usize;
     let mut last_pct_g = 0u64;
 
-    for (_sh, mut entries) in map {
+    for (_sh, mut entries) in map.drain() {
         utxo_counts.push(entries.len());
         let data = serialize_group(&mut entries);
         sizes.push(data.len());
@@ -234,11 +223,7 @@ fn main() {
     let max = sizes[sizes.len() - 1];
 
     println!("  Total groups:       {}", num_groups);
-    println!(
-        "  Total data bytes:   {} ({:.2} GB)",
-        total_bytes,
-        total_bytes as f64 / 1e9
-    );
+    println!("  Total data bytes:   {} ({:.2} GB)", total_bytes, total_bytes as f64 / 1e9);
     println!("  Average size:       {:.1} bytes", avg);
     println!("  Median size:        {} bytes", median);
     println!("  Min size:           {} bytes", min);
@@ -253,11 +238,7 @@ fn main() {
     );
     println!(
         "  {}  {}  {}  {}  {}",
-        "-".repeat(10),
-        "-".repeat(12),
-        "-".repeat(9),
-        "-".repeat(14),
-        "-".repeat(9)
+        "-".repeat(10), "-".repeat(12), "-".repeat(9), "-".repeat(14), "-".repeat(9)
     );
 
     let mut seen_sizes = 0;
@@ -344,11 +325,7 @@ fn main() {
     );
     println!(
         "  {}  {}  {}  {}  {}",
-        "-".repeat(8),
-        "-".repeat(12),
-        "-".repeat(9),
-        "-".repeat(14),
-        "-".repeat(9)
+        "-".repeat(8), "-".repeat(12), "-".repeat(9), "-".repeat(14), "-".repeat(9)
     );
     for &(chunks, count, storage) in &chunk_dist {
         println!(
@@ -396,11 +373,7 @@ fn main() {
     );
     println!(
         "  {}  {}  {}  {}  {}",
-        "-".repeat(8),
-        "-".repeat(12),
-        "-".repeat(9),
-        "-".repeat(14),
-        "-".repeat(9)
+        "-".repeat(8), "-".repeat(12), "-".repeat(9), "-".repeat(14), "-".repeat(9)
     );
 
     // Show all distinct counts up to 20, then bucket the rest
@@ -441,16 +414,9 @@ fn main() {
     );
     println!(
         "  {}  {}  {}  {}",
-        "-".repeat(10),
-        "-".repeat(12),
-        "-".repeat(14),
-        "-".repeat(9)
+        "-".repeat(10), "-".repeat(12), "-".repeat(14), "-".repeat(9)
     );
-    let tail_start = if utxo_dist.len() > 10 {
-        utxo_dist.len() - 10
-    } else {
-        0
-    };
+    let tail_start = if utxo_dist.len() > 10 { utxo_dist.len() - 10 } else { 0 };
     for &(uc, cnt, storage) in &utxo_dist[tail_start..] {
         println!(
             "  {:>10}  {:>12}  {:>14}  {:>8.3}%",
@@ -470,11 +436,7 @@ fn main() {
     );
     println!(
         "  {}  {}  {}  {}  {}",
-        "-".repeat(10),
-        "-".repeat(12),
-        "-".repeat(9),
-        "-".repeat(14),
-        "-".repeat(9)
+        "-".repeat(10), "-".repeat(12), "-".repeat(9), "-".repeat(14), "-".repeat(9)
     );
     let thresholds = [1, 2, 3, 5, 10, 20, 50, 100, 500, 1000, 5000, 10000, 50000];
 
@@ -492,9 +454,7 @@ fn main() {
         let pos = utxo_dist.partition_point(|&(uc, _, _)| uc <= thr);
         let g = suffix_groups[pos];
         let s = suffix_storage[pos];
-        if g == 0 {
-            continue;
-        }
+        if g == 0 { continue; }
         println!(
             "  {:>10}  {:>12}  {:>8.3}%  {:>14}  {:>8.3}%",
             format!(">{}", thr),
@@ -510,25 +470,19 @@ fn main() {
     let total_utxos_kept: u64 = utxo_counts.iter().map(|&c| c as u64).sum();
     let total_utxos_original = total_utxos_kept + total_dust_utxos;
 
-    println!(
-        "[7] Dust filtering summary (amount <= {} sats):",
-        DUST_THRESHOLD
-    );
+    println!("[7] Dust filtering summary (amount <= {} sats):", DUST_THRESHOLD);
     println!("  Original UTXOs:     {}", total_utxos_original);
-    println!(
-        "  Dust UTXOs removed: {} ({:.3}%)",
+    println!("  Dust UTXOs removed: {} ({:.3}%)",
         total_dust_utxos,
         total_dust_utxos as f64 / total_utxos_original as f64 * 100.0
     );
-    println!(
-        "  UTXOs kept:         {} ({:.3}%)",
+    println!("  UTXOs kept:         {} ({:.3}%)",
         total_utxos_kept,
         total_utxos_kept as f64 / total_utxos_original as f64 * 100.0
     );
     println!("  Original addresses: {}", all_script_hashes);
     println!("  Dust-only removed:  {}", dust_only_count);
-    println!(
-        "  Addresses kept:     {} ({:.3}%)",
+    println!("  Addresses kept:     {} ({:.3}%)",
         num_groups,
         num_groups as f64 / all_script_hashes as f64 * 100.0
     );

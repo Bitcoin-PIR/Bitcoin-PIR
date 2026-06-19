@@ -109,6 +109,10 @@ if [[ "${KEEP_ORAM_DIRECT_INPUTS:-0}" == "1" ]]; then
     mkdir -p "$ORAM_DIRECT_INPUT_DIR"
     cp -f "$INDEX_INPUT" "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_index_nodust.bin"
     cp -f "$CHUNKS_INPUT" "$ORAM_DIRECT_INPUT_DIR/utxo_chunks_nodust.bin"
+    (
+        cd "$ORAM_DIRECT_INPUT_DIR"
+        sha256sum utxo_chunks_index_nodust.bin utxo_chunks_nodust.bin > direct-inputs.sha256
+    )
     du -sh "$ORAM_DIRECT_INPUT_DIR"
 fi
 echo ""

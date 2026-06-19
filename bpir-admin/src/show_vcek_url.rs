@@ -69,9 +69,21 @@ pub async fn run(args: ShowVcekUrlArgs) -> Result<(), i32> {
         }
     };
 
-    // Format chip_id as 128 hex chars (uppercase, no spaces — matches
-    // the URL form AMD KDS expects).
+    // The report field is 64 bytes, but AMD KDS accepts the non-zero
+    // hardware-id prefix. Some production chips reject the zero-padded form.
+    let chip_id_len = report
+        .chip_id
+        .iter()
+        .rposition(|b| *b != 0)
+        .map(|pos| pos + 1)
+        .unwrap_or(report.chip_id.len());
     let chip_id_hex = report
+        .chip_id
+        .iter()
+        .take(chip_id_len)
+        .map(|b| format!("{:02X}", b))
+        .collect::<String>();
+    let chip_id_hex_full = report
         .chip_id
         .iter()
         .map(|b| format!("{:02X}", b))
@@ -84,6 +96,7 @@ pub async fn run(args: ShowVcekUrlArgs) -> Result<(), i32> {
 
     println!();
     println!("Chip ID:    {}", chip_id_hex);
+    println!("Chip ID full report field: {}", chip_id_hex_full);
     let fmc_str = match tcb.fmc {
         Some(fmc) => format!("fmc={} ", fmc),
         None => String::new(),
@@ -130,9 +143,9 @@ pub async fn run(args: ShowVcekUrlArgs) -> Result<(), i32> {
     println!("and restart pir-vpsbg. Re-run `bpir-admin attest` and look for");
     println!("\"vcek chain: bundled\" to confirm.");
     println!();
-    println!("Note: chip_id is full 64-byte SEV-SNP report field (AMD KDS accepts");
-    println!("      the truncated form when only the leading bytes are non-zero, as");
-    println!("      is common on production EPYC chips).");
+    println!("Note: chip_id above trims trailing zero bytes from the full 64-byte");
+    println!("      SEV-SNP report field; this is the form AMD KDS accepts for");
+    println!("      production EPYC chips whose report field is zero-padded.");
 
     Ok(())
 }

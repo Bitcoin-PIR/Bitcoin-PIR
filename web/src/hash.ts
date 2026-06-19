@@ -226,6 +226,12 @@ export function sha256(data: Uint8Array): Uint8Array {
   return new Uint8Array(lib.sha256().update(data).digest());
 }
 
+/** Compute SHA512 hash */
+export function sha512(data: Uint8Array): Uint8Array {
+  const lib = (hashJs as any).default || hashJs;
+  return new Uint8Array(lib.sha512().update(data).digest());
+}
+
 /** Compute RIPEMD160 hash */
 export function ripemd160(data: Uint8Array): Uint8Array {
   const lib = (hashJs as any).default || hashJs;

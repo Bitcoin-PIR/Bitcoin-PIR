@@ -126,28 +126,26 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 db-proof UKI, pinned 2026-06-16.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-06-27.
  * Built by `scripts/build_uki_tier3.sh` on the Hetzner build host:
- * VPSBG kernel 7.0.0-15 + the db-proof-enabled `unified_server`
+ * VPSBG kernel 7.0.0-15 + the ORAM-enabled `unified_server`
  * binary baked into the initramfs.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 db-proof UKI — 2026-06-16. Built from the db-proof server
-  // integration worktree (`git_rev` reported as 1c21d341...-dirty):
-  // unified_server serves the DB proof sidecar for
-  // delta_940611_948454 and still runs as pir2 query-only
-  // (`--serve-queries`, no hint pool, no OnionPIR) plus
-  // `--identity-*` (operator-signed identity, server_id=pir2).
-  // pir1 runs the SAME binary so PIR1_PIN and PIR2_TIER3_PIN share
-  // `binarySha256Hex`. MEASUREMENT captured from the live Tier 3
-  // deploy via `bpir-admin attest wss://weikeng2.bitcoinpir.org`
-  // (SEV-SNP REPORT_DATA binding verified on real hardware; UKI
-  // sha256 `01d0dc3f...`).
+  // Tier 3 ORAM UKI — 2026-06-27. Built from BitcoinPIR commit
+  // f402466af1ee21d02e0a65b457ad338ceb1216c0:
+  // unified_server serves db-proof query traffic and direct ORAM lookup
+  // for db_id 0/1 as pir2 query-only (`--serve-queries`, no hint pool,
+  // no OnionPIR) plus `--identity-*` (operator-signed identity,
+  // server_id=pir2). MEASUREMENT captured from the live Tier 3 deploy via
+  // `bpir-admin attest wss://weikeng2.bitcoinpir.org` after uploading
+  // UKI sha256 `3ef8249b...` (SEV-SNP REPORT_DATA binding verified on
+  // real hardware).
   measurementHex:
-    '892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013',
+    'f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0',
   binarySha256Hex:
-    'd01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a',
-  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 db-proof UKI)',
+    '233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3',
+  description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 ORAM UKI)',
 };
 
 /**
@@ -161,10 +159,8 @@ export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
   // Bumped 2026-06-16: pir1 redeployed to the db-proof-enabled
   // unified_server (`git_rev` reported as 1c21d341...-dirty), serving
-  // the same delta_940611_948454 proof sidecar as pir2. This is the
-  // same binary embedded in the pir2 Tier-3 db-proof UKI, so PIR1_PIN
-  // and PIR2_TIER3_PIN share `binarySha256Hex` (shared-binary
-  // invariant preserved).
+  // the delta_940611_948454 proof sidecar. This is intentionally
+  // independent from the pir2 ORAM Tier 3 UKI pin above.
   binarySha256Hex:
     'd01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a',
   description: 'weikeng1.bitcoinpir.org (Hetzner i7-8700, no SEV)',
@@ -203,6 +199,31 @@ export const DELTA_940611_948454_DB_PROOF_PIN: DatabaseProofPin = {
     'delta_940611_948454: Bitcoin Core MuHash and PIR Merkle roots from the SEV-SNP attested builder',
 };
 
+export const MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN: DatabaseProofPin = {
+  dbId: 0,
+  buildKind: 'snapshot',
+  fromHeight: 0,
+  height: 948454,
+  fromBlockHashHex:
+    '0000000000000000000000000000000000000000000000000000000000000000',
+  blockHashHex:
+    '00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4',
+  muhashHex:
+    'cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee',
+  bucketSuperRootHex:
+    '45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b',
+  onionSuperRootHex:
+    'e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4',
+  paramsHashHex:
+    'ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e',
+  networkMagicHex: 'f9beb4d9',
+  builderBinarySha256Hex:
+    'd4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427',
+  builderGitCommit: 'b692aec18b9c20ac92cb9fe22588e96ff96ad27d',
+  description:
+    'mainnet_948454 ORAM source proof: roots-only snapshot inputs preserved by the SEV-SNP attested builder for strict direct ORAM rebuild',
+};
+
 export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
@@ -230,9 +251,10 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
  * backed up out-of-band) and signs the pir1 / pir2 `IdentityCert`s
  * (`bpir-admin sign-identity`, valid_until 2029-05).
  *
- * LIVE END-TO-END (verified 2026-05-28). pir1 + pir2 both serve
- * REQ_ANNOUNCE on the announce-enabled binary (v22 `f7df82d0…` → current
- * db-proof deploy `d01e5b7a…`); `announce()` against either returns an
+ * LIVE END-TO-END (verified 2026-06-27, still used by the current
+ * production binaries). pir1 + pir2 both serve REQ_ANNOUNCE on
+ * announce-enabled binaries (pir1 db-proof `d01e5b7a...`, pir2 ORAM
+ * `23354188...`); `announce()` against either returns an
  * operator-endorsed bundle that verifies under this pinned key
  * (operator-pin + cert signature + validity + chain + channel binding).
  * The "verified operator" badge is wired into the DPF + HarmonyPIR cards
@@ -244,7 +266,7 @@ export const PIR_OPERATOR_PUBKEY_HEX =
 
 /** Decoded 32-byte operator pubkey for
  *  `WasmAnnounceVerification.checkPinnedOperator`. See provenance +
- *  the "not yet live" note on [`PIR_OPERATOR_PUBKEY_HEX`]. */
+ *  the live deployment note on [`PIR_OPERATOR_PUBKEY_HEX`]. */
 export const PIR_OPERATOR_PUBKEY: Uint8Array = (() => {
   const hex = PIR_OPERATOR_PUBKEY_HEX;
   if (hex.length !== 64) {

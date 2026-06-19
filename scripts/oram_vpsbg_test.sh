@@ -80,6 +80,14 @@ DIRECT_INDEX_SLOTS_PER_BIN="${DIRECT_INDEX_SLOTS_PER_BIN:-4}"
 DIRECT_INDEX_HASH_FNS="${DIRECT_INDEX_HASH_FNS:-2}"
 DIRECT_INDEX_LOAD_FACTOR="${DIRECT_INDEX_LOAD_FACTOR:-0.95}"
 DIRECT_INDEX_SEED="${DIRECT_INDEX_SEED:-8030603977422561841}"
+DIRECT_INPUTS_SHA256_FILE="${DIRECT_INPUTS_SHA256_FILE:-${DIRECT_SOURCE_DIR}/direct-inputs.sha256}"
+DB_BUILD_EVIDENCE="${DB_BUILD_EVIDENCE:-}"
+ROOT_BUNDLE_PAYLOAD="${ROOT_BUNDLE_PAYLOAD:-}"
+EXPECTED_MUHASH="${EXPECTED_MUHASH:-}"
+EXPECTED_FROM_MUHASH="${EXPECTED_FROM_MUHASH:-}"
+EXPECTED_INDEX_SHA256="${EXPECTED_INDEX_SHA256:-}"
+EXPECTED_CHUNKS_SHA256="${EXPECTED_CHUNKS_SHA256:-}"
+STRICT_SOURCE_BINDING="${STRICT_SOURCE_BINDING:-0}"
 
 AUTH_STORE="${AUTH_STORE:-1}"
 AUTH_TRUSTED_LEVELS="${AUTH_TRUSTED_LEVELS:-1}"
@@ -127,6 +135,8 @@ Important env:
   DIRECT_SOURCE_DIR=/path/to/oram-inputs/checkpoints/940611
   DIRECT_INDEX_FILE=/path/to/utxo_chunks_index_nodust.bin
   DIRECT_CHUNKS_FILE=/path/to/utxo_chunks_nodust.bin
+  DB_BUILD_EVIDENCE=/path/to/build-evidence.bin ROOT_BUNDLE_PAYLOAD=/path/to/root-bundle-payload.bin
+  STRICT_SOURCE_BINDING=1 EXPECTED_MUHASH=<Core-display-muhash>
   PACK=16 LEAF_DIVISOR=2 BUCKET_SIZE=2 STASH_CAPACITY=128
   DIRECT_ACCESS_BUDGET=75
   PATCH_LOCAL_ORAM=1          temporarily patch runtime to ORAM_REPO for server-smoke
@@ -234,6 +244,10 @@ print_host_state() {
   log "direct_source_dir=${DIRECT_SOURCE_DIR}"
   log "direct_index_file=${DIRECT_INDEX_FILE}"
   log "direct_chunks_file=${DIRECT_CHUNKS_FILE}"
+  log "direct_inputs_sha256_file=${DIRECT_INPUTS_SHA256_FILE}"
+  log "db_build_evidence=${DB_BUILD_EVIDENCE:-<unset>}"
+  log "root_bundle_payload=${ROOT_BUNDLE_PAYLOAD:-<unset>}"
+  log "strict_source_binding=${STRICT_SOURCE_BINDING}"
   log "config_path=${CONFIG_PATH:-<unset>}"
   log "oram_dir=${ORAM_DIR}"
   log "oram_db_specs=${ORAM_DB_SPECS:-<unset>}"
@@ -447,6 +461,17 @@ real_build() {
       --index-load-factor "${DIRECT_INDEX_LOAD_FACTOR}"
       --index-seed "${DIRECT_INDEX_SEED}"
     )
+    if [[ -f "${DIRECT_INPUTS_SHA256_FILE}" ]]; then
+      EXPECTED_INDEX_SHA256="${EXPECTED_INDEX_SHA256:-$(awk '$2 == "utxo_chunks_index_nodust.bin" || $2 == "./utxo_chunks_index_nodust.bin" { print $1; exit }' "${DIRECT_INPUTS_SHA256_FILE}")}"
+      EXPECTED_CHUNKS_SHA256="${EXPECTED_CHUNKS_SHA256:-$(awk '$2 == "utxo_chunks_nodust.bin" || $2 == "./utxo_chunks_nodust.bin" { print $1; exit }' "${DIRECT_INPUTS_SHA256_FILE}")}"
+    fi
+    [[ -n "${DB_BUILD_EVIDENCE}" ]] && build_cmd+=(--db-build-evidence "${DB_BUILD_EVIDENCE}")
+    [[ -n "${ROOT_BUNDLE_PAYLOAD}" ]] && build_cmd+=(--root-bundle-payload "${ROOT_BUNDLE_PAYLOAD}")
+    [[ -n "${EXPECTED_MUHASH}" ]] && build_cmd+=(--expected-muhash "${EXPECTED_MUHASH}")
+    [[ -n "${EXPECTED_FROM_MUHASH}" ]] && build_cmd+=(--expected-from-muhash "${EXPECTED_FROM_MUHASH}")
+    [[ -n "${EXPECTED_INDEX_SHA256}" ]] && build_cmd+=(--expected-index-sha256 "${EXPECTED_INDEX_SHA256}")
+    [[ -n "${EXPECTED_CHUNKS_SHA256}" ]] && build_cmd+=(--expected-chunks-sha256 "${EXPECTED_CHUNKS_SHA256}")
+    [[ "${STRICT_SOURCE_BINDING}" == "1" ]] && build_cmd+=(--strict-source-binding)
   else
     log "running size-cuckoo"
     cargo_oramctl size-cuckoo \

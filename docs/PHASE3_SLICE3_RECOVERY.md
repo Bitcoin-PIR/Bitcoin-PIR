@@ -15,18 +15,25 @@ Tier 3 is active. Recovery is via the VPSBG portal exclusively.
 
 ## Prereq: revert artifacts
 
-You need TWO files on your laptop before you can recover:
+You need TWO files available before you can recover:
 
-1. **A known-good Slice 2 UKI** (e.g. `deploy/uki/bpir-slice2-revert.efi`).
+1. **A known-good Slice 2 UKI**.
    This is the fastest revert path — boots straight back to the
    Slice 2 systemd-managed shape with sshd alive.
-2. **Optional: a known-good Tier 3 UKI** (e.g. `deploy/uki/bpir-tier3-phase32-v2.efi`).
+2. **Optional: a known-good Tier 3 UKI**.
    Useful if you want to revert a NEWER broken Tier 3 to a previous
    working Tier 3 without going all the way back to Slice 2.
 
-Both files live under `deploy/uki/` which is gitignored — keep them
-in your own laptop backup. To regenerate either from scratch, see
-"Rebuild a UKI from source" below.
+The durable copies should live on the Hetzner archive host under:
+
+```bash
+/home/pir/uki-archive/slice2/
+/home/pir/uki-archive/tier3/
+```
+
+Local copies under `deploy/uki/` are gitignored convenience copies only. Treat
+them as disposable. To regenerate either from scratch, see "Rebuild a UKI from
+source" below.
 
 ---
 
@@ -102,7 +109,7 @@ need to be on Slice 2 or stock Ubuntu — anything with SSH).
 ### Slice 2 UKI (known-good revert artifact)
 
 ```bash
-ssh vpsbg-pir 'sudo /home/pir/BitcoinPIR/scripts/build_uki.sh'
+ssh vpsbg-pir 'sudo UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/slice2 /home/pir/BitcoinPIR/scripts/build_uki.sh'
 scp vpsbg-pir:/tmp/bpir.efi ./deploy/uki/bpir-slice2-revert.efi
 shasum -a 256 ./deploy/uki/bpir-slice2-revert.efi
 ```
@@ -114,7 +121,7 @@ across fresh git clones).
 ### Tier 3 UKI
 
 ```bash
-ssh vpsbg-pir 'sudo /home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
+ssh vpsbg-pir 'sudo UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/tier3 /home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
 scp vpsbg-pir:/tmp/bpir-tier3.efi ./deploy/uki/bpir-tier3-phaseXX-vYY.efi
 shasum -a 256 ./deploy/uki/bpir-tier3-phaseXX-vYY.efi
 ```

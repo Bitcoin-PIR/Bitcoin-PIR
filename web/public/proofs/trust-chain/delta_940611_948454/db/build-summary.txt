@@ -1,0 +1,74 @@
+repo_root=/usr/local/lib/attested-builder
+from_snapshot=/home/pir/data/attested-builder/inputs/txoutset_940611.dat
+from_expected_muhash=aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b
+from_anchor_height=940611
+to_snapshot=/home/pir/data/attested-builder/inputs/txoutset_948454.dat
+to_expected_muhash=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee
+to_anchor_height=948454
+network_magic=f9beb4d9
+core_version=Bitcoin Core v31.0.0
+onion_entry_size=3328
+issued_at=0
+roots_only=1
+builder_git_commit=01e8db91d76037cd5562fce85c40e832ad156431
+tee_platform=sev-snp
+tee_image_measurement=none
+builder_bin=/usr/local/bin/pir-attested-builder
+step=01-materialize-from-utxo-set status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/01-materialize-from-utxo-set.out
+step=01-materialize-from-utxo-set status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/01-materialize-from-utxo-set.out
+step=02-materialize-to-utxo-set status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/02-materialize-to-utxo-set.out
+step=02-materialize-to-utxo-set status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/02-materialize-to-utxo-set.out
+step=03-write-delta-anchor status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/03-write-delta-anchor.out
+step=03-write-delta-anchor status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/03-write-delta-anchor.out
+step=04-build-grouped-delta status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/04-build-grouped-delta.out
+step=04-build-grouped-delta status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/04-build-grouped-delta.out
+step=05-build-delta-chunks status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/05-build-delta-chunks.out
+step=05-build-delta-chunks status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/05-build-delta-chunks.out
+step=06-build-index-cuckoo status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/06-build-index-cuckoo.out
+step=06-build-index-cuckoo status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/06-build-index-cuckoo.out
+step=07-build-chunk-cuckoo status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/07-build-chunk-cuckoo.out
+step=07-build-chunk-cuckoo status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/07-build-chunk-cuckoo.out
+step=08-build-bucket-merkle status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/08-build-bucket-merkle.out
+step=08-build-bucket-merkle status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/08-build-bucket-merkle.out
+step=09-build-delta-onion-pack status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/09-build-delta-onion-pack.out
+step=09-build-delta-onion-pack status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/09-build-delta-onion-pack.out
+step=10-build-onion-data-cuckoo status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/10-build-onion-data-cuckoo.out
+step=10-build-onion-data-cuckoo status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/10-build-onion-data-cuckoo.out
+step=11-build-onion-index-cuckoo status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/11-build-onion-index-cuckoo.out
+step=11-build-onion-index-cuckoo status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/11-build-onion-index-cuckoo.out
+step=12-build-onion-merkle status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/12-build-onion-merkle.out
+step=12-build-onion-merkle status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/12-build-onion-merkle.out
+step=13-build-delta-root-bundle-payload status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/13-build-delta-root-bundle-payload.out
+step=13-build-delta-root-bundle-payload status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/13-build-delta-root-bundle-payload.out
+server_db_dir=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/server-db
+server_db_manifest=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/server-db/MANIFEST.toml
+server_db_manifest_kind=delta-roots-only
+server_db_manifest_sha256=8c730b78dfa32e3fb5708f7f7fee16c7f53b1aaacbd3d1b7ba98b3e0d046dcb2
+step=17-write-build-evidence status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/17-write-build-evidence.out
+step=17-write-build-evidence status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/17-write-build-evidence.out
+step=18-write-tee-report-data status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/18-write-tee-report-data.out
+step=18-write-tee-report-data status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/18-write-tee-report-data.out
+step=19-emit-sev-snp-quote status=running log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/19-emit-sev-snp-quote.out
+step=19-emit-sev-snp-quote status=ok log=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/logs/19-emit-sev-snp-quote.out
+status=ok
+out_dir=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp
+roots_only=1
+from_muhash=aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b
+to_muhash=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee
+from_anchor_height=940611
+to_anchor_height=948454
+index_bins_per_table=53282
+chunk_bins_per_table=112332
+bucket_super_root=e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a
+onion_super_root=f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997
+payload_sha256=70cf9ab65f753a9c3a265f24a7220d52534e53a5739cc23921706b57afd907d4
+build_evidence=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/build-evidence.bin
+build_evidence_file_sha256=977abca3ca8dc5dfce06d69006feeb6c0df5e7df3d7c1d758fc717254ff10697
+build_evidence_digest=a8e04cc4785c9bd7046463cbdfdd7ebf7ab588369130ff7ff8c1fc576d7c0a79
+build_evidence_report_data=a8e04cc4785c9bd7046463cbdfdd7ebf7ab588369130ff7ff8c1fc576d7c0a79e02fc12a2e1e7df038c4a58dc48b6f7d4c0a5676634826030dfed341143dfbda
+build_evidence_sev_snp_report=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/build-evidence.sev-snp-report.bin
+build_evidence_sev_snp_report_sha256=4c27672968a1faf0a77d3554393dfd1faa9bd84702e625817a037ef7b1d30df6
+database_manifest=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/database.manifest.sha256
+database_manifest_sha256=58166fad1aaec56282f6fd2eff6c33550535a0eaba4a9eab9ab12b65e50a83e4
+all_artifacts_manifest=/home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/all-artifacts.manifest.sha256
+all_artifacts_manifest_sha256=1941ea76988775932657409b338c524e18722296fd8dc77df9d32728d17aeffd

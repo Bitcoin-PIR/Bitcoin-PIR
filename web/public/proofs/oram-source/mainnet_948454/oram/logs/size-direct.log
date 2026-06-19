@@ -1,0 +1,16 @@
+size_direct=true
+index_file=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin
+chunks_file=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin
+bucket_size=2
+stash_capacity=128
+cache_levels=0
+index_slots_per_bin=4
+index_hash_fns=2
+index_load_factor=0.950000
+index_seed=0x6f726fc4fe1c6231
+direct_source_bytes=4585256455 direct_source_gib=4.270
+direct_table level=index source=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin file_bytes=1345875975 file_gib=1.253 source_records=53835039 total_items=14167116 item_size=104 slots_per_bin=4 hash_fns=2 load_factor=0.950000 seed=0x6f726fc4fe1c6231
+direct_table level=chunk source=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin file_bytes=3239380480 file_gib=3.017 source_records=80984512 total_items=80984512 item_size=40 slots_per_bin=1 hash_fns=0 load_factor=1.000000 seed=0x0000000000000000
+direct_estimate level=index source=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin pack=16 leaf_divisor=2 source_records=53835039 total_items=14167116 item_size=104 logical_blocks=885445 block_payload_bytes=1664 bucket_size=2 leaves=524288 height=20 bucket_pages=1048575 page_plaintext_bytes=3354 page_aead_bytes=3382 image_plaintext_bytes=3516920550 image_plaintext_gib=3.275 image_aead_bytes=3546280650 image_aead_gib=3.303 pos_map_bytes=3541780 pos_map_mib=3.378 trusted_stash_bytes=214656 trusted_stash_mib=0.205 trusted_state_floor_bytes=3756436 trusted_state_floor_mib=3.582 cached_pages=0 front_cache_plaintext_bytes=0 front_cache_plaintext_mib=0.000 front_cache_aead_bytes=0 front_cache_aead_mib=0.000 disk_pages_per_access_no_flush=40 disk_aead_bytes_per_access_no_flush=135280 disk_aead_mib_per_access_no_flush=0.129 tree_slot_load_percent=42.221
+direct_estimate level=chunk source=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin pack=16 leaf_divisor=2 source_records=80984512 total_items=80984512 item_size=40 logical_blocks=5061532 block_payload_bytes=640 bucket_size=2 leaves=4194304 height=23 bucket_pages=8388607 page_plaintext_bytes=1306 page_aead_bytes=1334 image_plaintext_bytes=10955520742 image_plaintext_gib=10.203 image_aead_bytes=11190401738 image_aead_gib=10.422 pos_map_bytes=20246128 pos_map_mib=19.308 trusted_stash_bytes=83584 trusted_stash_mib=0.080 trusted_state_floor_bytes=20329712 trusted_state_floor_mib=19.388 cached_pages=0 front_cache_plaintext_bytes=0 front_cache_plaintext_mib=0.000 front_cache_aead_bytes=0 front_cache_aead_mib=0.000 disk_pages_per_access_no_flush=46 disk_aead_bytes_per_access_no_flush=61364 disk_aead_mib_per_access_no_flush=0.059 tree_slot_load_percent=30.169
+direct_total pack=16 leaf_divisor=2 image_plaintext_bytes=14472441292 image_plaintext_gib=13.479 image_aead_bytes=14736682388 image_aead_gib=13.725 direct_source_bytes=4585256455 direct_source_gib=4.270 expansion_aead_vs_direct_source=3.214 pos_map_bytes=23787908 pos_map_mib=22.686 trusted_state_floor_bytes=24086148 trusted_state_floor_mib=22.970 front_cache_plaintext_bytes=0 front_cache_plaintext_mib=0.000 front_cache_aead_bytes=0 front_cache_aead_mib=0.000

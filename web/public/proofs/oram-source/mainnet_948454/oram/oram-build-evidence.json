@@ -1,0 +1,211 @@
+{
+  "version": 1,
+  "build": "bitcoinpir-oram/direct-build",
+  "strict_source_binding": true,
+  "db_certification": {
+    "build_kind": "snapshot",
+    "network_magic_hex": "f9beb4d9",
+    "from_anchor": {
+      "height": 0,
+      "block_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "anchor": {
+      "height": 948454,
+      "block_hash_hex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4"
+    },
+    "from_muhash_hex": null,
+    "to_muhash_hex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee"
+  },
+  "db_build_evidence": {
+    "path": "/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/build-evidence.bin",
+    "file_name": "build-evidence.bin",
+    "sha256": "91618fa1efb6ff2fa748ff21d847cc484306e9447e97f16fbabb28087a5be465",
+    "bytes": 507
+  },
+  "root_bundle_payload": {
+    "path": "/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/root-bundle-payload.bin",
+    "file_name": "root-bundle-payload.bin",
+    "sha256": "cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f",
+    "bytes": 411
+  },
+  "source_files": {
+    "index": {
+      "level": "index",
+      "path": "/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin",
+      "sha256": "d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c",
+      "bytes": 1345875975,
+      "records": 53835039,
+      "record_size": 25
+    },
+    "chunks": {
+      "level": "chunk",
+      "path": "/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin",
+      "sha256": "9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521",
+      "bytes": 3239380480,
+      "records": 80984512,
+      "record_size": 40
+    }
+  },
+  "oram_params": {
+    "pack": 16,
+    "leaf_divisor": 2,
+    "bucket_size": 2,
+    "stash_capacity": 128,
+    "cache_levels": 0,
+    "auth_store": true,
+    "auth_layout": "sidecar",
+    "auth_trusted_levels": 1,
+    "auth_hash_page_size": 4096,
+    "index_slots_per_bin": 4,
+    "index_hash_fns": 2,
+    "index_load_factor": 0.95,
+    "index_seed": 8030603977422561841,
+    "oram_rng_seed_hex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+  },
+  "output_artifacts": [
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.auth.state",
+      "file_name": "direct-chunk.auth.state",
+      "sha256": "ee54a7e8dd136703df26756bd5413cff246101910fd9b6cd3e69ad4cee86cf38",
+      "bytes": 252
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.meta.hash.oram",
+      "file_name": "direct-chunk.meta.hash.oram",
+      "sha256": "5d9a392ff33ae912ea8b180d6e3e3aa2a364ed8d275a9f08e2fda268596d3b1d",
+      "bytes": 536870912
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.meta.oram",
+      "file_name": "direct-chunk.meta.oram",
+      "sha256": "9149d8456464a706c13e9e7d6838969a3b218b7ecd4ced9f12f2c8e1c3fa53b3",
+      "bytes": 218103782
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.metadata",
+      "file_name": "direct-chunk.metadata",
+      "sha256": "80c5706d80ec3eb9f69c3460389727966bcd698a2eb59b1a0c5f52242558acbf",
+      "bytes": 201
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.payload.hash.oram",
+      "file_name": "direct-chunk.payload.hash.oram",
+      "sha256": "0d2bfc92841c439221cc22b518764bddd213c1b3a83e76cb810782f64087a7b3",
+      "bytes": 536870912
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.payload.oram",
+      "file_name": "direct-chunk.payload.oram",
+      "sha256": "17103de1fa31251a466c8243e16a3ce6f2e26ac0513ef9f8e2a5697de7c4e25f",
+      "bytes": 10737416960
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.state",
+      "file_name": "direct-chunk.state",
+      "sha256": "c0304c069a71529870d0716eb4720fa623f17839b98f34bbaa74a08f8b9266eb",
+      "bytes": 20331137
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.auth.state",
+      "file_name": "direct-index.auth.state",
+      "sha256": "3ad9ed9afaf84d328eba5039b9ea998e50fbf5059c00563baf0b5dbbad1adbdb",
+      "bytes": 252
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.meta.hash.oram",
+      "file_name": "direct-index.meta.hash.oram",
+      "sha256": "a7b3802b0e553a6bfbf4212f6d75a0f2227c05f6ed78395a9e4b8eb88f69d6a1",
+      "bytes": 67108864
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.meta.oram",
+      "file_name": "direct-index.meta.oram",
+      "sha256": "cc752e298df06109c7b287a6afd7ceeced5042651dde9779015429afc448fb66",
+      "bytes": 27262950
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.metadata",
+      "file_name": "direct-index.metadata",
+      "sha256": "f06e3fc910b1a63ae64d40c198c3efc0dfb7a3d7aa6bccefb5e7fb9df4e41d37",
+      "bytes": 207
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.payload.hash.oram",
+      "file_name": "direct-index.payload.hash.oram",
+      "sha256": "c8d328ff18a5d75ced52320455116fd0d8be3135259f97978f82e199f498577a",
+      "bytes": 67108864
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.payload.oram",
+      "file_name": "direct-index.payload.oram",
+      "sha256": "05943edbf8efd5ace6c41d9cd14a226a4a3bc250b7bbf97337575d8cb1757289",
+      "bytes": 3489657600
+    },
+    {
+      "path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.state",
+      "file_name": "direct-index.state",
+      "sha256": "6bf6b9031e8f9e9871630bdc737b9c101294183576cc9e8ef4566c27a77cccc2",
+      "bytes": 3757861
+    }
+  ],
+  "controller_states": [
+    {
+      "level": "Index",
+      "state_path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.state",
+      "controller_state_bincode_sha256": "6bf6b9031e8f9e9871630bdc737b9c101294183576cc9e8ef4566c27a77cccc2",
+      "controller_state_bincode_bytes": 3757861,
+      "auth_roots": {
+        "layout": "tiered_merkle",
+        "meta": {
+          "store_id_hex": "627069722d6469726964782d6d657461",
+          "page_count": 1048575,
+          "page_size": 26,
+          "trusted_levels": 1,
+          "hash_page_size": 4096,
+          "root_hash_hex": "de2a8cbca84776aa14c04d4227d72295f8effb85048e89cfaa76561899ebeaa7",
+          "trusted_hashes_sha256": "fbe116e2aac77929fdd6b726cd87bb22bdedb84ece03b46f9b47cb1e56fbcb65",
+          "trusted_hashes": 2
+        },
+        "payload": {
+          "store_id_hex": "627069722d6469726964782d64617461",
+          "page_count": 1048575,
+          "page_size": 3328,
+          "trusted_levels": 1,
+          "hash_page_size": 4096,
+          "root_hash_hex": "1ddf087c995947d245f04c323b85a06e799981650227ef64dd649fbb7c83c37d",
+          "trusted_hashes_sha256": "44af35ad4430e80af6c983c086caec2d0f144373c1c91357d973a437e8e9de0c",
+          "trusted_hashes": 2
+        }
+      }
+    },
+    {
+      "level": "Chunk",
+      "state_path": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.state",
+      "controller_state_bincode_sha256": "c0304c069a71529870d0716eb4720fa623f17839b98f34bbaa74a08f8b9266eb",
+      "controller_state_bincode_bytes": 20331137,
+      "auth_roots": {
+        "layout": "tiered_merkle",
+        "meta": {
+          "store_id_hex": "627069722d64697263686b2d6d657461",
+          "page_count": 8388607,
+          "page_size": 26,
+          "trusted_levels": 1,
+          "hash_page_size": 4096,
+          "root_hash_hex": "1bc1ed8a2b219ed06712db91b613704c26c474ea19182aaf3832efecaa9bc241",
+          "trusted_hashes_sha256": "c9161c252be8dc00f96c21d3832371a13aa401ab9b85a00b52dc0b70ee17a8c9",
+          "trusted_hashes": 2
+        },
+        "payload": {
+          "store_id_hex": "627069722d64697263686b2d64617461",
+          "page_count": 8388607,
+          "page_size": 1280,
+          "trusted_levels": 1,
+          "hash_page_size": 4096,
+          "root_hash_hex": "4f059feddacf0e5f9160e03e16ceb06293f55b656a151a4a851daaa36fdfc9d7",
+          "trusted_hashes_sha256": "a5e7559acf38bcc994df02b62d0967f752d0e2b230d65ca43daf441f5c378f0f",
+          "trusted_hashes": 2
+        }
+      }
+    }
+  ]
+}

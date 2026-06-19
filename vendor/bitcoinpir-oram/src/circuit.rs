@@ -7,11 +7,13 @@
 //! background work drains that debt in reverse-bit order.
 
 use crate::{
-    ct, CircuitOramState, CircuitStoreAuthState, Error, OramBlock, OramParams, PageStore, Result,
+    ct, CircuitOramState, CircuitStoreAuthState, Error, OramBlock, OramParams, PageStore,
+    PathPageStore, Result,
 };
 use rand::{CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 const META_OCCUPIED: u8 = 1;
 const META_EMPTY: u8 = 0;
@@ -237,6 +239,29 @@ impl CircuitMetaSlot {
             leaf: u32::from_le_bytes(leaf),
         })
     }
+
+    fn logical_id_choice(&self, logical_id: u64) -> ct::Choice {
+        ct::and(
+            ct::choice_from_bool(self.occupied),
+            ct::eq_u64(self.logical_id, logical_id),
+        )
+    }
+
+    fn clear_if(&mut self, choice: ct::Choice) {
+        let mut occupied = self.occupied as u8;
+        ct::cmov_u8(&mut occupied, META_EMPTY, choice);
+        self.occupied = occupied != 0;
+        ct::cmov_u64(&mut self.logical_id, u64::MAX, choice);
+        ct::cmov_u32(&mut self.leaf, u32::MAX, choice);
+    }
+
+    fn cmov_from(&mut self, other: &Self, choice: ct::Choice) {
+        let mut occupied = self.occupied as u8;
+        ct::cmov_u8(&mut occupied, other.occupied as u8, choice);
+        self.occupied = occupied != 0;
+        ct::cmov_u64(&mut self.logical_id, other.logical_id, choice);
+        ct::cmov_u32(&mut self.leaf, other.leaf, choice);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -349,43 +374,33 @@ impl CircuitPayloadBucket {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CircuitEvictionSource {
-    Path { depth: usize, slot: usize },
-    Stash { slot: usize },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct CircuitEvictionCandidate {
     meta: CircuitMetaSlot,
-    source: CircuitEvictionSource,
+    active: ct::Choice,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct CircuitEvictionPlacement {
-    candidate_idx: Option<usize>,
+    candidate_idx: usize,
+    occupied: ct::Choice,
 }
 
 impl CircuitEvictionPlacement {
-    const fn dummy() -> Self {
+    fn dummy() -> Self {
         Self {
-            candidate_idx: None,
-        }
-    }
-
-    const fn real(candidate_idx: usize) -> Self {
-        Self {
-            candidate_idx: Some(candidate_idx),
+            candidate_idx: 0,
+            occupied: ct::choice_from_bool(false),
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct CircuitEvictionPlan {
     candidates: Vec<CircuitEvictionCandidate>,
     placements: Vec<Vec<CircuitEvictionPlacement>>,
-    selected: Vec<bool>,
-    path_candidate_indices: Vec<Vec<Option<usize>>>,
+    selected: Vec<ct::Choice>,
+    path_candidate_indices: Vec<Vec<usize>>,
 }
 
 /// Plaintext bytes in one metadata bucket page.
@@ -574,11 +589,14 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
         oram.check_stash()?;
         Ok(oram)
     }
+}
 
+impl<M: PathPageStore, P: PathPageStore> CircuitOram<M, P> {
     /// Re-open a split-store Circuit ORAM from trusted controller state.
     pub fn from_state(meta_store: M, payload_store: P, state: CircuitOramState) -> Result<Self> {
         validate_circuit_stores(&state.params, &meta_store, &payload_store)?;
         validate_circuit_state(&state.params, &state.pos_map, &state.stash, &state.schedule)?;
+        validate_bound_auth_state(state.auth.as_ref(), &meta_store, &payload_store)?;
         let mut oram = Self {
             params: state.params,
             meta_store,
@@ -602,6 +620,7 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
             self.rng.clone(),
             self.schedule.clone(),
         )
+        .with_auth(self.store_auth_state())
     }
 
     /// Immutable view of public ORAM parameters.
@@ -647,15 +666,21 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
 
     /// Snapshot authenticated page-store roots, if both stores provide them.
     pub fn store_auth_state(&self) -> Option<CircuitStoreAuthState> {
-        Some(CircuitStoreAuthState::new(
-            self.meta_store.tiered_merkle_state()?,
-            self.payload_store.tiered_merkle_state()?,
-        ))
+        store_auth_state_from_stores(&self.meta_store, &self.payload_store)
     }
 
     /// Read a logical block and schedule public background eviction debt.
     pub fn read(&mut self, logical_id: u64) -> Result<Vec<u8>> {
         self.access(logical_id, |_| {})
+    }
+
+    /// Read several logical blocks as one online batch and schedule eviction debt.
+    ///
+    /// Eviction is still delayed until `drain_evictions` is called. Repeated
+    /// logical ids use the previous occurrence's freshly remapped random leaf,
+    /// preserving sequential access semantics without branching on duplicates.
+    pub fn read_batch(&mut self, logical_ids: &[u64]) -> Result<Vec<Vec<u8>>> {
+        self.access_batch(logical_ids, |_, _| {})
     }
 
     /// Perform one dummy ORAM access on a random leaf path.
@@ -671,6 +696,47 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
         self.check_stash()
     }
 
+    /// Perform several dummy ORAM accesses as one online path batch.
+    ///
+    /// The chosen leaves remain random and independent, matching repeated
+    /// [`Self::dummy_access`] calls, but backing stores that support path
+    /// batches can collapse the physical reads/writes for overlapping paths.
+    pub fn dummy_access_batch(&mut self, count: usize) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let paths = (0..count)
+            .map(|_| {
+                self.params
+                    .path_nodes(random_leaf(&self.params, &mut self.rng))
+            })
+            .collect::<Vec<_>>();
+        let meta_path_pages = self.meta_store.read_paths_pages(&paths)?;
+        let payload_path_pages = self.payload_store.read_paths_pages(&paths)?;
+        let meta_overlay = overlay_path_pages(
+            &paths,
+            meta_path_pages,
+            circuit_meta_page_bytes(self.params.bucket_size),
+        )?;
+        let payload_overlay = overlay_path_pages(
+            &paths,
+            payload_path_pages,
+            circuit_payload_page_bytes(self.params.bucket_size, self.params.block_size),
+        )?;
+
+        let meta_write_pages = collect_overlay_paths(&paths, &meta_overlay)?;
+        let payload_write_pages = collect_overlay_paths(&paths, &payload_overlay)?;
+        self.meta_store
+            .write_paths_pages(&paths, &meta_write_pages)?;
+        self.payload_store
+            .write_paths_pages(&paths, &payload_write_pages)?;
+        for _ in 0..count {
+            self.schedule.record_access()?;
+        }
+        self.check_stash()
+    }
+
     /// Read and update a logical block. Eviction is delayed until
     /// `drain_evictions` is called.
     pub fn access<F>(&mut self, logical_id: u64, update: F) -> Result<Vec<u8>>
@@ -683,22 +749,22 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
             )));
         }
 
-        let old_leaf = self.pos_map[logical_id as usize];
+        let old_leaf = scan_pos_map_lookup(&self.pos_map, logical_id);
         self.read_and_remove_target_path(old_leaf, logical_id)?;
 
-        let mut found = 0u8;
+        let mut found = ct::choice_from_bool(false);
         let mut output = vec![0u8; self.params.block_size];
         for block in &self.stash {
             let matched = block.logical_id_choice(logical_id);
             ct::cmov_bytes(&mut output, &block.payload, matched);
             found = ct::or(found, matched);
         }
-        if found == 0 {
+        if ct::not(found).unwrap_u8() == 1 {
             return Err(Error::BlockNotFound(logical_id));
         }
 
         let new_leaf = random_leaf(&self.params, &mut self.rng);
-        self.pos_map[logical_id as usize] = new_leaf;
+        scan_pos_map_update(&mut self.pos_map, logical_id, new_leaf);
         let mut new_payload = output.clone();
         update(&mut new_payload);
         for block in &mut self.stash {
@@ -712,102 +778,267 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
         Ok(output)
     }
 
+    /// Read/update several logical blocks as one online batch.
+    ///
+    /// The old-leaf paths are prefetched into an in-memory page overlay, each
+    /// access is then applied in caller order, and all touched paths are written
+    /// back as one path batch. This preserves sequential ORAM semantics,
+    /// including repeated logical ids, while reducing the storage roundtrips for
+    /// the online phase.
+    pub fn access_batch<F>(&mut self, logical_ids: &[u64], mut update: F) -> Result<Vec<Vec<u8>>>
+    where
+        F: FnMut(u64, &mut [u8]),
+    {
+        if logical_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        for &logical_id in logical_ids {
+            if logical_id as usize >= self.params.logical_blocks {
+                return Err(Error::InvalidInput(format!(
+                    "logical_id {logical_id} out of range"
+                )));
+            }
+        }
+        let old_leaves = scan_pos_map_lookup_batch(&self.pos_map, logical_ids);
+        let mut next_rng = self.rng.clone();
+        let new_leaves = logical_ids
+            .iter()
+            .map(|_| random_leaf(&self.params, &mut next_rng))
+            .collect::<Vec<_>>();
+        let access_leaves = batch_access_leaves(logical_ids, &old_leaves, &new_leaves);
+        let paths = access_leaves
+            .iter()
+            .map(|&leaf| self.params.path_nodes(leaf))
+            .collect::<Vec<_>>();
+        let meta_path_pages = self.meta_store.read_paths_pages(&paths)?;
+        let payload_path_pages = self.payload_store.read_paths_pages(&paths)?;
+        let mut meta_overlay = overlay_path_pages(
+            &paths,
+            meta_path_pages,
+            circuit_meta_page_bytes(self.params.bucket_size),
+        )?;
+        let mut payload_overlay = overlay_path_pages(
+            &paths,
+            payload_path_pages,
+            circuit_payload_page_bytes(self.params.bucket_size, self.params.block_size),
+        )?;
+
+        let mut outputs = Vec::with_capacity(logical_ids.len());
+        for ((&logical_id, &new_leaf), path) in logical_ids.iter().zip(&new_leaves).zip(&paths) {
+            self.remove_target_from_overlays(
+                path,
+                logical_id,
+                &mut meta_overlay,
+                &mut payload_overlay,
+            )?;
+
+            let mut found = ct::choice_from_bool(false);
+            let mut output = vec![0u8; self.params.block_size];
+            for block in &self.stash {
+                let matched = block.logical_id_choice(logical_id);
+                ct::cmov_bytes(&mut output, &block.payload, matched);
+                found = ct::or(found, matched);
+            }
+            if ct::not(found).unwrap_u8() == 1 {
+                return Err(Error::BlockNotFound(logical_id));
+            }
+            let mut new_payload = output.clone();
+            update(logical_id, &mut new_payload);
+            for block in &mut self.stash {
+                let matched = block.logical_id_choice(logical_id);
+                ct::cmov_bytes(&mut block.payload, &new_payload, matched);
+                ct::cmov_u32(&mut block.leaf, new_leaf, matched);
+            }
+
+            self.schedule.record_access()?;
+            outputs.push(output);
+        }
+        scan_pos_map_update_batch(&mut self.pos_map, logical_ids, &new_leaves);
+        self.rng = next_rng;
+
+        let meta_write_pages = collect_overlay_paths(&paths, &meta_overlay)?;
+        let payload_write_pages = collect_overlay_paths(&paths, &payload_overlay)?;
+        self.meta_store
+            .write_paths_pages(&paths, &meta_write_pages)?;
+        self.payload_store
+            .write_paths_pages(&paths, &payload_write_pages)?;
+        self.check_stash()?;
+        Ok(outputs)
+    }
+
     /// Drain up to `budget` pending public eviction paths.
     pub fn drain_evictions(&mut self, budget: u64) -> Result<u64> {
-        let mut drained = 0u64;
-        for _ in 0..budget {
-            if self.schedule.pending_evictions()? == 0 {
-                break;
-            }
-            let leaf = self.schedule.next_eviction_leaf();
-            self.evict_path(leaf)?;
+        let pending = self.schedule.pending_evictions()?;
+        let to_drain = budget.min(pending);
+        if to_drain == 0 {
+            return Ok(0);
+        }
+        let start = self.schedule.completed_evictions();
+        let leaves = (0..to_drain)
+            .map(|offset| CircuitEvictionSchedule::eviction_leaf_at(&self.params, start + offset))
+            .collect::<Vec<_>>();
+        let paths = leaves
+            .iter()
+            .map(|&leaf| self.params.path_nodes(leaf))
+            .collect::<Vec<_>>();
+        let meta_path_pages = self.meta_store.read_paths_pages(&paths)?;
+        let payload_path_pages = self.payload_store.read_paths_pages(&paths)?;
+        let mut meta_overlay = overlay_path_pages(
+            &paths,
+            meta_path_pages,
+            circuit_meta_page_bytes(self.params.bucket_size),
+        )?;
+        let mut payload_overlay = overlay_path_pages(
+            &paths,
+            payload_path_pages,
+            circuit_payload_page_bytes(self.params.bucket_size, self.params.block_size),
+        )?;
+
+        for path in &paths {
+            self.evict_path_in_overlays(path, &mut meta_overlay, &mut payload_overlay)?;
+        }
+
+        let meta_write_pages = collect_overlay_paths(&paths, &meta_overlay)?;
+        let payload_write_pages = collect_overlay_paths(&paths, &payload_overlay)?;
+        self.meta_store
+            .write_paths_pages(&paths, &meta_write_pages)?;
+        self.payload_store
+            .write_paths_pages(&paths, &payload_write_pages)?;
+        for leaf in leaves {
             let completed = self.schedule.complete_one_eviction()?;
             debug_assert_eq!(completed, Some(leaf));
-            drained += 1;
         }
         self.check_stash()?;
-        Ok(drained)
+        Ok(to_drain)
     }
 
     fn read_and_remove_target_path(&mut self, leaf: u32, logical_id: u64) -> Result<()> {
         let path = self.params.path_nodes(leaf);
-        let mut meta_buf = vec![0u8; circuit_meta_page_bytes(self.params.bucket_size)];
-        let mut payload_buf =
-            vec![0u8; circuit_payload_page_bytes(self.params.bucket_size, self.params.block_size)];
+        let mut meta_pages = self.meta_store.read_path_pages(&path)?;
+        let mut payload_pages = self.payload_store.read_path_pages(&path)?;
+        let mut selected = OramBlock::dummy(self.params.block_size);
+        let mut removed = ct::choice_from_bool(false);
 
-        for node_idx in path {
-            self.meta_store.read_page(node_idx, &mut meta_buf)?;
-            self.payload_store.read_page(node_idx, &mut payload_buf)?;
-            let mut meta_bucket = CircuitMetaBucket::decode(&meta_buf, self.params.bucket_size)?;
+        // Deliberately rewrite every page on the path, even if only one slot
+        // changed. Rewriting only changed pages would leak the target depth in
+        // the host-visible write set.
+        for (meta_buf, payload_buf) in meta_pages.iter_mut().zip(&mut payload_pages) {
+            let mut meta_bucket = CircuitMetaBucket::decode(meta_buf, self.params.bucket_size)?;
             let mut payload_bucket = CircuitPayloadBucket::decode(
-                &payload_buf,
+                payload_buf,
                 self.params.bucket_size,
                 self.params.block_size,
             )?;
 
-            let mut removed = false;
-            for (slot_idx, meta) in meta_bucket.slots.iter_mut().enumerate() {
-                if meta.occupied && meta.logical_id == logical_id && !removed {
-                    let payload = payload_bucket.slots[slot_idx].clone();
-                    self.insert_into_stash(OramBlock::real(
-                        logical_id,
-                        meta.leaf,
-                        payload,
-                        self.params.block_size,
-                    )?)?;
-                    *meta = CircuitMetaSlot::dummy();
-                    payload_bucket.slots[slot_idx].fill(0);
-                    removed = true;
-                }
-            }
+            select_and_remove_target_slots(
+                &mut meta_bucket,
+                &mut payload_bucket,
+                logical_id,
+                self.params.block_size,
+                &mut selected,
+                &mut removed,
+            );
 
-            let encoded_meta = meta_bucket.encode(self.params.bucket_size)?;
-            let encoded_payload =
+            *meta_buf = meta_bucket.encode(self.params.bucket_size)?;
+            *payload_buf =
                 payload_bucket.encode(self.params.bucket_size, self.params.block_size)?;
-            self.meta_store.write_page(node_idx, &encoded_meta)?;
-            self.payload_store.write_page(node_idx, &encoded_payload)?;
         }
+        self.insert_into_stash(selected)?;
+        self.meta_store.write_path_pages(&path, &meta_pages)?;
+        self.payload_store.write_path_pages(&path, &payload_pages)?;
+        Ok(())
+    }
+
+    fn remove_target_from_overlays(
+        &mut self,
+        path: &[usize],
+        logical_id: u64,
+        meta_overlay: &mut BTreeMap<usize, Vec<u8>>,
+        payload_overlay: &mut BTreeMap<usize, Vec<u8>>,
+    ) -> Result<()> {
+        let mut selected = OramBlock::dummy(self.params.block_size);
+        let mut removed = ct::choice_from_bool(false);
+        // `path` is a public random ORAM path. BTreeMap lookups are keyed only
+        // by public page indices; block contents never influence overlay keys
+        // or the number of path pages visited.
+        for page_idx in path {
+            let meta_buf = meta_overlay
+                .get_mut(page_idx)
+                .expect("batch overlay includes every path page");
+            let payload_buf = payload_overlay
+                .get_mut(page_idx)
+                .expect("batch overlay includes every path page");
+            let mut meta_bucket = CircuitMetaBucket::decode(meta_buf, self.params.bucket_size)?;
+            let mut payload_bucket = CircuitPayloadBucket::decode(
+                payload_buf,
+                self.params.bucket_size,
+                self.params.block_size,
+            )?;
+
+            select_and_remove_target_slots(
+                &mut meta_bucket,
+                &mut payload_bucket,
+                logical_id,
+                self.params.block_size,
+                &mut selected,
+                &mut removed,
+            );
+
+            *meta_buf = meta_bucket.encode(self.params.bucket_size)?;
+            *payload_buf =
+                payload_bucket.encode(self.params.bucket_size, self.params.block_size)?;
+        }
+        self.insert_into_stash(selected)?;
         Ok(())
     }
 
     fn read_and_rewrite_path(&mut self, leaf: u32) -> Result<()> {
         let path = self.params.path_nodes(leaf);
-        let mut meta_buf = vec![0u8; circuit_meta_page_bytes(self.params.bucket_size)];
-        let mut payload_buf =
-            vec![0u8; circuit_payload_page_bytes(self.params.bucket_size, self.params.block_size)];
-
-        for node_idx in path {
-            self.meta_store.read_page(node_idx, &mut meta_buf)?;
-            self.payload_store.read_page(node_idx, &mut payload_buf)?;
-            self.meta_store.write_page(node_idx, &meta_buf)?;
-            self.payload_store.write_page(node_idx, &payload_buf)?;
-        }
+        let meta_pages = self.meta_store.read_path_pages(&path)?;
+        let payload_pages = self.payload_store.read_path_pages(&path)?;
+        self.meta_store.write_path_pages(&path, &meta_pages)?;
+        self.payload_store.write_path_pages(&path, &payload_pages)?;
         Ok(())
     }
 
-    fn evict_path(&mut self, leaf: u32) -> Result<()> {
-        let path = self.params.path_nodes(leaf);
-        let deepest_meta = self.read_path_metadata(&path)?;
-        let target_meta = self.read_path_metadata(&path)?;
+    fn evict_path_in_overlays(
+        &mut self,
+        path: &[usize],
+        meta_overlay: &mut BTreeMap<usize, Vec<u8>>,
+        payload_overlay: &mut BTreeMap<usize, Vec<u8>>,
+    ) -> Result<()> {
+        let deepest_meta = self.path_metadata_from_overlay(path, meta_overlay)?;
+        let target_meta = self.path_metadata_from_overlay(path, meta_overlay)?;
         debug_assert_eq!(deepest_meta, target_meta);
-        let plan = self.plan_eviction_placements(&path, &target_meta)?;
-        self.apply_eviction_plan(&path, &target_meta, plan)?;
-        Ok(())
+        let plan = self.plan_eviction_placements(path, &target_meta)?;
+        self.apply_eviction_plan_to_overlays(
+            path,
+            &target_meta,
+            plan,
+            meta_overlay,
+            payload_overlay,
+        )
     }
 
-    fn read_path_metadata(&mut self, path: &[usize]) -> Result<Vec<CircuitMetaBucket>> {
-        let mut meta_buf = vec![0u8; circuit_meta_page_bytes(self.params.bucket_size)];
+    fn path_metadata_from_overlay(
+        &self,
+        path: &[usize],
+        meta_overlay: &BTreeMap<usize, Vec<u8>>,
+    ) -> Result<Vec<CircuitMetaBucket>> {
         let mut buckets = Vec::with_capacity(path.len());
-        for &node_idx in path {
-            self.meta_store.read_page(node_idx, &mut meta_buf)?;
+        for page_idx in path {
+            let meta_buf = meta_overlay
+                .get(page_idx)
+                .expect("eviction overlay includes every path page");
             buckets.push(CircuitMetaBucket::decode(
-                &meta_buf,
+                meta_buf,
                 self.params.bucket_size,
             )?);
         }
         Ok(buckets)
     }
 
+    #[inline(never)]
     fn plan_eviction_placements(
         &self,
         path: &[usize],
@@ -818,18 +1049,27 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
                 "eviction path metadata length does not match tree height".into(),
             ));
         }
+        if self.stash.len() != self.params.stash_capacity {
+            return Err(Error::InvalidInput(format!(
+                "stash slots {} != stash_capacity {}",
+                self.stash.len(),
+                self.params.stash_capacity
+            )));
+        }
 
-        let mut candidates = Vec::new();
+        let mut candidates = Vec::with_capacity(self.eviction_candidate_count());
         let mut path_candidate_indices =
-            vec![vec![None; self.params.bucket_size]; self.params.height()];
+            vec![vec![0; self.params.bucket_size]; self.params.height()];
 
-        for (slot_idx, block) in self.stash.iter().enumerate() {
-            if block.occupied {
-                candidates.push(CircuitEvictionCandidate {
-                    meta: CircuitMetaSlot::real(block.logical_id, block.leaf),
-                    source: CircuitEvictionSource::Stash { slot: slot_idx },
-                });
-            }
+        for block in &self.stash {
+            candidates.push(CircuitEvictionCandidate {
+                meta: CircuitMetaSlot {
+                    occupied: block.occupied,
+                    logical_id: block.logical_id,
+                    leaf: block.leaf,
+                },
+                active: ct::choice_from_bool(block.occupied),
+            });
         }
 
         for (depth, bucket) in path_meta.iter().enumerate() {
@@ -842,17 +1082,12 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
                 )));
             }
             for (slot_idx, meta) in bucket.slots.iter().enumerate() {
-                if meta.occupied {
-                    let candidate_idx = candidates.len();
-                    candidates.push(CircuitEvictionCandidate {
-                        meta: *meta,
-                        source: CircuitEvictionSource::Path {
-                            depth,
-                            slot: slot_idx,
-                        },
-                    });
-                    path_candidate_indices[depth][slot_idx] = Some(candidate_idx);
-                }
+                let candidate_idx = candidates.len();
+                candidates.push(CircuitEvictionCandidate {
+                    meta: *meta,
+                    active: ct::choice_from_bool(meta.occupied),
+                });
+                path_candidate_indices[depth][slot_idx] = candidate_idx;
             }
         }
 
@@ -860,24 +1095,27 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
             vec![CircuitEvictionPlacement::dummy(); self.params.bucket_size];
             self.params.height()
         ];
-        let mut selected = vec![false; candidates.len()];
+        let mut selected = vec![ct::choice_from_bool(false); candidates.len()];
 
         for depth in (0..self.params.height()).rev() {
             let node_idx = path[depth];
             for placement in &mut placements[depth] {
+                let mut placed = ct::choice_from_bool(false);
+                let mut placement_idx = 0usize;
                 for (candidate_idx, candidate) in candidates.iter().enumerate() {
-                    if selected[candidate_idx] {
-                        continue;
-                    }
-                    if self
-                        .params
-                        .node_contains_leaf(depth, node_idx, candidate.meta.leaf)
-                    {
-                        *placement = CircuitEvictionPlacement::real(candidate_idx);
-                        selected[candidate_idx] = true;
-                        break;
-                    }
+                    let can_place = ct::and(
+                        ct::and(candidate.active, ct::not(selected[candidate_idx])),
+                        ct::and(
+                            ct::not(placed),
+                            self.node_contains_leaf_choice(depth, node_idx, candidate.meta.leaf),
+                        ),
+                    );
+                    ct::cmov_usize(&mut placement_idx, candidate_idx, can_place);
+                    selected[candidate_idx] = ct::or(selected[candidate_idx], can_place);
+                    placed = ct::or(placed, can_place);
                 }
+                placement.candidate_idx = placement_idx;
+                placement.occupied = placed;
             }
         }
 
@@ -889,110 +1127,138 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
         })
     }
 
-    fn apply_eviction_plan(
+    #[inline(never)]
+    fn apply_eviction_plan_to_overlays(
         &mut self,
         path: &[usize],
         path_meta: &[CircuitMetaBucket],
         plan: CircuitEvictionPlan,
+        meta_overlay: &mut BTreeMap<usize, Vec<u8>>,
+        payload_overlay: &mut BTreeMap<usize, Vec<u8>>,
     ) -> Result<()> {
-        let mut payloads = self.load_eviction_payloads(path, path_meta, &plan)?;
+        let payloads =
+            self.load_eviction_payloads_from_overlay(path, path_meta, &plan, payload_overlay)?;
         self.ensure_eviction_stash_capacity(&plan)?;
 
-        for (candidate_idx, candidate) in plan.candidates.iter().enumerate() {
-            if plan.selected[candidate_idx] {
-                if let CircuitEvictionSource::Stash { slot } = candidate.source {
-                    self.stash[slot].clear_if(1, self.params.block_size);
-                }
+        for slot in 0..self.params.stash_capacity {
+            let clear = ct::and(plan.candidates[slot].active, plan.selected[slot]);
+            self.stash[slot].clear_if(clear, self.params.block_size);
+        }
+
+        for depth in 0..self.params.height() {
+            for slot_idx in 0..self.params.bucket_size {
+                let candidate_idx = plan.path_candidate_indices[depth][slot_idx];
+                let candidate = &plan.candidates[candidate_idx];
+                let reinsert = ct::and(candidate.active, ct::not(plan.selected[candidate_idx]));
+                self.insert_candidate_into_stash(
+                    candidate.meta,
+                    &payloads[candidate_idx],
+                    reinsert,
+                )?;
             }
         }
 
-        for (candidate_idx, candidate) in plan.candidates.iter().enumerate() {
-            if !plan.selected[candidate_idx] {
-                if let CircuitEvictionSource::Path { .. } = candidate.source {
-                    self.insert_into_stash(OramBlock::real(
-                        candidate.meta.logical_id,
-                        candidate.meta.leaf,
-                        std::mem::take(&mut payloads[candidate_idx]),
-                        self.params.block_size,
-                    )?)?;
-                }
-            }
-        }
-
-        for (depth, &node_idx) in path.iter().enumerate() {
+        // Eviction paths and page indices are public. Overlay writes are keyed
+        // by those public page indices; secret placement choices only affect
+        // masked slot contents inside the page bytes.
+        for (depth, page_idx) in path.iter().enumerate() {
             let mut meta_bucket = CircuitMetaBucket::dummy(self.params.bucket_size);
             let mut payload_bucket =
                 CircuitPayloadBucket::dummy(self.params.bucket_size, self.params.block_size);
             for (slot_idx, placement) in plan.placements[depth].iter().enumerate() {
-                if let Some(candidate_idx) = placement.candidate_idx {
-                    let candidate = &plan.candidates[candidate_idx];
-                    meta_bucket.slots[slot_idx] = candidate.meta;
-                    payload_bucket.slots[slot_idx] = payloads[candidate_idx].clone();
+                let mut meta_slot = CircuitMetaSlot::dummy();
+                let mut payload_slot = vec![0u8; self.params.block_size];
+                for (candidate_idx, candidate) in plan.candidates.iter().enumerate() {
+                    let select = ct::and(
+                        placement.occupied,
+                        ct::eq_usize(placement.candidate_idx, candidate_idx),
+                    );
+                    meta_slot.cmov_from(&candidate.meta, select);
+                    ct::cmov_bytes(&mut payload_slot, &payloads[candidate_idx], select);
                 }
+                meta_bucket.slots[slot_idx] = meta_slot;
+                payload_bucket.slots[slot_idx] = payload_slot;
             }
 
-            let encoded_meta = meta_bucket.encode(self.params.bucket_size)?;
-            let encoded_payload =
-                payload_bucket.encode(self.params.bucket_size, self.params.block_size)?;
-            self.meta_store.write_page(node_idx, &encoded_meta)?;
-            self.payload_store.write_page(node_idx, &encoded_payload)?;
+            meta_overlay.insert(*page_idx, meta_bucket.encode(self.params.bucket_size)?);
+            payload_overlay.insert(
+                *page_idx,
+                payload_bucket.encode(self.params.bucket_size, self.params.block_size)?,
+            );
         }
         Ok(())
     }
 
-    fn load_eviction_payloads(
-        &mut self,
+    fn eviction_candidate_count(&self) -> usize {
+        self.params.stash_capacity + self.params.height() * self.params.bucket_size
+    }
+
+    fn node_contains_leaf_choice(&self, depth: usize, node_idx: usize, leaf: u32) -> ct::Choice {
+        // `depth` and `node_idx` are public loop values. `leaf` is secret block
+        // metadata, so target builds should inspect the generated shift
+        // instructions for the SEV-SNP CPU. On the current target this is kept
+        // as a documented audit item rather than a barrel-select rewrite.
+        let safe_leaf = ((leaf as usize) & (self.params.leaves - 1)) as u32;
+        ct::eq_usize(self.params.node_index(depth, safe_leaf), node_idx)
+    }
+
+    #[inline(never)]
+    fn load_eviction_payloads_from_overlay(
+        &self,
         path: &[usize],
         path_meta: &[CircuitMetaBucket],
         plan: &CircuitEvictionPlan,
+        payload_overlay: &BTreeMap<usize, Vec<u8>>,
     ) -> Result<Vec<Vec<u8>>> {
-        if path.len() != path_meta.len() || path.len() != plan.path_candidate_indices.len() {
+        if path.len() != path_meta.len()
+            || path.len() != plan.path_candidate_indices.len()
+            || plan.candidates.len() != self.eviction_candidate_count()
+        {
             return Err(Error::InvalidInput(
                 "eviction payload path length mismatch".into(),
             ));
         }
 
         let mut payloads = vec![vec![0u8; self.params.block_size]; plan.candidates.len()];
-        for (candidate_idx, candidate) in plan.candidates.iter().enumerate() {
-            if let CircuitEvictionSource::Stash { slot } = candidate.source {
-                payloads[candidate_idx].copy_from_slice(&self.stash[slot].payload);
-            }
+        for (slot, payload) in payloads
+            .iter_mut()
+            .enumerate()
+            .take(self.params.stash_capacity)
+        {
+            payload.copy_from_slice(&self.stash[slot].payload);
         }
 
-        let mut payload_buf =
-            vec![0u8; circuit_payload_page_bytes(self.params.bucket_size, self.params.block_size)];
-        for (depth, &node_idx) in path.iter().enumerate() {
-            self.payload_store.read_page(node_idx, &mut payload_buf)?;
+        for (depth, page_idx) in path.iter().enumerate() {
+            let payload_buf = payload_overlay
+                .get(page_idx)
+                .expect("eviction overlay includes every path page");
             let payload_bucket = CircuitPayloadBucket::decode(
-                &payload_buf,
+                payload_buf,
                 self.params.bucket_size,
                 self.params.block_size,
             )?;
             for (slot_idx, candidate_idx) in plan.path_candidate_indices[depth].iter().enumerate() {
-                if let Some(candidate_idx) = candidate_idx {
-                    payloads[*candidate_idx].copy_from_slice(&payload_bucket.slots[slot_idx]);
-                }
+                payloads[*candidate_idx].copy_from_slice(&payload_bucket.slots[slot_idx]);
             }
         }
         Ok(payloads)
     }
 
+    #[inline(never)]
     fn ensure_eviction_stash_capacity(&self, plan: &CircuitEvictionPlan) -> Result<()> {
         let mut selected_stash = 0usize;
         let mut unselected_path = 0usize;
 
-        for (candidate_idx, candidate) in plan.candidates.iter().enumerate() {
-            match candidate.source {
-                CircuitEvictionSource::Stash { .. } => {
-                    if plan.selected[candidate_idx] {
-                        selected_stash += 1;
-                    }
-                }
-                CircuitEvictionSource::Path { .. } => {
-                    if !plan.selected[candidate_idx] {
-                        unselected_path += 1;
-                    }
-                }
+        for slot in 0..self.params.stash_capacity {
+            let selected = ct::and(plan.candidates[slot].active, plan.selected[slot]);
+            selected_stash += selected.unwrap_u8() as usize;
+        }
+        for depth in 0..self.params.height() {
+            for slot_idx in 0..self.params.bucket_size {
+                let candidate_idx = plan.path_candidate_indices[depth][slot_idx];
+                let candidate = &plan.candidates[candidate_idx];
+                let reinsert = ct::and(candidate.active, ct::not(plan.selected[candidate_idx]));
+                unselected_path += reinsert.unwrap_u8() as usize;
             }
         }
 
@@ -1008,6 +1274,45 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
         Ok(())
     }
 
+    #[inline(never)]
+    fn insert_candidate_into_stash(
+        &mut self,
+        meta: CircuitMetaSlot,
+        payload: &[u8],
+        insert_choice: ct::Choice,
+    ) -> Result<()> {
+        if payload.len() != self.params.block_size {
+            return Err(Error::InvalidInput(format!(
+                "payload len {} != block_size {}",
+                payload.len(),
+                self.params.block_size
+            )));
+        }
+        let block = OramBlock {
+            occupied: true,
+            logical_id: meta.logical_id,
+            leaf: meta.leaf,
+            payload: payload.to_vec(),
+        };
+        let mut inserted = ct::not(insert_choice);
+        for slot in &mut self.stash {
+            let can_insert = ct::and(
+                ct::and(insert_choice, ct::not(inserted)),
+                ct::not(ct::choice_from_bool(slot.occupied)),
+            );
+            slot.cmov_from(&block, can_insert);
+            inserted = ct::or(inserted, can_insert);
+        }
+
+        if ct::not(inserted).unwrap_u8() == 1 {
+            return Err(Error::StashOverflow {
+                len: self.params.stash_capacity + 1,
+                capacity: self.params.stash_capacity,
+            });
+        }
+        Ok(())
+    }
+
     fn insert_into_stash(&mut self, block: OramBlock) -> Result<()> {
         let block_occupied = ct::choice_from_bool(block.occupied);
         let mut inserted = ct::not(block_occupied);
@@ -1020,7 +1325,7 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
             inserted = ct::or(inserted, can_insert);
         }
 
-        if inserted == 0 {
+        if ct::not(inserted).unwrap_u8() == 1 {
             return Err(Error::StashOverflow {
                 len: self.params.stash_capacity + 1,
                 capacity: self.params.stash_capacity,
@@ -1039,7 +1344,10 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
     }
 
     fn occupied_stash_len(&self) -> usize {
-        self.stash.iter().filter(|block| block.occupied).count()
+        self.stash
+            .iter()
+            .map(|block| ct::choice_from_bool(block.occupied).unwrap_u8() as usize)
+            .sum()
     }
 
     fn check_stash(&self) -> Result<()> {
@@ -1061,10 +1369,180 @@ impl<M: PageStore, P: PageStore> CircuitOram<M, P> {
     }
 }
 
+fn scan_pos_map_lookup(pos_map: &[u32], logical_id: u64) -> u32 {
+    let mut leaf = 0u32;
+    for (idx, &candidate_leaf) in pos_map.iter().enumerate() {
+        let matched = ct::eq_u64(idx as u64, logical_id);
+        ct::cmov_u32(&mut leaf, candidate_leaf, matched);
+    }
+    leaf
+}
+
+fn scan_pos_map_update(pos_map: &mut [u32], logical_id: u64, new_leaf: u32) {
+    for (idx, leaf) in pos_map.iter_mut().enumerate() {
+        let matched = ct::eq_u64(idx as u64, logical_id);
+        ct::cmov_u32(leaf, new_leaf, matched);
+    }
+}
+
+fn scan_pos_map_lookup_batch(pos_map: &[u32], logical_ids: &[u64]) -> Vec<u32> {
+    let mut leaves = vec![0u32; logical_ids.len()];
+    for (idx, &candidate_leaf) in pos_map.iter().enumerate() {
+        for (&logical_id, leaf) in logical_ids.iter().zip(&mut leaves) {
+            let matched = ct::eq_u64(idx as u64, logical_id);
+            ct::cmov_u32(leaf, candidate_leaf, matched);
+        }
+    }
+    leaves
+}
+
+fn scan_pos_map_update_batch(pos_map: &mut [u32], logical_ids: &[u64], new_leaves: &[u32]) {
+    debug_assert_eq!(logical_ids.len(), new_leaves.len());
+    for (idx, leaf) in pos_map.iter_mut().enumerate() {
+        for (&logical_id, &new_leaf) in logical_ids.iter().zip(new_leaves) {
+            let matched = ct::eq_u64(idx as u64, logical_id);
+            ct::cmov_u32(leaf, new_leaf, matched);
+        }
+    }
+}
+
+fn batch_access_leaves(logical_ids: &[u64], old_leaves: &[u32], new_leaves: &[u32]) -> Vec<u32> {
+    debug_assert_eq!(logical_ids.len(), old_leaves.len());
+    debug_assert_eq!(logical_ids.len(), new_leaves.len());
+
+    let mut access_leaves = old_leaves.to_vec();
+    for i in 0..logical_ids.len() {
+        for j in 0..i {
+            let repeated = ct::eq_u64(logical_ids[i], logical_ids[j]);
+            ct::cmov_u32(&mut access_leaves[i], new_leaves[j], repeated);
+        }
+    }
+    access_leaves
+}
+
+fn select_and_remove_target_slots(
+    meta_bucket: &mut CircuitMetaBucket,
+    payload_bucket: &mut CircuitPayloadBucket,
+    logical_id: u64,
+    block_size: usize,
+    selected: &mut OramBlock,
+    removed: &mut ct::Choice,
+) {
+    debug_assert_eq!(meta_bucket.slots.len(), payload_bucket.slots.len());
+    for (meta, payload) in meta_bucket.slots.iter_mut().zip(&mut payload_bucket.slots) {
+        debug_assert_eq!(payload.len(), block_size);
+        let matched = ct::and(meta.logical_id_choice(logical_id), ct::not(*removed));
+        cmov_block_from_meta_payload(selected, meta, payload, matched);
+        meta.clear_if(matched);
+        clear_payload_if(payload, matched);
+        *removed = ct::or(*removed, matched);
+    }
+}
+
+fn cmov_block_from_meta_payload(
+    block: &mut OramBlock,
+    meta: &CircuitMetaSlot,
+    payload: &[u8],
+    choice: ct::Choice,
+) {
+    debug_assert_eq!(block.payload.len(), payload.len());
+    let mut occupied = block.occupied as u8;
+    ct::cmov_u8(&mut occupied, meta.occupied as u8, choice);
+    block.occupied = occupied != 0;
+    ct::cmov_u64(&mut block.logical_id, meta.logical_id, choice);
+    ct::cmov_u32(&mut block.leaf, meta.leaf, choice);
+    ct::cmov_bytes(&mut block.payload, payload, choice);
+}
+
+#[inline(never)]
+fn clear_payload_if(payload: &mut [u8], choice: ct::Choice) {
+    let keep_mask = std::hint::black_box(!ct::mask8(choice));
+    for byte in payload {
+        // Keep this as volatile byte operations: LLVM otherwise recognizes the
+        // all-zero case and turns the loop into a branch to memset/bzero.
+        unsafe {
+            let current = std::ptr::read_volatile(byte);
+            std::ptr::write_volatile(byte, current & keep_mask);
+        }
+    }
+}
+
+fn overlay_path_pages(
+    paths: &[Vec<usize>],
+    path_pages: Vec<Vec<Vec<u8>>>,
+    page_size: usize,
+) -> Result<BTreeMap<usize, Vec<u8>>> {
+    if paths.len() != path_pages.len() {
+        return Err(Error::InvalidInput(format!(
+            "path count {} != page-path count {}",
+            paths.len(),
+            path_pages.len()
+        )));
+    }
+    // The overlay map is keyed only by public ORAM page indices. Insertion
+    // order follows public batch/path/depth order returned by the store layer;
+    // secret block metadata is opaque page bytes and never chooses a key.
+    let mut overlay = BTreeMap::new();
+    for (path, pages) in paths.iter().zip(path_pages) {
+        if path.len() != pages.len() {
+            return Err(Error::InvalidInput(format!(
+                "path length {} != page count {}",
+                path.len(),
+                pages.len()
+            )));
+        }
+        for (page_idx, page) in path.iter().zip(pages) {
+            if page.len() != page_size {
+                return Err(Error::InvalidInput(format!(
+                    "path page len {} != page_size {}",
+                    page.len(),
+                    page_size
+                )));
+            }
+            if let Some(existing) = overlay.get(page_idx) {
+                if existing != &page {
+                    return Err(Error::InvalidInput(format!(
+                        "batch read returned inconsistent bytes for page {}",
+                        page_idx
+                    )));
+                }
+            } else {
+                overlay.insert(*page_idx, page);
+            }
+        }
+    }
+    Ok(overlay)
+}
+
+fn collect_overlay_paths(
+    paths: &[Vec<usize>],
+    overlay: &BTreeMap<usize, Vec<u8>>,
+) -> Result<Vec<Vec<Vec<u8>>>> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let mut pages = Vec::with_capacity(path.len());
+        for page_idx in path {
+            pages.push(
+                overlay
+                    .get(page_idx)
+                    .ok_or_else(|| {
+                        Error::InvalidInput(format!(
+                            "batch overlay missing requested page {}",
+                            page_idx
+                        ))
+                    })?
+                    .clone(),
+            );
+        }
+        out.push(pages);
+    }
+    Ok(out)
+}
+
 fn validate_circuit_stores(
     params: &OramParams,
-    meta_store: &impl PageStore,
-    payload_store: &impl PageStore,
+    meta_store: &impl PathPageStore,
+    payload_store: &impl PathPageStore,
 ) -> Result<()> {
     if meta_store.page_count() != params.bucket_count() {
         return Err(Error::InvalidInput(format!(
@@ -1154,6 +1632,43 @@ fn validate_circuit_state(
     Ok(())
 }
 
+fn store_auth_state_from_stores<M: PathPageStore, P: PathPageStore>(
+    meta_store: &M,
+    payload_store: &P,
+) -> Option<CircuitStoreAuthState> {
+    match (
+        meta_store.tiered_merkle_state(),
+        payload_store.tiered_merkle_state(),
+    ) {
+        (Some(meta), Some(payload)) => Some(CircuitStoreAuthState::new(meta, payload)),
+        _ => Some(CircuitStoreAuthState::new_embedded(
+            meta_store.embedded_tree_state()?,
+            payload_store.embedded_tree_state()?,
+        )),
+    }
+}
+
+fn validate_bound_auth_state<M: PathPageStore, P: PathPageStore>(
+    expected: Option<&CircuitStoreAuthState>,
+    meta_store: &M,
+    payload_store: &P,
+) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = store_auth_state_from_stores(meta_store, payload_store).ok_or_else(|| {
+        Error::InvalidInput(
+            "Circuit ORAM state is bound to auth roots but stores expose no auth state".into(),
+        )
+    })?;
+    if &actual != expected {
+        return Err(Error::InvalidInput(
+            "Circuit ORAM auth roots do not match controller state".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn place_initial_meta(
     params: &OramParams,
     meta_buckets: &mut [CircuitMetaBucket],
@@ -1238,13 +1753,18 @@ fn read_source_block<S: TrustedBlockSource>(
 }
 
 fn random_leaf(params: &OramParams, rng: &mut (impl RngCore + CryptoRng)) -> u32 {
-    (rng.next_u64() as usize % params.leaves) as u32
+    debug_assert!(params.leaves.is_power_of_two());
+    (rng.next_u64() as usize & (params.leaves - 1)) as u32
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{store::TraceEvent, MemPageStore, TracingStore};
+    use crate::{
+        store::TraceEvent, CircuitStoreAuthLayout, EmbeddedTreePageStore, MemPageStore, PageStore,
+        TracingStore,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn blocks(n: usize, block_size: usize) -> Vec<Vec<u8>> {
         (0..n)
@@ -1263,6 +1783,211 @@ mod tests {
             .unwrap()
             .with_stash_capacity(128)
             .unwrap()
+    }
+
+    fn empty_circuit_oram(params: OramParams) -> CircuitOram<MemPageStore, MemPageStore> {
+        let meta_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        CircuitOram {
+            pos_map: vec![0; params.logical_blocks],
+            stash: vec![OramBlock::dummy(params.block_size); params.stash_capacity],
+            rng: ChaCha20Rng::from_seed([44; 32]),
+            schedule: CircuitEvictionSchedule::new(&params),
+            params,
+            meta_store,
+            payload_store,
+        }
+    }
+
+    fn test_payload(params: &OramParams, logical_id: u64) -> Vec<u8> {
+        let mut payload = vec![logical_id as u8; params.block_size];
+        payload[..8].copy_from_slice(&logical_id.to_le_bytes());
+        payload
+    }
+
+    fn seal_embedded_store(
+        mut logical_store: MemPageStore,
+        logical_page_size: usize,
+        store_id: [u8; 16],
+    ) -> EmbeddedTreePageStore<TracingStore<MemPageStore>> {
+        let physical_page_size =
+            EmbeddedTreePageStore::<MemPageStore>::physical_page_size_for(logical_page_size);
+        let page_count = PageStore::page_count(&logical_store);
+        let mut physical_store = MemPageStore::new(page_count, physical_page_size).unwrap();
+        let mut logical = vec![0u8; logical_page_size];
+        let mut physical = vec![0u8; physical_page_size];
+        for page_idx in 0..page_count {
+            logical_store.read_page(page_idx, &mut logical).unwrap();
+            physical.fill(0);
+            physical[..logical_page_size].copy_from_slice(&logical);
+            physical_store.write_page(page_idx, &physical).unwrap();
+        }
+        EmbeddedTreePageStore::build(
+            TracingStore::new(physical_store),
+            store_id,
+            logical_page_size,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn position_map_batch_scan_matches_many_queries() {
+        let mut pos_map = vec![70, 31, 90, 42, 63, 12];
+
+        let leaves = scan_pos_map_lookup_batch(&pos_map, &[3, 0, 4]);
+        assert_eq!(leaves, vec![42, 70, 63]);
+
+        scan_pos_map_update_batch(&mut pos_map, &[3, 0, 4], &[420, 700, 630]);
+        assert_eq!(pos_map, vec![700, 31, 90, 420, 630, 12]);
+
+        assert_eq!(scan_pos_map_lookup(&pos_map, 4), 630);
+        scan_pos_map_update(&mut pos_map, 1, 310);
+        assert_eq!(pos_map, vec![700, 310, 90, 420, 630, 12]);
+
+        let access_leaves =
+            batch_access_leaves(&[2, 4, 2, 2], &[20, 40, 20, 20], &[21, 41, 22, 23]);
+        assert_eq!(access_leaves, vec![20, 40, 21, 22]);
+    }
+
+    #[test]
+    fn greedy_eviction_plan_places_candidates_once_on_valid_buckets() {
+        let params = params(8);
+        let mut oram = empty_circuit_oram(params.clone());
+        oram.stash[0] =
+            OramBlock::real(10, 0, test_payload(&params, 10), params.block_size).unwrap();
+        oram.stash[1] =
+            OramBlock::real(11, 0, test_payload(&params, 11), params.block_size).unwrap();
+        oram.stash[2] =
+            OramBlock::real(12, 1, test_payload(&params, 12), params.block_size).unwrap();
+
+        let path = params.path_nodes(0);
+        let mut path_meta = vec![CircuitMetaBucket::dummy(params.bucket_size); params.height()];
+        path_meta[0].slots[0] = CircuitMetaSlot::real(13, 7);
+        path_meta[1].slots[0] = CircuitMetaSlot::real(14, 2);
+        path_meta[3].slots[0] = CircuitMetaSlot::real(15, 0);
+
+        let plan = oram.plan_eviction_placements(&path, &path_meta).unwrap();
+
+        let candidate_idx = |logical_id| {
+            plan.candidates
+                .iter()
+                .position(|candidate| candidate.meta.logical_id == logical_id)
+                .expect("candidate exists")
+        };
+        let assert_real = |placement: CircuitEvictionPlacement, candidate_idx| {
+            assert_eq!(placement.occupied.unwrap_u8(), 1);
+            assert_eq!(placement.candidate_idx, candidate_idx);
+        };
+        let assert_dummy = |placement: CircuitEvictionPlacement| {
+            assert_eq!(placement.occupied.unwrap_u8(), 0);
+        };
+        assert_real(plan.placements[3][0], candidate_idx(10));
+        assert_real(plan.placements[3][1], candidate_idx(11));
+        assert_real(plan.placements[2][0], candidate_idx(12));
+        assert_real(plan.placements[2][1], candidate_idx(15));
+        assert_real(plan.placements[1][0], candidate_idx(14));
+        assert_dummy(plan.placements[1][1]);
+        assert_real(plan.placements[0][0], candidate_idx(13));
+        assert_dummy(plan.placements[0][1]);
+
+        let mut seen = vec![0usize; plan.candidates.len()];
+        for (depth, placements) in plan.placements.iter().enumerate() {
+            for placement in placements {
+                if placement.occupied.unwrap_u8() == 1 {
+                    let candidate_idx = placement.candidate_idx;
+                    let candidate = &plan.candidates[candidate_idx];
+                    assert_eq!(plan.selected[candidate_idx].unwrap_u8(), 1);
+                    assert!(params.node_contains_leaf(depth, path[depth], candidate.meta.leaf));
+                    seen[candidate_idx] += 1;
+                }
+            }
+        }
+        for (candidate_idx, selected) in plan.selected.iter().enumerate() {
+            assert_eq!(seen[candidate_idx], selected.unwrap_u8() as usize);
+        }
+    }
+
+    #[test]
+    fn greedy_eviction_apply_preserves_payloads_and_moves_overflow_to_stash() {
+        let params = params(8);
+        let mut oram = empty_circuit_oram(params.clone());
+        oram.stash[0] =
+            OramBlock::real(20, 5, test_payload(&params, 20), params.block_size).unwrap();
+        oram.stash[1] =
+            OramBlock::real(24, 0, test_payload(&params, 24), params.block_size).unwrap();
+
+        let path = params.path_nodes(0);
+        let mut path_meta = vec![CircuitMetaBucket::dummy(params.bucket_size); params.height()];
+        let mut path_payload =
+            vec![
+                CircuitPayloadBucket::dummy(params.bucket_size, params.block_size);
+                params.height()
+            ];
+        path_meta[0].slots[0] = CircuitMetaSlot::real(21, 6);
+        path_payload[0].slots[0] = test_payload(&params, 21);
+        path_meta[0].slots[1] = CircuitMetaSlot::real(22, 7);
+        path_payload[0].slots[1] = test_payload(&params, 22);
+        path_meta[3].slots[0] = CircuitMetaSlot::real(23, 0);
+        path_payload[3].slots[0] = test_payload(&params, 23);
+
+        let mut meta_overlay = BTreeMap::new();
+        let mut payload_overlay = BTreeMap::new();
+        for (depth, &page_idx) in path.iter().enumerate() {
+            meta_overlay.insert(
+                page_idx,
+                path_meta[depth].encode(params.bucket_size).unwrap(),
+            );
+            payload_overlay.insert(
+                page_idx,
+                path_payload[depth]
+                    .encode(params.bucket_size, params.block_size)
+                    .unwrap(),
+            );
+        }
+
+        oram.evict_path_in_overlays(&path, &mut meta_overlay, &mut payload_overlay)
+            .unwrap();
+
+        let stash_ids = oram
+            .stash
+            .iter()
+            .filter(|block| block.occupied)
+            .map(|block| block.logical_id)
+            .collect::<Vec<_>>();
+        assert_eq!(stash_ids, vec![22]);
+        assert_eq!(oram.stash[0].payload, test_payload(&params, 22));
+
+        let mut path_ids = Vec::new();
+        for (depth, page_idx) in path.iter().enumerate() {
+            let meta_bucket =
+                CircuitMetaBucket::decode(&meta_overlay[page_idx], params.bucket_size).unwrap();
+            let payload_bucket = CircuitPayloadBucket::decode(
+                &payload_overlay[page_idx],
+                params.bucket_size,
+                params.block_size,
+            )
+            .unwrap();
+            for (slot_idx, meta) in meta_bucket.slots.iter().enumerate() {
+                if meta.occupied {
+                    assert!(params.node_contains_leaf(depth, path[depth], meta.leaf));
+                    assert_eq!(
+                        payload_bucket.slots[slot_idx],
+                        test_payload(&params, meta.logical_id)
+                    );
+                    path_ids.push(meta.logical_id);
+                }
+            }
+        }
+        path_ids.sort_unstable();
+        assert_eq!(path_ids, vec![20, 21, 23, 24]);
     }
 
     #[test]
@@ -1445,6 +2170,307 @@ mod tests {
     }
 
     #[test]
+    fn split_store_runtime_accepts_embedded_tree_path_stores() {
+        let params = params(16);
+        let meta_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let oram = CircuitOram::build_trusted(
+            params.clone(),
+            meta_store,
+            payload_store,
+            blocks(16, 32),
+            [31; 32],
+        )
+        .unwrap();
+        let state = oram.snapshot();
+        let (meta_store, payload_store) = oram.into_stores();
+        let embedded_meta = seal_embedded_store(
+            meta_store,
+            circuit_meta_page_bytes(params.bucket_size),
+            *b"circ-meta-embed!",
+        );
+        let embedded_payload = seal_embedded_store(
+            payload_store,
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+            *b"circ-data-embed!",
+        );
+
+        embedded_meta.inner().take_trace();
+        embedded_payload.inner().take_trace();
+        let mut reopened = CircuitOram::from_state(embedded_meta, embedded_payload, state).unwrap();
+
+        let payload = reopened.read(3).unwrap();
+        assert_eq!(u64::from_le_bytes(payload[..8].try_into().unwrap()), 3);
+        let meta_access = reopened.meta_store.inner().take_trace();
+        let payload_access = reopened.payload_store.inner().take_trace();
+        assert_eq!(meta_access.len(), params.height() * 2);
+        assert_eq!(payload_access.len(), params.height() * 2);
+        assert!(meta_access[..params.height()]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Read(_))));
+        assert!(meta_access[params.height()..]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Write(_))));
+        assert!(payload_access[..params.height()]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Read(_))));
+        assert!(payload_access[params.height()..]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Write(_))));
+
+        assert_eq!(reopened.drain_evictions(1).unwrap(), 1);
+    }
+
+    #[test]
+    fn split_store_state_rejects_mismatched_auth_roots() {
+        let params = params(16);
+        let meta_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let oram = CircuitOram::build_trusted(
+            params.clone(),
+            meta_store,
+            payload_store,
+            blocks(16, 32),
+            [34; 32],
+        )
+        .unwrap();
+        let state = oram.snapshot();
+        let (meta_store, payload_store) = oram.into_stores();
+        let embedded_meta = seal_embedded_store(
+            meta_store,
+            circuit_meta_page_bytes(params.bucket_size),
+            *b"circ-meta-bind!!",
+        );
+        let embedded_payload = seal_embedded_store(
+            payload_store,
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+            *b"circ-data-bind!!",
+        );
+
+        let reopened = CircuitOram::from_state(embedded_meta, embedded_payload, state).unwrap();
+        let mut bad_state = reopened.snapshot();
+        match &mut bad_state
+            .auth
+            .as_mut()
+            .expect("embedded stores bind auth state")
+            .layout
+        {
+            CircuitStoreAuthLayout::EmbeddedTree { meta, .. } => meta.root_hash[0] ^= 1,
+            CircuitStoreAuthLayout::TieredMerkle { meta, .. } => meta.trusted_hashes[0][0] ^= 1,
+        }
+        let (meta_store, payload_store) = reopened.into_stores();
+
+        let err = CircuitOram::from_state(meta_store, payload_store, bad_state)
+            .expect_err("mismatched auth roots must be rejected");
+        assert!(format!("{err}").contains("auth roots do not match"));
+    }
+
+    #[test]
+    fn split_store_batch_read_uses_embedded_tree_batch_paths() {
+        let params = params(16);
+        let meta_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let oram = CircuitOram::build_trusted(
+            params.clone(),
+            meta_store,
+            payload_store,
+            blocks(16, 32),
+            [32; 32],
+        )
+        .unwrap();
+        let state = oram.snapshot();
+        let requested = [3u64, 7u64];
+        let paths = requested
+            .iter()
+            .map(|logical_id| params.path_nodes(state.pos_map[*logical_id as usize]))
+            .collect::<Vec<_>>();
+        let expected_unique = paths
+            .iter()
+            .flat_map(|path| path.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let (meta_store, payload_store) = oram.into_stores();
+        let embedded_meta = seal_embedded_store(
+            meta_store,
+            circuit_meta_page_bytes(params.bucket_size),
+            *b"circ-meta-batch!",
+        );
+        let embedded_payload = seal_embedded_store(
+            payload_store,
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+            *b"circ-data-batch!",
+        );
+
+        embedded_meta.inner().take_trace();
+        embedded_payload.inner().take_trace();
+        let mut reopened = CircuitOram::from_state(embedded_meta, embedded_payload, state).unwrap();
+
+        let outputs = reopened.read_batch(&requested).unwrap();
+        assert_eq!(outputs.len(), requested.len());
+        for (output, logical_id) in outputs.iter().zip(requested) {
+            assert_eq!(
+                u64::from_le_bytes(output[..8].try_into().unwrap()),
+                logical_id
+            );
+        }
+
+        let meta_access = reopened.meta_store.inner().take_trace();
+        let payload_access = reopened.payload_store.inner().take_trace();
+        let expected_reads = expected_unique
+            .iter()
+            .copied()
+            .map(TraceEvent::Read)
+            .collect::<Vec<_>>();
+        let expected_writes = expected_unique
+            .iter()
+            .copied()
+            .map(TraceEvent::Write)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            meta_access,
+            [expected_reads.as_slice(), expected_writes.as_slice()].concat()
+        );
+        assert_eq!(
+            payload_access,
+            [expected_reads.as_slice(), expected_writes.as_slice()].concat()
+        );
+        assert_eq!(
+            reopened.pending_evictions().unwrap(),
+            requested.len() as u64 * 2
+        );
+
+        reopened.meta_store.inner().take_trace();
+        reopened.payload_store.inner().take_trace();
+        let eviction_paths = (0..4)
+            .map(|idx| params.path_nodes(CircuitEvictionSchedule::eviction_leaf_at(&params, idx)))
+            .collect::<Vec<_>>();
+        let expected_unique = eviction_paths
+            .iter()
+            .flat_map(|path| path.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(reopened.drain_evictions(4).unwrap(), 4);
+        let meta_evict = reopened.meta_store.inner().take_trace();
+        let payload_evict = reopened.payload_store.inner().take_trace();
+        let expected_reads = expected_unique
+            .iter()
+            .copied()
+            .map(TraceEvent::Read)
+            .collect::<Vec<_>>();
+        let expected_writes = expected_unique
+            .iter()
+            .copied()
+            .map(TraceEvent::Write)
+            .collect::<Vec<_>>();
+        let expected_evict = [expected_reads.as_slice(), expected_writes.as_slice()].concat();
+        assert_eq!(meta_evict, expected_evict);
+        assert_eq!(payload_evict, expected_evict);
+        assert_eq!(reopened.pending_evictions().unwrap(), 0);
+    }
+
+    #[test]
+    fn split_store_batch_dummy_uses_embedded_tree_batch_paths() {
+        let params = params(16);
+        let meta_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = MemPageStore::new(
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let oram = CircuitOram::build_trusted(
+            params.clone(),
+            meta_store,
+            payload_store,
+            blocks(16, 32),
+            [33; 32],
+        )
+        .unwrap();
+        let state = oram.snapshot();
+        let mut rng = state.rng.clone();
+        let count = 3usize;
+        let paths = (0..count)
+            .map(|_| params.path_nodes(random_leaf(&params, &mut rng)))
+            .collect::<Vec<_>>();
+        let expected_unique = paths
+            .iter()
+            .flat_map(|path| path.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let pos_map_before = state.pos_map.clone();
+
+        let (meta_store, payload_store) = oram.into_stores();
+        let embedded_meta = seal_embedded_store(
+            meta_store,
+            circuit_meta_page_bytes(params.bucket_size),
+            *b"circ-meta-dummy!",
+        );
+        let embedded_payload = seal_embedded_store(
+            payload_store,
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+            *b"circ-data-dummy!",
+        );
+
+        embedded_meta.inner().take_trace();
+        embedded_payload.inner().take_trace();
+        let mut reopened = CircuitOram::from_state(embedded_meta, embedded_payload, state).unwrap();
+
+        reopened.dummy_access_batch(count).unwrap();
+        assert_eq!(reopened.position_map(), pos_map_before.as_slice());
+        assert_eq!(
+            reopened.pending_evictions().unwrap(),
+            count as u64 * CircuitEvictionSchedule::DEFAULT_EVICTIONS_PER_ACCESS
+        );
+
+        let meta_access = reopened.meta_store.inner().take_trace();
+        let payload_access = reopened.payload_store.inner().take_trace();
+        let expected_reads = expected_unique
+            .iter()
+            .copied()
+            .map(TraceEvent::Read)
+            .collect::<Vec<_>>();
+        let expected_writes = expected_unique
+            .iter()
+            .copied()
+            .map(TraceEvent::Write)
+            .collect::<Vec<_>>();
+        let expected = [expected_reads.as_slice(), expected_writes.as_slice()].concat();
+        assert_eq!(meta_access, expected);
+        assert_eq!(payload_access, expected);
+    }
+
+    #[test]
     fn split_store_access_adds_deferred_eviction_debt() {
         let params = OramParams::with_leaves(32, 16, 32)
             .unwrap()
@@ -1552,22 +2578,28 @@ mod tests {
         let payload_access = oram.payload_store.take_trace();
         assert_eq!(meta_access.len(), params.height() * 2);
         assert_eq!(payload_access.len(), params.height() * 2);
-        assert!(meta_access
-            .chunks_exact(2)
-            .all(|chunk| matches!(chunk, [TraceEvent::Read(_), TraceEvent::Write(_)])));
-        assert!(payload_access
-            .chunks_exact(2)
-            .all(|chunk| matches!(chunk, [TraceEvent::Read(_), TraceEvent::Write(_)])));
+        assert!(meta_access[..params.height()]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Read(_))));
+        assert!(meta_access[params.height()..]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Write(_))));
+        assert!(payload_access[..params.height()]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Read(_))));
+        assert!(payload_access[params.height()..]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Write(_))));
 
         oram.drain_evictions(1).unwrap();
         let meta_evict = oram.meta_store.take_trace();
         let payload_evict = oram.payload_store.take_trace();
-        assert_eq!(meta_evict.len(), params.height() * 3);
+        assert_eq!(meta_evict.len(), params.height() * 2);
         assert_eq!(payload_evict.len(), params.height() * 2);
-        assert!(meta_evict[..params.height() * 2]
+        assert!(meta_evict[..params.height()]
             .iter()
             .all(|event| matches!(event, TraceEvent::Read(_))));
-        assert!(meta_evict[params.height() * 2..]
+        assert!(meta_evict[params.height()..]
             .iter()
             .all(|event| matches!(event, TraceEvent::Write(_))));
         assert!(payload_evict[..params.height()]
@@ -1589,11 +2621,17 @@ mod tests {
         let payload_dummy = oram.payload_store.take_trace();
         assert_eq!(meta_dummy.len(), params.height() * 2);
         assert_eq!(payload_dummy.len(), params.height() * 2);
-        assert!(meta_dummy
-            .chunks_exact(2)
-            .all(|chunk| matches!(chunk, [TraceEvent::Read(_), TraceEvent::Write(_)])));
-        assert!(payload_dummy
-            .chunks_exact(2)
-            .all(|chunk| matches!(chunk, [TraceEvent::Read(_), TraceEvent::Write(_)])));
+        assert!(meta_dummy[..params.height()]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Read(_))));
+        assert!(meta_dummy[params.height()..]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Write(_))));
+        assert!(payload_dummy[..params.height()]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Read(_))));
+        assert!(payload_dummy[params.height()..]
+            .iter()
+            .all(|event| matches!(event, TraceEvent::Write(_))));
     }
 }

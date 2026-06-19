@@ -50,9 +50,10 @@ use onionpir::{self, KeyStore, Server as PirServer};
 use bitcoinpir_oram::{
     circuit_meta_page_bytes, circuit_payload_page_bytes, AeadPageStore, CircuitCuckooBinReader,
     CircuitDirectChunkReader, CircuitDirectIndexReader, CircuitOram, CircuitOramState,
-    CircuitStoreAuthState, CuckooLevel, CuckooTableInfo, DirectLevel, DirectTableMetadata,
-    FilePageStore, FrontCachedPageStore, OramParams, PageStore, TieredMerklePageStore,
-    TieredMerkleState, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE,
+    CircuitStoreAuthLayout, CircuitStoreAuthState, CuckooLevel, CuckooTableInfo, DirectLevel,
+    DirectTableMetadata, EmbeddedTreePageStore, FilePageStore, FrontCachedPageStore, OramParams,
+    PageStore, PathPageStore, Result as OramResult, TieredMerklePageStore, TieredMerkleState,
+    AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 
 #[cfg(all(feature = "cuckoo-oram", test))]
@@ -906,7 +907,92 @@ impl CuckooTableAccess for MmapCuckooTable<'_> {
 }
 
 #[cfg(feature = "cuckoo-oram")]
-type CuckooOramStore = Box<dyn PageStore + Send>;
+type CuckooRawPageStore = Box<dyn PageStore + Send>;
+
+#[cfg(feature = "cuckoo-oram")]
+enum CuckooOramStore {
+    Plain(CuckooRawPageStore),
+    Sidecar(TieredMerklePageStore<CuckooRawPageStore, CuckooRawPageStore>),
+    Embedded(EmbeddedTreePageStore<CuckooRawPageStore>),
+}
+
+#[cfg(feature = "cuckoo-oram")]
+impl PathPageStore for CuckooOramStore {
+    fn page_size(&self) -> usize {
+        match self {
+            Self::Plain(store) => PageStore::page_size(&**store),
+            Self::Sidecar(store) => PageStore::page_size(store),
+            Self::Embedded(store) => PathPageStore::page_size(store),
+        }
+    }
+
+    fn page_count(&self) -> usize {
+        match self {
+            Self::Plain(store) => PageStore::page_count(&**store),
+            Self::Sidecar(store) => PageStore::page_count(store),
+            Self::Embedded(store) => PathPageStore::page_count(store),
+        }
+    }
+
+    fn read_path_pages(&mut self, path: &[usize]) -> OramResult<Vec<Vec<u8>>> {
+        match self {
+            Self::Plain(store) => PageStore::read_pages(&mut **store, path),
+            Self::Sidecar(store) => PathPageStore::read_path_pages(store, path),
+            Self::Embedded(store) => store.read_path_pages(path),
+        }
+    }
+
+    fn write_path_pages(&mut self, path: &[usize], pages: &[Vec<u8>]) -> OramResult<()> {
+        match self {
+            Self::Plain(store) => PageStore::write_pages(&mut **store, path, pages),
+            Self::Sidecar(store) => PathPageStore::write_path_pages(store, path, pages),
+            Self::Embedded(store) => store.write_path_pages(path, pages),
+        }
+    }
+
+    fn read_paths_pages(&mut self, paths: &[Vec<usize>]) -> OramResult<Vec<Vec<Vec<u8>>>> {
+        match self {
+            Self::Plain(store) => PathPageStore::read_paths_pages(&mut **store, paths),
+            Self::Sidecar(store) => PathPageStore::read_paths_pages(store, paths),
+            Self::Embedded(store) => PathPageStore::read_paths_pages(store, paths),
+        }
+    }
+
+    fn write_paths_pages(
+        &mut self,
+        paths: &[Vec<usize>],
+        pages: &[Vec<Vec<u8>>],
+    ) -> OramResult<()> {
+        match self {
+            Self::Plain(store) => PathPageStore::write_paths_pages(&mut **store, paths, pages),
+            Self::Sidecar(store) => PathPageStore::write_paths_pages(store, paths, pages),
+            Self::Embedded(store) => PathPageStore::write_paths_pages(store, paths, pages),
+        }
+    }
+
+    fn flush(&mut self) -> OramResult<()> {
+        match self {
+            Self::Plain(store) => PageStore::flush(&mut **store),
+            Self::Sidecar(store) => PageStore::flush(store),
+            Self::Embedded(store) => PathPageStore::flush(store),
+        }
+    }
+
+    fn tiered_merkle_state(&self) -> Option<TieredMerkleState> {
+        match self {
+            Self::Plain(store) => PageStore::tiered_merkle_state(&**store),
+            Self::Sidecar(store) => Some(store.trusted_state()),
+            Self::Embedded(_) => None,
+        }
+    }
+
+    fn embedded_tree_state(&self) -> Option<bitcoinpir_oram::EmbeddedTreeState> {
+        match self {
+            Self::Embedded(store) => Some(store.state()),
+            Self::Plain(_) | Self::Sidecar(_) => None,
+        }
+    }
+}
 
 #[cfg(feature = "cuckoo-oram")]
 type CuckooOramBinReader = CircuitCuckooBinReader<CuckooOramStore, CuckooOramStore>;
@@ -956,6 +1042,7 @@ impl CuckooOramTable {
             }
             None => CircuitOramState::load(&paths.state).map_err(|e| e.to_string())?,
         };
+        let bound_auth = loaded.auth.clone();
         let params = loaded.params.clone();
         let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
         let (meta_store, payload_store) = open_existing_circuit_oram_stores(
@@ -966,6 +1053,7 @@ impl CuckooOramTable {
             key_hex,
             cached_pages,
             auth_store,
+            bound_auth.as_ref(),
             state_key,
         )?;
         let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
@@ -1338,6 +1426,7 @@ impl DirectOramIndexTable {
         }
         let state_key = parse_optional_32_hex(state_key_hex)?;
         let loaded = load_circuit_oram_state(&paths.state, state_key)?;
+        let bound_auth = loaded.auth.clone();
         let params = loaded.params.clone();
         let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
         let (meta_store, payload_store) = open_existing_direct_oram_stores(
@@ -1348,6 +1437,7 @@ impl DirectOramIndexTable {
             key_hex,
             cached_pages,
             auth_store,
+            bound_auth.as_ref(),
             state_key,
         )?;
         let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
@@ -1380,38 +1470,24 @@ impl DirectOramIndexTable {
         })
     }
 
-    fn lookup(
+    fn lookup_many(
         &self,
-        script_hash: [u8; pir_core::params::SCRIPT_HASH_SIZE],
-    ) -> Result<bitcoinpir_oram::DirectIndexLookup, String> {
-        self.check_not_poisoned()?;
-        let mut reader = self
-            .reader
-            .lock()
-            .map_err(|_| "Direct ORAM index reader mutex poisoned".to_string())?;
-        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
-        match reader.lookup(script_hash, self.drain_per_access) {
-            Ok(got) => Ok(got),
-            Err(e) => {
-                let msg = format!("Direct ORAM index lookup failed after mutation: {}", e);
-                self.poison(msg.clone());
-                Err(msg)
-            }
+        script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+    ) -> Result<Vec<bitcoinpir_oram::DirectIndexLookup>, String> {
+        if script_hashes.is_empty() {
+            return Ok(Vec::new());
         }
-    }
-
-    fn lookup_dummy(&self) -> Result<(), String> {
         self.check_not_poisoned()?;
         let mut reader = self
             .reader
             .lock()
             .map_err(|_| "Direct ORAM index reader mutex poisoned".to_string())?;
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
-        match reader.lookup_dummy(self.drain_per_access) {
-            Ok(_) => Ok(()),
+        match reader.lookup_many_batched(script_hashes, self.drain_per_access) {
+            Ok(got) => Ok(got.lookups),
             Err(e) => {
                 let msg = format!(
-                    "Direct ORAM index dummy lookup failed after mutation: {}",
+                    "Direct ORAM index batch lookup failed after mutation: {}",
                     e
                 );
                 self.poison(msg.clone());
@@ -1479,6 +1555,7 @@ impl DirectOramChunkTable {
         }
         let state_key = parse_optional_32_hex(state_key_hex)?;
         let loaded = load_circuit_oram_state(&paths.state, state_key)?;
+        let bound_auth = loaded.auth.clone();
         let params = loaded.params.clone();
         let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
         let (meta_store, payload_store) = open_existing_direct_oram_stores(
@@ -1489,6 +1566,7 @@ impl DirectOramChunkTable {
             key_hex,
             cached_pages,
             auth_store,
+            bound_auth.as_ref(),
             state_key,
         )?;
         let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
@@ -1520,38 +1598,46 @@ impl DirectOramChunkTable {
         })
     }
 
-    fn read_chunk(&self, chunk_id: usize) -> Result<Vec<u8>, String> {
+    fn read_chunks(&self, chunk_ids: &[usize]) -> Result<Vec<Vec<u8>>, String> {
+        if chunk_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         self.check_not_poisoned()?;
         let mut reader = self
             .reader
             .lock()
             .map_err(|_| "Direct ORAM chunk reader mutex poisoned".to_string())?;
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
-        let got = match reader.read_chunk(chunk_id, self.drain_per_access) {
+        let got = match reader.read_chunks(chunk_ids, self.drain_per_access) {
             Ok(got) => got,
             Err(e) => {
-                let msg = format!(
-                    "Direct ORAM chunk {} read failed after mutation: {}",
-                    chunk_id, e
-                );
+                let msg = format!("Direct ORAM chunk batch read failed after mutation: {}", e);
                 self.poison(msg.clone());
                 return Err(msg);
             }
         };
-        if got.payload.len() != DIRECT_CHUNK_RECORD_SIZE {
-            let msg = format!(
-                "Direct ORAM chunk {} returned {} bytes, expected {}",
-                chunk_id,
-                got.payload.len(),
-                DIRECT_CHUNK_RECORD_SIZE
-            );
-            self.poison(msg.clone());
-            return Err(msg);
+
+        let mut payloads = Vec::with_capacity(got.reads.len());
+        for read in got.reads {
+            if read.payload.len() != DIRECT_CHUNK_RECORD_SIZE {
+                let msg = format!(
+                    "Direct ORAM chunk {} returned {} bytes, expected {}",
+                    read.chunk_id,
+                    read.payload.len(),
+                    DIRECT_CHUNK_RECORD_SIZE
+                );
+                self.poison(msg.clone());
+                return Err(msg);
+            }
+            payloads.push(read.payload);
         }
-        Ok(got.payload)
+        Ok(payloads)
     }
 
-    fn read_dummy(&self) -> Result<(), String> {
+    fn read_dummy_many(&self, count: usize) -> Result<(), String> {
+        if count == 0 {
+            return Ok(());
+        }
         if self.total_chunks == 0 {
             return Err("direct ORAM chunk table is empty; cannot issue dummy read".into());
         }
@@ -1561,10 +1647,13 @@ impl DirectOramChunkTable {
             .lock()
             .map_err(|_| "Direct ORAM chunk reader mutex poisoned".to_string())?;
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
-        match reader.read_dummy(self.drain_per_access) {
+        match reader.read_dummy_many(count, self.drain_per_access) {
             Ok(_) => Ok(()),
             Err(e) => {
-                let msg = format!("Direct ORAM chunk dummy read failed after mutation: {}", e);
+                let msg = format!(
+                    "Direct ORAM chunk dummy batch read failed after mutation: {}",
+                    e
+                );
                 self.poison(msg.clone());
                 Err(msg)
             }
@@ -1783,31 +1872,31 @@ fn direct_native_lookup_slots(
     }
     let chunk_budget = tables.access_budget - index_budget;
 
-    let mut lookups = Vec::with_capacity(script_hashes.len());
-    for (&script_hash, &present) in script_hashes.iter().zip(slot_present.iter()) {
-        if present {
-            match tables.index.lookup(script_hash) {
-                Ok(lookup) => lookups.push(Some(lookup)),
-                Err(e) => {
-                    tables.index.abort_request(&e);
-                    tables.chunk.abort_request(&e);
-                    return Err(e);
-                }
+    let lookups = match tables.index.lookup_many(script_hashes) {
+        Ok(batch) => {
+            if batch.len() != script_hashes.len() {
+                let msg = format!(
+                    "direct ORAM index batch returned {} lookup(s), expected {}",
+                    batch.len(),
+                    script_hashes.len()
+                );
+                tables.index.abort_request(&msg);
+                tables.chunk.abort_request(&msg);
+                return Err(msg);
             }
-        } else {
-            if let Err(e) = tables.index.lookup_dummy() {
-                tables.index.abort_request(&e);
-                tables.chunk.abort_request(&e);
-                return Err(e);
-            }
-            lookups.push(None);
+            batch
         }
-    }
+        Err(e) => {
+            tables.index.abort_request(&e);
+            tables.chunk.abort_request(&e);
+            return Err(e);
+        }
+    };
 
     let mut chunk_plan: Vec<(usize, u32)> = Vec::new();
     let mut out = Vec::with_capacity(lookups.len());
-    for lookup in &lookups {
-        let Some(lookup) = lookup else {
+    for (lookup, present) in lookups.iter().zip(slot_present) {
+        if !*present {
             out.push(DirectNativeLookupResult {
                 found: false,
                 whale: false,
@@ -1816,7 +1905,7 @@ fn direct_native_lookup_slots(
                 raw_chunk_data: Vec::new(),
             });
             continue;
-        };
+        }
 
         let found = lookup.found;
         let whale = found && lookup.num_chunks == 0;
@@ -1844,12 +1933,10 @@ fn direct_native_lookup_slots(
     }
 
     if chunk_plan.len() > chunk_budget {
-        for _ in 0..chunk_budget {
-            if let Err(e) = tables.chunk.read_dummy() {
-                tables.index.abort_request(&e);
-                tables.chunk.abort_request(&e);
-                return Err(e);
-            }
+        if let Err(e) = tables.chunk.read_dummy_many(chunk_budget) {
+            tables.index.abort_request(&e);
+            tables.chunk.abort_request(&e);
+            return Err(e);
         }
         let msg = format!(
             "direct ORAM chunk demand {} exceeds remaining access budget {}",
@@ -1867,22 +1954,25 @@ fn direct_native_lookup_slots(
     }
 
     let real_reads = chunk_plan.len();
-    for (result_idx, chunk_id) in chunk_plan {
-        match tables.chunk.read_chunk(chunk_id as usize) {
-            Ok(payload) => out[result_idx].raw_chunk_data.extend_from_slice(&payload),
-            Err(e) => {
-                tables.index.abort_request(&e);
-                tables.chunk.abort_request(&e);
-                return Err(e);
-            }
-        }
-    }
-    for _ in real_reads..chunk_budget {
-        if let Err(e) = tables.chunk.read_dummy() {
+    let chunk_ids = chunk_plan
+        .iter()
+        .map(|(_, chunk_id)| *chunk_id as usize)
+        .collect::<Vec<_>>();
+    let payloads = match tables.chunk.read_chunks(&chunk_ids) {
+        Ok(payloads) => payloads,
+        Err(e) => {
             tables.index.abort_request(&e);
             tables.chunk.abort_request(&e);
             return Err(e);
         }
+    };
+    for ((result_idx, _), payload) in chunk_plan.iter().zip(payloads) {
+        out[*result_idx].raw_chunk_data.extend_from_slice(&payload);
+    }
+    if let Err(e) = tables.chunk.read_dummy_many(chunk_budget - real_reads) {
+        tables.index.abort_request(&e);
+        tables.chunk.abort_request(&e);
+        return Err(e);
     }
 
     if let Err(e) = tables.index.finish_request() {
@@ -1891,6 +1981,34 @@ fn direct_native_lookup_slots(
     }
     tables.chunk.finish_request()?;
     Ok(out)
+}
+
+#[cfg(feature = "cuckoo-oram")]
+fn direct_oram_response_padding_bytes(
+    access_budget: usize,
+    slots: usize,
+    hash_fns: usize,
+    actual_chunk_bytes: usize,
+) -> Result<usize, String> {
+    let index_budget = hash_fns
+        .checked_mul(slots)
+        .ok_or_else(|| "direct ORAM response index budget overflow".to_string())?;
+    if index_budget > access_budget {
+        return Err(format!(
+            "direct ORAM access budget {} too small for {} slots and {} index reads each",
+            access_budget, slots, hash_fns,
+        ));
+    }
+    let max_chunk_bytes = (access_budget - index_budget)
+        .checked_mul(DIRECT_CHUNK_RECORD_SIZE)
+        .ok_or_else(|| "direct ORAM response padding byte count overflow".to_string())?;
+    if actual_chunk_bytes > max_chunk_bytes {
+        return Err(format!(
+            "direct ORAM response has {} chunk bytes, exceeding public budget {}",
+            actual_chunk_bytes, max_chunk_bytes,
+        ));
+    }
+    Ok(max_chunk_bytes - actual_chunk_bytes)
 }
 
 #[allow(dead_code)]
@@ -2229,7 +2347,7 @@ fn open_existing_oram_store(
     key_hex: Option<&str>,
     key_flag: &str,
     cached_pages: usize,
-) -> Result<Box<dyn PageStore + Send>, String> {
+) -> Result<CuckooRawPageStore, String> {
     let backing_page_size = plaintext_page_size + if encrypted { AEAD_OVERHEAD } else { 0 };
     let expected_len = page_count
         .checked_mul(backing_page_size)
@@ -2246,7 +2364,7 @@ fn open_existing_oram_store(
         ));
     }
 
-    let store: Box<dyn PageStore + Send> = if encrypted {
+    let store: CuckooRawPageStore = if encrypted {
         let key = parse_required_32_hex(key_hex, key_flag)?;
         let file =
             FilePageStore::open(path, page_count, backing_page_size).map_err(|e| e.to_string())?;
@@ -2277,60 +2395,133 @@ fn open_existing_circuit_oram_stores(
     key_hex: Option<&str>,
     cached_pages: usize,
     auth_store: bool,
+    bound_auth: Option<&CircuitStoreAuthState>,
     state_key: Option<[u8; 32]>,
 ) -> Result<(CuckooOramStore, CuckooOramStore), String> {
-    let meta_store = open_existing_oram_store(
-        &paths.meta_image,
-        params.bucket_count(),
-        circuit_meta_page_bytes(params.bucket_size),
-        encrypted,
-        key_hex,
-        "--cuckoo-oram-key-hex",
-        cached_pages,
-    )?;
-    let payload_store = open_existing_oram_store(
-        &paths.payload_image,
-        params.bucket_count(),
-        circuit_payload_page_bytes(params.bucket_size, params.block_size),
-        encrypted,
-        key_hex,
-        "--cuckoo-oram-key-hex",
-        cached_pages,
-    )?;
     if !auth_store {
-        return Ok((meta_store, payload_store));
-    }
-
-    let auth = load_circuit_store_auth(&paths.auth_state, state_key)?;
-    let expected_meta_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Meta);
-    let expected_payload_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Payload);
-    if auth.meta.store_id != expected_meta_id || auth.payload.store_id != expected_payload_id {
-        return Err(format!(
-            "Cuckoo ORAM {} auth sidecar store_id does not match expected level/store domains",
-            level
+        let meta_store = open_existing_oram_store(
+            &paths.meta_image,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+            encrypted,
+            key_hex,
+            "--cuckoo-oram-key-hex",
+            cached_pages,
+        )?;
+        let payload_store = open_existing_oram_store(
+            &paths.payload_image,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+            encrypted,
+            key_hex,
+            "--cuckoo-oram-key-hex",
+            cached_pages,
+        )?;
+        return Ok((
+            CuckooOramStore::Plain(meta_store),
+            CuckooOramStore::Plain(payload_store),
         ));
     }
 
-    let meta_hash_store = open_existing_hash_store(
-        &paths.meta_hash_image,
-        &auth.meta,
-        encrypted,
-        key_hex,
-        "--cuckoo-oram-key-hex",
-    )?;
-    let payload_hash_store = open_existing_hash_store(
-        &paths.payload_hash_image,
-        &auth.payload,
-        encrypted,
-        key_hex,
-        "--cuckoo-oram-key-hex",
-    )?;
-    let meta = TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
-        .map_err(|e| e.to_string())?;
-    let payload =
-        TieredMerklePageStore::from_trusted_state(payload_store, payload_hash_store, auth.payload)
+    let auth = match bound_auth {
+        Some(auth) => auth.clone(),
+        None => load_circuit_store_auth(&paths.auth_state, state_key)?,
+    };
+    match auth.layout {
+        CircuitStoreAuthLayout::TieredMerkle { meta, payload } => {
+            let expected_meta_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Meta);
+            let expected_payload_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Payload);
+            if meta.store_id != expected_meta_id || payload.store_id != expected_payload_id {
+                return Err(format!(
+                    "Cuckoo ORAM {} auth sidecar store_id does not match expected level/store domains",
+                    level
+                ));
+            }
+
+            let meta_store = open_existing_oram_store(
+                &paths.meta_image,
+                params.bucket_count(),
+                circuit_meta_page_bytes(params.bucket_size),
+                encrypted,
+                key_hex,
+                "--cuckoo-oram-key-hex",
+                cached_pages,
+            )?;
+            let payload_store = open_existing_oram_store(
+                &paths.payload_image,
+                params.bucket_count(),
+                circuit_payload_page_bytes(params.bucket_size, params.block_size),
+                encrypted,
+                key_hex,
+                "--cuckoo-oram-key-hex",
+                cached_pages,
+            )?;
+            let meta_hash_store = open_existing_hash_store(
+                &paths.meta_hash_image,
+                &meta,
+                encrypted,
+                key_hex,
+                "--cuckoo-oram-key-hex",
+            )?;
+            let payload_hash_store = open_existing_hash_store(
+                &paths.payload_hash_image,
+                &payload,
+                encrypted,
+                key_hex,
+                "--cuckoo-oram-key-hex",
+            )?;
+            let meta = TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, meta)
+                .map_err(|e| e.to_string())?;
+            let payload = TieredMerklePageStore::from_trusted_state(
+                payload_store,
+                payload_hash_store,
+                payload,
+            )
             .map_err(|e| e.to_string())?;
-    Ok((Box::new(meta), Box::new(payload)))
+            Ok((
+                CuckooOramStore::Sidecar(meta),
+                CuckooOramStore::Sidecar(payload),
+            ))
+        }
+        CircuitStoreAuthLayout::EmbeddedTree { meta, payload } => {
+            let expected_meta_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Meta);
+            let expected_payload_id = circuit_auth_store_id(level, CircuitAuthStoreKind::Payload);
+            if meta.store_id != expected_meta_id || payload.store_id != expected_payload_id {
+                return Err(format!(
+                    "Cuckoo ORAM {} embedded auth store_id does not match expected level/store domains",
+                    level
+                ));
+            }
+
+            let meta_store = open_existing_oram_store(
+                &paths.meta_image,
+                params.bucket_count(),
+                circuit_meta_page_bytes(params.bucket_size) + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+                encrypted,
+                key_hex,
+                "--cuckoo-oram-key-hex",
+                cached_pages,
+            )?;
+            let payload_store = open_existing_oram_store(
+                &paths.payload_image,
+                params.bucket_count(),
+                circuit_payload_page_bytes(params.bucket_size, params.block_size)
+                    + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+                encrypted,
+                key_hex,
+                "--cuckoo-oram-key-hex",
+                cached_pages,
+            )?;
+            let meta =
+                EmbeddedTreePageStore::from_state(meta_store, meta).map_err(|e| e.to_string())?;
+            let payload = EmbeddedTreePageStore::from_state(payload_store, payload)
+                .map_err(|e| e.to_string())?;
+            Ok((
+                CuckooOramStore::Embedded(meta),
+                CuckooOramStore::Embedded(payload),
+            ))
+        }
+    }
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -2343,60 +2534,133 @@ fn open_existing_direct_oram_stores(
     key_hex: Option<&str>,
     cached_pages: usize,
     auth_store: bool,
+    bound_auth: Option<&CircuitStoreAuthState>,
     state_key: Option<[u8; 32]>,
 ) -> Result<(CuckooOramStore, CuckooOramStore), String> {
-    let meta_store = open_existing_oram_store(
-        &paths.meta_image,
-        params.bucket_count(),
-        circuit_meta_page_bytes(params.bucket_size),
-        encrypted,
-        key_hex,
-        "--direct-oram-key-hex",
-        cached_pages,
-    )?;
-    let payload_store = open_existing_oram_store(
-        &paths.payload_image,
-        params.bucket_count(),
-        circuit_payload_page_bytes(params.bucket_size, params.block_size),
-        encrypted,
-        key_hex,
-        "--direct-oram-key-hex",
-        cached_pages,
-    )?;
     if !auth_store {
-        return Ok((meta_store, payload_store));
-    }
-
-    let auth = load_circuit_store_auth(&paths.auth_state, state_key)?;
-    let expected_meta_id = direct_auth_store_id(level, CircuitAuthStoreKind::Meta);
-    let expected_payload_id = direct_auth_store_id(level, CircuitAuthStoreKind::Payload);
-    if auth.meta.store_id != expected_meta_id || auth.payload.store_id != expected_payload_id {
-        return Err(format!(
-            "Direct ORAM {} auth sidecar store_id does not match expected level/store domains",
-            level
+        let meta_store = open_existing_oram_store(
+            &paths.meta_image,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+            encrypted,
+            key_hex,
+            "--direct-oram-key-hex",
+            cached_pages,
+        )?;
+        let payload_store = open_existing_oram_store(
+            &paths.payload_image,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+            encrypted,
+            key_hex,
+            "--direct-oram-key-hex",
+            cached_pages,
+        )?;
+        return Ok((
+            CuckooOramStore::Plain(meta_store),
+            CuckooOramStore::Plain(payload_store),
         ));
     }
 
-    let meta_hash_store = open_existing_hash_store(
-        &paths.meta_hash_image,
-        &auth.meta,
-        encrypted,
-        key_hex,
-        "--direct-oram-key-hex",
-    )?;
-    let payload_hash_store = open_existing_hash_store(
-        &paths.payload_hash_image,
-        &auth.payload,
-        encrypted,
-        key_hex,
-        "--direct-oram-key-hex",
-    )?;
-    let meta = TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, auth.meta)
-        .map_err(|e| e.to_string())?;
-    let payload =
-        TieredMerklePageStore::from_trusted_state(payload_store, payload_hash_store, auth.payload)
+    let auth = match bound_auth {
+        Some(auth) => auth.clone(),
+        None => load_circuit_store_auth(&paths.auth_state, state_key)?,
+    };
+    match auth.layout {
+        CircuitStoreAuthLayout::TieredMerkle { meta, payload } => {
+            let expected_meta_id = direct_auth_store_id(level, CircuitAuthStoreKind::Meta);
+            let expected_payload_id = direct_auth_store_id(level, CircuitAuthStoreKind::Payload);
+            if meta.store_id != expected_meta_id || payload.store_id != expected_payload_id {
+                return Err(format!(
+                    "Direct ORAM {} auth sidecar store_id does not match expected level/store domains",
+                    level
+                ));
+            }
+
+            let meta_store = open_existing_oram_store(
+                &paths.meta_image,
+                params.bucket_count(),
+                circuit_meta_page_bytes(params.bucket_size),
+                encrypted,
+                key_hex,
+                "--direct-oram-key-hex",
+                cached_pages,
+            )?;
+            let payload_store = open_existing_oram_store(
+                &paths.payload_image,
+                params.bucket_count(),
+                circuit_payload_page_bytes(params.bucket_size, params.block_size),
+                encrypted,
+                key_hex,
+                "--direct-oram-key-hex",
+                cached_pages,
+            )?;
+            let meta_hash_store = open_existing_hash_store(
+                &paths.meta_hash_image,
+                &meta,
+                encrypted,
+                key_hex,
+                "--direct-oram-key-hex",
+            )?;
+            let payload_hash_store = open_existing_hash_store(
+                &paths.payload_hash_image,
+                &payload,
+                encrypted,
+                key_hex,
+                "--direct-oram-key-hex",
+            )?;
+            let meta = TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, meta)
+                .map_err(|e| e.to_string())?;
+            let payload = TieredMerklePageStore::from_trusted_state(
+                payload_store,
+                payload_hash_store,
+                payload,
+            )
             .map_err(|e| e.to_string())?;
-    Ok((Box::new(meta), Box::new(payload)))
+            Ok((
+                CuckooOramStore::Sidecar(meta),
+                CuckooOramStore::Sidecar(payload),
+            ))
+        }
+        CircuitStoreAuthLayout::EmbeddedTree { meta, payload } => {
+            let expected_meta_id = direct_auth_store_id(level, CircuitAuthStoreKind::Meta);
+            let expected_payload_id = direct_auth_store_id(level, CircuitAuthStoreKind::Payload);
+            if meta.store_id != expected_meta_id || payload.store_id != expected_payload_id {
+                return Err(format!(
+                    "Direct ORAM {} embedded auth store_id does not match expected level/store domains",
+                    level
+                ));
+            }
+
+            let meta_store = open_existing_oram_store(
+                &paths.meta_image,
+                params.bucket_count(),
+                circuit_meta_page_bytes(params.bucket_size) + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+                encrypted,
+                key_hex,
+                "--direct-oram-key-hex",
+                cached_pages,
+            )?;
+            let payload_store = open_existing_oram_store(
+                &paths.payload_image,
+                params.bucket_count(),
+                circuit_payload_page_bytes(params.bucket_size, params.block_size)
+                    + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+                encrypted,
+                key_hex,
+                "--direct-oram-key-hex",
+                cached_pages,
+            )?;
+            let meta =
+                EmbeddedTreePageStore::from_state(meta_store, meta).map_err(|e| e.to_string())?;
+            let payload = EmbeddedTreePageStore::from_state(payload_store, payload)
+                .map_err(|e| e.to_string())?;
+            Ok((
+                CuckooOramStore::Embedded(meta),
+                CuckooOramStore::Embedded(payload),
+            ))
+        }
+    }
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -2406,7 +2670,7 @@ fn open_existing_hash_store(
     encrypted: bool,
     key_hex: Option<&str>,
     key_flag: &str,
-) -> Result<CuckooOramStore, String> {
+) -> Result<CuckooRawPageStore, String> {
     let hash_pages = tiered_hash_pages(auth.page_count, auth.hash_page_size, auth.trusted_levels)?;
     open_existing_oram_store(
         path,
@@ -2425,7 +2689,7 @@ fn tiered_hash_pages(
     hash_page_size: usize,
     trusted_levels: usize,
 ) -> Result<usize, String> {
-    TieredMerklePageStore::<CuckooOramStore, CuckooOramStore>::required_hash_pages(
+    TieredMerklePageStore::<CuckooRawPageStore, CuckooRawPageStore>::required_hash_pages(
         data_pages,
         hash_page_size,
         trusted_levels,
@@ -3489,13 +3753,29 @@ impl UnifiedServerData {
                     Err(e) => return Response::Error(format!("Direct ORAM lookup failed: {}", e)),
                 };
                 println!(
-                    "[direct-oram-lookup] db={} {}/{} present scripthash slot(s), budget={} in {:.2?}",
+                    "[direct-oram-lookup] db={} slots={}, budget={} in {:.2?}",
                     query.db_id,
-                    query.present_count(),
                     query.script_hashes.len(),
                     tables.access_budget,
                     t.elapsed(),
                 );
+                let actual_chunk_bytes = lookup.iter().try_fold(0usize, |acc, item| {
+                    acc.checked_add(item.raw_chunk_data.len())
+                        .ok_or_else(|| "direct ORAM response chunk byte count overflow".to_string())
+                });
+                let actual_chunk_bytes = match actual_chunk_bytes {
+                    Ok(bytes) => bytes,
+                    Err(e) => return Response::Error(e),
+                };
+                let trailing_padding_bytes = match direct_oram_response_padding_bytes(
+                    tables.access_budget,
+                    query.script_hashes.len(),
+                    tables.index.hash_fns,
+                    actual_chunk_bytes,
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(e) => return Response::Error(e),
+                };
                 return Response::OramLookupResult(OramLookupResult {
                     db_id: query.db_id,
                     items: lookup
@@ -3508,6 +3788,7 @@ impl UnifiedServerData {
                             raw_chunk_data: item.raw_chunk_data,
                         })
                         .collect(),
+                    trailing_padding_bytes,
                 });
             }
             let db = self
@@ -3554,6 +3835,7 @@ impl UnifiedServerData {
                         raw_chunk_data: item.raw_chunk_data,
                     })
                     .collect(),
+                trailing_padding_bytes: 0,
             })
         }
         #[cfg(not(feature = "cuckoo-oram"))]
@@ -6767,7 +7049,6 @@ mod harmony_dos_guard_tests {
         p
     }
 
-
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("unified_dos_{}_{}", tag, temp_suffix()));
@@ -7343,6 +7624,28 @@ mod harmony_dos_guard_tests {
     }
 
     #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_response_padding_fills_public_chunk_budget() {
+        let access_budget = 8usize;
+        let slots = 3usize;
+        let hash_fns = 2usize;
+        let actual_chunk_bytes = DIRECT_CHUNK_RECORD_SIZE;
+
+        assert_eq!(
+            direct_oram_response_padding_bytes(access_budget, slots, hash_fns, actual_chunk_bytes)
+                .unwrap(),
+            DIRECT_CHUNK_RECORD_SIZE,
+        );
+        assert!(direct_oram_response_padding_bytes(
+            access_budget,
+            slots,
+            hash_fns,
+            3 * DIRECT_CHUNK_RECORD_SIZE,
+        )
+        .is_err());
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
     fn write_direct_lookup_files(db_dir: &std::path::Path) -> DirectLookupFixture {
         std::fs::create_dir_all(db_dir).unwrap();
 
@@ -7633,8 +7936,8 @@ mod harmony_dos_guard_tests {
             trusted_levels,
         )
         .unwrap();
-        meta.flush().unwrap();
-        payload.flush().unwrap();
+        PageStore::flush(&mut meta).unwrap();
+        PageStore::flush(&mut payload).unwrap();
         CircuitStoreAuthState::new(meta.trusted_state(), payload.trusted_state())
             .save_atomic(&paths.auth_state)
             .unwrap();

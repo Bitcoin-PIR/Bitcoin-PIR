@@ -61,6 +61,7 @@ CUSTOM_INITRD=/tmp/bpir-initrd.img
 # (deploy/ is gitignored for local-only configs/secrets).
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DRACUT_MODULE_SRC="$SCRIPT_DIR/dracut/95bpir-verify"
+ARCHIVE_SCRIPT="$SCRIPT_DIR/archive_uki_artifact.sh"
 
 # ─── Sanity checks ─────────────────────────────────────────────────────────
 for f in "$KERNEL" "$BINARY"; do
@@ -164,11 +165,20 @@ UKI_SHA=$(sha256sum "$OUT" 2>/dev/null | awk '{print $1}' \
 echo
 echo "wrote UKI:                $OUT (${SIZE})"
 echo "uki sha256:               $UKI_SHA"
+"$ARCHIVE_SCRIPT" slice2 "$OUT" \
+    "kernel=$KERNEL" \
+    "kernel_version=$KVER" \
+    "root_label=$ROOT_LABEL" \
+    "unified_server=$BINARY" \
+    "binary_sha256=$BIN_HASH"
 echo
 echo "Next steps (operator):"
 echo "  1. Snapshot the binary so the tamper test in step 6 is recoverable:"
 echo "       cp $BINARY ${BINARY}.bak"
-echo "  2. Download $OUT to your laptop:"
+echo "  2. Confirm the UKI archive copy exists. If this build host is not the"
+echo "     durable Hetzner host, set UKI_ARCHIVE_REMOTE before building, e.g.:"
+echo "       UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/slice2"
+echo "     Download $OUT only as an operator convenience:"
 echo "       scp vpsbg-pir:$OUT ./bpir.efi"
 echo "  3. VPSBG dashboard → Confidentiality & Protection →"
 echo "     Advanced: Measured Boot → UKI → Upload bpir.efi → Save & Reboot"

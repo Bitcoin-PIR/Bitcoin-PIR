@@ -125,6 +125,7 @@ export {
   AMD_TURIN_ARK_FINGERPRINT,
   AMD_TURIN_ARK_FINGERPRINT_HEX,
   DELTA_940611_948454_DB_PROOF_PIN,
+  MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
   PIR1_PIN,
   PIR2_TIER3_PIN,
   PRODUCTION_DB_PROOF_PINS,
@@ -140,6 +141,22 @@ export {
   type DatabaseProofStatus,
   type VerifiedDatabaseProof,
 } from './db-proof.js';
+
+export {
+  DEFAULT_TRUST_CHAIN_MANIFEST_PATH,
+  verifyProductionTrustChain,
+  trustChainPinFromManifest,
+  type DatabaseTrustChainStatus,
+  type TrustChainManifest,
+} from './trust-chain-proof.js';
+
+export {
+  DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+  oramSourcePinFromManifest,
+  verifyOramSourceProof,
+  type OramSourceProofManifest,
+  type OramSourceProofStatus,
+} from './oram-source-proof.js';
 
 export type {
   HarmonyQueryResult,

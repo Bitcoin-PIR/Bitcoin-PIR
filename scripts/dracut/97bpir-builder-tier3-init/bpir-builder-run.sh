@@ -76,7 +76,7 @@ load_kv_file "$BAKED_ENV" \
 
 [[ -r "$CONFIG" ]] || fail "missing runtime config: $CONFIG"
 load_kv_file "$CONFIG" \
-    "SNAPSHOT EXPECTED_MUHASH NETWORK_MAGIC ANCHOR_HEIGHT ANCHOR_HASH CORE_VERSION OUT_BASE OUT_DIR RUN_ID MIN_FREE_KB REFERENCE_DATABASE_MANIFEST REFERENCE_ALL_ARTIFACTS_MANIFEST ONION_ENTRY_SIZE PARTITIONS ISSUED_AT PUSH_BATCH_ENTRIES"
+    "SNAPSHOT EXPECTED_MUHASH NETWORK_MAGIC ANCHOR_HEIGHT ANCHOR_HASH CORE_VERSION OUT_BASE OUT_DIR RUN_ID MIN_FREE_KB REFERENCE_DATABASE_MANIFEST REFERENCE_ALL_ARTIFACTS_MANIFEST ONION_ENTRY_SIZE PARTITIONS ISSUED_AT PUSH_BATCH_ENTRIES ORAM_DIRECT_INPUT_DIR KEEP_ORAM_DIRECT_INPUTS"
 
 require_env SNAPSHOT
 require_env EXPECTED_MUHASH
@@ -111,12 +111,20 @@ case "$OUT_DIR" in
 esac
 [[ ! -e "$OUT_DIR" ]] || fail "OUT_DIR already exists; refusing to reuse: $OUT_DIR"
 
+ORAM_DIRECT_INPUT_DIR=${ORAM_DIRECT_INPUT_DIR:-"$OUT_DIR/oram-direct-inputs"}
+require_data_path ORAM_DIRECT_INPUT_DIR
+case "$ORAM_DIRECT_INPUT_DIR" in
+    "$OUT_DIR"/*) ;;
+    *) fail "ORAM_DIRECT_INPUT_DIR must be under OUT_DIR ($OUT_DIR): $ORAM_DIRECT_INPUT_DIR" ;;
+esac
+
 STATUS_FILE="$OUT_BASE/builder-tier3-$RUN_ID.status"
 {
     printf 'status=running\n'
     printf 'run_id=%s\n' "$RUN_ID"
     printf 'out_dir=%s\n' "$OUT_DIR"
     printf 'snapshot=%s\n' "$SNAPSHOT"
+    printf 'oram_direct_input_dir=%s\n' "$ORAM_DIRECT_INPUT_DIR"
     printf 'anchor_height=%s\n' "$ANCHOR_HEIGHT"
     printf 'baked_builder_git_commit=%s\n' "${BAKED_BUILDER_GIT_COMMIT:-unknown}"
     printf 'baked_builder_bin_sha256=%s\n' "${BAKED_BUILDER_BIN_SHA256:-unknown}"
@@ -151,6 +159,8 @@ export RELEASE=1
 export RUN_ONION_FFI=0
 export ROOTS_ONLY=1
 export STAGE_SERVER_DB=0
+export KEEP_ORAM_DIRECT_INPUTS=1
+export ORAM_DIRECT_INPUT_DIR
 export WRITE_BUILD_EVIDENCE=1
 export EMIT_SEV_SNP_QUOTE=1
 export TEE_PLATFORM=sev-snp
@@ -199,6 +209,7 @@ ln -sfn "$OUT_DIR" "$OUT_BASE/latest"
     printf 'summary=%s\n' "$OUT_DIR/build-summary.txt"
     printf 'evidence=%s\n' "$OUT_DIR/build-evidence.bin"
     printf 'sev_snp_report=%s\n' "$OUT_DIR/build-evidence.sev-snp-report.bin"
+    printf 'oram_direct_input_dir=%s\n' "$ORAM_DIRECT_INPUT_DIR"
     printf 'finished_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >> "$STATUS_FILE"
 

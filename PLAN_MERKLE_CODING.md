@@ -1,0 +1,1 @@
+docs/plans/PLAN_MERKLE_CODING.md

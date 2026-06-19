@@ -75,9 +75,7 @@ impl OramBlock {
         self.occupied = occupied != 0;
         ct::cmov_u64(&mut self.logical_id, u64::MAX, choice);
         ct::cmov_u32(&mut self.leaf, u32::MAX, choice);
-        for byte in &mut self.payload {
-            ct::cmov_u8(byte, 0, choice);
-        }
+        clear_payload_volatile_if(&mut self.payload, choice);
     }
 
     /// Serialized length for a block at the given payload size.
@@ -142,57 +140,17 @@ impl OramBlock {
     }
 }
 
-/// A physical Path ORAM bucket.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Bucket {
-    /// Fixed number of physical block slots.
-    pub blocks: Vec<OramBlock>,
-}
-
-impl Bucket {
-    /// Construct an all-dummy bucket.
-    pub fn dummy(bucket_size: usize, block_size: usize) -> Self {
-        Self {
-            blocks: (0..bucket_size)
-                .map(|_| OramBlock::dummy(block_size))
-                .collect(),
+#[inline(never)]
+fn clear_payload_volatile_if(payload: &mut [u8], choice: ct::Choice) {
+    let keep_mask = std::hint::black_box(!ct::mask8(choice));
+    for byte in payload {
+        // Keep the conditional clear as volatile byte operations: LLVM can
+        // otherwise recognize the all-zero case and lower it to memset/bzero
+        // with alignment or size branches.
+        unsafe {
+            let current = std::ptr::read_volatile(byte);
+            std::ptr::write_volatile(byte, current & keep_mask);
         }
-    }
-
-    /// Encode the bucket into bytes.
-    pub fn encode(&self, bucket_size: usize, block_size: usize) -> Result<Vec<u8>> {
-        if self.blocks.len() != bucket_size {
-            return Err(Error::InvalidInput(format!(
-                "bucket has {} blocks, expected {}",
-                self.blocks.len(),
-                bucket_size
-            )));
-        }
-        let block_len = OramBlock::serialized_len(block_size);
-        let mut out = vec![0u8; bucket_size * block_len];
-        for (i, block) in self.blocks.iter().enumerate() {
-            let start = i * block_len;
-            block.encode_into(&mut out[start..start + block_len], block_size)?;
-        }
-        Ok(out)
-    }
-
-    /// Decode a bucket from bytes.
-    pub fn decode(input: &[u8], bucket_size: usize, block_size: usize) -> Result<Self> {
-        let block_len = OramBlock::serialized_len(block_size);
-        let expected = bucket_size * block_len;
-        if input.len() != expected {
-            return Err(Error::InvalidInput(format!(
-                "bucket input len {} != expected {}",
-                input.len(),
-                expected
-            )));
-        }
-        let mut blocks = Vec::with_capacity(bucket_size);
-        for chunk in input.chunks_exact(block_len) {
-            blocks.push(OramBlock::decode_from(chunk, block_size)?);
-        }
-        Ok(Self { blocks })
     }
 }
 
@@ -205,19 +163,19 @@ mod tests {
         let mut block = OramBlock::real(7, 3, vec![1, 2, 3, 4], 4).unwrap();
         let other = OramBlock::real(9, 5, vec![9, 8, 7, 6], 4).unwrap();
 
-        block.cmov_from(&other, 0);
+        block.cmov_from(&other, ct::choice_from_bool(false));
         assert_eq!(block.logical_id, 7);
         assert_eq!(block.leaf, 3);
         assert_eq!(block.payload, vec![1, 2, 3, 4]);
 
-        block.cmov_from(&other, 1);
+        block.cmov_from(&other, ct::choice_from_bool(true));
         assert_eq!(block.logical_id, 9);
         assert_eq!(block.leaf, 5);
         assert_eq!(block.payload, vec![9, 8, 7, 6]);
 
-        block.clear_if(0, 4);
+        block.clear_if(ct::choice_from_bool(false), 4);
         assert!(block.occupied);
-        block.clear_if(1, 4);
+        block.clear_if(ct::choice_from_bool(true), 4);
         assert!(!block.occupied);
         assert_eq!(block.logical_id, u64::MAX);
         assert_eq!(block.leaf, u32::MAX);

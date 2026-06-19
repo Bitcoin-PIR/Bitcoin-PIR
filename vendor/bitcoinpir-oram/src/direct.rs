@@ -6,7 +6,7 @@
 //! directly by chunk id.
 
 use crate::{
-    ct, CircuitOram, Error, OramBlock, OramParams, PageStore, Result, TrustedBlockSource,
+    ct, CircuitOram, Error, OramBlock, OramParams, PathPageStore, Result, TrustedBlockSource,
     AEAD_OVERHEAD,
 };
 use memmap2::{Mmap, MmapOptions};
@@ -753,13 +753,22 @@ pub struct DirectIndexLookup {
     pub drained_evictions: u64,
 }
 
+/// Result of resolving several direct INDEX lookups through one online ORAM batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectIndexBatchLookup {
+    /// Individual lookups in caller order.
+    pub lookups: Vec<DirectIndexLookup>,
+    /// Public eviction paths drained after the online batch.
+    pub drained_evictions: u64,
+}
+
 /// Reader that resolves script hashes through a direct INDEX Circuit ORAM.
 pub struct CircuitDirectIndexReader<M, P> {
     metadata: DirectTableMetadata,
     oram: CircuitOram<M, P>,
 }
 
-impl<M: PageStore, P: PageStore> CircuitDirectIndexReader<M, P> {
+impl<M: PathPageStore, P: PathPageStore> CircuitDirectIndexReader<M, P> {
     /// Wrap an opened Circuit ORAM controller for a direct INDEX image.
     pub fn new(metadata: DirectTableMetadata, oram: CircuitOram<M, P>) -> Result<Self> {
         metadata.validate()?;
@@ -799,7 +808,7 @@ impl<M: PageStore, P: PageStore> CircuitDirectIndexReader<M, P> {
             self.metadata.hash_fns,
             self.metadata.total_items,
         )?;
-        let mut found = 0u8;
+        let mut found = ct::choice_from_bool(false);
         let mut start_chunk_id = 0u32;
         let mut num_chunks = 0u8;
         let mut logical_blocks = Vec::with_capacity(candidate_bins.len());
@@ -828,11 +837,103 @@ impl<M: PageStore, P: PageStore> CircuitDirectIndexReader<M, P> {
 
         Ok(DirectIndexLookup {
             script_hash,
-            found: found == 1,
+            found: bool::from(found),
             start_chunk_id,
             num_chunks,
             candidate_bins,
             logical_blocks,
+            drained_evictions,
+        })
+    }
+
+    /// Read all candidate INDEX bins as one online ORAM batch, then drain debt.
+    pub fn lookup_batched(
+        &mut self,
+        script_hash: [u8; DIRECT_SCRIPT_HASH_SIZE],
+        drain_per_read: u64,
+    ) -> Result<DirectIndexLookup> {
+        let mut batch = self.lookup_many_batched(&[script_hash], drain_per_read)?;
+        let mut lookup = batch
+            .lookups
+            .pop()
+            .expect("single requested lookup yields one result");
+        lookup.drained_evictions = batch.drained_evictions;
+        Ok(lookup)
+    }
+
+    /// Read all candidate INDEX bins for several script hashes as one online ORAM batch.
+    pub fn lookup_many_batched(
+        &mut self,
+        script_hashes: &[[u8; DIRECT_SCRIPT_HASH_SIZE]],
+        drain_per_read: u64,
+    ) -> Result<DirectIndexBatchLookup> {
+        let mut candidates_by_lookup = Vec::with_capacity(script_hashes.len());
+        let mut locations_by_lookup = Vec::with_capacity(script_hashes.len());
+        let mut flat_logical_ids = Vec::new();
+        for script_hash in script_hashes {
+            let candidate_bins = direct_index_candidate_bins(
+                script_hash,
+                self.metadata.seed,
+                self.metadata.hash_fns,
+                self.metadata.total_items,
+            )?;
+            let mut locations = Vec::with_capacity(candidate_bins.len());
+            for &bin_id in &candidate_bins {
+                let location = locate_packed_direct_item(
+                    self.metadata.total_items,
+                    self.metadata.items_per_block,
+                    self.metadata.item_size,
+                    bin_id,
+                )?;
+                flat_logical_ids.push(location.logical_block as u64);
+                locations.push(location);
+            }
+            candidates_by_lookup.push(candidate_bins);
+            locations_by_lookup.push(locations);
+        }
+
+        let blocks = self.oram.read_batch(&flat_logical_ids)?;
+        let mut block_iter = blocks.iter();
+        let mut lookups = Vec::with_capacity(script_hashes.len());
+        for ((script_hash, candidate_bins), locations) in script_hashes
+            .iter()
+            .zip(candidates_by_lookup)
+            .zip(locations_by_lookup)
+        {
+            let mut found = ct::choice_from_bool(false);
+            let mut start_chunk_id = 0u32;
+            let mut num_chunks = 0u8;
+            let mut logical_blocks = Vec::with_capacity(locations.len());
+            for location in &locations {
+                let block = block_iter
+                    .next()
+                    .expect("flat blocks match candidate locations");
+                let bin = &block[location.byte_range()];
+                select_index_record_from_bin(
+                    bin,
+                    self.metadata.slots_per_bin,
+                    script_hash,
+                    &mut found,
+                    &mut start_chunk_id,
+                    &mut num_chunks,
+                )?;
+                logical_blocks.push(location.logical_block);
+            }
+            lookups.push(DirectIndexLookup {
+                script_hash: *script_hash,
+                found: bool::from(found),
+                start_chunk_id,
+                num_chunks,
+                candidate_bins,
+                logical_blocks,
+                drained_evictions: 0,
+            });
+        }
+        let drained_evictions = self
+            .oram
+            .drain_evictions(drain_per_read * flat_logical_ids.len() as u64)?;
+        Ok(DirectIndexBatchLookup {
+            lookups,
             drained_evictions,
         })
     }
@@ -843,13 +944,20 @@ impl<M: PageStore, P: PageStore> CircuitDirectIndexReader<M, P> {
         self.oram.drain_evictions(drain_per_read)
     }
 
+    /// Spend several fixed-shape INDEX candidate reads as one online batch.
+    pub fn read_dummy_candidates(&mut self, count: usize, drain_per_read: u64) -> Result<u64> {
+        self.oram.dummy_access_batch(count)?;
+        self.oram.drain_evictions(drain_per_read * count as u64)
+    }
+
     /// Spend the same number of INDEX reads as a real direct lookup.
     pub fn lookup_dummy(&mut self, drain_per_read: u64) -> Result<u64> {
-        let mut drained_evictions = 0u64;
-        for _ in 0..self.metadata.hash_fns {
-            drained_evictions += self.read_dummy_candidate(drain_per_read)?;
-        }
-        Ok(drained_evictions)
+        self.read_dummy_candidates(self.metadata.hash_fns, drain_per_read)
+    }
+
+    /// Spend the same number of INDEX reads as several real direct lookups.
+    pub fn lookup_dummy_many(&mut self, lookups: usize, drain_per_read: u64) -> Result<u64> {
+        self.read_dummy_candidates(self.metadata.hash_fns * lookups, drain_per_read)
     }
 }
 
@@ -868,13 +976,22 @@ pub struct DirectChunkRead {
     pub drained_evictions: u64,
 }
 
+/// Result of reading several direct chunks through one online ORAM batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectChunkBatchRead {
+    /// Individual chunk reads in caller order.
+    pub reads: Vec<DirectChunkRead>,
+    /// Public eviction paths drained after the online batch.
+    pub drained_evictions: u64,
+}
+
 /// Reader that exposes direct CHUNK ids through a Circuit ORAM image.
 pub struct CircuitDirectChunkReader<M, P> {
     metadata: DirectTableMetadata,
     oram: CircuitOram<M, P>,
 }
 
-impl<M: PageStore, P: PageStore> CircuitDirectChunkReader<M, P> {
+impl<M: PathPageStore, P: PathPageStore> CircuitDirectChunkReader<M, P> {
     /// Wrap an opened Circuit ORAM controller for a direct CHUNK image.
     pub fn new(metadata: DirectTableMetadata, oram: CircuitOram<M, P>) -> Result<Self> {
         metadata.validate()?;
@@ -927,14 +1044,59 @@ impl<M: PageStore, P: PageStore> CircuitDirectChunkReader<M, P> {
         })
     }
 
+    /// Read several direct chunks as one online ORAM batch, then drain debt.
+    pub fn read_chunks(
+        &mut self,
+        chunk_ids: &[usize],
+        drain_per_access: u64,
+    ) -> Result<DirectChunkBatchRead> {
+        let mut locations = Vec::with_capacity(chunk_ids.len());
+        let mut logical_ids = Vec::with_capacity(chunk_ids.len());
+        for &chunk_id in chunk_ids {
+            let location = locate_packed_direct_item(
+                self.metadata.total_items,
+                self.metadata.items_per_block,
+                self.metadata.item_size,
+                chunk_id,
+            )?;
+            logical_ids.push(location.logical_block as u64);
+            locations.push(location);
+        }
+        let blocks = self.oram.read_batch(&logical_ids)?;
+        let drained = self
+            .oram
+            .drain_evictions(drain_per_access * chunk_ids.len() as u64)?;
+
+        let mut reads = Vec::with_capacity(chunk_ids.len());
+        for ((&chunk_id, location), block) in chunk_ids.iter().zip(&locations).zip(&blocks) {
+            reads.push(DirectChunkRead {
+                chunk_id,
+                logical_block: location.logical_block,
+                byte_offset: location.byte_offset,
+                payload: block[location.byte_range()].to_vec(),
+                drained_evictions: 0,
+            });
+        }
+        Ok(DirectChunkBatchRead {
+            reads,
+            drained_evictions: drained,
+        })
+    }
+
     /// Spend one fixed-shape CHUNK read on a random dummy path.
     pub fn read_dummy(&mut self, drain_per_access: u64) -> Result<u64> {
         self.oram.dummy_access()?;
         self.oram.drain_evictions(drain_per_access)
     }
+
+    /// Spend several fixed-shape CHUNK reads as one online batch.
+    pub fn read_dummy_many(&mut self, count: usize, drain_per_access: u64) -> Result<u64> {
+        self.oram.dummy_access_batch(count)?;
+        self.oram.drain_evictions(drain_per_access * count as u64)
+    }
 }
 
-fn validate_oram_dimensions<M: PageStore, P: PageStore>(
+fn validate_oram_dimensions<M: PathPageStore, P: PathPageStore>(
     metadata: &DirectTableMetadata,
     oram: &CircuitOram<M, P>,
 ) -> Result<()> {
@@ -1205,7 +1367,7 @@ fn select_index_record_from_bin(
     bin: &[u8],
     slots_per_bin: usize,
     script_hash: &[u8; DIRECT_SCRIPT_HASH_SIZE],
-    found: &mut u8,
+    found: &mut ct::Choice,
     start_chunk_id: &mut u32,
     num_chunks: &mut u8,
 ) -> Result<()> {
@@ -1229,7 +1391,7 @@ fn select_index_record_from_bin(
         let candidate_start =
             u32::from_le_bytes(slot[21..25].try_into().expect("direct index slot"));
         let candidate_chunks = slot[25];
-        ct::cmov_u8(found, 1, select);
+        *found = ct::or(*found, select);
         ct::cmov_u32(start_chunk_id, candidate_start, select);
         ct::cmov_u8(num_chunks, candidate_chunks, select);
     }
@@ -1355,6 +1517,39 @@ mod tests {
             u32::from_le_bytes(record[20..24].try_into().unwrap())
         );
         assert_eq!(lookup.num_chunks, record[24]);
+        let record = read_test_record(&index_path, 27);
+        let script_hash: [u8; DIRECT_SCRIPT_HASH_SIZE] =
+            record[..DIRECT_SCRIPT_HASH_SIZE].try_into().unwrap();
+        let lookup = index_reader.lookup_batched(script_hash, 2).unwrap();
+        assert!(lookup.found);
+        assert_eq!(
+            lookup.start_chunk_id,
+            u32::from_le_bytes(record[20..24].try_into().unwrap())
+        );
+        assert_eq!(lookup.num_chunks, record[24]);
+        let batch_records = [5usize, 33usize]
+            .into_iter()
+            .map(|record_idx| read_test_record(&index_path, record_idx))
+            .collect::<Vec<_>>();
+        let batch_hashes = batch_records
+            .iter()
+            .map(|record| record[..DIRECT_SCRIPT_HASH_SIZE].try_into().unwrap())
+            .collect::<Vec<[u8; DIRECT_SCRIPT_HASH_SIZE]>>();
+        let batch = index_reader.lookup_many_batched(&batch_hashes, 2).unwrap();
+        assert_eq!(batch.lookups.len(), batch_hashes.len());
+        for (lookup, record) in batch.lookups.iter().zip(&batch_records) {
+            assert!(lookup.found);
+            assert_eq!(
+                lookup.start_chunk_id,
+                u32::from_le_bytes(record[20..24].try_into().unwrap())
+            );
+            assert_eq!(lookup.num_chunks, record[24]);
+        }
+        assert!(batch.drained_evictions > 0);
+        assert_eq!(
+            index_reader.lookup_dummy_many(2, 2).unwrap(),
+            (index_reader.metadata.hash_fns * 2 * 2) as u64
+        );
 
         let chunk_info = DirectTableInfo::from_chunks_file(&chunk_path).unwrap();
         let chunk_source = DirectChunkPackedBlockReader::open(chunk_info, 5).unwrap();
@@ -1390,6 +1585,13 @@ mod tests {
         let mut chunk_reader = CircuitDirectChunkReader::new(chunk_metadata, chunk_oram).unwrap();
         let got = chunk_reader.read_chunk(16, 2).unwrap();
         assert_eq!(got.payload, vec![16u8; DIRECT_CHUNK_RECORD_SIZE]);
+        let got = chunk_reader.read_chunks(&[1, 7, 16], 2).unwrap();
+        assert_eq!(got.reads.len(), 3);
+        assert_eq!(got.reads[0].payload, vec![1u8; DIRECT_CHUNK_RECORD_SIZE]);
+        assert_eq!(got.reads[1].payload, vec![7u8; DIRECT_CHUNK_RECORD_SIZE]);
+        assert_eq!(got.reads[2].payload, vec![16u8; DIRECT_CHUNK_RECORD_SIZE]);
+        assert!(got.drained_evictions > 0);
+        assert_eq!(chunk_reader.read_dummy_many(3, 2).unwrap(), 6);
     }
 
     fn write_index_records(path: &Path, records: usize) {

@@ -191,7 +191,8 @@ impl Packer {
         if data_len <= remaining {
             let entry_id = self.entry_count;
             let offset = self.current_pos;
-            self.current_entry[self.current_pos..self.current_pos + data_len].copy_from_slice(data);
+            self.current_entry[self.current_pos..self.current_pos + data_len]
+                .copy_from_slice(data);
             self.current_pos += data_len;
 
             // If entry is exactly full, flush it
@@ -228,12 +229,8 @@ impl Packer {
 
         // Case 3: spans multiple entries
         let num_entries = data_len.div_ceil(self.entry_size);
-        assert!(
-            num_entries <= 255,
-            "address data {} bytes needs {} entries, exceeds u8",
-            data_len,
-            num_entries
-        );
+        assert!(num_entries <= 255, "address data {} bytes needs {} entries, exceeds u8",
+            data_len, num_entries);
 
         let mut written = 0;
         for i in 0..num_entries {
@@ -281,10 +278,7 @@ fn main() {
     // better than implicit).
     let packed_entry_size = onion_entry_size();
 
-    println!(
-        "=== gen_1_onion: Pack UTXOs into {}-byte OnionPIR Entries ===",
-        packed_entry_size
-    );
+    println!("=== gen_1_onion: Pack UTXOs into {}-byte OnionPIR Entries ===", packed_entry_size);
     println!();
 
     let (num_partitions, data_dir) = parse_cli();
@@ -294,10 +288,7 @@ fn main() {
     let onion_index_path = format!("{}/onion_index.bin", data_dir);
 
     println!("Configuration:");
-    println!(
-        "  OnionPIR entry size: {} bytes (from onionpir::params_info(0))",
-        packed_entry_size
-    );
+    println!("  OnionPIR entry size: {} bytes (from onionpir::params_info(0))", packed_entry_size);
     println!("  Index entry size:    {} bytes", ONION_INDEX_RECORD_SIZE);
     println!("  Partitions:          {}", num_partitions);
     println!("  Dust threshold:      {} sats", DUST_THRESHOLD);
@@ -315,11 +306,7 @@ fn main() {
     let mmap = unsafe { Mmap::map(&input_file) }.expect("mmap");
     let entry_count = mmap.len() / ENTRY_SIZE_RAW;
     assert_eq!(mmap.len() % ENTRY_SIZE_RAW, 0);
-    println!(
-        "  {} entries ({})",
-        entry_count,
-        format_bytes(mmap.len() as u64)
-    );
+    println!("  {} entries ({})", entry_count, format_bytes(mmap.len() as u64));
     println!();
 
     // ── 2. Open output files ───────────────────────────────────────────
@@ -379,22 +366,15 @@ fn main() {
             let vout = u32::from_le_bytes(chunk[52..56].try_into().unwrap());
             let height = u32::from_le_bytes(chunk[64..68].try_into().unwrap());
 
-            map.entry(script_hash).or_default().push(ShortenedEntry {
-                txid,
-                vout,
-                amount,
-                height,
-            });
+            map.entry(script_hash)
+                .or_default()
+                .push(ShortenedEntry { txid, vout, amount, height });
 
             if one_percent > 0 {
                 let current_pct = (i as u64 + 1) / one_percent as u64;
                 if current_pct > last_pct && current_pct <= 100 {
-                    eprint!(
-                        "\r    Building: {}% | Keys: {} | Dust: {}",
-                        current_pct,
-                        map.len(),
-                        partition_dust
-                    );
+                    eprint!("\r    Building: {}% | Keys: {} | Dust: {}",
+                        current_pct, map.len(), partition_dust);
                     let _ = io::stderr().flush();
                     last_pct = current_pct;
                 }
@@ -403,23 +383,16 @@ fn main() {
         eprintln!();
         total_dust += partition_dust;
 
-        println!(
-            "  HashMap: {} unique script_hashes, {} dust skipped ({:.2?})",
-            map.len(),
-            partition_dust,
-            build_start.elapsed()
-        );
+        println!("  HashMap: {} unique script_hashes, {} dust skipped ({:.2?})",
+            map.len(), partition_dust, build_start.elapsed());
 
         // ── 3b. Sort by script_hash for deterministic ordering ──────────
         let sort_start = Instant::now();
         let mut sorted_entries: Vec<([u8; SCRIPT_HASH_SIZE], Vec<ShortenedEntry>)> =
-            map.into_iter().collect();
+            map.drain().collect();
         sorted_entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        println!(
-            "  Sorted {} entries by script_hash ({:.2?})",
-            sorted_entries.len(),
-            sort_start.elapsed()
-        );
+        println!("  Sorted {} entries by script_hash ({:.2?})",
+            sorted_entries.len(), sort_start.elapsed());
 
         // ── 3c. Serialize and pack ──────────────────────────────────────
         let pack_start = Instant::now();
@@ -481,18 +454,10 @@ fn main() {
         total_groups += partition_groups;
         total_whale += partition_whale;
 
-        println!(
-            "  Packed {} groups, {} whale ({:.2?})",
-            partition_groups,
-            partition_whale,
-            pack_start.elapsed()
-        );
-        println!(
-            "  Partition {}/{} completed in {:.2?}",
-            partition + 1,
-            num_partitions,
-            partition_start.elapsed()
-        );
+        println!("  Packed {} groups, {} whale ({:.2?})",
+            partition_groups, partition_whale, pack_start.elapsed());
+        println!("  Partition {}/{} completed in {:.2?}",
+            partition + 1, num_partitions, partition_start.elapsed());
         println!();
     }
 
@@ -515,79 +480,35 @@ fn main() {
     println!("Groups packed:        {}", total_groups);
     println!();
     println!("OnionPIR entries:     {}", packer.entry_count);
-    println!(
-        "Packed file size:     {} ({} entries × {} B)",
-        format_bytes(packed_file_size),
-        packer.entry_count,
-        packed_entry_size
-    );
-    println!(
-        "Index file size:      {} ({} entries × {} B)",
-        format_bytes(index_file_size),
-        total_groups + total_whale,
-        ONION_INDEX_RECORD_SIZE
-    );
+    println!("Packed file size:     {} ({} entries × {} B)",
+        format_bytes(packed_file_size), packer.entry_count, packed_entry_size);
+    println!("Index file size:      {} ({} entries × {} B)",
+        format_bytes(index_file_size), total_groups + total_whale, ONION_INDEX_RECORD_SIZE);
     println!();
-    println!(
-        "Actual data:          {} ({:.2}% of packed file)",
+    println!("Actual data:          {} ({:.2}% of packed file)",
         format_bytes(packer.total_data),
-        if packed_file_size > 0 {
-            packer.total_data as f64 / packed_file_size as f64 * 100.0
-        } else {
-            0.0
-        }
-    );
-    println!(
-        "Padding overhead:     {} ({:.2}%)",
+        if packed_file_size > 0 { packer.total_data as f64 / packed_file_size as f64 * 100.0 } else { 0.0 });
+    println!("Padding overhead:     {} ({:.2}%)",
         format_bytes(packer.total_padding),
-        if packed_file_size > 0 {
-            packer.total_padding as f64 / packed_file_size as f64 * 100.0
-        } else {
-            0.0
-        }
-    );
+        if packed_file_size > 0 { packer.total_padding as f64 / packed_file_size as f64 * 100.0 } else { 0.0 });
     println!("Max serialized len:   {} bytes", max_serialized_len);
-    println!(
-        "Avg addresses/entry:  {:.1}",
-        total_groups as f64 / packer.entry_count.max(1) as f64
-    );
+    println!("Avg addresses/entry:  {:.1}", total_groups as f64 / packer.entry_count.max(1) as f64);
     println!();
     println!("Serialized size distribution:");
-    println!(
-        "  0-40 B:     {:>10} ({:.2}%)",
-        size_histogram[0],
-        size_histogram[0] as f64 / total_groups.max(1) as f64 * 100.0
-    );
-    println!(
-        "  40-100 B:   {:>10} ({:.2}%)",
-        size_histogram[1],
-        size_histogram[1] as f64 / total_groups.max(1) as f64 * 100.0
-    );
-    println!(
-        "  100-500 B:  {:>10} ({:.2}%)",
-        size_histogram[2],
-        size_histogram[2] as f64 / total_groups.max(1) as f64 * 100.0
-    );
-    println!(
-        "  500-1K B:   {:>10} ({:.2}%)",
-        size_histogram[3],
-        size_histogram[3] as f64 / total_groups.max(1) as f64 * 100.0
-    );
-    println!(
-        "  1K-2K B:    {:>10} ({:.2}%)",
-        size_histogram[4],
-        size_histogram[4] as f64 / total_groups.max(1) as f64 * 100.0
-    );
-    println!(
-        "  2K-3840 B:  {:>10} ({:.2}%)",
-        size_histogram[5],
-        size_histogram[5] as f64 / total_groups.max(1) as f64 * 100.0
-    );
-    println!(
-        "  >3840 B:    {:>10} ({:.2}%) [span multiple entries]",
-        size_histogram[6],
-        size_histogram[6] as f64 / total_groups.max(1) as f64 * 100.0
-    );
+    println!("  0-40 B:     {:>10} ({:.2}%)", size_histogram[0],
+        size_histogram[0] as f64 / total_groups.max(1) as f64 * 100.0);
+    println!("  40-100 B:   {:>10} ({:.2}%)", size_histogram[1],
+        size_histogram[1] as f64 / total_groups.max(1) as f64 * 100.0);
+    println!("  100-500 B:  {:>10} ({:.2}%)", size_histogram[2],
+        size_histogram[2] as f64 / total_groups.max(1) as f64 * 100.0);
+    println!("  500-1K B:   {:>10} ({:.2}%)", size_histogram[3],
+        size_histogram[3] as f64 / total_groups.max(1) as f64 * 100.0);
+    println!("  1K-2K B:    {:>10} ({:.2}%)", size_histogram[4],
+        size_histogram[4] as f64 / total_groups.max(1) as f64 * 100.0);
+    println!("  2K-3840 B:  {:>10} ({:.2}%)", size_histogram[5],
+        size_histogram[5] as f64 / total_groups.max(1) as f64 * 100.0);
+    println!("  >3840 B:    {:>10} ({:.2}%) [span multiple entries]", size_histogram[6],
+        size_histogram[6] as f64 / total_groups.max(1) as f64 * 100.0);
     println!("  Whale:      {:>10}", size_histogram[7]);
     println!();
     println!("Packing time:         {:.2?}", packing_start.elapsed());
@@ -598,9 +519,6 @@ fn main() {
         println!("WARNING: entry_count {} overflows u32!", packer.entry_count);
     }
     if max_serialized_len > 255 * packed_entry_size {
-        println!(
-            "WARNING: max serialized length {} exceeds u8 num_entries capacity!",
-            max_serialized_len
-        );
+        println!("WARNING: max serialized length {} exceeds u8 num_entries capacity!", max_serialized_len);
     }
 }
