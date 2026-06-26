@@ -839,6 +839,14 @@
                     </span>
                     <span class="servers">1-srv</span>
                 </button>
+                <button class="scheme tab-btn" data-tab="oram" role="tab">
+                    <span class="ico">T</span>
+                    <span>
+                        <span class="name">ORAM TEE</span>
+                        <span class="sub">SEV-SNP direct lookup</span>
+                    </span>
+                    <span class="servers">1-srv</span>
+                </button>
             </div>
 
             <div class="sb-title" style="margin-top: 18px;">Two-server PIR</div>
@@ -1420,6 +1428,113 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
           </div>
         </div><!-- end tab-harmonypir -->
 
+        <!-- ═══ ORAM TEE Tab ═══ -->
+        <div id="tab-oram" class="tab-content">
+          <div class="grid">
+            <div class="col">
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
+                        <div id="oram-status" class="status disconnected">Disconnected</div>
+                    </div>
+                    <div class="card-body">
+                        <div class="step">
+                            <label for="oram-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex <span style="font-family:var(--mono); font-weight:500; color:var(--ink-faint); letter-spacing:0; text-transform:none;">· one per line</span></label>
+                            <textarea id="oram-scriptPubkeys" rows="4" class="addr-input" spellcheck="false" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
+bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
+                            <div id="oram-conversionNote" class="conversion-note" style="display: none;"></div>
+
+                            <details style="margin-top: 14px;">
+                                <summary style="cursor: pointer; font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute);">Load examples</summary>
+                                <div class="examples" style="margin-top: 10px; display: flex; flex-direction: column; gap: 12px;">
+                                    <div class="ex-section" style="margin-top:0;">
+                                        <div class="ex-head">Known in dataset <span class="count">· small ORAM batches</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn oram-example" data-spk="76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac">P2PKH</button>
+                                            <button class="example-btn oram-example" data-spk="0014528aa6fb623acd8f574abc89508e0a42cde57b8b">P2WPKH</button>
+                                            <button class="example-btn oram-example" data-spk="a914977824b90abfb1175a736e7020ac376702953adc87">P2SH</button>
+                                            <button class="example-btn oram-example" data-spk="51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a">P2TR</button>
+                                            <button class="example-btn oram-example" data-spk="0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e">P2WSH</button>
+                                            <button class="example-btn" id="oram-loadDiverseBtn">mix</button>
+                                        </div>
+                                    </div>
+                                    <div class="ex-section">
+                                        <div class="ex-head">Batch test <span class="count">· padded to 25 ORAM slots</span></div>
+                                        <div class="chips">
+                                            <button class="example-btn" id="oram-pickRandom10Btn">random 10</button>
+                                            <button class="example-btn" id="oram-pickRandom5Btn">random 5</button>
+                                            <button class="example-btn" id="oram-pickRandom3Btn">random 3</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </details>
+
+                            <div class="action-row">
+                                <button id="oram-connectBtn" class="btn">Connect</button>
+                                <button id="oram-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <button id="oram-queryBtn" class="btn" style="width: 100%;">Query UTXOs via ORAM TEE</button>
+                            </div>
+                        </div>
+
+                        <div id="oram-progressContainer" class="progress-container">
+                            <div class="progress-bar">
+                                <div id="oram-progressFill" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div id="oram-progressLabel" class="progress-label"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">03</span><span>Results</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div id="oram-resultsContainer" class="results-container"></div>
+                    </div>
+                </section>
+            </div>
+
+            <div class="col">
+                <section class="card">
+                    <div class="card-head">
+                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                    </div>
+                    <div class="card-body">
+                        <div class="status-row">
+                            <label for="oram-serverUrl">ORAM server</label>
+                            <input type="text" id="oram-serverUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                        </div>
+                        <div id="oram-attestBadge" class="attest-badge attest-badge-unattested" style="display: none;"></div>
+                        <div id="oram-operatorBadge" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+                        <div id="oram-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
+                        <div id="oram-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
+
+                        <div style="margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); background: var(--sunken); border-radius: 8px; font-size: 12px; line-height: 1.55; color: var(--ink-mute);">
+                            ORAM TEE is experimental. Script hashes are sent only after the browser verifies the SEV-SNP channel binding, AMD VCEK chain, build pin, operator identity, and DB proof. This mode does not use two-server non-collusion.
+                        </div>
+
+                        <details id="oram-advancedDbDetails" class="adv-db" style="display: none;">
+                            <summary>Advanced · database query</summary>
+                            <div id="oram-dbSelectorRow">
+                                <label for="oram-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                <select id="oram-dbSelect" class="select" style="width: auto; display: inline-block;">
+                                    <option value="0">Main UTXO (loading...)</option>
+                                </select>
+                                <span id="oram-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                    Requests are padded to 25 ORAM slots and capped at 5 real script hashes per frame.
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                </section>
+            </div>
+          </div>
+        </div><!-- end tab-oram -->
+
         </main>
     </div>
 
@@ -1442,7 +1557,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, verifyProductionTrustChain } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, verifyProductionTrustChain } from './src/index.ts';
         import { fetchResidency } from './src/server-info.ts';
 
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
@@ -2897,6 +3012,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 'op-serverUrl':     'wss://weikeng1.bitcoinpir.org',
                 'hp-hintServerUrl': 'wss://weikeng1.bitcoinpir.org',
                 'hp-queryServerUrl':'wss://weikeng2.bitcoinpir.org',
+                'oram-serverUrl':   'wss://weikeng2.bitcoinpir.org',
             },
             local: {
                 'server0Url':       'ws://localhost:8091',
@@ -2904,6 +3020,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 'op-serverUrl':     'ws://localhost:8091',
                 'hp-hintServerUrl': 'ws://localhost:8091',
                 'hp-queryServerUrl':'ws://localhost:8092',
+                'oram-serverUrl':   'ws://localhost:8092',
             },
         };
         let useLocalhost = false;
@@ -2933,6 +3050,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 ...(client ? client.getConnectedSockets() : []),
                 ...(opClient ? opClient.getConnectedSockets() : []),
                 ...(hpClient ? hpClient.getConnectedSockets() : []),
+                ...(oramClient ? oramClient.getConnectedSockets() : []),
             ];
             if (sockets.length === 0) {
                 panel.innerHTML = '<span class="residency-error">No servers connected. Connect to a server first.</span>';
@@ -4561,6 +4679,292 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         hpSetButtons(false);
         // Initialize HarmonyPIR sync button in disabled state.
         document.getElementById('hp-syncBtn').disabled = true;
+
+        // ═══════════════════════════════════════════════════════════════
+        // ORAM TEE tab logic
+        // ═══════════════════════════════════════════════════════════════
+
+        let oramClient = null;
+
+        function oramSetButtons(connected) {
+            document.getElementById('oram-connectBtn').disabled = connected;
+            document.getElementById('oram-disconnectBtn').disabled = !connected;
+        }
+
+        function oramSetProgress(percent, label) {
+            const container = document.getElementById('oram-progressContainer');
+            const fill = document.getElementById('oram-progressFill');
+            const lbl = document.getElementById('oram-progressLabel');
+            container.classList.add('active');
+            fill.style.width = `${percent}%`;
+            fill.textContent = percent > 10 ? `${Math.round(percent)}%` : '';
+            lbl.textContent = label;
+        }
+
+        function oramHideProgress() {
+            document.getElementById('oram-progressContainer').classList.remove('active');
+        }
+
+        function oramPopulateDbSelector() {
+            const catalog = oramClient?.getCatalog();
+            const select = document.getElementById('oram-dbSelect');
+            const advancedDetails = document.getElementById('oram-advancedDbDetails');
+            const infoSpan = document.getElementById('oram-dbInfo');
+            select.innerHTML = '';
+
+            if (!catalog || catalog.databases.length <= 1) {
+                advancedDetails.style.display = 'none';
+                return;
+            }
+
+            for (const db of catalog.databases) {
+                const opt = document.createElement('option');
+                opt.value = db.dbId;
+                if (db.dbType === 0) {
+                    opt.textContent = `[${db.dbId}] ${db.name} (full, height ${db.height.toLocaleString()})`;
+                } else {
+                    opt.textContent = `[${db.dbId}] ${db.name} (delta, ${db.baseHeight.toLocaleString()} \u2192 ${db.height.toLocaleString()})`;
+                }
+                select.appendChild(opt);
+            }
+
+            const refreshInfo = () => {
+                const dbId = parseInt(select.value);
+                const entry = catalog.databases.find(d => d.dbId === dbId);
+                if (entry) {
+                    const type = entry.dbType === 1 ? 'delta' : 'full';
+                    infoSpan.textContent = `${type}, index_bins=${entry.indexBinsPerTable.toLocaleString()}, chunk_bins=${entry.chunkBinsPerTable.toLocaleString()}`;
+                }
+            };
+            refreshInfo();
+            advancedDetails.style.display = 'block';
+        }
+
+        async function oramConnect() {
+            const serverUrl = document.getElementById('oram-serverUrl').value.trim();
+            if (!serverUrl) {
+                log('ORAM: Please enter a server URL', 'error');
+                return;
+            }
+
+            try {
+                log('ORAM: Connecting to attested server...', 'info');
+                const statusDiv = document.getElementById('oram-status');
+                statusDiv.textContent = 'Status: Connecting';
+                statusDiv.className = 'status connecting';
+                document.getElementById('oram-connectBtn').disabled = true;
+
+                oramClient = new OramPirClientAdapter({
+                    serverUrl,
+                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                    expectedServerPin: PIR2_TIER3_PIN,
+                    verifyOperatorIdentity: true,
+                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                    batchPlanner: {
+                        accessBudget: 75,
+                        indexReadsPerScriptHash: 2,
+                        expectedChunkReadsPerScriptHash: 1,
+                        paddedSlotCount: 25,
+                        maxScriptHashesPerRequest: 5,
+                    },
+                    onDatabaseProof: (dbId, info) => {
+                        if (info.state === 'verified') {
+                            log(`ORAM DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
+                        } else if (info.state === 'unverified') {
+                            log(`ORAM DB proof db ${dbId}: UNVERIFIED — ${info.mismatches?.[0] || info.error || 'check failed'}`, 'error');
+                        } else {
+                            log(`ORAM DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`, 'info');
+                        }
+                        renderDatabaseProofBadge('oram-dbProofBadge', 'ORAM TEE', info);
+                        verifyAndRenderBitcoinAnchorBadge('oram-bitcoinAnchorBadge', 'ORAM TEE', info)
+                            .catch(e => log(`ORAM Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
+                    },
+                    onAttestation: (info) => {
+                        if (info.state === 'verified-vcek') {
+                            log(`✓ ORAM: AMD VCEK chain verified (${info.binarySha256Hex?.slice(0, 16) ?? '?'}...)`, 'success');
+                        } else if (info.state === 'verified') {
+                            log(`ORAM: V2 binding only (${info.vcekChain ?? 'no chain'})`, 'info');
+                        } else if (info.state === 'mismatch') {
+                            log(`✗ ORAM: attestation mismatch${info.vcekChainError ? ': ' + info.vcekChainError : ''}`, 'error');
+                        }
+                        renderAttestBadge('oram-attestBadge', 'ORAM', info);
+                    },
+                    onOperatorIdentity: (info) => {
+                        if (info.state === 'verified') {
+                            log(`🔏 ORAM: operator-endorsed identity verified (${info.serverId})`, 'success');
+                        } else if (info.state === 'unverified') {
+                            log(`⚠ ORAM: operator identity UNVERIFIED — ${info.error}`, 'error');
+                        }
+                        renderOperatorBadge('oram-operatorBadge', 'ORAM', info);
+                    },
+                    onConnectionStateChange: (state, message) => {
+                        log(`ORAM connection: ${state}${message ? ' - ' + message : ''}`,
+                            state === 'connected' ? 'success' :
+                            state === 'disconnected' ? 'error' : 'info');
+                        statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
+                        statusDiv.className = `status ${state}`;
+                        if (state === 'connected') oramSetButtons(true);
+                        else if (state === 'disconnected') oramSetButtons(false);
+                    },
+                    onLog: (msg, level) => log(msg, level),
+                });
+
+                await oramClient.connect();
+                oramPopulateDbSelector();
+            } catch (error) {
+                log(`ORAM connection failed: ${error.message}`, 'error');
+                oramClient = null;
+                const statusDiv = document.getElementById('oram-status');
+                statusDiv.textContent = 'Status: Disconnected';
+                statusDiv.className = 'status disconnected';
+                oramSetButtons(false);
+            }
+        }
+
+        function oramDisconnect() {
+            if (oramClient) {
+                oramClient.disconnect();
+                oramClient = null;
+                log('ORAM: Disconnected', 'info');
+            }
+            document.getElementById('oram-resultsContainer').innerHTML = '';
+            document.getElementById('oram-advancedDbDetails').style.display = 'none';
+            oramSetButtons(false);
+        }
+
+        async function oramQueryUtxos() {
+            if (!oramClient || !oramClient.isConnected()) {
+                log('ORAM: Auto-connecting...', 'info');
+                await oramConnect();
+                if (!oramClient || !oramClient.isConnected()) return;
+            }
+
+            const textarea = document.getElementById('oram-scriptPubkeys');
+            const rawLines = textarea.value.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            if (rawLines.length === 0) {
+                log('ORAM: Please enter at least one address or scriptPubKey', 'error');
+                return;
+            }
+
+            const lines = [];
+            let converted = 0;
+            const convNote = document.getElementById('oram-conversionNote');
+            for (const raw of rawLines) {
+                if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
+                    lines.push(raw.toLowerCase());
+                } else {
+                    const spk = addressToScriptPubKey(raw);
+                    if (spk) {
+                        lines.push(spk);
+                        converted++;
+                        log(`ORAM: Converted address → scriptPubKey: ${raw} → ${spk}`, 'info');
+                    } else {
+                        log(`ORAM: Unrecognized input: ${raw}`, 'error');
+                    }
+                }
+            }
+            if (converted > 0) {
+                convNote.textContent = `Converted ${converted} address${converted > 1 ? 'es' : ''} to scriptPubKey hex`;
+                convNote.style.display = 'block';
+                setTimeout(() => { convNote.style.display = 'none'; }, 5000);
+            }
+            if (lines.length === 0) {
+                log('ORAM: No valid inputs found', 'error');
+                return;
+            }
+
+            const resultsContainer = document.getElementById('oram-resultsContainer');
+            resultsContainer.innerHTML = '';
+            document.getElementById('oram-queryBtn').disabled = true;
+
+            const N = lines.length;
+            const scriptHashes = lines.map(spkHex => scriptHash(hexToBytes(spkHex)));
+            const dbId = parseInt(document.getElementById('oram-dbSelect')?.value ?? '0') || 0;
+            const dbEntry = oramClient.getCatalogEntry(dbId);
+            const isDelta = dbEntry?.dbType === 1;
+
+            try {
+                oramSetProgress(5, `Preparing ${N} ORAM lookup${N === 1 ? '' : 's'}${isDelta ? ` (delta db ${dbId})` : ''}...`);
+                const results = isDelta
+                    ? await oramClient.queryDelta(scriptHashes, dbId, (step, detail) => {
+                        const pct = step === 'Decode' ? 90 : 45;
+                        oramSetProgress(pct, `${step}: ${detail}`);
+                    })
+                    : await oramClient.queryBatch(scriptHashes, (step, detail) => {
+                        const pct = step === 'Decode' ? 90 : 45;
+                        oramSetProgress(pct, `${step}: ${detail}`);
+                    }, dbId);
+
+                let found = 0;
+                if (isDelta) {
+                    const hdr = document.createElement('div');
+                    hdr.style.cssText = 'padding: 10px 14px; background: #e8f4fd; border: 1px solid #bee5eb; border-radius: 6px; margin-bottom: 10px; font-size: 14px; color: #0c5460;';
+                    hdr.textContent = `ORAM delta: ${dbEntry.baseHeight.toLocaleString()} \u2192 ${dbEntry.height.toLocaleString()} (${dbEntry.name})`;
+                    resultsContainer.appendChild(hdr);
+                }
+
+                for (let qi = 0; qi < N; qi++) {
+                    const spkHex = lines[qi];
+                    const hashHex = bytesToHex(scriptHashes[qi]);
+                    const result = results[qi];
+                    if (result) found++;
+                    if (isDelta) {
+                        renderDeltaResult(resultsContainer, spkHex, hashHex, result);
+                    } else {
+                        renderResult(resultsContainer, spkHex, hashHex, result);
+                    }
+                }
+
+                const verb = isDelta ? 'changed' : 'found';
+                oramSetProgress(100, `Done! ${found}/${N} addresses ${verb}`);
+                setTimeout(oramHideProgress, 2000);
+                log(`ORAM batch complete: ${found}/${N} ${verb}`, 'success');
+            } catch (error) {
+                log(`ORAM query error: ${error.message}`, 'error');
+                console.error(error);
+                oramSetProgress(0, '');
+                oramHideProgress();
+            }
+
+            document.getElementById('oram-queryBtn').disabled = false;
+        }
+
+        document.querySelectorAll('.oram-example[data-spk]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.getElementById('oram-scriptPubkeys').value = btn.dataset.spk;
+            });
+        });
+        document.getElementById('oram-loadDiverseBtn').addEventListener('click', () => {
+            document.getElementById('oram-scriptPubkeys').value = [
+                '0020ebb7d608cfce01578d4e07aa9a82e6a9cff4ae9194a7dce148d87c8dfdc7b55e',
+                'a914977824b90abfb1175a736e7020ac376702953adc87',
+                '51201c29857ea48bc3c477c9509aafe901a61940f1ac29215f588cb250291f30fe8a',
+                '76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac',
+            ].join('\n');
+        });
+        document.getElementById('oram-pickRandom10Btn').addEventListener('click', () => {
+            document.getElementById('oram-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 10).join('\n');
+        });
+        document.getElementById('oram-pickRandom5Btn').addEventListener('click', () => {
+            document.getElementById('oram-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 5).join('\n');
+        });
+        document.getElementById('oram-pickRandom3Btn').addEventListener('click', () => {
+            document.getElementById('oram-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 3).join('\n');
+        });
+        document.getElementById('oram-connectBtn').addEventListener('click', oramConnect);
+        document.getElementById('oram-disconnectBtn').addEventListener('click', oramDisconnect);
+        document.getElementById('oram-queryBtn').addEventListener('click', oramQueryUtxos);
+        document.getElementById('oram-dbSelect').addEventListener('change', () => {
+            const catalog = oramClient?.getCatalog();
+            const select = document.getElementById('oram-dbSelect');
+            const infoSpan = document.getElementById('oram-dbInfo');
+            const entry = catalog?.databases.find(d => d.dbId === parseInt(select.value));
+            if (entry && infoSpan) {
+                const type = entry.dbType === 1 ? 'delta' : 'full';
+                infoSpan.textContent = `${type}, index_bins=${entry.indexBinsPerTable.toLocaleString()}, chunk_bins=${entry.chunkBinsPerTable.toLocaleString()}`;
+            }
+        });
+        oramSetButtons(false);
     </script>
 
     <!-- Query Inspector Modal -->
@@ -4853,6 +5257,12 @@ Cell at position R = ${r}:
                 tag: "2-server · preprocessing + PRP",
                 sub: "Two non-colluding servers with a one-time hint (offline) phase that amortizes future queries down to milliseconds.",
                 crumb: "harmony-pir",
+            },
+            oram: {
+                name: "ORAM TEE",
+                tag: "1-server · SEV-SNP direct lookup",
+                sub: "Experimental single-server direct lookup through the attested VPSBG SEV-SNP UKI. Privacy relies on the measured TEE and encrypted channel, not non-collusion.",
+                crumb: "oram-tee",
             },
         };
         function _applySchemeMeta(key) {
