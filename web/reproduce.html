@@ -333,6 +333,14 @@
                     <strong>Database proof</strong>
                     <span>MuHash and Merkle roots</span>
                 </button>
+                <button id="tab-bitcoin-anchor" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="bitcoin-anchor" data-tab-target="bitcoin-anchor">
+                    <strong>Bitcoin anchor</strong>
+                    <span>BHTM leaf and SNP quote</span>
+                </button>
+                <button id="tab-artifacts" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="artifacts" data-tab-target="artifacts">
+                    <strong>Artifacts</strong>
+                    <span>Static proof files</span>
+                </button>
                 <button id="tab-pir1" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="pir1" data-tab-target="pir1">
                     <strong>pir1</strong>
                     <span>Hetzner, no SEV</span>
@@ -347,16 +355,16 @@
                 <header class="page-intro">
                     <h1>Reproducing runtime and database attestation</h1>
                     <p class="lede">
-                        Verify two separate claims: <code>weikeng2.bitcoinpir.org</code>
+                        Verify three separate claims: <code>weikeng2.bitcoinpir.org</code>
                         is running the pinned SEV-SNP runtime, and the served
-                        database roots bind to a Bitcoin Core MuHash at the pinned
-                        block range.
+                        database roots bind to a Bitcoin Core MuHash whose block
+                        anchor is checked by the blockhash-to-muhash proof.
                     </p>
                 </header>
 
                 <section id="overview" class="tab-panel active" role="tabpanel" aria-labelledby="tab-overview">
                     <section>
-                        <h2>Two proofs, two failure modes</h2>
+                        <h2>Three proofs, three failure modes</h2>
                         <div class="panel accent">
                             <ul>
                                 <li>
@@ -370,6 +378,13 @@
                                     attested-builder evidence, Bitcoin Core MuHash, and
                                     PIR Merkle roots. A blue verified DB proof badge belongs
                                     to this layer.
+                                </li>
+                                <li>
+                                    <strong>Bitcoin/MuHash anchor proof</strong> checks that
+                                    the database proof's block hash and MuHash appear as a
+                                    blockhash-to-muhash Merkle leaf under a SEV-SNP-attested
+                                    chunk root. A green Bitcoin anchor badge belongs to this
+                                    layer.
                                 </li>
                             </ul>
                         </div>
@@ -654,6 +669,75 @@
                     </section>
                 </section>
 
+                <section id="bitcoin-anchor" class="tab-panel" role="tabpanel" aria-labelledby="tab-bitcoin-anchor">
+                    <section>
+                        <h2>Bitcoin/MuHash anchor proof <span class="badge ok">height 948454</span></h2>
+                        <p>
+                            The database proof uses Bitcoin Core's MuHash at block
+                            <code>948454</code>. The anchor proof checks that the same
+                            <code>height</code>, <code>block_hash</code>, and Core-display
+                            <code>MuHash</code> are present in the
+                            <code>mainnet-900000-954920</code> blockhash-to-muhash chunk.
+                        </p>
+                        <div class="panel accent">
+                            <table class="pin-table">
+                                <tr>
+                                    <td>block</td>
+                                    <td>948454 · 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4</td>
+                                </tr>
+                                <tr>
+                                    <td>MuHash</td>
+                                    <td>cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee</td>
+                                </tr>
+                                <tr>
+                                    <td>BHTM chunk</td>
+                                    <td>mainnet-900000-954920</td>
+                                </tr>
+                                <tr>
+                                    <td>leaf</td>
+                                    <td>index 48454 · 0171a475dc43b97db594c7512039d12f5213d270b42e56babfa44d65359eeaaf</td>
+                                </tr>
+                                <tr>
+                                    <td>tree root</td>
+                                    <td>babeea635812c3b1a2d5f352ab0a5d1ee8a4e9c668c43c05d6603ef3c3766ba6</td>
+                                </tr>
+                                <tr>
+                                    <td>BHTM UKI measurement</td>
+                                    <td>652f8c813382abb0c09a7bdc6528e6a3494f9f0833eb087349ad5dac76dec140532763fec8eeaf3fa52723b6a5de8279</td>
+                                </tr>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section>
+                        <h2>What the browser checks</h2>
+                        <ul>
+                            <li>The BHTM leaf proof recomputes the leaf hash and Merkle path to the pinned chunk tree root.</li>
+                            <li><code>report-data.bin</code> equals <code>SHA512("BitcoinPIR/blockhash-to-muhash/report-data/v2" || attestation.bin)</code>.</li>
+                            <li>The SNP report's raw <code>REPORT_DATA</code> field equals <code>report-data.bin</code>.</li>
+                            <li>The SNP report's raw <code>MEASUREMENT</code> field equals the pinned BHTM UKI measurement.</li>
+                            <li>The AMD VCEK chain and report signature verify through the same WASM verifier used for runtime attestation.</li>
+                            <li>The DB proof anchor equals the BHTM leaf's height, block hash, and Core-display MuHash.</li>
+                        </ul>
+                    </section>
+                </section>
+
+                <section id="artifacts" class="tab-panel" role="tabpanel" aria-labelledby="tab-artifacts">
+                    <section>
+                        <h2>Published proof artifacts</h2>
+                        <p>
+                            The production frontend loads the manifest below, verifies each
+                            artifact's SHA-256 and size, then verifies the DB/BHTM chain.
+                        </p>
+                        <div class="panel">
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454.json" target="_blank" rel="noopener">trust-chain manifest</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json" target="_blank" rel="noopener">BHTM leaf proof JSON</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/sev-snp-report.bin" download>BHTM SEV-SNP report</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/db/build-evidence.bin" download>DB build evidence</a></p>
+                        </div>
+                    </section>
+                </section>
+
                 <section id="pir1" class="tab-panel" role="tabpanel" aria-labelledby="tab-pir1">
                     <section>
                         <h2>pir1 verification (Hetzner, no SEV)</h2>
@@ -695,6 +779,7 @@
                             <li>For pir2, AMD signs the loaded confidential-VM runtime and channel binding.</li>
                             <li>For pir1, binary-hash pinning detects drift but does not provide a hardware root of trust.</li>
                             <li>The database proof binds <code>delta_940611_948454</code>'s bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash at block <code>948454</code>.</li>
+                            <li>The Bitcoin anchor proof binds that same block hash and MuHash to a blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
                             <li>The web client refuses to upgrade to the encrypted channel if runtime pins do not match what the server reports.</li>
                         </ul>
                     </section>
@@ -705,6 +790,7 @@
                             <li>The custom OVMF binary is binary-pinned, not rebuilt from EDK2 source by this project.</li>
                             <li>The <code>--impure</code> Nix build sources VPSBG's validated kernel from the build host.</li>
                             <li>AMD's signing keys are trust roots; the project pins the AMD ARK fingerprint but cannot remove AMD from the trust base.</li>
+                            <li>The BHTM proof is an attested MuHash transition from Core-style stripped deltas. It checks header linkage and txid Merkle commitments; it is not a full Bitcoin consensus validator inside the TEE.</li>
                             <li>The web DB proof badge is advisory today for DPF and HarmonyPIR. Strict mode still needs to wire verified roots directly into query-path Merkle verification, and standalone OnionPIR still needs its browser-side DB proof verifier.</li>
                         </ul>
                     </section>

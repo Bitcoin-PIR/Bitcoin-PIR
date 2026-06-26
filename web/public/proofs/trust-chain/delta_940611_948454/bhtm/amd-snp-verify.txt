@@ -1,0 +1,8 @@
+family=Turin
+chip_id=003642735DDC6E02
+chip_id_full=003642735DDC6E020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+reported_tcb=fmc=Some(1),bootloader=1,tee=1,snp=4,microcode=88
+signing_key=0
+chain_url=https://kdsintf.amd.com/vcek/v1/Turin/cert_chain
+vcek_url=https://kdsintf.amd.com/vcek/v1/Turin/003642735DDC6E02?fmcSPL=1&blSPL=1&teeSPL=1&snpSPL=4&ucodeSPL=88
+amd_chain_and_report_signature=ok

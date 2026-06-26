@@ -141,6 +141,14 @@ export {
   type VerifiedDatabaseProof,
 } from './db-proof.js';
 
+export {
+  DEFAULT_TRUST_CHAIN_MANIFEST_PATH,
+  verifyProductionTrustChain,
+  trustChainPinFromManifest,
+  type DatabaseTrustChainStatus,
+  type TrustChainManifest,
+} from './trust-chain-proof.js';
+
 export type {
   HarmonyQueryResult,
   HarmonyUtxoEntry,

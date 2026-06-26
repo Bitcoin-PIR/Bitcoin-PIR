@@ -78,6 +78,19 @@ interface PirSdkWasm {
    */
   turinArkFingerprint(): Uint8Array;
   /**
+   * Verify a standalone SEV-SNP report plus PEM ARK/ASK/VCEK chain using
+   * the same Rust verifier as live runtime attestation. Used for static
+   * database-authenticity proof artifacts.
+   */
+  verifyRawSnpReport(
+    reportBytes: Uint8Array,
+    arkPem: string,
+    askPem: string,
+    vcekPem: string,
+    expectedArkFingerprint: Uint8Array | null,
+    policy: WasmPolicyRequirements,
+  ): void;
+  /**
    * Parse + verify a raw RESP_ANNOUNCE wire payload (the response frame
    * starting at the variant byte) into a `WasmAnnounceVerification`,
    * running the in-bundle chain check. Throws on a wire-format violation

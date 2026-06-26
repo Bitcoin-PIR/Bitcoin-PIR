@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "proofType": "BitcoinPIR/database-authenticity/trust-chain/v1",
+  "id": "delta_940611_948454",
+  "description": "Production DB proof anchor chained to the blockhash-to-muhash SEV-SNP proof for height 948454.",
+  "anchor": {
+    "network": "mainnet",
+    "dbId": 1,
+    "buildKind": "delta",
+    "fromHeight": 940611,
+    "fromBlockHashHex": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+    "height": 948454,
+    "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+    "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+    "bucketSuperRootHex": "e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a",
+    "onionSuperRootHex": "f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997"
+  },
+  "databaseProof": {
+    "builderBinarySha256Hex": "34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a",
+    "builderGitCommit": "01e8db91d76037cd5562fce85c40e832ad156431",
+    "paramsHashHex": "2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39",
+    "networkMagicHex": "f9beb4d9",
+    "artifacts": {
+      "buildEvidence": {
+        "path": "/proofs/trust-chain/delta_940611_948454/db/build-evidence.bin",
+        "sha256": "977abca3ca8dc5dfce06d69006feeb6c0df5e7df3d7c1d758fc717254ff10697",
+        "size": 507
+      },
+      "reportData": {
+        "path": "/proofs/trust-chain/delta_940611_948454/db/build-evidence.report-data",
+        "sha256": "7c5396f8a7a8b03d1eb37c8f34cac8f7f657494a66121646c0b931146ef72bc2",
+        "size": 64
+      },
+      "sevSnpReport": {
+        "path": "/proofs/trust-chain/delta_940611_948454/db/build-evidence.sev-snp-report.bin",
+        "sha256": "4c27672968a1faf0a77d3554393dfd1faa9bd84702e625817a037ef7b1d30df6",
+        "size": 1184
+      },
+      "buildSummary": {
+        "path": "/proofs/trust-chain/delta_940611_948454/db/build-summary.txt",
+        "sha256": "4cad3c59019423dae984f77f234856db44234ab7efef7bdf034d88f50c4b6aa2",
+        "size": 8101
+      }
+    }
+  },
+  "bhtmProof": {
+    "chunk": "mainnet-900000-954920",
+    "leafIndex": 48454,
+    "treeSize": 54921,
+    "leafHashHex": "0171a475dc43b97db594c7512039d12f5213d270b42e56babfa44d65359eeaaf",
+    "treeRootHex": "babeea635812c3b1a2d5f352ab0a5d1ee8a4e9c668c43c05d6603ef3c3766ba6",
+    "attestationVersion": 2,
+    "jobVersion": 1,
+    "jobSha256Hex": "19e03b71ea9150b1c64d4a0069469384420a22dd4bcffd0ae1300a7121331e52",
+    "streamingUkiMeasurementHex": "652f8c813382abb0c09a7bdc6528e6a3494f9f0833eb087349ad5dac76dec140532763fec8eeaf3fa52723b6a5de8279",
+    "reportDataDomain": "BitcoinPIR/blockhash-to-muhash/report-data/v2",
+    "reportDataScheme": "sha512(domain || attestation)",
+    "artifacts": {
+      "leafProof": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json",
+        "sha256": "0a6d6631984a00635528ac9f1df3530469d238b5aaf8b4a3fdb4a4a0fa46a015",
+        "size": 4293
+      },
+      "attestation": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/attestation.bin",
+        "sha256": "4c360e56c50f0d38747682932e35d9f54ce9992893bf7b61bbe62d16f37158ed",
+        "size": 916
+      },
+      "reportData": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/report-data.bin",
+        "sha256": "a06ca7af6c959d91617326c04395980d4cf3de7ad558a243b5581fe06e1bae34",
+        "size": 64
+      },
+      "sevSnpReport": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/sev-snp-report.bin",
+        "sha256": "383523d838d36d8aefedf57fc938b209c6d1b9cd24d9f23c5cb68b0ea7da03c6",
+        "size": 1184
+      },
+      "stats": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/stats.json",
+        "sha256": "389da53f63b21cf4632d203fc68e1aa58fe02c5e7c56966ab7564dc18f324d61",
+        "size": 3475
+      },
+      "job": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/job.json",
+        "sha256": "19e03b71ea9150b1c64d4a0069469384420a22dd4bcffd0ae1300a7121331e52",
+        "size": 1321
+      },
+      "verifyBhtmQuote": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/verify-bhtm-quote.txt",
+        "sha256": "58a35b6558afc8c34352d9cdf9ecce46693b3ec00ae3d48cdca186b97ffdcf12",
+        "size": 1310
+      },
+      "amdSnpVerify": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/amd-snp-verify.txt",
+        "sha256": "ab9639dd53ca0d15b737b4743a3b5045991241db5b06e640236a0bd8fd2b7e18",
+        "size": 461
+      },
+      "arkPem": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/ark.pem",
+        "sha256": "b69c981fe0216c3d8e682eb6f480c6879497103071e52b5e603178638db8f68d",
+        "size": 2277
+      },
+      "askPem": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/ask.pem",
+        "sha256": "c72a54fb75a0a06b0c8dbf68b04893d0891751b94ce4da8231d11fd18a0da944",
+        "size": 2325
+      },
+      "vcekPem": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/vcek.pem",
+        "sha256": "3d76cabd635ddeccea31610d51c9c008fa74269626e6c1c361c2e0aea1765bf1",
+        "size": 1801
+      }
+    }
+  }
+}
