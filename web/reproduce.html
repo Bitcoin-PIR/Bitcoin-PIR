@@ -412,7 +412,8 @@
                             </li>
                             <li>
                                 <strong>pir2 (VPSBG, SEV-SNP, Tier 3 UKI)</strong>
-                                serves the HarmonyPIR query phase plus DPF server-1.
+                                serves the HarmonyPIR query phase, DPF server-1,
+                                and the direct ORAM lookup path.
                                 AMD's PSP signs a <code>MEASUREMENT</code> over the
                                 loaded image and the client's pre-negotiated channel
                                 pubkey via REPORT_DATA binding.
@@ -456,7 +457,7 @@
 
                 <section id="runtime-pins" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-pins">
                     <section>
-                        <h2>Frontend-expected runtime pins <span class="badge ok">db-proof UKI — 2026-06-16</span></h2>
+                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-06-26</span></h2>
                         <p>
                             These are the values the browser bundle expects for
                             pir2. They are not a live-status feed. If the app shows
@@ -468,15 +469,19 @@
                             <table class="pin-table">
                                 <tr>
                                     <td>MEASUREMENT</td>
-                                    <td>892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013</td>
+                                    <td>1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746</td>
                                 </tr>
                                 <tr>
                                     <td>UKI sha256</td>
-                                    <td>01d0dc3f3fbff98886e8ba8bd9108a5a13fd55305806eeaeffeafe7307e68aab</td>
+                                    <td>718c7728142f9a3a1c6663711853d1b51ee14fde62debc8d2fb1c8662855b18b</td>
                                 </tr>
                                 <tr>
                                     <td>binary sha256</td>
-                                    <td>d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</td>
+                                    <td>457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1</td>
+                                </tr>
+                                <tr>
+                                    <td>server git rev</td>
+                                    <td>668dd36b812f51f8c6a63af6fd3025cc07455bfd</td>
                                 </tr>
                                 <tr>
                                     <td>OVMF sha256</td>
@@ -517,9 +522,10 @@
                     <section>
                         <h2>Verify via published artifacts</h2>
                         <p>
-                            Download the OVMF and UKI bytes, run
-                            <code>sev-snp-measure</code>, then compare the predicted
-                            value to the chip-signed value from <code>bpir-admin attest</code>.
+                            Download the OVMF, obtain or rebuild the ORAM Tier 3 UKI
+                            bytes, run <code>sev-snp-measure</code>, then compare the
+                            predicted value to the chip-signed value from
+                            <code>bpir-admin attest</code>.
                         </p>
 
                         <ol class="steps">
@@ -537,21 +543,34 @@
                             </li>
 
                             <li class="step">
-                                <h3>Get the UKI</h3>
+                                <h3>Get or rebuild the UKI</h3>
                                 <p>
                                     The current operator-published artifact is
-                                    <code>bpir-tier3-dbproof-d01e5b7a.efi</code>, the
-                                    Tier 3 UKI that serves the database-proof sidecar.
+                                    <code>bpir-tier3-oram-668dd36b.efi</code>, the
+                                    ORAM-enabled Tier 3 UKI that serves the database
+                                    proof sidecar and direct ORAM lookups for db_id 0/1.
+                                    It is a large runtime artifact, so this page pins the
+                                    exact bytes by hash and records the rebuild route
+                                    rather than inlining the UKI into the static proof
+                                    bundle.
                                 </p>
                                 <p class="meta" style="margin-top: 6px;">
-                                    Verify: <code>sha256sum bpir-tier3-dbproof-d01e5b7a.efi</code> →
-                                    <code>01d0dc3f3fbff98886e8ba8bd9108a5a13fd55305806eeaeffeafe7307e68aab</code>
+                                    Verify: <code>sha256sum bpir-tier3-oram-668dd36b.efi</code> →
+                                    <code>718c7728142f9a3a1c6663711853d1b51ee14fde62debc8d2fb1c8662855b18b</code>
                                 </p>
+	<pre><code>git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git BitcoinPIR-oram-repro
+	cd BitcoinPIR-oram-repro
+	git checkout 668dd36b812f51f8c6a63af6fd3025cc07455bfd
+	cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
+
+	OUT=/tmp/bpir-tier3-oram-668dd36b.efi \
+	BINARY="$PWD/target/release/unified_server" \
+	BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
+	./scripts/build_uki_tier3.sh</code></pre>
                                 <p class="meta" style="margin-top: 6px;">
-                                    Or rebuild from source with Nix:
-                                    <code>nix build --impure .#tier3-uki</code>. The
-                                    <code>--impure</code> input is the VPSBG-validated
-                                    kernel from the build host.
+                                    The operator-side recipe, build-host archive paths,
+                                    and validation gates are recorded in
+                                    <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/ORAM_TIER3_PRODUCTION_HANDOFF.md" target="_blank" rel="noopener"><code>docs/ORAM_TIER3_PRODUCTION_HANDOFF.md</code></a>.
                                 </p>
                             </li>
 
@@ -562,7 +581,7 @@
 	    --vcpus 2 \
 	    --vcpu-sig 0x00B10F10 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel bpir-tier3-dbproof-d01e5b7a.efi \
+	    --kernel bpir-tier3-oram-668dd36b.efi \
 	    --guest-features 0x1</code></pre>
                             </li>
 
@@ -570,13 +589,29 @@
                                 <h3>Verify against the live chip</h3>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-	    --expect-measurement 892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013 \
-	    --expect-binary      d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</code></pre>
+	    --expect-measurement 1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746 \
+	    --expect-binary      457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1</code></pre>
                                 <p>
                                     Expected checkmarks:
                                     <code>SEV-SNP REPORT_DATA binding verified</code>,
                                     <code>binary_sha256 matches expected</code>, and
                                     <code>Launch MEASUREMENT matches expected</code>.
+                                </p>
+                            </li>
+
+                            <li class="step">
+                                <h3>Smoke the ORAM path</h3>
+	<pre><code>HASH=4242424242424242424242424242424242424242
+	cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+	    --server wss://weikeng2.bitcoinpir.org --db-id 0 --padded-slots 25 "$HASH"
+	cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+	    --server wss://weikeng2.bitcoinpir.org --db-id 1 --padded-slots 25 "$HASH"</code></pre>
+                                <p>
+                                    Expected runtime signal:
+                                    <code>sev_status=ReportDataMatch</code>,
+                                    <code>secure_channel=established</code>, and
+                                    <code>found=false</code> for the all-<code>42</code>
+                                    smoke hash.
                                 </p>
                             </li>
                         </ol>
@@ -742,10 +777,11 @@
                     <section>
                         <h2>pir1 verification (Hetzner, no SEV)</h2>
                         <p>
-                            <code>weikeng1.bitcoinpir.org</code> runs the same
-                            <code>unified_server</code> binary as pir2 on a Hetzner
-                            i7-8700. Without a hardware root of trust, the client
-                            verifies the server's self-reported
+                            <code>weikeng1.bitcoinpir.org</code> runs the db-proof
+                            <code>unified_server</code> binary on a Hetzner i7-8700.
+                            It is intentionally pinned independently from pir2's ORAM
+                            Tier 3 UKI. Without a hardware root of trust, the client
+                            verifies pir1's self-reported
                             <code>binary_sha256</code> against a pinned value.
                         </p>
                         <div class="panel accent">
@@ -775,12 +811,13 @@
                     <section>
                         <h2>What this proves</h2>
                         <ul>
-                            <li>The same <code>unified_server</code> binary is expected to serve both pir1 and pir2.</li>
+                            <li>pir1 and pir2 have independent binary pins; pir2 is additionally bound to the ORAM Tier 3 UKI MEASUREMENT.</li>
                             <li>For pir2, AMD signs the loaded confidential-VM runtime and channel binding.</li>
                             <li>For pir1, binary-hash pinning detects drift but does not provide a hardware root of trust.</li>
                             <li>The database proof binds <code>delta_940611_948454</code>'s bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash at block <code>948454</code>.</li>
                             <li>The Bitcoin anchor proof binds that same block hash and MuHash to a blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
                             <li>The web client refuses to upgrade to the encrypted channel if runtime pins do not match what the server reports.</li>
+                            <li>The ORAM smoke route confirms the live attested binary accepts padded direct ORAM requests for both production databases.</li>
                         </ul>
                     </section>
 
