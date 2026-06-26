@@ -55,8 +55,14 @@ build/
 !gradle/wrapper/gradle-wrapper.jar
 *.class
 
-# Planning docs
-PLAN_*.md
+# macOS local metadata
+.DS_Store
+
+# Planning docs are tracked when they are referenced from source/docs.
+# Historical root-level PLAN_*.md files live in docs/plans/ with root
+# symlink shims for older references; use LOCAL_PLAN_*.md for private
+# scratch notes that should stay untracked.
+LOCAL_PLAN_*.md
 
 # Claude Code
 .claude/

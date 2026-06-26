@@ -184,7 +184,9 @@ don't undermine the documented privacy invariants (`CLAUDE.md`):
   base URL at the real payment service and add the invoice/poll/paid-issue
   calls. The WASM obtain bindings (`WasmArcCredentialRequest` / `WasmCashuBlind`)
   and the present path are reusable as-is.
-- **Security:** the `TUNNEL_TOKEN` in `deploy/cloudflared_tunnel.env` is a
-  committed live secret — rotate it. The dev-issuer keys (`arc_key.bin`,
+- **Security:** the old Cloudflare tunnel-token deployment path is gone; there
+  is no current `deploy/cloudflared_tunnel.env` token to rotate. If a tunnel
+  path is reintroduced, keep tokens out of git and document the rotation
+  procedure next to the deployment unit. The dev-issuer keys (`arc_key.bin`,
   `cashu_key.bin`) on pir1 are demo keys; production issuance must use the
   payment service's keys (and the gate must load the matching key).

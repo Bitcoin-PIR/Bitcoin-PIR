@@ -140,6 +140,21 @@ the live demo** (pir1/Hetzner has no SEV measurement).
 | I7 | minor | No dependabot / `cargo-audit` / `cargo-deny` — 317 vendored crates, no CVE signal |
 | I8 | minor | `pir-channel`, `pir-identity`, `pir-attest-verify` declare dual license but ship no in-crate LICENSE files and are not `publish = false` |
 
+### Status update (2026-06-26): I4/I5 closed
+
+- **I4**: historical `PLAN_*.md` files are now tracked under
+  `docs/plans/`, with root-level symlink shims preserving the old
+  references from source comments, CLAUDE.md, and EasyCrypt docs.
+  `.gitignore` now reserves `LOCAL_PLAN_*.md` for private scratch
+  notes instead of hiding referenced project plans.
+- **I5**: resolved by operations decision — the old Cloudflare tunnel
+  token path is gone. `docs/RATELIMIT_INTEGRATION.md` no longer
+  describes a live committed `TUNNEL_TOKEN`; if a tunnel path returns,
+  the doc now requires out-of-git token handling and a rotation
+  procedure.
+- **I7**: partially closed by the cargo-audit CI job added in June;
+  dependabot / cargo-deny remain optional future hygiene.
+
 ---
 
 ## Lower-severity / nits (not auto-fixing)
@@ -169,6 +184,20 @@ the live demo** (pir1/Hetzner has no SEV measurement).
   `measurementHex` pin is configured.
 - **W7** (minor): `onionpir_client.ts:1102` `keygenClient` leaks on a
   keygen throw — move creation inside the `try`.
+
+### Status update (2026-06-26): small nits closed
+
+- **S8**: ed25519 signature checks in `pir-runtime-core::admin` and
+  `pir-identity` now use `verify_strict`.
+- **C6**: DPF and Harmony chunk-id range expansion now uses
+  `checked_add`, returning `PirError::Decode` on malicious overflow
+  instead of release wrap / debug panic.
+- **W4/W5/W7**: already closed in the web client (accurate dummy-RNG
+  comment, unused `aes-js` dependency removed, `keygenClient.delete()`
+  guarded by `finally`).
+- **W6**: the DPF and Harmony web adapters now fail closed when a
+  `measurementHex` pin is configured but the attestation report omits
+  `launchMeasurementHex`.
 
 ---
 

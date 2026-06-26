@@ -1,0 +1,1 @@
+docs/plans/PLAN_HARMONY_COUNT_LEAK_FIX.md

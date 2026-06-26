@@ -20,7 +20,7 @@
 //! state never persists across WebSocket lifetimes. This is the cheap
 //! way to get session expiry without a clock.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
@@ -123,7 +123,7 @@ impl AdminConnectionState {
         let sig = Signature::from_bytes(signature);
         config
             .admin_pubkey
-            .verify(&signed_blob, &sig)
+            .verify_strict(&signed_blob, &sig)
             .map_err(|_| AuthError::BadSignature)?;
 
         self.authenticated = true;
