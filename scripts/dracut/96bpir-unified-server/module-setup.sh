@@ -36,7 +36,7 @@ depends() {
 }
 
 install() {
-    local bin=/home/pir/BitcoinPIR/target/release/unified_server
+    local bin=${BPIR_UNIFIED_SERVER_BIN:-${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}}
 
     if [ ! -x "$bin" ]; then
         derror "bpir-unified-server: $bin not executable on build host"
