@@ -15,6 +15,8 @@ use bitcoinpir_oram::{
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
@@ -220,6 +222,27 @@ enum Command {
         /// 32-byte hex ORAM RNG seed. Defaults to all 0x0a for reproducible direct builds.
         #[arg(long)]
         seed_hex: Option<String>,
+        /// Attested DB build-evidence.bin to bind this ORAM build to.
+        #[arg(long)]
+        db_build_evidence: Option<PathBuf>,
+        /// Root-bundle payload produced by the attested DB builder.
+        #[arg(long)]
+        root_bundle_payload: Option<PathBuf>,
+        /// Expected certified MuHash in Bitcoin Core display byte order.
+        #[arg(long)]
+        expected_muhash: Option<String>,
+        /// Expected starting MuHash for a delta build, in Bitcoin Core display byte order.
+        #[arg(long)]
+        expected_from_muhash: Option<String>,
+        /// Expected SHA-256 of utxo_chunks_index_nodust.bin.
+        #[arg(long)]
+        expected_index_sha256: Option<String>,
+        /// Expected SHA-256 of utxo_chunks_nodust.bin.
+        #[arg(long)]
+        expected_chunks_sha256: Option<String>,
+        /// Fail closed unless certified DB evidence and expected direct source hashes match.
+        #[arg(long)]
+        strict_source_binding: bool,
     },
     /// Benchmark direct INDEX/CHUNK ORAM images with native batch reads.
     BenchDirect {
@@ -740,6 +763,13 @@ fn main() -> Result<()> {
             index_load_factor,
             index_seed,
             seed_hex,
+            db_build_evidence,
+            root_bundle_payload,
+            expected_muhash,
+            expected_from_muhash,
+            expected_index_sha256,
+            expected_chunks_sha256,
+            strict_source_binding,
         } => {
             build_direct_images(
                 &index_file,
@@ -763,6 +793,15 @@ fn main() -> Result<()> {
                 index_load_factor,
                 index_seed,
                 parse_seed(seed_hex.as_deref(), 0x0a)?,
+                DirectBuildEvidenceInputs::parse(
+                    db_build_evidence,
+                    root_bundle_payload,
+                    expected_muhash.as_deref(),
+                    expected_from_muhash.as_deref(),
+                    expected_index_sha256.as_deref(),
+                    expected_chunks_sha256.as_deref(),
+                    strict_source_binding,
+                )?,
             )?;
         }
         Command::BenchDirect {
@@ -2355,6 +2394,776 @@ fn print_direct_estimate(info: &DirectTableInfo, e: &DirectOramEstimate) {
     );
 }
 
+const ORAM_BUILD_EVIDENCE_JSON_FILE: &str = "oram-build-evidence.json";
+const ORAM_BUILD_EVIDENCE_BIN_FILE: &str = "oram-build-evidence.bin";
+const ORAM_BUILD_EVIDENCE_VERSION: u32 = 1;
+const DB_BUILD_EVIDENCE_VERSION: u16 = 1;
+const ROOT_BUNDLE_PAYLOAD_VERSION: u16 = 1;
+
+#[derive(Clone, Debug)]
+struct DirectBuildEvidenceInputs {
+    db_build_evidence: Option<PathBuf>,
+    root_bundle_payload: Option<PathBuf>,
+    expected_muhash: Option<[u8; 32]>,
+    expected_from_muhash: Option<[u8; 32]>,
+    expected_index_sha256: Option<[u8; 32]>,
+    expected_chunks_sha256: Option<[u8; 32]>,
+    strict_source_binding: bool,
+}
+
+impl DirectBuildEvidenceInputs {
+    #[allow(clippy::too_many_arguments)]
+    fn parse(
+        db_build_evidence: Option<PathBuf>,
+        root_bundle_payload: Option<PathBuf>,
+        expected_muhash: Option<&str>,
+        expected_from_muhash: Option<&str>,
+        expected_index_sha256: Option<&str>,
+        expected_chunks_sha256: Option<&str>,
+        strict_source_binding: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            db_build_evidence,
+            root_bundle_payload,
+            expected_muhash: expected_muhash.map(parse_muhash_display_hex).transpose()?,
+            expected_from_muhash: expected_from_muhash
+                .map(parse_muhash_display_hex)
+                .transpose()?,
+            expected_index_sha256: expected_index_sha256.map(parse_32_hex).transpose()?,
+            expected_chunks_sha256: expected_chunks_sha256.map(parse_32_hex).transpose()?,
+            strict_source_binding,
+        })
+    }
+
+    fn empty() -> Self {
+        Self {
+            db_build_evidence: None,
+            root_bundle_payload: None,
+            expected_muhash: None,
+            expected_from_muhash: None,
+            expected_index_sha256: None,
+            expected_chunks_sha256: None,
+            strict_source_binding: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CertifiedBuildKind {
+    Snapshot,
+    Delta,
+}
+
+impl CertifiedBuildKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Delta => "delta",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CertifiedAnchor {
+    block_hash: [u8; 32],
+    height: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CertifiedDbBinding {
+    build_kind: CertifiedBuildKind,
+    network_magic: [u8; 4],
+    from_anchor: CertifiedAnchor,
+    anchor: CertifiedAnchor,
+    to_muhash: [u8; 32],
+    root_bundle_payload_sha256: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OramBuildEvidence {
+    version: u32,
+    build: &'static str,
+    strict_source_binding: bool,
+    db_certification: DbCertificationEvidence,
+    db_build_evidence: Option<ArtifactEvidence>,
+    root_bundle_payload: Option<ArtifactEvidence>,
+    source_files: DirectSourceFilesEvidence,
+    oram_params: DirectOramParamsEvidence,
+    output_artifacts: Vec<ArtifactEvidence>,
+    controller_states: Vec<DirectControllerStateEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DbCertificationEvidence {
+    build_kind: Option<&'static str>,
+    network_magic_hex: Option<String>,
+    from_anchor: Option<ChainAnchorEvidence>,
+    anchor: Option<ChainAnchorEvidence>,
+    from_muhash_hex: Option<String>,
+    to_muhash_hex: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ChainAnchorEvidence {
+    height: u32,
+    block_hash_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DirectSourceFilesEvidence {
+    index: DirectSourceFileEvidence,
+    chunks: DirectSourceFileEvidence,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DirectSourceFileEvidence {
+    level: &'static str,
+    path: String,
+    sha256: String,
+    bytes: u64,
+    records: usize,
+    record_size: usize,
+    #[serde(skip)]
+    sha256_bytes: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DirectOramParamsEvidence {
+    pack: usize,
+    leaf_divisor: usize,
+    bucket_size: usize,
+    stash_capacity: usize,
+    cache_levels: usize,
+    auth_store: bool,
+    auth_layout: &'static str,
+    auth_trusted_levels: usize,
+    auth_hash_page_size: usize,
+    index_slots_per_bin: usize,
+    index_hash_fns: usize,
+    index_load_factor: f64,
+    index_seed: u64,
+    oram_rng_seed_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArtifactEvidence {
+    path: String,
+    file_name: String,
+    sha256: String,
+    bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DirectControllerStateEvidence {
+    level: DirectLevel,
+    state_path: String,
+    controller_state_bincode_sha256: String,
+    controller_state_bincode_bytes: u64,
+    auth_roots: Option<AuthRootsEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "layout", rename_all = "snake_case")]
+enum AuthRootsEvidence {
+    TieredMerkle {
+        meta: TieredMerkleRootEvidence,
+        payload: TieredMerkleRootEvidence,
+    },
+    EmbeddedTree {
+        meta: EmbeddedTreeRootEvidence,
+        payload: EmbeddedTreeRootEvidence,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct TieredMerkleRootEvidence {
+    store_id_hex: String,
+    page_count: usize,
+    page_size: usize,
+    trusted_levels: usize,
+    hash_page_size: usize,
+    root_hash_hex: String,
+    trusted_hashes_sha256: String,
+    trusted_hashes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct EmbeddedTreeRootEvidence {
+    store_id_hex: String,
+    page_count: usize,
+    logical_page_size: usize,
+    root_hash_hex: String,
+}
+
+fn direct_source_files_evidence(infos: &[DirectTableInfo; 2]) -> Result<DirectSourceFilesEvidence> {
+    let index = infos
+        .iter()
+        .find(|info| info.level == DirectLevel::Index)
+        .expect("direct_infos returns index");
+    let chunks = infos
+        .iter()
+        .find(|info| info.level == DirectLevel::Chunk)
+        .expect("direct_infos returns chunks");
+    Ok(DirectSourceFilesEvidence {
+        index: direct_source_file_evidence(index, DIRECT_INDEX_INPUT_RECORD_SIZE)?,
+        chunks: direct_source_file_evidence(chunks, DIRECT_CHUNK_RECORD_SIZE)?,
+    })
+}
+
+fn direct_source_file_evidence(
+    info: &DirectTableInfo,
+    record_size: usize,
+) -> Result<DirectSourceFileEvidence> {
+    let (sha256_bytes, bytes) = sha256_file(&info.path)?;
+    if bytes != info.file_bytes {
+        return Err(Error::InvalidInput(format!(
+            "direct {} source {} changed while hashing: metadata saw {} bytes, hash saw {}",
+            info.level,
+            info.path.display(),
+            info.file_bytes,
+            bytes
+        )));
+    }
+    Ok(DirectSourceFileEvidence {
+        level: info.level.label(),
+        path: info.path.display().to_string(),
+        sha256: hex::encode(sha256_bytes),
+        bytes,
+        records: info.records,
+        record_size,
+        sha256_bytes,
+    })
+}
+
+fn load_certified_db_binding(
+    inputs: &DirectBuildEvidenceInputs,
+) -> Result<Option<CertifiedDbBinding>> {
+    let mut binding = None;
+    if let Some(path) = &inputs.db_build_evidence {
+        let bytes = fs::read(path)?;
+        binding = Some(decode_db_build_evidence_binding(&bytes)?);
+    }
+    if let Some(path) = &inputs.root_bundle_payload {
+        let bytes = fs::read(path)?;
+        let payload_sha256 = sha256_bytes(&bytes);
+        let payload_binding = decode_root_bundle_payload_binding(&bytes)?;
+        if let Some(existing) = &binding {
+            if existing.root_bundle_payload_sha256 != Some(payload_sha256) {
+                return Err(Error::InvalidInput(format!(
+                    "root bundle payload hash mismatch: db evidence expects {}, got {}",
+                    existing
+                        .root_bundle_payload_sha256
+                        .map(|h| hex::encode(h))
+                        .unwrap_or_else(|| "<none>".into()),
+                    hex::encode(payload_sha256)
+                )));
+            }
+            compare_certified_binding("root-bundle-payload", existing, &payload_binding)?;
+        } else {
+            binding = Some(payload_binding);
+        }
+    }
+    Ok(binding)
+}
+
+fn validate_direct_build_binding(
+    inputs: &DirectBuildEvidenceInputs,
+    sources: &DirectSourceFilesEvidence,
+    certified: Option<&CertifiedDbBinding>,
+) -> Result<()> {
+    if let Some(expected) = inputs.expected_index_sha256 {
+        expect_raw_hash(
+            "direct index source sha256",
+            expected,
+            sources.index.sha256_bytes,
+        )?;
+    }
+    if let Some(expected) = inputs.expected_chunks_sha256 {
+        expect_raw_hash(
+            "direct chunks source sha256",
+            expected,
+            sources.chunks.sha256_bytes,
+        )?;
+    }
+    if let (Some(expected), Some(certified)) = (inputs.expected_muhash, certified) {
+        expect_muhash("certified MuHash", expected, certified.to_muhash)?;
+    }
+    if inputs.expected_from_muhash.is_some()
+        && certified
+            .map(|certified| certified.build_kind != CertifiedBuildKind::Delta)
+            .unwrap_or(false)
+    {
+        return Err(Error::InvalidInput(
+            "--expected-from-muhash was provided but certified build kind is snapshot".into(),
+        ));
+    }
+
+    if inputs.strict_source_binding {
+        if certified.is_none() {
+            return Err(Error::InvalidInput(
+                "--strict-source-binding requires --db-build-evidence or --root-bundle-payload"
+                    .into(),
+            ));
+        }
+        if inputs.expected_index_sha256.is_none() || inputs.expected_chunks_sha256.is_none() {
+            return Err(Error::InvalidInput(
+                "--strict-source-binding requires --expected-index-sha256 and --expected-chunks-sha256 because DB evidence v1 does not carry direct source hashes".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_db_certification_evidence(
+    inputs: &DirectBuildEvidenceInputs,
+    certified: Option<&CertifiedDbBinding>,
+) -> DbCertificationEvidence {
+    let to_muhash = certified
+        .map(|certified| certified.to_muhash)
+        .or(inputs.expected_muhash);
+    DbCertificationEvidence {
+        build_kind: certified.map(|certified| certified.build_kind.label()),
+        network_magic_hex: certified.map(|certified| hex::encode(certified.network_magic)),
+        from_anchor: certified.map(|certified| chain_anchor_evidence(certified.from_anchor)),
+        anchor: certified.map(|certified| chain_anchor_evidence(certified.anchor)),
+        from_muhash_hex: inputs.expected_from_muhash.map(|h| muhash_display_hex(&h)),
+        to_muhash_hex: to_muhash.map(|h| muhash_display_hex(&h)),
+    }
+}
+
+fn chain_anchor_evidence(anchor: CertifiedAnchor) -> ChainAnchorEvidence {
+    ChainAnchorEvidence {
+        height: anchor.height,
+        block_hash_hex: display_block_hash_hex(&anchor.block_hash),
+    }
+}
+
+fn direct_oram_params_evidence(
+    pack: usize,
+    leaf_divisor: usize,
+    bucket_size: usize,
+    stash_capacity: usize,
+    cache_levels: usize,
+    auth_store: bool,
+    auth_layout: AuthLayoutArg,
+    auth_trusted_levels: usize,
+    auth_hash_page_size: usize,
+    index_slots_per_bin: usize,
+    index_hash_fns: usize,
+    index_load_factor: f64,
+    index_seed: u64,
+    seed: [u8; 32],
+) -> DirectOramParamsEvidence {
+    DirectOramParamsEvidence {
+        pack,
+        leaf_divisor,
+        bucket_size,
+        stash_capacity,
+        cache_levels,
+        auth_store,
+        auth_layout: auth_layout.label(),
+        auth_trusted_levels,
+        auth_hash_page_size,
+        index_slots_per_bin,
+        index_hash_fns,
+        index_load_factor,
+        index_seed,
+        oram_rng_seed_hex: hex::encode(seed),
+    }
+}
+
+fn direct_output_artifact_manifest(out_dir: &Path) -> Result<Vec<ArtifactEvidence>> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(out_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("direct-index.") || name.starts_with("direct-chunk.") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| artifact_evidence(&path))
+        .collect()
+}
+
+fn artifact_evidence(path: &Path) -> Result<ArtifactEvidence> {
+    let (sha256, bytes) = sha256_file(path)?;
+    Ok(ArtifactEvidence {
+        path: path.display().to_string(),
+        file_name: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        sha256: hex::encode(sha256),
+        bytes,
+    })
+}
+
+fn write_oram_build_evidence(out_dir: &Path, evidence: &OramBuildEvidence) -> Result<()> {
+    let json_path = out_dir.join(ORAM_BUILD_EVIDENCE_JSON_FILE);
+    let bin_path = out_dir.join(ORAM_BUILD_EVIDENCE_BIN_FILE);
+    let json = serde_json::to_vec_pretty(evidence)
+        .map_err(|err| Error::InvalidInput(format!("serialize ORAM build evidence JSON: {err}")))?;
+    fs::write(&json_path, json)?;
+    fs::write(&bin_path, bincode::serialize(evidence)?)?;
+    println!(
+        "oram_build_evidence json={} bin={}",
+        json_path.display(),
+        bin_path.display()
+    );
+    Ok(())
+}
+
+fn direct_controller_state_evidence(
+    level: DirectLevel,
+    state_path: &Path,
+    state: &CircuitOramState,
+) -> Result<DirectControllerStateEvidence> {
+    let encoded = bincode::serialize(state)?;
+    Ok(DirectControllerStateEvidence {
+        level,
+        state_path: state_path.display().to_string(),
+        controller_state_bincode_sha256: hex::encode(sha256_bytes(&encoded)),
+        controller_state_bincode_bytes: encoded.len() as u64,
+        auth_roots: state.auth.as_ref().map(auth_roots_evidence),
+    })
+}
+
+fn auth_roots_evidence(auth: &CircuitStoreAuthState) -> AuthRootsEvidence {
+    match &auth.layout {
+        CircuitStoreAuthLayout::TieredMerkle { meta, payload } => AuthRootsEvidence::TieredMerkle {
+            meta: tiered_merkle_root_evidence(meta),
+            payload: tiered_merkle_root_evidence(payload),
+        },
+        CircuitStoreAuthLayout::EmbeddedTree { meta, payload } => AuthRootsEvidence::EmbeddedTree {
+            meta: embedded_tree_root_evidence(meta),
+            payload: embedded_tree_root_evidence(payload),
+        },
+    }
+}
+
+fn tiered_merkle_root_evidence(
+    state: &bitcoinpir_oram::TieredMerkleState,
+) -> TieredMerkleRootEvidence {
+    let root = state.trusted_hashes.get(1).copied().unwrap_or([0u8; 32]);
+    TieredMerkleRootEvidence {
+        store_id_hex: hex::encode(state.store_id),
+        page_count: state.page_count,
+        page_size: state.page_size,
+        trusted_levels: state.trusted_levels,
+        hash_page_size: state.hash_page_size,
+        root_hash_hex: hex::encode(root),
+        trusted_hashes_sha256: hex::encode(sha256_hashes(&state.trusted_hashes)),
+        trusted_hashes: state.trusted_hashes.len(),
+    }
+}
+
+fn embedded_tree_root_evidence(
+    state: &bitcoinpir_oram::EmbeddedTreeState,
+) -> EmbeddedTreeRootEvidence {
+    EmbeddedTreeRootEvidence {
+        store_id_hex: hex::encode(state.store_id),
+        page_count: state.page_count,
+        logical_page_size: state.logical_page_size,
+        root_hash_hex: hex::encode(state.root_hash),
+    }
+}
+
+fn sha256_hashes(hashes: &[[u8; 32]]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    for hash in hashes {
+        h.update(hash);
+    }
+    h.finalize().into()
+}
+
+fn sha256_file(path: &Path) -> Result<([u8; 32], u64)> {
+    let mut file = File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = [0u8; 1024 * 1024];
+    let mut bytes = 0u64;
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        bytes += n as u64;
+        h.update(&buf[..n]);
+    }
+    Ok((h.finalize().into(), bytes))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+fn expect_raw_hash(field: &'static str, expected: [u8; 32], actual: [u8; 32]) -> Result<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput(format!(
+            "{field} mismatch: expected {}, got {}",
+            hex::encode(expected),
+            hex::encode(actual)
+        )))
+    }
+}
+
+fn expect_muhash(field: &'static str, expected: [u8; 32], actual: [u8; 32]) -> Result<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput(format!(
+            "{field} mismatch: expected {}, got {}",
+            muhash_display_hex(&expected),
+            muhash_display_hex(&actual)
+        )))
+    }
+}
+
+fn compare_certified_binding(
+    label: &'static str,
+    expected: &CertifiedDbBinding,
+    actual: &CertifiedDbBinding,
+) -> Result<()> {
+    if expected.build_kind != actual.build_kind {
+        return Err(Error::InvalidInput(format!(
+            "{label} build kind mismatch: expected {}, got {}",
+            expected.build_kind.label(),
+            actual.build_kind.label()
+        )));
+    }
+    if expected.network_magic != actual.network_magic {
+        return Err(Error::InvalidInput(format!(
+            "{label} network magic mismatch: expected {}, got {}",
+            hex::encode(expected.network_magic),
+            hex::encode(actual.network_magic)
+        )));
+    }
+    if expected.from_anchor != actual.from_anchor {
+        return Err(Error::InvalidInput(format!(
+            "{label} from-anchor mismatch: expected {}:{}, got {}:{}",
+            display_block_hash_hex(&expected.from_anchor.block_hash),
+            expected.from_anchor.height,
+            display_block_hash_hex(&actual.from_anchor.block_hash),
+            actual.from_anchor.height
+        )));
+    }
+    if expected.anchor != actual.anchor {
+        return Err(Error::InvalidInput(format!(
+            "{label} anchor mismatch: expected {}:{}, got {}:{}",
+            display_block_hash_hex(&expected.anchor.block_hash),
+            expected.anchor.height,
+            display_block_hash_hex(&actual.anchor.block_hash),
+            actual.anchor.height
+        )));
+    }
+    expect_muhash(label, expected.to_muhash, actual.to_muhash)
+}
+
+fn decode_db_build_evidence_binding(bytes: &[u8]) -> Result<CertifiedDbBinding> {
+    let cur = &mut &bytes[..];
+    let version = take_u16(cur, "db evidence version")?;
+    if version != DB_BUILD_EVIDENCE_VERSION {
+        return Err(Error::InvalidInput(format!(
+            "unsupported DB build evidence version {version}"
+        )));
+    }
+    let _builder_git_commit = take_string(cur, "builder_git_commit")?;
+    let _builder_binary_sha256 = take_arr::<32>(cur, "builder_binary_sha256")?;
+    let _tee_platform = take_string(cur, "tee_platform")?;
+    let _tee_image_measurement = take_len_bytes(cur, "tee_image_measurement")?;
+    let _core_version = take_string(cur, "core_version")?;
+    let _snapshot_sha256 = take_arr::<32>(cur, "snapshot_sha256")?;
+    let _snapshot_bytes = take_u64(cur, "snapshot_bytes")?;
+    let network_magic = take_arr::<4>(cur, "network_magic")?;
+    let build_kind = certified_build_kind_from_byte(take_u8(cur, "build_kind")?)?;
+    let from_anchor = take_certified_anchor(cur, "from_anchor")?;
+    let anchor = take_certified_anchor(cur, "anchor")?;
+    let to_muhash = take_arr::<32>(cur, "utxo_muhash")?;
+    let _dust_threshold_sats = take_u64(cur, "dust_threshold_sats")?;
+    let _max_utxos_per_spk = take_u32(cur, "max_utxos_per_spk")?;
+    let _params_hash = take_arr::<32>(cur, "params_hash")?;
+    let _index_bins_per_table = take_u32(cur, "index_bins_per_table")?;
+    let _chunk_bins_per_table = take_u32(cur, "chunk_bins_per_table")?;
+    let _onion_entry_size = take_u32(cur, "onion_entry_size")?;
+    let _bucket_super_root = take_arr::<32>(cur, "bucket_super_root")?;
+    let _onion_super_root = take_arr::<32>(cur, "onion_super_root")?;
+    let root_bundle_payload_sha256 = take_arr::<32>(cur, "root_bundle_payload_sha256")?;
+    match take_u8(cur, "has_signed_root_bundle")? {
+        0 => {}
+        1 => {
+            let _signed_root_bundle_sha256 = take_arr::<32>(cur, "signed_root_bundle_sha256")?;
+        }
+        _ => {
+            return Err(Error::InvalidInput(
+                "bad signed root bundle option tag".into(),
+            ))
+        }
+    }
+    let _database_manifest_sha256 = take_arr::<32>(cur, "database_manifest_sha256")?;
+    let _all_artifacts_manifest_sha256 = take_arr::<32>(cur, "all_artifacts_manifest_sha256")?;
+    let _server_db_manifest_sha256 = take_arr::<32>(cur, "server_db_manifest_sha256")?;
+    if !cur.is_empty() {
+        return Err(Error::InvalidInput(
+            "DB build evidence has trailing bytes".into(),
+        ));
+    }
+    Ok(CertifiedDbBinding {
+        build_kind,
+        network_magic,
+        from_anchor,
+        anchor,
+        to_muhash,
+        root_bundle_payload_sha256: Some(root_bundle_payload_sha256),
+    })
+}
+
+fn decode_root_bundle_payload_binding(bytes: &[u8]) -> Result<CertifiedDbBinding> {
+    let cur = &mut &bytes[..];
+    let version = take_u16(cur, "root payload version")?;
+    if version != ROOT_BUNDLE_PAYLOAD_VERSION {
+        return Err(Error::InvalidInput(format!(
+            "unsupported root bundle payload version {version}"
+        )));
+    }
+    let network_magic = take_arr::<4>(cur, "network_magic")?;
+    let build_kind = certified_build_kind_from_byte(take_u8(cur, "build_kind")?)?;
+    let from_anchor = take_certified_anchor(cur, "from_anchor")?;
+    let anchor = take_certified_anchor(cur, "anchor")?;
+    let to_muhash = take_arr::<32>(cur, "utxo_muhash")?;
+    let _dust_threshold_sats = take_u64(cur, "dust_threshold_sats")?;
+    let _max_utxos_per_spk = take_u32(cur, "max_utxos_per_spk")?;
+    let _params_hash = take_arr::<32>(cur, "params_hash")?;
+    let _issued_at = take_i64(cur, "issued_at")?;
+    let n_roots = take_u16(cur, "root_count")? as usize;
+    if n_roots == 0 || n_roots > 1024 {
+        return Err(Error::InvalidInput(
+            "root count is outside canonical bounds".into(),
+        ));
+    }
+    let mut previous_label = None::<String>;
+    for _ in 0..n_roots {
+        let label_len = take_u8(cur, "root label len")? as usize;
+        let label = take(cur, label_len, "root label")?;
+        let label = String::from_utf8(label.to_vec())
+            .map_err(|_| Error::InvalidInput("root label is not UTF-8".into()))?;
+        if label.is_empty()
+            || label.len() > 64
+            || !label.bytes().all(|b| (0x21..=0x7e).contains(&b))
+        {
+            return Err(Error::InvalidInput("root label is not canonical".into()));
+        }
+        if previous_label
+            .as_ref()
+            .map(|previous| previous >= &label)
+            .unwrap_or(false)
+        {
+            return Err(Error::InvalidInput(
+                "root labels are not strictly sorted".into(),
+            ));
+        }
+        previous_label = Some(label);
+        let _root = take_arr::<32>(cur, "root")?;
+    }
+    if !cur.is_empty() {
+        return Err(Error::InvalidInput(
+            "root bundle payload has trailing bytes".into(),
+        ));
+    }
+    Ok(CertifiedDbBinding {
+        build_kind,
+        network_magic,
+        from_anchor,
+        anchor,
+        to_muhash,
+        root_bundle_payload_sha256: None,
+    })
+}
+
+fn certified_build_kind_from_byte(byte: u8) -> Result<CertifiedBuildKind> {
+    match byte {
+        0 => Ok(CertifiedBuildKind::Snapshot),
+        1 => Ok(CertifiedBuildKind::Delta),
+        _ => Err(Error::InvalidInput(format!("unknown build kind {byte}"))),
+    }
+}
+
+fn take_certified_anchor(cur: &mut &[u8], what: &'static str) -> Result<CertifiedAnchor> {
+    Ok(CertifiedAnchor {
+        block_hash: take_arr::<32>(cur, what)?,
+        height: take_u32(cur, what)?,
+    })
+}
+
+fn take<'a>(cur: &mut &'a [u8], n: usize, what: &'static str) -> Result<&'a [u8]> {
+    if cur.len() < n {
+        return Err(Error::InvalidInput(format!("truncated {what}")));
+    }
+    let (head, rest) = cur.split_at(n);
+    *cur = rest;
+    Ok(head)
+}
+
+fn take_arr<const N: usize>(cur: &mut &[u8], what: &'static str) -> Result<[u8; N]> {
+    Ok(take(cur, N, what)?.try_into().unwrap())
+}
+
+fn take_u8(cur: &mut &[u8], what: &'static str) -> Result<u8> {
+    Ok(take_arr::<1>(cur, what)?[0])
+}
+
+fn take_u16(cur: &mut &[u8], what: &'static str) -> Result<u16> {
+    Ok(u16::from_le_bytes(take_arr::<2>(cur, what)?))
+}
+
+fn take_u32(cur: &mut &[u8], what: &'static str) -> Result<u32> {
+    Ok(u32::from_le_bytes(take_arr::<4>(cur, what)?))
+}
+
+fn take_u64(cur: &mut &[u8], what: &'static str) -> Result<u64> {
+    Ok(u64::from_le_bytes(take_arr::<8>(cur, what)?))
+}
+
+fn take_i64(cur: &mut &[u8], what: &'static str) -> Result<i64> {
+    Ok(i64::from_le_bytes(take_arr::<8>(cur, what)?))
+}
+
+fn take_len_bytes(cur: &mut &[u8], what: &'static str) -> Result<Vec<u8>> {
+    let len = take_u16(cur, what)? as usize;
+    Ok(take(cur, len, what)?.to_vec())
+}
+
+fn take_string(cur: &mut &[u8], what: &'static str) -> Result<String> {
+    String::from_utf8(take_len_bytes(cur, what)?)
+        .map_err(|_| Error::InvalidInput(format!("{what} is not UTF-8")))
+}
+
+fn parse_muhash_display_hex(input: &str) -> Result<[u8; 32]> {
+    let mut hash = parse_32_hex(input)?;
+    hash.reverse();
+    Ok(hash)
+}
+
+fn muhash_display_hex(hash: &[u8; 32]) -> String {
+    let mut display = *hash;
+    display.reverse();
+    hex::encode(display)
+}
+
+fn display_block_hash_hex(hash: &[u8; 32]) -> String {
+    let mut display = *hash;
+    display.reverse();
+    hex::encode(display)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_direct_images(
     index_file: &Path,
@@ -2378,6 +3187,7 @@ fn build_direct_images(
     index_load_factor: f64,
     index_seed: u64,
     seed: [u8; 32],
+    evidence_inputs: DirectBuildEvidenceInputs,
 ) -> Result<()> {
     if pack == 0 {
         return Err(Error::InvalidInput("--pack must be > 0".into()));
@@ -2398,6 +3208,9 @@ fn build_direct_images(
         index_load_factor,
         index_seed,
     )?;
+    let source_files = direct_source_files_evidence(&infos)?;
+    let certified_db = load_certified_db_binding(&evidence_inputs)?;
+    validate_direct_build_binding(&evidence_inputs, &source_files, certified_db.as_ref())?;
     println!("build_direct=true");
     println!("index_file={}", index_file.display());
     println!("chunks_file={}", chunks_file.display());
@@ -2419,13 +3232,32 @@ fn build_direct_images(
     println!("index_load_factor={index_load_factor:.6}");
     println!("index_seed=0x{index_seed:016x}");
     println!("seed_hex={}", hex::encode(seed));
+    println!("index_sha256={}", source_files.index.sha256);
+    println!("chunks_sha256={}", source_files.chunks.sha256);
+    if let Some(certified_db) = &certified_db {
+        println!("certified_build_kind={}", certified_db.build_kind.label());
+        println!(
+            "certified_network_magic={}",
+            hex::encode(certified_db.network_magic)
+        );
+        println!(
+            "certified_anchor={} height={}",
+            display_block_hash_hex(&certified_db.anchor.block_hash),
+            certified_db.anchor.height
+        );
+        println!(
+            "certified_muhash={}",
+            muhash_display_hex(&certified_db.to_muhash)
+        );
+    }
 
+    let mut controller_states = Vec::new();
     for &selected_level in level.levels() {
         let info = infos
             .iter()
             .find(|info| info.level == selected_level)
             .expect("direct_infos returns both levels");
-        build_direct_table(
+        controller_states.push(build_direct_table(
             out_dir,
             info,
             pack,
@@ -2441,8 +3273,45 @@ fn build_direct_images(
             auth_trusted_levels,
             auth_hash_page_size,
             derive_direct_level_seed(seed, info.level),
-        )?;
+        )?);
     }
+
+    let evidence = OramBuildEvidence {
+        version: ORAM_BUILD_EVIDENCE_VERSION,
+        build: "bitcoinpir-oram/direct-build",
+        strict_source_binding: evidence_inputs.strict_source_binding,
+        db_certification: build_db_certification_evidence(&evidence_inputs, certified_db.as_ref()),
+        db_build_evidence: evidence_inputs
+            .db_build_evidence
+            .as_deref()
+            .map(artifact_evidence)
+            .transpose()?,
+        root_bundle_payload: evidence_inputs
+            .root_bundle_payload
+            .as_deref()
+            .map(artifact_evidence)
+            .transpose()?,
+        source_files,
+        oram_params: direct_oram_params_evidence(
+            pack,
+            leaf_divisor,
+            bucket_size,
+            stash_capacity,
+            cache_levels,
+            auth_store,
+            auth_layout,
+            auth_trusted_levels,
+            auth_hash_page_size,
+            index_slots_per_bin,
+            index_hash_fns,
+            index_load_factor,
+            index_seed,
+            seed,
+        ),
+        output_artifacts: direct_output_artifact_manifest(out_dir)?,
+        controller_states,
+    };
+    write_oram_build_evidence(out_dir, &evidence)?;
 
     Ok(())
 }
@@ -2464,7 +3333,7 @@ fn build_direct_table(
     auth_trusted_levels: usize,
     auth_hash_page_size: usize,
     seed: [u8; 32],
-) -> Result<()> {
+) -> Result<DirectControllerStateEvidence> {
     let sizing = DirectOramSizing {
         items_per_block: pack,
         leaf_divisor,
@@ -2545,7 +3414,7 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
     auth_trusted_levels: usize,
     auth_hash_page_size: usize,
     seed: [u8; 32],
-) -> Result<()> {
+) -> Result<DirectControllerStateEvidence> {
     if source.logical_blocks() != params.logical_blocks || source.block_size() != params.block_size
     {
         return Err(Error::InvalidInput(
@@ -2631,7 +3500,7 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
         elapsed.as_millis()
     );
 
-    Ok(())
+    direct_controller_state_evidence(info.level, &paths.state, &controller_state)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5214,8 +6083,12 @@ mod tests {
             0.80,
             DIRECT_INDEX_DEFAULT_SEED,
             [10; 32],
+            DirectBuildEvidenceInputs::empty(),
         )
         .unwrap();
+
+        assert!(out.path().join(ORAM_BUILD_EVIDENCE_JSON_FILE).exists());
+        assert!(out.path().join(ORAM_BUILD_EVIDENCE_BIN_FILE).exists());
 
         bench_direct_images(
             out.path(),
@@ -5234,6 +6107,195 @@ mod tests {
             false,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn build_direct_strict_source_hashes_succeed() {
+        let input = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let index_file = input.path().join("utxo_chunks_index_nodust.bin");
+        let chunks_file = input.path().join("utxo_chunks_nodust.bin");
+        let payload_file = input.path().join("root-bundle-payload.bin");
+        write_direct_index_records(&index_file, 16);
+        write_direct_chunks(&chunks_file, 16);
+        let certified_muhash = numbered_hash(0x30);
+        fs::write(
+            &payload_file,
+            root_payload_bytes(CertifiedBuildKind::Snapshot, certified_muhash),
+        )
+        .unwrap();
+        let (index_sha256, _) = sha256_file(&index_file).unwrap();
+        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+
+        build_direct_images(
+            &index_file,
+            &chunks_file,
+            out.path(),
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            DirectBuildEvidenceInputs {
+                db_build_evidence: None,
+                root_bundle_payload: Some(payload_file.clone()),
+                expected_muhash: Some(certified_muhash),
+                expected_from_muhash: None,
+                expected_index_sha256: Some(index_sha256),
+                expected_chunks_sha256: Some(chunks_sha256),
+                strict_source_binding: true,
+            },
+        )
+        .unwrap();
+
+        let evidence: serde_json::Value = serde_json::from_slice(
+            &fs::read(out.path().join(ORAM_BUILD_EVIDENCE_JSON_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            evidence["source_files"]["index"]["sha256"],
+            hex::encode(index_sha256)
+        );
+        assert_eq!(
+            evidence["source_files"]["chunks"]["sha256"],
+            hex::encode(chunks_sha256)
+        );
+        assert_eq!(
+            evidence["db_certification"]["to_muhash_hex"],
+            muhash_display_hex(&certified_muhash)
+        );
+        assert!(evidence["output_artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| artifact["file_name"] == "direct-index.state"));
+    }
+
+    #[test]
+    fn build_direct_strict_changed_source_bytes_fail() {
+        let input = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let index_file = input.path().join("utxo_chunks_index_nodust.bin");
+        let chunks_file = input.path().join("utxo_chunks_nodust.bin");
+        let payload_file = input.path().join("root-bundle-payload.bin");
+        write_direct_index_records(&index_file, 16);
+        write_direct_chunks(&chunks_file, 16);
+        let certified_muhash = numbered_hash(0x40);
+        fs::write(
+            &payload_file,
+            root_payload_bytes(CertifiedBuildKind::Snapshot, certified_muhash),
+        )
+        .unwrap();
+        let (index_sha256, _) = sha256_file(&index_file).unwrap();
+        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+        let mut changed = fs::read(&index_file).unwrap();
+        changed[0] ^= 0x55;
+        fs::write(&index_file, changed).unwrap();
+
+        let err = build_direct_images(
+            &index_file,
+            &chunks_file,
+            out.path(),
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            DirectBuildEvidenceInputs {
+                db_build_evidence: None,
+                root_bundle_payload: Some(payload_file),
+                expected_muhash: Some(certified_muhash),
+                expected_from_muhash: None,
+                expected_index_sha256: Some(index_sha256),
+                expected_chunks_sha256: Some(chunks_sha256),
+                strict_source_binding: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("direct index source sha256 mismatch"));
+    }
+
+    #[test]
+    fn build_direct_strict_changed_muhash_evidence_fails() {
+        let input = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let index_file = input.path().join("utxo_chunks_index_nodust.bin");
+        let chunks_file = input.path().join("utxo_chunks_nodust.bin");
+        let payload_file = input.path().join("root-bundle-payload.bin");
+        write_direct_index_records(&index_file, 16);
+        write_direct_chunks(&chunks_file, 16);
+        let certified_muhash = numbered_hash(0x50);
+        let expected_muhash = numbered_hash(0x60);
+        fs::write(
+            &payload_file,
+            root_payload_bytes(CertifiedBuildKind::Snapshot, certified_muhash),
+        )
+        .unwrap();
+        let (index_sha256, _) = sha256_file(&index_file).unwrap();
+        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+
+        let err = build_direct_images(
+            &index_file,
+            &chunks_file,
+            out.path(),
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            DirectBuildEvidenceInputs {
+                db_build_evidence: None,
+                root_bundle_payload: Some(payload_file),
+                expected_muhash: Some(expected_muhash),
+                expected_from_muhash: None,
+                expected_index_sha256: Some(index_sha256),
+                expected_chunks_sha256: Some(chunks_sha256),
+                strict_source_binding: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("certified MuHash mismatch"));
     }
 
     fn write_table(path: &Path, level: CuckooLevel, bins_per_table: u32) {
@@ -5288,5 +6350,38 @@ mod tests {
             file.write_all(&[idx as u8; DIRECT_CHUNK_RECORD_SIZE])
                 .unwrap();
         }
+    }
+
+    fn numbered_hash(start: u8) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (idx, byte) in out.iter_mut().enumerate() {
+            *byte = start.wrapping_add(idx as u8);
+        }
+        out
+    }
+
+    fn root_payload_bytes(kind: CertifiedBuildKind, muhash: [u8; 32]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&ROOT_BUNDLE_PAYLOAD_VERSION.to_le_bytes());
+        out.extend_from_slice(&[0xf9, 0xbe, 0xb4, 0xd9]);
+        out.push(match kind {
+            CertifiedBuildKind::Snapshot => 0,
+            CertifiedBuildKind::Delta => 1,
+        });
+        out.extend_from_slice(&[0u8; 32]);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&numbered_hash(0x10));
+        out.extend_from_slice(&950_000u32.to_le_bytes());
+        out.extend_from_slice(&muhash);
+        out.extend_from_slice(&576u64.to_le_bytes());
+        out.extend_from_slice(&100u32.to_le_bytes());
+        out.extend_from_slice(&numbered_hash(0x20));
+        out.extend_from_slice(&1_780_000_000i64.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        let label = b"dpf/index/super_root";
+        out.push(label.len() as u8);
+        out.extend_from_slice(label);
+        out.extend_from_slice(&numbered_hash(0x70));
+        out
     }
 }
