@@ -1,8 +1,8 @@
 # ORAM Tier 3 Production Handoff
 
-Status as of 2026-06-26: the ORAM-enabled Tier 3 UKI is built and locally
-available, but pir2 is not live on that artifact yet. Live checks currently
-fail at the Cloudflare tunnel with HTTP 530.
+Status as of 2026-06-26: the ORAM-enabled Tier 3 UKI is live on pir2. The
+SEV-SNP report, binary pin, AMD VCEK chain, encrypted channel, and direct ORAM
+lookup smoke tests all pass against `wss://weikeng2.bitcoinpir.org`.
 
 ## Source Revisions
 
@@ -57,6 +57,12 @@ UKI sha256:
 
 The final initrd was unpacked on `pir-hetzner`; the baked
 `usr/local/bin/unified_server` hash matched the clean release binary hash above.
+
+Live attested MEASUREMENT:
+
+```text
+1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746
+```
 
 ## Build Recipe
 
@@ -118,30 +124,75 @@ query privacy properties are still:
 - direct ORAM response frames are padded to the public chunk-byte budget inside
   the encrypted channel.
 
-## Live Status
+## Live Verification
 
-As of this handoff, pir2 is not accepting WebSocket connections:
+Live checks were run on 2026-06-26 after uploading
+`deploy/uki/bpir-tier3-oram-668dd36b.efi` through the VPSBG measured-boot
+portal.
 
 ```bash
-./target/debug/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-  --expect-binary 457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
-
-./target/debug/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
-  --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+./scripts/verify_oram_tier3_deploy.sh
 ```
 
-Both currently fail with:
+The wrapper verifies:
 
 ```text
-HTTP error: 530
+server:              wss://weikeng2.bitcoinpir.org
+expected measurement: 1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746
+expected binary:     457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+expected ARK fp:     1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 ```
 
-This indicates the live tunnel/service is not reachable. It does not prove a
-binary mismatch.
+Observed live values:
 
-## Deployment Steps
+```text
+binary_sha256:
+457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
 
-Upload this UKI via the VPSBG portal:
+git_rev:
+668dd36b812f51f8c6a63af6fd3025cc07455bfd
+
+channel pubkey for this boot:
+77bbbc1064d3907b17a7a6c95d80a9a671a130304f954e75a1edc738b90b8f06
+
+REPORT_DATA binding:
+ReportDataMatch
+
+db_id=0 manifest root:
+d13ae468118366c1c1ad05bd069092cd7fa079ac205c9043d38e2954efdd7848
+
+db_id=1 manifest root:
+c816f067117bca98256ee246c4469591ee8f537b2271d65b38d1536a70887963
+```
+
+The wrapper passed both `bpir-admin attest` and `bpir-admin channel-test`.
+The attest step reported `ReportDataMatch`; the expected `REPORT_DATA` value is
+nonce-dependent and recomputed by the verifier for each run. The channel test
+verified the VCEK chain, matched the pinned ARK fingerprint, completed the
+encrypted handshake, and completed ping/get_info checks.
+
+Direct ORAM lookup smoke tests also passed over the encrypted channel:
+
+```bash
+HASH=4242424242424242424242424242424242424242
+cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+  --server wss://weikeng2.bitcoinpir.org --db-id 0 --padded-slots 25 "$HASH"
+cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+  --server wss://weikeng2.bitcoinpir.org --db-id 1 --padded-slots 25 "$HASH"
+```
+
+```text
+db_id=0: sev_status=ReportDataMatch, secure_channel=established, found=false
+db_id=1: sev_status=ReportDataMatch, secure_channel=established, found=false
+```
+
+`found=false` is expected for the all-`42` smoke hash; the important signal is
+that the padded direct ORAM request and response complete successfully for both
+production databases.
+
+## Redeployment / Reverification
+
+The live artifact is:
 
 ```text
 deploy/uki/bpir-tier3-oram-668dd36b.efi
@@ -154,24 +205,15 @@ VPSBG dashboard -> Confidentiality & Protection -> Advanced: Measured Boot
 -> UKI -> Upload -> Save & Reboot
 ```
 
-After reboot, run:
-
-```bash
-./target/debug/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-  --expect-binary 457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
-
-./target/debug/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
-  --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
-```
-
-Or run the wrapper:
+After any reboot or re-upload, rerun:
 
 ```bash
 ./scripts/verify_oram_tier3_deploy.sh
 ```
 
-Capture the new SEV-SNP MEASUREMENT from `attest` and update the web/runtime
-pins only after both commands pass.
+If a new binary or UKI is built, capture the new SEV-SNP MEASUREMENT from
+`attest` and update the web/runtime pins only after attest, channel-test, and
+ORAM lookup smoke tests pass.
 
 ## Recovery
 
