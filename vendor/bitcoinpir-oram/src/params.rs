@@ -10,14 +10,14 @@ pub struct OramParams {
     pub block_size: usize,
     /// Number of physical blocks in each tree bucket.
     pub bucket_size: usize,
-    /// Number of leaves in the Path ORAM tree. Must be a power of two.
+    /// Number of leaves in the ORAM tree. Must be a power of two.
     pub leaves: usize,
     /// Maximum stash length accepted by this prototype.
     pub stash_capacity: usize,
 }
 
 impl OramParams {
-    /// Construct conservative Path ORAM parameters.
+    /// Construct conservative ORAM parameters.
     ///
     /// The default uses one leaf per logical block, rounded up to a power of
     /// two. That is intentionally storage-heavy but easy to reason about for

@@ -4,9 +4,9 @@ This document fixes the next ORAM backend direction for BitcoinPIR: a
 disk-backed Circuit ORAM controller tuned for the existing DPF/Harmony cuckoo
 tables.
 
-The current `PathOram` implementation remains the correctness baseline.
-`CircuitOram` now provides a split metadata/payload controller prototype with
-the public deterministic scheduler. Its current eviction implementation uses
+`CircuitOram` is now the only controller in this crate. The older Path ORAM
+baseline was removed because it did not have the same trusted-memory
+side-channel hardening. The current Circuit ORAM eviction implementation uses
 two fixed metadata scans to produce a deepest-first placement plan, then applies
 the plan with one fixed payload scan. Replacing that planning routine with the
 exact optimized `deepest`/`target` circuit from the Circuit ORAM paper remains
@@ -96,19 +96,63 @@ Metadata pages can be much smaller than payload pages, so Circuit ORAM's
 `deepest` and `target` scans do not pay the full payload I/O cost.
 
 Disk pages must also be rollback-authenticated against trusted memory. The page
-store layer has two wrappers:
+store layer currently has two wrappers:
 
 - `MerklePageStore`: keeps the full SHA-256 Merkle tree in trusted memory.
 - `TieredMerklePageStore`: keeps only a public number of top levels in trusted
   memory and stores lower hash nodes in a second `PageStore`.
 
-`TieredMerklePageStore` is the intended production boundary. Reads recompute the
-data page's authentication path to the trusted frontier. Writes update the data
-page, leaf hash, lower disk-backed hash nodes, and trusted top hashes.
-`oramctl build-circuit --auth-store` now emits per-level metadata/payload hash
-images plus an auth-state sidecar; `bench-circuit --auth-store` and
-`verify-circuit-bins --auth-store` reopen through that sidecar and save updated
-trusted roots after mutating reads.
+`TieredMerklePageStore` is a correctness baseline, but it is not the preferred
+production boundary for Circuit ORAM. It authenticates every data page as a leaf
+of a separate Merkle tree, so one ORAM path read/write turns into many scattered
+hash-store page reads and writes.
+
+The production candidate should be an embedded authenticated ORAM tree. Store two
+child subtree hashes inside each physical bucket page:
+
+```text
+physical bucket page =
+  logical bucket bytes
+  left_child_subtree_hash[32]
+  right_child_subtree_hash[32]
+```
+
+The trusted state stores the root hash. A path read verifies top-down using the
+child hash already present in the parent page on the same ORAM path. A path write
+updates bottom-up, rewriting the path pages and the trusted root. This adds 64
+plaintext bytes to each bucket page and removes the lower Merkle sidecar from the
+steady-state request IO path.
+
+`oramctl build-circuit --auth-store` still defaults to per-level
+metadata/payload hash images plus an auth-state sidecar for the existing
+baseline. `--auth-layout embedded-tree` builds physical bucket pages with the
+64-byte embedded trailer. New controller snapshots carry the embedded roots;
+`*.auth.state` remains a compatibility/export file for older tooling and old
+snapshots.
+`EmbeddedTreePageStore` is the path-level store for this format: it builds
+embedded child hashes, verifies `read_path`, updates hashes on `write_path`, and
+has trace tests showing a verified read followed by a write touches only the path
+pages. The path-level store trait is wired into `CircuitOram` runtime access and
+eviction.
+
+For request batches, `CircuitOram::read_batch` prefetches all online old-leaf
+paths into metadata/payload overlays, applies each access in caller order, then
+writes the touched paths back through `PathPageStore::write_paths_pages`.
+`EmbeddedTreePageStore` handles overlapping authenticated paths by updating child
+hashes in an overlay before writing dirty physical pages. `drain_evictions`
+uses the same multi-path boundary for deterministic eviction paths, while still
+applying those paths in public schedule order. Padded request slots use
+`CircuitOram::dummy_access_batch`, so random dummy paths also share the same
+batched authenticated page boundary instead of falling back to one path
+roundtrip per dummy.
+
+The position map is trusted in-TEE state, but the online hot path no longer
+indexes it directly by logical id. Single access uses full-scan lookup and
+full-scan update. Batch access scans the map once per lookup/update pass and
+compares each entry against the whole logical-id batch, so a 50-query batch does
+not become 50 independent position-map scans. Repeated logical ids use the
+previous occurrence's freshly remapped random leaf instead of branching to a
+sequential slow path.
 
 ## Access State Machine
 
@@ -246,18 +290,45 @@ eviction to cross a durable boundary.
    state-file encryption are in place; metadata/payload image encryption CLI
    wiring is still pending.
 6. Add runtime rollback authentication for disk pages.
-   Partly done: `MerklePageStore` authenticates pages against a trusted
-   in-memory hash tree, and `TieredMerklePageStore` keeps only trusted top
-   levels while spilling lower hash nodes to disk. `oramctl` can build and
-   reopen authenticated sidecars. Pending: deciding whether auth roots remain a
-   sidecar or become embedded in `CircuitOramState`.
-7. Add a crash-safe WAL or epoch protocol for delayed eviction.
-8. Add a build path from existing DPF/Harmony cuckoo tables into ORAM images.
+   Done for the two supported layouts: `TieredMerklePageStore` keeps trusted top
+   levels while spilling lower hash nodes to sidecar images, and
+   `EmbeddedTreePageStore` stores child hashes inside physical bucket pages.
+   `oramctl build-circuit --auth-store --auth-layout embedded-tree` and
+   `bench-circuit --auth-store` build, reopen, verify, and save updated roots in
+   controller state, with `*.auth.state` retained for compatibility.
+7. Add native online batch reads.
+   Done at the library boundary: `PathPageStore` supports multi-path reads and
+   writes, `CircuitOram::read_batch` batches the online phase, and direct readers
+   expose batched INDEX candidate and CHUNK reads. `CircuitOram::dummy_access_batch`
+   covers padded request slots, and `CircuitOram::drain_evictions` batches
+   deterministic eviction paths for a public budget. Position-map lookup/update
+   is full-scan, with batch access checking each map entry against the whole
+   requested batch.
+   `oramctl bench-circuit --batch-size` exercises the batch boundary for random
+   logical-block reads, and `oramctl bench-direct --batch-size` verifies batched
+   direct INDEX/CHUNK queries. Pending production wiring: direct server request
+   handling.
+8. Add a crash-safe WAL or epoch protocol for delayed eviction.
+9. Add a build path from existing DPF/Harmony cuckoo tables into ORAM images.
    Done for trusted/offline initialization via `oramctl build-circuit`.
    `oramctl bench-circuit --db-dir ...` reopens the split images and verifies
    random reads against the original packed cuckoo payload. High-throughput
    bulk placement and final manifest wiring are still pending.
-9. Run release assembly and SEV-SNP page-trace audit on the hot loops.
+10. Run release assembly and SEV-SNP page-trace audit on the hot loops.
+   Partially done on the local `aarch64-apple-darwin` release build:
+   position-map scan/update, direct INDEX slot selection, and target-path
+   removal compile to compare/select or mask/bit operations rather than
+   secret-dependent branches. The local constant-time primitive wrapper now
+   delegates `Choice`, equality, and scalar conditional assignment to `subtle`.
+   One LLVM transform did turn a conditional payload clear into a secret branch
+   to `_bzero`; `clear_payload_if` now uses volatile byte stores plus an opaque
+   mask to keep the assembly branchless on the local backend. Run
+   `scripts/audit-ct-assembly.sh` to regenerate the release assembly and inspect
+   the current hot symbols. The greedy eviction placement planner has been
+   rewritten to use a fixed public candidate universe plus masked selection and
+   movement for stash/path candidates. Still pending: repeat this audit on the
+   actual SEV-SNP target build and treat the result as an implementation audit,
+   not a formal constant-time proof for Rust/LLVM/hardware.
 
 ## Current Design Choice
 

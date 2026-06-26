@@ -25,6 +25,8 @@ The delta pipeline uses the same direct index/chunk record shape.
 - `scan`: branchless full scan to select one leaf.
 - `scan_update`: branchless full scan that selects the old leaf and writes a
   new leaf with a constant-shape store to every entry.
+- `batch_scan` / `batch_scan_update`: one full map pass per batch lookup/update,
+  comparing each map entry against every requested logical id in that batch.
 
 VPSBG results for the current canonical direct-entry packed sizes, `ops=2000`,
 `warmup_ops=200`:
@@ -39,6 +41,25 @@ VPSBG results for the current canonical direct-entry packed sizes, `ops=2000`,
 Conclusion: full-scan position-map access is acceptable for the current packed
 block counts. It is not acceptable if we make every 40-byte chunk its own ORAM
 logical block and grow the position map by 16x.
+
+Online batch access uses the same full-scan idea without doing one complete map
+pass per query: each map entry is compared against the whole requested logical-id
+batch, and repeated logical ids use the previous occurrence's freshly remapped
+random leaf.
+
+A local release build against the current FULL direct dimensions, with
+`--batch-sizes 50,100 --ops 5 --warmup-ops 1`, measured the expected request-size
+batch widths:
+
+| Direct table | Batch width | Batch scan | Batch scan + update |
+| --- | ---: | ---: | ---: |
+| FULL direct index | 100 | 8.3 ms | 33.1 ms |
+| FULL direct chunks | 50 | 28.5 ms | 95.0 ms |
+
+These local batch numbers are small-sample CPU measurements, not disk timings.
+They show that a 50-user request shape can hide position-map memory access with
+roughly hundreds of milliseconds of extra CPU work rather than 50 independent
+map scans.
 
 A local macOS development-machine run against the canonical direct dimensions
 used a temporary standalone ORAM checkout outside the main BitcoinPIR cargo
@@ -128,8 +149,6 @@ The request should reject or split batches when
 
 With the current `hash_fns=2`:
 
-- `padded_slots=25` spends 50 INDEX ORAM path accesses before any CHUNK read.
-- `access_budget=75` leaves 25 CHUNK reads for those 25 slots.
 - `padded_slots=50` spends 100 INDEX ORAM path accesses before any CHUNK read.
 - `access_budget=120` leaves 20 CHUNK reads for those 50 slots.
 - `access_budget=150` leaves 50 CHUNK reads for those 50 slots.
@@ -147,19 +166,20 @@ DPF/Harmony PBC batch planner:
 
 ```ts
 planOramScriptHashBatches(scriptHashes, {
-  accessBudget: 75,
+  accessBudget: 120,
   indexReadsPerScriptHash: 2,
   expectedChunkReadsPerScriptHash: 1,
-  paddedSlotCount: 25,
+  paddedSlotCount: 50,
   chunkReadReserve: 0,
 });
 ```
 
-This example sends every request as 25 explicit slots. The server spends 50
-ORAM accesses on INDEX probes and leaves 25 accesses for CHUNK reads. If the
-operator wants up to 50 real script-hash slots with one expected CHUNK each, set
-`accessBudget` to at least 150. For safer ordinary wallet sync, keep a chunk
-reserve or an explicit `maxScriptHashesPerRequest` cap.
+This example sends every request as 50 explicit slots and derives 20 real
+script hashes per request because 100 ORAM accesses are reserved for INDEX and
+20 remain for expected CHUNK reads. If the operator wants up to 50 real
+script-hash slots with one expected CHUNK each, set `accessBudget` to at least
+150. For safer ordinary wallet sync, keep a chunk reserve or an explicit
+`maxScriptHashesPerRequest` cap.
 
 ## Engineering sequence
 
@@ -183,6 +203,147 @@ reserve or an explicit `maxScriptHashesPerRequest` cap.
    `hash_fns * len + expected_chunks <= access_budget`, split otherwise, and
    later replace overflow errors with continuation tokens if large wallets need
    it.
+
+## Fixed-offset batch IO planning
+
+`oramctl plan-direct-batch-io` estimates the disk roundtrip shape for the current
+direct Circuit ORAM layout without building images. It samples public online
+paths for a batch, adds the deterministic eviction paths implied by
+`--drain-per-access`, then reports:
+
+- current page operations under the existing per-page `PageStore` API;
+- unique pages and sorted contiguous runs for data pages;
+- current and coalesced lower Merkle hash-store page touches when `--auth-store`
+  is enabled with `--auth-layout sidecar`;
+- the proposed embedded-tree layout, where every bucket page carries its two
+  child subtree hashes and the trusted state keeps only the root.
+
+Example for the current FULL direct inputs:
+
+```bash
+cargo run --bin oramctl -- plan-direct-batch-io \
+  --case-label FULL \
+  --index-file /Volumes/Bitcoin/data/intermediate/full_948454/utxo_chunks_index_nodust.bin \
+  --chunks-file /Volumes/Bitcoin/data/intermediate/full_948454/utxo_chunks_nodust.bin \
+  --level all \
+  --pack 16 \
+  --leaf-divisor 2 \
+  --bucket-size 2 \
+  --cache-levels 5 \
+  --queries 50 \
+  --drain-per-access 2 \
+  --auth-store \
+  --auth-layout sidecar \
+  --auth-trusted-levels 1 \
+  --auth-hash-page-size 4096 \
+  --encrypted
+```
+
+Representative local planning results for 50 queries plus 100 deterministic
+eviction paths:
+
+| Case | Level | Auth layout | Current page ops | Sorted run floor | Current backing bytes |
+| --- | --- | --- | ---: | ---: | ---: |
+| FULL | index | sidecar | 530,500 | 14,332 | 2.06 GiB |
+| FULL | chunk | sidecar | 700,300 | 27,176 | 2.71 GiB |
+| FULL | index | embedded-tree | 10,500 | 6,812 | 15.4 MiB |
+| FULL | chunk | embedded-tree | 12,600 | 8,548 | 7.9 MiB |
+| DELTA canonical | index | sidecar | 384,100 | 6,364 | 1.45 GiB |
+| DELTA canonical | chunk | sidecar | 530,500 | 14,160 | 2.00 GiB |
+| DELTA canonical | index | embedded-tree | 8,400 | 4,944 | 12.3 MiB |
+| DELTA canonical | chunk | embedded-tree | 10,500 | 6,764 | 6.6 MiB |
+
+The important result is that batching helps the fixed-offset disk path, but the
+current Merkle sidecar dominates the roundtrip count. With authentication
+disabled, 50 queries plus 100 deterministic eviction paths touch only thousands
+of data-page runs and single-digit to low-double-digit MiB. With
+`TieredMerklePageStore` at `auth_trusted_levels=1`, every data page read/write
+walks many 32-byte hash nodes and currently reads or writes a whole 4 KiB hash
+page per node. For the same FULL run, raising trusted Merkle levels to 12 cuts
+current hash page ops by about half, but the sorted run floor barely changes
+because the lower hash pages are still scattered.
+
+The stronger candidate is not a larger sidecar page. It is an embedded
+authenticated ORAM tree:
+
+```text
+physical bucket page =
+  logical bucket bytes
+  left_child_subtree_hash[32]
+  right_child_subtree_hash[32]
+```
+
+The trusted state stores the root hash. A path read verifies top-down: root hash
+authenticates the root page, each parent page authenticates the next child page
+through the stored child hash. A path write updates bottom-up: recompute the leaf
+hash, then update each parent page's selected child hash and page hash until the
+trusted root changes. This is compatible with ORAM because online access and
+eviction already read/write complete root-to-leaf paths. It would not be a good
+generic random-page `PageStore`, but it matches the Circuit ORAM operation
+boundary.
+
+`EmbeddedTreePageStore` is the current implementation of this layout. It is
+intentionally path-level rather than a transparent `PageStore`: a single page
+cannot be verified efficiently without its ancestors, but a full ORAM path can be
+verified and updated with only the path pages. The runtime controller now uses a
+path-level store trait: ordinary `PageStore` implementations use a loop fallback,
+while `EmbeddedTreePageStore` supplies path authentication directly. The CLI can
+build and reopen these images with `--auth-store --auth-layout embedded-tree`.
+
+The library now has a native online batch boundary:
+
+- `PathPageStore::read_paths_pages` / `write_paths_pages` carry multiple public
+  paths at once;
+- `EmbeddedTreePageStore` verifies all unique pages for the batch, applies path
+  writes through an authenticated overlay, and writes dirty pages once;
+- `CircuitOram::read_batch` applies several logical reads in ORAM order over a
+  metadata/payload page overlay, then writes the touched paths back;
+- position-map lookup/update is full-scan; the batch path scans once per
+  lookup/update pass and compares each entry against every logical id in the
+  requested batch;
+- direct readers expose this as `lookup_batched` for INDEX candidates and
+  `lookup_many_batched` for INDEX batches, `read_chunks` for direct CHUNK ids,
+  and batched dummy padding for empty INDEX slots and unused CHUNK budget.
+- `CircuitOram::drain_evictions` batches deterministic eviction paths for a
+  public budget, applying them in schedule order over the same overlay model.
+- `AeadPageStore` and `FrontCachedPageStore` preserve the bulk boundary instead
+  of falling back to per-page calls. This matters for the production encrypted
+  and top-level cached store stack: the bottom `FilePageStore` can still see
+  sorted contiguous runs and approach the planner's `Sorted run floor`.
+
+`oramctl bench-circuit --batch-size N` exercises the batch boundary for random
+logical-block reads, and `oramctl bench-direct --batch-size N` verifies batched
+INDEX lookups plus CHUNK reads against direct source files.
+
+The remaining large I/O question is request-level durability, not page-run
+coalescing. The runtime currently flushes dirty ORAM stores at the end of a
+mutating request; `FilePageStore::flush()` calls `sync_all()`, and the trusted
+controller/auth state is then written atomically. Relaxing this to epoch flushes,
+`sync_data`, or a WAL would likely reduce latency, but it changes crash-recovery
+semantics and should be designed as a separate durability mode rather than hidden
+inside the page-store batching work.
+
+This points to the next useful implementation direction:
+
+1. Keep using direct-entry Circuit ORAM rather than moving to Ring/Burst ORAM.
+2. Keep `FilePageStore` positional, so page accesses do not depend on a shared
+   file cursor.
+3. Use embedded-tree authenticated page format for Circuit ORAM stores when
+   building new authenticated images.
+4. Keep production direct requests on the native batch APIs with a fixed public
+   access budget per request. `bench-circuit --batch-size` and
+   `bench-direct --batch-size` cover local benchmarking.
+5. Treat request-level WAL/epoch flushing as the next separate optimization if
+   per-request `sync_all()` shows up in runtime latency traces.
+6. Keep sidecar hash-page coalescing only as a fallback migration path for
+   existing images.
+
+The README previously compared the trusted bulk builder to the Oblix/EnigMap
+initialization line of work: assign leaves in trusted memory, place blocks close
+to their leaves, and write the final disk image in public bucket order. The local
+repo does not include the EnigMap paper/link, and a quick public search did not
+turn up a reliable primary source under that exact name, so this document keeps
+the engineering takeaway rather than relying on a precise citation.
 
 ## VPSBG smoke status
 

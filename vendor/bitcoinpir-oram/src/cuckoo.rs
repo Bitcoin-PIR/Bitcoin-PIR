@@ -5,7 +5,8 @@
 //! of scope for this crate.
 
 use crate::{
-    CircuitOram, Error, OramBlock, OramParams, PageStore, Result, TrustedBlockSource, AEAD_OVERHEAD,
+    CircuitOram, Error, OramBlock, OramParams, PathPageStore, Result, TrustedBlockSource,
+    AEAD_OVERHEAD,
 };
 use memmap2::{Mmap, MmapOptions};
 use std::{
@@ -271,7 +272,7 @@ pub struct CuckooOramSizing {
     pub bins_per_block: usize,
     /// Use `next_power_of_two(ceil(logical_blocks / leaf_divisor))` leaves.
     pub leaf_divisor: usize,
-    /// Physical Path ORAM bucket size.
+    /// Physical ORAM bucket size.
     pub bucket_size: usize,
     /// Fixed trusted stash slots.
     pub stash_capacity: usize,
@@ -362,7 +363,7 @@ pub struct CuckooOramEstimate {
     pub logical_blocks: usize,
     /// Payload bytes in one logical ORAM block.
     pub block_payload_bytes: usize,
-    /// Physical Path ORAM bucket size.
+    /// Physical ORAM bucket size.
     pub bucket_size: usize,
     /// Number of ORAM leaves.
     pub leaves: usize,
@@ -551,7 +552,7 @@ pub struct CircuitCuckooBinReader<M, P> {
     oram: CircuitOram<M, P>,
 }
 
-impl<M: PageStore, P: PageStore> CircuitCuckooBinReader<M, P> {
+impl<M: PathPageStore, P: PathPageStore> CircuitCuckooBinReader<M, P> {
     /// Wrap an opened Circuit ORAM controller for the matching cuckoo table.
     pub fn new(
         table: &CuckooTableInfo,

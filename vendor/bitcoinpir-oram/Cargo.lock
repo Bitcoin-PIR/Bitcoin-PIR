@@ -90,6 +90,7 @@ dependencies = [
  "rand_chacha",
  "serde",
  "sha2",
+ "subtle",
  "tempfile",
  "thiserror",
  "zeroize",
