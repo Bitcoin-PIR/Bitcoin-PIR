@@ -71,9 +71,9 @@ git = "https://github.com/Bitcoin-PIR/oram.git"
 rev = "33eaaf1c3925b9a8b9d7ea818eb54f9104c8000b"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/Bitcoin-PIR/oram.git?rev=11c66c337b9a6130cdffd69462b06b34deedcd64"]
+[source."git+https://github.com/Bitcoin-PIR/oram.git?rev=5f366492504d8e853cbd60d25a6adbf021a78746"]
 git = "https://github.com/Bitcoin-PIR/oram.git"
-rev = "11c66c337b9a6130cdffd69462b06b34deedcd64"
+rev = "5f366492504d8e853cbd60d25a6adbf021a78746"
 replace-with = "vendored-sources"
 
 [source.vendored-sources]
