@@ -126,25 +126,25 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-06-26.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-06-27.
  * Built by `scripts/build_uki_tier3.sh` on the Hetzner build host:
  * VPSBG kernel 7.0.0-15 + the ORAM-enabled `unified_server`
  * binary baked into the initramfs.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 ORAM UKI — 2026-06-26. Built from BitcoinPIR commit
-  // 668dd36b812f51f8c6a63af6fd3025cc07455bfd:
+  // Tier 3 ORAM UKI — 2026-06-27. Built from BitcoinPIR commit
+  // f402466af1ee21d02e0a65b457ad338ceb1216c0:
   // unified_server serves db-proof query traffic and direct ORAM lookup
   // for db_id 0/1 as pir2 query-only (`--serve-queries`, no hint pool,
   // no OnionPIR) plus `--identity-*` (operator-signed identity,
   // server_id=pir2). MEASUREMENT captured from the live Tier 3 deploy via
   // `bpir-admin attest wss://weikeng2.bitcoinpir.org` after uploading
-  // UKI sha256 `718c7728...` (SEV-SNP REPORT_DATA binding verified on
+  // UKI sha256 `3ef8249b...` (SEV-SNP REPORT_DATA binding verified on
   // real hardware).
   measurementHex:
-    '1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746',
+    'f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0',
   binarySha256Hex:
-    '457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1',
+    '233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3',
   description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 ORAM UKI)',
 };
 
@@ -199,6 +199,31 @@ export const DELTA_940611_948454_DB_PROOF_PIN: DatabaseProofPin = {
     'delta_940611_948454: Bitcoin Core MuHash and PIR Merkle roots from the SEV-SNP attested builder',
 };
 
+export const MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN: DatabaseProofPin = {
+  dbId: 0,
+  buildKind: 'snapshot',
+  fromHeight: 0,
+  height: 948454,
+  fromBlockHashHex:
+    '0000000000000000000000000000000000000000000000000000000000000000',
+  blockHashHex:
+    '00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4',
+  muhashHex:
+    'cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee',
+  bucketSuperRootHex:
+    '45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b',
+  onionSuperRootHex:
+    'e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4',
+  paramsHashHex:
+    'ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e',
+  networkMagicHex: 'f9beb4d9',
+  builderBinarySha256Hex:
+    'd4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427',
+  builderGitCommit: 'b692aec18b9c20ac92cb9fe22588e96ff96ad27d',
+  description:
+    'mainnet_948454 ORAM source proof: roots-only snapshot inputs preserved by the SEV-SNP attested builder for strict direct ORAM rebuild',
+};
+
 export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
@@ -226,10 +251,10 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
  * backed up out-of-band) and signs the pir1 / pir2 `IdentityCert`s
  * (`bpir-admin sign-identity`, valid_until 2029-05).
  *
- * LIVE END-TO-END (verified 2026-05-28, still used by the current
+ * LIVE END-TO-END (verified 2026-06-27, still used by the current
  * production binaries). pir1 + pir2 both serve REQ_ANNOUNCE on
  * announce-enabled binaries (pir1 db-proof `d01e5b7a...`, pir2 ORAM
- * `457590cf...`); `announce()` against either returns an
+ * `23354188...`); `announce()` against either returns an
  * operator-endorsed bundle that verifies under this pinned key
  * (operator-pin + cert signature + validity + chain + channel binding).
  * The "verified operator" badge is wired into the DPF + HarmonyPIR cards
@@ -241,7 +266,7 @@ export const PIR_OPERATOR_PUBKEY_HEX =
 
 /** Decoded 32-byte operator pubkey for
  *  `WasmAnnounceVerification.checkPinnedOperator`. See provenance +
- *  the "not yet live" note on [`PIR_OPERATOR_PUBKEY_HEX`]. */
+ *  the live deployment note on [`PIR_OPERATOR_PUBKEY_HEX`]. */
 export const PIR_OPERATOR_PUBKEY: Uint8Array = (() => {
   const hex = PIR_OPERATOR_PUBKEY_HEX;
   if (hex.length !== 64) {

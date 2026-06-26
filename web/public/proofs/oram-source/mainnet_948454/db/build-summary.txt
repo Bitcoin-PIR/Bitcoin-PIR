@@ -1,0 +1,69 @@
+repo_root=/usr/local/lib/attested-builder
+snapshot=/home/pir/data/attested-builder/inputs/txoutset_948454.dat
+expected_muhash=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee
+network_magic=f9beb4d9
+anchor_height=948454
+core_version=Bitcoin Core v31.0.0
+onion_entry_size=3328
+partitions=4
+issued_at=0
+run_onion_ffi=0
+roots_only=1
+builder_git_commit=b692aec18b9c20ac92cb9fe22588e96ff96ad27d
+tee_platform=sev-snp
+tee_image_measurement=none
+builder_bin=/usr/local/bin/pir-attested-builder
+step=01-materialize-utxo-set status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/01-materialize-utxo-set.out
+step=01-materialize-utxo-set status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/01-materialize-utxo-set.out
+step=02-build-utxo-chunks status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/02-build-utxo-chunks.out
+step=02-build-utxo-chunks status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/02-build-utxo-chunks.out
+oram_direct_inputs_status=preserved
+oram_direct_input_dir=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/oram-direct-inputs
+oram_direct_inputs_sha256=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/oram-direct-inputs/direct-inputs.sha256
+4.3G	/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/oram-direct-inputs
+step=03-build-index-cuckoo status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/03-build-index-cuckoo.out
+step=03-build-index-cuckoo status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/03-build-index-cuckoo.out
+step=04-build-chunk-cuckoo status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/04-build-chunk-cuckoo.out
+step=04-build-chunk-cuckoo status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/04-build-chunk-cuckoo.out
+step=05-build-bucket-merkle status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/05-build-bucket-merkle.out
+step=05-build-bucket-merkle status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/05-build-bucket-merkle.out
+step=06-build-onion-pack status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/06-build-onion-pack.out
+step=06-build-onion-pack status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/06-build-onion-pack.out
+step=07-build-onion-data-cuckoo status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/07-build-onion-data-cuckoo.out
+step=07-build-onion-data-cuckoo status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/07-build-onion-data-cuckoo.out
+step=08-build-onion-index-cuckoo status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/08-build-onion-index-cuckoo.out
+step=08-build-onion-index-cuckoo status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/08-build-onion-index-cuckoo.out
+step=09-build-onion-merkle status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/09-build-onion-merkle.out
+step=09-build-onion-merkle status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/09-build-onion-merkle.out
+step=11-build-root-bundle-payload status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/11-build-root-bundle-payload.out
+step=11-build-root-bundle-payload status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/11-build-root-bundle-payload.out
+server_db_dir=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/server-db
+server_db_manifest=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/server-db/MANIFEST.toml
+server_db_manifest_kind=roots-only
+server_db_manifest_sha256=0f5d943de226fc1b47ba22bc6dd99065e7435c76c9c0dd9564aa98e3280492ec
+step=15-write-build-evidence status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/15-write-build-evidence.out
+step=15-write-build-evidence status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/15-write-build-evidence.out
+step=16-write-tee-report-data status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/16-write-tee-report-data.out
+step=16-write-tee-report-data status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/16-write-tee-report-data.out
+step=17-emit-sev-snp-quote status=running log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/17-emit-sev-snp-quote.out
+step=17-emit-sev-snp-quote status=ok log=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/logs/17-emit-sev-snp-quote.out
+status=ok
+out_dir=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp
+roots_only=1
+muhash=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee
+anchor_height=948454
+index_bins_per_table=567558
+chunk_bins_per_table=1066928
+bucket_super_root=45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b
+onion_super_root=e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4
+payload_sha256=cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f
+build_evidence=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/build-evidence.bin
+build_evidence_file_sha256=91618fa1efb6ff2fa748ff21d847cc484306e9447e97f16fbabb28087a5be465
+build_evidence_digest=19060db8c548a561f0d3481dc941cdb2912ab8b4d2b8f6a9c97d104194b4be99
+build_evidence_report_data=19060db8c548a561f0d3481dc941cdb2912ab8b4d2b8f6a9c97d104194b4be992e0e2b719d2c88629f4ee0fa385380468a84fca067465e8f3781ba0007c4dc5c
+build_evidence_sev_snp_report=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/build-evidence.sev-snp-report.bin
+build_evidence_sev_snp_report_sha256=c67b6adf4e37f1e036c4612c3027f983eaf02b71f10acd09c203d5a3e59d7075
+database_manifest=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/database.manifest.sha256
+database_manifest_sha256=2e03e88cd35298ca715b600e2a1b21a6eb3d5c1ed43c2378b08c89239842244c
+all_artifacts_manifest=/home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/all-artifacts.manifest.sha256
+all_artifacts_manifest_sha256=9e19b8c7cd2c89fc734749942308868018584e5767e7f947ad0b863e18aab99e

@@ -1,0 +1,9 @@
+started_at=2026-06-26T15:59:51Z
+oram_repo=/root/oram-evidence-build-20260626/oram
+oram_commit=5f366492504d8e853cbd60d25a6adbf021a78746
+oramctl_sha256=d3958944592d2bf425f54dd6fcae7f542f6ac54a93dc4d1df8f11483dfaf96ef
+source_dir=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs
+out_dir=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict
+expected_index_sha256=d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c
+expected_chunks_sha256=9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521
+expected_muhash=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee

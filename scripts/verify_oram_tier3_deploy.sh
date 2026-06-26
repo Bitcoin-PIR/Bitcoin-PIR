@@ -2,13 +2,15 @@
 set -euo pipefail
 
 # Post-deploy smoke for the ORAM-enabled Tier 3 UKI built from BitcoinPIR
-# commit 668dd36b. Run after uploading the UKI in the VPSBG measured-boot
+# commit f402466a. Run after uploading the UKI in the VPSBG measured-boot
 # portal and waiting for cloudflared to reconnect.
 
 SERVER=${SERVER:-wss://weikeng2.bitcoinpir.org}
-EXPECT_MEASUREMENT=${EXPECT_MEASUREMENT:-1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746}
-EXPECT_BINARY=${EXPECT_BINARY:-457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1}
+EXPECT_MEASUREMENT=${EXPECT_MEASUREMENT:-f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0}
+EXPECT_BINARY=${EXPECT_BINARY:-233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3}
 EXPECT_ARK_FINGERPRINT=${EXPECT_ARK_FINGERPRINT:-1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a}
+ORAM_SMOKE_HASH=${ORAM_SMOKE_HASH:-4242424242424242424242424242424242424242}
+ORAM_PADDED_SLOTS=${ORAM_PADDED_SLOTS:-25}
 
 if [ -n "${BPIR_ADMIN:-}" ]; then
     ADMIN_CMD=("$BPIR_ADMIN")
@@ -31,3 +33,9 @@ echo
     --expect-binary "$EXPECT_BINARY"
 echo
 "${ADMIN_CMD[@]}" channel-test "$SERVER" --expect-ark-fingerprint "$EXPECT_ARK_FINGERPRINT"
+echo
+cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+    --server "$SERVER" --db-id 0 --padded-slots "$ORAM_PADDED_SLOTS" "$ORAM_SMOKE_HASH"
+echo
+cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
+    --server "$SERVER" --db-id 1 --padded-slots "$ORAM_PADDED_SLOTS" "$ORAM_SMOKE_HASH"

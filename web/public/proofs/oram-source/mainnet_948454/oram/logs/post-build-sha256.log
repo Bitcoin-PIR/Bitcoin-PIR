@@ -1,0 +1,18 @@
+finished_at=2026-06-26T16:04:57Z
+15G	/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict
+05943edbf8efd5ace6c41d9cd14a226a4a3bc250b7bbf97337575d8cb1757289  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.payload.oram
+0d2bfc92841c439221cc22b518764bddd213c1b3a83e76cb810782f64087a7b3  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.payload.hash.oram
+17103de1fa31251a466c8243e16a3ce6f2e26ac0513ef9f8e2a5697de7c4e25f  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.payload.oram
+3ad9ed9afaf84d328eba5039b9ea998e50fbf5059c00563baf0b5dbbad1adbdb  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.auth.state
+5d9a392ff33ae912ea8b180d6e3e3aa2a364ed8d275a9f08e2fda268596d3b1d  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.meta.hash.oram
+6bf6b9031e8f9e9871630bdc737b9c101294183576cc9e8ef4566c27a77cccc2  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.state
+80c5706d80ec3eb9f69c3460389727966bcd698a2eb59b1a0c5f52242558acbf  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.metadata
+9149d8456464a706c13e9e7d6838969a3b218b7ecd4ced9f12f2c8e1c3fa53b3  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.meta.oram
+9bca8a181cebfd228109bde78eebdbf066911d7ef0502e9fbeda351d0cfb7827  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/oram-build-evidence.json
+a7b3802b0e553a6bfbf4212f6d75a0f2227c05f6ed78395a9e4b8eb88f69d6a1  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.meta.hash.oram
+c0304c069a71529870d0716eb4720fa623f17839b98f34bbaa74a08f8b9266eb  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.state
+c8d328ff18a5d75ced52320455116fd0d8be3135259f97978f82e199f498577a  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.payload.hash.oram
+cc752e298df06109c7b287a6afd7ceeced5042651dde9779015429afc448fb66  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.meta.oram
+e27ec7f405bdb9f8232d030fc55415a482b2a017b5a603f30cc3803c55641db6  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/oram-build-evidence.bin
+ee54a7e8dd136703df26756bd5413cff246101910fd9b6cd3e69ad4cee86cf38  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.auth.state
+f06e3fc910b1a63ae64d40c198c3efc0dfb7a3d7aa6bccefb5e7fb9df4e41d37  /home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.metadata

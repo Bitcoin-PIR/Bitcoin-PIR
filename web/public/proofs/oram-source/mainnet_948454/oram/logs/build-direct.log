@@ -1,0 +1,32 @@
+build_direct=true
+index_file=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin
+chunks_file=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin
+out_dir=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict
+level=All
+pack=16
+leaf_divisor=2
+bucket_size=2
+stash_capacity=128
+encrypted=false
+state_encrypted=false
+cache_levels=0
+auth_store=true
+auth_layout=sidecar
+auth_trusted_levels=1
+auth_hash_page_size=4096
+index_slots_per_bin=4
+index_hash_fns=2
+index_load_factor=0.950000
+index_seed=0x6f726fc4fe1c6231
+seed_hex=0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+index_sha256=d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c
+chunks_sha256=9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521
+certified_build_kind=snapshot
+certified_network_magic=f9beb4d9
+certified_anchor=00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4 height=948454
+certified_muhash=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee
+direct_auth_built level=index meta_hash_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.meta.hash.oram payload_hash_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.payload.hash.oram auth_state=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.auth.state trusted_levels=1 hash_page_size=4096 meta_hash_pages=16384 payload_hash_pages=16384 meta_trusted_hash_bytes=32 payload_trusted_hash_bytes=32
+built_direct level=index source=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_index_nodust.bin meta_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.meta.oram payload_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.payload.oram state=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.state direct_metadata=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.metadata auth_state=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-index.auth.state auth_store=true auth_layout=sidecar source_records=53835039 total_items=14167116 item_size=104 logical_blocks=885445 block_payload_bytes=1664 bucket_size=2 leaves=524288 height=20 bucket_pages=1048575 cached_pages=0 meta_page_plaintext_bytes=26 payload_page_plaintext_bytes=3328 meta_image_bytes=27262950 payload_image_bytes=3489657600 stash_len=0 pending_evictions=0 elapsed_ms=32252
+direct_auth_built level=chunk meta_hash_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.meta.hash.oram payload_hash_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.payload.hash.oram auth_state=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.auth.state trusted_levels=1 hash_page_size=4096 meta_hash_pages=131072 payload_hash_pages=131072 meta_trusted_hash_bytes=32 payload_trusted_hash_bytes=32
+built_direct level=chunk source=/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs/utxo_chunks_nodust.bin meta_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.meta.oram payload_image=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.payload.oram state=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.state direct_metadata=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.metadata auth_state=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/direct-chunk.auth.state auth_store=true auth_layout=sidecar source_records=80984512 total_items=80984512 item_size=40 logical_blocks=5061532 block_payload_bytes=640 bucket_size=2 leaves=4194304 height=23 bucket_pages=8388607 cached_pages=0 meta_page_plaintext_bytes=26 payload_page_plaintext_bytes=1280 meta_image_bytes=218103782 payload_image_bytes=10737416960 stash_len=0 pending_evictions=0 elapsed_ms=177683
+oram_build_evidence json=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/oram-build-evidence.json bin=/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict/oram-build-evidence.bin

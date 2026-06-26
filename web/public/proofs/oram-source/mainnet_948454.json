@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 1,
+  "proofType": "BitcoinPIR/oram-source-binding/v1",
+  "id": "mainnet_948454_direct_oram_source_binding",
+  "description": "Strict source-bound direct ORAM rebuild from SEV-SNP attested Bitcoin Core snapshot inputs. The compact artifacts here certify the source inputs and rebuild outputs; the large ORAM image files remain archived on Hetzner.",
+  "anchor": {
+    "network": "mainnet",
+    "dbId": 0,
+    "buildKind": "snapshot",
+    "fromHeight": 0,
+    "fromBlockHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "height": 948454,
+    "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+    "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+    "bucketSuperRootHex": "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b",
+    "onionSuperRootHex": "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4",
+    "paramsHashHex": "ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e",
+    "networkMagicHex": "f9beb4d9"
+  },
+  "attestedBuilder": {
+    "builderGitCommit": "b692aec18b9c20ac92cb9fe22588e96ff96ad27d",
+    "builderBinarySha256Hex": "d4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427",
+    "coreVersion": "Bitcoin Core v31.0.0",
+    "snapshotSha256": "e5ed70c794830d6db2d7ebb7ad3965b126067457a977f370ec5e876139dcf6ff",
+    "snapshotBytes": 9422874286,
+    "teePlatform": "sev-snp",
+    "uki": {
+      "fileName": "attested-builder-tier3-oram-b692aec1-bpir-a8863f82-k6.17-20260626T141711Z-49f452c9b95f.efi",
+      "sha256": "49f452c9b95f1562002ad74364cf43f68244a5dd2a9073bf32279cb2f83d9d3b",
+      "archivePath": "/home/pir/uki-archive/attested-builder/attested-builder-tier3-oram-b692aec1-bpir-a8863f82-k6.17-20260626T141711Z-49f452c9b95f.efi",
+      "reproducibleBuild": "byte-identical"
+    },
+    "sevSnp": {
+      "reportDataHex": "19060db8c548a561f0d3481dc941cdb2912ab8b4d2b8f6a9c97d104194b4be992e0e2b719d2c88629f4ee0fa385380468a84fca067465e8f3781ba0007c4dc5c",
+      "measurementHex": "69ca84b97943370dab01c673da7e2a06e4e8ded5125aac91cba0749c4e967fe6677e7b5471d4db2d058bc02abce93b21",
+      "reportSha256": "c67b6adf4e37f1e036c4612c3027f983eaf02b71f10acd09c203d5a3e59d7075"
+    },
+    "manifests": {
+      "databaseManifestSha256": "2e03e88cd35298ca715b600e2a1b21a6eb3d5c1ed43c2378b08c89239842244c",
+      "allArtifactsManifestSha256": "9e19b8c7cd2c89fc734749942308868018584e5767e7f947ad0b863e18aab99e",
+      "serverDbManifestSha256": "0f5d943de226fc1b47ba22bc6dd99065e7435c76c9c0dd9564aa98e3280492ec"
+    },
+    "artifacts": {
+      "buildEvidence": {
+        "path": "/proofs/oram-source/mainnet_948454/db/build-evidence.bin",
+        "sha256": "91618fa1efb6ff2fa748ff21d847cc484306e9447e97f16fbabb28087a5be465",
+        "size": 507
+      },
+      "reportData": {
+        "path": "/proofs/oram-source/mainnet_948454/db/build-evidence.report-data",
+        "sha256": "1507e0bf7ad2eda859c81330afcfbb303a906d448b7ddc3527a83edf1b41a7a9",
+        "size": 64
+      },
+      "sevSnpReport": {
+        "path": "/proofs/oram-source/mainnet_948454/db/build-evidence.sev-snp-report.bin",
+        "sha256": "c67b6adf4e37f1e036c4612c3027f983eaf02b71f10acd09c203d5a3e59d7075",
+        "size": 1184
+      },
+      "rootBundlePayload": {
+        "path": "/proofs/oram-source/mainnet_948454/db/root-bundle-payload.bin",
+        "sha256": "cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f",
+        "size": 411
+      },
+      "buildSummary": {
+        "path": "/proofs/oram-source/mainnet_948454/db/build-summary.txt",
+        "sha256": "b5ca3211878dbb40d2b606a4a73971a84a33d718c5583756c3755964132a8294",
+        "size": 6724
+      },
+      "verifySummary": {
+        "path": "/proofs/oram-source/mainnet_948454/db/build-evidence.verify.txt",
+        "sha256": "d10d415a80418df57dd8771e278521c9c3d268ce5447662bd8490dcb710240b9",
+        "size": 1860
+      }
+    }
+  },
+  "directInputs": {
+    "archivePath": "/home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/oram-direct-inputs",
+    "rootsOnlySha256": {
+      "utxo_chunks_index_nodust.bin": "d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c",
+      "utxo_chunks_nodust.bin": "9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521"
+    },
+    "index": {
+      "fileName": "utxo_chunks_index_nodust.bin",
+      "sha256": "d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c",
+      "bytes": 1345875975,
+      "records": 53835039,
+      "recordSize": 25
+    },
+    "chunks": {
+      "fileName": "utxo_chunks_nodust.bin",
+      "sha256": "9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521",
+      "bytes": 3239380480,
+      "records": 80984512,
+      "recordSize": 40
+    },
+    "artifacts": {
+      "directInputsSha256": {
+        "path": "/proofs/oram-source/mainnet_948454/source/direct-inputs.sha256",
+        "sha256": "d1a8e805aabb4edd027654889b284dc8b8416ea5cf89638c1e95e9e4b346414d",
+        "size": 184
+      }
+    }
+  },
+  "oramBuild": {
+    "repository": "https://github.com/Bitcoin-PIR/oram.git",
+    "commit": "5f366492504d8e853cbd60d25a6adbf021a78746",
+    "oramctlSha256Hex": "d3958944592d2bf425f54dd6fcae7f542f6ac54a93dc4d1df8f11483dfaf96ef",
+    "outputArchivePath": "/home/pir/data/oram-builds/mainnet_948454_direct-pack16-z2-div2-stash128-auth-strict",
+    "sha256SumsSha256": "ba6c66244a68f0ed2434fec0992f91a0b7ed91203547b4748a9a6972a1d49b3e",
+    "strictSourceBinding": true,
+    "params": {
+      "pack": 16,
+      "leafDivisor": 2,
+      "bucketSize": 2,
+      "stashCapacity": 128,
+      "cacheLevels": 0,
+      "authStore": true,
+      "authLayout": "sidecar",
+      "authTrustedLevels": 1,
+      "authHashPageSize": 4096,
+      "indexSlotsPerBin": 4,
+      "indexHashFns": 2,
+      "indexLoadFactor": 0.95,
+      "indexSeedDecimal": "8030603977422561841",
+      "indexSeedHex": "0x6f726fc4fe1c6231",
+      "oramRngSeedHex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+    },
+    "outputArtifacts": [
+      {
+        "fileName": "direct-chunk.auth.state",
+        "sha256": "ee54a7e8dd136703df26756bd5413cff246101910fd9b6cd3e69ad4cee86cf38",
+        "size": 252
+      },
+      {
+        "fileName": "direct-chunk.meta.hash.oram",
+        "sha256": "5d9a392ff33ae912ea8b180d6e3e3aa2a364ed8d275a9f08e2fda268596d3b1d",
+        "size": 536870912
+      },
+      {
+        "fileName": "direct-chunk.meta.oram",
+        "sha256": "9149d8456464a706c13e9e7d6838969a3b218b7ecd4ced9f12f2c8e1c3fa53b3",
+        "size": 218103782
+      },
+      {
+        "fileName": "direct-chunk.metadata",
+        "sha256": "80c5706d80ec3eb9f69c3460389727966bcd698a2eb59b1a0c5f52242558acbf",
+        "size": 201
+      },
+      {
+        "fileName": "direct-chunk.payload.hash.oram",
+        "sha256": "0d2bfc92841c439221cc22b518764bddd213c1b3a83e76cb810782f64087a7b3",
+        "size": 536870912
+      },
+      {
+        "fileName": "direct-chunk.payload.oram",
+        "sha256": "17103de1fa31251a466c8243e16a3ce6f2e26ac0513ef9f8e2a5697de7c4e25f",
+        "size": 10737416960
+      },
+      {
+        "fileName": "direct-chunk.state",
+        "sha256": "c0304c069a71529870d0716eb4720fa623f17839b98f34bbaa74a08f8b9266eb",
+        "size": 20331137
+      },
+      {
+        "fileName": "direct-index.auth.state",
+        "sha256": "3ad9ed9afaf84d328eba5039b9ea998e50fbf5059c00563baf0b5dbbad1adbdb",
+        "size": 252
+      },
+      {
+        "fileName": "direct-index.meta.hash.oram",
+        "sha256": "a7b3802b0e553a6bfbf4212f6d75a0f2227c05f6ed78395a9e4b8eb88f69d6a1",
+        "size": 67108864
+      },
+      {
+        "fileName": "direct-index.meta.oram",
+        "sha256": "cc752e298df06109c7b287a6afd7ceeced5042651dde9779015429afc448fb66",
+        "size": 27262950
+      },
+      {
+        "fileName": "direct-index.metadata",
+        "sha256": "f06e3fc910b1a63ae64d40c198c3efc0dfb7a3d7aa6bccefb5e7fb9df4e41d37",
+        "size": 207
+      },
+      {
+        "fileName": "direct-index.payload.hash.oram",
+        "sha256": "c8d328ff18a5d75ced52320455116fd0d8be3135259f97978f82e199f498577a",
+        "size": 67108864
+      },
+      {
+        "fileName": "direct-index.payload.oram",
+        "sha256": "05943edbf8efd5ace6c41d9cd14a226a4a3bc250b7bbf97337575d8cb1757289",
+        "size": 3489657600
+      },
+      {
+        "fileName": "direct-index.state",
+        "sha256": "6bf6b9031e8f9e9871630bdc737b9c101294183576cc9e8ef4566c27a77cccc2",
+        "size": 3757861
+      }
+    ],
+    "controllerAuthRoots": {
+      "index": {
+        "controllerStateSha256": "6bf6b9031e8f9e9871630bdc737b9c101294183576cc9e8ef4566c27a77cccc2",
+        "controllerStateBytes": 3757861,
+        "layout": "tiered_merkle",
+        "metaRootHex": "de2a8cbca84776aa14c04d4227d72295f8effb85048e89cfaa76561899ebeaa7",
+        "payloadRootHex": "1ddf087c995947d245f04c323b85a06e799981650227ef64dd649fbb7c83c37d",
+        "metaTrustedHashesSha256": "fbe116e2aac77929fdd6b726cd87bb22bdedb84ece03b46f9b47cb1e56fbcb65",
+        "payloadTrustedHashesSha256": "44af35ad4430e80af6c983c086caec2d0f144373c1c91357d973a437e8e9de0c"
+      },
+      "chunk": {
+        "controllerStateSha256": "c0304c069a71529870d0716eb4720fa623f17839b98f34bbaa74a08f8b9266eb",
+        "controllerStateBytes": 20331137,
+        "layout": "tiered_merkle",
+        "metaRootHex": "1bc1ed8a2b219ed06712db91b613704c26c474ea19182aaf3832efecaa9bc241",
+        "payloadRootHex": "4f059feddacf0e5f9160e03e16ceb06293f55b656a151a4a851daaa36fdfc9d7",
+        "metaTrustedHashesSha256": "c9161c252be8dc00f96c21d3832371a13aa401ab9b85a00b52dc0b70ee17a8c9",
+        "payloadTrustedHashesSha256": "a5e7559acf38bcc994df02b62d0967f752d0e2b230d65ca43daf441f5c378f0f"
+      }
+    },
+    "artifacts": {
+      "evidenceJson": {
+        "path": "/proofs/oram-source/mainnet_948454/oram/oram-build-evidence.json",
+        "sha256": "9bca8a181cebfd228109bde78eebdbf066911d7ef0502e9fbeda351d0cfb7827",
+        "size": 8998
+      },
+      "evidenceBin": {
+        "path": "/proofs/oram-source/mainnet_948454/oram/oram-build-evidence.bin",
+        "sha256": "e27ec7f405bdb9f8232d030fc55415a482b2a017b5a603f30cc3803c55641db6",
+        "size": 5861
+      },
+      "buildRunMetadata": {
+        "path": "/proofs/oram-source/mainnet_948454/oram/build-run-metadata.txt",
+        "sha256": "b2d5d9d6198e6ca8018cd538a30095eed47c4ddb13ffd36f06e4931b945ded04",
+        "size": 654
+      },
+      "sha256Sums": {
+        "path": "/proofs/oram-source/mainnet_948454/oram/SHA256SUMS",
+        "sha256": "ba6c66244a68f0ed2434fec0992f91a0b7ed91203547b4748a9a6972a1d49b3e",
+        "size": 1848
+      },
+      "buildLog": {
+        "path": "/proofs/oram-source/mainnet_948454/oram/logs/build-direct.log",
+        "sha256": "c579b7ea54275d8a979ce836d70f0d757f04c9c23a49614b0db8cf2bc1be1ed8",
+        "size": 4715
+      },
+      "sizeLog": {
+        "path": "/proofs/oram-source/mainnet_948454/oram/logs/size-direct.log",
+        "sha256": "c0f6a7e9ed5c9a50d73a7b8e1fee79009ae8b52aef93746dd0e06c91ea9397ff",
+        "size": 3355
+      },
+      "postBuildSha256Log": {
+        "path": "/proofs/oram-source/mainnet_948454/oram/logs/post-build-sha256.log",
+        "sha256": "c313f05dd6416c14777e7db22d459fa506044582bb14ac6b9b9f68ad3006e997",
+        "size": 2933
+      }
+    }
+  },
+  "liveDeployment": {
+    "status": "strict-source-bound-live-on-pir2",
+    "verifiedAtUtc": "2026-06-26T17:00:00Z",
+    "currentPir2RuntimeBitcoinPirCommit": "f402466af1ee21d02e0a65b457ad338ceb1216c0",
+    "currentPir2RuntimeOramCommit": "5f366492504d8e853cbd60d25a6adbf021a78746",
+    "strictRebuildOramCommit": "5f366492504d8e853cbd60d25a6adbf021a78746",
+    "pir2UkiSha256": "3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60",
+    "pir2BinarySha256": "233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3",
+    "pir2MeasurementHex": "f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0",
+    "pir2ChannelPubkeyHex": "73d8aa08c98c0047e9031fbf342f08018ced95816d594eae1d28863d1df97b08",
+    "hetznerArchivePath": "/home/pir/uki-archive/tier3/oram-f402466a/",
+    "note": "The published proof certifies a strict source-bound ORAM rebuild, and the live pir2 Tier 3 UKI now runs BitcoinPIR commit f402466a with bitcoinpir-oram commit 5f36649. Live checks passed: bpir-admin attest matched the binary and SEV-SNP REPORT_DATA binding, channel-test verified the AMD VCEK chain, and padded direct ORAM smoke requests completed for db_id 0 and db_id 1."
+  }
+}

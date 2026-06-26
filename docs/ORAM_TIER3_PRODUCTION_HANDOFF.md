@@ -1,25 +1,25 @@
 # ORAM Tier 3 Production Handoff
 
-Status as of 2026-06-26: the ORAM-enabled Tier 3 UKI is live on pir2. The
-SEV-SNP report, binary pin, AMD VCEK chain, encrypted channel, and direct ORAM
-lookup smoke tests all pass against `wss://weikeng2.bitcoinpir.org`.
+Status as of 2026-06-27: the strict-source-bound ORAM-enabled Tier 3 UKI is
+live on pir2. The SEV-SNP report, binary pin, AMD VCEK chain, encrypted
+channel, and direct ORAM lookup smoke tests all pass against
+`wss://weikeng2.bitcoinpir.org`.
 
 ## Source Revisions
 
 BitcoinPIR:
 
 ```text
-668dd36b Correct ORAM dependency pin
-8ee1bed4 Allow Tier 3 UKI builds to select server binary
-f57debfd Pad direct ORAM lookup responses
-1a3d18f0 Pin hardened ORAM backend for runtime
+f402466a Pin runtime ORAM dependency to source-binding build
+a8863f82 Mirror ORAM clippy fix
+cf5e3b13 Wire direct ORAM source evidence into attested builds
 ```
 
 ORAM dependency:
 
 ```text
 https://github.com/Bitcoin-PIR/oram.git
-11c66c337b9a6130cdffd69462b06b34deedcd64
+5f366492504d8e853cbd60d25a6adbf021a78746
 ```
 
 The ORAM rev above exists on GitHub and is the value pinned in
@@ -30,29 +30,29 @@ The ORAM rev above exists on GitHub and is the value pinned in
 Local UKI:
 
 ```text
-deploy/uki/bpir-tier3-oram-668dd36b.efi
+~/Downloads/bpir-tier3-oram-f402466a-20260626T164616Z-3ef8249b673e.efi
 ```
 
 Remote build-host copy:
 
 ```text
-pir-hetzner:/tmp/bpir-tier3-oram-668dd36b.efi
+pir-hetzner:/tmp/bpir-tier3-oram-f402466a.efi
 ```
 
 Durable build-host archive:
 
 ```text
-pir-hetzner:/home/pir/uki-archive/tier3/oram-668dd36b/
+pir-hetzner:/home/pir/uki-archive/tier3/oram-f402466a/
 ```
 
 Hashes:
 
 ```text
 unified_server sha256:
-457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3
 
 UKI sha256:
-718c7728142f9a3a1c6663711853d1b51ee14fde62debc8d2fb1c8662855b18b
+3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60
 ```
 
 The final initrd was unpacked on `pir-hetzner`; the baked
@@ -61,7 +61,7 @@ The final initrd was unpacked on `pir-hetzner`; the baked
 Live attested MEASUREMENT:
 
 ```text
-1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746
+f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0
 ```
 
 ## Build Recipe
@@ -70,13 +70,19 @@ The final binary and UKI were built on `pir-hetzner` from a clean checkout:
 
 ```bash
 export PATH="/home/pir/.cargo/bin:$PATH"
-BUILD=/tmp/bpir-oram-prod-668dd36b
+BUILD=/tmp/bpir-oram-runtime-f402466
 git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git "$BUILD"
 cd "$BUILD"
-git checkout 668dd36b
-cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
+git checkout a8863f82cd880d911fe49a7186b0ad4c0b6139d7
+git fetch /tmp/bpir-oram-runtime-f402466.bundle \
+    refs/heads/codex/oram-runtime-5f36649:refs/heads/codex/oram-runtime-5f36649
+git checkout f402466af1ee21d02e0a65b457ad338ceb1216c0
+RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=/home/pir=/build" \
+SOURCE_DATE_EPOCH=0 cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
+strip --strip-debug target/release/unified_server
 
-OUT=/tmp/bpir-tier3-oram-668dd36b.efi \
+OUT=/tmp/bpir-tier3-oram-f402466a.efi \
+UKI_ARCHIVE_LABEL=oram-f402466a \
 BINARY="$PWD/target/release/unified_server" \
 BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 ./scripts/build_uki_tier3.sh
@@ -105,18 +111,14 @@ rustfmt --edition 2021 --check pir-runtime-core/src/protocol.rs pir-sdk-client/s
 git diff --check
 ```
 
-The ORAM release assembly audit passed on `pir-hetzner` with Rust `1.94.1`:
+The source bundle and one-commit patch are archived next to the UKI:
 
-```bash
-export PATH="/home/pir/.cargo/bin:$PATH"
-export RUSTUP_TOOLCHAIN=1.94.1
-cd /tmp/oram-audit-11c66c3
-./scripts/audit-ct-assembly.sh
+```text
+bpir-oram-runtime-f402466.bundle
+f402466a.patch
 ```
 
-The audit still prints non-fatal review notes for global `memset` references and
-variable shifts. Those are not failures from the audit script. The important
-query privacy properties are still:
+The important query privacy properties are still:
 
 - direct ORAM lookup slots are padded before index lookup;
 - every padded slot contributes to the public index-read budget;
@@ -126,8 +128,8 @@ query privacy properties are still:
 
 ## Live Verification
 
-Live checks were run on 2026-06-26 after uploading
-`deploy/uki/bpir-tier3-oram-668dd36b.efi` through the VPSBG measured-boot
+Live checks were run on 2026-06-27 after uploading
+`bpir-tier3-oram-f402466a-20260626T164616Z-3ef8249b673e.efi` through the VPSBG measured-boot
 portal.
 
 ```bash
@@ -138,8 +140,8 @@ The wrapper verifies:
 
 ```text
 server:              wss://weikeng2.bitcoinpir.org
-expected measurement: 1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746
-expected binary:     457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+expected measurement: f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0
+expected binary:     233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3
 expected ARK fp:     1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 ```
 
@@ -147,13 +149,13 @@ Observed live values:
 
 ```text
 binary_sha256:
-457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3
 
 git_rev:
-668dd36b812f51f8c6a63af6fd3025cc07455bfd
+f402466af1ee21d02e0a65b457ad338ceb1216c0
 
 channel pubkey for this boot:
-77bbbc1064d3907b17a7a6c95d80a9a671a130304f954e75a1edc738b90b8f06
+73d8aa08c98c0047e9031fbf342f08018ced95816d594eae1d28863d1df97b08
 
 REPORT_DATA binding:
 ReportDataMatch
@@ -195,7 +197,7 @@ production databases.
 The live artifact is:
 
 ```text
-deploy/uki/bpir-tier3-oram-668dd36b.efi
+~/Downloads/bpir-tier3-oram-f402466a-20260626T164616Z-3ef8249b673e.efi
 ```
 
 Portal path:
