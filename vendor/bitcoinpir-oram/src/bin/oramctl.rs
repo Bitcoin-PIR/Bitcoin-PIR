@@ -2435,6 +2435,7 @@ impl DirectBuildEvidenceInputs {
         })
     }
 
+    #[cfg(test)]
     fn empty() -> Self {
         Self {
             db_build_evidence: None,
@@ -2653,7 +2654,7 @@ fn load_certified_db_binding(
                     "root bundle payload hash mismatch: db evidence expects {}, got {}",
                     existing
                         .root_bundle_payload_sha256
-                        .map(|h| hex::encode(h))
+                        .map(hex::encode)
                         .unwrap_or_else(|| "<none>".into()),
                     hex::encode(payload_sha256)
                 )));
@@ -2738,6 +2739,7 @@ fn chain_anchor_evidence(anchor: CertifiedAnchor) -> ChainAnchorEvidence {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn direct_oram_params_evidence(
     pack: usize,
     leaf_divisor: usize,
