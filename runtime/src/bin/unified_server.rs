@@ -1983,6 +1983,34 @@ fn direct_native_lookup_slots(
     Ok(out)
 }
 
+#[cfg(feature = "cuckoo-oram")]
+fn direct_oram_response_padding_bytes(
+    access_budget: usize,
+    slots: usize,
+    hash_fns: usize,
+    actual_chunk_bytes: usize,
+) -> Result<usize, String> {
+    let index_budget = hash_fns
+        .checked_mul(slots)
+        .ok_or_else(|| "direct ORAM response index budget overflow".to_string())?;
+    if index_budget > access_budget {
+        return Err(format!(
+            "direct ORAM access budget {} too small for {} slots and {} index reads each",
+            access_budget, slots, hash_fns,
+        ));
+    }
+    let max_chunk_bytes = (access_budget - index_budget)
+        .checked_mul(DIRECT_CHUNK_RECORD_SIZE)
+        .ok_or_else(|| "direct ORAM response padding byte count overflow".to_string())?;
+    if actual_chunk_bytes > max_chunk_bytes {
+        return Err(format!(
+            "direct ORAM response has {} chunk bytes, exceeding public budget {}",
+            actual_chunk_bytes, max_chunk_bytes,
+        ));
+    }
+    Ok(max_chunk_bytes - actual_chunk_bytes)
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 struct CuckooNativeLookupConfig {
@@ -3731,6 +3759,23 @@ impl UnifiedServerData {
                     tables.access_budget,
                     t.elapsed(),
                 );
+                let actual_chunk_bytes = lookup.iter().try_fold(0usize, |acc, item| {
+                    acc.checked_add(item.raw_chunk_data.len())
+                        .ok_or_else(|| "direct ORAM response chunk byte count overflow".to_string())
+                });
+                let actual_chunk_bytes = match actual_chunk_bytes {
+                    Ok(bytes) => bytes,
+                    Err(e) => return Response::Error(e),
+                };
+                let trailing_padding_bytes = match direct_oram_response_padding_bytes(
+                    tables.access_budget,
+                    query.script_hashes.len(),
+                    tables.index.hash_fns,
+                    actual_chunk_bytes,
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(e) => return Response::Error(e),
+                };
                 return Response::OramLookupResult(OramLookupResult {
                     db_id: query.db_id,
                     items: lookup
@@ -3743,6 +3788,7 @@ impl UnifiedServerData {
                             raw_chunk_data: item.raw_chunk_data,
                         })
                         .collect(),
+                    trailing_padding_bytes,
                 });
             }
             let db = self
@@ -3789,6 +3835,7 @@ impl UnifiedServerData {
                         raw_chunk_data: item.raw_chunk_data,
                     })
                     .collect(),
+                trailing_padding_bytes: 0,
             })
         }
         #[cfg(not(feature = "cuckoo-oram"))]
@@ -7574,6 +7621,28 @@ mod harmony_dos_guard_tests {
         assert!(raw.len() <= DIRECT_CHUNK_RECORD_SIZE);
         raw.resize(DIRECT_CHUNK_RECORD_SIZE, 0);
         raw
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_response_padding_fills_public_chunk_budget() {
+        let access_budget = 8usize;
+        let slots = 3usize;
+        let hash_fns = 2usize;
+        let actual_chunk_bytes = DIRECT_CHUNK_RECORD_SIZE;
+
+        assert_eq!(
+            direct_oram_response_padding_bytes(access_budget, slots, hash_fns, actual_chunk_bytes)
+                .unwrap(),
+            DIRECT_CHUNK_RECORD_SIZE,
+        );
+        assert!(direct_oram_response_padding_bytes(
+            access_budget,
+            slots,
+            hash_fns,
+            3 * DIRECT_CHUNK_RECORD_SIZE,
+        )
+        .is_err());
     }
 
     #[cfg(feature = "cuckoo-oram")]

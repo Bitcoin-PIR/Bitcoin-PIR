@@ -440,6 +440,9 @@ pub struct OramLookupItem {
 pub struct OramLookupResult {
     pub db_id: u8,
     pub items: Vec<OramLookupItem>,
+    /// Zero bytes appended after all item records on the wire. Decoders ignore
+    /// these trailing bytes and always report `0` here.
+    pub trailing_padding_bytes: usize,
 }
 
 /// Small proof sidecar loaded from `proof_dir` and transported verbatim.
@@ -1954,6 +1957,7 @@ fn encode_oram_lookup_result(buf: &mut Vec<u8>, r: &OramLookupResult) {
         buf.extend_from_slice(&(item.raw_chunk_data.len() as u32).to_le_bytes());
         buf.extend_from_slice(&item.raw_chunk_data);
     }
+    buf.resize(buf.len() + r.trailing_padding_bytes, 0);
 }
 
 fn decode_oram_lookup_result(data: &[u8]) -> io::Result<OramLookupResult> {
@@ -1997,7 +2001,11 @@ fn decode_oram_lookup_result(data: &[u8]) -> io::Result<OramLookupResult> {
         });
         pos += data_len;
     }
-    Ok(OramLookupResult { db_id, items })
+    Ok(OramLookupResult {
+        db_id,
+        items,
+        trailing_padding_bytes: 0,
+    })
 }
 
 // ─── Database catalog encoding helpers ─────────────────────────────────────
@@ -2765,11 +2773,42 @@ mod attest_wire_tests {
                     raw_chunk_data: Vec::new(),
                 },
             ],
+            trailing_padding_bytes: 0,
         };
         let encoded = Response::OramLookupResult(result.clone()).encode();
         assert_eq!(encoded[4], RESP_ORAM_LOOKUP);
         match Response::decode(&encoded[4..]).unwrap() {
             Response::OramLookupResult(decoded) => assert_eq!(decoded, result),
+            other => panic!("wrong variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn oram_lookup_response_trailing_padding_is_ignored() {
+        let padded = OramLookupResult {
+            db_id: 7,
+            items: vec![OramLookupItem {
+                found: true,
+                whale: false,
+                start_chunk_id: 42,
+                num_chunks: 1,
+                raw_chunk_data: vec![0xAA; pir_core::params::CHUNK_SIZE],
+            }],
+            trailing_padding_bytes: 17,
+        };
+        let mut expected = padded.clone();
+        expected.trailing_padding_bytes = 0;
+
+        let encoded = Response::OramLookupResult(padded).encode();
+        let payload_len = u32::from_le_bytes(encoded[0..4].try_into().unwrap()) as usize;
+        assert_eq!(payload_len, encoded.len() - 4);
+        assert_eq!(
+            encoded.len(),
+            Response::OramLookupResult(expected.clone()).encode().len() + 17
+        );
+
+        match Response::decode(&encoded[4..]).unwrap() {
+            Response::OramLookupResult(decoded) => assert_eq!(decoded, expected),
             other => panic!("wrong variant: {:?}", other),
         }
     }

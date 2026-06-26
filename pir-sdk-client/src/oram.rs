@@ -622,6 +622,14 @@ mod tests {
         framed(&payload)
     }
 
+    fn append_frame_padding(mut frame: Vec<u8>, padding_len: usize) -> Vec<u8> {
+        let payload_len = u32::from_le_bytes(frame[0..4].try_into().unwrap()) as usize;
+        let padded_len = payload_len + padding_len;
+        frame[0..4].copy_from_slice(&(padded_len as u32).to_le_bytes());
+        frame.resize(4 + padded_len, 0);
+        frame
+    }
+
     #[tokio::test]
     async fn lookup_raw_sends_expected_frame_and_decodes_response() {
         let script_hash = [7u8; SCRIPT_HASH_SIZE];
@@ -634,6 +642,35 @@ mod tests {
         };
         let mut mock = MockTransport::new("mock://oram");
         mock.enqueue_response(encode_test_response(3, &[item.clone()]));
+
+        let mut client = OramClient::new("mock://oram");
+        client.connect_with_transport(Box::new(mock));
+        let result = client.lookup_raw(&[script_hash], 3).await.unwrap();
+
+        assert_eq!(
+            result,
+            OramLookupResult {
+                db_id: 3,
+                items: vec![item]
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_raw_ignores_trailing_response_padding() {
+        let script_hash = [7u8; SCRIPT_HASH_SIZE];
+        let item = OramLookupItem {
+            found: true,
+            whale: false,
+            start_chunk_id: 42,
+            num_chunks: 1,
+            raw_chunk_data: vec![1, 2, 3],
+        };
+        let mut mock = MockTransport::new("mock://oram");
+        mock.enqueue_response(append_frame_padding(
+            encode_test_response(3, &[item.clone()]),
+            17,
+        ));
 
         let mut client = OramClient::new("mock://oram");
         client.connect_with_transport(Box::new(mock));
