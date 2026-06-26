@@ -39,6 +39,12 @@ Remote build-host copy:
 pir-hetzner:/tmp/bpir-tier3-oram-668dd36b.efi
 ```
 
+Durable build-host archive:
+
+```text
+pir-hetzner:/home/pir/uki-archive/tier3/oram-668dd36b/
+```
+
 Hashes:
 
 ```text
@@ -156,6 +162,12 @@ After reboot, run:
 
 ./target/debug/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
   --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+```
+
+Or run the wrapper:
+
+```bash
+./scripts/verify_oram_tier3_deploy.sh
 ```
 
 Capture the new SEV-SNP MEASUREMENT from `attest` and update the web/runtime
