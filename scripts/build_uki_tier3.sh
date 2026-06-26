@@ -48,6 +48,7 @@ CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
 # Resolve dracut module dir relative to this script.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DRACUT_MODULE_DIR="$SCRIPT_DIR/dracut"
+ARCHIVE_SCRIPT="$SCRIPT_DIR/archive_uki_artifact.sh"
 
 # ─── Sanity checks ─────────────────────────────────────────────────────────
 
@@ -288,6 +289,11 @@ UKI_SHA=$(sha256sum "$OUT" | awk '{print $1}')
 echo
 echo "wrote tier3 UKI:          $OUT (${SIZE})"
 echo "tier3 uki sha256:         $UKI_SHA"
+"$ARCHIVE_SCRIPT" tier3 "$OUT" \
+    "kernel=$KERNEL" \
+    "kernel_version=$KVER" \
+    "unified_server=$BINARY" \
+    "binary_sha256=$BIN_HASH"
 echo
 echo "Next steps (Phase 3.2 acceptance):"
 echo "  0. (One-time, before first deploy of this Tier 3 variant) provision"
@@ -301,7 +307,10 @@ echo "           cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/'"
 echo "     Without this, the Tier 3 boot will FATAL-loop cloudflared and"
 echo "     the tunnel will never come up."
 echo
-echo "  1. Download $OUT to your laptop:"
+echo "  1. Confirm the UKI archive copy exists. If this build host is not the"
+echo "     durable Hetzner host, set UKI_ARCHIVE_REMOTE before building, e.g.:"
+echo "       UKI_ARCHIVE_REMOTE=pir-hetzner:/home/pir/uki-archive/tier3"
+echo "     Download $OUT only as an operator convenience:"
 echo "       scp vpsbg-pir:$OUT ./bpir-tier3.efi"
 echo
 echo "  2. VPSBG dashboard → Confidentiality & Protection →"
