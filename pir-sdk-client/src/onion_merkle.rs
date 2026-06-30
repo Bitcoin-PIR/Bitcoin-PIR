@@ -2,7 +2,7 @@
 //!
 //! This is a *different* Merkle subsystem from the per-bucket Merkle that
 //! powers DPF / Harmony verification in [`crate::merkle_verify`], but since
-//! the Phase-3 per-group redesign (PLAN_MERKLE_CODING.md /
+//! the Phase-3 per-group redesign (see docs/plans/README.md /
 //! MERKLE_COLOCATION_REVIEW.md §2–§6) the two are *structurally identical* —
 //! one independent Merkle tree per PBC group, anchored by a single
 //! `super_root`. They differ only in the sibling-fetch primitive:
@@ -59,7 +59,7 @@
 //!   verifies *both* sub-trees. A not-found / whale batch contributes 0 DATA
 //!   leaves, but `verify_sub_tree` still issues one all-dummy K_CHUNK sibling
 //!   pass, so found-vs-not-found cannot be inferred from CHUNK-Merkle traffic
-//!   (CLAUDE.md "CHUNK Round-Presence Symmetry"; PLAN_MERKLE_CODING.md C.1).
+//!   (CLAUDE.md "CHUNK Round-Presence Symmetry"; see docs/VERIFICATION_OVERVIEW.md).
 //! * **INDEX leaf symmetry** — the caller submits `INDEX_CUCKOO_NUM_HASHES = 2`
 //!   INDEX leaves per query (both probed cuckoo positions), regardless of
 //!   outcome (CLAUDE.md "Merkle INDEX item-count symmetry").
@@ -766,7 +766,7 @@ pub async fn verify_onion_merkle_batch(
     // all-not-found / whale batch contributes 0 DATA leaves; `verify_sub_tree`
     // still issues one all-dummy K_CHUNK sibling pass, so found-vs-not-found
     // cannot be inferred from CHUNK-Merkle traffic (CLAUDE.md "CHUNK
-    // Round-Presence Symmetry"; PLAN_MERKLE_CODING.md cross-cutting C.1).
+    // Round-Presence Symmetry"; see docs/VERIFICATION_OVERVIEW.md).
     let data_verdicts = verify_sub_tree(
         conn,
         OnionTreeKind::Data,

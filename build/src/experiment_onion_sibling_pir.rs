@@ -1,7 +1,7 @@
 //! Experiment: does OnionPIR's FHE PIR work on the tiny per-group Merkle
 //! "sibling DBs" the per-group redesign needs?
 //!
-//! PLAN_MERKLE_CODING.md Phase 3 / MERKLE_COLOCATION_REVIEW.md §3.2: the
+//! Retired PLAN_MERKLE_CODING.md Phase 3 / MERKLE_COLOCATION_REVIEW.md §3.2: the
 //! per-group OnionPIR Merkle redesign queries one FHE-PIR "sibling DB"
 //! per PBC group. Those DBs are tiny — the INDEX sibling DB is ~99 rows,
 //! the CHUNK one ~364 rows — versus the production data DB's 2^16 rows.

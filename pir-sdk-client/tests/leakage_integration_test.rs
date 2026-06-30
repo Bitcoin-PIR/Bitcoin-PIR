@@ -11,7 +11,7 @@
 //!   cargo test -p pir-sdk-client --test leakage_integration_test -- --ignored
 //!   cargo test -p pir-sdk-client --features onion --test leakage_integration_test -- --ignored
 //!
-//! See `PLAN_LEAKAGE_VERIFICATION.md` for the framework: a leakage
+//! See `docs/VERIFICATION_OVERVIEW.md` for the framework: a leakage
 //! function `L(q)` defines what each query is allowed to leak; the
 //! simulator property says two queries with the same `L(q)` produce
 //! structurally equivalent transcripts. The asserts below are the
@@ -103,7 +103,7 @@ fn not_found_pair() -> (ScriptHash, ScriptHash) {
 /// Two known-found script-hashes. These are HASH160 values of demo
 /// scriptPubKeys from `web/src/example_spks.json` (precomputed once
 /// via `RIPEMD160(SHA256(spk))` — see hardening notes in
-/// `PLAN_LEAKAGE_VERIFICATION.md`). They have valid on-chain UTXO sets
+/// `docs/VERIFICATION_OVERVIEW.md`). They have valid on-chain UTXO sets
 /// at the public Hetzner deployment's indexed height, so a `query_batch`
 /// against them will follow the FOUND path: INDEX rounds + CHUNK rounds
 /// + Merkle verification across both INDEX and CHUNK trees.
@@ -929,7 +929,7 @@ async fn harmony_simulator_property_multi_query_collision() {
     );
 }
 
-/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 2; Harmony
+/// M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md; Harmony
 /// analog of `dpf_found_vs_not_found_have_byte_identical_profiles`).
 /// A FOUND query with a SMALL chunk count (1 chunk — the common
 /// case) and a NOT-FOUND query still produce **byte-identical**
@@ -1080,7 +1080,7 @@ async fn run_onion_batch_query(scripthashes: &[ScriptHash]) -> LeakageProfile {
 /// the non-colliding `batch_C`, where DPF and Harmony assert *non*-equivalence:
 ///
 /// Since the Phase-3 per-group OnionPIR Merkle redesign
-/// (PLAN_MERKLE_CODING.md / MERKLE_COLOCATION_REVIEW.md) OnionPIR has
+/// (see docs/plans/README.md) OnionPIR has
 /// one independent Merkle tree per PBC group — structurally identical
 /// to DPF/Harmony's per-bucket trees. The flat per-table tree and its
 /// gid-cuckoo `pbc_plan_rounds`-over-gids sibling fetch are gone.
@@ -1287,7 +1287,7 @@ async fn dpf_found_vs_not_found_have_same_round_count() {
         found_chunks, not_found_chunks,
     );
 
-    // M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 1). The
+    // M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md). The
     // ChunkMerkleSiblings count still agrees across found and
     // not-found via ROUND-PRESENCE: a not-found query does one
     // all-dummy CHUNK-Merkle pass (the guard in merkle_verify.rs —
@@ -1355,7 +1355,7 @@ async fn dpf_round_count_is_function_of_batch_size_only() {
     );
 }
 
-/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 1). A FOUND
+/// M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md). A FOUND
 /// query with a SMALL chunk count (1 chunk — the common case) and a
 /// NOT-FOUND query still produce **byte-identical** leakage
 /// profiles, because:
@@ -1535,7 +1535,7 @@ async fn onion_found_vs_not_found_have_same_round_count() {
     // TOTAL round count and ChunkMerkleSiblings round count also
     // agree for a 1-chunk found example. Pre-fix not-found emitted 0
     // ChunkMerkleSiblings (and skipped DATA tree-tops) while found
-    // emitted those. M=16 padding was REMOVED in PLAN_MERKLE_CODING.md
+    // emitted those. M=16 padding was REMOVED; see docs/VERIFICATION_OVERVIEW.md
     // Phase 4 / WS-A; the agreement now comes from CHUNK Round-Presence
     // Symmetry — the per-group Merkle verifier (`verify_sub_tree`)
     // always issues >=1 all-dummy K_CHUNK DATA sibling pass, so a
@@ -1561,7 +1561,7 @@ async fn onion_found_vs_not_found_have_same_round_count() {
 }
 
 /// OnionPIR analog of `dpf_found_vs_not_found_have_byte_identical_profiles`.
-/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 4 / WS-A). A FOUND
+/// M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md). A FOUND
 /// query with a SMALL chunk count (1 chunk — the common case) and a
 /// NOT-FOUND query still produce **byte-identical** leakage profiles,
 /// because:

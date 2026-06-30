@@ -32,7 +32,7 @@
  *      Each scripthash's two INDEX Merkle items inherit a UNIQUE-per-
  *      batch `pbc_group`, so `max_items_per_group_per_level = 2`
  *      independently of the batch's collision pattern. Since the
- *      Phase-3 per-group redesign (PLAN_MERKLE_CODING.md /
+ *      Phase-3 per-group redesign (retired PLAN_MERKLE_CODING.md /
  *      MERKLE_COLOCATION_REVIEW.md) OnionPIR's INDEX Merkle is the
  *      same shape — one tree per PBC group — and realises this axis
  *      identically (see below).
@@ -84,7 +84,7 @@
  *          items, so the wire-observable
  *          `max_items_per_group_per_level = ceil(M / K_CHUNK) = 1` was
  *          constant for production parameters (`M = 16, K_CHUNK = 80`).
- *        - Re-opened (PLAN_MERKLE_CODING.md Phase 4 / WS-A,
+ *        - Re-opened (retired PLAN_MERKLE_CODING.md Phase 4 / WS-A,
  *          [HUMAN decision, 2026-05-17]): the M=16 pad was removed. It
  *          forced every query — incl. a 1-UTXO address — to fetch and
  *          verify 16 chunk entries (~16x chunk-layer cost) to hide a

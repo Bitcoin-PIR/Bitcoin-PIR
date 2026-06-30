@@ -159,8 +159,8 @@ them so `max_items_per_group = 2` regardless of input.
 **Not a closed invariant.** An M=16 chunk-Merkle item-count pad once
 made every query contribute exactly 16 chunk Merkle items, pinning the
 wire-observable `max_items_per_group_per_level` to `1`. Phase 4 / WS-A
-(PLAN_MERKLE_CODING.md, `[HUMAN decision, 2026-05-17]`) **removed that
-pad**: it forced even a 1-UTXO address to fetch and verify 16 chunk
+(retired `PLAN_MERKLE_CODING.md`, `[HUMAN decision, 2026-05-17]`) **removed
+that pad**: it forced even a 1-UTXO address to fetch and verify 16 chunk
 entries (~16× chunk-layer cost) to hide a count that is `1` for ~99 %
 of mainnet addresses.
 

@@ -139,7 +139,7 @@ Do NOT add any code path that emits fewer than `T − 1` indices, and
 do NOT add a "skip if empty" early-exit.
 
 The fix is implemented in `HarmonyGroup::build_request` /
-`build_synthetic_dummy` (see `PLAN_HARMONY_COUNT_LEAK_FIX.md`) by
+`build_synthetic_dummy` (see `docs/plans/README.md`) by
 padding the shortfall with random distinct indices drawn from
 `[0, real_n) \ R` and XOR-cancelling those dummy response entries in
 `process_response` / `process_response_xor_only`. No wire-format or
@@ -202,7 +202,8 @@ required.
 ### CHUNK Merkle Item-Count — Documented Trade-off (NOT an invariant)
 
 > **Status:** the M=16 chunk-Merkle item-count pad was **removed** in
-> PLAN_MERKLE_CODING.md Phase 4 / WS-A `[HUMAN decision, 2026-05-17]`.
+> retired `PLAN_MERKLE_CODING.md` Phase 4 / WS-A `[HUMAN decision,
+> 2026-05-17]`; see `docs/plans/README.md`.
 > Earlier revisions of this file described a "CHUNK Merkle Item-Count
 > Symmetry" MANDATORY invariant — that invariant **no longer holds**
 > and its removal was deliberate. This section documents the resulting

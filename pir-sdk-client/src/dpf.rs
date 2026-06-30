@@ -240,7 +240,7 @@ struct QueryTraces {
 /// query contributes exactly `INDEX_CUCKOO_NUM_HASHES` items regardless
 /// of found / not-found / whale.
 ///
-/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 1): `trace.chunk_bins`
+/// M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md): `trace.chunk_bins`
 /// now holds exactly the query's REAL chunk count — `N` for a found query,
 /// `0` for not-found / whale. The chunk-bin attachment stays unconditional
 /// (all on `bi == 0`); a not-found query simply attaches zero chunk items,
@@ -440,7 +440,7 @@ pub struct DpfClient {
     /// roundtrip emits a structured [`RoundProfile`] capturing the
     /// wire-observable shape (round kind, server id, request/response
     /// bytes, per-group or per-query item counts). Used by the
-    /// differential-testing harness in `PLAN_LEAKAGE_VERIFICATION.md`.
+    /// differential-testing harness summarized in `docs/VERIFICATION_OVERVIEW.md`.
     /// Independent of `metrics_recorder` — install neither, either, or
     /// both.
     leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
@@ -775,7 +775,7 @@ impl DpfClient {
         // emit a K_CHUNK-padded dummy CHUNK round (CHUNK Round-Presence
         // Symmetry).
         // M=16 chunk-Merkle padding REMOVED — 2026-05-17, see
-        // PLAN_MERKLE_CODING.md Phase 1. A query now fetches/verifies
+        // Retired PLAN_MERKLE_CODING.md Phase 1. A query now fetches/verifies
         // its REAL chunk count. Found-vs-not-found stays hidden:
         // `query_chunk_level(&[])` emits a K_CHUNK-padded dummy CHUNK
         // round for not-found/whale, and the per-bucket Merkle always
@@ -3692,7 +3692,7 @@ mod tests {
     /// chunk_bins attach to `bi == 0` unconditionally —
     /// `matched_index_idx` does not gate the attachment. Each query
     /// emits its *real* chunk count of chunk Merkle items (post-M=16
-    /// removal, PLAN_MERKLE_CODING.md Phase 4 / WS-A), all aggregated
+    /// removal, retired PLAN_MERKLE_CODING.md Phase 4 / WS-A), all aggregated
     /// on the first INDEX item for bookkeeping symmetry. The matched
     /// position is still recorded in `matched_index_idx` for downstream
     /// callers that need it (e.g. inspector path), but the Merkle layer

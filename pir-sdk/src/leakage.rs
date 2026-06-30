@@ -1,7 +1,7 @@
 //! Leakage profile capture for differential testing.
 //!
 //! This module is the foundation of the leakage-verification work
-//! (see `PLAN_LEAKAGE_VERIFICATION.md`). It defines a
+//! (see `docs/VERIFICATION_OVERVIEW.md`). It defines a
 //! [`LeakageRecorder`] trait — analogous to [`PirMetrics`] but
 //! orthogonal — that PIR clients invoke at every wire-observable
 //! roundtrip with structured metadata about what the server can see.

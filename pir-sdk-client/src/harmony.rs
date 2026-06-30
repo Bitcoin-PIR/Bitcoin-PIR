@@ -276,7 +276,7 @@ pub(crate) fn classify_index_groups(
 /// query contributes exactly `INDEX_CUCKOO_NUM_HASHES` items regardless
 /// of found / not-found / whale.
 ///
-/// M=16 padding REMOVED (PLAN_MERKLE_CODING.md Phase 2): `trace.chunk_bins`
+/// M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md): `trace.chunk_bins`
 /// now holds exactly the query's REAL chunk count — `N` for a found query,
 /// `0` for not-found / whale. The chunk-bin attachment stays unconditional
 /// (all on `bi == 0`); a not-found query simply attaches zero chunk items,
@@ -2536,7 +2536,7 @@ impl HarmonyClient {
         // their UTXO chunks, not-found / whale queries fetch none.
         //
         // M=16 chunk-Merkle padding REMOVED — 2026-05-17, see
-        // PLAN_MERKLE_CODING.md Phase 2 (mirrors the Phase 1 DPF
+        // Retired PLAN_MERKLE_CODING.md Phase 2 (mirrors the Phase 1 DPF
         // change). Found-vs-not-found stays hidden: an all-not-found
         // batch still emits one dummy K_CHUNK-padded CHUNK round pair
         // (`query_chunk_phase_batched`'s all-empty branch), and the
@@ -3543,7 +3543,7 @@ impl HarmonyClient {
     ///
     /// `per_query_chunks[i]` is the REAL chunk_id list for scripthash
     /// `i` — `N` ids for a found query with `N` UTXO chunks, empty for
-    /// not-found / whale. (M=16 padding removed — PLAN_MERKLE_CODING.md
+    /// not-found / whale. (M=16 padding removed — see docs/VERIFICATION_OVERVIEW.md
     /// Phase 2; the per-query chunk count is now an admitted leak.)
     ///
     /// Returns one `(chunk_data, chunk_bins)` pair per scripthash, in
@@ -3576,7 +3576,7 @@ impl HarmonyClient {
         let n = per_query_chunks.len();
 
         // Empty: still emit one dummy round pair for symmetry. With the
-        // M=16 padding removed (PLAN_MERKLE_CODING.md Phase 2) a
+        // M=16 padding removed (see docs/VERIFICATION_OVERVIEW.md) a
         // not-found / whale query owns 0 real chunks, so an
         // all-not-found batch reaches here. It must emit the SAME wire
         // shape as a found batch's single PBC round —

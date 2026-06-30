@@ -1510,7 +1510,7 @@ impl OnionClient {
         Vec<Vec<u32>>,
     )> {
         // Collect each query's *real* chunk entry_ids. Phase 3 / WS-A
-        // removed the M=16 chunk-Merkle padding (PLAN_MERKLE_CODING.md):
+        // removed the M=16 chunk-Merkle padding (see docs/VERIFICATION_OVERVIEW.md):
         // a query now fetches its real chunk count — found-with-N → N
         // reals, not-found / whale → 0. The newly-admitted leak (per-query
         // real chunk count becomes observable) is intended and tracked in
@@ -1556,7 +1556,7 @@ impl OnionClient {
         // fed to the per-group Merkle verifier.
         let mut data_merkle: HashMap<u32, (Hash256, usize, u32)> = HashMap::new();
 
-        // 🔒 CHUNK Round-Presence Symmetry (CLAUDE.md / PLAN_MERKLE_CODING.md
+        // 🔒 CHUNK Round-Presence Symmetry (CLAUDE.md / docs/VERIFICATION_OVERVIEW.md
         // cross-cutting invariant C.1). A genuinely empty batch (no
         // scripthashes) has nothing to hide → no CHUNK round. But a batch
         // whose scripthashes are *all* not-found / whale (`unique` empty)

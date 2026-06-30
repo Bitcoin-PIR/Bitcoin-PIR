@@ -1,7 +1,7 @@
 /**
  * Leakage profile capture — TypeScript port of `pir-sdk/src/leakage.rs`.
  *
- * The cross-language diff (Phase 2.3 of `PLAN_LEAKAGE_VERIFICATION.md`)
+ * The cross-language diff (see `docs/VERIFICATION_OVERVIEW.md`)
  * compares profiles emitted by the Rust `OnionClient` against profiles
  * emitted by the standalone TypeScript `OnionPirWebClient` (the only
  * client without a Rust-shared WASM core, since SEAL doesn't compile to

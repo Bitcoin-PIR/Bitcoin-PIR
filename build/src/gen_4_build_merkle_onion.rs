@@ -1,6 +1,6 @@
 //! Build PER-GROUP Merkle trees for OnionPIR — one tree per PBC group.
 //!
-//! Phase 3 of the per-group Merkle redesign (PLAN_MERKLE_CODING.md /
+//! Phase 3 of the per-group Merkle redesign (retired PLAN_MERKLE_CODING.md /
 //! MERKLE_COLOCATION_REVIEW.md §2–§6). Replaces the old flat per-table
 //! trees — which spanned every PBC group and so needed a `gid`-cuckoo for
 //! the sibling fetch (the batch-size leak, §1) — with one independent

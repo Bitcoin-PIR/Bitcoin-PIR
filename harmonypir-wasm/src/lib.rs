@@ -339,7 +339,7 @@ pub struct HarmonyGroup {
     /// recovered row.  Length = `params.t - 1` after every call.
     ///
     /// Round-local scratch — never serialized.  See
-    /// `PLAN_HARMONY_COUNT_LEAK_FIX.md` for the privacy rationale.
+    /// `CLAUDE.md` for the privacy rationale.
     last_is_dummy: Vec<bool>,
     /// Stashed state for deferred relocation (set by process_response_xor_only).
     deferred_entries: Option<Vec<Vec<u8>>>,
@@ -452,7 +452,7 @@ impl HarmonyGroup {
     ///
     /// Fixed-count invariant: every call emits `(T - 1) * 4` bytes,
     /// regardless of segment state, query count, or round.  See
-    /// `PLAN_HARMONY_COUNT_LEAK_FIX.md` and the "HarmonyPIR Per-Group
+    /// `CLAUDE.md` and the "HarmonyPIR Per-Group
     /// Request-Count Symmetry" section of `CLAUDE.md` — do NOT change
     /// this to a variable count.
     pub fn build_request(&mut self, q: u32) -> Result<HarmonyRequest, JsError> {
@@ -525,7 +525,7 @@ impl HarmonyGroup {
     /// count is deterministic, the server cannot tell synthetic
     /// dummies apart from real queries, nor can it tell real queries
     /// with many empty segment cells apart from real queries with
-    /// few.  See `PLAN_HARMONY_COUNT_LEAK_FIX.md`.
+    /// few. See `CLAUDE.md`.
     ///
     /// Returns raw bytes: `(T - 1) × 4B u32 LE` (same format as
     /// `HarmonyRequest.request`).
@@ -629,7 +629,7 @@ impl HarmonyGroup {
     ///
     /// Two [`HarmonyRequest`]s, each independently emitting exactly
     /// `(T - 1) * 4` bytes (the per-group request-count symmetry
-    /// invariant — see `PLAN_HARMONY_COUNT_LEAK_FIX.md`). The
+    /// invariant — see `CLAUDE.md`). The
     /// in-flight state is stashed on the group as
     /// `Option<PendingPair>` and consumed by
     /// `process_response_pair`.

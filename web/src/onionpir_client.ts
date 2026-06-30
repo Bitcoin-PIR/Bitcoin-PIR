@@ -372,7 +372,7 @@ function decodeBatchResult(data: Uint8Array, pos: number): { roundId: number; re
 // SOUNDNESS-CRITICAL module section — the standalone-TS mirror of the Rust
 // verifier `pir-sdk-client/src/onion_merkle.rs` (Phase 3d, commit 79e422b4).
 //
-// Since the Phase-3 per-group redesign (PLAN_MERKLE_CODING.md /
+// Since the Phase-3 per-group redesign (see docs/plans/README.md /
 // MERKLE_COLOCATION_REVIEW.md §2-§6) OnionPIR has one independent
 // arity-`arity` Merkle tree per PBC group — 75 INDEX trees + 80 DATA trees
 // — anchored by a single `super_root` = SHA256 of the 155 concatenated
@@ -786,7 +786,7 @@ export class OnionPirWebClient {
 
   // Optional leakage recorder. When installed, every transport-level
   // roundtrip emits a structured `RoundProfile` matching what the Rust
-  // `OnionClient` emits — Phase 2.3 of `PLAN_LEAKAGE_VERIFICATION.md`
+  // `OnionClient` emits — see docs/VERIFICATION_OVERVIEW.md
   // diff-tests Rust against TS using these profiles. `null` = no
   // recording (zero overhead in the no-recorder case).
   private leakageRecorder: LeakageRecorder | null = null;
@@ -1346,7 +1346,7 @@ export class OnionPirWebClient {
       // ════════════════════════════════════════════════════════════════
 
       // Collect each query's *real* chunk entry_ids. Phase 3 / WS-A
-      // removed the M=16 chunk-Merkle padding (PLAN_MERKLE_CODING.md):
+      // removed the M=16 chunk-Merkle padding (see docs/VERIFICATION_OVERVIEW.md):
       // a query now fetches its real chunk count — found-with-N → N
       // reals, not-found / whale → 0. The newly-admitted leak (per-query
       // real chunk count is observable) is intended and tracked in the
@@ -1401,7 +1401,7 @@ export class OnionPirWebClient {
       const dataMerkle = new Map<number, { hash: Uint8Array; pbcGroup: number; bin: number }>();
       let chunkRoundsCount = 0;
 
-      // 🔒 CHUNK Round-Presence Symmetry (CLAUDE.md / PLAN_MERKLE_CODING.md
+      // CHUNK Round-Presence Symmetry (CLAUDE.md / docs/VERIFICATION_OVERVIEW.md
       // cross-cutting invariant C.1). A genuinely empty batch (no
       // scripthashes, N === 0) has nothing to hide → no CHUNK round. But
       // a batch whose scripthashes are *all* not-found / whale

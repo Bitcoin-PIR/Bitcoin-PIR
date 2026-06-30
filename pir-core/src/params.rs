@@ -190,7 +190,7 @@ pub const CHUNK_MAGIC: u64 = CHUNK_PARAMS.magic;
 pub const CHUNK_HEADER_SIZE: usize = CHUNK_PARAMS.header_size;
 
 // NOTE: `CHUNK_MERKLE_ITEMS_PER_QUERY` (the M=16 chunk-Merkle item-count
-// pad) was removed in PLAN_MERKLE_CODING.md Phase 4 / WS-A. A query now
+// pad) was removed in retired PLAN_MERKLE_CODING.md Phase 4 / WS-A. A query now
 // contributes its *real* chunk count of chunk-Merkle items; the
 // `chunk_max_items_per_group_per_level` axis in
 // `proofs/easycrypt/Leakage.ec` is a documented, admitted leak again.
