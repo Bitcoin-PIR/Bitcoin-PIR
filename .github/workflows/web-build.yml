@@ -68,10 +68,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Rust toolchain (with wasm32 target)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      - name: Install pinned Rust toolchain (with wasm32 target)
+        run: rustup toolchain install --profile minimal --target wasm32-unknown-unknown
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
