@@ -1,7 +1,9 @@
 # Database Build Attestation Plan
 
-Status: server/API proof distribution deployed for the production delta DB;
-web UX and strict query-path enforcement remain.
+Status: server/API proof distribution is deployed for the production delta DB.
+The web frontend now fetches and verifies the production delta proof for DPF
+and HarmonyPIR and renders an advisory DB/MuHash badge. Strict query-path root
+installation and standalone OnionPIR proof verification remain.
 
 Goal: bind BitcoinPIR database Merkle roots to an independently verifiable
 Bitcoin Core UTXO MuHash computation. The runtime server attestation proves
@@ -13,6 +15,12 @@ Bitcoin Core UTXO MuHash computation. The runtime server attestation proves
 The first production-grade artifact is the VPSBG SEV-SNP roots-only delta run:
 
 - range: `940611 -> 948454`
+- from block hash:
+  `000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99`
+- block hash:
+  `00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4`
+- MuHash:
+  `cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee`
 - deployed proof dir on Hetzner and VPSBG:
   `/home/pir/data/attestations/delta_940611_948454_sev_snp`
 - local mirror:
@@ -21,6 +29,12 @@ The first production-grade artifact is the VPSBG SEV-SNP roots-only delta run:
   `01e8db91d76037cd5562fce85c40e832ad156431`
 - builder binary sha256:
   `34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a`
+- Bitcoin Core version:
+  `Bitcoin Core v31.0.0`
+- params hash:
+  `2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39`
+- network magic:
+  `f9beb4d9`
 - build evidence sha256:
   `977abca3ca8dc5dfce06d69006feeb6c0df5e7df3d7c1d758fc717254ff10697`
 - SEV-SNP report sha256:
@@ -105,20 +119,24 @@ Known cleanups:
 
 ### 6. Web/WASM Policy
 
-- `pir-sdk-wasm` should expose:
-  - `WasmDpfClient.verifyDatabaseProof(dbId, policy)`
-  - `WasmHarmonyClient.verifyDatabaseProof(dbId, policy)`
+- `pir-sdk-wasm` exposes:
+  - `WasmDpfClient.verifyDatabaseProof(dbId, params_hash, builder_hash,
+    builder_commit)`
+  - `WasmHarmonyClient.verifyDatabaseProof(dbId, params_hash, builder_hash,
+    builder_commit)`
   - `verifyDatabaseProofResponse(dbInfo, rawResponse, policy)` for the
-    standalone TypeScript OnionPIR client.
-- Web adapters should accept `databaseProofPolicy`, `requireDatabaseProofs`, and
-  `onDatabaseProof`.
+    standalone TypeScript OnionPIR client remains.
+- DPF and Harmony web adapters accept `databaseProofPins` and
+  `onDatabaseProof`, fetch `REQ_GET_DB_PROOF`, verify in WASM, compare against
+  `web/src/attest-pin.ts::PRODUCTION_DB_PROOF_PINS`, and store status in
+  `databaseProofs`.
+- The demo UI renders a DB proof badge with the verified MuHash, block range,
+  bucket root, onion root, and builder pins.
 - DPF and Harmony should install verified bucket/onion roots into their native WASM
   clients before queries.
 - standalone OnionPIR should fetch `REQ_GET_DB_PROOF` directly, verify it through
   the WASM verifier, and use the attested onion super-root as the Merkle
   anchor instead of trusting `server-info`'s `super_root`.
-- The demo UI should render a separate `DB build attested` badge for DPF,
-  HarmonyPIR, and OnionPIR using the `onDatabaseProof` callbacks.
 - `scripts/smoke_db_proof_attestation.sh` wraps local and live proof checks
   with the pinned expected values below.
 
@@ -146,9 +164,12 @@ if the client must verify the whole sync chain from zero. Run the same UKI in
 - [x] Client proof fetch and strict verification.
 - [x] Post-deploy smoke helper script.
 - [x] Production delta proof deployment and live smoke tests.
+- [x] Web/WASM proof policy for DPF and HarmonyPIR.
+- [x] Dedicated UI badge/status rendering for DPF and HarmonyPIR database
+      build attestation.
 - [ ] Merkle verification consumes verified roots in strict query paths.
-- [ ] Web/WASM proof policy and client root installation.
-- [ ] Dedicated UI badge/status rendering for database build attestation.
+- [ ] Web/WASM verified-root installation before queries.
+- [ ] standalone OnionPIR DB proof verifier and UI badge.
 
 ## Production Deployment Record
 

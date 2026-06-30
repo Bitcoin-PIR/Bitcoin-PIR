@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reproducing the MEASUREMENT — Bitcoin PIR</title>
+    <title>Reproducing runtime and database attestation — Bitcoin PIR</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -220,12 +220,14 @@
     </header>
 
     <main>
-        <h1>Reproducing the SEV-SNP MEASUREMENT</h1>
+        <h1>Reproducing runtime and database attestation</h1>
         <p class="lede">
             Independently verify that <code>weikeng2.bitcoinpir.org</code>'s
             attestation report — signed by the AMD chip — actually corresponds
-            to the source code published in this repo. No need to trust the
-            operator's claimed MEASUREMENT.
+            to the source code published in this repo, then verify that the
+            served database roots bind to a Bitcoin Core MuHash at the pinned
+            block range. No need to trust the operator's claimed MEASUREMENT
+            or database anchor.
         </p>
 
         <section id="non-collusion">
@@ -285,8 +287,8 @@
                 are observable in the browser's attestation badge,
                 and both are version-controlled in
                 <code>web/src/attest-pin.ts</code>. The rest of this
-                page documents how to reproduce the pinned value
-                yourself from the published source.
+                page documents how to reproduce the pinned runtime value
+                and how to check the database/MuHash proof yourself.
             </p>
         </section>
 
@@ -337,20 +339,20 @@
         </section>
 
         <section>
-            <h2>Currently pinned values <span class="badge ok">v23 — 2026-05-26</span></h2>
+            <h2>Currently pinned runtime values <span class="badge ok">db-proof UKI — 2026-06-16</span></h2>
             <div class="panel accent">
                 <table class="pin-table">
                     <tr>
                         <td>MEASUREMENT</td>
-                        <td>4fb0ad57b28b7c33e6b2977f911fd6bf407ccf28bbab3ef9d24dceec579464a5961e10f5297a294c7dde24839eca4c6e</td>
+                        <td>892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013</td>
                     </tr>
                     <tr>
                         <td>UKI sha256</td>
-                        <td>747988fb57b94eb2c26944c17b949a1e77060487ab71245893a725d4191117cd</td>
+                        <td>01d0dc3f3fbff98886e8ba8bd9108a5a13fd55305806eeaeffeafe7307e68aab</td>
                     </tr>
                     <tr>
                         <td>binary sha256</td>
-                        <td>57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</td>
+                        <td>d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</td>
                     </tr>
                     <tr>
                         <td>OVMF sha256</td>
@@ -366,6 +368,64 @@
                 Source of truth: <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts</code></a>.
                 These values change with every Tier 3 UKI redeploy; this page
                 tracks the current pin.
+            </p>
+        </section>
+
+        <section>
+            <h2>Currently pinned database proof <span class="badge ok">delta 940611 to 948454</span></h2>
+            <p>
+                Runtime attestation proves which server binary is running.
+                Database build attestation proves that the served PIR Merkle
+                roots were produced by the SEV-SNP attested builder from the
+                claimed Bitcoin Core UTXO snapshots.
+            </p>
+            <div class="panel accent">
+                <table class="pin-table">
+                    <tr>
+                        <td>db_id</td>
+                        <td>1</td>
+                    </tr>
+                    <tr>
+                        <td>build kind</td>
+                        <td>delta</td>
+                    </tr>
+                    <tr>
+                        <td>from block</td>
+                        <td>940611 · 000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99</td>
+                    </tr>
+                    <tr>
+                        <td>to block</td>
+                        <td>948454 · 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4</td>
+                    </tr>
+                    <tr>
+                        <td>MuHash</td>
+                        <td>cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee</td>
+                    </tr>
+                    <tr>
+                        <td>bucket root</td>
+                        <td>e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a</td>
+                    </tr>
+                    <tr>
+                        <td>onion root</td>
+                        <td>f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997</td>
+                    </tr>
+                    <tr>
+                        <td>builder binary</td>
+                        <td>34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a</td>
+                    </tr>
+                    <tr>
+                        <td>builder commit</td>
+                        <td>01e8db91d76037cd5562fce85c40e832ad156431</td>
+                    </tr>
+                    <tr>
+                        <td>params hash</td>
+                        <td>2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39</td>
+                    </tr>
+                </table>
+            </div>
+            <p class="meta">
+                Source of truth: <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/web/src/attest-pin.ts" target="_blank" rel="noopener"><code>web/src/attest-pin.ts::PRODUCTION_DB_PROOF_PINS</code></a>
+                and <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/DB_BUILD_ATTESTATION_PLAN.md" target="_blank" rel="noopener"><code>docs/DB_BUILD_ATTESTATION_PLAN.md</code></a>.
             </p>
         </section>
 
@@ -400,10 +460,14 @@
                         initramfs (with <code>unified_server</code> baked in) +
                         cmdline, packaged as a single PE/EFI file.
                     </p>
-                    <a class="download-link" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/releases/download/tier3-v23/bpir-tier3-v23.efi">bpir-tier3-v23.efi <span class="meta">(85&nbsp;MB, GitHub release)</span></a>
+                    <p>
+                        The current operator-published artifact is
+                        <code>bpir-tier3-dbproof-d01e5b7a.efi</code>, the
+                        Tier 3 UKI that serves the database-proof sidecar.
+                    </p>
                     <p class="meta" style="margin-top: 6px;">
-                        Verify: <code>sha256sum bpir-tier3-v23.efi</code> →
-                        <code>747988fb57b94eb2c26944c17b949a1e77060487ab71245893a725d4191117cd</code>
+                        Verify: <code>sha256sum bpir-tier3-dbproof-d01e5b7a.efi</code> →
+                        <code>01d0dc3f3fbff98886e8ba8bd9108a5a13fd55305806eeaeffeafe7307e68aab</code>
                     </p>
                     <p class="meta" style="margin-top: 6px;">
                         Or rebuild from source with Nix — the reproducible
@@ -431,7 +495,7 @@
 	    --vcpus 2 \
 	    --vcpu-sig 0x00B10F10 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel bpir-tier3-v23.efi \
+	    --kernel bpir-tier3-dbproof-d01e5b7a.efi \
 	    --guest-features 0x1</code></pre>
                     <p>
                         Output should be the same hex as the
@@ -455,8 +519,8 @@
                     </p>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-	    --expect-measurement 4fb0ad57b28b7c33e6b2977f911fd6bf407ccf28bbab3ef9d24dceec579464a5961e10f5297a294c7dde24839eca4c6e \
-	    --expect-binary      57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</code></pre>
+	    --expect-measurement 892bb625705e8df9ff587553b11900e4fa7c28df732a77cf0d417446d63d2dff82fbefac334e0d97eaf3a5c0d1ce1013 \
+	    --expect-binary      d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</code></pre>
                     <p>
                         Three checkmarks:
                         <code>SEV-SNP REPORT_DATA binding verified</code>,
@@ -465,6 +529,38 @@
                     </p>
                 </li>
             </ol>
+        </section>
+
+        <section>
+            <h2>Verify the database proof</h2>
+            <p>
+                The live servers also serve the attested-builder proof bundle
+                for <code>delta_940611_948454</code>. The verifier checks the
+                SEV-SNP report-data binding, builder evidence, root bundle,
+                live catalog chain anchors, Bitcoin Core MuHash, and the
+                bucket/onion Merkle roots.
+            </p>
+	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
+	./target/release/bpir-admin db-proof verify-live \
+	    --server wss://weikeng2.bitcoinpir.org \
+	    --db-id 1 \
+	    --expect-build-kind delta \
+	    --expect-from-height 940611 \
+	    --expect-height 948454 \
+	    --expect-from-block-hash 000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99 \
+	    --expect-block-hash 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4 \
+	    --expect-muhash cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee \
+	    --expect-bucket-root e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a \
+	    --expect-onion-root f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997 \
+	    --expect-builder-binary-sha256 34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a \
+	    --expect-builder-git-commit 01e8db91d76037cd5562fce85c40e832ad156431 \
+	    --expect-network-magic f9beb4d9 \
+	    --expect-params-hash 2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39</code></pre>
+            <p>
+                Repeat with <code>--server wss://weikeng1.bitcoinpir.org</code>
+                to confirm both hosts serve the same self-verifying proof
+                bundle.
+            </p>
         </section>
 
         <section>
@@ -485,7 +581,7 @@
                 <table class="pin-table">
                     <tr>
                         <td>binary sha256</td>
-                        <td>57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</td>
+                        <td>d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</td>
                     </tr>
                 </table>
             </div>
@@ -494,7 +590,7 @@
             </p>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng1.bitcoinpir.org \
-	    --expect-binary 57ac525b1d92656a0ae39d6def562d6fc2889a8c6337b8b34f71a59d6ac44d59</code></pre>
+	    --expect-binary d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</code></pre>
             <p>
                 Or directly: <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>
                 on the Hetzner host should return the same hash.
@@ -515,6 +611,10 @@
                     <a href="https://kdsintf.amd.com/vcek/v1/Turin/cert_chain" target="_blank" rel="noopener">AMD KDS</a>.</li>
                 <li>For pir1: the binary hash is cross-checked against the same
                     pinned value, ensuring the same code runs on both servers.</li>
+                <li>The database proof binds <code>delta_940611_948454</code>'s
+                    bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash
+                    at block <code>948454</code>, with the claimed delta base at
+                    block <code>940611</code>.</li>
                 <li>The web client refuses to upgrade to the encrypted channel
                     if the pinned values don't match what the server reports —
                     so a tampered server is silent, not silently-trusted.</li>
@@ -537,6 +637,10 @@
                 <li>AMD's signing keys themselves are trust roots (we can't
                     verify "AMD didn't sign this maliciously"). Mitigated by
                     pinning the ARK fingerprint locally.</li>
+                <li>The web DB proof badge is advisory today for DPF and
+                    HarmonyPIR. Strict mode still needs to wire verified roots
+                    directly into query-path Merkle verification, and standalone
+                    OnionPIR still needs its browser-side DB proof verifier.</li>
             </ul>
         </section>
     </main>

@@ -5,6 +5,9 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
+use crate::db_proof::{
+    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+};
 use crate::merkle_verify::{
     fetch_tree_tops, verify_bucket_merkle_batch_dpf, BucketMerkleItem,
 };
@@ -456,6 +459,35 @@ impl DpfClient {
             metrics_recorder: None,
             leakage_recorder: None,
         }
+    }
+
+    /// Fetch and verify the attested-builder proof bundle for `db_id`.
+    ///
+    /// The proof is checked against the cached database catalog, fetching the
+    /// catalog first if needed. The returned roots are the attested builder
+    /// output: chain anchor, UTXO MuHash, bucket Merkle super-root, OnionPIR
+    /// super-root, and builder metadata.
+    pub async fn verify_database_proof(
+        &mut self,
+        db_id: u8,
+        policy: &DatabaseProofPolicy,
+    ) -> PirResult<VerifiedDatabaseRoots> {
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
+        let catalog = match &self.catalog {
+            Some(c) => c.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        let db_info = catalog
+            .databases
+            .iter()
+            .find(|db| db.db_id == db_id)
+            .cloned()
+            .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
+        let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
+        let bundle = fetch_database_proof(conn0.as_mut(), db_id).await?;
+        verify_database_proof(&db_info, &bundle, policy)
     }
 
     /// Install (or replace) a metrics recorder.

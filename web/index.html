@@ -792,6 +792,9 @@
            check. Hidden for unconfigured / error / not-checked. */
         .attest-badge-op-verified   { border-left-color: #2e7d32; background: #f0fdf4; }
         .attest-badge-op-unverified { border-left-color: var(--err); background: #fef2f2; }
+        .attest-badge-db-verified   { border-left-color: #1565c0; background: #eff6ff; }
+        .attest-badge-db-unverified { border-left-color: var(--err); background: #fef2f2; }
+        .attest-badge-db-unavailable { border-left-color: var(--ink-mute); background: var(--bg); color: var(--ink-mute); }
     </style>
     <!-- OnionPIR WASM (post-port ES module) loaded dynamically via
          `await import('/wasm/onionpir_client.mjs')` in
@@ -1040,6 +1043,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         </div>
                         <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
                         <div id="operatorBadge1" class="attest-badge attest-badge-op-verified" data-server="1" style="display: none;"></div>
+                        <div id="dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
 
                         <div id="syncStateRow" style="display: none; margin-top: 14px;">
                             <span>Sync state:</span>
@@ -1373,6 +1377,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         </div>
                         <div id="hp-attestBadgeQuery" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                         <div id="hp-operatorBadgeQuery" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+                        <div id="hp-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
                         <div class="status-row">
                             <label for="hp-prpSelect">PRP backend</label>
                             <div style="display: flex; align-items: center; gap: 10px;">
@@ -1432,7 +1437,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, databaseProofAnchorLabel } from './src/index.ts';
         import { fetchResidency } from './src/server-info.ts';
 
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
@@ -1612,6 +1617,55 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             } else {
                 rows.push(`<span class="ab-state">⚠ Operator identity UNVERIFIED</span>`);
                 rows.push(`<div class="ab-row"><span class="ab-label">reason</span><span class="ab-val" title="${oid.error || ''}">${oid.error || 'check failed'}</span></div>`);
+            }
+            el.innerHTML = rows.join('');
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;',
+            })[ch]);
+        }
+
+        function renderDatabaseProofBadge(idElem, label, info) {
+            const el = typeof idElem === 'string' ? document.getElementById(idElem) : idElem;
+            if (!el) return;
+            const truncate = (hex, n = 16) =>
+                hex && hex.length > n ? `${hex.slice(0, n)}...` : (hex || '—');
+            const proof = info.proof;
+            const pin = info.pin;
+            const anchor = proof ? databaseProofAnchorLabel(proof)
+                : pin ? databaseProofAnchorLabel(pin)
+                : `db ${info.dbId}`;
+            const stateLabel = info.state === 'verified'
+                ? `Verified DB proof — ${anchor}`
+                : info.state === 'unverified'
+                    ? `DB proof mismatch — ${anchor}`
+                    : `DB proof unavailable — ${anchor}`;
+
+            el.className = `attest-badge attest-badge-db-${info.state}`;
+            el.style.display = 'block';
+
+            const rows = [];
+            rows.push(`<span class="ab-state">${escapeHtml(label)}: ${escapeHtml(stateLabel)}</span>`);
+            if (proof) {
+                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${proof.muhashHex}">${truncate(proof.muhashHex, 24)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">block</span><span class="ab-val" title="${proof.blockHashHex}">${proof.height.toLocaleString()} · ${truncate(proof.blockHashHex, 24)}</span></div>`);
+                if (proof.buildKind === 'delta') {
+                    rows.push(`<div class="ab-row"><span class="ab-label">from</span><span class="ab-val" title="${proof.fromBlockHashHex}">${proof.fromHeight.toLocaleString()} · ${truncate(proof.fromBlockHashHex, 24)}</span></div>`);
+                }
+                rows.push(`<div class="ab-row"><span class="ab-label">bucket root</span><span class="ab-val" title="${proof.bucketSuperRootHex}">${truncate(proof.bucketSuperRootHex, 24)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">onion root</span><span class="ab-val" title="${proof.onionSuperRootHex}">${truncate(proof.onionSuperRootHex, 24)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">builder</span><span class="ab-val" title="${proof.builderBinarySha256Hex}">${truncate(proof.builderGitCommit, 12)} · ${truncate(proof.builderBinarySha256Hex, 16)}</span></div>`);
+            }
+            if (info.mismatches?.length) {
+                rows.push(`<div class="ab-row"><span class="ab-label">reason</span><span class="ab-val" title="${escapeHtml(info.mismatches.join('\\n'))}">${escapeHtml(info.mismatches[0])}</span></div>`);
+            } else if (info.error) {
+                rows.push(`<div class="ab-row"><span class="ab-label">reason</span><span class="ab-val" title="${escapeHtml(info.error)}">${escapeHtml(info.error)}</span></div>`);
             }
             el.innerHTML = rows.join('');
         }
@@ -2105,6 +2159,17 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     // the operator re-bakes + republishes.
                     expectedServer0Pin: PIR1_PIN,
                     expectedServer1Pin: PIR2_TIER3_PIN,
+                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                    onDatabaseProof: (dbId, info) => {
+                        if (info.state === 'verified') {
+                            log(`DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
+                        } else if (info.state === 'unverified') {
+                            log(`DB proof db ${dbId}: UNVERIFIED — ${info.mismatches?.[0] || info.error || 'check failed'}`, 'error');
+                        } else {
+                            log(`DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`, 'info');
+                        }
+                        renderDatabaseProofBadge('dbProofBadge', 'DPF-PIR', info);
+                    },
                     onAttestation: (idx, info) => {
                         const tag = `server${idx}`;
                         if (info.state === 'verified-vcek') {
@@ -3596,6 +3661,17 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     // Slice 3 pins. Hint server = pir1 (no SEV), query server = pir2 (Tier 3).
                     expectedServer0Pin: PIR1_PIN,
                     expectedServer1Pin: PIR2_TIER3_PIN,
+                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                    onDatabaseProof: (dbId, info) => {
+                        if (info.state === 'verified') {
+                            log(`HarmonyPIR DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
+                        } else if (info.state === 'unverified') {
+                            log(`HarmonyPIR DB proof db ${dbId}: UNVERIFIED — ${info.mismatches?.[0] || info.error || 'check failed'}`, 'error');
+                        } else {
+                            log(`HarmonyPIR DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`);
+                        }
+                        renderDatabaseProofBadge('hp-dbProofBadge', 'HarmonyPIR', info);
+                    },
                     onAttestation: (idx, info) => {
                         const tag = idx === 0 ? 'hint' : 'query';
                         if (info.state === 'verified-vcek') {

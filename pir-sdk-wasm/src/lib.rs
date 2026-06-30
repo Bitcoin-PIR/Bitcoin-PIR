@@ -68,7 +68,7 @@ pub mod cashu;
 /// depends on C++/SEAL which does not compile to wasm32. Browsers that
 /// want OnionPIR must keep the TypeScript client for now.
 pub mod client;
-pub use client::{WasmDpfClient, WasmHarmonyClient, WasmSyncResult};
+pub use client::{WasmDatabaseProof, WasmDpfClient, WasmHarmonyClient, WasmSyncResult};
 
 /// Phase 2+ observability bridge — exposes `pir_sdk::AtomicMetrics` to
 /// JavaScript so a browser tools panel / dashboard can poll live PIR
