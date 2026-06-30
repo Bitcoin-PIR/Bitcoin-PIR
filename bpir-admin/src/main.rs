@@ -13,6 +13,9 @@
 //!   to confirm the cloudflared-blind path actually works.
 //! - `upload` — authenticate, build a manifest, stream a DB directory
 //!   to the server's staging area, finalize, optionally activate.
+//! - `db-proof verify` — verify attested-builder evidence, root bundle,
+//!   artifact manifests, and SEV-SNP REPORT_DATA binding for a database
+//!   build proof directory.
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -22,6 +25,7 @@ use clap::{Parser, Subcommand};
 
 mod attest;
 mod channel_test;
+mod db_proof;
 mod generate_identity;
 mod keygen;
 mod show_vcek_url;
@@ -62,6 +66,9 @@ enum Command {
     ShowVcekUrl(show_vcek_url::ShowVcekUrlArgs),
     /// Upload a DB directory: auth → BEGIN → CHUNK* → FINALIZE → ACTIVATE.
     Upload(upload::UploadArgs),
+    /// Verify attested-builder database build proof artifacts.
+    #[command(name = "db-proof")]
+    DbProof(db_proof::DbProofArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -105,6 +112,13 @@ async fn main() {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("upload: {}", e);
+                1
+            }
+        },
+        Command::DbProof(args) => match db_proof::run(args).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("db-proof: {}", e);
                 1
             }
         },

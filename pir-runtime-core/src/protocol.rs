@@ -48,6 +48,12 @@ pub const REQ_HARMONY_HINTS_V2_HALF: u8 = 0x46;
 // ─── Extended request variants (multi-database) ────────────────────────────
 
 pub const REQ_GET_DB_CATALOG: u8 = 0x02;
+/// Fetch the attested-builder proof bundle for one database.
+///
+/// 0x03 is already used by the production `unified_server` JSON info path
+/// (`REQ_GET_INFO_JSON`), even though that opcode is not represented in this
+/// core enum. Keep DB proof on 0x0a to avoid colliding with OnionPIR clients.
+pub const REQ_GET_DB_PROOF: u8 = 0x0a;
 
 // ─── Monitoring ────────────────────────────────────────────────────────────
 
@@ -184,6 +190,7 @@ pub const REQ_ADMIN_DB_ACTIVATE: u8 = 0x85;
 pub const RESP_PONG: u8 = 0x00;
 pub const RESP_INFO: u8 = 0x01;
 pub const RESP_DB_CATALOG: u8 = 0x02;
+pub const RESP_DB_PROOF: u8 = 0x0a;
 pub const RESP_ATTEST: u8 = 0x05;
 pub const RESP_HANDSHAKE: u8 = 0x06;
 pub const RESP_ANNOUNCE: u8 = 0x07;
@@ -362,11 +369,31 @@ pub struct HarmonyBatchResultItem {
     pub sub_results: Vec<Vec<u8>>,
 }
 
+/// Small proof sidecar loaded from `proof_dir` and transported verbatim.
+///
+/// The runtime server does not trust or interpret these bytes. It loads them
+/// from `proof_dir` and returns them verbatim so clients/admin tooling can
+/// verify the database roots against build evidence and the SEV-SNP report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseProofBundle {
+    pub db_id: u8,
+    pub build_evidence: Vec<u8>,
+    pub root_bundle_payload: Vec<u8>,
+    pub sev_snp_report: Vec<u8>,
+    pub database_manifest_sha256: Vec<u8>,
+    pub all_artifacts_manifest_sha256: Vec<u8>,
+    pub server_db_manifest_toml: Vec<u8>,
+}
+
+pub const DATABASE_PROOF_BUNDLE_VERSION: u16 = 1;
 #[derive(Clone, Debug)]
 pub enum Request {
     Ping,
     GetInfo,
     GetDbCatalog,
+    GetDbProof {
+        db_id: u8,
+    },
     /// Attestation request — 32-byte client-supplied nonce gets folded
     /// into REPORT_DATA so the response is anti-replay.
     Attest { nonce: [u8; 32] },
@@ -605,6 +632,7 @@ pub enum Response {
     Pong,
     Info(ServerInfo),
     DbCatalog(DatabaseCatalog),
+    DbProof(DatabaseProofBundle),
     Attest(AttestResult),
     /// Server's reply to `Request::Handshake`. Carries the per-session
     /// X25519 ephemeral pubkey. After this exchange both sides have the
@@ -648,6 +676,10 @@ impl Request {
             }
             Request::GetDbCatalog => {
                 payload.push(REQ_GET_DB_CATALOG);
+            }
+            Request::GetDbProof { db_id } => {
+                payload.push(REQ_GET_DB_PROOF);
+                payload.push(*db_id);
             }
             Request::Attest { nonce } => {
                 payload.push(REQ_ATTEST);
@@ -767,6 +799,15 @@ impl Request {
             REQ_PING => Ok(Request::Ping),
             REQ_GET_INFO => Ok(Request::GetInfo),
             REQ_GET_DB_CATALOG => Ok(Request::GetDbCatalog),
+            REQ_GET_DB_PROOF => {
+                if data.len() != 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "db proof request must carry exactly one db_id byte",
+                    ));
+                }
+                Ok(Request::GetDbProof { db_id: data[1] })
+            }
             REQ_ATTEST => {
                 if data.len() < 1 + 32 {
                     return Err(io::Error::new(
@@ -918,6 +959,10 @@ impl Response {
                 payload.push(RESP_DB_CATALOG);
                 encode_db_catalog(&mut payload, cat);
             }
+            Response::DbProof(bundle) => {
+                payload.push(RESP_DB_PROOF);
+                encode_db_proof_bundle(&mut payload, bundle);
+            }
             Response::Attest(r) => {
                 payload.push(RESP_ATTEST);
                 encode_attest_result(&mut payload, r);
@@ -1053,6 +1098,10 @@ impl Response {
             RESP_DB_CATALOG => {
                 let cat = decode_db_catalog(&data[1..])?;
                 Ok(Response::DbCatalog(cat))
+            }
+            RESP_DB_PROOF => {
+                let bundle = decode_db_proof_bundle(&data[1..])?;
+                Ok(Response::DbProof(bundle))
             }
             RESP_ATTEST => {
                 let r = decode_attest_result(&data[1..])?;
@@ -1739,6 +1788,62 @@ fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
     Ok(DatabaseCatalog { databases })
 }
 
+// ─── Database proof encoding helpers ───────────────────────────────────────
+
+fn encode_db_proof_bundle(buf: &mut Vec<u8>, bundle: &DatabaseProofBundle) {
+    buf.extend_from_slice(&DATABASE_PROOF_BUNDLE_VERSION.to_le_bytes());
+    buf.push(bundle.db_id);
+    encode_lp_bytes_u32(buf, &bundle.build_evidence);
+    encode_lp_bytes_u32(buf, &bundle.root_bundle_payload);
+    encode_lp_bytes_u32(buf, &bundle.sev_snp_report);
+    encode_lp_bytes_u32(buf, &bundle.database_manifest_sha256);
+    encode_lp_bytes_u32(buf, &bundle.all_artifacts_manifest_sha256);
+    encode_lp_bytes_u32(buf, &bundle.server_db_manifest_toml);
+}
+
+fn decode_db_proof_bundle(data: &[u8]) -> io::Result<DatabaseProofBundle> {
+    if data.len() < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "db proof bundle too short",
+        ));
+    }
+    let version = u16::from_le_bytes(data[0..2].try_into().unwrap());
+    if version != DATABASE_PROOF_BUNDLE_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported db proof bundle version: {}", version),
+        ));
+    }
+    let db_id = data[2];
+    let mut pos = 3;
+    let build_evidence = decode_lp_bytes_u32_required(data, &mut pos, "build_evidence")?;
+    let root_bundle_payload =
+        decode_lp_bytes_u32_required(data, &mut pos, "root_bundle_payload")?;
+    let sev_snp_report = decode_lp_bytes_u32_required(data, &mut pos, "sev_snp_report")?;
+    let database_manifest_sha256 =
+        decode_lp_bytes_u32_required(data, &mut pos, "database_manifest_sha256")?;
+    let all_artifacts_manifest_sha256 =
+        decode_lp_bytes_u32_required(data, &mut pos, "all_artifacts_manifest_sha256")?;
+    let server_db_manifest_toml =
+        decode_lp_bytes_u32_required(data, &mut pos, "server_db_manifest_toml")?;
+    if pos != data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "db proof bundle has trailing bytes",
+        ));
+    }
+    Ok(DatabaseProofBundle {
+        db_id,
+        build_evidence,
+        root_bundle_payload,
+        sev_snp_report,
+        database_manifest_sha256,
+        all_artifacts_manifest_sha256,
+        server_db_manifest_toml,
+    })
+}
+
 /// Encode one anchor record (kind byte + 0/36/72 bytes) into `buf`.
 fn encode_anchor_ext(buf: &mut Vec<u8>, anchor: &Option<pir_core::cuckoo::HeaderAnchor>) {
     match anchor {
@@ -1950,6 +2055,30 @@ fn decode_lp_bytes_u32_or_empty(data: &[u8], pos: &mut usize) -> Result<Vec<u8>,
     Ok(body)
 }
 
+fn decode_lp_bytes_u32_required(
+    data: &[u8],
+    pos: &mut usize,
+    field: &'static str,
+) -> io::Result<Vec<u8>> {
+    if *pos + 4 > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{field}: missing u32 length prefix"),
+        ));
+    }
+    let len = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
+    *pos += 4;
+    if *pos + len > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{field}: truncated body"),
+        ));
+    }
+    let out = data[*pos..*pos + len].to_vec();
+    *pos += len;
+    Ok(out)
+}
+
 // ─── Admin upload encoding helpers ─────────────────────────────────────────
 
 /// Encode a length-prefixed UTF-8 string with a 4-byte LE length.
@@ -2117,6 +2246,33 @@ mod attest_wire_tests {
         assert_eq!(decoded.databases.len(), 1);
         assert_eq!(decoded.databases[0].index_master_seed, 0);
         assert_eq!(decoded.databases[0].anchor, None);
+    }
+
+    #[test]
+    fn db_proof_request_and_response_roundtrip() {
+        let req = Request::GetDbProof { db_id: 9 };
+        let encoded = req.encode();
+        assert_eq!(encoded, vec![2, 0, 0, 0, REQ_GET_DB_PROOF, 9]);
+        match Request::decode(&encoded[4..]).unwrap() {
+            Request::GetDbProof { db_id } => assert_eq!(db_id, 9),
+            other => panic!("wrong request variant: {:?}", other),
+        }
+
+        let bundle = DatabaseProofBundle {
+            db_id: 9,
+            build_evidence: b"evidence".to_vec(),
+            root_bundle_payload: b"rootbundle".to_vec(),
+            sev_snp_report: b"report".to_vec(),
+            database_manifest_sha256: b"dbmanifest".to_vec(),
+            all_artifacts_manifest_sha256: b"allmanifest".to_vec(),
+            server_db_manifest_toml: b"manifest toml".to_vec(),
+        };
+        let encoded = Response::DbProof(bundle.clone()).encode();
+        assert_eq!(encoded[4], RESP_DB_PROOF);
+        match Response::decode(&encoded[4..]).unwrap() {
+            Response::DbProof(decoded) => assert_eq!(decoded, bundle),
+            other => panic!("wrong response variant: {:?}", other),
+        }
     }
 
     #[test]

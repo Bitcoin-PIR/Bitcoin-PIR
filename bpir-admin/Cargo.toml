@@ -22,6 +22,7 @@ pir-identity = { path = "../pir-identity" }
 # Slice D: parse the SNP report locally so `bpir-admin show-vcek-url`
 # can extract chip_id + TCB and print the AMD KDS curl commands.
 pir-attest-verify = { path = "../pir-attest-verify" }
+pir-db-attest = { path = "../pir-db-attest" }
 
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }

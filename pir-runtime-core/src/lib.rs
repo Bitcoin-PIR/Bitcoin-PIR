@@ -7,6 +7,7 @@ pub mod arc_verifier;
 pub mod attest;
 pub mod cashu_verifier;
 pub mod channel;
+pub mod db_proof;
 pub mod eval;
 pub mod handler;
 pub mod identity;
