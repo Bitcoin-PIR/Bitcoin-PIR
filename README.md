@@ -181,7 +181,7 @@ to no longer leak it):
 3. Remove the field from `leakage` and the corresponding entry from
    `L_factors`.
 4. Remove the per-axis agreement lemma from Theorem.ec.
-5. Update [PLAN_LEAKAGE_VERIFICATION.md](../../PLAN_LEAKAGE_VERIFICATION.md)
+5. Update [VERIFICATION_OVERVIEW.md](../../docs/VERIFICATION_OVERVIEW.md)
    and [CLAUDE.md](../../CLAUDE.md) "What the Server Learns" sections.
 
 ## Closure status
@@ -193,7 +193,7 @@ to no longer leak it):
   axis 1 in [Leakage.ec](Leakage.ec).
 - `chunk_max_items_per_group_per_level` — **closed, then deliberately
   re-opened.** An M=16 chunk-Merkle pad closed it; Phase 4 / WS-A
-  (PLAN_MERKLE_CODING.md, `[HUMAN decision]`) removed the pad — it cost
+  (retired `PLAN_MERKLE_CODING.md`, `[HUMAN decision]`) removed the pad — it cost
   ~16× chunk-layer work to hide a count that is `1` for ~99 % of
   addresses. This axis is now an accepted, documented leak (a function
   of the per-query real chunk count). See axis 2 in [Leakage.ec](Leakage.ec).
