@@ -51,8 +51,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --profile minimal
 
       # Plain `cargo install` (~2-3 min) instead of a cached or
       # prebuilt-binary action: this job runs weekly + on lockfile

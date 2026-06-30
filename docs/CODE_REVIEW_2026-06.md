@@ -140,7 +140,7 @@ the live demo** (pir1/Hetzner has no SEV measurement).
 | I7 | minor | No dependabot / `cargo-audit` / `cargo-deny` — 317 vendored crates, no CVE signal |
 | I8 | minor | `pir-channel`, `pir-identity`, `pir-attest-verify` declare dual license but ship no in-crate LICENSE files and are not `publish = false` |
 
-### Status update (2026-06-26): I4/I5 closed
+### Status update (2026-06-26): I4/I5/I6 closed
 
 - **I4**: historical `PLAN_*.md` files are now tracked under
   `docs/plans/`, with root-level symlink shims preserving the old
@@ -152,6 +152,11 @@ the live demo** (pir1/Hetzner has no SEV measurement).
   describes a live committed `TUNNEL_TOKEN`; if a tunnel path returns,
   the doc now requires out-of-git token handling and a rotation
   procedure.
+- **I6**: first-party GitHub Actions workflows no longer install
+  `dtolnay/rust-toolchain@stable`. They invoke `rustup toolchain
+  install` without a toolchain argument, so rustup installs the active
+  toolchain from `rust-toolchain.toml`; WASM jobs add
+  `wasm32-unknown-unknown` to that pinned toolchain.
 - **I7**: partially closed by the cargo-audit CI job added in June;
   dependabot / cargo-deny remain optional future hygiene.
 
