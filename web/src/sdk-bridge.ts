@@ -517,6 +517,11 @@ export interface WasmHarmonyClient {
   /** Overwrite the random 16-byte master PRP key. Must happen before
    *  `loadHints(...)`. Throws on non-16-byte input. */
   setMasterKey(key: Uint8Array): void;
+  /** Effective key bound to the current hint state. V2 hint setup may
+   *  replace the key originally installed through `setMasterKey`. */
+  cacheMasterKey(): Uint8Array;
+  /** Effective PRP backend selected by V2 hint setup. */
+  cachePrpBackend(): number;
   setPrpBackend(backend: number): void;
   /** Inspector-path batch query — populates `indexBins`/`chunkBins`
    *  on every returned `WasmQueryResult`. Not-found slots are

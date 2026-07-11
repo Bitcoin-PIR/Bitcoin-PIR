@@ -77,11 +77,6 @@
             color: oklch(100% 0 0 / .92); font-size: 13px;
             text-shadow: 0 1px 0 oklch(0% 0 0 / .15);
         }
-        .brand small {
-            font-weight: 500; color: var(--ink-mute);
-            border-left: 1px solid var(--line); margin-left: 4px; padding-left: 10px;
-            font-size: 12px;
-        }
         .topbar-spacer { flex: 1; }
         .topbar-meta {
             display: flex; align-items: center; gap: 14px;
@@ -99,123 +94,50 @@
         .topbar-btn:hover { border-color: var(--ink-faint); color: var(--ink); }
 
         /* ── layout ───────────────────────────────────────────────── */
-        .app {
+        .app { min-height: calc(100vh - 48px); }
+        .backend-picker {
+            padding-bottom: 22px; margin-bottom: 22px;
+            border-bottom: 1px solid var(--line);
+        }
+        .backend-picker-head {
+            display: flex; align-items: baseline; justify-content: space-between;
+            gap: 16px; margin-bottom: 12px;
+        }
+        .backend-picker-head h1 {
+            margin: 0; font-size: 20px; font-weight: 600;
+            letter-spacing: -0.015em;
+        }
+        .backend-picker-head a {
+            color: var(--ink-mute); font-size: 12px; text-decoration: none;
+        }
+        .backend-picker-head a:hover { color: var(--accent-ink); }
+        .scheme-list {
             display: grid;
-            grid-template-columns: 248px 1fr;
-            min-height: calc(100vh - 48px);
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
         }
-        .sidebar {
-            border-right: 1px solid var(--line); background: var(--panel);
-            padding: 20px 14px;
-            position: sticky; top: 48px; align-self: start;
-            height: calc(100vh - 48px); overflow-y: auto;
-        }
-        .sb-title {
-            font-size: 10.5px; font-weight: 600;
-            letter-spacing: 0.08em; text-transform: uppercase;
-            color: var(--ink-mute);
-            padding: 6px 10px 10px;
-        }
-        .scheme-list { display: flex; flex-direction: column; gap: 4px; }
         .scheme {
             all: unset;
-            display: grid;
-            grid-template-columns: 22px 1fr auto;
-            align-items: center;
-            gap: 10px;
-            padding: 10px; border-radius: var(--r);
+            display: flex; align-items: center; justify-content: center;
+            min-width: 0; min-height: 46px;
+            padding: 10px 14px; border-radius: var(--r-lg);
             cursor: pointer; color: var(--ink-soft);
-            border: 1px solid transparent;
+            border: 1px solid var(--line); background: var(--panel);
+            box-shadow: var(--shadow-sm);
         }
-        .scheme:hover { background: var(--sunken); color: var(--ink); }
+        .scheme:hover { border-color: var(--ink-faint); color: var(--ink); }
         .scheme.active {
             background: var(--accent-wash);
             border-color: var(--accent-line);
             color: var(--accent-ink);
         }
-        .scheme .ico {
-            width: 22px; height: 22px; border-radius: 5px;
-            background: var(--sunken); border: 1px solid var(--line);
-            display: grid; place-items: center;
-            font-family: var(--mono); font-size: 10px; font-weight: 600;
-            color: var(--ink-mute);
-        }
-        .scheme.active .ico {
-            background: oklch(100% 0 0); border-color: var(--accent-line);
-            color: var(--accent-ink);
-        }
-        .scheme .name { font-weight: 500; font-size: 13.5px; letter-spacing: -0.005em; }
-        .scheme .sub { display: block; font-weight: 400; color: var(--ink-mute); font-size: 11.5px; margin-top: 1px; }
-        .scheme.active .sub { color: var(--accent-ink); opacity: .7; }
-        .scheme .servers {
-            font-family: var(--mono); font-size: 10.5px;
-            color: var(--ink-mute);
-            padding: 2px 6px; border-radius: 4px;
-            background: var(--sunken);
-        }
-        .scheme.active .servers { background: oklch(100% 0 0); color: var(--accent-ink); }
-
-        .sb-section { margin-top: 22px; }
-        .sb-disclaimer {
-            margin: 18px 2px 0;
-            padding: 10px 12px;
-            border: 1px solid oklch(82% 0.08 75);
-            background: oklch(97% 0.05 85);
-            color: oklch(38% 0.1 70);
-            border-radius: var(--r);
-            font-size: 11.5px;
-            line-height: 1.5;
-        }
-        .sb-disclaimer strong { color: oklch(38% 0.1 70); font-weight: 600; }
-        .sb-disclaimer em { font-style: italic; }
-        .sb-row {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 6px 10px;
-            font-size: 12px; color: var(--ink-mute);
-            font-family: var(--mono);
-        }
-        .sb-row b { font-weight: 500; color: var(--ink-soft); }
-        .sb-repo {
-            margin-top: 10px; padding: 10px;
-            border: 1px solid var(--line); border-radius: var(--r);
-            background: var(--bg);
-            font-size: 12px; color: var(--ink-soft);
-            display: flex; align-items: center; gap: 8px;
-        }
-        .sb-repo svg { flex: 0 0 14px; }
-        .sb-repo a { color: var(--ink); text-decoration: none; font-weight: 500; }
-        .sb-repo a:hover { color: var(--accent-ink); }
+        .scheme .name { font-weight: 600; font-size: 13.5px; letter-spacing: -0.005em; }
 
         /* ── main ─────────────────────────────────────────────────── */
-        .main { min-width: 0; padding: 28px 36px 260px; }
-        .crumbs {
-            display: flex; align-items: center; gap: 6px;
-            font-size: 12px; color: var(--ink-mute);
-            font-family: var(--mono); margin-bottom: 14px;
+        .main {
+            width: min(1180px, 100%); min-width: 0;
+            margin: 0 auto; padding: 28px 36px 260px;
         }
-        .crumbs span.sep { color: var(--ink-faint); }
-        .crumbs b { font-weight: 500; color: var(--ink); }
-        .hero {
-            display: flex; justify-content: space-between; align-items: flex-end;
-            gap: 24px;
-            padding-bottom: 22px; margin-bottom: 22px;
-            border-bottom: 1px solid var(--line);
-        }
-        .hero h1 {
-            margin: 0 0 6px; font-size: 26px; letter-spacing: -0.02em;
-            font-weight: 600; color: var(--ink);
-        }
-        .hero h1 .tag {
-            font-family: var(--mono); font-size: 12px; font-weight: 500;
-            color: var(--accent-ink); background: var(--accent-wash);
-            border: 1px solid var(--accent-line);
-            padding: 2px 7px; border-radius: 999px;
-            vertical-align: middle; margin-left: 10px;
-            letter-spacing: 0;
-        }
-        .hero p { margin: 0; color: var(--ink-soft); max-width: 62ch; }
-        .hero-actions { display: flex; gap: 8px; flex-shrink: 0; }
-
         /* ── buttons ──────────────────────────────────────────────── */
         button, input, textarea, select { font: inherit; }
         .btn {
@@ -245,6 +167,7 @@
         .btn.danger { color: var(--err); border-color: var(--line); }
         .btn.danger:hover:not(:disabled) { border-color: var(--err); background: var(--err-wash); }
         .btn.sm { padding: 4px 8px; font-size: 12px; }
+        [hidden], .connection-controls { display: none !important; }
 
         /* ── grid of cards ────────────────────────────────────────── */
         .grid {
@@ -634,7 +557,7 @@
         /* ── tab content ──────────────────────────────────────────── */
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        .tab-btn { /* retained for JS compat; visual role is the sidebar .scheme */ }
+        .tab-btn { /* retained for JS compatibility; visual role is .scheme */ }
         .tab-btn.sr { position: absolute; left: -9999px; }
 
         /* ── terminal log (pinned bottom) ─────────────────────────── */
@@ -680,12 +603,20 @@
         /* responsive */
         @media (max-width: 1080px) {
             .grid { grid-template-columns: 1fr; }
-            .app { grid-template-columns: 1fr; }
-            .sidebar {
-                position: static; height: auto;
-                border-right: none; border-bottom: 1px solid var(--line);
-            }
+            .scheme-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .main { padding: 20px 20px 260px; }
+        }
+        @media (max-width: 640px) {
+            .topbar { padding: 0 12px; gap: 8px; }
+            .topbar a.topbar-btn { display: none; }
+            .topbar-btn { padding: 5px 8px; }
+            #residencyBtn { display: none; }
+            .main { padding: 18px 14px 220px; }
+            .backend-picker-head { align-items: center; }
+            .backend-picker-head h1 { font-size: 18px; }
+            .scheme-list { gap: 8px; }
+            .scheme { padding: 11px 12px; }
+            .status-row { grid-template-columns: 90px minmax(0, 1fr); }
         }
 
         /* ── Query Inspector Modal (unchanged functional classes) ─── */
@@ -798,6 +729,98 @@
         .attest-badge-chain-verified   { border-left-color: #2e7d32; background: #f0fdf4; }
         .attest-badge-chain-unverified { border-left-color: var(--err); background: #fef2f2; }
         .attest-badge-chain-unavailable { border-left-color: var(--ink-mute); background: var(--bg); color: var(--ink-mute); }
+
+        .merkle-result-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: 9px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            vertical-align: middle;
+            font-family: var(--mono);
+            font-size: 10.5px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .merkle-result-badge.verifying { color: var(--ink-mute); background: var(--sunken); border: 1px solid var(--line); }
+        .merkle-result-badge.verified { color: #166534; background: #dcfce7; border: 1px solid #86efac; }
+        .merkle-result-badge.failed { color: #991b1b; background: #fee2e2; border: 1px solid #fca5a5; }
+        .merkle-result-badge.error { color: #92400e; background: #fef3c7; border: 1px solid #fcd34d; }
+        .auto-merkle-bar { padding: 9px 12px !important; }
+        .auto-merkle-bar .batch-merkle-btn { cursor: default; }
+
+        /* Compact verification summary. The diagnostic panels and server
+           settings live in #verificationDialog so they never lengthen the
+           query/results grid. */
+        .verification-summary { display: grid; gap: 8px; }
+        .verification-summary-row {
+            min-height: 42px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 8px 10px;
+            border: 1px solid var(--line-soft);
+            border-radius: var(--r);
+            background: var(--sunken);
+        }
+        .verification-server { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+        .verification-result {
+            min-width: 84px;
+            padding: 3px 9px;
+            border-radius: 999px;
+            text-align: center;
+            font-family: var(--mono);
+            font-size: 10.5px;
+            font-weight: 700;
+            letter-spacing: .04em;
+        }
+        .verification-result.pending { color: var(--ink-mute); background: var(--panel); border: 1px solid var(--line); }
+        .verification-result.yes { color: #166534; background: #dcfce7; border: 1px solid #86efac; }
+        .verification-result.no { color: #991b1b; background: #fee2e2; border: 1px solid #fca5a5; }
+        .verification-result.unavailable { color: var(--ink-mute); background: var(--panel); border: 1px solid var(--line); }
+        .verification-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+        .verification-details-home > .verification-details-source { display: none !important; }
+        .verification-details-source.in-modal { display: block; }
+        .verification-details-source .status-row:first-child { margin-top: 0; }
+        .verification-dialog {
+            width: min(720px, calc(100vw - 32px));
+            max-height: min(820px, calc(100vh - 32px));
+            padding: 0;
+            border: 1px solid var(--line);
+            border-radius: var(--r-lg);
+            background: var(--panel);
+            color: var(--ink);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, .28);
+        }
+        .verification-dialog::backdrop { background: rgba(15, 23, 42, .48); }
+        .verification-dialog-head {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--line);
+            background: var(--panel);
+        }
+        .verification-dialog-head h2 { margin: 0; font-size: 16px; }
+        .verification-dialog-close {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            border: 0;
+            border-radius: 50%;
+            background: transparent;
+            color: var(--ink-mute);
+            font-size: 22px;
+            cursor: pointer;
+        }
+        .verification-dialog-close:hover { color: var(--ink); background: var(--sunken); }
+        .verification-dialog-body { padding: 18px; overflow-y: auto; max-height: calc(100vh - 96px); }
     </style>
     <!-- OnionPIR WASM (post-port ES module) loaded dynamically via
          `await import('/wasm/onionpir_client.mjs')` in
@@ -812,10 +835,8 @@
         <div class="brand">
             <span class="brand-mark" aria-hidden="true"></span>
             <span>Bitcoin PIR</span>
-            <small>private UTXO lookup</small>
         </div>
         <div class="topbar-spacer"></div>
-        <button id="localhostToggle" class="topbar-btn" title="Switch all server URLs between remote and localhost">🌐 Remote</button>
         <button id="residencyBtn" class="topbar-btn" title="Check server mmap page residency (warmup status)">Server Warmup</button>
         <a class="topbar-btn" href="/reproduce.html" title="How to independently verify the SEV-SNP MEASUREMENT pin">Reproducibility</a>
         <a class="topbar-btn" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">
@@ -826,89 +847,29 @@
 
     <!-- ── APP ──────────────────────────────────────────────────── -->
     <div class="app">
-
-        <!-- SIDEBAR -->
-        <aside class="sidebar">
-            <div class="sb-title">Single-server PIR</div>
-            <div class="scheme-list" role="tablist">
-                <button class="scheme tab-btn" data-tab="onionpir" role="tab">
-                    <span class="ico">O</span>
-                    <span>
-                        <span class="name">OnionPIR</span>
-                        <span class="sub">Lattice-based FHE</span>
-                    </span>
-                    <span class="servers">1-srv</span>
-                </button>
-                <button class="scheme tab-btn" data-tab="oram" role="tab">
-                    <span class="ico">T</span>
-                    <span>
-                        <span class="name">ORAM TEE</span>
-                        <span class="sub">SEV-SNP direct lookup</span>
-                    </span>
-                    <span class="servers">1-srv</span>
-                </button>
-            </div>
-
-            <div class="sb-title" style="margin-top: 18px;">Two-server PIR</div>
-            <div class="scheme-list" role="tablist">
-                <button class="scheme tab-btn active" data-tab="dpf" role="tab">
-                    <span class="ico">D</span>
-                    <span>
-                        <span class="name">DPF-PIR</span>
-                        <span class="sub">Distributed point fn</span>
-                    </span>
-                    <span class="servers">2-srv</span>
-                </button>
-                <button class="scheme tab-btn" data-tab="harmonypir" role="tab">
-                    <span class="ico">H</span>
-                    <span>
-                        <span class="name">HarmonyPIR</span>
-                        <span class="sub">Preprocessing + PRP</span>
-                    </span>
-                    <span class="servers">2-srv</span>
-                </button>
-            </div>
-
-            <div class="sb-disclaimer" role="note">
-                <strong>Non-collusion via SEV-SNP attestation.</strong>
-                pir1 and pir2 are <em>different machines</em>, one
-                operator. pir2's chip-signed MEASUREMENT is evidence the
-                operator is running the published binary. Attestation is
-                <em>advisory</em>: the result is shown in the per-server
-                badge, not enforced as a gate (pir1 has no SEV
-                measurement), so check the badge before you trust it.
-                <a href="/reproduce.html#non-collusion">How &amp; verify yourself</a>.
-            </div>
-
-            <div class="sb-section">
-                <div class="sb-title">About</div>
-                <div class="sb-repo">
-                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2.2.5-2.7-1.1-2.7-1.1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8 0 1.2.8 1.2.8.7 1.2 1.9.9 2.4.7.1-.5.3-.9.5-1.1-1.8-.2-3.7-.9-3.7-4 0-.9.3-1.6.8-2.1-.1-.2-.3-1 .1-2.1 0 0 .7-.2 2.2.8a7.6 7.6 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.5.8 1.2.8 2.1 0 3.1-1.9 3.8-3.7 4 .3.2.5.7.5 1.5v2.2c0 .2.1.5.5.4A8 8 0 0 0 8 .2Z"/></svg>
-                    <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">Bitcoin-PIR</a>
-                </div>
-                <p style="font-size:12px; color:var(--ink-mute); margin:10px 2px 0; line-height:1.55;">
-                    UTXOs with ≤ 576 sats (dust) and scriptPubKeys with &gt; 100 UTXOs are excluded from the database.
-                </p>
-            </div>
-        </aside>
-
         <!-- MAIN -->
         <main class="main">
 
-            <nav class="crumbs">
-                <span>home</span>
-                <span class="sep">/</span>
-                <span>schemes</span>
-                <span class="sep">/</span>
-                <b id="cbScheme">dpf-pir</b>
-            </nav>
-
-            <header class="hero">
-                <div>
-                    <h1 id="heroTitle">DPF-PIR <span class="tag">2-server · info-theoretic</span></h1>
-                    <p id="heroSub">Query two non-colluding servers with distributed point functions. No preprocessing; strong information-theoretic privacy against a single curious server.</p>
+            <section class="backend-picker" aria-labelledby="backendPickerTitle">
+                <div class="backend-picker-head">
+                    <h1 id="backendPickerTitle">Choose a backend</h1>
+                    <a href="https://docs.bitcoinpir.org/">Documentation ↗</a>
                 </div>
-            </header>
+                <div class="scheme-list" role="tablist" aria-label="PIR backend">
+                    <button type="button" class="scheme tab-btn active" data-tab="dpf" role="tab" aria-selected="true" aria-controls="tab-dpf">
+                        <span class="name">DPF-PIR</span>
+                    </button>
+                    <button type="button" class="scheme tab-btn" data-tab="harmonypir" role="tab" aria-selected="false" aria-controls="tab-harmonypir">
+                        <span class="name">HarmonyPIR</span>
+                    </button>
+                    <button type="button" class="scheme tab-btn" data-tab="onionpir" role="tab" aria-selected="false" aria-controls="tab-onionpir">
+                        <span class="name">OnionPIR</span>
+                    </button>
+                    <button type="button" class="scheme tab-btn" data-tab="oram" role="tab" aria-selected="false" aria-controls="tab-oram">
+                        <span class="name">ORAM TEE</span>
+                    </button>
+                </div>
+            </section>
 
             <div id="residencyPanel" class="residency-panel"></div>
 
@@ -922,7 +883,7 @@
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="status" class="status disconnected">Disconnected</div>
+                        <div id="status" class="status disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -997,7 +958,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row">
+                            <div class="action-row connection-controls" aria-hidden="true">
                                 <button id="connectBtn" class="btn">Connect</button>
                                 <button id="disconnectBtn" class="btn ghost" disabled>Disconnect</button>
                                 <button id="syncBtn" class="btn accent grow" disabled>Sync to latest &amp; query</button>
@@ -1010,7 +971,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </div>
                             <div style="margin-top: 10px;">
-                                <button id="queryBtn" class="btn" style="width: 100%;">Query UTXOs (manual mode)</button>
+                                <button id="queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
                         </div>
 
@@ -1038,45 +999,62 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             <div class="col">
                 <section class="card">
                     <div class="card-head">
-                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                        <div class="card-title"><span>Verification</span></div>
                     </div>
                     <div class="card-body">
-                        <div class="status-row">
-                            <label for="server0Url">Server 0</label>
-                            <input type="text" id="server0Url" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
-                        </div>
-                        <div id="attestBadge0" class="attest-badge attest-badge-unattested" data-server="0" style="display: none;"></div>
-                        <div id="operatorBadge0" class="attest-badge attest-badge-op-verified" data-server="0" style="display: none;"></div>
-
-                        <div class="status-row">
-                            <label for="server1Url">Server 1</label>
-                            <input type="text" id="server1Url" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
-                        </div>
-                        <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
-                        <div id="operatorBadge1" class="attest-badge attest-badge-op-verified" data-server="1" style="display: none;"></div>
-                        <div id="dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
-                        <div id="bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
-
-                        <div id="syncStateRow" style="display: none; margin-top: 14px;">
-                            <span>Sync state:</span>
-                            <span id="syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
-                            <button id="resetSyncBtn" style="float: right;">Reset</button>
-                            <div style="clear: both;"></div>
-                        </div>
-
-                        <details id="advancedDbDetails" class="adv-db" style="display: none;">
-                            <summary>Advanced · direct database query</summary>
-                            <div id="dbSelectorRow">
-                                <label for="dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
-                                <select id="dbSelect" class="select" style="width: auto; display: inline-block;">
-                                    <option value="0">Main UTXO (loading...)</option>
-                                </select>
-                                <span id="dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
-                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
-                                    Bypasses the sync flow and does not update sync state.
-                                </div>
+                        <div class="verification-summary" aria-live="polite">
+                            <div class="verification-summary-row">
+                                <span class="verification-server">Server 0</span>
+                                <span id="dpfVerification0" class="verification-result pending">Not checked</span>
                             </div>
-                        </details>
+                            <div class="verification-summary-row">
+                                <span class="verification-server">Server 1</span>
+                                <span id="dpfVerification1" class="verification-result pending">Not checked</span>
+                            </div>
+                        </div>
+                        <div class="verification-actions">
+                            <button type="button" class="btn ghost sm verification-details-btn" data-verification-source="dpfVerificationDetails" data-verification-title="DPF-PIR verification details">View details</button>
+                        </div>
+                        <div class="verification-details-home">
+                            <div id="dpfVerificationDetails" class="verification-details-source">
+                                <div class="status-row">
+                                    <label for="server0Url">Server 0</label>
+                                    <input type="text" id="server0Url" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
+                                </div>
+                                <div id="attestBadge0" class="attest-badge attest-badge-unattested" data-server="0" style="display: none;"></div>
+                                <div id="operatorBadge0" class="attest-badge attest-badge-op-verified" data-server="0" style="display: none;"></div>
+
+                                <div class="status-row">
+                                    <label for="server1Url">Server 1</label>
+                                    <input type="text" id="server1Url" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                </div>
+                                <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
+                                <div id="operatorBadge1" class="attest-badge attest-badge-op-verified" data-server="1" style="display: none;"></div>
+                                <div id="dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
+                                <div id="bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
+
+                                <div id="syncStateRow" style="display: none; margin-top: 14px;">
+                                    <span>Sync state:</span>
+                                    <span id="syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
+                                    <button id="resetSyncBtn" style="float: right;">Reset</button>
+                                    <div style="clear: both;"></div>
+                                </div>
+
+                                <details id="advancedDbDetails" class="adv-db" style="display: none;">
+                                    <summary>Advanced · direct database query</summary>
+                                    <div id="dbSelectorRow">
+                                        <label for="dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                        <select id="dbSelect" class="select" style="width: auto; display: inline-block;">
+                                            <option value="0">Main UTXO (loading...)</option>
+                                        </select>
+                                        <span id="dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                        <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                            Bypasses the sync flow and does not update sync state.
+                                        </div>
+                                    </div>
+                                </details>
+                            </div>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -1090,7 +1068,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="op-status" class="status disconnected">Disconnected</div>
+                        <div id="op-status" class="status disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1165,7 +1143,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row">
+                            <div class="action-row connection-controls" aria-hidden="true">
                                 <button id="op-connectBtn" class="btn">Connect</button>
                                 <button id="op-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
                                 <button id="op-syncBtn" class="btn accent grow" disabled>Sync to latest &amp; query</button>
@@ -1178,7 +1156,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </div>
                             <div style="margin-top: 10px;">
-                                <button id="op-queryBtn" class="btn" style="width: 100%;">Query UTXOs (manual mode)</button>
+                                <button id="op-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
                         </div>
 
@@ -1204,34 +1182,47 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             <div class="col">
                 <section class="card">
                     <div class="card-head">
-                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                        <div class="card-title"><span>Verification</span></div>
                     </div>
                     <div class="card-body">
-                        <div class="status-row">
-                            <label for="op-serverUrl">Server</label>
-                            <input type="text" id="op-serverUrl" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
-                        </div>
-
-                        <div id="op-syncStateRow" style="display: none; margin-top: 14px;">
-                            <span>Sync state:</span>
-                            <span id="op-syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
-                            <button id="op-resetSyncBtn" style="float: right;">Reset</button>
-                            <div style="clear: both;"></div>
-                        </div>
-
-                        <details id="op-advancedDbDetails" class="adv-db" style="display: none;">
-                            <summary>Advanced · direct database query</summary>
-                            <div id="op-dbSelectorRow">
-                                <label for="op-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
-                                <select id="op-dbSelect" class="select" style="width: auto; display: inline-block;">
-                                    <option value="0">Main UTXO (loading...)</option>
-                                </select>
-                                <span id="op-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
-                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
-                                    Bypasses the sync flow and does not update sync state.
-                                </div>
+                        <div class="verification-summary">
+                            <div class="verification-summary-row">
+                                <span class="verification-server">Server</span>
+                                <span class="verification-result unavailable" title="OnionPIR does not currently establish an attested channel">Unavailable</span>
                             </div>
-                        </details>
+                        </div>
+                        <div class="verification-actions">
+                            <button type="button" class="btn ghost sm verification-details-btn" data-verification-source="onionVerificationDetails" data-verification-title="OnionPIR server details">View details</button>
+                        </div>
+                        <div class="verification-details-home">
+                            <div id="onionVerificationDetails" class="verification-details-source">
+                                <div class="status-row">
+                                    <label for="op-serverUrl">Server</label>
+                                    <input type="text" id="op-serverUrl" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
+                                </div>
+
+                                <div id="op-syncStateRow" style="display: none; margin-top: 14px;">
+                                    <span>Sync state:</span>
+                                    <span id="op-syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
+                                    <button id="op-resetSyncBtn" style="float: right;">Reset</button>
+                                    <div style="clear: both;"></div>
+                                </div>
+
+                                <details id="op-advancedDbDetails" class="adv-db" style="display: none;">
+                                    <summary>Advanced · direct database query</summary>
+                                    <div id="op-dbSelectorRow">
+                                        <label for="op-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                        <select id="op-dbSelect" class="select" style="width: auto; display: inline-block;">
+                                            <option value="0">Main UTXO (loading...)</option>
+                                        </select>
+                                        <span id="op-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                        <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                            Bypasses the sync flow and does not update sync state.
+                                        </div>
+                                    </div>
+                                </details>
+                            </div>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -1245,7 +1236,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="hp-status" class="status disconnected">Disconnected</div>
+                        <div id="hp-status" class="status disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1320,7 +1311,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row">
+                            <div class="action-row connection-controls" aria-hidden="true">
                                 <button id="hp-connectBtn" class="btn">Connect</button>
                                 <button id="hp-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
                                 <button id="hp-syncBtn" class="btn accent grow" disabled>Sync to latest &amp; query</button>
@@ -1333,7 +1324,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </div>
                             <div style="margin-top: 10px;">
-                                <button id="hp-queryBtn" class="btn" style="width: 100%;">Query UTXOs (manual mode)</button>
+                                <button id="hp-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
                         </div>
 
@@ -1373,55 +1364,72 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             <div class="col">
                 <section class="card">
                     <div class="card-head">
-                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                        <div class="card-title"><span>Verification</span></div>
                     </div>
                     <div class="card-body">
-                        <div class="status-row">
-                            <label for="hp-hintServerUrl">Hint server</label>
-                            <input type="text" id="hp-hintServerUrl" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
-                        </div>
-                        <div id="hp-attestBadgeHint" class="attest-badge attest-badge-unattested" style="display: none;"></div>
-                        <div id="hp-operatorBadgeHint" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
-
-                        <div class="status-row">
-                            <label for="hp-queryServerUrl">Query server</label>
-                            <input type="text" id="hp-queryServerUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
-                        </div>
-                        <div id="hp-attestBadgeQuery" class="attest-badge attest-badge-unattested" style="display: none;"></div>
-                        <div id="hp-operatorBadgeQuery" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
-                        <div id="hp-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
-                        <div id="hp-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
-                        <div class="status-row">
-                            <label for="hp-prpSelect">PRP backend</label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <select id="hp-prpSelect" class="select" style="width: auto;">
-                                    <option value="0" selected>HMR12 (default)</option>
-                                    <option value="1">FastPRP</option>
-                                </select>
-                                <span id="hp-prpNote" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute);"></span>
+                        <div class="verification-summary" aria-live="polite">
+                            <div class="verification-summary-row">
+                                <span class="verification-server">Hint server</span>
+                                <span id="hpVerificationHint" class="verification-result pending">Not checked</span>
+                            </div>
+                            <div class="verification-summary-row">
+                                <span class="verification-server">Query server</span>
+                                <span id="hpVerificationQuery" class="verification-result pending">Not checked</span>
                             </div>
                         </div>
-
-                        <div id="hp-syncStateRow" style="display: none; margin-top: 14px;">
-                            <span>Sync state:</span>
-                            <span id="hp-syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
-                            <button id="hp-resetSyncBtn" style="float: right;">Reset</button>
-                            <div style="clear: both;"></div>
+                        <div class="verification-actions">
+                            <button type="button" class="btn ghost sm verification-details-btn" data-verification-source="harmonyVerificationDetails" data-verification-title="HarmonyPIR verification details">View details</button>
                         </div>
-
-                        <details id="hp-advancedDbDetails" class="adv-db" style="display: none;">
-                            <summary>Advanced · direct database query</summary>
-                            <div id="hp-dbSelectorRow">
-                                <label for="hp-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
-                                <select id="hp-dbSelect" class="select" style="width: auto; display: inline-block;">
-                                    <option value="0">Main UTXO (loading...)</option>
-                                </select>
-                                <span id="hp-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
-                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
-                                    Switching re-downloads hints (cached per PRP backend, so switching back is instant). Bypasses the sync flow and does not update the sync state.
+                        <div class="verification-details-home">
+                            <div id="harmonyVerificationDetails" class="verification-details-source">
+                                <div class="status-row">
+                                    <label for="hp-hintServerUrl">Hint server</label>
+                                    <input type="text" id="hp-hintServerUrl" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
                                 </div>
+                                <div id="hp-attestBadgeHint" class="attest-badge attest-badge-unattested" style="display: none;"></div>
+                                <div id="hp-operatorBadgeHint" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+
+                                <div class="status-row">
+                                    <label for="hp-queryServerUrl">Query server</label>
+                                    <input type="text" id="hp-queryServerUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                </div>
+                                <div id="hp-attestBadgeQuery" class="attest-badge attest-badge-unattested" style="display: none;"></div>
+                                <div id="hp-operatorBadgeQuery" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+                                <div id="hp-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
+                                <div id="hp-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
+                                <div class="status-row">
+                                    <label for="hp-prpSelect">PRP backend</label>
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <select id="hp-prpSelect" class="select" style="width: auto;">
+                                            <option value="0" selected>HMR12 (default)</option>
+                                            <option value="1">FastPRP</option>
+                                        </select>
+                                        <span id="hp-prpNote" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute);"></span>
+                                    </div>
+                                </div>
+
+                                <div id="hp-syncStateRow" style="display: none; margin-top: 14px;">
+                                    <span>Sync state:</span>
+                                    <span id="hp-syncStateLabel" style="font-weight: 600; margin-left: 4px;">Not synced</span>
+                                    <button id="hp-resetSyncBtn" style="float: right;">Reset</button>
+                                    <div style="clear: both;"></div>
+                                </div>
+
+                                <details id="hp-advancedDbDetails" class="adv-db" style="display: none;">
+                                    <summary>Advanced · direct database query</summary>
+                                    <div id="hp-dbSelectorRow">
+                                        <label for="hp-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                        <select id="hp-dbSelect" class="select" style="width: auto; display: inline-block;">
+                                            <option value="0">Main UTXO (loading...)</option>
+                                        </select>
+                                        <span id="hp-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                        <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                            Switching re-downloads hints (cached per PRP backend, so switching back is instant). Bypasses the sync flow and does not update the sync state.
+                                        </div>
+                                    </div>
+                                </details>
                             </div>
-                        </details>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -1435,7 +1443,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="oram-status" class="status disconnected">Disconnected</div>
+                        <div id="oram-status" class="status disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1469,12 +1477,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row">
+                            <div class="action-row connection-controls" aria-hidden="true">
                                 <button id="oram-connectBtn" class="btn">Connect</button>
                                 <button id="oram-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
                             </div>
                             <div style="margin-top: 10px;">
-                                <button id="oram-queryBtn" class="btn" style="width: 100%;">Query UTXOs via ORAM TEE</button>
+                                <button id="oram-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
                         </div>
 
@@ -1500,36 +1508,45 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             <div class="col">
                 <section class="card">
                     <div class="card-head">
-                        <div class="card-title"><span class="num">01</span><span>Server configuration</span></div>
+                        <div class="card-title"><span>Verification</span></div>
                     </div>
                     <div class="card-body">
-                        <div class="status-row">
-                            <label for="oram-serverUrl">ORAM server</label>
-                            <input type="text" id="oram-serverUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
-                        </div>
-                        <div id="oram-attestBadge" class="attest-badge attest-badge-unattested" style="display: none;"></div>
-                        <div id="oram-operatorBadge" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
-                        <div id="oram-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
-                        <div id="oram-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
-                        <div id="oram-sourceProofBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
-
-                        <div style="margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); background: var(--sunken); border-radius: 8px; font-size: 12px; line-height: 1.55; color: var(--ink-mute);">
-                            ORAM TEE is experimental. The status panel surfaces the SEV-SNP channel binding, AMD VCEK chain, build pin, operator identity, DB proof, and static ORAM source-binding proof as separate checks. This mode does not use two-server non-collusion.
-                        </div>
-
-                        <details id="oram-advancedDbDetails" class="adv-db" style="display: none;">
-                            <summary>Advanced · database query</summary>
-                            <div id="oram-dbSelectorRow">
-                                <label for="oram-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
-                                <select id="oram-dbSelect" class="select" style="width: auto; display: inline-block;">
-                                    <option value="0">Main UTXO (loading...)</option>
-                                </select>
-                                <span id="oram-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
-                                <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
-                                    Requests are padded to 25 ORAM slots and capped at 5 real script hashes per frame.
-                                </div>
+                        <div class="verification-summary" aria-live="polite">
+                            <div class="verification-summary-row">
+                                <span class="verification-server">Server</span>
+                                <span id="oramVerification" class="verification-result pending">Not checked</span>
                             </div>
-                        </details>
+                        </div>
+                        <div class="verification-actions">
+                            <button type="button" class="btn ghost sm verification-details-btn" data-verification-source="oramVerificationDetails" data-verification-title="ORAM TEE verification details">View details</button>
+                        </div>
+                        <div class="verification-details-home">
+                            <div id="oramVerificationDetails" class="verification-details-source">
+                                <div class="status-row">
+                                    <label for="oram-serverUrl">ORAM server</label>
+                                    <input type="text" id="oram-serverUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                </div>
+                                <div id="oram-attestBadge" class="attest-badge attest-badge-unattested" style="display: none;"></div>
+                                <div id="oram-operatorBadge" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+                                <div id="oram-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
+                                <div id="oram-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
+                                <div id="oram-sourceProofBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
+
+                                <details id="oram-advancedDbDetails" class="adv-db" style="display: none;">
+                                    <summary>Advanced · database query</summary>
+                                    <div id="oram-dbSelectorRow">
+                                        <label for="oram-dbSelect" style="font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute); display: inline-block; margin-right: 8px;">Database</label>
+                                        <select id="oram-dbSelect" class="select" style="width: auto; display: inline-block;">
+                                            <option value="0">Main UTXO (loading...)</option>
+                                        </select>
+                                        <span id="oram-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
+                                        <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
+                                            Requests are padded to 25 ORAM slots and capped at 5 real script hashes per frame.
+                                        </div>
+                                    </div>
+                                </details>
+                            </div>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -1538,6 +1555,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         </main>
     </div>
+
+    <dialog id="verificationDialog" class="verification-dialog" aria-labelledby="verificationDialogTitle">
+        <div class="verification-dialog-head">
+            <h2 id="verificationDialogTitle">Verification details</h2>
+            <button type="button" id="verificationDialogClose" class="verification-dialog-close" aria-label="Close verification details">×</button>
+        </div>
+        <div id="verificationDialogBody" class="verification-dialog-body"></div>
+    </dialog>
 
     <!-- ── TERMINAL (pinned log) ─────────────────────────────────── -->
     <section class="terminal collapsed" id="term">
@@ -1644,6 +1669,87 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             logDiv.appendChild(entry);
             logDiv.scrollTop = logDiv.scrollHeight;
         }
+
+        // The compact verdict intentionally summarizes only the two checks
+        // that bind a server to the expected deployment: attestation/channel
+        // binding and the pinned operator identity. Database and chain proof
+        // diagnostics remain available in the details dialog.
+        const basicVerification = {
+            dpf0: { elementId: 'dpfVerification0', attestation: null, operator: null },
+            dpf1: { elementId: 'dpfVerification1', attestation: null, operator: null },
+            hpHint: { elementId: 'hpVerificationHint', attestation: null, operator: null },
+            hpQuery: { elementId: 'hpVerificationQuery', attestation: null, operator: null },
+            oram: { elementId: 'oramVerification', attestation: null, operator: null },
+        };
+
+        function renderBasicVerification(key) {
+            const state = basicVerification[key];
+            const el = state && document.getElementById(state.elementId);
+            if (!el) return;
+            if (state.attestation === false || state.operator === false) {
+                el.textContent = 'NO';
+                el.className = 'verification-result no';
+            } else if (state.attestation === true && state.operator === true) {
+                el.textContent = 'YES';
+                el.className = 'verification-result yes';
+            } else {
+                el.textContent = 'Not checked';
+                el.className = 'verification-result pending';
+            }
+        }
+
+        function resetBasicVerification(keys) {
+            for (const key of keys) {
+                const state = basicVerification[key];
+                if (!state) continue;
+                state.attestation = null;
+                state.operator = null;
+                renderBasicVerification(key);
+            }
+        }
+
+        function setBasicVerificationCheck(key, check, passed) {
+            const state = basicVerification[key];
+            if (!state || (check !== 'attestation' && check !== 'operator')) return;
+            state[check] = passed;
+            renderBasicVerification(key);
+        }
+
+        // Move the live detail panel into one shared dialog. Moving rather
+        // than cloning keeps element IDs unique and lets existing callbacks
+        // continue updating badges while the dialog is open.
+        const verificationDialog = document.getElementById('verificationDialog');
+        const verificationDialogBody = document.getElementById('verificationDialogBody');
+        const verificationDialogTitle = document.getElementById('verificationDialogTitle');
+        let activeVerificationDetails = null;
+
+        function closeVerificationDialog() {
+            if (verificationDialog.open) verificationDialog.close();
+        }
+
+        document.querySelectorAll('.verification-details-btn').forEach(button => {
+            button.addEventListener('click', () => {
+                const source = document.getElementById(button.dataset.verificationSource);
+                if (!source) return;
+                const home = source.parentElement;
+                activeVerificationDetails = { source, home };
+                verificationDialogTitle.textContent = button.dataset.verificationTitle || 'Verification details';
+                source.classList.add('in-modal');
+                verificationDialogBody.appendChild(source);
+                verificationDialog.showModal();
+            });
+        });
+        document.getElementById('verificationDialogClose').addEventListener('click', closeVerificationDialog);
+        verificationDialog.addEventListener('click', event => {
+            if (event.target === verificationDialog) closeVerificationDialog();
+        });
+        verificationDialog.addEventListener('close', () => {
+            if (!activeVerificationDetails) return;
+            const { source, home } = activeVerificationDetails;
+            source.classList.remove('in-modal');
+            home.appendChild(source);
+            activeVerificationDetails = null;
+        });
 
         function setButtons(connected) {
             document.getElementById('connectBtn').disabled = connected;
@@ -2004,7 +2110,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <p style="color: #999;">No UTXOs found for this address.</p>
                 `;
                 container.appendChild(section);
-                return;
+                return section;
             }
 
             if (result.isWhale) {
@@ -2018,7 +2124,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     </div>
                 `;
                 container.appendChild(section);
-                return;
+                return section;
             }
 
             const totalBtc = formatBtc(result.totalSats);
@@ -2101,6 +2207,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             container.appendChild(section);
+            return section;
         }
 
         /**
@@ -2355,11 +2462,46 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             };
         }
 
-        // ─── Shared batch Merkle verification button ──────────────────────
-        // verifyBatchFn: (results[], onProgress) → Promise<boolean[]>  (single batch call)
-        function addBatchMerkleButton(container, verifiableResults, prefix, verifyBatchFn, getRootHex, label) {
+        // ─── Shared batch Merkle verification ─────────────────────────────
+        function setResultMerkleState(section, state) {
+            if (!section) return;
+            let badge = section.querySelector('.merkle-result-badge');
+            if (!badge) {
+                const heading = section.querySelector('h2');
+                if (!heading) return;
+                badge = document.createElement('span');
+                heading.appendChild(badge);
+            }
+            const labels = {
+                verifying: '… Verifying',
+                verified: '✓ Verified',
+                failed: '✕ Verification failed',
+                error: 'Verification unavailable',
+            };
+            badge.className = `merkle-result-badge ${state}`;
+            badge.textContent = labels[state] || state;
+        }
+
+        function waitForResultPaint() {
+            return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }
+
+        // verifyBatchFn: (results[], onProgress) → Promise<boolean[]>.
+        // Simple queries pass resultElements + autoStart=true so verification
+        // begins after results paint and each verdict returns to its result.
+        function addBatchMerkleButton(
+            container,
+            verifiableResults,
+            prefix,
+            verifyBatchFn,
+            getRootHex,
+            label,
+            resultElements = [],
+            autoStart = false,
+        ) {
             const bar = document.createElement('div');
             bar.style.cssText = 'margin: 15px 0; padding: 12px 16px; background: #f0faf0; border: 1px solid #c3e6cb; border-radius: 8px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;';
+            if (autoStart) bar.classList.add('auto-merkle-bar');
             const btnLabel = label
                 ? `&#128274; Verify Merkle Proofs \u2014 ${label} (${verifiableResults.length})`
                 : `&#128274; Verify All Merkle Proofs (${verifiableResults.length})`;
@@ -2371,16 +2513,25 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const btn = bar.querySelector('.batch-merkle-btn');
             const statusSpan = bar.querySelector('.batch-merkle-status');
+            if (autoStart) {
+                btn.disabled = true;
+                btn.textContent = '⏳ Preparing verification…';
+            }
 
-            btn.addEventListener('click', async () => {
+            const runVerification = async () => {
                 btn.disabled = true;
                 btn.textContent = `⏳ Verifying ${verifiableResults.length} proofs...`;
                 statusSpan.textContent = '';
                 statusSpan.style.color = '#888';
+                resultElements.forEach(section => setResultMerkleState(section, 'verifying'));
 
                 try {
                     const booleans = await verifyBatchFn(verifiableResults, (step, detail) => {
                         statusSpan.textContent = `${step}: ${detail}`;
+                    });
+
+                    resultElements.forEach((section, index) => {
+                        setResultMerkleState(section, booleans[index] ? 'verified' : 'failed');
                     });
 
                     const verified = booleans.filter(Boolean).length;
@@ -2392,21 +2543,36 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         const rootHex = getRootHex();
                         statusSpan.textContent = rootHex ? `Root: ${rootHex.substring(0, 16)}…` : '';
                         statusSpan.style.color = '#28a745';
+                        if (autoStart) {
+                            resultElements.forEach(section => {
+                                const badge = section?.querySelector('.merkle-result-badge');
+                                if (badge && rootHex) badge.title = `Merkle root ${rootHex}`;
+                            });
+                            bar.remove();
+                        }
                     } else {
                         btn.textContent = `⚠️ ${verified} verified, ${failed} failed`;
                         btn.style.backgroundColor = failed === booleans.length ? '#dc3545' : '#e0820e';
                         statusSpan.textContent = '';
                         statusSpan.style.color = '#dc3545';
                     }
+                    btn.disabled = failed === 0;
                 } catch (err) {
-                    btn.textContent = '❌ Error';
-                    btn.style.backgroundColor = '#dc3545';
+                    resultElements.forEach(section => setResultMerkleState(section, 'error'));
+                    btn.textContent = '↻ Retry verification';
+                    btn.style.backgroundColor = '#e0820e';
                     statusSpan.textContent = err.message;
-                    statusSpan.style.color = '#dc3545';
+                    statusSpan.style.color = '#92400e';
+                    btn.disabled = false;
                     console.error('Batch Merkle verify error:', err);
                 }
-                btn.disabled = false;
-            });
+            };
+
+            btn.addEventListener('click', runVerification);
+            if (autoStart) {
+                return waitForResultPaint().then(runVerification);
+            }
+            return Promise.resolve(null);
         }
 
         async function connect() {
@@ -2417,6 +2583,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log('Please enter both server URLs', 'error');
                 return;
             }
+
+            resetBasicVerification(['dpf0', 'dpf1']);
 
             try {
                 log(`Connecting to servers...`);
@@ -2447,6 +2615,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     },
                     onAttestation: (idx, info) => {
                         const tag = `server${idx}`;
+                        setBasicVerificationCheck(`dpf${idx}`, 'attestation',
+                            info.state === 'verified-vcek' || info.state === 'verified');
                         if (info.state === 'verified-vcek') {
                             log(`✓ ${tag}: AMD VCEK chain verified (${info.binarySha256Hex?.slice(0, 16) ?? '?'}…)`, 'success');
                         } else if (info.state === 'verified') {
@@ -2465,6 +2635,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     verifyOperatorIdentity: true,
                     onOperatorIdentity: (idx, info) => {
                         const tag = `server${idx}`;
+                        setBasicVerificationCheck(`dpf${idx}`, 'operator', info.state === 'verified');
                         if (info.state === 'verified') {
                             log(`🔏 ${tag}: operator-endorsed identity verified (${info.serverId})`, 'success');
                         } else if (info.state === 'unverified') {
@@ -2572,7 +2743,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (syncBtn) syncBtn.disabled = false;
         }
 
-        function disconnect() {
+        function disconnect(preserveResults = false) {
             if (client) {
                 client.disconnect();
                 client = null;
@@ -2582,7 +2753,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             // Keep the SyncController cache alive across disconnect/reconnect:
             // the controller's page-refresh safety rule (computePlan) will
             // force a fresh full sync anyway if the cache ends up stale.
-            document.getElementById('resultsContainer').innerHTML = '';
+            if (!preserveResults) {
+                document.getElementById('resultsContainer').innerHTML = '';
+            }
             document.getElementById('advancedDbDetails').style.display = 'none';
             document.getElementById('syncStateRow').style.display = 'none';
             document.getElementById('syncPlanBox').style.display = 'none';
@@ -2676,6 +2849,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // Render all results
                 let found = 0;
                 const dpfQueryResults = [];
+                const dpfResultSections = [];
 
                 if (isDelta) {
                     // Delta header
@@ -2694,18 +2868,34 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     if (isDelta) {
                         renderDeltaResult(resultsContainer, spkHex, hashHex, result);
                     } else {
-                        renderResult(resultsContainer, spkHex, hashHex, result);
+                        dpfResultSections.push(renderResult(resultsContainer, spkHex, hashHex, result));
                     }
                     dpfQueryResults.push(result);
                 }
 
-                // Batch Merkle verify button (only for full DB with Merkle)
+                // Automatically verify after the result cards have painted.
                 if (!isDelta) {
-                    const verifiable = dpfQueryResults.filter(r => r && !r.isWhale && r.indexPbcGroup !== undefined);
-                    if (verifiable.length > 0 && client.hasMerkle()) {
-                        addBatchMerkleButton(resultsContainer, verifiable, 'dpf',
-                            (results, onProg) => client.verifyMerkleBatch(results, onProg),
-                            () => client.getMerkleRootHex());
+                    const verifiablePairs = dpfQueryResults
+                        .map((result, index) => ({ result, section: dpfResultSections[index] }))
+                        .filter(({ result }) => result && !result.isWhale && result.indexPbcGroup !== undefined);
+                    if (verifiablePairs.length > 0 && client.hasMerkle()) {
+                        let verificationRootHex = '';
+                        await addBatchMerkleButton(resultsContainer, verifiablePairs.map(pair => pair.result), 'dpf',
+                            async (results, onProg) => {
+                                if (!client || !client.isConnected()) await connect();
+                                if (!client || !client.isConnected()) throw new Error('Unable to connect for verification');
+                                try {
+                                    const verdicts = await client.verifyMerkleBatch(results, onProg);
+                                    verificationRootHex = client.getMerkleRootHex() || '';
+                                    return verdicts;
+                                } finally {
+                                    disconnect(true);
+                                }
+                            },
+                            () => verificationRootHex,
+                            undefined,
+                            verifiablePairs.map(pair => pair.section),
+                            true);
                     }
                 }
 
@@ -2720,6 +2910,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             document.getElementById('queryBtn').disabled = false;
+        }
+
+        async function runDpfQueryOnce() {
+            const button = document.getElementById('queryBtn');
+            if (button.disabled) return;
+            button.disabled = true;
+            button.textContent = 'Querying…';
+            try {
+                // Every query owns its transport lifecycle. Cached query data may
+                // remain in the browser, but no socket survives this action.
+                if (client) disconnect(true);
+                await queryUtxos();
+            } finally {
+                disconnect(true);
+                button.disabled = false;
+                button.textContent = 'Query UTXOs';
+            }
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -3047,7 +3254,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ─── Main buttons (DPF) ────────────────────────────────────────
         document.getElementById('connectBtn').addEventListener('click', connect);
         document.getElementById('disconnectBtn').addEventListener('click', disconnect);
-        document.getElementById('queryBtn').addEventListener('click', queryUtxos);
+        document.getElementById('queryBtn').addEventListener('click', runDpfQueryOnce);
         document.getElementById('syncBtn').addEventListener('click', planSync);
         document.getElementById('syncConfirmBtn').addEventListener('click', executeSync);
         document.getElementById('syncCancelBtn').addEventListener('click', cancelSync);
@@ -3062,46 +3269,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ═══════════════════════════════════════════════════════════════
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-btn').forEach(b => {
+                    b.classList.remove('active');
+                    b.setAttribute('aria-selected', 'false');
+                });
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 btn.classList.add('active');
+                btn.setAttribute('aria-selected', 'true');
                 document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
             });
-        });
-
-        // ═══════════════════════════════════════════════════════════════
-        // Localhost / Remote toggle
-        // ═══════════════════════════════════════════════════════════════
-        const serverPresets = {
-            remote: {
-                'server0Url':       'wss://weikeng1.bitcoinpir.org',
-                'server1Url':       'wss://weikeng2.bitcoinpir.org',
-                'op-serverUrl':     'wss://weikeng1.bitcoinpir.org',
-                'hp-hintServerUrl': 'wss://weikeng1.bitcoinpir.org',
-                'hp-queryServerUrl':'wss://weikeng2.bitcoinpir.org',
-                'oram-serverUrl':   'wss://weikeng2.bitcoinpir.org',
-            },
-            local: {
-                'server0Url':       'ws://localhost:8091',
-                'server1Url':       'ws://localhost:8092',
-                'op-serverUrl':     'ws://localhost:8091',
-                'hp-hintServerUrl': 'ws://localhost:8091',
-                'hp-queryServerUrl':'ws://localhost:8092',
-                'oram-serverUrl':   'ws://localhost:8092',
-            },
-        };
-        let useLocalhost = false;
-        document.getElementById('localhostToggle').addEventListener('click', () => {
-            useLocalhost = !useLocalhost;
-            const preset = useLocalhost ? serverPresets.local : serverPresets.remote;
-            for (const [id, url] of Object.entries(preset)) {
-                const el = document.getElementById(id);
-                if (el) el.value = url;
-            }
-            const btn = document.getElementById('localhostToggle');
-            btn.textContent = useLocalhost ? '💻 Localhost' : '🌐 Remote';
-            btn.style.background = useLocalhost ? '#f0ad4e' : '';
-            btn.style.color = useLocalhost ? '#fff' : '';
         });
 
         // ─── Server Warmup / Residency button ────────────────────────
@@ -3308,9 +3484,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
-        function opDisconnect() {
+        function opDisconnect(preserveResults = false) {
             if (opClient) { opClient.disconnect(); opClient = null; }
-            document.getElementById('op-resultsContainer').innerHTML = '';
+            if (!preserveResults) {
+                document.getElementById('op-resultsContainer').innerHTML = '';
+            }
             document.getElementById('op-advancedDbDetails').style.display = 'none';
             document.getElementById('op-syncStateRow').style.display = 'none';
             document.getElementById('op-syncPlanBox').style.display = 'none';
@@ -3602,21 +3780,38 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 let found = 0;
                 const opQueryResults = [];
+                const opResultSections = [];
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
                     const result = results[qi];
                     if (result) found++;
-                    renderResult(resultsContainer, spkHex, hashHex, result);
+                    opResultSections.push(renderResult(resultsContainer, spkHex, hashHex, result));
                     opQueryResults.push(result);
                 }
 
-                // Batch Merkle verify button
-                const opVerifiable = opQueryResults.filter(r => r && !r.isWhale && r.indexBinHash !== undefined);
-                if (opVerifiable.length > 0 && opClient.hasMerkle()) {
-                    addBatchMerkleButton(resultsContainer, opVerifiable, 'onionpir',
-                        (results, onProg) => opClient.verifyMerkleBatch(results, onProg),
-                        () => opClient.getMerkleRootHex());
+                // Automatically verify after the result cards have painted.
+                const opVerifiablePairs = opQueryResults
+                    .map((result, index) => ({ result, section: opResultSections[index] }))
+                    .filter(({ result }) => result && !result.isWhale && result.indexBinHash !== undefined);
+                if (opVerifiablePairs.length > 0 && opClient.hasMerkle()) {
+                    let verificationRootHex = '';
+                    await addBatchMerkleButton(resultsContainer, opVerifiablePairs.map(pair => pair.result), 'onionpir',
+                        async (results, onProg) => {
+                            if (!opClient || !opClient.isConnected()) await opConnect();
+                            if (!opClient || !opClient.isConnected()) throw new Error('Unable to connect for verification');
+                            try {
+                                const verdicts = await opClient.verifyMerkleBatch(results, onProg);
+                                verificationRootHex = opClient.getMerkleRootHex() || '';
+                                return verdicts;
+                            } finally {
+                                opDisconnect(true);
+                            }
+                        },
+                        () => verificationRootHex,
+                        undefined,
+                        opVerifiablePairs.map(pair => pair.section),
+                        true);
                 }
 
                 opSetProgress(100, `Done! ${found}/${N} addresses found`);
@@ -3630,6 +3825,21 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             document.getElementById('op-queryBtn').disabled = false;
+        }
+
+        async function runOnionQueryOnce() {
+            const button = document.getElementById('op-queryBtn');
+            if (button.disabled) return;
+            button.disabled = true;
+            button.textContent = 'Querying…';
+            try {
+                if (opClient) opDisconnect(true);
+                await opQueryUtxos();
+            } finally {
+                opDisconnect(true);
+                button.disabled = false;
+                button.textContent = 'Query UTXOs';
+            }
         }
 
         // OnionPIR example buttons
@@ -3664,7 +3874,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // OnionPIR buttons
         document.getElementById('op-connectBtn').addEventListener('click', opConnect);
         document.getElementById('op-disconnectBtn').addEventListener('click', opDisconnect);
-        document.getElementById('op-queryBtn').addEventListener('click', opQueryUtxos);
+        document.getElementById('op-queryBtn').addEventListener('click', runOnionQueryOnce);
         document.getElementById('op-syncBtn').addEventListener('click', opPlanSync);
         document.getElementById('op-syncConfirmBtn').addEventListener('click', opExecuteSync);
         document.getElementById('op-syncCancelBtn').addEventListener('click', opCancelSync);
@@ -3902,6 +4112,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 return;
             }
 
+            resetBasicVerification(['hpHint', 'hpQuery']);
+
             // Fast reconnect: if client exists with hints, just reconnect query server.
             if (hpClient && hpHintsLoaded) {
                 const statusDiv = document.getElementById('hp-status');
@@ -3954,6 +4166,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     },
                     onAttestation: (idx, info) => {
                         const tag = idx === 0 ? 'hint' : 'query';
+                        setBasicVerificationCheck(idx === 0 ? 'hpHint' : 'hpQuery', 'attestation',
+                            info.state === 'verified-vcek' || info.state === 'verified');
                         if (info.state === 'verified-vcek') {
                             log(`✓ HarmonyPIR ${tag}: AMD VCEK chain verified`, 'success');
                         } else if (info.state === 'verified') {
@@ -3971,6 +4185,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     verifyOperatorIdentity: true,
                     onOperatorIdentity: (idx, info) => {
                         const tag = idx === 0 ? 'hint' : 'query';
+                        setBasicVerificationCheck(idx === 0 ? 'hpHint' : 'hpQuery', 'operator',
+                            info.state === 'verified');
                         if (info.state === 'verified') {
                             log(`🔏 HarmonyPIR ${tag}: operator-endorsed identity verified (${info.serverId})`, 'success');
                         } else if (info.state === 'unverified') {
@@ -4077,7 +4293,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
-        function hpDisconnect(full = false) {
+        function hpDisconnect(full = false, preserveResults = false) {
             if (!hpClient) return;
             if (full || !hpHintsLoaded) {
                 // Full teardown: destroy everything.
@@ -4090,7 +4306,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // Soft disconnect: keep hints alive.
                 hpClient.disconnectQueryServer();
             }
-            document.getElementById('hp-resultsContainer').innerHTML = '';
+            if (!preserveResults) {
+                document.getElementById('hp-resultsContainer').innerHTML = '';
+            }
             document.getElementById('hp-syncStateRow').style.display = 'none';
             document.getElementById('hp-syncPlanBox').style.display = 'none';
             document.getElementById('hp-syncBtn').disabled = true;
@@ -4103,6 +4321,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             hpSetButtons(false);
             document.getElementById('hp-connectBtn').disabled = false;
             hpHideProgress();
+        }
+
+        async function persistHarmonyHintsAndDisconnect(preserveResults = true) {
+            const clientToClose = hpClient;
+            try {
+                if (clientToClose && hpHintsLoaded) {
+                    await hpExclusive(() => clientToClose.saveHintsToCache());
+                }
+            } catch (error) {
+                log(`HarmonyPIR hint cache save failed: ${error.message || error}`, 'error');
+            } finally {
+                if (hpClient) hpDisconnect(true, preserveResults);
+            }
         }
 
         // ─── HarmonyPIR sync flow ─────────────────────────────────────────
@@ -4564,29 +4795,45 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 let found = 0;
                 const hpAllHResults = [];
+                const hpResultSections = [];
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
                     const hResult = results.get(qi);
                     const result = harmonyResultToRenderFormat(hResult);
                     if (result && result.entries.length > 0) found++;
-                    renderResult(resultsContainer, spkHex, hashHex, result, qi);
+                    hpResultSections.push(renderResult(resultsContainer, spkHex, hashHex, result, qi));
                     hpAllHResults.push(hResult);
                 }
 
-                // Batch Merkle verify button (HarmonyPIR uses HarmonyQueryResult)
+                // Automatically verify after the result cards have painted.
                 // Include NOT FOUND results (no rawChunkData) — verifyMerkleBatch
                 // proves absence using allIndexBins.
-                const hpVerifiable = hpAllHResults.filter(r => r && !r.whale && r.indexPbcGroup !== undefined);
+                const hpVerifiablePairs = hpAllHResults
+                    .map((result, index) => ({ result, section: hpResultSections[index] }))
+                    .filter(({ result }) => result && !result.whale && result.indexPbcGroup !== undefined);
                 const hpActiveDbId = hpClient.getDbId();
-                if (hpVerifiable.length > 0 && hpClient.hasMerkleForDb(hpActiveDbId)) {
+                if (hpVerifiablePairs.length > 0 && hpClient.hasMerkleForDb(hpActiveDbId)) {
                     const dbLabel = hpActiveDbId === 0
                         ? undefined
                         : `db ${hpActiveDbId}`;
-                    addBatchMerkleButton(resultsContainer, hpVerifiable, 'harmonypir',
-                        (results, onProg) => hpExclusive(() => hpClient.verifyMerkleBatch(results, onProg)),
-                        () => hpClient.getMerkleRootHex(),
-                        dbLabel);
+                    let verificationRootHex = '';
+                    await addBatchMerkleButton(resultsContainer, hpVerifiablePairs.map(pair => pair.result), 'harmonypir',
+                        async (results, onProg) => {
+                            if (!hpClient || !hpHintsLoaded) await hpConnect();
+                            if (!hpClient || !hpHintsLoaded) throw new Error('Unable to connect for verification');
+                            try {
+                                const verdicts = await hpExclusive(() => hpClient.verifyMerkleBatch(results, onProg));
+                                verificationRootHex = hpClient.getMerkleRootHex() || '';
+                                return verdicts;
+                            } finally {
+                                await persistHarmonyHintsAndDisconnect(true);
+                            }
+                        },
+                        () => verificationRootHex,
+                        dbLabel,
+                        hpVerifiablePairs.map(pair => pair.section),
+                        true);
                 }
 
                 hpSetProgress(100, `Done! ${found}/${N} addresses found`);
@@ -4600,6 +4847,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             document.getElementById('hp-queryBtn').disabled = false;
+        }
+
+        async function runHarmonyQueryOnce() {
+            const button = document.getElementById('hp-queryBtn');
+            if (button.disabled) return;
+            button.disabled = true;
+            button.textContent = 'Querying…';
+            try {
+                // Harmony hints may persist in IndexedDB, but the client, worker
+                // pool, and both sockets are torn down after every query.
+                if (hpClient) await persistHarmonyHintsAndDisconnect(true);
+                await hpQueryUtxos();
+            } finally {
+                await persistHarmonyHintsAndDisconnect(true);
+                button.disabled = false;
+                button.textContent = 'Query UTXOs';
+            }
         }
 
         // PRP change handler
@@ -4717,7 +4981,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // HarmonyPIR buttons
         document.getElementById('hp-connectBtn').addEventListener('click', hpConnect);
         document.getElementById('hp-disconnectBtn').addEventListener('click', hpDisconnect);
-        document.getElementById('hp-queryBtn').addEventListener('click', hpQueryUtxos);
+        document.getElementById('hp-queryBtn').addEventListener('click', runHarmonyQueryOnce);
         document.getElementById('hp-syncBtn').addEventListener('click', hpPlanSync);
         document.getElementById('hp-syncConfirmBtn').addEventListener('click', hpExecuteSync);
         document.getElementById('hp-syncCancelBtn').addEventListener('click', hpCancelSync);
@@ -4814,6 +5078,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 return;
             }
 
+            resetBasicVerification(['oram']);
+
             try {
                 log('ORAM: Connecting to attested server...', 'info');
                 const statusDiv = document.getElementById('oram-status');
@@ -4847,6 +5113,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             .catch(e => log(`ORAM Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
                     },
                     onAttestation: (info) => {
+                        setBasicVerificationCheck('oram', 'attestation',
+                            info.state === 'verified-vcek' || info.state === 'verified');
                         if (info.state === 'verified-vcek') {
                             log(`✓ ORAM: AMD VCEK chain verified (${info.binarySha256Hex?.slice(0, 16) ?? '?'}...)`, 'success');
                         } else if (info.state === 'verified') {
@@ -4857,6 +5125,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         renderAttestBadge('oram-attestBadge', 'ORAM', info);
                     },
                     onOperatorIdentity: (info) => {
+                        setBasicVerificationCheck('oram', 'operator', info.state === 'verified');
                         if (info.state === 'verified') {
                             log(`🔏 ORAM: operator-endorsed identity verified (${info.serverId})`, 'success');
                         } else if (info.state === 'unverified') {
@@ -4888,13 +5157,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
-        function oramDisconnect() {
+        function oramDisconnect(preserveResults = false) {
             if (oramClient) {
                 oramClient.disconnect();
                 oramClient = null;
                 log('ORAM: Disconnected', 'info');
             }
-            document.getElementById('oram-resultsContainer').innerHTML = '';
+            if (!preserveResults) {
+                document.getElementById('oram-resultsContainer').innerHTML = '';
+            }
             document.getElementById('oram-advancedDbDetails').style.display = 'none';
             oramSetButtons(false);
         }
@@ -4996,6 +5267,21 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('oram-queryBtn').disabled = false;
         }
 
+        async function runOramQueryOnce() {
+            const button = document.getElementById('oram-queryBtn');
+            if (button.disabled) return;
+            button.disabled = true;
+            button.textContent = 'Querying…';
+            try {
+                if (oramClient) oramDisconnect(true);
+                await oramQueryUtxos();
+            } finally {
+                oramDisconnect(true);
+                button.disabled = false;
+                button.textContent = 'Query UTXOs';
+            }
+        }
+
         document.querySelectorAll('.oram-example[data-spk]').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.getElementById('oram-scriptPubkeys').value = btn.dataset.spk;
@@ -5020,7 +5306,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
         document.getElementById('oram-connectBtn').addEventListener('click', oramConnect);
         document.getElementById('oram-disconnectBtn').addEventListener('click', oramDisconnect);
-        document.getElementById('oram-queryBtn').addEventListener('click', oramQueryUtxos);
+        document.getElementById('oram-queryBtn').addEventListener('click', runOramQueryOnce);
         document.getElementById('oram-dbSelect').addEventListener('change', () => {
             const catalog = oramClient?.getCatalog();
             const select = document.getElementById('oram-dbSelect');
@@ -5307,49 +5593,21 @@ Cell at position R = ${r}:
     </script>
 
     <script>
-        // ── Scheme metadata (drives hero + crumb + terminal label) ──
-        const _SCHEME_META = {
-            dpf: {
-                name: "DPF-PIR",
-                tag: "2-server · info-theoretic",
-                sub: "Query two non-colluding servers with distributed point functions. No preprocessing; strong information-theoretic privacy against a single curious server.",
-                crumb: "dpf-pir",
-            },
-            onionpir: {
-                name: "OnionPIR",
-                tag: "1-server · lattice FHE",
-                sub: "Single-server homomorphic PIR. No non-collusion assumption, heavier per-query compute than 2-server schemes.",
-                crumb: "onion-pir",
-            },
-            harmonypir: {
-                name: "HarmonyPIR",
-                tag: "2-server · preprocessing + PRP",
-                sub: "Two non-colluding servers with a one-time hint (offline) phase that amortizes future queries down to milliseconds.",
-                crumb: "harmony-pir",
-            },
-            oram: {
-                name: "ORAM TEE",
-                tag: "1-server · SEV-SNP direct lookup",
-                sub: "Experimental single-server direct lookup through the attested VPSBG SEV-SNP UKI. Privacy relies on the measured TEE and encrypted channel, not non-collusion.",
-                crumb: "oram-tee",
-            },
+        // ── Scheme metadata (drives the terminal label) ──
+        const _SCHEME_NAMES = {
+            dpf: "DPF-PIR",
+            onionpir: "OnionPIR",
+            harmonypir: "HarmonyPIR",
+            oram: "ORAM TEE",
         };
         function _applySchemeMeta(key) {
-            const s = _SCHEME_META[key]; if (!s) return;
-            const hTitle = document.getElementById('heroTitle');
-            const hSub = document.getElementById('heroSub');
-            const cb = document.getElementById('cbScheme');
+            const name = _SCHEME_NAMES[key]; if (!name) return;
             const termScheme = document.getElementById('termScheme');
-            if (hTitle) hTitle.innerHTML = `${s.name} <span class="tag">${s.tag}</span>`;
-            if (hSub) hSub.textContent = s.sub;
-            if (cb) cb.textContent = s.crumb;
-            if (termScheme) termScheme.textContent = s.name;
+            if (termScheme) termScheme.textContent = name;
         }
         document.querySelectorAll('.scheme.tab-btn').forEach(el => {
             el.addEventListener('click', () => {
                 _applySchemeMeta(el.dataset.tab);
-                document.querySelectorAll('.scheme.tab-btn').forEach(x =>
-                    x.classList.toggle('active', x === el));
             });
         });
         // initial
