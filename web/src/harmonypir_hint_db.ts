@@ -3,10 +3,10 @@
  *
  * Stores the opaque byte blob produced by `WasmHarmonyClient.saveHints()`
  * (self-describing, fingerprinted — see `pir-sdk-client/src/hint_cache.rs`)
- * together with the random master PRP key that the WASM client generated
- * at construction time. A page reload throws away the in-memory `WasmHarmonyClient`
- * instance and its random key, so the key has to be persisted next to the
- * hint blob — otherwise a restored hint bundle can't be replayed.
+ * together with the effective master PRP key and backend selected during
+ * hint setup. A page reload throws away the in-memory `WasmHarmonyClient`,
+ * so this binding has to be persisted next to the hint blob — otherwise a
+ * restored hint bundle can't be replayed.
  *
  * Records are keyed by `(serverUrl, dbId, prpBackend)`. The 16-byte
  * `fingerprintHex` is an integrity/debug field; the authoritative
@@ -31,8 +31,9 @@ export interface StoredHints {
   cacheKey: string;
   serverUrl: string;
   dbId: number;
+  /** Effective backend selected by V2 hint setup. */
   backend: number;
-  /** 16-byte master PRP key used to regenerate the hint bytes. */
+  /** Effective 16-byte master PRP key bound to the hint bytes. */
   masterKey: Uint8Array;
   /** Self-describing hint blob from `WasmHarmonyClient.saveHints()`. */
   bytes: Uint8Array;

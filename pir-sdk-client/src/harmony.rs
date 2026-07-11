@@ -1011,6 +1011,21 @@ impl HarmonyClient {
         self.invalidate_groups();
     }
 
+    /// Return the effective master PRP key for browser hint persistence.
+    ///
+    /// Under the V2 hint protocol the server assigns a fresh key during
+    /// hint setup, replacing the key installed by `set_master_key`. Cache
+    /// adapters must persist this effective value alongside `save_hints_bytes`
+    /// so a later client can restore the blob without a fingerprint mismatch.
+    pub fn cache_master_key(&self) -> [u8; 16] {
+        self.master_prp_key
+    }
+
+    /// Return the effective PRP backend selected by V2 hint setup.
+    pub fn cache_prp_backend(&self) -> u8 {
+        self.prp_backend
+    }
+
     /// Set the PRP backend (`PRP_HMR12` or `PRP_FASTPRP`).
     pub fn set_prp_backend(&mut self, backend: u8) {
         if backend != self.prp_backend {
@@ -6801,6 +6816,15 @@ mod tests {
         // No groups yet, but invalidation should clear the id.
         client.set_master_key([7u8; 16]);
         assert!(client.loaded_db_id.is_none());
+    }
+
+    #[test]
+    fn cache_binding_accessors_track_effective_state() {
+        let mut client = HarmonyClient::new("ws://localhost:8080", "ws://localhost:8081");
+        client.set_master_key([0x5au8; 16]);
+        client.set_prp_backend(PRP_FASTPRP);
+        assert_eq!(client.cache_master_key(), [0x5au8; 16]);
+        assert_eq!(client.cache_prp_backend(), PRP_FASTPRP);
     }
 
     #[test]
