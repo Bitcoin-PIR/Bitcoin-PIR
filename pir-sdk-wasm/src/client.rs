@@ -1738,6 +1738,20 @@ impl WasmHarmonyClient {
         Ok(())
     }
 
+    /// Return the effective 16-byte master key used by the loaded hint state.
+    /// V2 hint setup replaces the initial client key with a server-assigned
+    /// value, so browser persistence must read this value after hint download.
+    #[wasm_bindgen(js_name = cacheMasterKey)]
+    pub fn cache_master_key(&self) -> Uint8Array {
+        Uint8Array::from(&self.inner.cache_master_key()[..])
+    }
+
+    /// Return the effective PRP backend selected by V2 hint setup.
+    #[wasm_bindgen(js_name = cachePrpBackend)]
+    pub fn cache_prp_backend(&self) -> u8 {
+        self.inner.cache_prp_backend()
+    }
+
     /// Select the PRP backend.
     ///
     /// Accepts [`PRP_HMR12`] or [`PRP_FASTPRP`].

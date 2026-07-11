@@ -487,7 +487,6 @@ export class HarmonyPirClientAdapter {
     const masterKey = new Uint8Array(16);
     crypto.getRandomValues(masterKey);
     this.wasmClient.setMasterKey(masterKey);
-    this._masterKey = masterKey;
     const backendName = ['HMR12', 'FastPRP'][backend] ?? 'HMR12';
     this.log(`WASM loaded: ${backendName}`);
   }
@@ -797,14 +796,8 @@ export class HarmonyPirClientAdapter {
       this.log('No hints loaded to persist');
       return;
     }
-    // The master key isn't directly readable from the WASM client —
-    // but we can exfiltrate a stable 16-byte identifier by reading
-    // the fingerprint (the fingerprint itself is derived from the
-    // key + DB info, so pairing both with the blob lets us replay).
-    // Since the native API doesn't expose the raw key, the restore
-    // path sets a fresh random key, writes it back via
-    // `setMasterKey`, and relies on fingerprint matching.  See
-    // docstring above for why this works.
+    // Keep the fingerprint for cache diagnostics. The restore path still
+    // performs the authoritative native fingerprint check in loadHints().
     const sdkCatalog = this.catalogToSdkHandle();
     let fingerprint: Uint8Array;
     try {
@@ -812,16 +805,24 @@ export class HarmonyPirClientAdapter {
     } finally {
       sdkCatalog.free();
     }
-    const masterKey = this.currentMasterKey();
+    // V2 hint setup replaces the initial client-generated PRP key with the
+    // server-assigned key. Persist the effective native key, not the stale
+    // value installed by loadWasm(), or the next restore fails fingerprint
+    // validation even though the blob and database are otherwise identical.
+    const masterKey = this.wasmClient.cacheMasterKey();
+    const requestedBackend = this.config.prpBackend ?? 0;
+    const effectiveBackend = this.wasmClient.cachePrpBackend();
     const record: StoredHints = {
       cacheKey: buildCacheKey(
         this.config.queryServerUrl,
         this.dbId,
-        this.config.prpBackend ?? 0,
+        requestedBackend,
       ),
       serverUrl: this.config.queryServerUrl,
       dbId: this.dbId,
-      backend: this.config.prpBackend ?? 0,
+      // V2 servers may select a different compatible backend in the hint
+      // preamble. The blob header is authoritative for later restoration.
+      backend: effectiveBackend,
       masterKey,
       bytes,
       fingerprintHex: fingerprintToHex(fingerprint),
@@ -853,7 +854,7 @@ export class HarmonyPirClientAdapter {
 
     try {
       this.wasmClient.setMasterKey(record.masterKey);
-      this.wasmClient.setPrpBackend(backend);
+      this.wasmClient.setPrpBackend(record.backend);
       const sdkCatalog = this.catalogToSdkHandle();
       try {
         this.wasmClient.loadHints(record.bytes, sdkCatalog, this.dbId);
@@ -1046,22 +1047,6 @@ export class HarmonyPirClientAdapter {
     return sdk.WasmDatabaseCatalog.fromJson(json);
   }
 
-  /**
-   * Read the 16-byte master PRP key pinned by `loadWasm()`. The native
-   * WASM client doesn't expose its random key, so this adapter mints one
-   * per instance at `loadWasm()` time and pushes it into the client via
-   * `setMasterKey` **before** any hints are fetched. That guarantees the
-   * persisted blob, its fingerprint, and the key stored alongside it are
-   * mutually consistent for the `saveHints` → reload → `setMasterKey`
-   * → `loadHints` round-trip.
-   */
-  private _masterKey: Uint8Array | null = null;
-  private currentMasterKey(): Uint8Array {
-    if (!this._masterKey) {
-      throw new Error('master key not initialized; loadWasm() must be called first');
-    }
-    return this._masterKey;
-  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
