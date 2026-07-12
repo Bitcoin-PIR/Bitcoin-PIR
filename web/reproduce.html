@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reproducing runtime and database attestation — Bitcoin PIR</title>
+    <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -47,11 +48,10 @@
         .brand {
             display: flex; align-items: center; gap: 8px;
             font-weight: 600;
+            color: var(--ink);
+            text-decoration: none;
         }
-        .brand-mark {
-            width: 14px; height: 14px; border-radius: 4px;
-            background: linear-gradient(135deg, var(--accent), var(--accent-ink));
-        }
+        .brand-logo { display: block; width: 130px; height: auto; }
         .topbar small { color: var(--ink-mute); font-weight: 400; margin-left: 4px; }
         .topbar-spacer { flex: 1; }
         .topbar-btn {
@@ -300,11 +300,10 @@
 </head>
 <body>
     <header class="topbar">
-        <div class="brand">
-            <span class="brand-mark" aria-hidden="true"></span>
-            <span>Bitcoin PIR</span>
+        <a class="brand" href="/" aria-label="BitcoinPIR home">
+            <img class="brand-logo" src="/brand/bitcoinpir-logo.svg" width="430" height="128" alt="BitcoinPIR" />
             <small>reproducibility</small>
-        </div>
+        </a>
         <div class="topbar-spacer"></div>
         <a class="topbar-btn" href="/">← Back to app</a>
         <a class="topbar-btn" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">
