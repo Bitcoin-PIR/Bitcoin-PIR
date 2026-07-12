@@ -158,12 +158,12 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Bumped 2026-06-16: pir1 redeployed to the db-proof-enabled
-  // unified_server (`git_rev` reported as 1c21d341...-dirty), serving
-  // the delta_940611_948454 proof sidecar. This is intentionally
-  // independent from the pir2 ORAM Tier 3 UKI pin above.
+  // Bumped 2026-07-12: pir1 redeployed from BitcoinPIR commit
+  // 3cd5235500fd44a4d8421664ae295882eb6530bf after removal of the
+  // residency API and startup warmup. Both Hetzner systemd services use
+  // this binary. This remains independent from the pir2 Tier 3 UKI pin.
   binarySha256Hex:
-    'd01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a',
+    '3660318aed600b583d503d27f5d166420222fb228a6bd5befc3e15410d25b291',
   description: 'weikeng1.bitcoinpir.org (Hetzner i7-8700, no SEV)',
 };
 
