@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">BitcoinPIR symbol</title>
+  <desc id="desc">A private query aperture surrounded by six distributed data blocks.</desc>
+  <path fill="#111820" d="M60 8 17 33l31 18a23 23 0 0 1 12-7V8ZM13 40v49l31-18a23 23 0 0 1 0-14L13 40ZM17 96l43 25V84a23 23 0 0 1-12-7L17 96Z"/>
+  <path fill="#F59E0B" d="m68 8 43 25-31 18a23 23 0 0 0-12-7V8ZM115 40v49L84 71a23 23 0 0 0 0-14l31-17ZM111 96l-43 25V84a23 23 0 0 0 12-7l31 19Z"/>
+  <path fill="#22D3EE" d="M62 39h4v8h-4zM62 81h4v8h-4z"/>
+  <g fill="#FFF">
+    <path d="m31 32 5-3 5 3v6l-5 3-5-3zM43 25l5-3 5 3v6l-5 3-5-3zM75 25l5-3 5 3v6l-5 3-5-3zM87 32l5-3 5 3v6l-5 3-5-3z"/>
+    <path d="m24 53 5-3 5 3v6l-5 3-5-3zM24 69l5-3 5 3v6l-5 3-5-3zM94 53l5-3 5 3v6l-5 3-5-3zM94 69l5-3 5 3v6l-5 3-5-3z"/>
+    <path d="m31 90 5-3 5 3v6l-5 3-5-3zM43 97l5-3 5 3v6l-5 3-5-3zM75 97l5-3 5 3v6l-5 3-5-3zM87 90l5-3 5 3v6l-5 3-5-3z"/>
+  </g>
+  <circle cx="64" cy="64" r="17" fill="#FFF"/>
+  <path stroke="#FFF" stroke-linecap="round" stroke-width="10" d="m76 76 18 18"/>
+</svg>
