@@ -204,11 +204,6 @@ export class OramPirClientAdapter {
     return this.connected && this.ws.isOpen() && !!this.wasmClient?.isConnected;
   }
 
-  getConnectedSockets(): Array<{ label: string; ws: ManagedWebSocket }> {
-    if (!this.ws.isOpen()) return [];
-    return [{ label: `ORAM server (${this.config.serverUrl})`, ws: this.ws }];
-  }
-
   getCatalog(): DatabaseCatalog | null {
     return this.catalog;
   }

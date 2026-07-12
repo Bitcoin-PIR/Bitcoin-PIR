@@ -61,7 +61,7 @@ web/src/
 ├── attest-pin.ts          # Runtime + DB proof production pins
 ├── sdk-bridge.ts          # pir-sdk-wasm loader/type bridge
 ├── hash.ts                # Address/script hashing helpers
-├── server-info.ts         # Catalog, server-info, residency helpers
+├── server-info.ts         # Catalog and server-info helpers
 └── index.ts               # Public web exports
 ```
 

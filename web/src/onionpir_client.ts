@@ -913,12 +913,6 @@ export class OnionPirWebClient {
   getConnectionState(): ConnectionState { return this.connectionState; }
   isConnected(): boolean { return this.ws?.isOpen() ?? false; }
 
-  /** Return all open WebSocket connections (for diagnostics like residency check). */
-  getConnectedSockets(): { label: string; ws: ManagedWebSocket }[] {
-    if (this.ws?.isOpen()) return [{ label: 'OnionPIR Server', ws: this.ws }];
-    return [];
-  }
-
   // ─── Connection (delegates to shared ws.ts) ───────────────────────────
 
   async connect(): Promise<void> {

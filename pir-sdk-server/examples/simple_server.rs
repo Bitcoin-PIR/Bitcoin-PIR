@@ -69,12 +69,6 @@ fn parse_args() -> Result<ServerConfig, String> {
                     }
                 }
             }
-            "--warmup" => {
-                config.warmup = true;
-            }
-            "--no-warmup" => {
-                config.warmup = false;
-            }
             "--help" | "-h" => {
                 println!("PIR Server Example");
                 println!();
@@ -85,8 +79,6 @@ fn parse_args() -> Result<ServerConfig, String> {
                 println!("  --port, -p <port>       Listen port (default: 8091)");
                 println!("  --db, -d <path:height>  Add full snapshot database");
                 println!("  --db, -d <path:base:tip> Add delta database");
-                println!("  --warmup                Enable database warmup (default)");
-                println!("  --no-warmup             Disable database warmup");
                 println!("  --help, -h              Show this help");
                 println!();
                 println!("Example:");
@@ -127,7 +119,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Configuration:");
     println!("  Port: {}", config.port);
     println!("  Role: {:?}", config.role);
-    println!("  Warmup: {}", config.warmup);
     println!("  Databases: {}", config.databases.len());
 
     for db in &config.databases {
@@ -137,9 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Building server...");
 
-    let mut builder = PirServerBuilder::new()
-        .port(config.port)
-        .warmup(config.warmup);
+    let mut builder = PirServerBuilder::new().port(config.port);
 
     // Forward parsed databases into the builder. Without this, the builder
     // would be empty even though the user passed --db or --config flags.

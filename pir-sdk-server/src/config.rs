@@ -22,13 +22,6 @@ pub struct DatabaseEntry {
     pub base_height: u32,
     /// Snapshot height (full) or end height (delta).
     pub height: u32,
-    /// Warmup priority: lower = higher priority.
-    #[serde(default = "default_priority")]
-    pub priority: u32,
-}
-
-fn default_priority() -> u32 {
-    5
 }
 
 impl DatabaseEntry {
@@ -41,7 +34,6 @@ impl DatabaseEntry {
             proof_dir: None,
             base_height: 0,
             height,
-            priority: default_priority(),
         }
     }
 
@@ -59,7 +51,6 @@ impl DatabaseEntry {
             proof_dir: None,
             base_height,
             height: tip_height,
-            priority: default_priority(),
         }
     }
 
@@ -101,9 +92,6 @@ pub struct ServerConfig {
     /// Whether to enable OnionPIR backend.
     #[serde(default = "default_true")]
     pub enable_onion: bool,
-    /// Whether to perform warmup.
-    #[serde(default)]
-    pub warmup: bool,
 }
 
 fn default_port() -> u16 {
@@ -205,12 +193,6 @@ impl ServerConfig {
     /// Set the port.
     pub fn port(&mut self, port: u16) -> &mut Self {
         self.port = port;
-        self
-    }
-
-    /// Enable or disable warmup.
-    pub fn warmup(&mut self, enable: bool) -> &mut Self {
-        self.warmup = enable;
         self
     }
 }

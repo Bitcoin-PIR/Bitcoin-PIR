@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the unused warmup configuration and builder API. Servers rely on
+  normal operating-system demand paging instead of pre-touching every mapped
+  database page at startup.
+
 ### Changed
 
 - Replaced `runtime` + `build` workspace-internal path dependencies with
@@ -31,8 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     delta database.
   - `role(ServerRole::Primary | Hint)` — pick Harmony hint-server
     vs. query-server role.
-  - `warmup(bool)` — pre-touch mmap'd pages at startup
-    (default on).
   - `from_config(path)` — load all of the above from a TOML file.
 - `PirServer` — the built, ready-to-run server. `run().await`
   blocks until `ShutdownHandle::shutdown()` is called or a signal

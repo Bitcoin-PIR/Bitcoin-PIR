@@ -231,12 +231,6 @@ impl PirServerBuilder {
         self
     }
 
-    /// Enable or disable warmup.
-    pub fn warmup(mut self, enable: bool) -> Self {
-        self.config.warmup = enable;
-        self
-    }
-
     /// Disable DPF backend.
     pub fn disable_dpf(mut self) -> Self {
         self.config.enable_dpf = false;
