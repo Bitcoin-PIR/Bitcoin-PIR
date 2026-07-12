@@ -7,7 +7,7 @@
 //! Uses pir-core's MappedDatabase for table loading instead of legacy CuckooTablePair.
 //!
 //! Usage:
-//!   unified_server --port 8091 [--data-dir /path/to/checkpoint] [--role primary|secondary] [--warmup]
+//!   unified_server --port 8091 [--data-dir /path/to/checkpoint] [--role primary|secondary]
 //!     [--checkpoint /path/to/checkpoint <height>]...
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
@@ -20,7 +20,6 @@ use runtime::protocol::*;
 use runtime::table::{
     DatabaseDescriptor, DatabaseType, MappedDatabase, MappedSubTable, ServerState,
 };
-use runtime::warmup::{self, MmapRegion};
 
 use futures_util::{SinkExt, StreamExt};
 use libdpf::DpfKey;
@@ -104,7 +103,6 @@ struct CliArgs {
     port: u16,
     data_dir: PathBuf,
     role: ServerRole,
-    warmup: bool,
     /// Path to databases.toml config file (overrides --checkpoint/--delta).
     config_path: Option<PathBuf>,
     /// Checkpoint databases: (path, height).
@@ -259,7 +257,6 @@ fn parse_args() -> CliArgs {
     let mut port = 8091u16;
     let mut data_dir = PathBuf::from("/Volumes/Bitcoin/data/checkpoints/940611");
     let mut role = ServerRole::Primary;
-    let mut warmup = false;
     let mut config_path: Option<PathBuf> = None;
     let mut checkpoints: Vec<(PathBuf, u32)> = Vec::new();
     let mut deltas: Vec<(PathBuf, u32, u32)> = Vec::new();
@@ -319,9 +316,6 @@ fn parse_args() -> CliArgs {
                     };
                 }
                 i += 1;
-            }
-            "--warmup" | "-w" => {
-                warmup = true;
             }
             "--config" | "-c" => {
                 if let Some(path) = args.get(i + 1) {
@@ -529,7 +523,6 @@ fn parse_args() -> CliArgs {
         port,
         data_dir,
         role,
-        warmup,
         config_path,
         checkpoints,
         deltas,
@@ -3096,8 +3089,6 @@ struct UnifiedServerData {
     /// `merkle_onion_*` sibling / root / tree-top files on disk).
     /// Length matches `state.databases.len()`.
     onionpir_merkle: Vec<Option<OnionPirMerkleInfo>>,
-    /// All mmap'd regions for residency monitoring.
-    mmap_regions: Vec<MmapRegion>,
     /// Admin auth config — `Some` when the operator started the server with
     /// `--admin-pubkey-hex <hex>`. `None` means REQ_ADMIN_* requests fail.
     admin_config: Option<pir_runtime_core::admin::AdminConfig>,
@@ -4203,7 +4194,6 @@ async fn main() {
 
     // ── Load databases ─────────────────────────────────────────────────
     let mut all_databases: Vec<MappedDatabase> = Vec::new();
-    let mut mmap_regions: Vec<MmapRegion> = Vec::new();
     // Per-DB source directories for OnionPIR loading (db_id, label, path).
     // Populated alongside `all_databases` so OnionPIR setup can iterate over
     // every loaded DB and look for its OnionPIR files.
@@ -4258,26 +4248,13 @@ async fn main() {
                 format!("Full:{}", db_cfg.height)
             };
             println!(
-                "[{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}, priority={}",
+                "[{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
                 type_label,
                 db.index.bins_per_table,
                 db.chunk.bins_per_table,
                 params::compute_dpf_n(db.index.bins_per_table),
-                params::compute_dpf_n(db.chunk.bins_per_table),
-                db_cfg.priority
+                params::compute_dpf_n(db.chunk.bins_per_table)
             );
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/batch_pir_cuckoo.bin", db_cfg.name),
-                ptr: db.index.mmap.as_ptr(),
-                len: db.index.mmap.len(),
-                priority: db_cfg.priority,
-            });
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/chunk_pir_cuckoo.bin", db_cfg.name),
-                ptr: db.chunk.mmap.as_ptr(),
-                len: db.chunk.mmap.len(),
-                priority: db_cfg.priority,
-            });
             db_paths.push((i as u8, db_cfg.name.clone(), db_path));
             all_databases.push(db);
         }
@@ -4296,18 +4273,6 @@ async fn main() {
             },
         );
 
-        mmap_regions.push(MmapRegion {
-            name: "batch_pir_cuckoo.bin".into(),
-            ptr: main_db.index.mmap.as_ptr(),
-            len: main_db.index.mmap.len(),
-            priority: 1,
-        });
-        mmap_regions.push(MmapRegion {
-            name: "chunk_pir_cuckoo.bin".into(),
-            ptr: main_db.chunk.mmap.as_ptr(),
-            len: main_db.chunk.mmap.len(),
-            priority: 1,
-        });
         db_paths.push((0u8, "main".to_string(), args.data_dir.clone()));
         all_databases.push(main_db);
 
@@ -4332,18 +4297,6 @@ async fn main() {
                 params::compute_dpf_n(db.index.bins_per_table),
                 params::compute_dpf_n(db.chunk.bins_per_table)
             );
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/batch_pir_cuckoo.bin", name),
-                ptr: db.index.mmap.as_ptr(),
-                len: db.index.mmap.len(),
-                priority: 5,
-            });
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/chunk_pir_cuckoo.bin", name),
-                ptr: db.chunk.mmap.as_ptr(),
-                len: db.chunk.mmap.len(),
-                priority: 5,
-            });
             db_paths.push((all_databases.len() as u8, name, path.clone()));
             all_databases.push(db);
         }
@@ -4370,18 +4323,6 @@ async fn main() {
                 params::compute_dpf_n(db.index.bins_per_table),
                 params::compute_dpf_n(db.chunk.bins_per_table)
             );
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/batch_pir_cuckoo.bin", name),
-                ptr: db.index.mmap.as_ptr(),
-                len: db.index.mmap.len(),
-                priority: 10,
-            });
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/chunk_pir_cuckoo.bin", name),
-                ptr: db.chunk.mmap.as_ptr(),
-                len: db.chunk.mmap.len(),
-                priority: 10,
-            });
             db_paths.push((all_databases.len() as u8, name, path.clone()));
             all_databases.push(db);
         }
@@ -4608,7 +4549,6 @@ async fn main() {
         data_dir: &std::path::Path,
         db_label: &str,
         tree_kind: &str,
-        mmap_regions: &mut Vec<MmapRegion>,
     ) -> Option<OnionSibFile> {
         let path = data_dir.join(format!("merkle_onion_sib_{}.bin", tree_kind));
         if !path.exists() {
@@ -4646,12 +4586,6 @@ async fn main() {
             blob_len as f64 / 1e6,
             mmap.len() as f64 / 1e6,
         );
-        mmap_regions.push(MmapRegion {
-            name: format!("{}/merkle_onion_sib_{}.bin", db_label, tree_kind),
-            ptr: mmap.as_ptr(),
-            len: mmap.len(),
-            priority: 2,
-        });
         Some(OnionSibFile {
             k,
             num_pt,
@@ -4748,13 +4682,6 @@ async fn main() {
             let ntt_file = std::fs::File::open(&ntt_path).expect("open NTT store");
             let ntt_mmap = unsafe { Mmap::map(&ntt_file) }.expect("mmap NTT store");
             println!("  NTT store: {:.2} GB", ntt_mmap.len() as f64 / 1e9);
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/{}", db_label, ONION_NTT_FILE),
-                ptr: ntt_mmap.as_ptr(),
-                len: ntt_mmap.len(),
-                priority: 1,
-            });
-
             // Load consolidated INDEX file (onion_index_all.bin). Single mmap;
             // we parse the 32-byte master header here and hand per-group slices
             // to the PIR worker thread, which in turn feeds each slice into
@@ -4825,20 +4752,14 @@ async fn main() {
                     index_all_mmap.len() as f64 / 1e6,
                 );
             }
-            mmap_regions.push(MmapRegion {
-                name: format!("{}/{}", db_label, ONION_INDEX_ALL_FILE),
-                ptr: index_all_mmap.as_ptr(),
-                len: index_all_mmap.len(),
-                priority: 1,
-            });
             let index_all_per_group =
                 u64::from_le_bytes(index_all_mmap[16..24].try_into().unwrap()) as usize;
 
             // Load the per-group OnionPIR Merkle sidecars (Phase 3
             // per-group redesign). A DB ships these only if
             // `gen_4_build_merkle_onion` has been run for it.
-            let index_sib_file = load_onion_sib_file(db_dir, db_label, "index", &mut mmap_regions);
-            let data_sib_file = load_onion_sib_file(db_dir, db_label, "data", &mut mmap_regions);
+            let index_sib_file = load_onion_sib_file(db_dir, db_label, "index");
+            let data_sib_file = load_onion_sib_file(db_dir, db_label, "data");
 
             let merkle_tree_tops: Option<Vec<u8>> = {
                 let p = db_dir.join("merkle_onion_tree_tops.bin");
@@ -5232,15 +5153,6 @@ async fn main() {
     println!("Data loaded in {:.2?}", total_start.elapsed());
     println!();
 
-    // ── Residency report & optional warmup ─────────────────────────────
-
-    warmup::report_residency(&mmap_regions);
-    if args.warmup {
-        warmup::warmup_regions(&mut mmap_regions);
-        warmup::report_residency(&mmap_regions);
-    }
-    println!();
-
     // ── Generate the long-lived channel keypair ─────────────────────────
     // This is the X25519 key the future encrypted channel handshakes
     // ECDH against. We generate it inside the SEV-SNP guest at startup
@@ -5498,7 +5410,6 @@ async fn main() {
         onionpir_txs,
         onionpir_infos,
         onionpir_merkle: onionpir_merkle_per_db,
-        mmap_regions,
         admin_config,
         data_root,
         channel_keypair,
@@ -5806,7 +5717,7 @@ async fn main() {
                 // Mode gate: reject hint or query requests this server isn't
                 // configured for (`--serve-hints` / `--serve-queries` flags).
                 // Whitelisted opcodes (info / ping / attest / handshake /
-                // residency / credential / admin / db-catalog) always pass —
+                // credential / admin / db-catalog) always pass —
                 // they don't expose hint or query content, only metadata
                 // needed for clients to discover the server's capabilities.
                 if !server.serve_hints {
@@ -6153,17 +6064,6 @@ async fn main() {
                             let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
                         }
                     }
-                    REQ_RESIDENCY => {
-                        let json = warmup::residency_json(&server.mmap_regions);
-                        let json_bytes = json.as_bytes();
-                        let payload_len = 1 + json_bytes.len();
-                        let mut msg = Vec::with_capacity(4 + payload_len);
-                        msg.extend_from_slice(&(payload_len as u32).to_le_bytes());
-                        msg.push(RESP_RESIDENCY);
-                        msg.extend_from_slice(json_bytes);
-                        let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
-                    }
-
                     // ── DPF batch queries (both roles) ──────────────────
                     REQ_INDEX_BATCH => {
                         if let Ok(Request::IndexBatch(q)) = Request::decode(payload) {

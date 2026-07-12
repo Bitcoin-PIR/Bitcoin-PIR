@@ -16,10 +16,7 @@
  *         `serverInfo` so `hasMerkle` / `getMerkleRootHex` can answer
  *         synchronously without a roundtrip)
  *       - `REQ_GET_DB_CATALOG` at connect time (for the catalog
- *         accessors and the UI DB selector)
- *       - `REQ_RESIDENCY` via the residency panel in `web/index.html`
- *         (which iterates `getConnectedSockets()` across all backends
- *         and calls `fetchResidency(ws)`).
+ *         accessors and the UI DB selector).
  *   * Translation between `WasmQueryResult` (the WASM-side opaque
  *     handle) and the legacy `QueryResult` shape consumed by the UI
  *     renderers + `sync-merge.ts`.
@@ -457,23 +454,6 @@ export class BatchPirClientAdapter {
       && this.ws1.isOpen()
       && !!this.wasmClient?.isConnected
     );
-  }
-
-  /**
-   * Used by the residency panel in `web/index.html` to run `REQ_RESIDENCY`
-   * across every connected server. Only the side-channel sockets are
-   * returned — the WASM client's internal sockets are not addressable
-   * from JS.
-   */
-  getConnectedSockets(): Array<{ label: string; ws: ManagedWebSocket }> {
-    const out: Array<{ label: string; ws: ManagedWebSocket }> = [];
-    if (this.ws0.isOpen()) {
-      out.push({ label: `DPF server0 (${this.config.server0Url})`, ws: this.ws0 });
-    }
-    if (this.ws1.isOpen()) {
-      out.push({ label: `DPF server1 (${this.config.server1Url})`, ws: this.ws1 });
-    }
-    return out;
   }
 
   // ── Catalog accessors ─────────────────────────────────────────────────

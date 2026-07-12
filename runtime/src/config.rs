@@ -2,7 +2,7 @@
 //!
 //! Instead of passing many `--checkpoint` and `--delta` CLI flags, the server
 //! can load a single `databases.toml` file that declares all databases, their
-//! types, heights, paths, and warmup priority.
+//! types, heights, and paths.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -24,14 +24,6 @@ pub struct DatabaseConfig {
     pub base_height: u32,
     /// Snapshot height (full) or end height (delta).
     pub height: u32,
-    /// Warmup priority: lower = higher priority (warmed up first).
-    /// Defaults to 5 if omitted.
-    #[serde(default = "default_priority")]
-    pub priority: u32,
-}
-
-fn default_priority() -> u32 {
-    5
 }
 
 /// Top-level server configuration loaded from a TOML file.

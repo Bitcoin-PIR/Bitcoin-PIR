@@ -17,7 +17,6 @@
 //!     .add_full_db("/data/checkpoint/940611", 940611)
 //!     .add_delta_db("/data/delta/940611_944000", 940611, 944000)
 //!     .role(ServerRole::Primary)
-//!     .warmup(true)
 //!     .build().await?
 //!     .run().await?;
 //! ```

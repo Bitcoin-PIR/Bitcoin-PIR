@@ -610,7 +610,6 @@
             .topbar { padding: 0 12px; gap: 8px; }
             .topbar a.topbar-btn { display: none; }
             .topbar-btn { padding: 5px 8px; }
-            #residencyBtn { display: none; }
             .main { padding: 18px 14px 220px; }
             .backend-picker-head { align-items: center; }
             .backend-picker-head h1 { font-size: 18px; }
@@ -658,21 +657,6 @@
         .qi-timing-total { width: 55px; text-align: right; font-family: var(--mono); color: var(--ink); flex-shrink: 0; }
         .qi-inspect-btn { display: inline-block; padding: 2px 8px; font-size: 11px; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; color: var(--ink-mute); margin-left: 8px; vertical-align: middle; font-family: var(--mono); }
         .qi-inspect-btn:hover { background: var(--panel); color: var(--ink); border-color: var(--ink-faint); }
-
-        /* Residency panel */
-        .residency-panel { display: none; margin: 12px 0 0; padding: 12px 14px; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r); font-size: 12px; }
-        .residency-panel.active { display: block; }
-        .residency-server { margin-bottom: 10px; }
-        .residency-server:last-child { margin-bottom: 0; }
-        .residency-server-label { font-weight: 600; font-size: 12.5px; margin-bottom: 4px; color: var(--ink); font-family: var(--mono); }
-        .residency-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
-        .residency-name { width: 220px; font-family: var(--mono); color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
-        .residency-bar-wrap { flex: 1; height: 10px; background: var(--line); border-radius: 3px; overflow: hidden; min-width: 100px; }
-        .residency-bar-fill { height: 100%; background: var(--accent); transition: width 0.5s; border-radius: 3px; }
-        .residency-pct { width: 48px; text-align: right; font-family: var(--mono); font-weight: 500; flex-shrink: 0; color: var(--ink); }
-        .residency-size { width: 90px; text-align: right; font-family: var(--mono); color: var(--ink-mute); flex-shrink: 0; }
-        .residency-total { font-weight: 600; border-top: 1px solid var(--line); padding-top: 4px; margin-top: 4px; }
-        .residency-error { color: var(--err); font-style: italic; }
 
         /* Slice 3 attestation badge — persistent per-server status panel
            shown under each server URL input. Populated by the
@@ -837,7 +821,6 @@
             <span>Bitcoin PIR</span>
         </div>
         <div class="topbar-spacer"></div>
-        <button id="residencyBtn" class="topbar-btn" title="Check server mmap page residency (warmup status)">Server Warmup</button>
         <a class="topbar-btn" href="/reproduce.html" title="How to independently verify the SEV-SNP MEASUREMENT pin">Reproducibility</a>
         <a class="topbar-btn" href="https://github.com/Bitcoin-PIR/Bitcoin-PIR" target="_blank" rel="noopener">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2.2.5-2.7-1.1-2.7-1.1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8 0 1.2.8 1.2.8.7 1.2 1.9.9 2.4.7.1-.5.3-.9.5-1.1-1.8-.2-3.7-.9-3.7-4 0-.9.3-1.6.8-2.1-.1-.2-.3-1 .1-2.1 0 0 .7-.2 2.2.8a7.6 7.6 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.5.8 1.2.8 2.1 0 3.1-1.9 3.8-3.7 4 .3.2.5.7.5 1.5v2.2c0 .2.1.5.5.4A8 8 0 0 0 8 .2Z"/></svg>
@@ -870,8 +853,6 @@
                     </button>
                 </div>
             </section>
-
-            <div id="residencyPanel" class="residency-panel"></div>
 
         <!-- ═══ DPF Tab ═══ -->
         <div id="tab-dpf" class="tab-content active">
@@ -1584,8 +1565,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, verifyProductionTrustChain, verifyOramSourceProof } from './src/index.ts';
-        import { fetchResidency } from './src/server-info.ts';
-
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
             if (ok) console.log('[PIR] SDK WASM loaded');
@@ -3278,67 +3257,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 btn.setAttribute('aria-selected', 'true');
                 document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
             });
-        });
-
-        // ─── Server Warmup / Residency button ────────────────────────
-        document.getElementById('residencyBtn').addEventListener('click', async () => {
-            const panel = document.getElementById('residencyPanel');
-            // Toggle panel off if already visible
-            if (panel.classList.contains('active')) {
-                panel.classList.remove('active');
-                return;
-            }
-            // Collect all connected sockets across clients
-            const sockets = [
-                ...(client ? client.getConnectedSockets() : []),
-                ...(opClient ? opClient.getConnectedSockets() : []),
-                ...(hpClient ? hpClient.getConnectedSockets() : []),
-                ...(oramClient ? oramClient.getConnectedSockets() : []),
-            ];
-            if (sockets.length === 0) {
-                panel.innerHTML = '<span class="residency-error">No servers connected. Connect to a server first.</span>';
-                panel.classList.add('active');
-                return;
-            }
-            panel.innerHTML = '<span style="color:#888;">Querying servers...</span>';
-            panel.classList.add('active');
-
-            let html = '';
-            for (const { label, ws } of sockets) {
-                try {
-                    const info = await fetchResidency(ws);
-                    html += `<div class="residency-server">`;
-                    html += `<div class="residency-server-label">${label}</div>`;
-                    for (const r of info.regions) {
-                        const sizeGB = (r.size / 1e9).toFixed(2);
-                        const resGB = (r.resident / 1e9).toFixed(2);
-                        const pct = r.pct.toFixed(1);
-                        const color = r.pct > 90 ? '#28a745' : r.pct > 50 ? '#ffc107' : '#f7931a';
-                        html += `<div class="residency-row">`;
-                        html += `<span class="residency-name" title="${r.name}">${r.name}</span>`;
-                        html += `<div class="residency-bar-wrap"><div class="residency-bar-fill" style="width:${pct}%;background:${color};"></div></div>`;
-                        html += `<span class="residency-pct">${pct}%</span>`;
-                        html += `<span class="residency-size">${resGB}/${sizeGB} GB</span>`;
-                        html += `</div>`;
-                    }
-                    // Total row
-                    const totalGB = (info.total_size / 1e9).toFixed(2);
-                    const totalResGB = (info.total_resident / 1e9).toFixed(2);
-                    const totalPct = info.total_pct.toFixed(1);
-                    const totalColor = info.total_pct > 90 ? '#28a745' : info.total_pct > 50 ? '#ffc107' : '#f7931a';
-                    html += `<div class="residency-row residency-total">`;
-                    html += `<span class="residency-name"><b>TOTAL</b></span>`;
-                    html += `<div class="residency-bar-wrap"><div class="residency-bar-fill" style="width:${totalPct}%;background:${totalColor};"></div></div>`;
-                    html += `<span class="residency-pct">${totalPct}%</span>`;
-                    html += `<span class="residency-size">${totalResGB}/${totalGB} GB</span>`;
-                    html += `</div>`;
-                    html += `</div>`;
-                } catch (e) {
-                    html += `<div class="residency-server"><div class="residency-server-label">${label}</div>`;
-                    html += `<span class="residency-error">${e.message}</span></div>`;
-                }
-            }
-            panel.innerHTML = html;
         });
 
         // ═══════════════════════════════════════════════════════════════

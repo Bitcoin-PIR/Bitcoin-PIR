@@ -50,13 +50,6 @@ pub trait PirBackend: Send + Sync + 'static {
     /// Returns information about all databases loaded by this backend.
     fn catalog(&self) -> &DatabaseCatalog;
 
-    /// Optionally perform warmup (e.g., pre-compute FHE keys, touch pages).
-    ///
-    /// This is called after loading but before accepting connections.
-    fn warmup(&self) -> PirResult<()> {
-        Ok(())
-    }
-
     /// Shutdown the backend gracefully.
     fn shutdown(&self) -> PirResult<()> {
         Ok(())
@@ -79,9 +72,6 @@ pub trait PirBackendBuilder: Sized {
 
     /// Load database configuration from a TOML file.
     fn from_config(self, path: &std::path::Path) -> PirResult<Self>;
-
-    /// Enable warmup after loading.
-    fn warmup(self, enable: bool) -> Self;
 
     /// Build the backend.
     fn build(self) -> PirResult<Self::Backend>;
@@ -117,8 +107,6 @@ pub struct ServerConfig {
     pub enable_harmony: bool,
     /// Whether to enable OnionPIR backend.
     pub enable_onion: bool,
-    /// Whether to perform warmup.
-    pub warmup: bool,
 }
 
 impl ServerConfig {
@@ -131,7 +119,6 @@ impl ServerConfig {
             enable_dpf: true,
             enable_harmony: true,
             enable_onion: true,
-            warmup: false,
         }
     }
 }

@@ -114,7 +114,7 @@ Even though the total now fits in RAM, indirection saves physical I/O:
 
 - **Without sharing:** Main DB reads ~54 GB from SSD (3x redundancy)
 - **With sharing:** Main DB reads ~18 GB from SSD (each page loaded once, then cached)
-- After warmup, everything stays in page cache → zero SSD I/O per batch
+- Frequently accessed pages may remain in the operating-system page cache; nodes do not preload or pin the full dataset in RAM
 
 ### Compute vs I/O bottleneck (MEASURED)
 
@@ -128,7 +128,7 @@ For a full batch:
 - Chunk compute: 80 x 20.2 ms = **1.62 s**
 - **Total compute: ~2.5 s per client request**
 - I/O (shared store warm): ~0
-- I/O (shared store cold, first batch): ~28 GB / 4 GB/s ≈ 7 seconds (one-time warmup)
+- I/O (shared store cold): pages are faulted in on demand, so early-query latency depends on the node's storage and available page cache
 
 **Compute clearly dominates once warmed up.**
 

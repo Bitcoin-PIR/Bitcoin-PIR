@@ -21,7 +21,6 @@ and OnionPIR queries over WebSocket.
   - `add_delta_db(path, base_height, tip_height)` — register a delta database.
   - `role(ServerRole::Primary | Hint)` — pick Harmony hint-server vs.
     query-server role.
-  - `warmup(bool)` — pre-touch mmap'd pages at startup (default on).
   - `from_config(path)` — load all of the above from a TOML file.
 - [`PirServer`] — the built, ready-to-run server. `run().await` blocks until
   `ShutdownHandle::shutdown()` is called or a signal terminates the process.
@@ -41,7 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .port(8091)
         .add_full_db("/data/snapshot_900000.bin", 900_000)
         .add_delta_db("/data/delta_900000_910000.bin", 900_000, 910_000)
-        .warmup(true)
         .build()
         .await?;
 
@@ -57,7 +55,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 # server.toml
 port = 8091
 role = "Primary"   # or "Hint" for the HarmonyPIR hint server
-warmup = true
 
 [[databases]]
 path = "/data/snapshot_900000.bin"

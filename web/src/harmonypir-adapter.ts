@@ -15,8 +15,7 @@
  *     client owns its own transport sockets internally, but those
  *     aren't exposed to JS. The side-channel carries
  *     `REQ_GET_INFO_JSON` + `REQ_GET_DB_CATALOG` at connect time (for
- *     Merkle-root / catalog accessors that must return synchronously)
- *     and `REQ_RESIDENCY` from the residency panel.
+ *     Merkle-root / catalog accessors that must return synchronously).
  *   * IndexedDB plumbing — the native `HarmonyClient`'s `save_hints` /
  *     `load_hints` API produces opaque byte blobs; this adapter
  *     persists them through `harmonypir_hint_db.ts` keyed on
@@ -516,7 +515,7 @@ export class HarmonyPirClientAdapter {
     await this.wasmClient.fetchCatalog();
     await this.verifyConfiguredDatabaseProofs();
 
-    // Side-channel for residency / server-info JSON requests.
+    // Side-channel for server-info JSON requests.
     this.queryWs = new ManagedWebSocket({
       url: this.config.queryServerUrl,
       label: 'HarmonyPIR Query Server',
@@ -948,14 +947,6 @@ export class HarmonyPirClientAdapter {
     await this.queryWs.connect();
     await this.fetchServerInfo();
     this.log('Reconnected to Query Server (hints preserved)');
-  }
-
-  getConnectedSockets(): { label: string; ws: ManagedWebSocket }[] {
-    const out: { label: string; ws: ManagedWebSocket }[] = [];
-    if (this.queryWs?.isOpen()) {
-      out.push({ label: 'HarmonyPIR Query Server', ws: this.queryWs });
-    }
-    return out;
   }
 
   /**

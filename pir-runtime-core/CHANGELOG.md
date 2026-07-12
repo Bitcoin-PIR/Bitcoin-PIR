@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the public mmap-residency request/response opcode. Opcode `0x04`
+  remains retired and must not be reused.
+
 ## [0.1.0] — initial release (unpublished)
 
 ### Added
@@ -29,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `handler` module — `RequestHandler` dispatches decoded `Request`
   variants against a `Vec<MappedDatabase>` and produces `Response`
   values. Covers DPF single/batch queries, HarmonyPIR main and sibling
-  queries, catalog / info / residency requests, and bucket-Merkle
-  tree-tops and sibling-batch requests.
+  queries, catalog / info requests, and bucket-Merkle tree-tops and
+  sibling-batch requests.
 
 ### Why this crate exists
 

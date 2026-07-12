@@ -66,9 +66,9 @@ pub const REQ_GET_DB_CATALOG: u8 = 0x02;
 /// core enum. Keep DB proof on 0x0a to avoid colliding with OnionPIR clients.
 pub const REQ_GET_DB_PROOF: u8 = 0x0a;
 
-// ─── Monitoring ────────────────────────────────────────────────────────────
-
-pub const REQ_RESIDENCY: u8 = 0x04;
+// 0x04 is retired (former mmap residency diagnostic). Keep it unassigned so
+// older clients receive the normal unsupported-request response rather than a
+// different operation under the same opcode.
 
 // ─── Attestation ───────────────────────────────────────────────────────────
 //
@@ -216,7 +216,6 @@ pub const RESP_CHUNK_BATCH: u8 = 0x21;
 // 0x31 / 0x32 RETIRED (legacy N-ary tree Merkle) — see REQ section above.
 pub const RESP_BUCKET_MERKLE_SIB_BATCH: u8 = 0x33;
 pub const RESP_BUCKET_MERKLE_TREE_TOPS: u8 = 0x34;
-pub const RESP_RESIDENCY: u8 = 0x04;
 pub const RESP_ERROR: u8 = 0xFF;
 
 // ─── HarmonyPIR response variants ──────────────────────────────────────────
@@ -2574,6 +2573,13 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
 #[cfg(test)]
 mod attest_wire_tests {
     use super::*;
+
+    #[test]
+    fn retired_residency_opcode_is_rejected() {
+        let err = Request::decode(&[0x04]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("unknown request variant: 0x04"));
+    }
 
     #[test]
     fn attest_request_roundtrip() {

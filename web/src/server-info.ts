@@ -5,7 +5,7 @@
  * All backends extract their parameters from the same JSON structure.
  */
 
-import { REQ_GET_INFO_JSON, REQ_RESIDENCY, REQ_GET_DB_CATALOG } from './constants.js';
+import { REQ_GET_INFO_JSON, REQ_GET_DB_CATALOG } from './constants.js';
 import type { ManagedWebSocket } from './ws.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -277,47 +277,6 @@ export async function fetchServerInfoJson(
   const jsonBytes = raw.slice(5);
   const jsonStr = new TextDecoder().decode(jsonBytes);
   return parseServerInfoJson(jsonStr);
-}
-
-// ─── Residency ──────────────────────────────────────────────────────────────
-
-export interface ResidencyRegion {
-  name: string;
-  size: number;
-  resident: number;
-  pct: number;
-}
-
-export interface ResidencyInfo {
-  page_size: number;
-  regions: ResidencyRegion[];
-  total_size: number;
-  total_resident: number;
-  total_pct: number;
-}
-
-/** Pre-built request: [4B len=1 LE][1B variant=REQ_RESIDENCY] */
-const RESIDENCY_REQUEST = new Uint8Array([1, 0, 0, 0, REQ_RESIDENCY]);
-
-/**
- * Fetch mmap page residency from a connected server.
- *
- * Wire format:
- *   Request:  [4B len=1 LE][1B 0x04]
- *   Response: [4B len LE][1B 0x04][JSON bytes...]
- */
-export async function fetchResidency(ws: ManagedWebSocket): Promise<ResidencyInfo> {
-  const raw = await ws.sendRaw(RESIDENCY_REQUEST);
-  if (raw.length < 6) {
-    throw new Error('Residency response too short');
-  }
-  const variant = raw[4];
-  if (variant === 0xFF) {
-    throw new Error('Server returned error for residency request');
-  }
-  const jsonBytes = raw.slice(5);
-  const jsonStr = new TextDecoder().decode(jsonBytes);
-  return JSON.parse(jsonStr) as ResidencyInfo;
 }
 
 // ─── Database Catalog ──────────────────────────────────────────────────────

@@ -2231,7 +2231,6 @@ dependencies = [
  "futures-util",
  "harmonypir",
  "harmonypir-wasm",
- "libc",
  "libdpf",
  "memmap2",
  "onionpir",

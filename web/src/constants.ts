@@ -75,14 +75,13 @@ export const CHUNK_DPF_N = 21;
 export const REQ_PING = 0x00;
 export const REQ_GET_INFO = 0x01;
 export const REQ_GET_INFO_JSON = 0x03;
-export const REQ_RESIDENCY = 0x04;
+// 0x04 is retired (former mmap residency diagnostic); do not reuse.
 export const REQ_INDEX_BATCH = 0x11;
 export const REQ_CHUNK_BATCH = 0x21;
 
 export const RESP_PONG = 0x00;
 export const RESP_INFO = 0x01;
 export const RESP_INFO_JSON = 0x03;
-export const RESP_RESIDENCY = 0x04;
 export const RESP_INDEX_BATCH = 0x11;
 export const RESP_CHUNK_BATCH = 0x21;
 export const REQ_GET_DB_CATALOG = 0x02;
