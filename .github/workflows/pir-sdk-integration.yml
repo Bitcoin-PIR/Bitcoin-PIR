@@ -177,3 +177,87 @@ jobs:
         # already ran in the `integration` job without the feature.
         # (Quoted to keep YAML from parsing `::` as a mapping.)
         run: "cargo test -p pir-sdk-client --features onion --test integration_test -- --ignored --test-threads=1 --nocapture onion_tests::"
+
+  leakage-canary:
+    # The leakage suite opens many live WebSocket connections. Run it only
+    # after both ordinary integration jobs succeed on scheduled/manual runs,
+    # with every selected invariant serialized in this one job.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    needs: [integration, integration-onion]
+    name: privacy leakage canary (DPF, HarmonyPIR, OnionPIR)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      PIR_DPF_SERVER0_URL: wss://weikeng1.bitcoinpir.org
+      PIR_DPF_SERVER1_URL: wss://weikeng2.bitcoinpir.org
+      PIR_HARMONY_HINT_URL: wss://weikeng1.bitcoinpir.org
+      PIR_HARMONY_QUERY_URL: wss://weikeng2.bitcoinpir.org
+      PIR_ONION_URL: wss://weikeng1.bitcoinpir.org
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --profile minimal
+
+      - name: Install C++ toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libgomp1
+
+      - name: Rewrite SSH GitHub URLs to HTTPS (for SEAL submodule)
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-sdk-leakage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-leakage-
+            ${{ runner.os }}-cargo-sdk-onion-
+
+      - name: Run DPF leakage invariants
+        run: |
+          for test_name in \
+            dpf_per_message_invariants_not_found \
+            dpf_found_vs_not_found_have_byte_identical_profiles
+          do
+            cargo test -p pir-sdk-client --test leakage_integration_test \
+              --release "$test_name" -- \
+              --ignored --exact --test-threads=1 --nocapture
+          done
+
+      - name: Run HarmonyPIR leakage invariants (one retry)
+        run: |
+          run_harmony_invariants() {
+            for test_name in \
+              harmony_per_message_invariants_not_found \
+              harmony_found_vs_not_found_have_byte_identical_profiles
+            do
+              cargo test -p pir-sdk-client --test leakage_integration_test \
+                --release "$test_name" -- \
+                --ignored --exact --test-threads=1 --nocapture || return 1
+            done
+          }
+          run_harmony_invariants || run_harmony_invariants
+
+      - name: Run OnionPIR leakage invariants
+        run: |
+          for test_name in \
+            onion_per_message_invariants_not_found \
+            onion_found_vs_not_found_have_byte_identical_profiles
+          do
+            cargo test -p pir-sdk-client --features onion \
+              --test leakage_integration_test --release "$test_name" -- \
+              --ignored --exact --test-threads=1 --nocapture
+          done
