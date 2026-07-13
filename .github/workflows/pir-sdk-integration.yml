@@ -230,6 +230,7 @@ jobs:
         run: |
           for test_name in \
             dpf_per_message_invariants_not_found \
+            dpf_simulator_property_two_not_found \
             dpf_found_vs_not_found_have_byte_identical_profiles
           do
             cargo test -p pir-sdk-client --test leakage_integration_test \
@@ -242,6 +243,7 @@ jobs:
           run_harmony_invariants() {
             for test_name in \
               harmony_per_message_invariants_not_found \
+              harmony_simulator_property_two_not_found \
               harmony_found_vs_not_found_have_byte_identical_profiles
             do
               cargo test -p pir-sdk-client --test leakage_integration_test \
@@ -255,6 +257,7 @@ jobs:
         run: |
           for test_name in \
             onion_per_message_invariants_not_found \
+            onion_simulator_property_two_not_found \
             onion_found_vs_not_found_have_byte_identical_profiles
           do
             cargo test -p pir-sdk-client --features onion \
