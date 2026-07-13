@@ -190,6 +190,20 @@ the live demo** (pir1/Hetzner has no SEV measurement).
 - **W7** (minor): `onionpir_client.ts:1102` `keygenClient` leaks on a
   keygen throw — move creation inside the `try`.
 
+### Status update (2026-07-13): S6/S7/C5 closed
+
+- **S6**: `pir-sdk-server` now applies conservative global connection and
+  CPU-heavy request concurrency caps, runs PIR evaluation on Tokio's blocking
+  pool, and bounds WebSocket handshake/idle time. Configuration validation,
+  cap/backpressure tests, and a real loopback WebSocket allowed-traffic test
+  cover the public defaults and tuning surface.
+- **S7**: removed the ineffective `catch_unwind` wrappers and stale
+  panic-isolation logging from `unified_server`; comments now state that the
+  active `panic = 'abort'` policy requires a process boundary for isolation.
+- **C5**: malformed or wrong-sized Merkle sibling evidence is tracked per item
+  and forces verification failure after the privacy-padded round shape
+  completes. Tests cover valid, missing, short, and oversized rows.
+
 ### Status update (2026-06-26): small nits closed
 
 - **S8**: ed25519 signature checks in `pir-runtime-core::admin` and

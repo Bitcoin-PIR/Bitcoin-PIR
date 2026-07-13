@@ -424,4 +424,46 @@ mod tests {
         drop(first);
         assert!(waiting.await.is_ok());
     }
+
+    #[tokio::test]
+    async fn ordinary_websocket_connection_is_served_and_releases_its_slot() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connection_slots = Arc::new(Semaphore::new(1));
+        let connection_permit = connection_slots.clone().try_acquire_owned().unwrap();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let handler = Arc::new(RequestHandler::new(Vec::new()));
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(
+                stream,
+                handler,
+                connection_permit,
+                request_slots,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+            .await
+        });
+
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .unwrap();
+        client
+            .send(Message::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("server should answer an allowed connection")
+            .expect("server should keep the connection open")
+            .expect("Pong should decode");
+        assert!(matches!(reply, Message::Pong(data) if data.as_ref() == [1, 2, 3]));
+
+        client.close(None).await.unwrap();
+        server_task.await.unwrap().unwrap();
+        assert_eq!(connection_slots.available_permits(), 1);
+    }
 }
