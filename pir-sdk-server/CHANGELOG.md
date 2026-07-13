@@ -5,9 +5,9 @@ All notable changes to `pir-sdk-server` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Pre-publish note.** This crate depends on the `libdpf` git dependency
-> transitively through `pir-runtime-core`, which must land on crates.io
-> before `pir-sdk-server` itself can be published. See
+> **Pre-publish note.** This crate depends on the `libdpf` and `arc` Git
+> dependencies transitively through `pir-runtime-core`; registry releases are
+> required before `pir-sdk-server` itself can be published. See
 > [`PUBLISHING.md`](../PUBLISHING.md) Blocker 1 for the upstream path.
 
 ## [Unreleased]
@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database page at startup.
 
 ### Changed
+
+- Added configurable global connection and request-concurrency limits plus
+  WebSocket handshake and idle timeouts. PIR evaluation now runs on Tokio's
+  blocking pool so CPU-heavy work does not block async I/O workers.
 
 - Replaced `runtime` + `build` workspace-internal path dependencies with
   the new publishable `pir-runtime-core` library crate. No public API

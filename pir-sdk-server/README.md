@@ -6,12 +6,11 @@ Server-side SDK for [Bitcoin PIR](https://github.com/Bitcoin-PIR/Bitcoin-PIR) �
 load pre-built PIR databases (snapshot + delta files) and serve DPF, HarmonyPIR,
 and OnionPIR queries over WebSocket.
 
-> **Pre-publish note.** This crate is not yet on crates.io. It depends on two
-> workspace-internal binary crates (`runtime`, `build`) that contain the PIR
-> protocol wire implementation. Publishing requires factoring out a
-> `pir-runtime-core` library. Until then, use this crate via a path dependency
-> from a Git checkout. See [`PUBLISHING.md`](../PUBLISHING.md) for the
-> refactoring sketch.
+> **Pre-publish note.** This crate is not yet on crates.io. Its shared
+> `pir-runtime-core` dependency still uses revision-pinned `libdpf` and `arc`
+> Git sources, which crates.io packages cannot resolve. Until registry releases
+> are available, use this crate via a path dependency from a Git checkout. See
+> [`PUBLISHING.md`](../PUBLISHING.md) for the current dependency blockers.
 
 ## What this crate provides
 
@@ -19,8 +18,12 @@ and OnionPIR queries over WebSocket.
   - `port(u16)` — WebSocket listen port.
   - `add_full_db(path, height)` — register a snapshot database.
   - `add_delta_db(path, base_height, tip_height)` — register a delta database.
-  - `role(ServerRole::Primary | Hint)` — pick Harmony hint-server vs.
-    query-server role.
+  - `role(ServerRole::Primary | Secondary | Standalone)` — select the server
+    role.
+  - `max_connections(usize)` — global connection cap (default 128).
+  - `max_in_flight_requests(usize)` — global CPU-work cap (default 8).
+  - `handshake_timeout_secs(u64)` / `idle_timeout_secs(u64)` — bound stalled
+    clients (defaults 10 s / 120 s).
   - `from_config(path)` — load all of the above from a TOML file.
 - [`PirServer`] — the built, ready-to-run server. `run().await` blocks until
   `ShutdownHandle::shutdown()` is called or a signal terminates the process.
@@ -54,13 +57,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```toml
 # server.toml
 port = 8091
-role = "Primary"   # or "Hint" for the HarmonyPIR hint server
+role = "primary"   # or "secondary" / "standalone"
+max_connections = 128
+max_in_flight_requests = 8
+handshake_timeout_secs = 10
+idle_timeout_secs = 120
 
-[[databases]]
+[[database]]
+name = "main"
+type = "full"
 path = "/data/snapshot_900000.bin"
 height = 900000
 
-[[databases]]
+[[database]]
+name = "delta_900000_910000"
+type = "delta"
 path = "/data/delta_900000_910000.bin"
 base_height = 900000
 height = 910000
@@ -73,6 +84,21 @@ let server = PirServerBuilder::new()
     .await?;
 server.run().await?;
 ```
+
+## Overload protection
+
+The defaults provide baseline protection for an Internet-facing
+`pir-sdk-server` endpoint:
+excess TCP connections are refused once the global connection cap is full,
+CPU-heavy PIR evaluation is queued behind a separate global semaphore, and
+evaluation runs on Tokio's blocking pool rather than an async reactor thread.
+Handshake and idle deadlines prevent stalled clients from retaining connection
+slots indefinitely.
+
+Deployments can tune the four fields in TOML or through the builder methods
+above. Zero is rejected as a configuration error rather than silently disabling
+protection. These settings apply to servers built with this crate; workspace
+runtime binaries have their own admission controls.
 
 ## Graceful shutdown
 
