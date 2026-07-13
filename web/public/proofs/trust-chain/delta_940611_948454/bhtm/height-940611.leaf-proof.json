@@ -1,0 +1,107 @@
+{
+  "block_hash_display": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+  "block_hash_internal": "99eb858fcea1bc47f515ef31209435d1743d3b24412c00000000000000000000",
+  "chunk": {
+    "anchor_block_hash_display": "0000000000000000000196400396be46d0816dc462df4c3450972f589f4d7d24",
+    "anchor_block_hash_internal": "247d4d9f582f9750344cdf62c46d81d046be9603409601000000000000000000",
+    "anchor_height": 899999,
+    "end_block_hash_display": "00000000000000000001b0c7d606f5da5d39262dbfceb848fe0d19337fb9bf17",
+    "end_block_hash_internal": "17bfb97f33190dfe48b8cebf2d26395ddaf506d6c7b001000000000000000000",
+    "end_height": 954920,
+    "end_muhash_core_display": "c27e1fafa9dd154cfd16a78429477181febbecf49b3d49016c462b0764429470",
+    "first_block_height": 900000
+  },
+  "core_muhash_display": "aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b",
+  "core_muhash_internal": "6b75253b3be6578fa5045be016e8e9f8b8a3ab6362037952ef45e012df29bbae",
+  "height": 940611,
+  "leaf_hash": "d36ee0c4a44b2a392993c7a6a8ffaa0c69225e2187a46fcbef64a79e67dcf856",
+  "leaf_index": 40611,
+  "muhash": "fe41878f4454ab1e30ebebf095ec44f519e124cf00312fadf1f29dfec080fbd895688119e7f989f128ab64c8959cb105ed775be274afbcce12ec68b7e11f7355219fe387429fb0c9864ff25e3e8315bd5743a87c7a838363ef1636d055b68144a857a8a91555c54a510db30fd8dcd298115ce44f5b9b5eae5a1a1e9cf84cba6e61e019fb8d2cfd51de4ddc60737e84ce6930423ff1f50ef907b06cb3980ca2e69b5d930cfa7610ebdb132d03d31a3eaf84e6db8579110b3d129cdbd3af0940867dd1316631c7bd420712200f1c760d7860da79d2e67ab017570ff3ba237253d4470e83c3200517a784d4d7c646a4668af61126c385075324ad0c22116e0874337fa6a85d4bba155828f943279b46e005e62c2443887b3a77542ebe2f6fba492b5fe0bfcb9758cf5d59d24a84990e15803cdce760f03b9d7985d758e85635b8b1553d4e505c8198d6c41776b966beaeed103aa88e02908a3e0e35fb014e872c02d99ef49dcb37befecb23b95accd4bf08ac2d82249b4e14ac818835e71c4bdbc2",
+  "proof": [
+    {
+      "hash": "09c51aac3c580ddb72e8c9a9f2264706d633d48fce8cd496934b37e33776cc43",
+      "level": 0,
+      "side": "left"
+    },
+    {
+      "hash": "59597af4acac2db7b5930b2355e304b066223ba94aa83d2767f9a81925b43c94",
+      "level": 1,
+      "side": "left"
+    },
+    {
+      "hash": "2fb2fe833856e4279d3f1f5a34557485cd06d261cef7f8c18ca6c26ff9312bf3",
+      "level": 2,
+      "side": "right"
+    },
+    {
+      "hash": "cee2a75ae4e6345494693c073b328546110a4b80f8cd93ecc24bc136ac653f41",
+      "level": 3,
+      "side": "right"
+    },
+    {
+      "hash": "5eda3b7968773660c8fe17d8a06e969366724676aca8d06bb36a6b81342d8967",
+      "level": 4,
+      "side": "right"
+    },
+    {
+      "hash": "603047872dd18fc4384ab34fcbed6c74abfea65faf8d27bae7ab2c6be775fb4b",
+      "level": 5,
+      "side": "left"
+    },
+    {
+      "hash": "758891ab806fa6815fe3dda84703c774199feb13afc0f7abf0b8367011434295",
+      "level": 6,
+      "side": "right"
+    },
+    {
+      "hash": "c97c9522fa61de90fedf77db624029d9e22bd0e036dd19874af38a1bf2ceb9a4",
+      "level": 7,
+      "side": "left"
+    },
+    {
+      "hash": "314378a65499b015917de7cc28335d698ec7d970370add5b85e1fbb06af5540e",
+      "level": 8,
+      "side": "right"
+    },
+    {
+      "hash": "acbb09908ed727db6684e96255a23c3add28ea97836073f65e06fd0084ef1d66",
+      "level": 9,
+      "side": "left"
+    },
+    {
+      "hash": "6ee30935e8d62ab10e6f6d81c227a5cd548b436317a4dcf0cdaf8eecc45ccac8",
+      "level": 10,
+      "side": "left"
+    },
+    {
+      "hash": "5ed7a06267f65cc2d424673fbc0242c2abe85424e69debcdb0ddc42b634a954c",
+      "level": 11,
+      "side": "left"
+    },
+    {
+      "hash": "081e3c5efe3a8a0dcc3fbf99aa92d54b98ef9df5e938aaf943e366eabd4a77f2",
+      "level": 12,
+      "side": "left"
+    },
+    {
+      "hash": "82bbfee086347dbd01d2b6845361ed77ed0c3ed06494bc080c9811bd1aed1ee6",
+      "level": 13,
+      "side": "right"
+    },
+    {
+      "hash": "78aef487eccb43389d38a32af8b5980fbce1698e13b23e4af49020899dadd333",
+      "level": 14,
+      "side": "right"
+    },
+    {
+      "hash": "0cff9d5df75f090afc0805afe926f4b7fdb73946de6845acaeaed6b843e91361",
+      "level": 15,
+      "side": "left"
+    }
+  ],
+  "proof_type": "BitcoinPIR/blockhash-to-muhash/leaf-proof/v1",
+  "schema_version": 1,
+  "tree_root": "babeea635812c3b1a2d5f352ab0a5d1ee8a4e9c668c43c05d6603ef3c3766ba6",
+  "tree_size": 54921,
+  "verified_against_tree_root": true
+}

@@ -688,6 +688,13 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .attest-badge .ab-row .ab-val a {
+            color: var(--accent-ink);
+            cursor: pointer;
+            text-decoration: underline;
+            text-decoration-thickness: 1px;
+            text-underline-offset: 2px;
+        }
         .attest-badge-verified-vcek { border-left-color: #2e7d32; background: #f0fdf4; }
         .attest-badge-verified      { border-left-color: #f57f17; background: #fffbe6; }
         .attest-badge-mismatch      { border-left-color: var(--err); background: #fef2f2; }
@@ -1558,7 +1565,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, verifyProductionTrustChain, verifyOramSourceProof } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof } from './src/index.ts';
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
             if (ok) console.log('[PIR] SDK WASM loaded');
@@ -1831,6 +1838,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             })[ch]);
         }
 
+        function renderBitcoinBlockLink(point, truncate) {
+            const hash = String(point?.blockHashHex || '');
+            const text = `${Number(point?.height || 0).toLocaleString()} · ${truncate(hash, 24)}`;
+            const href = mempoolSpaceBlockUrl(hash);
+            if (!href) return escapeHtml(text);
+            return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" title="Open block ${escapeHtml(point.height)} on mempool.space">${escapeHtml(text)} ↗</a>`;
+        }
+
         function renderDatabaseProofBadge(idElem, label, info) {
             const el = typeof idElem === 'string' ? document.getElementById(idElem) : idElem;
             if (!el) return;
@@ -1854,10 +1869,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             rows.push(`<span class="ab-state">${escapeHtml(label)}: ${escapeHtml(stateLabel)}</span>`);
             if (proof) {
                 rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${proof.muhashHex}">${truncate(proof.muhashHex, 24)}</span></div>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">block</span><span class="ab-val" title="${proof.blockHashHex}">${proof.height.toLocaleString()} · ${truncate(proof.blockHashHex, 24)}</span></div>`);
-                if (proof.buildKind === 'delta') {
-                    rows.push(`<div class="ab-row"><span class="ab-label">from</span><span class="ab-val" title="${proof.fromBlockHashHex}">${proof.fromHeight.toLocaleString()} · ${truncate(proof.fromBlockHashHex, 24)}</span></div>`);
-                }
                 rows.push(`<div class="ab-row"><span class="ab-label">bucket root</span><span class="ab-val" title="${proof.bucketSuperRootHex}">${truncate(proof.bucketSuperRootHex, 24)}</span></div>`);
                 rows.push(`<div class="ab-row"><span class="ab-label">onion root</span><span class="ab-val" title="${proof.onionSuperRootHex}">${truncate(proof.onionSuperRootHex, 24)}</span></div>`);
                 rows.push(`<div class="ab-row"><span class="ab-label">builder</span><span class="ab-val" title="${proof.builderBinarySha256Hex}">${truncate(proof.builderGitCommit, 12)} · ${truncate(proof.builderBinarySha256Hex, 16)}</span></div>`);
@@ -1878,11 +1889,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const state = status?.state || 'unavailable';
             const verified = status?.verified;
             const manifest = status?.manifest || verified?.manifest;
-            const anchor = manifest?.anchor;
+            // Prefer the live, cryptographically verified server proof for
+            // display. verifyProductionTrustChain checks that it matches the
+            // published manifest before this badge can become verified.
+            const anchor = status?.displayAnchor || manifest?.anchor;
             const bhtm = manifest?.bhtmProof;
 
             const stateLabel = state === 'verified'
-                ? `Verified Bitcoin/MuHash anchor — ${anchor?.height?.toLocaleString?.() || 'unknown'}`
+                ? `Bitcoin anchor verified — ${anchor?.height?.toLocaleString?.() || 'unknown'}`
                 : state === 'unverified'
                     ? `Bitcoin/MuHash anchor mismatch`
                     : `Bitcoin/MuHash anchor unavailable`;
@@ -1893,7 +1907,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const rows = [];
             rows.push(`<span class="ab-state">${escapeHtml(label)}: ${escapeHtml(stateLabel)}</span>`);
             if (anchor) {
-                rows.push(`<div class="ab-row"><span class="ab-label">block</span><span class="ab-val" title="${anchor.blockHashHex}">${anchor.height.toLocaleString()} · ${truncate(anchor.blockHashHex, 24)}</span></div>`);
+                const anchorPoints = databaseProofAnchorPoints(anchor);
+                const fromPoint = anchorPoints.find(point => point.role === 'from');
+                const latestPoint = anchorPoints.find(point => point.role === 'latest');
+                if (latestPoint) {
+                    rows.push(`<div class="ab-row"><span class="ab-label">latest block</span><span class="ab-val" title="${escapeHtml(latestPoint.blockHashHex)}">${renderBitcoinBlockLink(latestPoint, truncate)}</span></div>`);
+                }
+                if (fromPoint) {
+                    const fromText = `${Number(fromPoint.height).toLocaleString()} · ${truncate(fromPoint.blockHashHex, 24)}`;
+                    const inclusionVerified = state === 'verified' && verified?.fromLeaf?.height === fromPoint.height;
+                    const verificationLabel = inclusionVerified ? ' · ✓ BHTM inclusion verified' : '';
+                    rows.push(`<div class="ab-row"><span class="ab-label">from block</span><span class="ab-val" title="${escapeHtml(fromPoint.blockHashHex)}">${escapeHtml(fromText + verificationLabel)}</span></div>`);
+                }
                 rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${anchor.muhashHex}">${truncate(anchor.muhashHex, 24)}</span></div>`);
             }
             if (bhtm?.treeRootHex) {
@@ -1930,8 +1955,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 state: 'unavailable',
                 checks: [],
                 mismatches: [],
+                displayAnchor: dbInfo.proof,
                 manifest: {
                     anchor: {
+                        buildKind: dbInfo.proof.buildKind,
+                        fromHeight: dbInfo.proof.fromHeight,
+                        fromBlockHashHex: dbInfo.proof.fromBlockHashHex,
                         height: dbInfo.proof.height,
                         blockHashHex: dbInfo.proof.blockHashHex,
                         muhashHex: dbInfo.proof.muhashHex,
@@ -1946,7 +1975,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 liveDatabaseProof: dbInfo.proof,
                 verifyAmdSignature: true,
             });
-            renderBitcoinAnchorBadge(idElem, label, status);
+            renderBitcoinAnchorBadge(idElem, label, { ...status, displayAnchor: dbInfo.proof });
             if (status.state === 'verified') {
                 log(`${label}: Bitcoin/MuHash anchor verified through BHTM SEV-SNP quote`, 'success');
             } else if (status.state === 'unverified') {

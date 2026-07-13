@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "proofType": "BitcoinPIR/database-authenticity/trust-chain/v1",
   "id": "delta_940611_948454",
-  "description": "Production DB proof anchor chained to the blockhash-to-muhash SEV-SNP proof for height 948454.",
+  "description": "Production delta DB proof endpoints chained to separate blockhash-to-muhash Merkle inclusion proofs under one SEV-SNP-attested root.",
   "anchor": {
     "network": "mainnet",
     "dbId": 1,
@@ -45,6 +45,8 @@
   },
   "bhtmProof": {
     "chunk": "mainnet-900000-954920",
+    "fromLeafIndex": 40611,
+    "fromLeafHashHex": "d36ee0c4a44b2a392993c7a6a8ffaa0c69225e2187a46fcbef64a79e67dcf856",
     "leafIndex": 48454,
     "treeSize": 54921,
     "leafHashHex": "0171a475dc43b97db594c7512039d12f5213d270b42e56babfa44d65359eeaaf",
@@ -56,6 +58,11 @@
     "reportDataDomain": "BitcoinPIR/blockhash-to-muhash/report-data/v2",
     "reportDataScheme": "sha512(domain || attestation)",
     "artifacts": {
+      "fromLeafProof": {
+        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json",
+        "sha256": "2e54cb56ae63d89036c1e74754b68a72e012ed775dff8b0204a6efc023b08195",
+        "size": 4294
+      },
       "leafProof": {
         "path": "/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json",
         "sha256": "0a6d6631984a00635528ac9f1df3530469d238b5aaf8b4a3fdb4a4a0fa46a015",

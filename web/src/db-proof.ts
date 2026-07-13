@@ -42,6 +42,12 @@ export interface DatabaseProofStatus {
   error?: string;
 }
 
+export interface DatabaseAnchorPoint {
+  role: 'from' | 'latest';
+  height: number;
+  blockHashHex: string;
+}
+
 export function verifiedDatabaseProofFromWasm(proof: WasmDatabaseProof): VerifiedDatabaseProof {
   return {
     dbId: proof.dbId,
@@ -121,6 +127,38 @@ export function databaseProofAnchorLabel(proof: VerifiedDatabaseProof | Database
     return `${proof.fromHeight.toLocaleString()} to ${proof.height.toLocaleString()}`;
   }
   return proof.height.toLocaleString();
+}
+
+/**
+ * Return every Bitcoin block hash that is an explicit input to the build.
+ * A delta has two independently meaningful endpoints; the latest header alone
+ * does not authenticate the claimed `from` hash unless the verifier also has
+ * the intervening headers or a Merkle inclusion proof for that earlier leaf.
+ */
+export function databaseProofAnchorPoints(
+  proof: VerifiedDatabaseProof | DatabaseProofPin,
+): DatabaseAnchorPoint[] {
+  const points: DatabaseAnchorPoint[] = [];
+  if (proof.buildKind === 'delta') {
+    points.push({
+      role: 'from',
+      height: proof.fromHeight,
+      blockHashHex: normalizeHex(proof.fromBlockHashHex),
+    });
+  }
+  points.push({
+    role: 'latest',
+    height: proof.height,
+    blockHashHex: normalizeHex(proof.blockHashHex),
+  });
+  return points;
+}
+
+/** Build a safe mainnet mempool.space URL for a server-provided block hash. */
+export function mempoolSpaceBlockUrl(blockHashHex: string): string | undefined {
+  const hash = normalizeHex(blockHashHex);
+  if (!/^[0-9a-f]{64}$/.test(hash)) return undefined;
+  return `https://mempool.space/block/${hash}`;
 }
 
 function normalizeHex(hex: string): string {
