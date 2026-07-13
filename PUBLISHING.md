@@ -9,74 +9,75 @@ resolved first. Each blocker is listed below with a suggested fix.
 
 ## Publishable artefacts
 
-| Artefact                          | Registry   | Status                                              |
-|-----------------------------------|------------|-----------------------------------------------------|
-| `pir-core`                        | crates.io  | 🟢 Ready (no git deps, no path-only deps).          |
-| `pir-sdk`                         | crates.io  | 🟢 Ready (path dep on `pir-core` only).             |
-| `pir-runtime-core`                | crates.io  | 🟡 Blocked — git dep on `libdpf`.                   |
-| `pir-sdk-client`                  | crates.io  | 🟡 Blocked — git deps on `libdpf` / `harmonypir`.   |
-| `pir-sdk-wasm` (as a crate)       | crates.io  | 🟡 Blocked — transitively via `pir-sdk-client`.     |
-| `pir-sdk-wasm` (as npm package)   | npm        | 🟢 Ready (wasm-pack bundles all Rust deps).         |
-| `pir-sdk-server`                  | crates.io  | 🟡 Blocked — transitively via `pir-runtime-core`.   |
+| Artefact                          | Registry   | Status                                                    |
+|-----------------------------------|------------|-----------------------------------------------------------|
+| `pir-core`                        | crates.io  | 🟢 Packageable (registry dependencies only).              |
+| `pir-sdk`                         | crates.io  | 🟢 Packageable after `pir-core` is published.             |
+| `pir-channel`                     | crates.io  | 🟢 Packageable (registry dependencies only).              |
+| `pir-identity`                    | crates.io  | 🟢 Packageable (registry dependencies only).              |
+| `pir-attest-verify`               | crates.io  | 🟢 Packageable (registry dependencies only).              |
+| `pir-runtime-core`                | crates.io  | 🟡 Blocked — git deps on `libdpf` and `arc`.               |
+| `pir-sdk-client`                  | crates.io  | 🟡 Blocked — git deps and unpublished internal path deps. |
+| `pir-sdk-wasm` (as a crate)       | crates.io  | 🟡 Blocked — direct and transitive non-registry deps.     |
+| `pir-sdk-wasm` (as npm package)   | npm        | 🟢 Packageable (wasm-pack bundles all Rust deps).         |
+| `pir-sdk-server`                  | crates.io  | 🟡 Blocked — transitively via `pir-runtime-core`.         |
 
 🟢 = ready; 🟡 = blocked, unblocking is tracked below; 🔴 = needs
 upstream refactoring, no ETA.
 
-## Blocker 1 — git dependencies on `libdpf` / `harmonypir`
+## Blocker 1 — dependencies that crates.io cannot resolve
 
 ### Current state
 
-`pir-sdk-client` pulls `libdpf` directly and `harmonypir` transitively
-(through the `path`-dep on the workspace-internal `harmonypir-wasm`
-shim) from GitHub:
+The affected packages currently contain these non-registry dependencies:
 
 ```toml
-# pir-sdk-client/Cargo.toml
-libdpf = { git = "https://github.com/weikengchen/libdpf.git" }
+# pir-runtime-core/Cargo.toml
+libdpf = { git = "...", rev = "..." }
+arc = { git = "...", rev = "..." }
 
-# harmonypir-wasm/Cargo.toml (path dep from pir-sdk-client)
-harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git",
-               rev = "a849dedfe0b0ab283c7c9ad9e20f8775b01b4543",
-               default-features = false }
+# pir-sdk-client/Cargo.toml
+libdpf = { git = "...", rev = "..." }
+harmonypir-wasm = { path = "../harmonypir-wasm" }
+pir-db-attest = { path = "../pir-db-attest" }
+onionpir = { git = "...", rev = "...", optional = true }
+
+# pir-sdk-wasm/Cargo.toml
+arc = { git = "...", rev = "..." }
+pir-db-attest = { path = "../pir-db-attest" }
+pir-sdk-client = { path = "../pir-sdk-client", version = "0.1.0" }
 ```
 
-crates.io requires all dependencies to be resolvable from the registry
-(or be `optional = true` + gated behind a feature that's off in the
-default-features set). Git deps in the non-optional path fail the
-`cargo publish` sanity check even with `--allow-dirty`.
+`harmonypir-wasm` and `pir-db-attest` are currently `publish = false`;
+the latter also has an unpublished path dependency on `rootbundle`.
+`harmonypir-wasm` in turn depends on the git-only `harmonypir` crate.
+
+All git dependencies above are revision-pinned, which is appropriate
+for reproducible workspace builds, but a pin is not a crates.io source.
+Every non-development dependency in a published package must resolve
+from a registry. That includes optional dependencies such as
+`onionpir`: disabling its feature by default does not remove it from
+the published manifest. A local `git` or `path` source may be retained
+for development only when the same dependency also has a compatible
+registry `version` fallback.
 
 ### Fixes (in increasing order of work)
 
-1. **Publish `libdpf` and `harmonypir` to crates.io first.**
-   Both crates are owned by weikengchen / Bitcoin-PIR. A single pass
-   of `cargo publish` on each, followed by updating
-   `pir-sdk-client/Cargo.toml` and `harmonypir-wasm/Cargo.toml` to
-   registry versions with a pinned semver range, unblocks
-   `pir-sdk-client`. `libdpf` currently has no pinned `rev` — pin one
-   before publishing to avoid a floating-HEAD supply-chain risk.
+1. **Publish or replace the external crates.** Publish compatible
+   versions of `libdpf`, `arc`, `harmonypir`, and `onionpir`, then add
+   registry `version` fallbacks to every git dependency. If a crate is
+   not intended for crates.io, move the required code behind a
+   publishable workspace interface instead.
 
-2. **Vendor the code into `pir-core`.** Move the ≈1.5 kLOC
-   `libdpf` / `harmonypir` cores into `pir-core` as submodules.
-   Heavier surgery but produces a self-contained publishable crate
-   with no external git deps. Only pursue if #1 stalls on upstream
-   coordination.
+2. **Resolve the internal path-only crates.** Make `rootbundle`,
+   `pir-db-attest`, and `harmonypir-wasm` publishable in dependency
+   order and give each path dependency a `version`, or fold their
+   public functionality into an already-publishable crate.
 
-### Note on the `onion` feature
-
-The `onion` feature is **not** a blocker:
-
-```toml
-onionpir = { git = "...", rev = "...", optional = true }
-```
-
-Because `onion` is off by default, crates.io ignores the git URL when
-verifying `default-features` — publishing `pir-sdk-client` with the
-`onion` feature still present is legal, it simply means `cargo install
-pir-sdk-client --features onion` fails on the registry copy (same as
-if the user tried `--features onion` on a crates.io-only machine). If
-the `onionpir` crate ever lands on crates.io, switch the git URL to a
-semver range and `cargo install … --features onion` starts working
-from the registry too.
+3. **Re-run packaging from the registry form.** Run `cargo package`
+   and `cargo publish --dry-run` for each dependent crate. `--list`
+   checks the file set but does not prove that the packaged dependency
+   graph can be resolved from crates.io.
 
 ## Blocker 2 — `pir-sdk-server` depends on internal binary crates (RESOLVED)
 
@@ -90,25 +91,13 @@ binary crate now depend on `pir-runtime-core` instead of maintaining
 parallel copies. `pir-sdk-server` dropped its unused `build` dep and
 the `publish = false` gate.
 
-Verification: `cargo package --list -p pir-runtime-core` and `-p
-pir-sdk-server` both produce clean tarballs with the expected metadata
-files. Full workspace test surface preserved:
-- `pir-core --lib` 25/25
-- `pir-sdk --lib` 56/56
-- `pir-sdk-client --lib` 125/125
-- `pir-sdk-wasm --lib` 51/51
-- `pir-sdk-server --lib` 0/0 (unchanged — no library tests)
-- `pir-runtime-core --lib` 0/0 (library-only, no unit tests in the
-  extracted modules — all semantic coverage lives in `pir-core`
-  and end-to-end coverage lives in the `runtime/` bin integration
-  tests, neither affected by the code move).
-
-`pir-sdk-server` is now blocked only transitively via Blocker 1
-(`libdpf` git dep in `pir-runtime-core`). Once `libdpf` lands on
-crates.io, the publish order is:
+The extraction itself is complete. `pir-sdk-server` is now blocked
+only transitively by `pir-runtime-core`, whose remaining registry
+incompatibilities are the git-only `libdpf` and `arc` dependencies.
+After both have registry versions, the server-side publish order is:
 
 ```
-pir-core → pir-sdk → pir-runtime-core → pir-sdk-server
+pir-core + pir-channel + pir-identity → pir-sdk → pir-runtime-core → pir-sdk-server
 ```
 
 🔒 PIR invariants preserved. The extraction is a pure code move; the
@@ -123,15 +112,18 @@ queries uniformly.
 Once the blockers above are cleared, publish in this order to respect
 the dependency graph:
 
-1. `pir-core` (no workspace deps).
+1. `pir-core`, `pir-channel`, `pir-identity`, and `pir-attest-verify`
+   (registry dependencies only).
 2. `pir-sdk` (depends on `pir-core`).
-3. `libdpf`, `harmonypir` (upstream — see Blocker 1).
-4. `pir-runtime-core` (depends on `pir-core` + `libdpf`).
-5. `pir-sdk-client` (depends on `pir-core`, `pir-sdk`, `libdpf`,
-   `harmonypir`).
-6. `pir-sdk-wasm` (depends on everything above).
-7. `pir-sdk-server` (depends on `pir-core`, `pir-sdk`,
-   `pir-runtime-core`).
+3. Registry releases for `libdpf`, `arc`, `harmonypir`, and `onionpir`.
+4. `rootbundle`, `pir-db-attest`, and `harmonypir-wasm`, if they remain
+   separate crates rather than being folded into publishable parents.
+5. `pir-runtime-core` (depends on `pir-core`, `pir-channel`,
+   `pir-identity`, `libdpf`, and `arc`).
+6. `pir-sdk-server` and `pir-sdk-client` after their respective
+   dependency graphs are available from crates.io.
+7. `pir-sdk-wasm` as a crate (depends on `pir-sdk-client`,
+   `pir-attest-verify`, `pir-db-attest`, and `arc`).
 
 Between each step, wait ~30 s for crates.io's index propagation
 before the next `cargo publish` so Cargo can resolve the
@@ -146,15 +138,16 @@ For each crate:
    (`0.1.0` → `0.2.0`). Workspace crates currently ship in lockstep
    at the first release, with per-crate semver freedom afterward.
 
-2. **Update `CHANGELOG.md`**: move the `Unreleased` section's contents
-   under a new version heading, add a fresh empty `Unreleased`.
+2. **Update release notes**: if the crate has a `CHANGELOG.md`, move the
+   `Unreleased` section under a new version heading and add a fresh empty
+   `Unreleased`. Add a changelog before the first public release if the
+   crate is intended to maintain one.
 
 3. **Verify clean package**: `cargo package -p <crate> --list` to see
    what ships, `cargo package -p <crate>` to build the tarball.
    Sanity-check: the tarball should include `LICENSE-MIT`,
-   `LICENSE-APACHE`, `README.md`, `CHANGELOG.md`, and only the `src/`
-   / `build.rs` / `Cargo.toml` / `Cargo.lock` files (not the whole
-   workspace).
+   `LICENSE-APACHE`, `README.md`, any maintained `CHANGELOG.md`, and only
+   the required source/metadata files (not the whole workspace).
 
 4. **Dry run**: `cargo publish -p <crate> --dry-run`.
 
