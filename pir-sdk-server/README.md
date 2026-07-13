@@ -21,7 +21,11 @@ and OnionPIR queries over WebSocket.
   - `add_delta_db(path, base_height, tip_height)` — register a delta database.
   - `role(ServerRole::Primary | Hint)` — pick Harmony hint-server vs.
     query-server role.
-  - `warmup(bool)` — pre-touch mmap'd pages at startup (default on).
+  - `warmup(bool)` — pre-touch mmap'd pages at startup (default off).
+  - `max_connections(usize)` — global admission cap (default 128).
+  - `max_in_flight_requests(usize)` — global CPU-work cap (default 8).
+  - `handshake_timeout_secs(u64)` / `idle_timeout_secs(u64)` — bound stalled
+    clients (defaults 10 s / 120 s).
   - `from_config(path)` — load all of the above from a TOML file.
 - [`PirServer`] — the built, ready-to-run server. `run().await` blocks until
   `ShutdownHandle::shutdown()` is called or a signal terminates the process.
@@ -58,12 +62,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 port = 8091
 role = "Primary"   # or "Hint" for the HarmonyPIR hint server
 warmup = true
+max_connections = 128
+max_in_flight_requests = 8
+handshake_timeout_secs = 10
+idle_timeout_secs = 120
 
-[[databases]]
+[[database]]
+name = "main"
+type = "full"
 path = "/data/snapshot_900000.bin"
 height = 900000
 
-[[databases]]
+[[database]]
+name = "delta_900000_910000"
+type = "delta"
 path = "/data/delta_900000_910000.bin"
 base_height = 900000
 height = 910000
@@ -76,6 +88,20 @@ let server = PirServerBuilder::new()
     .await?;
 server.run().await?;
 ```
+
+## Overload protection
+
+The defaults are safe for an Internet-facing endpoint: excess TCP connections
+are refused once the global connection cap is full, CPU-heavy PIR evaluation
+is queued behind a separate global semaphore, and evaluation runs on Tokio's
+blocking pool rather than an async reactor thread. Handshake and idle deadlines
+prevent stalled clients from retaining connection slots indefinitely.
+
+Trusted/private deployments can tune the four fields in TOML or through the
+builder methods above. Zero disables the server by configuration error rather
+than silently disabling protection. Current metrics are emitted through the
+crate's `log` events (accepted/refused connections and configured limits);
+exporter-specific counters remain application-owned.
 
 ## Graceful shutdown
 

@@ -1,9 +1,11 @@
 # Database Build Attestation Plan
 
 Status: server/API proof distribution is deployed for the production delta DB.
-The web frontend now fetches and verifies the production delta proof for DPF
-and HarmonyPIR and renders an advisory DB/MuHash badge. Strict query-path root
-installation and standalone OnionPIR proof verification remain.
+The web frontend now fetches and verifies that proof for DPF and HarmonyPIR and
+renders an advisory DB/MuHash badge. A separate static proof chain now binds the
+mainnet snapshot's attested-builder evidence to the inputs and outputs of the
+strict direct ORAM build. Strict query-path root installation, standalone
+OnionPIR proof verification, and live serving-state binding remain.
 
 Goal: bind BitcoinPIR database Merkle roots to an independently verifiable
 Bitcoin Core UTXO MuHash computation. The runtime server attestation proves
@@ -124,21 +126,39 @@ Known cleanups:
     builder_commit)`
   - `WasmHarmonyClient.verifyDatabaseProof(dbId, params_hash, builder_hash,
     builder_commit)`
-  - `verifyDatabaseProofResponse(dbInfo, rawResponse, policy)` for the
-    standalone TypeScript OnionPIR client remains.
+  - **planned authoritative standalone API:** a stateless WASM
+    `verifyDatabaseProofResponse(dbInfo, rawResponse, policy)` export. The
+    TypeScript OnionPIR client will transport the raw response and compare the
+    returned structured proof to its pin; it will not maintain a second proof
+    parser/verifier in TypeScript.
 - DPF and Harmony web adapters accept `databaseProofPins` and
   `onDatabaseProof`, fetch `REQ_GET_DB_PROOF`, verify in WASM, compare against
   `web/src/attest-pin.ts::PRODUCTION_DB_PROOF_PINS`, and store status in
   `databaseProofs`.
 - The demo UI renders a DB proof badge with the verified MuHash, block range,
   bucket root, onion root, and builder pins.
-- DPF and Harmony should install verified bucket/onion roots into their native WASM
-  clients before queries.
-- standalone OnionPIR should fetch `REQ_GET_DB_PROOF` directly, verify it through
-  the WASM verifier, and use the attested onion super-root as the Merkle
-  anchor instead of trusting `server-info`'s `super_root`.
+- DPF and Harmony should install only the verified **bucket** super-root into
+  their native WASM Merkle verifiers before queries. The standalone OnionPIR
+  client owns installation of the verified **onion** super-root; the two-server
+  adapters must not imply that they enforce OnionPIR's root.
+- standalone OnionPIR should fetch `REQ_GET_DB_PROOF` directly, pass the raw
+  response to that stateless WASM verifier, and use the attested onion
+  super-root as the Merkle anchor instead of trusting `server-info`'s
+  `super_root`.
 - `scripts/smoke_db_proof_attestation.sh` wraps local and live proof checks
   with the pinned expected values below.
+- `web/src/oram-source-proof.ts::verifyOramSourceProof` verifies the published
+  `/proofs/oram-source/mainnet_948454.json` artifact chain. It hashes every
+  compact artifact, recomputes `BuildEvidence::report_data()` from the binary
+  `build-evidence.bin`, checks that value against the SNP report and report-data
+  sidecar, binds the direct input hashes to ORAM output metadata/build logs,
+  checks output hashes and initial controller/auth roots, and requires the
+  explicit `MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN` before returning
+  `verified`.
+- The static TypeScript verifier does not validate the builder SNP signature or
+  AMD certificate chain and does not prove which ORAM image the live runtime
+  has open. Those are separate trust gates; do not describe the static proof as
+  live-serving attestation.
 
 ### 7. Deployment
 
@@ -150,9 +170,11 @@ Known cleanups:
 
 ### 8. Missing Artifact
 
-Current production strict mode still needs a full snapshot proof for the full DB
-if the client must verify the whole sync chain from zero. Run the same UKI in
-`BUILD_KIND=snapshot` for height `948454` and bind its bucket/onion roots.
+The `mainnet_948454` snapshot now has a published static source-binding proof
+for the direct ORAM rebuild. The live `REQ_GET_DB_PROOF` path still lacks a
+full-snapshot proof bundle suitable for installing strict DPF/Harmony/Onion
+query roots and verifying a complete sync chain from zero. Do not treat the
+static ORAM rebuild proof as a substitute for that live query-path bundle.
 
 ## Progress Log
 
@@ -167,6 +189,9 @@ if the client must verify the whole sync chain from zero. Run the same UKI in
 - [x] Web/WASM proof policy for DPF and HarmonyPIR.
 - [x] Dedicated UI badge/status rendering for DPF and HarmonyPIR database
       build attestation.
+- [x] Static mainnet snapshot -> direct-input -> ORAM-output source-binding
+      proof and frontend verifier, including binary BuildEvidence REPORT_DATA
+      recomputation and an explicit expected DB pin.
 - [ ] Merkle verification consumes verified roots in strict query paths.
 - [ ] Web/WASM verified-root installation before queries.
 - [ ] standalone OnionPIR DB proof verifier and UI badge.

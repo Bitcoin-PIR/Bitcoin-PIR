@@ -13,6 +13,9 @@ resolved first. Each blocker is listed below with a suggested fix.
 |-----------------------------------|------------|-----------------------------------------------------|
 | `pir-core`                        | crates.io  | 🟢 Ready (no git deps, no path-only deps).          |
 | `pir-sdk`                         | crates.io  | 🟢 Ready (path dep on `pir-core` only).             |
+| `pir-channel`                     | crates.io  | 🟢 Ready (pure RustCrypto channel primitives).      |
+| `pir-identity`                    | crates.io  | 🟢 Ready (pure Ed25519 identity primitives).        |
+| `pir-attest-verify`               | crates.io  | 🟢 Ready (standalone SEV-SNP verifier).              |
 | `pir-runtime-core`                | crates.io  | 🟡 Blocked — git dep on `libdpf`.                   |
 | `pir-sdk-client`                  | crates.io  | 🟡 Blocked — git deps on `libdpf` / `harmonypir`.   |
 | `pir-sdk-wasm` (as a crate)       | crates.io  | 🟡 Blocked — transitively via `pir-sdk-client`.     |
@@ -123,13 +126,17 @@ queries uniformly.
 Once the blockers above are cleared, publish in this order to respect
 the dependency graph:
 
-1. `pir-core` (no workspace deps).
+1. `pir-core`, `pir-channel`, `pir-identity`, and `pir-attest-verify`
+   (no workspace dependencies).
 2. `pir-sdk` (depends on `pir-core`).
 3. `libdpf`, `harmonypir` (upstream — see Blocker 1).
-4. `pir-runtime-core` (depends on `pir-core` + `libdpf`).
-5. `pir-sdk-client` (depends on `pir-core`, `pir-sdk`, `libdpf`,
+4. `pir-runtime-core` (depends on `pir-core`, `pir-channel`, `pir-identity`,
+   and `libdpf`).
+5. `pir-sdk-client` (depends on `pir-core`, `pir-sdk`, `pir-channel`,
+   `pir-identity`, `libdpf`,
    `harmonypir`).
-6. `pir-sdk-wasm` (depends on everything above).
+6. `pir-sdk-wasm` (also depends on `pir-attest-verify`; otherwise everything
+   above).
 7. `pir-sdk-server` (depends on `pir-core`, `pir-sdk`,
    `pir-runtime-core`).
 

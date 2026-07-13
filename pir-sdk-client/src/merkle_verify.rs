@@ -414,8 +414,9 @@ pub async fn fetch_tree_tops(
 ///   `rows[g]` must be `None`.
 ///
 /// Returned rows MUST be exactly [`BUCKET_MERKLE_SIB_ROW_SIZE`] (= 256)
-/// bytes; shorter rows are treated as an error and coerced to `ZERO_HASH`
-/// by the caller.
+/// bytes. The caller records missing or short rows as malformed evidence,
+/// completes every padded sibling round, and then forces that item's result
+/// to verification failure.
 ///
 /// `table_type` is `0` for INDEX trees and `1` for CHUNK trees. `level` is
 /// the sibling level (0-indexed, bottom-up).
@@ -987,6 +988,13 @@ async fn verify_sibling_levels(
     // Per-item running state.
     let mut current_hash: Vec<Hash256> = Vec::with_capacity(n_items);
     let mut node_idx: Vec<u32> = Vec::with_capacity(n_items);
+    // Keep evidence quality separate from the running hash. Substituting a
+    // sentinel hash alone is unsafe as an API contract: a later refactor (or
+    // an unusual tree whose root happens to match the sentinel-derived walk)
+    // could mistake a completed walk for a well-formed proof. We still finish
+    // every padded round before reporting failure so malformed evidence cannot
+    // change the privacy-visible request shape.
+    let mut malformed_evidence = vec![false; n_items];
     for it in items {
         current_hash.push(compute_bin_leaf_hash(it.bin_index, &it.bin_content));
         node_idx.push(it.bin_index);
@@ -1087,7 +1095,9 @@ async fn verify_sibling_levels(
                         "[PIR-AUDIT] Merkle L{} pass {}: missing sibling row for group {} (item {})",
                         level, pass, g, item_idx
                     );
+                    malformed_evidence[item_idx] = true;
                     current_hash[item_idx] = ZERO_HASH;
+                    node_idx[item_idx] /= arity as u32;
                     continue;
                 };
                 if row.len() < BUCKET_MERKLE_SIB_ROW_SIZE {
@@ -1098,7 +1108,9 @@ async fn verify_sibling_levels(
                         row.len(),
                         BUCKET_MERKLE_SIB_ROW_SIZE
                     );
+                    malformed_evidence[item_idx] = true;
                     current_hash[item_idx] = ZERO_HASH;
+                    node_idx[item_idx] /= arity as u32;
                     continue;
                 }
 
@@ -1173,7 +1185,14 @@ async fn verify_sibling_levels(
         // manifest roots is tracked follow-up (docs/CODE_REVIEW_2026-06.md,
         // C1 — opt-in strict mode).
         let expected_root = top.root().unwrap_or(ZERO_HASH);
-        let ok = hash == expected_root;
+        let ok = !malformed_evidence[i] && hash == expected_root;
+        if malformed_evidence[i] {
+            log::warn!(
+                "[PIR-AUDIT] Merkle: group {} item {} FAILED due to malformed sibling evidence",
+                g,
+                i
+            );
+        }
         if !ok {
             log::warn!(
                 "[PIR-AUDIT] Merkle: group {} item {} root MISMATCH (got {:02x}{:02x}{:02x}{:02x}..., expected {:02x}{:02x}{:02x}{:02x}...)",
@@ -1230,6 +1249,61 @@ impl SimpleRng {
 mod tests {
     use super::*;
     use pir_core::merkle::{compute_bin_leaf_hash, MerkleTreeN};
+
+    struct StaticSiblingQuerier {
+        row: Option<Vec<u8>>,
+        calls: usize,
+    }
+
+    #[async_trait]
+    impl BucketMerkleSiblingQuerier for StaticSiblingQuerier {
+        async fn query_pass(
+            &mut self,
+            _table_type: u8,
+            _level: usize,
+            _level_bins_per_table: u32,
+            pass_targets: &[Option<u32>],
+            _db_id: u8,
+        ) -> PirResult<Vec<Option<Vec<u8>>>> {
+            self.calls += 1;
+            Ok(pass_targets
+                .iter()
+                .map(|target| target.as_ref().and(self.row.clone()))
+                .collect())
+        }
+    }
+
+    async fn verify_one_sibling_row(row: Option<Vec<u8>>) -> (bool, usize) {
+        let bin_contents: Vec<Vec<u8>> = (0..64u32).map(|i| vec![i as u8; 68]).collect();
+        let leaves: Vec<Hash256> = bin_contents
+            .iter()
+            .enumerate()
+            .map(|(i, c)| compute_bin_leaf_hash(i as u32, c))
+            .collect();
+        let tree = MerkleTreeN::build(&leaves, BUCKET_MERKLE_ARITY);
+        let top = TreeTop {
+            cache_from_level: 1,
+            levels: tree.levels[1..].to_vec(),
+        };
+        let items = vec![SubItem {
+            pbc_group: 0,
+            bin_index: 7,
+            bin_content: bin_contents[7].clone(),
+        }];
+        let mut querier = StaticSiblingQuerier { row, calls: 0 };
+        let verified = verify_sibling_levels(
+            &mut querier,
+            &items,
+            64,
+            1,
+            0,
+            &[top],
+            0,
+        )
+        .await
+        .unwrap();
+        (verified[0], querier.calls)
+    }
 
     /// Build a small per-group Merkle tree, turn it into a `TreeTop` that
     /// caches the entire tree (so there are zero sibling levels to query),
@@ -1466,5 +1540,35 @@ mod tests {
             let root = walk_top_only(parent_hash, parent_idx, &top);
             assert_eq!(&root, tree.root());
         }
+    }
+
+    #[tokio::test]
+    async fn test_valid_sibling_row_verifies() {
+        let bin_contents: Vec<Vec<u8>> = (0..64u32).map(|i| vec![i as u8; 68]).collect();
+        let row: Vec<u8> = bin_contents
+            .iter()
+            .take(BUCKET_MERKLE_ARITY)
+            .enumerate()
+            .flat_map(|(i, content)| compute_bin_leaf_hash(i as u32, content))
+            .collect();
+
+        let (verified, calls) = verify_one_sibling_row(Some(row)).await;
+        assert!(verified);
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn test_missing_sibling_row_is_explicit_verification_failure() {
+        let (verified, calls) = verify_one_sibling_row(None).await;
+        assert!(!verified);
+        assert_eq!(calls, 1, "the padded sibling round must still complete");
+    }
+
+    #[tokio::test]
+    async fn test_short_sibling_row_is_explicit_verification_failure() {
+        let short = vec![0u8; BUCKET_MERKLE_SIB_ROW_SIZE - 1];
+        let (verified, calls) = verify_one_sibling_row(Some(short)).await;
+        assert!(!verified);
+        assert_eq!(calls, 1, "the padded sibling round must still complete");
     }
 }

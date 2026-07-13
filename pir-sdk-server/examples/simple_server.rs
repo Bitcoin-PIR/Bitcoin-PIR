@@ -139,7 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = PirServerBuilder::new()
         .port(config.port)
-        .warmup(config.warmup);
+        .warmup(config.warmup)
+        .max_connections(config.max_connections)
+        .max_in_flight_requests(config.max_in_flight_requests)
+        .handshake_timeout_secs(config.handshake_timeout_secs)
+        .idle_timeout_secs(config.idle_timeout_secs);
 
     // Forward parsed databases into the builder. Without this, the builder
     // would be empty even though the user passed --db or --config flags.

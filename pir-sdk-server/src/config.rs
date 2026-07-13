@@ -81,7 +81,7 @@ impl DatabaseEntry {
 }
 
 /// Top-level server configuration.
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct ServerConfig {
     /// Server role.
     #[serde(default)]
@@ -104,6 +104,36 @@ pub struct ServerConfig {
     /// Whether to perform warmup.
     #[serde(default)]
     pub warmup: bool,
+    /// Maximum simultaneously open TCP/WebSocket connections.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Maximum CPU-heavy PIR requests evaluated at once across all clients.
+    #[serde(default = "default_max_in_flight_requests")]
+    pub max_in_flight_requests: usize,
+    /// Deadline for completing the WebSocket handshake.
+    #[serde(default = "default_handshake_timeout_secs")]
+    pub handshake_timeout_secs: u64,
+    /// Close a connection that sends no message within this interval.
+    #[serde(default = "default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            role: ServerRoleConfig::default(),
+            port: default_port(),
+            databases: Vec::new(),
+            enable_dpf: true,
+            enable_harmony: true,
+            enable_onion: true,
+            warmup: false,
+            max_connections: default_max_connections(),
+            max_in_flight_requests: default_max_in_flight_requests(),
+            handshake_timeout_secs: default_handshake_timeout_secs(),
+            idle_timeout_secs: default_idle_timeout_secs(),
+        }
+    }
 }
 
 fn default_port() -> u16 {
@@ -112,6 +142,22 @@ fn default_port() -> u16 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_max_connections() -> usize {
+    128
+}
+
+fn default_max_in_flight_requests() -> usize {
+    8
+}
+
+fn default_handshake_timeout_secs() -> u64 {
+    10
+}
+
+fn default_idle_timeout_secs() -> u64 {
+    120
 }
 
 /// Server role configuration (for TOML parsing).
@@ -161,7 +207,35 @@ impl ServerConfig {
             }
         }
 
+        config.validate()?;
+
         Ok(config)
+    }
+
+    /// Reject limit settings that would make the server unusable or disable
+    /// its overload protection accidentally.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.max_connections == 0 {
+            return Err(ConfigError::Invalid(
+                "max_connections must be at least 1".into(),
+            ));
+        }
+        if self.max_in_flight_requests == 0 {
+            return Err(ConfigError::Invalid(
+                "max_in_flight_requests must be at least 1".into(),
+            ));
+        }
+        if self.handshake_timeout_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "handshake_timeout_secs must be at least 1".into(),
+            ));
+        }
+        if self.idle_timeout_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "idle_timeout_secs must be at least 1".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Add a full snapshot database.
@@ -268,5 +342,26 @@ height = 948454
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safe_limits_are_enabled_by_default() {
+        let config = ServerConfig::new();
+        assert_eq!(config.max_connections, 128);
+        assert_eq!(config.max_in_flight_requests, 8);
+        assert_eq!(config.handshake_timeout_secs, 10);
+        assert_eq!(config.idle_timeout_secs, 120);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn zero_limits_are_rejected() {
+        let mut config = ServerConfig::new();
+        config.max_connections = 0;
+        assert!(config.validate().is_err());
+
+        config.max_connections = 1;
+        config.max_in_flight_requests = 0;
+        assert!(config.validate().is_err());
     }
 }

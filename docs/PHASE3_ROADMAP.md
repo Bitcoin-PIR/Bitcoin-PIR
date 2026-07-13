@@ -30,7 +30,18 @@ to whichever slice you want to start on.
 
 ---
 
-## Current state (as of 2026-06-26, ORAM Tier 3 UKI deployed)
+## Current state (checked-in deployment record: 2026-06-27)
+
+The strict-source-bound ORAM Tier 3 deployment supersedes the June 26
+baseline that was previously recorded here. The exact build recipe, artifact
+locations, and live smoke results are in
+[`ORAM_TIER3_PRODUCTION_HANDOFF.md`](ORAM_TIER3_PRODUCTION_HANDOFF.md).
+
+Read-only live recheck on 2026-07-10: `bpir-admin attest` still matched the
+published measurement, binary hash, git revision, REPORT_DATA, and two manifest
+roots; `bpir-admin channel-test` also revalidated ARK -> ASK -> VCEK, the report
+signature, encrypted handshake, ping, and `get_info`. The state-mutating ORAM
+lookup smoke was intentionally not rerun in this documentation pass.
 
 ### Production deployment
 
@@ -42,7 +53,7 @@ to whichever slice you want to start on.
 | DBs in production | `main` (height 948454), `delta_940611_948454`. Both have `MANIFEST.toml`; the delta DB also has the SEV-SNP builder proof sidecar at `attestations/delta_940611_948454_sev_snp`. |
 | Hetzner `pir-secondary.service` | Running as a local secondary/hot-spare on port 8092. Public `weikeng2.bitcoinpir.org` routes to VPSBG, not this service. |
 
-### Attested values published (operator: weikengchen) — ORAM Tier 3 baseline
+### Attested values published (operator: weikengchen) — strict-source-bound ORAM Tier 3
 
 These are live values from the running pir2 — anyone can verify with `bpir-admin attest`.
 
@@ -53,17 +64,17 @@ Launch MEASUREMENT (covers OVMF + Tier 3 UKI bytes — UKI now contains
 the unified_server BINARY itself in initramfs, NOT just a cmdline hash
 pin. So this digest authenticates the literal binary bytes the box is
 running, not "a binary the box claims matches a hash"):
-  1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746
+  f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0
 
 UKI bytes sha256 (built by scripts/build_uki_tier3.sh on pir-hetzner;
 includes initramfs with unified_server + cloudflared + runit + the
 sev-guest/ccp/tsm_report kernel modules baked in):
-  718c7728142f9a3a1c6663711853d1b51ee14fde62debc8d2fb1c8662855b18b
+  3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60
 
 unified_server binary sha256 (computed at build time AND attested at
-runtime via /proc/self/exe — the two match because dracut was invoked
-with --nostrip; verifiers pin via --expect-binary on bpir-admin attest):
-  457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+runtime via /proc/self/exe — the archived build record verifies the bytes
+baked into the UKI; verifiers pin via --expect-binary on bpir-admin attest):
+  233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3
 
 ARK fingerprint (AMD Turin family root certificate — pinned in
 web/src/attest-pin.ts and used by --expect-ark-fingerprint to anchor
@@ -75,23 +86,23 @@ DB manifest roots (db_id order):
   delta_940611_948454:        c816f067117bca98256ee246c4469591ee8f537b2271d65b38d1536a70887963
 
 Server git rev (per /attest, captured at unified_server build time):
-  668dd36b812f51f8c6a63af6fd3025cc07455bfd
+  f402466af1ee21d02e0a65b457ad338ceb1216c0
 ```
 
 NOTE on the X25519 channel pubkey: it's "long-lived" relative to per-
 session ECDH (which is fresh per handshake), but it IS regenerated on
 every server-process start (i.e. every reboot). Verifiers should NOT
 pin it across reboots — they observe it dynamically via attest and
-cross-check the REPORT_DATA binding. The current value as of last
-boot is `77bbbc1064d3907b17a7a6c95d80a9a671a130304f954e75a1edc738b90b8f06`
+cross-check the REPORT_DATA binding. The value captured in the 2026-06-27
+deployment record was `73d8aa08c98c0047e9031fbf342f08018ced95816d594eae1d28863d1df97b08`
 but it'll be different next reboot.
 
 Verifiers can cross-check end-to-end with:
 ```bash
 # Static checks: report binding + binary + measurement + ARK chain
 bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746 \
-    --expect-binary 457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+    --expect-measurement f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0 \
+    --expect-binary 233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3
 
 # Live encrypted channel + AMD VCEK chain validation
 bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
@@ -106,12 +117,16 @@ cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
     4242424242424242424242424242424242424242
 ```
 
-### Full Layer 3 reproducibility — verified 2026-05-03
+### Historical Layer 3 reproduction — verified for the 2026-05-03 baseline
 
-The published MEASUREMENT can now be **independently reproduced from
-public artifacts** — no need to trust any operator-published value.
-Verified bit-for-bit against pir2's chip-reported MEASUREMENT for
-both the Tier 3 v2 production UKI and the Slice 2 revert UKI.
+The recipe below reproduced the **historical** Tier 3 v2 and Slice 2 launch
+measurements bit-for-bit. It does not reproduce the currently pinned
+`f0d449e0…ad8da0` ORAM UKI. The current UKI is retained in the operator-local
+and build-host archives listed in `ORAM_TIER3_PRODUCTION_HANDOFF.md`, but this
+repository does not currently provide a public download URL for those bytes.
+Publishing that artifact (and its matching OVMF input) is still required
+before an external verifier can independently recompute the current launch
+measurement.
 
 Recipe:
 
@@ -144,7 +159,7 @@ bpir-admin attest wss://weikeng2.bitcoinpir.org \
     --expect-measurement 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5
 ```
 
-Trust chain after this verification: a verifier who accepts AMD's
+Trust chain for that historical baseline: a verifier who accepts AMD's
 ARK as the silicon-rooted trust anchor (and accepts that VPSBG's
 disclosed OVMF is the binary they actually use — confirmable by the
 above hash matching the chip-signed MEASUREMENT) can establish that
@@ -222,29 +237,19 @@ portal upload + reboot. The new binary's bytes are inside the UKI's
 initramfs (and therefore in MEASUREMENT), so any binary update changes
 both the published binary sha256 AND the published MEASUREMENT.
 
-WARNING: Tier 3 has no SSH. The build host is pir2 itself — to
-re-bake you have to revert to Slice 2 first (so SSH works), build,
-swap back to Tier 3. Or maintain a separate build host with the same
-toolchain. Path below assumes operator handles the revert manually
-via portal.
+Tier 3 pir2 has no SSH. The current ORAM UKI was therefore built on the
+separate `pir-hetzner` build host, not inside pir2; use the pinned-toolchain
+recipe and archive procedure in `ORAM_TIER3_PRODUCTION_HANDOFF.md`. Reverting
+pir2 to Slice 2 and building in-guest remains a recovery option, but it is no
+longer the primary production recipe.
 
 ```bash
-# 1. Revert pir2 to Slice 2 via VPSBG portal (upload bpir-slice2-revert.efi).
-#    Wait ~90s for sshd.
-# 2. Build the new binary on pir2.
-ssh vpsbg-pir 'sudo -u pir bash -lc "
-    source ~/.cargo/env && cd /home/pir/BitcoinPIR &&
-    git fetch origin && git reset --hard origin/main &&
-    CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build --release -p runtime --bin unified_server
-"'
-# 3. Re-bake the Tier 3 UKI.
-ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
-scp vpsbg-pir:/tmp/bpir-tier3.efi ./deploy/uki/bpir-tier3-vNNN.efi
-# 4. Upload via VPSBG portal → Measured Boot → UKI → Save & Reboot.
-# 5. After reboot, capture + republish the new MEASUREMENT + binary sha.
-./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
-    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
-./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org
+# 1. Build and archive on pir-hetzner using the exact handoff recipe.
+# 2. Upload the archived UKI via VPSBG portal -> Measured Boot -> Save & Reboot.
+# 3. Capture the new measurement and binary hash, then update all three pins:
+#    web/src/attest-pin.ts, scripts/verify_oram_tier3_deploy.sh, and this file.
+# 4. Run the complete post-deploy gate (attest, VCEK chain/channel, db0/db1 ORAM):
+./scripts/verify_oram_tier3_deploy.sh
 ```
 
 ### Recovery — Tier 3 UKI bricks the box
@@ -381,8 +386,8 @@ The UI renders:
 - pir2 (VPSBG, SEV-SNP Tier 3): launch MEASUREMENT, binary hash, AMD ARK/VCEK
   chain validation, encrypted-channel upgrade, and operator identity.
 
-Pins live in `web/src/attest-pin.ts` as `PIR1_PIN`, `PIR2_TIER3_PIN`, and
-`AMD_TURIN_ARK_FINGERPRINT_HEX`.
+Pins live in `web/src/attest-pin.ts` as `PIR1_PIN`, `PIR2_TIER3_PIN`,
+`AMD_TURIN_ARK_FINGERPRINT_HEX`, and `PIR_OPERATOR_PUBKEY_HEX`.
 
 ### 2. Database build attestation status
 
@@ -400,12 +405,29 @@ Current production DB proof pin:
 | MuHash | `cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee` |
 | bucket super-root | `e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a` |
 | onion super-root | `f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997` |
+| params hash | `2b3e488c04433ed8bd293fd3adab72b49bf52346b81160365486d76f9b4d4e39` |
+| network magic | `f9beb4d9` |
 | builder binary | `34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a` |
 | builder commit | `01e8db91d76037cd5562fce85c40e832ad156431` |
 
 Open work: strict query-path root installation still needs to make DPF/Harmony
 Merkle checks consume the verified bucket root directly, and standalone
 OnionPIR still needs the direct `REQ_GET_DB_PROOF` verifier plus UI badge.
+
+### 2b. Direct ORAM source-binding proof
+
+The frontend also verifies the static
+`/proofs/oram-source/mainnet_948454.json` chain against
+`MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN`. It binds the attested-builder
+snapshot evidence to the preserved direct input hashes, strict ORAM build
+parameters, output artifact hashes, and initial controller/authentication
+roots. The verifier recomputes the 64-byte SNP `REPORT_DATA` from the actual
+`build-evidence.bin` bytes and requires an explicit DB pin before it can return
+`verified`.
+
+This static proof does **not** by itself prove that pir2 is currently serving
+those archived images. Live runtime attestation and the encrypted db0/db1 ORAM
+smoke in `scripts/verify_oram_tier3_deploy.sh` remain separate gates.
 
 ### 3. Confirm `--role secondary` doesn't break existing client flows
 
@@ -432,8 +454,8 @@ reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
 
 # Attest VPSBG (verifies SEV-SNP report + binds X25519 channel pubkey)
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746 \
-    --expect-binary 457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+    --expect-measurement f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0 \
+    --expect-binary 233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3
 
 # End-to-end channel test with ARK-rooted chain validation
 ./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
@@ -474,7 +496,12 @@ ssh vpsbg-pir 'journalctl -u pir-vpsbg -p err --no-pager -n 20'
 ssh pir-hetzner 'systemctl start pir-secondary'
 ```
 
-## Reproducibility status (2026-05-03 evening, post-investigation)
+## Superseded reproducibility investigation notes (2026-05-03)
+
+This section records the intermediate investigation before VPSBG supplied the
+custom measured-boot OVMF used by the verified historical recipe above. Its
+stock-OVMF/IGVM hypothesis and pending-support steps are retained for audit
+history, not as the current launch model or an open runbook.
 
 **Layer 2 (operator-trusted) is what we ship today** — browsers enforce
 the operator-published MEASUREMENT pin via Web #3. Closing the gap to

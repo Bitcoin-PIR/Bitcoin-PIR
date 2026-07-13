@@ -3,6 +3,13 @@ import type { DatabaseProofPin } from './db-proof.js';
 import { verifyDatabaseProofAgainstPin } from './db-proof.js';
 import { bytesToHex, sha256 } from './hash.js';
 
+const DB_EVIDENCE_DOMAIN = new TextEncoder().encode(
+  'BitcoinPIR/attested-builder/build-evidence/v1\0',
+);
+const DB_REPORT_DATA_DOMAIN = new TextEncoder().encode(
+  'BitcoinPIR/attested-builder/build-evidence/report-data/v1\0',
+);
+
 export const DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH =
   '/proofs/oram-source/mainnet_948454.json';
 
@@ -257,7 +264,15 @@ export async function verifyOramSourceProof(
     checks.push(checkFromMismatches('build logs matched manifest', mismatches, logsBefore));
 
     const reportBefore = mismatches.length;
+    const buildEvidence = requiredArtifact(artifacts, 'attestedBuilder.buildEvidence');
+    const expectedReportData = reportDataForBuildEvidence(buildEvidence);
     const report = requiredArtifact(artifacts, 'attestedBuilder.sevSnpReport');
+    compareHex(
+      'BuildEvidence-derived REPORT_DATA',
+      bytesToHex(expectedReportData),
+      manifest.attestedBuilder.sevSnp.reportDataHex,
+      mismatches,
+    );
     compareHex(
       'attested-builder SNP REPORT_DATA field',
       bytesToHex(extractSnpReportData(report)),
@@ -288,12 +303,19 @@ export async function verifyOramSourceProof(
         mismatches.push(...(status.mismatches ?? []).map((m) => `manifest DB pin: ${m}`));
       }
       checks.push(checkFromMismatches('manifest matches ORAM DB pin', mismatches, pinBefore));
+    } else {
+      mismatches.push('expectedDbPin is required before an ORAM source proof can be trusted');
+      checks.push({
+        name: 'manifest matches ORAM DB pin',
+        state: 'unverified',
+        message: 'no expectedDbPin supplied',
+      });
     }
 
     checks.push({
-      name: 'live deployment claim',
-      state: 'verified',
-      message: manifest.liveDeployment.status,
+      name: 'live deployment claim (informational)',
+      state: 'unverified',
+      message: `${manifest.liveDeployment.status}; verify the live runtime attestation separately`,
     });
 
     return {
@@ -318,6 +340,30 @@ export async function verifyOramSourceProof(
       error: message,
     };
   }
+}
+
+/**
+ * Reproduce `pir_db_attest::report_data_for_evidence_bytes` exactly.
+ * The low half commits to the domain-separated binary BuildEvidence bytes;
+ * the high half commits to that digest under a second domain. This check is
+ * what turns the SNP report's REPORT_DATA from a manifest assertion into a
+ * binding to the actual `build-evidence.bin` artifact.
+ */
+export function reportDataForBuildEvidence(evidenceBytes: Uint8Array): Uint8Array {
+  const evidenceHash = sha256(concatBytes(DB_EVIDENCE_DOMAIN, evidenceBytes));
+  const high = sha256(concatBytes(DB_REPORT_DATA_DOMAIN, evidenceHash));
+  return concatBytes(evidenceHash, high);
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const length = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 
 export function oramSourcePinFromManifest(manifest: OramSourceProofManifest): DatabaseProofPin {

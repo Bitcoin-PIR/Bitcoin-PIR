@@ -9,6 +9,10 @@ Findings tagged ✅ were verified by reading the code directly during the
 review; untagged findings come from the area sub-reviews with high
 confidence.
 
+> **Reading note (2026-07-10):** the tables below preserve the original June 9
+> findings as review history. They are not the current open-issue list. Use the
+> dated status sections and GitHub issues for closure state.
+
 Overall theme: the codebase is hardened against an **honest-but-curious**
 server and a passive network (the privacy/padding invariants are
 genuinely enforced), but **fragile against an actively malicious server
@@ -114,10 +118,13 @@ compile-time K; `deriveIntGroups3(id, k)` has no production callers).
 cryptographically… a malicious server can't lie." As wired, the Merkle
 layer proves *one server's internal self-consistency*, not soundness
 against a cheating server — a malicious server can fabricate a
-self-consistent root + siblings and every leaf "verifies." Integrity
-*does* hold today, but via the attestation/pinning path (pinned SEV
-measurement → trusted binary → binary self-verifies its DB), which is a
-different and weaker-sounding guarantee than the headline claim. The
+self-consistent root + siblings and every leaf "verifies." Integrity against
+an active server holds only in deployments where the client actually enforces
+a trusted measurement/root policy; the default advisory flow can continue
+after attestation mismatch and therefore does **not** provide that guarantee.
+The intended enforced path is pinned SEV measurement → trusted binary → binary
+self-verifies its DB, which is a different and weaker-sounding guarantee than
+the headline claim. The
 `onion_merkle.rs` "pinned trust anchor" comments overstate the current
 state.
 
@@ -154,6 +161,33 @@ the live demo** (pir1/Hetzner has no SEV measurement).
   procedure.
 - **I7**: partially closed by the cargo-audit CI job added in June;
   dependabot / cargo-deny remain optional future hygiene.
+
+### Status update (2026-07-10): I1/I7/I8 closed
+
+- **I1**: the scheduled/manual production canary now runs the DPF,
+  HarmonyPIR, and OnionPIR leakage groups sequentially after the ordinary
+  integration jobs. Each group uses one test thread, OnionPIR has a 90-minute
+  job budget, and HarmonyPIR receives one retry for transient hint resets.
+- **I7**: Dependabot now covers the root Cargo workspace, the `web` and
+  `explorer` npm workspaces, and GitHub Actions on staggered weekly schedules.
+  Minor/patch updates are grouped to limit PR noise. `cargo-audit` remains the
+  vulnerability signal; `cargo-deny` is deferred until the project wants to
+  adopt an explicit source/license policy.
+- **I8**: `pir-channel`, `pir-identity`, and `pir-attest-verify` are explicitly
+  publishable: each package now ships the repository's MIT and Apache-2.0
+  license texts, `pir-identity` has the README required by its manifest, and
+  all three pass `cargo package --list` / package verification.
+
+### Status update (2026-07-10): older table entries reconciled
+
+- **C2/C3/C4**: client UTXO decoding uses `try_read_varint`, DPF validates
+  decoded response dimensions before indexing, and HarmonyPIR seeds its master
+  PRP key with `getrandom`.
+- **W1/W3**: the unsound `verifyMerkleProof` export is gone, and DPF/Harmony
+  teardown awaits `disconnect()` before freeing the WASM client.
+- **I2/I3**: every `libdpf` dependency is revision-pinned, and `.gitignore`
+  explicitly re-opens the root `/build/` workspace crate so new source files
+  are trackable.
 
 ---
 
@@ -198,6 +232,21 @@ the live demo** (pir1/Hetzner has no SEV measurement).
 - **W6**: the DPF and Harmony web adapters now fail closed when a
   `measurementHex` pin is configured but the attestation report omits
   `launchMeasurementHex`.
+
+### Status update (2026-07-10): S7/C5 closed
+
+- **S7**: removed the dead `catch_unwind` wrappers from the OnionPIR server
+  query paths. Comments now state the real `panic = 'abort'` behavior and
+  point to a process boundary as the required isolation mechanism.
+- **C5**: malformed Merkle sibling evidence now sets an explicit per-item
+  failure flag while the client completes the same padded round shape. Missing
+  and short rows cannot pass even if the sentinel-derived hash walk happens to
+  match; tests cover missing, short, and valid rows.
+- **S6**: `pir-sdk-server` now defaults to 128 open connections and 8
+  concurrent request evaluations, refuses excess connections, queues excess
+  work, evaluates synchronous PIR work on Tokio's blocking pool, and enforces
+  handshake/idle deadlines. TOML and builder knobs plus limiter tests cover
+  trusted/private tuning and overload behavior.
 
 ---
 

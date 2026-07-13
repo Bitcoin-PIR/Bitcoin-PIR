@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN } from '../attest-pin.js';
 import {
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+  reportDataForBuildEvidence,
   verifyOramSourceProof,
 } from '../oram-source-proof.js';
+import { bytesToHex } from '../hash.js';
 
 const publicRoot = new URL('../../public/', import.meta.url);
 
@@ -53,6 +55,30 @@ describe('ORAM source-binding proof', () => {
     expect(status.state).toBe('unverified');
     expect(status.mismatches.some((m) => m.includes('DB certification MuHash'))).toBe(true);
     expect(status.mismatches.some((m) => m.includes('manifest DB pin'))).toBe(true);
+  });
+
+  it('recomputes the SNP REPORT_DATA binding from build-evidence.bin', async () => {
+    const manifest = JSON.parse(
+      new TextDecoder().decode(await publicArtifactLoader(DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH)),
+    );
+    const evidence = await publicArtifactLoader(
+      manifest.attestedBuilder.artifacts.buildEvidence.path,
+    );
+
+    expect(bytesToHex(reportDataForBuildEvidence(evidence))).toBe(
+      manifest.attestedBuilder.sevSnp.reportDataHex,
+    );
+  });
+
+  it('does not call an unpinned source proof verified', async () => {
+    const status = await verifyOramSourceProof({
+      artifactLoader: publicArtifactLoader,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches).toContain(
+      'expectedDbPin is required before an ORAM source proof can be trusted',
+    );
   });
 
   it('keeps the 64-bit ORAM index seed exact instead of rounding in JavaScript', async () => {

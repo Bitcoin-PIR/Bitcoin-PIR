@@ -5120,18 +5120,11 @@ async fn main() {
                                     .flat_map_iter(|(g, server)| {
                                         let q0 = &queries_ref[2 * g];
                                         let q1 = &queries_ref[2 * g + 1];
-                                        let r0 = match std::panic::catch_unwind(
-                                            std::panic::AssertUnwindSafe(|| server.answer_query(client_id, q0)),
-                                        ) {
-                                            Ok(r) => r,
-                                            Err(e) => { eprintln!("[OnionPIR:{}] panic in index group {} q0: {:?}", worker_label, g, e); Vec::new() }
-                                        };
-                                        let r1 = match std::panic::catch_unwind(
-                                            std::panic::AssertUnwindSafe(|| server.answer_query(client_id, q1)),
-                                        ) {
-                                            Ok(r) => r,
-                                            Err(e) => { eprintln!("[OnionPIR:{}] panic in index group {} q1: {:?}", worker_label, g, e); Vec::new() }
-                                        };
+                                        // The workspace uses panic=abort, so an OnionPIR panic
+                                        // terminates the process; there is no in-process isolation.
+                                        // A process boundary is required if that policy changes.
+                                        let r0 = server.answer_query(client_id, q0);
+                                        let r1 = server.answer_query(client_id, q1);
                                         std::iter::once(r0).chain(std::iter::once(r1))
                                     })
                                     .collect();
@@ -5141,20 +5134,7 @@ async fn main() {
                                     .par_iter_mut()
                                     .enumerate()
                                     .map(|(b, server)| {
-                                        match std::panic::catch_unwind(
-                                            std::panic::AssertUnwindSafe(|| {
-                                                server.answer_query(client_id, &queries_ref[b])
-                                            }),
-                                        ) {
-                                            Ok(r) => r,
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[OnionPIR:{}] panic in chunk group {}: {:?}",
-                                                    worker_label, b, e
-                                                );
-                                                Vec::new()
-                                            }
-                                        }
+                                        server.answer_query(client_id, &queries_ref[b])
                                     })
                                     .collect();
                                 ("chunk", results)
@@ -5170,20 +5150,7 @@ async fn main() {
                                     .par_iter_mut()
                                     .enumerate()
                                     .map(|(b, server)| {
-                                        match std::panic::catch_unwind(
-                                            std::panic::AssertUnwindSafe(|| {
-                                                server.answer_query(client_id, &queries_ref[b])
-                                            }),
-                                        ) {
-                                            Ok(r) => r,
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[OnionPIR:{}] panic in {} group {}: {:?}",
-                                                    worker_label, kind, b, e
-                                                );
-                                                Vec::new()
-                                            }
-                                        }
+                                        server.answer_query(client_id, &queries_ref[b])
                                     })
                                     .collect();
                                 (kind, results)

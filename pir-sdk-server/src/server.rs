@@ -3,13 +3,14 @@
 use crate::config::{ConfigError, ServerConfig};
 use crate::loader::DatabaseLoader;
 use futures_util::{SinkExt, StreamExt};
-use pir_sdk::{DatabaseCatalog, PirError, PirResult, ServerRole};
 use pir_runtime_core::handler::RequestHandler;
 use pir_runtime_core::protocol::{Request, Response};
+use pir_sdk::{DatabaseCatalog, PirError, PirResult, ServerRole};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::tungstenite::Message;
 
 /// Handle for graceful shutdown.
@@ -72,6 +73,18 @@ impl PirServer {
             self.handler.databases().len(),
             self.config.role
         );
+        log::info!(
+            "Overload limits: max_connections={}, max_in_flight_requests={}, handshake_timeout={}s, idle_timeout={}s",
+            self.config.max_connections,
+            self.config.max_in_flight_requests,
+            self.config.handshake_timeout_secs,
+            self.config.idle_timeout_secs,
+        );
+
+        let connection_slots = Arc::new(Semaphore::new(self.config.max_connections));
+        let request_slots = Arc::new(Semaphore::new(self.config.max_in_flight_requests));
+        let handshake_timeout = Duration::from_secs(self.config.handshake_timeout_secs);
+        let idle_timeout = Duration::from_secs(self.config.idle_timeout_secs);
 
         // Main accept loop
         loop {
@@ -79,10 +92,30 @@ impl PirServer {
                 result = listener.accept() => {
                     match result {
                         Ok((stream, peer)) => {
+                            let connection_permit = match connection_slots.clone().try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    log::warn!(
+                                        "Refusing connection from {}: max_connections={} reached",
+                                        peer,
+                                        self.config.max_connections,
+                                    );
+                                    drop(stream);
+                                    continue;
+                                }
+                            };
                             log::debug!("New connection from {}", peer);
                             let handler = self.handler.clone();
+                            let request_slots = request_slots.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, handler).await {
+                                if let Err(e) = handle_connection(
+                                    stream,
+                                    handler,
+                                    connection_permit,
+                                    request_slots,
+                                    handshake_timeout,
+                                    idle_timeout,
+                                ).await {
                                     log::error!("Connection error from {}: {}", peer, e);
                                 }
                             });
@@ -107,14 +140,31 @@ impl PirServer {
 }
 
 /// Handle a single WebSocket connection.
-async fn handle_connection(stream: TcpStream, handler: Arc<RequestHandler>) -> PirResult<()> {
-    let ws_stream = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(|e| PirError::ConnectionFailed(format!("WebSocket handshake failed: {}", e)))?;
+async fn handle_connection(
+    stream: TcpStream,
+    handler: Arc<RequestHandler>,
+    _connection_permit: OwnedSemaphorePermit,
+    request_slots: Arc<Semaphore>,
+    handshake_timeout: Duration,
+    idle_timeout: Duration,
+) -> PirResult<()> {
+    let ws_stream =
+        tokio::time::timeout(handshake_timeout, tokio_tungstenite::accept_async(stream))
+            .await
+            .map_err(|_| PirError::ConnectionFailed("WebSocket handshake timed out".into()))?
+            .map_err(|e| {
+                PirError::ConnectionFailed(format!("WebSocket handshake failed: {}", e))
+            })?;
 
     let (mut sink, mut stream) = ws_stream.split();
 
-    while let Some(msg) = stream.next().await {
+    loop {
+        let Some(msg) = tokio::time::timeout(idle_timeout, stream.next())
+            .await
+            .map_err(|_| PirError::ConnectionFailed("connection idle timeout".into()))?
+        else {
+            break;
+        };
         let msg = match msg {
             Ok(m) => m,
             Err(e) => {
@@ -143,8 +193,21 @@ async fn handle_connection(stream: TcpStream, handler: Arc<RequestHandler>) -> P
                     }
                 };
 
-                // Handle request
-                let response = handler.handle_request(&request);
+                // Bound CPU-heavy request evaluation globally and keep it off
+                // Tokio's async worker threads. Waiting for a permit applies
+                // backpressure to this connection without changing wire shape.
+                let permit = request_slots
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| PirError::InvalidState("request limiter closed".into()))?;
+                let request_handler = handler.clone();
+                let response = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    request_handler.handle_request(&request)
+                })
+                .await
+                .map_err(|e| PirError::InvalidState(format!("request worker failed: {}", e)))?;
 
                 // Send response
                 let encoded = response.encode();
@@ -237,6 +300,30 @@ impl PirServerBuilder {
         self
     }
 
+    /// Set the global connection cap. Values below 1 are rejected by `build`.
+    pub fn max_connections(mut self, limit: usize) -> Self {
+        self.config.max_connections = limit;
+        self
+    }
+
+    /// Set the global CPU-heavy request concurrency cap.
+    pub fn max_in_flight_requests(mut self, limit: usize) -> Self {
+        self.config.max_in_flight_requests = limit;
+        self
+    }
+
+    /// Set the WebSocket handshake deadline in seconds.
+    pub fn handshake_timeout_secs(mut self, seconds: u64) -> Self {
+        self.config.handshake_timeout_secs = seconds;
+        self
+    }
+
+    /// Set the idle connection timeout in seconds.
+    pub fn idle_timeout_secs(mut self, seconds: u64) -> Self {
+        self.config.idle_timeout_secs = seconds;
+        self
+    }
+
     /// Disable DPF backend.
     pub fn disable_dpf(mut self) -> Self {
         self.config.enable_dpf = false;
@@ -257,6 +344,10 @@ impl PirServerBuilder {
 
     /// Build and bind the server (but don't start accepting connections).
     pub async fn build(self) -> PirResult<PirServer> {
+        self.config
+            .validate()
+            .map_err(|e| PirError::Config(e.to_string()))?;
+
         // Load databases
         let mut loader = DatabaseLoader::new();
         loader.load_all(&self.config.databases)?;
@@ -308,5 +399,37 @@ impl PirServerBuilder {
 impl Default for PirServerBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_cap_refuses_excess_and_recovers_after_drop() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let slots = Arc::new(Semaphore::new(2));
+            let first = slots.clone().try_acquire_owned().unwrap();
+            let _second = slots.clone().try_acquire_owned().unwrap();
+            assert!(slots.clone().try_acquire_owned().is_err());
+            drop(first);
+            assert!(slots.clone().try_acquire_owned().is_ok());
+        });
+    }
+
+    #[tokio::test]
+    async fn request_cap_queues_excess_work() {
+        let slots = Arc::new(Semaphore::new(1));
+        let first = slots.clone().acquire_owned().await.unwrap();
+        let waiting = slots.clone().acquire_owned();
+        tokio::pin!(waiting);
+        assert!(matches!(
+            futures_util::poll!(&mut waiting),
+            std::task::Poll::Pending
+        ));
+        drop(first);
+        assert!(waiting.await.is_ok());
     }
 }
