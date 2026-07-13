@@ -160,6 +160,22 @@ the live demo** (pir1/Hetzner has no SEV measurement).
 - **I7**: partially closed by the cargo-audit CI job added in June;
   dependabot / cargo-deny remain optional future hygiene.
 
+### Status update (2026-07-13): I1/I7/I8 closed
+
+- **I1**: the scheduled/manual SDK workflow now runs serialized core leakage
+  invariants for DPF, HarmonyPIR, and OnionPIR after the ordinary live
+  integration jobs pass. Each backend covers per-message shape, the
+  two-not-found simulator property, and found/not-found byte-identical
+  profiles; HarmonyPIR receives one transport-only retry.
+- **I7**: Dependabot now covers the Cargo workspace, both npm applications,
+  and GitHub Actions on a weekly grouped cadence. Together with the existing
+  cargo-audit workflow this closes the selected dependency-hygiene scope;
+  cargo-deny remains an optional future policy layer rather than a blocker.
+- **I8**: `pir-channel`, `pir-identity`, and `pir-attest-verify` now ship the
+  declared MIT/Apache-2.0 license texts. All three complete `cargo package`
+  packaging, verification, and compilation; remaining downstream registry
+  blockers are recorded in `PUBLISHING.md`.
+
 ---
 
 ## Lower-severity / nits (not auto-fixing)
