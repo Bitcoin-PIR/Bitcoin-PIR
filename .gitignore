@@ -81,6 +81,9 @@ deploy/
 # rules above (target/, build/, .DS_Store, .claude/, Cargo.lock) don't
 # bite vendored crates.
 !vendor/**
+# The vendor re-include above also re-opens files matched by the global
+# macOS metadata rule. Keep local Finder state out of vendored sources.
+/vendor/**/.DS_Store
 # dev-issuer demo key files (never commit)
 arc_key.bin
 cashu_key.bin
