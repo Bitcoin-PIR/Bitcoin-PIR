@@ -13,7 +13,9 @@ Status: **merged** ([#53](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/53)).
 
 ## PR B — strict native SDK root policy
 
-Status: **in progress**.
+Status: **draft PR open** ([#54](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/54)).
+Implementation and local validation are complete; the checklist remains
+unchecked until the PR is merged, per this file's convention.
 
 - [ ] Add `Advisory` and `RequireVerified` root policies to DPF, HarmonyPIR,
       and native OnionPIR clients.
