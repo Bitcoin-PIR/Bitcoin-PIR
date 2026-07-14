@@ -61,6 +61,21 @@
         "sha256": "cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f",
         "size": 411
       },
+      "databaseManifest": {
+        "path": "/proofs/oram-source/mainnet_948454/db/database.manifest.sha256",
+        "sha256": "2e03e88cd35298ca715b600e2a1b21a6eb3d5c1ed43c2378b08c89239842244c",
+        "size": 588
+      },
+      "allArtifactsManifest": {
+        "path": "/proofs/oram-source/mainnet_948454/db/all-artifacts.manifest.sha256",
+        "sha256": "9e19b8c7cd2c89fc734749942308868018584e5767e7f947ad0b863e18aab99e",
+        "size": 678
+      },
+      "serverDbManifest": {
+        "path": "/proofs/oram-source/mainnet_948454/db/server-db/MANIFEST.toml",
+        "sha256": "0f5d943de226fc1b47ba22bc6dd99065e7435c76c9c0dd9564aa98e3280492ec",
+        "size": 752
+      },
       "buildSummary": {
         "path": "/proofs/oram-source/mainnet_948454/db/build-summary.txt",
         "sha256": "b5ca3211878dbb40d2b606a4a73971a84a33d718c5583756c3755964132a8294",
