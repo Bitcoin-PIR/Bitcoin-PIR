@@ -37,9 +37,10 @@ use crate::db_proof::{
 use crate::hint_cache;
 use crate::merkle_verify::{
     fetch_tree_tops, verify_bucket_merkle_batch_generic,
-    verify_bucket_merkle_batch_parallel, BucketMerkleItem,
+    verify_bucket_merkle_batch_parallel, verify_tree_tops_super_root, BucketMerkleItem,
     BucketMerkleSiblingQuerier, TreeTop, BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
 };
+use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use crate::transport::PirTransport;
 use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
@@ -563,6 +564,8 @@ pub struct HarmonyClient {
     /// 0 for the query server and 1 for the hint server. Independent
     /// of `metrics_recorder` — install neither, either, or both.
     leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
+    verified_roots: VerifiedRootState,
+    verified_tree_tops: HashMap<u8, Vec<TreeTop>>,
     /// If true, use V2 hint protocol: server generates the PRP key.
     /// Default: true for new clients. Set to false for V1 fallback
     /// (client generates key, sends in request).
@@ -610,8 +613,57 @@ impl HarmonyClient {
             state_listener: None,
             metrics_recorder: None,
             leakage_recorder: None,
+            verified_roots: VerifiedRootState::default(),
+            verified_tree_tops: HashMap::new(),
             use_v2_protocol: true,
         }
+    }
+
+    pub fn root_policy(&self) -> RootPolicy { self.verified_roots.policy() }
+
+    pub fn set_root_policy(&mut self, policy: RootPolicy) {
+        self.verified_roots.set_policy(policy);
+    }
+
+    pub fn install_verified_database_roots(
+        &mut self,
+        roots: VerifiedDatabaseRoots,
+    ) -> PirResult<()> {
+        let catalog = self.catalog.as_ref()
+            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
+        let db_id = roots.db_id;
+        self.verified_roots.install(catalog, roots)?;
+        self.verified_tree_tops.remove(&db_id);
+        Ok(())
+    }
+
+    pub fn clear_verified_database_roots(&mut self) {
+        self.verified_roots.clear();
+        self.verified_tree_tops.clear();
+    }
+
+    pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
+        self.verified_roots.get(db_id)
+    }
+
+    async fn preflight_bucket_tree_tops(&mut self, db: &DatabaseInfo) -> PirResult<()> {
+        let Some(roots) = self.verified_roots.get(db.db_id).cloned() else {
+            return self.verified_roots.require_db(db.db_id);
+        };
+        if !db.has_bucket_merkle {
+            return Err(PirError::VerificationFailed(format!(
+                "db_id {} has verified bucket root but catalog disables bucket Merkle", db.db_id
+            )));
+        }
+        if self.verified_tree_tops.contains_key(&db.db_id) { return Ok(()); }
+        let leakage = self.leakage_recorder.clone();
+        let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        let tops = fetch_tree_tops(conn, db.db_id, leakage.as_ref(), "harmony", 0).await?;
+        verify_tree_tops_super_root(
+            &tops, db.index_k as usize, db.chunk_k as usize, &roots.bucket_super_root,
+        )?;
+        self.verified_tree_tops.insert(db.db_id, tops);
+        Ok(())
     }
 
     /// Fetch and verify the attested-builder proof bundle for `db_id`.
@@ -4229,11 +4281,13 @@ impl HarmonyClient {
         }
 
         // Fetch tree-tops blob via the query server (same blob both servers share).
-        let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        // Tree-tops fetch goes over the query server (server_id = 0).
         let leakage = self.leakage_recorder.clone();
-        let tree_tops =
-            fetch_tree_tops(conn, db_info.db_id, leakage.as_ref(), "harmony", 0).await?;
+        let tree_tops = if let Some(tops) = self.verified_tree_tops.get(&db_info.db_id) {
+            tops.clone()
+        } else {
+            let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+            fetch_tree_tops(conn, db_info.db_id, leakage.as_ref(), "harmony", 0).await?
+        };
 
         // Ensure sibling groups + hints are initialised.
         self.ensure_sibling_groups_ready(db_info, &tree_tops).await?;
@@ -4415,6 +4469,9 @@ impl HarmonyClient {
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
 
+        self.verified_roots.require_db(db_id)?;
+        self.preflight_bucket_tree_tops(&db_info).await?;
+
         // Ensure groups are loaded for this db before firing queries;
         // `query_single` would do this per-call, but front-loading it
         // makes the inspector-path failure mode (hint-fetch errors)
@@ -4513,6 +4570,9 @@ impl HarmonyClient {
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
 
+        self.verified_roots.require_db(db_id)?;
+        self.preflight_bucket_tree_tops(&db_info).await?;
+
         // If the database doesn't publish bucket Merkle, "verify" is a
         // no-op — mirrors `execute_step`'s skip branch so callers can
         // always call `verify_merkle_batch_for_results` without
@@ -4597,10 +4657,19 @@ impl HarmonyClient {
                 });
             }
 
+            self.verified_roots.require_plan(&plan)?;
+
             let catalog = self
                 .catalog
                 .clone()
                 .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
+
+            for step in &plan.steps {
+                let db = catalog.get(step.db_id)
+                    .ok_or(PirError::DatabaseNotFound(step.db_id))?
+                    .clone();
+                self.preflight_bucket_tree_tops(&db).await?;
+            }
 
             let total = plan.steps.len();
             let mut merged: Vec<Option<QueryResult>> = vec![None; script_hashes.len()];
@@ -5617,6 +5686,7 @@ impl PirClient for HarmonyClient {
         self.query_conn = None;
         self.query_conn_secondary = None;
         self.catalog = None;
+        self.clear_verified_database_roots();
         self.invalidate_groups();
         self.fire_disconnect();
         self.notify_state(ConnectionState::Disconnected);
@@ -5647,6 +5717,9 @@ impl PirClient for HarmonyClient {
                 catalog.databases.len(),
                 catalog.latest_tip()
             );
+            self.verified_roots.reconcile_catalog(&catalog);
+            self.verified_tree_tops
+                .retain(|db_id, _| self.verified_roots.get(*db_id).is_some());
             self.catalog = Some(catalog.clone());
             return Ok(catalog);
         }
@@ -5659,6 +5732,9 @@ impl PirClient for HarmonyClient {
         let catalog = DatabaseCatalog {
             databases: vec![info],
         };
+        self.verified_roots.reconcile_catalog(&catalog);
+        self.verified_tree_tops
+            .retain(|db_id, _| self.verified_roots.get(*db_id).is_some());
         self.catalog = Some(catalog.clone());
         Ok(catalog)
     }
@@ -5725,6 +5801,8 @@ impl PirClient for HarmonyClient {
             });
         }
 
+        self.verified_roots.require_plan(plan)?;
+
         let catalog = self
             .catalog
             .clone()
@@ -5733,6 +5811,13 @@ impl PirClient for HarmonyClient {
         let mut merged: Vec<Option<QueryResult>> = cached_results
             .map(|r| r.to_vec())
             .unwrap_or_else(|| vec![None; script_hashes.len()]);
+
+        for step in &plan.steps {
+            let db = catalog.get(step.db_id)
+                .ok_or(PirError::DatabaseNotFound(step.db_id))?
+                .clone();
+            self.preflight_bucket_tree_tops(&db).await?;
+        }
 
         for (step_idx, step) in plan.steps.iter().enumerate() {
             log::info!(
@@ -5788,6 +5873,9 @@ impl PirClient for HarmonyClient {
             .get(db_id)
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
+
+        self.verified_roots.require_db(db_id)?;
+        self.preflight_bucket_tree_tops(&db_info).await?;
 
         // Fire query lifecycle callbacks so a recorder can time the
         // batch end-to-end without needing mid-layer hooks. `fire_*`

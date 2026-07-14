@@ -73,6 +73,7 @@ mod oram;
 mod platform_time;
 mod protocol;
 mod transport;
+mod verified_roots;
 #[cfg(target_arch = "wasm32")]
 mod wasm_transport;
 
@@ -90,6 +91,7 @@ pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
 pub use onion::OnionClient;
 pub use oram::{OramClient, OramLookupItem, OramLookupResult, OramLookupSlot};
 pub use transport::PirTransport;
+pub use verified_roots::RootPolicy;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_transport::WasmWebSocketTransport;
 

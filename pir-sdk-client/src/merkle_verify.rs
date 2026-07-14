@@ -32,28 +32,20 @@
 //!
 //! ## Trust model (what "verified" means here)
 //!
-//! The per-group roots this module compares against come from the **server's
-//! own tree-tops blob** ([`fetch_tree_tops`], server 0) and are trusted
-//! verbatim — they are never compared to the attested `manifest_roots` from
-//! `crate::attest` (docs/CODE_REVIEW_2026-06.md, finding C1). A passing
-//! verification therefore proves the served bins and sibling rows are
-//! *internally consistent* with the root the server declared — catching
-//! corruption, truncation, and a server that contradicts its own
-//! commitment — not soundness against a malicious server, which could
-//! commit to a forged database and serve a self-consistent tree. End-to-end
-//! integrity against such a server currently rests on the
-//! attestation/pinning path (pinned SEV measurement / binary hash → trusted
-//! binary → the binary verifies its DB manifest at load; see `crate::attest`).
-//! Anchoring the served roots to the attested `manifest_roots` — an opt-in
-//! strict mode — is tracked follow-up work; see "Follow-up: strict
-//! verification mode" in docs/CODE_REVIEW_2026-06.md.
+//! In advisory mode, the per-group roots come from the server's tree-tops
+//! blob and prove internal consistency only. When a client explicitly installs
+//! [`crate::VerifiedDatabaseRoots`], the SDK first checks the exact ordered
+//! root list against its attested `bucket_super_root` and caches the tree-tops
+//! only after that binding succeeds. [`crate::RootPolicy::RequireVerified`]
+//! additionally refuses queries for databases without installed roots.
 
-use crate::transport::PirTransport;
 use async_trait::async_trait;
+use crate::transport::PirTransport;
 use libdpf::Dpf;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, Hash256, ZERO_HASH};
 use pir_core::params::compute_dpf_n;
 use pir_sdk::{LeakageRecorder, PirError, PirResult, RoundKind, RoundProfile};
+use sha2::{Digest, Sha256};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -112,6 +104,38 @@ impl TreeTop {
     pub fn root(&self) -> Option<Hash256> {
         self.levels.last().and_then(|lvl| lvl.first().copied())
     }
+}
+
+/// Bind the protocol-ordered INDEX + CHUNK roots to an attested super-root.
+pub(crate) fn verify_tree_tops_super_root(
+    tree_tops: &[TreeTop],
+    index_k: usize,
+    chunk_k: usize,
+    expected: &[u8; 32],
+) -> PirResult<()> {
+    let exact = index_k + chunk_k;
+    if tree_tops.len() != exact {
+        return Err(PirError::VerificationFailed(format!(
+            "bucket tree-tops count mismatch: expected {} ({} INDEX + {} CHUNK), got {}",
+            exact, index_k, chunk_k, tree_tops.len()
+        )));
+    }
+    let mut hasher = Sha256::new();
+    for (position, top) in tree_tops.iter().enumerate() {
+        let root = top.root().ok_or_else(|| {
+            PirError::VerificationFailed(format!("bucket tree-top {} has no root", position))
+        })?;
+        hasher.update(root);
+    }
+    let actual: [u8; 32] = hasher.finalize().into();
+    if &actual != expected {
+        return Err(PirError::VerificationFailed(format!(
+            "bucket tree-tops super-root mismatch: expected {}, got {}",
+            hex::encode(expected),
+            hex::encode(actual)
+        )));
+    }
+    Ok(())
 }
 
 // ─── Tree-top blob parsing ───────────────────────────────────────────────────
@@ -1352,6 +1376,23 @@ mod tests {
         // Claims 1 tree but no bytes follow.
         let blob = 1u32.to_le_bytes().to_vec();
         assert!(parse_tree_tops(&blob).is_err());
+    }
+
+    #[test]
+    fn tree_tops_super_root_requires_exact_ordered_roots() {
+        let tops = vec![
+            TreeTop { cache_from_level: 0, levels: vec![vec![[1; 32]]] },
+            TreeTop { cache_from_level: 0, levels: vec![vec![[2; 32]]] },
+        ];
+        let mut hasher = Sha256::new();
+        hasher.update([1; 32]);
+        hasher.update([2; 32]);
+        let expected: [u8; 32] = hasher.finalize().into();
+        verify_tree_tops_super_root(&tops, 1, 1, &expected).unwrap();
+
+        assert!(verify_tree_tops_super_root(&tops[..1], 1, 1, &expected).is_err());
+        let reversed = vec![tops[1].clone(), tops[0].clone()];
+        assert!(verify_tree_tops_super_root(&reversed, 1, 1, &expected).is_err());
     }
 
     #[test]
