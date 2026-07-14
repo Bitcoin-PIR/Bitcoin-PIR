@@ -134,9 +134,12 @@ export {
 
 export {
   databaseProofAnchorLabel,
+  databaseProofAnchorPoints,
   databaseProofUnavailable,
+  mempoolSpaceBlockUrl,
   verifiedDatabaseProofFromWasm,
   verifyDatabaseProofAgainstPin,
+  type DatabaseAnchorPoint,
   type DatabaseProofPin,
   type DatabaseProofStatus,
   type VerifiedDatabaseProof,

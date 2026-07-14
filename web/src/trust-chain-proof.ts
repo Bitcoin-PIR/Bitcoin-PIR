@@ -48,6 +48,8 @@ export interface TrustChainManifest {
   };
   bhtmProof: {
     chunk: string;
+    fromLeafIndex?: number;
+    fromLeafHashHex?: string;
     leafIndex: number;
     treeSize: number;
     leafHashHex: string;
@@ -70,6 +72,7 @@ export interface TrustChainCheck {
 
 export interface VerifiedTrustChain {
   manifest: TrustChainManifest;
+  fromLeaf?: VerifiedBhtmLeafProof;
   leaf: VerifiedBhtmLeafProof;
   attestation: BhtmAttestationV2;
 }
@@ -88,6 +91,7 @@ export interface VerifyTrustChainOptions {
   artifactLoader?: (path: string) => Promise<Uint8Array>;
   expectedDbPin?: DatabaseProofPin;
   liveDatabaseProof?: VerifiedDatabaseProof;
+  /** Defaults to true. Set false only for fixture/offline tests without initialized verifier WASM. */
   verifyAmdSignature?: boolean;
 }
 
@@ -113,6 +117,19 @@ export async function verifyProductionTrustChain(
       checks.push(checkFromMismatches('manifest matches DB pin', mismatches, before));
     }
 
+    if (options.liveDatabaseProof) {
+      const before = mismatches.length;
+      const manifestPin = trustChainPinFromManifest(manifest);
+      const dbStatus = verifyDatabaseProofAgainstPin(options.liveDatabaseProof, manifestPin);
+      if (dbStatus.state !== 'verified') {
+        mismatches.push(
+          ...(dbStatus.mismatches ?? [dbStatus.error ?? 'live DB proof did not match manifest'])
+            .map((m) => `live DB proof vs manifest: ${m}`),
+        );
+      }
+      checks.push(checkFromMismatches('live DB proof matches manifest anchors and roots', mismatches, before));
+    }
+
     if (options.liveDatabaseProof && options.expectedDbPin) {
       const dbStatus = verifyDatabaseProofAgainstPin(options.liveDatabaseProof, options.expectedDbPin);
       if (dbStatus.state === 'verified') {
@@ -128,10 +145,18 @@ export async function verifyProductionTrustChain(
       }
     }
 
+    let fromLeaf: VerifiedBhtmLeafProof | undefined;
+    if (manifest.anchor.buildKind === 'delta') {
+      fromLeaf = verifyBhtmLeafProofJson(
+        JSON.parse(decodeUtf8(requiredArtifact(bhtmArtifactBytes, 'fromLeafProof'))),
+      );
+      checks.push({ name: 'BHTM delta from leaf proof verified', state: 'verified' });
+    }
+
     const leaf = verifyBhtmLeafProofJson(
       JSON.parse(decodeUtf8(requiredArtifact(bhtmArtifactBytes, 'leafProof'))),
     );
-    checks.push({ name: 'BHTM leaf proof verified', state: 'verified' });
+    checks.push({ name: 'BHTM latest leaf proof verified', state: 'verified' });
 
     const attestationBytes = requiredArtifact(bhtmArtifactBytes, 'attestation');
     const attestation = parseBhtmAttestationV2(attestationBytes);
@@ -158,8 +183,21 @@ export async function verifyProductionTrustChain(
     checks.push(checkFromMismatches('BHTM report-data and measurement matched', mismatches, reportBefore));
 
     const leafBefore = mismatches.length;
+    if (fromLeaf) {
+      compareFromLeafToManifestAndDbAnchor(fromLeaf, manifest, mismatches);
+      compareLeafPositionToAttestation('BHTM from leaf', fromLeaf, attestation, mismatches);
+      compareHex('BHTM endpoint shared tree_root', fromLeaf.treeRootHex, leaf.treeRootHex, mismatches);
+      if (fromLeaf.treeSize !== leaf.treeSize) {
+        mismatches.push(`BHTM endpoint shared tree_size: expected ${leaf.treeSize}, got ${fromLeaf.treeSize}`);
+      }
+    }
     compareLeafToManifestAndDbAnchor(leaf, manifest, mismatches);
-    checks.push(checkFromMismatches('DB anchor matches BHTM leaf', mismatches, leafBefore));
+    compareLeafPositionToAttestation('BHTM latest leaf', leaf, attestation, mismatches);
+    checks.push(checkFromMismatches(
+      fromLeaf ? 'DB delta endpoints match BHTM leaves and shared root' : 'DB anchor matches BHTM leaf',
+      mismatches,
+      leafBefore,
+    ));
 
     const statsBefore = mismatches.length;
     compareStatsAndJobToManifest(bhtmArtifactBytes, manifest, mismatches);
@@ -169,15 +207,16 @@ export async function verifyProductionTrustChain(
       mismatches.push('database proof artifacts missing from manifest');
     }
 
-    if (options.verifyAmdSignature) {
+    if (options.verifyAmdSignature ?? true) {
       verifyStaticSnpReportSignature(bhtmArtifactBytes, sevSnpReport, manifest);
       checks.push({ name: 'BHTM AMD VCEK/report signature verified', state: 'verified' });
     }
 
+    const state = mismatches.length === 0 ? 'verified' : 'unverified';
     return {
-      state: mismatches.length === 0 ? 'verified' : 'unverified',
+      state,
       manifest,
-      verified: { manifest, leaf, attestation },
+      verified: state === 'verified' ? { manifest, fromLeaf, leaf, attestation } : undefined,
       checks,
       mismatches,
     };
@@ -296,6 +335,12 @@ function compareBhtmAttestationToManifest(
   if (attestation.treeSize !== BigInt(manifest.bhtmProof.treeSize)) {
     mismatches.push(`BHTM attestation tree_size: expected ${manifest.bhtmProof.treeSize}, got ${attestation.treeSize}`);
   }
+  const heightSpan = attestation.endHeight - attestation.startHeight;
+  if (heightSpan <= 0 || attestation.treeSize !== BigInt(heightSpan)) {
+    mismatches.push(
+      `BHTM attestation height span/tree_size: start ${attestation.startHeight}, end ${attestation.endHeight}, tree_size ${attestation.treeSize}`,
+    );
+  }
 }
 
 function compareLeafToManifestAndDbAnchor(
@@ -318,18 +363,64 @@ function compareLeafToManifestAndDbAnchor(
   compareHex('BHTM leaf tree_root', leaf.treeRootHex, manifest.bhtmProof.treeRootHex, mismatches);
 }
 
+function compareFromLeafToManifestAndDbAnchor(
+  leaf: VerifiedBhtmLeafProof,
+  manifest: TrustChainManifest,
+  mismatches: string[],
+): void {
+  if (leaf.height !== manifest.anchor.fromHeight) {
+    mismatches.push(`BHTM from leaf height: expected ${manifest.anchor.fromHeight}, got ${leaf.height}`);
+  }
+  if (leaf.leafIndex !== manifest.bhtmProof.fromLeafIndex) {
+    mismatches.push(`BHTM from leaf index: expected ${manifest.bhtmProof.fromLeafIndex}, got ${leaf.leafIndex}`);
+  }
+  if (leaf.treeSize !== manifest.bhtmProof.treeSize) {
+    mismatches.push(`BHTM from leaf tree size: expected ${manifest.bhtmProof.treeSize}, got ${leaf.treeSize}`);
+  }
+  compareHex('BHTM from leaf block hash', leaf.blockHashDisplayHex, manifest.anchor.fromBlockHashHex, mismatches);
+  compareHex('BHTM from leaf hash', leaf.leafHashHex, manifest.bhtmProof.fromLeafHashHex ?? '', mismatches);
+  compareHex('BHTM from leaf tree_root', leaf.treeRootHex, manifest.bhtmProof.treeRootHex, mismatches);
+}
+
+function compareLeafPositionToAttestation(
+  name: string,
+  leaf: VerifiedBhtmLeafProof,
+  attestation: BhtmAttestationV2,
+  mismatches: string[],
+): void {
+  if (leaf.height <= attestation.startHeight || leaf.height > attestation.endHeight) {
+    mismatches.push(
+      `${name} height ${leaf.height} is outside attested range ${attestation.startHeight + 1}..${attestation.endHeight}`,
+    );
+    return;
+  }
+  const expectedIndex = leaf.height - attestation.startHeight - 1;
+  if (leaf.leafIndex !== expectedIndex) {
+    mismatches.push(`${name} attested position: expected leaf index ${expectedIndex}, got ${leaf.leafIndex}`);
+  }
+  if (leaf.treeSize !== Number(attestation.treeSize)) {
+    mismatches.push(`${name} attested tree_size: expected ${attestation.treeSize}, got ${leaf.treeSize}`);
+  }
+  compareHex(`${name} attested tree_root`, leaf.treeRootHex, attestation.treeRootHex, mismatches);
+}
+
 function compareStatsAndJobToManifest(
   artifacts: Map<string, Uint8Array>,
   manifest: TrustChainManifest,
   mismatches: string[],
 ): void {
   const stats = JSON.parse(decodeUtf8(requiredArtifact(artifacts, 'stats'))) as Record<string, unknown>;
-  const job = JSON.parse(decodeUtf8(requiredArtifact(artifacts, 'job'))) as Record<string, unknown>;
+  const jobBytes = requiredArtifact(artifacts, 'job');
+  const job = JSON.parse(decodeUtf8(jobBytes)) as Record<string, unknown>;
   compareHex('BHTM stats tree_root', String(stats.tree_root ?? ''), manifest.bhtmProof.treeRootHex, mismatches);
   compareHex('BHTM stats job_sha256', String(stats.job_sha256 ?? ''), manifest.bhtmProof.jobSha256Hex, mismatches);
   compareHex('BHTM stats tee_report_data', String(stats.tee_report_data ?? ''), bytesToHex(requiredArtifact(artifacts, 'reportData')), mismatches);
+  compareHex('BHTM job artifact sha256', bytesToHex(sha256(jobBytes)), manifest.bhtmProof.jobSha256Hex, mismatches);
   if (stats.job_chunk !== manifest.bhtmProof.chunk) {
     mismatches.push(`BHTM stats job_chunk: expected ${manifest.bhtmProof.chunk}, got ${String(stats.job_chunk ?? '')}`);
+  }
+  if (job.chain !== manifest.anchor.network) {
+    mismatches.push(`BHTM job chain: expected ${manifest.anchor.network}, got ${String(job.chain ?? '')}`);
   }
   if (job.chunk !== manifest.bhtmProof.chunk) {
     mismatches.push(`BHTM job chunk: expected ${manifest.bhtmProof.chunk}, got ${String(job.chunk ?? '')}`);
@@ -369,6 +460,25 @@ function validateManifestShape(manifest: TrustChainManifest): void {
   if (!manifest.anchor || !manifest.databaseProof || !manifest.bhtmProof) {
     throw new Error('trust-chain manifest missing anchor/databaseProof/bhtmProof');
   }
+  if (manifest.anchor.buildKind !== 'snapshot' && manifest.anchor.buildKind !== 'delta') {
+    throw new Error(`unsupported trust-chain buildKind ${manifest.anchor.buildKind}`);
+  }
+  if (manifest.anchor.buildKind === 'delta') {
+    if (!manifest.bhtmProof.artifacts?.fromLeafProof) {
+      throw new Error('delta trust-chain manifest missing BHTM fromLeafProof artifact');
+    }
+    if (!Number.isInteger(manifest.bhtmProof.fromLeafIndex)) {
+      throw new Error('delta trust-chain manifest missing BHTM fromLeafIndex');
+    }
+    if (!isHexBytes(manifest.bhtmProof.fromLeafHashHex, 32)) {
+      throw new Error('delta trust-chain manifest missing or invalid BHTM fromLeafHashHex');
+    }
+  }
+}
+
+function isHexBytes(value: unknown, byteLength: number): value is string {
+  return typeof value === 'string'
+    && new RegExp(`^(?:0x)?[0-9a-fA-F]{${byteLength * 2}}$`).test(value.trim());
 }
 
 function decodeUtf8(bytes: Uint8Array): string {

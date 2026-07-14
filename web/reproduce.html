@@ -385,10 +385,10 @@
                                 </li>
                                 <li>
                                     <strong>Bitcoin/MuHash anchor proof</strong> checks that
-                                    the database proof's block hash and MuHash appear as a
-                                    blockhash-to-muhash Merkle leaf under a SEV-SNP-attested
-                                    chunk root. A green Bitcoin anchor badge belongs to this
-                                    layer.
+                                    both database endpoint block hashes and the latest MuHash
+                                    appear as separate blockhash-to-muhash Merkle leaves under
+                                    one SEV-SNP-attested chunk root. A green Bitcoin anchor badge
+                                    belongs to this layer.
                                 </li>
                                 <li>
                                     <strong>ORAM source binding</strong> checks that
@@ -880,19 +880,23 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 
                 <section id="bitcoin-anchor" class="tab-panel" role="tabpanel" aria-labelledby="tab-bitcoin-anchor">
                     <section>
-                        <h2>Bitcoin/MuHash anchor proof <span class="badge ok">height 948454</span></h2>
+                        <h2>Bitcoin/MuHash anchor proof <span class="badge ok">940611 → 948454</span></h2>
                         <p>
-                            The database proof uses Bitcoin Core's MuHash at block
-                            <code>948454</code>. The anchor proof checks that the same
-                            <code>height</code>, <code>block_hash</code>, and Core-display
-                            <code>MuHash</code> are present in the
-                            <code>mainnet-900000-954920</code> blockhash-to-muhash chunk.
+                            The delta database proof binds both endpoint block hashes and Bitcoin
+                            Core's MuHash at block <code>948454</code>. The browser verifies a
+                            separate BHTM Merkle inclusion proof for each endpoint against the same
+                            SEV-SNP-attested <code>mainnet-900000-954920</code> chunk root. The
+                            latest leaf also binds the database MuHash.
                         </p>
                         <div class="panel accent">
                             <table class="pin-table">
                                 <tr>
-                                    <td>block</td>
-                                    <td>948454 · 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4</td>
+                                    <td>from block</td>
+                                    <td>940611 · 000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99 · ✓ BHTM inclusion proof verified</td>
+                                </tr>
+                                <tr>
+                                    <td>latest block</td>
+                                    <td><a href="https://mempool.space/block/00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4" target="_blank" rel="noopener noreferrer">948454 · 00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4 ↗</a></td>
                                 </tr>
                                 <tr>
                                     <td>MuHash</td>
@@ -903,7 +907,11 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                     <td>mainnet-900000-954920</td>
                                 </tr>
                                 <tr>
-                                    <td>leaf</td>
+                                    <td>from leaf</td>
+                                    <td>index 40611 · d36ee0c4a44b2a392993c7a6a8ffaa0c69225e2187a46fcbef64a79e67dcf856</td>
+                                </tr>
+                                <tr>
+                                    <td>latest leaf</td>
                                     <td>index 48454 · 0171a475dc43b97db594c7512039d12f5213d270b42e56babfa44d65359eeaaf</td>
                                 </tr>
                                 <tr>
@@ -921,13 +929,20 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                     <section>
                         <h2>What the browser checks</h2>
                         <ul>
-                            <li>The BHTM leaf proof recomputes the leaf hash and Merkle path to the pinned chunk tree root.</li>
+                            <li>The verified live server proof matches the published manifest at both delta endpoints, the MuHash, and both PIR Merkle roots.</li>
+                            <li>Separate BHTM proofs recompute both endpoint leaf hashes and Merkle paths to the same attested chunk tree root.</li>
                             <li><code>report-data.bin</code> equals <code>SHA512("BitcoinPIR/blockhash-to-muhash/report-data/v2" || attestation.bin)</code>.</li>
                             <li>The SNP report's raw <code>REPORT_DATA</code> field equals <code>report-data.bin</code>.</li>
                             <li>The SNP report's raw <code>MEASUREMENT</code> field equals the pinned BHTM UKI measurement.</li>
                             <li>The AMD VCEK chain and report signature verify through the same WASM verifier used for runtime attestation.</li>
-                            <li>The DB proof anchor equals the BHTM leaf's height, block hash, and Core-display MuHash.</li>
+                            <li>Both DB endpoint heights and block hashes equal their BHTM leaves; the latest leaf also equals the DB proof's Core-display MuHash.</li>
                         </ul>
+                        <p class="meta">
+                            The latest-block mempool.space link is an independent user cross-check,
+                            not an input to the cryptographic verifier. The earlier endpoint is
+                            checked by its own inclusion proof under the same attested root; the
+                            attested BHTM process also validates header linkage across the chunk.
+                        </p>
                     </section>
                 </section>
 
@@ -940,7 +955,8 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                         </p>
                         <div class="panel">
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454.json" target="_blank" rel="noopener">trust-chain manifest</a></p>
-                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json" target="_blank" rel="noopener">BHTM leaf proof JSON</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json" target="_blank" rel="noopener">BHTM 940611 leaf proof JSON</a></p>
+                            <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/height-948454.leaf-proof.json" target="_blank" rel="noopener">BHTM 948454 leaf proof JSON</a></p>
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/bhtm/sev-snp-report.bin" download>BHTM SEV-SNP report</a></p>
                             <p><a class="download-link" href="/proofs/trust-chain/delta_940611_948454/db/build-evidence.bin" download>DB build evidence</a></p>
                             <p><a class="download-link" href="/proofs/oram-source/mainnet_948454.json" target="_blank" rel="noopener">ORAM source-binding manifest</a></p>
@@ -995,7 +1011,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>For pir1, binary-hash pinning detects drift but does not provide a hardware root of trust.</li>
                             <li>The database proof binds <code>delta_940611_948454</code>'s bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash at block <code>948454</code>.</li>
                             <li>The ORAM source-binding proof binds a strict direct ORAM rebuild to roots-only snapshot inputs preserved by the SEV-SNP attested builder for block <code>948454</code>.</li>
-                            <li>The Bitcoin anchor proof binds that same block hash and MuHash to a blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
+                            <li>The Bitcoin anchor proof binds both delta endpoint block hashes and the latest MuHash to one blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
                             <li>The web client refuses to upgrade to the encrypted channel if runtime pins do not match what the server reports.</li>
                             <li>The ORAM smoke route confirms the live attested binary accepts padded direct ORAM requests for both production databases.</li>
                         </ul>
