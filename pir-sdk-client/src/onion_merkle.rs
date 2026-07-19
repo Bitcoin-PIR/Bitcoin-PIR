@@ -29,26 +29,12 @@
 //! # Trust model
 //!
 //! The verification anchor is `super_root` = `SHA256` of the 155 concatenated
-//! per-group roots (§2f). Both the anchor and the trees are
-//! **server-supplied**: `super_root` is parsed from the server's own info
-//! JSON ([`parse_onionpir_merkle`]) and the 155 roots ride in the tree-top
-//! blob fetched over the same connection. [`check_tree_top_anchor`] binds the
-//! blob to `super_root`, so a passing verification proves the served
-//! siblings / tree-tops / leaves are *internally consistent* with the root
-//! the server declared — catching corruption, truncation, DB-version skew,
-//! and mid-session equivocation against that declared root.
-//!
-//! It does **not** by itself prove soundness against a malicious server:
-//! nothing in this code path compares `super_root` to an independently
-//! trusted value — in particular it is never checked against the attested
-//! `manifest_roots` from `crate::attest` — so a cheating server can declare a
-//! forged root and serve a self-consistent blob + siblings under it
-//! (docs/CODE_REVIEW_2026-06.md, finding C1). End-to-end integrity against
-//! such a server currently rests on the attestation/pinning path instead
-//! (pinned SEV measurement / binary hash → trusted binary → the binary
-//! verifies its DB manifest at load). Anchoring `super_root` to the attested
-//! `manifest_roots` — an opt-in strict mode — is tracked follow-up work; see
-//! "Follow-up: strict verification mode" in docs/CODE_REVIEW_2026-06.md.
+//! per-group roots (§2f). In advisory mode, `super_root` is server-supplied
+//! and proves internal consistency only. When the native client explicitly
+//! installs verified database roots, it replaces that diagnostic value with
+//! the attested `onion_super_root` and preflights the consolidated tree-tops
+//! before any address query. `RequireVerified` refuses a query without this
+//! binding.
 //!
 //! # Privacy invariants preserved
 //!
@@ -547,16 +533,11 @@ pub fn decode_sibling_batch_result(data: &[u8]) -> PirResult<Vec<Vec<u8>>> {
 /// (parsed from the server's info JSON — `SHA256` of the 155 concatenated
 /// roots, MERKLE_COLOCATION_REVIEW.md §2f — and never compared to the
 /// attested `manifest_roots`; docs/CODE_REVIEW_2026-06.md C1). This check
-/// therefore proves the served tree-tops are *internally consistent* with
-/// the root the server declared: it catches corruption, truncation,
-/// DB-version skew, and a server that equivocates against its own declared
-/// root mid-session, and it is the check a future strict mode would point at
-/// an *attested* root. It does **not** by itself defeat a malicious server,
-/// which can declare a forged `super_root` and serve a self-consistent
-/// blob + siblings under it; soundness against that server currently rests
-/// on the attestation/pinning path (see the module-level trust-model notes).
+/// In advisory mode this proves internal consistency with the server-declared
+/// root. In strict mode the caller substitutes the proof-verified
+/// `onion_super_root`, turning the same check into the trust-anchor binding.
 ///
-/// Returns `true` iff the blob is bound to the declared anchor. Three
+/// Returns `true` iff the blob is bound to the selected anchor. Three
 /// checks, all required:
 ///
 /// 1. The blob has exactly `index.k + data.k` trees.
@@ -566,7 +547,7 @@ pub fn decode_sibling_batch_result(data: &[u8]) -> PirResult<Vec<Vec<u8>>> {
 /// 3. **`SHA256(concat of the 155 per-group roots) == super_root`** — the
 ///    anchor-consistency check proper. Do not skip or weaken it: without it
 ///    even the internal-consistency guarantee collapses (any blob would
-///    pass), and a future attested anchor would have nothing to bind to.
+///    pass), and an attested anchor would have nothing to bind to.
 fn check_tree_top_anchor(
     info: &OnionMerkleInfo,
     blob: &[u8],
@@ -652,6 +633,27 @@ fn check_tree_top_anchor(
         return false;
     }
     true
+}
+
+/// Fetch and bind the consolidated tree-top blob before any address query.
+pub(crate) async fn preflight_onion_tree_tops(
+    conn: &mut dyn PirTransport,
+    info: &OnionMerkleInfo,
+    db_id: u8,
+) -> PirResult<()> {
+    let req = encode_tree_top_request(OnionTreeKind::Index.req_tree_top(), db_id);
+    let resp = conn.roundtrip(&req).await?;
+    if resp.is_empty() || resp[0] != OnionTreeKind::Index.resp_tree_top() {
+        return Err(PirError::Protocol("invalid OnionPIR tree-top preflight response".into()));
+    }
+    let blob = &resp[1..];
+    let tops = parse_onion_tree_top_cache(blob)?;
+    if !check_tree_top_anchor(info, blob, &tops) {
+        return Err(PirError::VerificationFailed(
+            "OnionPIR tree-tops do not match installed onion_super_root".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ─── Tree-top walk ──────────────────────────────────────────────────────────

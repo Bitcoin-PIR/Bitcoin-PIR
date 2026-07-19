@@ -50,8 +50,12 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
+use crate::db_proof::{
+    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+};
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
 use crate::transport::PirTransport;
+use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant,
@@ -460,6 +464,8 @@ pub struct OnionClient {
     /// a structured [`RoundProfile`] on `server_id = 0` (single-server
     /// backend).
     leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
+    verified_roots: VerifiedRootState,
+    verified_tree_tops: std::collections::HashSet<u8>,
 }
 
 impl OnionClient {
@@ -477,7 +483,73 @@ impl OnionClient {
             fhe: None,
             metrics_recorder: None,
             leakage_recorder: None,
+            verified_roots: VerifiedRootState::default(),
+            verified_tree_tops: std::collections::HashSet::new(),
         }
+    }
+
+    pub fn root_policy(&self) -> RootPolicy { self.verified_roots.policy() }
+
+    pub fn set_root_policy(&mut self, policy: RootPolicy) {
+        self.verified_roots.set_policy(policy);
+    }
+
+    pub async fn verify_database_proof(
+        &mut self,
+        db_id: u8,
+        policy: &DatabaseProofPolicy,
+    ) -> PirResult<VerifiedDatabaseRoots> {
+        if !self.is_connected() { return Err(PirError::NotConnected); }
+        let catalog = match &self.catalog {
+            Some(c) => c.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        let db = catalog.get(db_id).ok_or(PirError::DatabaseNotFound(db_id))?.clone();
+        let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        let bundle = fetch_database_proof(conn.as_mut(), db_id).await?;
+        verify_database_proof(&db, &bundle, policy)
+    }
+
+    pub fn install_verified_database_roots(
+        &mut self,
+        roots: VerifiedDatabaseRoots,
+    ) -> PirResult<()> {
+        let catalog = self.catalog.as_ref()
+            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
+        let db_id = roots.db_id;
+        self.verified_roots.install(catalog, roots)?;
+        self.verified_tree_tops.remove(&db_id);
+        Ok(())
+    }
+
+    pub fn clear_verified_database_roots(&mut self) {
+        self.verified_roots.clear();
+        self.verified_tree_tops.clear();
+    }
+
+    pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
+        self.verified_roots.get(db_id)
+    }
+
+    #[cfg(feature = "onion")]
+    async fn preflight_trusted_tree_tops(&mut self, db_id: u8) -> PirResult<()> {
+        let Some(roots) = self.verified_roots.get(db_id).cloned() else {
+            return self.verified_roots.require_db(db_id);
+        };
+        if self.verified_tree_tops.contains(&db_id) { return Ok(()); }
+        let mut info = self.onion_merkle.get(&db_id).cloned().ok_or_else(|| {
+            PirError::VerificationFailed(format!("db_id {} has no OnionPIR Merkle metadata", db_id))
+        })?;
+        info.super_root = roots.onion_super_root;
+        let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        crate::onion_merkle::preflight_onion_tree_tops(conn.as_mut(), &info, db_id).await?;
+        self.verified_tree_tops.insert(db_id);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "onion"))]
+    async fn preflight_trusted_tree_tops(&mut self, db_id: u8) -> PirResult<()> {
+        self.verified_roots.require_db(db_id)
     }
 
     /// Install (or replace) a metrics recorder.
@@ -886,10 +958,13 @@ impl OnionClient {
         chunk_owned_per_query: &[Vec<u32>],
         db_info: &DatabaseInfo,
     ) -> PirResult<()> {
-        let info = match self.onion_merkle.get(&db_info.db_id).cloned() {
+        let mut info = match self.onion_merkle.get(&db_info.db_id).cloned() {
             Some(m) => m,
             None => return Ok(()),
         };
+        if let Some(roots) = self.verified_roots.get(db_info.db_id) {
+            info.super_root = roots.onion_super_root;
+        }
 
         // Build the flat leaf list (both INDEX and DATA).
         let mut leaves: Vec<OnionMerkleLeaf> =
@@ -1779,6 +1854,7 @@ impl PirClient for OnionClient {
         }
         self.conn = None;
         self.catalog = None;
+        self.clear_verified_database_roots();
         self.onion_params.clear();
         self.info_json = None;
         #[cfg(feature = "onion")]
@@ -1800,10 +1876,14 @@ impl PirClient for OnionClient {
             return Err(PirError::NotConnected);
         }
         self.fetch_server_info().await?;
-        Ok(self
+        let catalog = self
             .catalog
             .clone()
-            .expect("fetch_server_info populates catalog"))
+            .expect("fetch_server_info populates catalog");
+        self.verified_roots.reconcile_catalog(&catalog);
+        self.verified_tree_tops
+            .retain(|db_id| self.verified_roots.get(*db_id).is_some());
+        Ok(catalog)
     }
 
     fn cached_catalog(&self) -> Option<&DatabaseCatalog> {
@@ -1852,6 +1932,8 @@ impl PirClient for OnionClient {
             });
         }
 
+        self.verified_roots.require_plan(plan)?;
+
         let catalog = self
             .catalog
             .clone()
@@ -1859,6 +1941,10 @@ impl PirClient for OnionClient {
         let mut merged: Vec<Option<QueryResult>> = cached_results
             .map(|r| r.to_vec())
             .unwrap_or_else(|| vec![None; script_hashes.len()]);
+
+        for step in &plan.steps {
+            self.preflight_trusted_tree_tops(step.db_id).await?;
+        }
 
         for (step_idx, step) in plan.steps.iter().enumerate() {
             log::info!(
@@ -1908,6 +1994,8 @@ impl PirClient for OnionClient {
             .get(db_id)
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
+        self.verified_roots.require_db(db_id)?;
+        self.preflight_trusted_tree_tops(db_id).await?;
         // Fire the query lifecycle callbacks so a recorder can time
         // the end-to-end round. `fire_*` is a no-op absent a recorder;
         // the `Option<Instant>` returned by `fire_query_start` carries
