@@ -33,11 +33,11 @@ Status: **merged** ([#54](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/54)).
 
 ## PR C — strict WASM and DPF/Harmony web flow
 
-Status: **implementation and validation complete; Draft PR pending**. The
-production proof prerequisite is complete: on 2026-07-19, `bpir-admin
-db-proof verify-live` returned `status=ok` for db 0 and db 1 on both hosts.
-Strict DPF and HarmonyPIR browser queries also passed end to end. Merge is now
-gated on review and CI.
+Status: **Draft PR open** ([#56](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/56)).
+Implementation and validation are complete. The production proof prerequisite
+is also complete: on 2026-07-19, `bpir-admin db-proof verify-live` returned
+`status=ok` for db 0 and db 1 on both hosts. Strict DPF and HarmonyPIR browser
+queries passed end to end. Merge is now gated on review and CI.
 
 - [ ] Verify DB proof in Rust/WASM and compare every field with the production
       pin in TypeScript.
