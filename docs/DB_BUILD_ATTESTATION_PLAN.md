@@ -1,11 +1,11 @@
 # Database Build Attestation Plan
 
-Status: server/API proof distribution is deployed for the production delta DB.
-The web frontend now fetches and verifies that proof for DPF and HarmonyPIR and
-renders an advisory DB/MuHash badge. A separate static proof chain now binds the
-mainnet snapshot's attested-builder evidence to the inputs and outputs of the
-strict direct ORAM build. Strict query-path root installation, standalone
-OnionPIR proof verification, and live serving-state binding remain.
+Status: server/API proof distribution is deployed for both production
+databases (`db_id=0` snapshot and `db_id=1` delta) on both hosts. DPF and
+HarmonyPIR now have a strict Web/WASM proof-install and tree-top preflight
+path under validation. The broader static proof chain also binds the snapshot
+builder evidence to the inputs and outputs of the direct ORAM build.
+Standalone OnionPIR proof installation and live serving-state binding remain.
 
 Goal: bind BitcoinPIR database Merkle roots to an independently verifiable
 Bitcoin Core UTXO MuHash computation. The runtime server attestation proves
@@ -169,13 +169,17 @@ Known cleanups:
 - Serve the same self-verifying proof from both hosts.
 - Run `bpir-admin db-proof verify-live` against both servers.
 
-### 8. Missing Artifact
+### 8. Snapshot Artifact and Live Rollout
 
-The `mainnet_948454` snapshot now has a published static source-binding proof
-for the direct ORAM rebuild. The live `REQ_GET_DB_PROOF` path still lacks a
-full-snapshot proof bundle suitable for installing strict DPF/Harmony/Onion
-query roots and verifying a complete sync chain from zero. Do not treat the
-static ORAM rebuild proof as a substitute for that live query-path bundle.
+The `mainnet_948454` snapshot has a complete database proof bundle under
+`web/public/proofs/oram-source/mainnet_948454/db/`. The same directory is also
+one input to the broader static direct-ORAM source-binding proof, but the
+database subdirectory independently passes `bpir-admin db-proof verify` with
+the pinned snapshot MuHash and bucket/Onion roots. The compact bundle is now
+installed as `db_id=0`'s `proof_dir` on both production hosts. On 2026-07-19,
+`bpir-admin db-proof verify-live` returned `status=ok` for db 0 and db 1 on
+both `wss://weikeng1.bitcoinpir.org` and
+`wss://weikeng2.bitcoinpir.org`.
 
 ## Progress Log
 
@@ -187,14 +191,16 @@ static ORAM rebuild proof as a substitute for that live query-path bundle.
 - [x] Client proof fetch and strict verification.
 - [x] Post-deploy smoke helper script.
 - [x] Production delta proof deployment and live smoke tests.
+- [x] Production snapshot proof deployment and live smoke tests on both hosts.
 - [x] Web/WASM proof policy for DPF and HarmonyPIR.
 - [x] Dedicated UI badge/status rendering for DPF and HarmonyPIR database
       build attestation.
 - [x] Static mainnet snapshot -> direct-input -> ORAM-output source-binding
       proof and frontend verifier, including binary BuildEvidence REPORT_DATA
       recomputation and an explicit expected DB pin.
-- [ ] Merkle verification consumes verified roots in strict query paths.
-- [ ] Web/WASM verified-root installation before queries.
+- [x] Merkle verification consumes verified roots in strict native query paths.
+- [x] DPF/Harmony Web/WASM typed root installation and tree-top preflight
+      before queries.
 - [ ] standalone OnionPIR DB proof verifier and UI badge.
 
 ## Production Deployment Record
@@ -212,3 +218,11 @@ Deployed on 2026-06-16:
 - Live smoke passed against `wss://weikeng1.bitcoinpir.org` and
   `wss://weikeng2.bitcoinpir.org` with:
   `scripts/smoke_db_proof_attestation.sh`.
+
+Snapshot proof follow-up completed on 2026-07-19:
+
+- Both hosts serve the complete `mainnet_948454` snapshot proof for
+  `db_id=0` while retaining the delta proof for `db_id=1`.
+- Direct `bpir-admin db-proof verify-live` checks passed for both database IDs
+  on both hosts. This was a data/config rollout and did not require another
+  server binary or UKI rebuild.

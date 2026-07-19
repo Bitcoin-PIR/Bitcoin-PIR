@@ -491,6 +491,25 @@ impl DpfClient {
         self.verified_tree_tops.clear();
     }
 
+    /// Clear every value whose authenticity is bound to the current pair of
+    /// transports.  A fresh transport pair is a fresh session: keeping the
+    /// old catalog or proof/tree-top bindings across it could authorize a
+    /// query against a server whose database has rotated.
+    fn invalidate_session_bindings(&mut self) {
+        self.catalog = None;
+        self.clear_verified_database_roots();
+    }
+
+    /// Gracefully close and remove any complete or partial transport pair.
+    async fn close_transport_slots(&mut self) {
+        if let Some(mut conn) = self.conn0.take() {
+            let _ = conn.close().await;
+        }
+        if let Some(mut conn) = self.conn1.take() {
+            let _ = conn.close().await;
+        }
+    }
+
     pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
         self.verified_roots.get(db_id)
     }
@@ -513,6 +532,35 @@ impl DpfClient {
         )?;
         self.verified_tree_tops.insert(db.db_id, tops);
         Ok(())
+    }
+
+    /// Fetch and bind the bucket Merkle tree-tops for `db_id` to an
+    /// explicitly installed database proof before any private query is sent.
+    ///
+    /// This is exposed separately from the query methods so browser clients
+    /// can complete the proof -> production pin -> install -> preflight
+    /// sequence as a fail-closed connection gate.
+    pub async fn preflight_verified_database(&mut self, db_id: u8) -> PirResult<()> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "db_id {} has no installed database proof",
+                db_id
+            )));
+        }
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
+        let catalog = match &self.catalog {
+            Some(catalog) => catalog.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        let db = catalog
+            .databases
+            .iter()
+            .find(|db| db.db_id == db_id)
+            .cloned()
+            .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
+        self.preflight_bucket_tree_tops(&db).await
     }
 
     /// Fetch and verify the attested-builder proof bundle for `db_id`.
@@ -686,6 +734,12 @@ impl DpfClient {
         conn0: Box<dyn PirTransport>,
         conn1: Box<dyn PirTransport>,
     ) {
+        // Injection can also replace a live pair.  Dropping the old slots is
+        // synchronous here, but the trust state must follow the same fresh-
+        // session rule as the URL-driven connect path.
+        self.conn0 = None;
+        self.conn1 = None;
+        self.invalidate_session_bindings();
         self.conn0 = Some(conn0);
         self.conn1 = Some(conn1);
         // Propagate any installed recorder to the injected transports so
@@ -2288,6 +2342,15 @@ impl PirClient for DpfClient {
 
     #[tracing::instrument(level = "info", skip_all, fields(backend = "dpf", server0 = %self.server0_url, server1 = %self.server1_url))]
     async fn connect(&mut self) -> PirResult<()> {
+        // A second connect on an already complete session is an idempotent
+        // no-op.  If only part of a previous dial remains, however, this is a
+        // real session replacement and all transport-bound trust must go.
+        if self.is_connected() {
+            return Ok(());
+        }
+        self.close_transport_slots().await;
+        self.invalidate_session_bindings();
+
         log::info!(
             "Connecting to servers: {}, {}",
             self.server0_url,
@@ -2363,16 +2426,8 @@ impl PirClient for DpfClient {
 
     #[tracing::instrument(level = "info", skip_all, fields(backend = "dpf"))]
     async fn disconnect(&mut self) -> PirResult<()> {
-        if let Some(ref mut conn) = self.conn0 {
-            let _ = conn.close().await;
-        }
-        if let Some(ref mut conn) = self.conn1 {
-            let _ = conn.close().await;
-        }
-        self.conn0 = None;
-        self.conn1 = None;
-        self.catalog = None;
-        self.clear_verified_database_roots();
+        self.close_transport_slots().await;
+        self.invalidate_session_bindings();
         self.fire_disconnect();
         self.notify_state(ConnectionState::Disconnected);
         Ok(())
@@ -3366,7 +3421,74 @@ mod kani_harnesses {
 mod tests {
     use super::*;
     use crate::transport::mock::MockTransport;
+    use pir_db_attest::BuildKind;
     use std::sync::Mutex;
+
+    fn session_db_info() -> DatabaseInfo {
+        DatabaseInfo {
+            db_id: 7,
+            kind: DatabaseKind::Full,
+            name: "session-test".into(),
+            height: 100,
+            index_bins: 8,
+            chunk_bins: 8,
+            index_k: 1,
+            chunk_k: 1,
+            tag_seed: 0,
+            dpf_n_index: 3,
+            dpf_n_chunk: 3,
+            has_bucket_merkle: true,
+            index_master_seed: 1,
+            chunk_master_seed: 2,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
+        }
+    }
+
+    fn session_roots(db: &DatabaseInfo) -> VerifiedDatabaseRoots {
+        VerifiedDatabaseRoots {
+            db_id: db.db_id,
+            build_kind: BuildKind::Snapshot,
+            from_height: db.base_height(),
+            from_block_hash: [0; 32],
+            height: db.height,
+            block_hash: [1; 32],
+            muhash: [2; 32],
+            bucket_super_root: [3; 32],
+            onion_super_root: [4; 32],
+            params_hash: [5; 32],
+            network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
+            builder_binary_sha256: [6; 32],
+            builder_git_commit: "session-test".into(),
+        }
+    }
+
+    fn seed_verified_session(client: &mut DpfClient) -> u8 {
+        let db = session_db_info();
+        let db_id = db.db_id;
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db.clone()],
+        });
+        client
+            .install_verified_database_roots(session_roots(&db))
+            .unwrap();
+        client.verified_tree_tops.insert(
+            db_id,
+            vec![TreeTop {
+                cache_from_level: 0,
+                levels: vec![vec![[7; 32]]],
+            }],
+        );
+        db_id
+    }
+
+    #[tokio::test]
+    async fn explicit_preflight_rejects_missing_root_even_in_advisory_mode() {
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        let error = client.preflight_verified_database(0).await.unwrap_err();
+        assert!(matches!(error, PirError::VerificationFailed(message) if
+            message.contains("no installed database proof")));
+    }
 
     /// Demonstrates the test-injection escape hatch: a client built with a
     /// pair of [`MockTransport`]s reports `is_connected()` without ever
@@ -3382,6 +3504,44 @@ mod tests {
             Box::new(MockTransport::new("wss://mock-1")),
         );
         assert!(client.is_connected());
+    }
+
+    #[test]
+    fn connect_with_transport_replacement_invalidates_verified_session() {
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://old-0")),
+            Box::new(MockTransport::new("wss://old-1")),
+        );
+        let db_id = seed_verified_session(&mut client);
+        assert!(client.verified_database_roots(db_id).is_some());
+        assert!(client.verified_tree_tops.contains_key(&db_id));
+
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://new-0")),
+            Box::new(MockTransport::new("wss://new-1")),
+        );
+
+        assert!(client.is_connected());
+        assert!(client.catalog.is_none());
+        assert!(client.verified_database_roots(db_id).is_none());
+        assert!(!client.verified_tree_tops.contains_key(&db_id));
+    }
+
+    #[tokio::test]
+    async fn duplicate_connect_is_idempotent_for_verified_session() {
+        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-0")),
+            Box::new(MockTransport::new("wss://mock-1")),
+        );
+        let db_id = seed_verified_session(&mut client);
+
+        client.connect().await.unwrap();
+
+        assert!(client.catalog.is_some());
+        assert!(client.verified_database_roots(db_id).is_some());
+        assert!(client.verified_tree_tops.contains_key(&db_id));
     }
 
     /// Recorder impl of [`StateListener`] — records every transition in a

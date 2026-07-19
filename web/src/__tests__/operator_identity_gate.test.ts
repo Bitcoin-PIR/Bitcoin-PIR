@@ -53,6 +53,7 @@ describe('gateOperatorIdentity', () => {
     const r = gateOperatorIdentity(fakeBundle(), PIN, CHANNEL, 0n);
     expect(r.state).toBe('verified');
     expect(r.serverId).toBe('pir1');
+    expect(r.binarySha256Hex).toBe('0'.repeat(64));
     expect(r.gitRev).toBe('test-rev');
     expect(r.validUntil).toBe(1811051894); // bigint → number
     expect(r.error).toBeUndefined();

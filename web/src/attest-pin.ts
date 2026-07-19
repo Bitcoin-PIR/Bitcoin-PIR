@@ -225,7 +225,16 @@ export const MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN: DatabaseProofPin = {
     'mainnet_948454 ORAM source proof: roots-only snapshot inputs preserved by the SEV-SNP attested builder for strict direct ORAM rebuild',
 };
 
+/** The same verified snapshot database bundle, named for the DPF/Harmony
+ * query-root flow rather than its additional use as the direct-ORAM source. */
+export const MAINNET_948454_DB_PROOF_PIN: DatabaseProofPin = {
+  ...MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
+  description:
+    'mainnet_948454 full snapshot: Bitcoin Core MuHash and PIR Merkle roots from the SEV-SNP attested builder',
+};
+
 export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
+  MAINNET_948454_DB_PROOF_PIN,
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
 

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { parseServerInfoJson, decodeDatabaseCatalog } from '../server-info.js';
+import {
+  databaseCatalogFromWasmJson,
+  decodeDatabaseCatalog,
+  parseServerInfoJson,
+} from '../server-info.js';
 
 describe('parseServerInfoJson', () => {
   const MINIMAL_JSON = JSON.stringify({
@@ -206,5 +210,51 @@ describe('decodeDatabaseCatalog', () => {
     const data = new Uint8Array([0]); // num_databases = 0
     const catalog = decodeDatabaseCatalog(data);
     expect(catalog.databases).toHaveLength(0);
+  });
+});
+
+describe('databaseCatalogFromWasmJson', () => {
+  it('preserves the post-channel native catalog fields used by sync planning', () => {
+    const catalog = databaseCatalogFromWasmJson({
+      databases: [{
+        dbId: 1,
+        dbType: 1,
+        name: 'delta_940611_948454',
+        baseHeight: 940611,
+        height: 948454,
+        indexBins: 4096,
+        chunkBins: 8192,
+        indexK: 75,
+        chunkK: 80,
+        tagSeed: '0xaabbccdd11223344',
+        dpfNIndex: 12,
+        dpfNChunk: 13,
+        hasBucketMerkle: true,
+        indexMasterSeed: '0x0102030405060708',
+        chunkMasterSeed: '0x1112131415161718',
+        anchorKind: 2,
+        anchorHex: 'ab'.repeat(72),
+      }],
+    });
+
+    expect(catalog.databases).toEqual([expect.objectContaining({
+      dbId: 1,
+      baseHeight: 940611,
+      height: 948454,
+      indexBinsPerTable: 4096,
+      chunkBinsPerTable: 8192,
+      tagSeed: 0xaabbccdd11223344n,
+      indexMasterSeed: 0x0102030405060708n,
+      chunkMasterSeed: 0x1112131415161718n,
+      hasBucketMerkle: true,
+      anchorKind: 2,
+      anchorHex: 'ab'.repeat(72),
+    })]);
+  });
+
+  it('rejects a malformed catalog instead of silently planning against defaults', () => {
+    expect(() => databaseCatalogFromWasmJson({ databases: [{ dbId: -1 }] }))
+      .toThrow(/invalid databases\[0\]\.dbId/);
+    expect(() => databaseCatalogFromWasmJson({})).toThrow(/missing databases/);
   });
 });

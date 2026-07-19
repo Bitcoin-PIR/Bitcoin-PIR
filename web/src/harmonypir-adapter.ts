@@ -14,8 +14,9 @@
  *   * A side-channel `ManagedWebSocket` to the query server — the WASM
  *     client owns its own transport sockets internally, but those
  *     aren't exposed to JS. The side-channel carries
- *     `REQ_GET_INFO_JSON` + `REQ_GET_DB_CATALOG` at connect time (for
- *     Merkle-root / catalog accessors that must return synchronously).
+ *     `REQ_GET_INFO_JSON` for diagnostic details only. The canonical catalog,
+ *     sync plan, Merkle availability, and roots come from the post-upgrade
+ *     native connection and installed proof handles.
  *   * IndexedDB plumbing — the native `HarmonyClient`'s `save_hints` /
  *     `load_hints` API produces opaque byte blobs; this adapter
  *     persists them through `harmonypir_hint_db.ts` keyed on
@@ -57,7 +58,7 @@ import {
   scriptHash as computeScriptHash,
 } from './hash.js';
 import {
-  fetchDatabaseCatalog,
+  databaseCatalogFromWasmJson,
   fetchServerInfoJson,
   type BucketMerkleInfoJson,
   type DatabaseCatalog,
@@ -72,14 +73,16 @@ import {
   type WasmQueryResult,
 } from './sdk-bridge.js';
 import {
-  databaseProofUnavailable,
-  verifiedDatabaseProofFromWasm,
-  verifyDatabaseProofAgainstPin,
   type DatabaseProofPin,
   type DatabaseProofStatus,
 } from './db-proof.js';
 import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
 import { gateOperatorIdentity, type OperatorIdentity, type ServerAttestation } from './dpf-adapter.js';
+import {
+  assertStrictDatabasePinCoverage,
+  assertStrictTransportReady,
+  verifyInstallAndPreflightDatabaseProofs,
+} from './strict-verification.js';
 import type {
   HarmonyQueryResult,
   HarmonyUtxoEntry,
@@ -115,6 +118,10 @@ export interface HarmonyPirClientConfig {
    * Set `false` to keep the connection in cleartext for debugging.
    */
   useSecureChannel?: boolean;
+  /** Fail closed on the complete transport, operator, database-proof, and
+   * tree-top gate before hints or address queries. Production enables this
+   * explicitly; the library default remains advisory. */
+  strictVerification?: boolean;
   /** Fires once per server after `connectQueryServer()` resolves the
    *  per-server attestation. `serverIndex` 0 = hint server, 1 = query
    *  server (matches `serverUrls()` order). */
@@ -136,6 +143,11 @@ export interface HarmonyPirClientConfig {
    */
   expectedServer0Pin?: import('./attest-pin.js').ServerAttestPin;
   expectedServer1Pin?: import('./attest-pin.js').ServerAttestPin;
+  /** Expected operator-endorsed identity for each transport endpoint.
+   * Strict mode requires both non-empty IDs and rejects duplicate endpoint
+   * identities. Production uses hint=`pir1`, query=`pir2`. */
+  expectedServer0Id?: string;
+  expectedServer1Id?: string;
   /**
    * Opt-in operator-signed identity (REQ_ANNOUNCE) verification, mirroring
    * `BatchPirClientConfig`. When `true`, after attesting both servers the
@@ -178,6 +190,8 @@ export class HarmonyPirClientAdapter {
   private serverInfo: ServerInfoJson | null = null;
   private catalog: DatabaseCatalog | null = null;
   private dbId = 0;
+  private secureChannelEstablished = false;
+  private strictReady = false;
   /** Whether any hints are loaded (main or restored from cache). */
   hintsLoaded = false;
   /**
@@ -241,6 +255,7 @@ export class HarmonyPirClientAdapter {
    */
   private async attestAndUpgrade(): Promise<void> {
     if (!this.wasmClient) return;
+    this.secureChannelEstablished = false;
 
     const attestOne = async (idx: 0 | 1): Promise<WasmAttestVerification | null> => {
       try {
@@ -252,162 +267,185 @@ export class HarmonyPirClientAdapter {
       }
     };
 
-    // Sequential — same reasoning as dpf-adapter::attestAndUpgrade:
-    // both calls target the same WasmHarmonyClient and the underlying
-    // `&mut self` borrow serializes them. Promise.all wedges.
-    const hintAtt = await attestOne(0);
-    const queryAtt = await attestOne(1);
+    let hintAtt: WasmAttestVerification | null = null;
+    let queryAtt: WasmAttestVerification | null = null;
+    try {
+      // Sequential — same reasoning as dpf-adapter::attestAndUpgrade:
+      // both calls target the same WasmHarmonyClient and the underlying
+      // `&mut self` borrow serializes them. Promise.all wedges.
+      hintAtt = await attestOne(0);
+      queryAtt = await attestOne(1);
 
-    // Same default-to-WASM-export logic as the DPF adapter — see
-    // dpf-adapter.ts::attestAndUpgrade for rationale.
-    let expectedArkFp: Uint8Array | null;
-    if (this.config.expectedArkFingerprint === null) {
-      expectedArkFp = null;
-    } else if (this.config.expectedArkFingerprint !== undefined) {
-      expectedArkFp = this.config.expectedArkFingerprint;
-    } else {
-      try {
-        expectedArkFp = getAmdTurinArkFingerprint();
-      } catch (e) {
-        this.log(
-          `HarmonyPIR default ARK fingerprint unavailable: ${(e as Error)?.message ?? e}`,
-        );
+      // Same default-to-WASM-export logic as the DPF adapter — see
+      // dpf-adapter.ts::attestAndUpgrade for rationale.
+      let expectedArkFp: Uint8Array | null;
+      if (this.config.expectedArkFingerprint === null) {
         expectedArkFp = null;
-      }
-    }
-
-    const sdk = requireSdkWasm();
-    const policyReqs = new sdk.WasmPolicyRequirements();
-
-    const summarise = (
-      idx: 0 | 1,
-      att: WasmAttestVerification | null,
-    ): ServerAttestation => {
-      if (!att) return { state: 'mismatch' };
-      const allZero = att.serverStaticPub.every((b) => b === 0);
-      const matched = att.sevStatus === 'reportDataMatch';
-      const noSev = att.sevStatus === 'noSevHost';
-      const channelOk = matched || noSev;
-      let state: ServerAttestation['state'];
-      if (allZero) state = 'plaintext';
-      else if (!channelOk) state = 'mismatch';
-      else state = 'verified';
-      const result: ServerAttestation = {
-        state,
-        sevStatus: att.sevStatus,
-        serverStaticPubHex: att.serverStaticPubHex,
-        binarySha256Hex: att.binarySha256Hex,
-        gitRev: att.gitRev,
-        launchMeasurementHex: att.launchMeasurementHex,
-      };
-      // Slice D.3+ chain + policy validation. Same gating logic as
-      // the DPF adapter — see dpf-adapter.ts::attestAndUpgrade.
-      if (state === 'verified' && matched && att.hasVcekChain) {
-        if (expectedArkFp) {
-          try {
-            att.verifyFull(expectedArkFp, policyReqs);
-            result.state = 'verified-vcek';
-            result.vcekChain = 'pass';
-          } catch (e) {
-            result.vcekChain = 'fail';
-            result.vcekChainError = (e as Error)?.message ?? String(e);
-            this.log(
-              `HarmonyPIR verifyFull failed: ${result.vcekChainError}`,
-            );
-            result.state = 'mismatch';
-          }
-        } else {
-          result.vcekChain = 'skipped';
-        }
-      } else if (state === 'verified' && matched && !att.hasVcekChain) {
-        result.vcekChain = 'skipped';
-      }
-      // Slice 3 build-time pin enforcement. See dpf-adapter.ts::summarise
-      // for the rationale + same shape.
-      const pin =
-        idx === 0 ? this.config.expectedServer0Pin : this.config.expectedServer1Pin;
-      if (pin) {
-        const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
-        if (stateOk) {
-          if (pin.measurementHex && !att.launchMeasurementHex) {
-            result.pinStatus = 'measurement-mismatch';
-            result.pinError = `MEASUREMENT pin required (${pin.measurementHex.slice(0, 16)}…) but server report omitted launch MEASUREMENT`;
-            result.state = 'mismatch';
-            this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
-          } else if (
-            pin.measurementHex &&
-            pin.measurementHex.toLowerCase() !== att.launchMeasurementHex!.toLowerCase()
-          ) {
-            result.pinStatus = 'measurement-mismatch';
-            result.pinError = `MEASUREMENT pin mismatch — expected ${pin.measurementHex.slice(0, 16)}…, got ${att.launchMeasurementHex.slice(0, 16)}…`;
-            result.state = 'mismatch';
-            this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
-          } else if (
-            pin.binarySha256Hex &&
-            att.binarySha256Hex &&
-            pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
-          ) {
-            result.pinStatus = 'binary-mismatch';
-            result.pinError = `binary_sha256 pin mismatch — expected ${pin.binarySha256Hex.slice(0, 16)}…, got ${att.binarySha256Hex.slice(0, 16)}…`;
-            result.state = 'mismatch';
-            this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
-          } else {
-            result.pinStatus = 'match';
-          }
-        }
+      } else if (this.config.expectedArkFingerprint !== undefined) {
+        expectedArkFp = this.config.expectedArkFingerprint;
       } else {
-        result.pinStatus = 'no-pin';
+        try {
+          expectedArkFp = getAmdTurinArkFingerprint();
+        } catch (e) {
+          this.log(
+            `HarmonyPIR default ARK fingerprint unavailable: ${(e as Error)?.message ?? e}`,
+          );
+          expectedArkFp = null;
+        }
       }
-      return result;
-    };
 
-    this.attestation.hint = summarise(0, hintAtt);
-    this.attestation.query = summarise(1, queryAtt);
-    this.config.onAttestation?.(0, this.attestation.hint);
-    this.config.onAttestation?.(1, this.attestation.query);
-
-    const channelReady = (s: ServerAttestation['state']) =>
-      s === 'verified' || s === 'verified-vcek';
-    if (
-      channelReady(this.attestation.hint.state)
-      && channelReady(this.attestation.query.state)
-      && hintAtt
-      && queryAtt
-    ) {
+      const sdk = requireSdkWasm();
+      const policyReqs = new sdk.WasmPolicyRequirements();
       try {
-        await this.wasmClient.upgradeToSecureChannel(
-          hintAtt.serverStaticPub,
-          queryAtt.serverStaticPub,
-        );
-        this.log('HarmonyPIR: upgraded to encrypted channel (cloudflared blind)');
-      } catch (e) {
-        this.log(`HarmonyPIR upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`);
-        this.attestation.hint = { ...this.attestation.hint, state: 'mismatch' };
-        this.attestation.query = { ...this.attestation.query, state: 'mismatch' };
+
+        const summarise = (
+          idx: 0 | 1,
+          att: WasmAttestVerification | null,
+        ): ServerAttestation => {
+          if (!att) return { state: 'mismatch' };
+          const allZero = att.serverStaticPub.every((b) => b === 0);
+          const matched = att.sevStatus === 'reportDataMatch';
+          const noSev = att.sevStatus === 'noSevHost';
+          const channelOk = matched || noSev;
+          let state: ServerAttestation['state'];
+          if (allZero) state = 'plaintext';
+          else if (!channelOk) state = 'mismatch';
+          else state = 'verified';
+          const result: ServerAttestation = {
+            state,
+            sevStatus: att.sevStatus,
+            serverStaticPubHex: att.serverStaticPubHex,
+            binarySha256Hex: att.binarySha256Hex,
+            gitRev: att.gitRev,
+            launchMeasurementHex: att.launchMeasurementHex,
+          };
+          // Slice D.3+ chain + policy validation. Same gating logic as
+          // the DPF adapter — see dpf-adapter.ts::attestAndUpgrade.
+          if (state === 'verified' && matched && att.hasVcekChain) {
+            if (expectedArkFp) {
+              try {
+                att.verifyFull(expectedArkFp, policyReqs);
+                result.state = 'verified-vcek';
+                result.vcekChain = 'pass';
+              } catch (e) {
+                result.vcekChain = 'fail';
+                result.vcekChainError = (e as Error)?.message ?? String(e);
+                this.log(
+                  `HarmonyPIR verifyFull failed: ${result.vcekChainError}`,
+                );
+                result.state = 'mismatch';
+              }
+            } else {
+              result.vcekChain = 'skipped';
+            }
+          } else if (state === 'verified' && matched && !att.hasVcekChain) {
+            result.vcekChain = 'skipped';
+          }
+          // Slice 3 build-time pin enforcement. See dpf-adapter.ts::summarise
+          // for the rationale + same shape.
+          const pin =
+            idx === 0 ? this.config.expectedServer0Pin : this.config.expectedServer1Pin;
+          if (pin) {
+            const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
+            if (stateOk) {
+              if (pin.measurementHex && !att.launchMeasurementHex) {
+                result.pinStatus = 'measurement-mismatch';
+                result.pinError = `MEASUREMENT pin required (${pin.measurementHex.slice(0, 16)}…) but server report omitted launch MEASUREMENT`;
+                result.state = 'mismatch';
+                this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
+              } else if (
+                pin.measurementHex &&
+                pin.measurementHex.toLowerCase() !== att.launchMeasurementHex!.toLowerCase()
+              ) {
+                result.pinStatus = 'measurement-mismatch';
+                result.pinError = `MEASUREMENT pin mismatch — expected ${pin.measurementHex.slice(0, 16)}…, got ${att.launchMeasurementHex.slice(0, 16)}…`;
+                result.state = 'mismatch';
+                this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
+              } else if (
+                pin.binarySha256Hex &&
+                !att.binarySha256Hex
+              ) {
+                result.pinStatus = 'binary-mismatch';
+                result.pinError = `binary_sha256 pin required (${pin.binarySha256Hex.slice(0, 16)}…) but server report omitted binary_sha256`;
+                result.state = 'mismatch';
+                this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
+              } else if (
+                pin.binarySha256Hex &&
+                att.binarySha256Hex &&
+                pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
+              ) {
+                result.pinStatus = 'binary-mismatch';
+                result.pinError = `binary_sha256 pin mismatch — expected ${pin.binarySha256Hex.slice(0, 16)}…, got ${att.binarySha256Hex.slice(0, 16)}…`;
+                result.state = 'mismatch';
+                this.log(`HarmonyPIR ${idx === 0 ? 'hint' : 'query'}: ${result.pinError}`);
+              } else {
+                result.pinStatus = 'match';
+              }
+            }
+          } else {
+            result.pinStatus = 'no-pin';
+          }
+          return result;
+        };
+
+        this.attestation.hint = summarise(0, hintAtt);
+        this.attestation.query = summarise(1, queryAtt);
         this.config.onAttestation?.(0, this.attestation.hint);
         this.config.onAttestation?.(1, this.attestation.query);
+
+        const channelReady = (s: ServerAttestation['state']) =>
+          s === 'verified' || s === 'verified-vcek';
+        if (
+          channelReady(this.attestation.hint.state)
+          && channelReady(this.attestation.query.state)
+          && hintAtt
+          && queryAtt
+        ) {
+          try {
+            await this.wasmClient.upgradeToSecureChannel(
+              hintAtt.serverStaticPub,
+              queryAtt.serverStaticPub,
+            );
+            this.secureChannelEstablished = true;
+            this.log('HarmonyPIR: upgraded to encrypted channel (cloudflared blind)');
+          } catch (e) {
+            this.log(`HarmonyPIR upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`);
+            this.attestation.hint = { ...this.attestation.hint, state: 'mismatch' };
+            this.attestation.query = { ...this.attestation.query, state: 'mismatch' };
+            this.config.onAttestation?.(0, this.attestation.hint);
+            this.config.onAttestation?.(1, this.attestation.query);
+          }
+        } else {
+          this.log(
+            `HarmonyPIR channel left in cleartext (hint=${this.attestation.hint.state},`
+            + ` query=${this.attestation.query.state})`,
+          );
+        }
+
+        // Operator-signed identity (REQ_ANNOUNCE), opt-in. After the channel
+        // decision so announce() rides the encrypted channel when it came up;
+        // binds against the attested serverStaticPub from hintAtt/queryAtt
+        // (still alive here — freed just below). Mirrors the DPF adapter.
+        if (this.config.verifyOperatorIdentity) {
+          const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
+          this.operatorIdentity.hint = await this.verifyOperatorIdentityOne(0, hintAtt, pin);
+          this.operatorIdentity.query = await this.verifyOperatorIdentityOne(1, queryAtt, pin);
+          this.config.onOperatorIdentity?.(0, this.operatorIdentity.hint);
+          this.config.onOperatorIdentity?.(1, this.operatorIdentity.query);
+        }
+
+      } finally {
+        policyReqs.free();
       }
-    } else {
-      this.log(
-        `HarmonyPIR channel left in cleartext (hint=${this.attestation.hint.state},`
-        + ` query=${this.attestation.query.state})`,
-      );
+    } finally {
+      // Keep the attestation allocations scoped to this bootstrap even when
+      // a UI callback, field projection, identity check, or upgrade throws.
+      try {
+        hintAtt?.free();
+      } finally {
+        queryAtt?.free();
+      }
     }
-
-    // Operator-signed identity (REQ_ANNOUNCE), opt-in. After the channel
-    // decision so announce() rides the encrypted channel when it came up;
-    // binds against the attested serverStaticPub from hintAtt/queryAtt
-    // (still alive here — freed just below). Mirrors the DPF adapter.
-    if (this.config.verifyOperatorIdentity) {
-      const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
-      this.operatorIdentity.hint = await this.verifyOperatorIdentityOne(0, hintAtt, pin);
-      this.operatorIdentity.query = await this.verifyOperatorIdentityOne(1, queryAtt, pin);
-      this.config.onOperatorIdentity?.(0, this.operatorIdentity.hint);
-      this.config.onOperatorIdentity?.(1, this.operatorIdentity.query);
-    }
-
-    hintAtt?.free();
-    queryAtt?.free();
   }
 
   /**
@@ -475,6 +513,7 @@ export class HarmonyPirClientAdapter {
       this.config.hintServerUrl,
       this.config.queryServerUrl,
     );
+    this.wasmClient.setRequireVerifiedDatabaseRoots(this.isStrictVerification());
     const backend = this.config.prpBackend ?? 0;
     this.wasmClient.setPrpBackend(backend);
     // Pin the adapter's master PRP key NOW, before any hints are fetched.
@@ -497,35 +536,21 @@ export class HarmonyPirClientAdapter {
    */
   async connectQueryServer(): Promise<void> {
     if (!this.wasmClient) throw new Error('loadWasm() must be called first');
-    // WASM-side dual connection (hint + query).
-    await this.wasmClient.connect();
-
-    // Optionally attest both servers and upgrade to the encrypted
-    // channel BEFORE fetching the catalog. After this, every PIR
-    // request (hint fetch, query, Merkle sibling batch) goes through
-    // the AEAD-sealed frame layer; cloudflared only sees ciphertext.
-    if (this.config.useSecureChannel !== false) {
-      await this.attestAndUpgrade();
+    try {
+      this.resetVerificationState();
+      if (this.isStrictVerification() && this.config.useSecureChannel === false) {
+        throw new Error('strict verification requires the secure channel');
+      }
+      await this.establishNativeSession();
+      await this.connectDiagnosticSocket();
+      this.log('Connected to HarmonyPIR servers');
+    } catch (error) {
+      this.strictReady = false;
+      this.secureChannelEstablished = false;
+      this.disconnectQueryServer();
+      await this.freeWasmClient().catch(() => { /* keep original error */ });
+      throw error;
     }
-
-    // Populate the native-side catalog so subsequent hint fetches and
-    // query batches (which go through the native client) can resolve
-    // `db_id`. The side-channel `fetchServerInfo` below only populates
-    // the TS-side `this.catalog`. Matches the DPF adapter pattern.
-    await this.wasmClient.fetchCatalog();
-    await this.verifyConfiguredDatabaseProofs();
-
-    // Side-channel for server-info JSON requests.
-    this.queryWs = new ManagedWebSocket({
-      url: this.config.queryServerUrl,
-      label: 'HarmonyPIR Query Server',
-      onLog: (msg, _level) => this.log(msg),
-      onClose: () => {
-        this.externalCloseCallback?.();
-      },
-    });
-    await this.queryWs.connect();
-    this.log('Connected to HarmonyPIR servers');
   }
 
   /**
@@ -535,8 +560,14 @@ export class HarmonyPirClientAdapter {
    */
   async fetchServerInfo(): Promise<void> {
     if (!this.queryWs) throw new Error('connectQueryServer() must be called first');
-    this.serverInfo = await fetchServerInfoJson(this.queryWs);
-    this.catalog = await fetchDatabaseCatalog(this.queryWs);
+    try {
+      this.serverInfo = await fetchServerInfoJson(this.queryWs);
+    } catch (error) {
+      this.serverInfo = null;
+      this.log(
+        `HarmonyPIR server diagnostics unavailable: ${(error as Error)?.message ?? error}`,
+      );
+    }
   }
 
   /**
@@ -561,6 +592,9 @@ export class HarmonyPirClientAdapter {
    */
   async fetchHints(): Promise<void> {
     if (!this.wasmClient) throw new Error('loadWasm() must be called first');
+    if (this.isStrictVerification() && !this.strictReady) {
+      throw new Error('strict verification is not ready');
+    }
     this.log('Hints: downloading…');
     this.wasmClient.setDbId(this.dbId);
     const sdkCatalog = this.catalogToSdkHandle();
@@ -608,37 +642,32 @@ export class HarmonyPirClientAdapter {
   private async verifyConfiguredDatabaseProofs(): Promise<void> {
     if (!this.wasmClient) return;
     const pins = this.config.databaseProofPins ?? [];
-    for (const pin of pins) {
-      let status: DatabaseProofStatus;
-      try {
-        const proofHandle = await this.wasmClient.verifyDatabaseProof(
-          pin.dbId,
-          pin.paramsHashHex,
-          pin.builderBinarySha256Hex,
-          pin.builderGitCommit,
-        );
-        try {
-          const proof = verifiedDatabaseProofFromWasm(proofHandle);
-          status = verifyDatabaseProofAgainstPin(proof, pin);
-        } finally {
-          proofHandle.free();
-        }
-      } catch (e) {
-        status = databaseProofUnavailable(pin, e);
-      }
-      this.databaseProofs.set(pin.dbId, status);
-      this.config.onDatabaseProof?.(pin.dbId, status);
-      if (status.state === 'verified') {
-        this.log(
-          `DB proof db ${pin.dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
-        );
-      } else if (status.state === 'unavailable') {
-        this.log(`DB proof db ${pin.dbId}: unavailable (${status.error})`);
-      } else {
-        this.log(
-          `DB proof db ${pin.dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
-        );
-      }
+    if (pins.length === 0 && !this.isStrictVerification()) return;
+    try {
+      await verifyInstallAndPreflightDatabaseProofs({
+        client: this.wasmClient,
+        pins,
+        onStatus: (dbId, status) => {
+          this.databaseProofs.set(dbId, status);
+          this.config.onDatabaseProof?.(dbId, status);
+          if (status.state === 'verified') {
+            this.log(
+              `DB proof db ${dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
+            );
+          } else if (status.state === 'unavailable') {
+            this.log(`DB proof db ${dbId}: unavailable (${status.error})`);
+          } else {
+            this.log(
+              `DB proof db ${dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
+            );
+          }
+        },
+      });
+    } catch (error) {
+      if (this.isStrictVerification()) throw error;
+      this.log(
+        `Advisory database verification did not complete: ${(error as Error)?.message ?? error}`,
+      );
     }
   }
 
@@ -657,6 +686,9 @@ export class HarmonyPirClientAdapter {
     dbId?: number,
   ): Promise<Map<number, HarmonyQueryResult>> {
     if (!this.wasmClient) throw new Error('Not connected');
+    if (this.isStrictVerification() && !this.strictReady) {
+      throw new Error('strict verification is not ready');
+    }
     if (dbId !== undefined && dbId !== this.dbId) {
       throw new Error(
         `queryBatch dbId=${dbId} does not match active dbId=${this.dbId}; ` +
@@ -725,20 +757,19 @@ export class HarmonyPirClientAdapter {
   // ══ Merkle accessors ═══════════════════════════════════════════════════
 
   hasMerkle(): boolean {
-    const mb = this.serverInfo?.merkle_bucket;
-    return !!(mb && mb.index_levels.length > 0);
+    return this.catalog?.databases.some((db) => db.hasBucketMerkle) ?? false;
   }
 
   hasMerkleForDb(dbId: number): boolean {
-    const info = this.getBucketMerkleForDb(dbId);
-    return !!(info && info.index_levels.length > 0);
+    return this.getCatalogEntry(dbId)?.hasBucketMerkle ?? false;
   }
 
   getMerkleRootHex(): string | undefined {
-    return (
-      this.getBucketMerkleForDb(this.dbId)?.super_root
-      ?? this.serverInfo?.merkle_bucket?.super_root
-    );
+    const proofRoot = this.databaseProofs.get(this.dbId)?.proof?.bucketSuperRootHex;
+    if (proofRoot) return proofRoot;
+    if (this.isStrictVerification()) return undefined;
+    return this.getBucketMerkleForDb(this.dbId)?.super_root
+      ?? this.serverInfo?.merkle_bucket?.super_root;
   }
 
   private getBucketMerkleForDb(dbId: number): BucketMerkleInfoJson | undefined {
@@ -756,6 +787,9 @@ export class HarmonyPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<boolean[]> {
     if (!this.wasmClient) throw new Error('Not connected');
+    if (this.isStrictVerification() && !this.strictReady) {
+      throw new Error('strict verification is not ready');
+    }
     onProgress?.('Merkle', `verifying ${results.length} items`);
 
     const jsonArr: any[] = results.map((r) => {
@@ -915,6 +949,11 @@ export class HarmonyPirClientAdapter {
   disconnectQueryServer(): void {
     this.queryWs?.disconnect();
     this.queryWs = null;
+    if (this.isStrictVerification()) {
+      // A later reconnect must rebuild channel and database-root trust for a
+      // fresh native session before queries become available again.
+      this.strictReady = false;
+    }
   }
 
   isQueryServerConnected(): boolean {
@@ -927,26 +966,38 @@ export class HarmonyPirClientAdapter {
 
   async reconnectQueryServer(): Promise<void> {
     this.disconnectQueryServer();
-    // Re-open the WASM client's internal hint + query sockets if they
-    // dropped (e.g. server-side idle timeout). Without this, the next
-    // `queryBatch` hits `send on non-open socket (state=3)` even though
-    // the UI-side side-channel is healthy. `isConnected` on the WASM
-    // client tracks the native `HarmonyClient`'s view; if it still says
-    // connected we skip re-opening to avoid orphaning live sockets.
-    if (this.wasmClient && !this.wasmClient.isConnected) {
-      await this.wasmClient.connect();
+    if (!this.wasmClient) throw new Error('loadWasm() must be called first');
+    try {
+      if (this.isStrictVerification()) {
+        // Native disconnect clears installed roots, catalog, and tree-top cache.
+        // Re-run the complete bootstrap so root rotation cannot reuse old state.
+        if (this.wasmClient.isConnected) {
+          await this.wasmClient.disconnect();
+        }
+        this.hintsLoaded = false;
+        this.resetVerificationState();
+        this.wasmClient.setRequireVerifiedDatabaseRoots(true);
+        await this.establishNativeSession();
+      } else if (!this.wasmClient.isConnected) {
+        // Advisory compatibility path.
+        await this.wasmClient.connect();
+      }
+      await this.connectDiagnosticSocket();
+      await this.fetchServerInfo();
+      this.log(
+        this.hintsLoaded
+          ? 'Reconnected to Query Server (hints preserved)'
+          : 'Reconnected to Query Server',
+      );
+    } catch (error) {
+      // A strict rebuild may fail after opening only part of the transport or
+      // after allocating a fresh proof/catalog session. Leave no reconnectable
+      // half-session behind; the caller can construct/load a fresh client.
+      this.disconnectQueryServer();
+      this.hintsLoaded = false;
+      await this.freeWasmClient().catch(() => { /* keep original error */ });
+      throw error;
     }
-    this.queryWs = new ManagedWebSocket({
-      url: this.config.queryServerUrl,
-      label: 'HarmonyPIR Query Server',
-      onLog: (msg, _level) => this.log(msg),
-      onClose: () => {
-        this.externalCloseCallback?.();
-      },
-    });
-    await this.queryWs.connect();
-    await this.fetchServerInfo();
-    this.log('Reconnected to Query Server (hints preserved)');
   }
 
   /**
@@ -959,6 +1010,11 @@ export class HarmonyPirClientAdapter {
    * Nulls the handle up front so a concurrent call can't double-free.
    */
   private async freeWasmClient(): Promise<void> {
+    this.strictReady = false;
+    this.secureChannelEstablished = false;
+    this.catalog = null;
+    this.serverInfo = null;
+    this.databaseProofs.clear();
     const client = this.wasmClient;
     if (!client) return;
     this.wasmClient = null;
@@ -972,6 +1028,8 @@ export class HarmonyPirClientAdapter {
 
   /** Full teardown — closes transports and frees WASM state. */
   disconnect(): void {
+    this.strictReady = false;
+    this.secureChannelEstablished = false;
     this.queryWs?.disconnect();
     this.queryWs = null;
     // `freeWasmClient()` is async (awaits the WASM `disconnect()` before
@@ -1010,6 +1068,86 @@ export class HarmonyPirClientAdapter {
   }
 
   // ══ Internal ═══════════════════════════════════════════════════════════
+
+  private isStrictVerification(): boolean {
+    return this.config.strictVerification === true;
+  }
+
+  private resetVerificationState(): void {
+    this.strictReady = false;
+    this.secureChannelEstablished = false;
+    this.catalog = null;
+    this.serverInfo = null;
+    this.databaseProofs.clear();
+    this.attestation = {
+      hint: { state: 'unattested' },
+      query: { state: 'unattested' },
+    };
+    this.operatorIdentity = {
+      hint: { state: 'not-checked' },
+      query: { state: 'not-checked' },
+    };
+  }
+
+  private async establishNativeSession(): Promise<void> {
+    if (!this.wasmClient) throw new Error('loadWasm() must be called first');
+    await this.wasmClient.connect();
+    if (this.config.useSecureChannel !== false) {
+      await this.attestAndUpgrade();
+    }
+    if (this.isStrictVerification()) {
+      assertStrictTransportReady({
+        secureChannelEstablished: this.secureChannelEstablished,
+        attestations: [this.attestation.hint, this.attestation.query],
+        expectedPins: [this.config.expectedServer0Pin, this.config.expectedServer1Pin],
+        expectedServerIds: [this.config.expectedServer0Id, this.config.expectedServer1Id],
+        requireOperatorIdentity: this.config.verifyOperatorIdentity === true,
+        operatorIdentities: [this.operatorIdentity.hint, this.operatorIdentity.query],
+      });
+    }
+
+    const catalogHandle = await this.wasmClient.fetchCatalog();
+    try {
+      this.catalog = databaseCatalogFromWasmJson(catalogHandle.toJson());
+    } finally {
+      catalogHandle.free();
+    }
+    if (this.isStrictVerification()) this.assertPinsCoverCatalog();
+    await this.verifyConfiguredDatabaseProofs();
+    this.strictReady = this.isStrictVerification();
+  }
+
+  private assertPinsCoverCatalog(): void {
+    if (!this.catalog) throw new Error('strict verification requires a database catalog');
+    assertStrictDatabasePinCoverage(
+      this.catalog.databases.map((db) => db.dbId),
+      this.config.databaseProofPins ?? [],
+    );
+  }
+
+  private async connectDiagnosticSocket(): Promise<void> {
+    const socket = new ManagedWebSocket({
+      url: this.config.queryServerUrl,
+      label: 'HarmonyPIR Query Server',
+      onLog: (msg, _level) => this.log(msg),
+      onClose: () => {
+        // `disconnect()` closes asynchronously. Ignore the old socket's late
+        // close event if a replacement diagnostic session already exists.
+        if (this.queryWs !== socket) return;
+        this.queryWs = null;
+        if (this.isStrictVerification()) this.strictReady = false;
+        this.externalCloseCallback?.();
+      },
+    });
+    this.queryWs = socket;
+    try {
+      await socket.connect();
+    } catch (error) {
+      if (this.queryWs === socket) this.queryWs = null;
+      socket.disconnect();
+      throw error;
+    }
+  }
 
   /** Build a `WasmDatabaseCatalog` handle from the cached catalog. */
   private catalogToSdkHandle(): any {

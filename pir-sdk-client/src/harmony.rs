@@ -642,6 +642,32 @@ impl HarmonyClient {
         self.verified_tree_tops.clear();
     }
 
+    /// Clear all catalog, proof, Merkle, and hint state bound to the current
+    /// transport session.  Persisted hint bytes remain available on disk, but
+    /// must be re-bound through the normal catalog/fingerprint path.
+    fn invalidate_session_bindings(&mut self) {
+        self.catalog = None;
+        self.clear_verified_database_roots();
+        self.invalidate_groups();
+    }
+
+    /// Gracefully close and remove every primary/secondary transport slot.
+    /// This also handles partial failed sessions before a real re-dial.
+    async fn close_transport_slots(&mut self) {
+        if let Some(mut conn) = self.hint_conn.take() {
+            let _ = conn.close().await;
+        }
+        if let Some(mut conn) = self.hint_conn_secondary.take() {
+            let _ = conn.close().await;
+        }
+        if let Some(mut conn) = self.query_conn.take() {
+            let _ = conn.close().await;
+        }
+        if let Some(mut conn) = self.query_conn_secondary.take() {
+            let _ = conn.close().await;
+        }
+    }
+
     pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
         self.verified_roots.get(db_id)
     }
@@ -664,6 +690,35 @@ impl HarmonyClient {
         )?;
         self.verified_tree_tops.insert(db.db_id, tops);
         Ok(())
+    }
+
+    /// Fetch and bind the bucket Merkle tree-tops for `db_id` to an
+    /// explicitly installed database proof before any private query is sent.
+    ///
+    /// Web clients call this after the Rust proof verifier and TypeScript
+    /// production-pin comparison, so a mismatched tree-top is rejected before
+    /// an address query can leave the browser.
+    pub async fn preflight_verified_database(&mut self, db_id: u8) -> PirResult<()> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "db_id {} has no installed database proof",
+                db_id
+            )));
+        }
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
+        let catalog = match &self.catalog {
+            Some(catalog) => catalog.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        let db = catalog
+            .databases
+            .iter()
+            .find(|db| db.db_id == db_id)
+            .cloned()
+            .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
+        self.preflight_bucket_tree_tops(&db).await
     }
 
     /// Fetch and verify the attested-builder proof bundle for `db_id`.
@@ -986,13 +1041,18 @@ impl HarmonyClient {
         self.hint_conn = Some(Box::new(wrapped_hint));
         self.query_conn = Some(Box::new(wrapped_query));
 
-        // Drop the secondary query socket on secure-channel upgrade —
+        // Drop both secondary sockets on secure-channel upgrade —
         // the channel handshake is single-socket today, and parallel
-        // round-fanout would have to re-handshake the secondary too.
+        // hint downloads / round-fanout would have to re-handshake each
+        // secondary too.  Leaving the hint secondary installed would let
+        // later hint paths send cleartext after the primaries were secured.
         // Single-socket fallback is correct (just slower) under
         // secure-channel mode; ship parallel-pool channel as a
         // follow-up if real users hit this combination.
-        if let Some(ref mut c) = self.query_conn_secondary.take() {
+        if let Some(mut c) = self.hint_conn_secondary.take() {
+            let _ = c.close().await;
+        }
+        if let Some(mut c) = self.query_conn_secondary.take() {
             let _ = c.close().await;
         }
         Ok(())
@@ -1038,6 +1098,14 @@ impl HarmonyClient {
         hint_conn: Box<dyn PirTransport>,
         query_conn: Box<dyn PirTransport>,
     ) {
+        // An injected pair may replace a live pooled session.  Drop every
+        // old primary/secondary slot and every session-bound trust/hint value
+        // before making the new pair observable as connected.
+        self.hint_conn = None;
+        self.hint_conn_secondary = None;
+        self.query_conn = None;
+        self.query_conn_secondary = None;
+        self.invalidate_session_bindings();
         self.hint_conn = Some(hint_conn);
         self.query_conn = Some(query_conn);
         // Propagate any installed recorder to the injected transports so
@@ -5451,6 +5519,15 @@ impl PirClient for HarmonyClient {
 
     #[tracing::instrument(level = "info", skip_all, fields(backend = "harmony", hint = %self.hint_server_url, query = %self.query_server_url))]
     async fn connect(&mut self) -> PirResult<()> {
+        // Preserve a complete live session on duplicate connect calls.  A
+        // partial prior dial is instead replaced, so close all pool slots and
+        // invalidate catalog/root/tree-top/hint bindings before re-dialing.
+        if self.is_connected() {
+            return Ok(());
+        }
+        self.close_transport_slots().await;
+        self.invalidate_session_bindings();
+
         log::info!(
             "Connecting to HarmonyPIR servers: hint={}, query={}",
             self.hint_server_url,
@@ -5669,25 +5746,8 @@ impl PirClient for HarmonyClient {
 
     #[tracing::instrument(level = "info", skip_all, fields(backend = "harmony"))]
     async fn disconnect(&mut self) -> PirResult<()> {
-        if let Some(ref mut conn) = self.hint_conn {
-            let _ = conn.close().await;
-        }
-        if let Some(ref mut conn) = self.hint_conn_secondary {
-            let _ = conn.close().await;
-        }
-        if let Some(ref mut conn) = self.query_conn {
-            let _ = conn.close().await;
-        }
-        if let Some(ref mut conn) = self.query_conn_secondary {
-            let _ = conn.close().await;
-        }
-        self.hint_conn = None;
-        self.hint_conn_secondary = None;
-        self.query_conn = None;
-        self.query_conn_secondary = None;
-        self.catalog = None;
-        self.clear_verified_database_roots();
-        self.invalidate_groups();
+        self.close_transport_slots().await;
+        self.invalidate_session_bindings();
         self.fire_disconnect();
         self.notify_state(ConnectionState::Disconnected);
         Ok(())
@@ -6874,6 +6934,115 @@ mod kani_harnesses {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::mock::MockTransport;
+    use pir_db_attest::BuildKind;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    fn session_db_info() -> DatabaseInfo {
+        DatabaseInfo {
+            db_id: 7,
+            kind: DatabaseKind::Full,
+            name: "session-test".into(),
+            height: 100,
+            index_bins: 8,
+            chunk_bins: 8,
+            index_k: 1,
+            chunk_k: 1,
+            tag_seed: 0,
+            dpf_n_index: 3,
+            dpf_n_chunk: 3,
+            has_bucket_merkle: true,
+            index_master_seed: 1,
+            chunk_master_seed: 2,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
+        }
+    }
+
+    fn session_roots(db: &DatabaseInfo) -> VerifiedDatabaseRoots {
+        VerifiedDatabaseRoots {
+            db_id: db.db_id,
+            build_kind: BuildKind::Snapshot,
+            from_height: db.base_height(),
+            from_block_hash: [0; 32],
+            height: db.height,
+            block_hash: [1; 32],
+            muhash: [2; 32],
+            bucket_super_root: [3; 32],
+            onion_super_root: [4; 32],
+            params_hash: [5; 32],
+            network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
+            builder_binary_sha256: [6; 32],
+            builder_git_commit: "session-test".into(),
+        }
+    }
+
+    fn seed_verified_session(client: &mut HarmonyClient) -> u8 {
+        let db = session_db_info();
+        let db_id = db.db_id;
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db.clone()],
+        });
+        client
+            .install_verified_database_roots(session_roots(&db))
+            .unwrap();
+        client.verified_tree_tops.insert(
+            db_id,
+            vec![TreeTop {
+                cache_from_level: 0,
+                levels: vec![vec![[7; 32]]],
+            }],
+        );
+        db_id
+    }
+
+    struct CloseTrackingTransport {
+        url: &'static str,
+        closed: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl PirTransport for CloseTrackingTransport {
+        async fn send(&mut self, _data: Vec<u8>) -> PirResult<()> {
+            unreachable!("secondary transport must not be used during upgrade")
+        }
+
+        async fn recv(&mut self) -> PirResult<Vec<u8>> {
+            unreachable!("secondary transport must not be used during upgrade")
+        }
+
+        async fn roundtrip(&mut self, _request: &[u8]) -> PirResult<Vec<u8>> {
+            unreachable!("secondary transport must not be used during upgrade")
+        }
+
+        async fn close(&mut self) -> PirResult<()> {
+            self.closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn url(&self) -> &str {
+            self.url
+        }
+    }
+
+    fn handshake_frame(server_eph_byte: u8) -> Vec<u8> {
+        let mut payload = vec![0x06];
+        payload.extend_from_slice(&[server_eph_byte; 32]);
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    #[tokio::test]
+    async fn explicit_preflight_rejects_missing_root_even_in_advisory_mode() {
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        let error = client.preflight_verified_database(0).await.unwrap_err();
+        assert!(matches!(error, PirError::VerificationFailed(message) if
+            message.contains("no installed database proof")));
+    }
 
     #[test]
     fn test_new_client() {
@@ -6992,7 +7161,6 @@ mod tests {
     /// the core value prop of the `PirTransport` trait.
     #[test]
     fn connect_with_transport_marks_connected() {
-        use crate::transport::mock::MockTransport;
         let mut client =
             HarmonyClient::new("wss://mock-hint", "wss://mock-query");
         assert!(!client.is_connected());
@@ -7001,6 +7169,94 @@ mod tests {
             Box::new(MockTransport::new("wss://mock-query")),
         );
         assert!(client.is_connected());
+    }
+
+    #[test]
+    fn connect_with_transport_replacement_invalidates_verified_session() {
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://old-hint")),
+            Box::new(MockTransport::new("wss://old-query")),
+        );
+        let db_id = seed_verified_session(&mut client);
+        populate_main_groups(&mut client, &session_db_info());
+        assert!(!client.index_groups.is_empty());
+        assert!(!client.chunk_groups.is_empty());
+        client.hint_conn_secondary = Some(Box::new(MockTransport::new("wss://old-hint-2")));
+        client.query_conn_secondary = Some(Box::new(MockTransport::new("wss://old-query-2")));
+
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://new-hint")),
+            Box::new(MockTransport::new("wss://new-query")),
+        );
+
+        assert!(client.is_connected());
+        assert!(client.hint_conn_secondary.is_none());
+        assert!(client.query_conn_secondary.is_none());
+        assert!(client.catalog.is_none());
+        assert!(client.verified_database_roots(db_id).is_none());
+        assert!(!client.verified_tree_tops.contains_key(&db_id));
+        assert!(client.loaded_db_id.is_none());
+        assert!(client.index_groups.is_empty());
+        assert!(client.chunk_groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_connect_is_idempotent_for_verified_session() {
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        client.connect_with_transport(
+            Box::new(MockTransport::new("wss://mock-hint")),
+            Box::new(MockTransport::new("wss://mock-query")),
+        );
+        let db_id = seed_verified_session(&mut client);
+        populate_main_groups(&mut client, &session_db_info());
+
+        client.connect().await.unwrap();
+
+        assert!(client.catalog.is_some());
+        assert!(client.verified_database_roots(db_id).is_some());
+        assert!(client.verified_tree_tops.contains_key(&db_id));
+        assert_eq!(client.loaded_db_id, Some(db_id));
+        assert!(!client.index_groups.is_empty());
+        assert!(!client.chunk_groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn secure_upgrade_closes_both_plaintext_secondary_transports() {
+        let mut hint_primary = MockTransport::new("wss://hint-primary");
+        hint_primary.enqueue_response(handshake_frame(0x41));
+        let mut query_primary = MockTransport::new("wss://query-primary");
+        query_primary.enqueue_response(handshake_frame(0x42));
+
+        let hint_closed = Arc::new(AtomicBool::new(false));
+        let query_closed = Arc::new(AtomicBool::new(false));
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(Box::new(hint_primary), Box::new(query_primary));
+        client.hint_conn_secondary = Some(Box::new(CloseTrackingTransport {
+            url: "wss://hint-secondary",
+            closed: hint_closed.clone(),
+        }));
+        client.query_conn_secondary = Some(Box::new(CloseTrackingTransport {
+            url: "wss://query-secondary",
+            closed: query_closed.clone(),
+        }));
+
+        client
+            .upgrade_to_secure_channel_with_seeds(
+                [0x11; 32],
+                [0x21; 32],
+                [0x31; 32],
+                [0x12; 32],
+                [0x22; 32],
+                [0x32; 32],
+            )
+            .await
+            .unwrap();
+
+        assert!(client.hint_conn_secondary.is_none());
+        assert!(client.query_conn_secondary.is_none());
+        assert!(hint_closed.load(Ordering::SeqCst));
+        assert!(query_closed.load(Ordering::SeqCst));
     }
 
     // ─── Hint cache plumbing tests ─────────────────────────────────────────
