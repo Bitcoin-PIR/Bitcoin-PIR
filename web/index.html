@@ -1745,9 +1745,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (!el) return;
             const truncate = (hex, n = 16) =>
                 hex && hex.length > n ? `${hex.slice(0, n)}…` : (hex || '—');
+            const verifiedLabel = info.sevStatus === 'noSevHost'
+                ? '✓ Encrypted channel — binary pin (no hardware attestation)'
+                : '✓ Verified channel — report binding only (AMD chain not validated)';
             const stateLabel = {
                 'verified-vcek': '✓ Verified — AMD VCEK chain validated',
-                'verified':      '✓ Verified — V2 binding only (no chain)',
+                'verified':      verifiedLabel,
                 'mismatch':      '⚠ Mismatch — channel binding failed',
                 'plaintext':     '⚪ Plaintext — server has no channel pubkey',
                 'unattested':    '⏸ Unattested',
@@ -1948,6 +1951,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     mismatches: [],
                     error: 'waiting for verified live DB proof',
                 });
+                return;
+            }
+
+            // The published Bitcoin-history proof is the delta DB manifest:
+            // it proves both the 940,611 starting block and the 948,454 latest
+            // block against one BHTM root.  The snapshot DB has its own
+            // independently pinned database proof, but it must not be compared
+            // field-for-field with this delta manifest (different db id, build
+            // kind, and PIR roots).  Wait for the delta callback instead; it is
+            // emitted immediately after snapshot preflight in the strict flow.
+            if (
+                dbInfo.proof.dbId !== DELTA_940611_948454_DB_PROOF_PIN.dbId
+                || dbInfo.proof.buildKind !== DELTA_940611_948454_DB_PROOF_PIN.buildKind
+            ) {
                 return;
             }
 
@@ -2587,6 +2604,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             resetBasicVerification(['dpf0', 'dpf1']);
+            renderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', {
+                state: 'unavailable',
+                checks: [],
+                mismatches: [],
+                error: 'waiting for latest delta trust-chain proof',
+            });
 
             try {
                 log(`Connecting to servers...`);
@@ -2594,7 +2617,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 client = new BatchPirClientAdapter({
                     server0Url,
                     server1Url,
-                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                    strictVerification: true,
                     // Slice 3 build-time pins. Production topology: server0=pir1
                     // (Hetzner, no SEV — only binary sha pinnable), server1=pir2
                     // (VPSBG Tier 3 — both MEASUREMENT + binary sha pinned).
@@ -2602,6 +2625,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     // the operator re-bakes + republishes.
                     expectedServer0Pin: PIR1_PIN,
                     expectedServer1Pin: PIR2_TIER3_PIN,
+                    expectedServer0Id: 'pir1',
+                    expectedServer1Id: 'pir2',
                     databaseProofPins: PRODUCTION_DB_PROOF_PINS,
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
@@ -3877,11 +3902,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // Pending HarmonyPIR sync plan staged for confirmation.
         let hpPendingSync = null;
 
-        function hpRefreshSyncStateUI() {
+        function hpRefreshSyncStateUI(client = hpClient, hintsLoaded = hpHintsLoaded) {
             const row = document.getElementById('hp-syncStateRow');
             const label = document.getElementById('hp-syncStateLabel');
             const syncBtn = document.getElementById('hp-syncBtn');
-            if (!hpClient || !hpHintsLoaded) {
+            if (!client || !hintsLoaded) {
                 row.style.display = 'none';
                 if (syncBtn) syncBtn.disabled = true;
                 return;
@@ -4018,8 +4043,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return { entries, totalSats, isWhale: false };
         }
 
-        async function hpFetchHints() {
-            if (!hpClient) return;
+        async function hpFetchHints(client = hpClient) {
+            if (!client) return false;
             const offlineStatus = document.getElementById('hp-offlineStatus');
             const offlineFill = document.getElementById('hp-offlineFill');
             const offlineLabel = document.getElementById('hp-offlineLabel');
@@ -4027,18 +4052,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             offlineFill.style.width = '0%';
             offlineLabel.textContent = 'Fetching hints from Hint Server...';
             try {
-                await hpClient.fetchHints();
-                hpHintsLoaded = true;
+                await client.fetchHints();
                 offlineStatus.textContent = 'Hints loaded';
                 offlineFill.style.width = '100%';
                 offlineFill.style.backgroundColor = '#28a745';
-                const remaining = await hpClient.getMinQueriesRemaining();
-                offlineLabel.textContent = 'Hints loaded (~' + hpClient.estimateHintSize() + ' MB, ' + remaining + ' queries available). Ready.';
+                const remaining = await client.getMinQueriesRemaining();
+                offlineLabel.textContent = 'Hints loaded (~' + client.estimateHintSize() + ' MB, ' + remaining + ' queries available). Ready.';
+                if (client === hpClient) hpHintsLoaded = true;
                 log('HarmonyPIR: Hints downloaded successfully', 'success');
+                return true;
             } catch (error) {
                 offlineStatus.textContent = 'Failed';
                 offlineLabel.textContent = `Error: ${error.message}`;
                 log(`HarmonyPIR hint download failed: ${error.message}`, 'error');
+                return false;
             }
         }
 
@@ -4054,14 +4081,42 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             resetBasicVerification(['hpHint', 'hpQuery']);
+            renderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', {
+                state: 'unavailable',
+                checks: [],
+                mismatches: [],
+                error: 'waiting for latest delta trust-chain proof',
+            });
 
             // Fast reconnect: if client exists with hints, just reconnect query server.
             if (hpClient && hpHintsLoaded) {
+                const reconnectingClient = hpClient;
                 const statusDiv = document.getElementById('hp-status');
+                hpConnecting = true;
+                document.getElementById('hp-connectBtn').disabled = true;
                 try {
                     statusDiv.textContent = 'Status: Reconnecting...';
                     statusDiv.className = 'status connecting';
-                    await hpClient.reconnectQueryServer();
+                    await reconnectingClient.reconnectQueryServer();
+                    // Strict reconnect creates a fresh native session, so its
+                    // installed roots and in-memory hint groups are new too.
+                    // Restore the browser cache (or download again) before the
+                    // wrapper becomes queryable.
+                    let hintsReady = reconnectingClient.hintsLoaded;
+                    if (!hintsReady) {
+                        statusDiv.textContent = 'Status: Checking persisted hints...';
+                        hintsReady = await reconnectingClient.restoreHintsFromCache(hpCurrentPrp);
+                    }
+                    if (!hintsReady) {
+                        await reconnectingClient.initGroups();
+                        hintsReady = await hpFetchHints(reconnectingClient);
+                    }
+                    if (!hintsReady) throw new Error('hints could not be restored or downloaded');
+                    if (hpClient !== reconnectingClient) {
+                        reconnectingClient.disconnect();
+                        return;
+                    }
+                    hpHintsLoaded = true;
                     statusDiv.textContent = 'Status: Ready';
                     statusDiv.className = 'status connected';
                     hpSetButtons(true);
@@ -4069,29 +4124,48 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     log('HarmonyPIR: Reconnected (hints preserved)', 'success');
                 } catch (error) {
                     log(`HarmonyPIR reconnect failed: ${error.message}`, 'error');
-                    statusDiv.textContent = 'Status: Disconnected (hints preserved)';
+                    if (hpClient === reconnectingClient) {
+                        reconnectingClient.disconnect();
+                        hpClient = null;
+                        hpHintsLoaded = false;
+                    }
+                    statusDiv.textContent = 'Status: Disconnected';
                     statusDiv.className = 'status disconnected';
+                    hpSetButtons(false);
                     document.getElementById('hp-connectBtn').disabled = false;
+                } finally {
+                    hpConnecting = false;
                 }
                 return;
             }
 
             hpConnecting = true;
             document.getElementById('hp-connectBtn').disabled = true;
+            let candidate = null;
             try {
                 const statusDiv = document.getElementById('hp-status');
                 statusDiv.textContent = 'Status: Connecting...';
                 statusDiv.className = 'status connecting';
                 log('HarmonyPIR: Loading WASM + connecting...');
 
-                hpClient = new HarmonyPirClientAdapter({
+                // A prior wrapper without usable hints is not a reconnect
+                // candidate. Tear it down before constructing a replacement.
+                if (hpClient) {
+                    hpClient.disconnect();
+                    hpClient = null;
+                    hpHintsLoaded = false;
+                }
+
+                candidate = new HarmonyPirClientAdapter({
                     hintServerUrl,
                     queryServerUrl,
                     prpBackend: hpCurrentPrp,
-                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                    strictVerification: true,
                     // Slice 3 pins. Hint server = pir1 (no SEV), query server = pir2 (Tier 3).
                     expectedServer0Pin: PIR1_PIN,
                     expectedServer1Pin: PIR2_TIER3_PIN,
+                    expectedServer0Id: 'pir1',
+                    expectedServer1Id: 'pir2',
                     databaseProofPins: PRODUCTION_DB_PROOF_PINS,
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
@@ -4168,63 +4242,79 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     },
                 });
 
-                await hpClient.loadWasm();
+                await candidate.loadWasm();
                 log('HarmonyPIR: WASM loaded', 'success');
 
-                await hpClient.connectQueryServer();
-                await hpClient.fetchServerInfo();
-                await hpClient.initGroups();
+                await candidate.connectQueryServer();
+                await candidate.fetchServerInfo();
+                await candidate.initGroups();
 
-                hpSetButtons(true);
-                hpHintsLoaded = false;
+                let candidateHintsLoaded = false;
 
                 document.getElementById('hp-offlineContainer').style.display = 'block';
 
                 // Try IndexedDB-persisted hints first; falls back to fresh download.
                 statusDiv.textContent = 'Status: Checking persisted hints...';
                 statusDiv.className = 'status connecting';
-                const restored = await hpClient.restoreHintsFromCache(hpCurrentPrp);
+                const restored = await candidate.restoreHintsFromCache(hpCurrentPrp);
                 if (restored) {
-                    hpHintsLoaded = true;
+                    candidateHintsLoaded = true;
                     const offlineStatus = document.getElementById('hp-offlineStatus');
                     const offlineFill = document.getElementById('hp-offlineFill');
                     const offlineLabel = document.getElementById('hp-offlineLabel');
                     offlineStatus.textContent = 'Restored from browser storage';
                     offlineFill.style.width = '100%';
                     offlineFill.style.backgroundColor = '#28a745';
-                    const remaining = await hpClient.getMinQueriesRemaining();
+                    const remaining = await candidate.getMinQueriesRemaining();
                     offlineLabel.textContent =
-                        'Hints restored (~' + hpClient.estimateHintSize() + ' MB, ' +
+                        'Hints restored (~' + candidate.estimateHintSize() + ' MB, ' +
                         remaining + ' queries available). No re-download required.';
                     log('HarmonyPIR: Hints restored from IndexedDB', 'success');
                 } else {
                     statusDiv.textContent = 'Status: Connected (downloading hints...)';
                     statusDiv.className = 'status connected';
                     document.getElementById('hp-offlineStatus').textContent = 'Downloading...';
-                    await hpFetchHints();
+                    candidateHintsLoaded = await hpFetchHints(candidate);
+                    if (!candidateHintsLoaded) {
+                        throw new Error('hints could not be downloaded');
+                    }
                 }
 
-                if (hpHintsLoaded) {
+                if (candidateHintsLoaded) {
                     statusDiv.textContent = 'Status: Ready';
                 }
 
-                // Post-connect: just refresh the sync state UI. The Advanced
-                // DB selector and delta example buttons reveal after the
-                // first successful sync (see hpExecuteSync).
-                hpRefreshSyncStateUI();
-
                 // Update UI when query server disconnects (e.g. idle timeout).
-                hpClient.onQueryServerClose(() => {
+                const connectedCandidate = candidate;
+                connectedCandidate.onQueryServerClose(() => {
+                    if (hpClient !== connectedCandidate) return;
                     statusDiv.textContent = 'Status: Disconnected (hints preserved)';
                     statusDiv.className = 'status disconnected';
                     document.getElementById('hp-connectBtn').disabled = false;
                 });
+
+                // Transfer ownership only after the complete strict bootstrap
+                // and hint restore/download succeeded. Until this point every
+                // failure is cleaned up through the local candidate below.
+                hpSetButtons(true);
+
+                // Post-connect: just refresh the sync state UI. The Advanced
+                // DB selector and delta example buttons reveal after the
+                // first successful sync (see hpExecuteSync).
+                hpRefreshSyncStateUI(connectedCandidate, candidateHintsLoaded);
+
+                hpClient = connectedCandidate;
+                hpHintsLoaded = candidateHintsLoaded;
+                candidate = null;
             } catch (error) {
+                candidate?.disconnect();
                 log(`HarmonyPIR connection failed: ${error.message}`, 'error');
                 const statusDiv = document.getElementById('hp-status');
                 statusDiv.textContent = 'Status: Disconnected';
                 statusDiv.className = 'status disconnected';
-                hpClient = null;
+                hpHintsLoaded = false;
+                hpSetButtons(false);
+                document.getElementById('hp-offlineContainer').style.display = 'none';
             } finally {
                 hpConnecting = false;
                 // Re-enable connect button only if not connected.
@@ -5020,6 +5110,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             resetBasicVerification(['oram']);
+            renderBitcoinAnchorBadge('oram-bitcoinAnchorBadge', 'ORAM TEE', {
+                state: 'unavailable',
+                checks: [],
+                mismatches: [],
+                error: 'waiting for latest delta trust-chain proof',
+            });
 
             try {
                 log('ORAM: Connecting to attested server...', 'info');

@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { DELTA_940611_948454_DB_PROOF_PIN } from '../attest-pin.js';
+import {
+  DELTA_940611_948454_DB_PROOF_PIN,
+  PRODUCTION_DB_PROOF_PINS,
+} from '../attest-pin.js';
 import { databaseProofAnchorPoints, mempoolSpaceBlockUrl } from '../db-proof.js';
 
 describe('database proof Bitcoin anchors', () => {
+  it('pins both production databases required by a fresh sync', () => {
+    expect(PRODUCTION_DB_PROOF_PINS.map((pin) => pin.dbId)).toEqual([0, 1]);
+  });
+
   it('returns both independently meaningful endpoints for a delta', () => {
     expect(databaseProofAnchorPoints(DELTA_940611_948454_DB_PROOF_PIN)).toEqual([
       {

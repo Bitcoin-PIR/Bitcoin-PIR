@@ -37,8 +37,8 @@ use pir_sdk_client::attest::{AttestVerification, SevStatus};
 #[cfg(target_arch = "wasm32")]
 use pir_sdk_client::HintProgress;
 use pir_sdk_client::{
-    DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, VerifiedDatabaseRoots, PRP_FASTPRP,
-    PRP_HMR12,
+    DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, RootPolicy,
+    VerifiedDatabaseRoots, PRP_FASTPRP, PRP_HMR12,
 };
 use wasm_bindgen::prelude::*;
 
@@ -1262,6 +1262,40 @@ impl WasmDpfClient {
         Ok(WasmDatabaseProof { inner: roots })
     }
 
+    /// Select whether every query must be bound to proof-verified database
+    /// roots installed during the current connection.
+    #[wasm_bindgen(js_name = setRequireVerifiedDatabaseRoots)]
+    pub fn set_require_verified_database_roots(&mut self, require_verified: bool) {
+        self.inner.set_root_policy(if require_verified {
+            RootPolicy::RequireVerified
+        } else {
+            RootPolicy::Advisory
+        });
+    }
+
+    /// Consume and install the exact proof handle returned by
+    /// `verifyDatabaseProof`. JavaScript must perform its production-pin
+    /// comparison before transferring ownership here.
+    #[wasm_bindgen(js_name = installVerifiedDatabaseProof)]
+    pub fn install_verified_database_proof(
+        &mut self,
+        proof: WasmDatabaseProof,
+    ) -> Result<(), JsError> {
+        self.inner
+            .install_verified_database_roots(proof.inner)
+            .map_err(err_to_js)
+    }
+
+    /// Fetch and authenticate the bucket Merkle tree-tops before any private
+    /// address query is allowed to run.
+    #[wasm_bindgen(js_name = preflightDatabase)]
+    pub async fn preflight_database(&mut self, db_id: u8) -> Result<(), JsError> {
+        self.inner
+            .preflight_verified_database(db_id)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// End-to-end sync: fetch catalog, plan, execute all steps, merge
     /// deltas. Returns a [`WasmSyncResult`] whose `results[i]`
     /// corresponds to the i-th script hash in the packed input.
@@ -1813,6 +1847,39 @@ impl WasmHarmonyClient {
             .await
             .map_err(err_to_js)?;
         Ok(WasmDatabaseProof { inner: roots })
+    }
+
+    /// Select whether every query must be bound to proof-verified database
+    /// roots installed during the current connection.
+    #[wasm_bindgen(js_name = setRequireVerifiedDatabaseRoots)]
+    pub fn set_require_verified_database_roots(&mut self, require_verified: bool) {
+        self.inner.set_root_policy(if require_verified {
+            RootPolicy::RequireVerified
+        } else {
+            RootPolicy::Advisory
+        });
+    }
+
+    /// Consume and install the exact proof handle returned by
+    /// `verifyDatabaseProof` after the browser's production-pin comparison.
+    #[wasm_bindgen(js_name = installVerifiedDatabaseProof)]
+    pub fn install_verified_database_proof(
+        &mut self,
+        proof: WasmDatabaseProof,
+    ) -> Result<(), JsError> {
+        self.inner
+            .install_verified_database_roots(proof.inner)
+            .map_err(err_to_js)
+    }
+
+    /// Fetch and authenticate the bucket Merkle tree-tops before any private
+    /// address query is allowed to run.
+    #[wasm_bindgen(js_name = preflightDatabase)]
+    pub async fn preflight_database(&mut self, db_id: u8) -> Result<(), JsError> {
+        self.inner
+            .preflight_verified_database(db_id)
+            .await
+            .map_err(err_to_js)
     }
 
     /// End-to-end sync. See [`WasmDpfClient::sync`] for argument

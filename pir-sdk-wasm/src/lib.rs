@@ -544,6 +544,8 @@ fn database_info_to_json(db: &DatabaseInfo) -> serde_json::Value {
         "anchorBlockHash": db.anchor_display().map(|(h, _)| h),
         "anchorHeight": db.anchor_display().map(|(_, ht)| ht),
         "anchorVerified": db.verify_anchor_seeds().is_ok(),
+        "anchorKind": db.anchor_kind,
+        "anchorHex": hex_encode(&db.anchor_bytes),
     })
 }
 
@@ -1294,6 +1296,16 @@ mod tests {
         let db = make_info(5, false);
         let json = database_info_to_json(&db);
         assert_eq!(json["hasBucketMerkle"], false);
+    }
+
+    #[test]
+    fn database_info_to_json_preserves_catalog_anchor_bytes() {
+        let mut db = make_info(1, true);
+        db.anchor_kind = 2;
+        db.anchor_bytes = vec![0xabu8; 72];
+        let json = database_info_to_json(&db);
+        assert_eq!(json["anchorKind"], 2);
+        assert_eq!(json["anchorHex"], hex_encode(&db.anchor_bytes));
     }
 
     #[test]

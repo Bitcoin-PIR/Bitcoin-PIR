@@ -429,7 +429,7 @@ export interface WasmDpfClient {
   /** Populate the native-side catalog so subsequent `queryBatchRaw` calls
    * (which go through `query_batch_with_inspector`) can resolve `db_id`
    * against an in-memory catalog. Returns the freshly fetched catalog. */
-  fetchCatalog(): Promise<unknown>;
+  fetchCatalog(): Promise<WasmDatabaseCatalog>;
   /** Fetch and verify an attested-builder database proof against the
    * native catalog. Optional string policy pins may be `undefined` or empty.
    * Mainnet network magic is always enforced by the WASM method. */
@@ -439,6 +439,15 @@ export interface WasmDpfClient {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): Promise<WasmDatabaseProof>;
+  /** Switch the native client between advisory roots and the fail-closed
+   * policy that requires a proof-installed root for every queried DB. */
+  setRequireVerifiedDatabaseRoots(requireVerified: boolean): void;
+  /** Consume the exact live proof handle returned by `verifyDatabaseProof`.
+   * The caller must complete the TypeScript production-pin comparison first
+   * and must not call `free()` after ownership transfers here. */
+  installVerifiedDatabaseProof(proof: WasmDatabaseProof): void;
+  /** Fetch and bind this DB's Merkle tree-tops to the installed proof root. */
+  preflightDatabase(dbId: number): Promise<void>;
   /** Inspector-path batch query. Returns an `Array<WasmQueryResult>` of
    * length `N` (one per packed scripthash). Every slot is non-null —
    * not-found queries are synthesised as empty inspector-populated
@@ -510,6 +519,12 @@ export interface WasmHarmonyClient {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): Promise<WasmDatabaseProof>;
+  /** Same strict root-policy switch as `WasmDpfClient`. */
+  setRequireVerifiedDatabaseRoots(requireVerified: boolean): void;
+  /** Consume a pin-matched `WasmDatabaseProof` and install its roots. */
+  installVerifiedDatabaseProof(proof: WasmDatabaseProof): void;
+  /** Fetch and bind this DB's Merkle tree-tops before any address query. */
+  preflightDatabase(dbId: number): Promise<void>;
   serverUrls(): [string, string];
   /** Returns the active `db_id`, or `undefined` if no hints are loaded. */
   dbId(): number | undefined;

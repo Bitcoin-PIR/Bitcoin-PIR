@@ -12,11 +12,9 @@
  *   * A pair of side-channel `ManagedWebSocket`s — the WASM client owns
  *     its own transport sockets internally, but those aren't exposed to
  *     the browser. The side-channel sockets are used for:
- *       - `REQ_GET_INFO_JSON` at connect time (to populate
- *         `serverInfo` so `hasMerkle` / `getMerkleRootHex` can answer
- *         synchronously without a roundtrip)
- *       - `REQ_GET_DB_CATALOG` at connect time (for the catalog
- *         accessors and the UI DB selector).
+ *       - `REQ_GET_INFO_JSON` for diagnostic details only. Catalog, Merkle
+ *         availability, sync planning, and trusted roots all come from the
+ *         post-upgrade native connection and installed proof handles.
  *   * Translation between `WasmQueryResult` (the WASM-side opaque
  *     handle) and the legacy `QueryResult` shape consumed by the UI
  *     renderers + `sync-merge.ts`.
@@ -35,7 +33,7 @@
 
 import { bytesToHex, hexToBytes } from './hash.js';
 import {
-  fetchDatabaseCatalog,
+  databaseCatalogFromWasmJson,
   fetchServerInfoJson,
   type BucketMerkleInfoJson,
   type DatabaseCatalog,
@@ -50,13 +48,15 @@ import {
   type WasmQueryResult,
 } from './sdk-bridge.js';
 import {
-  databaseProofUnavailable,
-  verifiedDatabaseProofFromWasm,
-  verifyDatabaseProofAgainstPin,
   type DatabaseProofPin,
   type DatabaseProofStatus,
 } from './db-proof.js';
 import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
+import {
+  assertStrictDatabasePinCoverage,
+  assertStrictTransportReady,
+  verifyInstallAndPreflightDatabaseProofs,
+} from './strict-verification.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
 
@@ -160,6 +160,8 @@ export interface OperatorIdentity {
   identityPubkeyHex?: string;
   /** Git rev the manifest self-reports. */
   gitRev?: string;
+  /** Binary SHA-256 authenticated by the signed announce manifest. */
+  binarySha256Hex?: string;
   /** Cert validity upper bound (unix-seconds; 0 = indefinite). */
   validUntil?: number;
   /** Diagnostic for `'unverified'` / `'error'`. */
@@ -193,6 +195,7 @@ export function gateOperatorIdentity(
       serverId: v.serverId,
       operatorPubkeyHex: v.operatorPubkeyHex,
       identityPubkeyHex: v.identityPubkeyHex,
+      binarySha256Hex: v.binarySha256Hex,
       gitRev: v.gitRev,
       validUntil: Number(v.validUntil),
     };
@@ -201,6 +204,7 @@ export function gateOperatorIdentity(
       state: 'unverified',
       serverId: v.serverId,
       operatorPubkeyHex: v.operatorPubkeyHex,
+      binarySha256Hex: v.binarySha256Hex,
       error: (e as Error)?.message ?? String(e),
     };
   }
@@ -228,6 +232,13 @@ export interface BatchPirClientConfig {
    * tcpdump-side debugging or testing against pre-V2 servers).
    */
   useSecureChannel?: boolean;
+  /**
+   * Fail closed unless both runtime identities, the encrypted channel, every
+   * configured operator identity, and every catalog database root are
+   * verified before a query. Default `false` for library compatibility;
+   * production explicitly enables it.
+   */
+  strictVerification?: boolean;
   /** Fires once per server after `connect()` resolves the per-server
    *  attestation result. Use to surface a "verified channel" badge in
    *  the UI. `serverIndex` is 0 (first URL) or 1 (second URL). */
@@ -264,6 +275,11 @@ export interface BatchPirClientConfig {
    */
   expectedServer0Pin?: import('./attest-pin.js').ServerAttestPin;
   expectedServer1Pin?: import('./attest-pin.js').ServerAttestPin;
+  /** Expected operator-endorsed identity for each transport endpoint.
+   * Strict mode requires both non-empty IDs and rejects duplicate endpoint
+   * identities. Production uses server0=`pir1`, server1=`pir2`. */
+  expectedServer0Id?: string;
+  expectedServer1Id?: string;
   /**
    * If `true`, after attesting each server the adapter also fetches its
    * operator-signed identity (REQ_ANNOUNCE) and verifies it against
@@ -324,6 +340,10 @@ export class BatchPirClientAdapter {
    */
   private readonly wasmHandles: WeakMap<QueryResult, WasmQueryResult> = new WeakMap();
   private connected = false;
+  private secureChannelEstablished = false;
+  private strictReady = false;
+  /** Invalidates native state callbacks from a client being torn down. */
+  private sessionGeneration = 0;
   /**
    * Per-server attestation snapshot. Filled in by `connect()` if
    * `useSecureChannel` is enabled (default). Default `'unattested'`
@@ -368,32 +388,39 @@ export class BatchPirClientAdapter {
   // ── Connection lifecycle ──────────────────────────────────────────────
 
   async connect(): Promise<void> {
+    const generation = ++this.sessionGeneration;
     this.setState('connecting');
     try {
+      this.resetVerificationState();
+      if (this.isStrictVerification() && this.config.useSecureChannel === false) {
+        throw new Error('strict verification requires the secure channel');
+      }
+
       // Side-channels first — these carry small diagnostic frames, so
       // they're useful even before the PIR client comes up.
       await Promise.all([this.ws0.connect(), this.ws1.connect()]);
-
-      // Fetch server info + catalog from server0 (the primary role)
-      // so the Merkle / catalog accessors can return cached data.
-      this.serverInfo = await fetchServerInfoJson(this.ws0);
-      this.catalog = await fetchDatabaseCatalog(this.ws0);
 
       // Construct + wire the WASM client. `onStateChange` replays the
       // native-side transitions; we remap the plain-string payload onto
       // the web `ConnectionState` enum.
       const sdk = requireSdkWasm();
-      this.wasmClient = new sdk.WasmDpfClient(
+      const client = new sdk.WasmDpfClient(
         this.config.server0Url,
         this.config.server1Url,
       );
-      this.wasmClient.onStateChange((state: string) => {
+      this.wasmClient = client;
+      client.setRequireVerifiedDatabaseRoots(this.isStrictVerification());
+      client.onStateChange((state: string) => {
+        if (generation !== this.sessionGeneration || this.wasmClient !== client) return;
         if (
           state === 'connected'
           || state === 'disconnected'
           || state === 'connecting'
           || state === 'reconnecting'
         ) {
+          if (state === 'connected' && this.isStrictVerification() && !this.strictReady) {
+            return;
+          }
           this.setState(state);
         }
       });
@@ -407,13 +434,31 @@ export class BatchPirClientAdapter {
       if (this.config.useSecureChannel !== false) {
         await this.attestAndUpgrade();
       }
+      if (this.isStrictVerification()) {
+        this.assertStrictTransportReady();
+      }
 
-      // Populate the native-side catalog so subsequent `queryBatchRaw`
-      // calls (which go through `query_batch_with_inspector`) have an
-      // in-memory catalog to resolve `db_id` against. The side-channel
-      // fetch above only populates the TS-side `this.catalog`.
-      await this.wasmClient.fetchCatalog();
+      // This post-upgrade native catalog is canonical for both native query
+      // routing and TypeScript sync planning. The clear diagnostic socket can
+      // no longer remove a delta step or disable Merkle verification.
+      const catalogHandle = await this.wasmClient.fetchCatalog();
+      try {
+        this.catalog = databaseCatalogFromWasmJson(catalogHandle.toJson());
+      } finally {
+        catalogHandle.free();
+      }
+      if (this.isStrictVerification()) {
+        this.assertPinsCoverCatalog();
+      }
       await this.verifyConfiguredDatabaseProofs();
+      this.strictReady = this.isStrictVerification();
+      // Best-effort diagnostics only. Failure here cannot replace or weaken
+      // the post-channel catalog/proof/tree-top trust gate above.
+      try {
+        this.serverInfo = await fetchServerInfoJson(this.ws0);
+      } catch (error) {
+        this.log(`Server diagnostics unavailable: ${(error as Error)?.message ?? error}`, 'info');
+      }
       this.connected = true;
       // Emit a final `connected` in case the native client's own
       // `onStateChange` fired before we registered the listener or got
@@ -453,6 +498,7 @@ export class BatchPirClientAdapter {
       && this.ws0.isOpen()
       && this.ws1.isOpen()
       && !!this.wasmClient?.isConnected
+      && (!this.isStrictVerification() || this.strictReady)
     );
   }
 
@@ -470,23 +516,26 @@ export class BatchPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  // ── Merkle accessors (all read cached server info) ────────────────────
+  // ── Merkle accessors ─────────────────────────────────────────────────
 
   hasMerkle(): boolean {
-    const mb = this.serverInfo?.merkle_bucket;
-    return !!(mb && mb.index_levels.length > 0);
+    return this.catalog?.databases.some((db) => db.hasBucketMerkle) ?? false;
   }
 
   hasMerkleForDb(dbId: number): boolean {
-    const info = this.getMerkleInfoForDb(dbId);
-    return !!(info && info.index_levels.length > 0);
+    return this.getCatalogEntry(dbId)?.hasBucketMerkle ?? false;
   }
 
   getMerkleRootHex(): string | undefined {
-    return this.serverInfo?.merkle_bucket?.super_root;
+    return this.getMerkleRootHexForDb(0);
   }
 
   getMerkleRootHexForDb(dbId: number): string | undefined {
+    const proofRoot = this.databaseProofs.get(dbId)?.proof?.bucketSuperRootHex;
+    if (proofRoot) return proofRoot;
+    // In advisory mode the server-info root remains useful diagnostics. It is
+    // never treated as a trust root by strict sessions.
+    if (this.isStrictVerification()) return undefined;
     return this.getMerkleInfoForDb(dbId)?.super_root;
   }
 
@@ -540,6 +589,9 @@ export class BatchPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     if (!this.wasmClient) throw new Error('Not connected');
+    if (this.isStrictVerification() && !this.strictReady) {
+      throw new Error('strict verification is not ready');
+    }
     onProgress?.('Level 1', 'sending batched INDEX queries');
 
     const packed = packScriptHashes(scriptHashes);
@@ -599,6 +651,13 @@ export class BatchPirClientAdapter {
   // ── Internal ──────────────────────────────────────────────────────────
 
   private async teardown(): Promise<void> {
+    ++this.sessionGeneration;
+    this.strictReady = false;
+    this.secureChannelEstablished = false;
+    this.connected = false;
+    this.catalog = null;
+    this.serverInfo = null;
+    this.databaseProofs.clear();
     this.ws0.disconnect();
     this.ws1.disconnect();
     const client = this.wasmClient;
@@ -618,46 +677,81 @@ export class BatchPirClientAdapter {
       }
       client.free();
     }
-    this.connected = false;
   }
 
   private async verifyConfiguredDatabaseProofs(): Promise<void> {
     if (!this.wasmClient) return;
     const pins = this.config.databaseProofPins ?? [];
-    for (const pin of pins) {
-      let status: DatabaseProofStatus;
-      try {
-        const proofHandle = await this.wasmClient.verifyDatabaseProof(
-          pin.dbId,
-          pin.paramsHashHex,
-          pin.builderBinarySha256Hex,
-          pin.builderGitCommit,
-        );
-        try {
-          const proof = verifiedDatabaseProofFromWasm(proofHandle);
-          status = verifyDatabaseProofAgainstPin(proof, pin);
-        } finally {
-          proofHandle.free();
-        }
-      } catch (e) {
-        status = databaseProofUnavailable(pin, e);
-      }
-      this.databaseProofs.set(pin.dbId, status);
-      this.config.onDatabaseProof?.(pin.dbId, status);
-      if (status.state === 'verified') {
-        this.log(
-          `DB proof db ${pin.dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
-          'success',
-        );
-      } else if (status.state === 'unavailable') {
-        this.log(`DB proof db ${pin.dbId}: unavailable (${status.error})`, 'info');
-      } else {
-        this.log(
-          `DB proof db ${pin.dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
-          'error',
-        );
-      }
+    if (pins.length === 0 && !this.isStrictVerification()) return;
+    try {
+      await verifyInstallAndPreflightDatabaseProofs({
+        client: this.wasmClient,
+        pins,
+        onStatus: (dbId, status) => {
+          this.databaseProofs.set(dbId, status);
+          this.config.onDatabaseProof?.(dbId, status);
+          if (status.state === 'verified') {
+            this.log(
+              `DB proof db ${dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
+              'success',
+            );
+          } else if (status.state === 'unavailable') {
+            this.log(`DB proof db ${dbId}: unavailable (${status.error})`, 'info');
+          } else {
+            this.log(
+              `DB proof db ${dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
+              'error',
+            );
+          }
+        },
+      });
+    } catch (error) {
+      if (this.isStrictVerification()) throw error;
+      this.log(
+        `Advisory database verification did not complete: ${(error as Error)?.message ?? error}`,
+        'info',
+      );
     }
+  }
+
+  private isStrictVerification(): boolean {
+    return this.config.strictVerification === true;
+  }
+
+  private resetVerificationState(): void {
+    this.connected = false;
+    this.strictReady = false;
+    this.secureChannelEstablished = false;
+    this.catalog = null;
+    this.serverInfo = null;
+    this.databaseProofs.clear();
+    this.attestation = {
+      server0: { state: 'unattested' },
+      server1: { state: 'unattested' },
+    };
+    this.operatorIdentity = {
+      server0: { state: 'not-checked' },
+      server1: { state: 'not-checked' },
+    };
+  }
+
+  private assertPinsCoverCatalog(): void {
+    if (!this.catalog) throw new Error('strict verification requires a database catalog');
+    assertStrictDatabasePinCoverage(
+      this.catalog.databases.map((db) => db.dbId),
+      this.config.databaseProofPins ?? [],
+    );
+  }
+
+  private assertStrictTransportReady(): void {
+    assertStrictTransportReady({
+      secureChannelEstablished: this.secureChannelEstablished,
+      attestations: [this.attestation.server0, this.attestation.server1],
+      expectedPins: [this.config.expectedServer0Pin, this.config.expectedServer1Pin],
+      expectedServerIds: [this.config.expectedServer0Id, this.config.expectedServer1Id],
+      requireOperatorIdentity: this.config.verifyOperatorIdentity === true,
+      operatorIdentities: [this.operatorIdentity.server0, this.operatorIdentity.server1],
+    });
   }
 
   private setState(state: ConnectionState, message?: string): void {
@@ -687,6 +781,7 @@ export class BatchPirClientAdapter {
    */
   private async attestAndUpgrade(): Promise<void> {
     if (!this.wasmClient) return;
+    this.secureChannelEstablished = false;
 
     const attestOne = async (idx: 0 | 1): Promise<WasmAttestVerification | null> => {
       try {
@@ -700,218 +795,240 @@ export class BatchPirClientAdapter {
       }
     };
 
-    // Run sequentially: both attests target the same WasmDpfClient
-    // instance and the underlying `&mut self` Rust API serializes them
-    // anyway. Using Promise.all here can leave the second future
-    // wedged on the borrow when wasm-bindgen's async glue races.
-    const att0 = await attestOne(0);
-    const att1 = await attestOne(1);
+    let att0: WasmAttestVerification | null = null;
+    let att1: WasmAttestVerification | null = null;
+    try {
+      // Run sequentially: both attests target the same WasmDpfClient
+      // instance and the underlying `&mut self` Rust API serializes them
+      // anyway. Using Promise.all here can leave the second future
+      // wedged on the borrow when wasm-bindgen's async glue races.
+      att0 = await attestOne(0);
+      att1 = await attestOne(1);
 
-    // Default behaviour: source the ARK fingerprint from WASM
-    // (`getAmdTurinArkFingerprint`), which mirrors the Rust constant
-    // `pir-attest-verify::TURIN_ARK_FINGERPRINT_SHA256` and runs a
-    // cross-check against `AMD_TURIN_ARK_FINGERPRINT_HEX` on first
-    // call. Callers can still pass `null` explicitly to skip the
-    // chain check (tests, pre-deploy debugging) or pass a different
-    // fingerprint to override (e.g. for a future Milan migration —
-    // they'd ship a custom Uint8Array).
-    let expectedArkFp: Uint8Array | null;
-    if (this.config.expectedArkFingerprint === null) {
-      expectedArkFp = null;
-    } else if (this.config.expectedArkFingerprint !== undefined) {
-      expectedArkFp = this.config.expectedArkFingerprint;
-    } else {
-      try {
-        expectedArkFp = getAmdTurinArkFingerprint();
-      } catch (e) {
-        // 'info' rather than 'error' because this is a fallback path
-        // (skip chain validation) rather than an outright failure —
-        // the connection still works, just without ARK pinning.
-        this.log(
-          `default ARK fingerprint unavailable (WASM not initialised?): ${(e as Error)?.message ?? e}`,
-          'info',
-        );
+      // Default behaviour: source the ARK fingerprint from WASM
+      // (`getAmdTurinArkFingerprint`), which mirrors the Rust constant
+      // `pir-attest-verify::TURIN_ARK_FINGERPRINT_SHA256` and runs a
+      // cross-check against `AMD_TURIN_ARK_FINGERPRINT_HEX` on first
+      // call. Callers can still pass `null` explicitly to skip the
+      // chain check (tests, pre-deploy debugging) or pass a different
+      // fingerprint to override (e.g. for a future Milan migration —
+      // they'd ship a custom Uint8Array).
+      let expectedArkFp: Uint8Array | null;
+      if (this.config.expectedArkFingerprint === null) {
         expectedArkFp = null;
+      } else if (this.config.expectedArkFingerprint !== undefined) {
+        expectedArkFp = this.config.expectedArkFingerprint;
+      } else {
+        try {
+          expectedArkFp = getAmdTurinArkFingerprint();
+        } catch (e) {
+          // 'info' rather than 'error' because this is a fallback path
+          // (skip chain validation) rather than an outright failure —
+          // the connection still works, just without ARK pinning.
+          this.log(
+            `default ARK fingerprint unavailable (WASM not initialised?): ${(e as Error)?.message ?? e}`,
+            'info',
+          );
+          expectedArkFp = null;
+        }
       }
-    }
 
-    // Strict production policy: VMPL 0, no debug, no migrate-MA, TCB-
-    // monotonic. We deliberately do NOT pin MEASUREMENT here even when
-    // a per-server pin is configured — the manual measurement check
-    // below produces a more granular error message (which pin failed,
-    // for which server) than the single-line WASM diagnostic.
-    const sdk = requireSdkWasm();
-    const policyReqs = new sdk.WasmPolicyRequirements();
+      // Strict production policy: VMPL 0, no debug, no migrate-MA, TCB-
+      // monotonic. We deliberately do NOT pin MEASUREMENT here even when
+      // a per-server pin is configured — the manual measurement check
+      // below produces a more granular error message (which pin failed,
+      // for which server) than the single-line WASM diagnostic.
+      const sdk = requireSdkWasm();
+      const policyReqs = new sdk.WasmPolicyRequirements();
+      try {
 
-    const summarise = (
-      idx: 0 | 1,
-      att: WasmAttestVerification | null,
-    ): ServerAttestation => {
-      if (!att) {
-        return { state: 'mismatch' };
-      }
-      const allZero = att.serverStaticPub.every((b) => b === 0);
-      const matched = att.sevStatus === 'reportDataMatch';
-      const noSev = att.sevStatus === 'noSevHost';
-      // For non-SEV hosts (e.g. Hetzner) we still allow the channel —
-      // `noSevHost` means the binding can't be hardware-anchored but
-      // the inner crypto is otherwise sound. Production `pir2` is on
-      // SEV-SNP, so it should be `reportDataMatch`.
-      const channelOk = matched || noSev;
-      let state: ServerAttestation['state'];
-      if (allZero) state = 'plaintext';
-      else if (!channelOk) state = 'mismatch';
-      else state = 'verified';
+        const summarise = (
+          idx: 0 | 1,
+          att: WasmAttestVerification | null,
+        ): ServerAttestation => {
+          if (!att) {
+            return { state: 'mismatch' };
+          }
+          const allZero = att.serverStaticPub.every((b) => b === 0);
+          const matched = att.sevStatus === 'reportDataMatch';
+          const noSev = att.sevStatus === 'noSevHost';
+          // For non-SEV hosts (e.g. Hetzner) we still allow the channel —
+          // `noSevHost` means the binding can't be hardware-anchored but
+          // the inner crypto is otherwise sound. Production `pir2` is on
+          // SEV-SNP, so it should be `reportDataMatch`.
+          const channelOk = matched || noSev;
+          let state: ServerAttestation['state'];
+          if (allZero) state = 'plaintext';
+          else if (!channelOk) state = 'mismatch';
+          else state = 'verified';
 
-      const result: ServerAttestation = {
-        state,
-        sevStatus: att.sevStatus,
-        serverStaticPubHex: att.serverStaticPubHex,
-        binarySha256Hex: att.binarySha256Hex,
-        gitRev: att.gitRev,
-        launchMeasurementHex: att.launchMeasurementHex,
-      };
+          const result: ServerAttestation = {
+            state,
+            sevStatus: att.sevStatus,
+            serverStaticPubHex: att.serverStaticPubHex,
+            binarySha256Hex: att.binarySha256Hex,
+            gitRev: att.gitRev,
+            launchMeasurementHex: att.launchMeasurementHex,
+          };
 
-      // Slice D.3+: AMD VCEK chain + policy validation. Only attempt
-      // when the V2 binding already passed (otherwise the report is
-      // suspect anyway), the server bundled a chain, AND we have an
-      // operator-pinned ARK fingerprint to anchor trust.
-      //
-      // `verifyFull` runs:
-      //   1. ARK fingerprint match + ARK→ASK→VCEK chain (RSA-PSS)
-      //   2. SEV-SNP report ECDSA-P384 signature against VCEK
-      //   3. Policy: VMPL ≤ max, no debug, no migrate-MA, TCB
-      //      monotonicity + optional minimum / measurement / id pins
-      // — and throws on the FIRST failure. Error message starts with
-      // "chain:", "report-sig:" or "policy:" so the operator can
-      // tell which step rejected.
-      if (state === 'verified' && matched && att.hasVcekChain) {
-        if (expectedArkFp) {
+          // Slice D.3+: AMD VCEK chain + policy validation. Only attempt
+          // when the V2 binding already passed (otherwise the report is
+          // suspect anyway), the server bundled a chain, AND we have an
+          // operator-pinned ARK fingerprint to anchor trust.
+          //
+          // `verifyFull` runs:
+          //   1. ARK fingerprint match + ARK→ASK→VCEK chain (RSA-PSS)
+          //   2. SEV-SNP report ECDSA-P384 signature against VCEK
+          //   3. Policy: VMPL ≤ max, no debug, no migrate-MA, TCB
+          //      monotonicity + optional minimum / measurement / id pins
+          // — and throws on the FIRST failure. Error message starts with
+          // "chain:", "report-sig:" or "policy:" so the operator can
+          // tell which step rejected.
+          if (state === 'verified' && matched && att.hasVcekChain) {
+            if (expectedArkFp) {
+              try {
+                att.verifyFull(expectedArkFp, policyReqs);
+                result.state = 'verified-vcek';
+                result.vcekChain = 'pass';
+              } catch (e) {
+                result.vcekChain = 'fail';
+                result.vcekChainError = (e as Error)?.message ?? String(e);
+                this.log(
+                  `verifyFull(server${idx}) failed: ${result.vcekChainError}`,
+                  'error',
+                );
+                // Demote to 'mismatch' on any failure — the operator's
+                // pinning explicitly demanded chain + policy validation
+                // and it didn't pass. Treat as a strong negative signal.
+                result.state = 'mismatch';
+              }
+            } else {
+              result.vcekChain = 'skipped';
+            }
+          } else if (state === 'verified' && matched && !att.hasVcekChain) {
+            result.vcekChain = 'skipped';
+          }
+
+          // Slice 3 build-time pin enforcement. Runs AFTER chain
+          // validation so the pin only kicks in when the report is
+          // already internally consistent. A mismatch demotes state to
+          // 'mismatch' regardless of how clean the chain validation was —
+          // the operator pinned a specific (UKI, binary), and the server
+          // is reporting something else.
+          const pin =
+            idx === 0 ? this.config.expectedServer0Pin : this.config.expectedServer1Pin;
+          if (pin) {
+            // Only enforce when state is verified-ish AND the report is
+            // internally consistent. Skipping pin check on a 'mismatch'
+            // would be misleading anyway — the channel is already broken.
+            const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
+            if (stateOk) {
+              if (pin.measurementHex && !att.launchMeasurementHex) {
+                result.pinStatus = 'measurement-mismatch';
+                result.pinError = `MEASUREMENT pin required (${pin.measurementHex.slice(0, 16)}…) but server report omitted launch MEASUREMENT`;
+                result.state = 'mismatch';
+                this.log(`server${idx}: ${result.pinError}`, 'error');
+              } else if (
+                pin.measurementHex &&
+                pin.measurementHex.toLowerCase() !== att.launchMeasurementHex!.toLowerCase()
+              ) {
+                result.pinStatus = 'measurement-mismatch';
+                result.pinError = `MEASUREMENT pin mismatch — expected ${pin.measurementHex.slice(0, 16)}…, got ${att.launchMeasurementHex.slice(0, 16)}…`;
+                result.state = 'mismatch';
+                this.log(`server${idx}: ${result.pinError}`, 'error');
+              } else if (
+                pin.binarySha256Hex &&
+                !att.binarySha256Hex
+              ) {
+                result.pinStatus = 'binary-mismatch';
+                result.pinError = `binary_sha256 pin required (${pin.binarySha256Hex.slice(0, 16)}…) but server report omitted binary_sha256`;
+                result.state = 'mismatch';
+                this.log(`server${idx}: ${result.pinError}`, 'error');
+              } else if (
+                pin.binarySha256Hex &&
+                att.binarySha256Hex &&
+                pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
+              ) {
+                result.pinStatus = 'binary-mismatch';
+                result.pinError = `binary_sha256 pin mismatch — expected ${pin.binarySha256Hex.slice(0, 16)}…, got ${att.binarySha256Hex.slice(0, 16)}…`;
+                result.state = 'mismatch';
+                this.log(`server${idx}: ${result.pinError}`, 'error');
+              } else {
+                result.pinStatus = 'match';
+              }
+            }
+          } else {
+            result.pinStatus = 'no-pin';
+          }
+          return result;
+        };
+
+        const sum0 = summarise(0, att0);
+        const sum1 = summarise(1, att1);
+        this.attestation.server0 = sum0;
+        this.attestation.server1 = sum1;
+        this.config.onAttestation?.(0, sum0);
+        this.config.onAttestation?.(1, sum1);
+
+        // Only upgrade if BOTH servers cleared the channel-OK gate. A
+        // half-encrypted setup gives no privacy benefit (the all-cleartext
+        // server still leaks queries to cloudflared) and complicates UI.
+        // Either 'verified' (V2 binding only) or 'verified-vcek' (full
+        // AMD chain) qualifies — both prove the channel pubkey is bound
+        // to a SEV-SNP report; the V2 binding is the gate that matters
+        // for the channel itself.
+        const channelReady = (s: ServerAttestation['state']) =>
+          s === 'verified' || s === 'verified-vcek';
+        if (channelReady(sum0.state) && channelReady(sum1.state) && att0 && att1) {
           try {
-            att.verifyFull(expectedArkFp, policyReqs);
-            result.state = 'verified-vcek';
-            result.vcekChain = 'pass';
-          } catch (e) {
-            result.vcekChain = 'fail';
-            result.vcekChainError = (e as Error)?.message ?? String(e);
-            this.log(
-              `verifyFull(server${idx}) failed: ${result.vcekChainError}`,
-              'error',
+            await this.wasmClient.upgradeToSecureChannel(
+              att0.serverStaticPub,
+              att1.serverStaticPub,
             );
-            // Demote to 'mismatch' on any failure — the operator's
-            // pinning explicitly demanded chain + policy validation
-            // and it didn't pass. Treat as a strong negative signal.
-            result.state = 'mismatch';
+            this.secureChannelEstablished = true;
+            this.log('Upgraded to encrypted channel (cloudflared sees only ciphertext)', 'success');
+          } catch (e) {
+            this.log(`upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`, 'error');
+            // Mark both as mismatch since the channel didn't actually come
+            // up despite the per-server attest being clean.
+            this.attestation.server0 = { ...sum0, state: 'mismatch' };
+            this.attestation.server1 = { ...sum1, state: 'mismatch' };
+            this.config.onAttestation?.(0, this.attestation.server0);
+            this.config.onAttestation?.(1, this.attestation.server1);
           }
         } else {
-          result.vcekChain = 'skipped';
+          this.log(
+            `Channel left in cleartext (server0=${sum0.state}, server1=${sum1.state})`,
+            'info',
+          );
         }
-      } else if (state === 'verified' && matched && !att.hasVcekChain) {
-        result.vcekChain = 'skipped';
-      }
 
-      // Slice 3 build-time pin enforcement. Runs AFTER chain
-      // validation so the pin only kicks in when the report is
-      // already internally consistent. A mismatch demotes state to
-      // 'mismatch' regardless of how clean the chain validation was —
-      // the operator pinned a specific (UKI, binary), and the server
-      // is reporting something else.
-      const pin =
-        idx === 0 ? this.config.expectedServer0Pin : this.config.expectedServer1Pin;
-      if (pin) {
-        // Only enforce when state is verified-ish AND the report is
-        // internally consistent. Skipping pin check on a 'mismatch'
-        // would be misleading anyway — the channel is already broken.
-        const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
-        if (stateOk) {
-          if (pin.measurementHex && !att.launchMeasurementHex) {
-            result.pinStatus = 'measurement-mismatch';
-            result.pinError = `MEASUREMENT pin required (${pin.measurementHex.slice(0, 16)}…) but server report omitted launch MEASUREMENT`;
-            result.state = 'mismatch';
-            this.log(`server${idx}: ${result.pinError}`, 'error');
-          } else if (
-            pin.measurementHex &&
-            pin.measurementHex.toLowerCase() !== att.launchMeasurementHex!.toLowerCase()
-          ) {
-            result.pinStatus = 'measurement-mismatch';
-            result.pinError = `MEASUREMENT pin mismatch — expected ${pin.measurementHex.slice(0, 16)}…, got ${att.launchMeasurementHex.slice(0, 16)}…`;
-            result.state = 'mismatch';
-            this.log(`server${idx}: ${result.pinError}`, 'error');
-          } else if (
-            pin.binarySha256Hex &&
-            att.binarySha256Hex &&
-            pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
-          ) {
-            result.pinStatus = 'binary-mismatch';
-            result.pinError = `binary_sha256 pin mismatch — expected ${pin.binarySha256Hex.slice(0, 16)}…, got ${att.binarySha256Hex.slice(0, 16)}…`;
-            result.state = 'mismatch';
-            this.log(`server${idx}: ${result.pinError}`, 'error');
-          } else {
-            result.pinStatus = 'match';
-          }
+        // Operator-signed identity (REQ_ANNOUNCE), opt-in. Runs after the
+        // channel decision so announce() rides the encrypted channel when it
+        // came up; binds against the attested serverStaticPub from `att*`.
+        if (this.config.verifyOperatorIdentity) {
+          const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
+          const oid0 = await this.verifyOperatorIdentityOne(0, att0, pin);
+          const oid1 = await this.verifyOperatorIdentityOne(1, att1, pin);
+          this.operatorIdentity.server0 = oid0;
+          this.operatorIdentity.server1 = oid1;
+          this.config.onOperatorIdentity?.(0, oid0);
+          this.config.onOperatorIdentity?.(1, oid1);
         }
-      } else {
-        result.pinStatus = 'no-pin';
+
+      } finally {
+        policyReqs.free();
       }
-      return result;
-    };
-
-    const sum0 = summarise(0, att0);
-    const sum1 = summarise(1, att1);
-    this.attestation.server0 = sum0;
-    this.attestation.server1 = sum1;
-    this.config.onAttestation?.(0, sum0);
-    this.config.onAttestation?.(1, sum1);
-
-    // Only upgrade if BOTH servers cleared the channel-OK gate. A
-    // half-encrypted setup gives no privacy benefit (the all-cleartext
-    // server still leaks queries to cloudflared) and complicates UI.
-    // Either 'verified' (V2 binding only) or 'verified-vcek' (full
-    // AMD chain) qualifies — both prove the channel pubkey is bound
-    // to a SEV-SNP report; the V2 binding is the gate that matters
-    // for the channel itself.
-    const channelReady = (s: ServerAttestation['state']) =>
-      s === 'verified' || s === 'verified-vcek';
-    if (channelReady(sum0.state) && channelReady(sum1.state) && att0 && att1) {
+    } finally {
+      // Callbacks, field projections, BigInt conversion, identity checks, and
+      // secure-channel upgrade are all allowed to throw. Neither attestation
+      // allocation may outlive this bootstrap attempt.
       try {
-        await this.wasmClient.upgradeToSecureChannel(
-          att0.serverStaticPub,
-          att1.serverStaticPub,
-        );
-        this.log('Upgraded to encrypted channel (cloudflared sees only ciphertext)', 'success');
-      } catch (e) {
-        this.log(`upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`, 'error');
-        // Mark both as mismatch since the channel didn't actually come
-        // up despite the per-server attest being clean.
-        this.attestation.server0 = { ...sum0, state: 'mismatch' };
-        this.attestation.server1 = { ...sum1, state: 'mismatch' };
-        this.config.onAttestation?.(0, this.attestation.server0);
-        this.config.onAttestation?.(1, this.attestation.server1);
+        att0?.free();
+      } finally {
+        att1?.free();
       }
-    } else {
-      this.log(
-        `Channel left in cleartext (server0=${sum0.state}, server1=${sum1.state})`,
-        'info',
-      );
     }
-
-    // Operator-signed identity (REQ_ANNOUNCE), opt-in. Runs after the
-    // channel decision so announce() rides the encrypted channel when it
-    // came up; binds against the attested serverStaticPub from `att*`.
-    if (this.config.verifyOperatorIdentity) {
-      const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
-      const oid0 = await this.verifyOperatorIdentityOne(0, att0, pin);
-      const oid1 = await this.verifyOperatorIdentityOne(1, att1, pin);
-      this.operatorIdentity.server0 = oid0;
-      this.operatorIdentity.server1 = oid1;
-      this.config.onOperatorIdentity?.(0, oid0);
-      this.config.onOperatorIdentity?.(1, oid1);
-    }
-
-    // Free the WasmAttestVerification handles to release the WASM-side
-    // copies. We've already extracted the JS-side fields we need.
-    att0?.free();
-    att1?.free();
   }
 
   /**
