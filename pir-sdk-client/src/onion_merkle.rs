@@ -644,7 +644,9 @@ pub(crate) async fn preflight_onion_tree_tops(
     let req = encode_tree_top_request(OnionTreeKind::Index.req_tree_top(), db_id);
     let resp = conn.roundtrip(&req).await?;
     if resp.is_empty() || resp[0] != OnionTreeKind::Index.resp_tree_top() {
-        return Err(PirError::Protocol("invalid OnionPIR tree-top preflight response".into()));
+        return Err(PirError::Protocol(
+            "invalid OnionPIR tree-top preflight response".into(),
+        ));
     }
     let blob = &resp[1..];
     let tops = parse_onion_tree_top_cache(blob)?;
@@ -709,6 +711,36 @@ fn walk_tree_top_to_root(
 /// notes for what this does and does not guarantee).
 pub type OnionMerkleVerdicts = HashMap<(OnionTreeKind, usize, u32), bool>;
 
+/// Reject contradictory claims for one Merkle leaf coordinate before any
+/// verification traffic is sent.
+///
+/// Repeating the same `(tree, pbc_group, bin, hash)` is harmless: the
+/// per-sub-tree verifier deduplicates it below. Repeating the coordinate with
+/// a different hash is ambiguous and must fail the whole batch. In
+/// particular, silently keeping the first hash would make the outcome depend
+/// on caller-controlled input order.
+fn validate_duplicate_leaf_hashes(leaves: &[OnionMerkleLeaf]) -> PirResult<()> {
+    let mut hashes: HashMap<(OnionTreeKind, usize, u32), Hash256> = HashMap::new();
+    for leaf in leaves {
+        let key = (leaf.tree, leaf.pbc_group, leaf.bin);
+        match hashes.get(&key) {
+            Some(hash) if hash != &leaf.hash => {
+                return Err(PirError::Protocol(format!(
+                    "OnionPIR Merkle {} group {} bin {} has conflicting duplicate leaf hashes",
+                    leaf.tree.name(),
+                    leaf.pbc_group,
+                    leaf.bin,
+                )));
+            }
+            Some(_) => {}
+            None => {
+                hashes.insert(key, leaf.hash);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Verify all OnionPIR Merkle leaves across both INDEX and DATA sub-trees.
 ///
 /// * `conn` — the same WebSocket used for the regular queries. The caller
@@ -716,7 +748,9 @@ pub type OnionMerkleVerdicts = HashMap<(OnionTreeKind, usize, u32), bool>;
 /// * `info` — parsed [`OnionMerkleInfo`] for the current DB.
 /// * `leaves` — one entry per probed leaf, pre-populated with
 ///   `(tree, pbc_group, bin, hash, result_idx)`. Duplicates (same
-///   `(tree, pbc_group, bin)`) are deduplicated internally.
+///   `(tree, pbc_group, bin, hash)`) are deduplicated internally. If one
+///   coordinate appears with different hashes, the whole batch is rejected
+///   before any verification request is sent.
 /// * `client_id`, `secret_key` — FHE state from the `OnionClient`'s
 ///   `FheState`. The sibling FHE client is created from these.
 /// * `db_id` — DB under verification.
@@ -737,6 +771,11 @@ pub async fn verify_onion_merkle_batch(
     db_id: u8,
     leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 ) -> PirResult<OnionMerkleVerdicts> {
+    // Validate the whole INDEX + DATA batch before issuing either sub-tree's
+    // tree-top request. A contradictory duplicate in DATA must not allow the
+    // INDEX half to run first, and vice versa.
+    validate_duplicate_leaf_hashes(leaves)?;
+
     let mut verdicts: OnionMerkleVerdicts = HashMap::new();
 
     let index_leaves: Vec<&OnionMerkleLeaf> = leaves
@@ -1307,7 +1346,12 @@ mod tests {
         assert!(parse_onionpir_merkle(j).is_none());
     }
 
-    fn merkle_info(arity: usize, super_root: Hash256, hash: Hash256, size: usize) -> OnionMerkleInfo {
+    fn merkle_info(
+        arity: usize,
+        super_root: Hash256,
+        hash: Hash256,
+        size: usize,
+    ) -> OnionMerkleInfo {
         OnionMerkleInfo {
             arity,
             super_root,
@@ -1315,6 +1359,63 @@ mod tests {
             tree_tops_size: size,
             index: OnionMerkleKindInfo { k: 3, num_pt: 5 },
             data: OnionMerkleKindInfo { k: 2, num_pt: 5 },
+        }
+    }
+
+    fn leaf(tree: OnionTreeKind, pbc_group: usize, bin: u32, hash: Hash256) -> OnionMerkleLeaf {
+        OnionMerkleLeaf {
+            tree,
+            pbc_group,
+            bin,
+            hash,
+            result_idx: 0,
+        }
+    }
+
+    #[test]
+    fn test_duplicate_coordinate_with_same_hash_is_accepted() {
+        let first = leaf(OnionTreeKind::Index, 1, 17, h(3));
+        let mut duplicate = first.clone();
+        duplicate.result_idx = 9;
+
+        assert!(validate_duplicate_leaf_hashes(&[first, duplicate]).is_ok());
+    }
+
+    #[test]
+    fn test_same_coordinate_in_different_trees_is_not_a_conflict() {
+        let leaves = [
+            leaf(OnionTreeKind::Index, 1, 17, h(3)),
+            leaf(OnionTreeKind::Data, 1, 17, h(4)),
+        ];
+
+        assert!(validate_duplicate_leaf_hashes(&leaves).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_conflicting_duplicate_rejects_whole_batch_before_io_in_any_order() {
+        use crate::transport::mock::MockTransport;
+
+        let first = leaf(OnionTreeKind::Data, 1, 17, h(3));
+        let conflicting = leaf(OnionTreeKind::Data, 1, 17, h(4));
+        let info = merkle_info(8, ZERO_HASH, ZERO_HASH, 0);
+
+        for leaves in [
+            vec![first.clone(), conflicting.clone()],
+            vec![conflicting.clone(), first.clone()],
+        ] {
+            let mut conn = MockTransport::new("mock://duplicate-leaf");
+            let err = verify_onion_merkle_batch(&mut conn, &info, &leaves, 1, &[], 0, None)
+                .await
+                .expect_err("conflicting duplicate hash must reject the batch");
+
+            assert!(
+                matches!(err, PirError::Protocol(ref message) if message.contains("conflicting duplicate leaf hashes")),
+                "unexpected error: {err}",
+            );
+            assert!(
+                conn.sent.is_empty(),
+                "conflict must be rejected before either Merkle sub-tree sends traffic",
+            );
         }
     }
 
@@ -1417,11 +1518,7 @@ mod tests {
     fn test_walk_tree_top_deep_tree() {
         // 4096 leaves, arity 8 → levels [4096, 512, 64, 8, 1]. Cache from
         // level 1 → tree-top [[512],[64],[8],[1]]. Exercises a 3-level walk.
-        let leaves: Vec<Hash256> = (0..255u8)
-            .cycle()
-            .take(4096)
-            .map(h)
-            .collect();
+        let leaves: Vec<Hash256> = (0..255u8).cycle().take(4096).map(h).collect();
         let (levels, root) = build_tree(8, &leaves);
         assert_eq!(levels.len(), 5);
         let top = OnionTreeTopCache {
@@ -1438,10 +1535,22 @@ mod tests {
     #[test]
     fn test_wire_code_pairing() {
         // Request/response are the same variant byte per feature (server convention).
-        assert_eq!(REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP, RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP);
-        assert_eq!(REQ_ONIONPIR_MERKLE_INDEX_SIBLING, RESP_ONIONPIR_MERKLE_INDEX_SIBLING);
-        assert_eq!(REQ_ONIONPIR_MERKLE_DATA_TREE_TOP, RESP_ONIONPIR_MERKLE_DATA_TREE_TOP);
-        assert_eq!(REQ_ONIONPIR_MERKLE_DATA_SIBLING, RESP_ONIONPIR_MERKLE_DATA_SIBLING);
+        assert_eq!(
+            REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+            RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP
+        );
+        assert_eq!(
+            REQ_ONIONPIR_MERKLE_INDEX_SIBLING,
+            RESP_ONIONPIR_MERKLE_INDEX_SIBLING
+        );
+        assert_eq!(
+            REQ_ONIONPIR_MERKLE_DATA_TREE_TOP,
+            RESP_ONIONPIR_MERKLE_DATA_TREE_TOP
+        );
+        assert_eq!(
+            REQ_ONIONPIR_MERKLE_DATA_SIBLING,
+            RESP_ONIONPIR_MERKLE_DATA_SIBLING
+        );
         assert_eq!(REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP, 0x54);
         assert_eq!(REQ_ONIONPIR_MERKLE_INDEX_SIBLING, 0x53);
         assert_eq!(REQ_ONIONPIR_MERKLE_DATA_TREE_TOP, 0x56);

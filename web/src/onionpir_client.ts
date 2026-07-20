@@ -28,10 +28,20 @@ import { unpackOnionPlaintext } from './onion-unpack.js';
 import { findEntryInOnionPirIndexResult } from './scan.js';
 import { ManagedWebSocket } from './ws.js';
 import { fetchServerInfoJson } from './server-info.js';
-import { requireSdkWasm, type WasmAnnounceVerification } from './sdk-bridge.js';
+import {
+  requireSdkWasm,
+  type WasmAnnounceVerification,
+  type WasmDatabaseProof,
+} from './sdk-bridge.js';
 import { computeParentN, ZERO_HASH } from './merkle.js';
+import {
+  assertStrictDatabasePinCoverage,
+  verifyInstallAndPreflightDatabaseProofs,
+} from './strict-verification.js';
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './types.js';
+import type { DatabaseProofPin, DatabaseProofStatus } from './db-proof.js';
+import type { OnionQueryLayoutPin } from './attest-pin.js';
 import type {
   DatabaseCatalog,
   OnionPirMerkleInfoJson,
@@ -66,6 +76,7 @@ const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
 // Operator-signed identity (shared across all backends; 0x07).
 const REQ_ANNOUNCE              = 0x07;
+const REQ_GET_DB_PROOF          = 0x0A;
 
 // NOTE: moved from 0x30-0x32 to 0x50-0x52 to avoid collision with
 // REQ_MERKLE_SIBLING_BATCH (0x31) and REQ_MERKLE_TREE_TOP (0x32).
@@ -163,7 +174,10 @@ async function loadWasmModule(): Promise<OnionPirModule> {
         // time. The browser fetches it from /wasm/onionpir_client.mjs
         // (Vite serves the public/ tree verbatim); node tests install
         // a factory via `globalThis.__onionpirWasmFactory`.
-        const wasmModuleUrl = '/wasm/onionpir_client.mjs';
+        // A fully-resolved URL keeps Vite's dev server from treating this
+        // public asset as source (`/wasm/...?...import`), while production
+        // browsers still import the exact same static module.
+        const wasmModuleUrl = new URL('/wasm/onionpir_client.mjs', globalThis.location.href).href;
         const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ wasmModuleUrl);
         factory = (mod as { default: OnionPirFactory }).default;
       }
@@ -354,15 +368,66 @@ function encodeBatchQuery(variant: number, roundId: number, queries: Uint8Array[
   return msg;
 }
 
-function decodeBatchResult(data: Uint8Array, pos: number): { roundId: number; results: Uint8Array[]; pos: number } {
-  const dv = new DataView(data.buffer, data.byteOffset);
+/** Validate one exact length-prefixed response record and return its payload. */
+export function responsePayloadFromFrame(frame: Uint8Array, expectedVariant?: number): Uint8Array {
+  if (frame.length < 5) {
+    throw new Error(`Response frame too short: ${frame.length} bytes`);
+  }
+  const declared = new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
+    .getUint32(0, true);
+  if (declared !== frame.length - 4) {
+    throw new Error(
+      `Response frame length mismatch: declared ${declared}, got ${frame.length - 4}`,
+    );
+  }
+  const payload = frame.slice(4);
+  if (expectedVariant !== undefined && payload[0] !== expectedVariant) {
+    throw new Error(
+      `Unexpected response variant: expected 0x${expectedVariant.toString(16)}, ` +
+      `got 0x${(payload[0] ?? 0).toString(16)}`,
+    );
+  }
+  return payload;
+}
+
+export function decodeBatchResult(
+  data: Uint8Array,
+  pos: number,
+  expectedRoundId: number,
+  expectedGroups: number,
+): { roundId: number; results: Uint8Array[]; pos: number } {
+  if (pos < 0 || pos + 3 > data.length) {
+    throw new Error('OnionPIR batch response header truncated');
+  }
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const roundId = dv.getUint16(pos, true); pos += 2;
   const numGroups = data[pos++];
+  if (roundId !== expectedRoundId) {
+    throw new Error(
+      `OnionPIR batch response round mismatch: expected ${expectedRoundId}, got ${roundId}`,
+    );
+  }
+  if (numGroups !== expectedGroups) {
+    throw new Error(
+      `OnionPIR batch response group count mismatch: expected ${expectedGroups}, got ${numGroups}`,
+    );
+  }
   const results: Uint8Array[] = [];
   for (let i = 0; i < numGroups; i++) {
+    if (pos + 4 > data.length) {
+      throw new Error(`OnionPIR batch response truncated before group ${i} length`);
+    }
     const len = dv.getUint32(pos, true); pos += 4;
+    if (pos + len > data.length) {
+      throw new Error(
+        `OnionPIR batch response group ${i} truncated: claimed ${len}, have ${data.length - pos}`,
+      );
+    }
     results.push(data.slice(pos, pos + len));
     pos += len;
+  }
+  if (pos !== data.length) {
+    throw new Error(`OnionPIR batch response has ${data.length - pos} trailing bytes`);
   }
   return { roundId, results, pos };
 }
@@ -380,11 +445,12 @@ function decodeBatchResult(data: Uint8Array, pos: number): { roundId: number; re
 // `planRounds`-over-gids sibling machinery they needed, are gone.
 //
 // The 155 per-group roots ride in the *untrusted*, server-supplied tree-top
-// blob; `super_root` (from the trusted server-info JSON) is the pinned
-// anchor. `checkTreeTopAnchor` binds the blob to that anchor — this is the
-// load-bearing check. Skip or weaken it and a malicious server can
-// fabricate a self-consistent blob + sibling responses, and every leaf
-// "verifies" against forged roots.
+// blob. In strict mode the pinned anchor is the installed database-proof
+// `onion_super_root`; `server-info.super_root` is diagnostic only. The
+// advisory compatibility path still uses the advertised value.
+// `checkTreeTopAnchor` is the load-bearing binding check. Skip or weaken it
+// and a malicious server can fabricate a self-consistent blob + sibling
+// responses, and every leaf "verifies" against forged roots.
 
 /**
  * One parsed per-group Merkle tree-top. `levels[0]` is the first cached
@@ -411,6 +477,31 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+export interface OnionMerkleLeafCoordinate {
+  tree: 'index' | 'data';
+  pbcGroup: number;
+  bin: number;
+  hash: Uint8Array;
+}
+
+/**
+ * Reject ambiguous Merkle batches before any proof request is sent. Duplicate
+ * consumers may share one coordinate only when they commit to the same hash.
+ */
+export function assertConsistentOnionMerkleLeaves(
+  leaves: readonly OnionMerkleLeafCoordinate[],
+): void {
+  const coordinateHashes = new Map<string, Uint8Array>();
+  for (const leaf of leaves) {
+    const key = `${leaf.tree}:${leaf.pbcGroup}:${leaf.bin}`;
+    const previous = coordinateHashes.get(key);
+    if (previous && !bytesEqual(previous, leaf.hash)) {
+      throw new Error(`OnionPIR conflicting hashes for Merkle leaf ${key}`);
+    }
+    if (!previous) coordinateHashes.set(key, leaf.hash);
+  }
 }
 
 /**
@@ -474,6 +565,9 @@ function parseOnionTreeTopCache(data: Uint8Array): OnionTreeTopCache[] {
       levels.push(nodes);
     }
     out.push({ cacheFromLevel, arity, levels });
+  }
+  if (off !== data.length) {
+    throw new Error(`onionpir tree-tops blob has ${data.length - off} trailing bytes`);
   }
   return out;
 }
@@ -603,8 +697,30 @@ function walkTreeTopToRoot(
 
 export interface OnionPirClientConfig {
   serverUrl: string;
+  /** Production enables this fail-closed proof/root gate. */
+  strictVerification?: boolean;
+  databaseProofPins?: readonly DatabaseProofPin[];
+  onionQueryLayoutPins?: readonly OnionQueryLayoutPin[];
+  onDatabaseProof?: (dbId: number, status: DatabaseProofStatus) => void;
   onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
   onLog?: (message: string, level: 'info' | 'success' | 'error') => void;
+}
+
+interface InstalledOnionRoot {
+  dbId: number;
+  buildKind: string;
+  fromHeight: number;
+  height: number;
+  onionSuperRootHex: string;
+  onionEntrySize: number;
+  generation: number;
+}
+
+interface VerifiedTreeTopBinding {
+  dbId: number;
+  rootHex: string;
+  generation: number;
+  allTops: OnionTreeTopCache[];
 }
 
 // ─── CHUNK Round-Presence Symmetry: per-slot classifier ───────────────────
@@ -778,6 +894,15 @@ export class OnionPirWebClient {
   // Database catalog (populated after connect). Used by the UI selector.
   private catalog: DatabaseCatalog | null = null;
 
+  // Strict, session-local trust state. None of these values survives a
+  // disconnect or socket replacement.
+  private strictReady = false;
+  private sessionGeneration = 0;
+  private installedOnionRoots = new Map<number, InstalledOnionRoot>();
+  private verifiedTreeTops = new Map<number, VerifiedTreeTopBinding>();
+  private databaseProofStatuses = new Map<number, DatabaseProofStatus>();
+  private verifiedLayoutDbIds = new Set<number>();
+
   // Test hook: one-shot override of the computed scripthashes for the next
   // queryBatch() call. Consumed on use and then cleared. Used by harnesses
   // that need to drive a query at a specific scripthash without reversing
@@ -802,6 +927,127 @@ export class OnionPirWebClient {
 
   constructor(config: OnionPirClientConfig) {
     this.config = config;
+  }
+
+  private isStrictVerification(): boolean {
+    return this.config.strictVerification === true;
+  }
+
+  private clearSessionTrust(): void {
+    this.strictReady = false;
+    this.installedOnionRoots.clear();
+    this.verifiedTreeTops.clear();
+    this.databaseProofStatuses.clear();
+    this.verifiedLayoutDbIds.clear();
+    this.registeredDbs.clear();
+    this.fheClientId = 0;
+    this.fheSecretKey = null;
+  }
+
+  private layoutPinForDb(dbId: number): OnionQueryLayoutPin | undefined {
+    return this.config.onionQueryLayoutPins?.find((pin) => pin.dbId === dbId);
+  }
+
+  private validateStrictLayoutPins(): void {
+    const catalog = this.catalog;
+    const serverInfo = this.serverInfo;
+    const pins = this.config.onionQueryLayoutPins ?? [];
+    if (!catalog || !serverInfo) {
+      throw new Error('strict OnionPIR layout validation requires server info and catalog');
+    }
+    if (pins.length === 0) {
+      throw new Error('strict OnionPIR requires pinned query layouts');
+    }
+
+    const catalogIds = catalog.databases.map((db) => db.dbId);
+    const pinIds = pins.map((pin) => pin.dbId);
+    const duplicates = pinIds.filter((id, i) => pinIds.indexOf(id) !== i);
+    const missing = catalogIds.filter((id) => !pinIds.includes(id));
+    const unexpected = pinIds.filter((id) => !catalogIds.includes(id));
+    if (duplicates.length || missing.length || unexpected.length) {
+      throw new Error(
+        `strict OnionPIR layout pin coverage failed: duplicates=${[...new Set(duplicates)]}; ` +
+        `missing=${missing}; unexpected=${unexpected}`,
+      );
+    }
+
+    const failures: string[] = [];
+    const check = (dbId: number, field: string, actual: unknown, expected: unknown) => {
+      if (actual !== expected) {
+        failures.push(`db ${dbId} ${field}: expected ${String(expected)}, got ${String(actual)}`);
+      }
+    };
+    const hex64 = (value: bigint) => value.toString(16).padStart(16, '0').toLowerCase();
+
+    for (const pin of pins) {
+      const db = catalog.databases.find((entry) => entry.dbId === pin.dbId);
+      const advertised = this.getOnionPirForDb(pin.dbId);
+      const merkle = this.getOnionPirMerkleForDb(pin.dbId);
+      if (!db || !advertised || !merkle) {
+        failures.push(`db ${pin.dbId}: OnionPIR layout or Merkle metadata unavailable`);
+        continue;
+      }
+
+      check(pin.dbId, 'catalog.index_k', db.indexK, pin.indexK);
+      check(pin.dbId, 'catalog.chunk_k', db.chunkK, pin.chunkK);
+      check(pin.dbId, 'catalog.tag_seed', hex64(db.tagSeed), pin.tagSeedHex);
+      check(pin.dbId, 'catalog.index_master_seed', hex64(db.indexMasterSeed), pin.indexMasterSeedHex);
+      check(pin.dbId, 'catalog.chunk_master_seed', hex64(db.chunkMasterSeed), pin.chunkMasterSeedHex);
+
+      check(pin.dbId, 'onion.total_packed_entries', advertised.total_packed_entries, pin.totalPackedEntries);
+      check(pin.dbId, 'onion.index_bins_per_table', advertised.index_bins_per_table, pin.indexBinsPerTable);
+      check(pin.dbId, 'onion.chunk_bins_per_table', advertised.chunk_bins_per_table, pin.chunkBinsPerTable);
+      check(pin.dbId, 'onion.index_k', advertised.index_k, pin.indexK);
+      check(pin.dbId, 'onion.chunk_k', advertised.chunk_k, pin.chunkK);
+      check(pin.dbId, 'onion.tag_seed', hex64(advertised.tag_seed), pin.tagSeedHex);
+      check(pin.dbId, 'onion.index_slots_per_bin', advertised.index_slots_per_bin, pin.indexSlotsPerBin);
+      check(pin.dbId, 'onion.index_slot_size', advertised.index_slot_size, pin.indexSlotSize);
+
+      check(pin.dbId, 'merkle.arity', merkle.arity, pin.merkleArity);
+      check(pin.dbId, 'merkle.index.k', merkle.index.k, pin.merkleIndexK);
+      check(pin.dbId, 'merkle.data.k', merkle.data.k, pin.merkleDataK);
+      check(pin.dbId, 'merkle.index.num_pt', merkle.index.num_pt, pin.merkleIndexNumPt);
+      check(pin.dbId, 'merkle.data.num_pt', merkle.data.num_pt, pin.merkleDataNumPt);
+
+      const indexEntrySize = this.wasmModule!.paramsInfo(pin.indexBinsPerTable).entrySize;
+      const chunkEntrySize = this.wasmModule!.paramsInfo(pin.chunkBinsPerTable).entrySize;
+      check(pin.dbId, 'local index entry_size', indexEntrySize, pin.onionEntrySize);
+      check(pin.dbId, 'local chunk entry_size', chunkEntrySize, pin.onionEntrySize);
+      check(pin.dbId, 'merkle sibling entry_size', pin.merkleArity * 32, pin.onionEntrySize);
+    }
+    if (failures.length > 0) {
+      throw new Error(`strict OnionPIR query-layout mismatch: ${failures.join('; ')}`);
+    }
+  }
+
+  private catalogToSdkHandle(): any {
+    if (!this.catalog) throw new Error('Database catalog unavailable');
+    const json = {
+      databases: this.catalog.databases.map((db) => ({
+        dbId: db.dbId,
+        dbType: db.dbType,
+        name: db.name,
+        baseHeight: db.baseHeight,
+        height: db.height,
+        indexBins: db.indexBinsPerTable,
+        chunkBins: db.chunkBinsPerTable,
+        indexK: db.indexK,
+        chunkK: db.chunkK,
+        tagSeed: `0x${db.tagSeed.toString(16)}`,
+        dpfNIndex: db.dpfNIndex,
+        dpfNChunk: db.dpfNChunk,
+        hasBucketMerkle: db.hasBucketMerkle,
+        indexMasterSeed: `0x${db.indexMasterSeed.toString(16)}`,
+        chunkMasterSeed: `0x${db.chunkMasterSeed.toString(16)}`,
+        anchorKind: db.anchorKind,
+        anchorHex: db.anchorHex,
+      })),
+    };
+    return requireSdkWasm().WasmDatabaseCatalog.fromJson(json);
+  }
+
+  getDatabaseProofStatus(dbId: number): DatabaseProofStatus | undefined {
+    return this.databaseProofStatuses.get(dbId);
   }
 
   /**
@@ -858,6 +1104,21 @@ export class OnionPirWebClient {
    * the active DB does not expose its own `onionpir` block.
    */
   private updateParamsForActiveDb(): void {
+    if (this.isStrictVerification() && this.verifiedLayoutDbIds.has(this.dbId)) {
+      const pin = this.layoutPinForDb(this.dbId);
+      if (!pin) throw new Error(`strict OnionPIR layout pin missing for dbId=${this.dbId}`);
+      this.indexK = pin.indexK;
+      this.chunkK = pin.chunkK;
+      this.indexBins = pin.indexBinsPerTable;
+      this.chunkBins = pin.chunkBinsPerTable;
+      this.tagSeed = BigInt(`0x${pin.tagSeedHex}`);
+      this.indexMasterSeed = BigInt(`0x${pin.indexMasterSeedHex}`);
+      this.chunkMasterSeed = BigInt(`0x${pin.chunkMasterSeedHex}`);
+      this.totalPacked = pin.totalPackedEntries;
+      this.indexSlotsPerBin = pin.indexSlotsPerBin;
+      this.indexSlotSize = pin.indexSlotSize;
+      return;
+    }
     const opi = this.getOnionPirForDb(this.dbId) ?? this.serverInfo?.onionpir;
     if (!opi) return;
     this.indexK = opi.index_k;
@@ -885,6 +1146,16 @@ export class OnionPirWebClient {
    */
   hasMerkleForDb(dbId: number): boolean {
     const info = this.getOnionPirMerkleForDb(dbId);
+    if (this.isStrictVerification()) {
+      const installed = this.installedOnionRoots.get(dbId);
+      const binding = this.verifiedTreeTops.get(dbId);
+      return !!(
+        info && installed && binding &&
+        installed.generation === this.sessionGeneration &&
+        binding.generation === this.sessionGeneration &&
+        binding.rootHex === installed.onionSuperRootHex
+      );
+    }
     return !!(
       info &&
       info.arity > 0 &&
@@ -896,6 +1167,12 @@ export class OnionPirWebClient {
 
   /** Merkle super-root hex for a specific DB (the pinned trust anchor). */
   getMerkleRootHexForDb(dbId: number): string | undefined {
+    if (this.isStrictVerification()) {
+      const installed = this.installedOnionRoots.get(dbId);
+      return installed?.generation === this.sessionGeneration
+        ? installed.onionSuperRootHex
+        : undefined;
+    }
     const info = this.getOnionPirMerkleForDb(dbId);
     return info && info.super_root ? info.super_root : undefined;
   }
@@ -911,42 +1188,108 @@ export class OnionPirWebClient {
   }
 
   getConnectionState(): ConnectionState { return this.connectionState; }
-  isConnected(): boolean { return this.ws?.isOpen() ?? false; }
+  isConnected(): boolean {
+    const open = this.ws?.isOpen() ?? false;
+    return this.isStrictVerification() ? open && this.strictReady : open;
+  }
 
   // ─── Connection (delegates to shared ws.ts) ───────────────────────────
 
   async connect(): Promise<void> {
+    if (this.ws) this.disconnect();
+    this.sessionGeneration++;
+    const generation = this.sessionGeneration;
+    this.clearSessionTrust();
+    this.catalog = null;
+    this.serverInfo = null;
     this.setState('connecting', 'Loading WASM + connecting...');
 
     // Load WASM module (cached after first load)
     this.wasmModule = await loadWasmModule();
     this.log('WASM module loaded');
 
-    // Connect WebSocket
-    this.ws = new ManagedWebSocket({
+    // Keep the socket identity stable throughout bootstrap. A late close from
+    // an older connection must never clear a replacement session.
+    let socket: ManagedWebSocket;
+    socket = new ManagedWebSocket({
       url: this.config.serverUrl,
       label: 'onionpir',
       onLog: (msg, level) => this.log(msg, level),
       onClose: () => {
+        if (this.ws !== socket) return;
         this.ws = null;
+        this.sessionGeneration++;
+        this.clearSessionTrust();
+        this.catalog = null;
+        this.serverInfo = null;
         this.setState('disconnected');
       },
     });
-    await this.ws.connect();
+    this.ws = socket;
 
-    this.setState('connected', 'Connected');
-    this.log('Connected to server', 'success');
+    try {
+      await socket.connect();
+      if (this.ws !== socket || this.sessionGeneration !== generation) {
+        throw new Error('stale OnionPIR connection bootstrap');
+      }
 
-    // Fetch server info
-    await this.fetchServerInfo();
+      await this.fetchServerInfo();
+      if (this.ws !== socket || this.sessionGeneration !== generation) {
+        throw new Error('stale OnionPIR catalog bootstrap');
+      }
+
+      if (this.isStrictVerification()) {
+        const catalog = this.getCatalog();
+        if (!catalog) throw new Error('strict OnionPIR requires a database catalog');
+        const proofPins = this.config.databaseProofPins ?? [];
+        assertStrictDatabasePinCoverage(
+          catalog.databases.map((db) => db.dbId),
+          proofPins,
+        );
+        this.validateStrictLayoutPins();
+        await verifyInstallAndPreflightDatabaseProofs({
+          client: this,
+          pins: proofPins,
+          onStatus: (dbId, status) => {
+            if (this.sessionGeneration !== generation || this.ws !== socket) return;
+            this.databaseProofStatuses.set(dbId, status);
+            this.config.onDatabaseProof?.(dbId, status);
+          },
+        });
+        if (this.ws !== socket || this.sessionGeneration !== generation) {
+          throw new Error('stale OnionPIR proof bootstrap');
+        }
+        this.strictReady = true;
+        this.updateParamsForActiveDb();
+      }
+
+      this.setState('connected', 'Connected');
+      this.log('Connected to server', 'success');
+    } catch (error) {
+      // Only the bootstrap that still owns the active socket may tear down
+      // session trust. A stale, concurrently replaced bootstrap must not
+      // clear roots or state belonging to its successor.
+      if (this.ws === socket && this.sessionGeneration === generation) {
+        this.ws = null;
+        this.sessionGeneration++;
+        this.clearSessionTrust();
+        this.catalog = null;
+        this.serverInfo = null;
+        this.setState('disconnected', 'Connection failed');
+      }
+      socket.disconnect();
+      throw error;
+    }
   }
 
   disconnect(): void {
-    this.ws?.disconnect();
+    const socket = this.ws;
     this.ws = null;
-    // Reset per-connection FHE registration state — keys live only for the
-    // server connection, so a new connection requires re-registration.
-    this.registeredDbs.clear();
+    this.sessionGeneration++;
+    this.clearSessionTrust();
+    this.catalog = null;
+    this.serverInfo = null;
+    socket?.disconnect();
     this.setState('disconnected', 'Disconnected');
   }
 
@@ -981,11 +1324,124 @@ export class OnionPirWebClient {
     const msg = new Uint8Array(5);
     new DataView(msg.buffer).setUint32(0, 1, true);
     msg[4] = REQ_ANNOUNCE;
-    // sendRaw resolves with the response payload (variant byte first,
-    // outer length already stripped) — exactly the shape
-    // verifyAnnounceResponse expects.
     const resp = await this.sendRaw(msg);
-    return requireSdkWasm().verifyAnnounceResponse(resp);
+    return requireSdkWasm().verifyAnnounceResponse(
+      responsePayloadFromFrame(resp),
+    );
+  }
+
+  /** Fetch and verify one DB proof. This method is deliberately stateless. */
+  async verifyDatabaseProof(
+    dbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): Promise<WasmDatabaseProof> {
+    if (!this.ws?.isOpen()) throw new Error('Not connected');
+    const request = new Uint8Array([2, 0, 0, 0, REQ_GET_DB_PROOF, dbId & 0xff]);
+    const response = await this.sendRaw(request);
+    this.recordRound({
+      kind: 'info',
+      server_id: 0,
+      db_id: dbId,
+      request_bytes: request.length,
+      response_bytes: response.length,
+      items: [],
+    });
+    const catalogHandle = this.catalogToSdkHandle();
+    try {
+      return requireSdkWasm().verifyDatabaseProofResponse(
+        response,
+        catalogHandle,
+        dbId,
+        expectedParamsHashHex,
+        allowedBuilderBinarySha256Hex,
+        allowedBuilderGitCommit,
+      );
+    } finally {
+      catalogHandle.free();
+    }
+  }
+
+  /** Consume a pin-matched proof handle and install its Onion root locally. */
+  installVerifiedDatabaseProof(proof: WasmDatabaseProof): void {
+    try {
+      const pin = this.layoutPinForDb(proof.dbId);
+      const catalogEntry = this.catalog?.databases.find((db) => db.dbId === proof.dbId);
+      if (!pin || !catalogEntry) {
+        throw new Error(`strict OnionPIR install has no layout/catalog entry for db ${proof.dbId}`);
+      }
+      if (proof.onionEntrySize !== pin.onionEntrySize) {
+        throw new Error(
+          `db ${proof.dbId} onion_entry_size mismatch: proof ${proof.onionEntrySize}, ` +
+          `pin ${pin.onionEntrySize}`,
+        );
+      }
+      if (proof.height !== catalogEntry.height || proof.fromHeight !== catalogEntry.baseHeight) {
+        throw new Error(`db ${proof.dbId} proof/catalog height changed during install`);
+      }
+      const root = proof.onionSuperRootHex.toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(root)) {
+        throw new Error(`db ${proof.dbId} proof has malformed Onion root`);
+      }
+      this.installedOnionRoots.set(proof.dbId, {
+        dbId: proof.dbId,
+        buildKind: proof.buildKind,
+        fromHeight: proof.fromHeight,
+        height: proof.height,
+        onionSuperRootHex: root,
+        onionEntrySize: proof.onionEntrySize,
+        generation: this.sessionGeneration,
+      });
+      this.verifiedTreeTops.delete(proof.dbId);
+      this.verifiedLayoutDbIds.add(proof.dbId);
+    } finally {
+      proof.free();
+    }
+  }
+
+  /** Bind the consolidated Onion tree-tops to the installed proof root. */
+  async preflightDatabase(dbId: number): Promise<void> {
+    const installed = this.installedOnionRoots.get(dbId);
+    const advertised = this.getOnionPirMerkleForDb(dbId);
+    if (!installed || installed.generation !== this.sessionGeneration) {
+      throw new Error(`db ${dbId} has no installed Onion root`);
+    }
+    if (!advertised) throw new Error(`db ${dbId} has no Onion tree-top metadata`);
+
+    const payloadLen = dbId === 0 ? 1 : 2;
+    const request = new Uint8Array(4 + payloadLen);
+    new DataView(request.buffer).setUint32(0, payloadLen, true);
+    request[4] = REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP;
+    if (dbId !== 0) request[5] = dbId;
+    const response = await this.sendRaw(request);
+    this.recordRound({
+      kind: 'merkle_tree_tops',
+      server_id: 0,
+      db_id: dbId,
+      request_bytes: request.length,
+      response_bytes: response.length,
+      items: [],
+    });
+    const payload = responsePayloadFromFrame(
+      response,
+      RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+    );
+    const blob = payload.slice(1);
+    const allTops = parseOnionTreeTopCache(blob);
+    const trustedInfo: OnionPirMerkleInfoJson = {
+      ...advertised,
+      super_root: installed.onionSuperRootHex,
+    };
+    if (!checkTreeTopAnchor(trustedInfo, blob, allTops, (m) => this.log(m, 'error'))) {
+      throw new Error(`db ${dbId} Onion tree-tops do not match the installed root`);
+    }
+    this.verifiedTreeTops.set(dbId, {
+      dbId,
+      rootHex: installed.onionSuperRootHex,
+      generation: this.sessionGeneration,
+      allTops,
+    });
   }
 
   // ─── Server info (delegates to shared server-info.ts) ──────────────────
@@ -1037,8 +1493,11 @@ export class OnionPirWebClient {
       });
       this.log(`Catalog: ${this.catalog.databases.length} database(s)`);
     } catch (e: any) {
-      this.log(`Catalog fetch failed (non-fatal): ${e.message}`, 'info');
       this.catalog = null;
+      if (this.isStrictVerification()) {
+        throw new Error(`strict OnionPIR catalog fetch failed: ${e.message}`);
+      }
+      this.log(`Catalog fetch failed (non-fatal): ${e.message}`, 'info');
     }
   }
 
@@ -1063,6 +1522,21 @@ export class OnionPirWebClient {
     if (!this.wasmModule) throw new Error('WASM not loaded');
 
     const dbId = dbIdOverride ?? this.dbId;
+    if (this.isStrictVerification()) {
+      const installed = this.installedOnionRoots.get(dbId);
+      const binding = this.verifiedTreeTops.get(dbId);
+      if (
+        !this.strictReady ||
+        !installed || installed.generation !== this.sessionGeneration ||
+        !binding || binding.generation !== this.sessionGeneration ||
+        binding.rootHex !== installed.onionSuperRootHex ||
+        !this.verifiedLayoutDbIds.has(dbId)
+      ) {
+        throw new Error(
+          `strict OnionPIR query rejected: db ${dbId} proof/layout/tree-tops are not ready`,
+        );
+      }
+    }
     // Consume the test hook override (if any) — one-shot replacement of the
     // input scripthashes so harnesses can drive queries at known-present
     // delta entries without needing an H160 preimage.
@@ -1156,7 +1630,8 @@ export class OnionPirWebClient {
           response_bytes: ack.length,
           items: [],
         });
-        if (ack[4] !== RESP_KEYS_ACK) throw new Error('Key registration failed');
+        const ackPayload = responsePayloadFromFrame(ack, RESP_KEYS_ACK);
+        if (ackPayload.length !== 1) throw new Error('Key registration response has trailing data');
         this.registeredDbs.add(dbId);
         this.log(`Keys registered for dbId=${dbId}`);
       } else {
@@ -1254,9 +1729,13 @@ export class OnionPirWebClient {
         });
         totalIndexRounds++;
 
-        const respPayload = respRaw.slice(4);
-        if (respPayload[0] !== RESP_ONIONPIR_INDEX_RESULT) throw new Error('Unexpected index response');
-        const { results } = decodeBatchResult(respPayload, 1);
+        const respPayload = responsePayloadFromFrame(respRaw, RESP_ONIONPIR_INDEX_RESULT);
+        const { results } = decodeBatchResult(
+          respPayload,
+          1,
+          totalIndexRounds - 1,
+          queries.length,
+        );
 
         // Decrypt all INDEX_CUCKOO_NUM_HASHES responses per address — even
         // after a match — so the Merkle item count is uniform across
@@ -1500,9 +1979,8 @@ export class OnionPirWebClient {
             items: new Array(this.chunkK).fill(1),
           });
 
-          const respPayload = respRaw.slice(4);
-          if (respPayload[0] !== RESP_ONIONPIR_CHUNK_RESULT) throw new Error('Unexpected chunk response');
-          const { results } = decodeBatchResult(respPayload, 1);
+          const respPayload = responsePayloadFromFrame(respRaw, RESP_ONIONPIR_CHUNK_RESULT);
+          const { results } = decodeBatchResult(respPayload, 1, ri, this.chunkK);
 
           let chunkDecrypted = 0;
           // Post-port (commit 7): unpack the raw plaintext exactly as
@@ -1548,6 +2026,17 @@ export class OnionPirWebClient {
       // OnionPIR Merkle info for this DB — `super_root` (the pinned
       // anchor) is surfaced on each result for display.
       const merkleInfo = this.getOnionPirMerkleForDb(this.dbId);
+      const installedRoot = this.installedOnionRoots.get(this.dbId);
+      const resultMerkleRoot = this.isStrictVerification()
+        ? installedRoot?.onionSuperRootHex
+        : merkleInfo?.super_root;
+      const resultTrustBinding = this.isStrictVerification() && installedRoot
+        ? {
+            verifiedDbId: this.dbId,
+            verifiedOnionRootHex: installedRoot.onionSuperRootHex,
+            verificationGeneration: this.sessionGeneration,
+          }
+        : {};
 
       // Helper: collect the per-group DATA Merkle leaves owned by query
       // `qi` — one per real chunk entry_id (so 0 for not-found / whale).
@@ -1582,12 +2071,13 @@ export class OnionPirWebClient {
             numChunks: 0,
             numRounds: chunkRoundsCount,
             isWhale: true,
-            merkleSuperRoot: merkleInfo?.super_root,
+            merkleSuperRoot: resultMerkleRoot,
             indexBinHash: indexBinHashes[qi] ?? undefined,
             indexBinLeaves: allBinsChecked.get(qi),
             dataBinLeaves: ownedLeaves,
             scriptHash: scriptHashes[qi],
             rawChunkData: new Uint8Array(0),
+            ...resultTrustBinding,
           };
           continue;
         }
@@ -1609,12 +2099,13 @@ export class OnionPirWebClient {
               numChunks: 0,
               numRounds: chunkRoundsCount,
               isWhale: false,
-              merkleSuperRoot: merkleInfo?.super_root,
+              merkleSuperRoot: resultMerkleRoot,
               indexBinHash: binHash,
               indexBinLeaves: allBins,
               dataBinLeaves: ownedLeaves,
               scriptHash: scriptHashes[qi],
               rawChunkData: new Uint8Array(0),
+              ...resultTrustBinding,
             };
           }
           continue;
@@ -1645,7 +2136,7 @@ export class OnionPirWebClient {
           numChunks: ir.numEntries,
           numRounds: chunkRoundsCount,
           isWhale: false,
-          merkleSuperRoot: merkleInfo?.super_root,
+          merkleSuperRoot: resultMerkleRoot,
           indexBinHash: indexBinHashes[qi] ?? undefined,
           // ALL probed cuckoo positions (always INDEX_CUCKOO_NUM_HASHES bins —
           // see CLAUDE.md "Merkle INDEX Item-Count Symmetry"); one per-group
@@ -1658,11 +2149,18 @@ export class OnionPirWebClient {
           // decodeDeltaData in the sync-merge flow. For main DB this is just
           // the same bytes that decodeUtxoData already consumed above.
           rawChunkData: fullData,
+          ...resultTrustBinding,
         };
       }
 
-      const found = results.filter(r => r !== null).length;
-      this.log(`=== Batch complete: ${found}/${N} returned results ===`, 'success');
+      const verifiable = results.filter(r => r !== null).length;
+      const matched = results.filter(
+        r => r !== null && !r.isWhale && r.entries.length > 0,
+      ).length;
+      this.log(
+        `=== Batch complete: ${matched}/${N} matched; ${verifiable}/${N} verifiable results ===`,
+        'success',
+      );
       return results;
 
     } finally {
@@ -1715,8 +2213,43 @@ export class OnionPirWebClient {
     // Per-DB Merkle lookup: falls back to the top-level `onionpir_merkle`
     // when dbId=0 (backward compatible with older servers that only emit
     // main-DB Merkle info at the top level).
-    const merkle = this.getOnionPirMerkleForDb(this.dbId);
-    if (!merkle) throw new Error(`OnionPIR Merkle not available for dbId=${this.dbId}`);
+    const advertisedMerkle = this.getOnionPirMerkleForDb(this.dbId);
+    if (!advertisedMerkle) throw new Error(`OnionPIR Merkle not available for dbId=${this.dbId}`);
+    let merkle = advertisedMerkle;
+    if (this.isStrictVerification()) {
+      const installed = this.installedOnionRoots.get(this.dbId);
+      const binding = this.verifiedTreeTops.get(this.dbId);
+      if (
+        !installed || installed.generation !== this.sessionGeneration ||
+        !binding || binding.generation !== this.sessionGeneration ||
+        binding.rootHex !== installed.onionSuperRootHex
+      ) {
+        throw new Error(`strict OnionPIR Merkle rejected: db ${this.dbId} root binding is stale`);
+      }
+      merkle = { ...advertisedMerkle, super_root: installed.onionSuperRootHex };
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (
+          result.verifiedDbId !== this.dbId ||
+          result.verifiedOnionRootHex !== installed.onionSuperRootHex ||
+          result.verificationGeneration !== this.sessionGeneration
+        ) {
+          throw new Error(`strict OnionPIR result ${i} is not bound to the current DB/root/session`);
+        }
+        if (result.indexBinLeaves?.length !== INDEX_CUCKOO_NUM_HASHES) {
+          throw new Error(
+            `strict OnionPIR result ${i} has ${result.indexBinLeaves?.length ?? 0} INDEX leaves; ` +
+            `expected ${INDEX_CUCKOO_NUM_HASHES}`,
+          );
+        }
+        if ((result.dataBinLeaves?.length ?? 0) !== result.numChunks) {
+          throw new Error(
+            `strict OnionPIR result ${i} has ${result.dataBinLeaves?.length ?? 0} DATA leaves; ` +
+            `expected ${result.numChunks}`,
+          );
+        }
+      }
+    }
     if (!this.fheSecretKey) throw new Error('No FHE keys — call queryBatch() first');
 
     const progress = onProgress || (() => {});
@@ -1751,9 +2284,19 @@ export class OnionPirWebClient {
       }
     }
 
+    // A repeated coordinate may be shared by duplicate queries, but it must
+    // commit to exactly one plaintext hash. First/last-wins would let one copy
+    // influence the result while another copy supplies the proof.
+    assertConsistentOnionMerkleLeaves(leaves);
+
     // Genuinely empty input — nothing to verify, no Merkle traffic.
     // Mirrors the Rust `run_merkle_verification` empty-leaves guard.
-    if (leaves.length === 0) return out;
+    if (leaves.length === 0) {
+      if (this.isStrictVerification() && results.length > 0) {
+        throw new Error('strict OnionPIR results contain no Merkle leaves');
+      }
+      return out;
+    }
 
     // Verify BOTH sub-trees — ALWAYS, even when one has no leaves. An
     // all-not-found / whale batch contributes 0 DATA leaves, but
@@ -1842,55 +2385,53 @@ export class OnionPirWebClient {
     const sibResp = treeName === 'index'
       ? RESP_ONIONPIR_MERKLE_INDEX_SIBLING : RESP_ONIONPIR_MERKLE_DATA_SIBLING;
 
-    // ── 1. Fetch the consolidated 155-tree tree-top blob ───────────────
-    // The whole blob is served on either TREE_TOP opcode; fetching once
-    // per sub-tree mirrors the Rust `verify_sub_tree` (and keeps the
-    // `merkle_tree_tops` round count = 2 — one INDEX, one DATA).
-    progress('Merkle', `Fetching ${treeName} tree-top blob...`);
-    // Wire: [4B len][1B req]([1B db_id] if non-zero, backward compatible).
-    const ttPayloadLen = this.dbId !== 0 ? 2 : 1;
-    const ttReq = new Uint8Array(4 + ttPayloadLen);
-    new DataView(ttReq.buffer).setUint32(0, ttPayloadLen, true);
-    ttReq[4] = treeTopReq;
-    if (this.dbId !== 0) ttReq[5] = this.dbId;
-    const ttRaw = await this.sendRaw(ttReq);
-    // Tree-top fetch is admitted to leak (public Merkle tops). Tagged
-    // `merkle_tree_tops` — matches the Rust `RoundKind::MerkleTreeTops`.
-    this.recordRound({
-      kind: 'merkle_tree_tops',
-      server_id: 0,
-      db_id: this.dbId,
-      request_bytes: ttReq.length,
-      response_bytes: ttRaw.length,
-      items: [],
-    });
-    if (ttRaw.length < 5 || ttRaw[4] !== treeTopResp) {
-      throw new Error(
-        `Unexpected ${treeName} tree-top response: 0x${(ttRaw[4] ?? 0).toString(16)}`,
+    let allTops: OnionTreeTopCache[];
+    if (this.isStrictVerification()) {
+      // Strict sessions reuse only the tree-tops cached by the pre-query
+      // proof-root preflight. Their generation/root binding was checked by
+      // verifyMerkleBatch before reaching this method.
+      const binding = this.verifiedTreeTops.get(this.dbId);
+      if (!binding) throw new Error(`strict OnionPIR tree-tops missing for db ${this.dbId}`);
+      allTops = binding.allTops;
+    } else {
+      // Advisory/back-compat flow: fetch and bind against the advertised root.
+      progress('Merkle', `Fetching ${treeName} tree-top blob...`);
+      const ttPayloadLen = this.dbId !== 0 ? 2 : 1;
+      const ttReq = new Uint8Array(4 + ttPayloadLen);
+      new DataView(ttReq.buffer).setUint32(0, ttPayloadLen, true);
+      ttReq[4] = treeTopReq;
+      if (this.dbId !== 0) ttReq[5] = this.dbId;
+      const ttRaw = await this.sendRaw(ttReq);
+      this.recordRound({
+        kind: 'merkle_tree_tops',
+        server_id: 0,
+        db_id: this.dbId,
+        request_bytes: ttReq.length,
+        response_bytes: ttRaw.length,
+        items: [],
+      });
+      const ttPayload = responsePayloadFromFrame(ttRaw, treeTopResp);
+      const blob = ttPayload.slice(1);
+      allTops = parseOnionTreeTopCache(blob);
+      this.log(
+        `[PIR-AUDIT] OnionPIR Merkle ${treeName} tree-top: ${allTops.length} ` +
+        `trees parsed (arity=${arity})`,
       );
-    }
-    const blob = ttRaw.slice(5);
-    const allTops = parseOnionTreeTopCache(blob);
-    this.log(
-      `[PIR-AUDIT] OnionPIR Merkle ${treeName} tree-top: ${allTops.length} ` +
-      `trees parsed (arity=${arity})`,
-    );
-
-    // ── 2. Bind the blob to the pinned super-root (SOUNDNESS-CRITICAL) ──
-    // A super-root mismatch means the server's whole Merkle commitment
-    // is untrusted (malicious server, or a DB-version skew). Every
-    // probed leaf fails; the sibling rounds would prove nothing against
-    // forged roots, so skip them.
-    if (!checkTreeTopAnchor(info, blob, allTops, (m) => this.log(m, 'error'))) {
-      for (const lf of leaves) out.set(`${lf.pbcGroup}:${lf.bin}`, false);
-      return out;
+      if (!checkTreeTopAnchor(info, blob, allTops, (m) => this.log(m, 'error'))) {
+        for (const lf of leaves) out.set(`${lf.pbcGroup}:${lf.bin}`, false);
+        return out;
+      }
     }
 
     // ── 3. Deduplicate leaves by (pbcGroup, bin) ───────────────────────
     const uniqueMap = new Map<string, { pbcGroup: number; bin: number; hash: Uint8Array }>();
     for (const lf of leaves) {
       const key = `${lf.pbcGroup}:${lf.bin}`;
-      if (!uniqueMap.has(key)) uniqueMap.set(key, lf);
+      const previous = uniqueMap.get(key);
+      if (previous && !bytesEqual(previous.hash, lf.hash)) {
+        throw new Error(`OnionPIR conflicting hashes for ${treeName} Merkle leaf ${key}`);
+      }
+      if (!previous) uniqueMap.set(key, lf);
     }
     const keys = [...uniqueMap.keys()];
     const n = keys.length;
@@ -1985,13 +2526,8 @@ export class OnionPirWebClient {
           response_bytes: respRaw.length,
           items: new Array(k).fill(1),
         });
-        const respPayload = respRaw.slice(4);
-        if (respPayload[0] !== sibResp) {
-          throw new Error(
-            `Unexpected ${treeName} sibling response: 0x${respPayload[0].toString(16)}`,
-          );
-        }
-        const { results: batch } = decodeBatchResult(respPayload, 1);
+        const respPayload = responsePayloadFromFrame(respRaw, sibResp);
+        const { results: batch } = decodeBatchResult(respPayload, 1, 0, k);
 
         // Fold each real group's decrypted sibling row into its leaf.
         for (const [g, item] of passGroupToItem) {

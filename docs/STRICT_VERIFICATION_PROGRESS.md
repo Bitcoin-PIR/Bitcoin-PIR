@@ -33,20 +33,20 @@ Status: **merged** ([#54](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/54)).
 
 ## PR C — strict WASM and DPF/Harmony web flow
 
-Status: **Draft PR open** ([#56](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/56)).
-Implementation and validation are complete. The production proof prerequisite
-is also complete: on 2026-07-19, `bpir-admin db-proof verify-live` returned
-`status=ok` for db 0 and db 1 on both hosts. Strict DPF and HarmonyPIR browser
-queries passed end to end. Merge is now gated on review and CI.
+Status: **merged** ([#56](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/56)).
+The production proof prerequisite is also complete: on 2026-07-19,
+`bpir-admin db-proof verify-live` returned `status=ok` for db 0 and db 1 on
+both hosts. On 2026-07-20, strict DPF and HarmonyPIR production browser queries
+passed end to end after the Pages deployment.
 
-- [ ] Verify DB proof in Rust/WASM and compare every field with the production
+- [x] Verify DB proof in Rust/WASM and compare every field with the production
       pin in TypeScript.
-- [ ] Install the same live `WasmDatabaseProof` handle into the client only
+- [x] Install the same live `WasmDatabaseProof` handle into the client only
       after the TypeScript pin comparison succeeds.
-- [ ] Preflight trusted tree-tops before querying.
-- [ ] Fail closed on runtime attestation/pin, secure-channel upgrade, and any
+- [x] Preflight trusted tree-tops before querying.
+- [x] Fail closed on runtime attestation/pin, secure-channel upgrade, and any
       configured operator-identity failure.
-- [ ] Describe Hetzner as operator identity + binary pin, and VPSBG as the
+- [x] Describe Hetzner as operator identity + binary pin, and VPSBG as the
       SEV-SNP deployment.
 - Production deployment complete: both hosts serve the snapshot and delta
   proof bundles and pass live proof verification.
@@ -71,10 +71,30 @@ Completed production proof activation for PR C:
 
 ## PR D — standalone OnionPIR web client
 
-Status: **not started**; depends on the proof/install contract established by
-PR B and the WASM patterns established by PR C.
+Status: **Draft PR open**
+([#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57)). Implementation and
+validation are complete. Checkboxes remain unchecked until the PR is merged,
+per this file's convention.
 
 - [ ] Add a stateless WASM verifier for `REQ_GET_DB_PROOF` responses.
 - [ ] Install `onion_super_root` only after production-pin matching.
 - [ ] Bind Onion tree-tops to the installed trusted root.
 - [ ] Treat `server-info.super_root` as diagnostics only.
+- [ ] Pin the remaining standalone OnionPIR query layout until a v2 database
+      proof commits those fields directly.
+- [ ] Verify every found, absent, and whale result before merging or committing
+      sync state, and disconnect at the end of every query.
+
+Branch validation completed on 2026-07-20:
+
+- Rust client: 276 unit tests passed; 6 non-network integration/doc tests
+  passed (network-dependent tests remain intentionally ignored).
+- WASM: 73 tests passed, `wasm32-unknown-unknown` check passed, and `wasm-pack`
+  produced the browser package.
+- Web: TypeScript build passed; 240 tests passed and 2 optional leakage tests
+  remained skipped.
+- Browser smoke against `wss://weikeng1.bitcoinpir.org`: both production DB
+  proofs and consolidated tree-tops passed preflight; both found and not-found
+  results received automatic `Verified` marks; each session ended disconnected.
+- This rollout uses the existing proof and OnionPIR Merkle protocol. It does
+  not require a new server binary or rebuilt UKI.

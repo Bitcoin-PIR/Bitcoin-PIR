@@ -14,6 +14,7 @@ export interface VerifiedDatabaseProof {
   networkMagicHex: string;
   builderBinarySha256Hex: string;
   builderGitCommit: string;
+  onionEntrySize?: number;
 }
 
 export interface DatabaseProofPin {
@@ -30,6 +31,9 @@ export interface DatabaseProofPin {
   networkMagicHex: string;
   builderBinarySha256Hex: string;
   builderGitCommit: string;
+  /** Present in current attested-builder evidence; optional for older/static
+   * manifest-derived pins that predate this field. */
+  onionEntrySize?: number;
   description?: string;
 }
 
@@ -63,6 +67,7 @@ export function verifiedDatabaseProofFromWasm(proof: WasmDatabaseProof): Verifie
     networkMagicHex: proof.networkMagicHex,
     builderBinarySha256Hex: proof.builderBinarySha256Hex,
     builderGitCommit: proof.builderGitCommit,
+    onionEntrySize: proof.onionEntrySize,
   };
 }
 
@@ -98,6 +103,7 @@ export function verifyDatabaseProofAgainstPin(
   cmp('networkMagicHex', true);
   cmp('builderBinarySha256Hex', true);
   cmp('builderGitCommit');
+  if (pin.onionEntrySize !== undefined) cmp('onionEntrySize');
 
   return {
     state: mismatches.length === 0 ? 'verified' : 'unverified',

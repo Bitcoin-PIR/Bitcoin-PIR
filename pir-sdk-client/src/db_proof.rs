@@ -66,6 +66,7 @@ pub struct VerifiedDatabaseRoots {
     pub muhash: [u8; 32],
     pub bucket_super_root: [u8; 32],
     pub onion_super_root: [u8; 32],
+    pub onion_entry_size: u32,
     pub params_hash: [u8; 32],
     pub network_magic: [u8; 4],
     pub builder_binary_sha256: [u8; 32],
@@ -142,6 +143,25 @@ pub fn verify_database_proof(
     verify_against_catalog_and_policy(db_info, &verified, policy)
 }
 
+/// Decode and verify a raw `RESP_DB_PROOF` payload without owning a
+/// transport or client session.
+///
+/// `response_payload` starts at the response opcode and therefore does not
+/// include the outer four-byte wire length prefix.  This is the synchronous
+/// counterpart of [`fetch_database_proof`], intended for callers that own
+/// their transport separately (for example the standalone browser OnionPIR
+/// client).  Verification is deliberately side-effect free: the returned
+/// roots still have to be installed explicitly by the caller after any
+/// application-level production-pin comparison.
+pub fn verify_database_proof_response(
+    db_info: &DatabaseInfo,
+    response_payload: &[u8],
+    policy: &DatabaseProofPolicy,
+) -> PirResult<VerifiedDatabaseRoots> {
+    let bundle = decode_database_proof_response(response_payload)?;
+    verify_database_proof(db_info, &bundle, policy)
+}
+
 pub fn decode_database_proof_response(data: &[u8]) -> PirResult<DatabaseProofBundle> {
     if data.is_empty() {
         return Err(PirError::Decode("db proof response empty".into()));
@@ -192,6 +212,7 @@ fn verify_against_catalog_and_policy(
         evidence.chunk_bins_per_table,
     )?;
     verify_catalog_anchor(db_info, verified)?;
+    verify_catalog_query_parameters(db_info)?;
     if let Some(expected) = policy.expected_network_magic {
         expect_arr("network_magic", &expected, &evidence.network_magic)?;
     }
@@ -237,6 +258,7 @@ fn verify_against_catalog_and_policy(
         muhash: evidence.utxo_muhash,
         bucket_super_root: evidence.bucket_super_root,
         onion_super_root: evidence.onion_super_root,
+        onion_entry_size: evidence.onion_entry_size,
         params_hash: evidence.params_hash,
         network_magic: evidence.network_magic,
         builder_binary_sha256: evidence.builder_binary_sha256,
@@ -364,6 +386,61 @@ fn verify_catalog_anchor(db_info: &DatabaseInfo, verified: &ProofDirectory) -> P
     Ok(())
 }
 
+/// Bind every catalog field that controls client-side query placement to the
+/// chain anchor already authenticated by the database proof.
+fn verify_catalog_query_parameters(db_info: &DatabaseInfo) -> PirResult<()> {
+    use pir_core::cuckoo::HeaderAnchor;
+    use pir_core::params::{compute_dpf_n, K, K_CHUNK};
+    use pir_core::seeds::{DeltaSeeds, SnapshotSeeds};
+
+    crate::protocol::validate_db_geometry(db_info).map_err(|err| {
+        PirError::VerificationFailed(format!("db proof catalog geometry invalid: {err}"))
+    })?;
+    expect_usize("index_k", K, db_info.index_k as usize)?;
+    expect_usize("chunk_k", K_CHUNK, db_info.chunk_k as usize)?;
+    expect_usize(
+        "dpf_n_index",
+        compute_dpf_n(db_info.index_bins as usize) as usize,
+        db_info.dpf_n_index as usize,
+    )?;
+    expect_usize(
+        "dpf_n_chunk",
+        compute_dpf_n(db_info.chunk_bins as usize) as usize,
+        db_info.dpf_n_chunk as usize,
+    )?;
+
+    let (expected_tag_seed, expected_index_seed, expected_chunk_seed) = match db_info.chain_anchor()
+    {
+        Some(HeaderAnchor::Snapshot(anchor)) => {
+            let seeds = SnapshotSeeds::derive(&anchor);
+            (seeds.index_tag, seeds.index_master, seeds.chunk_master)
+        }
+        Some(HeaderAnchor::Delta(anchor)) => {
+            let seeds = DeltaSeeds::derive(&anchor);
+            (seeds.index_tag, seeds.index_master, seeds.chunk_master)
+        }
+        None => {
+            return Err(proof_mismatch(
+                "catalog_anchor",
+                "chain-anchored catalog entry".into(),
+                "missing or malformed catalog anchor".into(),
+            ));
+        }
+    };
+
+    expect_u64("tag_seed", expected_tag_seed, db_info.tag_seed)?;
+    expect_u64(
+        "index_master_seed",
+        expected_index_seed,
+        db_info.index_master_seed,
+    )?;
+    expect_u64(
+        "chunk_master_seed",
+        expected_chunk_seed,
+        db_info.chunk_master_seed,
+    )
+}
+
 fn expect_chain_anchor(
     field: &'static str,
     expected: &AttestedChainAnchor,
@@ -375,6 +452,30 @@ fn expect_chain_anchor(
 }
 
 fn expect_u32(field: &'static str, expected: u32, actual: u32) -> PirResult<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(proof_mismatch(
+            field,
+            expected.to_string(),
+            actual.to_string(),
+        ))
+    }
+}
+
+fn expect_u64(field: &'static str, expected: u64, actual: u64) -> PirResult<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(proof_mismatch(
+            field,
+            expected.to_string(),
+            actual.to_string(),
+        ))
+    }
+}
+
+fn expect_usize(field: &'static str, expected: usize, actual: usize) -> PirResult<()> {
     if expected == actual {
         Ok(())
     } else {
@@ -414,7 +515,7 @@ mod tests {
     use super::*;
     use crate::transport::PirTransport;
     use async_trait::async_trait;
-    use pir_core::seeds::{ChainAnchor as CoreChainAnchor, DeltaAnchor, DeltaSeeds};
+    use pir_core::seeds::{ChainAnchor as CoreChainAnchor, DeltaAnchor, DeltaSeeds, SnapshotSeeds};
     use pir_db_attest::{ChainAnchor, RootBundlePayload};
     use pir_sdk::PirResult;
     use sha2::{Digest, Sha256};
@@ -534,8 +635,8 @@ mod tests {
             height: 948_454,
             index_bins: 53_282,
             chunk_bins: 112_332,
-            index_k: 75,
-            chunk_k: 80,
+            index_k: pir_core::params::K as u8,
+            chunk_k: pir_core::params::K_CHUNK as u8,
             tag_seed: seeds.index_tag,
             dpf_n_index: 16,
             dpf_n_chunk: 17,
@@ -639,6 +740,45 @@ mod tests {
         assert_eq!(decode_database_proof_response(&response).unwrap(), bundle);
     }
 
+    #[test]
+    fn verify_database_proof_response_is_stateless() {
+        let (bundle, db_info) = sample_bundle();
+        let response = encode_proof_response(&bundle);
+        let mut policy = DatabaseProofPolicy::mainnet();
+        policy.expected_params_hash = Some([6u8; 32]);
+        policy.allowed_builder_binary_sha256.push([1u8; 32]);
+        policy.allowed_builder_git_commits.push("abc123".into());
+
+        let verified = verify_database_proof_response(&db_info, &response, &policy).unwrap();
+        assert_eq!(verified.db_id, db_info.db_id);
+        assert_eq!(verified.onion_super_root, [8u8; 32]);
+        assert_eq!(verified.onion_entry_size, 3328);
+    }
+
+    #[test]
+    fn verify_database_proof_response_rejects_substituted_db_id() {
+        let (mut bundle, db_info) = sample_bundle();
+        bundle.db_id = db_info.db_id.wrapping_add(1);
+        let response = encode_proof_response(&bundle);
+
+        let err =
+            verify_database_proof_response(&db_info, &response, &DatabaseProofPolicy::mainnet())
+                .unwrap_err();
+        assert!(err.to_string().contains("db_id mismatch"));
+    }
+
+    #[test]
+    fn verify_database_proof_response_rejects_wrong_opcode() {
+        let (_, db_info) = sample_bundle();
+        let err = verify_database_proof_response(
+            &db_info,
+            &[RESP_DB_CATALOG],
+            &DatabaseProofPolicy::mainnet(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PirError::UnexpectedResponse { .. }));
+    }
+
     #[tokio::test]
     async fn fetch_catalog_and_proof_over_transport() {
         let (bundle, db_info) = sample_bundle();
@@ -690,6 +830,93 @@ mod tests {
         assert_eq!(verified.from_height, 940_611);
         assert_eq!(verified.bucket_super_root, [7u8; 32]);
         assert_eq!(verified.onion_super_root, [8u8; 32]);
+        assert_eq!(verified.onion_entry_size, 3328);
+    }
+
+    #[test]
+    fn verify_database_proof_rejects_untrusted_catalog_query_parameters() {
+        let (bundle, db_info) = sample_bundle();
+        let cases = [
+            (
+                "index_k",
+                DatabaseInfo {
+                    index_k: db_info.index_k.wrapping_sub(1),
+                    ..db_info.clone()
+                },
+            ),
+            (
+                "chunk_k",
+                DatabaseInfo {
+                    chunk_k: db_info.chunk_k.wrapping_sub(1),
+                    ..db_info.clone()
+                },
+            ),
+            (
+                "tag_seed",
+                DatabaseInfo {
+                    tag_seed: db_info.tag_seed ^ 1,
+                    ..db_info.clone()
+                },
+            ),
+            (
+                "dpf_n_index",
+                DatabaseInfo {
+                    dpf_n_index: db_info.dpf_n_index.wrapping_add(1),
+                    ..db_info.clone()
+                },
+            ),
+            (
+                "dpf_n_chunk",
+                DatabaseInfo {
+                    dpf_n_chunk: db_info.dpf_n_chunk.wrapping_add(1),
+                    ..db_info.clone()
+                },
+            ),
+            (
+                "index_master_seed",
+                DatabaseInfo {
+                    index_master_seed: db_info.index_master_seed ^ 1,
+                    ..db_info.clone()
+                },
+            ),
+            (
+                "chunk_master_seed",
+                DatabaseInfo {
+                    chunk_master_seed: db_info.chunk_master_seed ^ 1,
+                    ..db_info.clone()
+                },
+            ),
+        ];
+
+        for (field, tampered) in cases {
+            let err = verify_database_proof(&tampered, &bundle, &DatabaseProofPolicy::mainnet())
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("{} mismatch", field)),
+                "unexpected error for {field}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_query_parameters_accept_snapshot_derived_seeds() {
+        let (_, mut db_info) = sample_bundle();
+        let anchor = CoreChainAnchor {
+            block_hash: [9u8; 32],
+            block_height: 940_611,
+        };
+        let seeds = SnapshotSeeds::derive(&anchor);
+        db_info.kind = DatabaseKind::Full;
+        db_info.height = anchor.block_height;
+        db_info.index_k = pir_core::params::K as u8;
+        db_info.chunk_k = pir_core::params::K_CHUNK as u8;
+        db_info.tag_seed = seeds.index_tag;
+        db_info.index_master_seed = seeds.index_master;
+        db_info.chunk_master_seed = seeds.chunk_master;
+        db_info.anchor_kind = 1;
+        db_info.anchor_bytes = anchor.to_bytes().to_vec();
+
+        verify_catalog_query_parameters(&db_info).unwrap();
     }
 
     #[test]

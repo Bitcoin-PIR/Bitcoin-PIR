@@ -83,8 +83,8 @@ pub use connection::{
     DEFAULT_MAX_BACKOFF_DELAY, DEFAULT_MAX_CONNECT_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT,
 };
 pub use db_proof::{
-    fetch_database_proof, verify_database_proof, DatabaseProofBundle, DatabaseProofPolicy,
-    VerifiedDatabaseRoots,
+    fetch_database_proof, verify_database_proof, verify_database_proof_response,
+    DatabaseProofBundle, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 pub use dpf::DpfClient;
 pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
