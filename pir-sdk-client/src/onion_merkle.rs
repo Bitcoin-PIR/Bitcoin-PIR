@@ -179,13 +179,11 @@ pub struct OnionMerkleInfo {
     /// same for every per-group tree.
     pub arity: usize,
     /// The verification anchor — `SHA256` of the 155 concatenated
-    /// per-group roots (MERKLE_COLOCATION_REVIEW.md §2f). **Server-supplied,
-    /// not pinned**: it is parsed from the server's own info JSON and never
-    /// compared to the attested `manifest_roots` in this code path
-    /// (docs/CODE_REVIEW_2026-06.md C1). Binding the tree-top blob to this
-    /// value ([`check_tree_top_anchor`]) proves internal consistency with
-    /// the root the server declared — see the module-level trust-model
-    /// notes for what that does and does not guarantee.
+    /// per-group roots (MERKLE_COLOCATION_REVIEW.md §2f). Advisory callers
+    /// keep the value parsed from server info, which proves only internal
+    /// consistency. Strict callers replace it with the proof-verified
+    /// `onion_super_root` before [`check_tree_top_anchor`] runs, binding the
+    /// fetched tree-tops to the attested database commitment.
     pub super_root: Hash256,
     /// `SHA256` of the whole `merkle_onion_tree_tops.bin` blob — a
     /// JSON-declared integrity value. `super_root` is the (server-declared)
@@ -525,17 +523,15 @@ pub fn decode_sibling_batch_result(data: &[u8]) -> PirResult<Vec<Vec<u8>>> {
     Ok(results)
 }
 
-// ─── Anchor-consistency check (server-declared super_root) ─────────────────
+// ─── Anchor-consistency check (advisory or proof-verified super_root) ──────
 
-/// Bind the fetched tree-top blob to the server-declared `super_root` anchor.
+/// Bind the fetched tree-top blob to the selected `super_root` anchor.
 ///
-/// **Scope of the guarantee.** `info.super_root` is itself **server-supplied**
-/// (parsed from the server's info JSON — `SHA256` of the 155 concatenated
-/// roots, MERKLE_COLOCATION_REVIEW.md §2f — and never compared to the
-/// attested `manifest_roots`; docs/CODE_REVIEW_2026-06.md C1). This check
-/// In advisory mode this proves internal consistency with the server-declared
-/// root. In strict mode the caller substitutes the proof-verified
-/// `onion_super_root`, turning the same check into the trust-anchor binding.
+/// **Scope of the guarantee.** `info.super_root` is selected by the caller.
+/// Advisory callers leave the value parsed from server info, so this proves
+/// only internal consistency with a server-declared root. Strict callers
+/// substitute the proof-verified `onion_super_root`, turning the same check
+/// into the trust-anchor binding that closes CODE_REVIEW_2026-06 C1.
 ///
 /// Returns `true` iff the blob is bound to the selected anchor. Three
 /// checks, all required:

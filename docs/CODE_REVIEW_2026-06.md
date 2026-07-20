@@ -103,27 +103,20 @@ compile-time K; `deriveIntGroups3(id, k)` has no production callers).
 
 ---
 
-## Architectural / trust-model (needs a decision)
+## Architectural / trust-model (resolved)
 
 | ID | Sev | Location | Issue |
 |----|-----|----------|-------|
-| C1 | major | `pir-sdk-client/src/merkle_verify.rs:1145`, `onion_merkle.rs:281,610` | ✅ Merkle anchors to **server-supplied** `top.root()`, never compared to attested `manifest_roots` (which appear *only* in `attest.rs`) |
-| W2 | major | `web/src/dpf-adapter.ts:526`, `harmonypir-adapter.ts:595`, `arc-present.ts:29` | Attestation is **advisory**: queries + ARC/Cashu credential presentation proceed even when attestation resolves to `mismatch` |
+| C1 | major | `pir-sdk-client/src/merkle_verify.rs:1145`, `onion_merkle.rs:281,610` | ✅ Closed in PRs #54/#56/#57: strict clients install verified database roots and bind tree-tops before querying |
+| W2 | major | `web/src/dpf-adapter.ts:526`, `harmonypir-adapter.ts:595`, `arc-present.ts:29` | ✅ Closed in PRs #56/#57: the production web query path fails closed on runtime/pin/channel/identity or database-root verification failure |
 
-**Why this matters:** The README promises "verify results
-cryptographically… a malicious server can't lie." As wired, the Merkle
-layer proves *one server's internal self-consistency*, not soundness
-against a cheating server — a malicious server can fabricate a
-self-consistent root + siblings and every leaf "verifies." Integrity
-*does* hold today, but via the attestation/pinning path (pinned SEV
-measurement → trusted binary → binary self-verifies its DB), which is a
-different and weaker-sounding guarantee than the headline claim. The
-`onion_merkle.rs` "pinned trust anchor" comments overstate the current
-state.
-
-These two are the same theme (fail-closed vs advisory trust) and are
-deferred to a human decision because **fail-closed by default would break
-the live demo** (pir1/Hetzner has no SEV measurement).
+**Why this mattered at review time:** The Merkle layer proved only one
+server's internal self-consistency, so a malicious server could fabricate a
+self-consistent root and siblings. The later strict-root rollout made the
+database proof and production pins the trust input, then bound the exact
+tree-tops to the installed bucket or Onion super-root before any address
+query. Pir1 remains explicitly described as operator identity plus binary
+pinning rather than SEV hardware attestation.
 
 ---
 
@@ -259,55 +252,45 @@ the live demo** (pir1/Hetzner has no SEV measurement).
 
 ---
 
-## Follow-up: strict verification mode (tracked)
+## Follow-up: strict verification mode (resolved)
 
-*Appended 2026-06-09 after the C1/W2 documentation pass. This is a
-tracking note, not an implementation.*
+*Originally appended 2026-06-09; updated after the 2026-07-20 production
+rollout.*
 
-**Decision.** C1/W2 are documented as the current (advisory) trust model
-rather than fixed in this pass — fail-closed by default would break the
-live pir1 demo, which has no SEV measurement to pin against. The wording
-fixes landed in `pir-sdk-client/src/merkle_verify.rs` and
-`pir-sdk-client/src/onion_merkle.rs` (comments only) and `README.md`;
-behavior is unchanged. (Line references in the C1 row above are as of
-the review commit; the added comments shift lines in both files.) The
-proper closure is an **opt-in strict verification mode**, scoped as:
+C1/W2 are closed by PRs
+[#54](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/54),
+[#56](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/56), and
+[#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57):
 
-- **Plumb the attested roots into Merkle verification.**
-  `attest.rs::AttestResponse` already carries
-  `manifest_roots: Vec<Hash256>` (per-DB, db_id order; folded into SEV
-  REPORT_DATA as `combined_root` via the V2 preimage). Thread the
-  relevant attested root into the DPF/Harmony verifier
-  (`fetch_tree_tops` / `verify_bucket_merkle_batch_*`) and into
-  `OnionMerkleInfo` construction (OnionPIR), so the served commitment
-  (per-group `top.root()` / `super_root`) is checked against an anchor
-  the query server cannot choose.
-- **Fail closed on mismatch.** With strict mode on, refuse to verify
-  (all leaves fail) — or refuse to query at all — when the served root
-  is not endorsed by the attested manifest root. Refusing to query is
-  the stronger posture and also closes W2's "queries proceed on
-  attestation mismatch" gap; failing verification is the minimum.
-- **Gate on attestation quality.** The anchor is only as strong as the
-  attestation behind it: require `SevStatus::ReportDataMatch` (plus VCEK
-  chain validation where available) before treating `manifest_roots` as
-  trusted. On `ReportDataMismatch`, strict mode must refuse — never fall
-  back to the self-reported value.
-- **Opt-in, default off.** Default stays today's advisory behavior so
-  the unattested pir1 demo (no SEV; self-reported binary hash) keeps
-  working. Suggested surface: a `strict_verification` flag on the client
-  builders and the WASM / TS constructors, off unless explicitly set.
-- **Open design points** (settle at implementation time):
-  - *Root binding.* `manifest_roots[db]` is `SHA-256(MANIFEST.toml)`,
-    which commits to per-file hashes (including the tree-tops blobs) —
-    not directly to `top.root()` / `super_root`. Strict mode needs
-    either the manifest body client-side (check the fetched tree-tops
-    blob hash against its manifest entry) or a manifest/attest schema
-    extension that surfaces the Merkle roots directly.
-  - *Root rotation.* Delta sync changes the DB ⇒ the attested root
-    changes. Strict mode must re-attest on epoch change rather than
-    permanently reject the new root.
-  - *pir1 story.* Without SEV, the strongest available pin is the
-    reproducible-build binary hash plus operator-published roots —
-    weaker than pir2's measurement but better than verbatim trust.
-    Decide whether strict mode admits that tier or refuses non-SEV
-    hosts outright.
+- Native DPF, HarmonyPIR, and OnionPIR clients expose `Advisory` and
+  `RequireVerified` policies. Verification returns a typed
+  `VerifiedDatabaseRoots` handle; installation is a separate explicit action.
+- `RequireVerified` refuses to query unless every database in the sync plan
+  has an installed verified root. Disconnect and catalog/height rotation clear
+  the installed roots and authenticated tree-top caches.
+- DPF/HarmonyPIR require the exact ordered INDEX + CHUNK root list to hash to
+  the installed `bucket_super_root`. OnionPIR binds its consolidated tree-tops
+  to the installed `onion_super_root`; `server-info.super_root` is diagnostic
+  only.
+- The production web client verifies each database proof in Rust/WASM,
+  compares every returned field with the production TypeScript pin, installs
+  that same verified handle, preflights tree-tops, and then permits the query.
+  Database proof and tree-top mismatch are fail-closed for all three backends;
+  the DPF/HarmonyPIR runtime pins, secure-channel upgrade, and configured
+  operator identity are fail-closed as well.
+- Pir1's accepted production tier is operator identity plus binary pinning;
+  only pir2 is described as SEV-SNP hardware attestation.
+
+Production Pages deployment and all three backend smokes passed on 2026-07-20.
+The complete closure record is in
+[`STRICT_VERIFICATION_PROGRESS.md`](STRICT_VERIFICATION_PROGRESS.md).
+
+The scheduled/manual native SDK canary now exercises proof-pin verification,
+typed root installation, tree-top binding, fresh and delta sync-plan gates,
+result verification, and disconnect for every backend. Browser-only runtime,
+identity, encrypted-channel, and v1 Onion layout automation remains a
+non-blocking follow-up. A v2 database proof should commit the complete
+OnionPIR query layout so the current fail-closed v1 layout pins can be removed.
+Root changes are operationally covered by
+[`DATABASE_ROOT_ROTATION_RUNBOOK.md`](DATABASE_ROOT_ROTATION_RUNBOOK.md).
+Neither item makes C1/W2 open again.

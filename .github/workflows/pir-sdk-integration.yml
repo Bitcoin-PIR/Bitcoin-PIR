@@ -16,18 +16,32 @@ on:
   push:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'pir-sdk/**'
       - 'pir-sdk-client/**'
       - 'pir-core/**'
+      - 'pir-db-attest/**'
+      - 'pir-runtime-core/**'
       - 'harmonypir-wasm/**'
+      - 'runtime/Cargo.toml'
+      - 'runtime/src/hint_pool.rs'
+      - 'runtime/src/bin/unified_server.rs'
       - '.github/workflows/pir-sdk-integration.yml'
   pull_request:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'pir-sdk/**'
       - 'pir-sdk-client/**'
       - 'pir-core/**'
+      - 'pir-db-attest/**'
+      - 'pir-runtime-core/**'
       - 'harmonypir-wasm/**'
+      - 'runtime/Cargo.toml'
+      - 'runtime/src/hint_pool.rs'
+      - 'runtime/src/bin/unified_server.rs'
       - '.github/workflows/pir-sdk-integration.yml'
   workflow_dispatch:
   # Daily canary — catches breakage from server-side protocol changes
@@ -89,6 +103,16 @@ jobs:
         run: cargo test -p pir-sdk-client
       - name: Run ignored integration tests against live PIR servers
         run: cargo test -p pir-sdk-client --test integration_test -- --ignored --test-threads=1 --nocapture
+
+      # The strict tests are present (and compile) on every PR, but their live
+      # body is enabled only for the daily/manual canary. This keeps ordinary
+      # PR traffic from repeatedly exercising the expensive production query
+      # path while still catching root/proof rotation within one day.
+      - name: Run native database-root canary (DPF + HarmonyPIR)
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        env:
+          PIR_STRICT_PRODUCTION_CANARY: "1"
+        run: cargo test -p pir-sdk-client --features fastprp --test integration_test strict_production_canary -- --ignored --test-threads=1 --nocapture
 
   integration-onion:
     # OnionPIR tests live in their own job because the `onion` feature
@@ -171,12 +195,28 @@ jobs:
       - name: Run unit tests with --features onion
         run: cargo test -p pir-sdk-client --features onion
 
+      # Reuse this GCC 11 job's already-built OnionPIR dependency for the
+      # unified-server hint-pool checks. The runtime depends on OnionPIR even
+      # though these focused tests exercise only HarmonyPIR persistence.
+      - name: Run HarmonyPIR hint-pool and server backend tests
+        run: |
+          cargo test -p runtime --lib hint_pool
+          cargo test -p runtime --no-default-features --lib hint_pool
+          cargo test -p runtime --bin unified_server harmony_dos_guard_tests
+          cargo test -p runtime --no-default-features --bin unified_server harmony_dos_guard_tests
+
       - name: Run ignored OnionPIR integration tests against live PIR servers
         # The `onion_tests` filter scopes this to the OnionPIR module
         # introduced in integration_test.rs — the DPF / Harmony tests
         # already ran in the `integration` job without the feature.
         # (Quoted to keep YAML from parsing `::` as a mapping.)
         run: "cargo test -p pir-sdk-client --features onion --test integration_test -- --ignored --test-threads=1 --nocapture onion_tests::"
+
+      - name: Run native database-root canary (OnionPIR)
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        env:
+          PIR_STRICT_PRODUCTION_CANARY: "1"
+        run: "cargo test -p pir-sdk-client --features onion,fastprp --test integration_test onion_tests::test_onion_strict_production_canary -- --ignored --exact --test-threads=1 --nocapture"
 
   leakage-canary:
     # The leakage suite opens many live WebSocket connections. Run it only
