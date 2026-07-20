@@ -1,0 +1,124 @@
+[package]
+name = "pir-sdk-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "WASM bindings for the PIR SDK: sync planning, delta merging, Merkle verification, and async DPF + HarmonyPIR clients"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-sdk-wasm"
+readme = "README.md"
+keywords = ["pir", "privacy", "bitcoin", "wasm", "webassembly"]
+categories = ["cryptography", "cryptography::cryptocurrencies", "wasm", "web-programming"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# `fastprp` enables PRP_FASTPRP support in the upstream HarmonyPIR remote client,
+# matching the runtime server's default PRP backend
+# (`runtime/src/bin/unified_server.rs:1986` →
+# `harmonypir::remote::PRP_FASTPRP`). Without this feature the WASM client now
+# rejects a PRP_FASTPRP hint stream instead of constructing HMR12 state with
+# a different permutation. The explicit failure is required because a silent
+# backend substitution produces invalid recoveries and failed Merkle checks.
+# Added 2026-05-13 alongside the v15 production rollout.
+default = ["fastprp"]
+fastprp = ["pir-sdk-client/fastprp"]
+
+[dependencies]
+pir-sdk = { version = "0.1.0", path = "../core" }
+pir-core = { version = "0.1.0", path = "../../../pir-core" }
+# Native PIR client — on wasm32 its transport layer becomes
+# `WasmWebSocketTransport` (web-sys WebSocket), so the same client structs
+# work in the browser. On native it stays tokio-tungstenite; we only hit
+# the native path in `cargo test -p pir-sdk-wasm`, so the tokio pull-in is
+# acceptable.
+pir-sdk-client = { version = "0.1.0", path = "../client", default-features = false }
+# Provides `eph_pub_from_seed` for the bound-nonce derivation in
+# `WasmDpfClient::attest` / `WasmHarmonyClient::attest` (so the SEV-SNP
+# REPORT_DATA commits to the *exact* X25519 eph pubkey used in the
+# subsequent `upgradeToSecureChannel` handshake).
+pir-channel = { version = "0.1.0", path = "../../../pir-channel" }
+arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
+# Cashu BDHKE blind/unblind (the `cashu` module's WasmCashuBlind). k256 +
+# sha2 compile cleanly to wasm32; the hash_to_curve here is byte-identical
+# to pir_runtime_core::cashu_verifier (asserted by the native cross-check
+# test, which presents a WASM-blinded BAT to the real CashuVerifier).
+k256 = { version = "0.13", features = ["arithmetic"] }
+sha2 = "0.10"
+hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Browser-side AMD VCEK chain verifier (Slice D). Pure-Rust crypto
+# so the browser can chain-validate the SEV-SNP report's signature
+# back to AMD's known root without talking to kdsintf.amd.com
+# (CORS-blocked from browser context).
+pir-attest-verify = { version = "0.1.0", path = "../../../pir-attest-verify" }
+# JS-facing DB proof summaries use the same build-kind labels and hash display
+# helpers as the native verifier.
+pir-db-attest = { path = "../../../pir-db-attest" }
+# Per-handshake nonce + ephemeral seed in `WasmDpfClient::attest`. The
+# "js" feature lets it use `crypto.getRandomValues` on wasm32; on
+# native (used only by `cargo test`) it reads /dev/urandom.
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+# Bridges Rust `Future` → JS `Promise` for the client's async methods
+# (`connect` / `sync` / `fetch_catalog`). Builds on native too (the macros
+# no-op on non-wasm32), so no cfg gating needed here.
+wasm-bindgen-futures = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+
+# `send_wrapper` is wasm32-only: it's the bridge that lets us hold a
+# `!Send + !Sync` `js_sys::Function` (JS callback) inside a trait object
+# that demands `Send + Sync` (`StateListener`, `SyncProgress`). The
+# wrapper unsafely asserts Send + Sync and panics on cross-thread access
+# — sound on wasm32 where the runtime is single-threaded. Not needed on
+# native (the recorder impls in `#[cfg(test)]` modules use plain
+# `Arc<Mutex<_>>`).
+#
+# `tracing-wasm` is wasm32-only: it provides a `tracing::Subscriber` impl
+# that routes spans + events to the browser's `web_sys::console`. Pulled
+# in by the Phase 2+ observability bridge (`tracing_bridge` module) so the
+# `#[tracing::instrument]` attributes laid down on `DpfClient` /
+# `HarmonyClient` / `OnionClient` / `WsConnection` in Phase 1 surface in
+# the browser DevTools. Not needed on native — native tests install
+# `tracing-subscriber::fmt` directly via the Phase 1 smoke-test path.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+send_wrapper = "0.6"
+tracing-wasm = "0.2"
+console_error_panic_hook = "0.1"
+
+# Native-only dev dependency: the wire-explorer decoder in
+# `harmony_wire::harmony_decode_counts` mirrors
+# `pir_runtime_core::protocol::decode_harmony_batch_query` (see that
+# module's source-of-truth note). The mirror exists because
+# pir-runtime-core pulls in libdpf/memmap2/etc. and doesn't compile to
+# `wasm32-unknown-unknown`. To keep the mirror honest, the module's
+# native unit tests round-trip fixtures through pir-runtime-core's
+# canonical encoder and assert byte-level parity.
+#
+# Gated to `cfg(not(target_arch = "wasm32"))` so wasm-pack builds never
+# attempt to pull pir-runtime-core (which would fail). Dev-dependencies
+# don't normally affect `wasm-pack build`, but the target-gate makes
+# the intent explicit and survives any future resolver shifts.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pir-runtime-core = { version = "0.1.0", path = "../../../pir-runtime-core" }
+
+# Per-package profile overrides must live at the workspace root; Cargo
+# ignores `[profile.*]` here and emits a warning on every build. For
+# size-optimized WASM builds, use `wasm-pack build --release` which
+# already inherits the workspace root's `[profile.release]`. If a
+# future size-over-speed tradeoff is needed (currently the root picks
+# `opt-level = 3`), add a workspace-level `wasm-release` profile:
+#
+#   [profile.wasm-release]
+#   inherits = "release"
+#   opt-level = "s"
+#   lto = true
+#
+# and invoke `wasm-pack build -- --profile wasm-release`.

@@ -2,7 +2,7 @@
  * Phase 2.3 step C: corpus shape verification.
  *
  * Loads the JSON fixture produced by the Rust `onion_leakage_dump`
- * example (`pir-sdk-client/examples/onion_leakage_dump.rs`) and
+ * example (`crates/sdk/client/examples/onion_leakage_dump.rs`) and
  * confirms it parses cleanly into the TypeScript `LeakageProfile`
  * shape. Catches schema regressions: if the Rust serde output drifts
  * (kind tag rename, field reorder, missing field), this test fails
@@ -131,7 +131,7 @@ describe('OnionPIR corpus fixture (Phase 2.3 step C)', () => {
   /**
    * Every IndexMerkleSiblings round emits exactly one FHE query per
    * group — items[g] = 1 — matching the Rust pin in
-   * `pir-sdk-client/src/onion_merkle.rs`.
+   * `crates/sdk/client/src/onion_merkle.rs`.
    */
   it('every IndexMerkleSiblings round has uniform items[g] = 1', () => {
     const corpus = loadCorpus();

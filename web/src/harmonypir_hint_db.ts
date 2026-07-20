@@ -2,7 +2,7 @@
  * IndexedDB persistence for HarmonyPIR hint state (v2 schema).
  *
  * Stores the opaque byte blob produced by `WasmHarmonyClient.saveHints()`
- * (self-describing, fingerprinted — see `pir-sdk-client/src/hint_cache.rs`)
+ * (self-describing, fingerprinted — see `crates/sdk/client/src/hint_cache.rs`)
  * together with the effective master PRP key and backend selected during
  * hint setup. A page reload throws away the in-memory `WasmHarmonyClient`,
  * so this binding has to be persisted next to the hint blob — otherwise a

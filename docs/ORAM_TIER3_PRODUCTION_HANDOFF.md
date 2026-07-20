@@ -107,7 +107,7 @@ cargo check --locked --release -p runtime --features cuckoo-oram --bin unified_s
 cargo test --locked -p runtime --features cuckoo-oram --bin unified_server direct_oram
 cargo test --locked -p pir-runtime-core oram_lookup
 cargo test --locked -p pir-sdk-client lookup_raw_ignores_trailing_response_padding
-rustfmt --edition 2021 --check pir-runtime-core/src/protocol.rs pir-sdk-client/src/oram.rs runtime/src/bin/unified_server.rs
+rustfmt --edition 2021 --check pir-runtime-core/src/protocol.rs crates/sdk/client/src/oram.rs runtime/src/bin/unified_server.rs
 git diff --check
 ```
 

@@ -435,7 +435,7 @@ export function decodeBatchResult(
 // ─── Per-group OnionPIR Merkle: tree-top blob + trust anchor ──────────────
 //
 // SOUNDNESS-CRITICAL module section — the standalone-TS mirror of the Rust
-// verifier `pir-sdk-client/src/onion_merkle.rs` (Phase 3d, commit 79e422b4).
+// verifier `crates/sdk/client/src/onion_merkle.rs` (Phase 3d, commit 79e422b4).
 //
 // Since the Phase-3 per-group redesign (see docs/plans/README.md /
 // MERKLE_COLOCATION_REVIEW.md §2-§6) OnionPIR has one independent
@@ -726,7 +726,7 @@ interface VerifiedTreeTopBinding {
 // ─── CHUNK Round-Presence Symmetry: per-slot classifier ───────────────────
 //
 // Mirrors the Rust helper `classify_chunk_slots` in
-// `pir-sdk-client/src/onion.rs`. Pure (no side effects, no RNG, no DOM
+// `crates/sdk/client/src/onion.rs`. Pure (no side effects, no RNG, no DOM
 // access) so it can be exercised by unit tests in node without
 // instantiating the WASM module.
 //
@@ -775,7 +775,7 @@ export type ChunkSlotAction =
  *   `append_dummy`. There is no third "skip" branch — the pre-fix
  *   bug.
  *
- * Mirrors `classify_chunk_slots` in `pir-sdk-client/src/onion.rs`.
+ * Mirrors `classify_chunk_slots` in `crates/sdk/client/src/onion.rs`.
  * Cross-language consistency is enforced by the cross-language diff
  * test (`onion_leakage_diff.test.ts`) — same RoundProfile shape on
  * the wire requires same per-slot decisions here.

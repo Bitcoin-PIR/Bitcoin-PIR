@@ -13,7 +13,7 @@
  *   `crypto.getRandomValues` non-determinism.
  *
  * The properties tested below are the TypeScript analog of the Rust
- * Kani harnesses in `pir-sdk-client/src/onion.rs::kani_harnesses`:
+ * Kani harnesses in `crates/sdk/client/src/onion.rs::kani_harnesses`:
  *
  *   P1 (round-count uniformity) — every slot contributes ≥1 entry_id
  *       to the unique-fetch list.

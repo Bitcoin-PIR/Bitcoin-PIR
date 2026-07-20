@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # prepare-wasm-publish.sh
 #
-# Post-processes the wasm-pack-generated `pir-sdk-wasm/pkg/package.json`
+# Post-processes the wasm-pack-generated `crates/sdk/wasm/pkg/package.json`
 # so it has the same provenance metadata (repository, homepage,
 # keywords, bugs, description, author) as the crates.io side.
 #
@@ -15,7 +15,7 @@
 # Usage:
 #   cd /path/to/BitcoinPIR
 #   wasm-pack build --target web --out-dir pkg --release -- \
-#     --manifest-path pir-sdk-wasm/Cargo.toml
+#     --manifest-path crates/sdk/wasm/Cargo.toml
 #   ./scripts/prepare-wasm-publish.sh
 #
 # Dependencies: jq (https://jqlang.github.io/jq/).
@@ -30,7 +30,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CRATE_DIR="$WORKSPACE_ROOT/pir-sdk-wasm"
+CRATE_DIR="$WORKSPACE_ROOT/crates/sdk/wasm"
 PKG_DIR="$CRATE_DIR/pkg"
 PKG_JSON="$PKG_DIR/package.json"
 CARGO_TOML="$CRATE_DIR/Cargo.toml"

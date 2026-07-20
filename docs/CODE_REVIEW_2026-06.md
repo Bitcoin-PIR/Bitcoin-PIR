@@ -26,8 +26,8 @@ or client**. The must-fix set below closes that gap.
 | S4 | crit | `pir-runtime-core/src/table.rs:135` (callers `handler.rs:322,359`) | `group_bytes` slices mmap with unchecked `group_id` on Harmony path |
 | S5 | major | `pir-runtime-core/src/handler.rs:324,365` | `Vec::with_capacity(indices.len()*entry_size)` before range check → alloc amplification (~50–130×) |
 | C2 | major | `pir-core/src/codec.rs:19,22` (callers `dpf.rs:2650`, `harmony.rs:5945`, `onion.rs:2033`) | ✅ `read_varint` panics by design on adversarial server chunk data, *before* Merkle verify |
-| C3 | major | `pir-sdk-client/src/dpf.rs:1258,1465,1665` | ✅ `results0[assigned_group][h]` double-index OOB on short/truncated server batch response (DPF-specific) |
-| C4 | minor | `pir-sdk-client/src/harmony.rs:576` | Master 128-bit PRP key derived from `splitmix64(seed_nanos())` (wall clock), not a CSPRNG |
+| C3 | major | `crates/sdk/client/src/dpf.rs:1258,1465,1665` | ✅ `results0[assigned_group][h]` double-index OOB on short/truncated server batch response (DPF-specific) |
+| C4 | minor | `crates/sdk/client/src/harmony.rs:576` | Master 128-bit PRP key derived from `splitmix64(seed_nanos())` (wall clock), not a CSPRNG |
 | W1 | major | `web/src/merkle.ts:107` (exported `index.ts:96`) | ✅ `verifyMerkleProof` is unsound — overwrites leaf hash at line 122, never binds the leaf; returns `true` for any data |
 | W3 | major | `web/src/dpf-adapter.ts:593`, `harmonypir-adapter.ts:903,918` | `disconnect().catch(); free()` races wasm-bindgen borrow → `free()` can throw "value while borrowed" |
 
@@ -47,7 +47,7 @@ allowed) the server crashes are **unauthenticated**.
 - **C2**: add a `Result`-returning varint reader (e.g.
   `try_read_varint`) and route the UTXO-decode callers through it; keep
   the change additive to avoid rippling the signature across all callers.
-  Note `pir-sdk/src/sync.rs:504` already has a panic-free variant.
+  Note `crates/sdk/core/src/sync.rs:504` already has a panic-free variant.
 - **C3**: validate `results{0,1}` group-count and per-group key-count
   against the request before indexing; return `PirError::Decode`.
 - **C4**: source the key from `getrandom` (already a dependency, used a
@@ -107,7 +107,7 @@ compile-time K; `deriveIntGroups3(id, k)` has no production callers).
 
 | ID | Sev | Location | Issue |
 |----|-----|----------|-------|
-| C1 | major | `pir-sdk-client/src/merkle_verify.rs:1145`, `onion_merkle.rs:281,610` | ✅ Closed in PRs #54/#56/#57: strict clients install verified database roots and bind tree-tops before querying |
+| C1 | major | `crates/sdk/client/src/merkle_verify.rs:1145`, `onion_merkle.rs:281,610` | ✅ Closed in PRs #54/#56/#57: strict clients install verified database roots and bind tree-tops before querying |
 | W2 | major | `web/src/dpf-adapter.ts:526`, `harmonypir-adapter.ts:595`, `arc-present.ts:29` | ✅ Closed in PRs #56/#57: the production web query path fails closed on runtime/pin/channel/identity or database-root verification failure |
 
 **Why this mattered at review time:** The Merkle layer proved only one
@@ -125,7 +125,7 @@ pinning rather than SEV hardware attestation.
 | ID | Sev | Issue |
 |----|-----|-------|
 | I1 | major | Privacy **leakage suite never runs in CI** (`leakage_integration_test.rs` is `#[ignore]`d + invoked nowhere); ~half of 678 Rust tests not in CI; no `cargo fmt --check`; clippy on one crate only. Adding `--test leakage_integration_test -- --ignored` to the daily canary is a one-line, high-value fix |
-| I2 | major | `libdpf` floats unpinned (no `rev`) in `pir-sdk-client/Cargo.toml:60`, `pir-runtime-core/Cargo.toml:25`, `runtime/Cargo.toml:66`, and `.cargo/config.toml`; pinned only by `Cargo.lock`. Every other git dep is rev-pinned |
+| I2 | major | `libdpf` floats unpinned (no `rev`) in `crates/sdk/client/Cargo.toml:60`, `pir-runtime-core/Cargo.toml:25`, `runtime/Cargo.toml:66`, and `.cargo/config.toml`; pinned only by `Cargo.lock`. Every other git dep is rev-pinned |
 | I3 | major | `.gitignore:47` (`build/`) shadows the Rust `build/` workspace crate — new files under `build/src/` are silently untracked |
 | I4 | major | `PLAN_*.md` design docs are gitignored (`.gitignore:54`) but referenced as normative from `CLAUDE.md`, source comments, and the then-local EasyCrypt README (now [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md)) — dangling links for any cloner |
 | I5 | major⚠ | `docs/RATELIMIT_INTEGRATION.md:187` asserts a committed live `TUNNEL_TOKEN` in `deploy/cloudflared_tunnel.env`. File not in tracked tree; **confirm the token was rotated / history scrubbed**, then fix the doc |

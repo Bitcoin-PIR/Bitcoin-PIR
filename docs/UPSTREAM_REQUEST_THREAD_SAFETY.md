@@ -511,7 +511,7 @@ the test above doesn't exercise.
 
 If both fixes ship in a single upstream commit, BitcoinPIR's
 follow-up is mechanical: bump the rev in three Cargo.toml files
-(`build/`, `pir-sdk-client/`, `runtime/`), recompile, redeploy.
+(`build/`, `crates/sdk/client/`, `runtime/`), recompile, redeploy.
 Expected wall-time improvement on pir1's i7-8700: INDEX 162 s →
 27 s, CHUNK 158 s → 27 s. Total per-query batch ≈ 60 s — under CF's
 100 s threshold with room to spare.

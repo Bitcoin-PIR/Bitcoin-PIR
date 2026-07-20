@@ -46,7 +46,7 @@ A **mechanism demo**, live and working end-to-end:
 | Server verify (ARC) | `pir-runtime-core/src/arc_verifier.rs` | ✅ done; real key load via `from_secret_key_file` |
 | Server verify (Cashu) | `pir-runtime-core/src/cashu_verifier.rs` | ✅ done (BDHKE + spent-set) |
 | Server gate | `runtime/src/bin/unified_server.rs` (`--require-arc` / `--require-cashu` / `--arc-key` / `--cashu-keyset`) | ✅ opt-in, **off in prod** |
-| WASM obtain | `pir-sdk-wasm/src/arc.rs` (`WasmArcCredentialRequest`, `WasmArcPresentationState`), `pir-sdk-wasm/src/cashu.rs` (`WasmCashuBlind`) | ✅ done |
+| WASM obtain | `crates/sdk/wasm/src/arc.rs` (`WasmArcCredentialRequest`, `WasmArcPresentationState`), `crates/sdk/wasm/src/cashu.rs` (`WasmCashuBlind`) | ✅ done |
 | Web obtain/present | `web/src/payment-client.ts`, `cashu-bat.ts`, `credential-manager.ts`, `arc-present.ts` | ✅ done (point at issuer; HTTP) |
 | Demo issuer + gate | `dev-issuer/` (free issuance + co-located verify) | ✅ DEV ONLY; deployed `deploy/systemd/dev-issuer.service` |
 | Demo UI | `web/ratelimit-demo.html` + `web/src/ratelimit-demo.ts`; playground `app/rate-limiting/` | ✅ done |
@@ -87,7 +87,7 @@ Five things stand between the demo and real rate limiting.
 - Today only the demo presents a credential. Production needs the **PIR query
   clients** to present **before** querying: `web/src/dpf-adapter.ts`,
   `harmonypir-adapter.ts`, `onionpir_client.ts` (and the Rust SDK clients in
-  `pir-sdk-client/src/{dpf,harmony,onion}.rs`).
+  `crates/sdk/client/src/{dpf,harmony,onion}.rs`).
 - The present helpers exist: `arc-present.ts::sendArcPresentation(ws, mgr)`
   sends `REQ_CREDENTIAL_PRESENT` (0x08) over the **WebSocket** to the PIR
   server; the Cashu equivalent builds `REQ_CASHU_BAT_PRESENT` (0x09) via

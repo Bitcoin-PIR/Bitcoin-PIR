@@ -7,7 +7,7 @@ export default defineConfig({
     port: 3001,
     cors: true,
     fs: {
-      // pir-sdk-wasm/pkg lives outside web/. `--target web` wasm bundles
+      // crates/sdk/wasm/pkg lives outside web/. `--target web` wasm bundles
       // fetch their .wasm at runtime via /@fs/<absolute-path>/..., which
       // Vite 8 blocks by default. Allow the repo root so dev can resolve
       // the sibling workspace package.

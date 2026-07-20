@@ -64,7 +64,7 @@ manifest, and content-addressed verification record through
    `Protocol.ec`. Includes the multi-query analog over batches via
    `Real_batch.query_batch` + list induction.
 
-2. **Pure-helper correctness via Kani** (`pir-sdk-client/src/{dpf,harmony,onion}.rs`,
+2. **Pure-helper correctness via Kani** (`crates/sdk/client/src/{dpf,harmony,onion}.rs`,
    `#[cfg(kani)] mod kani_harnesses`). 14+ harnesses verifying:
    - `build_index_alphas` / `build_index_alphas_batched` K-padding
      invariants.
@@ -80,12 +80,12 @@ manifest, and content-addressed verification record through
 3. **Implementation-vs-spec correspondence (empirical)**. The
    spec's per-section ops (`info_segment`, `index_segment`,
    `chunk_segment`, `index_merkle_segment`, etc.) mirror the
-   per-section structure of `pir-sdk-client/src/{dpf,harmony,onion}.rs::execute_step`.
+   per-section structure of `crates/sdk/client/src/{dpf,harmony,onion}.rs::execute_step`.
    This correspondence is not proved formally (would require
    extracting Rust → EasyCrypt code, currently out of scope) but
    is checked at every commit by:
    - 30+ integration tests against live Hetzner servers
-     (`pir-sdk-client/tests/leakage_integration_test.rs`).
+     (`crates/sdk/client/tests/leakage_integration_test.rs`).
    - 138 vitest unit tests in `web/src/__tests__/`.
    - Cross-language equivalence test (`onion_leakage_diff.test.ts`)
      comparing Rust reference output byte-for-byte to TS
@@ -122,7 +122,7 @@ asymmetry leaked the cuckoo position.
 
 - Spec: `pir-core/src/params.rs:154` (`INDEX_CUCKOO_NUM_HASHES`).
 - Doc: `CLAUDE.md` § "Merkle INDEX Item-Count Symmetry".
-- Code: `pir-sdk-client/src/{dpf,harmony,onion}.rs::items_from_trace`
+- Code: `crates/sdk/client/src/{dpf,harmony,onion}.rs::items_from_trace`
   (each scripthash contributes both probed positions to the trace
   unconditionally).
 
@@ -133,9 +133,9 @@ K_CHUNK-padded CHUNK PIR round. Pre-closure: not-found and whale
 skipped CHUNK rounds, exposing presence.
 
 - Doc: `CLAUDE.md` § "CHUNK Round-Presence Symmetry".
-- Code: `pir-sdk-client/src/{dpf,harmony}.rs::query_chunk_level`
+- Code: `crates/sdk/client/src/{dpf,harmony}.rs::query_chunk_level`
   (forces a dummy round when `chunk_ids` is empty);
-  `pir-sdk-client/src/onion.rs::query_chunk_level` and
+  `crates/sdk/client/src/onion.rs::query_chunk_level` and
   `web/src/onionpir_client.ts::queryBatch` (an all-not-found batch
   substitutes a single empty round, so one all-dummy K_CHUNK CHUNK
   round still goes out).
@@ -155,7 +155,7 @@ them so `max_items_per_group = 2` regardless of input.
 
 - Spec: [`Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) axis 1.
 - Doc: `CLAUDE.md` § "INDEX Merkle Group-Symmetry".
-- Helper: `pir-sdk-client/src/dpf.rs::plan_index_pbc_rounds` +
+- Helper: `crates/sdk/client/src/dpf.rs::plan_index_pbc_rounds` +
   `build_index_alphas_batched` (3 Kani harnesses).
 - Closure commits: `606fddb` (DPF), `632cfd2` (Harmony). OnionPIR
   was structurally trivial pre-closure (its INDEX layer already
@@ -245,11 +245,11 @@ Multi-query (curated colliding scripthash batches):
 
 ### Code
 - `pir-core/src/params.rs` — privacy-relevant constants.
-- `pir-sdk-client/src/{dpf,harmony,onion}.rs` — per-backend Rust
+- `crates/sdk/client/src/{dpf,harmony,onion}.rs` — per-backend Rust
   client, including the per-helper Kani harnesses inline.
-- `pir-sdk-client/src/merkle_verify.rs` — bucket-Merkle verification.
-- `pir-sdk-client/src/onion_merkle.rs` — OnionPIR-specific Merkle.
-- `pir-sdk-client/tests/leakage_integration_test.rs` — Rust live
+- `crates/sdk/client/src/merkle_verify.rs` — bucket-Merkle verification.
+- `crates/sdk/client/src/onion_merkle.rs` — OnionPIR-specific Merkle.
+- `crates/sdk/client/tests/leakage_integration_test.rs` — Rust live
   integration tests + curated-collision multi-query tests.
 - `web/src/onionpir_client.ts` — standalone TS Onion client.
 - `web/src/leakage.ts` — TS port of the leakage profile types.

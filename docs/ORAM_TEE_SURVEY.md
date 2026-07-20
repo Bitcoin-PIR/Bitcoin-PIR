@@ -643,7 +643,7 @@ crate gives us Circuit ORAM (HeapTree backend) as a clean library we
 can integrate directly into `pir-runtime-core`. Pair it with a much
 simpler in-VM linear-scan index for the position map at v1; we already
 own the data-oblivious-scan discipline from
-`pir-sdk-client/src/dpf.rs` invariants. Rust + SEV is a cleaner
+`crates/sdk/client/src/dpf.rs` invariants. Rust + SEV is a cleaner
 software-supply-chain story than ZeroTrace's circa-2018 C++.
 
 **Prototype scope.** Stand up an `pir-oram` crate that wraps
