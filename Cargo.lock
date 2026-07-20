@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "harmonypir"
 version = "0.1.0"
-source = "git+https://github.com/Bitcoin-PIR/harmonypir.git?rev=60635d8e526629b2ba99ec5020a55d078a299660#60635d8e526629b2ba99ec5020a55d078a299660"
+source = "git+https://github.com/Bitcoin-PIR/harmonypir.git?rev=ad1b5b99c3ec979ed8fda5bb64c4b240f6114e79#ad1b5b99c3ec979ed8fda5bb64c4b240f6114e79"
 dependencies = [
  "aes",
  "bincode",
@@ -1233,18 +1233,6 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "serde",
-]
-
-[[package]]
-name = "harmonypir-wasm"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.2.17",
- "harmonypir",
- "js-sys",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -1799,7 +1787,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "getrandom 0.2.17",
- "harmonypir-wasm",
+ "harmonypir",
  "hex",
  "js-sys",
  "libdpf",
@@ -2230,7 +2218,6 @@ dependencies = [
  "build",
  "futures-util",
  "harmonypir",
- "harmonypir-wasm",
  "libdpf",
  "memmap2",
  "onionpir",

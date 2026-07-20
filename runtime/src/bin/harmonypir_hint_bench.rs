@@ -12,10 +12,11 @@ use harmonypir::prp::hoang::HoangPrp;
 #[cfg(feature = "fastprp")]
 use harmonypir::prp::fast::FastPrpWrapper;
 use harmonypir::prp::Prp;
-use harmonypir_wasm::{
-    PRP_HMR12, PRP_FASTPRP,
-    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
+use harmonypir::remote::{
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t, PRP_HMR12,
 };
+#[cfg(feature = "fastprp")]
+use harmonypir::remote::PRP_FASTPRP;
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -51,7 +52,7 @@ fn generate_hints_single_group(
         PRP_FASTPRP => {
             Box::new(FastPrpWrapper::new(&derived_key, domain))
         }
-        // ALF arm removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36.
+        // ALF is not part of the remote-client wire contract.
         _ => {
             Box::new(HoangPrp::new(domain, rounds, &derived_key))
         }
@@ -137,7 +138,7 @@ fn generate_hints_inner_rayon(
     let table_offset = header_size + actual_group * n * w;
 
     // Build PRP — same as before.
-    // ALF arm removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36.
+    // ALF is not part of the remote-client wire contract.
     let prp: Box<dyn BatchPrp> = match backend {
         PRP_HMR12 => {
             Box::new(HoangPrp::new(domain, rounds, &derived_key))
@@ -187,7 +188,8 @@ fn main() {
 
     let n = index_bins;
     let t_raw = find_best_t(n as u32);
-    let (padded_n, t_val) = pad_n_for_t(n as u32, t_raw);
+    let (padded_n, t_val) = pad_n_for_t(n as u32, t_raw)
+        .expect("validated non-zero HarmonyPIR benchmark dimensions");
     let pn = padded_n as usize;
     let t = t_val as usize;
     let domain = 2 * pn;

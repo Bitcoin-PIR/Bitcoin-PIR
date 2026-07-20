@@ -1,7 +1,9 @@
-//! PyO3 bindings for HarmonyPIR — standalone reimplementation.
+//! Legacy PyO3 bindings for HarmonyPIR.
 //!
 //! Uses harmonypir core crate (PRP, RelocationDS) directly,
-//! reimplementing the group logic from harmonypir-wasm/src/lib.rs.
+//! predating the upstream `harmonypir::remote::RemoteClient` API. New Rust
+//! and WASM clients use that upstream state machine directly; this excluded
+//! Electrum plugin should be migrated separately before production use.
 
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -16,7 +18,7 @@ use rand::Rng;
 
 const BETA: usize = 4;
 
-// ── Parameter helpers (matching harmonypir-wasm exactly) ─────────────────
+// ── Legacy parameter helpers ─────────────────────────────────────────────
 
 fn compute_rounds(n: u32) -> usize {
     let domain = 2 * n as usize;
@@ -39,7 +41,7 @@ fn pad_n_for_t(n: u32, t: u32) -> (u32, u32) {
     (padded_n, t)
 }
 
-/// XORs group_id into bytes 12-15 of key (matching harmonypir-wasm).
+/// XORs group_id into bytes 12-15 of the key.
 fn derive_group_key(master_key: &[u8], group_id: u32) -> [u8; 16] {
     let mut key = [0u8; 16];
     let len = master_key.len().min(16);
@@ -141,8 +143,8 @@ impl PyHarmonyGroup {
     /// Build a query request for database row `q`.
     /// Returns (request_bytes, segment, position, query_index).
     ///
-    /// Matches harmonypir-wasm build_request: uses batch_access for PRP
-    /// pipelining, filters EMPTY cells, sorts by DB index.
+    /// Legacy request builder: uses batch_access for PRP pipelining,
+    /// filters EMPTY cells, and sorts by DB index.
     fn build_request(&mut self, q: u32) -> PyResult<(Vec<u8>, u32, u32, u32)> {
         let t = self.params.t;
 
@@ -187,7 +189,7 @@ impl PyHarmonyGroup {
         Ok((bytes, s as u32, r as u32, self.query_count as u32))
     }
 
-    /// Build a synthetic dummy request (matching harmonypir-wasm exactly).
+    /// Build a legacy synthetic dummy request.
     /// Uses Binomial(T, 0.5) count sampling + uniform random indices.
     fn build_synthetic_dummy(&mut self) -> Vec<u8> {
         let t = self.params.t;

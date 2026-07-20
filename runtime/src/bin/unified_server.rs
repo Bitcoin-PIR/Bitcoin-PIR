@@ -2888,8 +2888,9 @@ fn compute_hints_for_group(
     let real_n = sub_table.bins_per_table;
     let w = entry_size;
 
-    let t_raw = harmonypir_wasm::find_best_t(real_n as u32);
-    let (padded_n, t_val) = harmonypir_wasm::pad_n_for_t(real_n as u32, t_raw);
+    let t_raw = harmonypir::remote::find_best_t(real_n as u32);
+    let (padded_n, t_val) = harmonypir::remote::pad_n_for_t(real_n as u32, t_raw)
+        .expect("validated non-zero HarmonyPIR table dimensions");
     let pn = padded_n as usize;
     let t = t_val as usize;
 
@@ -2898,25 +2899,25 @@ fn compute_hints_for_group(
 
     let derived_key = derive_group_key(prp_key, k_offset + group_id as u32);
     let domain = 2 * pn;
-    let r = harmonypir_wasm::compute_rounds(padded_n);
+    let r = harmonypir::remote::compute_rounds(padded_n);
 
     use harmonypir::prp::BatchPrp;
-    // PRP_ALF (= 2) was removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36
+    // PRP_ALF (= 2) is not part of the remote-client wire contract.
     // and pir-sdk-client/src/harmony.rs:81 for the rationale (panic on
     // domain<65536 crashed pir-vpsbg in a tight loop).
     let cell_of: Vec<usize> = match prp_backend {
         #[cfg(feature = "fastprp")]
-        harmonypir_wasm::PRP_FASTPRP => {
+        harmonypir::remote::PRP_FASTPRP => {
             use harmonypir::prp::fast::FastPrpWrapper;
             let prp = FastPrpWrapper::new(&derived_key, domain);
             prp.batch_forward()
         }
-        harmonypir_wasm::PRP_HMR12 => {
+        harmonypir::remote::PRP_HMR12 => {
             let prp = HoangPrp::new(domain, r, &derived_key);
             prp.batch_forward()
         }
         #[cfg(not(feature = "fastprp"))]
-        harmonypir_wasm::PRP_FASTPRP => {
+        harmonypir::remote::PRP_FASTPRP => {
             return Err(
                 "FastPRP requested, but runtime was built without the `fastprp` feature".into(),
             );
@@ -5376,8 +5377,8 @@ async fn main() {
             .get_db(pool_db_id)
             .expect("main database must be loaded");
         let backend_name = match pool_config.prp_backend {
-            harmonypir_wasm::PRP_HMR12 => "HMR12",
-            harmonypir_wasm::PRP_FASTPRP => "FastPRP",
+            harmonypir::remote::PRP_HMR12 => "HMR12",
+            harmonypir::remote::PRP_FASTPRP => "FastPRP",
             _ => "unknown",
         };
         println!(

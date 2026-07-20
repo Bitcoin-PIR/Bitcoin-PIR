@@ -14,7 +14,6 @@ members = [
     "bpir-admin",
     "build",
     "runtime",
-    "harmonypir-wasm",
     "block_reader",
     "dev-issuer",
 ]

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use harmonypir::params::Params;
 use harmonypir::prp::BatchPrp;
-use harmonypir_wasm;
+use harmonypir::remote;
 
 use pir_runtime_core::table::MappedDatabase;
 
@@ -53,21 +53,21 @@ impl Default for HintPoolConfig {
 pub const fn default_prp_backend() -> u8 {
     #[cfg(feature = "fastprp")]
     {
-        harmonypir_wasm::PRP_FASTPRP
+        remote::PRP_FASTPRP
     }
     #[cfg(not(feature = "fastprp"))]
     {
-        harmonypir_wasm::PRP_HMR12
+        remote::PRP_HMR12
     }
 }
 
 pub fn validate_prp_backend(prp_backend: u8) -> Result<(), String> {
     match prp_backend {
-        harmonypir_wasm::PRP_HMR12 => Ok(()),
+        remote::PRP_HMR12 => Ok(()),
         #[cfg(feature = "fastprp")]
-        harmonypir_wasm::PRP_FASTPRP => Ok(()),
+        remote::PRP_FASTPRP => Ok(()),
         #[cfg(not(feature = "fastprp"))]
-        harmonypir_wasm::PRP_FASTPRP => {
+        remote::PRP_FASTPRP => {
             Err("FastPRP requested, but runtime was built without the `fastprp` feature".into())
         }
         other => Err(format!("unsupported HarmonyPIR PRP backend {}", other)),
@@ -509,8 +509,9 @@ fn compute_and_serialize_hint_frame(
 
     let real_n = bins_per_table;
     let w = entry_size;
-    let t_raw = harmonypir_wasm::find_best_t(real_n as u32);
-    let (padded_n, t_val) = harmonypir_wasm::pad_n_for_t(real_n as u32, t_raw);
+    let t_raw = remote::find_best_t(real_n as u32);
+    let (padded_n, t_val) = remote::pad_n_for_t(real_n as u32, t_raw)
+        .expect("validated non-zero HarmonyPIR hint-pool dimensions");
     let pn = padded_n as usize;
     let t = t_val as usize;
 
@@ -519,19 +520,19 @@ fn compute_and_serialize_hint_frame(
 
     let derived_key = derive_group_key(prp_key, k_offset + group_id);
     let domain = 2 * pn;
-    let r = harmonypir_wasm::compute_rounds(padded_n);
+    let r = remote::compute_rounds(padded_n);
 
     // Batch PRP evaluation.
-    // PRP_ALF (= 2) was removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36
+    // PRP_ALF (= 2) is not part of the remote-client wire contract.
     // for the rationale (panic on domain<65536 crashed pir-vpsbg).
     let cell_of: Vec<usize> = match prp_backend {
         #[cfg(feature = "fastprp")]
-        harmonypir_wasm::PRP_FASTPRP => {
+        remote::PRP_FASTPRP => {
             use harmonypir::prp::fast::FastPrpWrapper;
             let prp = FastPrpWrapper::new(&derived_key, domain);
             prp.batch_forward()
         }
-        harmonypir_wasm::PRP_HMR12 => {
+        remote::PRP_HMR12 => {
             use harmonypir::prp::hoang::HoangPrp;
             let prp = HoangPrp::new(domain, r, &derived_key);
             prp.batch_forward()
@@ -767,8 +768,9 @@ fn entry_checksum(
 
 fn expected_hint_frame_len(bins: usize, entry_size: usize) -> io::Result<(u32, u32, u32, usize)> {
     let bins_u32 = u32::try_from(bins).map_err(|_| invalid_data("bin count exceeds u32"))?;
-    let t_raw = harmonypir_wasm::find_best_t(bins_u32);
-    let (padded_n, t_val) = harmonypir_wasm::pad_n_for_t(bins_u32, t_raw);
+    let t_raw = remote::find_best_t(bins_u32);
+    let (padded_n, t_val) = remote::pad_n_for_t(bins_u32, t_raw)
+        .expect("validated non-zero HarmonyPIR tree-top dimensions");
     let params = Params::new(padded_n as usize, entry_size, t_val as usize)
         .map_err(|e| invalid_data(format!("invalid persisted hint geometry: {}", e)))?;
     let flat_len = params
@@ -1213,7 +1215,7 @@ mod tests {
         PoolFileBinding {
             fingerprint: [fingerprint; 32],
             bound_db_id: 0,
-            prp_backend: harmonypir_wasm::PRP_HMR12,
+            prp_backend: remote::PRP_HMR12,
             index_groups: 2,
             chunk_groups: 1,
             index_bins: 8,
@@ -1415,7 +1417,7 @@ mod tests {
     #[cfg(not(feature = "fastprp"))]
     #[test]
     fn no_fastprp_build_defaults_to_hmr12() {
-        assert_eq!(default_prp_backend(), harmonypir_wasm::PRP_HMR12);
-        assert!(validate_prp_backend(harmonypir_wasm::PRP_FASTPRP).is_err());
+        assert_eq!(default_prp_backend(), remote::PRP_HMR12);
+        assert!(validate_prp_backend(remote::PRP_FASTPRP).is_err());
     }
 }

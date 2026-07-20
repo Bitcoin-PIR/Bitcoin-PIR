@@ -38,7 +38,7 @@ arc = { git = "...", rev = "..." }
 
 # pir-sdk-client/Cargo.toml
 libdpf = { git = "...", rev = "..." }
-harmonypir-wasm = { path = "../harmonypir-wasm" }
+harmonypir = { git = "...", rev = "..." }
 pir-db-attest = { path = "../pir-db-attest" }
 onionpir = { git = "...", rev = "...", optional = true }
 
@@ -48,9 +48,10 @@ pir-db-attest = { path = "../pir-db-attest" }
 pir-sdk-client = { path = "../pir-sdk-client", version = "0.1.0" }
 ```
 
-`harmonypir-wasm` and `pir-db-attest` are currently `publish = false`;
-the latter also has an unpublished path dependency on `rootbundle`.
-`harmonypir-wasm` in turn depends on the git-only `harmonypir` crate.
+`pir-db-attest` is currently `publish = false` and has an unpublished path
+dependency on `rootbundle`. HarmonyPIR client state now comes directly from
+the revision-pinned upstream `harmonypir` crate; the former workspace-local
+WASM wrapper has been retired.
 
 All git dependencies above are revision-pinned, which is appropriate
 for reproducible workspace builds, but a pin is not a crates.io source.
@@ -69,10 +70,10 @@ registry `version` fallback.
    not intended for crates.io, move the required code behind a
    publishable workspace interface instead.
 
-2. **Resolve the internal path-only crates.** Make `rootbundle`,
-   `pir-db-attest`, and `harmonypir-wasm` publishable in dependency
-   order and give each path dependency a `version`, or fold their
-   public functionality into an already-publishable crate.
+2. **Resolve the internal path-only crates.** Make `rootbundle` and
+   `pir-db-attest` publishable in dependency order and give each path
+   dependency a `version`, or fold their public functionality into an
+   already-publishable crate.
 
 3. **Re-run packaging from the registry form.** Run `cargo package`
    and `cargo publish --dry-run` for each dependent crate. `--list`
@@ -116,8 +117,8 @@ the dependency graph:
    (registry dependencies only).
 2. `pir-sdk` (depends on `pir-core`).
 3. Registry releases for `libdpf`, `arc`, `harmonypir`, and `onionpir`.
-4. `rootbundle`, `pir-db-attest`, and `harmonypir-wasm`, if they remain
-   separate crates rather than being folded into publishable parents.
+4. `rootbundle` and `pir-db-attest`, if they remain separate crates rather
+   than being folded into publishable parents.
 5. `pir-runtime-core` (depends on `pir-core`, `pir-channel`,
    `pir-identity`, `libdpf`, and `arc`).
 6. `pir-sdk-server` and `pir-sdk-client` after their respective

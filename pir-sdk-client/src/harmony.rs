@@ -5,10 +5,9 @@
 //! - **Query Server**: answers per-group sorted-index queries against the cuckoo table
 //!
 //! The per-group state (relocation data structure + hints) is managed by
-//! [`harmonypir_wasm::HarmonyGroup`], which is reused from the browser/JS
-//! client. Although the wrapper was originally written for WASM, it is
-//! exposed as an `rlib` and compiles fine for native targets — the
-//! `#[wasm_bindgen]` attribute is a no-op off the `wasm32` target.
+//! [`harmonypir::remote::RemoteClient`]. The SDK owns the transport and the
+//! browser binding; the upstream library owns only protocol state and wire
+//! request/response processing.
 //!
 //! ## Flow
 //! 1. `connect()` opens WebSocket connections to both servers.
@@ -46,7 +45,7 @@ use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
 use async_trait::async_trait;
-use harmonypir_wasm::HarmonyGroup;
+use harmonypir::remote::{PrpBackend, RemoteClient as HarmonyGroup};
 use pir_core::params::{
     CHUNK_CUCKOO_NUM_HASHES, CHUNK_SIZE, CHUNK_SLOT_SIZE, CHUNK_SLOTS_PER_BIN,
     INDEX_CUCKOO_NUM_HASHES, INDEX_SLOT_SIZE, INDEX_SLOTS_PER_BIN, NUM_HASHES, TAG_SIZE,
@@ -111,11 +110,34 @@ const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
 // `REQ_GET_DB_CATALOG` / `RESP_DB_CATALOG` / `RESP_ERROR` come from
 // `crate::protocol` — shared with `DpfClient` and `OnionClient`.
 
-/// PRP backends (mirrors `harmonypir_wasm::PRP_*`).
-pub const PRP_HMR12: u8 = 0;
-pub const PRP_FASTPRP: u8 = 1;
+/// PRP backends used on the HarmonyPIR wire.
+pub use harmonypir::remote::{PRP_FASTPRP, PRP_HMR12};
 // PRP_ALF (= 2) was removed 2026-05-12: ALF panicked on domain<65536
 // (sibling Merkle tables hit this), causing pir-vpsbg crash loops.
+
+fn new_harmony_group(
+    n: u32,
+    w: u32,
+    t: u32,
+    master_key: &[u8],
+    group_id: u32,
+    backend: u8,
+) -> harmonypir::remote::Result<HarmonyGroup> {
+    HarmonyGroup::new_with_backend(
+        n,
+        w,
+        t,
+        master_key,
+        group_id,
+        PrpBackend::try_from(backend)?,
+    )
+}
+
+fn serialize_harmony_group(group: &HarmonyGroup) -> PirResult<Vec<u8>> {
+    group.serialize_legacy_state().map_err(|error| {
+        PirError::BackendState(format!("serialize HarmonyPIR group: {error}"))
+    })
+}
 
 /// Which group-map `fetch_and_load_hints_into` should write into.
 ///
@@ -208,10 +230,10 @@ struct QueryTraces {
 ///
 /// `Real(chunk_id)` — the group has a real chunk to retrieve; the
 /// caller computes the cuckoo target bin and dispatches via
-/// [`harmonypir_wasm::HarmonyGroup::build_request`].
+/// [`harmonypir::remote::RemoteClient::build_request`].
 ///
 /// `Dummy` — no real chunk is assigned to this group; caller falls
-/// back to [`harmonypir_wasm::HarmonyGroup::build_synthetic_dummy`],
+/// back to [`harmonypir::remote::RemoteClient::build_synthetic_dummy`],
 /// whose T-1-padded shape is byte-shape-identical to a real request
 /// per the existing "HarmonyPIR Per-Group Request-Count Symmetry"
 /// invariant. The two branches of `run_chunk_round` therefore emit
@@ -1233,10 +1255,14 @@ impl HarmonyClient {
         let mut bundle = hint_cache::HintBundle::new();
 
         for (&gid, group) in &self.index_groups {
-            bundle.main_index.insert(gid, group.serialize());
+            bundle
+                .main_index
+                .insert(gid, serialize_harmony_group(group)?);
         }
         for (&gid, group) in &self.chunk_groups {
-            bundle.main_chunk.insert(gid, group.serialize());
+            bundle
+                .main_chunk
+                .insert(gid, serialize_harmony_group(group)?);
         }
         // Sibling level is stored in memory as `usize` but realistic
         // Merkle tree depths are well under 255 (typically <= 12);
@@ -1245,13 +1271,13 @@ impl HarmonyClient {
             debug_assert!(level < 256, "sibling level overflow at save time");
             bundle
                 .index_sib
-                .insert((level as u8, gid), group.serialize());
+                .insert((level as u8, gid), serialize_harmony_group(group)?);
         }
         for (&(level, gid), group) in &self.chunk_sib_groups {
             debug_assert!(level < 256, "sibling level overflow at save time");
             bundle
                 .chunk_sib
-                .insert((level as u8, gid), group.serialize());
+                .insert((level as u8, gid), serialize_harmony_group(group)?);
         }
 
         Ok(Some(hint_cache::encode_hints(&key, &bundle)))
@@ -1324,26 +1350,32 @@ impl HarmonyClient {
         self.sibling_hints_loaded = None;
 
         for (&gid, bytes) in &bundle.main_index {
-            let group =
-                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, gid as u32).map_err(
-                    |e| {
-                        PirError::BackendState(format!(
-                            "deserialize main INDEX group {}: {:?}",
-                            gid, e
-                        ))
-                    },
-                )?;
+            let group = HarmonyGroup::deserialize_legacy_state(
+                bytes,
+                &self.master_prp_key,
+                gid as u32,
+            )
+            .map_err(|e| {
+                PirError::BackendState(format!(
+                    "deserialize main INDEX group {}: {:?}",
+                    gid, e
+                ))
+            })?;
             self.index_groups.insert(gid, group);
         }
         for (&gid, bytes) in &bundle.main_chunk {
             let group_id = (k_index + gid as usize) as u32;
-            let group =
-                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, group_id).map_err(|e| {
-                    PirError::BackendState(format!(
-                        "deserialize main CHUNK group {}: {:?}",
-                        gid, e
-                    ))
-                })?;
+            let group = HarmonyGroup::deserialize_legacy_state(
+                bytes,
+                &self.master_prp_key,
+                group_id,
+            )
+            .map_err(|e| {
+                PirError::BackendState(format!(
+                    "deserialize main CHUNK group {}: {:?}",
+                    gid, e
+                ))
+            })?;
             self.chunk_groups.insert(gid, group);
         }
 
@@ -1358,13 +1390,17 @@ impl HarmonyClient {
             let sl = level as usize;
             let g = gid as usize;
             let group_id = ((k_index + k_chunk) + sl * k_index + g) as u32;
-            let group =
-                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, group_id).map_err(|e| {
-                    PirError::BackendState(format!(
-                        "deserialize INDEX sib L{} g{}: {:?}",
-                        sl, g, e
-                    ))
-                })?;
+            let group = HarmonyGroup::deserialize_legacy_state(
+                bytes,
+                &self.master_prp_key,
+                group_id,
+            )
+            .map_err(|e| {
+                PirError::BackendState(format!(
+                    "deserialize INDEX sib L{} g{}: {:?}",
+                    sl, g, e
+                ))
+            })?;
             self.index_sib_groups.insert((sl, gid), group);
         }
         for (&(level, gid), bytes) in &bundle.chunk_sib {
@@ -1372,13 +1408,17 @@ impl HarmonyClient {
             let g = gid as usize;
             let group_id =
                 ((k_index + k_chunk) + index_sib_levels * k_index + sl * k_chunk + g) as u32;
-            let group =
-                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, group_id).map_err(|e| {
-                    PirError::BackendState(format!(
-                        "deserialize CHUNK sib L{} g{}: {:?}",
-                        sl, g, e
-                    ))
-                })?;
+            let group = HarmonyGroup::deserialize_legacy_state(
+                bytes,
+                &self.master_prp_key,
+                group_id,
+            )
+            .map_err(|e| {
+                PirError::BackendState(format!(
+                    "deserialize CHUNK sib L{} g{}: {:?}",
+                    sl, g, e
+                ))
+            })?;
             self.chunk_sib_groups.insert((sl, gid), group);
         }
 
@@ -1713,7 +1753,7 @@ impl HarmonyClient {
         let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
 
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 db_info.index_bins,
                 index_w as u32,
                 0, // T=0 means "pick balanced T"
@@ -1726,7 +1766,7 @@ impl HarmonyClient {
         }
 
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 db_info.chunk_bins,
                 chunk_w as u32,
                 0,
@@ -1855,7 +1895,7 @@ impl HarmonyClient {
         let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
 
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 db_info.index_bins,
                 index_w as u32,
                 0,
@@ -1868,7 +1908,7 @@ impl HarmonyClient {
         }
 
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 db_info.chunk_bins,
                 chunk_w as u32,
                 0,
@@ -1913,7 +1953,7 @@ impl HarmonyClient {
                 PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
             })?;
             group
-                .load_hints_checked(hints_data)
+                .load_hints(hints_data)
                 .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
 
             done += 1;
@@ -1955,7 +1995,7 @@ impl HarmonyClient {
                 PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
             })?;
             group
-                .load_hints_checked(hints_data)
+                .load_hints(hints_data)
                 .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
 
             done += 1;
@@ -2165,7 +2205,7 @@ impl HarmonyClient {
             let mut groups: HashMap<u8, HarmonyGroup> =
                 HashMap::with_capacity(num_groups as usize);
             for g in 0..num_groups {
-                let group = HarmonyGroup::new_with_backend_checked(
+                let group = new_harmony_group(
                     bins,
                     slot_size,
                     0,
@@ -2225,7 +2265,7 @@ impl HarmonyClient {
                     ))
                 })?;
                 group
-                    .load_hints_checked(hints_data)
+                    .load_hints(hints_data)
                     .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
             }
 
@@ -2448,7 +2488,7 @@ impl HarmonyClient {
         // gain is small relative to the hint-download wall time, and
         // wasm32 is single-threaded anyway. Keep serial.
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 db_info.index_bins,
                 index_w as u32,
                 0,
@@ -2460,7 +2500,7 @@ impl HarmonyClient {
             self.index_groups.insert(g as u8, group);
         }
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 db_info.chunk_bins,
                 chunk_w as u32,
                 0,
@@ -2697,7 +2737,7 @@ impl HarmonyClient {
             })?;
             let t_load = Instant::now();
             group
-                .load_hints_checked(hints_data)
+                .load_hints(hints_data)
                 .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
             dt_load_total += t_load.elapsed();
 
@@ -3348,7 +3388,7 @@ impl HarmonyClient {
                     let req = group
                         .build_request(target_bin)
                         .map_err(|e| PirError::BackendState(format!("build_request: {:?}", e)))?;
-                    req.request()
+                    req.into_bytes()
                 }
                 IndexGroupRole::Dummy => group.build_synthetic_dummy(),
             };
@@ -3418,7 +3458,7 @@ impl HarmonyClient {
     /// (one per cuckoo position), exactly as the sequential path. The
     /// upstream pair API guarantees bit-for-bit equivalence with two
     /// sequential `build_request` + `process_response` cycles given the
-    /// same RNG seed (see `harmonypir-wasm::test_pair_equiv_sequential_*`).
+    /// same RNG seed (covered by upstream `remote` pair-equivalence tests).
     ///
     /// Dummy groups are *not* covered by the wrapper's `PendingPair`
     /// state — they call `build_synthetic_dummy()` twice (once per wire
@@ -3489,7 +3529,7 @@ impl HarmonyClient {
                         PirError::BackendState(format!("build_request_pair: {:?}", e))
                     })?;
                     let (req_1, req_2) = pair.into_parts();
-                    (req_1.request(), req_2.request())
+                    (req_1.into_bytes(), req_2.into_bytes())
                 }
                 IndexGroupRole::Dummy => {
                     // Two independent K-padded synthetic dummies — one per
@@ -3638,12 +3678,11 @@ impl HarmonyClient {
                 .index_groups
                 .get_mut(&g)
                 .ok_or_else(|| PirError::InvalidState("missing INDEX real group".into()))?;
-            let answer_pair = group
+            let (answer_h0, answer_h1) = group
                 .process_response_pair(data_h0, data_h1)
                 .map_err(|e| {
                     PirError::BackendState(format!("process_response_pair: {:?}", e))
                 })?;
-            let (answer_h0, answer_h1) = answer_pair.into_parts();
             out_h0.insert(g, answer_h0);
             out_h1.insert(g, answer_h1);
         }
@@ -4119,7 +4158,7 @@ impl HarmonyClient {
                     nodes = level_n;
                     let t_init = Instant::now();
                     for g in 0..k_index {
-                        let group = HarmonyGroup::new_with_backend_checked(
+                        let group = new_harmony_group(
                             level_n as u32,
                             sib_w,
                             0,
@@ -4168,7 +4207,7 @@ impl HarmonyClient {
                     nodes = level_n;
                     let t_init = Instant::now();
                     for g in 0..k_chunk {
-                        let group = HarmonyGroup::new_with_backend_checked(
+                        let group = new_harmony_group(
                             level_n as u32,
                             sib_w,
                             0,
@@ -4251,7 +4290,7 @@ impl HarmonyClient {
                 nodes = level_n;
                 let t_init = Instant::now();
                 for g in 0..k_index {
-                    let group = HarmonyGroup::new_with_backend_checked(
+                    let group = new_harmony_group(
                         level_n as u32,
                         sib_w,
                         0,
@@ -4297,7 +4336,7 @@ impl HarmonyClient {
                 nodes = level_n;
                 let t_init = Instant::now();
                 for g in 0..k_chunk {
-                    let group = HarmonyGroup::new_with_backend_checked(
+                    let group = new_harmony_group(
                         level_n as u32,
                         sib_w,
                         0,
@@ -5099,7 +5138,7 @@ impl HarmonyClient {
                     let req = group.build_request(target_bin as u32).map_err(|e| {
                         PirError::BackendState(format!("build_request (chunk): {:?}", e))
                     })?;
-                    req.request()
+                    req.into_bytes()
                 }
                 ChunkGroupRole::Dummy => group.build_synthetic_dummy(),
             };
@@ -5192,7 +5231,7 @@ impl HarmonyClient {
     /// path's `query_count += 2` semantics. The pair API (upstream
     /// `harmonypir`) is bit-for-bit equivalent to two sequential
     /// `build_request` + `process_response` cycles given the same RNG
-    /// seed — see `harmonypir-wasm::test_pair_equiv_sequential_*`.
+    /// seed — see the upstream `remote` pair-equivalence tests.
     ///
     /// Returns `(out_h0, out_h1)` — two `HashMap<group_id, answer>`
     /// maps keyed by PBC group, containing the `process_response_pair`
@@ -5238,7 +5277,7 @@ impl HarmonyClient {
                         PirError::BackendState(format!("build_request_pair (chunk): {:?}", e))
                     })?;
                     let (req_1, req_2) = pair.into_parts();
-                    (req_1.request(), req_2.request())
+                    (req_1.into_bytes(), req_2.into_bytes())
                 }
                 ChunkGroupRole::Dummy => {
                     // Two independent K-padded synthetic dummies — one
@@ -5388,11 +5427,10 @@ impl HarmonyClient {
                 .chunk_groups
                 .get_mut(&g)
                 .ok_or_else(|| PirError::InvalidState("missing CHUNK real group".into()))?;
-            let answer_pair =
+            let (answer_h0, answer_h1) =
                 group.process_response_pair(data_h0, data_h1).map_err(|e| {
                     PirError::BackendState(format!("process_response_pair (chunk): {:?}", e))
                 })?;
-            let (answer_h0, answer_h1) = answer_pair.into_parts();
             out_h0.insert(g, answer_h0);
             out_h1.insert(g, answer_h1);
         }
@@ -5495,7 +5533,7 @@ async fn fetch_and_load_main_hints_into_map(
         })?;
         let t_load = Instant::now();
         group
-            .load_hints_checked(hints_data)
+            .load_hints(hints_data)
             .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
         dt_load_total += t_load.elapsed();
         received += 1;
@@ -5612,7 +5650,7 @@ async fn fetch_and_load_sib_hints_into_map(
         })?;
         let t_load = Instant::now();
         group
-            .load_hints_checked(hints_data)
+            .load_hints(hints_data)
             .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
         dt_load_total += t_load.elapsed();
         received += 1;
@@ -6451,7 +6489,7 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                 let req = group.build_request(t).map_err(|e| {
                     PirError::BackendState(format!("sib build_request: {:?}", e))
                 })?;
-                req.request()
+                req.into_bytes()
             } else {
                 group.build_synthetic_dummy()
             };
@@ -6553,7 +6591,7 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
     ///   The pair API stashes both states in `pending_pair` and
     ///   consumes both atomically — exact equivalent of two sequential
     ///   `build_request`+`process_response` cycles given the same RNG
-    ///   seed (verified by `harmonypir-wasm::test_pair_equiv_sequential_*`).
+    ///   seed (verified by upstream `remote` pair-equivalence tests).
     /// * **RealDummy** → `build_request(t)` then `build_synthetic_dummy()`.
     ///   The dummy doesn't touch `last_*`, so pass 0's `process_response`
     ///   reads the real state correctly. Pass 1's dummy slot in
@@ -6677,14 +6715,14 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                         ))
                     })?;
                     let (req_1, req_2) = pair.into_parts();
-                    bytes_h0.push(req_1.request());
-                    bytes_h1.push(req_2.request());
+                    bytes_h0.push(req_1.into_bytes());
+                    bytes_h1.push(req_2.into_bytes());
                 }
                 PassPattern::RealDummy(t0) => {
                     let req = group.build_request(t0).map_err(|e| {
                         PirError::BackendState(format!("sib build_request: {:?}", e))
                     })?;
-                    bytes_h0.push(req.request());
+                    bytes_h0.push(req.into_bytes());
                     bytes_h1.push(group.build_synthetic_dummy());
                 }
                 PassPattern::DummyReal(t1) => {
@@ -6692,7 +6730,7 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                     let req = group.build_request(t1).map_err(|e| {
                         PirError::BackendState(format!("sib build_request: {:?}", e))
                     })?;
-                    bytes_h1.push(req.request());
+                    bytes_h1.push(req.into_bytes());
                 }
                 PassPattern::DummyDummy => {
                     bytes_h0.push(group.build_synthetic_dummy());
@@ -6820,7 +6858,7 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                             g, table_type, level
                         ))
                     })?;
-                    let pair = group
+                    let (row0, row1) = group
                         .process_response_pair(data_h0, data_h1)
                         .map_err(|e| {
                             PirError::BackendState(format!(
@@ -6828,7 +6866,6 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                                 e
                             ))
                         })?;
-                    let (row0, row1) = pair.into_parts();
                     if row0.len() != BUCKET_MERKLE_SIB_ROW_SIZE
                         || row1.len() != BUCKET_MERKLE_SIB_ROW_SIZE
                     {
@@ -7712,7 +7749,7 @@ mod tests {
         let chunk_w = (CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE) as u32;
 
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 info.index_bins,
                 index_w,
                 0,
@@ -7724,7 +7761,7 @@ mod tests {
             client.index_groups.insert(g as u8, group);
         }
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend_checked(
+            let group = new_harmony_group(
                 info.chunk_bins,
                 chunk_w,
                 0,

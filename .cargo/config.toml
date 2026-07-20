@@ -41,9 +41,9 @@ git = "https://github.com/Bitcoin-PIR/fastprp.git"
 rev = "eaf1ee787c051c1250329cbe645c157e085af6e2"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/Bitcoin-PIR/harmonypir.git?rev=60635d8e526629b2ba99ec5020a55d078a299660"]
+[source."git+https://github.com/Bitcoin-PIR/harmonypir.git?rev=ad1b5b99c3ec979ed8fda5bb64c4b240f6114e79"]
 git = "https://github.com/Bitcoin-PIR/harmonypir.git"
-rev = "60635d8e526629b2ba99ec5020a55d078a299660"
+rev = "ad1b5b99c3ec979ed8fda5bb64c4b240f6114e79"
 replace-with = "vendored-sources"
 
 [source."git+https://github.com/weikengchen/libdpf.git?rev=8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"]

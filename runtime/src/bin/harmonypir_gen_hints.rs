@@ -13,8 +13,10 @@ use harmonypir::params::Params;
 use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::RelocationDS;
-use harmonypir_wasm::state::{self, GroupEntry, StateFileHeader};
-use harmonypir_wasm::{compute_rounds, derive_group_key, find_best_t, HarmonyGroup, PRP_HMR12};
+use harmonypir::remote::{
+    compute_rounds, derive_group_key, find_best_t, PrpBackend, RemoteClient, PRP_HMR12,
+};
+use runtime::harmony_state::{self as state, GroupEntry, StateFileHeader};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -145,9 +147,14 @@ fn compute_group_hints(
         }
     }
 
-    // Create a HarmonyGroup, load hints, serialize.
-    let mut group = HarmonyGroup::new_with_backend(
-        n as u32, w as u32, t as u32, prp_key, group_id, PRP_HMR12,
+    // Create a transport-independent remote client, load hints, serialize.
+    let mut group = RemoteClient::new_with_backend(
+        n as u32,
+        w as u32,
+        t as u32,
+        prp_key,
+        group_id,
+        PrpBackend::Hmr12,
     ).expect("group creation");
 
     let flat: Vec<u8> = hints.into_iter().flat_map(|h| h.into_iter()).collect();
@@ -156,7 +163,9 @@ fn compute_group_hints(
     GroupEntry {
         group_id,
         level,
-        data: group.serialize(),
+        data: group
+            .serialize_legacy_state()
+            .expect("idle HarmonyPIR state serializes"),
     }
 }
 

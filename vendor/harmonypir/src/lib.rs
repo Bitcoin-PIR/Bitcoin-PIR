@@ -90,6 +90,7 @@ pub mod params;
 pub mod prp;
 pub mod protocol;
 pub mod relocation;
+pub mod remote;
 pub mod server;
 pub mod util;
 
@@ -105,5 +106,6 @@ pub mod prelude {
     pub use crate::prp::alf::{AlfPrp, AlfEngine};
     pub use crate::prp::{Prp, BatchPrp};
     pub use crate::protocol::{Client, PendingPair};
+    pub use crate::remote::{PrpBackend, RemoteClient, RemoteRequest, RemoteRequestPair};
     pub use crate::server::Server;
 }
