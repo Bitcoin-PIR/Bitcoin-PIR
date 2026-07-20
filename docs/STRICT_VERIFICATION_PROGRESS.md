@@ -71,21 +71,19 @@ Completed production proof activation for PR C:
 
 ## PR D — standalone OnionPIR web client
 
-Status: **Draft PR open**
-([#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57)). Implementation and
-validation are complete. Checkboxes remain unchecked until the PR is merged,
-per this file's convention.
+Status: **merged** ([#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57)).
+Merged on 2026-07-20 as `4adb5924`.
 
-- [ ] Add a stateless WASM verifier for `REQ_GET_DB_PROOF` responses.
-- [ ] Install `onion_super_root` only after production-pin matching.
-- [ ] Bind Onion tree-tops to the installed trusted root.
-- [ ] Treat `server-info.super_root` as diagnostics only.
-- [ ] Pin the remaining standalone OnionPIR query layout until a v2 database
+- [x] Add a stateless WASM verifier for `REQ_GET_DB_PROOF` responses.
+- [x] Install `onion_super_root` only after production-pin matching.
+- [x] Bind Onion tree-tops to the installed trusted root.
+- [x] Treat `server-info.super_root` as diagnostics only.
+- [x] Pin the remaining standalone OnionPIR query layout until a v2 database
       proof commits those fields directly.
-- [ ] Verify every found, absent, and whale result before merging or committing
+- [x] Verify every found, absent, and whale result before merging or committing
       sync state, and disconnect at the end of every query.
 
-Branch validation completed on 2026-07-20:
+Pre-merge validation completed on 2026-07-20:
 
 - Rust client: 276 unit tests passed; 6 non-network integration/doc tests
   passed (network-dependent tests remain intentionally ignored).
