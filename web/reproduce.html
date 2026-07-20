@@ -458,17 +458,19 @@
 	   ═══ compare to ═══
 	              │
 	              ▼
-	   chip-signed MEASUREMENT  (from bpir-admin attest)</div>
+	   chip-signed MEASUREMENT  (verified by attest with an ARK pin)</div>
                         <p style="margin-top:12px">
-                            If your computed value matches the chip-signed value,
-                            the runtime claim is anchored down to the AMD ARK.
+                            If your computed value matches the reported value and
+                            <code>attest --expect-ark-fingerprint</code> validates the
+                            certificate chain and that same report's signature, the
+                            runtime claim is anchored down to the AMD ARK.
                         </p>
                     </section>
                 </section>
 
                 <section id="runtime-pins" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-pins">
                     <section>
-                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-06-27</span></h2>
+                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-07-20</span></h2>
                         <p>
                             These are the values the browser bundle expects for
                             pir2. They are not a live-status feed. If the app shows
@@ -480,19 +482,19 @@
                             <table class="pin-table">
                                 <tr>
                                     <td>MEASUREMENT</td>
-                                    <td>f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0</td>
+                                    <td>db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2</td>
                                 </tr>
                                 <tr>
                                     <td>UKI sha256</td>
-                                    <td>3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60</td>
+                                    <td>d9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6</td>
                                 </tr>
                                 <tr>
                                     <td>binary sha256</td>
-                                    <td>233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3</td>
+                                    <td>4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4</td>
                                 </tr>
                                 <tr>
                                     <td>server git rev</td>
-                                    <td>f402466af1ee21d02e0a65b457ad338ceb1216c0</td>
+                                    <td>d126f36adb1ec4da7f23dcfe97a81f7503b6829f</td>
                                 </tr>
                                 <tr>
                                     <td>OVMF sha256</td>
@@ -522,8 +524,8 @@
                         <div class="panel">
                             <ol>
                                 <li>Check the VPSBG measured-boot selection and active UKI.</li>
-                                <li>Run <code>bpir-admin attest</code> to capture the live measurement and binary hash.</li>
-                                <li>Only update <code>PIR2_TIER3_PIN</code> if the new UKI is intended and externally reproducible.</li>
+                                <li>Run <code>bpir-admin attest --expect-ark-fingerprint</code> so the live measurement, binary hash, AMD chain, and report signature are verified on one response; use <code>channel-test</code> separately to exercise the encrypted channel.</li>
+                                <li>Only update <code>PIR2_TIER3_PIN</code> after the new UKI is intentionally deployed, its exact bytes are archived, and all validation gates pass.</li>
                             </ol>
                         </div>
                     </section>
@@ -531,12 +533,13 @@
 
                 <section id="runtime-verify" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-verify">
                     <section>
-                        <h2>Verify via published artifacts</h2>
+                        <h2>Verify from pinned inputs</h2>
                         <p>
-                            Download the OVMF, obtain or rebuild the ORAM Tier 3 UKI
-                            bytes, run <code>sev-snp-measure</code>, then compare the
-                            predicted value to the chip-signed value from
-                            <code>bpir-admin attest</code>.
+                            Download the published OVMF, obtain the operator-archived
+                            ORAM Tier 3 UKI if you have host access or rebuild it on a
+                            matching build host, then run <code>sev-snp-measure</code>.
+                            Finally, compare the predicted value with the live report
+                            and validate that report through the pinned AMD ARK.
                         </p>
 
                         <ol class="steps">
@@ -556,63 +559,86 @@
                             <li class="step">
                                 <h3>Get or rebuild the UKI</h3>
                                 <p>
-                                    The current operator-published artifact is
-                                    <code>bpir-tier3-oram-f402466a.efi</code>, the
+                                    The current operator-archived artifact is
+                                    <code>strict-d126f36a-20260720T104243Z-d9698bdc394e.efi</code>, the
                                     ORAM-enabled Tier 3 UKI that serves the database
                                     proof sidecar and direct ORAM lookups for db_id 0/1.
                                     It is a large runtime artifact, so this page pins the
                                     exact bytes by hash and records the rebuild route
                                     rather than inlining the UKI into the static proof
-                                    bundle.
+                                    bundle. The archive path below is operator-only; it
+                                    is not a public download URL.
                                 </p>
                                 <p class="meta" style="margin-top: 6px;">
-                                    Verify: <code>sha256sum bpir-tier3-oram-f402466a.efi</code> →
-                                    <code>3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60</code>
+                                    Verify: <code>sha256sum strict-d126f36a-20260720T104243Z-d9698bdc394e.efi</code> →
+                                    <code>d9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6</code>
                                 </p>
-<pre><code>scp pir-hetzner:/home/pir/uki-archive/tier3/oram-f402466a/bpir-oram-runtime-f402466.bundle .
-git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git BitcoinPIR-oram-repro
-cd BitcoinPIR-oram-repro
-git checkout a8863f82cd880d911fe49a7186b0ad4c0b6139d7
-git fetch ../bpir-oram-runtime-f402466.bundle \
-    refs/heads/codex/oram-runtime-5f36649:refs/heads/codex/oram-runtime-5f36649
-git checkout f402466af1ee21d02e0a65b457ad338ceb1216c0
+<pre><code># Operator-only shortcut: retrieve the exact deployed bytes.
+scp pir-hetzner:/home/pir/uki-archive/tier3/strict-d126f36a-20260720T104243Z-d9698bdc394e.efi .</code></pre>
+                                <p class="meta" style="margin-top: 6px;">
+                                    Or perform a functional source rebuild. This is not
+                                    a byte-identical reproduction of the production artifact:
+                                    the production C++ objects embed the checkout path
+                                    <code>/tmp/bitcoinpir-d126f36adb1ec4da7f23dcfe97a81f7503b6829f</code>,
+                                    and exact output also depends on Rust 1.94.1, GCC 13.3,
+                                    GNU ld 2.42, and the host's UKI inputs.
+                                </p>
+<pre><code>git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git BitcoinPIR-runtime-repro
+cd BitcoinPIR-runtime-repro
+git checkout d126f36adb1ec4da7f23dcfe97a81f7503b6829f
 RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=$HOME=/build" \
 SOURCE_DATE_EPOCH=0 cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
 strip --strip-debug target/release/unified_server
 
-OUT=/tmp/bpir-tier3-oram-f402466a.efi \
+sudo env KERNEL=/boot/vmlinuz-7.0.0-15-generic \
+OUT="$PWD/bpir-tier3-functional-rebuild-d126f36a.efi" \
 BINARY="$PWD/target/release/unified_server" \
 BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 ./scripts/build_uki_tier3.sh</code></pre>
                                 <p class="meta" style="margin-top: 6px;">
-                                    The operator-side recipe, build-host archive paths,
-                                    and validation gates are recorded in
-                                    <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/ORAM_TIER3_PRODUCTION_HANDOFF.md" target="_blank" rel="noopener"><code>docs/ORAM_TIER3_PRODUCTION_HANDOFF.md</code></a>.
+                                    Exact UKI bytes also depend on the documented build-host
+                                    kernel, dracut, cloudflared, and initramfs inputs. The current
+                                    deployment pins and validation gates are recorded in
+                                    <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/PHASE3_ROADMAP.md" target="_blank" rel="noopener"><code>docs/PHASE3_ROADMAP.md</code></a>.
                                 </p>
                             </li>
 
                             <li class="step">
                                 <h3>Predict the MEASUREMENT</h3>
+	                            <p>
+	                                The command below uses the exact operator archive.
+	                                For a functional rebuild, substitute its filename and
+	                                expect a different SHA-256 and MEASUREMENT unless every
+	                                path and toolchain input is reproduced exactly.
+	                            </p>
 	<pre><code>sev-snp-measure \
 	    --mode snp \
 	    --vcpus 2 \
 	    --vcpu-sig 0x00B10F10 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel bpir-tier3-oram-f402466a.efi \
+	    --kernel strict-d126f36a-20260720T104243Z-d9698bdc394e.efi \
 	    --guest-features 0x1</code></pre>
                             </li>
 
                             <li class="step">
-                                <h3>Verify against the live chip</h3>
-	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
+                                <h3>Verify the live report and AMD chain</h3>
+	<pre><code>cargo build --locked --release --bin bpir-admin -p bpir-admin
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0 \
-    --expect-binary      233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3</code></pre>
+    --expect-measurement db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2 \
+    --expect-binary      4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4 \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a</code></pre>
                                 <p>
-                                    Expected checkmarks:
+                                    With the ARK pin, <code>attest</code> checks REPORT_DATA,
+                                    binary, MEASUREMENT, AMD chain, and report signature
+                                    on one response. <code>channel-test</code> then exercises a
+                                    fresh attested encrypted session. Expected checkmarks:
                                     <code>SEV-SNP REPORT_DATA binding verified</code>,
                                     <code>binary_sha256 matches expected</code>, and
-                                    <code>Launch MEASUREMENT matches expected</code>.
+                                    <code>Launch MEASUREMENT matches expected</code>, followed by
+                                    <code>AMD ARK→ASK→VCEK chain and this attestation report's signature verified</code>,
+                                    then a successful encrypted handshake.
                                 </p>
                             </li>
 
@@ -863,7 +889,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                 This page verifies the strict source-bound rebuild and records
                                 the live pir2 runtime that consumes it. The pinned pir2 runtime
                                 commit
-                                <code>f402466af1ee21d02e0a65b457ad338ceb1216c0</code>
+                                <code>d126f36adb1ec4da7f23dcfe97a81f7503b6829f</code>
                                 vendors <code>bitcoinpir-oram</code> at
                                 <code>5f366492504d8e853cbd60d25a6adbf021a78746</code>.
                             </p>
@@ -872,7 +898,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                 <code>bpir-admin attest</code>, <code>channel-test</code>, and
                                 padded direct ORAM smoke requests for both db_id 0 and db_id 1.
                                 The UKI bytes are archived on Hetzner at
-                                <code>/home/pir/uki-archive/tier3/oram-f402466a/</code>.
+                                <code>/home/pir/uki-archive/tier3/strict-d126f36a-20260720T104243Z-d9698bdc394e.efi</code>.
                             </p>
                         </div>
                     </section>
@@ -983,7 +1009,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <table class="pin-table">
                                 <tr>
                                     <td>binary sha256</td>
-                                    <td>d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</td>
+                                    <td>4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4</td>
                                 </tr>
                             </table>
                         </div>
@@ -993,7 +1019,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                         <h2>Verify pir1</h2>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng1.bitcoinpir.org \
-	    --expect-binary d01e5b7aab2b3075eed4dd154ffc2079aae394b418a40155128166a50ace750a</code></pre>
+	    --expect-binary 4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4</code></pre>
                         <p>
                             You can also check
                             <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>
@@ -1022,10 +1048,11 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                         <h2>Out of scope</h2>
                         <ul>
                             <li>The custom OVMF binary is binary-pinned, not rebuilt from EDK2 source by this project.</li>
-                            <li>The <code>--impure</code> Nix build sources VPSBG's validated kernel from the build host.</li>
+                            <li>The exact production UKI is currently retained in an operator-only archive, not a public download. Publishing the 311,033,344-byte artifact or a fully pinned public build environment remains necessary for independent byte-for-byte reproduction.</li>
+                            <li>The functional UKI rebuild depends on the checkout path, Rust/C++ toolchains, validated kernel, dracut, cloudflared, and initramfs inputs; the Git source checkout alone is insufficient to reproduce the complete UKI bytes.</li>
                             <li>AMD's signing keys are trust roots; the project pins the AMD ARK fingerprint but cannot remove AMD from the trust base.</li>
                             <li>The BHTM proof is an attested MuHash transition from Core-style stripped deltas. It checks header linkage and txid Merkle commitments; it is not a full Bitcoin consensus validator inside the TEE.</li>
-                            <li>The strict ORAM source-binding proof is not yet a live-image byte-match claim. The current pir2 runtime vendors an older ORAM commit, so a refreshed ORAM runtime/data deployment is still required for that stronger statement.</li>
+                            <li>The strict ORAM source-binding proof is not a live-image byte-match claim. The current runtime vendors the certified ORAM source commit, but mutable ORAM image bytes remain on the root filesystem; a stronger byte-identical live-image claim needs independent validation.</li>
                             <li>The v1 database proof does not commit the complete standalone OnionPIR query layout. The production web client therefore checks a separate, explicit layout pin and fails closed on mismatch; a future v2 proof can absorb those fields.</li>
                         </ul>
                     </section>

@@ -28,7 +28,8 @@
 //!
 //! ## What this does NOT prove
 //!
-//! - That the AMD VCEK chain validates the SEV-SNP report (Slice D).
+//! - Without `--expect-ark-fingerprint`, that the AMD VCEK chain validates
+//!   the SEV-SNP report. With the flag, chain + report signature are checked.
 //! - That the browser-side wiring works (Slice C.2).
 //! - That cloudflared can't be exploited to MITM (out of scope —
 //!   that's the AMD-attested chip's job).

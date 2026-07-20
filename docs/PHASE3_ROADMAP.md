@@ -36,7 +36,7 @@ to whichever slice you want to start on.
 
 | | |
 |---|---|
-| `weikeng1.bitcoinpir.org` | Hetzner i7-8700, role=primary, DPF + OnionPIR + HarmonyPIR query, 125 GB RAM, 944 GB disk. Cloudflared tunnel terminates here. **Not** SEV-attested (Intel chip). |
+| `weikeng1.bitcoinpir.org` | Hetzner i7-8700, role=primary, DPF + OnionPIR + HarmonyPIR query, 125 GB RAM, 944 GB disk. Cloudflared tunnel terminates here. **Not** SEV-attested (Intel chip). The durable, non-blocking HMPOOLV2 lifecycle is deployed. |
 | `weikeng2.bitcoinpir.org` | VPSBG EPYC 9745 (Zen 5), role=secondary, query-only (`--serve-queries`), **SEV-SNP active** at VMPL0, **ORAM-enabled Tier 3 UKI loaded**: `unified_server` runs from initramfs, no rootfs pivot for the service, sshd gone. cloudflared also runs from initramfs (supervised by runit alongside unified_server). Rootfs is mounted (rw) only to expose `/home/pir/data` for DBs + VCEK chain. The server accepts db-proof query traffic and direct ORAM lookup requests for db_id 0/1. |
 | Cloudflare tunnels | Two: Hetzner (existing) for pir1, VPSBG (new) for pir2. Both healthy. |
 | DBs in production | `main` (height 948454), `delta_940611_948454`. Both have `MANIFEST.toml`; the delta DB also has the SEV-SNP builder proof sidecar at `attestations/delta_940611_948454_sev_snp`. |
@@ -55,17 +55,17 @@ Launch MEASUREMENT (covers OVMF + Tier 3 UKI bytes — UKI now contains
 the unified_server BINARY itself in initramfs, NOT just a cmdline hash
 pin. So this digest authenticates the literal binary bytes the box is
 running, not "a binary the box claims matches a hash"):
-  9b92966e641f948ea855e205c8a8a258f15ea0c5135fe444362333ac0299bf8e2ebead5868bacbd4041abace0eb3b9b5
+  db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2
 
 UKI bytes sha256 (built by scripts/build_uki_tier3.sh on pir-hetzner;
 includes initramfs with unified_server + cloudflared + runit + the
 sev-guest/ccp/tsm_report kernel modules baked in):
-  a4eb1a9dc66937e725b3021c7fccfa8c8433af30282351cd748dd63e77d1421b
+  d9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6
 
 unified_server binary sha256 (computed at build time AND attested at
 runtime via /proc/self/exe — the two match because dracut was invoked
 with --nostrip; verifiers pin via --expect-binary on bpir-admin attest):
-  3660318aed600b583d503d27f5d166420222fb228a6bd5befc3e15410d25b291
+  4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4
 
 ARK fingerprint (AMD Turin family root certificate — pinned in
 web/src/attest-pin.ts and used by --expect-ark-fingerprint to anchor
@@ -77,7 +77,7 @@ DB manifest roots (db_id order):
   delta_940611_948454:        c816f067117bca98256ee246c4469591ee8f537b2271d65b38d1536a70887963
 
 Server git rev (per /attest, captured at unified_server build time):
-  3cd5235500fd44a4d8421664ae295882eb6530bf
+  d126f36adb1ec4da7f23dcfe97a81f7503b6829f
 ```
 
 NOTE on the X25519 channel pubkey: it's "long-lived" relative to per-
@@ -91,8 +91,9 @@ Verifiers can cross-check end-to-end with:
 ```bash
 # Static checks: report binding + binary + measurement + ARK chain
 bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 9b92966e641f948ea855e205c8a8a258f15ea0c5135fe444362333ac0299bf8e2ebead5868bacbd4041abace0eb3b9b5 \
-    --expect-binary 3660318aed600b583d503d27f5d166420222fb228a6bd5befc3e15410d25b291
+    --expect-measurement db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2 \
+    --expect-binary 4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4 \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 # Live encrypted channel + AMD VCEK chain validation
 bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
@@ -107,12 +108,14 @@ cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
     4242424242424242424242424242424242424242
 ```
 
-### Full Layer 3 reproducibility — verified 2026-05-03
+### Historical Layer 3 reproduction experiment — superseded 2026-05-03
 
-The published MEASUREMENT can now be **independently reproduced from
-public artifacts** — no need to trust any operator-published value.
-Verified bit-for-bit against pir2's chip-reported MEASUREMENT for
-both the Tier 3 v2 production UKI and the Slice 2 revert UKI.
+This section records the retired Tier 3 v2 experiment. Its measurement
+was reproduced from artifacts retained in the operator environment; it
+was not a complete public byte-for-byte build route. The values and UKI
+below are not current production and the command must not be run against
+the live endpoint. See `web/reproduce.html` for the 2026-07-20 pins and
+the current operator-archive/public-rebuild boundary.
 
 Recipe:
 
@@ -140,12 +143,13 @@ sev-snp-measure --mode snp \
     --guest-features 0x1
 # expected output: 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5
 
-# 4. Cross-check against the chip's signed report.
-bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5
+# 4. Historical cross-check against a server still running that UKI.
+bpir-admin attest <server-running-the-historical-tier3-v2-uki> \
+    --expect-measurement 2ad9490a64a48d7ab9af1045c5a5abe2b8308edcb13f966a9c95eea3709c4018faf161f52eb3c6063c1e241f19fd6fe5 \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 ```
 
-Trust chain after this verification: a verifier who accepts AMD's
+Historical trust chain after this verification: a verifier who accepts AMD's
 ARK as the silicon-rooted trust anchor (and accepts that VPSBG's
 disclosed OVMF is the binary they actually use — confirmable by the
 above hash matching the chip-signed MEASUREMENT) can establish that
@@ -181,7 +185,9 @@ All landed and deployed. See commits `2858f54`, `c167579`, `ab9c0dc`,
 
 Landed (`f7a308b`). `scripts/build_uki.sh` produces a UKI that bakes
 the binary's SHA-256 into the kernel cmdline. `bpir-admin attest
---expect-measurement` cross-checks the chip-signed launch digest.
+--expect-measurement` compares the report field with a pin. Current
+acceptance also passes `--expect-ark-fingerprint`, which validates the
+AMD chain and the same report's signature before that field is trusted.
 
 ### Phase 3 Slice 2 (dracut hook — landed + tamper-tested)
 
@@ -223,30 +229,52 @@ portal upload + reboot. The new binary's bytes are inside the UKI's
 initramfs (and therefore in MEASUREMENT), so any binary update changes
 both the published binary sha256 AND the published MEASUREMENT.
 
-WARNING: Tier 3 has no SSH. The build host is pir2 itself — to
-re-bake you have to revert to Slice 2 first (so SSH works), build,
-swap back to Tier 3. Or maintain a separate build host with the same
-toolchain. Path below assumes operator handles the revert manually
-via portal.
+Tier 3 has no SSH and is not the production build host. Build on
+`pir-hetzner` from a clean checkout at the exact intended commit, using
+the fixed VPSBG kernel and the ORAM feature. The mutable
+`/home/pir/BitcoinPIR` checkout is not a valid build source.
 
 ```bash
-# 1. Revert pir2 to Slice 2 via VPSBG portal (upload bpir-slice2-revert.efi).
-#    Wait ~90s for sshd.
-# 2. Build the new binary on pir2.
-ssh vpsbg-pir 'sudo -u pir bash -lc "
-    source ~/.cargo/env && cd /home/pir/BitcoinPIR &&
-    git fetch origin && git reset --hard origin/main &&
-    CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build --release -p runtime --bin unified_server
-"'
-# 3. Re-bake the Tier 3 UKI.
-ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
-scp vpsbg-pir:/tmp/bpir-tier3.efi ./deploy/uki/bpir-tier3-vNNN.efi
-# 4. Upload via VPSBG portal → Measured Boot → UKI → Save & Reboot.
-# 5. After reboot, capture + republish the new MEASUREMENT + binary sha.
-./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
-    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
-./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org
+# On pir-hetzner. Use a new path for each exact commit.
+COMMIT=REPLACE_WITH_40_HEX_BITCOINPIR_COMMIT
+git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git /tmp/bitcoinpir-$COMMIT
+cd /tmp/bitcoinpir-$COMMIT
+git checkout --detach "$COMMIT"
+export PATH=/home/pir/.cargo/bin:$PATH
+RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=$HOME=/build" \
+SOURCE_DATE_EPOCH=0 cargo build --locked --release -p runtime \
+    --features cuckoo-oram --bin unified_server
+strip --strip-debug target/release/unified_server
+BIN_HASH=$(sha256sum target/release/unified_server | awk '{print $1}')
+
+sudo env KERNEL=/boot/vmlinuz-7.0.0-15-generic \
+    OUT=/tmp/bpir-tier3-$COMMIT.efi \
+    BINARY="$PWD/target/release/unified_server" \
+    BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
+    ./scripts/build_uki_tier3.sh
 ```
+
+Retain the generated archive metadata and the previous known-good UKI.
+Deploy the same ELF to Hetzner secondary-first, then primary, before
+uploading the UKI through the VPSBG portal. After reboot, obtain the
+candidate MEASUREMENT from an ARK-validated response, rerun with that
+measurement pinned, and only then publish it:
+
+```bash
+bpir-admin attest wss://weikeng2.bitcoinpir.org \
+    --expect-binary <new-binary-sha256> \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+bpir-admin attest wss://weikeng2.bitcoinpir.org \
+    --expect-binary <new-binary-sha256> \
+    --expect-measurement <candidate-measurement> \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+```
+
+Run `scripts/verify_oram_tier3_deploy.sh` with the candidate binary and
+measurement overrides for the direct-ORAM gates, then rotate the web
+pins in one reviewed PR.
 
 ### Recovery — Tier 3 UKI bricks the box
 
@@ -448,16 +476,17 @@ fail-closed and this is not a rollout blocker.
 ## Quick-reference command index
 
 In Tier 3, pir2 has no SSH and no systemd. All operator interaction is
-via `bpir-admin` over WSS. SSH-using commands below assume you've
-reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
+via `bpir-admin` over WSS. SSH commands below that target `vpsbg-pir`
+assume you've reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
 
 ```bash
 # === Tier 3 (current production state) — works without SSH ===
 
 # Attest VPSBG (verifies SEV-SNP report + binds X25519 channel pubkey)
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 9b92966e641f948ea855e205c8a8a258f15ea0c5135fe444362333ac0299bf8e2ebead5868bacbd4041abace0eb3b9b5 \
-    --expect-binary 3660318aed600b583d503d27f5d166420222fb228a6bd5befc3e15410d25b291
+    --expect-measurement db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2 \
+    --expect-binary 4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4 \
+    --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 # End-to-end channel test with ARK-rooted chain validation
 ./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
@@ -472,24 +501,14 @@ reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
     --target-path checkpoints/944321 \
     --server wss://weikeng2.bitcoinpir.org
 
-# === Slice 2 (after reverting via portal — restores SSH) ===
+# === Build / rollback ===
 
-# Build a fresh Tier 3 UKI on pir2 (must run as root)
-ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
-scp vpsbg-pir:/tmp/bpir-tier3.efi ./deploy/uki/bpir-tier3-vNNN.efi
+# Build every production ELF + Tier 3 UKI on pir-hetzner by following
+# "Operational reference → Binary update flow" above. Do not build the
+# production artifact on pir2 and do not use a mutable checkout.
 
-# Build a fresh Slice 2 UKI on pir2 (revert artifact)
-ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki.sh'
-scp vpsbg-pir:/tmp/bpir.efi ./deploy/uki/bpir-slice2-revert.efi
-# then upload via VPSBG portal → reboot → re-attest → republish
-
-# Re-deploy code change (rebuild binary, then re-bake Tier 3 UKI)
-ssh vpsbg-pir 'sudo -u pir bash -lc "
-    source ~/.cargo/env && cd /home/pir/BitcoinPIR &&
-    git fetch origin && git reset --hard origin/main &&
-    CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build --release -p runtime --bin unified_server
-"'
-ssh vpsbg-pir '/home/pir/BitcoinPIR/scripts/build_uki_tier3.sh'
+# Keep the previous, already-verified UKI as the primary rollback artifact.
+# Revert to Slice 2 / None in the portal only for recovery or investigation.
 
 # Check live state under Slice 2
 ssh vpsbg-pir 'systemctl status pir-vpsbg cloudflared --no-pager | head -20'
@@ -501,9 +520,9 @@ ssh vpsbg-pir 'journalctl -u pir-vpsbg -p err --no-pager -n 20'
 ssh pir-hetzner 'systemctl start pir-secondary'
 ```
 
-## Reproducibility status (2026-05-03 evening, post-investigation)
+## Historical reproducibility status (2026-05-03 evening, superseded)
 
-**Layer 2 (operator-trusted) is what we ship today** — browsers enforce
+**Layer 2 (operator-trusted) was what that deployment shipped** — browsers enforced
 the operator-published MEASUREMENT pin via Web #3. Closing the gap to
 **Layer 3 (independently reproducible)** has progressed substantially
 this session:
