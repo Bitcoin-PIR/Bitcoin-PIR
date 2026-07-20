@@ -1,1 +1,0 @@
-docs/plans/PLAN_ONION_SHARDING.md

@@ -1,1 +1,0 @@
-docs/plans/PLAN_CHUNK_MAX_CLOSURE.md

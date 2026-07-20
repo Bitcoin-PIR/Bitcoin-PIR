@@ -1,1 +1,0 @@
-docs/plans/PLAN_ANONYMOUS_RATE_LIMIT.md
