@@ -1,0 +1,82 @@
+name: Formal wire-shape proof
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-proof-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Locked EasyCrypt proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+
+    steps:
+      - name: Check out BitcoinPIR
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check implementation contract against Rust
+        run: cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract
+
+      - name: Validate lock and expose exact proof revision
+        id: lock
+        run: >-
+          python3 verification/scripts/verify_formal_lock.py
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Check out locked protocol proof
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ steps.lock.outputs.repository }}
+          ref: ${{ steps.lock.outputs.commit }}
+          path: .formal-proof
+          persist-credentials: false
+
+      - name: Verify proof checkout and manifest binding
+        run: >-
+          python3 verification/scripts/verify_formal_lock.py
+          --proof-dir .formal-proof
+
+      - name: Build product-owned trusted EasyCrypt verifier
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --tag bitcoinpir/protocol-proofs-toolchain:locked \
+            --file verification/toolchains/easycrypt.Dockerfile \
+            verification/toolchains
+
+      - name: Re-run locked proof with trusted command
+        run: |
+          docker run --rm \
+            --platform linux/amd64 \
+            --volume "$GITHUB_WORKSPACE/.formal-proof:/proofs" \
+            --workdir /proofs \
+            bitcoinpir/protocol-proofs-toolchain:locked \
+            easycrypt compile -I . Theorem.ec
+
+  gate:
+    name: Formal proof gate
+    needs: verify
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the locked proof
+        env:
+          PROOF_RESULT: ${{ needs.verify.result }}
+        run: |
+          set -euo pipefail
+          test "$PROOF_RESULT" = success

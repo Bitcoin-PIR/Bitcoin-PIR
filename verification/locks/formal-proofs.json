@@ -1,0 +1,31 @@
+{
+  "schema": "BitcoinPIR/formal-proof-lock/v1",
+  "protocolProofs": {
+    "repository": "Bitcoin-PIR/protocol-proofs",
+    "commit": "64bf4cf826f629a216b59ffd02b344f303fbc819",
+    "manifestPath": "proof-manifest.json",
+    "manifestSha256": "970947efee3edfe5207df136be8268a17177b4f646fe6d946fa39475f967e6c9",
+    "verificationRecordPath": "verification/records/formal/6cdaaa5262462fae6784c096fbd77cd6b25179b13657c14705b3fd206d283549.json",
+    "verificationRecordSha256": "6cdaaa5262462fae6784c096fbd77cd6b25179b13657c14705b3fd206d283549"
+  },
+  "implementationContract": {
+    "schema": "BitcoinPIR/wire-shape-contract/v1",
+    "path": "verification/contracts/wire-shape-v1.json",
+    "sha256": "1b0df1150e885abe0446afe5b960a471c67e458905ab54f9aa8799c42bc2c673"
+  },
+  "trustedVerifier": {
+    "dockerfilePath": "verification/toolchains/easycrypt.Dockerfile",
+    "dockerfileSha256": "84b3d2e19b0d7b82b208000e4c9620178f0bd6aaf134d0e14d5a531dbeae58f9",
+    "platform": "linux/amd64",
+    "command": [
+      "easycrypt",
+      "compile",
+      "-I",
+      ".",
+      "Theorem.ec"
+    ]
+  },
+  "verification": {
+    "command": "make check"
+  }
+}

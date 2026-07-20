@@ -20,7 +20,7 @@ use `LOCAL_PLAN_*.md`, which is ignored by git.
 
 | Retired file | Resolution |
 |---|---|
-| `PLAN_LEAKAGE_VERIFICATION.md` | Closed on 2026-04-29. Consolidated into `VERIFICATION_OVERVIEW.md`; EasyCrypt spec lives in `proofs/easycrypt/`. |
+| `PLAN_LEAKAGE_VERIFICATION.md` | Closed on 2026-04-29. Consolidated into `VERIFICATION_OVERVIEW.md`; the EasyCrypt spec lives in [`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs), with the production revision pinned by `verification/locks/formal-proofs.json`. |
 | `PLAN_MULTI_QUERY_SIMULATOR_TEST.md` | Shipped. Multi-query simulator-property tests are covered by the verification overview and `pir-sdk-client/tests/leakage_integration_test.rs`. |
 | `PLAN_CHUNK_MAX_CLOSURE.md` | Historical only. The M=16 chunk-Merkle pad later shipped and was deliberately removed; current trade-off is documented in `VERIFICATION_OVERVIEW.md` and `CLAUDE.md`. |
 | `PLAN_scripthash_padding.md` | Obsolete because the M=16 chunk-Merkle pad it optimized was removed. |

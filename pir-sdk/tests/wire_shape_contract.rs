@@ -5,8 +5,12 @@ use pir_sdk::{PirBackendType, RoundKind};
 use serde_json::Value;
 
 fn contract() -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../verification/contracts/wire-shape-v1.json");
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let path = manifest_dir
+        .ancestors()
+        .map(|ancestor| ancestor.join("verification/contracts/wire-shape-v1.json"))
+        .find(|candidate| candidate.is_file())
+        .expect("wire-shape contract must exist below a crate ancestor");
     let bytes = fs::read(&path)
         .unwrap_or_else(|err| panic!("failed to read contract {}: {err}", path.display()));
     serde_json::from_slice(&bytes)
@@ -24,10 +28,7 @@ fn number(value: &Value, pointer: &str) -> usize {
 fn public_parameters_match_the_implementation() {
     let contract = contract();
 
-    assert_eq!(
-        contract["schema"],
-        "BitcoinPIR/wire-shape-contract/v1"
-    );
+    assert_eq!(contract["schema"], "BitcoinPIR/wire-shape-contract/v1");
     assert_eq!(number(&contract, "/parameters/indexGroups"), K);
     assert_eq!(number(&contract, "/parameters/chunkGroups"), K_CHUNK);
     assert_eq!(
@@ -45,6 +46,18 @@ fn public_parameters_match_the_implementation() {
     assert_eq!(
         number(&contract, "/backends/onion/deploymentServerCount"),
         PirBackendType::Onion.required_servers()
+    );
+    assert_eq!(
+        contract["backends"]["dpf"]["formalPirRoundServerIds"],
+        serde_json::json!([0, 1])
+    );
+    assert_eq!(
+        contract["backends"]["harmony"]["formalPirRoundServerIds"],
+        serde_json::json!([0])
+    );
+    assert_eq!(
+        contract["backends"]["onion"]["formalPirRoundServerIds"],
+        serde_json::json!([0])
     );
 }
 
@@ -93,12 +106,41 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
     let non_claims = contract["explicitNonClaims"]
         .as_array()
         .expect("explicitNonClaims must be an array");
+    let expected_leakage = serde_json::json!([
+        "index_max_items_per_group_per_level",
+        "chunk_max_items_per_group_per_level",
+        "session_query_index",
+        "query_db_id"
+    ]);
 
-    assert_eq!(leakage.len(), 4, "changing L requires updating the proof");
-    assert!(non_claims.iter().any(|value| {
-        value.as_str() == Some("mechanical_correspondence_to_the_rust_implementation")
-    }));
+    assert_eq!(
+        leakage,
+        expected_leakage.as_array().unwrap(),
+        "changing L requires updating the proof"
+    );
     assert!(non_claims
         .iter()
-        .any(|value| value.as_str() == Some("cryptographic_primitive_reductions")));
+        .any(|value| value.as_str() == Some("NC-IMPLEMENTATION-REFINEMENT")));
+    assert!(non_claims
+        .iter()
+        .any(|value| value.as_str() == Some("NC-CRYPTOGRAPHIC-REDUCTIONS")));
+    assert!(non_claims
+        .iter()
+        .any(|value| value.as_str() == Some("NC-RESULT-CORRECTNESS")));
+
+    assert_eq!(
+        contract["implementationSurfaceIds"],
+        serde_json::json!([
+            "pir_core::params",
+            "pir_sdk::leakage",
+            "pir_sdk_client::dpf",
+            "pir_sdk_client::harmony",
+            "pir_sdk_client::onion",
+            "pir_sdk_client::onion_merkle",
+            "pir_sdk_client::leakage_integration",
+            "pir_sdk_wasm::harmony_wire",
+            "web::leakage",
+            "web::onionpir_client"
+        ])
+    );
 }

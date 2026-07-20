@@ -2,6 +2,10 @@
   "schema": "BitcoinPIR/wire-shape-contract/v1",
   "contractVersion": 1,
   "description": "Public protocol parameters and leakage axes covered by the EasyCrypt simulator-property proof.",
+  "proofBinding": {
+    "format": "BitcoinPIR/easycrypt-contract-binding/v1",
+    "source": "ContractBinding.ec"
+  },
   "parameters": {
     "indexGroups": 75,
     "chunkGroups": 80,
@@ -38,23 +42,24 @@
     "query_db_id"
   ],
   "explicitNonClaims": [
-    "timing_channels",
-    "onionpir_server_lru_eviction_retries",
-    "connection_level_metadata",
-    "compression_artifacts",
-    "cryptographic_primitive_reductions",
-    "mechanical_correspondence_to_the_rust_implementation"
+    "NC-CRYPTOGRAPHIC-REDUCTIONS",
+    "NC-IMPLEMENTATION-REFINEMENT",
+    "NC-TIMING-AND-CPU",
+    "NC-NETWORK-METADATA",
+    "NC-COMPRESSION",
+    "NC-ONION-LRU-RETRY",
+    "NC-RESULT-CORRECTNESS"
   ],
-  "implementationSurfaces": [
-    "pir-core/src/params.rs",
-    "pir-sdk/src/leakage.rs",
-    "pir-sdk-client/src/dpf.rs",
-    "pir-sdk-client/src/harmony.rs",
-    "pir-sdk-client/src/onion.rs",
-    "pir-sdk-client/src/onion_merkle.rs",
-    "pir-sdk-client/tests/leakage_integration_test.rs",
-    "pir-sdk-wasm/src/harmony_wire.rs",
-    "web/src/leakage.ts",
-    "web/src/onionpir_client.ts"
+  "implementationSurfaceIds": [
+    "pir_core::params",
+    "pir_sdk::leakage",
+    "pir_sdk_client::dpf",
+    "pir_sdk_client::harmony",
+    "pir_sdk_client::onion",
+    "pir_sdk_client::onion_merkle",
+    "pir_sdk_client::leakage_integration",
+    "pir_sdk_wasm::harmony_wire",
+    "web::leakage",
+    "web::onionpir_client"
   ]
 }

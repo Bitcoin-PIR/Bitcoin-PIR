@@ -193,7 +193,8 @@ pub const CHUNK_HEADER_SIZE: usize = CHUNK_PARAMS.header_size;
 // pad) was removed in retired PLAN_MERKLE_CODING.md Phase 4 / WS-A. A query now
 // contributes its *real* chunk count of chunk-Merkle items; the
 // `chunk_max_items_per_group_per_level` axis in
-// `proofs/easycrypt/Leakage.ec` is a documented, admitted leak again.
+// Bitcoin-PIR/protocol-proofs/Leakage.ec is a documented, admitted leak again.
+// Production uses the exact revision in verification/locks/formal-proofs.json.
 // Found-vs-not-found stays closed via CHUNK Round-Presence Symmetry,
 // which is a separate mechanism and does not depend on M-padding.
 
