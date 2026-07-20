@@ -71,9 +71,10 @@ Completed production proof activation for PR C:
 
 ## PR D — standalone OnionPIR web client
 
-Status: **implementation and validation complete on
-`codex/strict-onion-web-flow`**; Draft PR pending. Checkboxes remain unchecked
-until the PR is merged, per this file's convention.
+Status: **Draft PR open**
+([#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57)). Implementation and
+validation are complete. Checkboxes remain unchecked until the PR is merged,
+per this file's convention.
 
 - [ ] Add a stateless WASM verifier for `REQ_GET_DB_PROOF` responses.
 - [ ] Install `onion_super_root` only after production-pin matching.
