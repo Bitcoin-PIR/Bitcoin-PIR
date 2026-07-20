@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "harmonypir"
 version = "0.1.0"
-source = "git+https://github.com/Bitcoin-PIR/harmonypir.git?rev=ad1b5b99c3ec979ed8fda5bb64c4b240f6114e79#ad1b5b99c3ec979ed8fda5bb64c4b240f6114e79"
+source = "git+https://github.com/Bitcoin-PIR/harmonypir.git?rev=97288656b9b8cc393de7a8bc4d30d769404c2f39#97288656b9b8cc393de7a8bc4d30d769404c2f39"
 dependencies = [
  "aes",
  "bincode",

@@ -67,7 +67,7 @@ libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae3
 
 # Transport-independent HarmonyPIR remote client. Pin the exact upstream
 # commit until the matching `harmonypir` release is published.
-harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "ad1b5b99c3ec979ed8fda5bb64c4b240f6114e79", default-features = false }
+harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "97288656b9b8cc393de7a8bc4d30d769404c2f39", default-features = false }
 
 # OnionPIR v2 FFI bindings — C++ BV-keyswitch FHE (SEAL-free). Pulled in only
 # under the `onion` feature because it requires a native toolchain (cmake +
