@@ -1,11 +1,13 @@
 # Database Build Attestation Plan
 
-Status: server/API proof distribution is deployed for both production
-databases (`db_id=0` snapshot and `db_id=1` delta) on both hosts. DPF and
-HarmonyPIR now have a strict Web/WASM proof-install and tree-top preflight
-path under validation. The broader static proof chain also binds the snapshot
-builder evidence to the inputs and outputs of the direct ORAM build.
-Standalone OnionPIR proof installation and live serving-state binding remain.
+Status: **complete for the database-root trust gap**. Server/API proof
+distribution is deployed for both production databases (`db_id=0` snapshot
+and `db_id=1` delta) on both hosts. DPF, HarmonyPIR, and standalone OnionPIR
+all use the strict Web/WASM proof verification, production-pin comparison,
+typed root installation, and tree-top preflight path before address queries.
+The broader static proof chain also binds the snapshot builder evidence to the
+inputs and outputs of the direct ORAM build. The stronger ORAM live-image
+byte-match claim remains a separate, unfinished scope.
 
 Goal: bind BitcoinPIR database Merkle roots to an independently verifiable
 Bitcoin Core UTXO MuHash computation. The runtime server attestation proves
@@ -114,9 +116,9 @@ Known cleanups:
 
 ### 5. Merkle Root Plumbing
 
-- DPF and HarmonyPIR bucket Merkle verification should consume
+- DPF and HarmonyPIR bucket Merkle verification consumes
   `VerifiedDatabaseRoots.bucket_super_root`.
-- OnionPIR verification should consume `VerifiedDatabaseRoots.onion_super_root`.
+- OnionPIR verification consumes `VerifiedDatabaseRoots.onion_super_root`.
 - The server's tree tops are no longer the root of trust in strict mode.
 
 ### 6. Web/WASM Policy
@@ -126,10 +128,10 @@ Known cleanups:
     builder_commit)`
   - `WasmHarmonyClient.verifyDatabaseProof(dbId, params_hash, builder_hash,
     builder_commit)`
-  - **planned authoritative standalone API:** a stateless WASM
+  - the authoritative standalone API: a stateless WASM
     `verifyDatabaseProofResponse(dbInfo, rawResponse, policy)` export. The
-    TypeScript OnionPIR client will transport the raw response and compare the
-    returned structured proof to its pin; it will not maintain a second proof
+    TypeScript OnionPIR client transports the raw response and compares the
+    returned structured proof to its pin; it does not maintain a second proof
     parser/verifier in TypeScript.
 - DPF and Harmony web adapters accept `databaseProofPins` and
   `onDatabaseProof`, fetch `REQ_GET_DB_PROOF`, verify in WASM, compare against
@@ -137,12 +139,12 @@ Known cleanups:
   `databaseProofs`.
 - The demo UI renders a DB proof badge with the verified MuHash, block range,
   bucket root, onion root, and builder pins.
-- DPF and Harmony should install only the verified **bucket** super-root into
+- DPF and Harmony install only the verified **bucket** super-root into
   their native WASM Merkle verifiers before queries. The standalone OnionPIR
   client owns installation of the verified **onion** super-root; the two-server
   adapters must not imply that they enforce OnionPIR's root.
-- standalone OnionPIR should fetch `REQ_GET_DB_PROOF` directly, pass the raw
-  response to that stateless WASM verifier, and use the attested onion
+- Standalone OnionPIR fetches `REQ_GET_DB_PROOF` directly, passes the raw
+  response to that stateless WASM verifier, and uses the attested onion
   super-root as the Merkle anchor instead of trusting `server-info`'s
   `super_root`.
 - `scripts/smoke_db_proof_attestation.sh` wraps local and live proof checks
@@ -201,7 +203,9 @@ both `wss://weikeng1.bitcoinpir.org` and
 - [x] Merkle verification consumes verified roots in strict native query paths.
 - [x] DPF/Harmony Web/WASM typed root installation and tree-top preflight
       before queries.
-- [ ] standalone OnionPIR DB proof verifier and UI badge.
+- [x] Standalone OnionPIR stateless DB-proof verification, production-pin
+      comparison, typed root installation, v1 layout-pin check, tree-top
+      preflight, and automatic result verification.
 
 ## Production Deployment Record
 
@@ -226,3 +230,27 @@ Snapshot proof follow-up completed on 2026-07-19:
 - Direct `bpir-admin db-proof verify-live` checks passed for both database IDs
   on both hosts. This was a data/config rollout and did not require another
   server binary or UKI rebuild.
+
+Strict web rollout completed on 2026-07-20:
+
+- PR [#56](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/56) enabled the
+  fail-closed DPF/HarmonyPIR proof-install and bucket tree-top flow.
+- PR [#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57) enabled the
+  equivalent standalone OnionPIR flow, including stateless WASM proof
+  verification and `onion_super_root` installation.
+- The Pages deployments succeeded, and production browser smokes confirmed
+  trusted proof/tree-top preflight, automatic Merkle `Verified` results, and
+  per-query disconnect behavior.
+- No new server binary or UKI was required for these frontend/WASM changes.
+
+Future snapshot and delta changes must follow
+[the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md). The
+scheduled/manual native SDK canary now covers the proof/root/tree-top flow and
+both fresh and delta sync for all three backends. Browser-only runtime,
+identity, encrypted-channel, and v1 Onion layout automation, plus a v2 proof
+that commits the complete OnionPIR query layout, are non-blocking follow-ups,
+not missing pieces of the deployed v1 trust chain.
+
+The v2 producer/verifier split, minimal missing fields, existing-artifact
+re-attestation path, and compatibility choices are specified in
+[the database proof v2 plan](DB_PROOF_V2_PLAN.md).

@@ -2848,6 +2848,22 @@ fn validate_harmony_hints_request(
     Ok(())
 }
 
+/// A V2 hint pool is precomputed against exactly one immutable database.
+/// Never serve those hints for another catalog entry, even when that db_id is
+/// otherwise valid and loaded by the server.
+fn validate_harmony_v2_pool_database(
+    bound_db_id: u8,
+    requested_db_id: u8,
+) -> Result<(), String> {
+    if requested_db_id != bound_db_id {
+        return Err(format!(
+            "HarmonyPIR V2 hint pool is bound to db {}, not requested db {}",
+            bound_db_id, requested_db_id
+        ));
+    }
+    Ok(())
+}
+
 fn compute_hints_for_group(
     db: &MappedDatabase,
     prp_key: &[u8; 16],
@@ -2884,19 +2900,29 @@ fn compute_hints_for_group(
     let domain = 2 * pn;
     let r = harmonypir_wasm::compute_rounds(padded_n);
 
-    use harmonypir::prp::fast::FastPrpWrapper;
     use harmonypir::prp::BatchPrp;
     // PRP_ALF (= 2) was removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36
     // and pir-sdk-client/src/harmony.rs:81 for the rationale (panic on
     // domain<65536 crashed pir-vpsbg in a tight loop).
     let cell_of: Vec<usize> = match prp_backend {
+        #[cfg(feature = "fastprp")]
         harmonypir_wasm::PRP_FASTPRP => {
+            use harmonypir::prp::fast::FastPrpWrapper;
             let prp = FastPrpWrapper::new(&derived_key, domain);
             prp.batch_forward()
         }
-        _ => {
+        harmonypir_wasm::PRP_HMR12 => {
             let prp = HoangPrp::new(domain, r, &derived_key);
             prp.batch_forward()
+        }
+        #[cfg(not(feature = "fastprp"))]
+        harmonypir_wasm::PRP_FASTPRP => {
+            return Err(
+                "FastPRP requested, but runtime was built without the `fastprp` feature".into(),
+            );
+        }
+        other => {
+            return Err(format!("unsupported HarmonyPIR PRP backend {}", other));
         }
     };
 
@@ -5340,16 +5366,15 @@ async fn main() {
     let hint_pool = if args.pool_size > 0 {
         let pool_config = hint_pool::HintPoolConfig {
             pool_size: args.pool_size,
-            // Default to PRP_FASTPRP (large-domain SAFE; main hints have
-            // domain >= 2^20 easily). Was PRP_ALF before 2026-05-12 but
-            // ALF panicked on small (sibling) domains, crashing the server.
-            prp_backend: harmonypir_wasm::PRP_FASTPRP,
+            // Advertise exactly the backend compiled into this runtime:
+            // FastPRP with the feature, HMR12 otherwise.
+            prp_backend: hint_pool::default_prp_backend(),
             pool_dir: args.pool_dir.clone(),
         };
-        let main_db = state.get_db(0).expect("main database must be loaded");
-        if let Some(ref dir) = pool_config.pool_dir {
-            let _ = std::fs::create_dir_all(dir);
-        }
+        let pool_db_id = 0u8;
+        let main_db = state
+            .get_db(pool_db_id)
+            .expect("main database must be loaded");
         let backend_name = match pool_config.prp_backend {
             harmonypir_wasm::PRP_HMR12 => "HMR12",
             harmonypir_wasm::PRP_FASTPRP => "FastPRP",
@@ -5365,7 +5390,10 @@ async fn main() {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "memory-only".into())
         );
-        Some(hint_pool::HintPool::new(pool_config, main_db))
+        Some(
+            hint_pool::HintPool::new(pool_config, pool_db_id, main_db)
+                .unwrap_or_else(|e| panic!("HarmonyPIR hint pool init failed: {}", e)),
+        )
     } else {
         println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
         None
@@ -6156,8 +6184,18 @@ async fn main() {
                             let prp_backend = hint_req.prp_backend;
                             let group_ids = hint_req.group_ids.clone();
                             let db_id = hint_req.db_id;
-                            // Validate db_id, level, and group_ids before
-                            // spawning blocking work — all three come off
+                            if let Err(msg) = hint_pool::validate_prp_backend(prp_backend) {
+                                let resp = Response::Error(msg);
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    resp.encode(),
+                                )
+                                .await;
+                                continue;
+                            }
+                            // Validate backend, db_id, level, and group_ids before
+                            // spawning blocking work — all four come off
                             // the wire (S4: an out-of-range group_id or
                             // unknown level previously panicked inside the
                             // rayon pool, aborting the whole server).
@@ -6269,11 +6307,26 @@ async fn main() {
                                 continue;
                             }
                         };
+                        if let Err(message) = validate_harmony_v2_pool_database(
+                            pool.database_id(),
+                            db_id,
+                        ) {
+                            let resp = Response::Error(message);
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                resp.encode(),
+                            )
+                            .await;
+                            continue;
+                        }
 
-                        let entry = match pool.take() {
+                        let entry = match pool.try_take() {
                             Some(e) => e,
                             None => {
-                                let resp = Response::Error("server shutting down".into());
+                                let resp = Response::Error(
+                                    "V2 hint pool temporarily empty/unavailable".into(),
+                                );
                                 let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                                 continue;
                             }
@@ -6391,6 +6444,19 @@ async fn main() {
                                 continue;
                             }
                         };
+                        if let Err(message) = validate_harmony_v2_pool_database(
+                            pool.database_id(),
+                            db_id,
+                        ) {
+                            let resp = Response::Error(message);
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                resp.encode(),
+                            )
+                            .await;
+                            continue;
+                        }
 
                         let token = v2half_req.session_token;
                         let side = v2half_req.side;
@@ -6436,12 +6502,13 @@ async fn main() {
                                 None => {
                                     // First half to arrive — allocate a
                                     // fresh pool entry.
-                                    let entry = match pool.take() {
+                                    let entry = match pool.try_take() {
                                         Some(e) => e,
                                         None => {
                                             drop(map);
                                             let resp = Response::Error(
-                                                "server shutting down".into(),
+                                                "V2 hint pool temporarily empty/unavailable"
+                                                    .into(),
                                             );
                                             let _ = send_resp(
                                                 &mut sink,
@@ -8142,8 +8209,9 @@ mod harmony_dos_guard_tests {
         // pool → abort.
         let db = make_db();
         let key = [7u8; 16];
-        assert!(compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 42, 0).is_err());
-        assert!(compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 11, 0).is_err());
+        let backend = hint_pool::default_prp_backend();
+        assert!(compute_hints_for_group(&db, &key, backend, 42, 0).is_err());
+        assert!(compute_hints_for_group(&db, &key, backend, 11, 0).is_err());
     }
 
     #[test]
@@ -8151,7 +8219,9 @@ mod harmony_dos_guard_tests {
         // Previously sliced the mmap at group 250 of 75 → panic → abort.
         let db = make_db();
         let key = [7u8; 16];
-        assert!(compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 0, 250).is_err());
+        assert!(
+            compute_hints_for_group(&db, &key, hint_pool::default_prp_backend(), 0, 250).is_err()
+        );
     }
 
     #[test]
@@ -8159,11 +8229,26 @@ mod harmony_dos_guard_tests {
         let db = make_db();
         let key = [7u8; 16];
         let (group_id, n, t, m, flat) =
-            compute_hints_for_group(&db, &key, harmonypir_wasm::PRP_FASTPRP, 0, 3)
+            compute_hints_for_group(&db, &key, hint_pool::default_prp_backend(), 0, 3)
                 .expect("legitimate hint request must still be served");
         assert_eq!(group_id, 3);
         assert!(n as usize >= TEST_BINS);
         assert!(t > 0 && m > 0);
         assert_eq!(flat.len(), m as usize * db.index.params.bin_size());
+    }
+
+    #[test]
+    fn compute_hints_unsupported_backend_returns_err() {
+        let db = make_db();
+        let error = compute_hints_for_group(&db, &[7u8; 16], 0xfe, 0, 3).unwrap_err();
+        assert!(error.contains("unsupported"));
+    }
+
+    #[test]
+    fn v2_hint_pool_rejects_a_different_database_id() {
+        assert!(validate_harmony_v2_pool_database(0, 0).is_ok());
+        let error = validate_harmony_v2_pool_database(0, 1).unwrap_err();
+        assert!(error.contains("bound to db 0"));
+        assert!(error.contains("requested db 1"));
     }
 }

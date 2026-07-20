@@ -350,8 +350,9 @@ const _: fn() = || {
     assert_send_sync::<FheState>();
     assert_send_sync::<OnionClient>();
 };
-// Same assertion for the stub (non-`onion`) build: `OnionClient` there is a
-// no-op but still has to meet `PirClient: Send + Sync`.
+// Same assertion for the stub (non-`onion`) build: `OnionClient` retains the
+// API shape but fails queries closed, and still has to meet
+// `PirClient: Send + Sync`.
 #[cfg(not(feature = "onion"))]
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -438,7 +439,15 @@ struct FheState {
 pub struct OnionClient {
     server_url: String,
     conn: Option<Box<dyn PirTransport>>,
+    /// Onion query catalog. Its geometry comes from the JSON `onionpir`
+    /// section, while heights and anchors are copied from the standard
+    /// catalog when that catalog is available.
     catalog: Option<DatabaseCatalog>,
+    /// Unmodified `REQ_GET_DB_CATALOG` response used exclusively to verify
+    /// DB proof bundles. A v1 proof commits the DPF table geometry, not the
+    /// OnionPIR query geometry, so substituting `catalog` here would reject
+    /// every production proof (or, worse, validate against the wrong shape).
+    proof_catalog: Option<DatabaseCatalog>,
     /// Per-DB OnionPIR-specific parameters. Keyed by db_id.
     onion_params: std::collections::HashMap<u8, OnionDbParams>,
     /// Per-DB OnionPIR per-bin Merkle info, populated during `fetch_server_info`
@@ -475,6 +484,7 @@ impl OnionClient {
             server_url: server_url.to_string(),
             conn: None,
             catalog: None,
+            proof_catalog: None,
             onion_params: std::collections::HashMap::new(),
             #[cfg(feature = "onion")]
             onion_merkle: std::collections::HashMap::new(),
@@ -500,14 +510,37 @@ impl OnionClient {
         policy: &DatabaseProofPolicy,
     ) -> PirResult<VerifiedDatabaseRoots> {
         if !self.is_connected() { return Err(PirError::NotConnected); }
-        let catalog = match &self.catalog {
+        let query_catalog = match &self.catalog {
             Some(c) => c.clone(),
             None => self.fetch_catalog().await?,
         };
-        let db = catalog.get(db_id).ok_or(PirError::DatabaseNotFound(db_id))?.clone();
+        // The DB must exist in the catalog that drives this Onion session.
+        // Merely finding it in the standard catalog is not enough to make it
+        // queryable by OnionPIR.
+        query_catalog
+            .get(db_id)
+            .ok_or(PirError::DatabaseNotFound(db_id))?;
+        let db = self.proof_database_info(db_id)?;
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
         let bundle = fetch_database_proof(conn.as_mut(), db_id).await?;
         verify_database_proof(&db, &bundle, policy)
+    }
+
+    /// Select the unmodified standard-catalog entry for v1 DB-proof
+    /// verification. JSON-only Onion servers may remain usable in advisory
+    /// mode, but can never satisfy strict proof verification.
+    fn proof_database_info(&self, db_id: u8) -> PirResult<DatabaseInfo> {
+        let catalog = self.proof_catalog.as_ref().ok_or_else(|| {
+            PirError::VerificationFailed(
+                "OnionPIR strict verification requires REQ_GET_DB_CATALOG; \
+                 server provided only OnionPIR query geometry"
+                    .into(),
+            )
+        })?;
+        catalog
+            .get(db_id)
+            .cloned()
+            .ok_or(PirError::DatabaseNotFound(db_id))
     }
 
     pub fn install_verified_database_roots(
@@ -527,8 +560,52 @@ impl OnionClient {
         self.verified_tree_tops.clear();
     }
 
+    /// Clear every value whose authenticity or protocol state is bound to the
+    /// current transport. Metrics/leakage recorders and the configured server
+    /// URL are client configuration, so they deliberately survive.
+    fn invalidate_session_bindings(&mut self) {
+        self.catalog = None;
+        self.proof_catalog = None;
+        self.clear_verified_database_roots();
+        self.onion_params.clear();
+        self.info_json = None;
+        #[cfg(feature = "onion")]
+        {
+            self.fhe = None;
+            self.onion_merkle.clear();
+        }
+    }
+
     pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
         self.verified_roots.get(db_id)
+    }
+
+    /// Fetch and bind a database's OnionPIR Merkle tree-tops to an explicitly
+    /// installed proof root before any address query is sent.
+    ///
+    /// This is the native OnionPIR counterpart of the DPF/Harmony preflight
+    /// APIs. It is feature-gated because a build without `onion` has no FHE
+    /// tree-top verifier and therefore cannot truthfully report a successful
+    /// preflight.
+    #[cfg(feature = "onion")]
+    pub async fn preflight_verified_database(&mut self, db_id: u8) -> PirResult<()> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "db_id {} has no installed database proof",
+                db_id
+            )));
+        }
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
+        let catalog = match &self.catalog {
+            Some(catalog) => catalog.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        if catalog.get(db_id).is_none() {
+            return Err(PirError::DatabaseNotFound(db_id));
+        }
+        self.preflight_trusted_tree_tops(db_id).await
     }
 
     #[cfg(feature = "onion")]
@@ -548,8 +625,10 @@ impl OnionClient {
     }
 
     #[cfg(not(feature = "onion"))]
-    async fn preflight_trusted_tree_tops(&mut self, db_id: u8) -> PirResult<()> {
-        self.verified_roots.require_db(db_id)
+    async fn preflight_trusted_tree_tops(&mut self, _db_id: u8) -> PirResult<()> {
+        Err(PirError::BackendState(
+            "OnionPIR support is not compiled in; enable the `onion` cargo feature".into(),
+        ))
     }
 
     /// Install (or replace) a metrics recorder.
@@ -711,6 +790,9 @@ impl OnionClient {
     /// `sync_with_plan`.
     #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion"))]
     pub fn connect_with_transport(&mut self, conn: Box<dyn PirTransport>) {
+        // Replacing a transport starts a new session. Never carry a catalog,
+        // verified root/tree-top binding, or FHE registration into it.
+        self.invalidate_session_bindings();
         self.conn = Some(conn);
         // Propagate any installed recorder so per-frame byte counts flow
         // from this injected transport. OnionPIR only has one transport,
@@ -768,9 +850,12 @@ impl OnionClient {
             self.onion_merkle = parse_onion_merkle_per_db(&json);
         }
 
-        // Best-effort DPF catalog fetch for heights/names. If the server
-        // doesn't support it, synthesize a single-DB catalog from JSON.
+        // Best-effort standard catalog fetch for heights/names and proof
+        // verification. Advisory Onion queries retain the JSON-only fallback,
+        // but strict proof verification requires this exact, unmodified
+        // catalog and never substitutes OnionPIR geometry.
         let dpf_catalog = self.try_fetch_dpf_catalog().await.ok();
+        self.proof_catalog = dpf_catalog.clone();
 
         let catalog = build_catalog(&json, &self.onion_params, dpf_catalog.as_ref());
         self.catalog = Some(catalog);
@@ -1087,7 +1172,7 @@ impl OnionClient {
         Ok(())
     }
 
-    /// Placeholder fallback when the `onion` feature is disabled.
+    /// Fail-closed fallback when the `onion` feature is disabled.
     #[cfg(not(feature = "onion"))]
     #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion", db_id = _step.db_id, step = %_step.name, height = _step.tip_height, num_queries = script_hashes.len()))]
     async fn execute_step(
@@ -1096,13 +1181,11 @@ impl OnionClient {
         _step: &SyncStep,
         _db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<QueryResult>>> {
-        log::warn!(
-            "OnionPIR query attempted without the `onion` cargo feature — \
-             returning empty results for {} script hash(es). Enable the feature \
-             (requires a C++ toolchain + cmake + SEAL) to run real OnionPIR queries.",
+        Err(PirError::BackendState(format!(
+            "OnionPIR support is not compiled in; cannot query {} script hash(es). \
+             Enable the `onion` cargo feature (requires a C++ toolchain + cmake + SEAL)",
             script_hashes.len()
-        );
-        Ok(vec![None; script_hashes.len()])
+        )))
     }
 
     // ─── FHE helpers (onion feature only) ───────────────────────────────────
@@ -1816,6 +1899,13 @@ impl PirClient for OnionClient {
 
     #[tracing::instrument(level = "info", skip_all, fields(backend = "onion", server = %self.server_url))]
     async fn connect(&mut self) -> PirResult<()> {
+        // Match DPF/Harmony semantics: duplicate connect on a complete live
+        // session is idempotent, not an implicit transport replacement.
+        if self.is_connected() {
+            return Ok(());
+        }
+        self.invalidate_session_bindings();
+
         log::info!("Connecting to OnionPIR server: {}", self.server_url);
 
         // Native → tokio-tungstenite; WASM → web-sys WebSocket. OnionPIR
@@ -1842,7 +1932,7 @@ impl PirClient for OnionClient {
         #[cfg(not(feature = "onion"))]
         log::warn!(
             "OnionPIR client connected without the `onion` cargo feature — \
-             queries will return empty results."
+             queries will fail closed."
         );
         Ok(())
     }
@@ -1853,15 +1943,7 @@ impl PirClient for OnionClient {
             let _ = conn.close().await;
         }
         self.conn = None;
-        self.catalog = None;
-        self.clear_verified_database_roots();
-        self.onion_params.clear();
-        self.info_json = None;
-        #[cfg(feature = "onion")]
-        {
-            self.fhe = None;
-            self.onion_merkle.clear();
-        }
+        self.invalidate_session_bindings();
         self.fire_disconnect();
         Ok(())
     }
@@ -2860,6 +2942,124 @@ mod kani_harnesses {
 mod tests {
     use super::*;
 
+    fn proof_test_db(index_bins: u32, chunk_bins: u32, height: u32) -> DatabaseInfo {
+        DatabaseInfo {
+            db_id: 0,
+            kind: DatabaseKind::Full,
+            name: "main".into(),
+            height,
+            index_bins,
+            chunk_bins,
+            index_k: 75,
+            chunk_k: 80,
+            tag_seed: 7,
+            dpf_n_index: pir_core::params::compute_dpf_n(index_bins as usize),
+            dpf_n_chunk: pir_core::params::compute_dpf_n(chunk_bins as usize),
+            has_bucket_merkle: true,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
+        }
+    }
+
+    fn framed_response(payload: Vec<u8>) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(4 + payload.len());
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    fn onion_info_response(index_bins: u32, chunk_bins: u32) -> Vec<u8> {
+        let json = format!(
+            r#"{{"index_bins_per_table":{index_bins},"chunk_bins_per_table":{chunk_bins},"index_k":75,"chunk_k":80,"tag_seed":7,"onionpir":{{"total_packed_entries":1000,"index_bins_per_table":{index_bins},"chunk_bins_per_table":{chunk_bins},"index_k":75,"chunk_k":80,"tag_seed":7,"index_slots_per_bin":256,"index_slot_size":15}}}}"#
+        );
+        let mut payload = Vec::with_capacity(1 + json.len());
+        payload.push(RESP_GET_INFO_JSON);
+        payload.extend_from_slice(json.as_bytes());
+        framed_response(payload)
+    }
+
+    fn standard_catalog_response(db: &DatabaseInfo) -> Vec<u8> {
+        let mut payload = vec![RESP_DB_CATALOG, 1, db.db_id, 0, db.name.len() as u8];
+        payload.extend_from_slice(db.name.as_bytes());
+        payload.extend_from_slice(&db.base_height().to_le_bytes());
+        payload.extend_from_slice(&db.height.to_le_bytes());
+        payload.extend_from_slice(&db.index_bins.to_le_bytes());
+        payload.extend_from_slice(&db.chunk_bins.to_le_bytes());
+        payload.push(db.index_k);
+        payload.push(db.chunk_k);
+        payload.extend_from_slice(&db.tag_seed.to_le_bytes());
+        payload.push(db.dpf_n_index);
+        payload.push(db.dpf_n_chunk);
+        payload.push(u8::from(db.has_bucket_merkle));
+        framed_response(payload)
+    }
+
+    fn proof_test_roots(height: u32) -> VerifiedDatabaseRoots {
+        VerifiedDatabaseRoots {
+            db_id: 0,
+            build_kind: pir_db_attest::BuildKind::Snapshot,
+            from_height: 0,
+            from_block_hash: [0; 32],
+            height,
+            block_hash: [1; 32],
+            muhash: [2; 32],
+            bucket_super_root: [3; 32],
+            onion_super_root: [4; 32],
+            onion_entry_size: 3328,
+            params_hash: [5; 32],
+            network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
+            builder_binary_sha256: [6; 32],
+            builder_git_commit: "test".into(),
+        }
+    }
+
+    fn seed_test_session_bindings(client: &mut OnionClient, db: &DatabaseInfo) {
+        let catalog = DatabaseCatalog {
+            databases: vec![db.clone()],
+        };
+        client.catalog = Some(catalog.clone());
+        client.proof_catalog = Some(catalog);
+        client.onion_params.insert(
+            db.db_id,
+            OnionDbParams {
+                total_packed: 1000,
+                index_slots_per_bin: 256,
+                index_slot_size: 15,
+            },
+        );
+        client.info_json = Some("{\"session\":\"old\"}".into());
+        client.set_root_policy(RootPolicy::RequireVerified);
+        client
+            .install_verified_database_roots(proof_test_roots(db.height))
+            .unwrap();
+        client.verified_tree_tops.insert(db.db_id);
+
+        #[cfg(feature = "onion")]
+        {
+            let merkle_json = r#"{
+                "onionpir_merkle": {
+                    "arity": 104,
+                    "super_root": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                    "tree_tops_hash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+                    "tree_tops_size": 1245184,
+                    "index": {"k": 75, "num_pt": 99},
+                    "data": {"k": 80, "num_pt": 364}
+                }
+            }"#;
+            client.onion_merkle = parse_onion_merkle_per_db(merkle_json);
+            client.fhe = Some(FheState {
+                client_id: 7,
+                secret_key: vec![1],
+                galois_keys: vec![2],
+                gsw_keys: vec![3],
+                level_clients: HashMap::new(),
+                registered: [db.db_id].into_iter().collect(),
+            });
+        }
+    }
+
     #[test]
     fn test_encode_request_simple() {
         let buf = encode_request(0x03, &[]);
@@ -2928,12 +3128,131 @@ mod tests {
         assert!(matches!(db.kind, DatabaseKind::Full));
     }
 
+    #[tokio::test]
+    async fn proof_verification_uses_standard_catalog_not_onion_query_geometry() {
+        use crate::transport::mock::MockTransport;
+
+        let proof_db = proof_test_db(567_558, 1_135_116, 948_454);
+        let mut mock = MockTransport::new("wss://mock-onion");
+        mock.enqueue_response(onion_info_response(10_273, 20_547));
+        mock.enqueue_response(standard_catalog_response(&proof_db));
+
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.connect_with_transport(Box::new(mock));
+        let query_catalog = client.fetch_catalog().await.unwrap();
+
+        let query_db = query_catalog.get(0).unwrap();
+        assert_eq!(query_db.index_bins, 10_273);
+        assert_eq!(query_db.chunk_bins, 20_547);
+        assert_eq!(query_db.height, proof_db.height);
+
+        let selected_for_proof = client.proof_database_info(0).unwrap();
+        assert_eq!(selected_for_proof.index_bins, proof_db.index_bins);
+        assert_eq!(selected_for_proof.chunk_bins, proof_db.chunk_bins);
+        assert_ne!(selected_for_proof.index_bins, query_db.index_bins);
+    }
+
+    #[tokio::test]
+    async fn proof_verification_fails_closed_without_standard_catalog() {
+        use crate::transport::mock::MockTransport;
+
+        let mut mock = MockTransport::new("wss://mock-onion");
+        mock.enqueue_response(onion_info_response(10_273, 20_547));
+        mock.enqueue_response(framed_response(vec![0xff, b'n', b'o']));
+
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.connect_with_transport(Box::new(mock));
+        let query_catalog = client.fetch_catalog().await.unwrap();
+        assert_eq!(query_catalog.get(0).unwrap().index_bins, 10_273);
+
+        let err = client
+            .verify_database_proof(0, &DatabaseProofPolicy::mainnet())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PirError::VerificationFailed(_)));
+        assert!(err.to_string().contains("requires REQ_GET_DB_CATALOG"));
+    }
+
+    #[tokio::test]
+    async fn onion_query_catalog_rotation_invalidates_installed_roots() {
+        use crate::transport::mock::MockTransport;
+
+        let proof_db = proof_test_db(567_558, 1_135_116, 948_454);
+        let mut mock = MockTransport::new("wss://mock-onion");
+        mock.enqueue_response(onion_info_response(10_273, 20_547));
+        mock.enqueue_response(standard_catalog_response(&proof_db));
+        mock.enqueue_response(onion_info_response(10_274, 20_547));
+        mock.enqueue_response(standard_catalog_response(&proof_db));
+
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.connect_with_transport(Box::new(mock));
+        client.fetch_catalog().await.unwrap();
+        let err = client
+            .install_verified_database_roots(proof_test_roots(proof_db.height + 1))
+            .unwrap_err();
+        assert!(matches!(err, PirError::VerificationFailed(_)));
+        assert!(client.verified_database_roots(0).is_none());
+        client
+            .install_verified_database_roots(proof_test_roots(proof_db.height))
+            .unwrap();
+        assert!(client.verified_database_roots(0).is_some());
+
+        let rotated_query_catalog = client.fetch_catalog().await.unwrap();
+        assert_eq!(rotated_query_catalog.get(0).unwrap().index_bins, 10_274);
+        assert_eq!(
+            client.proof_database_info(0).unwrap().index_bins,
+            proof_db.index_bins
+        );
+        assert!(
+            client.verified_database_roots(0).is_none(),
+            "Onion query-catalog rotation must clear roots bound to the old session geometry"
+        );
+    }
+
     #[test]
     fn test_onion_client_new_uninitialised() {
         let c = OnionClient::new("ws://localhost:8091");
         assert_eq!(c.backend_type(), PirBackendType::Onion);
         assert!(!c.is_connected());
         assert!(c.cached_catalog().is_none());
+    }
+
+    #[cfg(not(feature = "onion"))]
+    #[tokio::test]
+    async fn query_fails_closed_without_onion_feature_for_every_root_policy() {
+        use crate::transport::mock::MockTransport;
+
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let script_hashes = [[0u8; 20]];
+
+        for policy in [RootPolicy::Advisory, RootPolicy::RequireVerified] {
+            let mut client = OnionClient::new("wss://mock-onion");
+            client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
+            client.catalog = Some(DatabaseCatalog {
+                databases: vec![db.clone()],
+            });
+            client.set_root_policy(policy);
+            if policy == RootPolicy::RequireVerified {
+                client
+                    .install_verified_database_roots(proof_test_roots(db.height))
+                    .unwrap();
+            }
+
+            let query_err = client
+                .query_batch(&script_hashes, db.db_id)
+                .await
+                .unwrap_err();
+            assert!(matches!(query_err, PirError::BackendState(_)));
+            assert!(query_err.to_string().contains("not compiled in"));
+
+            let step = SyncStep::from_db_info(&db);
+            let execute_err = client
+                .execute_step(&script_hashes, &step, &db)
+                .await
+                .unwrap_err();
+            assert!(matches!(execute_err, PirError::BackendState(_)));
+            assert!(execute_err.to_string().contains("not compiled in"));
+        }
     }
 
     /// `batch_looks_evicted` must fire on an all-empty batch of ≥1 slot,
@@ -3175,6 +3494,67 @@ mod tests {
             "wss://mock-onion",
         )));
         assert!(client.is_connected());
+    }
+
+    #[test]
+    fn replacing_transport_invalidates_all_session_bindings() {
+        use crate::transport::mock::MockTransport;
+
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.connect_with_transport(Box::new(MockTransport::new("wss://old-session")));
+        seed_test_session_bindings(&mut client, &db);
+
+        assert!(client.catalog.is_some());
+        assert!(client.proof_catalog.is_some());
+        assert!(client.verified_database_roots(db.db_id).is_some());
+        assert!(client.verified_tree_tops.contains(&db.db_id));
+        assert!(!client.onion_params.is_empty());
+        assert!(client.info_json.is_some());
+        #[cfg(feature = "onion")]
+        {
+            assert!(!client.onion_merkle.is_empty());
+            assert!(client.fhe.is_some());
+        }
+
+        client.connect_with_transport(Box::new(MockTransport::new("wss://new-session")));
+
+        assert!(client.is_connected());
+        assert!(client.catalog.is_none());
+        assert!(client.proof_catalog.is_none());
+        assert!(client.verified_database_roots(db.db_id).is_none());
+        assert!(client.verified_tree_tops.is_empty());
+        assert!(client.onion_params.is_empty());
+        assert!(client.info_json.is_none());
+        assert_eq!(client.root_policy(), RootPolicy::RequireVerified);
+        #[cfg(feature = "onion")]
+        {
+            assert!(client.onion_merkle.is_empty());
+            assert!(client.fhe.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_connect_is_idempotent_and_preserves_live_session() {
+        use crate::transport::mock::MockTransport;
+
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let mut client = OnionClient::new("wss://must-not-be-dialed");
+        client.connect_with_transport(Box::new(MockTransport::new("wss://live-session")));
+        seed_test_session_bindings(&mut client, &db);
+
+        client.connect().await.unwrap();
+
+        assert!(client.is_connected());
+        assert!(client.catalog.is_some());
+        assert!(client.proof_catalog.is_some());
+        assert!(client.verified_database_roots(db.db_id).is_some());
+        assert!(client.verified_tree_tops.contains(&db.db_id));
+        #[cfg(feature = "onion")]
+        {
+            assert!(!client.onion_merkle.is_empty());
+            assert!(client.fhe.is_some());
+        }
     }
 
     // ─── Tracing smoke test ──────────────────────────────────────────────

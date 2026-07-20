@@ -30,7 +30,7 @@ to whichever slice you want to start on.
 
 ---
 
-## Current state (as of 2026-06-26, ORAM Tier 3 UKI deployed)
+## Current state (as of 2026-07-20, ORAM Tier 3 UKI deployed)
 
 ### Production deployment
 
@@ -42,9 +42,11 @@ to whichever slice you want to start on.
 | DBs in production | `main` (height 948454), `delta_940611_948454`. Both have `MANIFEST.toml`; the delta DB also has the SEV-SNP builder proof sidecar at `attestations/delta_940611_948454_sev_snp`. |
 | Hetzner `pir-secondary.service` | Running as a local secondary/hot-spare on port 8092. Public `weikeng2.bitcoinpir.org` routes to VPSBG, not this service. |
 
-### Attested values published (operator: weikengchen) — ORAM Tier 3 baseline
+### Attested values published (operator: weikengchen) — current ORAM Tier 3 baseline
 
-These are live values from the running pir2 — anyone can verify with `bpir-admin attest`.
+These values match `web/src/attest-pin.ts` and
+`scripts/verify_oram_tier3_deploy.sh`. They were rechecked against the live
+pir2 report on 2026-07-20 with `bpir-admin attest`.
 
 ```
 Server: wss://weikeng2.bitcoinpir.org
@@ -53,17 +55,17 @@ Launch MEASUREMENT (covers OVMF + Tier 3 UKI bytes — UKI now contains
 the unified_server BINARY itself in initramfs, NOT just a cmdline hash
 pin. So this digest authenticates the literal binary bytes the box is
 running, not "a binary the box claims matches a hash"):
-  1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746
+  9b92966e641f948ea855e205c8a8a258f15ea0c5135fe444362333ac0299bf8e2ebead5868bacbd4041abace0eb3b9b5
 
 UKI bytes sha256 (built by scripts/build_uki_tier3.sh on pir-hetzner;
 includes initramfs with unified_server + cloudflared + runit + the
 sev-guest/ccp/tsm_report kernel modules baked in):
-  718c7728142f9a3a1c6663711853d1b51ee14fde62debc8d2fb1c8662855b18b
+  a4eb1a9dc66937e725b3021c7fccfa8c8433af30282351cd748dd63e77d1421b
 
 unified_server binary sha256 (computed at build time AND attested at
 runtime via /proc/self/exe — the two match because dracut was invoked
 with --nostrip; verifiers pin via --expect-binary on bpir-admin attest):
-  457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+  3660318aed600b583d503d27f5d166420222fb228a6bd5befc3e15410d25b291
 
 ARK fingerprint (AMD Turin family root certificate — pinned in
 web/src/attest-pin.ts and used by --expect-ark-fingerprint to anchor
@@ -75,23 +77,22 @@ DB manifest roots (db_id order):
   delta_940611_948454:        c816f067117bca98256ee246c4469591ee8f537b2271d65b38d1536a70887963
 
 Server git rev (per /attest, captured at unified_server build time):
-  668dd36b812f51f8c6a63af6fd3025cc07455bfd
+  3cd5235500fd44a4d8421664ae295882eb6530bf
 ```
 
 NOTE on the X25519 channel pubkey: it's "long-lived" relative to per-
 session ECDH (which is fresh per handshake), but it IS regenerated on
 every server-process start (i.e. every reboot). Verifiers should NOT
 pin it across reboots — they observe it dynamically via attest and
-cross-check the REPORT_DATA binding. The current value as of last
-boot is `77bbbc1064d3907b17a7a6c95d80a9a671a130304f954e75a1edc738b90b8f06`
-but it'll be different next reboot.
+cross-check the REPORT_DATA binding. No channel key is published here because
+any value would become stale at the next process restart.
 
 Verifiers can cross-check end-to-end with:
 ```bash
 # Static checks: report binding + binary + measurement + ARK chain
 bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746 \
-    --expect-binary 457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+    --expect-measurement 9b92966e641f948ea855e205c8a8a258f15ea0c5135fe444362333ac0299bf8e2ebead5868bacbd4041abace0eb3b9b5 \
+    --expect-binary 3660318aed600b583d503d27f5d166420222fb228a6bd5befc3e15410d25b291
 
 # Live encrypted channel + AMD VCEK chain validation
 bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
@@ -386,11 +387,16 @@ Pins live in `web/src/attest-pin.ts` as `PIR1_PIN`, `PIR2_TIER3_PIN`, and
 
 ### 2. Database build attestation status
 
-DPF and HarmonyPIR adapters also fetch `REQ_GET_DB_PROOF = 0x0a` for configured
+DPF and HarmonyPIR adapters fetch `REQ_GET_DB_PROOF = 0x0a` for configured
 `databaseProofPins`, verify the attested-builder bundle in WASM, compare the
-result against `PRODUCTION_DB_PROOF_PINS`, and render a separate DB proof badge.
+result against `PRODUCTION_DB_PROOF_PINS`, install the verified bucket root,
+and preflight the ordered tree-tops before querying. Standalone OnionPIR uses
+the stateless WASM response verifier, compares the same production proof pins,
+installs the verified Onion root, checks the v1 query-layout pin, and preflights
+its consolidated tree-tops. `server-info.super_root` is diagnostic only.
 
-Current production DB proof pin:
+Representative production delta pin (the snapshot and delta pins both live in
+`PRODUCTION_DB_PROOF_PINS`):
 
 | Field | Value |
 |---|---|
@@ -403,9 +409,16 @@ Current production DB proof pin:
 | builder binary | `34a677847b9be6580385c73f163279c81561772f8d3ad782d0ca08f1c01fad4a` |
 | builder commit | `01e8db91d76037cd5562fce85c40e832ad156431` |
 
-Open work: strict query-path root installation still needs to make DPF/Harmony
-Merkle checks consume the verified bucket root directly, and standalone
-OnionPIR still needs the direct `REQ_GET_DB_PROOF` verifier plus UI badge.
+This strict query-path work is complete in PRs
+[#54](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/54),
+[#56](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/56), and
+[#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57). All three production
+web backends fail closed before an address query when the database proof,
+production proof pin, or tree-top binding fails; standalone OnionPIR also
+checks its temporary v1 layout pin. DPF/HarmonyPIR additionally fail closed on
+their runtime pin, secure-channel, and configured operator-identity gates.
+Hetzner's runtime trust tier is operator identity plus binary pinning; only
+VPSBG has SEV-SNP hardware attestation.
 
 ### 3. Confirm `--role secondary` doesn't break existing client flows
 
@@ -414,10 +427,21 @@ The web client expects:
 - pir2 (VPSBG Tier 3) handles HarmonyPIR online queries.
 - DPF uses pir1 as server 0 and pir2 as server 1.
 
-This is the existing production topology. **Open**: after every new web build,
-run one real DPF and one real HarmonyPIR query and confirm that runtime
-attestation, operator identity, and DB proof badges all settle before the
-query path proceeds.
+This is the existing production topology. It was rechecked after the strict
+DPF/HarmonyPIR and OnionPIR Pages deployments on 2026-07-20. As a non-blocking
+release check, continue to run one real query with every backend after a web
+build and confirm runtime identity, database proof, tree-top preflight,
+automatic result verification, and final disconnect. The scheduled/manual
+native SDK canary now covers proof pins, explicit root installation, fresh and
+delta sync-plan gates, tree-top binding, result verification, and disconnect
+for all three backends. Automating the browser-only runtime, identity,
+encrypted-channel, and v1 Onion layout gates remains a follow-up.
+
+For a new snapshot or delta epoch, use
+[the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md). The
+future v2 database proof should commit the complete OnionPIR query layout so
+the temporary explicit v1 layout pins can be removed; v1 is already
+fail-closed and this is not a rollout blocker.
 
 ---
 
@@ -432,15 +456,18 @@ reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
 
 # Attest VPSBG (verifies SEV-SNP report + binds X25519 channel pubkey)
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 1e6256d9c01562b04470081d260d878436340fc406bf7d5567e5824c9b94ffcfd2c95dbd2648e7030f75023223912746 \
-    --expect-binary 457590cf4e17221c709be806a40d7d68a7f0978e365789cbe37f4a4d1e9aaaf1
+    --expect-measurement 9b92966e641f948ea855e205c8a8a258f15ea0c5135fe444362333ac0299bf8e2ebead5868bacbd4041abace0eb3b9b5 \
+    --expect-binary 3660318aed600b583d503d27f5d166420222fb228a6bd5befc3e15410d25b291
 
 # End-to-end channel test with ARK-rooted chain validation
 ./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
-# Upload a new DB (admin auth + chunked upload + activate). The
-# --activate flag triggers an in-process hot reload — no restart.
+# Upload and activate a new DB directory (admin auth + chunked upload).
+# Activation is the default; use --no-activate to leave it staged. This command
+# does not hot-reload the process, and it generates a new MANIFEST.toml. Restart
+# through the normal supervisor/portal path, and do not use this route when an
+# attested proof requires preserving the original manifest bytes.
 ./target/release/bpir-admin upload main_944321 ./build/output/main_944321 \
     --target-path checkpoints/944321 \
     --server wss://weikeng2.bitcoinpir.org

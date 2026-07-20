@@ -1013,6 +1013,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>The ORAM source-binding proof binds a strict direct ORAM rebuild to roots-only snapshot inputs preserved by the SEV-SNP attested builder for block <code>948454</code>.</li>
                             <li>The Bitcoin anchor proof binds both delta endpoint block hashes and the latest MuHash to one blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
                             <li>The web client refuses to upgrade to the encrypted channel if runtime pins do not match what the server reports.</li>
+                            <li>DPF, HarmonyPIR, and standalone OnionPIR verify each database proof in Rust/WASM, compare it with the production pin, install the verified bucket or Onion root, and bind the fetched tree-tops before issuing an address query.</li>
                             <li>The ORAM smoke route confirms the live attested binary accepts padded direct ORAM requests for both production databases.</li>
                         </ul>
                     </section>
@@ -1025,7 +1026,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>AMD's signing keys are trust roots; the project pins the AMD ARK fingerprint but cannot remove AMD from the trust base.</li>
                             <li>The BHTM proof is an attested MuHash transition from Core-style stripped deltas. It checks header linkage and txid Merkle commitments; it is not a full Bitcoin consensus validator inside the TEE.</li>
                             <li>The strict ORAM source-binding proof is not yet a live-image byte-match claim. The current pir2 runtime vendors an older ORAM commit, so a refreshed ORAM runtime/data deployment is still required for that stronger statement.</li>
-                            <li>The web DB proof badge is advisory today for DPF and HarmonyPIR. Strict mode still needs to wire verified roots directly into query-path Merkle verification, and standalone OnionPIR still needs its browser-side DB proof verifier.</li>
+                            <li>The v1 database proof does not commit the complete standalone OnionPIR query layout. The production web client therefore checks a separate, explicit layout pin and fails closed on mismatch; a future v2 proof can absorb those fields.</li>
                         </ul>
                     </section>
                 </section>

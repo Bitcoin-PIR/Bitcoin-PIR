@@ -20,7 +20,9 @@ categories = ["cryptography", "cryptography::cryptocurrencies", "network-program
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [features]
-default = []
+# Production V2 hint pools advertise FastPRP on the wire. Keep native SDK
+# builds aligned with the WASM SDK default so backend 1 can be honored exactly.
+default = ["fastprp"]
 # Enable fast PRP backend (FastPRP) for HarmonyPIR — faster per-element but slower build.
 fastprp = ["harmonypir-wasm/fastprp"]
 # `alf` feature dropped 2026-05-12 — ALF panicked on small (sibling-table)
@@ -28,8 +30,9 @@ fastprp = ["harmonypir-wasm/fastprp"]
 # Enable the real OnionPIR client. Off by default because the upstream
 # `onionpir` crate requires a C++ toolchain + cmake + Homebrew GCC on macOS
 # and pulls in the SEAL submodule. Without this feature, `OnionClient` keeps
-# its placeholder behavior (warn + return None). Native-only — the `onion`
-# feature is not compatible with `wasm32` targets (SEAL does not build there).
+# its transport/API shape but fails every preflight and query explicitly.
+# Native-only — the `onion` feature is not compatible with `wasm32` targets
+# (SEAL does not build there).
 onion = ["dep:onionpir", "dep:rand"]
 
 # ─── Cross-target dependencies ──────────────────────────────────────────────

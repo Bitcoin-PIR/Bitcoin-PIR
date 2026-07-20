@@ -1,9 +1,14 @@
 # Strict verification rollout
 
-This file tracks the work that closes the database-root trust gap. For code
-items, a checked box means the behavior is merged into `main`, not merely
-implemented on an open branch. Production deployment state is recorded
-separately and reflects the live hosts.
+Rollout status: **complete as of 2026-07-20**. PRs
+[#53](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/53),
+[#54](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/54),
+[#56](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/56), and
+[#57](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/57) closed the
+database-root trust gap. PR
+[#58](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/58) recorded the merged
+state. For code items, a checked box means the behavior is merged into `main`,
+not merely implemented on an open branch.
 
 ## PR A — publish complete database proof material
 
@@ -96,3 +101,79 @@ Pre-merge validation completed on 2026-07-20:
   results received automatic `Verified` marks; each session ended disconnected.
 - This rollout uses the existing proof and OnionPIR Merkle protocol. It does
   not require a new server binary or rebuilt UKI.
+
+Post-merge production validation completed on 2026-07-20:
+
+- The Pages deployment for PR #57 completed successfully in
+  [Actions run 29723261461](https://github.com/Bitcoin-PIR/Bitcoin-PIR/actions/runs/29723261461).
+  The follow-up Pages deployment for PR #58 also completed successfully in
+  [Actions run 29723409814](https://github.com/Bitcoin-PIR/Bitcoin-PIR/actions/runs/29723409814).
+- A production OnionPIR query reported `Data integrity: YES`; both returned
+  results received automatic `Verified` marks, INDEX verification completed
+  `4/4`, DATA verification completed `2/2`, and the session disconnected after
+  the query.
+
+## Continuous verification
+
+The SDK integration workflow now runs a scheduled/manual native
+database-root canary for DPF, HarmonyPIR, and OnionPIR. For both production
+databases it verifies the proof against reviewed pins, installs the typed
+roots, preflights tree-tops, and exercises fresh and delta sync. It also proves
+that a sync plan fails before the required root is installed, checks result
+Merkle status, disconnects, and confirms session roots were cleared.
+
+Pre-merge production validation on 2026-07-20 passed all three native
+canaries: DPF and HarmonyPIR completed their fresh and delta paths in one run,
+and standalone OnionPIR completed the same paths in its Onion-enabled run.
+The canaries caught and drove fixes for several issues that ordinary unit
+tests did not expose:
+
+- native HarmonyPIR now honors the production FastPRP backend exactly instead
+  of silently constructing HMR12 state;
+- the db-0-bound V2 hint pool is never used for a delta database, and only the
+  exact pool-empty response may fall back to V1;
+- V2-half errors, mismatches, and timeouts close both hint sockets rather than
+  reusing a partially drained stream;
+- persisted server hint-pool entries are versioned, fingerprinted, consumed
+  durably, and never block a Tokio worker while the pool is empty;
+- native OnionPIR verifies a v1 DB proof against the standard DPF catalog
+  geometry while retaining the distinct Onion geometry for queries; and
+- a client built without the `onion` feature fails explicitly instead of
+  returning an unverified empty result.
+
+This native canary deliberately does not claim to automate the production web
+runtime/binary pin, operator-identity, secure-channel, or temporary v1 Onion
+layout gates. Those browser-level gates remain covered by release smokes; an
+end-to-end browser canary is a non-blocking automation follow-up.
+
+The server-side HarmonyPIR hint-pool hardening in the canary follow-up requires
+a new `unified_server` deployment after merge. Until that rollout, the current
+servers remain compatible and the client-side strict root flow stays
+fail-closed, but production does not yet benefit from the new durable,
+non-blocking pool lifecycle.
+
+## Non-blocking follow-ups
+
+The strict-root rollout above is closed. The following improvements do not
+reopen it:
+
+- Automate the remaining browser-only runtime, identity, encrypted-channel,
+  and v1 Onion layout gates without weakening the native database-root canary.
+- Harden malformed HarmonyPIR V2 streams further by rejecting duplicate group
+  IDs and inconsistent preamble/terminal metadata immediately, and discard the
+  single-stream V2 socket after any mid-stream error. Strict Merkle binding
+  already prevents such a stream from yielding trusted data; this follow-up is
+  fail-fast protocol hygiene and connection recovery.
+- Implement the separately scoped
+  [v2 database-proof migration](DB_PROOF_V2_PLAN.md), which commits the three
+  remaining OnionPIR layout values and replaces the explicit v1 layout pins
+  only after new builder evidence and production sidecars exist. Until then,
+  the production client safely fails closed against the explicit pins in
+  `web/src/attest-pin.ts`.
+- Follow [the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md)
+  for every new snapshot or delta generation.
+
+The separate ORAM live-image byte-match claim remains out of scope. The static
+strict ORAM source-binding proof is not evidence that the deployed runtime has
+the byte-identical ORAM image open; that stronger deployment claim must be
+tracked and validated independently.

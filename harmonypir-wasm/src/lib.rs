@@ -80,27 +80,47 @@ pub fn pad_n_for_t(n: u32, t: u32) -> (u32, u32) {
     (padded_n, t)
 }
 
+/// Return an error when this build cannot honor `backend` exactly.
+fn validate_prp_backend(backend: u8) -> Result<(), String> {
+    match backend {
+        PRP_HMR12 => Ok(()),
+        PRP_FASTPRP => {
+            #[cfg(feature = "fastprp")]
+            {
+                Ok(())
+            }
+            #[cfg(not(feature = "fastprp"))]
+            {
+                Err("FastPRP backend requested, but harmonypir-wasm was built without the `fastprp` feature".into())
+            }
+        }
+        unsupported => Err(format!("unsupported HarmonyPIR PRP backend: {unsupported}")),
+    }
+}
+
 /// Build a PRP for the given backend, key, and domain.
-fn build_prp(backend: u8, key: &[u8; 16], domain: usize, n: u32, _prp_cache: &[u8]) -> Box<dyn Prp> {
+fn build_prp(
+    backend: u8,
+    key: &[u8; 16],
+    domain: usize,
+    n: u32,
+    _prp_cache: &[u8],
+) -> Result<Box<dyn Prp>, String> {
+    validate_prp_backend(backend)?;
     match backend {
         PRP_HMR12 => {
             let r = compute_rounds(n);
-            Box::new(HoangPrp::new(domain, r, key))
+            Ok(Box::new(HoangPrp::new(domain, r, key)))
         }
         #[cfg(feature = "fastprp")]
         PRP_FASTPRP => {
             if _prp_cache.is_empty() {
-                Box::new(FastPrpWrapper::new(key, domain))
+                Ok(Box::new(FastPrpWrapper::new(key, domain)))
             } else {
-                Box::new(FastPrpWrapper::from_cache(key, domain, _prp_cache))
+                Ok(Box::new(FastPrpWrapper::from_cache(key, domain, _prp_cache)))
             }
         }
-        _ => {
-            // Fallback to HMR12 for unknown backends (including the
-            // removed PRP_ALF=2; old clients hit this branch silently).
-            let r = compute_rounds(n);
-            Box::new(HoangPrp::new(domain, r, key))
-        }
+        _ => unreachable!("unsupported PRP backends returned above"),
     }
 }
 
@@ -371,73 +391,14 @@ impl HarmonyGroup {
         prp_key: &[u8], group_id: u32,
         prp_backend: u8,
     ) -> Result<HarmonyGroup, JsError> {
-        let w_usize = w as usize;
-        let t_val = if t == 0 { find_best_t(n) } else { t };
-
-        // Pad N so 2*padded_n is a multiple of T.
-        let (padded_n, t_val) = pad_n_for_t(n, t_val);
-        let padded_n_usize = padded_n as usize;
-        let t_usize = t_val as usize;
-
-        let params = Params::new(padded_n_usize, w_usize, t_usize)
-            .map_err(|e| JsError::new(&format!("invalid params: {e:?}")))?;
-
-        let key = derive_group_key(prp_key, group_id);
-        let domain = 2 * padded_n_usize;
-        let prp_cache = save_prp_cache(prp_backend, &key, domain, &[]);
-        let prp = build_prp(prp_backend, &key, domain, padded_n, &prp_cache);
-
-        let ds = RelocationDS::new(padded_n_usize, t_usize, prp)
-            .map_err(|e| JsError::new(&format!("DS init failed: {e:?}")))?;
-
-        let m = params.m;
-        let hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
-        let seed = make_rng_seed(&key, group_id, 0);
-
-        // `key` and `group_id` are consumed by `make_rng_seed` above
-        // and by the `derive_group_key` call that produced `prp_cache` —
-        // neither is retained on the struct. See the NOTE on
-        // `HarmonyGroup` above for the rationale.
-        let _ = key;
-        let _ = group_id;
-
-        Ok(HarmonyGroup {
-            params,
-            ds,
-            hints,
-            query_count: 0,
-            rng: ChaCha20Rng::from_seed(seed),
-            prp_backend,
-            prp_cache,
-            real_n: n,
-            relocated_segments: Vec::new(),
-            last_segment: 0,
-            last_position: 0,
-            last_query: 0,
-            last_position_map: Vec::new(),
-            last_is_dummy: Vec::new(),
-            deferred_entries: None,
-            deferred_answer: None,
-            pending_pair: None,
-        })
+        Self::new_with_backend_checked(n, w, t, prp_key, group_id, prp_backend)
+            .map_err(|e| JsError::new(&e))
     }
 
     /// Load pre-computed hint parities (M × w bytes, flat).
     pub fn load_hints(&mut self, hints_data: &[u8]) -> Result<(), JsError> {
-        self.check_pair_not_in_flight("load_hints")?;
-        let m = self.params.m;
-        let w = self.params.w;
-        let expected = m * w;
-        if hints_data.len() != expected {
-            return Err(JsError::new(&format!(
-                "expected {expected} bytes of hints, got {}", hints_data.len()
-            )));
-        }
-        for i in 0..m {
-            let start = i * w;
-            self.hints[i].copy_from_slice(&hints_data[start..start + w]);
-        }
-        Ok(())
+        self.load_hints_checked(hints_data)
+            .map_err(|e| JsError::new(&e))
     }
 
     /// Build a request for database row `q`.
@@ -1002,94 +963,7 @@ impl HarmonyGroup {
         prp_key: &[u8],
         group_id: u32,
     ) -> Result<HarmonyGroup, JsError> {
-        if data.len() < 25 {
-            return Err(JsError::new("serialized data too short"));
-        }
-
-        let mut pos = 0;
-
-        // Parse header: padded_n, w, t, query_count, backend, real_n.
-        let n = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()); pos += 4; // padded_n
-        let w = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()); pos += 4;
-        let t = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()); pos += 4;
-        let query_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize; pos += 4;
-        let prp_backend = data[pos]; pos += 1;
-        let real_n = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()); pos += 4;
-
-        // Parse relocated segments.
-        let num_relocated = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize; pos += 4;
-        let mut relocated_segments = Vec::with_capacity(num_relocated);
-        for _ in 0..num_relocated {
-            let seg = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()); pos += 4;
-            relocated_segments.push(seg);
-        }
-
-        // Parse PRP cache.
-        let cache_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize; pos += 4;
-        let prp_cache = data[pos..pos + cache_len].to_vec(); pos += cache_len;
-
-        // Construct params and PRP.
-        let n_usize = n as usize;
-        let w_usize = w as usize;
-        let t_usize = t as usize;
-
-        let params = Params::new(n_usize, w_usize, t_usize)
-            .map_err(|e| JsError::new(&format!("invalid params: {e:?}")))?;
-
-        let key = derive_group_key(prp_key, group_id);
-        let domain = 2 * n_usize;
-        let prp = build_prp(prp_backend, &key, domain, n, &prp_cache);
-
-        let mut ds = RelocationDS::new(n_usize, t_usize, prp)
-            .map_err(|e| JsError::new(&format!("DS init failed: {e:?}")))?;
-
-        // Replay relocated segments to restore DS' state.
-        for &seg in &relocated_segments {
-            ds.relocate_segment(seg as usize)
-                .map_err(|e| JsError::new(&format!("replay relocate failed: {e:?}")))?;
-        }
-
-        // Parse hints.
-        let m = params.m;
-        let mut hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
-        for i in 0..m {
-            let start = pos + i * w_usize;
-            let end = start + w_usize;
-            if end > data.len() {
-                return Err(JsError::new(&format!(
-                    "truncated hints at segment {i}: need {end}, have {}", data.len()
-                )));
-            }
-            hints[i].copy_from_slice(&data[start..end]);
-        }
-
-        let seed = make_rng_seed(&key, group_id, query_count as u32);
-
-        // `key` and `group_id` are consumed by `make_rng_seed` above —
-        // neither is retained on the struct. See the NOTE on
-        // `HarmonyGroup` above for the rationale.
-        let _ = key;
-        let _ = group_id;
-
-        Ok(HarmonyGroup {
-            params,
-            ds,
-            hints,
-            query_count,
-            rng: ChaCha20Rng::from_seed(seed),
-            prp_backend,
-            prp_cache,
-            real_n,
-            relocated_segments,
-            last_segment: 0,
-            last_position: 0,
-            last_query: 0,
-            last_position_map: Vec::new(),
-            last_is_dummy: Vec::new(),
-            deferred_entries: None,
-            deferred_answer: None,
-            pending_pair: None,
-        })
+        Self::deserialize_checked(data, prp_key, group_id).map_err(|e| JsError::new(&e))
     }
 
     // ─── Getters ────────────────────────────────────────────────────────
@@ -1319,6 +1193,206 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
+impl HarmonyGroup {
+    /// Rust/native hint loader that returns a pure Rust error without invoking
+    /// JavaScript imports. The wasm-bindgen wrapper maps this error to JsError.
+    pub fn load_hints_checked(&mut self, hints_data: &[u8]) -> Result<(), String> {
+        if self.pending_pair.is_some() {
+            return Err(
+                "load_hints called while a pipelined pair query is in flight; \
+                 call process_response_pair first to complete the pair"
+                    .into(),
+            );
+        }
+        let m = self.params.m;
+        let w = self.params.w;
+        let expected = m * w;
+        if hints_data.len() != expected {
+            return Err(format!(
+                "expected {expected} bytes of hints, got {}",
+                hints_data.len()
+            ));
+        }
+        for i in 0..m {
+            let start = i * w;
+            self.hints[i].copy_from_slice(&hints_data[start..start + w]);
+        }
+        Ok(())
+    }
+
+    /// Rust/native constructor that returns a pure Rust error without invoking
+    /// JavaScript imports. The wasm-bindgen wrapper maps this error to JsError.
+    pub fn new_with_backend_checked(
+        n: u32, w: u32, t: u32,
+        prp_key: &[u8], group_id: u32,
+        prp_backend: u8,
+    ) -> Result<HarmonyGroup, String> {
+        let w_usize = w as usize;
+        let t_val = if t == 0 { find_best_t(n) } else { t };
+        let (padded_n, t_val) = pad_n_for_t(n, t_val);
+        let padded_n_usize = padded_n as usize;
+        let t_usize = t_val as usize;
+
+        let params = Params::new(padded_n_usize, w_usize, t_usize)
+            .map_err(|e| format!("invalid params: {e:?}"))?;
+        let key = derive_group_key(prp_key, group_id);
+        let domain = 2 * padded_n_usize;
+        let prp_cache = save_prp_cache(prp_backend, &key, domain, &[]);
+        let prp = build_prp(prp_backend, &key, domain, padded_n, &prp_cache)?;
+        let ds = RelocationDS::new(padded_n_usize, t_usize, prp)
+            .map_err(|e| format!("DS init failed: {e:?}"))?;
+
+        let m = params.m;
+        let hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
+        let seed = make_rng_seed(&key, group_id, 0);
+
+        Ok(HarmonyGroup {
+            params,
+            ds,
+            hints,
+            query_count: 0,
+            rng: ChaCha20Rng::from_seed(seed),
+            prp_backend,
+            prp_cache,
+            real_n: n,
+            relocated_segments: Vec::new(),
+            last_segment: 0,
+            last_position: 0,
+            last_query: 0,
+            last_position_map: Vec::new(),
+            last_is_dummy: Vec::new(),
+            deferred_entries: None,
+            deferred_answer: None,
+            pending_pair: None,
+        })
+    }
+
+    /// Rust/native deserializer counterpart to [`Self::deserialize`].
+    pub fn deserialize_checked(
+        data: &[u8],
+        prp_key: &[u8],
+        group_id: u32,
+    ) -> Result<HarmonyGroup, String> {
+        fn take<'a>(
+            data: &'a [u8],
+            pos: &mut usize,
+            len: usize,
+            field: &str,
+        ) -> Result<&'a [u8], String> {
+            let end = pos
+                .checked_add(len)
+                .ok_or_else(|| format!("serialized {field} offset overflow"))?;
+            let bytes = data.get(*pos..end).ok_or_else(|| {
+                format!(
+                    "serialized data truncated while reading {field}: need {end}, have {}",
+                    data.len()
+                )
+            })?;
+            *pos = end;
+            Ok(bytes)
+        }
+
+        fn read_u32(
+            data: &[u8],
+            pos: &mut usize,
+            field: &str,
+        ) -> Result<u32, String> {
+            let bytes: [u8; 4] = take(data, pos, 4, field)?
+                .try_into()
+                .map_err(|_| format!("serialized {field} has invalid width"))?;
+            Ok(u32::from_le_bytes(bytes))
+        }
+
+        if data.len() < 25 {
+            return Err("serialized data too short".into());
+        }
+
+        let mut pos = 0;
+        let n = read_u32(data, &mut pos, "padded_n")?;
+        let w = read_u32(data, &mut pos, "w")?;
+        let t = read_u32(data, &mut pos, "t")?;
+        let query_count = read_u32(data, &mut pos, "query_count")? as usize;
+        let prp_backend = take(data, &mut pos, 1, "prp_backend")?[0];
+        let real_n = read_u32(data, &mut pos, "real_n")?;
+
+        let num_relocated = read_u32(data, &mut pos, "num_relocated")? as usize;
+        let relocated_len = num_relocated
+            .checked_mul(4)
+            .ok_or_else(|| "serialized relocated segment length overflow".to_string())?;
+        let relocated_bytes = take(
+            data,
+            &mut pos,
+            relocated_len,
+            "relocated segments",
+        )?;
+        let mut relocated_segments = Vec::new();
+        relocated_segments
+            .try_reserve_exact(num_relocated)
+            .map_err(|_| "serialized relocated segment count is too large".to_string())?;
+        for bytes in relocated_bytes.chunks_exact(4) {
+            relocated_segments.push(u32::from_le_bytes(
+                bytes
+                    .try_into()
+                    .map_err(|_| "serialized relocated segment has invalid width".to_string())?,
+            ));
+        }
+
+        let cache_len = read_u32(data, &mut pos, "cache_len")? as usize;
+        let prp_cache = take(data, &mut pos, cache_len, "PRP cache")?.to_vec();
+        let n_usize = n as usize;
+        let w_usize = w as usize;
+        let t_usize = t as usize;
+        let params = Params::new(n_usize, w_usize, t_usize)
+            .map_err(|e| format!("invalid params: {e:?}"))?;
+
+        let m = params.m;
+        let hints_len = m
+            .checked_mul(w_usize)
+            .ok_or_else(|| "serialized hint length overflow".to_string())?;
+        let hints_data = take(data, &mut pos, hints_len, "hints")?;
+
+        let key = derive_group_key(prp_key, group_id);
+        let domain = n_usize
+            .checked_mul(2)
+            .ok_or_else(|| "serialized PRP domain overflow".to_string())?;
+        let prp = build_prp(prp_backend, &key, domain, n, &prp_cache)?;
+        let mut ds = RelocationDS::new(n_usize, t_usize, prp)
+            .map_err(|e| format!("DS init failed: {e:?}"))?;
+        for &seg in &relocated_segments {
+            ds.relocate_segment(seg as usize)
+                .map_err(|e| format!("replay relocate failed: {e:?}"))?;
+        }
+
+        let mut hints: Vec<Vec<u8>> = (0..m).map(|_| vec![0u8; w_usize]).collect();
+        for i in 0..m {
+            let start = i * w_usize;
+            let end = start + w_usize;
+            hints[i].copy_from_slice(&hints_data[start..end]);
+        }
+
+        let seed = make_rng_seed(&key, group_id, query_count as u32);
+        Ok(HarmonyGroup {
+            params,
+            ds,
+            hints,
+            query_count,
+            rng: ChaCha20Rng::from_seed(seed),
+            prp_backend,
+            prp_cache,
+            real_n,
+            relocated_segments,
+            last_segment: 0,
+            last_position: 0,
+            last_query: 0,
+            last_position_map: Vec::new(),
+            last_is_dummy: Vec::new(),
+            deferred_entries: None,
+            deferred_answer: None,
+            pending_pair: None,
+        })
+    }
+}
+
 // ─── Utility exports ────────────────────────────────────────────────────────
 
 #[wasm_bindgen]
@@ -1356,7 +1430,10 @@ pub fn verify_protocol_impl(n: u32, w: u32, backend: u8) -> bool {
     let domain = 2 * padded_n_usize;
 
     // Server-side: compute hints using padded_n.
-    let prp_server = build_prp(backend, &derived_key, domain, padded_n, &[]);
+    let prp_server = match build_prp(backend, &derived_key, domain, padded_n, &[]) {
+        Ok(prp) => prp,
+        Err(_) => return false,
+    };
     let params = match Params::new(padded_n_usize, w_usize, t) {
         Ok(p) => p,
         Err(_) => return false,
@@ -1381,12 +1458,12 @@ pub fn verify_protocol_impl(n: u32, w: u32, backend: u8) -> bool {
     }
 
     // Client creates group with real_n — padding happens internally.
-    let mut group = match HarmonyGroup::new_with_backend(n, w, t_val, &key, group_id, backend) {
+    let mut group = match HarmonyGroup::new_with_backend_checked(n, w, t_val, &key, group_id, backend) {
         Ok(b) => b,
         Err(_) => return false,
     };
     let flat_hints: Vec<u8> = hints.iter().flat_map(|h| h.iter().copied()).collect();
-    if group.load_hints(&flat_hints).is_err() { return false; }
+    if group.load_hints_checked(&flat_hints).is_err() { return false; }
 
     // Simulate server: sorted non-empty indices → individual entries.
     let simulate = |req: &HarmonyRequest, db: &[Vec<u8>], real_n: usize, w: usize, _t: usize| -> Vec<u8> {
@@ -1418,7 +1495,7 @@ pub fn verify_protocol_impl(n: u32, w: u32, backend: u8) -> bool {
 
     // Serialize and deserialize.
     let serialized = group.serialize();
-    let mut group = match HarmonyGroup::deserialize(&serialized, &key, group_id) {
+    let mut group = match HarmonyGroup::deserialize_checked(&serialized, &key, group_id) {
         Ok(b) => b,
         Err(_) => return false,
     };
@@ -1470,6 +1547,112 @@ mod tests {
         let k1 = derive_group_key(&key, 1);
         assert_ne!(k0, k1);
         assert_eq!(k0, key);
+    }
+
+    #[test]
+    fn test_unknown_prp_backend_is_rejected_without_native_panic() {
+        let key = [0x42u8; 16];
+        let error = HarmonyGroup::new_with_backend_checked(64, 32, 0, &key, 0, u8::MAX)
+            .err().expect("unknown backend must fail");
+        assert_eq!(error, "unsupported HarmonyPIR PRP backend: 255");
+        assert!(!verify_protocol_impl(64, 32, u8::MAX));
+
+        let group = HarmonyGroup::new(64, 32, 0, &key, 0).unwrap();
+        let mut serialized = group.serialize();
+        serialized[16] = u8::MAX;
+        let error = HarmonyGroup::deserialize_checked(&serialized, &key, 0)
+            .err().expect("unknown serialized backend must fail");
+        assert_eq!(error, "unsupported HarmonyPIR PRP backend: 255");
+    }
+
+    #[test]
+    fn test_load_hints_checked_rejects_bad_length_without_native_panic() {
+        let key = [0x42u8; 16];
+        let mut group = HarmonyGroup::new_with_backend_checked(64, 32, 0, &key, 0, PRP_HMR12)
+            .expect("valid group");
+        let error = group
+            .load_hints_checked(&[])
+            .expect_err("wrong hint length must fail");
+        assert!(error.starts_with("expected "));
+        assert!(error.ends_with(" bytes of hints, got 0"));
+    }
+
+    fn assert_deserialize_rejected_without_panic(data: &[u8]) {
+        let key = [0x42u8; 16];
+        let outcome = std::panic::catch_unwind(|| HarmonyGroup::deserialize_checked(data, &key, 0));
+        assert!(outcome.is_ok(), "malformed serialized group must not panic");
+        assert!(
+            outcome.unwrap().is_err(),
+            "malformed serialized group must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_checked_rejects_truncated_relocated_segments_without_panic() {
+        // The fixed header ends with num_relocated at bytes 21..25.  Claiming
+        // one segment without providing its four bytes used to index beyond
+        // the input after the coarse 25-byte minimum check.
+        let mut data = vec![0u8; 25];
+        data[21..25].copy_from_slice(&1u32.to_le_bytes());
+        assert_deserialize_rejected_without_panic(&data);
+    }
+
+    #[test]
+    fn test_deserialize_checked_rejects_oversized_relocated_count_without_panic() {
+        let mut data = vec![0u8; 25];
+        data[21..25].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_deserialize_rejected_without_panic(&data);
+    }
+
+    #[test]
+    fn test_deserialize_checked_rejects_truncated_and_oversized_cache_without_panic() {
+        let key = [0x42u8; 16];
+        let group = HarmonyGroup::new_with_backend_checked(64, 32, 0, &key, 0, PRP_HMR12)
+            .expect("valid group");
+        let serialized = group.serialize();
+
+        // With zero relocated segments, cache_len occupies bytes 25..29.
+        let mut truncated = serialized.clone();
+        truncated[25..29].copy_from_slice(&4u32.to_le_bytes());
+        truncated.truncate(29);
+        assert_deserialize_rejected_without_panic(&truncated);
+
+        let mut oversized = serialized;
+        oversized[25..29].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_deserialize_rejected_without_panic(&oversized);
+    }
+
+    #[test]
+    fn test_deserialize_checked_rejects_truncated_hints_without_panic() {
+        let key = [0x42u8; 16];
+        let group = HarmonyGroup::new_with_backend_checked(64, 32, 0, &key, 0, PRP_HMR12)
+            .expect("valid group");
+        let mut serialized = group.serialize();
+        serialized.pop();
+        assert_deserialize_rejected_without_panic(&serialized);
+    }
+
+    #[cfg(not(feature = "fastprp"))]
+    #[test]
+    fn test_fastprp_backend_is_rejected_without_feature_or_native_panic() {
+        let key = [0x42u8; 16];
+        let error = HarmonyGroup::new_with_backend_checked(64, 32, 0, &key, 0, PRP_FASTPRP)
+            .err().expect("FastPRP without feature must fail");
+        assert!(error.contains("without the `fastprp` feature"));
+        assert!(!verify_protocol_impl(64, 32, PRP_FASTPRP));
+
+        let group = HarmonyGroup::new(64, 32, 0, &key, 0).unwrap();
+        let mut serialized = group.serialize();
+        serialized[16] = PRP_FASTPRP;
+        let error = HarmonyGroup::deserialize_checked(&serialized, &key, 0)
+            .err().expect("serialized FastPRP without feature must fail");
+        assert!(error.contains("without the `fastprp` feature"));
+    }
+
+    #[cfg(feature = "fastprp")]
+    #[test]
+    fn test_fastprp_backend_is_supported_with_feature() {
+        assert!(verify_protocol_impl(64, 32, PRP_FASTPRP));
     }
 
     #[test]
@@ -1541,7 +1724,7 @@ mod tests {
         let derived_key = derive_group_key(&key, group_id);
         let domain = 2 * padded_n_usize;
 
-        let prp_server = build_prp(backend, &derived_key, domain, padded_n, &[]);
+        let prp_server = build_prp(backend, &derived_key, domain, padded_n, &[]).unwrap();
         let params = Params::new(padded_n_usize, w_usize, t).unwrap();
         let ds_server = RelocationDS::new(padded_n_usize, t, prp_server).unwrap();
 
@@ -1555,7 +1738,7 @@ mod tests {
         }
 
         let mut group =
-            HarmonyGroup::new_with_backend(n, w, t_val, &key, group_id, backend).unwrap();
+            HarmonyGroup::new_with_backend_checked(n, w, t_val, &key, group_id, backend).unwrap();
         let flat_hints: Vec<u8> = hints.iter().flat_map(|h| h.iter().copied()).collect();
         group.load_hints(&flat_hints).unwrap();
 
@@ -1751,7 +1934,7 @@ mod tests {
 
         let derived_key = derive_group_key(master_key, group_id);
         let domain = 2 * padded_n_usize;
-        let prp_server = build_prp(backend, &derived_key, domain, padded_n, &[]);
+        let prp_server = build_prp(backend, &derived_key, domain, padded_n, &[]).unwrap();
         let params = Params::new(padded_n_usize, w_usize, t).unwrap();
         let ds_server = RelocationDS::new(padded_n_usize, t, prp_server).unwrap();
 
@@ -1936,12 +2119,12 @@ mod tests {
 
         // Sequential client.
         let mut client_seq =
-            HarmonyGroup::new_with_backend(n, w, 0, master_key, 0, backend).unwrap();
+            HarmonyGroup::new_with_backend_checked(n, w, 0, master_key, 0, backend).unwrap();
         client_seq.load_hints(&hints).unwrap();
 
         // Paired client (same construction → same RNG seed).
         let mut client_pair =
-            HarmonyGroup::new_with_backend(n, w, 0, master_key, 0, backend).unwrap();
+            HarmonyGroup::new_with_backend_checked(n, w, 0, master_key, 0, backend).unwrap();
         client_pair.load_hints(&hints).unwrap();
 
         for (i, &(q_1, q_2)) in pairs.iter().enumerate() {

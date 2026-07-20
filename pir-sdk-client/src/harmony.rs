@@ -73,6 +73,28 @@ const RESP_HARMONY_HINTS: u8 = 0x41;
 const REQ_HARMONY_HINTS_V2: u8 = 0x44;
 /// V2: key preamble response variant.
 const RESP_HARMONY_HINTS_KEY: u8 = 0x44;
+const V2_HINT_POOL_UNAVAILABLE: &str = "V2 hint pool temporarily empty/unavailable";
+#[cfg(not(test))]
+const V2_HALF_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+#[cfg(test)]
+const V2_HALF_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum V2HintFetchOutcome {
+    Loaded,
+    PoolUnavailable,
+}
+
+fn should_use_v2_hint_pool(use_v2_protocol: bool, db_id: u8) -> bool {
+    use_v2_protocol && db_id == 0
+}
+
+fn is_v2_hint_pool_unavailable_error(error: &PirError) -> bool {
+    matches!(
+        error,
+        PirError::ServerError(reason) if reason == V2_HINT_POOL_UNAVAILABLE
+    )
+}
 
 /// V2 half-stream hint request — pairs with `REQ_HARMONY_HINTS_V2` but
 /// splits the response into INDEX-only (side=0) or CHUNK-only (side=1)
@@ -1303,7 +1325,7 @@ impl HarmonyClient {
 
         for (&gid, bytes) in &bundle.main_index {
             let group =
-                HarmonyGroup::deserialize(bytes, &self.master_prp_key, gid as u32).map_err(
+                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, gid as u32).map_err(
                     |e| {
                         PirError::BackendState(format!(
                             "deserialize main INDEX group {}: {:?}",
@@ -1316,7 +1338,7 @@ impl HarmonyClient {
         for (&gid, bytes) in &bundle.main_chunk {
             let group_id = (k_index + gid as usize) as u32;
             let group =
-                HarmonyGroup::deserialize(bytes, &self.master_prp_key, group_id).map_err(|e| {
+                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, group_id).map_err(|e| {
                     PirError::BackendState(format!(
                         "deserialize main CHUNK group {}: {:?}",
                         gid, e
@@ -1337,7 +1359,7 @@ impl HarmonyClient {
             let g = gid as usize;
             let group_id = ((k_index + k_chunk) + sl * k_index + g) as u32;
             let group =
-                HarmonyGroup::deserialize(bytes, &self.master_prp_key, group_id).map_err(|e| {
+                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, group_id).map_err(|e| {
                     PirError::BackendState(format!(
                         "deserialize INDEX sib L{} g{}: {:?}",
                         sl, g, e
@@ -1351,7 +1373,7 @@ impl HarmonyClient {
             let group_id =
                 ((k_index + k_chunk) + index_sib_levels * k_index + sl * k_chunk + g) as u32;
             let group =
-                HarmonyGroup::deserialize(bytes, &self.master_prp_key, group_id).map_err(|e| {
+                HarmonyGroup::deserialize_checked(bytes, &self.master_prp_key, group_id).map_err(|e| {
                     PirError::BackendState(format!(
                         "deserialize CHUNK sib L{} g{}: {:?}",
                         sl, g, e
@@ -1633,6 +1655,7 @@ impl HarmonyClient {
         // Dispatch matrix for main hint fetch (cold cache only — the
         // warm-cache fast path returned above):
         //
+        //   db_id != 0:              → V1 (the V2 pool is bound to db0)
         //   pool=2 AND v2:           → V2-half (parallel; this commit)
         //   pool=2 AND v1-opt-in:    → V1 parallel (slow; bench/fallback only)
         //   pool=1 AND v2:           → V2 full single-stream
@@ -1648,30 +1671,36 @@ impl HarmonyClient {
         // socket is available because it splits the ~20 MB stream
         // across two TCP connections — each connection gets its own
         // bandwidth-delay-product budget, halving wall time on far
-        // (high-RTT) clients. Falls back to V2 full on any error
-        // (older servers, network hiccups, etc.).
+        // (high-RTT) clients. A malformed or interrupted V2 response is
+        // fail-closed; only the server's exact preamble-level pool-empty
+        // response permits a retry through V1.
+        let use_v2_for_db = should_use_v2_hint_pool(self.use_v2_protocol, db_info.db_id);
         let want_v1_parallel =
             matches!(std::env::var("HARMONY_USE_V1_PARALLEL").as_deref(), Ok("1"));
-        if want_v1_parallel && self.hint_conn_secondary.is_some() {
+        if (want_v1_parallel || !use_v2_for_db) && self.hint_conn_secondary.is_some() {
             return self.ensure_groups_ready_v1_parallel(db_info, progress).await;
         }
-        if self.use_v2_protocol && self.hint_conn_secondary.is_some() {
-            match self
-                .ensure_groups_ready_v2_half(db_info, progress)
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(e) => {
+        if use_v2_for_db && self.hint_conn_secondary.is_some() {
+            match self.ensure_groups_ready_v2_half(db_info, progress).await {
+                Ok(V2HintFetchOutcome::Loaded) => return Ok(()),
+                Ok(V2HintFetchOutcome::PoolUnavailable) => {
                     log::warn!(
-                        "[PIR-AUDIT] V2-half failed ({}); falling back to V2 full",
-                        e
+                        "[PIR-AUDIT] V2 hint pool temporarily unavailable; falling back to V1"
                     );
-                    // Continue to V2 full below.
+                    return self.ensure_groups_ready_v1_parallel(db_info, progress).await;
                 }
+                Err(e) => return Err(e),
             }
         }
-        if self.use_v2_protocol {
-            return self.ensure_groups_ready_v2(db_info, progress).await;
+        if use_v2_for_db {
+            match self.ensure_groups_ready_v2(db_info, progress).await? {
+                V2HintFetchOutcome::Loaded => return Ok(()),
+                V2HintFetchOutcome::PoolUnavailable => {
+                    log::warn!(
+                        "[PIR-AUDIT] V2 hint pool temporarily unavailable; falling back to V1"
+                    );
+                }
+            }
         }
         if self.hint_conn_secondary.is_some() {
             return self.ensure_groups_ready_v1_parallel(db_info, progress).await;
@@ -1684,7 +1713,7 @@ impl HarmonyClient {
         let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
 
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 db_info.index_bins,
                 index_w as u32,
                 0, // T=0 means "pick balanced T"
@@ -1697,7 +1726,7 @@ impl HarmonyClient {
         }
 
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 db_info.chunk_bins,
                 chunk_w as u32,
                 0,
@@ -1768,7 +1797,7 @@ impl HarmonyClient {
         &mut self,
         db_info: &DatabaseInfo,
         progress: Option<&dyn HintProgress>,
-    ) -> PirResult<()> {
+    ) -> PirResult<V2HintFetchOutcome> {
         let k_index = db_info.index_k as usize;
         let k_chunk = db_info.chunk_k as usize;
         let total = (k_index + k_chunk) as u32;
@@ -1797,7 +1826,11 @@ impl HarmonyClient {
         if body.is_empty() || body[0] != RESP_HARMONY_HINTS_KEY {
             if !body.is_empty() && body[0] == RESP_ERROR {
                 let reason = String::from_utf8_lossy(&body[1..]).to_string();
-                return Err(PirError::ServerError(reason));
+                let error = PirError::ServerError(reason);
+                if is_v2_hint_pool_unavailable_error(&error) {
+                    return Ok(V2HintFetchOutcome::PoolUnavailable);
+                }
+                return Err(error);
             }
             return Err(PirError::Protocol(format!(
                 "expected V2 key preamble (0x{:02x}), got 0x{:02x}",
@@ -1822,7 +1855,7 @@ impl HarmonyClient {
         let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
 
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 db_info.index_bins,
                 index_w as u32,
                 0,
@@ -1835,7 +1868,7 @@ impl HarmonyClient {
         }
 
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 db_info.chunk_bins,
                 chunk_w as u32,
                 0,
@@ -1880,7 +1913,7 @@ impl HarmonyClient {
                 PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
             })?;
             group
-                .load_hints(hints_data)
+                .load_hints_checked(hints_data)
                 .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
 
             done += 1;
@@ -1922,7 +1955,7 @@ impl HarmonyClient {
                 PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
             })?;
             group
-                .load_hints(hints_data)
+                .load_hints_checked(hints_data)
                 .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
 
             done += 1;
@@ -1961,7 +1994,7 @@ impl HarmonyClient {
             );
         }
 
-        Ok(())
+        Ok(V2HintFetchOutcome::Loaded)
     }
 
     /// V2 half-stream parallel main hint fetch.
@@ -1978,17 +2011,47 @@ impl HarmonyClient {
     /// code as `ensure_groups_ready_v2`. Only the dispatch
     /// (parallel send + matched-key check after) differs.
     ///
-    /// Returns `Err` on any wire / protocol error so the caller (the
-    /// `ensure_groups_ready` dispatch matrix) can fall back to V2 full
-    /// single-stream — older servers that don't recognize
-    /// `REQ_HARMONY_HINTS_V2_HALF` will return a `RESP_ERROR` and this
-    /// function bails, letting the fallback proceed.
+    /// Wire, protocol, and unknown server errors are fail-closed. Only
+    /// matching, complete pool-unavailable preambles on both sockets return
+    /// `PoolUnavailable`, which permits the caller to retry through V1.
     #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", v2_half = true, db_id = db_info.db_id))]
     async fn ensure_groups_ready_v2_half(
         &mut self,
         db_info: &DatabaseInfo,
         progress: Option<&dyn HintProgress>,
-    ) -> PirResult<()> {
+    ) -> PirResult<V2HintFetchOutcome> {
+        #[cfg(target_arch = "wasm32")]
+        async fn browser_delay(duration: std::time::Duration) -> PirResult<()> {
+            use wasm_bindgen::{JsCast, JsValue};
+
+            // Keep only the Send-capable oneshot receiver across `.await`.
+            // Browser JS values and the callback are installed synchronously;
+            // `once_into_js` releases the Rust closure after setTimeout invokes
+            // it.  This preserves the async-trait Send bound on wasm32, where
+            // JsFuture itself is !Send.
+            let receiver = {
+                let (sender, receiver) = futures_channel::oneshot::channel();
+                let callback = wasm_bindgen::closure::Closure::once_into_js(move || {
+                    let _ = sender.send(());
+                });
+                let global = js_sys::global();
+                let timer = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
+                    .map_err(|e| PirError::BackendState(format!("read setTimeout: {e:?}")))?
+                    .dyn_into::<js_sys::Function>()
+                    .map_err(|_| PirError::BackendState("setTimeout is not a function".into()))?;
+                let delay_ms = i32::try_from(duration.as_millis())
+                    .map_err(|_| PirError::BackendState("V2-half timeout is too large".into()))?;
+                timer
+                    .call2(&global, &callback, &JsValue::from(delay_ms))
+                    .map_err(|e| PirError::BackendState(format!("setTimeout failed: {e:?}")))?;
+                receiver
+            };
+            receiver
+                .await
+                .map_err(|_| PirError::BackendState("setTimeout callback dropped".into()))?;
+            Ok(())
+        }
+
         let k_index = db_info.index_k as usize;
         let k_chunk = db_info.chunk_k as usize;
         let total = (k_index + k_chunk) as u32;
@@ -2041,6 +2104,12 @@ impl HarmonyClient {
         // The shared-key check on the call site runs against the
         // returned `prp_key`s; the built groups are then moved into
         // `self.{index,chunk}_groups`.
+        type HalfData = (u8, [u8; 16], HashMap<u8, HarmonyGroup>, u64);
+        enum HalfDrainOutcome {
+            Loaded(HalfData),
+            PoolUnavailable,
+        }
+
         #[allow(clippy::too_many_arguments)]
         async fn drain_half_build(
             conn: &mut Box<dyn PirTransport>,
@@ -2051,7 +2120,7 @@ impl HarmonyClient {
             bins: u32,
             slot_size: u32,
             base_offset: usize, // 0 for INDEX, k_index for CHUNK
-        ) -> PirResult<(u8, [u8; 16], HashMap<u8, HarmonyGroup>, u64)> {
+        ) -> PirResult<HalfDrainOutcome> {
             // 1. Receive key preamble.
             let preamble = conn.recv().await?;
             let mut total_resp: u64 = preamble.len() as u64;
@@ -2065,7 +2134,11 @@ impl HarmonyClient {
             if body.is_empty() || body[0] != RESP_HARMONY_HINTS_KEY {
                 if !body.is_empty() && body[0] == RESP_ERROR {
                     let reason = String::from_utf8_lossy(&body[1..]).to_string();
-                    return Err(PirError::ServerError(reason));
+                    let error = PirError::ServerError(reason);
+                    if is_v2_hint_pool_unavailable_error(&error) {
+                        return Ok(HalfDrainOutcome::PoolUnavailable);
+                    }
+                    return Err(error);
                 }
                 return Err(PirError::Protocol(format!(
                     "{}: expected V2-half key preamble (0x{:02x}), got 0x{:02x}",
@@ -2092,7 +2165,7 @@ impl HarmonyClient {
             let mut groups: HashMap<u8, HarmonyGroup> =
                 HashMap::with_capacity(num_groups as usize);
             for g in 0..num_groups {
-                let group = HarmonyGroup::new_with_backend(
+                let group = HarmonyGroup::new_with_backend_checked(
                     bins,
                     slot_size,
                     0,
@@ -2152,21 +2225,26 @@ impl HarmonyClient {
                     ))
                 })?;
                 group
-                    .load_hints(hints_data)
+                    .load_hints_checked(hints_data)
                     .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
             }
 
             // 4. Receive terminal sentinel.
             let _terminal = conn.recv().await?;
 
-            Ok((prp_backend, prp_key, groups, total_resp))
+            Ok(HalfDrainOutcome::Loaded((
+                prp_backend,
+                prp_key,
+                groups,
+                total_resp,
+            )))
         }
 
         let t_half_start = Instant::now();
 
         let index_fut = async {
             hint_primary.send(request_index).await?;
-            let r = drain_half_build(
+            drain_half_build(
                 &mut hint_primary,
                 k_index as u8,
                 "V2-half INDEX",
@@ -2174,12 +2252,11 @@ impl HarmonyClient {
                 index_w as u32,
                 0, // base_offset for INDEX groups
             )
-            .await?;
-            Ok::<_, PirError>((hint_primary, r))
+            .await
         };
         let chunk_fut = async {
             hint_secondary.send(request_chunk).await?;
-            let r = drain_half_build(
+            drain_half_build(
                 &mut hint_secondary,
                 k_chunk as u8,
                 "V2-half CHUNK",
@@ -2187,36 +2264,78 @@ impl HarmonyClient {
                 chunk_w as u32,
                 k_index, // base_offset for CHUNK groups
             )
-            .await?;
-            Ok::<_, PirError>((hint_secondary, r))
+            .await
         };
 
         #[cfg(not(target_arch = "wasm32"))]
-        let join_res = tokio::try_join!(index_fut, chunk_fut);
+        let join_result = {
+            let joined = async { tokio::try_join!(index_fut, chunk_fut) };
+            match tokio::time::timeout(V2_HALF_FETCH_TIMEOUT, joined).await {
+                Ok(result) => result,
+                Err(_) => Err(PirError::Timeout(format!(
+                    "V2-half hint fetch exceeded {:?}",
+                    V2_HALF_FETCH_TIMEOUT
+                ))),
+            }
+        };
         #[cfg(target_arch = "wasm32")]
-        let join_res = futures::future::try_join(index_fut, chunk_fut).await;
+        let join_result = {
+            use futures::future::{select, Either};
 
-        // Always restore the connections to self, even on error, so a
-        // fallback to V2 full has a working primary socket and the
-        // secondary slot is restored for subsequent rounds.
-        let (idx_out, chk_out) = match join_res {
-            Ok(v) => v,
-            Err(e) => {
-                // Best-effort: we don't have the moved conns back here,
-                // so they're dropped. The next reconnect will rebuild.
-                return Err(e);
+            let joined = Box::pin(futures::future::try_join(index_fut, chunk_fut));
+            let deadline = Box::pin(async {
+                browser_delay(V2_HALF_FETCH_TIMEOUT).await?;
+                Err(PirError::Timeout(format!(
+                    "V2-half hint fetch exceeded {:?}",
+                    V2_HALF_FETCH_TIMEOUT
+                )))
+            });
+            match select(joined, deadline).await {
+                Either::Left((result, _)) | Either::Right((result, _)) => result,
             }
         };
 
-        let (hp, (idx_backend, idx_key, idx_groups, idx_bytes)) = idx_out;
-        let (hs, (chk_backend, chk_key, chk_groups, chk_bytes)) = chk_out;
+        // An arbitrary error can leave unread coalesced hint records in either
+        // transport (or leave the transport itself dead).  Reusing such a
+        // socket would let a later request consume an old hint record as its
+        // key preamble.  Short-circuit the peer future, close both sockets,
+        // and force a reconnect instead.  The exact pool-empty response is an
+        // `Ok(PoolUnavailable)` outcome, so both halves are still observed
+        // before the deliberate V1 fallback below.
+        let (idx_out, chk_out) = match join_result {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                let _ = hint_primary.close().await;
+                let _ = hint_secondary.close().await;
+                return Err(error);
+            }
+        };
 
-        self.hint_conn = Some(hp);
-        self.hint_conn_secondary = Some(hs);
+        let (idx_data, chk_data) = match (idx_out, chk_out) {
+            (HalfDrainOutcome::Loaded(index), HalfDrainOutcome::Loaded(chunk)) => (index, chunk),
+            (HalfDrainOutcome::PoolUnavailable, HalfDrainOutcome::PoolUnavailable) => {
+                // Both error envelopes were consumed completely, so these
+                // sockets are at a clean request boundary for V1.
+                self.hint_conn = Some(hint_primary);
+                self.hint_conn_secondary = Some(hint_secondary);
+                return Ok(V2HintFetchOutcome::PoolUnavailable);
+            }
+            _ => {
+                let _ = hint_primary.close().await;
+                let _ = hint_secondary.close().await;
+                return Err(PirError::Protocol(
+                    "V2-half INDEX and CHUNK pool availability responses disagree".into(),
+                ));
+            }
+        };
+        let (idx_backend, idx_key, idx_groups, idx_bytes) = idx_data;
+        let (chk_backend, chk_key, chk_groups, chk_bytes) = chk_data;
 
         // Both halves must agree on the PRP key + backend; if they
         // don't, the server mis-paired the session — bail.
         if idx_key != chk_key {
+            let _ = hint_primary.close().await;
+            let _ = hint_secondary.close().await;
             return Err(PirError::Protocol(format!(
                 "V2-half: INDEX and CHUNK PRP keys mismatch (INDEX={:02x?}..., CHUNK={:02x?}...)",
                 &idx_key[..4],
@@ -2224,11 +2343,19 @@ impl HarmonyClient {
             )));
         }
         if idx_backend != chk_backend {
+            let _ = hint_primary.close().await;
+            let _ = hint_secondary.close().await;
             return Err(PirError::Protocol(format!(
                 "V2-half: INDEX and CHUNK PRP backends mismatch ({} vs {})",
                 idx_backend, chk_backend
             )));
         }
+
+        // Both streams and their terminal sentinels were consumed, and their
+        // session key/backend binding agrees.  Only now are the sockets safe
+        // to return to the client state.
+        self.hint_conn = Some(hint_primary);
+        self.hint_conn_secondary = Some(hint_secondary);
 
         let dt_wire = t_half_start.elapsed();
         if std::env::var("HARMONY_BENCH").is_ok() {
@@ -2284,7 +2411,7 @@ impl HarmonyClient {
                 e
             );
         }
-        Ok(())
+        Ok(V2HintFetchOutcome::Loaded)
     }
 
     /// V1-protocol parallel main hint fetch.
@@ -2321,7 +2448,7 @@ impl HarmonyClient {
         // gain is small relative to the hint-download wall time, and
         // wasm32 is single-threaded anyway. Keep serial.
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 db_info.index_bins,
                 index_w as u32,
                 0,
@@ -2333,7 +2460,7 @@ impl HarmonyClient {
             self.index_groups.insert(g as u8, group);
         }
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 db_info.chunk_bins,
                 chunk_w as u32,
                 0,
@@ -2570,7 +2697,7 @@ impl HarmonyClient {
             })?;
             let t_load = Instant::now();
             group
-                .load_hints(hints_data)
+                .load_hints_checked(hints_data)
                 .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
             dt_load_total += t_load.elapsed();
 
@@ -3992,7 +4119,7 @@ impl HarmonyClient {
                     nodes = level_n;
                     let t_init = Instant::now();
                     for g in 0..k_index {
-                        let group = HarmonyGroup::new_with_backend(
+                        let group = HarmonyGroup::new_with_backend_checked(
                             level_n as u32,
                             sib_w,
                             0,
@@ -4041,7 +4168,7 @@ impl HarmonyClient {
                     nodes = level_n;
                     let t_init = Instant::now();
                     for g in 0..k_chunk {
-                        let group = HarmonyGroup::new_with_backend(
+                        let group = HarmonyGroup::new_with_backend_checked(
                             level_n as u32,
                             sib_w,
                             0,
@@ -4124,7 +4251,7 @@ impl HarmonyClient {
                 nodes = level_n;
                 let t_init = Instant::now();
                 for g in 0..k_index {
-                    let group = HarmonyGroup::new_with_backend(
+                    let group = HarmonyGroup::new_with_backend_checked(
                         level_n as u32,
                         sib_w,
                         0,
@@ -4170,7 +4297,7 @@ impl HarmonyClient {
                 nodes = level_n;
                 let t_init = Instant::now();
                 for g in 0..k_chunk {
-                    let group = HarmonyGroup::new_with_backend(
+                    let group = HarmonyGroup::new_with_backend_checked(
                         level_n as u32,
                         sib_w,
                         0,
@@ -5368,7 +5495,7 @@ async fn fetch_and_load_main_hints_into_map(
         })?;
         let t_load = Instant::now();
         group
-            .load_hints(hints_data)
+            .load_hints_checked(hints_data)
             .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
         dt_load_total += t_load.elapsed();
         received += 1;
@@ -5485,7 +5612,7 @@ async fn fetch_and_load_sib_hints_into_map(
         })?;
         let t_load = Instant::now();
         group
-            .load_hints(hints_data)
+            .load_hints_checked(hints_data)
             .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
         dt_load_total += t_load.elapsed();
         received += 1;
@@ -6936,8 +7063,9 @@ mod tests {
     use super::*;
     use crate::transport::mock::MockTransport;
     use pir_db_attest::BuildKind;
+    use std::collections::VecDeque;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
 
@@ -7029,12 +7157,125 @@ mod tests {
         }
     }
 
+    struct ScriptedCloseTransport {
+        url: &'static str,
+        responses: VecDeque<Vec<u8>>,
+        closed: Arc<AtomicBool>,
+        sends: Arc<AtomicUsize>,
+    }
+
+    impl ScriptedCloseTransport {
+        fn new(
+            url: &'static str,
+            responses: impl IntoIterator<Item = Vec<u8>>,
+            closed: Arc<AtomicBool>,
+            sends: Arc<AtomicUsize>,
+        ) -> Self {
+            Self {
+                url,
+                responses: responses.into_iter().collect(),
+                closed,
+                sends,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PirTransport for ScriptedCloseTransport {
+        async fn send(&mut self, _data: Vec<u8>) -> PirResult<()> {
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(PirError::ConnectionClosed(
+                    "scripted transport closed".into(),
+                ));
+            }
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> PirResult<Vec<u8>> {
+            self.responses
+                .pop_front()
+                .ok_or_else(|| PirError::Protocol("scripted transport has no response".into()))
+        }
+
+        async fn roundtrip(&mut self, _request: &[u8]) -> PirResult<Vec<u8>> {
+            unreachable!("scripted half-stream transport only uses send/recv")
+        }
+
+        async fn close(&mut self) -> PirResult<()> {
+            self.closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn url(&self) -> &str {
+            self.url
+        }
+    }
+
+    struct PendingCloseTransport {
+        url: &'static str,
+        closed: Arc<AtomicBool>,
+        sends: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl PirTransport for PendingCloseTransport {
+        async fn send(&mut self, _data: Vec<u8>) -> PirResult<()> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> PirResult<Vec<u8>> {
+            std::future::pending().await
+        }
+
+        async fn roundtrip(&mut self, _request: &[u8]) -> PirResult<Vec<u8>> {
+            unreachable!("pending half-stream transport only uses send/recv")
+        }
+
+        async fn close(&mut self) -> PirResult<()> {
+            self.closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn url(&self) -> &str {
+            self.url
+        }
+    }
+
     fn handshake_frame(server_eph_byte: u8) -> Vec<u8> {
         let mut payload = vec![0x06];
         payload.extend_from_slice(&[server_eph_byte; 32]);
         let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
         frame.extend_from_slice(&payload);
         frame
+    }
+
+    fn response_frame(body: Vec<u8>) -> Vec<u8> {
+        let mut out = (body.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn v1_hint_frame(group_id: u8, n: u32, t: u32, m: u32, hint_bytes: usize) -> Vec<u8> {
+        let mut body = vec![RESP_HARMONY_HINTS, group_id];
+        body.extend_from_slice(&n.to_le_bytes());
+        body.extend_from_slice(&t.to_le_bytes());
+        body.extend_from_slice(&m.to_le_bytes());
+        body.resize(body.len() + hint_bytes, 0);
+        response_frame(body)
+    }
+
+    fn v2_pool_unavailable_frame() -> Vec<u8> {
+        let mut body = vec![RESP_ERROR];
+        body.extend_from_slice(V2_HINT_POOL_UNAVAILABLE.as_bytes());
+        response_frame(body)
+    }
+
+    fn v2_error_frame(reason: &str) -> Vec<u8> {
+        let mut body = vec![RESP_ERROR];
+        body.extend_from_slice(reason.as_bytes());
+        response_frame(body)
     }
 
     #[tokio::test]
@@ -7051,6 +7292,177 @@ mod tests {
         assert!(!client.is_connected());
         assert_eq!(client.backend_type(), PirBackendType::Harmony);
         assert_eq!(client.prp_backend, PRP_HMR12);
+    }
+
+    #[test]
+    fn non_main_database_never_uses_v2_hint_pool() {
+        assert!(should_use_v2_hint_pool(true, 0));
+        assert!(!should_use_v2_hint_pool(true, 1));
+        assert!(!should_use_v2_hint_pool(true, u8::MAX));
+        assert!(!should_use_v2_hint_pool(false, 0));
+    }
+
+    #[test]
+    fn v2_pool_fallback_requires_exact_server_error() {
+        let exact = PirError::ServerError(V2_HINT_POOL_UNAVAILABLE.into());
+        assert!(is_v2_hint_pool_unavailable_error(&exact));
+
+        let extra = PirError::ServerError(format!("{V2_HINT_POOL_UNAVAILABLE}; retry later"));
+        assert!(!is_v2_hint_pool_unavailable_error(&extra));
+        assert!(!is_v2_hint_pool_unavailable_error(&PirError::Protocol(
+            V2_HINT_POOL_UNAVAILABLE.into(),
+        )));
+        assert!(!is_v2_hint_pool_unavailable_error(&PirError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn exact_v2_pool_unavailable_preamble_falls_back_to_v1() {
+        let mut hint = MockTransport::new("wss://hint");
+        hint.enqueue_response(v2_pool_unavailable_frame());
+        hint.enqueue_response(v1_hint_frame(
+            0,
+            8,
+            4,
+            4,
+            4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+        ));
+        hint.enqueue_response(v1_hint_frame(
+            0,
+            8,
+            4,
+            4,
+            4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
+        ));
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(hint),
+            Box::new(MockTransport::new("wss://query")),
+        );
+
+        client.ensure_groups_ready(&db, None).await.unwrap();
+        assert_eq!(client.loaded_db_id, Some(0));
+        assert_eq!(client.index_groups.len(), 1);
+        assert_eq!(client.chunk_groups.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn exact_v2_half_pool_unavailable_restores_both_sockets_for_v1() {
+        let mut primary = MockTransport::new("wss://hint-primary");
+        primary.enqueue_response(v2_pool_unavailable_frame());
+        primary.enqueue_response(v1_hint_frame(
+            0,
+            8,
+            4,
+            4,
+            4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+        ));
+
+        let mut secondary = MockTransport::new("wss://hint-secondary");
+        secondary.enqueue_response(v2_pool_unavailable_frame());
+        secondary.enqueue_response(v1_hint_frame(
+            0,
+            8,
+            4,
+            4,
+            4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
+        ));
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(primary),
+            Box::new(MockTransport::new("wss://query")),
+        );
+        client.hint_conn_secondary = Some(Box::new(secondary));
+
+        client.ensure_groups_ready(&db, None).await.unwrap();
+        assert_eq!(client.loaded_db_id, Some(0));
+        assert_eq!(client.index_groups.len(), 1);
+        assert_eq!(client.chunk_groups.len(), 1);
+        assert!(client.hint_conn.is_some());
+        assert!(client.hint_conn_secondary.is_some());
+    }
+
+    #[tokio::test]
+    async fn v2_half_single_side_unknown_error_closes_both_without_v1_fallback() {
+        let primary_closed = Arc::new(AtomicBool::new(false));
+        let secondary_closed = Arc::new(AtomicBool::new(false));
+        let primary_sends = Arc::new(AtomicUsize::new(0));
+        let secondary_sends = Arc::new(AtomicUsize::new(0));
+
+        let primary = ScriptedCloseTransport::new(
+            "wss://hint-primary",
+            [v2_error_frame("unexpected V2 failure")],
+            primary_closed.clone(),
+            primary_sends.clone(),
+        );
+        let secondary = ScriptedCloseTransport::new(
+            "wss://hint-secondary",
+            [v2_pool_unavailable_frame()],
+            secondary_closed.clone(),
+            secondary_sends.clone(),
+        );
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(primary),
+            Box::new(MockTransport::new("wss://query")),
+        );
+        client.hint_conn_secondary = Some(Box::new(secondary));
+
+        let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
+        assert!(matches!(error, PirError::ServerError(reason) if reason == "unexpected V2 failure"));
+        assert!(primary_closed.load(Ordering::SeqCst));
+        assert!(secondary_closed.load(Ordering::SeqCst));
+        assert!(client.hint_conn.is_none());
+        assert!(client.hint_conn_secondary.is_none());
+        assert_eq!(primary_sends.load(Ordering::SeqCst), 1);
+        assert!(secondary_sends.load(Ordering::SeqCst) <= 1);
+    }
+
+    #[tokio::test]
+    async fn v2_half_one_pool_empty_one_silent_times_out_and_closes_both() {
+        let primary_closed = Arc::new(AtomicBool::new(false));
+        let secondary_closed = Arc::new(AtomicBool::new(false));
+        let primary_sends = Arc::new(AtomicUsize::new(0));
+        let secondary_sends = Arc::new(AtomicUsize::new(0));
+
+        let primary = ScriptedCloseTransport::new(
+            "wss://hint-primary",
+            [v2_pool_unavailable_frame()],
+            primary_closed.clone(),
+            primary_sends.clone(),
+        );
+        let secondary = PendingCloseTransport {
+            url: "wss://hint-secondary",
+            closed: secondary_closed.clone(),
+            sends: secondary_sends.clone(),
+        };
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(primary),
+            Box::new(MockTransport::new("wss://query")),
+        );
+        client.hint_conn_secondary = Some(Box::new(secondary));
+
+        let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
+        assert!(matches!(error, PirError::Timeout(message) if
+            message.contains("V2-half hint fetch exceeded")));
+        assert!(primary_closed.load(Ordering::SeqCst));
+        assert!(secondary_closed.load(Ordering::SeqCst));
+        assert!(client.hint_conn.is_none());
+        assert!(client.hint_conn_secondary.is_none());
+        assert_eq!(primary_sends.load(Ordering::SeqCst), 1);
+        assert_eq!(secondary_sends.load(Ordering::SeqCst), 1);
     }
 
     /// C4 (docs/CODE_REVIEW_2026-06.md): the master PRP key comes from
@@ -7300,7 +7712,7 @@ mod tests {
         let chunk_w = (CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE) as u32;
 
         for g in 0..k_index {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 info.index_bins,
                 index_w,
                 0,
@@ -7312,7 +7724,7 @@ mod tests {
             client.index_groups.insert(g as u8, group);
         }
         for g in 0..k_chunk {
-            let group = HarmonyGroup::new_with_backend(
+            let group = HarmonyGroup::new_with_backend_checked(
                 info.chunk_bins,
                 chunk_w,
                 0,
