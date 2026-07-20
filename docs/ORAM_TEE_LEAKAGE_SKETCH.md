@@ -1,8 +1,11 @@
 # ORAM TEE Leakage Sketch
 
 This note records the proof-facing shape for the native TEE + ORAM backend.
-It is not a checked proof. The checked proof tree in this checkout is
-`proofs/easycrypt/`; no Lean sources are currently present here.
+It is not a checked proof. The checked EasyCrypt tree lives in
+[`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs);
+no Lean sources are currently present here. Production accepts only the exact
+proof commit, manifest, and verification record pinned by
+`verification/locks/formal-proofs.json`.
 
 ## Backend Model
 
@@ -52,8 +55,8 @@ unless a later response-padding layer is added.
 ## Leakage Record Candidate
 
 The ORAM backend proof should use a leakage record analogous to
-`proofs/easycrypt/Leakage.ec`, but with ORAM transcript fields rather than PIR
-wire rounds:
+[`protocol-proofs/Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec),
+but with ORAM transcript fields rather than PIR wire rounds:
 
 ```text
 type oram_leakage = {

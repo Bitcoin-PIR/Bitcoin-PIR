@@ -137,10 +137,12 @@ don't undermine the documented privacy invariants (`CLAUDE.md`):
   frame is uniform per session, so it shouldn't add a query-distinguishing
   side channel — but confirm the present happens once per session at a fixed
   point, not per-query in a way that correlates with query content.
-- The EasyCrypt leakage model (`proofs/easycrypt/`) currently does **not**
+- The external [EasyCrypt leakage model](https://github.com/Bitcoin-PIR/protocol-proofs)
+  currently does **not**
   cover credential frames. If rate limiting ships to production, extend the
   wire-shape model + the leakage integration tests to include the
-  presentation frame.
+  presentation frame, then update the exact commit, manifest, and verification
+  record in `verification/locks/formal-proofs.json`.
 
 ---
 

@@ -20,7 +20,8 @@
 //!
 //! By construction `L_eq(batch_A, batch_B)` and `¬L_eq(batch_A, batch_C)`
 //! at the `index_max_items_per_group_per_level` axis admitted in
-//! `proofs/easycrypt/Leakage.ec`.
+//! `Bitcoin-PIR/protocol-proofs/Leakage.ec`; production pins its exact revision
+//! in `verification/locks/formal-proofs.json`.
 //!
 //! Run: `cargo run -p pir-sdk-client --example find_colliding_scripthashes`
 //!

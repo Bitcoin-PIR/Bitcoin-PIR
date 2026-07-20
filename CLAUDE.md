@@ -8,13 +8,17 @@ synchronization for incremental updates.
 > **Verification status (2026-04-29).** The multi-session leakage
 > verification effort wrapped: all four privacy invariants below are
 > closed end-to-end across DPF / HarmonyPIR / OnionPIR (Rust) plus the
-> WASM bindings and standalone TS `OnionPirWebClient`. EasyCrypt spec
-> at `proofs/easycrypt/` mechanizes the simulator-property argument
-> (31 lemmas, zero admits). Cross-language equivalence (Rust ↔ TS)
+> WASM bindings and standalone TS `OnionPirWebClient`. The EasyCrypt spec in
+> [`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs)
+> mechanizes the simulator-property argument
+> (39 lemmas, zero admits). Cross-language equivalence (Rust ↔ TS)
 > verified live against Hetzner. See
 > [docs/VERIFICATION_OVERVIEW.md](docs/VERIFICATION_OVERVIEW.md) for
 > the consolidated final-state summary, including the honest scope
 > split (mechanized wire-shape vs cited primitive-layer reductions).
+> Production binds the exact proof commit, manifest, and verification record
+> through [`verification/locks/formal-proofs.json`](verification/locks/formal-proofs.json);
+> the repository's mutable default branch is for browsing only.
 
 ---
 
@@ -215,7 +219,7 @@ required.
 learns the approximate per-query UTXO count — more precisely, the
 per-Merkle-level pass count = the maximum real chunk count across a
 chunk-PBC group. This is the `chunk_max_items_per_group_per_level`
-axis in [`proofs/easycrypt/Leakage.ec`](proofs/easycrypt/Leakage.ec) —
+axis in [`protocol-proofs/Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) —
 an **admitted** (open) axis again.
 
 **Why the pad was removed:** the M=16 pad (`pad_chunk_ids_to_m`,

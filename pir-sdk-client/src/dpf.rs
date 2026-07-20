@@ -1481,7 +1481,8 @@ impl DpfClient {
     /// `max_items_per_group_per_level` is then 2 (independent of which
     /// scripthashes were queried), which is exactly the closure target
     /// for the `index_max_items_per_group_per_level` axis admitted in
-    /// `proofs/easycrypt/Leakage.ec`.
+    /// `Bitcoin-PIR/protocol-proofs/Leakage.ec` (at the revision pinned by
+    /// `verification/locks/formal-proofs.json`).
     ///
     /// Per-server wire round count = `n_pbc_rounds`; for typical
     /// batches with `N ≤ k` the planner packs into 1 round.

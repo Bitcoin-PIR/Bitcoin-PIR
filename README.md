@@ -59,14 +59,26 @@ Anyone can run their own PIR servers from a public Bitcoin Core snapshot. No tru
 
 ```
 BitcoinPIR/
-├── runtime/          PIR servers and reference CLI (Rust)
-├── build/            Database generation pipeline (Rust)
-├── web/              Browser client (TypeScript + WASM)
-├── explorer/         bitcoinjs adapter
-├── electrum_plugin/  Electrum plugin (Python)
-├── doc/              Deployment and integration guides
-└── pdf/              Research paper
+├── pir-core/          Shared database and protocol primitives
+├── pir-runtime-core/ Server protocol and runtime library
+├── pir-sdk*/          Rust, native-client, server, and WASM SDK crates
+├── runtime/           Production server and diagnostic binaries
+├── build/             Database generation pipeline
+├── bpir-admin/        Operator CLI
+├── web/               Production browser query application
+├── explorer/          bitcoinjs adapter
+├── electrum_plugin/   Electrum plugin
+├── deploy/            Reproducible build and deployment integration
+├── docs/              Design, verification, and operating documentation
+└── verification/      External proof locks and implementation contracts
 ```
+
+The repository is being reorganized into stable `apps/`, `crates/`, `tools/`,
+and `verification/` boundaries. Reusable protocols, formal proofs, generated
+proof bundles, demos, and research sources live in separate repositories under
+the [Bitcoin-PIR organization](https://github.com/Bitcoin-PIR). See
+[`docs/REPOSITORY_BOUNDARIES.md`](docs/REPOSITORY_BOUNDARIES.md) for the
+ownership rules and migration gates.
 
 ## Getting Started
 

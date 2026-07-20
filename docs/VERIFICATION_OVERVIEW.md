@@ -11,7 +11,7 @@ For any backend `b ∈ {DPF, HarmonyPIR, OnionPIR}` and any two queries
 q₁, q₂ that agree on the four leakage axes admitted in the spec, the
 wire transcripts `Real(b, q₁)` and `Real(b, q₂)` are
 **byte-shape-identical**. The same holds for batches of queries
-(`Real_batch`). This is mechanized in EasyCrypt (31 lemmas, zero
+(`Real_batch`). This is mechanized in EasyCrypt (39 lemmas, zero
 admits), empirically witnessed against the live Hetzner staging
 deployment, and pinned cross-language between the Rust reference
 implementation and the standalone TypeScript `OnionPirWebClient`.
@@ -48,9 +48,16 @@ This section matters because it draws the honest scope line. Future
 sessions should preserve this distinction in any external-facing
 write-up.
 
-### Mechanized in this repo
+### Mechanized in `Bitcoin-PIR/protocol-proofs`
 
-1. **Wire-shape simulator-property** (`proofs/easycrypt/`). 31
+The formal source of truth is the external
+[`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs)
+repository. File links below use its default branch for convenient reading;
+production does not trust that mutable branch. It binds the exact proof commit,
+manifest, and content-addressed verification record through
+`verification/locks/formal-proofs.json` and reruns the locked proof in CI.
+
+1. **Wire-shape simulator-property** ([proof sources](https://github.com/Bitcoin-PIR/protocol-proofs)). 39
    lemmas, zero `admit` tactics, 415 verification points. The proof
    says: any two queries with equal `L(q)` produce byte-shape-equal
    transcripts under the abstract per-section model defined in
@@ -96,7 +103,7 @@ write-up.
 
 The bridge from "wire SHAPE matches" to "wire BYTES indistinguishable"
 relies on the ideal-primitive hypothesis modelled abstractly in
-`proofs/easycrypt/Common.ec`: byte content within each fixed-length
+[`Common.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Common.ec): byte content within each fixed-length
 envelope is treated as ideal-primitive uniform randomness. Closing
 this gap formally would be a multi-year research project per
 primitive; not pursued here.
@@ -146,7 +153,7 @@ two scripthashes whose `[0]`s collided accumulated 4 items in one
 group (`max_items_per_group = 4`); post-closure the planner spreads
 them so `max_items_per_group = 2` regardless of input.
 
-- Spec: `proofs/easycrypt/Leakage.ec` axis 1.
+- Spec: [`Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) axis 1.
 - Doc: `CLAUDE.md` § "INDEX Merkle Group-Symmetry".
 - Helper: `pir-sdk-client/src/dpf.rs::plan_index_pbc_rounds` +
   `build_index_alphas_batched` (3 Kani harnesses).
@@ -176,7 +183,7 @@ all-dummy CHUNK-Merkle pass even for a 0-chunk query, so a not-found
 query emits the same ChunkMerkleSiblings + DATA tree-top traffic as a
 found query.
 
-- Spec: `proofs/easycrypt/Leakage.ec` axis 2 (re-opened, admitted).
+- Spec: [`Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) axis 2 (re-opened, admitted).
 - Doc: `CLAUDE.md` § "CHUNK Merkle Item-Count — Documented Trade-off".
 - History: closed by `565ea47` (DPF), `08ec736` (Harmony), `f915a65`
   (OnionPIR), `eb5128c` (standalone TS); re-opened in Phase 4 — the
@@ -191,7 +198,7 @@ gates the next at commit / PR / release time.
 
 | Layer | What it pins | Cost |
 |---|---|---|
-| EasyCrypt simulator-property (31 lemmas) | Wire-shape factors through `L(q)`. Per-query AND multi-query. | One-time + `make check` (~30s) |
+| EasyCrypt simulator-property (39 lemmas) | Wire-shape factors through `L(q)`. Per-query AND multi-query, including the generated contract-binding lemmas. | One-time + `make check` (~30s) |
 | Kani harnesses (18+) | Pure-helper invariants exhaustively under bounded models. | Run one at a time, ≤15s each |
 | Rust unit tests (151) | Per-helper correctness on concrete inputs. | <10s, every PR via `pir-sdk-integration.yml` |
 | Rust integration tests (live Hetzner, ~30) | End-to-end byte-shape against the production server. | 30-300s per test, daily cron + PR |
@@ -249,21 +256,24 @@ Multi-query (curated colliding scripthash batches):
 - `web/src/__tests__/` — vitest unit tests including the live diff.
 
 ### Spec
-- `proofs/easycrypt/Common.ec` — abstract types.
-- `proofs/easycrypt/Leakage.ec` — leakage record `L(q)`, four axes,
+- [`Common.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Common.ec) — abstract types.
+- [`ContractBinding.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/ContractBinding.ec) — generated and compiled binding to the product wire contract.
+- [`Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) — leakage record `L(q)`, four axes,
   `L_factors` axiom.
-- `proofs/easycrypt/Protocol.ec` — abstract `Real` model.
-- `proofs/easycrypt/Protocol_{DPF,Harmony,Onion}.ec` — per-backend
+- [`Protocol.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Protocol.ec) — abstract `Real` model.
+- [`Protocol_DPF.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Protocol_DPF.ec),
+  [`Protocol_Harmony.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Protocol_Harmony.ec), and
+  [`Protocol_Onion.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Protocol_Onion.ec) — per-backend
   concrete bindings + specialisation lemmas.
-- `proofs/easycrypt/Simulator.ec` — `Sim` model.
-- `proofs/easycrypt/Theorem.ec` — 16 theorem-side lemmas including
+- [`Simulator.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Simulator.ec) — `Sim` model.
+- [`Theorem.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Theorem.ec) — 16 theorem-side lemmas including
   per-query + multi-query simulator-property.
-- `proofs/easycrypt/README.md` — full file map and proof status.
+- [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md) — full file map and proof status.
 
 ### Docs
 - `CLAUDE.md` — project memory, with all four invariant sections.
 - `docs/VERIFICATION_OVERVIEW.md` — this file.
-- `proofs/easycrypt/README.md` — EasyCrypt verification recipe.
+- [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md) — EasyCrypt verification recipe.
 
 ### Notable commits (newest first)
 - `f087685` — CI release-readiness gate (wasm-pack + tsc + vitest).
@@ -289,10 +299,12 @@ Multi-query (curated colliding scripthash batches):
 
 If you're picking this up cold:
 
-1. Start with `proofs/easycrypt/README.md` — it's the most
+1. Start with [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md) — it's the most
    self-contained explanation of the verification approach.
-2. Run `make check` from `proofs/easycrypt/` to confirm the spec
-   typechecks (one-time install via opam; ~30s on a warm cache).
+2. Check out the exact `protocol-proofs` commit in
+   `verification/locks/formal-proofs.json`, then run `make check` at that
+   repository root to confirm the spec typechecks (one-time install via opam;
+   ~30s on a warm cache).
 3. Run `cargo test -p pir-sdk-client --lib` to confirm 151
    unit tests pass.
 4. Run `cd web && npm test` to confirm 138 vitest tests pass.
@@ -302,7 +314,7 @@ If you're picking this up cold:
 
 Adding a new privacy axis to the leakage record:
 
-1. Add the axis to `proofs/easycrypt/Leakage.ec` with prose
+1. Add the axis to [`protocol-proofs/Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) with prose
    describing what the wire reveals.
 2. Add a corresponding accessor `query_X` and a per-axis projection
    lemma `L_eq_query_X` in `Theorem.ec`.
