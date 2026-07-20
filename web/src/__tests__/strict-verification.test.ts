@@ -45,6 +45,7 @@ function proofHandle(pin: DatabaseProofPin, overrides: Partial<WasmDatabaseProof
     networkMagicHex: pin.networkMagicHex,
     builderBinarySha256Hex: pin.builderBinarySha256Hex,
     builderGitCommit: pin.builderGitCommit,
+    onionEntrySize: pin.onionEntrySize ?? 3_328,
     toJson: () => ({}),
     free: freeMock,
     freeMock,

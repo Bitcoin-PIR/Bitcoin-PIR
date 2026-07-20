@@ -1158,8 +1158,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-body">
                         <div class="verification-summary">
                             <div class="verification-summary-row">
-                                <span class="verification-server">Server</span>
-                                <span class="verification-result unavailable" title="OnionPIR does not currently establish an attested channel">Unavailable</span>
+                                <span class="verification-server">Data integrity</span>
+                                <span id="onionVerification" class="verification-result pending">Not checked</span>
                             </div>
                         </div>
                         <div class="verification-actions">
@@ -1171,6 +1171,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <label for="op-serverUrl">Server</label>
                                     <input type="text" id="op-serverUrl" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
                                 </div>
+                                <div id="op-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
+                                <div id="op-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
 
                                 <div id="op-syncStateRow" style="display: none; margin-top: 14px;">
                                     <span>Sync state:</span>
@@ -1565,7 +1567,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_QUERY_LAYOUT_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof } from './src/index.ts';
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
             if (ok) console.log('[PIR] SDK WASM loaded');
@@ -3105,7 +3107,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
                     const r = merged[qi];
-                    if (r) found++;
+                    if (r && !r.isWhale && r.entries.length > 0) found++;
                     renderResult(resultsContainer, spkHex, hashHex, r);
 
                     // Append a "delta activity" card for each delta step that
@@ -3311,6 +3313,37 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // OnionPIR tab logic
         // ═══════════════════════════════════════════════════════════════
         let opClient = null;
+        const opDatabaseProofs = new Map();
+
+        function opSetDataIntegrity(state, title = '') {
+            const el = document.getElementById('onionVerification');
+            if (!el) return;
+            if (state === 'yes') {
+                el.textContent = 'YES';
+                el.className = 'verification-result yes';
+            } else if (state === 'no') {
+                el.textContent = 'NO';
+                el.className = 'verification-result no';
+            } else {
+                el.textContent = state === 'checking' ? 'Checking' : 'Not checked';
+                el.className = 'verification-result pending';
+            }
+            el.title = title;
+        }
+
+        function opUpdateDataIntegritySummary() {
+            const statuses = PRODUCTION_DB_PROOF_PINS.map(pin => opDatabaseProofs.get(pin.dbId));
+            if (statuses.some(status => status && status.state !== 'verified')) {
+                opSetDataIntegrity('no', 'Database proof or trusted tree-top binding failed');
+            } else if (
+                statuses.every(status => status?.state === 'verified') &&
+                opClient?.isConnected()
+            ) {
+                opSetDataIntegrity('yes', 'Database proofs, production pins, and OnionPIR tree-tops verified');
+            } else {
+                opSetDataIntegrity('checking', 'Verifying database roots and tree-tops');
+            }
+        }
 
         // OnionPIR SyncController — owns snapshot cache + lastSyncedHeight for
         // the OnionPIR tab. setDbId is cheap for OnionPIR (just BFV params),
@@ -3422,10 +3455,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const serverUrl = document.getElementById('op-serverUrl').value.trim();
             if (!serverUrl) { log('Please enter a server URL', 'error'); return; }
 
+            let candidate = null;
             try {
                 log('OnionPIR: Connecting...');
-                opClient = new OnionPirWebClient({
+                opDatabaseProofs.clear();
+                opSetDataIntegrity('checking', 'Verifying database roots and tree-tops');
+                const sdkReady = isSdkWasmReady() || await initSdkWasm();
+                if (!sdkReady) throw new Error('strict database-proof WASM failed to load');
+                candidate = new OnionPirWebClient({
                     serverUrl,
+                    strictVerification: true,
+                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                    onionQueryLayoutPins: PRODUCTION_ONION_QUERY_LAYOUT_PINS,
                     onConnectionStateChange: (state, message) => {
                         log(`OnionPIR: ${state}${message ? ' - ' + message : ''}`,
                             state === 'connected' ? 'success' : state === 'disconnected' ? 'error' : 'info');
@@ -3435,9 +3476,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         if (state === 'connected') opSetButtons(true);
                         else if (state === 'disconnected') opSetButtons(false);
                     },
+                    onDatabaseProof: (dbId, info) => {
+                        opDatabaseProofs.set(dbId, info);
+                        renderDatabaseProofBadge('op-dbProofBadge', 'OnionPIR', info);
+                        verifyAndRenderBitcoinAnchorBadge('op-bitcoinAnchorBadge', 'OnionPIR', info)
+                            .catch(error => log(`OnionPIR anchor verification failed: ${error.message}`, 'error'));
+                        opUpdateDataIntegritySummary();
+                    },
                     onLog: (msg, level) => log(msg, level),
                 });
-                await opClient.connect();
+                await candidate.connect();
+                opClient = candidate;
+                candidate = null;
+                opUpdateDataIntegritySummary();
                 // Post-connect: just refresh the sync state UI. The Advanced
                 // DB selector and delta example buttons reveal after the
                 // first successful sync (see opExecuteSync).
@@ -3445,8 +3496,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // Dev-only: expose client on window for browser console debugging.
                 window.opClient = opClient;
             } catch (error) {
+                candidate?.disconnect();
                 log(`OnionPIR connection failed: ${error.message}`, 'error');
                 opClient = null;
+                opSetDataIntegrity('no', error.message);
             }
         }
 
@@ -3593,6 +3646,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             opSetProgress(pct, `${stepLabel} \u2014 ${s}: ${d}`);
                         }, step.dbId);
                     },
+                    verifyStep: async (step, stepResults) => {
+                        if (stepResults.some(result => result === null)) {
+                            throw new Error(`OnionPIR db ${step.dbId} returned an unverifiable result`);
+                        }
+                        const concrete = stepResults;
+                        const verdicts = await opClient.verifyMerkleBatch(concrete, (s, d) => {
+                            opSetProgress(92, `${describeStep(step)} — ${s}: ${d}`);
+                        });
+                        if (verdicts.length !== concrete.length || verdicts.some(ok => !ok)) {
+                            throw new Error(`OnionPIR db ${step.dbId} Merkle verification failed`);
+                        }
+                    },
                     mergeStep: (snapshot, delta) =>
                         mergeDeltaIntoSnapshot(snapshot, delta, (msg) => log(msg, 'error')),
                     onError: (msg) => log(msg, 'error'),
@@ -3605,7 +3670,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const hashHex = bytesToHex(scriptHashes[qi]);
                     const r = merged[qi];
                     if (r) found++;
-                    renderResult(resultsContainer, spkHex, hashHex, r);
+                    const rendered = renderResult(resultsContainer, spkHex, hashHex, r);
+                    if (r) setResultMerkleState(rendered, 'verified');
 
                     for (let si = 0; si < verifiableSteps.length; si++) {
                         const vs = verifiableSteps[si];
@@ -3627,42 +3693,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // load (see wireDeltaExampleButtons).
                 opPopulateDbSelector();
 
-                // Per-step Merkle verification buttons (OnionPIR per-bin).
-                // Steps are rendered in plan order.
-                const merkleSteps = verifiableSteps
-                    .map(({ step, stepResults }) => ({
-                        step,
-                        verifiable: stepResults.filter(r => r && !r.isWhale && r.indexBinHash !== undefined),
-                    }))
-                    .filter(({ step, verifiable }) =>
-                        verifiable.length > 0 && opClient.hasMerkleForDb(step.dbId));
-
-                if (merkleSteps.length > 0) {
-                    const note = document.createElement('div');
-                    note.style.cssText = 'margin: 12px 0; font-size: 12px; color: #666;';
-                    note.textContent = merkleSteps.length === 1
-                        ? `Merkle verification below applies to the ${merkleSteps[0].step.dbType} step of this sync.`
-                        : `Merkle verification below runs one proof batch per sync step (${merkleSteps.length} steps).`;
-                    resultsContainer.appendChild(note);
-                    for (let i = merkleSteps.length - 1; i >= 0; i--) {
-                        const { step, verifiable } = merkleSteps[i];
-                        const prefix = `op-sync-${step.dbType}-${step.dbId}`;
-                        const label = step.dbType === 'full'
-                            ? `full snapshot (db ${step.dbId}, height ${step.tipHeight.toLocaleString()})`
-                            : `delta (db ${step.dbId}, ${step.baseHeight.toLocaleString()} \u2192 ${step.tipHeight.toLocaleString()})`;
-                        // verifyMerkleBatch uses the client's active dbId; set
-                        // it for each proof batch so results line up with the
-                        // step's DB (mirrors per-step FHE key state).
-                        addBatchMerkleButton(resultsContainer, verifiable, prefix,
-                            (results, onProg) => {
-                                if (opClient.getDbId() !== step.dbId) opClient.setDbId(step.dbId);
-                                return opClient.verifyMerkleBatch(results, onProg);
-                            },
-                            () => opClient.getMerkleRootHexForDb(step.dbId),
-                            label);
-                    }
-                }
-
                 opSetProgress(100, `Sync complete! ${found}/${N} found at height ${plan.targetHeight.toLocaleString()}`);
                 setTimeout(opHideProgress, 2000);
                 log(`OnionPIR sync complete: ${found}/${N} found at height ${plan.targetHeight}`, 'success');
@@ -3670,6 +3700,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 opPendingSync = null;
             } catch (error) {
                 log(`OnionPIR sync error: ${error.message || error}`, 'error');
+                opSetDataIntegrity('no', error.message || String(error));
                 opSetProgress(0, '');
                 opHideProgress();
             } finally {
@@ -3683,6 +3714,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 document.getElementById('op-syncConfirmBtn').disabled = false;
                 document.getElementById('op-syncCancelBtn').disabled = false;
                 document.getElementById('op-resetSyncBtn').disabled = false;
+                opDisconnect(true);
             }
         }
 
@@ -3751,33 +3783,38 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
                     const result = results[qi];
-                    if (result) found++;
+                    if (result && !result.isWhale && result.entries.length > 0) found++;
                     opResultSections.push(renderResult(resultsContainer, spkHex, hashHex, result));
                     opQueryResults.push(result);
                 }
 
-                // Automatically verify after the result cards have painted.
-                const opVerifiablePairs = opQueryResults
-                    .map((result, index) => ({ result, section: opResultSections[index] }))
-                    .filter(({ result }) => result && !result.isWhale && result.indexBinHash !== undefined);
-                if (opVerifiablePairs.length > 0 && opClient.hasMerkle()) {
-                    let verificationRootHex = '';
-                    await addBatchMerkleButton(resultsContainer, opVerifiablePairs.map(pair => pair.result), 'onionpir',
-                        async (results, onProg) => {
-                            if (!opClient || !opClient.isConnected()) await opConnect();
-                            if (!opClient || !opClient.isConnected()) throw new Error('Unable to connect for verification');
-                            try {
-                                const verdicts = await opClient.verifyMerkleBatch(results, onProg);
-                                verificationRootHex = opClient.getMerkleRootHex() || '';
-                                return verdicts;
-                            } finally {
-                                opDisconnect(true);
-                            }
-                        },
-                        () => verificationRootHex,
-                        undefined,
-                        opVerifiablePairs.map(pair => pair.section),
-                        true);
+                // Verify every found, absent, and whale result in the same
+                // connection/FHE session. Only then turn the per-result state
+                // into the compact checkmark.
+                opResultSections.forEach(section => setResultMerkleState(section, 'verifying'));
+                await waitForResultPaint();
+                if (opQueryResults.some(result => result === null)) {
+                    opResultSections.forEach(section => setResultMerkleState(section, 'failed'));
+                    throw new Error('OnionPIR returned an unverifiable result');
+                }
+                try {
+                    const verdicts = await opClient.verifyMerkleBatch(opQueryResults, (step, detail) => {
+                        opSetProgress(94, `${step}: ${detail}`);
+                    });
+                    if (verdicts.length !== opQueryResults.length || verdicts.some(ok => !ok)) {
+                        opResultSections.forEach((section, index) =>
+                            setResultMerkleState(section, verdicts[index] ? 'verified' : 'failed'));
+                        throw new Error('OnionPIR Merkle verification failed');
+                    }
+                    opResultSections.forEach(section => setResultMerkleState(section, 'verified'));
+                } catch (error) {
+                    opResultSections.forEach(section => {
+                        const badge = section?.querySelector('.merkle-result-badge');
+                        if (!badge || badge.classList.contains('verifying')) {
+                            setResultMerkleState(section, 'error');
+                        }
+                    });
+                    throw error;
                 }
 
                 opSetProgress(100, `Done! ${found}/${N} addresses found`);
@@ -3785,6 +3822,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log(`OnionPIR batch complete: ${found}/${N} found`, 'success');
             } catch (error) {
                 log(`OnionPIR error: ${error.message}`, 'error');
+                opSetDataIntegrity('no', error.message);
                 console.error(error);
                 opSetProgress(0, '');
                 opHideProgress();

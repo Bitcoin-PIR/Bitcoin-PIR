@@ -3456,6 +3456,7 @@ mod tests {
             muhash: [2; 32],
             bucket_super_root: [3; 32],
             onion_super_root: [4; 32],
+            onion_entry_size: 3328,
             params_hash: [5; 32],
             network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
             builder_binary_sha256: [6; 32],

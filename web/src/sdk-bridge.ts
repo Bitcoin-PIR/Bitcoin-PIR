@@ -103,6 +103,16 @@ interface PirSdkWasm {
    * `pir_sdk_client::announce::parse_announce_response`.
    */
   verifyAnnounceResponse(respPayload: Uint8Array): WasmAnnounceVerification;
+  /** Stateless verification of one complete `[u32 len][RESP_DB_PROOF...]`
+   * frame. This does not install roots or retain session state. */
+  verifyDatabaseProofResponse(
+    responseFrame: Uint8Array,
+    catalog: WasmDatabaseCatalog,
+    expectedDbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): WasmDatabaseProof;
   // ARC (Anonymous Rate-limited Credentials) presentation state. Opaque
   // wrapper over the Rust `arc::PresentationState`; mirrored in TS by
   // `web/src/credential-manager.ts::ArcCredentialManager`. The constructor
@@ -395,6 +405,7 @@ export interface WasmDatabaseProof {
   readonly networkMagicHex: string;
   readonly builderBinarySha256Hex: string;
   readonly builderGitCommit: string;
+  readonly onionEntrySize: number;
   toJson(): any;
 }
 

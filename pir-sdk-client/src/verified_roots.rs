@@ -29,6 +29,10 @@ struct CatalogIdentity {
     chunk_bins: u32,
     index_k: u8,
     chunk_k: u8,
+    tag_seed: u64,
+    dpf_n_index: u8,
+    dpf_n_chunk: u8,
+    has_bucket_merkle: bool,
     index_master_seed: u64,
     chunk_master_seed: u64,
     anchor_kind: u8,
@@ -70,7 +74,11 @@ impl VerifiedRootState {
     /// Drop roots whose catalog identity rotated while keeping unaffected DBs.
     pub(crate) fn reconcile_catalog(&mut self, catalog: &DatabaseCatalog) {
         let identity = catalog_identity(catalog);
-        if self.bound_catalog.as_ref().is_some_and(|old| old != &identity) {
+        if self
+            .bound_catalog
+            .as_ref()
+            .is_some_and(|old| old != &identity)
+        {
             self.clear();
             return;
         }
@@ -103,19 +111,27 @@ impl VerifiedRootState {
 }
 
 fn catalog_identity(catalog: &DatabaseCatalog) -> Vec<CatalogIdentity> {
-    catalog.databases.iter().map(|db| CatalogIdentity {
-        db_id: db.db_id,
-        kind: format!("{:?}", db.kind),
-        height: db.height,
-        index_bins: db.index_bins,
-        chunk_bins: db.chunk_bins,
-        index_k: db.index_k,
-        chunk_k: db.chunk_k,
-        index_master_seed: db.index_master_seed,
-        chunk_master_seed: db.chunk_master_seed,
-        anchor_kind: db.anchor_kind,
-        anchor_bytes: db.anchor_bytes.clone(),
-    }).collect()
+    catalog
+        .databases
+        .iter()
+        .map(|db| CatalogIdentity {
+            db_id: db.db_id,
+            kind: format!("{:?}", db.kind),
+            height: db.height,
+            index_bins: db.index_bins,
+            chunk_bins: db.chunk_bins,
+            index_k: db.index_k,
+            chunk_k: db.chunk_k,
+            tag_seed: db.tag_seed,
+            dpf_n_index: db.dpf_n_index,
+            dpf_n_chunk: db.dpf_n_chunk,
+            has_bucket_merkle: db.has_bucket_merkle,
+            index_master_seed: db.index_master_seed,
+            chunk_master_seed: db.chunk_master_seed,
+            anchor_kind: db.anchor_kind,
+            anchor_bytes: db.anchor_bytes.clone(),
+        })
+        .collect()
 }
 
 fn ensure_roots_match_catalog(db: &DatabaseInfo, roots: &VerifiedDatabaseRoots) -> PirResult<()> {
@@ -170,6 +186,7 @@ mod tests {
             muhash: [0; 32],
             bucket_super_root: [1; 32],
             onion_super_root: [2; 32],
+            onion_entry_size: 3328,
             params_hash: [0; 32],
             network_magic: [0; 4],
             builder_binary_sha256: [0; 32],
@@ -195,5 +212,45 @@ mod tests {
             databases: vec![db(11)],
         });
         assert!(state.require_db(7).is_err());
+    }
+
+    #[test]
+    fn query_parameter_rotation_invalidates_roots() {
+        let baseline = db(10);
+        let variants = [
+            DatabaseInfo {
+                tag_seed: 1,
+                ..baseline.clone()
+            },
+            DatabaseInfo {
+                dpf_n_index: 2,
+                ..baseline.clone()
+            },
+            DatabaseInfo {
+                dpf_n_chunk: 2,
+                ..baseline.clone()
+            },
+            DatabaseInfo {
+                has_bucket_merkle: false,
+                ..baseline.clone()
+            },
+        ];
+
+        for changed in variants {
+            let mut state = VerifiedRootState::default();
+            state.set_policy(RootPolicy::RequireVerified);
+            state
+                .install(
+                    &DatabaseCatalog {
+                        databases: vec![baseline.clone()],
+                    },
+                    roots(10),
+                )
+                .unwrap();
+            state.reconcile_catalog(&DatabaseCatalog {
+                databases: vec![changed],
+            });
+            assert!(state.require_db(7).is_err());
+        }
     }
 }
