@@ -8,7 +8,7 @@
 //! underlying database snapshot hasn't shifted, those hints are
 //! bit-exact reusable — they are derived deterministically from
 //! `master_prp_key` + PRP backend + group_id, and every relocation is
-//! recorded inside [`harmonypir_wasm::HarmonyGroup::serialize`].
+//! recorded inside [`harmonypir::remote::RemoteClient::serialize_legacy_state`].
 //!
 //! This module gives callers a small, auditable persistence surface:
 //!
@@ -178,7 +178,7 @@ impl CacheKey {
 ///
 /// Main groups are keyed by `group_id`; sibling groups are keyed by
 /// `(sib_level, group_id)`. The bytes are the output of
-/// `HarmonyGroup::serialize()` — its deserializer replays the
+/// `RemoteClient::serialize_legacy_state()` — its deserializer replays the
 /// relocation log exactly, so no other state is needed for
 /// reconstruction.
 #[derive(Clone, Debug, Default)]

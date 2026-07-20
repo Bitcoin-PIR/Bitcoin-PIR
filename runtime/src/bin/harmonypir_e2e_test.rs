@@ -9,14 +9,15 @@
 
 use harmonypir::params::{Params, BETA};
 use harmonypir::prp::hoang::HoangPrp;
+#[cfg(feature = "fastprp")]
+use harmonypir::prp::fast::FastPrpWrapper;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::{RelocationDS, EMPTY};
-use harmonypir_wasm::state::{self, GroupEntry, StateFileHeader};
-use harmonypir_wasm::{
-    HarmonyGroup, PRP_HMR12, PRP_FASTPRP,
-    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
-    verify_protocol_impl,
+use harmonypir::remote::{
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t, PrpBackend,
+    RemoteClient as HarmonyGroup, PRP_FASTPRP, PRP_HMR12,
 };
+use runtime::harmony_state::{self as state, GroupEntry, StateFileHeader};
 
 use std::io::Cursor;
 use std::time::Instant;
@@ -43,7 +44,7 @@ fn main() {
     let backend_name = "HMR12 PRP";
 
     let t_raw = find_best_t(n);
-    let (padded_n, t_val) = pad_n_for_t(n, t_raw);
+    let (padded_n, t_val) = pad_n_for_t(n, t_raw).unwrap();
     let pn = padded_n as usize;
     let n_usize = n as usize;
     let w_usize = w as usize;
@@ -167,11 +168,11 @@ fn main() {
 
     // ─── Create groups and serialize ───────────────────────────────────
     println!("[3] Creating HarmonyGroup instances and writing state file...");
-    let mut group0 = HarmonyGroup::new_with_backend(n, w, t, &key, 0, PRP_HMR12).unwrap();
+    let mut group0 = HarmonyGroup::new_with_backend(n, w, t, &key, 0, PrpBackend::Hmr12).unwrap();
     let flat0: Vec<u8> = hints0.iter().flat_map(|h| h.iter().copied()).collect();
     group0.load_hints(&flat0).unwrap();
 
-    let mut group1 = HarmonyGroup::new_with_backend(n, w, t, &key, 1, PRP_HMR12).unwrap();
+    let mut group1 = HarmonyGroup::new_with_backend(n, w, t, &key, 1, PrpBackend::Hmr12).unwrap();
     let flat1: Vec<u8> = hints1.iter().flat_map(|h| h.iter().copied()).collect();
     group1.load_hints(&flat1).unwrap();
 
@@ -184,8 +185,8 @@ fn main() {
     };
 
     let entries = vec![
-        GroupEntry { group_id: 0, level: 0, data: group0.serialize() },
-        GroupEntry { group_id: 1, level: 0, data: group1.serialize() },
+        GroupEntry { group_id: 0, level: 0, data: group0.serialize_legacy_state().unwrap() },
+        GroupEntry { group_id: 1, level: 0, data: group1.serialize_legacy_state().unwrap() },
     ];
     let mut file_buf: Vec<u8> = Vec::new();
     state::write_state_file(&mut file_buf, &header, &entries).unwrap();
@@ -195,7 +196,7 @@ fn main() {
     println!("[4] Loading state file and reconstructing groups...");
     let state = state::read_state_file(&mut Cursor::new(&file_buf)).unwrap();
     let mut groups: Vec<HarmonyGroup> = state.groups.iter()
-        .map(|e| HarmonyGroup::deserialize(&e.data, &key, e.group_id).unwrap())
+        .map(|e| HarmonyGroup::deserialize_legacy_state(&e.data, &key, e.group_id).unwrap())
         .collect();
     println!("  Loaded {} groups, {} queries remaining each\n",
         groups.len(), groups[0].queries_remaining());
@@ -245,7 +246,7 @@ fn main() {
         println!("    HarmonyGroup.build_request({}) → segment={}, position={}", q, req.segment(), req.position());
 
         // Parse request indices for display.
-        let req_bytes = req.request();
+        let req_bytes = req.as_bytes();
         let count = req_bytes.len() / 4;
         if DEBUG {
             println!("    Request: {} sorted non-empty indices (T={}, ~{:.0}% reduction)",
@@ -305,8 +306,8 @@ fn main() {
     // ─── Save and reload ────────────────────────────────────────────────
     println!("[6] Saving state after {} queries...", queries.len());
     let entries2 = vec![
-        GroupEntry { group_id: 0, level: 0, data: groups[0].serialize() },
-        GroupEntry { group_id: 1, level: 0, data: groups[1].serialize() },
+        GroupEntry { group_id: 0, level: 0, data: groups[0].serialize_legacy_state().unwrap() },
+        GroupEntry { group_id: 1, level: 0, data: groups[1].serialize_legacy_state().unwrap() },
     ];
     let mut file_buf2 = Vec::new();
     state::write_state_file(&mut file_buf2, &header, &entries2).unwrap();
@@ -316,7 +317,7 @@ fn main() {
     println!("[7] Reloading state file...");
     let state2 = state::read_state_file(&mut Cursor::new(&file_buf2)).unwrap();
     let mut groups2: Vec<HarmonyGroup> = state2.groups.iter()
-        .map(|e| HarmonyGroup::deserialize(&e.data, &key, e.group_id).unwrap())
+        .map(|e| HarmonyGroup::deserialize_legacy_state(&e.data, &key, e.group_id).unwrap())
         .collect();
     println!("  Bucket 0: {} queries used, {} remaining",
         groups2[0].queries_used(), groups2[0].queries_remaining());
@@ -362,7 +363,7 @@ fn main() {
         assert!(ok, "FastPRP test failed!");
     }
 
-    // ALF block removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36.
+    // ALF is not part of the remote-client wire contract.
 
     // Also verify HMR12 at larger N to be thorough.
     {
@@ -375,12 +376,89 @@ fn main() {
     println!("\n=== ALL PRP BACKENDS PASS ===");
 }
 
+/// Run a compact simulated-server check for one remote-client backend.
+fn verify_protocol_impl(n: u32, w: u32, backend_id: u8) -> bool {
+    let backend = match PrpBackend::try_from(backend_id) {
+        Ok(backend) => backend,
+        Err(_) => return false,
+    };
+    let t = find_best_t(n);
+    let (padded_n, t) = match pad_n_for_t(n, t) {
+        Ok(params) => params,
+        Err(_) => return false,
+    };
+    let params = match Params::new(padded_n as usize, w as usize, t as usize) {
+        Ok(params) => params,
+        Err(_) => return false,
+    };
+    let key = [0x42; 16];
+    let derived_key = derive_group_key(&key, 0);
+    let domain = 2 * padded_n as usize;
+    let prp: Box<dyn Prp> = match backend {
+        PrpBackend::Hmr12 => Box::new(HoangPrp::new(
+            domain,
+            compute_rounds(padded_n),
+            &derived_key,
+        )),
+        PrpBackend::FastPrp => {
+            #[cfg(feature = "fastprp")]
+            {
+                Box::new(FastPrpWrapper::new(&derived_key, domain))
+            }
+            #[cfg(not(feature = "fastprp"))]
+            {
+                return false;
+            }
+        }
+    };
+    let ds = match RelocationDS::new(padded_n as usize, t as usize, prp) {
+        Ok(ds) => ds,
+        Err(_) => return false,
+    };
+    let db: Vec<Vec<u8>> = (0..n)
+        .map(|index| {
+            let mut row = vec![0; w as usize];
+            let encoded = index.to_le_bytes();
+            let copied = encoded.len().min(row.len());
+            row[..copied].copy_from_slice(&encoded[..copied]);
+            row
+        })
+        .collect();
+    let mut hints = vec![vec![0; w as usize]; params.m];
+    for value in 0..padded_n as usize {
+        let segment = match ds.locate(value) {
+            Ok(cell) => cell / t as usize,
+            Err(_) => return false,
+        };
+        if value < n as usize {
+            for (hint, byte) in hints[segment].iter_mut().zip(&db[value]) {
+                *hint ^= byte;
+            }
+        }
+    }
+
+    let mut group = match HarmonyGroup::new_with_backend(n, w, t, &key, 0, backend) {
+        Ok(group) => group,
+        Err(_) => return false,
+    };
+    let flat_hints: Vec<u8> = hints.into_iter().flatten().collect();
+    if group.load_hints(&flat_hints).is_err() {
+        return false;
+    }
+    for query in [0, n / 3, n.saturating_sub(1)] {
+        if do_query(&mut group, query, &db) != db[query as usize] {
+            return false;
+        }
+    }
+    true
+}
+
 /// Execute a single query with simulated server.
 fn do_query(group: &mut HarmonyGroup, q: u32, db: &[Vec<u8>]) -> Vec<u8> {
     let req = group.build_request(q).unwrap();
-    let w = group.w() as usize;
+    let w = group.row_width() as usize;
     let n = group.real_n() as usize;
-    let req_bytes = req.request();
+    let req_bytes = req.as_bytes();
     let count = req_bytes.len() / 4;
 
     let mut response = Vec::with_capacity(count * w);

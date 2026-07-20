@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  msrv:
+    name: Rust 1.78 minimal check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Rust 1.78
+        run: rustup toolchain install 1.78.0 --profile minimal
+      - name: Check dependency-minimal library at MSRV
+        run: cargo +1.78.0 check --locked --lib --no-default-features
+
+  test:
+    name: Test (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [default, minimal]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select stable Rust
+        run: rustup default stable
+      - name: Test default feature set
+        if: matrix.features == 'default'
+        run: cargo test --locked --lib
+      - name: Test dependency-minimal feature set
+        if: matrix.features == 'minimal'
+        run: cargo test --locked --lib --no-default-features
+
+  remote-client-boundary:
+    name: Remote client boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select stable Rust and WASM target
+        run: |
+          rustup default stable
+          rustup component add rustfmt
+          rustup target add wasm32-unknown-unknown
+      - name: Check remote client formatting
+        run: rustfmt --edition 2021 --check src/remote.rs
+      - name: Reject browser binding code in the pure Rust module
+        run: |
+          if grep -Eq 'use[[:space:]]+wasm_bindgen|#\[wasm_bindgen' src/remote.rs; then
+            echo "remote.rs must remain independent of wasm-bindgen"
+            exit 1
+          fi
+      - name: Check native dependency-minimal build
+        run: cargo check --locked --lib --no-default-features
+      - name: Check WASM dependency-minimal build
+        run: cargo check --locked --lib --target wasm32-unknown-unknown --no-default-features

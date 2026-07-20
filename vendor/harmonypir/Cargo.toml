@@ -11,6 +11,7 @@
 
 [package]
 edition = "2021"
+rust-version = "1.78"
 name = "harmonypir"
 version = "0.1.0"
 build = false

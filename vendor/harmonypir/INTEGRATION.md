@@ -142,6 +142,66 @@ let diff = server.modify_entry(42, new_entry);
 client.apply_modification(42, &diff).unwrap();
 ```
 
+## Stateful Remote Client
+
+Use `remote::RemoteClient` when the database server is reached through a
+caller-owned transport. The module contains no WebSocket, HTTP, Bitcoin, or
+`wasm-bindgen` code; a WASM or Python package should be a thin adapter around
+this API.
+
+```rust
+use harmonypir::remote::RemoteClient;
+
+let mut group = RemoteClient::new(
+    real_n,
+    row_width,
+    segment_size, // pass 0 to select balanced T
+    &master_prp_key,
+    group_id,
+)?;
+
+// Offline hint service output, exactly M * row_width bytes.
+group.load_hints(&flat_hints)?;
+
+let request = group.build_request(query_index)?;
+transport.send(request.as_bytes()).await?;
+let response = transport.receive().await?;
+let row = group.process_response(&response)?;
+```
+
+### Fixed-count wire contract
+
+Every request is exactly `T - 1` sorted, distinct `u32` little-endian indices.
+Empty segment cells are padded with random indices from `[0, padded_n)`, and
+padding responses are excluded when reconstructing the answer. The count must
+not depend on segment occupancy or query age.
+
+The response is the concatenation of exactly `T - 1` rows in request order,
+with no count or length prefix. `process_response` rejects any other length and
+keeps the request in flight so a caller can retry with the correct response.
+
+For two requests in one network round trip, call `build_request_pair`, send the
+two byte strings independently, then call `process_response_pair`. The first
+local relocation is applied before the second request is built; the first hint
+update is applied before the second answer is recovered, matching two
+sequential requests.
+
+### State compatibility
+
+`serialize_legacy_state` and `deserialize_legacy_state` preserve the v1 byte
+format originally implemented by BitcoinPIR's `harmonypir-wasm`. Serialization
+is allowed only when the client is idle: a built request, pair, or deferred
+relocation contains round-local metadata that v1 cannot encode.
+
+The serialized state intentionally does not contain the master PRP key or group
+id. Callers must supply the same pair to `deserialize_legacy_state`. It also
+preserves the legacy deterministic RNG restart rule based on query count; this
+is byte-compatible but does not preserve the exact rejection-sampling cursor.
+
+Transport authentication, database-root verification, attestation policy, and
+server pinning belong to the integrating application. They are deliberately
+outside the HarmonyPIR crate.
+
 ## Pipelined Pair Queries (one network round-trip per two queries)
 
 `Client::query` does one server roundtrip per query. When you have two

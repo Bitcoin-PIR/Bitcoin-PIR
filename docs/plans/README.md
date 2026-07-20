@@ -26,7 +26,7 @@ use `LOCAL_PLAN_*.md`, which is ignored by git.
 | `PLAN_scripthash_padding.md` | Obsolete because the M=16 chunk-Merkle pad it optimized was removed. |
 | `PLAN_MERKLE_CODING.md` | Shipped historical coding plan. The lasting decision is the Phase 4 / WS-A removal of M=16 padding, documented in `VERIFICATION_OVERVIEW.md` and code comments. |
 | `PLAN_MERKLE_COLOCATION.md` | Superseded by the per-group Merkle redesign work and the later M=16 removal. |
-| `PLAN_HARMONY_COUNT_LEAK_FIX.md` | Implemented. The invariant is now documented in `CLAUDE.md` and enforced in `harmonypir-wasm/src/lib.rs`. |
+| `PLAN_HARMONY_COUNT_LEAK_FIX.md` | Implemented. The invariant is documented in `CLAUDE.md` and enforced by upstream `harmonypir::remote::RemoteClient`. |
 | `PLAN_ANONYMOUS_RATE_LIMIT.md` | Superseded by the production status doc `RATELIMIT_INTEGRATION.md`. |
 | `PLAN_ONION_SHARDING.md` | Historical handoff for the OnionPIR sharding work; implementation details are now in code/tests. Remaining deployment work should get a fresh `docs/` status doc if resumed. |
 | `PLAN_PIR2_UKI_V17.md` | Stale one-off deployment draft. Current Tier 3 values and operating flow are in `PHASE3_ROADMAP.md` / `CLAUDE.md`. |

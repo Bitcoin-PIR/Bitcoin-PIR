@@ -1,4 +1,4 @@
 {
-  "//": "Tells Node to treat .js files in this directory as CommonJS, regardless of the parent web/ package.json's type:module. Still needed because the HarmonyPIR Emscripten loaders (harmonypir*/onionpir_client.js variants when added) keep emitting CommonJS module.exports = ... — node tests read them via require(). Post-port (commit 7), OnionPIR moved from .js (CommonJS) to .mjs (ES module); the leakage-diff test now dynamic-imports the .mjs as a file:// URL and is unaffected by this CommonJS hint. Vite serves the public/ tree verbatim and ignores this file at bundle time, so production is unaffected.",
+  "//": "Tells Node to treat any future .js compatibility loaders in this directory as CommonJS, regardless of the parent web/ package.json's type:module. The current OnionPIR loader is an ES module (.mjs), while HarmonyPIR is exposed by the main pir-sdk-wasm package rather than a standalone loader. Vite serves the public/ tree verbatim and ignores this file at bundle time.",
   "type": "commonjs"
 }

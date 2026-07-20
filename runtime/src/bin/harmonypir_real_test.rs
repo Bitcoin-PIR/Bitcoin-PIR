@@ -17,10 +17,12 @@ use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::fast::FastPrpWrapper;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::RelocationDS;
-use harmonypir_wasm::{
-    HarmonyGroup, PRP_HMR12, PRP_FASTPRP,
-    compute_rounds, derive_group_key, find_best_t, pad_n_for_t,
+use harmonypir::remote::{
+    compute_rounds, derive_group_key, find_best_t, pad_n_for_t, PrpBackend,
+    RemoteClient as HarmonyGroup, PRP_HMR12,
 };
+#[cfg(feature = "fastprp")]
+use harmonypir::remote::PRP_FASTPRP;
 
 use memmap2::Mmap;
 use std::fs::File;
@@ -146,7 +148,8 @@ fn run_narrative(
     backend_name: &str,
 ) {
     let t_val = find_best_t(n as u32);
-    let (padded_n, t_val) = pad_n_for_t(n as u32, t_val);
+    let (padded_n, t_val) = pad_n_for_t(n as u32, t_val)
+        .expect("validated non-zero HarmonyPIR table dimensions");
     let pn = padded_n as usize;
     let t = t_val as usize;
     let domain = 2 * pn;
@@ -201,7 +204,7 @@ fn run_narrative(
                 let full = unsafe { &*(fp as *const FastPrpWrapper) }.batch_forward();
                 full[..pn].to_vec()
             }
-            // ALF arm removed 2026-05-12 — see harmonypir-wasm/src/lib.rs:36.
+            // ALF is not part of the remote-client wire contract.
             _ => {
                 println!("    Using HMR12 batch_forward() (4-way AES + rayon)...");
                 let hp = prp.as_ref() as *const dyn Prp;
@@ -255,22 +258,27 @@ fn run_narrative(
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
     let mut group = HarmonyGroup::new_with_backend(
-        n as u32, w as u32, t as u32, master_key, group_id, backend,
+        n as u32,
+        w as u32,
+        t as u32,
+        master_key,
+        group_id,
+        PrpBackend::try_from(backend).expect("known HarmonyPIR backend"),
     ).unwrap();
     let flat: Vec<u8> = hints.iter().flat_map(|h| h.iter().copied()).collect();
     group.load_hints(&flat).unwrap();
 
     println!("  Client created HarmonyGroup:");
-    println!("    real_N={}, padded_N={}, w={}, T={}, M={}", group.real_n(), group.n(), w, t, m);
+    println!("    real_N={}, padded_N={}, w={}, T={}, M={}", group.real_n(), group.padded_n(), w, t, m);
     println!("    Hints loaded: {} bytes", flat.len());
 
-    let state_bytes = group.serialize();
+    let state_bytes = group.serialize_legacy_state().unwrap();
     println!("  State file serialized: {} bytes ({:.1} KB)", state_bytes.len(), state_bytes.len() as f64 / 1024.0);
     println!("    Contents: params + 0 relocated segments + 0 PRP cache + {} hint bytes", hints_bytes);
     println!("    queries_remaining = {}\n", group.queries_remaining());
 
     // Deserialize to prove round-trip.
-    let mut group = HarmonyGroup::deserialize(&state_bytes, master_key, group_id).unwrap();
+    let mut group = HarmonyGroup::deserialize_legacy_state(&state_bytes, master_key, group_id).unwrap();
     println!("  State file reloaded OK (simulating client restart).\n");
 
     // ═══════════════════════════════════════════════════════════════════
@@ -341,9 +349,9 @@ fn run_narrative(
 
         // Step 2: Build request (sorted non-empty indices, no dummy).
         println!("    [Client] Step 2 — Build request Q", );
-        let hint_before = group.serialize(); // snapshot for comparison
+        let hint_before = group.serialize_legacy_state().unwrap(); // snapshot for comparison
         let req = group.build_request(q as u32).unwrap();
-        let req_bytes = req.request();
+        let req_bytes = req.as_bytes();
         let count = req_bytes.len() / 4;
 
         println!("      Q has {} sorted non-empty indices (T={}, ~{:.0}% reduction)",
@@ -410,7 +418,7 @@ fn run_narrative(
         println!("      Hint parities updated for destination segments");
 
         // Compare serialized state to show growth.
-        let state_after = group.serialize();
+        let state_after = group.serialize_legacy_state().unwrap();
         let delta = state_after.len() as i64 - hint_before.len() as i64;
         println!("      State delta: +{} bytes (relocated segment ID stored)", delta);
         println!("      queries_used={}, queries_remaining={}\n",
@@ -427,14 +435,14 @@ fn run_narrative(
     println!("  │  Save final state (client can resume later)            │");
     println!("  └─────────────────────────────────────────────────────────┘\n");
 
-    let final_state = group.serialize();
+    let final_state = group.serialize_legacy_state().unwrap();
     println!("    Final state: {} bytes ({:.1} KB)", final_state.len(), final_state.len() as f64 / 1024.0);
     println!("    queries_used = {}, queries_remaining = {}",
         group.queries_used(), group.queries_remaining());
     println!("    {} relocated segments stored\n", group.queries_used());
 
     // Verify reload.
-    let restored = HarmonyGroup::deserialize(&final_state, master_key, group_id).unwrap();
+    let restored = HarmonyGroup::deserialize_legacy_state(&final_state, master_key, group_id).unwrap();
     assert_eq!(restored.queries_used(), group.queries_used());
     println!("    Reload verified: state survives serialize/deserialize ✓");
     println!("\n  [{label}] PASS ✓");

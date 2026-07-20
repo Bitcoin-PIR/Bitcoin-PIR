@@ -304,7 +304,7 @@ cost the project deliberately decided against.
 - `pir-runtime-core` — shared server primitives (admin, attest, channel,
   eval, handler, manifest, protocol, table). Extracted from `runtime/` as a
   publishable lib crate.
-- `runtime/`, `build/`, `block_reader/`, `harmonypir-wasm/` — internal
+- `runtime/`, `build/`, `block_reader/` — internal
   binary crates (`publish = false`).
 
 ### Web integration

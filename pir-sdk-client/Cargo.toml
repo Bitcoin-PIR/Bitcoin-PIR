@@ -24,7 +24,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 # builds aligned with the WASM SDK default so backend 1 can be honored exactly.
 default = ["fastprp"]
 # Enable fast PRP backend (FastPRP) for HarmonyPIR — faster per-element but slower build.
-fastprp = ["harmonypir-wasm/fastprp"]
+fastprp = ["harmonypir/fastprp-prp"]
 # `alf` feature dropped 2026-05-12 — ALF panicked on small (sibling-table)
 # domains, crashed pir-vpsbg in a tight loop. See runtime/Cargo.toml note.
 # Enable the real OnionPIR client. Off by default because the upstream
@@ -65,12 +65,9 @@ getrandom = { version = "0.2", features = ["js"] }
 # DPF library — pure Rust, works on any target.
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 
-# HarmonyPIR stateful per-group wrapper (reusable native rlib).
-# Note: no `version` because harmonypir-wasm is not publishable to
-# crates.io today (git dep on upstream `harmonypir`). The path dep
-# works for workspace development; `cargo publish -p pir-sdk-client`
-# is gated on resolving this per PUBLISHING.md "Blocker 1".
-harmonypir-wasm = { path = "../harmonypir-wasm" }
+# Transport-independent HarmonyPIR remote client. Pin the exact upstream
+# commit until the matching `harmonypir` release is published.
+harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "97288656b9b8cc393de7a8bc4d30d769404c2f39", default-features = false }
 
 # OnionPIR v2 FFI bindings — C++ BV-keyswitch FHE (SEAL-free). Pulled in only
 # under the `onion` feature because it requires a native toolchain (cmake +
