@@ -84,9 +84,15 @@ export interface OramSourceProofManifest {
   };
   liveDeployment: {
     status: string;
-    currentPir2RuntimeBitcoinPirCommit?: string;
-    currentPir2RuntimeOramCommit?: string;
-    strictRebuildOramCommit?: string;
+    verifiedAtUtc: string;
+    currentPir2RuntimeBitcoinPirCommit: string;
+    currentPir2RuntimeOramCommit: string;
+    strictRebuildOramCommit: string;
+    pir2UkiSha256: string;
+    pir2BinarySha256: string;
+    pir2MeasurementHex: string;
+    pir2ChannelPubkeyHex: string;
+    hetznerArchivePath: string;
     note?: string;
   };
 }

@@ -1,10 +1,11 @@
 //! `bpir-admin attest` — fetch and verify a server's SEV-SNP report.
 //!
 //! Drives `pir_sdk_client::attest::attest()` and presents the result.
-//! Optional `--expect-binary` and `--expect-manifest-roots` flags cross-
-//! check the server's self-reported values against operator-published
-//! expected values; mismatches exit non-zero so this can be wired into
-//! CI.
+//! Optional pin flags cross-check the server's values against
+//! operator-published expectations. When `--expect-ark-fingerprint` is
+//! supplied, the same response is also verified through ARK→ASK→VCEK and
+//! its SNP report signature, atomically binding the pinned binary and
+//! MEASUREMENT checks to an AMD-signed report.
 
 use clap::Args;
 use pir_sdk_client::attest::{attest, SevStatus};
@@ -37,6 +38,14 @@ pub struct AttestArgs {
     #[arg(long)]
     pub expect_measurement: Option<String>,
 
+    /// Operator-pinned 64-hex-character SHA-256 fingerprint of the AMD
+    /// ARK certificate. When set, verify ARK→ASK→VCEK and the SNP report
+    /// signature from this same attestation response. This makes the
+    /// binary and MEASUREMENT comparisons silicon-rooted instead of
+    /// treating the report fields as unsigned input.
+    #[arg(long = "expect-ark-fingerprint", value_name = "HEX64")]
+    pub expect_ark_fingerprint: Option<String>,
+
     /// Override the connect+request timeout (seconds, default 30).
     #[arg(long, default_value_t = 30)]
     pub timeout_seconds: u64,
@@ -44,6 +53,17 @@ pub struct AttestArgs {
 
 /// Run the attest subcommand, returning the process exit code.
 pub async fn run(args: AttestArgs) -> Result<(), i32> {
+    let expected_ark_fingerprint = match args.expect_ark_fingerprint.as_deref() {
+        Some(value) => match parse_hex_array::<32>(value, "--expect-ark-fingerprint") {
+            Ok(pin) => Some(pin),
+            Err(e) => {
+                eprintln!("attest: {e}");
+                return Err(1);
+            }
+        },
+        None => None,
+    };
+
     let mut conn = match connect(&args.server, args.timeout_seconds).await {
         Ok(c) => c,
         Err(e) => {
@@ -151,6 +171,37 @@ pub async fn run(args: AttestArgs) -> Result<(), i32> {
         }
     }
 
+    // Validate the AMD certificate chain and report signature against the
+    // exact same AttestResult used for REPORT_DATA, binary, and MEASUREMENT
+    // checks below. Keeping these checks on one response avoids a split-view
+    // endpoint satisfying pin checks and signature checks on different reports.
+    if let Some(ark_pin) = expected_ark_fingerprint {
+        if !chain_present {
+            println!();
+            println!("✗ --expect-ark-fingerprint set but the server returned no complete ARK/ASK/VCEK chain.");
+            mismatch = true;
+        } else if let Err(e) = pir_attest_verify::verify_chain(
+            &v.response.ark_pem,
+            &v.response.ask_pem,
+            &v.response.vcek_pem,
+            Some(ark_pin),
+        ) {
+            println!();
+            println!("✗ AMD certificate-chain validation failed: {e}");
+            mismatch = true;
+        } else if let Err(e) = pir_attest_verify::verify_report_against_vcek(
+            &v.response.sev_snp_report,
+            &v.response.vcek_pem,
+        ) {
+            println!();
+            println!("✗ SEV-SNP report-signature validation failed: {e}");
+            mismatch = true;
+        } else {
+            println!();
+            println!("✓ AMD ARK→ASK→VCEK chain and this attestation report's signature verified.");
+        }
+    }
+
     // Cross-check expected binary hash
     if let Some(expected_hex) = args.expect_binary {
         let actual_hex = hex::encode(v.response.binary_sha256);
@@ -238,4 +289,32 @@ async fn connect(url: &str, _timeout_secs: u64) -> Result<WsConnection, String> 
     // internally; per-request deadline is DEFAULT_REQUEST_TIMEOUT.
     // For an MVP CLI the defaults are fine; expose finer control later.
     WsConnection::connect(url).await.map_err(|e| e.to_string())
+}
+
+fn parse_hex_array<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], String> {
+    let bytes = hex::decode(value.trim()).map_err(|e| format!("{flag} must be valid hex: {e}"))?;
+    bytes.try_into().map_err(|v: Vec<u8>| {
+        format!(
+            "{flag} must be {} hex characters, got {}",
+            N * 2,
+            v.len() * 2
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hex_array;
+
+    #[test]
+    fn parses_exact_ark_fingerprint() {
+        let parsed = parse_hex_array::<32>(&"1f".repeat(32), "--expect-ark-fingerprint").unwrap();
+        assert_eq!(parsed, [0x1f; 32]);
+    }
+
+    #[test]
+    fn rejects_wrong_length_ark_fingerprint() {
+        let err = parse_hex_array::<32>("abcd", "--expect-ark-fingerprint").unwrap_err();
+        assert!(err.contains("64 hex characters"), "{err}");
+    }
 }

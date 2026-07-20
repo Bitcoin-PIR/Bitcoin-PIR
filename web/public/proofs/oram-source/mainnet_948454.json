@@ -272,15 +272,15 @@
   },
   "liveDeployment": {
     "status": "strict-source-bound-live-on-pir2",
-    "verifiedAtUtc": "2026-06-26T17:00:00Z",
-    "currentPir2RuntimeBitcoinPirCommit": "f402466af1ee21d02e0a65b457ad338ceb1216c0",
+    "verifiedAtUtc": "2026-07-20T11:40:00Z",
+    "currentPir2RuntimeBitcoinPirCommit": "d126f36adb1ec4da7f23dcfe97a81f7503b6829f",
     "currentPir2RuntimeOramCommit": "5f366492504d8e853cbd60d25a6adbf021a78746",
     "strictRebuildOramCommit": "5f366492504d8e853cbd60d25a6adbf021a78746",
-    "pir2UkiSha256": "3ef8249b673efc96ea5cdc74671871558b35948beeb6411186226b367fb40a60",
-    "pir2BinarySha256": "233541886714f1eec9ca90cf876c33774b9fd07cae2d6e3a2c9d555ef5e53fb3",
-    "pir2MeasurementHex": "f0d449e04c27ba2bf5b96790d58d9b1d5b789c7c560f16bc9d3f8bb26c78391ae7d3bb55deeea1bf7ef07c1671ad8da0",
-    "pir2ChannelPubkeyHex": "73d8aa08c98c0047e9031fbf342f08018ced95816d594eae1d28863d1df97b08",
-    "hetznerArchivePath": "/home/pir/uki-archive/tier3/oram-f402466a/",
-    "note": "The published proof certifies a strict source-bound ORAM rebuild, and the live pir2 Tier 3 UKI now runs BitcoinPIR commit f402466a with bitcoinpir-oram commit 5f36649. Live checks passed: bpir-admin attest matched the binary and SEV-SNP REPORT_DATA binding, channel-test verified the AMD VCEK chain, and padded direct ORAM smoke requests completed for db_id 0 and db_id 1."
+    "pir2UkiSha256": "d9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6",
+    "pir2BinarySha256": "4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4",
+    "pir2MeasurementHex": "db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2",
+    "pir2ChannelPubkeyHex": "1fa699f7d41d22632251411f126a057fa5b7e2f7a86a169e1ca4c495f7e9ed7e",
+    "hetznerArchivePath": "/home/pir/uki-archive/tier3/strict-d126f36a-20260720T104243Z-d9698bdc394e.efi",
+    "note": "The published proof certifies a strict source-bound ORAM rebuild, and the live pir2 Tier 3 UKI now runs BitcoinPIR commit d126f36a with bitcoinpir-oram commit 5f36649. Two independent UKI builds were byte-identical. Live checks passed: bpir-admin attest atomically matched the binary, measurement, and REPORT_DATA while validating ARK-to-ASK-to-VCEK plus the same report signature; channel-test revalidated the AMD chain and encrypted session; padded direct ORAM smoke requests completed for db_id 0 and db_id 1."
   }
 }

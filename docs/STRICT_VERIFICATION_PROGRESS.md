@@ -146,11 +146,14 @@ runtime/binary pin, operator-identity, secure-channel, or temporary v1 Onion
 layout gates. Those browser-level gates remain covered by release smokes; an
 end-to-end browser canary is a non-blocking automation follow-up.
 
-The server-side HarmonyPIR hint-pool hardening in the canary follow-up requires
-a new `unified_server` deployment after merge. Until that rollout, the current
-servers remain compatible and the client-side strict root flow stays
-fail-closed, but production does not yet benefit from the new durable,
-non-blocking pool lifecycle.
+The server-side HarmonyPIR hint-pool hardening was deployed on 2026-07-20 from
+commit `d126f36a`. Hetzner and the VPSBG Tier 3 UKI use the same ORAM-enabled
+`unified_server` binary (SHA-256 `4cf7d467...045b4`). The Hetzner primary now
+maintains eight fingerprint-bound HMPOOLV2 entries in its persistent pool;
+consumed entries are removed durably before use and replenished in the
+background. Both services stayed at zero restarts during rollout. Post-deploy
+strict production canaries passed for DPF, HarmonyPIR, and OnionPIR, and the
+VPSBG direct-ORAM smoke passed for both production database IDs.
 
 ## Non-blocking follow-ups
 

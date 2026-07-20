@@ -1,6 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN } from '../attest-pin.js';
+import {
+  MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN,
+  PIR2_TIER3_PIN,
+} from '../attest-pin.js';
 import {
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
   reportDataForBuildEvidence,
@@ -33,6 +36,18 @@ describe('ORAM source-binding proof', () => {
     );
     expect(status.verified?.manifest.liveDeployment.status).toBe(
       'strict-source-bound-live-on-pir2',
+    );
+    expect(status.verified?.manifest.liveDeployment.pir2BinarySha256).toBe(
+      PIR2_TIER3_PIN.binarySha256Hex,
+    );
+    expect(status.verified?.manifest.liveDeployment.pir2MeasurementHex).toBe(
+      PIR2_TIER3_PIN.measurementHex,
+    );
+    expect(status.verified?.manifest.liveDeployment.pir2UkiSha256).toBe(
+      'd9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6',
+    );
+    expect(status.verified?.manifest.liveDeployment.currentPir2RuntimeBitcoinPirCommit).toBe(
+      'd126f36adb1ec4da7f23dcfe97a81f7503b6829f',
     );
   });
 

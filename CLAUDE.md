@@ -384,8 +384,8 @@ cargo test -p pir-sdk-wasm --lib
 
 ### Hetzner (pir-hetzner) — UKI build host
 - **SSH**: `ssh pir-hetzner` (root@65.21.91.217, key `~/.ssh/id_ed25519`)
-- **Build binary**: `ssh pir-hetzner 'export PATH="/home/pir/.cargo/bin:$PATH" && cd /home/pir/BitcoinPIR && ./scripts/build_unified_server.sh'`
-- **Build UKI** (with VPSBG kernel): `ssh pir-hetzner '... && sudo KERNEL=/boot/vmlinuz-7.0.0-15-generic ./scripts/build_uki_tier3.sh'`
+- **Build production binary**: use a clean checkout at the exact deploy commit, then run `cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server` and `strip --strip-debug`. Do not use the current `build_unified_server.sh` or `flake.nix` output for Tier 3; neither enables `cuckoo-oram`.
+- **Build UKI** (with VPSBG kernel): `sudo env KERNEL=/boot/vmlinuz-7.0.0-15-generic BINARY=/absolute/path/to/unified_server BPIR_UNIFIED_SERVER_BIN=/absolute/path/to/unified_server ./scripts/build_uki_tier3.sh`
 - **Deploy UKI**: `scp pir-hetzner:/tmp/bpir-tier3.efi deploy/uki/bpir-tier3-vN.efi`, then portal → Upload → Save & Reboot
 - **Cross-build stack**: kernel 7.0.0-15, kmod 34.2, libkmod 2.5.1, dracut 110 (all backported from Ubuntu 25.04 plucky)
 - **Critical**: dracut 060 (Ubuntu 24.04) cannot build a working initramfs for kernel 7.0 — modprobe silently fails. dracut 110 required.
@@ -400,7 +400,7 @@ Never use `echo "$var" | grep -q` under `set -o pipefail`. `grep -q` exits on fi
 - Inspect with `lsinitrd` (handles all compression); `cpio -t <` does NOT work on zstd
 - SEV modules: ccp, sev-guest, tsm_report — validated pre/post-build in `build_uki_tier3.sh`
 
-### Attestation pins (current as of 2026-06-11)
+### Attestation pins (current as of 2026-07-20)
 `web/src/attest-pin.ts` is the authoritative source — values below are a quick reference.
-- **pir1 (Hetzner)**: binary `bb2cf422...` (2026-06 security-review build, commit `6c7aa158`, reproducible `nix build .#unified-server`, PR #19) — no SEV, no measurement
-- **pir2 (VPSBG) Tier 3 v24**: binary `bb2cf422...` (same as pir1 — flake-built UKI `nix build --impure .#tier3-uki`, sha256 `4eefec07...`), measurement `59ab13f5...` — pir2 serves `--serve-queries` only, no OnionPIR
+- **pir1 (Hetzner)**: binary `4cf7d467...` (commit `d126f36a`, Cargo release build with `cuckoo-oram`) — no SEV, no measurement
+- **pir2 (VPSBG) Tier 3**: the same `4cf7d467...` binary baked into UKI sha256 `d9698bdc...`, measurement `db1a0a4c...` — pir2 serves `--serve-queries` plus direct ORAM for db_id 0/1, with no OnionPIR
