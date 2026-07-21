@@ -1257,6 +1257,9 @@ impl CuckooTableAccess for CuckooOramTable {
 struct CuckooOramTables {
     index: CuckooOramTable,
     chunk: CuckooOramTable,
+    /// Serializes the complete legacy lookup transaction for this database,
+    /// including both table mutations and both controller/auth-state commits.
+    request_transaction: std::sync::Mutex<()>,
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -1301,7 +1304,21 @@ impl CuckooOramTables {
                 auth_store,
                 save_state,
             )?,
+            request_transaction: std::sync::Mutex::new(()),
         })
+    }
+
+    fn lookup_batch(
+        &self,
+        config: CuckooNativeLookupConfig,
+        script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
+    ) -> Result<Vec<CuckooNativeLookupResult>, String> {
+        let _transaction = self.request_transaction.lock().map_err(|_| {
+            "Cuckoo ORAM request transaction mutex poisoned; refusing further mutations".to_string()
+        })?;
+        self.index.check_not_poisoned()?;
+        self.chunk.check_not_poisoned()?;
+        cuckoo_native_lookup_batch_from_tables(&self.index, &self.chunk, config, script_hashes)
     }
 }
 
@@ -1342,6 +1359,15 @@ struct DirectOramTables {
     index: DirectOramIndexTable,
     chunk: DirectOramChunkTable,
     access_budget: usize,
+    /// Serializes the complete mutating lookup transaction for this database.
+    ///
+    /// The index and chunk reader mutexes only protect individual in-memory
+    /// ORAM operations.  A request also flushes both readers and atomically
+    /// replaces their controller/auth-state files, whose save helpers use
+    /// fixed `.tmp` paths.  Without this outer per-DB mutex, two requests can
+    /// interleave those phases and race the same temp files (or persist an
+    /// index state from one request with a chunk state from another).
+    request_transaction: std::sync::Mutex<()>,
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -1383,6 +1409,7 @@ impl DirectOramTables {
                 save_state,
             )?,
             access_budget,
+            request_transaction: std::sync::Mutex::new(()),
         })
     }
 
@@ -1834,7 +1861,7 @@ fn direct_native_lookup_batch(
     script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
 ) -> Result<Vec<DirectNativeLookupResult>, String> {
     let slot_present = vec![true; script_hashes.len()];
-    direct_native_lookup_slots(tables, script_hashes, &slot_present)
+    tables.lookup_batch(script_hashes, &slot_present)
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -1843,6 +1870,9 @@ fn direct_native_lookup_slots(
     script_hashes: &[[u8; pir_core::params::SCRIPT_HASH_SIZE]],
     slot_present: &[bool],
 ) -> Result<Vec<DirectNativeLookupResult>, String> {
+    let _transaction = tables.request_transaction.lock().map_err(|_| {
+        "Direct ORAM request transaction mutex poisoned; refusing further mutations".to_string()
+    })?;
     if slot_present.len() != script_hashes.len() {
         return Err(format!(
             "direct ORAM slot-present length {} does not match script hash count {}",
@@ -1864,6 +1894,12 @@ fn direct_native_lookup_slots(
         ));
     }
     let chunk_budget = tables.access_budget - index_budget;
+
+    // Fail before mutating either half if a prior request already made the
+    // paired database unusable. The transaction lock keeps this preflight
+    // valid until both tables have committed or the request fails closed.
+    tables.index.check_not_poisoned()?;
+    tables.chunk.check_not_poisoned()?;
 
     let lookups = match tables.index.lookup_many(script_hashes) {
         Ok(batch) => {
@@ -3826,12 +3862,9 @@ impl UnifiedServerData {
                     "padded empty ORAM slots require --direct-oram-db; legacy cuckoo ORAM fallback does not support explicit empty slots".into(),
                 );
             }
-            let lookup = match cuckoo_native_lookup_batch_from_tables(
-                &tables.index,
-                &tables.chunk,
-                CuckooNativeLookupConfig::from_db(db),
-                &query.script_hashes,
-            ) {
+            let lookup = match tables
+                .lookup_batch(CuckooNativeLookupConfig::from_db(db), &query.script_hashes)
+            {
                 Ok(v) => v,
                 Err(e) => return Response::Error(format!("ORAM lookup failed: {}", e)),
             };
@@ -7696,6 +7729,61 @@ mod harmony_dos_guard_tests {
     }
 
     #[cfg(feature = "cuckoo-oram")]
+    fn build_test_direct_oram_auth_store(
+        oram_dir: &std::path::Path,
+        level: DirectLevel,
+        trusted_levels: usize,
+    ) {
+        let paths = DirectOramPaths::new(oram_dir, level);
+        let state = CircuitOramState::load(&paths.state).unwrap();
+        let params = state.params.clone();
+        let hash_page_size = 4096usize;
+        let meta_store = FilePageStore::open(
+            &paths.meta_image,
+            params.bucket_count(),
+            circuit_meta_page_bytes(params.bucket_size),
+        )
+        .unwrap();
+        let payload_store = FilePageStore::open(
+            &paths.payload_image,
+            params.bucket_count(),
+            circuit_payload_page_bytes(params.bucket_size, params.block_size),
+        )
+        .unwrap();
+        let meta_hash_store = FilePageStore::open(
+            &paths.meta_hash_image,
+            tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels).unwrap(),
+            hash_page_size,
+        )
+        .unwrap();
+        let payload_hash_store = FilePageStore::open(
+            &paths.payload_hash_image,
+            tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels).unwrap(),
+            hash_page_size,
+        )
+        .unwrap();
+        let mut meta = TieredMerklePageStore::build(
+            meta_store,
+            meta_hash_store,
+            direct_auth_store_id(level, CircuitAuthStoreKind::Meta),
+            trusted_levels,
+        )
+        .unwrap();
+        let mut payload = TieredMerklePageStore::build(
+            payload_store,
+            payload_hash_store,
+            direct_auth_store_id(level, CircuitAuthStoreKind::Payload),
+            trusted_levels,
+        )
+        .unwrap();
+        PageStore::flush(&mut meta).unwrap();
+        PageStore::flush(&mut payload).unwrap();
+        CircuitStoreAuthState::new(meta.trusted_state(), payload.trusted_state())
+            .save_atomic(&paths.auth_state)
+            .unwrap();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
     #[test]
     fn direct_oram_lookup_reads_direct_entries_without_pbc() {
         let db_dir = temp_dir("direct_lookup_db");
@@ -7754,16 +7842,16 @@ mod harmony_dos_guard_tests {
 
         let tables =
             DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, false, true).unwrap();
-        let got = direct_native_lookup_slots(
-            &tables,
-            &[
-                fixture.found_sh,
-                [0u8; pir_core::params::SCRIPT_HASH_SIZE],
-                fixture.missing_sh,
-            ],
-            &[true, false, true],
-        )
-        .unwrap();
+        let got = tables
+            .lookup_batch(
+                &[
+                    fixture.found_sh,
+                    [0u8; pir_core::params::SCRIPT_HASH_SIZE],
+                    fixture.missing_sh,
+                ],
+                &[true, false, true],
+            )
+            .unwrap();
 
         let mut expected_payload = Vec::new();
         expected_payload.extend_from_slice(&fixture.chunks[3]);
@@ -7779,6 +7867,141 @@ mod harmony_dos_guard_tests {
 
         std::fs::remove_dir_all(&db_dir).ok();
         std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_same_db_requests_serialize_complete_state_commits() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let db_dir = temp_dir("direct_lookup_serial_db");
+        let oram_dir = temp_dir("direct_lookup_serial_img");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        let fixture = write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
+        build_test_direct_oram_auth_store(&oram_dir, DirectLevel::Index, 2);
+        build_test_direct_oram_auth_store(&oram_dir, DirectLevel::Chunk, 2);
+
+        let tables = Arc::new(
+            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, true, true).unwrap(),
+        );
+
+        // Hold the per-DB transaction gate while both workers reach the
+        // production lookup entrypoint. Neither request may complete until
+        // the gate is released; afterwards both must commit cleanly in turn.
+        let gate = tables.request_transaction.lock().unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let tables = Arc::clone(&tables);
+            let ready_tx = ready_tx.clone();
+            let done_tx = done_tx.clone();
+            let script_hash = fixture.found_sh;
+            workers.push(std::thread::spawn(move || {
+                ready_tx.send(()).unwrap();
+                done_tx
+                    .send(tables.lookup_batch(&[script_hash], &[true]))
+                    .unwrap();
+            }));
+        }
+        drop(ready_tx);
+        drop(done_tx);
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        drop(gate);
+        for _ in 0..2 {
+            let got = done_rx
+                .recv_timeout(Duration::from_secs(15))
+                .expect("serialized direct ORAM request did not finish")
+                .expect("serialized direct ORAM request failed");
+            assert_eq!(got.len(), 1);
+            assert!(got[0].found);
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        tables.index.check_not_poisoned().unwrap();
+        tables.chunk.check_not_poisoned().unwrap();
+        for name in [
+            "direct-index.state.tmp",
+            "direct-index.auth.state.tmp",
+            "direct-chunk.state.tmp",
+            "direct-chunk.auth.state.tmp",
+        ] {
+            assert!(
+                !oram_dir.join(name).exists(),
+                "serialized save left temporary file {name}"
+            );
+        }
+
+        // Reopening validates that state and authenticated roots were saved as
+        // one coherent sequence, not merely that neither worker saw ENOENT.
+        drop(tables);
+        let reopened =
+            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, true, true).unwrap();
+        let got = reopened.lookup_batch(&[fixture.found_sh], &[true]).unwrap();
+        assert!(got[0].found);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_different_databases_keep_independent_transaction_gates() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let db_dir = temp_dir("direct_lookup_parallel_db");
+        let oram_dir_0 = temp_dir("direct_lookup_parallel_img_0");
+        let oram_dir_1 = temp_dir("direct_lookup_parallel_img_1");
+        let fixture = write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        for oram_dir in [&oram_dir_0, &oram_dir_1] {
+            std::fs::create_dir_all(oram_dir).unwrap();
+            build_test_direct_oram_image(&db_dir, oram_dir, DirectLevel::Index, pack);
+            build_test_direct_oram_image(&db_dir, oram_dir, DirectLevel::Chunk, pack);
+        }
+
+        let db0 =
+            DirectOramTables::open(&oram_dir_0, 2, 8, false, None, None, 0, false, true).unwrap();
+        let db1 = Arc::new(
+            DirectOramTables::open(&oram_dir_1, 2, 8, false, None, None, 0, false, true).unwrap(),
+        );
+
+        let db0_gate = db0.request_transaction.lock().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_db1 = Arc::clone(&db1);
+        let script_hash = fixture.found_sh;
+        let worker = std::thread::spawn(move || {
+            done_tx
+                .send(worker_db1.lookup_batch(&[script_hash], &[true]))
+                .unwrap();
+        });
+
+        let got = done_rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("DB1 request was incorrectly blocked by DB0 transaction")
+            .expect("DB1 request failed while DB0 transaction was held");
+        assert!(got[0].found);
+        worker.join().unwrap();
+        drop(db0_gate);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir_0).ok();
+        std::fs::remove_dir_all(&oram_dir_1).ok();
     }
 
     #[cfg(feature = "cuckoo-oram")]
@@ -7955,6 +8178,96 @@ mod harmony_dos_guard_tests {
             reopened.finish_request().unwrap();
             assert_eq!(via_oram, expected);
         }
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn legacy_oram_same_db_requests_serialize_complete_state_commits() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let db_dir = temp_dir("legacy_lookup_serial_db");
+        let oram_dir = temp_dir("legacy_lookup_serial_img");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        let fixture = write_lookup_db_files(&db_dir);
+        let db = load_lookup_db(&db_dir);
+        let config = CuckooNativeLookupConfig::from_db(&db);
+
+        let pack = 4usize;
+        build_test_oram_image(&db_dir, &oram_dir, CuckooLevel::Index, pack);
+        build_test_oram_image(&db_dir, &oram_dir, CuckooLevel::Chunk, pack);
+        build_test_oram_auth_store(&oram_dir, CuckooLevel::Index, 2);
+        build_test_oram_auth_store(&oram_dir, CuckooLevel::Chunk, 2);
+
+        let tables = Arc::new(
+            CuckooOramTables::open(
+                &db_dir, &oram_dir, pack, 2, false, None, None, 0, true, true,
+            )
+            .unwrap(),
+        );
+
+        let gate = tables.request_transaction.lock().unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let tables = Arc::clone(&tables);
+            let ready_tx = ready_tx.clone();
+            let done_tx = done_tx.clone();
+            let script_hash = fixture.found_sh;
+            workers.push(std::thread::spawn(move || {
+                ready_tx.send(()).unwrap();
+                done_tx
+                    .send(tables.lookup_batch(config, &[script_hash]))
+                    .unwrap();
+            }));
+        }
+        drop(ready_tx);
+        drop(done_tx);
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        drop(gate);
+        for _ in 0..2 {
+            let got = done_rx
+                .recv_timeout(Duration::from_secs(15))
+                .expect("serialized legacy ORAM request did not finish")
+                .expect("serialized legacy ORAM request failed");
+            assert_eq!(got.len(), 1);
+            assert!(got[0].found);
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        tables.index.check_not_poisoned().unwrap();
+        tables.chunk.check_not_poisoned().unwrap();
+        for name in [
+            "index.state.tmp",
+            "index.auth.state.tmp",
+            "chunk.state.tmp",
+            "chunk.auth.state.tmp",
+        ] {
+            assert!(
+                !oram_dir.join(name).exists(),
+                "serialized legacy save left temporary file {name}"
+            );
+        }
+
+        drop(tables);
+        let reopened = CuckooOramTables::open(
+            &db_dir, &oram_dir, pack, 2, false, None, None, 0, true, true,
+        )
+        .unwrap();
+        let got = reopened.lookup_batch(config, &[fixture.found_sh]).unwrap();
+        assert!(got[0].found);
 
         std::fs::remove_dir_all(&db_dir).ok();
         std::fs::remove_dir_all(&oram_dir).ok();
