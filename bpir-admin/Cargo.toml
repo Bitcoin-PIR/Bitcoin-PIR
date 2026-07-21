@@ -14,8 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 pir-core = { path = "../pir-core" }
-pir-sdk = { path = "../pir-sdk" }
-pir-sdk-client = { path = "../pir-sdk-client" }
+pir-sdk = { path = "../crates/sdk/core" }
+pir-sdk-client = { path = "../crates/sdk/client" }
 # Used by `generate-identity` + `sign-identity` subcommands to build
 # IdentityCert blobs the server consumes.
 pir-identity = { path = "../pir-identity" }

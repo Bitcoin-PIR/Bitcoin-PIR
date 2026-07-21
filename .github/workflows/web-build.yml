@@ -26,7 +26,7 @@ name: Web client build + tests
 #
 # This workflow plugs all three gaps with a single PR-time job. The
 # wasm-pack output is reused by the tsc step (the regenerated
-# `pir-sdk-wasm/pkg/*.d.ts` stubs are what `web/src/sdk-bridge.ts`
+# `crates/sdk/wasm/pkg/*.d.ts` stubs are what `web/src/sdk-bridge.ts`
 # imports), so any drift between the Rust-side `#[wasm_bindgen]` API
 # and the hand-written TS interface fires at this point.
 
@@ -35,20 +35,18 @@ on:
     branches: [main]
     paths:
       - 'pir-core/**'
-      - 'pir-sdk/**'
-      - 'pir-sdk-wasm/**'
-      - 'pir-sdk-client/**'
-      - 'harmonypir-wasm/**'
+      - 'crates/sdk/core/**'
+      - 'crates/sdk/wasm/**'
+      - 'crates/sdk/client/**'
       - 'web/**'
       - '.github/workflows/web-build.yml'
   pull_request:
     branches: [main]
     paths:
       - 'pir-core/**'
-      - 'pir-sdk/**'
-      - 'pir-sdk-wasm/**'
-      - 'pir-sdk-client/**'
-      - 'harmonypir-wasm/**'
+      - 'crates/sdk/core/**'
+      - 'crates/sdk/wasm/**'
+      - 'crates/sdk/client/**'
       - 'web/**'
       - '.github/workflows/web-build.yml'
   workflow_dispatch:
@@ -103,21 +101,21 @@ jobs:
 
       # Build pir-sdk-wasm with a trimmed workspace. The full workspace
       # contains crates that don't compile to wasm32 (the `onion`
-      # feature pulls SEAL via a C++ toolchain; harmonypir-wasm has
-      # native bindgen deps). Same pattern as `deploy-web.yml` —
+      # feature pulls SEAL via a C++ toolchain). Same pattern as
+      # `deploy-web.yml` —
       # mirror the `[workspace]` munging exactly so this job catches
       # any drift in what's-wasm-buildable.
       - name: Build pir-sdk-wasm (wasm32 target validation)
         run: |
           cp Cargo.toml Cargo.toml.bak
-          printf '[workspace]\nresolver = "2"\nmembers = ["pir-core", "pir-sdk", "pir-sdk-wasm"]\n' > Cargo.toml
-          wasm-pack build pir-sdk-wasm --target web --out-dir pkg
+          printf '[workspace]\nresolver = "2"\nmembers = ["pir-core", "crates/sdk/core", "crates/sdk/wasm"]\n' > Cargo.toml
+          wasm-pack build crates/sdk/wasm --target web --out-dir pkg
           mv Cargo.toml.bak Cargo.toml
 
       # `npm run build` = `tsc`. Strict typecheck of every .ts file
       # under web/src/, including the test files. Catches drift in
       # `sdk-bridge.ts` interfaces against the regenerated
-      # `pir-sdk-wasm/pkg/*.d.ts` stubs.
+      # `crates/sdk/wasm/pkg/*.d.ts` stubs.
       - name: TypeScript strict typecheck (npm run build = tsc)
         working-directory: web
         run: npm run build

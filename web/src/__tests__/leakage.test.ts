@@ -195,7 +195,7 @@ describe('roundProfilesEqual / leakageProfilesEqual', () => {
 
 /**
  * The Rust pin test (`leakage_profile_json_shape_is_pinned` in
- * `pir-sdk/src/leakage.rs`) asserts the exact wire JSON the Rust side
+ * `crates/sdk/core/src/leakage.rs`) asserts the exact wire JSON the Rust side
  * produces. This test pins the same shape from the TS side. If the
  * Rust shape changes, both pins must change together — that's the
  * cross-language contract.

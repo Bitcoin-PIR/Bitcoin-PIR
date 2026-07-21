@@ -499,7 +499,7 @@ interface WasmSyncPlan {
 /**
  * Native-WASM HarmonyPIR client. See `PirSdkWasm.WasmHarmonyClient` for the
  * constructor signature. Fields used by `harmonypir-adapter.ts`; the full
- * surface exposed by `pir-sdk-wasm/src/client.rs::WasmHarmonyClient` is a
+ * surface exposed by `crates/sdk/wasm/src/client.rs::WasmHarmonyClient` is a
  * superset (notably `queryBatch` + `fetchCatalog`, which the adapter doesn't
  * need because PIR rounds go through `queryBatchRaw`).
  */
@@ -600,7 +600,7 @@ export interface WasmHarmonyClient {
 }
 
 /**
- * Native-WASM ORAM client. See `pir-sdk-wasm/src/client.rs::WasmOramClient`.
+ * Native-WASM ORAM client. See `crates/sdk/wasm/src/client.rs::WasmOramClient`.
  *
  * This is the direct TEE backend surface: one server connection, one
  * attestation/channel upgrade, then fixed-budget server-side ORAM lookup.

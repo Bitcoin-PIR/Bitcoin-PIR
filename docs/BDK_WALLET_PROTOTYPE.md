@@ -284,7 +284,7 @@ Two options, ordered by simplicity:
 
 **Option 2b (more work, more reusable): wasm-compile the BDK wallet.**
 
-- Add `pir-bdk-wallet-wasm/` analog of `pir-sdk-wasm/`.
+- Add `crates/sdk/bdk-wallet-wasm/` analog of `crates/sdk/wasm/`.
 - Verify the same feature-gating MetaMask did
   ([`MetaMask/bdk-wasm`](https://github.com/MetaMask/bdk-wasm)) works
   for our case (no Esplora HTTP client; replace with our wasm
@@ -362,7 +362,7 @@ Out of scope for Phase 1; single-element CP works.
 The existing `PirClient::sync()` is exactly the right shape:
 
 ```rust
-// pir-sdk/src/client.rs:109-113
+// crates/sdk/core/src/client.rs:109-113
 async fn sync(
     &mut self,
     script_hashes: &[ScriptHash],

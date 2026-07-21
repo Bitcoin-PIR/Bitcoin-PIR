@@ -105,7 +105,7 @@ to the live session.
   doesn't track handshake state. Use the attested
   `AttestVerification.response.server_static_pub`.
 
-Source: `pir-sdk-client/src/announce.rs`, `pir-sdk-wasm/src/client.rs`.
+Source: `crates/sdk/client/src/announce.rs`, `crates/sdk/wasm/src/client.rs`.
 
 ---
 

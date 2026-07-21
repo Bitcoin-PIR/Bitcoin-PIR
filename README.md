@@ -61,7 +61,7 @@ Anyone can run their own PIR servers from a public Bitcoin Core snapshot. No tru
 BitcoinPIR/
 ├── pir-core/          Shared database and protocol primitives
 ├── pir-runtime-core/ Server protocol and runtime library
-├── pir-sdk*/          Rust, native-client, server, and WASM SDK crates
+├── crates/sdk/        Rust, native-client, server, and WASM SDK crates
 ├── runtime/           Production server and diagnostic binaries
 ├── build/             Database generation pipeline
 ├── bpir-admin/        Operator CLI

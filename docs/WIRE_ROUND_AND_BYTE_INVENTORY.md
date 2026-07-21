@@ -13,7 +13,7 @@ invariants, (c) future privacy and bandwidth optimization decisions.
 ## 1. Round counts per protocol
 
 Source: empirical witnesses from
-[`pir-sdk-client/tests/leakage_integration_test.rs`](../pir-sdk-client/tests/leakage_integration_test.rs)
+[`crates/sdk/client/tests/leakage_integration_test.rs`](../crates/sdk/client/tests/leakage_integration_test.rs)
 run against `wss://weikeng1.bitcoinpir.org`, recorded in
 [`CLAUDE.md`](../CLAUDE.md) lines 192–200. `A` = `found@h=0`, `B` =
 `found@h=1`, `C` = `not-found`. Post-closure all three are
@@ -36,10 +36,10 @@ client-side optimizations narrow the wall-clock count without changing
 total bytes on the wire:
 
 1. **Within-level pass pipelining** — `query_passes` in
-   [`pir-sdk-client/src/merkle_verify.rs:411`](../pir-sdk-client/src/merkle_verify.rs)
+   [`crates/sdk/client/src/merkle_verify.rs:411`](../crates/sdk/client/src/merkle_verify.rs)
    sends multiple passes at the same `(table_type, level)` concurrently.
 2. **INDEX/CHUNK Merkle in parallel** —
-   [`verify_bucket_merkle_batch_parallel`](../pir-sdk-client/src/merkle_verify.rs:808)
+   [`verify_bucket_merkle_batch_parallel`](../crates/sdk/client/src/merkle_verify.rs:808)
    uses `tokio::try_join!` (native) / `futures::future::try_join` (wasm32).
 
 **Not yet exploited:** sibling fetches *across* Merkle levels are still
@@ -126,7 +126,7 @@ padding overhead):
   the per-round sibling bytes match the DPF Merkle column above
 - Hints: tens of MB once per `(db_id, prp_backend)`, cached in
   IndexedDB (see `estimate_hint_size_bytes` in
-  [`pir-sdk-client/src/harmony.rs:4704`](../pir-sdk-client/src/harmony.rs))
+  [`crates/sdk/client/src/harmony.rs:4704`](../crates/sdk/client/src/harmony.rs))
 
 **Per-query (warm) total:** ~200–300 KB up / ~250 KB down. Same
 ballpark as DPF.
@@ -171,11 +171,11 @@ latency improvement on DPF/Harmony.
 ### 5.1 Make DPF / HarmonyPIR numbers empirical, not computed
 
 OnionPIR has
-[`pir-sdk-client/examples/onion_leakage_dump.rs`](../pir-sdk-client/examples/onion_leakage_dump.rs)
+[`crates/sdk/client/examples/onion_leakage_dump.rs`](../crates/sdk/client/examples/onion_leakage_dump.rs)
 (~80 LOC) that dumps a `LeakageProfile` to JSON. The recorder is
 already attached for DPF and HarmonyPIR — every round goes through
 `record_round(RoundProfile { request_bytes, response_bytes, … })` (see
-[`pir-sdk-client/src/dpf.rs:560`](../pir-sdk-client/src/dpf.rs)).
+[`crates/sdk/client/src/dpf.rs:560`](../crates/sdk/client/src/dpf.rs)).
 
 Action: copy `onion_leakage_dump.rs` to `dpf_leakage_dump.rs` and
 `harmony_leakage_dump.rs`, swap the client type, store fixtures under

@@ -137,8 +137,8 @@ Surface measured by `rg "onionpir|push_database_chunk|decrypt_response"
 
 | File | What it does | Touches integration §§ |
 |---|---|---|
-| `pir-sdk-client/src/onion.rs` | Native + WASM client logic; per-level `onionpir::Client`, batched INDEX/CHUNK PIR | 1.1, 1.2, 1.5, 2.1, 2.4 |
-| `pir-sdk-client/src/onion_merkle.rs` | Sibling-level OnionPIR Merkle verification | 1.1, 1.2, 1.5, 2.4 |
+| `crates/sdk/client/src/onion.rs` | Native + WASM client logic; per-level `onionpir::Client`, batched INDEX/CHUNK PIR | 1.1, 1.2, 1.5, 2.1, 2.4 |
+| `crates/sdk/client/src/onion_merkle.rs` | Sibling-level OnionPIR Merkle verification | 1.1, 1.2, 1.5, 2.4 |
 | `runtime/src/bin/unified_server.rs` | Production server (pir-primary on Hetzner) | 1.1, 1.3, 1.4, 2.1, 2.5, 2.6 |
 | `runtime/src/bin/onionpir_client.rs` | Standalone client binary | 1.1, 1.2, 1.5 |
 | `runtime/src/bin/onionpir_bench.rs` | Benchmark; tiny test DB | 1.1, 1.4, 1.5 |
@@ -150,13 +150,13 @@ Surface measured by `rg "onionpir|push_database_chunk|decrypt_response"
 | `web/public/wasm/onionpir_client.{js,d.ts}` | Currently a stub | possibly replaced by upstream's new WASM client (`bitcoin-pir/OnionPIRv2/wasm/`) |
 | `web/src/__tests__/onion_*.ts` | Vitest fixtures around the TS client | shape-changes only |
 | `explorer/src/{utxo-provider,types}.ts` | Explorer adapter glue | none if `onionpir_client.ts` API stays stable |
-| `pir-sdk-wasm/src/{lib,client}.rs` | WASM bindings; **no `WasmOnionClient` today** | 2.4 may unlock `WasmOnionClient` post-port |
-| `pir-sdk-client/tests/leakage_integration_test.rs` | Privacy invariants (M-padding, Merkle item count) | check §1.5 doesn't break invariants |
+| `crates/sdk/wasm/src/{lib,client}.rs` | WASM bindings; **no `WasmOnionClient` today** | 2.4 may unlock `WasmOnionClient` post-port |
+| `crates/sdk/client/tests/leakage_integration_test.rs` | Privacy invariants (M-padding, Merkle item count) | check §1.5 doesn't break invariants |
 
 Cargo.toml refs to bump (all currently `350ccc43`):
 
 * `build/Cargo.toml:164`
-* `pir-sdk-client/Cargo.toml:69`
+* `crates/sdk/client/Cargo.toml:69`
 * `runtime/Cargo.toml:78`
 
 ---
@@ -183,7 +183,7 @@ BitcoinPIR's Rust call surface is almost entirely through the high-level
 `onionpir::{Client, Server, KeyStore, params_info}` rather than raw
 `onion_*` C symbols, so the rename impact at the Rust level is small.
 The compile errors will fall out of `cargo check`. Expected fix scope:
-< 20 sed-style edits across `pir-sdk-client/src/onion*.rs`,
+< 20 sed-style edits across `crates/sdk/client/src/onion*.rs`,
 `runtime/src/bin/{unified_server,onionpir_client,onionpir_bench}.rs`.
 
 Note `OnionPirParamsInfo` has a new `rns_mod_count` field between
@@ -214,9 +214,9 @@ Spots in BitcoinPIR that touch raw bytes:
   (internal); BitcoinPIR doesn't need to know the inner format, but the
   byte count and frame boundaries matter for `[harmony-hint-*]`-style
   logging.
-* `pir-sdk-client/src/onion.rs` (~line 1354, 1579) — calls
+* `crates/sdk/client/src/onion.rs` (~line 1354, 1579) — calls
   `decrypt_response(bin, &batch[qi])`.
-* `pir-sdk-client/src/onion_merkle.rs` (~line 922) —
+* `crates/sdk/client/src/onion_merkle.rs` (~line 922) —
   `sib_client.decrypt_response(target_bin, &batch[pbc_group])`.
 
 §1.5 is the silent-bug landmine. `decrypt_response` no longer returns
@@ -298,15 +298,15 @@ across a process or page lifecycle**:
 | `pir-sdk-client::onion::FheState` | in-memory `Vec<u8>`, dropped on session close | none |
 | `runtime/src/bin/onionpir_client.rs` | freshly generated per CLI invocation | none |
 | `web/src/onionpir_client.ts::fheSecretKey` | in-memory only; not written to localStorage / IndexedDB / sessionStorage | none |
-| `pir-sdk-client/tests/` | tests generate keys at runtime; no committed blob fixtures | none |
+| `crates/sdk/client/tests/` | tests generate keys at runtime; no committed blob fixtures | none |
 | `web/src/__tests__/` | same — no committed key fixtures | none |
 
 So the original "design a re-key UX" task is structurally moot. What
 actually shipped in this commit:
 
 1. **Diagnostic-friendly error messages** at the two `from_secret_key`
-   sites (`pir-sdk-client/src/onion.rs::get_level_client` and
-   `pir-sdk-client/src/onion_merkle.rs`). The post-commit-1 messages
+   sites (`crates/sdk/client/src/onion.rs::get_level_client` and
+   `crates/sdk/client/src/onion_merkle.rs`). The post-commit-1 messages
    said only "secret key may be from a different fork rev"; commit 4
    spells out the three likely causes (ACTIVE_CONFIG drift, blob
    truncation, stale persisted key) plus a recovery procedure
@@ -347,7 +347,7 @@ Spots:
   path.
 * `runtime/src/bin/onionpir_client.rs` standalone client — easy: just
   generate fresh.
-* `pir-sdk-client/tests/leakage_integration_test.rs` and the wasm test
+* `crates/sdk/client/tests/leakage_integration_test.rs` and the wasm test
   fixtures — regenerate, no production impact.
 
 ### Commit 5 — Capacity math sweep — **CLIENT-SIDE LANDED `f0399024`**
@@ -355,7 +355,7 @@ Spots:
 Client-side hardcoded `PACKED_ENTRY_SIZE = 3840` constants replaced
 with `packed_entry_size()` helpers that read
 `onionpir::params_info(0).entry_size` at runtime. Touched
-`pir-sdk-client/src/onion.rs` (the public client) and
+`crates/sdk/client/src/onion.rs` (the public client) and
 `runtime/src/bin/onionpir_client.rs` (the standalone CLI). After commit
 2's `onion_unpack` lands, the decoded bin is exactly
 `pinfo.entry_size` bytes, so the pre-port "if len ≥ PACKED_ENTRY_SIZE

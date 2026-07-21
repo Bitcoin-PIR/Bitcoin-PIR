@@ -1,0 +1,42 @@
+[package]
+name = "pir-sdk-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "PIR server-side SDK: load pre-built PIR databases and serve DPF, HarmonyPIR, and OnionPIR requests"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-sdk-server"
+readme = "README.md"
+keywords = ["pir", "privacy", "bitcoin", "cryptography", "server"]
+categories = ["cryptography", "cryptography::cryptocurrencies", "network-programming::server"]
+
+[dependencies]
+# Core SDK types and traits
+pir-sdk = { version = "0.1.0", path = "../core" }
+pir-core = { version = "0.1.0", path = "../../../pir-core" }
+
+# Shared server runtime primitives (wire protocol, mmap tables, DPF
+# evaluation, request dispatch). Lives in its own publishable crate so
+# `runtime/` binaries and `pir-sdk-server` both consume the same types.
+pir-runtime-core = { version = "0.1.0", path = "../../../pir-runtime-core" }
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+
+# Logging
+log = "0.4"
+
+# Error handling
+thiserror = "1.0"
+
+[dev-dependencies]
+env_logger = "0.11"

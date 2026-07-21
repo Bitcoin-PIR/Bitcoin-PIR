@@ -70,8 +70,8 @@ mint ── dev-issuer ── obtain ── browser (WASM) ── present ──
                                                               PIR server's gate)
 ```
 
-- **mint / obtain** — `WasmArcCredentialRequest` (`pir-sdk-wasm/src/arc.rs`) and
-  `WasmCashuBlind` (`pir-sdk-wasm/src/cashu.rs`) do the blinding/finalising in
+- **mint / obtain** — `WasmArcCredentialRequest` (`crates/sdk/wasm/src/arc.rs`) and
+  `WasmCashuBlind` (`crates/sdk/wasm/src/cashu.rs`) do the blinding/finalising in
   WASM so secrets never reach JS; `web/src/payment-client.ts` +
   `web/src/cashu-bat.ts` orchestrate the HTTP calls.
 - **present / verify** — `presentArc` / `presentCashu` post the *exact*
@@ -106,7 +106,7 @@ endpoints would be served by a Lightning-backed mint after a paid invoice.
 | Area | File |
 |---|---|
 | Issuer + gate | [`dev-issuer/`](../dev-issuer/) (`README.md` has endpoint details) |
-| WASM obtain | [`pir-sdk-wasm/src/arc.rs`](../pir-sdk-wasm/src/arc.rs), [`pir-sdk-wasm/src/cashu.rs`](../pir-sdk-wasm/src/cashu.rs) |
+| WASM obtain | [`crates/sdk/wasm/src/arc.rs`](../crates/sdk/wasm/src/arc.rs), [`crates/sdk/wasm/src/cashu.rs`](../crates/sdk/wasm/src/cashu.rs) |
 | HTTP client | [`web/src/payment-client.ts`](../web/src/payment-client.ts) |
 | BAT pool | [`web/src/cashu-bat.ts`](../web/src/cashu-bat.ts), [`web/src/credential-manager.ts`](../web/src/credential-manager.ts) |
 | Demo page | [`web/ratelimit-demo.html`](../web/ratelimit-demo.html), [`web/src/ratelimit-demo.ts`](../web/src/ratelimit-demo.ts) |

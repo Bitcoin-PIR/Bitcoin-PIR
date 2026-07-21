@@ -1,5 +1,5 @@
 /**
- * Leakage profile capture — TypeScript port of `pir-sdk/src/leakage.rs`.
+ * Leakage profile capture — TypeScript port of `crates/sdk/core/src/leakage.rs`.
  *
  * The cross-language diff (see `docs/VERIFICATION_OVERVIEW.md`)
  * compares profiles emitted by the Rust `OnionClient` against profiles

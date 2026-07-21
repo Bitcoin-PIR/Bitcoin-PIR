@@ -2903,7 +2903,7 @@ fn compute_hints_for_group(
 
     use harmonypir::prp::BatchPrp;
     // PRP_ALF (= 2) is not part of the remote-client wire contract.
-    // and pir-sdk-client/src/harmony.rs:81 for the rationale (panic on
+    // and crates/sdk/client/src/harmony.rs:81 for the rationale (panic on
     // domain<65536 crashed pir-vpsbg in a tight loop).
     let cell_of: Vec<usize> = match prp_backend {
         #[cfg(feature = "fastprp")]
@@ -4078,7 +4078,7 @@ where
 // docs/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
 // split into `[4B len][CHUNK_MAGIC][seq:u16][total:u16][piece]` frames;
 // the peer reassembles. These constants MUST stay in sync with
-// `pir-sdk-client/src/connection.rs` (CHUNK_MAGIC / CHUNK_SIZE) and
+// `crates/sdk/client/src/connection.rs` (CHUNK_MAGIC / CHUNK_SIZE) and
 // `web/src/onionpir_client.ts`.
 const CHUNK_MAGIC: u8 = 0xc7;
 const CHUNK_SIZE: usize = 256 * 1024;
@@ -5109,7 +5109,7 @@ async fn main() {
                             // OnionPIRv2 port: report empty/nonempty result split
                             // alongside the existing wall-clock log so a future
                             // "all-empty batch" client-side report (see
-                            // `pir-sdk-client/src/onion.rs::batch_looks_evicted`)
+                            // `crates/sdk/client/src/onion.rs::batch_looks_evicted`)
                             // can be triaged from server logs alone — either
                             // answer_query returned an all-empty batch quickly
                             // (empty=N/N → keystore drift or query malformed) or the

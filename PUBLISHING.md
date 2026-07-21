@@ -36,16 +36,16 @@ The affected packages currently contain these non-registry dependencies:
 libdpf = { git = "...", rev = "..." }
 arc = { git = "...", rev = "..." }
 
-# pir-sdk-client/Cargo.toml
+# crates/sdk/client/Cargo.toml
 libdpf = { git = "...", rev = "..." }
 harmonypir = { git = "...", rev = "..." }
-pir-db-attest = { path = "../pir-db-attest" }
+pir-db-attest = { path = "../../../pir-db-attest" }
 onionpir = { git = "...", rev = "...", optional = true }
 
-# pir-sdk-wasm/Cargo.toml
+# crates/sdk/wasm/Cargo.toml
 arc = { git = "...", rev = "..." }
-pir-db-attest = { path = "../pir-db-attest" }
-pir-sdk-client = { path = "../pir-sdk-client", version = "0.1.0" }
+pir-db-attest = { path = "../../../pir-db-attest" }
+pir-sdk-client = { path = "../client", version = "0.1.0" }
 ```
 
 `pir-db-attest` is currently `publish = false` and has an unpublished path
@@ -167,14 +167,14 @@ homepage, keywords, license) are patched in by
 ### Steps
 
 1. Build release: `wasm-pack build --target web --out-dir pkg --release`
-   inside `pir-sdk-wasm/`.
+   inside `crates/sdk/wasm/`.
 2. Patch metadata:
    `./scripts/prepare-wasm-publish.sh`
-   (edits `pir-sdk-wasm/pkg/package.json` in place to add
+   (edits `crates/sdk/wasm/pkg/package.json` in place to add
    `repository`, `homepage`, `keywords`, `bugs`, and a tighter
    `description`).
-3. Dry run: `(cd pir-sdk-wasm/pkg && npm publish --dry-run)`.
-4. Publish: `(cd pir-sdk-wasm/pkg && npm publish --access public)`.
+3. Dry run: `(cd crates/sdk/wasm/pkg && npm publish --dry-run)`.
+4. Publish: `(cd crates/sdk/wasm/pkg && npm publish --access public)`.
    The `--access public` is required for unscoped packages on a
    free npm account.
 5. Tag the release:

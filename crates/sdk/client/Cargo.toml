@@ -1,0 +1,189 @@
+[package]
+name = "pir-sdk-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "Native Rust PIR client for DPF, HarmonyPIR, and OnionPIR backends (two-server and single-server FHE)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-sdk-client"
+readme = "README.md"
+keywords = ["pir", "privacy", "bitcoin", "cryptography", "websocket"]
+categories = ["cryptography", "cryptography::cryptocurrencies", "network-programming"]
+
+# `kani` is a custom cfg used by `#[cfg(kani)]` harness modules for the
+# Kani bounded-model-checker (`cargo install kani-verifier`). Register it
+# here so a normal `cargo build` doesn't warn `unexpected cfg`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[features]
+# Production V2 hint pools advertise FastPRP on the wire. Keep native SDK
+# builds aligned with the WASM SDK default so backend 1 can be honored exactly.
+default = ["fastprp"]
+# Enable fast PRP backend (FastPRP) for HarmonyPIR — faster per-element but slower build.
+fastprp = ["harmonypir/fastprp-prp"]
+# `alf` feature dropped 2026-05-12 — ALF panicked on small (sibling-table)
+# domains, crashed pir-vpsbg in a tight loop. See runtime/Cargo.toml note.
+# Enable the real OnionPIR client. Off by default because the upstream
+# `onionpir` crate requires a C++ toolchain + cmake + Homebrew GCC on macOS
+# and pulls in the SEAL submodule. Without this feature, `OnionClient` keeps
+# its transport/API shape but fails every preflight and query explicitly.
+# Native-only — the `onion` feature is not compatible with `wasm32` targets
+# (SEAL does not build there).
+onion = ["dep:onionpir", "dep:rand"]
+
+# ─── Cross-target dependencies ──────────────────────────────────────────────
+# These compile on both native (tokio) and wasm32 (web-sys). Anything that
+# pulls in tokio / tokio-tungstenite / rustls / a C toolchain must live in the
+# target-specific sections below.
+
+[dependencies]
+# Core SDK types and traits.
+# `serde` activates the `LeakageProfile` JSON derives the
+# `onion_leakage_dump` example (Phase 2.3) needs; cost is the serde
+# crate, no runtime overhead unless callers actually serialise.
+pir-sdk = { version = "0.1.0", path = "../core", features = ["serde"] }
+pir-core = { version = "0.1.0", path = "../../../pir-core" }
+# Pure-crypto handshake + AEAD primitives shared with the server
+# (pir-runtime-core::channel). Compiles to wasm32 (verified — uses
+# RustCrypto's pure-Rust x25519-dalek + chacha20poly1305 + hkdf).
+pir-channel = { version = "0.1.0", path = "../../../pir-channel" }
+# Attested-builder DB proof verifier. Pure parsing/hash logic; the runtime
+# server only transports proof bytes, clients decide policy.
+pir-db-attest = { path = "../../../pir-db-attest" }
+# Operator-signed identity bundle (REQ_ANNOUNCE response parser).
+# Pure-crypto Ed25519 — compiles to wasm32 without modification.
+pir-identity = { version = "0.1.0", path = "../../../pir-identity" }
+# Per-handshake ephemeral seed + nonce generation in
+# `DpfClient::upgrade_to_secure_channel`. The "js" feature lets it
+# use WebCrypto on wasm32; on native it reads /dev/urandom.
+getrandom = { version = "0.2", features = ["js"] }
+
+# DPF library — pure Rust, works on any target.
+libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
+
+# Transport-independent HarmonyPIR remote client. Pin the exact upstream
+# commit until the matching `harmonypir` release is published.
+harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "97288656b9b8cc393de7a8bc4d30d769404c2f39", default-features = false }
+
+# OnionPIR v2 FFI bindings — C++ BV-keyswitch FHE (SEAL-free). Pulled in only
+# under the `onion` feature because it requires a native toolchain (cmake +
+# a C++20 compiler). Pinned to the same rev used by the `runtime` crate.
+# rev 3f815ba — self-contained, vendorable crate; USE_HEXL/-march
+# detection fixed; build.rs emits HEXL + cpu_features link directives
+# natively (via the package's *Targets*.cmake IMPORTED_LOCATION,
+# split-output-safe), so consumers link cleanly with no manual flag
+# injection.
+onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b", optional = true }
+rand = { version = "0.8", optional = true }
+
+# `async_trait` is pure-Rust and works on any target — both the native
+# WsConnection impl and the WASM WebSocket transport impl share it.
+async-trait = "0.1"
+
+# ed25519 signing for the admin authentication challenge/response
+# (REQ_ADMIN_AUTH_*). Pure-Rust, no C deps; works cross-target.
+ed25519-dalek = "2"
+
+# futures-util combinators are cross-target. The native WebSocket path uses
+# `StreamExt`/`SinkExt`; the WASM path uses channel combinators.
+futures-util = "0.3"
+
+# Logging
+log = "0.4"
+
+# Structured tracing (spans + events). Additive: the `log::info!` audit
+# trail still works unchanged, and `tracing`'s `log` feature bridges
+# existing `log::*!` calls into any installed `tracing` subscriber so
+# callers get a unified event stream. No-op unless a subscriber is
+# installed. Cross-target — `tracing` core compiles to wasm32.
+tracing = { version = "0.1", features = ["log"] }
+
+# Error handling
+thiserror = "1.0"
+
+# Human-readable hash mismatch messages for DB proof policy failures.
+hex = "0.4"
+
+# Scripthash-derived synthetic CHUNK padding (dpf::derive_synthetic_chunk_ids).
+# Pulls a SHA-256 KDF instead of the legacy deterministic `0..M` synthetic
+# IDs so the PBC planner can pack batched CHUNK rounds densely across
+# not-found-heavy wallet syncs. Pure-Rust, no C deps; already a
+# transitive dep via pir-channel.
+sha2 = { version = "0.10", default-features = false }
+
+# ─── Native (tokio + tungstenite) target deps ───────────────────────────────
+# The tokio reactor does not run on `wasm32-unknown-unknown`. Everything that
+# needs `net` / `time` / multi-threaded I/O lives here so the crate can still
+# compile to wasm32 with the new `WasmWebSocketTransport` (see the wasm32
+# section below).
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Async runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
+# `rustls-tls-webpki-roots` enables `wss://` with the bundled Mozilla root
+# store. No system OpenSSL/schannel dependency — works identically in CI
+# across Linux/macOS/Windows and in consumer apps that don't want a
+# native-tls dependency.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# Explicit rustls dep to pin the `ring` crypto provider (rustls 0.23+
+# requires exactly one of `ring` / `aws-lc-rs`; `ring` is pure-Rust and
+# avoids the C toolchain dependency `aws-lc-rs` brings). The provider is
+# installed at `WsConnection::connect()` time via
+# `install_default_crypto_provider()`.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+# ─── WASM (wasm32-unknown-unknown) target deps ──────────────────────────────
+# Browsers expose `WebSocket` as a callback-driven DOM object; we bridge it
+# to async via a `futures_channel::mpsc` receiver. `wasm-bindgen-futures`
+# lets the client's `async fn` surface run on the JS event loop.
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "Blob",
+    "CloseEvent",
+    "ErrorEvent",
+    "Event",
+    "FileReader",
+    "MessageEvent",
+    "ProgressEvent",
+    "WebSocket",
+] }
+# `futures` brings the cross-task join / select combinators that replace
+# `tokio::try_join!` on the WASM single-threaded event loop.
+futures = "0.3"
+futures-channel = "0.3"
+# `web_sys::WebSocket` and `Rc<RefCell<_>>` are `!Send + !Sync`, but
+# `PirTransport: Send + Sync` is required so the trait object satisfies
+# `PirClient: Send + Sync` on the native side of the codebase (and because
+# `#[async_trait]` futures have a Send bound by default). The wasm32
+# transport uses a local `Wasm32Shim<T>` wrapper (see
+# `wasm_transport.rs`) that `unsafe impl`s `Send + Sync` unconditionally
+# — sound because wasm32-unknown-unknown is single-threaded absent the
+# unstable `+atomics` target feature, which this crate does not enable.
+
+[dev-dependencies]
+env_logger = "0.11"
+hex = "0.4"
+# Address → scriptPubKey → HASH160 derivation for the `fetch_addresses`
+# example. Matches the build pipeline (build/src/gen_0_utxo_set.rs), which
+# also keys the DB by `HASH160(scriptPubKey)` via `bitcoin::hashes`.
+bitcoin = "0.32"
+# Used by pir-sdk-client::channel tests to mint test ephemeral keys
+# and probe handshake-mismatch behaviour against a fake server.
+rand_core = { version = "0.6", features = ["getrandom"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+# `serde_json` drives JSON output for the `onion_leakage_dump`
+# example (Phase 2.3 cross-language diff fixture).
+serde_json = "1.0"
+# Test-only: a subscriber that captures formatted span/event output for
+# assertion. Kept as a dev-dep to avoid forcing a subscriber choice on
+# downstream callers — production code only depends on the facade.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }

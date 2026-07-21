@@ -53,9 +53,9 @@ Each scripthash maps to INDEX_CUCKOO_NUM_HASHES=2 possible cuckoo positions. To 
 Merkle items per INDEX query, regardless of query outcome (found at h=0,
 found at h=1, not-found, or whale):**
 
-- `pir-sdk-client/src/dpf.rs` (Rust DPF — also drives `web/src/dpf-adapter.ts` via WASM)
-- `pir-sdk-client/src/harmony.rs` (Rust HarmonyPIR — also drives `web/src/harmonypir-adapter.ts` via WASM)
-- `pir-sdk-client/src/onion.rs` (Rust OnionPIR, feature-gated)
+- `crates/sdk/client/src/dpf.rs` (Rust DPF — also drives `web/src/dpf-adapter.ts` via WASM)
+- `crates/sdk/client/src/harmony.rs` (Rust HarmonyPIR — also drives `web/src/harmonypir-adapter.ts` via WASM)
+- `crates/sdk/client/src/onion.rs` (Rust OnionPIR, feature-gated)
 - `web/src/onionpir_client.ts` (standalone TS — SEAL doesn't compile to wasm32)
 
 The per-level sibling **pass count** (`max_items_per_group`) is directly
@@ -88,15 +88,15 @@ level (the server simply observes whether any CHUNK traffic followed
 the INDEX phase).
 
 This invariant is enforced in:
-- `pir-sdk-client/src/dpf.rs::query_single` — calls `query_chunk_level(&[], …)`
+- `crates/sdk/client/src/dpf.rs::query_single` — calls `query_chunk_level(&[], …)`
   for the not-found and whale paths; `query_chunk_level` upgrades an empty
   `chunk_ids` list to a single empty-round plan so the existing per-group
   random-alpha padding code emits a fully synthetic K_CHUNK-padded batch.
-- `pir-sdk-client/src/harmony.rs::query_single` — same shape; the dummy
+- `crates/sdk/client/src/harmony.rs::query_single` — same shape; the dummy
   round is dispatched via `run_chunk_round(db_id, &[], …)` which already
   takes the `build_synthetic_dummy` branch for every group when
   `real_queries` is empty.
-- `pir-sdk-client/src/onion.rs::query_chunk_level` — queries each
+- `crates/sdk/client/src/onion.rs::query_chunk_level` — queries each
   scripthash's *real* chunk-id list (no M-padding since Phase 4 / WS-A).
   A batch whose scripthashes are all not-found / whale (`unique` empty)
   substitutes a single empty round (`rounds = vec![Vec::new()]`) so one
@@ -171,16 +171,16 @@ pattern. Wire round count per level becomes `2 × n_servers × n_levels
 
 **How implementations preserve this:**
 
-1. **DPF** ([pir-sdk-client/src/dpf.rs](pir-sdk-client/src/dpf.rs)):
+1. **DPF** ([crates/sdk/client/src/dpf.rs](crates/sdk/client/src/dpf.rs)):
    `query_index_phase_batched` runs one or more K-padded DPF INDEX
    wire rounds per PBC round. Real placements use the planner-assigned
    group's cuckoo positions; remaining groups send random dummies.
-2. **HarmonyPIR** ([pir-sdk-client/src/harmony.rs](pir-sdk-client/src/harmony.rs)):
+2. **HarmonyPIR** ([crates/sdk/client/src/harmony.rs](crates/sdk/client/src/harmony.rs)):
    `query_index_phase_batched` runs `INDEX_CUCKOO_NUM_HASHES = 2`
    wire rounds per PBC round (one per cuckoo position). Each placed
    group sends `build_request(target_bin)`; remaining groups send
    `build_synthetic_dummy()`.
-3. **OnionPIR** ([pir-sdk-client/src/onion.rs](pir-sdk-client/src/onion.rs)):
+3. **OnionPIR** ([crates/sdk/client/src/onion.rs](crates/sdk/client/src/onion.rs)):
    already uses `pbc_plan_rounds` over INDEX queries, plus a separate
    gid-level PBC plan at the Merkle layer with ARITY=120 — at batch=2
    the axis is structurally trivial regardless of placement (`pbc_plan_rounds`
@@ -347,15 +347,15 @@ YPIR_*_PLAN.md were deleted 2026-04-19 — all superseded or rejected.
 
 ## Key Files
 
-- `pir-sdk/src/lib.rs`, `pir-sdk/src/error.rs`, `pir-sdk/src/metrics.rs`,
-  `pir-sdk/src/sync.rs`.
-- `pir-sdk-client/src/`: `admin.rs`, `attest.rs`, `channel.rs`,
+- `crates/sdk/core/src/lib.rs`, `crates/sdk/core/src/error.rs`, `crates/sdk/core/src/metrics.rs`,
+  `crates/sdk/core/src/sync.rs`.
+- `crates/sdk/client/src/`: `admin.rs`, `attest.rs`, `channel.rs`,
   `dpf.rs`, `harmony.rs`, `onion.rs`, `transport.rs`, `connection.rs`,
   `wasm_transport.rs`, `merkle_verify.rs`, `onion_merkle.rs`,
   `hint_cache.rs`, `protocol.rs`.
-- `pir-sdk-wasm/src/`: `lib.rs`, `client.rs`, `merkle_verify.rs`,
+- `crates/sdk/wasm/src/`: `lib.rs`, `client.rs`, `merkle_verify.rs`,
   `metrics.rs`, `tracing_bridge.rs`.
-- `pir-sdk-server/src/`: `server.rs`, `loader.rs`, `config.rs`.
+- `crates/sdk/server/src/`: `server.rs`, `loader.rs`, `config.rs`.
 - `pir-runtime-core/src/`: `protocol.rs`, `table.rs`, `eval.rs`,
   `handler.rs`.
 - `web/src/`: `sdk-bridge.ts`, `dpf-adapter.ts`, `types.ts`,
@@ -364,7 +364,7 @@ YPIR_*_PLAN.md were deleted 2026-04-19 — all superseded or rejected.
 ## Build Commands
 ```bash
 # Build SDK WASM
-cd pir-sdk-wasm && wasm-pack build --target web --out-dir pkg
+cd crates/sdk/wasm && wasm-pack build --target web --out-dir pkg
 
 # Run web dev server
 cd web && npm run dev

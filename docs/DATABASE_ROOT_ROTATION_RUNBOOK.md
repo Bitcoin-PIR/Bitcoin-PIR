@@ -102,7 +102,7 @@ In the same change set, update `web/src/attest-pin.ts`:
    counts, table sizes, seeds, slot sizes, arity, and Merkle group geometry
    against the build output.
 3. Update the duplicate `PRODUCTION_DATABASE_PINS` in
-   `pir-sdk-client/tests/integration_test.rs`. The scheduled native canary must
+   `crates/sdk/client/tests/integration_test.rs`. The scheduled native canary must
    fail on an unreviewed rotation; keep these values synchronized with the
    independently reviewed web pins.
 4. Update proof artifacts under `web/public/proofs/` and any public block links

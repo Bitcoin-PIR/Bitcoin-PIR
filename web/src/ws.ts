@@ -34,7 +34,7 @@ const PING_MSG = new Uint8Array([1, 0, 0, 0, 0x00]);
 // docs/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
 // split into `[4B len][CHUNK_MAGIC][seq:u16 LE][total:u16 LE][piece]`
 // frames; the peer reassembles. Must stay in sync with
-// pir-sdk-client/src/connection.rs and runtime/src/bin/unified_server.rs.
+// crates/sdk/client/src/connection.rs and runtime/src/bin/unified_server.rs.
 const CHUNK_MAGIC = 0xc7;
 const CHUNK_SIZE = 256 * 1024;
 const CHUNK_HDR = 5; // 1 magic + 2 seq + 2 total
@@ -215,7 +215,7 @@ export class ManagedWebSocket {
   /**
    * Accumulate one chunk frame; deliver the reassembled message once the
    * final chunk arrives. Frame layout must match `send_chunked` in
-   * pir-sdk-client/src/connection.rs and `send_resp_chunked` in
+   * crates/sdk/client/src/connection.rs and `send_resp_chunked` in
    * runtime/src/bin/unified_server.rs.
    */
   private handleChunkFrame(data: Uint8Array): void {
