@@ -14,8 +14,7 @@
 #
 # Usage:
 #   cd /path/to/BitcoinPIR
-#   wasm-pack build --target web --out-dir pkg --release -- \
-#     --manifest-path crates/sdk/wasm/Cargo.toml
+#   wasm-pack build crates/sdk/wasm --target web --out-dir pkg --release
 #   ./scripts/prepare-wasm-publish.sh
 #
 # Dependencies: jq (https://jqlang.github.io/jq/).
