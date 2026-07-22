@@ -141,10 +141,19 @@ tests did not expose:
 - a client built without the `onion` feature fails explicitly instead of
   returning an unverified empty result.
 
-This native canary deliberately does not claim to automate the production web
-runtime/binary pin, operator-identity, secure-channel, or temporary v1 Onion
-layout gates. Those browser-level gates remain covered by release smokes; an
-end-to-end browser canary is a non-blocking automation follow-up.
+The native canary deliberately does not claim to exercise the browser runtime.
+A separate scheduled/manual Playwright canary now covers that boundary against
+`https://www.bitcoinpir.org/`: it performs one strict query with DPF-PIR,
+HarmonyPIR, OnionPIR, and ORAM TEE, checks the runtime/operator verdicts and
+encrypted-channel path, requires automatic result Merkle verification where
+the protocol exposes it, and confirms that every query tears down its sockets.
+The OnionPIR query also exercises the temporary v1 layout/tree-top preflight;
+that gate remains required until database-proof v2 is activated.
+
+The initial live run on 2026-07-22 passed all four backends in 2.1 minutes from
+a fresh Chromium profile. Pull requests only parse and discover the suite; live
+production queries are restricted to the scheduled workflow or an explicit
+manual run, and failure traces/screenshots/video are retained as artifacts.
 
 The server-side HarmonyPIR hint-pool hardening was deployed on 2026-07-20 from
 commit `d126f36a`. Hetzner and the VPSBG Tier 3 UKI use the same ORAM-enabled
@@ -170,8 +179,9 @@ binary above.
 The strict-root rollout above is closed. The following improvements do not
 reopen it:
 
-- Automate the remaining browser-only runtime, identity, encrypted-channel,
-  and v1 Onion layout gates without weakening the native database-root canary.
+- [x] Automate the browser-only runtime, identity, encrypted-channel, automatic
+  result-verification, teardown, and v1 Onion layout gates without weakening
+  the native database-root canary.
 - Harden malformed HarmonyPIR V2 streams further by rejecting duplicate group
   IDs and inconsistent preamble/terminal metadata immediately, and discard the
   single-stream V2 socket after any mid-stream error. Strict Merkle binding
