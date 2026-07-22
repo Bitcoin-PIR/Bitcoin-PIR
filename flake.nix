@@ -443,13 +443,16 @@
           # package's *Targets*.cmake IMPORTED_LOCATION, split-output
           # safe), so the flake postPatch HEXL-link sed below is dropped.
           # New rev → new content hash (fake-hash cycle).
+          # 2026-07-22: add the extracted BitcoinPIR ORAM crate and refresh
+          # HarmonyPIR's fixed-output hash after its repository migration;
+          # both hashes were captured on the clean Hetzner builder.
           outputHashes = {
             "arc-0.1.0"        = "sha256-tUyvnyJoNTlrXpudIZ3Er6Mqj8zmltBtY06kF9P6hp0=";
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
-            "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
+            "harmonypir-0.1.0" = "sha256-f3IMAESCQf1iSBBgiztCImjL/QdkZjbxCiaKxyKI57Y=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
             "onionpir-0.2.0"   = "sha256-0xqftjQya0180F+xSOhcTnKKqj4nMHzEiSwQTtlZpJQ=";
-            "bitcoinpir-oram-0.1.0" = pkgs.lib.fakeHash;
+            "bitcoinpir-oram-0.1.0" = "sha256-SXC2i4h0olsxJzcO7fILmlwrv6T4HMd5x60X0uwvCXk=";
           };
         };
 
