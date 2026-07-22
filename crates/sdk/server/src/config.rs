@@ -17,6 +17,9 @@ pub struct DatabaseEntry {
     /// Optional attested-builder proof directory for this database.
     #[serde(default)]
     pub proof_dir: Option<PathBuf>,
+    /// Optional database proof v2 directory, served on the v2-only opcode.
+    #[serde(default)]
+    pub proof_v2_dir: Option<PathBuf>,
     /// Starting height (0 for full snapshots, start height for deltas).
     #[serde(default)]
     pub base_height: u32,
@@ -32,6 +35,7 @@ impl DatabaseEntry {
             db_type: "full".into(),
             path: path.into(),
             proof_dir: None,
+            proof_v2_dir: None,
             base_height: 0,
             height,
         }
@@ -49,6 +53,7 @@ impl DatabaseEntry {
             db_type: "delta".into(),
             path: path.into(),
             proof_dir: None,
+            proof_v2_dir: None,
             base_height,
             height: tip_height,
         }
@@ -192,6 +197,11 @@ impl ServerConfig {
                     *proof_dir = base_dir.join(&proof_dir);
                 }
             }
+            if let Some(proof_dir) = db.proof_v2_dir.as_mut() {
+                if proof_dir.is_relative() {
+                    *proof_dir = base_dir.join(&proof_dir);
+                }
+            }
         }
 
         config.validate()?;
@@ -319,6 +329,7 @@ name = "delta_940611_948454"
 type = "delta"
 path = "deltas/940611_948454_canonical_20260615"
 proof_dir = "attestations/delta_940611_948454_sev_snp"
+proof_v2_dir = "attestations/delta_940611_948454_sev_snp_v2"
 base_height = 940611
 height = 948454
 "#,
@@ -332,6 +343,10 @@ height = 948454
         assert_eq!(
             db.proof_dir.as_ref().unwrap(),
             &dir.join("attestations/delta_940611_948454_sev_snp")
+        );
+        assert_eq!(
+            db.proof_v2_dir.as_ref().unwrap(),
+            &dir.join("attestations/delta_940611_948454_sev_snp_v2")
         );
 
         let _ = std::fs::remove_dir_all(&dir);

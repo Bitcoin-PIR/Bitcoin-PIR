@@ -20,6 +20,9 @@ pub struct DatabaseConfig {
     /// Optional attested-builder proof directory for this database.
     #[serde(default)]
     pub proof_dir: Option<PathBuf>,
+    /// Optional proof v2 directory, served independently during migration.
+    #[serde(default)]
+    pub proof_v2_dir: Option<PathBuf>,
     /// Starting height (0 for full snapshots, start height for deltas).
     pub base_height: u32,
     /// Snapshot height (full) or end height (delta).
@@ -50,6 +53,11 @@ impl ServerConfig {
                 db.path = base_dir.join(p).to_string_lossy().into_owned();
             }
             if let Some(proof_dir) = db.proof_dir.as_mut() {
+                if proof_dir.is_relative() {
+                    *proof_dir = base_dir.join(&proof_dir);
+                }
+            }
+            if let Some(proof_dir) = db.proof_v2_dir.as_mut() {
                 if proof_dir.is_relative() {
                     *proof_dir = base_dir.join(&proof_dir);
                 }
@@ -89,6 +97,7 @@ name = "delta_940611_948454"
 type = "delta"
 path = "deltas/940611_948454_canonical_20260615"
 proof_dir = "attestations/delta_940611_948454_sev_snp"
+proof_v2_dir = "attestations/delta_940611_948454_sev_snp_v2"
 base_height = 940611
 height = 948454
 "#,
@@ -105,6 +114,10 @@ height = 948454
         assert_eq!(
             db.proof_dir.as_ref().unwrap(),
             &dir.join("attestations/delta_940611_948454_sev_snp")
+        );
+        assert_eq!(
+            db.proof_v2_dir.as_ref().unwrap(),
+            &dir.join("attestations/delta_940611_948454_sev_snp_v2")
         );
 
         let _ = std::fs::remove_dir_all(&dir);

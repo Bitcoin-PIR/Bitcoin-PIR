@@ -2887,10 +2887,7 @@ fn validate_harmony_hints_request(
 /// A V2 hint pool is precomputed against exactly one immutable database.
 /// Never serve those hints for another catalog entry, even when that db_id is
 /// otherwise valid and loaded by the server.
-fn validate_harmony_v2_pool_database(
-    bound_db_id: u8,
-    requested_db_id: u8,
-) -> Result<(), String> {
+fn validate_harmony_v2_pool_database(bound_db_id: u8, requested_db_id: u8) -> Result<(), String> {
     if requested_db_id != bound_db_id {
         return Err(format!(
             "HarmonyPIR V2 hint pool is bound to db {}, not requested db {}",
@@ -4297,6 +4294,24 @@ async fn main() {
                 );
                 println!(
                     "[config] DB proof loaded for db_id={} name={} from {}",
+                    i,
+                    db_cfg.name,
+                    proof_dir.display()
+                );
+            }
+            if let Some(proof_dir) = db_cfg.proof_v2_dir.as_ref() {
+                db.db_proof_v2 = Some(
+                    load_database_proof_bundle(i as u8, proof_dir).unwrap_or_else(|e| {
+                        panic!(
+                            "[config] failed to load proof_v2_dir for db {} from {}: {}",
+                            db_cfg.name,
+                            proof_dir.display(),
+                            e
+                        )
+                    }),
+                );
+                println!(
+                    "[config] DB proof v2 loaded for db_id={} name={} from {}",
                     i,
                     db_cfg.name,
                     proof_dir.display()
@@ -5828,6 +5843,28 @@ async fn main() {
                         };
                         let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                     }
+                    REQ_GET_DB_PROOF_V2 => {
+                        if body.len() != 1 {
+                            let resp = Response::Error(
+                                "malformed REQ_GET_DB_PROOF_V2: expected one db_id byte".into(),
+                            );
+                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            continue;
+                        }
+                        let db_id = body[0];
+                        let resp = match server
+                            .state
+                            .get_db(db_id)
+                            .and_then(|db| db.db_proof_v2.as_ref())
+                        {
+                            Some(bundle) => Response::DbProofV2(bundle.clone()),
+                            None => Response::Error(format!(
+                                "db proof v2 not configured for db_id {}",
+                                db_id
+                            )),
+                        };
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                    }
                     REQ_CREDENTIAL_PRESENT => {
                         // Wire format:
                         //   [1B variant=0x08]
@@ -7262,6 +7299,7 @@ mod harmony_dos_guard_tests {
             manifest_root: None,
             manifest: None,
             db_proof: None,
+            db_proof_v2: None,
         }
     }
 
@@ -7300,6 +7338,7 @@ mod harmony_dos_guard_tests {
             manifest_root: None,
             manifest: None,
             db_proof: None,
+            db_proof_v2: None,
         }
     }
 

@@ -187,6 +187,7 @@ mod tests {
             bucket_super_root: [1; 32],
             onion_super_root: [2; 32],
             onion_entry_size: 3328,
+            onion_layout_v2: None,
             params_hash: [0; 32],
             network_magic: [0; 4],
             builder_binary_sha256: [0; 32],

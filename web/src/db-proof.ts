@@ -15,6 +15,12 @@ export interface VerifiedDatabaseProof {
   builderBinarySha256Hex: string;
   builderGitCommit: string;
   onionEntrySize?: number;
+  proofVersion?: number;
+  onionTotalPackedEntries?: number;
+  onionIndexBinsPerTable?: number;
+  onionChunkBinsPerTable?: number;
+  onionIndexSlotsPerBin?: number;
+  onionIndexSlotSize?: number;
 }
 
 export interface DatabaseProofPin {
@@ -68,6 +74,12 @@ export function verifiedDatabaseProofFromWasm(proof: WasmDatabaseProof): Verifie
     builderBinarySha256Hex: proof.builderBinarySha256Hex,
     builderGitCommit: proof.builderGitCommit,
     onionEntrySize: proof.onionEntrySize,
+    proofVersion: proof.proofVersion,
+    onionTotalPackedEntries: proof.onionTotalPackedEntries,
+    onionIndexBinsPerTable: proof.onionIndexBinsPerTable,
+    onionChunkBinsPerTable: proof.onionChunkBinsPerTable,
+    onionIndexSlotsPerBin: proof.onionIndexSlotsPerBin,
+    onionIndexSlotSize: proof.onionIndexSlotSize,
   };
 }
 

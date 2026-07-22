@@ -13,10 +13,15 @@ pub use rootbundle::{
     SignedRootBundle,
 };
 
-pub const EVIDENCE_DOMAIN: &[u8] = b"BitcoinPIR/attested-builder/build-evidence/v1\0";
-pub const REPORT_DATA_DOMAIN: &[u8] =
+pub const EVIDENCE_V1_DOMAIN: &[u8] = b"BitcoinPIR/attested-builder/build-evidence/v1\0";
+pub const EVIDENCE_V2_DOMAIN: &[u8] = b"BitcoinPIR/attested-builder/build-evidence/v2\0";
+pub const REPORT_DATA_V1_DOMAIN: &[u8] =
     b"BitcoinPIR/attested-builder/build-evidence/report-data/v1\0";
-pub const EVIDENCE_VERSION: u16 = 1;
+pub const REPORT_DATA_V2_DOMAIN: &[u8] =
+    b"BitcoinPIR/attested-builder/build-evidence/report-data/v2\0";
+pub const EVIDENCE_VERSION_V1: u16 = 1;
+pub const EVIDENCE_VERSION_V2: u16 = 2;
+pub const PARAMS_HASH_V2_DOMAIN: &[u8] = b"BPIR_BUILD_PARAMS_V2\0";
 pub const MAX_STRING_LEN: usize = 4096;
 pub const MAX_MEASUREMENT_LEN: usize = 4096;
 pub const SEV_SNP_REPORT_DATA_OFFSET: usize = 0x50;
@@ -46,8 +51,155 @@ pub enum DbAttestError {
 
 pub type Result<T> = std::result::Result<T, DbAttestError>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvidenceMode {
+    FullBuild,
+    ReattestExisting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OnionQueryLayoutV2 {
+    pub total_packed_entries: u32,
+    pub index_bins_per_table: u32,
+    pub chunk_bins_per_table: u32,
+    pub entry_size: u32,
+    pub index_slots_per_bin: u16,
+    pub index_slot_size: u16,
+    pub index_k: u16,
+    pub chunk_k: u16,
+    pub merkle_arity: u16,
+    pub merkle_hash_bytes: u16,
+}
+
+impl OnionQueryLayoutV2 {
+    pub fn current(
+        total_packed_entries: u32,
+        index_bins_per_table: u32,
+        chunk_bins_per_table: u32,
+        entry_size: u32,
+    ) -> Self {
+        Self {
+            total_packed_entries,
+            index_bins_per_table,
+            chunk_bins_per_table,
+            entry_size,
+            index_slots_per_bin: (entry_size / 15) as u16,
+            index_slot_size: 15,
+            index_k: 75,
+            chunk_k: 80,
+            merkle_arity: (entry_size / 32) as u16,
+            merkle_hash_bytes: 32,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.total_packed_entries == 0
+            || self.index_bins_per_table == 0
+            || self.chunk_bins_per_table == 0
+            || self.entry_size == 0
+        {
+            return Err(DbAttestError::Malformed("zero Onion query dimension"));
+        }
+        if self.index_k != 75 || self.chunk_k != 80 {
+            return Err(DbAttestError::Malformed("unexpected Onion K"));
+        }
+        if self.index_slot_size != 15
+            || self.index_slots_per_bin as u32 * self.index_slot_size as u32 > self.entry_size
+            || self.index_slots_per_bin as u32 != self.entry_size / self.index_slot_size as u32
+        {
+            return Err(DbAttestError::Malformed(
+                "invalid Onion index slot geometry",
+            ));
+        }
+        if self.merkle_hash_bytes != 32
+            || self.merkle_arity as u32 * self.merkle_hash_bytes as u32 != self.entry_size
+        {
+            return Err(DbAttestError::Malformed("invalid Onion Merkle geometry"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuildParamsV2 {
+    pub index_bins_per_table: u32,
+    pub chunk_bins_per_table: u32,
+    pub onion: OnionQueryLayoutV2,
+}
+
+impl BuildParamsV2 {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(96);
+        put_u16(&mut out, 2);
+        for n in [68u16, 20, 32, 25, 40, 1] {
+            put_u16(&mut out, n);
+        }
+        encode_table_params(&mut out, 75, 3, self.index_bins_per_table, 4, 2, 13, true);
+        encode_table_params(&mut out, 80, 3, self.chunk_bins_per_table, 3, 2, 44, false);
+        put_u32(&mut out, self.onion.entry_size);
+        for n in [
+            27u16,
+            self.onion.index_slot_size,
+            self.onion.index_slots_per_bin,
+            self.onion.chunk_k,
+            8,
+            self.onion.merkle_hash_bytes,
+            0,
+        ] {
+            put_u16(&mut out, n);
+        }
+        put_u32(&mut out, self.onion.total_packed_entries);
+        put_u32(&mut out, self.onion.index_bins_per_table);
+        put_u32(&mut out, self.onion.chunk_bins_per_table);
+        out
+    }
+
+    pub fn params_hash(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(PARAMS_HASH_V2_DOMAIN);
+        h.update(self.encode());
+        h.finalize().into()
+    }
+}
+
+fn encode_table_params(
+    out: &mut Vec<u8>,
+    k: u16,
+    pbc_num_hashes: u16,
+    bins: u32,
+    slots: u16,
+    cuckoo_hashes: u16,
+    slot_size: u16,
+    has_tag_seed: bool,
+) {
+    put_u16(out, k);
+    put_u16(out, pbc_num_hashes);
+    put_u32(out, bins);
+    put_u16(out, slots);
+    put_u16(out, cuckoo_hashes);
+    put_u16(out, slot_size);
+    out.push(compute_dpf_n(bins));
+    let magic = if k == 75 {
+        0xBA7C_C000_C000_0004u64
+    } else {
+        0xBA7C_C000_C000_0002u64
+    };
+    put_u64(out, magic);
+    put_u16(out, if k == 75 { 40 } else { 32 });
+    out.push(u8::from(has_tag_seed));
+}
+
+fn compute_dpf_n(bins: u32) -> u8 {
+    if bins <= 2 {
+        1
+    } else {
+        (32 - (bins - 1).leading_zeros()) as u8
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildEvidence {
+    pub version: u16,
     pub builder_git_commit: String,
     pub builder_binary_sha256: [u8; 32],
     pub tee_platform: String,
@@ -73,6 +225,9 @@ pub struct BuildEvidence {
     pub database_manifest_sha256: [u8; 32],
     pub all_artifacts_manifest_sha256: [u8; 32],
     pub server_db_manifest_sha256: [u8; 32],
+    pub evidence_mode: EvidenceMode,
+    pub predecessor_evidence_sha256: Option<[u8; 32]>,
+    pub onion_layout_v2: Option<OnionQueryLayoutV2>,
 }
 
 impl BuildEvidence {
@@ -88,7 +243,13 @@ impl BuildEvidence {
         }
 
         let mut out = Vec::with_capacity(512 + self.tee_image_measurement.len());
-        put_u16(&mut out, EVIDENCE_VERSION);
+        if self.version != EVIDENCE_VERSION_V1 && self.version != EVIDENCE_VERSION_V2 {
+            return Err(DbAttestError::Message(format!(
+                "unsupported evidence version: {}",
+                self.version
+            )));
+        }
+        put_u16(&mut out, self.version);
         put_string(&mut out, &self.builder_git_commit)?;
         put_arr(&mut out, &self.builder_binary_sha256);
         put_string(&mut out, &self.tee_platform)?;
@@ -120,13 +281,33 @@ impl BuildEvidence {
         put_arr(&mut out, &self.database_manifest_sha256);
         put_arr(&mut out, &self.all_artifacts_manifest_sha256);
         put_arr(&mut out, &self.server_db_manifest_sha256);
+        if self.version == EVIDENCE_VERSION_V2 {
+            let layout = self
+                .onion_layout_v2
+                .ok_or(DbAttestError::Malformed("v2 evidence missing Onion layout"))?;
+            layout.validate()?;
+            out.push(match self.evidence_mode {
+                EvidenceMode::FullBuild => 0,
+                EvidenceMode::ReattestExisting => 1,
+            });
+            match self.predecessor_evidence_sha256 {
+                Some(hash) => {
+                    out.push(1);
+                    put_arr(&mut out, &hash);
+                }
+                None => out.push(0),
+            }
+            put_u32(&mut out, layout.total_packed_entries);
+            put_u32(&mut out, layout.index_bins_per_table);
+            put_u32(&mut out, layout.chunk_bins_per_table);
+        }
         Ok(out)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let cur = &mut &bytes[..];
         let version = take_u16(cur, "version")?;
-        if version != EVIDENCE_VERSION {
+        if version != EVIDENCE_VERSION_V1 && version != EVIDENCE_VERSION_V2 {
             return Err(DbAttestError::Message(format!(
                 "unsupported evidence version: {version}"
             )));
@@ -164,10 +345,43 @@ impl BuildEvidence {
         let database_manifest_sha256 = take_arr::<32>(cur, "database_manifest_sha256")?;
         let all_artifacts_manifest_sha256 = take_arr::<32>(cur, "all_artifacts_manifest_sha256")?;
         let server_db_manifest_sha256 = take_arr::<32>(cur, "server_db_manifest_sha256")?;
+        let (evidence_mode, predecessor_evidence_sha256, onion_layout_v2) =
+            if version == EVIDENCE_VERSION_V2 {
+                let evidence_mode = match take_u8(cur, "evidence_mode")? {
+                    0 => EvidenceMode::FullBuild,
+                    1 => EvidenceMode::ReattestExisting,
+                    _ => return Err(DbAttestError::Malformed("unknown evidence mode")),
+                };
+                let predecessor = match take_u8(cur, "has_predecessor_evidence")? {
+                    0 => None,
+                    1 => Some(take_arr::<32>(cur, "predecessor_evidence_sha256")?),
+                    _ => {
+                        return Err(DbAttestError::Malformed(
+                            "bad predecessor evidence option tag",
+                        ))
+                    }
+                };
+                if evidence_mode == EvidenceMode::ReattestExisting && predecessor.is_none() {
+                    return Err(DbAttestError::Malformed(
+                        "reattest_existing evidence requires predecessor digest",
+                    ));
+                }
+                let layout = OnionQueryLayoutV2::current(
+                    take_u32(cur, "onion_total_packed_entries")?,
+                    take_u32(cur, "onion_index_bins_per_table")?,
+                    take_u32(cur, "onion_chunk_bins_per_table")?,
+                    onion_entry_size,
+                );
+                layout.validate()?;
+                (evidence_mode, predecessor, Some(layout))
+            } else {
+                (EvidenceMode::FullBuild, None, None)
+            };
         if !cur.is_empty() {
             return Err(DbAttestError::Malformed("trailing bytes"));
         }
         let evidence = Self {
+            version,
             builder_git_commit,
             builder_binary_sha256,
             tee_platform,
@@ -193,6 +407,9 @@ impl BuildEvidence {
             database_manifest_sha256,
             all_artifacts_manifest_sha256,
             server_db_manifest_sha256,
+            evidence_mode,
+            predecessor_evidence_sha256,
+            onion_layout_v2,
         };
         validate_metadata_string("builder_git_commit", &evidence.builder_git_commit)?;
         validate_metadata_string("tee_platform", &evidence.tee_platform)?;
@@ -206,7 +423,7 @@ impl BuildEvidence {
     }
 
     pub fn evidence_digest(&self) -> Result<[u8; 32]> {
-        evidence_digest(&self.encode()?)
+        evidence_digest(self.version, &self.encode()?)
     }
 
     pub fn evidence_file_sha256(&self) -> Result<[u8; 32]> {
@@ -214,7 +431,7 @@ impl BuildEvidence {
     }
 
     pub fn report_data(&self) -> Result<[u8; 64]> {
-        report_data_for_evidence_bytes(&self.encode()?)
+        report_data_for_evidence_bytes(self.version, &self.encode()?)
     }
 
     pub fn verify_root_payload(&self, payload_bytes: &[u8]) -> Result<RootBundlePayload> {
@@ -331,17 +548,33 @@ impl ProofDirectory {
     }
 }
 
-pub fn evidence_digest(evidence_bytes: &[u8]) -> Result<[u8; 32]> {
+pub fn evidence_digest(version: u16, evidence_bytes: &[u8]) -> Result<[u8; 32]> {
     let mut h = Sha256::new();
-    h.update(EVIDENCE_DOMAIN);
+    h.update(match version {
+        EVIDENCE_VERSION_V1 => EVIDENCE_V1_DOMAIN,
+        EVIDENCE_VERSION_V2 => EVIDENCE_V2_DOMAIN,
+        _ => {
+            return Err(DbAttestError::Message(format!(
+                "unsupported evidence version: {version}"
+            )))
+        }
+    });
     h.update(evidence_bytes);
     Ok(h.finalize().into())
 }
 
-pub fn report_data_for_evidence_bytes(evidence_bytes: &[u8]) -> Result<[u8; 64]> {
-    let evidence_hash = evidence_digest(evidence_bytes)?;
+pub fn report_data_for_evidence_bytes(version: u16, evidence_bytes: &[u8]) -> Result<[u8; 64]> {
+    let evidence_hash = evidence_digest(version, evidence_bytes)?;
     let mut high = Sha256::new();
-    high.update(REPORT_DATA_DOMAIN);
+    high.update(match version {
+        EVIDENCE_VERSION_V1 => REPORT_DATA_V1_DOMAIN,
+        EVIDENCE_VERSION_V2 => REPORT_DATA_V2_DOMAIN,
+        _ => {
+            return Err(DbAttestError::Message(format!(
+                "unsupported evidence version: {version}"
+            )))
+        }
+    });
     high.update(evidence_hash);
     let high: [u8; 32] = high.finalize().into();
 
@@ -601,6 +834,7 @@ mod tests {
 
     fn sample_evidence() -> BuildEvidence {
         BuildEvidence {
+            version: EVIDENCE_VERSION_V1,
             builder_git_commit: "abc123".into(),
             builder_binary_sha256: [1u8; 32],
             tee_platform: "sev-snp".into(),
@@ -632,6 +866,9 @@ mod tests {
             database_manifest_sha256: [11u8; 32],
             all_artifacts_manifest_sha256: [12u8; 32],
             server_db_manifest_sha256: [13u8; 32],
+            evidence_mode: EvidenceMode::FullBuild,
+            predecessor_evidence_sha256: None,
+            onion_layout_v2: None,
         }
     }
 
@@ -646,7 +883,7 @@ mod tests {
     fn report_data_is_full_64_byte_binding() {
         let evidence = sample_evidence();
         let encoded = evidence.encode().unwrap();
-        let evidence_hash = evidence_digest(&encoded).unwrap();
+        let evidence_hash = evidence_digest(evidence.version, &encoded).unwrap();
         let report_data = evidence.report_data().unwrap();
         assert_eq!(&report_data[..32], &evidence_hash);
         assert_ne!(&report_data[32..], &[0u8; 32]);
@@ -661,5 +898,19 @@ mod tests {
         let mut evidence = sample_evidence();
         evidence.core_version = "bad\nversion".into();
         assert!(matches!(evidence.encode(), Err(DbAttestError::Message(_))));
+    }
+
+    #[test]
+    fn params_v2_matches_producer_golden_vector() {
+        let params = BuildParamsV2 {
+            index_bins_per_table: 565_684,
+            chunk_bins_per_table: 1_064_454,
+            onion: OnionQueryLayoutV2::current(1_234_567, 612_345, 1_345_678, 3_328),
+        };
+        assert_eq!(params.encode().len(), 96);
+        assert_eq!(
+            hex::encode(params.params_hash()),
+            "da2d3ad06596a646c8a9c516a904d1d79d8fbb8df0591a8a8f3135283d88592c"
+        );
     }
 }

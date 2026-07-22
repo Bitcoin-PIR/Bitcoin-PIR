@@ -51,7 +51,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
 use crate::db_proof::{
-    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+    fetch_database_proof_v2, verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
 use crate::transport::PirTransport;
@@ -522,8 +522,8 @@ impl OnionClient {
             .ok_or(PirError::DatabaseNotFound(db_id))?;
         let db = self.proof_database_info(db_id)?;
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        let bundle = fetch_database_proof(conn.as_mut(), db_id).await?;
-        verify_database_proof(&db, &bundle, policy)
+        let bundle = fetch_database_proof_v2(conn.as_mut(), db_id).await?;
+        verify_database_proof_v2(&db, &bundle, policy)
     }
 
     /// Select the unmodified standard-catalog entry for v1 DB-proof
@@ -550,7 +550,71 @@ impl OnionClient {
         let catalog = self.catalog.as_ref()
             .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
         let db_id = roots.db_id;
+        let layout = roots.onion_layout_v2.ok_or_else(|| {
+            PirError::VerificationFailed(
+                "OnionPIR root installation requires typed database proof v2 layout".into(),
+            )
+        })?;
+        let query_db = catalog
+            .get(db_id)
+            .ok_or(PirError::DatabaseNotFound(db_id))?;
+        let proof_db = self
+            .proof_catalog
+            .as_ref()
+            .and_then(|catalog| catalog.get(db_id))
+            .ok_or_else(|| {
+                PirError::VerificationFailed(
+                    "OnionPIR root installation requires the standard database catalog".into(),
+                )
+            })?;
+        if query_db.index_bins != layout.index_bins_per_table
+            || query_db.chunk_bins != layout.chunk_bins_per_table
+            || query_db.index_k != layout.index_k as u8
+            || query_db.chunk_k != layout.chunk_k as u8
+            || query_db.tag_seed != proof_db.tag_seed
+        {
+            return Err(PirError::VerificationFailed(format!(
+                "server Onion query geometry disagrees with proof v2 for db_id {db_id}"
+            )));
+        }
+        #[cfg(feature = "onion")]
+        {
+            if packed_entry_size() != layout.entry_size as usize {
+                return Err(PirError::VerificationFailed(format!(
+                    "local OnionPIR entry size {} disagrees with proof v2 {}",
+                    packed_entry_size(),
+                    layout.entry_size
+                )));
+            }
+            let merkle = self.onion_merkle.get(&db_id).ok_or_else(|| {
+                PirError::VerificationFailed(format!(
+                    "db_id {db_id} has no OnionPIR Merkle metadata"
+                ))
+            })?;
+            let expected_index_rows =
+                (layout.index_bins_per_table as usize).div_ceil(layout.merkle_arity as usize);
+            let expected_chunk_rows =
+                (layout.chunk_bins_per_table as usize).div_ceil(layout.merkle_arity as usize);
+            if merkle.arity != layout.merkle_arity as usize
+                || merkle.index.k != layout.index_k as usize
+                || merkle.data.k != layout.chunk_k as usize
+                || merkle.index.num_pt != expected_index_rows
+                || merkle.data.num_pt != expected_chunk_rows
+            {
+                return Err(PirError::VerificationFailed(format!(
+                    "server Onion Merkle geometry disagrees with proof v2 for db_id {db_id}"
+                )));
+            }
+        }
         self.verified_roots.install(catalog, roots)?;
+        self.onion_params.insert(
+            db_id,
+            OnionDbParams {
+                total_packed: layout.total_packed_entries as usize,
+                index_slots_per_bin: layout.index_slots_per_bin as usize,
+                index_slot_size: layout.index_slot_size as usize,
+            },
+        );
         self.verified_tree_tops.remove(&db_id);
         Ok(())
     }
@@ -2971,8 +3035,12 @@ mod tests {
     }
 
     fn onion_info_response(index_bins: u32, chunk_bins: u32) -> Vec<u8> {
+        let index_num_pt = index_bins.div_ceil(104);
+        let chunk_num_pt = chunk_bins.div_ceil(104);
         let json = format!(
-            r#"{{"index_bins_per_table":{index_bins},"chunk_bins_per_table":{chunk_bins},"index_k":75,"chunk_k":80,"tag_seed":7,"onionpir":{{"total_packed_entries":1000,"index_bins_per_table":{index_bins},"chunk_bins_per_table":{chunk_bins},"index_k":75,"chunk_k":80,"tag_seed":7,"index_slots_per_bin":256,"index_slot_size":15}}}}"#
+            r#"{{"index_bins_per_table":{index_bins},"chunk_bins_per_table":{chunk_bins},"index_k":75,"chunk_k":80,"tag_seed":7,"onionpir":{{"total_packed_entries":1000,"index_bins_per_table":{index_bins},"chunk_bins_per_table":{chunk_bins},"index_k":75,"chunk_k":80,"tag_seed":7,"index_slots_per_bin":221,"index_slot_size":15}},"onionpir_merkle":{{"arity":104,"super_root":"{root}","tree_tops_hash":"{tops}","tree_tops_size":1,"index":{{"k":75,"num_pt":{index_num_pt}}},"data":{{"k":80,"num_pt":{chunk_num_pt}}}}}}}"#,
+            root = "00".repeat(32),
+            tops = "11".repeat(32),
         );
         let mut payload = Vec::with_capacity(1 + json.len());
         payload.push(RESP_GET_INFO_JSON);
@@ -3008,6 +3076,9 @@ mod tests {
             bucket_super_root: [3; 32],
             onion_super_root: [4; 32],
             onion_entry_size: 3328,
+            onion_layout_v2: Some(pir_db_attest::OnionQueryLayoutV2::current(
+                1_000, 10_273, 20_547, 3_328,
+            )),
             params_hash: [5; 32],
             network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
             builder_binary_sha256: [6; 32],
@@ -3025,12 +3096,26 @@ mod tests {
             db.db_id,
             OnionDbParams {
                 total_packed: 1000,
-                index_slots_per_bin: 256,
+                index_slots_per_bin: 221,
                 index_slot_size: 15,
             },
         );
         client.info_json = Some("{\"session\":\"old\"}".into());
         client.set_root_policy(RootPolicy::RequireVerified);
+        #[cfg(feature = "onion")]
+        {
+            let merkle_json = r#"{
+                "onionpir_merkle": {
+                    "arity": 104,
+                    "super_root": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                    "tree_tops_hash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+                    "tree_tops_size": 1245184,
+                    "index": {"k": 75, "num_pt": 99},
+                    "data": {"k": 80, "num_pt": 198}
+                }
+            }"#;
+            client.onion_merkle = parse_onion_merkle_per_db(merkle_json);
+        }
         client
             .install_verified_database_roots(proof_test_roots(db.height))
             .unwrap();
@@ -3045,7 +3130,7 @@ mod tests {
                     "tree_tops_hash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
                     "tree_tops_size": 1245184,
                     "index": {"k": 75, "num_pt": 99},
-                    "data": {"k": 80, "num_pt": 364}
+                    "data": {"k": 80, "num_pt": 198}
                 }
             }"#;
             client.onion_merkle = parse_onion_merkle_per_db(merkle_json);
@@ -3231,6 +3316,7 @@ mod tests {
             client.catalog = Some(DatabaseCatalog {
                 databases: vec![db.clone()],
             });
+            client.proof_catalog = client.catalog.clone();
             client.set_root_policy(policy);
             if policy == RootPolicy::RequireVerified {
                 client

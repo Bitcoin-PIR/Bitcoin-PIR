@@ -7143,6 +7143,7 @@ mod tests {
             network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
             builder_binary_sha256: [6; 32],
             builder_git_commit: "session-test".into(),
+            onion_layout_v2: None,
         }
     }
 
