@@ -319,6 +319,11 @@
         # `ukify` attr and `systemdUkify` is unreliable — objcopy is
         # the documented pre-ukify recipe and needs no Python.)
         nativeBuildInputs = with pkgs; [ binutils ];
+        # The output is an already-assembled PE/COFF UKI, not an ELF binary
+        # for stdenv to shrink. The default strip hook otherwise mutates it
+        # after the in-derivation SHA-256 is recorded, leaving a stale checksum
+        # and potentially changing measured-boot bytes behind our back.
+        dontStrip = true;
         passthru = { inherit initrd modulesSubset; kernel = vpsbgKernelImage; };
       } ''
         set -euo pipefail
