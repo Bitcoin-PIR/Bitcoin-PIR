@@ -44,10 +44,10 @@ describe('ORAM source-binding proof', () => {
       PIR2_TIER3_PIN.measurementHex,
     );
     expect(status.verified?.manifest.liveDeployment.pir2UkiSha256).toBe(
-      'd9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6',
+      '3d511f88ea065ac564b8838e69d904acd1fd21d63eff1d0a5768e80c1dcaa6ce',
     );
     expect(status.verified?.manifest.liveDeployment.currentPir2RuntimeBitcoinPirCommit).toBe(
-      'd126f36adb1ec4da7f23dcfe97a81f7503b6829f',
+      '837108b65374c3c05f876c1d57914e05f106c6a8',
     );
   });
 

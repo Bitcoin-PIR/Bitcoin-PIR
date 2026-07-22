@@ -46,7 +46,7 @@ to whichever slice you want to start on.
 
 These values match `web/src/attest-pin.ts` and
 `scripts/verify_oram_tier3_deploy.sh`. They were rechecked against the live
-pir2 report on 2026-07-20 with `bpir-admin attest`.
+pir2 report on 2026-07-22 with `bpir-admin attest`.
 
 ```
 Server: wss://weikeng2.bitcoinpir.org
@@ -55,17 +55,17 @@ Launch MEASUREMENT (covers OVMF + Tier 3 UKI bytes — UKI now contains
 the unified_server BINARY itself in initramfs, NOT just a cmdline hash
 pin. So this digest authenticates the literal binary bytes the box is
 running, not "a binary the box claims matches a hash"):
-  db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2
+  478fb4acdf0bd505bccfab14f46d7d81e19d782b19480433f7716c27872a003742b0e7ff8f787195533a39514887c3f7
 
 UKI bytes sha256 (built by scripts/build_uki_tier3.sh on pir-hetzner;
 includes initramfs with unified_server + cloudflared + runit + the
 sev-guest/ccp/tsm_report kernel modules baked in):
-  d9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6
+  3d511f88ea065ac564b8838e69d904acd1fd21d63eff1d0a5768e80c1dcaa6ce
 
 unified_server binary sha256 (computed at build time AND attested at
 runtime via /proc/self/exe — the two match because dracut was invoked
 with --nostrip; verifiers pin via --expect-binary on bpir-admin attest):
-  4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4
+  61d74a9ce4f97b3563ce76b5e2b1a0fba0d0e6c8f9934ae95b404ededac5f178
 
 ARK fingerprint (AMD Turin family root certificate — pinned in
 web/src/attest-pin.ts and used by --expect-ark-fingerprint to anchor
@@ -77,7 +77,7 @@ DB manifest roots (db_id order):
   delta_940611_948454:        c816f067117bca98256ee246c4469591ee8f537b2271d65b38d1536a70887963
 
 Server git rev (per /attest, captured at unified_server build time):
-  d126f36adb1ec4da7f23dcfe97a81f7503b6829f
+  837108b65374c3c05f876c1d57914e05f106c6a8
 ```
 
 NOTE on the X25519 channel pubkey: it's "long-lived" relative to per-
@@ -91,8 +91,8 @@ Verifiers can cross-check end-to-end with:
 ```bash
 # Static checks: report binding + binary + measurement + ARK chain
 bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2 \
-    --expect-binary 4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4 \
+    --expect-measurement 478fb4acdf0bd505bccfab14f46d7d81e19d782b19480433f7716c27872a003742b0e7ff8f787195533a39514887c3f7 \
+    --expect-binary 61d74a9ce4f97b3563ce76b5e2b1a0fba0d0e6c8f9934ae95b404ededac5f178 \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 # Live encrypted channel + AMD VCEK chain validation
@@ -484,8 +484,8 @@ assume you've reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
 
 # Attest VPSBG (verifies SEV-SNP report + binds X25519 channel pubkey)
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2 \
-    --expect-binary 4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4 \
+    --expect-measurement 478fb4acdf0bd505bccfab14f46d7d81e19d782b19480433f7716c27872a003742b0e7ff8f787195533a39514887c3f7 \
+    --expect-binary 61d74a9ce4f97b3563ce76b5e2b1a0fba0d0e6c8f9934ae95b404ededac5f178 \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 # End-to-end channel test with ARK-rooted chain validation

@@ -126,26 +126,26 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-07-20.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-07-22.
  * Built by `scripts/build_uki_tier3.sh` on the Hetzner build host:
  * VPSBG kernel 7.0.0-15 + the ORAM-enabled `unified_server`
  * binary baked into the initramfs.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 ORAM UKI — 2026-07-20. Built from BitcoinPIR commit
-  // d126f36adb1ec4da7f23dcfe97a81f7503b6829f:
+  // Tier 3 ORAM UKI — 2026-07-22. Built from BitcoinPIR commit
+  // 837108b65374c3c05f876c1d57914e05f106c6a8:
   // unified_server serves db-proof query traffic and direct ORAM lookup
   // for db_id 0/1 as pir2 query-only (`--serve-queries`, no hint pool,
   // no OnionPIR) plus `--identity-*` (operator-signed identity,
   // server_id=pir2). MEASUREMENT captured from the live Tier 3 deploy via
   // `bpir-admin attest wss://weikeng2.bitcoinpir.org` after uploading
-  // UKI sha256 `d9698bdc394eb97611000d5b938ef708bde342645c3f8a9e9e2234ebfa5d8ce6`
+  // UKI sha256 `3d511f88ea065ac564b8838e69d904acd1fd21d63eff1d0a5768e80c1dcaa6ce`
   // (SEV-SNP REPORT_DATA binding verified on
   // real hardware).
   measurementHex:
-    'db1a0a4c43e07c212590f705679b8d5d8b6335a6dd755550b65558a675226f1f2207524ef83213bb7fd1e69b472953f2',
+    '478fb4acdf0bd505bccfab14f46d7d81e19d782b19480433f7716c27872a003742b0e7ff8f787195533a39514887c3f7',
   binarySha256Hex:
-    '4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4',
+    '61d74a9ce4f97b3563ce76b5e2b1a0fba0d0e6c8f9934ae95b404ededac5f178',
   description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 ORAM UKI)',
 };
 
@@ -333,9 +333,9 @@ export const PRODUCTION_ONION_QUERY_LAYOUT_PINS: OnionQueryLayoutPin[] = [
  * backed up out-of-band) and signs the pir1 / pir2 `IdentityCert`s
  * (`bpir-admin sign-identity`, valid_until 2029-05).
  *
- * LIVE END-TO-END (verified 2026-07-20, still used by the current
- * production binaries). pir1 + pir2 both serve REQ_ANNOUNCE on
- * announce-enabled binaries (both `4cf7d467...`); `announce()` against
+ * LIVE END-TO-END (reverified 2026-07-22). pir1 + pir2 both serve
+ * REQ_ANNOUNCE on their independently pinned production binaries;
+ * `announce()` against
  * either returns an
  * operator-endorsed bundle that verifies under this pinned key
  * (operator-pin + cert signature + validity + chain + channel binding).
