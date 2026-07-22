@@ -404,7 +404,7 @@ Never use `echo "$var" | grep -q` under `set -o pipefail`. `grep -q` exits on fi
 - Inspect with `lsinitrd` (handles all compression); `cpio -t <` does NOT work on zstd
 - SEV modules: ccp, sev-guest, tsm_report — validated pre/post-build in `build_uki_tier3.sh`
 
-### Attestation pins (current as of 2026-07-20)
+### Attestation pins (current as of 2026-07-22)
 `web/src/attest-pin.ts` is the authoritative source — values below are a quick reference.
 - **pir1 (Hetzner)**: binary `4cf7d467...` (commit `d126f36a`, Cargo release build with `cuckoo-oram`) — no SEV, no measurement
-- **pir2 (VPSBG) Tier 3**: the same `4cf7d467...` binary baked into UKI sha256 `d9698bdc...`, measurement `db1a0a4c...` — pir2 serves `--serve-queries` plus direct ORAM for db_id 0/1, with no OnionPIR
+- **pir2 (VPSBG) Tier 3**: binary `61d74a9c...` (commit `837108b6`) baked into UKI sha256 `3d511f88...`, measurement `478fb4ac...` — pir2 serves `--serve-queries` plus direct ORAM for db_id 0/1, with no OnionPIR

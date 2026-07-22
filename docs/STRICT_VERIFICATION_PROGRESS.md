@@ -155,6 +155,16 @@ background. Both services stayed at zero restarts during rollout. Post-deploy
 strict production canaries passed for DPF, HarmonyPIR, and OnionPIR, and the
 VPSBG direct-ORAM smoke passed for both production database IDs.
 
+On 2026-07-22, VPSBG moved independently to BitcoinPIR commit `837108b6`
+(binary SHA-256 `61d74a9c...f178`, UKI SHA-256 `3d511f88...aa6ce`, launch
+MEASUREMENT `478fb4ac...c3f7`). This keeps the certified
+`bitcoinpir-oram` revision unchanged while serializing each database's complete
+ORAM request and state-commit transaction. A fixed-pin AMD attestation,
+encrypted-channel test, and padded direct-ORAM smoke for db_id 0 and db_id 1
+passed on the full-feature UKI after it reopened state written by the diagnostic
+UKI. Hetzner intentionally remains on the independently pinned 2026-07-20
+binary above.
+
 ## Non-blocking follow-ups
 
 The strict-root rollout above is closed. The following improvements do not
