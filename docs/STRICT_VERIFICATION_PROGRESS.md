@@ -172,11 +172,13 @@ reopen it:
 
 - Automate the remaining browser-only runtime, identity, encrypted-channel,
   and v1 Onion layout gates without weakening the native database-root canary.
-- Harden malformed HarmonyPIR V2 streams further by rejecting duplicate group
-  IDs and inconsistent preamble/terminal metadata immediately, and discard the
-  single-stream V2 socket after any mid-stream error. Strict Merkle binding
-  already prevents such a stream from yielding trusted data; this follow-up is
-  fail-fast protocol hygiene and connection recovery.
+- [x] Harden malformed HarmonyPIR V2 streams by rejecting duplicate group IDs,
+  mismatched record lengths, and inconsistent preamble/terminal metadata at
+  the frame where they appear. Full-stream failures now discard the single V2
+  socket, while half-stream failures discard both sockets; only the exact,
+  completely consumed pool-unavailable response may reuse a connection for V1
+  fallback. Strict Merkle binding already prevented malformed hints from
+  yielding trusted data; this closes the fail-fast and recovery gap.
 - Implement the separately scoped
   [v2 database-proof migration](DB_PROOF_V2_PLAN.md), which commits the three
   remaining OnionPIR layout values and replaces the explicit v1 layout pins
