@@ -186,7 +186,6 @@ reopen it:
 - Follow [the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md)
   for every new snapshot or delta generation.
 
-The separate ORAM live-image byte-match claim remains out of scope. The static
-strict ORAM source-binding proof is not evidence that the deployed runtime has
-the byte-identical ORAM image open; that stronger deployment claim must be
-tracked and validated independently.
+The separate ORAM live-image claim remains out of scope for the completed
+strict-root rollout. Its threat model and implementation sequence are tracked
+in [ORAM_LIVE_IMAGE_BINDING_PLAN.md](ORAM_LIVE_IMAGE_BINDING_PLAN.md).
