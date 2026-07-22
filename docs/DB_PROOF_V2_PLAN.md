@@ -3,9 +3,10 @@
 Status: producer and consumer implementation are in draft review. The
 [attested-builder producer PR](https://github.com/Bitcoin-PIR/attested-builder/pull/1)
 implements canonical v2 evidence plus existing-artifact re-attestation. The
-`codex/db-proof-v2-consumer` branch in this repository implements dual-serving,
-native/WASM verification, typed Onion layout installation, and removal of the
-temporary per-field layout pins. Production activation remains pending. The
+[consumer PR #69](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/69) implements
+dual-serving, native/WASM verification, typed Onion layout installation, and
+removal of the temporary per-field layout pins. Production activation remains
+pending. The
 deployed v1 strict flow continues to fail closed against the explicit layout
 pins until v2 evidence, runtime configuration, frontend pins, and deployment
 all move together.
