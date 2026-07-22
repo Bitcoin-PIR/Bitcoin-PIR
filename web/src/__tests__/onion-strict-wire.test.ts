@@ -5,6 +5,7 @@ import {
   OnionPirWebClient,
   responsePayloadFromFrame,
 } from '../onionpir_client.js';
+import { PRODUCTION_ONION_QUERY_LAYOUT_PINS } from '../attest-pin.js';
 
 function frame(payload: number[]): Uint8Array {
   const out = new Uint8Array(4 + payload.length);
@@ -93,39 +94,13 @@ describe('strict OnionPIR session lifecycle', () => {
     const client = new OnionPirWebClient({
       serverUrl: 'wss://example.invalid',
       strictVerification: true,
+      onionQueryLayoutPins: PRODUCTION_ONION_QUERY_LAYOUT_PINS,
     });
     const internal = client as any;
     internal.sessionGeneration = 7;
     internal.catalog = {
-      databases: [{
-        dbId: 0,
-        baseHeight: 0,
-        height: 948_454,
-        tagSeed: 7n,
-        indexMasterSeed: 8n,
-        chunkMasterSeed: 9n,
-      }],
+      databases: [{ dbId: 0, baseHeight: 0, height: 948_454 }],
     };
-    internal.serverInfo = {
-      onionpir: {
-        total_packed_entries: 1_000,
-        index_bins_per_table: 100,
-        chunk_bins_per_table: 200,
-        index_k: 75,
-        chunk_k: 80,
-        tag_seed: 7n,
-        index_master_seed: 8n,
-        chunk_master_seed: 9n,
-        index_slots_per_bin: 221,
-        index_slot_size: 15,
-      },
-      onionpir_merkle: {
-        arity: 104,
-        index: { k: 75, num_pt: 1 },
-        data: { k: 80, num_pt: 2 },
-      },
-    };
-    internal.wasmModule = { paramsInfo: () => ({ entrySize: 3_328 }) };
 
     client.installVerifiedDatabaseProof({
       dbId: 0,
@@ -134,12 +109,6 @@ describe('strict OnionPIR session lifecycle', () => {
       height: 948_454,
       onionSuperRootHex: 'ab'.repeat(32),
       onionEntrySize: 3_328,
-      proofVersion: 2,
-      onionTotalPackedEntries: 1_000,
-      onionIndexBinsPerTable: 100,
-      onionChunkBinsPerTable: 200,
-      onionIndexSlotsPerBin: 221,
-      onionIndexSlotSize: 15,
       free,
     } as any);
 

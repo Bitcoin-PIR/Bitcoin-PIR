@@ -130,6 +130,8 @@ export {
   PIR1_PIN,
   PIR2_TIER3_PIN,
   PRODUCTION_DB_PROOF_PINS,
+  PRODUCTION_ONION_QUERY_LAYOUT_PINS,
+  type OnionQueryLayoutPin,
   type ServerAttestPin,
 } from './attest-pin.js';
 

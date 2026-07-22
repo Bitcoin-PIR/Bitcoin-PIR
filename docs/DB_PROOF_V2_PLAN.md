@@ -5,11 +5,12 @@ Status: producer and consumer implementation are in draft review. The
 implements canonical v2 evidence plus existing-artifact re-attestation. The
 [consumer PR #69](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/69) implements
 dual-serving, native/WASM verification, typed Onion layout installation, and
-removal of the temporary per-field layout pins. Production activation remains
-pending. The
-deployed v1 strict flow continues to fail closed against the explicit layout
-pins until v2 evidence, runtime configuration, frontend pins, and deployment
-all move together.
+an explicit v2-only native verification method. It intentionally leaves the
+deployed v1 strict call path and temporary per-field layout pins in place so
+the capability PR can merge before production sidecars exist. Production
+activation remains a separate fail-closed cutover. The deployed v1 strict flow
+continues to fail closed against the explicit layout pins until v2 evidence,
+runtime configuration, frontend pins, and deployment all move together.
 
 ## Goal and trust model
 
@@ -153,19 +154,22 @@ It must not be described as a fresh full build.
       `proof_v2_dir`, while preserving v1 serving for old clients.
 - [x] Recompute `params_hash_v2` in Rust/WASM and return a typed verified
       `OnionQueryLayoutV2` handle.
-- [x] Make strict native and standalone-web Onion clients request v2 only,
-      reject v1 fallback, compare live catalog/Merkle geometry with the typed
-      proof, and then query using the proof-backed values.
-- [x] Remove `PRODUCTION_ONION_QUERY_LAYOUT_PINS`; the layout is no longer
-      trusted as three independent TypeScript constants.
+- [x] Add an explicit native v2-only Onion verifier with no v1 fallback and
+      typed installation checks against live catalog/Merkle geometry. Preserve
+      the existing v1 method during the staged migration.
+- [x] Expose the v2-only stateless verifier and typed layout getters to WASM.
+      The production web client deliberately continues to request v1.
 - [ ] Generate v2 evidence and SNP reports for production db 0 and db 1 on the
       attested builder.
 - [ ] Archive and independently verify the new bundles, then add reviewed
       production `params_hash_v2`/builder pins.
 - [ ] Configure and deploy `proof_v2_dir` on Hetzner and VPSBG using a runtime
       binary that supports the v2 opcode.
-- [ ] Publish the v2 web client and run strict browser/native canaries against
-      both servers before retiring v1.
+- [ ] Submit the activation PR: switch strict native/web Onion clients to v2,
+      consume only proof-backed layout values, and remove
+      `PRODUCTION_ONION_QUERY_LAYOUT_PINS` without any fallback.
+- [ ] Publish the activation web client and run strict browser/native canaries
+      against both servers before retiring v1.
 
 The unchecked items are activation gates. Merging the implementation PRs alone
 must not be described as a production v2 rollout.

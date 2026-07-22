@@ -2776,6 +2776,38 @@ mod tests {
     }
 
     #[test]
+    fn database_proof_v2_exposes_typed_onion_layout() {
+        let layout = pir_db_attest::OnionQueryLayoutV2::current(
+            948_640, 10_273, 37_954, 3_328,
+        );
+        let roots = VerifiedDatabaseRoots {
+            db_id: 0,
+            build_kind: pir_db_attest::BuildKind::Snapshot,
+            from_height: 0,
+            from_block_hash: [0; 32],
+            height: 948_454,
+            block_hash: [1; 32],
+            muhash: [2; 32],
+            bucket_super_root: [3; 32],
+            onion_super_root: [4; 32],
+            onion_entry_size: 3328,
+            onion_layout_v2: Some(layout),
+            params_hash: [5; 32],
+            network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
+            builder_binary_sha256: [6; 32],
+            builder_git_commit: "test-v2".into(),
+        };
+
+        let json = database_proof_json(&roots);
+        assert_eq!(json["proofVersion"], 2);
+        assert_eq!(json["onionTotalPackedEntries"], 948_640);
+        let proof = WasmDatabaseProof { inner: roots };
+        assert_eq!(proof.proof_version(), 2);
+        assert_eq!(proof.onion_index_bins_per_table(), Some(10_273));
+        assert_eq!(proof.onion_chunk_bins_per_table(), Some(37_954));
+    }
+
+    #[test]
     fn unpack_script_hashes_empty_input_ok() {
         let out = unpack_script_hashes(&[]).unwrap();
         assert!(out.is_empty());

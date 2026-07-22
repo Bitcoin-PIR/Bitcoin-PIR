@@ -51,7 +51,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
 use crate::db_proof::{
-    fetch_database_proof_v2, verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
+    fetch_database_proof, fetch_database_proof_v2, verify_database_proof,
+    verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
 use crate::transport::PirTransport;
@@ -522,6 +523,28 @@ impl OnionClient {
             .ok_or(PirError::DatabaseNotFound(db_id))?;
         let db = self.proof_database_info(db_id)?;
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        let bundle = fetch_database_proof(conn.as_mut(), db_id).await?;
+        verify_database_proof(&db, &bundle, policy)
+    }
+
+    /// Fetch and verify the staged v2 proof without falling back to v1.
+    /// Production callers can opt in after v2 evidence and sidecars are
+    /// deployed; the existing v1 method remains available during migration.
+    pub async fn verify_database_proof_v2(
+        &mut self,
+        db_id: u8,
+        policy: &DatabaseProofPolicy,
+    ) -> PirResult<VerifiedDatabaseRoots> {
+        if !self.is_connected() { return Err(PirError::NotConnected); }
+        let query_catalog = match &self.catalog {
+            Some(c) => c.clone(),
+            None => self.fetch_catalog().await?,
+        };
+        query_catalog
+            .get(db_id)
+            .ok_or(PirError::DatabaseNotFound(db_id))?;
+        let db = self.proof_database_info(db_id)?;
+        let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
         let bundle = fetch_database_proof_v2(conn.as_mut(), db_id).await?;
         verify_database_proof_v2(&db, &bundle, policy)
     }
@@ -550,71 +573,71 @@ impl OnionClient {
         let catalog = self.catalog.as_ref()
             .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
         let db_id = roots.db_id;
-        let layout = roots.onion_layout_v2.ok_or_else(|| {
-            PirError::VerificationFailed(
-                "OnionPIR root installation requires typed database proof v2 layout".into(),
-            )
-        })?;
-        let query_db = catalog
-            .get(db_id)
-            .ok_or(PirError::DatabaseNotFound(db_id))?;
-        let proof_db = self
-            .proof_catalog
-            .as_ref()
-            .and_then(|catalog| catalog.get(db_id))
-            .ok_or_else(|| {
-                PirError::VerificationFailed(
-                    "OnionPIR root installation requires the standard database catalog".into(),
-                )
-            })?;
-        if query_db.index_bins != layout.index_bins_per_table
-            || query_db.chunk_bins != layout.chunk_bins_per_table
-            || query_db.index_k != layout.index_k as u8
-            || query_db.chunk_k != layout.chunk_k as u8
-            || query_db.tag_seed != proof_db.tag_seed
-        {
-            return Err(PirError::VerificationFailed(format!(
-                "server Onion query geometry disagrees with proof v2 for db_id {db_id}"
-            )));
-        }
-        #[cfg(feature = "onion")]
-        {
-            if packed_entry_size() != layout.entry_size as usize {
-                return Err(PirError::VerificationFailed(format!(
-                    "local OnionPIR entry size {} disagrees with proof v2 {}",
-                    packed_entry_size(),
-                    layout.entry_size
-                )));
-            }
-            let merkle = self.onion_merkle.get(&db_id).ok_or_else(|| {
-                PirError::VerificationFailed(format!(
-                    "db_id {db_id} has no OnionPIR Merkle metadata"
-                ))
-            })?;
-            let expected_index_rows =
-                (layout.index_bins_per_table as usize).div_ceil(layout.merkle_arity as usize);
-            let expected_chunk_rows =
-                (layout.chunk_bins_per_table as usize).div_ceil(layout.merkle_arity as usize);
-            if merkle.arity != layout.merkle_arity as usize
-                || merkle.index.k != layout.index_k as usize
-                || merkle.data.k != layout.chunk_k as usize
-                || merkle.index.num_pt != expected_index_rows
-                || merkle.data.num_pt != expected_chunk_rows
+        let verified_layout = roots.onion_layout_v2;
+        if let Some(layout) = verified_layout {
+            let query_db = catalog
+                .get(db_id)
+                .ok_or(PirError::DatabaseNotFound(db_id))?;
+            let proof_db = self
+                .proof_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.get(db_id))
+                .ok_or_else(|| {
+                    PirError::VerificationFailed(
+                        "OnionPIR root installation requires the standard database catalog".into(),
+                    )
+                })?;
+            if query_db.index_bins != layout.index_bins_per_table
+                || query_db.chunk_bins != layout.chunk_bins_per_table
+                || query_db.index_k != layout.index_k as u8
+                || query_db.chunk_k != layout.chunk_k as u8
+                || query_db.tag_seed != proof_db.tag_seed
             {
                 return Err(PirError::VerificationFailed(format!(
-                    "server Onion Merkle geometry disagrees with proof v2 for db_id {db_id}"
+                    "server Onion query geometry disagrees with proof v2 for db_id {db_id}"
                 )));
+            }
+            #[cfg(feature = "onion")]
+            {
+                if packed_entry_size() != layout.entry_size as usize {
+                    return Err(PirError::VerificationFailed(format!(
+                        "local OnionPIR entry size {} disagrees with proof v2 {}",
+                        packed_entry_size(),
+                        layout.entry_size
+                    )));
+                }
+                let merkle = self.onion_merkle.get(&db_id).ok_or_else(|| {
+                    PirError::VerificationFailed(format!(
+                        "db_id {db_id} has no OnionPIR Merkle metadata"
+                    ))
+                })?;
+                let expected_index_rows =
+                    (layout.index_bins_per_table as usize).div_ceil(layout.merkle_arity as usize);
+                let expected_chunk_rows =
+                    (layout.chunk_bins_per_table as usize).div_ceil(layout.merkle_arity as usize);
+                if merkle.arity != layout.merkle_arity as usize
+                    || merkle.index.k != layout.index_k as usize
+                    || merkle.data.k != layout.chunk_k as usize
+                    || merkle.index.num_pt != expected_index_rows
+                    || merkle.data.num_pt != expected_chunk_rows
+                {
+                    return Err(PirError::VerificationFailed(format!(
+                        "server Onion Merkle geometry disagrees with proof v2 for db_id {db_id}"
+                    )));
+                }
             }
         }
         self.verified_roots.install(catalog, roots)?;
-        self.onion_params.insert(
-            db_id,
-            OnionDbParams {
-                total_packed: layout.total_packed_entries as usize,
-                index_slots_per_bin: layout.index_slots_per_bin as usize,
-                index_slot_size: layout.index_slot_size as usize,
-            },
-        );
+        if let Some(layout) = verified_layout {
+            self.onion_params.insert(
+                db_id,
+                OnionDbParams {
+                    total_packed: layout.total_packed_entries as usize,
+                    index_slots_per_bin: layout.index_slots_per_bin as usize,
+                    index_slot_size: layout.index_slot_size as usize,
+                },
+            );
+        }
         self.verified_tree_tops.remove(&db_id);
         Ok(())
     }
@@ -3235,6 +3258,31 @@ mod tests {
         assert_eq!(selected_for_proof.index_bins, proof_db.index_bins);
         assert_eq!(selected_for_proof.chunk_bins, proof_db.chunk_bins);
         assert_ne!(selected_for_proof.index_bins, query_db.index_bins);
+    }
+
+    #[test]
+    fn v1_roots_remain_installable_during_staged_v2_migration() {
+        let db = proof_test_db(10_273, 20_547, 948_454);
+        let mut client = OnionClient::new("wss://mock-onion");
+        client.catalog = Some(DatabaseCatalog {
+            databases: vec![db.clone()],
+        });
+        client.proof_catalog = client.catalog.clone();
+        client.onion_params.insert(
+            db.db_id,
+            OnionDbParams {
+                total_packed: 777,
+                index_slots_per_bin: 221,
+                index_slot_size: 15,
+            },
+        );
+        let mut roots = proof_test_roots(db.height);
+        roots.onion_layout_v2 = None;
+
+        client.install_verified_database_roots(roots).unwrap();
+
+        assert!(client.verified_database_roots(db.db_id).is_some());
+        assert_eq!(client.onion_params.get(&db.db_id).unwrap().total_packed, 777);
     }
 
     #[tokio::test]

@@ -240,6 +240,77 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
 ];
 
 /**
+ * Query-layout values needed by the standalone OnionPIR client.
+ *
+ * The v1 database proof authenticates the Onion super-root and the packed
+ * plaintext entry size, but its `index_bins_per_table` /
+ * `chunk_bins_per_table` fields describe the shared DPF tables rather than
+ * the separately packed OnionPIR tables.  Until a v2 proof commits the full
+ * Onion layout, production must pin this remaining query shape explicitly.
+ * A server-info response is only accepted when every field below matches.
+ */
+export interface OnionQueryLayoutPin {
+  dbId: number;
+  totalPackedEntries: number;
+  indexBinsPerTable: number;
+  chunkBinsPerTable: number;
+  indexK: number;
+  chunkK: number;
+  tagSeedHex: string;
+  indexMasterSeedHex: string;
+  chunkMasterSeedHex: string;
+  indexSlotsPerBin: number;
+  indexSlotSize: number;
+  onionEntrySize: number;
+  merkleArity: number;
+  merkleIndexK: number;
+  merkleDataK: number;
+  merkleIndexNumPt: number;
+  merkleDataNumPt: number;
+}
+
+export const PRODUCTION_ONION_QUERY_LAYOUT_PINS: OnionQueryLayoutPin[] = [
+  {
+    dbId: 0,
+    totalPackedEntries: 948_640,
+    indexBinsPerTable: 10_273,
+    chunkBinsPerTable: 37_954,
+    indexK: 75,
+    chunkK: 80,
+    tagSeedHex: 'f0b13554de8352f6',
+    indexMasterSeedHex: 'c97f21d6d9364b72',
+    chunkMasterSeedHex: '367867dd7bc05649',
+    indexSlotsPerBin: 221,
+    indexSlotSize: 15,
+    onionEntrySize: 3_328,
+    merkleArity: 104,
+    merkleIndexK: 75,
+    merkleDataK: 80,
+    merkleIndexNumPt: 99,
+    merkleDataNumPt: 365,
+  },
+  {
+    dbId: 1,
+    totalPackedEntries: 116_030,
+    indexBinsPerTable: 965,
+    chunkBinsPerTable: 4_792,
+    indexK: 75,
+    chunkK: 80,
+    tagSeedHex: 'ffa0120f182d4a0d',
+    indexMasterSeedHex: '1c353b0854eab60f',
+    chunkMasterSeedHex: '1545e02440952c73',
+    indexSlotsPerBin: 221,
+    indexSlotSize: 15,
+    onionEntrySize: 3_328,
+    merkleArity: 104,
+    merkleIndexK: 75,
+    merkleDataK: 80,
+    merkleIndexNumPt: 10,
+    merkleDataNumPt: 47,
+  },
+];
+
+/**
  * Operator identity pin (Tier-1) for the REQ_ANNOUNCE operator-signed
  * identity flow.
  *
