@@ -5,13 +5,14 @@
 # (started by /sbin/bpir-tier3-init) execs this; if cloudflared exits,
 # runit restarts it after a 1s delay.
 #
-# The token is sourced from /home/pir/data/cloudflared/tunnel.env on
+# The token is parsed from /home/pir/data/cloudflared/tunnel.env on
 # the rootfs partition, NOT from the initramfs cpio. The bind mount
 # of /sysroot/home/pir/data → /home/pir/data is set up by
 # /sbin/bpir-tier3-init before runsvdir takes over, so by the time
 # this script runs the path is reachable (or the mount failed and
 # we FATAL out — runit will keep restart-looping until the operator
-# fixes it). tunnel.env defines TUNNEL_TOKEN=<base64-jwt>.
+# fixes it). tunnel.env contains TUNNEL_TOKEN=<base64-jwt>, treated strictly
+# as data and never evaluated as shell.
 #
 # Why runtime-sourced: keeping the token out of the cpio means the
 # UKI bytes (and therefore MEASUREMENT) are operator-agnostic — see
@@ -24,40 +25,43 @@
 
 # shellcheck shell=sh
 
-# Source then explicitly export — `. /file` populates the shell's
-# vars but does NOT export them, so a child process (cloudflared)
-# launched via exec would not inherit TUNNEL_TOKEN unless we export.
+umask 077
+BB=/usr/bin/busybox
+READY_CHECK=/usr/local/bin/bpir-ready-check
+TOKEN_READER=/usr/local/bin/bpir-read-tunnel-token
+
+# Wait for the exact measured unified_server attempt to finish all startup
+# work and publish its ready tuple. There is deliberately no timeout path that
+# starts a tunnel to a dead or foreign origin: the sibling watchdog preserves
+# diagnostics at 30/60/180 seconds while this service remains closed.
+while ! "$READY_CHECK"; do
+    $BB sleep 1
+done
+
+# The token lives on the unmeasured writable rootfs. Treat the file strictly as
+# data; sourcing it as shell would grant arbitrary root code execution to any
+# rootfs writer. Read it only after server readiness, accept exactly one
+# TUNNEL_TOKEN line, and reject all other non-comment content.
 TUNNEL_ENV=/home/pir/data/cloudflared/tunnel.env
 if [ ! -r "$TUNNEL_ENV" ]; then
     echo "[cloudflared-run] FATAL: $TUNNEL_ENV not readable" >&2
     echo "[cloudflared-run]   provision via Slice 2 SSH:" >&2
     echo "[cloudflared-run]   mkdir -p /home/pir/data/cloudflared && \\" >&2
     echo "[cloudflared-run]     cp /etc/cloudflared/tunnel.env /home/pir/data/cloudflared/" >&2
-    sleep 5
+    $BB sleep 5
     exit 1
 fi
-. "$TUNNEL_ENV"
+TUNNEL_TOKEN=$("$TOKEN_READER" "$TUNNEL_ENV") || {
+    echo "[cloudflared-run] FATAL: $TUNNEL_ENV must contain exactly one valid TUNNEL_TOKEN line" >&2
+    $BB sleep 5
+    exit 1
+}
+[ -n "$TUNNEL_TOKEN" ] || {
+    echo "[cloudflared-run] FATAL: parsed tunnel token is empty" >&2
+    $BB sleep 5
+    exit 1
+}
 export TUNNEL_TOKEN
-
-if [ -z "$TUNNEL_TOKEN" ]; then
-    echo "[cloudflared-run] FATAL: TUNNEL_TOKEN not set after sourcing $TUNNEL_ENV" >&2
-    sleep 5
-    exit 1
-fi
-
-# Wait for unified_server to listen on 8091 before starting cloudflared.
-# Without this gate, the tunnel comes up to a dead origin and we serve
-# 502s for the first ~10s of every boot. busybox nc supports -z (port
-# scan, no data) — exit 0 if open, non-zero otherwise.
-i=0
-while ! nc -z 127.0.0.1 8091 2>/dev/null; do
-    if [ "$i" -ge 60 ]; then
-        echo "[cloudflared-run] WARN: unified_server still not listening on 8091 after 60s — starting cloudflared anyway" >&2
-        break
-    fi
-    sleep 1
-    i=$((i + 1))
-done
 
 # Match the systemd-canonical invocation form (deploy/systemd/cloudflared.service):
 # rely on TUNNEL_TOKEN env var, NOT a `--token` CLI flag. cloudflared 2026.3.0's

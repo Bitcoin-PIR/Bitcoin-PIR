@@ -131,9 +131,9 @@ echo
 # the initial fetch, builds can run offline by passing OFFLINE=1
 # (combines --locked + --offline = same effect as --frozen).
 if [ "${OFFLINE:-0}" = "1" ]; then
-    cargo build --release --locked --offline -p runtime --bin unified_server
+    cargo build --release --locked --offline -p runtime --features cuckoo-oram --bin unified_server
 else
-    cargo build --release --locked -p runtime --bin unified_server
+    cargo build --release --locked -p runtime --features cuckoo-oram --bin unified_server
 fi
 
 # Strip debug info reproducibly. GNU strip on Linux; macOS strip has

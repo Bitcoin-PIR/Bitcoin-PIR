@@ -148,6 +148,11 @@
         bpirInitScript   = ./scripts/dracut/97bpir-tier3-init/bpir-tier3-init.sh;
         cloudflaredRun   = ./scripts/dracut/97bpir-tier3-init/cloudflared-run.sh;
         unifiedServerRun = ./scripts/dracut/97bpir-tier3-init/unified-server-run.sh;
+        unifiedServerFinish = ./scripts/dracut/97bpir-tier3-init/unified-server-finish.sh;
+        startupWatchdogRun  = ./scripts/dracut/97bpir-tier3-init/startup-watchdog-run.sh;
+        readyCheck          = ./scripts/dracut/97bpir-tier3-init/ready-check.sh;
+        readTunnelToken     = ./scripts/dracut/97bpir-tier3-init/read-tunnel-token.sh;
+        verifyInitramfs     = ./scripts/verify_tier3_initramfs.sh;
 
         # ── Minimal SEV-SNP kernel-module subset ─────────────────────
         # The 7.0.0-15 kernel has virtio_net / virtio_pci / virtio_blk
@@ -226,7 +231,9 @@
         };
 
         initrd = pkgs.runCommand "bpir-tier3-initrd" {
-          nativeBuildInputs = [ pkgs.cpio pkgs.gzip ];
+          nativeBuildInputs = [
+            pkgs.bash pkgs.coreutils pkgs.cpio pkgs.gawk pkgs.gnugrep pkgs.gzip
+          ];
         } ''
           set -euo pipefail
           root=root
@@ -253,7 +260,9 @@
           #    util-linux mount/blkid (rootfs LABEL= / ext4 / --bind).
           mkdir -p "$root/usr/bin" "$root/usr/local/bin" "$root/sbin" \
                    "$root/etc/sv/cloudflared" "$root/etc/sv/unified_server" \
+                   "$root/etc/sv/unified_server_watchdog" \
                    "$root/lib"
+          ln -s ${pkgs.busybox}/bin/busybox         "$root/usr/bin/busybox"
           ln -s ${pkgs.kmod}/bin/modprobe           "$root/usr/bin/modprobe"
           ln -s ${pkgs.kmod}/bin/lsmod              "$root/usr/bin/lsmod"
           ln -s ${pkgs.iproute2}/bin/ip             "$root/usr/bin/ip"
@@ -281,11 +290,19 @@
           install -m0755 ${bpirInitScript}   "$root/sbin/bpir-tier3-init"
           install -m0755 ${cloudflaredRun}   "$root/etc/sv/cloudflared/run"
           install -m0755 ${unifiedServerRun} "$root/etc/sv/unified_server/run"
+          install -m0755 ${unifiedServerFinish} "$root/etc/sv/unified_server/finish"
+          install -m0755 ${startupWatchdogRun} "$root/etc/sv/unified_server_watchdog/run"
+          install -m0755 ${readyCheck} "$root/usr/local/bin/bpir-ready-check"
+          install -m0755 ${readTunnelToken} "$root/usr/local/bin/bpir-read-tunnel-token"
 
           # 6. SEV-SNP module subset → /lib/modules/<kver>/ for modprobe.
           ln -s ${modulesSubset}/lib/modules "$root/lib/modules"
 
-          # 7. Reproducible newc cpio + gzip (kernel: CONFIG_RD_GZIP=y).
+          # 7. Validate the final assembled root, including exact server bytes.
+          ${pkgs.bash}/bin/bash ${verifyInitramfs} "$root" \
+            "$(sha256sum ${unifiedServer}/bin/unified_server | awk '{print $1}')"
+
+          # 8. Reproducible newc cpio + gzip (kernel: CONFIG_RD_GZIP=y).
           mkdir -p "$out"
           find "$root" -exec touch -h -d @1 {} +
           ( cd "$root" && find . -print0 | sort -z \
@@ -432,6 +449,7 @@
             "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
             "onionpir-0.2.0"   = "sha256-0xqftjQya0180F+xSOhcTnKKqj4nMHzEiSwQTtlZpJQ=";
+            "bitcoinpir-oram-0.1.0" = pkgs.lib.fakeHash;
           };
         };
 
@@ -439,7 +457,7 @@
         # rustPlatform.buildRustPackage already adds `--profile release`
         # by default, so we omit `--release` here to avoid the
         # "argument can't be used with `--release`" conflict.
-        cargoBuildFlags = [ "-p" "runtime" "--bin" "unified_server" ];
+        cargoBuildFlags = [ "-p" "runtime" "--features" "cuckoo-oram" "--bin" "unified_server" ];
 
         # The repo's .cargo/config.toml declares [source."git+..."] +
         # [source.crates-io] replace-with = "vendored-sources" entries

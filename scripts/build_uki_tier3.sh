@@ -49,10 +49,11 @@ CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DRACUT_MODULE_DIR="$SCRIPT_DIR/dracut"
 ARCHIVE_SCRIPT="$SCRIPT_DIR/archive_uki_artifact.sh"
+VERIFY_INITRAMFS_SCRIPT="$SCRIPT_DIR/verify_tier3_initramfs.sh"
 
 # ─── Sanity checks ─────────────────────────────────────────────────────────
 
-for tool in ukify dracut sha256sum; do
+for tool in ukify dracut sha256sum lsinitrd; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "error: $tool not installed (apt install systemd-ukify dracut)" >&2
         exit 1
@@ -257,6 +258,20 @@ if [ -n "$MISSING_MODS" ]; then
 fi
 echo "SEV modules confirmed in initramfs: $REQUIRED_SEV_MODS"
 
+# Fail closed if any diagnostic service/helper, permission bit, or the exact
+# unified_server bytes are missing from the final initramfs. Checking source
+# files is insufficient: dracut dependency/install drift happens while packing.
+VERIFY_ROOT=$(mktemp -d /tmp/bpir-tier3-verify.XXXXXX)
+cleanup_verify_root() { rm -rf "$VERIFY_ROOT"; }
+trap cleanup_verify_root EXIT
+(
+    cd "$VERIFY_ROOT"
+    /usr/bin/lsinitrd --unpack "$CUSTOM_INITRD" >/dev/null
+)
+"$VERIFY_INITRAMFS_SCRIPT" "$VERIFY_ROOT" "$BIN_HASH"
+cleanup_verify_root
+trap - EXIT
+
 # ─── Build the cmdline ─────────────────────────────────────────────────────
 # rdinit=/sbin/bpir-tier3-init  : kernel exec's OUR script as PID 1
 #                                 from the initramfs, bypassing dracut /init.
@@ -299,7 +314,7 @@ echo "Next steps (Phase 3.2 acceptance):"
 echo "  0. (One-time, before first deploy of this Tier 3 variant) provision"
 echo "     the tunnel token on the target's rootfs partition. The token is"
 echo "     no longer baked into the initramfs (sub-task 3 / option b of"
-echo "     PHASE3_SLICE3_REPRO_PLAN.md), so cloudflared-run.sh sources it"
+echo "     PHASE3_SLICE3_REPRO_PLAN.md), so cloudflared-run.sh parses it"
 echo "     from /home/pir/data/cloudflared/tunnel.env at boot. Provision via"
 echo "     Slice 2 SSH access:"
 echo "       ssh <slice2-host> 'mkdir -p /home/pir/data/cloudflared && \\"

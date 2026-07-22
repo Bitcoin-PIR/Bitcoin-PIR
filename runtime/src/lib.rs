@@ -13,3 +13,4 @@ pub mod config;
 pub mod harmony_state;
 pub mod hint_pool;
 pub mod onionpir;
+pub mod startup_diagnostics;

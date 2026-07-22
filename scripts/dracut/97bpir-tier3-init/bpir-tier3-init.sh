@@ -21,6 +21,8 @@
 
 PATH=/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
 export PATH
+umask 077
+BB=/usr/bin/busybox
 
 # ── 1. Kernel pseudo-fs ────────────────────────────────────────────
 # These come from the initramfs's empty mount points; kernel doesn't
@@ -33,6 +35,50 @@ mount -t devtmpfs devtmpfs /dev      2>/dev/null || true
 mount -t devpts   devpts   /dev/pts  2>/dev/null || true
 [ -d /run ] || mkdir -p /run
 mount -t tmpfs    tmpfs    /run      2>/dev/null || true
+
+# Root-only control plane and early flight recorder. Events remain in tmpfs
+# until the writable data bind is available, then every update is copied to a
+# per-boot persistent directory outside all database/ORAM paths.
+mkdir -p /run/bpir
+chmod 0700 /run/bpir
+BOOT_ID=$($BB cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+case "$BOOT_ID" in
+    ????????-????-????-????-????????????) ;;
+    *) echo "[bpir-tier3-init] FATAL: kernel boot ID unavailable or invalid" >&2; while :; do $BB sleep 300; done ;;
+esac
+case "$BOOT_ID" in
+    *[!0-9a-f-]*) echo "[bpir-tier3-init] FATAL: kernel boot ID contains invalid characters" >&2; while :; do $BB sleep 300; done ;;
+esac
+printf '%s\n' "$BOOT_ID" > /run/bpir/boot-id
+INIT_EVENTS=/run/bpir/init-events.log
+DIAG_BOOT_DIR=
+
+persist_init_events() {
+    [ -n "$DIAG_BOOT_DIR" ] || return 0
+    raw=$DIAG_BOOT_DIR/init-events.log.raw.$$
+    tmp=$DIAG_BOOT_DIR/init-events.log.tmp.$$
+    $BB cp "$INIT_EVENTS" "$raw" || return 1
+    $BB dd if="$raw" of="$tmp" bs=4096 conv=fsync 2>/dev/null || return 1
+    $BB mv -f "$tmp" "$DIAG_BOOT_DIR/init-events.log" || return 1
+    $BB sync -d "$DIAG_BOOT_DIR" || return 1
+    $BB rm -f "$raw"
+}
+
+boot_event() {
+    stage=$1
+    uptime=$($BB cat /proc/uptime 2>/dev/null || printf 'unknown')
+    uptime=${uptime%% *}
+    printf 'schema=bpir-init-v1 stage=%s uptime_s=%s\n' "$stage" "$uptime" >> "$INIT_EVENTS"
+    persist_init_events || return 1
+}
+
+diagnostics_halt() {
+    echo "[bpir-tier3-init] FATAL: $1; preserving console evidence" >&2
+    boot_event diagnostics_halt 2>/dev/null || true
+    while :; do $BB sleep 300; done
+}
+
+boot_event init_start || diagnostics_halt "early init recorder failed"
 
 # ── 2. Disable kernel console input vectors ──────────────────────
 # /proc must be mounted first. With no getty and no shell on the
@@ -110,11 +156,9 @@ ip route show
 # only /home/pir/data rw, so an attacker compromising unified_server
 # cannot scribble on /usr/, /etc/, /home/pir/.ssh/, etc.
 #
-# IMPORTANT: this section MUST NOT exit-or-shell on failure. If the
-# rootfs mount fails, we still want runsvdir → cloudflared to start,
-# so the tunnel comes up (giving us a HTTP 502 we can observe) instead
-# of leaving the box in HTTP 530 silent-black-hole mode. Phase 3.2 v1
-# learned this the hard way.
+# A rootfs or data-bind failure also makes the runtime token and persistent
+# diagnostics unavailable. This diagnostic UKI therefore halts safely after a
+# console error instead of crash-looping cloudflared with no recoverable log.
 
 echo "--- mounting rootfs ---"
 modprobe virtio_blk 2>/dev/null || true   # KVM virt block driver
@@ -140,6 +184,7 @@ for src in "LABEL=cloudimg-rootfs" /dev/vda1 /dev/sda1 /dev/vda /dev/sda; do
     if mount $flag -o rw /sysroot 2>/dev/null; then
         echo "[bpir-tier3-init] rootfs mounted at /sysroot via $src"
         mounted=true
+        boot_event rootfs_mounted || diagnostics_halt "rootfs event could not be recorded"
         break
     fi
 done
@@ -148,14 +193,26 @@ if [ "$mounted" = "true" ]; then
     mkdir -p /home/pir/data
     if mount --bind /sysroot/home/pir/data /home/pir/data 2>&1; then
         echo "[bpir-tier3-init] /home/pir/data bind-mounted (rw)"
+        for dir in /home/pir/data/.runtime /home/pir/data/.runtime/tier3; do
+            [ ! -L "$dir" ] || diagnostics_halt "diagnostics path is a symbolic link"
+            mkdir -p "$dir" || diagnostics_halt "diagnostics path could not be created"
+            chmod 0700 "$dir" || diagnostics_halt "diagnostics path permissions failed"
+        done
+        DIAG_BOOT_DIR=/home/pir/data/.runtime/tier3/$BOOT_ID
+        [ ! -L "$DIAG_BOOT_DIR" ] || diagnostics_halt "boot diagnostics path is a symbolic link"
+        mkdir -p "$DIAG_BOOT_DIR" || diagnostics_halt "boot diagnostics path could not be created"
+        chmod 0700 "$DIAG_BOOT_DIR" || diagnostics_halt "boot diagnostics permissions failed"
+        $BB sync -d /home/pir/data/.runtime/tier3 \
+            || diagnostics_halt "boot diagnostics directory could not be synced"
+        boot_event data_bind_mounted || diagnostics_halt "data-bind event could not be persisted"
         if [ ! -r /home/pir/data/databases.toml ]; then
             echo "[bpir-tier3-init] WARN: /home/pir/data/databases.toml missing — unified_server will fail to start" >&2
         fi
     else
-        echo "[bpir-tier3-init] WARN: bind mount of /home/pir/data failed; unified_server will fail to start, cloudflared will still come up" >&2
+        diagnostics_halt "bind mount of /home/pir/data failed"
     fi
 else
-    echo "[bpir-tier3-init] WARN: rootfs mount failed — no /home/pir/data available, unified_server will not run, but cloudflared will still come up so we keep observability" >&2
+    diagnostics_halt "rootfs mount failed"
 fi
 
 # ── 5. /dev/sev-guest ─────────────────────────────────────────────
@@ -181,20 +238,24 @@ fi
     if [ -c /dev/sev-guest ]; then
         ls -la /dev/sev-guest
         echo "[bpir-tier3-init] /dev/sev-guest ready — SEV-SNP attestation enabled"
+        boot_event sev_device_ready || diagnostics_halt "SEV event could not be persisted"
     else
         echo "[bpir-tier3-init] WARN: /dev/sev-guest missing — SEV-SNP attest will return NoSevHost"
         echo "[bpir-tier3-init] modules may not have been baked into initramfs — check UKI build log"
+        boot_event sev_device_missing || diagnostics_halt "SEV event could not be persisted"
     fi
 
 # ── 6. Service tree ────────────────────────────────────────────────
 mkdir -p /etc/service
 ln -sf /etc/sv/unified_server /etc/service/unified_server
+ln -sf /etc/sv/unified_server_watchdog /etc/service/unified_server_watchdog
 ln -sf /etc/sv/cloudflared    /etc/service/cloudflared
 
 # ── 7. Hand off to runsvdir ────────────────────────────────────────
 # runsvdir watches /etc/service/, spawns runsv per service, restarts
 # them on exit. As PID 1 it also reaps zombies. Replaces this script.
-# unified_server starts immediately; cloudflared waits on port 8091
-# in its own run script (so the tunnel doesn't come up to a dead origin).
+# unified_server starts immediately; cloudflared waits for its full ready
+# tuple in its own run script (so the tunnel cannot expose a stale process).
 echo "[bpir-tier3-init] handing off to runsvdir"
+boot_event runsvdir_handoff || diagnostics_halt "runsvdir event could not be persisted"
 exec /usr/bin/runsvdir /etc/service

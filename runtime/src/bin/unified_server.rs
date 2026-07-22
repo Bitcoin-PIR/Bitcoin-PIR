@@ -17,6 +17,13 @@ use runtime::eval::{self, GroupTiming};
 use runtime::hint_pool;
 use runtime::onionpir::*;
 use runtime::protocol::*;
+use runtime::startup_diagnostics::{
+    publish_ready_file, StartupContext, StartupDiagnostics, StartupStage,
+};
+#[cfg(feature = "cuckoo-oram")]
+use runtime::startup_diagnostics::{
+    OramLevel as DiagnosticOramLevel, StoreKind as DiagnosticStoreKind,
+};
 use runtime::table::{
     DatabaseDescriptor, DatabaseType, MappedDatabase, MappedSubTable, ServerState,
 };
@@ -29,7 +36,7 @@ use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
@@ -217,6 +224,16 @@ struct CliArgs {
     direct_oram_auth_store: bool,
     /// Do not persist trusted direct ORAM state after query responses.
     direct_oram_no_save: bool,
+    /// Fresh per-attempt file for bounded, fixed-schema startup diagnostics.
+    /// When configured, failure to persist an event is fatal so a diagnostic
+    /// boot cannot silently reproduce the incident without evidence.
+    startup_diagnostics_file: Option<PathBuf>,
+    /// Monotonic runit attempt number for this boot. Required with
+    /// `--ready-file` and included in the atomically-published ready tuple.
+    startup_attempt: Option<u64>,
+    /// Root-only tmpfs marker published after all startup work and listener
+    /// binding complete. The Tier 3 cloudflared gate validates its full tuple.
+    ready_file: Option<PathBuf>,
 }
 
 fn parse_cuckoo_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
@@ -294,6 +311,9 @@ fn parse_args() -> CliArgs {
     let mut direct_oram_cache_levels: usize = 0;
     let mut direct_oram_auth_store = false;
     let mut direct_oram_no_save = false;
+    let mut startup_diagnostics_file: Option<PathBuf> = None;
+    let mut startup_attempt: Option<u64> = None;
+    let mut ready_file: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -514,6 +534,41 @@ fn parse_args() -> CliArgs {
             "--direct-oram-no-save" => {
                 direct_oram_no_save = true;
             }
+            "--startup-diagnostics-file" => {
+                let path = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--startup-diagnostics-file requires an absolute path");
+                });
+                let path = PathBuf::from(path);
+                if !path.is_absolute() {
+                    fatal_cli("--startup-diagnostics-file requires an absolute path");
+                }
+                startup_diagnostics_file = Some(path);
+                i += 1;
+            }
+            "--startup-attempt" => {
+                let value = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--startup-attempt requires a positive integer");
+                });
+                let value = value.parse::<u64>().unwrap_or_else(|_| {
+                    fatal_cli("--startup-attempt requires a positive integer");
+                });
+                if value == 0 {
+                    fatal_cli("--startup-attempt requires a positive integer");
+                }
+                startup_attempt = Some(value);
+                i += 1;
+            }
+            "--ready-file" => {
+                let path = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--ready-file requires an absolute path");
+                });
+                let path = PathBuf::from(path);
+                if !path.is_absolute() {
+                    fatal_cli("--ready-file requires an absolute path");
+                }
+                ready_file = Some(path);
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
@@ -560,6 +615,72 @@ fn parse_args() -> CliArgs {
         direct_oram_cache_levels,
         direct_oram_auth_store,
         direct_oram_no_save,
+        startup_diagnostics_file,
+        startup_attempt,
+        ready_file,
+    }
+}
+
+fn paths_share_target(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    let (Some(left_name), Some(right_name), Some(left_parent), Some(right_parent)) = (
+        left.file_name(),
+        right.file_name(),
+        left.parent(),
+        right.parent(),
+    ) else {
+        return false;
+    };
+    if left_name != right_name {
+        return false;
+    }
+    match (
+        std::fs::canonicalize(left_parent),
+        std::fs::canonicalize(right_parent),
+    ) {
+        (Ok(left_parent), Ok(right_parent)) => left_parent == right_parent,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod startup_path_tests {
+    use super::paths_share_target;
+
+    #[test]
+    fn diagnostics_and_ready_paths_cannot_alias_the_same_file() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "unified-startup-paths-{}-{nonce}",
+            std::process::id()
+        ));
+        let real = root.join("real");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, &alias).unwrap();
+
+        assert!(paths_share_target(
+            &real.join("startup.log"),
+            &real.join("startup.log")
+        ));
+        assert!(paths_share_target(
+            &real.join("startup.log"),
+            &alias.join("startup.log")
+        ));
+        assert!(!paths_share_target(
+            &real.join("startup.log"),
+            &alias.join("ready")
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -1383,31 +1504,45 @@ impl DirectOramTables {
         cache_levels: usize,
         auth_store: bool,
         save_state: bool,
+        diagnostics: &StartupDiagnostics,
+        db_id: u8,
     ) -> Result<Self, String> {
         if access_budget == 0 {
             return Err("--direct-oram-access-budget must be > 0".into());
         }
+        let index_context = StartupContext::db(db_id).with_level(DiagnosticOramLevel::Index);
+        let index = diagnostics.trace(StartupStage::DirectLevelOpen, index_context, || {
+            DirectOramIndexTable::open(
+                oram_dir,
+                drain_per_access,
+                encrypted,
+                key_hex,
+                state_key_hex,
+                cache_levels,
+                auth_store,
+                save_state,
+                diagnostics,
+                db_id,
+            )
+        })?;
+        let chunk_context = StartupContext::db(db_id).with_level(DiagnosticOramLevel::Chunk);
+        let chunk = diagnostics.trace(StartupStage::DirectLevelOpen, chunk_context, || {
+            DirectOramChunkTable::open(
+                oram_dir,
+                drain_per_access,
+                encrypted,
+                key_hex,
+                state_key_hex,
+                cache_levels,
+                auth_store,
+                save_state,
+                diagnostics,
+                db_id,
+            )
+        })?;
         Ok(Self {
-            index: DirectOramIndexTable::open(
-                oram_dir,
-                drain_per_access,
-                encrypted,
-                key_hex,
-                state_key_hex,
-                cache_levels,
-                auth_store,
-                save_state,
-            )?,
-            chunk: DirectOramChunkTable::open(
-                oram_dir,
-                drain_per_access,
-                encrypted,
-                key_hex,
-                state_key_hex,
-                cache_levels,
-                auth_store,
-                save_state,
-            )?,
+            index,
+            chunk,
             access_budget,
             request_transaction: std::sync::Mutex::new(()),
         })
@@ -1434,21 +1569,34 @@ impl DirectOramIndexTable {
         cache_levels: usize,
         auth_store: bool,
         save_state: bool,
+        diagnostics: &StartupDiagnostics,
+        db_id: u8,
     ) -> Result<Self, String> {
         let paths = DirectOramPaths::new(oram_dir, DirectLevel::Index);
-        let metadata = DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
-        if metadata.level != DirectLevel::Index {
-            return Err(format!(
-                "direct index metadata {} has level {}",
-                paths.metadata.display(),
-                metadata.level
-            ));
-        }
-        let state_key = parse_optional_32_hex(state_key_hex)?;
-        let loaded = load_circuit_oram_state(&paths.state, state_key)?;
+        let context = StartupContext::db(db_id).with_level(DiagnosticOramLevel::Index);
+        let metadata = diagnostics.trace(StartupStage::DirectMetadataLoad, context, || {
+            let metadata =
+                DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
+            if metadata.level != DirectLevel::Index {
+                return Err(format!(
+                    "direct index metadata {} has level {}",
+                    paths.metadata.display(),
+                    metadata.level
+                ));
+            }
+            Ok(metadata)
+        })?;
+        let state_key = diagnostics.trace(StartupStage::DirectStateKeyParse, context, || {
+            parse_optional_32_hex(state_key_hex)
+        })?;
+        let loaded = diagnostics.trace(StartupStage::DirectControllerStateLoad, context, || {
+            load_circuit_oram_state(&paths.state, state_key)
+        })?;
         let bound_auth = loaded.auth.clone();
         let params = loaded.params.clone();
-        let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
+        let cached_pages = diagnostics.trace(StartupStage::DirectCachePlan, context, || {
+            cached_pages_for_oram_levels(&params, cache_levels)
+        })?;
         let (meta_store, payload_store) = open_existing_direct_oram_stores(
             &paths,
             DirectLevel::Index,
@@ -1459,11 +1607,15 @@ impl DirectOramIndexTable {
             auth_store,
             bound_auth.as_ref(),
             state_key,
+            diagnostics,
+            db_id,
         )?;
-        let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
-            .map_err(|e| e.to_string())?;
-        let reader =
-            CircuitDirectIndexReader::new(metadata.clone(), oram).map_err(|e| e.to_string())?;
+        let oram = diagnostics.trace(StartupStage::DirectOramRestore, context, || {
+            CircuitOram::from_state(meta_store, payload_store, loaded).map_err(|e| e.to_string())
+        })?;
+        let reader = diagnostics.trace(StartupStage::DirectReaderInit, context, || {
+            CircuitDirectIndexReader::new(metadata.clone(), oram).map_err(|e| e.to_string())
+        })?;
 
         println!(
             "  Direct ORAM index: dir={}, items={}, pack={}, logical_blocks={}, hash_fns={}, cache_levels={}, auth_store={}, save_state={}",
@@ -1563,21 +1715,34 @@ impl DirectOramChunkTable {
         cache_levels: usize,
         auth_store: bool,
         save_state: bool,
+        diagnostics: &StartupDiagnostics,
+        db_id: u8,
     ) -> Result<Self, String> {
         let paths = DirectOramPaths::new(oram_dir, DirectLevel::Chunk);
-        let metadata = DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
-        if metadata.level != DirectLevel::Chunk {
-            return Err(format!(
-                "direct chunk metadata {} has level {}",
-                paths.metadata.display(),
-                metadata.level
-            ));
-        }
-        let state_key = parse_optional_32_hex(state_key_hex)?;
-        let loaded = load_circuit_oram_state(&paths.state, state_key)?;
+        let context = StartupContext::db(db_id).with_level(DiagnosticOramLevel::Chunk);
+        let metadata = diagnostics.trace(StartupStage::DirectMetadataLoad, context, || {
+            let metadata =
+                DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
+            if metadata.level != DirectLevel::Chunk {
+                return Err(format!(
+                    "direct chunk metadata {} has level {}",
+                    paths.metadata.display(),
+                    metadata.level
+                ));
+            }
+            Ok(metadata)
+        })?;
+        let state_key = diagnostics.trace(StartupStage::DirectStateKeyParse, context, || {
+            parse_optional_32_hex(state_key_hex)
+        })?;
+        let loaded = diagnostics.trace(StartupStage::DirectControllerStateLoad, context, || {
+            load_circuit_oram_state(&paths.state, state_key)
+        })?;
         let bound_auth = loaded.auth.clone();
         let params = loaded.params.clone();
-        let cached_pages = cached_pages_for_oram_levels(&params, cache_levels)?;
+        let cached_pages = diagnostics.trace(StartupStage::DirectCachePlan, context, || {
+            cached_pages_for_oram_levels(&params, cache_levels)
+        })?;
         let (meta_store, payload_store) = open_existing_direct_oram_stores(
             &paths,
             DirectLevel::Chunk,
@@ -1588,11 +1753,15 @@ impl DirectOramChunkTable {
             auth_store,
             bound_auth.as_ref(),
             state_key,
+            diagnostics,
+            db_id,
         )?;
-        let oram = CircuitOram::from_state(meta_store, payload_store, loaded)
-            .map_err(|e| e.to_string())?;
-        let reader =
-            CircuitDirectChunkReader::new(metadata.clone(), oram).map_err(|e| e.to_string())?;
+        let oram = diagnostics.trace(StartupStage::DirectOramRestore, context, || {
+            CircuitOram::from_state(meta_store, payload_store, loaded).map_err(|e| e.to_string())
+        })?;
+        let reader = diagnostics.trace(StartupStage::DirectReaderInit, context, || {
+            CircuitDirectChunkReader::new(metadata.clone(), oram).map_err(|e| e.to_string())
+        })?;
 
         println!(
             "  Direct ORAM chunk: dir={}, chunks={}, pack={}, logical_blocks={}, cache_levels={}, auth_store={}, save_state={}",
@@ -2565,26 +2734,40 @@ fn open_existing_direct_oram_stores(
     auth_store: bool,
     bound_auth: Option<&CircuitStoreAuthState>,
     state_key: Option<[u8; 32]>,
+    diagnostics: &StartupDiagnostics,
+    db_id: u8,
 ) -> Result<(CuckooOramStore, CuckooOramStore), String> {
+    let diagnostic_level = match level {
+        DirectLevel::Index => DiagnosticOramLevel::Index,
+        DirectLevel::Chunk => DiagnosticOramLevel::Chunk,
+    };
+    let context = StartupContext::db(db_id).with_level(diagnostic_level);
     if !auth_store {
-        let meta_store = open_existing_oram_store(
-            &paths.meta_image,
-            params.bucket_count(),
-            circuit_meta_page_bytes(params.bucket_size),
-            encrypted,
-            key_hex,
-            "--direct-oram-key-hex",
-            cached_pages,
-        )?;
-        let payload_store = open_existing_oram_store(
-            &paths.payload_image,
-            params.bucket_count(),
-            circuit_payload_page_bytes(params.bucket_size, params.block_size),
-            encrypted,
-            key_hex,
-            "--direct-oram-key-hex",
-            cached_pages,
-        )?;
+        let meta_context = context.with_store(DiagnosticStoreKind::Meta);
+        let meta_store = diagnostics.trace(StartupStage::DirectStoreOpen, meta_context, || {
+            open_existing_oram_store(
+                &paths.meta_image,
+                params.bucket_count(),
+                circuit_meta_page_bytes(params.bucket_size),
+                encrypted,
+                key_hex,
+                "--direct-oram-key-hex",
+                cached_pages,
+            )
+        })?;
+        let payload_context = context.with_store(DiagnosticStoreKind::Payload);
+        let payload_store =
+            diagnostics.trace(StartupStage::DirectStoreOpen, payload_context, || {
+                open_existing_oram_store(
+                    &paths.payload_image,
+                    params.bucket_count(),
+                    circuit_payload_page_bytes(params.bucket_size, params.block_size),
+                    encrypted,
+                    key_hex,
+                    "--direct-oram-key-hex",
+                    cached_pages,
+                )
+            })?;
         return Ok((
             CuckooOramStore::Plain(meta_store),
             CuckooOramStore::Plain(payload_store),
@@ -2593,97 +2776,136 @@ fn open_existing_direct_oram_stores(
 
     let auth = match bound_auth {
         Some(auth) => auth.clone(),
-        None => load_circuit_store_auth(&paths.auth_state, state_key)?,
+        None => diagnostics.trace(StartupStage::DirectAuthStateLoad, context, || {
+            load_circuit_store_auth(&paths.auth_state, state_key)
+        })?,
     };
+    let auth = diagnostics.trace(StartupStage::DirectAuthDomainValidate, context, || {
+        let valid = match &auth.layout {
+            CircuitStoreAuthLayout::TieredMerkle { meta, payload } => {
+                meta.store_id == direct_auth_store_id(level, CircuitAuthStoreKind::Meta)
+                    && payload.store_id
+                        == direct_auth_store_id(level, CircuitAuthStoreKind::Payload)
+            }
+            CircuitStoreAuthLayout::EmbeddedTree { meta, payload } => {
+                meta.store_id == direct_auth_store_id(level, CircuitAuthStoreKind::Meta)
+                    && payload.store_id
+                        == direct_auth_store_id(level, CircuitAuthStoreKind::Payload)
+            }
+        };
+        if !valid {
+            return Err(format!(
+                "Direct ORAM {} auth store_id does not match expected level/store domains",
+                level
+            ));
+        }
+        Ok(auth)
+    })?;
     match auth.layout {
         CircuitStoreAuthLayout::TieredMerkle { meta, payload } => {
-            let expected_meta_id = direct_auth_store_id(level, CircuitAuthStoreKind::Meta);
-            let expected_payload_id = direct_auth_store_id(level, CircuitAuthStoreKind::Payload);
-            if meta.store_id != expected_meta_id || payload.store_id != expected_payload_id {
-                return Err(format!(
-                    "Direct ORAM {} auth sidecar store_id does not match expected level/store domains",
-                    level
-                ));
-            }
-
-            let meta_store = open_existing_oram_store(
-                &paths.meta_image,
-                params.bucket_count(),
-                circuit_meta_page_bytes(params.bucket_size),
-                encrypted,
-                key_hex,
-                "--direct-oram-key-hex",
-                cached_pages,
-            )?;
-            let payload_store = open_existing_oram_store(
-                &paths.payload_image,
-                params.bucket_count(),
-                circuit_payload_page_bytes(params.bucket_size, params.block_size),
-                encrypted,
-                key_hex,
-                "--direct-oram-key-hex",
-                cached_pages,
-            )?;
-            let meta_hash_store = open_existing_hash_store(
-                &paths.meta_hash_image,
-                &meta,
-                encrypted,
-                key_hex,
-                "--direct-oram-key-hex",
-            )?;
-            let payload_hash_store = open_existing_hash_store(
-                &paths.payload_hash_image,
-                &payload,
-                encrypted,
-                key_hex,
-                "--direct-oram-key-hex",
-            )?;
-            let meta = TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, meta)
-                .map_err(|e| e.to_string())?;
-            let payload = TieredMerklePageStore::from_trusted_state(
-                payload_store,
-                payload_hash_store,
-                payload,
-            )
-            .map_err(|e| e.to_string())?;
+            let meta_context = context.with_store(DiagnosticStoreKind::Meta);
+            let meta_store =
+                diagnostics.trace(StartupStage::DirectStoreOpen, meta_context, || {
+                    open_existing_oram_store(
+                        &paths.meta_image,
+                        params.bucket_count(),
+                        circuit_meta_page_bytes(params.bucket_size),
+                        encrypted,
+                        key_hex,
+                        "--direct-oram-key-hex",
+                        cached_pages,
+                    )
+                })?;
+            let payload_context = context.with_store(DiagnosticStoreKind::Payload);
+            let payload_store =
+                diagnostics.trace(StartupStage::DirectStoreOpen, payload_context, || {
+                    open_existing_oram_store(
+                        &paths.payload_image,
+                        params.bucket_count(),
+                        circuit_payload_page_bytes(params.bucket_size, params.block_size),
+                        encrypted,
+                        key_hex,
+                        "--direct-oram-key-hex",
+                        cached_pages,
+                    )
+                })?;
+            let meta_hash_context = context.with_store(DiagnosticStoreKind::MetaHash);
+            let meta_hash_store =
+                diagnostics.trace(StartupStage::DirectStoreOpen, meta_hash_context, || {
+                    open_existing_hash_store(
+                        &paths.meta_hash_image,
+                        &meta,
+                        encrypted,
+                        key_hex,
+                        "--direct-oram-key-hex",
+                    )
+                })?;
+            let payload_hash_context = context.with_store(DiagnosticStoreKind::PayloadHash);
+            let payload_hash_store =
+                diagnostics.trace(StartupStage::DirectStoreOpen, payload_hash_context, || {
+                    open_existing_hash_store(
+                        &paths.payload_hash_image,
+                        &payload,
+                        encrypted,
+                        key_hex,
+                        "--direct-oram-key-hex",
+                    )
+                })?;
+            let meta = diagnostics.trace(StartupStage::DirectAuthBind, meta_context, || {
+                TieredMerklePageStore::from_trusted_state(meta_store, meta_hash_store, meta)
+                    .map_err(|e| e.to_string())
+            })?;
+            let payload =
+                diagnostics.trace(StartupStage::DirectAuthBind, payload_context, || {
+                    TieredMerklePageStore::from_trusted_state(
+                        payload_store,
+                        payload_hash_store,
+                        payload,
+                    )
+                    .map_err(|e| e.to_string())
+                })?;
             Ok((
                 CuckooOramStore::Sidecar(meta),
                 CuckooOramStore::Sidecar(payload),
             ))
         }
         CircuitStoreAuthLayout::EmbeddedTree { meta, payload } => {
-            let expected_meta_id = direct_auth_store_id(level, CircuitAuthStoreKind::Meta);
-            let expected_payload_id = direct_auth_store_id(level, CircuitAuthStoreKind::Payload);
-            if meta.store_id != expected_meta_id || payload.store_id != expected_payload_id {
-                return Err(format!(
-                    "Direct ORAM {} embedded auth store_id does not match expected level/store domains",
-                    level
-                ));
-            }
-
-            let meta_store = open_existing_oram_store(
-                &paths.meta_image,
-                params.bucket_count(),
-                circuit_meta_page_bytes(params.bucket_size) + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
-                encrypted,
-                key_hex,
-                "--direct-oram-key-hex",
-                cached_pages,
-            )?;
-            let payload_store = open_existing_oram_store(
-                &paths.payload_image,
-                params.bucket_count(),
-                circuit_payload_page_bytes(params.bucket_size, params.block_size)
-                    + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
-                encrypted,
-                key_hex,
-                "--direct-oram-key-hex",
-                cached_pages,
-            )?;
-            let meta =
-                EmbeddedTreePageStore::from_state(meta_store, meta).map_err(|e| e.to_string())?;
-            let payload = EmbeddedTreePageStore::from_state(payload_store, payload)
-                .map_err(|e| e.to_string())?;
+            let meta_context = context.with_store(DiagnosticStoreKind::Meta);
+            let meta_store =
+                diagnostics.trace(StartupStage::DirectStoreOpen, meta_context, || {
+                    open_existing_oram_store(
+                        &paths.meta_image,
+                        params.bucket_count(),
+                        circuit_meta_page_bytes(params.bucket_size)
+                            + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+                        encrypted,
+                        key_hex,
+                        "--direct-oram-key-hex",
+                        cached_pages,
+                    )
+                })?;
+            let payload_context = context.with_store(DiagnosticStoreKind::Payload);
+            let payload_store =
+                diagnostics.trace(StartupStage::DirectStoreOpen, payload_context, || {
+                    open_existing_oram_store(
+                        &paths.payload_image,
+                        params.bucket_count(),
+                        circuit_payload_page_bytes(params.bucket_size, params.block_size)
+                            + EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+                        encrypted,
+                        key_hex,
+                        "--direct-oram-key-hex",
+                        cached_pages,
+                    )
+                })?;
+            let meta = diagnostics.trace(StartupStage::DirectAuthBind, meta_context, || {
+                EmbeddedTreePageStore::from_state(meta_store, meta).map_err(|e| e.to_string())
+            })?;
+            let payload =
+                diagnostics.trace(StartupStage::DirectAuthBind, payload_context, || {
+                    EmbeddedTreePageStore::from_state(payload_store, payload)
+                        .map_err(|e| e.to_string())
+                })?;
             Ok((
                 CuckooOramStore::Embedded(meta),
                 CuckooOramStore::Embedded(payload),
@@ -4205,10 +4427,33 @@ where
 #[tokio::main]
 async fn main() {
     let args = parse_args();
+    let startup = match args.startup_diagnostics_file.as_deref() {
+        Some(path) => StartupDiagnostics::required_file(path).unwrap_or_else(|_| {
+            eprintln!("FATAL: required startup diagnostics file could not be created");
+            std::process::exit(74);
+        }),
+        None => StartupDiagnostics::disabled(),
+    };
+    startup.install_panic_hook();
     let role_name = match args.role {
         ServerRole::Primary => "primary",
         ServerRole::Secondary => "secondary",
     };
+    let args_validation = startup.begin(StartupStage::ArgsValidated, StartupContext::default());
+
+    if args.ready_file.is_some() != args.startup_attempt.is_some() {
+        startup.error(args_validation);
+        fatal_cli("--ready-file and --startup-attempt must be configured together");
+    }
+    if let (Some(diagnostics_file), Some(ready_file)) = (
+        args.startup_diagnostics_file.as_deref(),
+        args.ready_file.as_deref(),
+    ) {
+        if paths_share_target(diagnostics_file, ready_file) {
+            startup.error(args_validation);
+            fatal_cli("--startup-diagnostics-file and --ready-file must be different files");
+        }
+    }
 
     // ── Mode validation ────────────────────────────────────────────────
     // The server's accepted-opcode set is gated by two independent flags:
@@ -4221,6 +4466,7 @@ async fn main() {
     // `deploy/systemd/pir-primary.service` and
     // `deploy/systemd/pir-secondary.service`).
     if !args.serve_hints && !args.serve_queries {
+        startup.error(args_validation);
         eprintln!(
             "ERROR: must enable at least one of --serve-hints / --serve-queries.\n  \
              Hint-only deployment (HarmonyPIR V2 pool):  --serve-hints --pool-size N\n  \
@@ -4229,6 +4475,7 @@ async fn main() {
         );
         std::process::exit(2);
     }
+    startup.ok(args_validation);
 
     println!("=== Unified PIR Server ({}) ===", role_name);
     println!("  Port:     {}", args.port);
@@ -4260,7 +4507,9 @@ async fn main() {
     let mut db_paths: Vec<(u8, String, PathBuf)> = Vec::new();
 
     if let Some(ref config_path) = args.config_path {
+        let config_load = startup.begin(StartupStage::ConfigLoad, StartupContext::default());
         let config = ServerConfig::load(config_path);
+        startup.ok(config_load);
         println!(
             "[config] Loaded {} databases from {}",
             config.databases.len(),
@@ -4273,6 +4522,8 @@ async fn main() {
                 _ => DatabaseType::Full,
             };
             let db_path = config.db_path(i);
+            let db_context = StartupContext::db(i as u8);
+            let database_map = startup.begin(StartupStage::DatabaseMap, db_context);
             let mut db = MappedDatabase::load(
                 &db_path,
                 DatabaseDescriptor {
@@ -4284,16 +4535,21 @@ async fn main() {
                     chunk_params: CHUNK_PARAMS,
                 },
             );
+            startup.ok(database_map);
             if let Some(proof_dir) = db_cfg.proof_dir.as_ref() {
                 db.db_proof = Some(
-                    load_database_proof_bundle(i as u8, proof_dir).unwrap_or_else(|e| {
-                        panic!(
-                            "[config] failed to load proof_dir for db {} from {}: {}",
-                            db_cfg.name,
-                            proof_dir.display(),
-                            e
-                        )
-                    }),
+                    startup
+                        .trace(StartupStage::DatabaseProofLoad, db_context, || {
+                            load_database_proof_bundle(i as u8, proof_dir)
+                        })
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "[config] failed to load proof_dir for db {} from {}: {}",
+                                db_cfg.name,
+                                proof_dir.display(),
+                                e
+                            )
+                        }),
                 );
                 println!(
                     "[config] DB proof loaded for db_id={} name={} from {}",
@@ -4321,6 +4577,7 @@ async fn main() {
     } else {
         // Legacy CLI mode: --data-dir + --checkpoint + --delta
 
+        let database_map = startup.begin(StartupStage::DatabaseMap, StartupContext::db(0));
         let main_db = MappedDatabase::load(
             &args.data_dir,
             DatabaseDescriptor {
@@ -4332,12 +4589,15 @@ async fn main() {
                 chunk_params: CHUNK_PARAMS,
             },
         );
+        startup.ok(database_map);
 
         db_paths.push((0u8, "main".to_string(), args.data_dir.clone()));
         all_databases.push(main_db);
 
         for (path, height) in &args.checkpoints {
             let name = format!("checkpoint_{}", height);
+            let db_id = all_databases.len() as u8;
+            let database_map = startup.begin(StartupStage::DatabaseMap, StartupContext::db(db_id));
             let db = MappedDatabase::load(
                 path,
                 DatabaseDescriptor {
@@ -4349,6 +4609,7 @@ async fn main() {
                     chunk_params: CHUNK_PARAMS,
                 },
             );
+            startup.ok(database_map);
             println!(
                 "[Checkpoint:{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
                 height,
@@ -4363,6 +4624,8 @@ async fn main() {
 
         for (path, base, tip) in &args.deltas {
             let name = format!("delta_{}_{}", base, tip);
+            let db_id = all_databases.len() as u8;
+            let database_map = startup.begin(StartupStage::DatabaseMap, StartupContext::db(db_id));
             let db = MappedDatabase::load(
                 path,
                 DatabaseDescriptor {
@@ -4374,6 +4637,7 @@ async fn main() {
                     chunk_params: CHUNK_PARAMS,
                 },
             );
+            startup.ok(database_map);
             println!(
                 "[Delta:{}→{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
                 base,
@@ -4388,6 +4652,12 @@ async fn main() {
         }
     }
 
+    let database_set = startup.begin(StartupStage::DatabaseSetReady, StartupContext::default());
+    if all_databases.is_empty() {
+        startup.error(database_set);
+        panic!("server configuration contains no databases");
+    }
+    startup.ok(database_set);
     let main_db = &all_databases[0];
     let index_k = main_db.index.params.k;
     let chunk_k = main_db.chunk.params.k;
@@ -4470,24 +4740,31 @@ async fn main() {
                     args.cuckoo_oram_cache_levels,
                     args.cuckoo_oram_auth_store,
                 );
-                let tables = CuckooOramTables::open(
-                    db_path,
-                    &oram_dir,
-                    args.cuckoo_oram_pack,
-                    args.cuckoo_oram_drain_per_access,
-                    args.cuckoo_oram_encrypted,
-                    args.cuckoo_oram_key_hex.as_deref(),
-                    args.cuckoo_oram_state_key_hex.as_deref(),
-                    args.cuckoo_oram_cache_levels,
-                    args.cuckoo_oram_auth_store,
-                    !args.cuckoo_oram_no_save,
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "failed to open Cuckoo ORAM for db_id={} ({}): {}",
-                        db_id, db_label, e
+                let tables = startup
+                    .trace(
+                        StartupStage::CuckooOramOpen,
+                        StartupContext::db(db_id),
+                        || {
+                            CuckooOramTables::open(
+                                db_path,
+                                &oram_dir,
+                                args.cuckoo_oram_pack,
+                                args.cuckoo_oram_drain_per_access,
+                                args.cuckoo_oram_encrypted,
+                                args.cuckoo_oram_key_hex.as_deref(),
+                                args.cuckoo_oram_state_key_hex.as_deref(),
+                                args.cuckoo_oram_cache_levels,
+                                args.cuckoo_oram_auth_store,
+                                !args.cuckoo_oram_no_save,
+                            )
+                        },
                     )
-                });
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to open Cuckoo ORAM for db_id={} ({}): {}",
+                            db_id, db_label, e
+                        )
+                    });
                 opened.insert(db_id, tables);
             }
 
@@ -4507,6 +4784,10 @@ async fn main() {
     };
 
     #[cfg(feature = "cuckoo-oram")]
+    let direct_oram_config =
+        startup.begin(StartupStage::DirectOramConfig, StartupContext::default());
+
+    #[cfg(feature = "cuckoo-oram")]
     let direct_oram = {
         let mut requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
         if let Some(oram_dir) = args.direct_oram_dir.as_ref() {
@@ -4514,6 +4795,7 @@ async fn main() {
         }
         for (db_id, oram_dir) in &args.direct_oram_dbs {
             if requested.insert(*db_id, oram_dir.clone()).is_some() {
+                startup.error(direct_oram_config);
                 eprintln!(
                     "ERROR: duplicate Direct ORAM configuration for db_id={}",
                     db_id
@@ -4532,6 +4814,7 @@ async fn main() {
                     .iter()
                     .find(|(candidate, _, _)| *candidate == db_id)
                 else {
+                    startup.error(direct_oram_config);
                     eprintln!(
                         "ERROR: Direct ORAM configured for unknown db_id={} (loaded db_ids: {:?})",
                         db_id,
@@ -4551,28 +4834,42 @@ async fn main() {
                     args.direct_oram_cache_levels,
                     args.direct_oram_auth_store,
                 );
-                let tables = DirectOramTables::open(
-                    &oram_dir,
-                    args.direct_oram_drain_per_access,
-                    args.direct_oram_access_budget,
-                    args.direct_oram_encrypted,
-                    args.direct_oram_key_hex.as_deref(),
-                    args.direct_oram_state_key_hex.as_deref(),
-                    args.direct_oram_cache_levels,
-                    args.direct_oram_auth_store,
-                    !args.direct_oram_no_save,
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "failed to open Direct ORAM for db_id={} ({}): {}",
-                        db_id, db_label, e
+                let tables = startup
+                    .trace(
+                        StartupStage::DirectDbOpen,
+                        StartupContext::db(db_id),
+                        || {
+                            DirectOramTables::open(
+                                &oram_dir,
+                                args.direct_oram_drain_per_access,
+                                args.direct_oram_access_budget,
+                                args.direct_oram_encrypted,
+                                args.direct_oram_key_hex.as_deref(),
+                                args.direct_oram_state_key_hex.as_deref(),
+                                args.direct_oram_cache_levels,
+                                args.direct_oram_auth_store,
+                                !args.direct_oram_no_save,
+                                &startup,
+                                db_id,
+                            )
+                        },
                     )
-                });
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to open Direct ORAM for db_id={} ({}): {}",
+                            db_id, db_label, e
+                        )
+                    });
                 opened.insert(db_id, tables);
             }
             opened
         }
     };
+
+    #[cfg(feature = "cuckoo-oram")]
+    startup.ok(direct_oram_config);
+
+    let onion_setup = startup.begin(StartupStage::OnionSetup, StartupContext::default());
 
     // ── Set up OnionPIR per-DB (primary only, if data available) ──────────
     //
@@ -5176,9 +5473,12 @@ async fn main() {
     // (OnionPIR per-bin Merkle info was built per-DB inside the loading
     // loop above; it's stored in `onionpir_merkle_per_db`.)
 
+    startup.ok(onion_setup);
+    let all_data_ready = startup.begin(StartupStage::AllDataReady, StartupContext::default());
     println!();
     println!("Data loaded in {:.2?}", total_start.elapsed());
     println!();
+    startup.ok(all_data_ready);
 
     // ── Generate the long-lived channel keypair ─────────────────────────
     // This is the X25519 key the future encrypted channel handshakes
@@ -5193,7 +5493,10 @@ async fn main() {
     // identically; only the attestation backing differs. Clients still
     // get an encrypted channel against pir1; they just don't get the
     // chip-signed binding.
+    let channel_key_generate =
+        startup.begin(StartupStage::ChannelKeyGenerate, StartupContext::default());
     let channel_keypair = pir_runtime_core::channel::ChannelKeypair::generate();
+    startup.ok(channel_key_generate);
     let channel_pubkey = channel_keypair.public_bytes();
     println!(
         "  Channel pubkey: {}",
@@ -5209,9 +5512,11 @@ async fn main() {
     // browser can chain-validate the SNP report's signature back to
     // AMD's known root without talking to kdsintf.amd.com directly
     // (CORS-blocked from the browser).
+    let vcek_load = startup.begin(StartupStage::VcekLoad, StartupContext::default());
     let (ark_pem, ask_pem, vcek_pem) = match args.vcek_dir.as_ref() {
         Some(dir) => match load_vcek_chain(dir) {
             Ok((ark, ask, vcek)) => {
+                startup.ok(vcek_load);
                 println!(
                     "  VCEK chain: loaded from {} (ark={}B ask={}B vcek={}B)",
                     dir.display(),
@@ -5222,6 +5527,7 @@ async fn main() {
                 (ark, ask, vcek)
             }
             Err(e) => {
+                startup.error(vcek_load);
                 eprintln!(
                     "  VCEK chain: failed to load from {}: {} — AttestResult will ship empty cert fields, browser falls back to V2-binding-only verification",
                     dir.display(),
@@ -5231,6 +5537,7 @@ async fn main() {
             }
         },
         None => {
+            startup.ok(vcek_load);
             println!("  VCEK chain: not configured (--vcek-dir unset) — AttestResult ships empty cert fields");
             (Vec::new(), Vec::new(), Vec::new())
         }
@@ -5241,6 +5548,8 @@ async fn main() {
     // cert / key disagree, log a warning and serve without announce
     // (REQ_ANNOUNCE returns RESP_ERROR). Existing attest / handshake
     // / query paths are unaffected.
+    let identity_files_load =
+        startup.begin(StartupStage::IdentityFilesLoad, StartupContext::default());
     let announcement_bundle: Option<Vec<u8>> = match (
         args.identity_key_path.as_ref(),
         args.identity_cert_path.as_ref(),
@@ -5251,6 +5560,7 @@ async fn main() {
                 pir_runtime_core::identity::load_identity_cert(cert_path).map(|cert| (sk, cert))
             }) {
                 Ok((sk, cert)) => {
+                    startup.ok(identity_files_load);
                     // Manifest roots in db_id order — same as the V2
                     // attest layout, so the bundle and the SEV report
                     // commit to the same set.
@@ -5258,13 +5568,18 @@ async fn main() {
                         .iter()
                         .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
                         .collect();
+                    let self_exe_hash =
+                        startup.begin(StartupStage::SelfExeHash, StartupContext::default());
                     let binary_sha256 = pir_runtime_core::attest::self_exe_sha256();
+                    startup.ok(self_exe_hash);
                     let git_rev = pir_runtime_core::attest::GIT_REV;
                     let issued_at = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
                         .unwrap_or(0);
-                    match pir_runtime_core::identity::build_announcement_bundle(
+                    let announcement_build =
+                        startup.begin(StartupStage::AnnouncementBuild, StartupContext::default());
+                    let announcement_result = pir_runtime_core::identity::build_announcement_bundle(
                         &sk,
                         cert,
                         server_id,
@@ -5273,7 +5588,13 @@ async fn main() {
                         git_rev,
                         manifest_roots,
                         issued_at,
-                    ) {
+                    );
+                    if announcement_result.is_ok() {
+                        startup.ok(announcement_build);
+                    } else {
+                        startup.error(announcement_build);
+                    }
+                    match announcement_result {
                         Ok(id) => {
                             let id_short: String = id.cert.identity_pubkey[..8]
                                 .iter()
@@ -5295,6 +5616,7 @@ async fn main() {
                     }
                 }
                 Err(e) => {
+                    startup.error(identity_files_load);
                     eprintln!(
                         "  Identity announce: DISABLED — {}. REQ_ANNOUNCE will return RESP_ERROR; attest/handshake/queries still serve normally.",
                         e
@@ -5304,12 +5626,14 @@ async fn main() {
             }
         }
         (None, None, None) => {
+            startup.ok(identity_files_load);
             println!(
                 "  Identity announce: not configured (--identity-key-path / --identity-cert-path / --identity-server-id unset)"
             );
             None
         }
         _ => {
+            startup.error(identity_files_load);
             eprintln!(
                 "  Identity announce: DISABLED — all three of --identity-key-path, --identity-cert-path, --identity-server-id must be set together (or none of them)."
             );
@@ -5318,6 +5642,8 @@ async fn main() {
     };
 
     // ── Assemble ServerState ────────────────────────────────────────────
+    let server_state_assemble =
+        startup.begin(StartupStage::ServerStateAssemble, StartupContext::default());
     let num_databases = all_databases.len();
     let state = ServerState {
         databases: all_databases,
@@ -5327,7 +5653,9 @@ async fn main() {
         vcek_pem,
         announcement_bundle,
     };
+    startup.ok(server_state_assemble);
 
+    let admin_config_stage = startup.begin(StartupStage::AdminConfig, StartupContext::default());
     let admin_config = match args.admin_pubkey_hex.as_deref() {
         None => None,
         Some(hex) => match pir_runtime_core::admin::AdminConfig::from_hex(hex) {
@@ -5338,6 +5666,7 @@ async fn main() {
             Err(e) => panic!("invalid --admin-pubkey-hex: {}", e),
         },
     };
+    startup.ok(admin_config_stage);
 
     // data_root = directory of databases.toml (where DB subdirs live)
     // when --config is given; otherwise fall back to --data-dir.
@@ -5351,6 +5680,7 @@ async fn main() {
     println!("  Data root: {}", data_root.display());
 
     // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
+    let arc_init = startup.begin(StartupStage::ArcInit, StartupContext::default());
     let (arc_verifier, require_arc) = if args.require_arc {
         let verifier = match &args.arc_key_path {
             Some(path) => {
@@ -5379,7 +5709,9 @@ async fn main() {
         println!("  ARC: disabled (use --require-arc to enable)");
         (None, false)
     };
+    startup.ok(arc_init);
 
+    let cashu_init = startup.begin(StartupStage::CashuInit, StartupContext::default());
     let (cashu_verifier, require_cashu) = if args.require_cashu {
         if args.cashu_keysets.is_empty() {
             panic!("--require-cashu requires at least one --cashu-keyset <id>:<hex_sk>");
@@ -5396,7 +5728,9 @@ async fn main() {
         println!("  Cashu: disabled (use --require-cashu to enable)");
         (None, false)
     };
+    startup.ok(cashu_init);
 
+    let hint_pool_init = startup.begin(StartupStage::HintPoolInit, StartupContext::default());
     let hint_pool = if args.pool_size > 0 {
         let pool_config = hint_pool::HintPoolConfig {
             pool_size: args.pool_size,
@@ -5432,7 +5766,12 @@ async fn main() {
         println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
         None
     };
+    startup.ok(hint_pool_init);
 
+    let unified_server_assemble = startup.begin(
+        StartupStage::UnifiedServerAssemble,
+        StartupContext::default(),
+    );
     let server = Arc::new(UnifiedServerData {
         state,
         role: args.role,
@@ -5455,6 +5794,7 @@ async fn main() {
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
     });
+    startup.ok(unified_server_assemble);
 
     // Background task: garbage-collect V2-half pending entries whose
     // matching second half never arrived. Runs every 10 s; entries
@@ -5493,7 +5833,18 @@ async fn main() {
     // to `::1` first per RFC 6724 happy-eyeballs — binding only `0.0.0.0`
     // would silently refuse those connections.
     let addr: SocketAddr = format!("[::]:{}", args.port).parse().unwrap();
-    let listener = TcpListener::bind(addr).await.expect("bind");
+    let listener_bind = startup.begin(StartupStage::ListenerBind, StartupContext::default());
+    let listener = match TcpListener::bind(addr).await {
+        Ok(listener) => {
+            startup.ok(listener_bind);
+            listener
+        }
+        Err(error) => {
+            startup.error(listener_bind);
+            panic!("bind failed: {error}");
+        }
+    };
+    let post_bind_status = startup.begin(StartupStage::PostBindStatus, StartupContext::default());
     println!("Listening on ws://{}", addr);
     println!("  Role: {}", role_name);
     println!(
@@ -5527,6 +5878,24 @@ async fn main() {
         println!("  Merkle: available (per-bucket)");
     }
     println!();
+    startup.ok(post_bind_status);
+
+    let startup_complete = startup.begin(StartupStage::StartupComplete, StartupContext::default());
+    startup.ok(startup_complete);
+
+    if let (Some(ready_file), Some(attempt)) = (args.ready_file.as_deref(), args.startup_attempt) {
+        let ready_publish = startup.begin(StartupStage::ReadyPublish, StartupContext::default());
+        if let Err(error) =
+            publish_ready_file(ready_file, attempt, listener.local_addr().unwrap().port())
+        {
+            startup.error(ready_publish);
+            panic!("failed to publish ready marker: {error}");
+        }
+        // The marker itself is the durable completion record. Do not append a
+        // diagnostic event after exposing readiness: a later log-write failure
+        // must never leave cloudflared observing a marker from a dying server.
+        startup.ready_published(ready_publish);
+    }
 
     let client_counter = std::sync::atomic::AtomicU64::new(1);
 
@@ -7785,6 +8154,142 @@ mod harmony_dos_guard_tests {
 
     #[cfg(feature = "cuckoo-oram")]
     #[test]
+    fn direct_oram_startup_diagnostics_cover_authenticated_reopen_stages() {
+        let db_dir = temp_dir("direct_diag_db");
+        let oram_dir = temp_dir("direct_diag_img");
+        let diagnostics_dir = temp_dir("direct_diag_events");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        std::fs::create_dir_all(&diagnostics_dir).unwrap();
+        write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
+        build_test_direct_oram_auth_store(&oram_dir, DirectLevel::Index, 2);
+        build_test_direct_oram_auth_store(&oram_dir, DirectLevel::Chunk, 2);
+
+        let events_path = diagnostics_dir.join("events.log");
+        let diagnostics = StartupDiagnostics::required_file(&events_path).unwrap();
+        DirectOramTables::open(
+            &oram_dir,
+            2,
+            8,
+            false,
+            None,
+            None,
+            0,
+            true,
+            true,
+            &diagnostics,
+            1,
+        )
+        .unwrap();
+
+        let events = std::fs::read_to_string(events_path).unwrap();
+        let lines = events.lines().collect::<Vec<_>>();
+        for level in ["index", "chunk"] {
+            for stage in [
+                "direct_metadata_load",
+                "direct_controller_state_load",
+                "direct_auth_domain_validate",
+                "direct_oram_restore",
+                "direct_reader_init",
+            ] {
+                assert!(
+                    lines.iter().any(|line| {
+                        line.contains(&format!("event=ok stage={stage}"))
+                            && line.contains("db=1")
+                            && line.contains(&format!("level={level}"))
+                    }),
+                    "missing successful {stage} event for {level}"
+                );
+            }
+            for store in ["meta", "payload", "meta_hash", "payload_hash"] {
+                assert!(
+                    lines.iter().any(|line| {
+                        line.contains("event=ok stage=direct_store_open")
+                            && line.contains("db=1")
+                            && line.contains(&format!("level={level}"))
+                            && line.contains(&format!("store={store}"))
+                    }),
+                    "missing successful store-open event for {level}/{store}"
+                );
+            }
+        }
+        let index_reader = lines
+            .iter()
+            .position(|line| {
+                line.contains("event=ok stage=direct_reader_init")
+                    && line.contains("level=index")
+            })
+            .unwrap();
+        let chunk_metadata = lines
+            .iter()
+            .position(|line| {
+                line.contains("event=begin stage=direct_metadata_load")
+                    && line.contains("level=chunk")
+            })
+            .unwrap();
+        assert!(index_reader < chunk_metadata);
+        assert!(!events.contains(oram_dir.to_string_lossy().as_ref()));
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+        std::fs::remove_dir_all(&diagnostics_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_startup_diagnostics_pinpoint_missing_hash_store() {
+        let db_dir = temp_dir("direct_diag_missing_db");
+        let oram_dir = temp_dir("direct_diag_missing_img");
+        let diagnostics_dir = temp_dir("direct_diag_missing_events");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        std::fs::create_dir_all(&diagnostics_dir).unwrap();
+        write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
+        build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
+        build_test_direct_oram_auth_store(&oram_dir, DirectLevel::Index, 2);
+        build_test_direct_oram_auth_store(&oram_dir, DirectLevel::Chunk, 2);
+        std::fs::remove_file(oram_dir.join("direct-index.payload.hash.oram")).unwrap();
+
+        let events_path = diagnostics_dir.join("events.log");
+        let diagnostics = StartupDiagnostics::required_file(&events_path).unwrap();
+        let open_result = DirectOramTables::open(
+            &oram_dir,
+            2,
+            8,
+            false,
+            None,
+            None,
+            0,
+            true,
+            true,
+            &diagnostics,
+            0,
+        );
+        let error = match open_result {
+            Ok(_) => panic!("missing hash store unexpectedly reopened"),
+            Err(error) => error,
+        };
+        assert!(error.contains("payload.hash.oram"));
+
+        let events = std::fs::read_to_string(events_path).unwrap();
+        assert!(events.lines().any(|line| {
+            line.contains("event=error stage=direct_store_open span=")
+                && line.contains("db=0 level=index store=payload_hash")
+        }));
+        assert!(!events.contains("level=chunk"));
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+        std::fs::remove_dir_all(&diagnostics_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
     fn direct_oram_lookup_reads_direct_entries_without_pbc() {
         let db_dir = temp_dir("direct_lookup_db");
         let oram_dir = temp_dir("direct_lookup_img");
@@ -7795,8 +8300,20 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
 
-        let tables =
-            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, false, true).unwrap();
+        let tables = DirectOramTables::open(
+            &oram_dir,
+            2,
+            8,
+            false,
+            None,
+            None,
+            0,
+            false,
+            true,
+            &StartupDiagnostics::disabled(),
+            0,
+        )
+        .unwrap();
         let got = direct_native_lookup_batch(
             &tables,
             &[fixture.found_sh, fixture.missing_sh, fixture.whale_sh],
@@ -7840,8 +8357,20 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
 
-        let tables =
-            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, false, true).unwrap();
+        let tables = DirectOramTables::open(
+            &oram_dir,
+            2,
+            8,
+            false,
+            None,
+            None,
+            0,
+            false,
+            true,
+            &StartupDiagnostics::disabled(),
+            0,
+        )
+        .unwrap();
         let got = tables
             .lookup_batch(
                 &[
@@ -7887,7 +8416,20 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_auth_store(&oram_dir, DirectLevel::Chunk, 2);
 
         let tables = Arc::new(
-            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, true, true).unwrap(),
+            DirectOramTables::open(
+                &oram_dir,
+                2,
+                8,
+                false,
+                None,
+                None,
+                0,
+                true,
+                true,
+                &StartupDiagnostics::disabled(),
+                0,
+            )
+            .unwrap(),
         );
 
         // Hold the per-DB transaction gate while both workers reach the
@@ -7948,8 +8490,20 @@ mod harmony_dos_guard_tests {
         // Reopening validates that state and authenticated roots were saved as
         // one coherent sequence, not merely that neither worker saw ENOENT.
         drop(tables);
-        let reopened =
-            DirectOramTables::open(&oram_dir, 2, 8, false, None, None, 0, true, true).unwrap();
+        let reopened = DirectOramTables::open(
+            &oram_dir,
+            2,
+            8,
+            false,
+            None,
+            None,
+            0,
+            true,
+            true,
+            &StartupDiagnostics::disabled(),
+            0,
+        )
+        .unwrap();
         let got = reopened.lookup_batch(&[fixture.found_sh], &[true]).unwrap();
         assert!(got[0].found);
 
@@ -7975,10 +8529,35 @@ mod harmony_dos_guard_tests {
             build_test_direct_oram_image(&db_dir, oram_dir, DirectLevel::Chunk, pack);
         }
 
-        let db0 =
-            DirectOramTables::open(&oram_dir_0, 2, 8, false, None, None, 0, false, true).unwrap();
+        let db0 = DirectOramTables::open(
+            &oram_dir_0,
+            2,
+            8,
+            false,
+            None,
+            None,
+            0,
+            false,
+            true,
+            &StartupDiagnostics::disabled(),
+            0,
+        )
+        .unwrap();
         let db1 = Arc::new(
-            DirectOramTables::open(&oram_dir_1, 2, 8, false, None, None, 0, false, true).unwrap(),
+            DirectOramTables::open(
+                &oram_dir_1,
+                2,
+                8,
+                false,
+                None,
+                None,
+                0,
+                false,
+                true,
+                &StartupDiagnostics::disabled(),
+                1,
+            )
+            .unwrap(),
         );
 
         let db0_gate = db0.request_transaction.lock().unwrap();
@@ -8016,8 +8595,20 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
 
-        let tables =
-            DirectOramTables::open(&oram_dir, 2, 1, false, None, None, 0, false, true).unwrap();
+        let tables = DirectOramTables::open(
+            &oram_dir,
+            2,
+            1,
+            false,
+            None,
+            None,
+            0,
+            false,
+            true,
+            &StartupDiagnostics::disabled(),
+            0,
+        )
+        .unwrap();
         let err = direct_native_lookup_batch(&tables, &[fixture.found_sh]).unwrap_err();
         assert!(err.contains("access budget 1 too small"));
 
@@ -8037,8 +8628,20 @@ mod harmony_dos_guard_tests {
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Index, pack);
         build_test_direct_oram_image(&db_dir, &oram_dir, DirectLevel::Chunk, pack);
 
-        let tables =
-            DirectOramTables::open(&oram_dir, 2, 3, false, None, None, 0, false, true).unwrap();
+        let tables = DirectOramTables::open(
+            &oram_dir,
+            2,
+            3,
+            false,
+            None,
+            None,
+            0,
+            false,
+            true,
+            &StartupDiagnostics::disabled(),
+            0,
+        )
+        .unwrap();
         let err = direct_native_lookup_batch(&tables, &[fixture.found_sh]).unwrap_err();
         assert!(err.contains("chunk demand 2 exceeds remaining access budget 1"));
 

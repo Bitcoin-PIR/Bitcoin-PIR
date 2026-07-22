@@ -29,6 +29,9 @@
 # Build-host prereq: `apt install runit` on pir2.
 
 # shellcheck shell=bash
+# `moddir` and `initdir` are globals injected by dracut when it sources this
+# module; they are intentionally not assigned in this standalone file.
+# shellcheck disable=SC2154
 
 check() {
     # Module is opt-in via `--add bpir-tier3-init`. Refuse to install
@@ -38,6 +41,17 @@ check() {
         if ! command -v "$b" >/dev/null 2>&1; then
             derror "bpir-tier3-init: $b not in \$PATH on build host"
             derror "  install with: apt install runit"
+            return 1
+        fi
+    done
+    if [ ! -x /usr/bin/busybox ]; then
+        derror "bpir-tier3-init: /usr/bin/busybox not found"
+        derror "  install with: apt install busybox-static"
+        return 1
+    fi
+    for applet in awk cat chmod cp dd dmesg grep head ln ls mkdir mv readlink reboot rm sleep stat sync tail timeout; do
+        if ! /usr/bin/busybox --list | grep -x "$applet" >/dev/null; then
+            derror "bpir-tier3-init: busybox applet missing: $applet"
             return 1
         fi
     done
@@ -66,9 +80,9 @@ install() {
     # ip / modprobe / mount / sleep / ln / mkdir / cat / sh come from
     # the busybox dependency or are baked in by base. Listing them
     # explicitly is idempotent (inst_multiple no-ops if already there).
-    # nc is needed by cloudflared-run.sh's port-wait gate (Phase 3.2);
-    # blkid for the FATAL-path diagnostic when rootfs mount fails.
-    inst_multiple ip modprobe mount sleep ln mkdir cat sh nc blkid
+    # blkid is retained for the console diagnostic when rootfs mount fails.
+    # Readiness no longer relies on `nc -z` (unsupported by BusyBox nc).
+    inst_multiple ip modprobe mount sleep ln mkdir cat sh blkid
 
     # udhcpc is a busybox applet, NOT a standalone binary on Ubuntu.
     # Bake busybox itself in (statically linked, ~1.5 MB) and create
@@ -97,6 +111,11 @@ install() {
     inst_dir /etc/sv/cloudflared
     inst_simple "$moddir/cloudflared-run.sh" /etc/sv/cloudflared/run
 
+    # Shared full-tuple readiness validator. The measured Rust process writes
+    # the ready marker; cloudflared and the watchdog only consume it.
+    inst_simple "$moddir/ready-check.sh" /usr/local/bin/bpir-ready-check
+    inst_simple "$moddir/read-tunnel-token.sh" /usr/local/bin/bpir-read-tunnel-token
+
     # Phase 3.2: unified_server service. Depends on the binary at
     # /usr/local/bin/unified_server which the 96bpir-unified-server
     # module bakes in. The run script gates on /home/pir/data/
@@ -104,4 +123,10 @@ install() {
     # the same flag set as deploy/systemd/pir-vpsbg.service.
     inst_dir /etc/sv/unified_server
     inst_simple "$moddir/unified-server-run.sh" /etc/sv/unified_server/run
+    inst_simple "$moddir/unified-server-finish.sh" /etc/sv/unified_server/finish
+
+    # Independent, read-only startup sampler. It never supervises or sends
+    # signals to unified_server; runsv continues to own the server lifecycle.
+    inst_dir /etc/sv/unified_server_watchdog
+    inst_simple "$moddir/startup-watchdog-run.sh" /etc/sv/unified_server_watchdog/run
 }

@@ -1,0 +1,107 @@
+name: Tier 3 startup diagnostics
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tier3-startup-diagnostics.yml'
+      - 'runtime/src/startup_diagnostics.rs'
+      - 'runtime/src/bin/unified_server.rs'
+      - 'runtime/src/lib.rs'
+      - 'runtime/Cargo.toml'
+      - 'scripts/build_unified_server.sh'
+      - 'scripts/build_uki_tier3.sh'
+      - 'scripts/verify_tier3_initramfs.sh'
+      - 'scripts/tests/tier3_startup_diagnostics.sh'
+      - 'scripts/tests/tier3_initramfs_verifier.sh'
+      - 'scripts/dracut/97bpir-tier3-init/**'
+      - 'flake.nix'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tier3-startup-diagnostics.yml'
+      - 'runtime/src/startup_diagnostics.rs'
+      - 'runtime/src/bin/unified_server.rs'
+      - 'runtime/src/lib.rs'
+      - 'runtime/Cargo.toml'
+      - 'scripts/build_unified_server.sh'
+      - 'scripts/build_uki_tier3.sh'
+      - 'scripts/verify_tier3_initramfs.sh'
+      - 'scripts/tests/**'
+      - 'scripts/dracut/97bpir-tier3-init/**'
+      - 'flake.nix'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install shell test tools
+        run: sudo apt-get update && sudo apt-get install -y busybox-static shellcheck
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: tier3-diagnostics-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: tier3-diagnostics-${{ runner.os }}-
+
+      - name: Rust format for the new diagnostics module
+        # The repository has pre-existing rustfmt drift in unrelated runtime
+        # modules. Keep this check scoped so this PR cannot reformat them or
+        # inherit a false failure from the base branch.
+        run: rustfmt --edition 2021 --check runtime/src/startup_diagnostics.rs
+
+      - name: Shell syntax and lint
+        run: |
+          shellcheck -S warning -s sh \
+            scripts/dracut/97bpir-tier3-init/bpir-tier3-init.sh \
+            scripts/dracut/97bpir-tier3-init/cloudflared-run.sh \
+            scripts/dracut/97bpir-tier3-init/unified-server-run.sh \
+            scripts/dracut/97bpir-tier3-init/unified-server-finish.sh \
+            scripts/dracut/97bpir-tier3-init/startup-watchdog-run.sh \
+            scripts/dracut/97bpir-tier3-init/ready-check.sh \
+            scripts/dracut/97bpir-tier3-init/read-tunnel-token.sh
+          shellcheck -S warning -s bash \
+            scripts/dracut/97bpir-tier3-init/module-setup.sh \
+            scripts/build_uki_tier3.sh \
+            scripts/build_unified_server.sh \
+            scripts/verify_tier3_initramfs.sh \
+            scripts/tests/tier3_initramfs_verifier.sh
+          dash -n scripts/dracut/97bpir-tier3-init/*.sh
+          busybox ash -n scripts/dracut/97bpir-tier3-init/*.sh
+
+      - name: Shell fixtures and initramfs verifier
+        run: |
+          sh scripts/tests/tier3_startup_diagnostics.sh
+          bash scripts/tests/tier3_initramfs_verifier.sh
+
+      - name: Startup recorder unit tests
+        run: cargo test --locked -p runtime --lib startup_diagnostics -- --test-threads=1 --nocapture
+
+      - name: Production Direct ORAM feature compile
+        run: cargo check --locked -p runtime --features cuckoo-oram --bin unified_server
+
+      - name: Direct ORAM startup-stage contract
+        run: >-
+          cargo test --locked -p runtime --features cuckoo-oram --bin unified_server
+          direct_oram_startup_diagnostics -- --test-threads=1 --nocapture
+
+      - name: Diff hygiene
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...HEAD"
+          else
+            git show --check --format= HEAD
+          fi
