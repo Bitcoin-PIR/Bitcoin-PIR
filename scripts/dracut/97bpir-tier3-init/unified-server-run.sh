@@ -58,6 +58,10 @@ ORAM_STAGING_DIR="$ORAM_BOOT_ROOT/staging.$$"
 ORAM_CURRENT_DIR="$ORAM_BOOT_ROOT/current"
 ORAM_FULL_DIR="$ORAM_CURRENT_DIR/db0-mainnet-948454"
 ORAM_DELTA_DIR="$ORAM_CURRENT_DIR/db1-delta-940611-948454"
+TRUSTED_INPUT_ROOT=/run/bitcoinpir-oram-inputs
+TRUSTED_STATE_ROOT=/run/bitcoinpir-oram-state
+ORAM_FULL_TRUSTED_STATE_DIR="$TRUSTED_STATE_ROOT/db0-mainnet-948454"
+ORAM_DELTA_TRUSTED_STATE_DIR="$TRUSTED_STATE_ROOT/db1-delta-940611-948454"
 
 ORAM_PACK=16
 ORAM_LEAF_DIVISOR=2
@@ -136,6 +140,29 @@ safe_remove_boot_path() {
     esac
 }
 
+safe_remove_runtime_path() {
+    case "$1" in
+        "$TRUSTED_INPUT_ROOT"|"$TRUSTED_INPUT_ROOT"/*|"$TRUSTED_STATE_ROOT"|"$TRUSTED_STATE_ROOT"/*)
+            rm -rf "$1" || fatal "failed to remove $1"
+            ;;
+        *) fatal "refusing to remove path outside trusted runtime roots: $1" ;;
+    esac
+}
+
+cleanup_build_staging() {
+    safe_remove_boot_path "$ORAM_STAGING_DIR"
+    safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
+    safe_remove_runtime_path "$TRUSTED_STATE_ROOT"
+}
+
+copy_to_trusted_runtime() {
+    copy_source_path="$1"
+    copy_destination_path="$2"
+    require_file "$copy_source_path"
+    dd if="$copy_source_path" of="$copy_destination_path" bs=1048576 2>>"$log_file" \
+        || fatal "failed to copy $3 into SEV-protected tmpfs"
+}
+
 build_direct_oram() {
     db_label="$1"
     source_dir="$2"
@@ -149,11 +176,11 @@ build_direct_oram() {
     log_file="$ORAM_BUILD_LOG_DIR/${db_label}.build-direct.log"
     seed_hex="$(random_seed_hex)"
 
-    index_file="$source_dir/utxo_chunks_index_nodust.bin"
-    chunks_file="$source_dir/utxo_chunks_nodust.bin"
+    source_index_file="$source_dir/utxo_chunks_index_nodust.bin"
+    source_chunks_file="$source_dir/utxo_chunks_nodust.bin"
     sha_file="$source_dir/direct-inputs.sha256"
-    require_file "$index_file"
-    require_file "$chunks_file"
+    require_file "$source_index_file"
+    require_file "$source_chunks_file"
     require_file "$db_evidence"
     require_file "$root_bundle"
 
@@ -166,13 +193,32 @@ build_direct_oram() {
     [ -n "$expected_index_sha" ] || fatal "$db_label direct index hash pin missing"
     [ -n "$expected_chunks_sha" ] || fatal "$db_label direct chunks hash pin missing"
 
+    trusted_input_dir="$TRUSTED_INPUT_ROOT/$db_label"
+    trusted_state_dir="$TRUSTED_STATE_ROOT/$db_label"
+    mkdir -p "$trusted_input_dir" "$trusted_state_dir" \
+        || fatal "failed to create trusted tmpfs directories for $db_label"
+    : >"$log_file" || fatal "failed to create $log_file"
+    copy_to_trusted_runtime "$source_index_file" \
+        "$trusted_input_dir/utxo_chunks_index_nodust.bin" "$db_label index source"
+    copy_to_trusted_runtime "$source_chunks_file" \
+        "$trusted_input_dir/utxo_chunks_nodust.bin" "$db_label chunks source"
+    copy_to_trusted_runtime "$db_evidence" \
+        "$trusted_input_dir/build-evidence.bin" "$db_label DB evidence"
+    copy_to_trusted_runtime "$root_bundle" \
+        "$trusted_input_dir/root-bundle-payload.bin" "$db_label root bundle"
+    index_file="$trusted_input_dir/utxo_chunks_index_nodust.bin"
+    chunks_file="$trusted_input_dir/utxo_chunks_nodust.bin"
+    db_evidence="$trusted_input_dir/build-evidence.bin"
+    root_bundle="$trusted_input_dir/root-bundle-payload.bin"
+
     mkdir -p "$out_dir" || fatal "failed to create $out_dir"
-    echo "[unified-server-run] regenerating $db_label direct ORAM from $source_dir into $out_dir" >&2
+    echo "[unified-server-run] regenerating $db_label direct ORAM from trusted tmpfs into $out_dir; trusted state: $trusted_state_dir" >&2
     if [ -n "$expected_from_muhash" ]; then
         "$ORAMCTL" build-direct \
             --index-file "$index_file" \
             --chunks-file "$chunks_file" \
             --out-dir "$out_dir" \
+            --trusted-state-dir "$trusted_state_dir" \
             --level all \
             --pack "$ORAM_PACK" \
             --leaf-divisor "$ORAM_LEAF_DIVISOR" \
@@ -207,6 +253,7 @@ build_direct_oram() {
             --index-file "$index_file" \
             --chunks-file "$chunks_file" \
             --out-dir "$out_dir" \
+            --trusted-state-dir "$trusted_state_dir" \
             --level all \
             --pack "$ORAM_PACK" \
             --leaf-divisor "$ORAM_LEAF_DIVISOR" \
@@ -232,6 +279,7 @@ build_direct_oram() {
                 fatal "$db_label direct ORAM regeneration failed; full log: $log_file"
             }
     fi
+    safe_remove_runtime_path "$trusted_input_dir"
     echo "[unified-server-run] regenerated $db_label direct ORAM; log: $log_file" >&2
 }
 
@@ -244,8 +292,12 @@ for stale_staging in "$ORAM_BOOT_ROOT"/staging.*; do
     safe_remove_boot_path "$stale_staging"
 done
 safe_remove_boot_path "$ORAM_CURRENT_DIR"
+safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
+safe_remove_runtime_path "$TRUSTED_STATE_ROOT"
 mkdir -p "$ORAM_STAGING_DIR" || fatal "failed to create $ORAM_STAGING_DIR"
-trap 'safe_remove_boot_path "$ORAM_STAGING_DIR"' EXIT
+mkdir -p "$TRUSTED_INPUT_ROOT" "$TRUSTED_STATE_ROOT" \
+    || fatal "failed to create SEV-protected ORAM runtime directories"
+trap cleanup_build_staging EXIT
 
 MAINNET_SOURCE_DIR="$(first_existing_dir \
     /home/pir/data/oram-inputs/checkpoints/948454 \
@@ -283,6 +335,7 @@ build_direct_oram delta-940611-948454 "$DELTA_SOURCE_DIR" "$ORAM_STAGING_DIR/db1
     "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256"
 
 mv "$ORAM_STAGING_DIR" "$ORAM_CURRENT_DIR" || fatal "failed to publish regenerated ORAM image"
+safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
 trap - EXIT
 
 exec "$UNIFIED_SERVER" \
@@ -292,6 +345,8 @@ exec "$UNIFIED_SERVER" \
     --config /home/pir/data/databases.toml \
     --direct-oram-db "0=$ORAM_FULL_DIR" \
     --direct-oram-db "1=$ORAM_DELTA_DIR" \
+    --direct-oram-trusted-state-db "0=$ORAM_FULL_TRUSTED_STATE_DIR" \
+    --direct-oram-trusted-state-db "1=$ORAM_DELTA_TRUSTED_STATE_DIR" \
     --direct-oram-drain-per-access 2 \
     --direct-oram-access-budget 75 \
     --direct-oram-cache-levels 0 \

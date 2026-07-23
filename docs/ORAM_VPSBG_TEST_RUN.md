@@ -2,10 +2,12 @@
 
 This runbook covers the upgraded VPSBG single-machine ORAM deployment path.
 The trusted production shape is regenerate-on-boot: immutable direct inputs and
-DB proof artifacts live on local VPSBG disk, while ORAM payload/meta/hash/state
-images are rebuilt into a disposable boot directory before `unified_server`
-starts. Trusted memory is limited to the ORAM reader state, stash, auth
-roots/state, and any explicitly configured top-level cache.
+DB proof artifacts live on local VPSBG disk, but are copied into SEV-protected
+`/run` tmpfs before verification. Bulk ORAM payload/meta/hash pages are rebuilt
+into a disposable disk directory, while controller state, auth roots, and
+lookup metadata stay in `/run`. Trusted memory is otherwise limited to the
+ORAM reader state, stash, auth roots/state, and any explicitly configured
+top-level cache.
 
 Current target shape:
 
@@ -186,6 +188,10 @@ The generated direct ORAM image directories are disposable:
 
 Boot-time build logs are written under:
   /home/pir/data/oram-boot-logs/
+
+Trusted runtime state is held only in SEV-protected tmpfs:
+  /run/bitcoinpir-oram-state/db0-mainnet-948454
+  /run/bitcoinpir-oram-state/db1-delta-940611-948454
 ```
 
 ## Safety Boundary
@@ -513,17 +519,19 @@ For Tier 3, the UKI now measures:
 - the proof/input paths and direct ORAM generation parameters; and
 - the explicit direct ORAM runtime flags.
 
-The bulk ORAM metadata/payload/hash/state files are regenerated under the
-bind-mounted `/home/pir/data/.oram-boot/current/...` directories at boot. The
-current measured startup script is:
+The bulk ORAM metadata/payload/hash files are regenerated under the bind-mounted
+`/home/pir/data/.oram-boot/current/...` directories at boot. Trusted state and
+lookup metadata are regenerated under `/run/bitcoinpir-oram-state`. The current
+measured startup script is:
 
 ```text
 scripts/dracut/97bpir-tier3-init/unified-server-run.sh
 ```
 
-It first reads a fresh 32-byte ORAM seed from `/dev/urandom`, then runs
-`/usr/local/bin/oramctl build-direct` twice, with `--strict-source-binding`,
-against:
+It first copies each direct input and DB proof artifact into
+`/run/bitcoinpir-oram-inputs`, reads a fresh 32-byte ORAM seed from
+`/dev/urandom`, then runs `/usr/local/bin/oramctl build-direct` twice with
+`--strict-source-binding` and `--trusted-state-dir` against:
 
 ```text
 db_id=0 source:
@@ -547,11 +555,20 @@ root. It also requires the DB build evidence to use the same starting height
 and block hash. Missing or modified proof data aborts startup before port 8091
 is opened.
 
+The tmpfs source copy is required because hashing a disk file and reopening it
+later would allow an untrusted block device to change pages between
+verification and the ORAM build. The verified tmpfs copy is the exact source
+consumed by `oramctl`. Controller state, authenticated roots, and direct
+metadata are also written straight to tmpfs so the live server never reloads
+its trust anchor from persistent disk.
+
 Then it starts `/usr/local/bin/unified_server` with:
 
 ```text
 --direct-oram-db 0=/home/pir/data/.oram-boot/current/db0-mainnet-948454
 --direct-oram-db 1=/home/pir/data/.oram-boot/current/db1-delta-940611-948454
+--direct-oram-trusted-state-db 0=/run/bitcoinpir-oram-state/db0-mainnet-948454
+--direct-oram-trusted-state-db 1=/run/bitcoinpir-oram-state/db1-delta-940611-948454
 --direct-oram-drain-per-access 2
 --direct-oram-access-budget 75
 --direct-oram-cache-levels 0

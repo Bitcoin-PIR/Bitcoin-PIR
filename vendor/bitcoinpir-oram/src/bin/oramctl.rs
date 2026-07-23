@@ -168,6 +168,10 @@ enum Command {
         /// Output directory for direct index/chunk metadata, payload, state, and direct metadata files.
         #[arg(long)]
         out_dir: PathBuf,
+        /// Optional trusted directory for controller state, auth roots, and direct lookup metadata.
+        /// Bulk ORAM images remain in --out-dir.
+        #[arg(long)]
+        trusted_state_dir: Option<PathBuf>,
         /// Which direct ORAM instance to build.
         #[arg(long, value_enum, default_value_t = DirectLevelArg::All)]
         level: DirectLevelArg,
@@ -757,6 +761,7 @@ fn main() -> Result<()> {
             index_file,
             chunks_file,
             out_dir,
+            trusted_state_dir,
             level,
             pack,
             leaf_divisor,
@@ -791,6 +796,7 @@ fn main() -> Result<()> {
                 &index_file,
                 &chunks_file,
                 &out_dir,
+                trusted_state_dir.as_deref(),
                 level,
                 pack,
                 leaf_divisor,
@@ -3511,6 +3517,7 @@ fn build_direct_images(
     index_file: &Path,
     chunks_file: &Path,
     out_dir: &Path,
+    trusted_state_dir: Option<&Path>,
     level: DirectLevelArg,
     pack: usize,
     leaf_divisor: usize,
@@ -3541,6 +3548,9 @@ fn build_direct_images(
         parse_required_key(key_hex)?;
     }
     fs::create_dir_all(out_dir)?;
+    if let Some(trusted_state_dir) = trusted_state_dir {
+        fs::create_dir_all(trusted_state_dir)?;
+    }
 
     let infos = direct_infos(
         index_file,
@@ -3557,6 +3567,10 @@ fn build_direct_images(
     println!("index_file={}", index_file.display());
     println!("chunks_file={}", chunks_file.display());
     println!("out_dir={}", out_dir.display());
+    println!(
+        "trusted_state_dir={}",
+        trusted_state_dir.unwrap_or(out_dir).display()
+    );
     println!("level={level:?}");
     println!("pack={pack}");
     println!("leaf_divisor={leaf_divisor}");
@@ -3601,6 +3615,7 @@ fn build_direct_images(
             .expect("direct_infos returns both levels");
         controller_states.push(build_direct_table(
             out_dir,
+            trusted_state_dir,
             info,
             pack,
             leaf_divisor,
@@ -3666,6 +3681,7 @@ fn build_direct_images(
 #[allow(clippy::too_many_arguments)]
 fn build_direct_table(
     out_dir: &Path,
+    trusted_state_dir: Option<&Path>,
     info: &DirectTableInfo,
     pack: usize,
     leaf_divisor: usize,
@@ -3696,7 +3712,7 @@ fn build_direct_table(
     )?
     .with_bucket_size(bucket_size)?
     .with_stash_capacity(stash_capacity)?;
-    let paths = direct_output_paths(out_dir, info.level);
+    let paths = direct_output_paths(out_dir, trusted_state_dir, info.level);
 
     match info.level {
         DirectLevel::Index => {
@@ -3930,7 +3946,7 @@ fn bench_direct_table(
     query_seed: [u8; 32],
     no_save: bool,
 ) -> Result<()> {
-    let paths = direct_output_paths(oram_dir, level);
+    let paths = direct_output_paths(oram_dir, None, level);
     let metadata = DirectTableMetadata::load(&paths.metadata)?;
     if metadata.level != level {
         return Err(Error::InvalidInput(format!(
@@ -4382,16 +4398,21 @@ fn circuit_output_paths(out_dir: &Path, level: CuckooLevel) -> CircuitOutputPath
     }
 }
 
-fn direct_output_paths(out_dir: &Path, level: DirectLevel) -> CircuitOutputPaths {
+fn direct_output_paths(
+    out_dir: &Path,
+    trusted_state_dir: Option<&Path>,
+    level: DirectLevel,
+) -> CircuitOutputPaths {
     let label = format!("direct-{}", level.label());
+    let trusted_state_dir = trusted_state_dir.unwrap_or(out_dir);
     CircuitOutputPaths {
         meta_image: out_dir.join(format!("{label}.meta.oram")),
         payload_image: out_dir.join(format!("{label}.payload.oram")),
         meta_hash_image: out_dir.join(format!("{label}.meta.hash.oram")),
         payload_hash_image: out_dir.join(format!("{label}.payload.hash.oram")),
-        state: out_dir.join(format!("{label}.state")),
-        auth_state: out_dir.join(format!("{label}.auth.state")),
-        metadata: out_dir.join(format!("{label}.metadata")),
+        state: trusted_state_dir.join(format!("{label}.state")),
+        auth_state: trusted_state_dir.join(format!("{label}.auth.state")),
+        metadata: trusted_state_dir.join(format!("{label}.metadata")),
     }
 }
 
@@ -6427,6 +6448,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             8,
             2,
@@ -6472,6 +6494,58 @@ mod tests {
     }
 
     #[test]
+    fn build_direct_separates_trusted_state_from_bulk_images() {
+        let input = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let trusted = tempfile::tempdir().unwrap();
+        let index_file = input.path().join("utxo_chunks_index_nodust.bin");
+        let chunks_file = input.path().join("utxo_chunks_nodust.bin");
+        write_direct_index_records(&index_file, 16);
+        write_direct_chunks(&chunks_file, 16);
+
+        build_direct_images(
+            &index_file,
+            &chunks_file,
+            out.path(),
+            Some(trusted.path()),
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            true,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            DirectBuildEvidenceInputs::empty(),
+        )
+        .unwrap();
+
+        for level in ["direct-index", "direct-chunk"] {
+            assert!(out.path().join(format!("{level}.meta.oram")).exists());
+            assert!(out.path().join(format!("{level}.payload.oram")).exists());
+            assert!(out.path().join(format!("{level}.meta.hash.oram")).exists());
+            assert!(out
+                .path()
+                .join(format!("{level}.payload.hash.oram"))
+                .exists());
+            for suffix in ["state", "auth.state", "metadata"] {
+                assert!(!out.path().join(format!("{level}.{suffix}")).exists());
+                assert!(trusted.path().join(format!("{level}.{suffix}")).exists());
+            }
+        }
+    }
+
+    #[test]
     fn build_direct_strict_source_hashes_succeed() {
         let input = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
@@ -6493,6 +6567,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,
@@ -6575,6 +6650,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,
@@ -6636,6 +6712,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,
@@ -6721,6 +6798,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,
@@ -6749,6 +6827,7 @@ mod tests {
             &index_file,
             &chunks_file,
             missing_out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,

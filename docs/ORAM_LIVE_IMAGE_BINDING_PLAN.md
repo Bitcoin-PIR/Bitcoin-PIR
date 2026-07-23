@@ -1,15 +1,20 @@
 # ORAM live-image binding
 
-Status: regenerate-on-boot implementation is tracked by BitcoinPIR PR #70 and
-the proof-producing `oramctl` change by Bitcoin-PIR/oram PR #4. The selected
-production model discards prior mutable ORAM state and rebuilds from proof-bound
-inputs before listening. This document also retains the more complex
-persistent-lineage design for any future node that cannot afford regeneration.
+Status: regenerate-on-boot implementation is tracked by BitcoinPIR PR #70.
+The proof-producing and trusted-state-separation changes landed in
+Bitcoin-PIR/oram PRs #4 and #5. The selected production model discards prior
+mutable ORAM state and rebuilds from proof-bound inputs before listening. This
+document also retains the more complex persistent-lineage design for any future
+node that cannot afford regeneration.
 
 ## Regenerate-on-boot rollout status
 
 - [x] Regenerate db 0 and db 1 ORAM images from fixed-hash direct inputs before
       the server listens.
+- [x] Copy direct inputs and proof artifacts into SEV-protected `/run` tmpfs
+      before hashing/building, eliminating the disk hash/build TOCTOU.
+- [x] Keep controller state, authenticated roots, and lookup metadata in
+      `/run`; only authenticated bulk ORAM pages remain on persistent disk.
 - [x] Embed and verify the existing 940611 BHTM inclusion proof for the delta
       starting MuHash, block hash, height, and pinned tree root.
 - [x] Bind the BHTM starting anchor to the attested-builder DB evidence and add
@@ -205,6 +210,16 @@ witness, not the byte-for-byte runtime image. This is the model implemented by
 `scripts/dracut/97bpir-tier3-init/unified-server-run.sh`; the persistent
 lineage protocol above is needed only if nodes must reuse an existing large
 image across restarts.
+
+The implementation must not hand the generated controller state back through
+untrusted persistent storage between `oramctl` and `unified_server`. Direct
+inputs and DB evidence are first copied from disk into the SEV-protected
+`/run` tmpfs; `oramctl` hashes and reads those same trusted copies. It writes
+the small controller states, authenticated roots, and direct lookup metadata
+directly into `/run/bitcoinpir-oram-state`. `unified_server` opens and updates
+those trusted files while accessing only the large authenticated
+payload/meta/hash page images on persistent disk. This closes both the source
+hash/build TOCTOU and the process-boundary whole-image substitution window.
 
 For the production delta, the measured startup path also embeds and verifies
 the existing BHTM inclusion proof for height 940611. `oramctl` recomputes the
