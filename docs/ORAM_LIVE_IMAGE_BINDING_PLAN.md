@@ -221,6 +221,17 @@ those trusted files while accessing only the large authenticated
 payload/meta/hash page images on persistent disk. This closes both the source
 hash/build TOCTOU and the process-boundary whole-image substitution window.
 
+The sidecar Merkle roots are also bound to the page bytes emitted by that same
+trusted build. While writing each metadata and payload page in order,
+`oramctl` accumulates its expected domain-separated Merkle root using only
+`O(log N)` trusted memory. It then builds the disk-backed sidecar tree and
+requires both resulting roots to equal those expected roots before saving the
+trusted controller state. A host replacement between ORAM generation and the
+sidecar scan therefore fails closed instead of becoming the installed trust
+root. Strict source-bound authenticated builds use the sidecar layout; the
+embedded-tree layout is rejected for that mode until it has an equivalent
+construction-time binding.
+
 For the production delta, the measured startup path also embeds and verifies
 the existing BHTM inclusion proof for height 940611. `oramctl` recomputes the
 Core MuHash from the proof's complete 384-byte MuHash, recomputes the leaf and

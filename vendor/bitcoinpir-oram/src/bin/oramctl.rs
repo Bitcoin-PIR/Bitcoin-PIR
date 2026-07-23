@@ -7,10 +7,11 @@ use bitcoinpir_oram::{
     DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel, DirectOramEstimate,
     DirectOramSizing, DirectTableInfo, DirectTableMetadata, EmbeddedTreePageStore, Error,
     FilePageStore, FrontCachedPageStore, OramParams, PageStore, PathPageStore, Result,
-    RingStressConfig, RingStressReport, TieredMerklePageStore, TrustedBlockSource, AEAD_OVERHEAD,
-    DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS, DIRECT_INDEX_DEFAULT_LOAD_FACTOR,
-    DIRECT_INDEX_DEFAULT_SEED, DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE,
-    DIRECT_SCRIPT_HASH_SIZE, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+    RingStressConfig, RingStressReport, TieredMerklePageStore, TieredMerkleRootBuilder,
+    TrustedBlockSource, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS,
+    DIRECT_INDEX_DEFAULT_LOAD_FACTOR, DIRECT_INDEX_DEFAULT_SEED,
+    DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE, DIRECT_SCRIPT_HASH_SIZE,
+    EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{RngCore, SeedableRng};
@@ -3547,6 +3548,15 @@ fn build_direct_images(
     if encrypted {
         parse_required_key(key_hex)?;
     }
+    if evidence_inputs.strict_source_binding
+        && auth_store
+        && matches!(auth_layout, AuthLayoutArg::EmbeddedTree)
+    {
+        return Err(Error::InvalidInput(
+            "strict source-bound authenticated builds currently require --auth-layout sidecar"
+                .into(),
+        ));
+    }
     fs::create_dir_all(out_dir)?;
     if let Some(trusted_state_dir) = trusted_state_dir {
         fs::create_dir_all(trusted_state_dir)?;
@@ -3795,6 +3805,14 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
         false,
         active_auth_layout(auth_store, auth_layout),
     )?;
+    let meta_store = SourceBoundPageStore::new(
+        meta_store,
+        direct_auth_store_id(info.level, CircuitAuthStoreKind::Meta),
+    )?;
+    let payload_store = SourceBoundPageStore::new(
+        payload_store,
+        direct_auth_store_id(info.level, CircuitAuthStoreKind::Payload),
+    )?;
 
     let started = Instant::now();
     let mut oram = CircuitOram::build_trusted_from_source(
@@ -3807,18 +3825,38 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
     oram.flush()?;
     metadata.save(&paths.metadata)?;
     let mut controller_state = oram.snapshot();
+    let stash_len = oram.stash_len();
+    let pending_evictions = oram.pending_evictions()?;
+    let (meta_store, payload_store) = oram.into_stores();
+    let (meta_store, expected_meta_root) = meta_store.into_parts()?;
+    let (payload_store, expected_payload_root) = payload_store.into_parts()?;
     if auth_store {
-        let auth_state = build_direct_store_auth(
-            paths,
-            info.level,
-            params,
-            encrypted,
-            key_hex,
-            cached_pages,
-            auth_layout,
-            auth_trusted_levels,
-            auth_hash_page_size,
-        )?;
+        let auth_state = match auth_layout {
+            AuthLayoutArg::Sidecar => build_direct_sidecar_store_auth_from_stores(
+                paths,
+                info.level,
+                params,
+                encrypted,
+                key_hex,
+                meta_store,
+                payload_store,
+                expected_meta_root,
+                expected_payload_root,
+                auth_trusted_levels,
+                auth_hash_page_size,
+            )?,
+            AuthLayoutArg::EmbeddedTree => build_direct_store_auth(
+                paths,
+                info.level,
+                params,
+                encrypted,
+                key_hex,
+                cached_pages,
+                auth_layout,
+                auth_trusted_levels,
+                auth_hash_page_size,
+            )?,
+        };
         controller_state = controller_state.with_auth(Some(auth_state.clone()));
         save_circuit_store_auth(&auth_state, &paths.auth_state, state_key_hex)?;
     }
@@ -3858,8 +3896,8 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
         params.bucket_count() as u64 * backing_page_bytes(meta_page_plaintext_bytes, encrypted) as u64,
         params.bucket_count() as u64
             * backing_page_bytes(payload_page_plaintext_bytes, encrypted) as u64,
-        oram.stash_len(),
-        oram.pending_evictions()?,
+        stash_len,
+        pending_evictions,
         elapsed.as_millis()
     );
 
@@ -5574,6 +5612,49 @@ const fn auth_plaintext_page_bytes(logical_page_bytes: usize, auth_layout: AuthL
     }
 }
 
+struct SourceBoundPageStore<S> {
+    inner: S,
+    root_builder: TieredMerkleRootBuilder,
+}
+
+impl<S: PageStore> SourceBoundPageStore<S> {
+    fn new(inner: S, store_id: [u8; 16]) -> Result<Self> {
+        let root_builder =
+            TieredMerkleRootBuilder::new(store_id, inner.page_count(), inner.page_size())?;
+        Ok(Self {
+            inner,
+            root_builder,
+        })
+    }
+
+    fn into_parts(self) -> Result<(S, [u8; 32])> {
+        Ok((self.inner, self.root_builder.finish()?))
+    }
+}
+
+impl<S: PageStore> PageStore for SourceBoundPageStore<S> {
+    fn page_size(&self) -> usize {
+        self.inner.page_size()
+    }
+
+    fn page_count(&self) -> usize {
+        self.inner.page_count()
+    }
+
+    fn read_page(&mut self, page_idx: usize, out: &mut [u8]) -> Result<()> {
+        self.inner.read_page(page_idx, out)
+    }
+
+    fn write_page(&mut self, page_idx: usize, input: &[u8]) -> Result<()> {
+        self.root_builder.push_page(page_idx, input)?;
+        self.inner.write_page(page_idx, input)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.inner.flush()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn open_circuit_file_stores(
     meta_image: &Path,
@@ -5889,6 +5970,61 @@ fn build_direct_sidecar_store_auth(
         AuthLayoutArg::Sidecar,
     )?;
 
+    build_direct_sidecar_store_auth_inner(
+        paths,
+        level,
+        params,
+        encrypted,
+        key_hex,
+        meta_store,
+        payload_store,
+        None,
+        trusted_levels,
+        hash_page_size,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_direct_sidecar_store_auth_from_stores(
+    paths: &CircuitOutputPaths,
+    level: DirectLevel,
+    params: &OramParams,
+    encrypted: bool,
+    key_hex: Option<&str>,
+    meta_store: Box<dyn PageStore>,
+    payload_store: Box<dyn PageStore>,
+    expected_meta_root: [u8; 32],
+    expected_payload_root: [u8; 32],
+    trusted_levels: usize,
+    hash_page_size: usize,
+) -> Result<CircuitStoreAuthState> {
+    build_direct_sidecar_store_auth_inner(
+        paths,
+        level,
+        params,
+        encrypted,
+        key_hex,
+        meta_store,
+        payload_store,
+        Some((expected_meta_root, expected_payload_root)),
+        trusted_levels,
+        hash_page_size,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_direct_sidecar_store_auth_inner(
+    paths: &CircuitOutputPaths,
+    level: DirectLevel,
+    params: &OramParams,
+    encrypted: bool,
+    key_hex: Option<&str>,
+    meta_store: Box<dyn PageStore>,
+    payload_store: Box<dyn PageStore>,
+    expected_roots: Option<([u8; 32], [u8; 32])>,
+    trusted_levels: usize,
+    hash_page_size: usize,
+) -> Result<CircuitStoreAuthState> {
     let meta_hash_pages = tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels)?;
     let payload_hash_pages =
         tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels)?;
@@ -5925,15 +6061,30 @@ fn build_direct_sidecar_store_auth(
         direct_auth_store_id(level, CircuitAuthStoreKind::Payload),
         trusted_levels,
     )?;
+    if let Some((expected_meta_root, expected_payload_root)) = expected_roots {
+        if meta.root() != expected_meta_root {
+            return Err(Error::InvalidInput(format!(
+                "{} direct metadata authentication root does not match the pages emitted from the trusted source",
+                level
+            )));
+        }
+        if payload.root() != expected_payload_root {
+            return Err(Error::InvalidInput(format!(
+                "{} direct payload authentication root does not match the pages emitted from the trusted source",
+                level
+            )));
+        }
+    }
     PageStore::flush(&mut meta)?;
     PageStore::flush(&mut payload)?;
 
     println!(
-        "direct_auth_built level={} meta_hash_image={} payload_hash_image={} auth_state={} trusted_levels={} hash_page_size={} meta_hash_pages={} payload_hash_pages={} meta_trusted_hash_bytes={} payload_trusted_hash_bytes={}",
+        "direct_auth_built level={} meta_hash_image={} payload_hash_image={} auth_state={} source_bound={} trusted_levels={} hash_page_size={} meta_hash_pages={} payload_hash_pages={} meta_trusted_hash_bytes={} payload_trusted_hash_bytes={}",
         level,
         paths.meta_hash_image.display(),
         paths.payload_hash_image.display(),
         paths.auth_state.display(),
+        expected_roots.is_some(),
         trusted_levels,
         hash_page_size,
         meta_hash_pages,
@@ -6318,6 +6469,64 @@ fn checksum_payload(mut checksum: u64, payload: &[u8]) -> u64 {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    #[test]
+    fn source_bound_sidecar_rejects_persisted_root_mismatch() {
+        let out = tempfile::tempdir().unwrap();
+        let params = OramParams::with_leaves(4, 16, 2)
+            .unwrap()
+            .with_bucket_size(2)
+            .unwrap();
+        let paths = direct_output_paths(out.path(), None, DirectLevel::Index);
+        let (mut meta_store, mut payload_store) = open_circuit_file_stores(
+            &paths.meta_image,
+            &paths.payload_image,
+            &params,
+            false,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+        )
+        .unwrap();
+        for page_idx in 0..params.bucket_count() {
+            meta_store
+                .write_page(
+                    page_idx,
+                    &vec![page_idx as u8; circuit_meta_page_bytes(params.bucket_size)],
+                )
+                .unwrap();
+            payload_store
+                .write_page(
+                    page_idx,
+                    &vec![
+                        page_idx as u8;
+                        circuit_payload_page_bytes(params.bucket_size, params.block_size)
+                    ],
+                )
+                .unwrap();
+        }
+        PageStore::flush(&mut meta_store).unwrap();
+        PageStore::flush(&mut payload_store).unwrap();
+
+        let err = build_direct_sidecar_store_auth_from_stores(
+            &paths,
+            DirectLevel::Index,
+            &params,
+            false,
+            None,
+            meta_store,
+            payload_store,
+            [0u8; 32],
+            [0u8; 32],
+            1,
+            64,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("authentication root does not match the pages emitted"));
+    }
 
     #[test]
     fn build_and_bench_circuit_with_auth_store_reopens() {

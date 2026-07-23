@@ -549,6 +549,12 @@ db_id=1 embedded BHTM from-leaf proof:
   /usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
 ```
 
+During each direct build, `oramctl` accumulates expected metadata and payload
+Merkle roots from the exact pages it emits, using `O(log N)` trusted memory.
+It installs the disk-backed sidecar roots only when both roots match. Thus a
+bulk-page substitution between generation and authentication-tree construction
+aborts startup; it cannot be promoted into trusted controller state.
+
 For db_id 1, `oramctl` verifies the complete 940611 BHTM leaf proof against
 the measured pins for height, block hash, starting Core MuHash, and BHTM tree
 root. It also requires the DB build evidence to use the same starting height
