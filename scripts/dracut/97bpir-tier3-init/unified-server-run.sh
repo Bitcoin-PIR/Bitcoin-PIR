@@ -231,6 +231,7 @@ build_direct_oram() {
             --index-seed "$DIRECT_INDEX_SEED" \
             --seed-hex "$seed_hex" \
             --auth-store \
+            --auth-layout sidecar \
             --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
             --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
             --db-build-evidence "$db_evidence" \
@@ -266,6 +267,7 @@ build_direct_oram() {
             --index-seed "$DIRECT_INDEX_SEED" \
             --seed-hex "$seed_hex" \
             --auth-store \
+            --auth-layout sidecar \
             --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
             --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
             --db-build-evidence "$db_evidence" \
