@@ -45,7 +45,9 @@ pub use embedded_tree::{
     EmbeddedTreePageStore, EmbeddedTreeState, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 pub use error::{Error, Result};
-pub use merkle::{MerklePageStore, TieredMerklePageStore, TieredMerkleState};
+pub use merkle::{
+    MerklePageStore, TieredMerklePageStore, TieredMerkleRootBuilder, TieredMerkleState,
+};
 pub use params::OramParams;
 pub use ring_stress::{
     stress_ring, RingCrashStateEstimate, RingIoEstimate, RingStressConfig, RingStressReport,

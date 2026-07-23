@@ -6,6 +6,123 @@ const LEAF_DOMAIN: &[u8] = b"bpir-oram-page-v1";
 const EMPTY_LEAF_DOMAIN: &[u8] = b"bpir-oram-empty-page-v1";
 const NODE_DOMAIN: &[u8] = b"bpir-oram-node-v1";
 
+/// Streaming Merkle-root accumulator for pages written exactly once in page
+/// order.
+///
+/// This is intended for trusted image construction: callers can commit to the
+/// bytes they hand to an untrusted page store without retaining the whole tree
+/// in trusted memory. The resulting root can then be compared with the root of
+/// a disk-backed authentication tree built over the persisted image.
+pub struct TieredMerkleRootBuilder {
+    store_id: [u8; 16],
+    page_count: usize,
+    page_size: usize,
+    leaf_base: usize,
+    next_page: usize,
+    pending: Vec<Option<(usize, [u8; 32])>>,
+}
+
+impl TieredMerkleRootBuilder {
+    /// Create an empty accumulator for a fixed page-store shape.
+    pub fn new(store_id: [u8; 16], page_count: usize, page_size: usize) -> Result<Self> {
+        if page_count == 0 || page_size == 0 {
+            return Err(Error::InvalidInput(
+                "page_count and page_size must be > 0".into(),
+            ));
+        }
+        let leaf_base = leaf_base_for_page_count(page_count)?;
+        let height = leaf_base.trailing_zeros() as usize;
+        Ok(Self {
+            store_id,
+            page_count,
+            page_size,
+            leaf_base,
+            next_page: 0,
+            pending: vec![None; height + 1],
+        })
+    }
+
+    /// Commit the next logical page. Pages must be supplied as `0, 1, ...`.
+    pub fn push_page(&mut self, page_idx: usize, page: &[u8]) -> Result<()> {
+        if page_idx != self.next_page {
+            return Err(Error::InvalidInput(format!(
+                "Merkle root builder expected page {}, got {}",
+                self.next_page, page_idx
+            )));
+        }
+        if page_idx >= self.page_count {
+            return Err(Error::InvalidInput(format!(
+                "page_idx {} out of range {}",
+                page_idx, self.page_count
+            )));
+        }
+        if page.len() != self.page_size {
+            return Err(Error::InvalidInput(format!(
+                "page len {} != page_size {}",
+                page.len(),
+                self.page_size
+            )));
+        }
+        self.push_leaf(page_idx, hash_leaf(self.store_id, page_idx, page))?;
+        self.next_page += 1;
+        Ok(())
+    }
+
+    /// Finish the commitment, adding the same domain-separated empty leaves
+    /// used by [`TieredMerklePageStore`].
+    pub fn finish(mut self) -> Result<[u8; 32]> {
+        if self.next_page != self.page_count {
+            return Err(Error::InvalidInput(format!(
+                "Merkle root builder received {} of {} pages",
+                self.next_page, self.page_count
+            )));
+        }
+        for page_idx in self.page_count..self.leaf_base {
+            self.push_leaf(
+                page_idx,
+                hash_empty_leaf(self.store_id, page_idx, self.page_size),
+            )?;
+        }
+        let root_level = self.pending.len() - 1;
+        let (node_idx, root) = self.pending[root_level]
+            .take()
+            .ok_or_else(|| Error::InvalidInput("Merkle root builder produced no root".into()))?;
+        if node_idx != 1 || self.pending[..root_level].iter().any(Option::is_some) {
+            return Err(Error::InvalidInput(
+                "Merkle root builder ended with an incomplete tree".into(),
+            ));
+        }
+        Ok(root)
+    }
+
+    fn push_leaf(&mut self, page_idx: usize, hash: [u8; 32]) -> Result<()> {
+        let mut node_idx = self.leaf_base + page_idx;
+        let mut current = hash;
+        let mut level = 0usize;
+        loop {
+            let slot = self.pending.get_mut(level).ok_or_else(|| {
+                Error::InvalidInput("Merkle root builder exceeded tree height".into())
+            })?;
+            match slot.take() {
+                None => {
+                    *slot = Some((node_idx, current));
+                    return Ok(());
+                }
+                Some((left_idx, left)) => {
+                    if left_idx + 1 != node_idx || !is_left_child(left_idx) {
+                        return Err(Error::InvalidInput(
+                            "Merkle root builder received non-consecutive leaves".into(),
+                        ));
+                    }
+                    node_idx /= 2;
+                    current = hash_node(node_idx, left, current);
+                    level += 1;
+                }
+            }
+        }
+    }
+}
+
 /// Page-store wrapper that authenticates disk-resident pages against a trusted
 /// Merkle root.
 ///
@@ -688,6 +805,45 @@ mod tests {
         let left = MerklePageStore::new(left, *b"index-meta-store").unwrap();
         let right = MerklePageStore::new(right, *b"chunk-meta-store").unwrap();
         assert_ne!(left.root(), right.root());
+    }
+
+    #[test]
+    fn streaming_root_matches_full_and_tiered_trees() {
+        let mut full_inner = MemPageStore::new(5, 8).unwrap();
+        let mut builder = TieredMerkleRootBuilder::new(STORE_ID, 5, 8).unwrap();
+        for page_idx in 0..5 {
+            let page = [page_idx as u8 + 11; 8];
+            full_inner.write_page(page_idx, &page).unwrap();
+            builder.push_page(page_idx, &page).unwrap();
+        }
+        let expected = builder.finish().unwrap();
+        let full = MerklePageStore::new(full_inner, STORE_ID).unwrap();
+        assert_eq!(expected, full.root());
+
+        let tiered_inner = filled_store(5);
+        let hash_pages =
+            TieredMerklePageStore::<MemPageStore, MemPageStore>::required_hash_pages(5, 64, 2)
+                .unwrap();
+        let hash_store = MemPageStore::new(hash_pages, 64).unwrap();
+        let tiered = TieredMerklePageStore::build(tiered_inner, hash_store, STORE_ID, 2).unwrap();
+        let mut tiered_builder = TieredMerkleRootBuilder::new(STORE_ID, 5, 8).unwrap();
+        for page_idx in 0..5 {
+            tiered_builder
+                .push_page(page_idx, &[page_idx as u8; 8])
+                .unwrap();
+        }
+        assert_eq!(tiered_builder.finish().unwrap(), tiered.root());
+    }
+
+    #[test]
+    fn streaming_root_requires_every_page_in_order() {
+        let mut builder = TieredMerkleRootBuilder::new(STORE_ID, 2, 8).unwrap();
+        let err = builder.push_page(1, &[1; 8]).unwrap_err();
+        assert!(err.to_string().contains("expected page 0"));
+
+        builder.push_page(0, &[0; 8]).unwrap();
+        let err = builder.finish().unwrap_err();
+        assert!(err.to_string().contains("received 1 of 2 pages"));
     }
 
     #[test]

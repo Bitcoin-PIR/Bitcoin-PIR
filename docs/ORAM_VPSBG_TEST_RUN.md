@@ -1,19 +1,25 @@
 # ORAM VPSBG Runbook
 
 This runbook covers the upgraded VPSBG single-machine ORAM deployment path.
-The bulk ORAM payload/meta/hash images live on local VPSBG disk. Trusted memory
-is limited to the ORAM reader state, stash, auth roots/state, and any explicitly
-configured top-level cache.
+The trusted production shape is regenerate-on-boot: immutable direct inputs and
+DB proof artifacts live on local VPSBG disk, but are copied into SEV-protected
+`/run` tmpfs before verification. Bulk ORAM payload/meta/hash pages are rebuilt
+into a disposable disk directory, while controller state, auth roots, and
+lookup metadata stay in `/run`. Trusted memory is otherwise limited to the
+ORAM reader state, stash, auth roots/state, and any explicitly configured
+top-level cache.
 
 Current target shape:
 
-- one local server hosts normal Harmony/DPF data plus ORAM images;
+- one local server hosts normal Harmony/DPF data plus regenerated ORAM images;
 - db_id 0 is the FULL checkpoint;
 - db_id 1 is the canonical DELTA;
 - OnionPIR is not part of this ORAM backend;
 - ORAM uses direct INDEX+CHUNK entry images, not the PBC-expanded cuckoo
   buckets used by Harmony/DPF;
-- startup uses explicit per-db ORAM flags rather than a global ORAM directory.
+- startup uses explicit per-db ORAM flags rather than a global ORAM directory;
+- Tier 3 startup regenerates the ORAM images from proof-bound direct inputs and
+  does not reuse mutable ORAM state across reboots.
 
 ## Current VPSBG Candidate
 
@@ -59,7 +65,7 @@ DELTA INDEX source: /home/pir/data/oram-inputs/deltas/940611_948454_canonical_20
 DELTA CHUNK source: /home/pir/data/oram-inputs/deltas/940611_948454_canonical_20260615/utxo_chunks_nodust.bin
 ```
 
-Current VPSBG state:
+Current VPSBG direct-input state:
 
 ```text
 FULL INDEX source copied and verified:
@@ -171,17 +177,21 @@ The noncanonical DELTA image is not suitable for production db_id=1 while
 Runtime status:
 
 ```text
-As of 2026-06-18 12:40 UTC, live pir-vpsbg runs the merged main binary
-with direct ORAM enabled for db_id=0 and db_id=1. DPF/Harmony query traffic
-still uses the ordinary mmap-backed PBC database path; ORAM is only the
-dedicated encrypted REQ_ORAM_LOOKUP path.
+Tier 3 UKI startup regenerates direct ORAM images for db_id=0 and db_id=1
+before opening port 8091. DPF/Harmony query traffic still uses the ordinary
+mmap-backed PBC database path; ORAM is only the dedicated encrypted
+REQ_ORAM_LOOKUP path.
 
-The VPSBG base unit has no legacy --cuckoo-oram-* flags. Direct ORAM is
-enabled by the local drop-in:
-  /etc/systemd/system/pir-vpsbg.service.d/10-direct-oram.conf
+The generated direct ORAM image directories are disposable:
+  /home/pir/data/.oram-boot/current/db0-mainnet-948454
+  /home/pir/data/.oram-boot/current/db1-delta-940611-948454
 
-The direct ORAM image directories are owned by pir:pir because ORAM reads
-mutate page/state/auth-state files.
+Boot-time build logs are written under:
+  /home/pir/data/oram-boot-logs/
+
+Trusted runtime state is held only in SEV-protected tmpfs:
+  /run/bitcoinpir-oram-state/db0-mainnet-948454
+  /run/bitcoinpir-oram-state/db1-delta-940611-948454
 ```
 
 ## Safety Boundary
@@ -499,44 +509,98 @@ The legacy `--cuckoo-oram-*` flags remain accepted for comparison runs only.
 ## Tier 3 UKI Wiring
 
 The ORAM image directories are too large and too mutable to bake into the UKI.
-For Tier 3, the UKI should instead measure:
+For Tier 3, the UKI now measures:
 
 - the ORAM-enabled `unified_server` binary;
+- the `oramctl` binary used to regenerate ORAM images;
+- the public BHTM inclusion proof for the delta starting point at height
+  940611;
 - the runit service script that starts it;
-- the explicit direct ORAM flags and image paths.
+- the proof/input paths and direct ORAM generation parameters; and
+- the explicit direct ORAM runtime flags.
 
-The bulk ORAM metadata/payload/hash/state files stay under the bind-mounted
-`/home/pir/data/oram/...` directories. The current measured startup script is:
+The bulk ORAM metadata/payload/hash files are regenerated under the bind-mounted
+`/home/pir/data/.oram-boot/current/...` directories at boot. Trusted state and
+lookup metadata are regenerated under `/run/bitcoinpir-oram-state`. The current
+measured startup script is:
 
 ```text
 scripts/dracut/97bpir-tier3-init/unified-server-run.sh
 ```
 
-It starts `/usr/local/bin/unified_server` with:
+It first copies each direct input and DB proof artifact into
+`/run/bitcoinpir-oram-inputs`, reads a fresh 32-byte ORAM seed from
+`/dev/urandom`, then runs `/usr/local/bin/oramctl build-direct` twice with
+`--strict-source-binding` and `--trusted-state-dir` against:
 
 ```text
---direct-oram-db 0=/home/pir/data/oram/checkpoints/948454-direct-pack16-z2-div2-stash128-auth
---direct-oram-db 1=/home/pir/data/oram/deltas/940611_948454_canonical-direct-pack16-z2-div2-stash128-auth
+db_id=0 source:
+  /home/pir/data/oram-inputs/checkpoints/948454
+db_id=0 proof candidates:
+  /home/pir/data/attestations/mainnet_948454_oram_sev_snp/run/
+  /home/pir/data/attested-builder-runs/mainnet_948454_oram_948454_sev_snp/
+
+db_id=1 source:
+  /home/pir/data/oram-inputs/deltas/940611_948454_canonical_20260615
+db_id=1 proof candidates:
+  /home/pir/data/attestations/delta_940611_948454_sev_snp/
+  /home/pir/data/attested-builder-runs/delta_940611_948454_delta_940611_948454_sev_snp/
+db_id=1 embedded BHTM from-leaf proof:
+  /usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
+```
+
+During each direct build, `oramctl` accumulates expected metadata and payload
+Merkle roots from the exact pages it emits, using `O(log N)` trusted memory.
+It installs the disk-backed sidecar roots only when both roots match. Thus a
+bulk-page substitution between generation and authentication-tree construction
+aborts startup; it cannot be promoted into trusted controller state.
+The measured script passes `--auth-layout sidecar` explicitly so this property
+does not depend on a future CLI default.
+
+For db_id 1, `oramctl` verifies the complete 940611 BHTM leaf proof against
+the measured pins for height, block hash, starting Core MuHash, and BHTM tree
+root. It also requires the DB build evidence to use the same starting height
+and block hash. Missing or modified proof data aborts startup before port 8091
+is opened.
+
+The tmpfs source copy is required because hashing a disk file and reopening it
+later would allow an untrusted block device to change pages between
+verification and the ORAM build. The verified tmpfs copy is the exact source
+consumed by `oramctl`. Controller state, authenticated roots, and direct
+metadata are also written straight to tmpfs so the live server never reloads
+its trust anchor from persistent disk.
+
+Then it starts `/usr/local/bin/unified_server` with:
+
+```text
+--direct-oram-db 0=/home/pir/data/.oram-boot/current/db0-mainnet-948454
+--direct-oram-db 1=/home/pir/data/.oram-boot/current/db1-delta-940611-948454
+--direct-oram-trusted-state-db 0=/run/bitcoinpir-oram-state/db0-mainnet-948454
+--direct-oram-trusted-state-db 1=/run/bitcoinpir-oram-state/db1-delta-940611-948454
 --direct-oram-drain-per-access 2
 --direct-oram-access-budget 75
 --direct-oram-cache-levels 0
 --direct-oram-auth-store
 ```
 
-Build the binary that will be copied into the UKI with ORAM support enabled:
+Build the binaries that will be copied into the UKI with ORAM support enabled:
 
 ```bash
 cd /home/pir/BitcoinPIR
 cargo build --release -p runtime --features cuckoo-oram --bin unified_server
+cd /home/pir/BitcoinPIR/vendor/bitcoinpir-oram
+cargo build --release --bin oramctl
+cd /home/pir/BitcoinPIR
 sudo ./scripts/build_uki_tier3.sh
 ```
 
 After uploading the new UKI in the VPSBG portal and rebooting, capture the new
-SEV-SNP MEASUREMENT and run:
+SEV-SNP MEASUREMENT and binary hash, then run:
 
 ```bash
-bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
-  --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
+EXPECT_MEASUREMENT=<reviewed-live-measurement> \
+EXPECT_BINARY=<reviewed-unified-server-sha256> \
+./scripts/verify_oram_tier3_deploy.sh
 
 PADDED_SLOTS=25 ./scripts/oram_vpsbg_test.sh server-smoke
 ```
@@ -544,22 +608,26 @@ PADDED_SLOTS=25 ./scripts/oram_vpsbg_test.sh server-smoke
 The attestation/communication story is unchanged by ORAM: the client verifies
 the SEV-SNP VCEK chain and launch measurement, then checks that `REPORT_DATA`
 binds the ephemeral encrypted-channel key it is about to use. Since the UKI
-measurement covers the ORAM-enabled binary plus the fixed run script, a
-successful attestation proves the encrypted ORAM request channel terminates in
-that measured code path. Database-build proofs and ORAM page authentication
-remain separate evidence layers for data correctness and disk tamper detection.
+measurement covers the ORAM-enabled binary, `oramctl`, and the fixed run
+script, a successful attestation proves the encrypted ORAM request channel
+terminates in a measured code path that first regenerated its ORAM images from
+the pinned direct inputs, fresh boot randomness, and DB proof artifacts.
+Database-build proofs and ORAM page authentication remain separate evidence
+layers for data correctness and disk tamper detection.
 
 ## Memory And Disk Planning
 
 Disk:
 
-- direct FULL ORAM image: 15G built;
-- canonical direct DELTA image: 1.9G built;
+- direct FULL ORAM boot image: about 15G regenerated;
+- canonical direct DELTA boot image: about 1.9G regenerated;
 - noncanonical direct DELTA staging image: 1.9G built during testing, now
   removed;
 - legacy PBC/cuckoo FULL image: about 42G;
 - legacy PBC/cuckoo DELTA image: about 4.8G;
-- keep at least one extra rebuild window if regenerating in place is not used.
+- keep enough free disk for one regenerated `/home/pir/data/.oram-boot/current`
+  image set; the measured startup script deletes the old boot image before
+  rebuilding because the service is not yet listening.
 
 Runtime memory:
 

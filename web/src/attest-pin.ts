@@ -183,6 +183,8 @@ export const DELTA_940611_948454_DB_PROOF_PIN: DatabaseProofPin = {
   height: 948454,
   fromBlockHashHex:
     '000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99',
+  fromMuhashHex:
+    'aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b',
   blockHashHex:
     '00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4',
   muhashHex:

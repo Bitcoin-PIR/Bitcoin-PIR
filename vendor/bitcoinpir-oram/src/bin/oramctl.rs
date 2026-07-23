@@ -7,15 +7,16 @@ use bitcoinpir_oram::{
     DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel, DirectOramEstimate,
     DirectOramSizing, DirectTableInfo, DirectTableMetadata, EmbeddedTreePageStore, Error,
     FilePageStore, FrontCachedPageStore, OramParams, PageStore, PathPageStore, Result,
-    RingStressConfig, RingStressReport, TieredMerklePageStore, TrustedBlockSource, AEAD_OVERHEAD,
-    DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS, DIRECT_INDEX_DEFAULT_LOAD_FACTOR,
-    DIRECT_INDEX_DEFAULT_SEED, DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE,
-    DIRECT_SCRIPT_HASH_SIZE, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+    RingStressConfig, RingStressReport, TieredMerklePageStore, TieredMerkleRootBuilder,
+    TrustedBlockSource, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS,
+    DIRECT_INDEX_DEFAULT_LOAD_FACTOR, DIRECT_INDEX_DEFAULT_SEED,
+    DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE, DIRECT_SCRIPT_HASH_SIZE,
+    EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -168,6 +169,10 @@ enum Command {
         /// Output directory for direct index/chunk metadata, payload, state, and direct metadata files.
         #[arg(long)]
         out_dir: PathBuf,
+        /// Optional trusted directory for controller state, auth roots, and direct lookup metadata.
+        /// Bulk ORAM images remain in --out-dir.
+        #[arg(long)]
+        trusted_state_dir: Option<PathBuf>,
         /// Which direct ORAM instance to build.
         #[arg(long, value_enum, default_value_t = DirectLevelArg::All)]
         level: DirectLevelArg,
@@ -234,6 +239,18 @@ enum Command {
         /// Expected starting MuHash for a delta build, in Bitcoin Core display byte order.
         #[arg(long)]
         expected_from_muhash: Option<String>,
+        /// BHTM Merkle inclusion proof for the starting block of a delta build.
+        #[arg(long)]
+        from_bhtm_leaf_proof: Option<PathBuf>,
+        /// Expected starting block height committed by the BHTM leaf proof.
+        #[arg(long)]
+        expected_from_height: Option<u32>,
+        /// Expected starting block hash in Bitcoin display byte order.
+        #[arg(long)]
+        expected_from_block_hash: Option<String>,
+        /// Expected BHTM tree root authenticating the starting leaf proof.
+        #[arg(long)]
+        expected_bhtm_tree_root: Option<String>,
         /// Expected SHA-256 of utxo_chunks_index_nodust.bin.
         #[arg(long)]
         expected_index_sha256: Option<String>,
@@ -745,6 +762,7 @@ fn main() -> Result<()> {
             index_file,
             chunks_file,
             out_dir,
+            trusted_state_dir,
             level,
             pack,
             leaf_divisor,
@@ -767,6 +785,10 @@ fn main() -> Result<()> {
             root_bundle_payload,
             expected_muhash,
             expected_from_muhash,
+            from_bhtm_leaf_proof,
+            expected_from_height,
+            expected_from_block_hash,
+            expected_bhtm_tree_root,
             expected_index_sha256,
             expected_chunks_sha256,
             strict_source_binding,
@@ -775,6 +797,7 @@ fn main() -> Result<()> {
                 &index_file,
                 &chunks_file,
                 &out_dir,
+                trusted_state_dir.as_deref(),
                 level,
                 pack,
                 leaf_divisor,
@@ -798,6 +821,10 @@ fn main() -> Result<()> {
                     root_bundle_payload,
                     expected_muhash.as_deref(),
                     expected_from_muhash.as_deref(),
+                    from_bhtm_leaf_proof,
+                    expected_from_height,
+                    expected_from_block_hash.as_deref(),
+                    expected_bhtm_tree_root.as_deref(),
                     expected_index_sha256.as_deref(),
                     expected_chunks_sha256.as_deref(),
                     strict_source_binding,
@@ -2406,6 +2433,10 @@ struct DirectBuildEvidenceInputs {
     root_bundle_payload: Option<PathBuf>,
     expected_muhash: Option<[u8; 32]>,
     expected_from_muhash: Option<[u8; 32]>,
+    from_bhtm_leaf_proof: Option<PathBuf>,
+    expected_from_height: Option<u32>,
+    expected_from_block_hash: Option<[u8; 32]>,
+    expected_bhtm_tree_root: Option<[u8; 32]>,
     expected_index_sha256: Option<[u8; 32]>,
     expected_chunks_sha256: Option<[u8; 32]>,
     strict_source_binding: bool,
@@ -2418,6 +2449,10 @@ impl DirectBuildEvidenceInputs {
         root_bundle_payload: Option<PathBuf>,
         expected_muhash: Option<&str>,
         expected_from_muhash: Option<&str>,
+        from_bhtm_leaf_proof: Option<PathBuf>,
+        expected_from_height: Option<u32>,
+        expected_from_block_hash: Option<&str>,
+        expected_bhtm_tree_root: Option<&str>,
         expected_index_sha256: Option<&str>,
         expected_chunks_sha256: Option<&str>,
         strict_source_binding: bool,
@@ -2429,6 +2464,12 @@ impl DirectBuildEvidenceInputs {
             expected_from_muhash: expected_from_muhash
                 .map(parse_muhash_display_hex)
                 .transpose()?,
+            from_bhtm_leaf_proof,
+            expected_from_height,
+            expected_from_block_hash: expected_from_block_hash
+                .map(parse_display_hash_hex)
+                .transpose()?,
+            expected_bhtm_tree_root: expected_bhtm_tree_root.map(parse_32_hex).transpose()?,
             expected_index_sha256: expected_index_sha256.map(parse_32_hex).transpose()?,
             expected_chunks_sha256: expected_chunks_sha256.map(parse_32_hex).transpose()?,
             strict_source_binding,
@@ -2442,6 +2483,10 @@ impl DirectBuildEvidenceInputs {
             root_bundle_payload: None,
             expected_muhash: None,
             expected_from_muhash: None,
+            from_bhtm_leaf_proof: None,
+            expected_from_height: None,
+            expected_from_block_hash: None,
+            expected_bhtm_tree_root: None,
             expected_index_sha256: None,
             expected_chunks_sha256: None,
             strict_source_binding: false,
@@ -2488,6 +2533,7 @@ struct OramBuildEvidence {
     db_certification: DbCertificationEvidence,
     db_build_evidence: Option<ArtifactEvidence>,
     root_bundle_payload: Option<ArtifactEvidence>,
+    from_bhtm_leaf_proof: Option<ArtifactEvidence>,
     source_files: DirectSourceFilesEvidence,
     oram_params: DirectOramParamsEvidence,
     output_artifacts: Vec<ArtifactEvidence>,
@@ -2561,6 +2607,223 @@ struct DirectControllerStateEvidence {
     controller_state_bincode_sha256: String,
     controller_state_bincode_bytes: u64,
     auth_roots: Option<AuthRootsEvidence>,
+}
+
+const BHTM_LEAF_PROOF_TYPE: &str = "BitcoinPIR/blockhash-to-muhash/leaf-proof/v1";
+
+#[derive(Debug, Deserialize)]
+struct BhtmLeafProofJson {
+    schema_version: u32,
+    proof_type: String,
+    height: u32,
+    block_hash_internal: String,
+    block_hash_display: String,
+    muhash: String,
+    core_muhash_internal: String,
+    core_muhash_display: String,
+    leaf_hash: String,
+    leaf_index: u64,
+    tree_size: u64,
+    tree_root: String,
+    proof: Vec<BhtmLeafProofStep>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BhtmLeafProofStep {
+    side: String,
+    hash: String,
+}
+
+fn verify_bhtm_from_leaf_proof(
+    path: &Path,
+    expected_height: u32,
+    expected_block_hash: [u8; 32],
+    expected_muhash: [u8; 32],
+    expected_tree_root: [u8; 32],
+) -> Result<()> {
+    let proof: BhtmLeafProofJson = serde_json::from_slice(&fs::read(path)?)
+        .map_err(|e| Error::InvalidInput(format!("invalid BHTM from-leaf proof JSON: {e}")))?;
+    if proof.schema_version != 1 {
+        return Err(Error::InvalidInput(format!(
+            "unsupported BHTM from-leaf schema version {}",
+            proof.schema_version
+        )));
+    }
+    if proof.proof_type != BHTM_LEAF_PROOF_TYPE {
+        return Err(Error::InvalidInput(format!(
+            "unsupported BHTM from-leaf proof type {}",
+            proof.proof_type
+        )));
+    }
+    if proof.height != expected_height {
+        return Err(Error::InvalidInput(format!(
+            "BHTM from-leaf height mismatch: expected {expected_height}, got {}",
+            proof.height
+        )));
+    }
+
+    let block_hash_internal = parse_hex_array::<32>(
+        &proof.block_hash_internal,
+        "BHTM from-leaf block_hash_internal",
+    )?;
+    expect_raw_hash(
+        "BHTM from-leaf block hash",
+        expected_block_hash,
+        block_hash_internal,
+    )?;
+    expect_hex(
+        "BHTM from-leaf block_hash_display",
+        &proof.block_hash_display,
+        &display_block_hash_hex(&block_hash_internal),
+    )?;
+
+    let muhash = parse_hex_array::<384>(&proof.muhash, "BHTM from-leaf muhash")?;
+    let core_muhash: [u8; 32] = Sha256::digest(muhash).into();
+    expect_raw_hash("BHTM from-leaf MuHash", expected_muhash, core_muhash)?;
+    expect_hex(
+        "BHTM from-leaf core_muhash_internal",
+        &proof.core_muhash_internal,
+        &hex::encode(core_muhash),
+    )?;
+    expect_hex(
+        "BHTM from-leaf core_muhash_display",
+        &proof.core_muhash_display,
+        &muhash_display_hex(&core_muhash),
+    )?;
+
+    let mut leaf_preimage = Vec::with_capacity(11 + 4 + 32 + muhash.len());
+    leaf_preimage.extend_from_slice(b"muhash-leaf");
+    leaf_preimage.extend_from_slice(&proof.height.to_le_bytes());
+    leaf_preimage.extend_from_slice(&block_hash_internal);
+    leaf_preimage.extend_from_slice(&muhash);
+    let leaf_hash = sha256_bytes(&leaf_preimage);
+    expect_hex(
+        "BHTM from-leaf leaf_hash",
+        &proof.leaf_hash,
+        &hex::encode(leaf_hash),
+    )?;
+
+    let declared_tree_root = parse_hex_array::<32>(&proof.tree_root, "BHTM tree_root")?;
+    expect_raw_hash(
+        "BHTM pinned tree root",
+        expected_tree_root,
+        declared_tree_root,
+    )?;
+    let proof_steps = proof
+        .proof
+        .iter()
+        .enumerate()
+        .map(|(idx, step)| {
+            let side = match step.side.as_str() {
+                "left" => BhtmProofSide::Left,
+                "right" => BhtmProofSide::Right,
+                other => {
+                    return Err(Error::InvalidInput(format!(
+                        "BHTM proof[{idx}].side must be left or right, got {other}"
+                    )))
+                }
+            };
+            Ok((
+                side,
+                parse_hex_array::<32>(&step.hash, "BHTM proof sibling")?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let computed_root =
+        verify_bhtm_inclusion_proof(leaf_hash, proof.leaf_index, proof.tree_size, &proof_steps)?;
+    expect_raw_hash(
+        "BHTM inclusion tree root",
+        expected_tree_root,
+        computed_root,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BhtmProofSide {
+    Left,
+    Right,
+}
+
+fn verify_bhtm_inclusion_proof(
+    leaf_hash: [u8; 32],
+    leaf_index: u64,
+    tree_size: u64,
+    proof: &[(BhtmProofSide, [u8; 32])],
+) -> Result<[u8; 32]> {
+    if tree_size == 0 || leaf_index >= tree_size {
+        return Err(Error::InvalidInput(format!(
+            "BHTM leaf index {leaf_index} is outside tree size {tree_size}"
+        )));
+    }
+    let mut proof_index = 0usize;
+    let root =
+        verify_bhtm_inclusion_range(leaf_hash, leaf_index, tree_size, proof, &mut proof_index)?;
+    if proof_index != proof.len() {
+        return Err(Error::InvalidInput(format!(
+            "unused BHTM proof steps: consumed {proof_index}, got {}",
+            proof.len()
+        )));
+    }
+    Ok(root)
+}
+
+fn verify_bhtm_inclusion_range(
+    node: [u8; 32],
+    leaf_index: u64,
+    tree_size: u64,
+    proof: &[(BhtmProofSide, [u8; 32])],
+    proof_index: &mut usize,
+) -> Result<[u8; 32]> {
+    if tree_size == 1 {
+        return Ok(node);
+    }
+    let split = largest_power_of_two_less_than(tree_size);
+    if leaf_index < split {
+        let left = verify_bhtm_inclusion_range(node, leaf_index, split, proof, proof_index)?;
+        let (side, right) = proof
+            .get(*proof_index)
+            .copied()
+            .ok_or_else(|| Error::InvalidInput("BHTM proof ended before right sibling".into()))?;
+        *proof_index += 1;
+        if side != BhtmProofSide::Right {
+            return Err(Error::InvalidInput(format!(
+                "BHTM proof step {} should be a right sibling",
+                *proof_index - 1
+            )));
+        }
+        Ok(hash_bhtm_pair(left, right))
+    } else {
+        let right = verify_bhtm_inclusion_range(
+            node,
+            leaf_index - split,
+            tree_size - split,
+            proof,
+            proof_index,
+        )?;
+        let (side, left) = proof
+            .get(*proof_index)
+            .copied()
+            .ok_or_else(|| Error::InvalidInput("BHTM proof ended before left sibling".into()))?;
+        *proof_index += 1;
+        if side != BhtmProofSide::Left {
+            return Err(Error::InvalidInput(format!(
+                "BHTM proof step {} should be a left sibling",
+                *proof_index - 1
+            )));
+        }
+        Ok(hash_bhtm_pair(left, right))
+    }
+}
+
+fn largest_power_of_two_less_than(n: u64) -> u64 {
+    1u64 << (63 - (n - 1).leading_zeros())
+}
+
+fn hash_bhtm_pair(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
+    let mut preimage = [0u8; 64];
+    preimage[..32].copy_from_slice(&left);
+    preimage[32..].copy_from_slice(&right);
+    sha256_bytes(&preimage)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2689,14 +2952,83 @@ fn validate_direct_build_binding(
     if let (Some(expected), Some(certified)) = (inputs.expected_muhash, certified) {
         expect_muhash("certified MuHash", expected, certified.to_muhash)?;
     }
-    if inputs.expected_from_muhash.is_some()
-        && certified
-            .map(|certified| certified.build_kind != CertifiedBuildKind::Delta)
-            .unwrap_or(false)
-    {
+    let delta_binding_requested = inputs.expected_from_muhash.is_some()
+        || inputs.from_bhtm_leaf_proof.is_some()
+        || inputs.expected_from_height.is_some()
+        || inputs.expected_from_block_hash.is_some()
+        || inputs.expected_bhtm_tree_root.is_some();
+    if delta_binding_requested && certified.is_none() {
         return Err(Error::InvalidInput(
-            "--expected-from-muhash was provided but certified build kind is snapshot".into(),
+            "BHTM from-leaf binding requires certified delta DB evidence".into(),
         ));
+    }
+    if let Some(certified) = certified {
+        match certified.build_kind {
+            CertifiedBuildKind::Snapshot => {
+                if inputs.expected_from_muhash.is_some()
+                    || inputs.from_bhtm_leaf_proof.is_some()
+                    || inputs.expected_from_height.is_some()
+                    || inputs.expected_from_block_hash.is_some()
+                    || inputs.expected_bhtm_tree_root.is_some()
+                {
+                    return Err(Error::InvalidInput(
+                        "BHTM from-leaf arguments are only valid for a delta build".into(),
+                    ));
+                }
+            }
+            CertifiedBuildKind::Delta => {
+                let delta_binding_requested =
+                    inputs.strict_source_binding || delta_binding_requested;
+                if !delta_binding_requested {
+                    return Ok(());
+                }
+                let expected_from_muhash = inputs.expected_from_muhash.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --expected-from-muhash".into(),
+                    )
+                })?;
+                let proof_path = inputs.from_bhtm_leaf_proof.as_deref().ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --from-bhtm-leaf-proof".into(),
+                    )
+                })?;
+                let expected_from_height = inputs.expected_from_height.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --expected-from-height".into(),
+                    )
+                })?;
+                let expected_from_block_hash =
+                    inputs.expected_from_block_hash.ok_or_else(|| {
+                        Error::InvalidInput(
+                            "strict delta source binding requires --expected-from-block-hash"
+                                .into(),
+                        )
+                    })?;
+                let expected_bhtm_tree_root = inputs.expected_bhtm_tree_root.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --expected-bhtm-tree-root".into(),
+                    )
+                })?;
+                if certified.from_anchor.height != expected_from_height {
+                    return Err(Error::InvalidInput(format!(
+                        "certified delta from-height mismatch: expected {expected_from_height}, got {}",
+                        certified.from_anchor.height
+                    )));
+                }
+                expect_raw_hash(
+                    "certified delta from-block hash",
+                    expected_from_block_hash,
+                    certified.from_anchor.block_hash,
+                )?;
+                verify_bhtm_from_leaf_proof(
+                    proof_path,
+                    expected_from_height,
+                    expected_from_block_hash,
+                    expected_from_muhash,
+                    expected_bhtm_tree_root,
+                )?;
+            }
+        }
     }
 
     if inputs.strict_source_binding {
@@ -2709,6 +3041,15 @@ fn validate_direct_build_binding(
         if inputs.expected_index_sha256.is_none() || inputs.expected_chunks_sha256.is_none() {
             return Err(Error::InvalidInput(
                 "--strict-source-binding requires --expected-index-sha256 and --expected-chunks-sha256 because DB evidence v1 does not carry direct source hashes".into(),
+            ));
+        }
+        if certified
+            .map(|certified| certified.build_kind == CertifiedBuildKind::Delta)
+            .unwrap_or(false)
+            && inputs.from_bhtm_leaf_proof.is_none()
+        {
+            return Err(Error::InvalidInput(
+                "--strict-source-binding requires a BHTM from-leaf proof for delta builds".into(),
             ));
         }
     }
@@ -3154,6 +3495,12 @@ fn parse_muhash_display_hex(input: &str) -> Result<[u8; 32]> {
     Ok(hash)
 }
 
+fn parse_display_hash_hex(input: &str) -> Result<[u8; 32]> {
+    let mut hash = parse_32_hex(input)?;
+    hash.reverse();
+    Ok(hash)
+}
+
 fn muhash_display_hex(hash: &[u8; 32]) -> String {
     let mut display = *hash;
     display.reverse();
@@ -3171,6 +3518,7 @@ fn build_direct_images(
     index_file: &Path,
     chunks_file: &Path,
     out_dir: &Path,
+    trusted_state_dir: Option<&Path>,
     level: DirectLevelArg,
     pack: usize,
     leaf_divisor: usize,
@@ -3200,7 +3548,19 @@ fn build_direct_images(
     if encrypted {
         parse_required_key(key_hex)?;
     }
+    if evidence_inputs.strict_source_binding
+        && auth_store
+        && matches!(auth_layout, AuthLayoutArg::EmbeddedTree)
+    {
+        return Err(Error::InvalidInput(
+            "strict source-bound authenticated builds currently require --auth-layout sidecar"
+                .into(),
+        ));
+    }
     fs::create_dir_all(out_dir)?;
+    if let Some(trusted_state_dir) = trusted_state_dir {
+        fs::create_dir_all(trusted_state_dir)?;
+    }
 
     let infos = direct_infos(
         index_file,
@@ -3217,6 +3577,10 @@ fn build_direct_images(
     println!("index_file={}", index_file.display());
     println!("chunks_file={}", chunks_file.display());
     println!("out_dir={}", out_dir.display());
+    println!(
+        "trusted_state_dir={}",
+        trusted_state_dir.unwrap_or(out_dir).display()
+    );
     println!("level={level:?}");
     println!("pack={pack}");
     println!("leaf_divisor={leaf_divisor}");
@@ -3261,6 +3625,7 @@ fn build_direct_images(
             .expect("direct_infos returns both levels");
         controller_states.push(build_direct_table(
             out_dir,
+            trusted_state_dir,
             info,
             pack,
             leaf_divisor,
@@ -3293,6 +3658,11 @@ fn build_direct_images(
             .as_deref()
             .map(artifact_evidence)
             .transpose()?,
+        from_bhtm_leaf_proof: evidence_inputs
+            .from_bhtm_leaf_proof
+            .as_deref()
+            .map(artifact_evidence)
+            .transpose()?,
         source_files,
         oram_params: direct_oram_params_evidence(
             pack,
@@ -3321,6 +3691,7 @@ fn build_direct_images(
 #[allow(clippy::too_many_arguments)]
 fn build_direct_table(
     out_dir: &Path,
+    trusted_state_dir: Option<&Path>,
     info: &DirectTableInfo,
     pack: usize,
     leaf_divisor: usize,
@@ -3351,7 +3722,7 @@ fn build_direct_table(
     )?
     .with_bucket_size(bucket_size)?
     .with_stash_capacity(stash_capacity)?;
-    let paths = direct_output_paths(out_dir, info.level);
+    let paths = direct_output_paths(out_dir, trusted_state_dir, info.level);
 
     match info.level {
         DirectLevel::Index => {
@@ -3434,6 +3805,14 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
         false,
         active_auth_layout(auth_store, auth_layout),
     )?;
+    let meta_store = SourceBoundPageStore::new(
+        meta_store,
+        direct_auth_store_id(info.level, CircuitAuthStoreKind::Meta),
+    )?;
+    let payload_store = SourceBoundPageStore::new(
+        payload_store,
+        direct_auth_store_id(info.level, CircuitAuthStoreKind::Payload),
+    )?;
 
     let started = Instant::now();
     let mut oram = CircuitOram::build_trusted_from_source(
@@ -3446,18 +3825,38 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
     oram.flush()?;
     metadata.save(&paths.metadata)?;
     let mut controller_state = oram.snapshot();
+    let stash_len = oram.stash_len();
+    let pending_evictions = oram.pending_evictions()?;
+    let (meta_store, payload_store) = oram.into_stores();
+    let (meta_store, expected_meta_root) = meta_store.into_parts()?;
+    let (payload_store, expected_payload_root) = payload_store.into_parts()?;
     if auth_store {
-        let auth_state = build_direct_store_auth(
-            paths,
-            info.level,
-            params,
-            encrypted,
-            key_hex,
-            cached_pages,
-            auth_layout,
-            auth_trusted_levels,
-            auth_hash_page_size,
-        )?;
+        let auth_state = match auth_layout {
+            AuthLayoutArg::Sidecar => build_direct_sidecar_store_auth_from_stores(
+                paths,
+                info.level,
+                params,
+                encrypted,
+                key_hex,
+                meta_store,
+                payload_store,
+                expected_meta_root,
+                expected_payload_root,
+                auth_trusted_levels,
+                auth_hash_page_size,
+            )?,
+            AuthLayoutArg::EmbeddedTree => build_direct_store_auth(
+                paths,
+                info.level,
+                params,
+                encrypted,
+                key_hex,
+                cached_pages,
+                auth_layout,
+                auth_trusted_levels,
+                auth_hash_page_size,
+            )?,
+        };
         controller_state = controller_state.with_auth(Some(auth_state.clone()));
         save_circuit_store_auth(&auth_state, &paths.auth_state, state_key_hex)?;
     }
@@ -3497,8 +3896,8 @@ fn build_direct_table_from_source<S: TrustedBlockSource>(
         params.bucket_count() as u64 * backing_page_bytes(meta_page_plaintext_bytes, encrypted) as u64,
         params.bucket_count() as u64
             * backing_page_bytes(payload_page_plaintext_bytes, encrypted) as u64,
-        oram.stash_len(),
-        oram.pending_evictions()?,
+        stash_len,
+        pending_evictions,
         elapsed.as_millis()
     );
 
@@ -3585,7 +3984,7 @@ fn bench_direct_table(
     query_seed: [u8; 32],
     no_save: bool,
 ) -> Result<()> {
-    let paths = direct_output_paths(oram_dir, level);
+    let paths = direct_output_paths(oram_dir, None, level);
     let metadata = DirectTableMetadata::load(&paths.metadata)?;
     if metadata.level != level {
         return Err(Error::InvalidInput(format!(
@@ -4037,16 +4436,21 @@ fn circuit_output_paths(out_dir: &Path, level: CuckooLevel) -> CircuitOutputPath
     }
 }
 
-fn direct_output_paths(out_dir: &Path, level: DirectLevel) -> CircuitOutputPaths {
+fn direct_output_paths(
+    out_dir: &Path,
+    trusted_state_dir: Option<&Path>,
+    level: DirectLevel,
+) -> CircuitOutputPaths {
     let label = format!("direct-{}", level.label());
+    let trusted_state_dir = trusted_state_dir.unwrap_or(out_dir);
     CircuitOutputPaths {
         meta_image: out_dir.join(format!("{label}.meta.oram")),
         payload_image: out_dir.join(format!("{label}.payload.oram")),
         meta_hash_image: out_dir.join(format!("{label}.meta.hash.oram")),
         payload_hash_image: out_dir.join(format!("{label}.payload.hash.oram")),
-        state: out_dir.join(format!("{label}.state")),
-        auth_state: out_dir.join(format!("{label}.auth.state")),
-        metadata: out_dir.join(format!("{label}.metadata")),
+        state: trusted_state_dir.join(format!("{label}.state")),
+        auth_state: trusted_state_dir.join(format!("{label}.auth.state")),
+        metadata: trusted_state_dir.join(format!("{label}.metadata")),
     }
 }
 
@@ -5208,6 +5612,49 @@ const fn auth_plaintext_page_bytes(logical_page_bytes: usize, auth_layout: AuthL
     }
 }
 
+struct SourceBoundPageStore<S> {
+    inner: S,
+    root_builder: TieredMerkleRootBuilder,
+}
+
+impl<S: PageStore> SourceBoundPageStore<S> {
+    fn new(inner: S, store_id: [u8; 16]) -> Result<Self> {
+        let root_builder =
+            TieredMerkleRootBuilder::new(store_id, inner.page_count(), inner.page_size())?;
+        Ok(Self {
+            inner,
+            root_builder,
+        })
+    }
+
+    fn into_parts(self) -> Result<(S, [u8; 32])> {
+        Ok((self.inner, self.root_builder.finish()?))
+    }
+}
+
+impl<S: PageStore> PageStore for SourceBoundPageStore<S> {
+    fn page_size(&self) -> usize {
+        self.inner.page_size()
+    }
+
+    fn page_count(&self) -> usize {
+        self.inner.page_count()
+    }
+
+    fn read_page(&mut self, page_idx: usize, out: &mut [u8]) -> Result<()> {
+        self.inner.read_page(page_idx, out)
+    }
+
+    fn write_page(&mut self, page_idx: usize, input: &[u8]) -> Result<()> {
+        self.root_builder.push_page(page_idx, input)?;
+        self.inner.write_page(page_idx, input)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.inner.flush()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn open_circuit_file_stores(
     meta_image: &Path,
@@ -5523,6 +5970,61 @@ fn build_direct_sidecar_store_auth(
         AuthLayoutArg::Sidecar,
     )?;
 
+    build_direct_sidecar_store_auth_inner(
+        paths,
+        level,
+        params,
+        encrypted,
+        key_hex,
+        meta_store,
+        payload_store,
+        None,
+        trusted_levels,
+        hash_page_size,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_direct_sidecar_store_auth_from_stores(
+    paths: &CircuitOutputPaths,
+    level: DirectLevel,
+    params: &OramParams,
+    encrypted: bool,
+    key_hex: Option<&str>,
+    meta_store: Box<dyn PageStore>,
+    payload_store: Box<dyn PageStore>,
+    expected_meta_root: [u8; 32],
+    expected_payload_root: [u8; 32],
+    trusted_levels: usize,
+    hash_page_size: usize,
+) -> Result<CircuitStoreAuthState> {
+    build_direct_sidecar_store_auth_inner(
+        paths,
+        level,
+        params,
+        encrypted,
+        key_hex,
+        meta_store,
+        payload_store,
+        Some((expected_meta_root, expected_payload_root)),
+        trusted_levels,
+        hash_page_size,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_direct_sidecar_store_auth_inner(
+    paths: &CircuitOutputPaths,
+    level: DirectLevel,
+    params: &OramParams,
+    encrypted: bool,
+    key_hex: Option<&str>,
+    meta_store: Box<dyn PageStore>,
+    payload_store: Box<dyn PageStore>,
+    expected_roots: Option<([u8; 32], [u8; 32])>,
+    trusted_levels: usize,
+    hash_page_size: usize,
+) -> Result<CircuitStoreAuthState> {
     let meta_hash_pages = tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels)?;
     let payload_hash_pages =
         tiered_hash_pages(params.bucket_count(), hash_page_size, trusted_levels)?;
@@ -5559,15 +6061,30 @@ fn build_direct_sidecar_store_auth(
         direct_auth_store_id(level, CircuitAuthStoreKind::Payload),
         trusted_levels,
     )?;
+    if let Some((expected_meta_root, expected_payload_root)) = expected_roots {
+        if meta.root() != expected_meta_root {
+            return Err(Error::InvalidInput(format!(
+                "{} direct metadata authentication root does not match the pages emitted from the trusted source",
+                level
+            )));
+        }
+        if payload.root() != expected_payload_root {
+            return Err(Error::InvalidInput(format!(
+                "{} direct payload authentication root does not match the pages emitted from the trusted source",
+                level
+            )));
+        }
+    }
     PageStore::flush(&mut meta)?;
     PageStore::flush(&mut payload)?;
 
     println!(
-        "direct_auth_built level={} meta_hash_image={} payload_hash_image={} auth_state={} trusted_levels={} hash_page_size={} meta_hash_pages={} payload_hash_pages={} meta_trusted_hash_bytes={} payload_trusted_hash_bytes={}",
+        "direct_auth_built level={} meta_hash_image={} payload_hash_image={} auth_state={} source_bound={} trusted_levels={} hash_page_size={} meta_hash_pages={} payload_hash_pages={} meta_trusted_hash_bytes={} payload_trusted_hash_bytes={}",
         level,
         paths.meta_hash_image.display(),
         paths.payload_hash_image.display(),
         paths.auth_state.display(),
+        expected_roots.is_some(),
         trusted_levels,
         hash_page_size,
         meta_hash_pages,
@@ -5912,16 +6429,31 @@ fn parse_required_key(key_hex: Option<&str>) -> Result<[u8; 32]> {
 }
 
 fn parse_32_hex(input: &str) -> Result<[u8; 32]> {
-    let bytes = hex::decode(input)?;
-    if bytes.len() != 32 {
+    parse_hex_array::<32>(input, "hex value")
+}
+
+fn parse_hex_array<const N: usize>(input: &str, field: &str) -> Result<[u8; N]> {
+    let bytes = hex::decode(input)
+        .map_err(|e| Error::InvalidInput(format!("{field} is not valid hex: {e}")))?;
+    if bytes.len() != N {
         return Err(Error::InvalidInput(format!(
-            "expected 32-byte hex string, got {} bytes",
+            "{field} must be {N} bytes, got {}",
             bytes.len()
         )));
     }
-    let mut out = [0u8; 32];
+    let mut out = [0u8; N];
     out.copy_from_slice(&bytes);
     Ok(out)
+}
+
+fn expect_hex(field: &str, actual: &str, expected: &str) -> Result<()> {
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput(format!(
+            "{field} mismatch: expected {expected}, got {actual}"
+        )))
+    }
 }
 
 fn checksum_payload(mut checksum: u64, payload: &[u8]) -> u64 {
@@ -5937,6 +6469,64 @@ fn checksum_payload(mut checksum: u64, payload: &[u8]) -> u64 {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    #[test]
+    fn source_bound_sidecar_rejects_persisted_root_mismatch() {
+        let out = tempfile::tempdir().unwrap();
+        let params = OramParams::with_leaves(4, 16, 2)
+            .unwrap()
+            .with_bucket_size(2)
+            .unwrap();
+        let paths = direct_output_paths(out.path(), None, DirectLevel::Index);
+        let (mut meta_store, mut payload_store) = open_circuit_file_stores(
+            &paths.meta_image,
+            &paths.payload_image,
+            &params,
+            false,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+        )
+        .unwrap();
+        for page_idx in 0..params.bucket_count() {
+            meta_store
+                .write_page(
+                    page_idx,
+                    &vec![page_idx as u8; circuit_meta_page_bytes(params.bucket_size)],
+                )
+                .unwrap();
+            payload_store
+                .write_page(
+                    page_idx,
+                    &vec![
+                        page_idx as u8;
+                        circuit_payload_page_bytes(params.bucket_size, params.block_size)
+                    ],
+                )
+                .unwrap();
+        }
+        PageStore::flush(&mut meta_store).unwrap();
+        PageStore::flush(&mut payload_store).unwrap();
+
+        let err = build_direct_sidecar_store_auth_from_stores(
+            &paths,
+            DirectLevel::Index,
+            &params,
+            false,
+            None,
+            meta_store,
+            payload_store,
+            [0u8; 32],
+            [0u8; 32],
+            1,
+            64,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("authentication root does not match the pages emitted"));
+    }
 
     #[test]
     fn build_and_bench_circuit_with_auth_store_reopens() {
@@ -6067,6 +6657,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             8,
             2,
@@ -6112,6 +6703,58 @@ mod tests {
     }
 
     #[test]
+    fn build_direct_separates_trusted_state_from_bulk_images() {
+        let input = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let trusted = tempfile::tempdir().unwrap();
+        let index_file = input.path().join("utxo_chunks_index_nodust.bin");
+        let chunks_file = input.path().join("utxo_chunks_nodust.bin");
+        write_direct_index_records(&index_file, 16);
+        write_direct_chunks(&chunks_file, 16);
+
+        build_direct_images(
+            &index_file,
+            &chunks_file,
+            out.path(),
+            Some(trusted.path()),
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            true,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            DirectBuildEvidenceInputs::empty(),
+        )
+        .unwrap();
+
+        for level in ["direct-index", "direct-chunk"] {
+            assert!(out.path().join(format!("{level}.meta.oram")).exists());
+            assert!(out.path().join(format!("{level}.payload.oram")).exists());
+            assert!(out.path().join(format!("{level}.meta.hash.oram")).exists());
+            assert!(out
+                .path()
+                .join(format!("{level}.payload.hash.oram"))
+                .exists());
+            for suffix in ["state", "auth.state", "metadata"] {
+                assert!(!out.path().join(format!("{level}.{suffix}")).exists());
+                assert!(trusted.path().join(format!("{level}.{suffix}")).exists());
+            }
+        }
+    }
+
+    #[test]
     fn build_direct_strict_source_hashes_succeed() {
         let input = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
@@ -6133,6 +6776,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,
@@ -6156,6 +6800,10 @@ mod tests {
                 root_bundle_payload: Some(payload_file.clone()),
                 expected_muhash: Some(certified_muhash),
                 expected_from_muhash: None,
+                from_bhtm_leaf_proof: None,
+                expected_from_height: None,
+                expected_from_block_hash: None,
+                expected_bhtm_tree_root: None,
                 expected_index_sha256: Some(index_sha256),
                 expected_chunks_sha256: Some(chunks_sha256),
                 strict_source_binding: true,
@@ -6211,6 +6859,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,
@@ -6234,6 +6883,10 @@ mod tests {
                 root_bundle_payload: Some(payload_file),
                 expected_muhash: Some(certified_muhash),
                 expected_from_muhash: None,
+                from_bhtm_leaf_proof: None,
+                expected_from_height: None,
+                expected_from_block_hash: None,
+                expected_bhtm_tree_root: None,
                 expected_index_sha256: Some(index_sha256),
                 expected_chunks_sha256: Some(chunks_sha256),
                 strict_source_binding: true,
@@ -6268,6 +6921,7 @@ mod tests {
             &index_file,
             &chunks_file,
             out.path(),
+            None,
             DirectLevelArg::All,
             4,
             2,
@@ -6291,6 +6945,10 @@ mod tests {
                 root_bundle_payload: Some(payload_file),
                 expected_muhash: Some(expected_muhash),
                 expected_from_muhash: None,
+                from_bhtm_leaf_proof: None,
+                expected_from_height: None,
+                expected_from_block_hash: None,
+                expected_bhtm_tree_root: None,
                 expected_index_sha256: Some(index_sha256),
                 expected_chunks_sha256: Some(chunks_sha256),
                 strict_source_binding: true,
@@ -6298,6 +6956,176 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("certified MuHash mismatch"));
+    }
+
+    #[test]
+    fn verifies_bhtm_delta_from_leaf_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let proof_path = dir.path().join("from-leaf-proof.json");
+        let block_hash = [0u8; 32];
+        let (from_muhash, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_path, 0, block_hash);
+
+        verify_bhtm_from_leaf_proof(&proof_path, 0, block_hash, from_muhash, tree_root).unwrap();
+    }
+
+    #[test]
+    fn strict_delta_build_requires_and_verifies_bhtm_from_leaf() {
+        let input = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let missing_out = tempfile::tempdir().unwrap();
+        let index_file = input.path().join("utxo_chunks_index_nodust.bin");
+        let chunks_file = input.path().join("utxo_chunks_nodust.bin");
+        let root_payload_file = input.path().join("root-bundle-payload.bin");
+        let proof_file = input.path().join("from-leaf-proof.json");
+        write_direct_index_records(&index_file, 16);
+        write_direct_chunks(&chunks_file, 16);
+        let certified_muhash = numbered_hash(0x30);
+        fs::write(
+            &root_payload_file,
+            root_payload_bytes(CertifiedBuildKind::Delta, certified_muhash),
+        )
+        .unwrap();
+        let block_hash = [0u8; 32];
+        let (from_muhash, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_file, 0, block_hash);
+        let (index_sha256, _) = sha256_file(&index_file).unwrap();
+        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+        let inputs = DirectBuildEvidenceInputs {
+            db_build_evidence: None,
+            root_bundle_payload: Some(root_payload_file),
+            expected_muhash: Some(certified_muhash),
+            expected_from_muhash: Some(from_muhash),
+            from_bhtm_leaf_proof: Some(proof_file),
+            expected_from_height: Some(0),
+            expected_from_block_hash: Some(block_hash),
+            expected_bhtm_tree_root: Some(tree_root),
+            expected_index_sha256: Some(index_sha256),
+            expected_chunks_sha256: Some(chunks_sha256),
+            strict_source_binding: true,
+        };
+
+        build_direct_images(
+            &index_file,
+            &chunks_file,
+            out.path(),
+            None,
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            inputs.clone(),
+        )
+        .unwrap();
+
+        let mut missing_proof = inputs;
+        missing_proof.from_bhtm_leaf_proof = None;
+        let err = build_direct_images(
+            &index_file,
+            &chunks_file,
+            missing_out.path(),
+            None,
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            missing_proof,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("strict delta source binding requires --from-bhtm-leaf-proof"));
+    }
+
+    #[test]
+    fn rejects_bhtm_delta_from_leaf_muhash_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let proof_path = dir.path().join("from-leaf-proof.json");
+        let block_hash = [0u8; 32];
+        let (_, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_path, 0, block_hash);
+
+        let err = verify_bhtm_from_leaf_proof(&proof_path, 0, block_hash, [0u8; 32], tree_root)
+            .unwrap_err();
+        assert!(err.to_string().contains("BHTM from-leaf MuHash mismatch"));
+    }
+
+    #[test]
+    fn rejects_bhtm_delta_from_leaf_path_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        let proof_path = dir.path().join("from-leaf-proof.json");
+        let block_hash = [0u8; 32];
+        let (from_muhash, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_path, 0, block_hash);
+        let mut proof: serde_json::Value =
+            serde_json::from_slice(&fs::read(&proof_path).unwrap()).unwrap();
+        proof["proof"][0]["hash"] = serde_json::Value::String("00".repeat(32));
+        fs::write(&proof_path, serde_json::to_vec(&proof).unwrap()).unwrap();
+
+        let err = verify_bhtm_from_leaf_proof(&proof_path, 0, block_hash, from_muhash, tree_root)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("BHTM inclusion tree root mismatch"));
+    }
+
+    fn write_synthetic_bhtm_leaf_proof(
+        path: &Path,
+        height: u32,
+        block_hash_internal: [u8; 32],
+    ) -> ([u8; 32], [u8; 32]) {
+        let muhash = [0x42u8; 384];
+        let core_muhash: [u8; 32] = Sha256::digest(muhash).into();
+        let mut leaf_preimage = Vec::new();
+        leaf_preimage.extend_from_slice(b"muhash-leaf");
+        leaf_preimage.extend_from_slice(&height.to_le_bytes());
+        leaf_preimage.extend_from_slice(&block_hash_internal);
+        leaf_preimage.extend_from_slice(&muhash);
+        let leaf_hash = sha256_bytes(&leaf_preimage);
+        let sibling = [0x77u8; 32];
+        let tree_root = hash_bhtm_pair(leaf_hash, sibling);
+        let proof = serde_json::json!({
+            "schema_version": 1,
+            "proof_type": BHTM_LEAF_PROOF_TYPE,
+            "height": height,
+            "block_hash_internal": hex::encode(block_hash_internal),
+            "block_hash_display": display_block_hash_hex(&block_hash_internal),
+            "muhash": hex::encode(muhash),
+            "core_muhash_internal": hex::encode(core_muhash),
+            "core_muhash_display": muhash_display_hex(&core_muhash),
+            "leaf_hash": hex::encode(leaf_hash),
+            "leaf_index": 0,
+            "tree_size": 2,
+            "tree_root": hex::encode(tree_root),
+            "proof": [{ "level": 0, "side": "right", "hash": hex::encode(sibling) }],
+            "verified_against_tree_root": true
+        });
+        fs::write(path, serde_json::to_vec(&proof).unwrap()).unwrap();
+        (core_muhash, tree_root)
     }
 
     fn write_table(path: &Path, level: CuckooLevel, bins_per_table: u32) {
