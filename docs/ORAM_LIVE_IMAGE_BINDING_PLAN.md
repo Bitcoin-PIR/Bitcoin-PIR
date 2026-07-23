@@ -1,9 +1,27 @@
 # ORAM live-image binding
 
-Status: design for the follow-up to the static ORAM source-binding proof. This
-document deliberately separates an image's build provenance, the state opened
-by a live process, and rollback freshness. They are different claims and need
-different evidence.
+Status: regenerate-on-boot implementation is tracked by BitcoinPIR PR #70 and
+the proof-producing `oramctl` change by Bitcoin-PIR/oram PR #4. The selected
+production model discards prior mutable ORAM state and rebuilds from proof-bound
+inputs before listening. This document also retains the more complex
+persistent-lineage design for any future node that cannot afford regeneration.
+
+## Regenerate-on-boot rollout status
+
+- [x] Regenerate db 0 and db 1 ORAM images from fixed-hash direct inputs before
+      the server listens.
+- [x] Embed and verify the existing 940611 BHTM inclusion proof for the delta
+      starting MuHash, block hash, height, and pinned tree root.
+- [x] Bind the BHTM starting anchor to the attested-builder DB evidence and add
+      source/proof mutation tests.
+- [x] Require the frontend trust-chain manifest and production pin to agree on
+      `fromMuhashHex`.
+- [ ] Merge the implementation and build the final binaries from the merged
+      commit.
+- [ ] Build, archive, upload, and boot the final Tier 3 UKI.
+- [ ] Pass AMD attestation, encrypted-channel, operator-identity, db 0/db 1
+      proof, padded ORAM, and strict browser acceptance gates.
+- [ ] Publish the final binary/UKI/MEASUREMENT pins and deployment record.
 
 ## The missing link
 
@@ -178,17 +196,27 @@ Without one of these mechanisms, the precise claim is **live image consistency
 and lineage**, not global anti-rollback freshness.
 
 There is a simpler alternative when startup cost is acceptable: discard prior
-mutable ORAM state at every boot, read the immutable proof-bound cuckoo source,
-and generate a fresh ORAM image with fresh TEE randomness. In that model the
-attested claim changes to “this measured runtime generated the live ORAM from
-source identity X,” and an external monotonic counter is unnecessary. The
-archived ORAM output is then a reproducibility witness, not the byte-for-byte
-runtime image. This is the preferred recovery model already described in
-[ORAM_CRASH_CONSISTENCY.md](ORAM_CRASH_CONSISTENCY.md); the persistent lineage
-protocol above is needed only if nodes must reuse an existing large image
-across restarts.
+mutable ORAM state at every boot, read the immutable proof-bound direct source
+tables, and generate a fresh ORAM image inside the measured Tier 3 startup
+path. In that model the attested claim changes to “this measured runtime path
+generated the live ORAM from source identity X,” and an external monotonic
+counter is unnecessary. The archived ORAM output is then a reproducibility
+witness, not the byte-for-byte runtime image. This is the model implemented by
+`scripts/dracut/97bpir-tier3-init/unified-server-run.sh`; the persistent
+lineage protocol above is needed only if nodes must reuse an existing large
+image across restarts.
 
-## Delivery sequence
+For the production delta, the measured startup path also embeds and verifies
+the existing BHTM inclusion proof for height 940611. `oramctl` recomputes the
+Core MuHash from the proof's complete 384-byte MuHash, recomputes the leaf and
+Merkle path, and requires the resulting tree root, height, block hash, and
+starting MuHash to equal the reviewed UKI pins. It also requires the
+attested-builder DB evidence to name the same starting height and block hash.
+This closes the previous gap where `--expected-from-muhash` was recorded but
+not compared to certified proof material, without regenerating the expensive
+database or BHTM proof.
+
+## Persistent-reuse delivery sequence
 
 1. Inventory the ORAM file/controller format and identify the authoritative
    `CircuitStoreAuthState` roots, position map, stash, and journal boundaries;

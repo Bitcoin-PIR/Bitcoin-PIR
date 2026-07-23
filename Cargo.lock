@@ -239,7 +239,7 @@ dependencies = [
 [[package]]
 name = "bitcoinpir-oram"
 version = "0.1.0"
-source = "git+https://github.com/Bitcoin-PIR/oram.git?rev=5f366492504d8e853cbd60d25a6adbf021a78746#5f366492504d8e853cbd60d25a6adbf021a78746"
+source = "git+https://github.com/Bitcoin-PIR/oram.git?rev=618d3f03475aece9dc85fc4da3a93fa6364b067e#618d3f03475aece9dc85fc4da3a93fa6364b067e"
 dependencies = [
  "bincode",
  "chacha20poly1305",

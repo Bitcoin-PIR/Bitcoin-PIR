@@ -15,7 +15,7 @@ use bitcoinpir_oram::{
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -234,6 +234,18 @@ enum Command {
         /// Expected starting MuHash for a delta build, in Bitcoin Core display byte order.
         #[arg(long)]
         expected_from_muhash: Option<String>,
+        /// BHTM Merkle inclusion proof for the starting block of a delta build.
+        #[arg(long)]
+        from_bhtm_leaf_proof: Option<PathBuf>,
+        /// Expected starting block height committed by the BHTM leaf proof.
+        #[arg(long)]
+        expected_from_height: Option<u32>,
+        /// Expected starting block hash in Bitcoin display byte order.
+        #[arg(long)]
+        expected_from_block_hash: Option<String>,
+        /// Expected BHTM tree root authenticating the starting leaf proof.
+        #[arg(long)]
+        expected_bhtm_tree_root: Option<String>,
         /// Expected SHA-256 of utxo_chunks_index_nodust.bin.
         #[arg(long)]
         expected_index_sha256: Option<String>,
@@ -767,6 +779,10 @@ fn main() -> Result<()> {
             root_bundle_payload,
             expected_muhash,
             expected_from_muhash,
+            from_bhtm_leaf_proof,
+            expected_from_height,
+            expected_from_block_hash,
+            expected_bhtm_tree_root,
             expected_index_sha256,
             expected_chunks_sha256,
             strict_source_binding,
@@ -798,6 +814,10 @@ fn main() -> Result<()> {
                     root_bundle_payload,
                     expected_muhash.as_deref(),
                     expected_from_muhash.as_deref(),
+                    from_bhtm_leaf_proof,
+                    expected_from_height,
+                    expected_from_block_hash.as_deref(),
+                    expected_bhtm_tree_root.as_deref(),
                     expected_index_sha256.as_deref(),
                     expected_chunks_sha256.as_deref(),
                     strict_source_binding,
@@ -2406,6 +2426,10 @@ struct DirectBuildEvidenceInputs {
     root_bundle_payload: Option<PathBuf>,
     expected_muhash: Option<[u8; 32]>,
     expected_from_muhash: Option<[u8; 32]>,
+    from_bhtm_leaf_proof: Option<PathBuf>,
+    expected_from_height: Option<u32>,
+    expected_from_block_hash: Option<[u8; 32]>,
+    expected_bhtm_tree_root: Option<[u8; 32]>,
     expected_index_sha256: Option<[u8; 32]>,
     expected_chunks_sha256: Option<[u8; 32]>,
     strict_source_binding: bool,
@@ -2418,6 +2442,10 @@ impl DirectBuildEvidenceInputs {
         root_bundle_payload: Option<PathBuf>,
         expected_muhash: Option<&str>,
         expected_from_muhash: Option<&str>,
+        from_bhtm_leaf_proof: Option<PathBuf>,
+        expected_from_height: Option<u32>,
+        expected_from_block_hash: Option<&str>,
+        expected_bhtm_tree_root: Option<&str>,
         expected_index_sha256: Option<&str>,
         expected_chunks_sha256: Option<&str>,
         strict_source_binding: bool,
@@ -2429,6 +2457,12 @@ impl DirectBuildEvidenceInputs {
             expected_from_muhash: expected_from_muhash
                 .map(parse_muhash_display_hex)
                 .transpose()?,
+            from_bhtm_leaf_proof,
+            expected_from_height,
+            expected_from_block_hash: expected_from_block_hash
+                .map(parse_display_hash_hex)
+                .transpose()?,
+            expected_bhtm_tree_root: expected_bhtm_tree_root.map(parse_32_hex).transpose()?,
             expected_index_sha256: expected_index_sha256.map(parse_32_hex).transpose()?,
             expected_chunks_sha256: expected_chunks_sha256.map(parse_32_hex).transpose()?,
             strict_source_binding,
@@ -2442,6 +2476,10 @@ impl DirectBuildEvidenceInputs {
             root_bundle_payload: None,
             expected_muhash: None,
             expected_from_muhash: None,
+            from_bhtm_leaf_proof: None,
+            expected_from_height: None,
+            expected_from_block_hash: None,
+            expected_bhtm_tree_root: None,
             expected_index_sha256: None,
             expected_chunks_sha256: None,
             strict_source_binding: false,
@@ -2488,6 +2526,7 @@ struct OramBuildEvidence {
     db_certification: DbCertificationEvidence,
     db_build_evidence: Option<ArtifactEvidence>,
     root_bundle_payload: Option<ArtifactEvidence>,
+    from_bhtm_leaf_proof: Option<ArtifactEvidence>,
     source_files: DirectSourceFilesEvidence,
     oram_params: DirectOramParamsEvidence,
     output_artifacts: Vec<ArtifactEvidence>,
@@ -2561,6 +2600,223 @@ struct DirectControllerStateEvidence {
     controller_state_bincode_sha256: String,
     controller_state_bincode_bytes: u64,
     auth_roots: Option<AuthRootsEvidence>,
+}
+
+const BHTM_LEAF_PROOF_TYPE: &str = "BitcoinPIR/blockhash-to-muhash/leaf-proof/v1";
+
+#[derive(Debug, Deserialize)]
+struct BhtmLeafProofJson {
+    schema_version: u32,
+    proof_type: String,
+    height: u32,
+    block_hash_internal: String,
+    block_hash_display: String,
+    muhash: String,
+    core_muhash_internal: String,
+    core_muhash_display: String,
+    leaf_hash: String,
+    leaf_index: u64,
+    tree_size: u64,
+    tree_root: String,
+    proof: Vec<BhtmLeafProofStep>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BhtmLeafProofStep {
+    side: String,
+    hash: String,
+}
+
+fn verify_bhtm_from_leaf_proof(
+    path: &Path,
+    expected_height: u32,
+    expected_block_hash: [u8; 32],
+    expected_muhash: [u8; 32],
+    expected_tree_root: [u8; 32],
+) -> Result<()> {
+    let proof: BhtmLeafProofJson = serde_json::from_slice(&fs::read(path)?)
+        .map_err(|e| Error::InvalidInput(format!("invalid BHTM from-leaf proof JSON: {e}")))?;
+    if proof.schema_version != 1 {
+        return Err(Error::InvalidInput(format!(
+            "unsupported BHTM from-leaf schema version {}",
+            proof.schema_version
+        )));
+    }
+    if proof.proof_type != BHTM_LEAF_PROOF_TYPE {
+        return Err(Error::InvalidInput(format!(
+            "unsupported BHTM from-leaf proof type {}",
+            proof.proof_type
+        )));
+    }
+    if proof.height != expected_height {
+        return Err(Error::InvalidInput(format!(
+            "BHTM from-leaf height mismatch: expected {expected_height}, got {}",
+            proof.height
+        )));
+    }
+
+    let block_hash_internal = parse_hex_array::<32>(
+        &proof.block_hash_internal,
+        "BHTM from-leaf block_hash_internal",
+    )?;
+    expect_raw_hash(
+        "BHTM from-leaf block hash",
+        expected_block_hash,
+        block_hash_internal,
+    )?;
+    expect_hex(
+        "BHTM from-leaf block_hash_display",
+        &proof.block_hash_display,
+        &display_block_hash_hex(&block_hash_internal),
+    )?;
+
+    let muhash = parse_hex_array::<384>(&proof.muhash, "BHTM from-leaf muhash")?;
+    let core_muhash: [u8; 32] = Sha256::digest(muhash).into();
+    expect_raw_hash("BHTM from-leaf MuHash", expected_muhash, core_muhash)?;
+    expect_hex(
+        "BHTM from-leaf core_muhash_internal",
+        &proof.core_muhash_internal,
+        &hex::encode(core_muhash),
+    )?;
+    expect_hex(
+        "BHTM from-leaf core_muhash_display",
+        &proof.core_muhash_display,
+        &muhash_display_hex(&core_muhash),
+    )?;
+
+    let mut leaf_preimage = Vec::with_capacity(11 + 4 + 32 + muhash.len());
+    leaf_preimage.extend_from_slice(b"muhash-leaf");
+    leaf_preimage.extend_from_slice(&proof.height.to_le_bytes());
+    leaf_preimage.extend_from_slice(&block_hash_internal);
+    leaf_preimage.extend_from_slice(&muhash);
+    let leaf_hash = sha256_bytes(&leaf_preimage);
+    expect_hex(
+        "BHTM from-leaf leaf_hash",
+        &proof.leaf_hash,
+        &hex::encode(leaf_hash),
+    )?;
+
+    let declared_tree_root = parse_hex_array::<32>(&proof.tree_root, "BHTM tree_root")?;
+    expect_raw_hash(
+        "BHTM pinned tree root",
+        expected_tree_root,
+        declared_tree_root,
+    )?;
+    let proof_steps = proof
+        .proof
+        .iter()
+        .enumerate()
+        .map(|(idx, step)| {
+            let side = match step.side.as_str() {
+                "left" => BhtmProofSide::Left,
+                "right" => BhtmProofSide::Right,
+                other => {
+                    return Err(Error::InvalidInput(format!(
+                        "BHTM proof[{idx}].side must be left or right, got {other}"
+                    )))
+                }
+            };
+            Ok((
+                side,
+                parse_hex_array::<32>(&step.hash, "BHTM proof sibling")?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let computed_root =
+        verify_bhtm_inclusion_proof(leaf_hash, proof.leaf_index, proof.tree_size, &proof_steps)?;
+    expect_raw_hash(
+        "BHTM inclusion tree root",
+        expected_tree_root,
+        computed_root,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BhtmProofSide {
+    Left,
+    Right,
+}
+
+fn verify_bhtm_inclusion_proof(
+    leaf_hash: [u8; 32],
+    leaf_index: u64,
+    tree_size: u64,
+    proof: &[(BhtmProofSide, [u8; 32])],
+) -> Result<[u8; 32]> {
+    if tree_size == 0 || leaf_index >= tree_size {
+        return Err(Error::InvalidInput(format!(
+            "BHTM leaf index {leaf_index} is outside tree size {tree_size}"
+        )));
+    }
+    let mut proof_index = 0usize;
+    let root =
+        verify_bhtm_inclusion_range(leaf_hash, leaf_index, tree_size, proof, &mut proof_index)?;
+    if proof_index != proof.len() {
+        return Err(Error::InvalidInput(format!(
+            "unused BHTM proof steps: consumed {proof_index}, got {}",
+            proof.len()
+        )));
+    }
+    Ok(root)
+}
+
+fn verify_bhtm_inclusion_range(
+    node: [u8; 32],
+    leaf_index: u64,
+    tree_size: u64,
+    proof: &[(BhtmProofSide, [u8; 32])],
+    proof_index: &mut usize,
+) -> Result<[u8; 32]> {
+    if tree_size == 1 {
+        return Ok(node);
+    }
+    let split = largest_power_of_two_less_than(tree_size);
+    if leaf_index < split {
+        let left = verify_bhtm_inclusion_range(node, leaf_index, split, proof, proof_index)?;
+        let (side, right) = proof
+            .get(*proof_index)
+            .copied()
+            .ok_or_else(|| Error::InvalidInput("BHTM proof ended before right sibling".into()))?;
+        *proof_index += 1;
+        if side != BhtmProofSide::Right {
+            return Err(Error::InvalidInput(format!(
+                "BHTM proof step {} should be a right sibling",
+                *proof_index - 1
+            )));
+        }
+        Ok(hash_bhtm_pair(left, right))
+    } else {
+        let right = verify_bhtm_inclusion_range(
+            node,
+            leaf_index - split,
+            tree_size - split,
+            proof,
+            proof_index,
+        )?;
+        let (side, left) = proof
+            .get(*proof_index)
+            .copied()
+            .ok_or_else(|| Error::InvalidInput("BHTM proof ended before left sibling".into()))?;
+        *proof_index += 1;
+        if side != BhtmProofSide::Left {
+            return Err(Error::InvalidInput(format!(
+                "BHTM proof step {} should be a left sibling",
+                *proof_index - 1
+            )));
+        }
+        Ok(hash_bhtm_pair(left, right))
+    }
+}
+
+fn largest_power_of_two_less_than(n: u64) -> u64 {
+    1u64 << (63 - (n - 1).leading_zeros())
+}
+
+fn hash_bhtm_pair(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
+    let mut preimage = [0u8; 64];
+    preimage[..32].copy_from_slice(&left);
+    preimage[32..].copy_from_slice(&right);
+    sha256_bytes(&preimage)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2689,14 +2945,83 @@ fn validate_direct_build_binding(
     if let (Some(expected), Some(certified)) = (inputs.expected_muhash, certified) {
         expect_muhash("certified MuHash", expected, certified.to_muhash)?;
     }
-    if inputs.expected_from_muhash.is_some()
-        && certified
-            .map(|certified| certified.build_kind != CertifiedBuildKind::Delta)
-            .unwrap_or(false)
-    {
+    let delta_binding_requested = inputs.expected_from_muhash.is_some()
+        || inputs.from_bhtm_leaf_proof.is_some()
+        || inputs.expected_from_height.is_some()
+        || inputs.expected_from_block_hash.is_some()
+        || inputs.expected_bhtm_tree_root.is_some();
+    if delta_binding_requested && certified.is_none() {
         return Err(Error::InvalidInput(
-            "--expected-from-muhash was provided but certified build kind is snapshot".into(),
+            "BHTM from-leaf binding requires certified delta DB evidence".into(),
         ));
+    }
+    if let Some(certified) = certified {
+        match certified.build_kind {
+            CertifiedBuildKind::Snapshot => {
+                if inputs.expected_from_muhash.is_some()
+                    || inputs.from_bhtm_leaf_proof.is_some()
+                    || inputs.expected_from_height.is_some()
+                    || inputs.expected_from_block_hash.is_some()
+                    || inputs.expected_bhtm_tree_root.is_some()
+                {
+                    return Err(Error::InvalidInput(
+                        "BHTM from-leaf arguments are only valid for a delta build".into(),
+                    ));
+                }
+            }
+            CertifiedBuildKind::Delta => {
+                let delta_binding_requested =
+                    inputs.strict_source_binding || delta_binding_requested;
+                if !delta_binding_requested {
+                    return Ok(());
+                }
+                let expected_from_muhash = inputs.expected_from_muhash.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --expected-from-muhash".into(),
+                    )
+                })?;
+                let proof_path = inputs.from_bhtm_leaf_proof.as_deref().ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --from-bhtm-leaf-proof".into(),
+                    )
+                })?;
+                let expected_from_height = inputs.expected_from_height.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --expected-from-height".into(),
+                    )
+                })?;
+                let expected_from_block_hash =
+                    inputs.expected_from_block_hash.ok_or_else(|| {
+                        Error::InvalidInput(
+                            "strict delta source binding requires --expected-from-block-hash"
+                                .into(),
+                        )
+                    })?;
+                let expected_bhtm_tree_root = inputs.expected_bhtm_tree_root.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "strict delta source binding requires --expected-bhtm-tree-root".into(),
+                    )
+                })?;
+                if certified.from_anchor.height != expected_from_height {
+                    return Err(Error::InvalidInput(format!(
+                        "certified delta from-height mismatch: expected {expected_from_height}, got {}",
+                        certified.from_anchor.height
+                    )));
+                }
+                expect_raw_hash(
+                    "certified delta from-block hash",
+                    expected_from_block_hash,
+                    certified.from_anchor.block_hash,
+                )?;
+                verify_bhtm_from_leaf_proof(
+                    proof_path,
+                    expected_from_height,
+                    expected_from_block_hash,
+                    expected_from_muhash,
+                    expected_bhtm_tree_root,
+                )?;
+            }
+        }
     }
 
     if inputs.strict_source_binding {
@@ -2709,6 +3034,15 @@ fn validate_direct_build_binding(
         if inputs.expected_index_sha256.is_none() || inputs.expected_chunks_sha256.is_none() {
             return Err(Error::InvalidInput(
                 "--strict-source-binding requires --expected-index-sha256 and --expected-chunks-sha256 because DB evidence v1 does not carry direct source hashes".into(),
+            ));
+        }
+        if certified
+            .map(|certified| certified.build_kind == CertifiedBuildKind::Delta)
+            .unwrap_or(false)
+            && inputs.from_bhtm_leaf_proof.is_none()
+        {
+            return Err(Error::InvalidInput(
+                "--strict-source-binding requires a BHTM from-leaf proof for delta builds".into(),
             ));
         }
     }
@@ -3154,6 +3488,12 @@ fn parse_muhash_display_hex(input: &str) -> Result<[u8; 32]> {
     Ok(hash)
 }
 
+fn parse_display_hash_hex(input: &str) -> Result<[u8; 32]> {
+    let mut hash = parse_32_hex(input)?;
+    hash.reverse();
+    Ok(hash)
+}
+
 fn muhash_display_hex(hash: &[u8; 32]) -> String {
     let mut display = *hash;
     display.reverse();
@@ -3290,6 +3630,11 @@ fn build_direct_images(
             .transpose()?,
         root_bundle_payload: evidence_inputs
             .root_bundle_payload
+            .as_deref()
+            .map(artifact_evidence)
+            .transpose()?,
+        from_bhtm_leaf_proof: evidence_inputs
+            .from_bhtm_leaf_proof
             .as_deref()
             .map(artifact_evidence)
             .transpose()?,
@@ -5912,16 +6257,31 @@ fn parse_required_key(key_hex: Option<&str>) -> Result<[u8; 32]> {
 }
 
 fn parse_32_hex(input: &str) -> Result<[u8; 32]> {
-    let bytes = hex::decode(input)?;
-    if bytes.len() != 32 {
+    parse_hex_array::<32>(input, "hex value")
+}
+
+fn parse_hex_array<const N: usize>(input: &str, field: &str) -> Result<[u8; N]> {
+    let bytes = hex::decode(input)
+        .map_err(|e| Error::InvalidInput(format!("{field} is not valid hex: {e}")))?;
+    if bytes.len() != N {
         return Err(Error::InvalidInput(format!(
-            "expected 32-byte hex string, got {} bytes",
+            "{field} must be {N} bytes, got {}",
             bytes.len()
         )));
     }
-    let mut out = [0u8; 32];
+    let mut out = [0u8; N];
     out.copy_from_slice(&bytes);
     Ok(out)
+}
+
+fn expect_hex(field: &str, actual: &str, expected: &str) -> Result<()> {
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput(format!(
+            "{field} mismatch: expected {expected}, got {actual}"
+        )))
+    }
 }
 
 fn checksum_payload(mut checksum: u64, payload: &[u8]) -> u64 {
@@ -6156,6 +6516,10 @@ mod tests {
                 root_bundle_payload: Some(payload_file.clone()),
                 expected_muhash: Some(certified_muhash),
                 expected_from_muhash: None,
+                from_bhtm_leaf_proof: None,
+                expected_from_height: None,
+                expected_from_block_hash: None,
+                expected_bhtm_tree_root: None,
                 expected_index_sha256: Some(index_sha256),
                 expected_chunks_sha256: Some(chunks_sha256),
                 strict_source_binding: true,
@@ -6234,6 +6598,10 @@ mod tests {
                 root_bundle_payload: Some(payload_file),
                 expected_muhash: Some(certified_muhash),
                 expected_from_muhash: None,
+                from_bhtm_leaf_proof: None,
+                expected_from_height: None,
+                expected_from_block_hash: None,
+                expected_bhtm_tree_root: None,
                 expected_index_sha256: Some(index_sha256),
                 expected_chunks_sha256: Some(chunks_sha256),
                 strict_source_binding: true,
@@ -6291,6 +6659,10 @@ mod tests {
                 root_bundle_payload: Some(payload_file),
                 expected_muhash: Some(expected_muhash),
                 expected_from_muhash: None,
+                from_bhtm_leaf_proof: None,
+                expected_from_height: None,
+                expected_from_block_hash: None,
+                expected_bhtm_tree_root: None,
                 expected_index_sha256: Some(index_sha256),
                 expected_chunks_sha256: Some(chunks_sha256),
                 strict_source_binding: true,
@@ -6298,6 +6670,174 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("certified MuHash mismatch"));
+    }
+
+    #[test]
+    fn verifies_bhtm_delta_from_leaf_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let proof_path = dir.path().join("from-leaf-proof.json");
+        let block_hash = [0u8; 32];
+        let (from_muhash, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_path, 0, block_hash);
+
+        verify_bhtm_from_leaf_proof(&proof_path, 0, block_hash, from_muhash, tree_root).unwrap();
+    }
+
+    #[test]
+    fn strict_delta_build_requires_and_verifies_bhtm_from_leaf() {
+        let input = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let missing_out = tempfile::tempdir().unwrap();
+        let index_file = input.path().join("utxo_chunks_index_nodust.bin");
+        let chunks_file = input.path().join("utxo_chunks_nodust.bin");
+        let root_payload_file = input.path().join("root-bundle-payload.bin");
+        let proof_file = input.path().join("from-leaf-proof.json");
+        write_direct_index_records(&index_file, 16);
+        write_direct_chunks(&chunks_file, 16);
+        let certified_muhash = numbered_hash(0x30);
+        fs::write(
+            &root_payload_file,
+            root_payload_bytes(CertifiedBuildKind::Delta, certified_muhash),
+        )
+        .unwrap();
+        let block_hash = [0u8; 32];
+        let (from_muhash, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_file, 0, block_hash);
+        let (index_sha256, _) = sha256_file(&index_file).unwrap();
+        let (chunks_sha256, _) = sha256_file(&chunks_file).unwrap();
+        let inputs = DirectBuildEvidenceInputs {
+            db_build_evidence: None,
+            root_bundle_payload: Some(root_payload_file),
+            expected_muhash: Some(certified_muhash),
+            expected_from_muhash: Some(from_muhash),
+            from_bhtm_leaf_proof: Some(proof_file),
+            expected_from_height: Some(0),
+            expected_from_block_hash: Some(block_hash),
+            expected_bhtm_tree_root: Some(tree_root),
+            expected_index_sha256: Some(index_sha256),
+            expected_chunks_sha256: Some(chunks_sha256),
+            strict_source_binding: true,
+        };
+
+        build_direct_images(
+            &index_file,
+            &chunks_file,
+            out.path(),
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            inputs.clone(),
+        )
+        .unwrap();
+
+        let mut missing_proof = inputs;
+        missing_proof.from_bhtm_leaf_proof = None;
+        let err = build_direct_images(
+            &index_file,
+            &chunks_file,
+            missing_out.path(),
+            DirectLevelArg::All,
+            4,
+            2,
+            2,
+            128,
+            false,
+            None,
+            None,
+            0,
+            false,
+            AuthLayoutArg::Sidecar,
+            1,
+            64,
+            DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN,
+            DIRECT_INDEX_DEFAULT_HASH_FNS,
+            0.80,
+            DIRECT_INDEX_DEFAULT_SEED,
+            [10; 32],
+            missing_proof,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("strict delta source binding requires --from-bhtm-leaf-proof"));
+    }
+
+    #[test]
+    fn rejects_bhtm_delta_from_leaf_muhash_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let proof_path = dir.path().join("from-leaf-proof.json");
+        let block_hash = [0u8; 32];
+        let (_, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_path, 0, block_hash);
+
+        let err = verify_bhtm_from_leaf_proof(&proof_path, 0, block_hash, [0u8; 32], tree_root)
+            .unwrap_err();
+        assert!(err.to_string().contains("BHTM from-leaf MuHash mismatch"));
+    }
+
+    #[test]
+    fn rejects_bhtm_delta_from_leaf_path_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        let proof_path = dir.path().join("from-leaf-proof.json");
+        let block_hash = [0u8; 32];
+        let (from_muhash, tree_root) = write_synthetic_bhtm_leaf_proof(&proof_path, 0, block_hash);
+        let mut proof: serde_json::Value =
+            serde_json::from_slice(&fs::read(&proof_path).unwrap()).unwrap();
+        proof["proof"][0]["hash"] = serde_json::Value::String("00".repeat(32));
+        fs::write(&proof_path, serde_json::to_vec(&proof).unwrap()).unwrap();
+
+        let err = verify_bhtm_from_leaf_proof(&proof_path, 0, block_hash, from_muhash, tree_root)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("BHTM inclusion tree root mismatch"));
+    }
+
+    fn write_synthetic_bhtm_leaf_proof(
+        path: &Path,
+        height: u32,
+        block_hash_internal: [u8; 32],
+    ) -> ([u8; 32], [u8; 32]) {
+        let muhash = [0x42u8; 384];
+        let core_muhash: [u8; 32] = Sha256::digest(muhash).into();
+        let mut leaf_preimage = Vec::new();
+        leaf_preimage.extend_from_slice(b"muhash-leaf");
+        leaf_preimage.extend_from_slice(&height.to_le_bytes());
+        leaf_preimage.extend_from_slice(&block_hash_internal);
+        leaf_preimage.extend_from_slice(&muhash);
+        let leaf_hash = sha256_bytes(&leaf_preimage);
+        let sibling = [0x77u8; 32];
+        let tree_root = hash_bhtm_pair(leaf_hash, sibling);
+        let proof = serde_json::json!({
+            "schema_version": 1,
+            "proof_type": BHTM_LEAF_PROOF_TYPE,
+            "height": height,
+            "block_hash_internal": hex::encode(block_hash_internal),
+            "block_hash_display": display_block_hash_hex(&block_hash_internal),
+            "muhash": hex::encode(muhash),
+            "core_muhash_internal": hex::encode(core_muhash),
+            "core_muhash_display": muhash_display_hex(&core_muhash),
+            "leaf_hash": hex::encode(leaf_hash),
+            "leaf_index": 0,
+            "tree_size": 2,
+            "tree_root": hex::encode(tree_root),
+            "proof": [{ "level": 0, "side": "right", "hash": hex::encode(sibling) }],
+            "verified_against_tree_root": true
+        });
+        fs::write(path, serde_json::to_vec(&proof).unwrap()).unwrap();
+        (core_muhash, tree_root)
     }
 
     fn write_table(path: &Path, level: CuckooLevel, bins_per_table: u32) {

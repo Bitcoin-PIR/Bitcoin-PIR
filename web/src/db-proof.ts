@@ -23,6 +23,9 @@ export interface DatabaseProofPin {
   fromHeight: number;
   height: number;
   fromBlockHashHex: string;
+  /** Starting-state MuHash for a delta. It is authenticated by the separate
+   * BHTM from-leaf proof, not by database-proof v1 itself. */
+  fromMuhashHex?: string;
   blockHashHex: string;
   muhashHex: string;
   bucketSuperRootHex: string;

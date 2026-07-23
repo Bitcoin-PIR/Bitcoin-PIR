@@ -76,4 +76,4 @@ futures-util = "0.3"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "5f366492504d8e853cbd60d25a6adbf021a78746", optional = true }
+bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "618d3f03475aece9dc85fc4da3a93fa6364b067e", optional = true }

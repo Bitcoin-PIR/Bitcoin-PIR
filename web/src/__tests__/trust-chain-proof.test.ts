@@ -30,6 +30,9 @@ describe('database trust-chain proof', () => {
     expect(status.verified?.fromLeaf?.blockHashDisplayHex).toBe(
       DELTA_940611_948454_DB_PROOF_PIN.fromBlockHashHex,
     );
+    expect(status.verified?.fromLeaf?.coreMuhashDisplayHex).toBe(
+      DELTA_940611_948454_DB_PROOF_PIN.fromMuhashHex,
+    );
     expect(status.verified?.leaf.height).toBe(948454);
     expect(status.verified?.leaf.coreMuhashDisplayHex).toBe(
       DELTA_940611_948454_DB_PROOF_PIN.muhashHex,
@@ -107,6 +110,41 @@ describe('database trust-chain proof', () => {
     expect(status.state).toBe('unverified');
     expect(status.verified).toBeUndefined();
     expect(status.mismatches.some((m) => m.includes('BHTM from leaf block hash'))).toBe(true);
+  });
+
+  it('reports unverified when the delta from MuHash disagrees with its BHTM leaf and production pin', async () => {
+    const original = JSON.parse(
+      new TextDecoder().decode(await publicArtifactLoader(DEFAULT_TRUST_CHAIN_MANIFEST_PATH)),
+    );
+    original.anchor.fromMuhashHex = `00${original.anchor.fromMuhashHex.slice(2)}`;
+    const mutatedManifest = new TextEncoder().encode(JSON.stringify(original));
+
+    const status = await verifyProductionTrustChain({
+      manifestPath: DEFAULT_TRUST_CHAIN_MANIFEST_PATH,
+      expectedDbPin: DELTA_940611_948454_DB_PROOF_PIN,
+      artifactLoader: async (path) => (
+        path === DEFAULT_TRUST_CHAIN_MANIFEST_PATH ? mutatedManifest : publicArtifactLoader(path)
+      ),
+      verifyAmdSignature: false,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches.some((m) => m.includes('BHTM from leaf Core MuHash'))).toBe(true);
+    expect(status.mismatches.some((m) => m.includes('manifest delta from MuHash pin'))).toBe(true);
+  });
+
+  it('fails closed when the production delta pin omits fromMuhashHex', async () => {
+    const pin = { ...DELTA_940611_948454_DB_PROOF_PIN };
+    delete pin.fromMuhashHex;
+
+    const status = await verifyProductionTrustChain({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: pin,
+      verifyAmdSignature: false,
+    });
+
+    expect(status.state).toBe('unverified');
+    expect(status.mismatches).toContain('production DB pin is missing delta fromMuhashHex');
   });
 
   it('fails closed when a delta manifest omits the from leaf proof', async () => {
