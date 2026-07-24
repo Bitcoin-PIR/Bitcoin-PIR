@@ -28,10 +28,10 @@ jobs:
 
     steps:
       - name: Checkout BitcoinPIR
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Checkout locked proof registry commit
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: Bitcoin-PIR/proof-registry
           ref: 4e19b0bc675715c88e5c11364ac9e0236c2cb359
