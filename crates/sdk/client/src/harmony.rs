@@ -25,7 +25,7 @@
 //!      chunk ids to recover UTXO bytes.
 //!
 //! The implementation mirrors the native reference
-//! `runtime/src/bin/harmonypir_batch_e2e.rs` but fetches hints over
+//! `apps/server/src/bin/harmonypir_batch_e2e.rs` but fetches hints over
 //! the wire instead of computing them from a local mmap.
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3305,7 +3305,7 @@ impl HarmonyClient {
         // (see `build/src/build_cuckoo_generic.rs:87-90` and
         // `gen_4_build_merkle.rs:236-239`), so any one is sufficient to
         // retrieve an entry. This matches the reference Rust DPF binary
-        // (`runtime/src/bin/client.rs:246`) and every web TS client's
+        // (`apps/server/src/bin/client.rs:246`) and every web TS client's
         // single-query behavior (all reduce to `candGroups[0]` at N=1 via
         // `planRounds`). If this path is ever extended to batch multiple
         // scripthashes per HarmonyPIR round, switch to `pbc_plan_rounds` to

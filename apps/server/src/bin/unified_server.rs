@@ -4209,7 +4209,7 @@ const MAX_REASSEMBLED: usize = 64 * 1024 * 1024;
 /// Sized below 1 MiB so the message survives the Cloudflare WebSocket
 /// proxy (~1 MB ceiling — see docs/PIR1_REGISTER_KEYS_TRUNCATION.md).
 /// Mirrors `HINT_BATCH_BYTES` in
-/// `runtime/src/bin/harmonypir_hint_server.rs`.
+/// `apps/server/src/bin/harmonypir_hint_server.rs`.
 const HINT_BATCH_BYTES: usize = 768 * 1024;
 
 /// Like [`send_resp`], but when `allow_chunk` is set and the framed

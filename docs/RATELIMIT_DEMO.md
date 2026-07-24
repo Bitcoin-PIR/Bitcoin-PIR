@@ -105,9 +105,9 @@ endpoints would be served by a Lightning-backed mint after a paid invoice.
 
 | Area | File |
 |---|---|
-| Issuer + gate | [`dev-issuer/`](../dev-issuer/) (`README.md` has endpoint details) |
+| Issuer + gate | [`apps/dev-issuer/`](../apps/dev-issuer/) (`README.md` has endpoint details) |
 | WASM obtain | [`crates/sdk/wasm/src/arc.rs`](../crates/sdk/wasm/src/arc.rs), [`crates/sdk/wasm/src/cashu.rs`](../crates/sdk/wasm/src/cashu.rs) |
 | HTTP client | [`web/src/payment-client.ts`](../web/src/payment-client.ts) |
 | BAT pool | [`web/src/cashu-bat.ts`](../web/src/cashu-bat.ts), [`web/src/credential-manager.ts`](../web/src/credential-manager.ts) |
 | Demo page | [`web/ratelimit-demo.html`](../web/ratelimit-demo.html), [`web/src/ratelimit-demo.ts`](../web/src/ratelimit-demo.ts) |
-| Server gate (prod) | [`runtime/src/bin/unified_server.rs`](../runtime/src/bin/unified_server.rs) (`--require-arc` / `--require-cashu`) |
+| Server gate (prod) | [`apps/server/src/bin/unified_server.rs`](../apps/server/src/bin/unified_server.rs) (`--require-arc` / `--require-cashu`) |

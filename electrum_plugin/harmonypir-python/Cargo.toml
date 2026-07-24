@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 [features]
 default = []
 fastprp = ["harmonypir/fastprp-prp"]
-# `alf` feature dropped 2026-05-12 — see runtime/Cargo.toml note.
+# `alf` feature dropped 2026-05-12 — see apps/server/Cargo.toml note.
 
 [dependencies]
 harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "97288656b9b8cc393de7a8bc4d30d769404c2f39", default-features = false }

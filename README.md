@@ -63,9 +63,11 @@ BitcoinPIR/
 │   ├── protocol/      Shared database, channel, and server-runtime primitives
 │   ├── sdk/           Rust, native-client, server, and WASM SDK crates
 │   └── trust/         Identity, attestation, and database-proof verification
-├── runtime/           Production server and diagnostic binaries
+├── apps/
+│   ├── server/        Production server and diagnostic binaries
+│   ├── admin/         Operator CLI
+│   └── dev-issuer/    Development-only rate-limit issuer and gate
 ├── build/             Database generation pipeline
-├── bpir-admin/        Operator CLI
 ├── web/               Production browser query application
 ├── explorer/          bitcoinjs adapter
 ├── electrum_plugin/   Electrum plugin

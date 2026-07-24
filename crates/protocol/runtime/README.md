@@ -12,7 +12,7 @@ It is consumed by two callers:
   the public SDK that wraps these primitives in a fluent
   `PirServerBuilder` with TOML config, WebSocket transport, and
   graceful shutdown.
-- **`runtime/`** — the workspace-internal binary crate that owns the
+- **`apps/server/`** — the workspace-internal binary crate that owns the
   reference PIR server binaries (`unified_server`, `server`,
   `harmonypir_hint_server`, etc.) and CLI clients.
 

@@ -10,7 +10,7 @@
 ## Factual accuracy (high priority)
 - [ ] **Merkle construction details.** Verify the leaf formula `SHA256(u32le(i) || bin_content)` matches `crates/protocol/core/src/merkle.rs` (or wherever `computeBinLeafHash` lives) — in particular, confirm endianness, that the index really is `u32` not `u64`, and that there is no separator byte between index and bin content.
 - [ ] **Merkle arity = 8.** Confirm `BUCKET_MERKLE_ARITY` in `web/src/constants.ts` and the matching Rust constant.
-- [ ] **Sibling row size = 256 B = 8 × 32 B.** Cross-check against the slot_size in `runtime/src/table.rs` per-bucket Merkle loaders.
+- [ ] **Sibling row size = 256 B = 8 × 32 B.** Cross-check against the slot_size in `apps/server/src/table.rs` per-bucket Merkle loaders.
 - [ ] **Tree-tops = 9.1 MB, sibling data = 4.6 GB.** These are quoted numbers — re-measure against the current on-disk files before release. `ls -la /Volumes/Bitcoin/data/.../merkle_bucket_*`.
 - [ ] **INDEX ~565K bins, CHUNK ~1.06M bins.** Check current actual bin counts — the whitepaper now cites these for HarmonyPIR hint budget.
 - [ ] **HarmonyPIR hint budget ~530 / ~730** per group. Recompute `M = N/T = N/floor(sqrt(2N).round())` for both current bin counts.
@@ -20,11 +20,11 @@
 ## Protocol & wire format
 - [ ] **Wire codes table.** The deployment section now lists every code `0x01, 0x02, 0x04, 0x05, 0x06, 0x11, 0x21, 0x33, 0x34, 0x40–0x44, 0x51–0x56, 0x80, 0x81`. Grep `crates/protocol/runtime/src/protocol.rs` for any new codes added since and update.
 - [ ] **`db_id` byte backward compatibility.** The paper claims "requests without the trailing byte are routed to `db_id=0`". Verify this is actually true for all relevant handlers in `unified_server.rs` (INDEX_BATCH, CHUNK_BATCH, `0x33`, `0x34`).
-- [ ] **Catalog entry fields.** Make sure the paper's list of `DatabaseCatalogEntry` fields matches `runtime/src/protocol.rs` exactly (and matches `web/src/server-info.ts`).
+- [ ] **Catalog entry fields.** Make sure the paper's list of `DatabaseCatalogEntry` fields matches `apps/server/src/protocol.rs` exactly (and matches `web/src/server-info.ts`).
 - [ ] **`GET_INFO` `"databases"` array.** Re-read `server_info_json()` in `unified_server.rs` and confirm the field names (arity, level sizes, per-group roots, super-root, tree-top hash) are what the paper says.
 
 ## Section 6 (Merkle) — content pass
-- [ ] **Read Section 6 end-to-end.** Confirm the verification walk (steps 1–5) matches the actual code path in `web/src/merkle-verify-bucket.ts::verifyBucketMerkleBatchDpf` and `runtime/src/bin/client.rs`. Specifically: is the tree-top cache fetched *before* the leaf is computed, or lazily? Does the client verify the `tree_tops_hash` from `GET_INFO` or from another source?
+- [ ] **Read Section 6 end-to-end.** Confirm the verification walk (steps 1–5) matches the actual code path in `web/src/merkle-verify-bucket.ts::verifyBucketMerkleBatchDpf` and `apps/server/src/bin/client.rs`. Specifically: is the tree-top cache fetched *before* the leaf is computed, or lazily? Does the client verify the `tree_tops_hash` from `GET_INFO` or from another source?
 - [ ] **"Walk the tree, one level at a time."** Verify that the number of levels and the fetch granularity match — does the client really issue one DPF-PIR batch *per level*, or is it batched across levels?
 - [ ] **Synthetic dummies for Merkle queries.** The paper says "synthetic dummies for unused groups, exactly as in the main protocol" — confirm this is what the code does.
 - [ ] **"DPF as uniform integrity primitive."** The paper says sibling verification uses DPF even when the main data was retrieved via HarmonyPIR. Double-check this in the web HarmonyPIR path.

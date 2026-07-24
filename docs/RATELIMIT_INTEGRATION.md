@@ -45,10 +45,10 @@ A **mechanism demo**, live and working end-to-end:
 |---|---|---|
 | Server verify (ARC) | `crates/protocol/runtime/src/arc_verifier.rs` | ✅ done; real key load via `from_secret_key_file` |
 | Server verify (Cashu) | `crates/protocol/runtime/src/cashu_verifier.rs` | ✅ done (BDHKE + spent-set) |
-| Server gate | `runtime/src/bin/unified_server.rs` (`--require-arc` / `--require-cashu` / `--arc-key` / `--cashu-keyset`) | ✅ opt-in, **off in prod** |
+| Server gate | `apps/server/src/bin/unified_server.rs` (`--require-arc` / `--require-cashu` / `--arc-key` / `--cashu-keyset`) | ✅ opt-in, **off in prod** |
 | WASM obtain | `crates/sdk/wasm/src/arc.rs` (`WasmArcCredentialRequest`, `WasmArcPresentationState`), `crates/sdk/wasm/src/cashu.rs` (`WasmCashuBlind`) | ✅ done |
 | Web obtain/present | `web/src/payment-client.ts`, `cashu-bat.ts`, `credential-manager.ts`, `arc-present.ts` | ✅ done (point at issuer; HTTP) |
-| Demo issuer + gate | `dev-issuer/` (free issuance + co-located verify) | ✅ DEV ONLY; deployed `deploy/systemd/dev-issuer.service` |
+| Demo issuer + gate | `apps/dev-issuer/` (free issuance + co-located verify) | ✅ DEV ONLY; deployed `deploy/systemd/dev-issuer.service` |
 | Demo UI | `web/ratelimit-demo.html` + `web/src/ratelimit-demo.ts`; playground `app/rate-limiting/` | ✅ done |
 | **Real payment service** | `~/bitcoin-pir/payment` (axum + LDK Lightning) | ⚠️ feature-complete prototype, **NOT in git, never deployed** |
 

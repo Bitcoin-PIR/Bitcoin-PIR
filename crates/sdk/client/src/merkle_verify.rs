@@ -142,7 +142,7 @@ pub(crate) fn verify_tree_tops_super_root(
 
 /// Parse the tree-tops blob returned by `REQ_BUCKET_MERKLE_TREE_TOPS`.
 ///
-/// Wire format (matches server `runtime/src/bin/unified_server.rs` and
+/// Wire format (matches server `apps/server/src/bin/unified_server.rs` and
 /// the TS parser in `web/src/merkle-verify-bucket.ts`):
 ///
 /// ```text
@@ -227,7 +227,7 @@ pub fn parse_tree_tops(data: &[u8]) -> PirResult<Vec<TreeTop>> {
 /// * `db_id != 0`: `[4B len=2][0x34][db_id]`
 ///
 /// (Matches the backward-compatible optional-trailing-byte convention used
-/// throughout runtime/src/protocol.rs.)
+/// throughout apps/server/src/protocol.rs.)
 pub fn encode_tree_tops_request(db_id: u8) -> Vec<u8> {
     let payload: &[u8] = if db_id != 0 {
         &[REQ_BUCKET_MERKLE_TREE_TOPS, db_id]
@@ -242,7 +242,7 @@ pub fn encode_tree_tops_request(db_id: u8) -> Vec<u8> {
 
 /// Encode a `REQ_BUCKET_MERKLE_SIB_BATCH` (0x33) request.
 ///
-/// Wire layout — see `runtime/src/protocol.rs::encode_batch_query`:
+/// Wire layout — see `apps/server/src/protocol.rs::encode_batch_query`:
 ///
 /// ```text
 /// [4B total_len LE]
@@ -313,7 +313,7 @@ pub fn decode_sibling_batch(data: &[u8]) -> PirResult<SiblingResults> {
             )))
         }
     }
-    // Skip variant byte; body matches runtime/src/protocol.rs::decode_batch_result.
+    // Skip variant byte; body matches apps/server/src/protocol.rs::decode_batch_result.
     let body = &data[1..];
     if body.len() < 4 {
         return Err(PirError::Decode("sibling batch body too short".into()));

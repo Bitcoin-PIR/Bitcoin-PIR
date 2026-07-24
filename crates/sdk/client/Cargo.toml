@@ -26,7 +26,7 @@ default = ["fastprp"]
 # Enable fast PRP backend (FastPRP) for HarmonyPIR — faster per-element but slower build.
 fastprp = ["harmonypir/fastprp-prp"]
 # `alf` feature dropped 2026-05-12 — ALF panicked on small (sibling-table)
-# domains, crashed pir-vpsbg in a tight loop. See runtime/Cargo.toml note.
+# domains, crashed pir-vpsbg in a tight loop. See apps/server/Cargo.toml note.
 # Enable the real OnionPIR client. Off by default because the upstream
 # `onionpir` crate requires a C++ toolchain + cmake + Homebrew GCC on macOS
 # and pulls in the SEAL submodule. Without this feature, `OnionClient` keeps

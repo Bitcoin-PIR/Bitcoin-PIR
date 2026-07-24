@@ -17,7 +17,7 @@ pub const REQ_CHUNK_BATCH: u8 = 0x21;
 // RETIRED. They served the legacy global N-ary tree Merkle, superseded by
 // the per-bucket bin Merkle (0x33/0x34). Do not reuse these opcode values:
 // pre-removal clients may still probe them, and the OnionPIR codes were
-// deliberately placed at 0x50+ to avoid this range (see runtime/onionpir.rs).
+// deliberately placed at 0x50+ to avoid this range (see apps/server/src/onionpir.rs).
 pub const REQ_BUCKET_MERKLE_SIB_BATCH: u8 = 0x33;
 pub const REQ_BUCKET_MERKLE_TREE_TOPS: u8 = 0x34;
 

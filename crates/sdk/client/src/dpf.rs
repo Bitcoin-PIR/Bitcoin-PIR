@@ -43,7 +43,7 @@ const INDEX_SLOTS_PER_BIN: usize = 4;
 // not tracked as a constant here — the XOR'd bin content arrives from
 // the server already sized, and the two component constants are what
 // downstream code indexes against. The equivalent constant lives in
-// `runtime/src/eval.rs` for the server-side table layout.
+// `apps/server/src/eval.rs` for the server-side table layout.
 
 /// Tag size in bytes.
 const TAG_SIZE: usize = 8;
@@ -1292,7 +1292,7 @@ impl DpfClient {
         // and `gen_4_build_merkle.rs:236-239`). Any one of the 3 groups is
         // therefore sufficient to retrieve an entry. For a single-query round
         // we just pick the first group — matching the reference Rust client
-        // (`runtime/src/bin/client.rs:246`), the web TS client
+        // (`apps/server/src/bin/client.rs:246`), the web TS client
         // (`web/src/client.ts` via `planRounds` which reduces to `candGroups[0]`
         // at N=1), and the Python plugin. When this function is ever extended
         // to batch multiple scripthashes in a single DPF request (like
@@ -2633,7 +2633,7 @@ impl PirClient for DpfClient {
 
 /// Encode a batch query request.
 ///
-/// Wire format matches `runtime/src/protocol.rs::encode_batch_query`:
+/// Wire format matches `apps/server/src/protocol.rs::encode_batch_query`:
 /// ```text
 /// [4B total_len LE][1B variant]
 ///   [2B round_id LE]
@@ -2686,7 +2686,7 @@ fn encode_batch_query(
 
 /// Decode a batch response into per-group, per-key results.
 ///
-/// Wire format matches `runtime/src/protocol.rs::encode_batch_result`:
+/// Wire format matches `apps/server/src/protocol.rs::encode_batch_result`:
 /// ```text
 /// [1B variant]
 /// [2B round_id LE]

@@ -102,7 +102,7 @@ or state encryption is enabled.
 
 ## Code Witness
 
-The current Rust witness is in `runtime/src/bin/unified_server.rs`:
+The current Rust witness is in `apps/server/src/bin/unified_server.rs`:
 
 - `direct_native_lookup_slots` implements the padded-slot direct ORAM shape.
 - `direct_oram_lookup_spends_dummy_index_reads_for_empty_slots` checks that

@@ -204,7 +204,7 @@ more entropy (e.g., future FHE-layer pre-randomization).
   `0xBA7C_0010_0000_0001`) and [build/src/gen_3_onion.rs](../build/src/gen_3_onion.rs)
   (index meta, `0xBA7C_0010_0000_0002`) XOR the same snapshot/delta
   marker into their bespoke magics and append the 36/72-byte anchor.
-  [runtime/src/bin/unified_server.rs](../runtime/src/bin/unified_server.rs)
+  [apps/server/src/bin/unified_server.rs](../apps/server/src/bin/unified_server.rs)
   `read_onion_chunk_header` / `read_onion_index_meta` accept legacy + v2
   via a shared `check_onion_magic` helper.
 - **Diagnostic binaries migrated off const seeds.** `build/common.rs`

@@ -11,11 +11,11 @@ members = [
     "crates/sdk/server",
     "crates/sdk/client",
     "crates/sdk/wasm",
-    "bpir-admin",
+    "apps/admin",
     "build",
-    "runtime",
+    "apps/server",
     "block_reader",
-    "dev-issuer",
+    "apps/dev-issuer",
 ]
 exclude = ["electrum_plugin/harmonypir-python", "vendor/bitcoinpir-oram"]
 

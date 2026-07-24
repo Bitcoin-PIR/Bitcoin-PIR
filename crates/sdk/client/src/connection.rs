@@ -194,7 +194,7 @@ pub struct WsConnection {
     /// Used to consume coalesced HarmonyPIR hint batches (a server-side
     /// optimisation that flushes ~750 KB of length-prefixed hint records
     /// per WS message — see `HINT_BATCH_BYTES` in
-    /// `runtime/src/bin/unified_server.rs`). For any server that still
+    /// `apps/server/src/bin/unified_server.rs`). For any server that still
     /// emits one record per WS message, this buffer never holds residual
     /// bytes, so the path is a no-op for non-coalesced traffic.
     recv_buf: Vec<u8>,
@@ -920,7 +920,7 @@ mod tests {
     /// Server-side coalescing-then-client-side demux round-trip check.
     ///
     /// Mirrors what `send_resp_batch` produces in
-    /// `runtime/src/bin/unified_server.rs` for the no-channel case: a
+    /// `apps/server/src/bin/unified_server.rs` for the no-channel case: a
     /// `Vec` of `[4B len][body]` records concatenated back-to-back into
     /// one buffer. Demuxing must return the exact same records in
     /// order — this is the strongest argument the coalescing doesn't

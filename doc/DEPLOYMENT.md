@@ -121,7 +121,7 @@ for the full design + threat model.
 
 ### 1.4 Update Configuration
 
-Database paths are configured in `runtime/src/bin/server.rs`.
+Database paths are configured in `apps/server/src/bin/server.rs`.
 
 Build the server:
 

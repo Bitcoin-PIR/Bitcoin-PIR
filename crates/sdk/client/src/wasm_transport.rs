@@ -237,7 +237,7 @@ pub struct WasmWebSocketTransport {
     /// Leftover bytes from the last WS Binary message — populated when
     /// the message carries multiple length-prefixed records (the
     /// HarmonyPIR hint coalescing introduced 2026-05-20; see
-    /// `HINT_BATCH_BYTES` in `runtime/src/bin/unified_server.rs`).
+    /// `HINT_BATCH_BYTES` in `apps/server/src/bin/unified_server.rs`).
     /// `recv()` peels one record per call before reaching for the next
     /// WS message. For any server that emits one record per WS message,
     /// this buffer is always empty between calls, so the path is a

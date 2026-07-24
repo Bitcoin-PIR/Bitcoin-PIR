@@ -39,10 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Why this crate exists
 
-Extracted from the workspace-internal `runtime/` binary crate so that
+Extracted from the workspace-internal `apps/server/` binary crate so that
 `pir-sdk-server` can depend on a publishable library rather than on a
 `publish = false` binary crate. Both `pir-sdk-server` and the
-`runtime/` binaries now consume the same types from `pir-runtime-core`.
+`apps/server/` binaries now consume the same types from `pir-runtime-core`.
 
 🔒 PIR invariants preserved — this crate is a pure code move. It does
 not alter the wire format, slot layout, DPF evaluation, or

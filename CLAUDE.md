@@ -306,9 +306,9 @@ cost the project deliberately decided against.
   `initTracingSubscriber()`). No `WasmOnionClient` — SEAL doesn't compile
   to wasm32.
 - `pir-runtime-core` — shared server primitives (admin, attest, channel,
-  eval, handler, manifest, protocol, table). Extracted from `runtime/` as a
+  eval, handler, manifest, protocol, table). Extracted from `apps/server/` as a
   publishable lib crate.
-- `runtime/`, `build/`, `block_reader/` — internal
+- `apps/server/`, `build/`, `block_reader/` — internal
   binary crates (`publish = false`).
 
 ### Web integration

@@ -1,7 +1,7 @@
 """
 Binary protocol encoder/decoder for the Batch PIR system.
 
-Matches web/src/protocol.ts and runtime/src/protocol.rs exactly:
+Matches web/src/protocol.ts and apps/server/src/protocol.rs exactly:
   Messages are length-prefixed: [4B total_len LE][1B variant][payload...]
   Batch queries/results: [2B round_id][1B count][1B keys_per_group][per-group: [2B len][key]...]
 """
