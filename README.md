@@ -99,7 +99,7 @@ For a quick taste:
 - [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) — Production deployment guide
 - [`doc/WEB.md`](doc/WEB.md) — Web client details
 - [`doc/WALLET_INTEGRATION_ANALYSIS.md`](doc/WALLET_INTEGRATION_ANALYSIS.md) — How Bitcoin PIR integrates with existing wallets
-- [`pdf/main.pdf`](pdf/main.pdf) — Research paper with full protocol descriptions and benchmarks
+- [`Bitcoin-PIR/whitepaper`](https://github.com/Bitcoin-PIR/whitepaper) — Research paper sources, generated PDF, and benchmark material (the exact consumed revision is recorded in [`verification/locks/whitepaper.json`](verification/locks/whitepaper.json))
 
 ## License
 

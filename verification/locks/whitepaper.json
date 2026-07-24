@@ -1,0 +1,22 @@
+{
+  "schema": "BitcoinPIR/whitepaper-lock/v1",
+  "repository": "https://github.com/Bitcoin-PIR/whitepaper",
+  "commit": "a7c3417774eb4014c85502612a505120e6f22405",
+  "generatedPdf": {
+    "path": "main.pdf",
+    "sha256": "9967061004f1b1361c6bdd7a8b59c76a33d0782eb5932240748ae4765fc8eb53",
+    "pages": 42
+  },
+  "reproducibility": {
+    "sourceDateEpoch": 0,
+    "timezone": "UTC",
+    "command": "OPEN_PDF=0 ./build.sh",
+    "independentBuilds": 2,
+    "byteIdentical": true,
+    "ciRun": "https://github.com/Bitcoin-PIR/whitepaper/actions/runs/30112326827"
+  },
+  "migration": {
+    "legacyRepositoryCommit": "e7e6cfb671bf4a5009d7c1e2eb9f9ffce453e33a",
+    "legacyPdfTree": "44e6ee6d9cc50b1da0a220dd0f8e8ad91898655d"
+  }
+}
