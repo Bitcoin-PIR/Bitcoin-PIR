@@ -1,8 +1,9 @@
 # Wire round and byte inventory across PIR backends
 
-**Status:** snapshot 2026-04-29. Empirical figures for OnionPIR; computed
-figures for DPF and HarmonyPIR (no leakage-dump tool wired for them yet —
-see [§"Follow-ups"](#follow-ups)).
+**Status:** refreshed 2026-07-24. Empirical fixtures now cover DPF-PIR,
+HarmonyPIR, and OnionPIR. DPF/Harmony figures below come from fresh native
+clients querying the production db 0 layout with two deterministic not-found
+scripthashes; both transcripts are byte-identical.
 
 **Purpose:** baseline data for (a) the Oblivious-HTTP (OHTTP) migration
 feasibility study, (b) the formal-verification agent's wire-shape
@@ -19,11 +20,18 @@ run against `wss://weikeng1.bitcoinpir.org`, recorded in
 `found@h=1`, `C` = `not-found`. Post-closure all three are
 byte-identical (the simulator-property tests assert this).
 
-| Backend | Total rounds (A = B = C) | IndexMerkleSiblings | Decomposition of IndexMerkleSiblings |
+| Backend | Fresh-client recorded rounds | Query rounds after setup | IndexMerkleSiblings |
 |---|---:|---:|---|
-| **DPF-PIR** | **19** | 12 | 2 max_items_per_group × 2 servers × 3 INDEX-Merkle levels |
-| **HarmonyPIR** | **20** | 6 | 2 × 1 server × 3 levels |
-| **OnionPIR** | **10** | 2 | per-group Merkle (ARITY=120) → packs in 1 round at batch=2 |
+| **DPF-PIR** | **23** | **22** | 12 = 2 passes × 2 servers × 3 levels |
+| **HarmonyPIR** | **23** | **13** | 6 = 2 passes × 1 server × 3 levels |
+| **OnionPIR** | **10** | **5** | 2 = per-group Merkle at ARITY=120 |
+
+“Recorded round” means one `RoundProfile`; for DPF a logical two-server
+exchange contributes one entry per server. Setup is `merkle_tree_tops` for DPF;
+for Harmony it is `info`, eight `harmony_hint_refresh` records, and
+`merkle_tree_tops`; for Onion it is two `info` records, key registration, and
+two tree-top records. The production browser intentionally disconnects after
+each query, though Harmony hints may be retained in its browser cache.
 
 Pre-closure these counts diverged across A/B/C (e.g. DPF: A=33 / C=21).
 The closure work — Merkle INDEX Item-Count Symmetry, INDEX Merkle
@@ -77,7 +85,7 @@ Observations:
 - A whole steady-state query is **~26 MB on the wire**. FHE is
   expensive. Per-round bytes are dominated by BFV ciphertext size.
 
-### 2.2 DPF-PIR — computed from constants
+### 2.2 DPF-PIR — empirical, from [`web/test/fixtures/dpf_corpus.json`](../web/test/fixtures/dpf_corpus.json)
 
 DPF key bytes formula:
 `1 + 16 + 1 + 18·(n−7) + 16` (see
@@ -106,11 +114,13 @@ Main DB has `dpf_n=20` for INDEX (565K bins ⇒ 268 B/key) and
 each Merkle level emits **two** padded sibling passes. Roughly doubles
 the per-level Merkle bytes versus the formula above.
 
-**Per-server steady-state (excluding cacheable tree-tops):**
-~250 KB up / ~210 KB down. **Two servers ⇒ ~500 KB up / ~420 KB down
-per query.** Roughly 50× cheaper on the wire than OnionPIR.
+The fixture pins 23 fresh-client records: **405,563 B up / 9,570,707 B
+down**. The one tree-tops response is 9,155,389 B. Excluding that setup
+record, the measured query is **22 records, 405,558 B up / 415,318 B down**
+across both servers. This confirms the earlier response estimate and shows the
+request estimate was conservative.
 
-### 2.3 HarmonyPIR — sketched from per-group structure
+### 2.3 HarmonyPIR — empirical, from [`web/test/fixtures/harmony_corpus.json`](../web/test/fixtures/harmony_corpus.json)
 
 Per-group request payload: `T−1` sorted distinct u32 indices = `4·(T−1)`
 bytes. `T = round(√(2n))` (see
@@ -118,28 +128,22 @@ bytes. `T = round(√(2n))` (see
 For main-DB INDEX with `n ≈ 565K/K = 7,500`, `T ≈ 122` ⇒ ~488 B/group.
 Per-group response is the small XOR-cancelled answer (~64 B).
 
-Estimated steady-state numbers (1 server, warm hints, no Merkle
-padding overhead):
-- `index` round: ~37 KB request / ~5 KB response
-- `chunk` round: similar shape with K_CHUNK groups
-- `merkle_*` rounds: reuse the DPF Merkle tables (single-server), so
-  the per-round sibling bytes match the DPF Merkle column above
-- Hints: tens of MB once per `(db_id, prp_backend)`, cached in
-  IndexedDB (see `estimate_hint_size_bytes` in
-  [`crates/sdk/client/src/harmony.rs:4704`](../crates/sdk/client/src/harmony.rs))
-
-**Per-query (warm) total:** ~200–300 KB up / ~250 KB down. Same
-ballpark as DPF.
+The fresh native client records **23 rounds, 2,154,526 B up / 131,221,536 B
+down**. Setup contributes one `info`, eight hint-refresh records
+(46,067,488 B down), and one 9,155,389 B tree-tops response. Excluding those
+setup records, the measured query is **13 records, 2,153,863 B up /
+75,998,423 B down**. The previous sketch substantially underestimated the
+FHE response payloads; the empirical fixture is now authoritative.
 
 ---
 
 ## 3. Summary table
 
-| Backend | Wire rounds (multi-query collision) | Per-query bytes (warm session, not-found) |
-|---|---:|---|
-| OnionPIR | **10** | ~17.4 MB up / ~7.2 MB down (empirical) |
-| DPF-PIR | **19** | ~500 KB up / ~420 KB down (2 servers, computed) |
-| HarmonyPIR | **20** | ~200–300 KB up / ~250 KB down (1 server, computed) |
+| Backend | Fresh / post-setup records | Fresh bytes | Post-setup query bytes |
+|---|---:|---|---|
+| OnionPIR | **10 / 5** | 18.2 MB up / 7.6 MB down | protocol rounds: 17.4 MB up / 7.2 MB down |
+| DPF-PIR | **23 / 22** | 405,563 B up / 9,570,707 B down | 405,558 B up / 415,318 B down |
+| HarmonyPIR | **23 / 13** | 2,154,526 B up / 131,221,536 B down | 2,153,863 B up / 75,998,423 B down |
 
 ---
 
@@ -155,8 +159,8 @@ common relay providers:
 - Fastly OHTTP Relay: no published limit.
 
 For latency, each OHTTP exchange adds one relay → gateway → target
-RTT versus direct HTTPS. At 19 / 20 / 10 rounds today, that's
-~20–60 ms × those counts before any client-side parallelization
+RTT versus direct HTTPS. The current fresh-client record counts are
+23 / 23 / 10, before any cross-level client-side parallelization
 optimizations land.
 
 The "all Merkle levels in parallel" refactor (see [§1 wall-clock
@@ -168,7 +172,7 @@ latency improvement on DPF/Harmony.
 
 ## 5. Follow-ups
 
-### 5.1 Make DPF / HarmonyPIR numbers empirical, not computed
+### 5.1 Make DPF / HarmonyPIR numbers empirical, not computed — complete
 
 OnionPIR has
 [`crates/sdk/client/examples/onion_leakage_dump.rs`](../crates/sdk/client/examples/onion_leakage_dump.rs)
@@ -177,11 +181,9 @@ already attached for DPF and HarmonyPIR — every round goes through
 `record_round(RoundProfile { request_bytes, response_bytes, … })` (see
 [`crates/sdk/client/src/dpf.rs:560`](../crates/sdk/client/src/dpf.rs)).
 
-Action: copy `onion_leakage_dump.rs` to `dpf_leakage_dump.rs` and
-`harmony_leakage_dump.rs`, swap the client type, store fixtures under
-`web/test/fixtures/`. This validates the §2.2 and §2.3 numbers and
-gives the formal-verification agent the same JSON shape across all
-three backends.
+Completed on 2026-07-24 with `dpf_leakage_dump.rs`,
+`harmony_leakage_dump.rs`, the two checked-in fixtures, and a Vitest regression
+that pins byte-identical not-found transcripts plus exact round/byte totals.
 
 ### 5.2 All-Merkle-levels-in-parallel refactor
 
