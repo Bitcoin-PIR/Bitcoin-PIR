@@ -44,7 +44,7 @@ side, and the `ChannelManifest` commits to it from the **operator**
 side. The client checks they're the same key, and that it's the key the
 session actually handshook against.
 
-Source: `pir-identity/src/lib.rs`.
+Source: `crates/trust/identity/src/lib.rs`.
 
 ---
 

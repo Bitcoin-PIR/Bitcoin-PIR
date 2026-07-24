@@ -21,7 +21,7 @@ pir-channel = { version = "0.1.0", path = "../pir-channel" }
 # Pure crypto (Ed25519 sign/verify + canonical wire encoding) — the
 # server-side I/O wrapper (loading the identity key + cert from disk,
 # building the per-boot ChannelManifest) lives in `crate::identity`.
-pir-identity = { version = "0.1.0", path = "../pir-identity" }
+pir-identity = { version = "0.1.0", path = "../crates/trust/identity" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 memmap2 = "0.9"
 rayon = "1.10"

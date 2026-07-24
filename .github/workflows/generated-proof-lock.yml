@@ -4,14 +4,14 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pir-db-attest/**'
+      - 'crates/trust/db-attest/**'
       - 'verification/locks/generated-proofs.json'
       - 'verification/scripts/verify_generated_proofs.py'
       - '.github/workflows/generated-proof-lock.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'pir-db-attest/**'
+      - 'crates/trust/db-attest/**'
       - 'verification/locks/generated-proofs.json'
       - 'verification/scripts/verify_generated_proofs.py'
       - '.github/workflows/generated-proof-lock.yml'

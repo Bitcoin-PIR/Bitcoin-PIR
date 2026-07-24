@@ -53,10 +53,10 @@ pir-core = { version = "0.1.0", path = "../../../pir-core" }
 pir-channel = { version = "0.1.0", path = "../../../pir-channel" }
 # Attested-builder DB proof verifier. Pure parsing/hash logic; the runtime
 # server only transports proof bytes, clients decide policy.
-pir-db-attest = { path = "../../../pir-db-attest" }
+pir-db-attest = { path = "../../trust/db-attest" }
 # Operator-signed identity bundle (REQ_ANNOUNCE response parser).
 # Pure-crypto Ed25519 — compiles to wasm32 without modification.
-pir-identity = { version = "0.1.0", path = "../../../pir-identity" }
+pir-identity = { version = "0.1.0", path = "../../trust/identity" }
 # Per-handshake ephemeral seed + nonce generation in
 # `DpfClient::upgrade_to_secure_channel`. The "js" feature lets it
 # use WebCrypto on wasm32; on native it reads /dev/urandom.

@@ -3,9 +3,9 @@ resolver = "2"
 members = [
     "pir-core",
     "pir-channel",
-    "pir-identity",
-    "pir-attest-verify",
-    "pir-db-attest",
+    "crates/trust/identity",
+    "crates/trust/attest-verify",
+    "crates/trust/db-attest",
     "crates/sdk/core",
     "pir-runtime-core",
     "crates/sdk/server",

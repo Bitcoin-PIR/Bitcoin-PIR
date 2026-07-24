@@ -5,9 +5,16 @@ use std::path::Path;
 
 const UPSTREAM_COMMIT: &str = "80ad9b185760d2e36fd24baef50dd3030af8e94f";
 
+fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|path| path.join("verification/locks/rootbundle.json").is_file())
+        .expect("workspace root containing the rootbundle lock")
+}
+
 #[test]
 fn consumer_lock_matches_the_cargo_pin() {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let repo = repo_root();
     let lock: serde_json::Value = serde_json::from_slice(
         &fs::read(repo.join("verification/locks/rootbundle.json")).unwrap(),
     )
@@ -18,7 +25,7 @@ fn consumer_lock_matches_the_cargo_pin() {
         lock["golden_bundle_sha256"],
         "71c32a0dbaf5d2fad4d2778fca5c6c88f317a0606358b4c49f429d368ebcd4dc"
     );
-    let manifest = fs::read_to_string(repo.join("pir-db-attest/Cargo.toml")).unwrap();
+    let manifest = fs::read_to_string(repo.join("crates/trust/db-attest/Cargo.toml")).unwrap();
     assert!(manifest.contains(UPSTREAM_COMMIT));
 }
 
@@ -49,7 +56,7 @@ fn upstream_release_golden_bundle_decodes_reencodes_and_verifies() {
 
 #[test]
 fn retained_production_payloads_still_decode_byte_for_byte() {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let repo = repo_root();
     for (relative, expected_sha256) in [(
         "web/public/proofs/oram-source/mainnet_948454/db/root-bundle-payload.bin",
         "cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f",
