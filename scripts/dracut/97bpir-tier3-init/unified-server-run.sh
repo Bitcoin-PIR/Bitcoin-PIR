@@ -173,6 +173,7 @@ build_direct_oram() {
     expected_from_muhash="$7"
     expected_index_sha="$8"
     expected_chunks_sha="$9"
+    trusted_state_dir="${10}"
     log_file="$ORAM_BUILD_LOG_DIR/${db_label}.build-direct.log"
     seed_hex="$(random_seed_hex)"
 
@@ -194,7 +195,6 @@ build_direct_oram() {
     [ -n "$expected_chunks_sha" ] || fatal "$db_label direct chunks hash pin missing"
 
     trusted_input_dir="$TRUSTED_INPUT_ROOT/$db_label"
-    trusted_state_dir="$TRUSTED_STATE_ROOT/$db_label"
     mkdir -p "$trusted_input_dir" "$trusted_state_dir" \
         || fatal "failed to create trusted tmpfs directories for $db_label"
     : >"$log_file" || fatal "failed to create $log_file"
@@ -285,6 +285,22 @@ build_direct_oram() {
     echo "[unified-server-run] regenerated $db_label direct ORAM; log: $log_file" >&2
 }
 
+verify_direct_oram_publish() {
+    published_dir="$1"
+    trusted_state_dir="$2"
+    db_label="$3"
+    for level in direct-index direct-chunk; do
+        require_file "$published_dir/$level.meta.oram"
+        require_file "$published_dir/$level.payload.oram"
+        require_file "$published_dir/$level.meta.hash.oram"
+        require_file "$published_dir/$level.payload.hash.oram"
+        require_file "$trusted_state_dir/$level.state"
+        require_file "$trusted_state_dir/$level.auth.state"
+        require_file "$trusted_state_dir/$level.metadata"
+    done
+    echo "[unified-server-run] verified published $db_label direct ORAM paths" >&2
+}
+
 [ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 [ -x "$UNIFIED_SERVER" ] || fatal "$UNIFIED_SERVER missing from UKI"
 require_file "$DELTA_BHTM_FROM_LEAF_PROOF"
@@ -331,12 +347,16 @@ DELTA_ROOT_BUNDLE="$(first_existing_file \
 
 build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
     "$MAINNET_DB_EVIDENCE" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
-    "$MAINNET_EXPECTED_INDEX_SHA256" "$MAINNET_EXPECTED_CHUNKS_SHA256"
+    "$MAINNET_EXPECTED_INDEX_SHA256" "$MAINNET_EXPECTED_CHUNKS_SHA256" \
+    "$ORAM_FULL_TRUSTED_STATE_DIR"
 build_direct_oram delta-940611-948454 "$DELTA_SOURCE_DIR" "$ORAM_STAGING_DIR/db1-delta-940611-948454" \
     "$DELTA_DB_EVIDENCE" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
-    "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256"
+    "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256" \
+    "$ORAM_DELTA_TRUSTED_STATE_DIR"
 
 mv "$ORAM_STAGING_DIR" "$ORAM_CURRENT_DIR" || fatal "failed to publish regenerated ORAM image"
+verify_direct_oram_publish "$ORAM_FULL_DIR" "$ORAM_FULL_TRUSTED_STATE_DIR" mainnet-948454
+verify_direct_oram_publish "$ORAM_DELTA_DIR" "$ORAM_DELTA_TRUSTED_STATE_DIR" delta-940611-948454
 safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
 trap - EXIT
 
