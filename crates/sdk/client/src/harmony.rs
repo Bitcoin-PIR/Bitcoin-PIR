@@ -84,6 +84,98 @@ enum V2HintFetchOutcome {
     PoolUnavailable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum V2KeyPreambleOutcome {
+    Key {
+        prp_backend: u8,
+        prp_key: [u8; 16],
+    },
+    PoolUnavailable,
+}
+
+fn v2_record_body<'a>(frame: &'a [u8], label: &str) -> PirResult<&'a [u8]> {
+    if frame.len() < 4 {
+        return Err(PirError::Protocol(format!(
+            "{}: truncated record length prefix",
+            label
+        )));
+    }
+    let declared = u32::from_le_bytes(frame[..4].try_into().expect("length checked")) as usize;
+    let actual = frame.len() - 4;
+    if declared != actual {
+        return Err(PirError::Protocol(format!(
+            "{}: record length mismatch (declared {}, actual {})",
+            label, declared, actual
+        )));
+    }
+    Ok(&frame[4..])
+}
+
+fn parse_v2_key_preamble(
+    frame: &[u8],
+    expected_total_groups: u8,
+    label: &str,
+) -> PirResult<V2KeyPreambleOutcome> {
+    let body = v2_record_body(frame, label)?;
+    match body.first().copied() {
+        Some(RESP_ERROR) => {
+            let reason = String::from_utf8_lossy(&body[1..]).to_string();
+            let error = PirError::ServerError(reason);
+            if is_v2_hint_pool_unavailable_error(&error) {
+                Ok(V2KeyPreambleOutcome::PoolUnavailable)
+            } else {
+                Err(error)
+            }
+        }
+        Some(RESP_HARMONY_HINTS_KEY) => {
+            // Exact layout: variant, backend, all-levels sentinel, total
+            // groups, and the 16-byte server-generated PRP key.
+            if body.len() != 20 {
+                return Err(PirError::Protocol(format!(
+                    "{}: key preamble has {} bytes, expected 20",
+                    label,
+                    body.len()
+                )));
+            }
+            if body[2] != 0xFF {
+                return Err(PirError::Protocol(format!(
+                    "{}: key preamble level is 0x{:02x}, expected 0xff",
+                    label, body[2]
+                )));
+            }
+            if body[3] != expected_total_groups {
+                return Err(PirError::Protocol(format!(
+                    "{}: key preamble declares {} groups, expected {}",
+                    label, body[3], expected_total_groups
+                )));
+            }
+            let mut prp_key = [0u8; 16];
+            prp_key.copy_from_slice(&body[4..20]);
+            Ok(V2KeyPreambleOutcome::Key {
+                prp_backend: body[1],
+                prp_key,
+            })
+        }
+        other => Err(PirError::Protocol(format!(
+            "{}: expected key preamble (0x{:02x}), got 0x{:02x}",
+            label,
+            RESP_HARMONY_HINTS_KEY,
+            other.unwrap_or(0),
+        ))),
+    }
+}
+
+fn validate_v2_terminal(frame: &[u8], label: &str) -> PirResult<()> {
+    let body = v2_record_body(frame, label)?;
+    if body != [RESP_HARMONY_HINTS, 0xFF] {
+        return Err(PirError::Protocol(format!(
+            "{}: invalid terminal sentinel (expected [0x{:02x}, 0xff], got {:02x?})",
+            label, RESP_HARMONY_HINTS, body
+        )));
+    }
+    Ok(())
+}
+
 fn should_use_v2_hint_pool(use_v2_protocol: bool, db_id: u8) -> bool {
     use_v2_protocol && db_id == 0
 }
@@ -1842,6 +1934,15 @@ impl HarmonyClient {
         let k_chunk = db_info.chunk_k as usize;
         let total = (k_index + k_chunk) as u32;
         let db_id = db_info.db_id;
+        let expected_total_groups = u8::try_from(k_index + k_chunk).map_err(|_| {
+            PirError::Protocol(format!(
+                "V2 hint group count {} exceeds wire limit",
+                k_index + k_chunk
+            ))
+        })?;
+        let mut conn = self.hint_conn.take().ok_or(PirError::NotConnected)?;
+
+        let result = async {
 
         // ── 1. Send V2 request ──────────────────────────────────────────
         let mut payload = Vec::with_capacity(4);
@@ -1854,38 +1955,23 @@ impl HarmonyClient {
         let request = crate::protocol::encode_request(REQ_HARMONY_HINTS_V2, &payload);
         let request_bytes = request.len() as u64;
 
-        let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
         conn.send(request).await?;
 
         // ── 2. Receive key preamble ─────────────────────────────────────
         let preamble = conn.recv().await?;
-        if preamble.len() < 5 {
-            return Err(PirError::Protocol("truncated V2 key preamble".into()));
-        }
-        let body = &preamble[4..]; // strip outer length prefix
-        if body.is_empty() || body[0] != RESP_HARMONY_HINTS_KEY {
-            if !body.is_empty() && body[0] == RESP_ERROR {
-                let reason = String::from_utf8_lossy(&body[1..]).to_string();
-                let error = PirError::ServerError(reason);
-                if is_v2_hint_pool_unavailable_error(&error) {
-                    return Ok(V2HintFetchOutcome::PoolUnavailable);
-                }
-                return Err(error);
+        let (prp_backend, prp_key) = match parse_v2_key_preamble(
+            &preamble,
+            expected_total_groups,
+            "V2 full",
+        )? {
+            V2KeyPreambleOutcome::Key {
+                prp_backend,
+                prp_key,
+            } => (prp_backend, prp_key),
+            V2KeyPreambleOutcome::PoolUnavailable => {
+                return Ok(V2HintFetchOutcome::PoolUnavailable);
             }
-            return Err(PirError::Protocol(format!(
-                "expected V2 key preamble (0x{:02x}), got 0x{:02x}",
-                RESP_HARMONY_HINTS_KEY,
-                body.first().copied().unwrap_or(0),
-            )));
-        }
-        // Layout: [RESP_HARMONY_HINTS_KEY=0x44][1B prp_backend][1B level_sentinel=0xFF][1B total_groups][16B prp_key]
-        if body.len() < 20 {
-            return Err(PirError::Protocol("V2 key preamble truncated".into()));
-        }
-        let prp_backend = body[1];
-        // body[2] = level_sentinel, body[3] = total_groups (informational)
-        let mut prp_key = [0u8; 16];
-        prp_key.copy_from_slice(&body[4..20]);
+        };
 
         self.prp_backend = prp_backend;
         self.master_prp_key = prp_key;
@@ -1923,13 +2009,11 @@ impl HarmonyClient {
         // ── 4. Receive per-group INDEX frames ───────────────────────────
         let mut done: u32 = 0;
         let mut total_response_bytes: u64 = 0;
+        let mut seen_index = vec![false; k_index];
         for _g in 0..k_index {
             let msg = conn.recv().await?;
             total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
-            if msg.len() < 5 {
-                return Err(PirError::Protocol("truncated V2 hint frame".into()));
-            }
-            let body = &msg[4..];
+            let body = v2_record_body(&msg, "V2 full INDEX hint")?;
             if body.is_empty() {
                 return Err(PirError::Protocol("empty V2 hint frame body".into()));
             }
@@ -1948,6 +2032,17 @@ impl HarmonyClient {
             }
             let group_id = body[1];
             let hints_data = &body[14..];
+
+            let seen = seen_index.get_mut(group_id as usize).ok_or_else(|| {
+                PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
+            })?;
+            if *seen {
+                return Err(PirError::Protocol(format!(
+                    "V2: duplicate INDEX group {}",
+                    group_id
+                )));
+            }
+            *seen = true;
 
             let group = self.index_groups.get_mut(&group_id).ok_or_else(|| {
                 PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
@@ -1963,13 +2058,11 @@ impl HarmonyClient {
         }
 
         // ── 5. Receive per-group CHUNK frames ───────────────────────────
+        let mut seen_chunk = vec![false; k_chunk];
         for _g in 0..k_chunk {
             let msg = conn.recv().await?;
             total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
-            if msg.len() < 5 {
-                return Err(PirError::Protocol("truncated V2 hint frame".into()));
-            }
-            let body = &msg[4..];
+            let body = v2_record_body(&msg, "V2 full CHUNK hint")?;
             if body.is_empty() {
                 return Err(PirError::Protocol("empty V2 hint frame body".into()));
             }
@@ -1988,6 +2081,17 @@ impl HarmonyClient {
             }
             let group_id = body[1];
             let hints_data = &body[14..];
+
+            let seen = seen_chunk.get_mut(group_id as usize).ok_or_else(|| {
+                PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
+            })?;
+            if *seen {
+                return Err(PirError::Protocol(format!(
+                    "V2: duplicate CHUNK group {}",
+                    group_id
+                )));
+            }
+            *seen = true;
 
             // CHUNK groups are stored under the local offset (0..79),
             // matching the wire group_id byte.
@@ -2005,7 +2109,8 @@ impl HarmonyClient {
         }
 
         // ── 6. Receive terminal sentinel ────────────────────────────────
-        let _terminal = conn.recv().await?;
+        let terminal = conn.recv().await?;
+        validate_v2_terminal(&terminal, "V2 full")?;
 
         self.loaded_db_id = Some(db_info.db_id);
 
@@ -2035,6 +2140,25 @@ impl HarmonyClient {
         }
 
         Ok(V2HintFetchOutcome::Loaded)
+        }
+        .await;
+
+        match result {
+            Ok(outcome) => {
+                self.hint_conn = Some(conn);
+                Ok(outcome)
+            }
+            Err(error) => {
+                // A failed stream can leave unread coalesced records queued.
+                // Closing is the only safe way to re-establish a request
+                // boundary; the caller must reconnect before retrying.
+                let _ = conn.close().await;
+                self.index_groups.clear();
+                self.chunk_groups.clear();
+                self.loaded_db_id = None;
+                Err(error)
+            }
+        }
     }
 
     /// V2 half-stream parallel main hint fetch.
@@ -2096,6 +2220,12 @@ impl HarmonyClient {
         let k_chunk = db_info.chunk_k as usize;
         let total = (k_index + k_chunk) as u32;
         let db_id = db_info.db_id;
+        let expected_total_groups = u8::try_from(k_index + k_chunk).map_err(|_| {
+            PirError::Protocol(format!(
+                "V2-half hint group count {} exceeds wire limit",
+                k_index + k_chunk
+            ))
+        })?;
 
         // Generate a 16-byte random session token. Both halves carry
         // the same token; server matches them to the same pool entry.
@@ -2154,6 +2284,7 @@ impl HarmonyClient {
         async fn drain_half_build(
             conn: &mut Box<dyn PirTransport>,
             num_groups: u8,
+            expected_total_groups: u8,
             label: &str,
             // Group construction params (same for every group at this
             // level — only the per-group offset varies).
@@ -2164,40 +2295,19 @@ impl HarmonyClient {
             // 1. Receive key preamble.
             let preamble = conn.recv().await?;
             let mut total_resp: u64 = preamble.len() as u64;
-            if preamble.len() < 5 {
-                return Err(PirError::Protocol(format!(
-                    "{}: truncated V2-half key preamble",
-                    label
-                )));
-            }
-            let body = &preamble[4..];
-            if body.is_empty() || body[0] != RESP_HARMONY_HINTS_KEY {
-                if !body.is_empty() && body[0] == RESP_ERROR {
-                    let reason = String::from_utf8_lossy(&body[1..]).to_string();
-                    let error = PirError::ServerError(reason);
-                    if is_v2_hint_pool_unavailable_error(&error) {
-                        return Ok(HalfDrainOutcome::PoolUnavailable);
-                    }
-                    return Err(error);
+            let (prp_backend, prp_key) = match parse_v2_key_preamble(
+                &preamble,
+                expected_total_groups,
+                label,
+            )? {
+                V2KeyPreambleOutcome::Key {
+                    prp_backend,
+                    prp_key,
+                } => (prp_backend, prp_key),
+                V2KeyPreambleOutcome::PoolUnavailable => {
+                    return Ok(HalfDrainOutcome::PoolUnavailable);
                 }
-                return Err(PirError::Protocol(format!(
-                    "{}: expected V2-half key preamble (0x{:02x}), got 0x{:02x}",
-                    label,
-                    RESP_HARMONY_HINTS_KEY,
-                    body.first().copied().unwrap_or(0),
-                )));
-            }
-            // Layout: [RESP_HARMONY_HINTS_KEY][prp_backend][level_sentinel=0xFF][total_groups][16B prp_key]
-            if body.len() < 20 {
-                return Err(PirError::Protocol(format!(
-                    "{}: V2-half key preamble truncated ({} bytes)",
-                    label,
-                    body.len()
-                )));
-            }
-            let prp_backend = body[1];
-            let mut prp_key = [0u8; 16];
-            prp_key.copy_from_slice(&body[4..20]);
+            };
 
             // 2. Build all `num_groups` HarmonyGroup instances using
             //    the just-received key. This is the CPU-heavy part —
@@ -2223,16 +2333,11 @@ impl HarmonyClient {
             }
 
             // 3. Receive N per-group frames and load hints in-place.
+            let mut seen = vec![false; num_groups as usize];
             for _ in 0..num_groups {
                 let msg = conn.recv().await?;
                 total_resp = total_resp.saturating_add(msg.len() as u64);
-                if msg.len() < 5 {
-                    return Err(PirError::Protocol(format!(
-                        "{}: truncated V2-half hint frame",
-                        label
-                    )));
-                }
-                let body = &msg[4..];
+                let body = v2_record_body(&msg, label)?;
                 if body.is_empty() {
                     return Err(PirError::Protocol(format!(
                         "{}: empty V2-half hint frame body",
@@ -2258,6 +2363,16 @@ impl HarmonyClient {
                 let group_id = body[1];
                 // bytes 2..14 = (n, t, m) metadata — unused
                 let hints_data = &body[14..];
+                let was_seen = seen.get_mut(group_id as usize).ok_or_else(|| {
+                    PirError::Protocol(format!("{}: unexpected group {}", label, group_id))
+                })?;
+                if *was_seen {
+                    return Err(PirError::Protocol(format!(
+                        "{}: duplicate group {}",
+                        label, group_id
+                    )));
+                }
+                *was_seen = true;
                 let group = groups.get_mut(&group_id).ok_or_else(|| {
                     PirError::Protocol(format!(
                         "{}: unexpected group {}",
@@ -2270,7 +2385,8 @@ impl HarmonyClient {
             }
 
             // 4. Receive terminal sentinel.
-            let _terminal = conn.recv().await?;
+            let terminal = conn.recv().await?;
+            validate_v2_terminal(&terminal, label)?;
 
             Ok(HalfDrainOutcome::Loaded((
                 prp_backend,
@@ -2287,6 +2403,7 @@ impl HarmonyClient {
             drain_half_build(
                 &mut hint_primary,
                 k_index as u8,
+                expected_total_groups,
                 "V2-half INDEX",
                 db_info.index_bins,
                 index_w as u32,
@@ -2299,6 +2416,7 @@ impl HarmonyClient {
             drain_half_build(
                 &mut hint_secondary,
                 k_chunk as u8,
+                expected_total_groups,
                 "V2-half CHUNK",
                 db_info.chunk_bins,
                 chunk_w as u32,
@@ -7316,6 +7434,21 @@ mod tests {
         response_frame(body)
     }
 
+    fn v2_key_preamble_frame(
+        backend: u8,
+        level: u8,
+        total_groups: u8,
+        key: [u8; 16],
+    ) -> Vec<u8> {
+        let mut body = vec![RESP_HARMONY_HINTS_KEY, backend, level, total_groups];
+        body.extend_from_slice(&key);
+        response_frame(body)
+    }
+
+    fn v2_terminal_frame(group_id: u8) -> Vec<u8> {
+        response_frame(vec![RESP_HARMONY_HINTS, group_id])
+    }
+
     #[tokio::test]
     async fn explicit_preflight_rejects_missing_root_even_in_advisory_mode() {
         let mut client = HarmonyClient::new("wss://hint", "wss://query");
@@ -7423,6 +7556,233 @@ mod tests {
         assert_eq!(client.chunk_groups.len(), 1);
         assert!(client.hint_conn.is_some());
         assert!(client.hint_conn_secondary.is_some());
+    }
+
+    #[test]
+    fn v2_metadata_parsers_reject_inconsistent_preamble_and_terminal() {
+        let wrong_level = v2_key_preamble_frame(PRP_HMR12, 0, 2, [7; 16]);
+        let error = parse_v2_key_preamble(&wrong_level, 2, "test").unwrap_err();
+        assert!(matches!(error, PirError::Protocol(message) if
+            message.contains("expected 0xff")));
+
+        let wrong_total = v2_key_preamble_frame(PRP_HMR12, 0xFF, 3, [7; 16]);
+        let error = parse_v2_key_preamble(&wrong_total, 2, "test").unwrap_err();
+        assert!(matches!(error, PirError::Protocol(message) if
+            message.contains("declares 3 groups, expected 2")));
+
+        let trailing_terminal = response_frame(vec![RESP_HARMONY_HINTS, 0xFF, 0]);
+        let error = validate_v2_terminal(&trailing_terminal, "test").unwrap_err();
+        assert!(matches!(error, PirError::Protocol(message) if
+            message.contains("invalid terminal sentinel")));
+    }
+
+    #[tokio::test]
+    async fn v2_full_duplicate_group_closes_and_discards_stream() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let sends = Arc::new(AtomicUsize::new(0));
+        let key = [0x31; 16];
+
+        let primary = ScriptedCloseTransport::new(
+            "wss://hint-primary",
+            [
+                v2_key_preamble_frame(PRP_HMR12, 0xFF, 3, key),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+                ),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+                ),
+            ],
+            closed.clone(),
+            sends.clone(),
+        );
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        db.index_k = 2;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(primary),
+            Box::new(MockTransport::new("wss://query")),
+        );
+
+        let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
+        assert!(matches!(error, PirError::Protocol(message) if
+            message.contains("duplicate INDEX group 0")));
+        assert!(closed.load(Ordering::SeqCst));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        assert!(client.hint_conn.is_none());
+        assert!(client.index_groups.is_empty());
+        assert!(client.chunk_groups.is_empty());
+        assert!(client.loaded_db_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn v2_full_valid_stream_restores_socket() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let sends = Arc::new(AtomicUsize::new(0));
+        let key = [0x3a; 16];
+
+        let primary = ScriptedCloseTransport::new(
+            "wss://hint-primary",
+            [
+                v2_key_preamble_frame(PRP_HMR12, 0xFF, 2, key),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+                ),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
+                ),
+                v2_terminal_frame(0xFF),
+            ],
+            closed.clone(),
+            sends.clone(),
+        );
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(primary),
+            Box::new(MockTransport::new("wss://query")),
+        );
+
+        client.ensure_groups_ready(&db, None).await.unwrap();
+        assert!(!closed.load(Ordering::SeqCst));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        assert!(client.hint_conn.is_some());
+        assert_eq!(client.index_groups.len(), 1);
+        assert_eq!(client.chunk_groups.len(), 1);
+        assert_eq!(client.loaded_db_id, Some(0));
+    }
+
+    #[tokio::test]
+    async fn v2_full_invalid_terminal_closes_and_discards_stream() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let sends = Arc::new(AtomicUsize::new(0));
+        let key = [0x42; 16];
+
+        let primary = ScriptedCloseTransport::new(
+            "wss://hint-primary",
+            [
+                v2_key_preamble_frame(PRP_HMR12, 0xFF, 2, key),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+                ),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
+                ),
+                v2_terminal_frame(0xFE),
+            ],
+            closed.clone(),
+            sends.clone(),
+        );
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(primary),
+            Box::new(MockTransport::new("wss://query")),
+        );
+
+        let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
+        assert!(matches!(error, PirError::Protocol(message) if
+            message.contains("invalid terminal sentinel")));
+        assert!(closed.load(Ordering::SeqCst));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        assert!(client.hint_conn.is_none());
+        assert!(client.loaded_db_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn v2_half_duplicate_group_closes_both_streams() {
+        let primary_closed = Arc::new(AtomicBool::new(false));
+        let secondary_closed = Arc::new(AtomicBool::new(false));
+        let primary_sends = Arc::new(AtomicUsize::new(0));
+        let secondary_sends = Arc::new(AtomicUsize::new(0));
+        let key = [0x53; 16];
+
+        let primary = ScriptedCloseTransport::new(
+            "wss://hint-primary",
+            [
+                v2_key_preamble_frame(PRP_HMR12, 0xFF, 3, key),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+                ),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
+                ),
+            ],
+            primary_closed.clone(),
+            primary_sends.clone(),
+        );
+        let secondary = ScriptedCloseTransport::new(
+            "wss://hint-secondary",
+            [
+                v2_key_preamble_frame(PRP_HMR12, 0xFF, 3, key),
+                v1_hint_frame(
+                    0,
+                    8,
+                    4,
+                    4,
+                    4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
+                ),
+                v2_terminal_frame(0xFF),
+            ],
+            secondary_closed.clone(),
+            secondary_sends.clone(),
+        );
+
+        let mut db = session_db_info();
+        db.db_id = 0;
+        db.index_k = 2;
+        let mut client = HarmonyClient::new("wss://hint", "wss://query");
+        client.connect_with_transport(
+            Box::new(primary),
+            Box::new(MockTransport::new("wss://query")),
+        );
+        client.hint_conn_secondary = Some(Box::new(secondary));
+
+        let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
+        assert!(matches!(error, PirError::Protocol(message) if
+            message.contains("duplicate group 0")));
+        assert!(primary_closed.load(Ordering::SeqCst));
+        assert!(secondary_closed.load(Ordering::SeqCst));
+        assert!(client.hint_conn.is_none());
+        assert!(client.hint_conn_secondary.is_none());
     }
 
     #[tokio::test]

@@ -132,3 +132,9 @@ jobs:
       - name: Run vitest unit tests
         working-directory: web
         run: npm test
+
+      # Parse and discover the browser canary without issuing live production
+      # queries on every PR. The scheduled workflow owns those queries.
+      - name: Discover strict production Playwright canary
+        working-directory: web
+        run: npm run test:e2e:strict-production -- --list

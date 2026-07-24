@@ -8,7 +8,8 @@
     "build": "tsc",
     "dev": "vite",
     "build-web": "vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e:strict-production": "playwright test --config playwright.production.config.ts"
   },
   "keywords": [
     "bitcoin",
@@ -25,6 +26,7 @@
     "pir-sdk-wasm": "file:../crates/sdk/wasm/pkg"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
     "typescript": "^5.0.0",
