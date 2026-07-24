@@ -1989,8 +1989,21 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 error: 'checking static proof artifacts...',
             });
 
+            const expectedV2Pin = PRODUCTION_ONION_DB_PROOF_V2_PINS.find(pin => pin.dbId === dbInfo.proof.dbId);
+            if (!expectedV2Pin) {
+                const error = `no production v2 pin for db ${dbInfo.proof.dbId}`;
+                renderBitcoinAnchorBadge(idElem, label, {
+                    state: 'unverified',
+                    checks: [],
+                    mismatches: [error],
+                    displayAnchor: dbInfo.proof,
+                });
+                log(`${label}: Bitcoin/MuHash anchor UNVERIFIED — ${error}`, 'error');
+                return;
+            }
+
             const status = await verifyProductionTrustChain({
-                expectedDbPin: DELTA_940611_948454_DB_PROOF_PIN,
+                expectedDbPin: expectedV2Pin,
                 liveDatabaseProof: dbInfo.proof,
                 verifyAmdSignature: true,
             });

@@ -121,13 +121,12 @@ export async function verifyProductionTrustChain(
     if (options.liveDatabaseProof) {
       const before = mismatches.length;
       const manifestPin = trustChainPinFromManifest(manifest);
-      const dbStatus = verifyDatabaseProofAgainstPin(options.liveDatabaseProof, manifestPin);
-      if (dbStatus.state !== 'verified') {
-        mismatches.push(
-          ...(dbStatus.mismatches ?? [dbStatus.error ?? 'live DB proof did not match manifest'])
-            .map((m) => `live DB proof vs manifest: ${m}`),
-        );
-      }
+      compareTrustChainBinding(
+        options.liveDatabaseProof,
+        manifestPin,
+        'live DB proof vs manifest',
+        mismatches,
+      );
       checks.push(checkFromMismatches('live DB proof matches manifest anchors and roots', mismatches, before));
     }
 
@@ -315,10 +314,7 @@ function compareManifestToDbPin(
   mismatches: string[],
 ): void {
   const pinFromManifest = trustChainPinFromManifest(manifest);
-  const status = verifyDatabaseProofAgainstPin(pinFromManifest, pin);
-  if (status.state !== 'verified') {
-    mismatches.push(...(status.mismatches ?? []).map((m) => `manifest DB pin: ${m}`));
-  }
+  compareTrustChainBinding(pinFromManifest, pin, 'manifest DB pin', mismatches);
   if (manifest.anchor.buildKind === 'delta') {
     if (!pin.fromMuhashHex) {
       mismatches.push('production DB pin is missing delta fromMuhashHex');
@@ -331,6 +327,47 @@ function compareManifestToDbPin(
       );
     }
   }
+}
+
+/**
+ * Bind a current database proof to the historical Bitcoin/MuHash manifest.
+ *
+ * The trust-chain manifest embeds a v1 database proof. A v2 re-attestation of
+ * the same serving images intentionally has a different params hash and
+ * builder identity, because v2 commits the typed Onion layout and image
+ * digests and was produced by a newer builder. Those version-specific fields
+ * are authenticated by `expectedDbPin` below; the cross-version bridge only
+ * compares the Bitcoin endpoints and resulting database roots.
+ */
+function compareTrustChainBinding(
+  actual: DatabaseProofPin | VerifiedDatabaseProof,
+  expected: DatabaseProofPin | VerifiedDatabaseProof,
+  prefix: string,
+  mismatches: string[],
+): void {
+  const compareValue = (field: keyof DatabaseProofPin & keyof VerifiedDatabaseProof) => {
+    if (actual[field] !== expected[field]) {
+      mismatches.push(`${prefix}: ${field}: expected ${String(expected[field])}, got ${String(actual[field])}`);
+    }
+  };
+  const compareHexField = (field: keyof DatabaseProofPin & keyof VerifiedDatabaseProof) => {
+    const actualValue = String(actual[field]).replace(/^0x/i, '').toLowerCase();
+    const expectedValue = String(expected[field]).replace(/^0x/i, '').toLowerCase();
+    if (actualValue !== expectedValue) {
+      mismatches.push(`${prefix}: ${field}: expected ${String(expected[field])}, got ${String(actual[field])}`);
+    }
+  };
+
+  compareValue('dbId');
+  compareValue('buildKind');
+  compareValue('fromHeight');
+  compareValue('height');
+  compareHexField('fromBlockHashHex');
+  compareHexField('blockHashHex');
+  compareHexField('muhashHex');
+  compareHexField('bucketSuperRootHex');
+  compareHexField('onionSuperRootHex');
+  compareHexField('networkMagicHex');
 }
 
 function compareBhtmAttestationToManifest(

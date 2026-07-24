@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { DELTA_940611_948454_DB_PROOF_PIN } from '../attest-pin.js';
+import {
+  DELTA_940611_948454_DB_PROOF_PIN,
+  PRODUCTION_ONION_DB_PROOF_V2_PINS,
+} from '../attest-pin.js';
 import {
   DEFAULT_TRUST_CHAIN_MANIFEST_PATH,
   trustChainPinFromManifest,
@@ -90,6 +93,29 @@ describe('database trust-chain proof', () => {
       check.name === 'live DB proof matches manifest anchors and roots'
       && check.state === 'unverified'
     ))).toBe(true);
+  });
+
+  it('bridges the historical trust-chain manifest to a fully pinned v2 proof', async () => {
+    const v2Pin = PRODUCTION_ONION_DB_PROOF_V2_PINS.find(({ dbId }) => dbId === 1);
+    expect(v2Pin).toBeDefined();
+
+    const status = await verifyProductionTrustChain({
+      artifactLoader: publicArtifactLoader,
+      expectedDbPin: v2Pin,
+      liveDatabaseProof: { ...v2Pin! },
+      verifyAmdSignature: false,
+    });
+
+    expect(status.state).toBe('verified');
+    expect(status.mismatches).toEqual([]);
+    expect(status.checks).toContainEqual({
+      name: 'live DB proof matches manifest anchors and roots',
+      state: 'verified',
+    });
+    expect(status.checks).toContainEqual({
+      name: 'live DB proof matches pin',
+      state: 'verified',
+    });
   });
 
   it('reports unverified when the delta from block hash disagrees with its BHTM leaf', async () => {
