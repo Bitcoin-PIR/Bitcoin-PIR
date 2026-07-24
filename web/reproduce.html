@@ -482,19 +482,19 @@
                             <table class="pin-table">
                                 <tr>
                                     <td>MEASUREMENT</td>
-                                    <td>a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86</td>
+                                    <td>d7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245</td>
                                 </tr>
                                 <tr>
                                     <td>UKI sha256</td>
-                                    <td>5b8548888b5b5f8eabee5002c263179dd9b2efa8ad135efb1aefe79c3d17b13e</td>
+                                    <td>34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681</td>
                                 </tr>
                                 <tr>
                                     <td>binary sha256</td>
-                                    <td>1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37</td>
+                                    <td>cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e</td>
                                 </tr>
                                 <tr>
                                     <td>server git rev</td>
-                                    <td>66034c8204e19b11b8c0602aa625c2414095deb2</td>
+                                    <td>81dd96d442d39200fee7e6c97f5c308f38126756</td>
                                 </tr>
                                 <tr>
                                     <td>OVMF sha256</td>
@@ -560,7 +560,7 @@
                                 <h3>Get or rebuild the UKI</h3>
                                 <p>
                                     The current operator-archived artifact is
-                                    <code>main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi</code>, the
+                                    <code>main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi</code>, the
                                     ORAM-enabled Tier 3 UKI that serves the database
                                     proof sidecar and direct ORAM lookups for db_id 0/1.
                                     It is a large runtime artifact, so this page pins the
@@ -570,11 +570,11 @@
                                     is not a public download URL.
                                 </p>
                                 <p class="meta" style="margin-top: 6px;">
-                                    Verify: <code>sha256sum main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi</code> →
-                                    <code>5b8548888b5b5f8eabee5002c263179dd9b2efa8ad135efb1aefe79c3d17b13e</code>
+                                    Verify: <code>sha256sum main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi</code> →
+                                    <code>34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681</code>
                                 </p>
 <pre><code># Operator-only shortcut: retrieve the exact deployed bytes.
-scp pir-hetzner:/home/pir/uki-archive/tier3/main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi .</code></pre>
+scp pir-hetzner:/home/pir/uki-archive/tier3/main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi .</code></pre>
                                 <p class="meta" style="margin-top: 6px;">
                                     Or perform a functional source rebuild. This is not
                                     a byte-identical reproduction of the production artifact:
@@ -584,13 +584,13 @@ scp pir-hetzner:/home/pir/uki-archive/tier3/main-7b6cf108-trusted-path-fix-20260
                                 </p>
 <pre><code>git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git BitcoinPIR-runtime-repro
 cd BitcoinPIR-runtime-repro
-git checkout 7b6cf108da189cc3b693c3f004612dcd90a80a0f
+git checkout 81dd96d442d39200fee7e6c97f5c308f38126756
 RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=$HOME=/build" \
 SOURCE_DATE_EPOCH=0 cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
 strip --strip-debug target/release/unified_server
 
 sudo env KERNEL=/boot/vmlinuz-7.0.0-28-generic \
-OUT="$PWD/bpir-tier3-functional-rebuild-7b6cf108.efi" \
+OUT="$PWD/bpir-tier3-functional-rebuild-81dd96d4.efi" \
 BINARY="$PWD/target/release/unified_server" \
 BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 ./scripts/build_uki_tier3.sh</code></pre>
@@ -615,7 +615,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 	    --vcpus 2 \
 	    --vcpu-sig 0x00B10F10 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi \
+	    --kernel main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi \
 	    --guest-features 0x1</code></pre>
                             </li>
 
@@ -623,8 +623,8 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                 <h3>Verify the live report and AMD chain</h3>
 	<pre><code>cargo build --locked --release --bin bpir-admin -p bpir-admin
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86 \
-    --expect-binary      1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37 \
+    --expect-measurement d7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245 \
+    --expect-binary      cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 ./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a</code></pre>
@@ -888,18 +888,18 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                 This page verifies the strict source-bound rebuild and records
                                 the live pir2 runtime that consumes it. The pinned pir2 runtime
                                 binary commit
-                                <code>66034c8204e19b11b8c0602aa625c2414095deb2</code>
+                                <code>81dd96d442d39200fee7e6c97f5c308f38126756</code>
                                 vendors <code>bitcoinpir-oram</code> at
                                 <code>cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b</code>.
                                 The measured boot-regeneration script comes from
-                                <code>7b6cf108da189cc3b693c3f004612dcd90a80a0f</code>.
+                                <code>81dd96d442d39200fee7e6c97f5c308f38126756</code>.
                             </p>
                             <p>
                                 Live verification on the refreshed measured UKI passed
                                 <code>bpir-admin attest</code>, <code>channel-test</code>, and
                                 padded direct ORAM smoke requests for both db_id 0 and db_id 1.
                                 The UKI bytes are archived on Hetzner at
-                                <code>/home/pir/uki-archive/tier3/main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi</code>.
+                                <code>/home/pir/uki-archive/tier3/main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi</code>.
                             </p>
                         </div>
                     </section>
@@ -1010,7 +1010,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <table class="pin-table">
                                 <tr>
                                     <td>binary sha256</td>
-                                    <td>4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4</td>
+                                    <td>cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e</td>
                                 </tr>
                             </table>
                         </div>
@@ -1020,7 +1020,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                         <h2>Verify pir1</h2>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng1.bitcoinpir.org \
-	    --expect-binary 4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4</code></pre>
+	    --expect-binary cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e</code></pre>
                         <p>
                             You can also check
                             <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>

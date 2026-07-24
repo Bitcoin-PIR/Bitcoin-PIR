@@ -30,7 +30,7 @@ to whichever slice you want to start on.
 
 ---
 
-## Current state (as of 2026-07-20, ORAM Tier 3 UKI deployed)
+## Current state (as of 2026-07-24, ORAM + DB-proof-v2 Tier 3 UKI deployed)
 
 ### Production deployment
 
@@ -55,17 +55,17 @@ Launch MEASUREMENT (covers OVMF + Tier 3 UKI bytes — UKI now contains
 the unified_server BINARY itself in initramfs, NOT just a cmdline hash
 pin. So this digest authenticates the literal binary bytes the box is
 running, not "a binary the box claims matches a hash"):
-  a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86
+  d7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245
 
 UKI bytes sha256 (built by scripts/build_uki_tier3.sh on VPSBG and archived on Hetzner;
 includes initramfs with unified_server + cloudflared + runit + the
 sev-guest/ccp/tsm_report kernel modules baked in):
-  5b8548888b5b5f8eabee5002c263179dd9b2efa8ad135efb1aefe79c3d17b13e
+  34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681
 
 unified_server binary sha256 (computed at build time AND attested at
 runtime via /proc/self/exe — the two match because dracut was invoked
 with --nostrip; verifiers pin via --expect-binary on bpir-admin attest):
-  1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37
+  cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e
 
 ARK fingerprint (AMD Turin family root certificate — pinned in
 web/src/attest-pin.ts and used by --expect-ark-fingerprint to anchor
@@ -77,13 +77,24 @@ DB manifest roots (db_id order):
   delta_940611_948454:        c816f067117bca98256ee246c4469591ee8f537b2271d65b38d1536a70887963
 
 Server git rev (per /attest, captured at unified_server build time):
-  66034c8204e19b11b8c0602aa625c2414095deb2
+  81dd96d442d39200fee7e6c97f5c308f38126756
 
 Measured startup script git rev (boot-regeneration path and path-contract fix):
-  7b6cf108da189cc3b693c3f004612dcd90a80a0f
+  81dd96d442d39200fee7e6c97f5c308f38126756
 
 bitcoinpir-oram git rev used by the live binary and oramctl:
   cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b
+
+Database-proof-v2 sidecars served identically by pir1 and pir2
+(`REQ_GET_DB_PROOF_V2 = 0x0c`):
+  db_id=0 build-evidence sha256:
+    e9795887805769525d484824d85d8b3fcda008340c1b2332de7b46a59f055517
+  db_id=0 params_hash_v2:
+    a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563
+  db_id=1 build-evidence sha256:
+    59bd47d078458490735ea8707db3c10a3473af034f653f4d51275e5e511c0509
+  db_id=1 params_hash_v2:
+    fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d
 ```
 
 NOTE on the X25519 channel pubkey: it's "long-lived" relative to per-
@@ -97,8 +108,8 @@ Verifiers can cross-check end-to-end with:
 ```bash
 # Static checks: report binding + binary + measurement + ARK chain
 bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86 \
-    --expect-binary 1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37 \
+    --expect-measurement d7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245 \
+    --expect-binary cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 # Live encrypted channel + AMD VCEK chain validation
@@ -490,8 +501,8 @@ assume you've reverted to Slice 2 first (see PHASE3_SLICE3_RECOVERY.md).
 
 # Attest VPSBG (verifies SEV-SNP report + binds X25519 channel pubkey)
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86 \
-    --expect-binary 1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37 \
+    --expect-measurement d7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245 \
+    --expect-binary cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e \
     --expect-ark-fingerprint 1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a
 
 # End-to-end channel test with ARK-rooted chain validation

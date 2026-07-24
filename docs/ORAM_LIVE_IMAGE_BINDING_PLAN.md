@@ -34,7 +34,7 @@ the current deployment.
 The final deployment record and reviewed values are in
 [`STRICT_VERIFICATION_PROGRESS.md`](STRICT_VERIFICATION_PROGRESS.md) and
 [`PHASE3_ROADMAP.md`](PHASE3_ROADMAP.md). The archived production UKI is
-`main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi`.
+`main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi`.
 
 ## The missing link
 
