@@ -682,6 +682,7 @@ mod tests {
             server_db_manifest_sha256: sha256(&server_db_manifest_toml),
             evidence_mode: pir_db_attest::EvidenceMode::FullBuild,
             predecessor_evidence_sha256: None,
+            predecessor_report_sha256: None,
             onion_layout_v2: None,
         };
         let build_evidence = evidence.encode().unwrap();
@@ -757,6 +758,7 @@ mod tests {
         evidence.version = EVIDENCE_VERSION_V2;
         evidence.evidence_mode = pir_db_attest::EvidenceMode::ReattestExisting;
         evidence.predecessor_evidence_sha256 = Some([9u8; 32]);
+        evidence.predecessor_report_sha256 = Some([10u8; 32]);
         evidence.onion_layout_v2 = Some(layout);
         evidence.params_hash = params.params_hash();
         evidence.root_bundle_payload_sha256 = sha256(&bundle.root_bundle_payload);

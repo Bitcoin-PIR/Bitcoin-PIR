@@ -1,6 +1,7 @@
 # Database proof v2: complete OnionPIR layout binding
 
-Status: producer and consumer implementation are in draft review. The
+Status: the producer implementation is merged and the consumer implementation
+is in final review. The
 [attested-builder producer PR](https://github.com/Bitcoin-PIR/attested-builder/pull/1)
 implements canonical v2 evidence plus existing-artifact re-attestation. The
 [consumer PR #69](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/69) implements
@@ -148,8 +149,10 @@ It must not be described as a fresh full build.
       and a producer/verifier golden hash vector.
 - [x] Add `attest-existing-layout`, including a scan of the retained Onion
       tables, leaf hashes, Merkle roots/siblings/tree-tops, and predecessor v1
-      proof material. This re-seals existing artifacts without rebuilding the
-      database.
+      proof material. The scan enforces exact deterministic packed-entry group
+      placement, legal cuckoo bins, entry-derived index geometry, and commits
+      both the predecessor evidence and SNP-report digests. This re-seals
+      existing artifacts without rebuilding the database.
 - [x] Add a distinct `REQ_GET_DB_PROOF_V2` wire request and optional
       `proof_v2_dir`, while preserving v1 serving for old clients.
 - [x] Recompute `params_hash_v2` in Rust/WASM and return a typed verified

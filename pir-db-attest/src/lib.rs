@@ -227,6 +227,7 @@ pub struct BuildEvidence {
     pub server_db_manifest_sha256: [u8; 32],
     pub evidence_mode: EvidenceMode,
     pub predecessor_evidence_sha256: Option<[u8; 32]>,
+    pub predecessor_report_sha256: Option<[u8; 32]>,
     pub onion_layout_v2: Option<OnionQueryLayoutV2>,
 }
 
@@ -286,11 +287,26 @@ impl BuildEvidence {
                 .onion_layout_v2
                 .ok_or(DbAttestError::Malformed("v2 evidence missing Onion layout"))?;
             layout.validate()?;
+            if self.evidence_mode == EvidenceMode::ReattestExisting
+                && (self.predecessor_evidence_sha256.is_none()
+                    || self.predecessor_report_sha256.is_none())
+            {
+                return Err(DbAttestError::Malformed(
+                    "reattest_existing evidence requires predecessor evidence and report digests",
+                ));
+            }
             out.push(match self.evidence_mode {
                 EvidenceMode::FullBuild => 0,
                 EvidenceMode::ReattestExisting => 1,
             });
             match self.predecessor_evidence_sha256 {
+                Some(hash) => {
+                    out.push(1);
+                    put_arr(&mut out, &hash);
+                }
+                None => out.push(0),
+            }
+            match self.predecessor_report_sha256 {
                 Some(hash) => {
                     out.push(1);
                     put_arr(&mut out, &hash);
@@ -345,38 +361,53 @@ impl BuildEvidence {
         let database_manifest_sha256 = take_arr::<32>(cur, "database_manifest_sha256")?;
         let all_artifacts_manifest_sha256 = take_arr::<32>(cur, "all_artifacts_manifest_sha256")?;
         let server_db_manifest_sha256 = take_arr::<32>(cur, "server_db_manifest_sha256")?;
-        let (evidence_mode, predecessor_evidence_sha256, onion_layout_v2) =
-            if version == EVIDENCE_VERSION_V2 {
-                let evidence_mode = match take_u8(cur, "evidence_mode")? {
-                    0 => EvidenceMode::FullBuild,
-                    1 => EvidenceMode::ReattestExisting,
-                    _ => return Err(DbAttestError::Malformed("unknown evidence mode")),
-                };
-                let predecessor = match take_u8(cur, "has_predecessor_evidence")? {
-                    0 => None,
-                    1 => Some(take_arr::<32>(cur, "predecessor_evidence_sha256")?),
-                    _ => {
-                        return Err(DbAttestError::Malformed(
-                            "bad predecessor evidence option tag",
-                        ))
-                    }
-                };
-                if evidence_mode == EvidenceMode::ReattestExisting && predecessor.is_none() {
-                    return Err(DbAttestError::Malformed(
-                        "reattest_existing evidence requires predecessor digest",
-                    ));
-                }
-                let layout = OnionQueryLayoutV2::current(
-                    take_u32(cur, "onion_total_packed_entries")?,
-                    take_u32(cur, "onion_index_bins_per_table")?,
-                    take_u32(cur, "onion_chunk_bins_per_table")?,
-                    onion_entry_size,
-                );
-                layout.validate()?;
-                (evidence_mode, predecessor, Some(layout))
-            } else {
-                (EvidenceMode::FullBuild, None, None)
+        let (
+            evidence_mode,
+            predecessor_evidence_sha256,
+            predecessor_report_sha256,
+            onion_layout_v2,
+        ) = if version == EVIDENCE_VERSION_V2 {
+            let evidence_mode = match take_u8(cur, "evidence_mode")? {
+                0 => EvidenceMode::FullBuild,
+                1 => EvidenceMode::ReattestExisting,
+                _ => return Err(DbAttestError::Malformed("unknown evidence mode")),
             };
+            let predecessor = match take_u8(cur, "has_predecessor_evidence")? {
+                0 => None,
+                1 => Some(take_arr::<32>(cur, "predecessor_evidence_sha256")?),
+                _ => {
+                    return Err(DbAttestError::Malformed(
+                        "bad predecessor evidence option tag",
+                    ))
+                }
+            };
+            let predecessor_report = match take_u8(cur, "has_predecessor_report")? {
+                0 => None,
+                1 => Some(take_arr::<32>(cur, "predecessor_report_sha256")?),
+                _ => {
+                    return Err(DbAttestError::Malformed(
+                        "bad predecessor report option tag",
+                    ))
+                }
+            };
+            if evidence_mode == EvidenceMode::ReattestExisting
+                && (predecessor.is_none() || predecessor_report.is_none())
+            {
+                return Err(DbAttestError::Malformed(
+                    "reattest_existing evidence requires predecessor evidence and report digests",
+                ));
+            }
+            let layout = OnionQueryLayoutV2::current(
+                take_u32(cur, "onion_total_packed_entries")?,
+                take_u32(cur, "onion_index_bins_per_table")?,
+                take_u32(cur, "onion_chunk_bins_per_table")?,
+                onion_entry_size,
+            );
+            layout.validate()?;
+            (evidence_mode, predecessor, predecessor_report, Some(layout))
+        } else {
+            (EvidenceMode::FullBuild, None, None, None)
+        };
         if !cur.is_empty() {
             return Err(DbAttestError::Malformed("trailing bytes"));
         }
@@ -409,6 +440,7 @@ impl BuildEvidence {
             server_db_manifest_sha256,
             evidence_mode,
             predecessor_evidence_sha256,
+            predecessor_report_sha256,
             onion_layout_v2,
         };
         validate_metadata_string("builder_git_commit", &evidence.builder_git_commit)?;
@@ -868,6 +900,7 @@ mod tests {
             server_db_manifest_sha256: [13u8; 32],
             evidence_mode: EvidenceMode::FullBuild,
             predecessor_evidence_sha256: None,
+            predecessor_report_sha256: None,
             onion_layout_v2: None,
         }
     }
@@ -877,6 +910,28 @@ mod tests {
         let evidence = sample_evidence();
         let encoded = evidence.encode().unwrap();
         assert_eq!(BuildEvidence::decode(&encoded).unwrap(), evidence);
+    }
+
+    #[test]
+    fn v2_reattest_roundtrip_binds_both_predecessor_inputs() {
+        let mut evidence = sample_evidence();
+        evidence.version = EVIDENCE_VERSION_V2;
+        evidence.evidence_mode = EvidenceMode::ReattestExisting;
+        evidence.predecessor_evidence_sha256 = Some([14u8; 32]);
+        evidence.predecessor_report_sha256 = Some([15u8; 32]);
+        evidence.onion_layout_v2 = Some(OnionQueryLayoutV2::current(
+            1_234_567, 612_345, 1_345_678, 3_328,
+        ));
+        let encoded = evidence.encode().unwrap();
+        assert_eq!(BuildEvidence::decode(&encoded).unwrap(), evidence);
+
+        evidence.predecessor_report_sha256 = None;
+        assert!(matches!(
+            evidence.encode(),
+            Err(DbAttestError::Malformed(
+                "reattest_existing evidence requires predecessor evidence and report digests"
+            ))
+        ));
     }
 
     #[test]

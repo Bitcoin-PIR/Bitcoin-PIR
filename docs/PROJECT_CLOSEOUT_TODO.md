@@ -36,17 +36,17 @@ Tracking PR: BitcoinPIR #68.
 - [x] Rebase or merge current `main` into the PR branch.
 - [x] Review duplicate-group, preamble, terminal-metadata, and socket-discard
       behavior, including regression coverage.
-- [ ] Run the SDK, WASM, Web, and formal-wire-shape gates affected by the diff.
-- [ ] Mark the PR ready and merge it.
+- [x] Run the SDK, WASM, Web, and formal-wire-shape gates affected by the diff.
+- [x] Mark the PR ready and merge it.
 
 ## 3. Land database proof v2 capability
 
 Tracking PRs: `Bitcoin-PIR/attested-builder` #1 and BitcoinPIR #69.
 
-- [ ] Review and merge the producer/re-attester implementation in
+- [x] Review and merge the producer/re-attester implementation in
       `attested-builder` without treating a recorded verifier result as a trust
       input.
-- [ ] Review BitcoinPIR #69's v2 parser, typed Onion layout, dual-serving wire
+- [x] Review BitcoinPIR #69's v2 parser, typed Onion layout, dual-serving wire
       path, WASM handle, and strict no-fallback behavior.
 - [ ] Rebase, rerun all affected Rust/WASM/Web/formal gates, and merge #69 as a
       capability-only change.
