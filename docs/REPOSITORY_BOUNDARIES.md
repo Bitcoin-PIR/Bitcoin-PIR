@@ -168,6 +168,8 @@ After that milestone merges, use this order:
    the nested copy.
 3. Merge the remaining `pdf/` source changes into `Bitcoin-PIR/whitepaper` and
    delete the generated-paper copy here after a reproducible build comparison.
+   **Complete:** the exact upstream commit and generated PDF digest are pinned
+   in `verification/locks/whitepaper.json`; two clean builds were byte-identical.
 4. Move in-repository crates in small path-only pull requests: trust crates,
    protocol/runtime crates, server/admin applications, then tools/ops/docs.
    Package names and public APIs remain stable.
@@ -180,7 +182,7 @@ After that milestone merges, use this order:
 7. Treat full builder extraction and `vendor/` replacement as the final phase,
    gated on byte-identical output and a fresh hermetic offline build.
 
-`web/public/proofs` and `pdf` are the remaining duplicate sources of truth.
-Root-level production crates are primarily a layout problem and should be
-grouped in this repository rather than split into many tightly coupled
-repositories.
+The duplicate sources of truth identified for this phase have been removed or
+replaced by exact consumer locks and generated assets. Root-level production
+crates are primarily a layout problem and should be grouped in this repository
+rather than split into many tightly coupled repositories.
