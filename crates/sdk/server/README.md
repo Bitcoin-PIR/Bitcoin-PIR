@@ -153,7 +153,7 @@ Merkle trees → PIR-ready database).
 | Native client           | `pir-sdk-client`     | Query servers from native Rust      |
 | Browser bindings        | `pir-sdk-wasm`       | Query servers from JS/TS            |
 | Core primitives         | `pir-core`           | Hashes, codec, cuckoo placement     |
-| Reference binaries      | `runtime/`           | Stand-alone `server`, `client`      |
+| Reference binaries      | `apps/server/`       | Stand-alone `server`, `client`      |
 | Database pipeline       | `build/`             | `gen_0` ... `gen_4` build stages    |
 
 ## License

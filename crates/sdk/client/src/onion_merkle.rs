@@ -62,7 +62,7 @@ use pir_sdk::{LeakageRecorder, PirError, PirResult, RoundKind, RoundProfile};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// ─── Wire codes (match runtime/src/onionpir.rs — UNCHANGED by Phase 3) ──────
+// ─── Wire codes (match apps/server/src/onionpir.rs — UNCHANGED by Phase 3) ──────
 
 /// Request: fetch INDEX tree-top cache.
 pub const REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP: u8 = 0x54;
@@ -470,7 +470,7 @@ pub fn encode_tree_top_request(variant: u8, db_id: u8) -> Vec<u8> {
 
 /// Encode an FHE sibling batch query.
 /// Same wire format as `REQ_ONIONPIR_INDEX_QUERY` / `REQ_ONIONPIR_CHUNK_QUERY`
-/// (`OnionPirBatchQuery` in `runtime/src/onionpir.rs` — UNCHANGED by Phase 3).
+/// (`OnionPirBatchQuery` in `apps/server/src/onionpir.rs` — UNCHANGED by Phase 3).
 ///
 /// `round_id` is vestigial under the per-group design (the server no longer
 /// decodes a sibling level from `round_id / 100`); callers pass `0`.

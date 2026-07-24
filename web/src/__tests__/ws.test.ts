@@ -195,7 +195,7 @@ describe('ManagedWebSocket', () => {
   //
   // The HarmonyPIR hint server may flush several length-prefixed records
   // back-to-back inside a single WS Binary message (~768 KB target — see
-  // `HINT_BATCH_BYTES` in `runtime/src/bin/unified_server.rs`). The
+  // `HINT_BATCH_BYTES` in `apps/server/src/bin/unified_server.rs`). The
   // delivery loop must peel one record per pending caller, in order,
   // without dropping records or hanging.
 

@@ -20,7 +20,7 @@ pir-core = { version = "0.1.0", path = "../../protocol/core" }
 
 # Shared server runtime primitives (wire protocol, mmap tables, DPF
 # evaluation, request dispatch). Lives in its own publishable crate so
-# `runtime/` binaries and `pir-sdk-server` both consume the same types.
+# `apps/server/` binaries and `pir-sdk-server` both consume the same types.
 pir-runtime-core = { version = "0.1.0", path = "../../protocol/runtime" }
 
 # Configuration

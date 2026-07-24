@@ -23,7 +23,7 @@ https://github.com/Bitcoin-PIR/oram.git
 ```
 
 The ORAM rev above exists on GitHub and is the value pinned in
-`runtime/Cargo.toml`, `Cargo.lock`, and `.cargo/config.toml`.
+`apps/server/Cargo.toml`, `Cargo.lock`, and `.cargo/config.toml`.
 
 ## Final Artifact
 
@@ -107,7 +107,7 @@ cargo check --locked --release -p runtime --features cuckoo-oram --bin unified_s
 cargo test --locked -p runtime --features cuckoo-oram --bin unified_server direct_oram
 cargo test --locked -p pir-runtime-core oram_lookup
 cargo test --locked -p pir-sdk-client lookup_raw_ignores_trailing_response_padding
-rustfmt --edition 2021 --check crates/protocol/runtime/src/protocol.rs crates/sdk/client/src/oram.rs runtime/src/bin/unified_server.rs
+rustfmt --edition 2021 --check crates/protocol/runtime/src/protocol.rs crates/sdk/client/src/oram.rs apps/server/src/bin/unified_server.rs
 git diff --check
 ```
 

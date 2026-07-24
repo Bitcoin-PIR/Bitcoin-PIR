@@ -34,7 +34,7 @@ const PING_MSG = new Uint8Array([1, 0, 0, 0, 0x00]);
 // docs/PIR1_REGISTER_KEYS_TRUNCATION.md). Messages over CHUNK_SIZE are
 // split into `[4B len][CHUNK_MAGIC][seq:u16 LE][total:u16 LE][piece]`
 // frames; the peer reassembles. Must stay in sync with
-// crates/sdk/client/src/connection.rs and runtime/src/bin/unified_server.rs.
+// crates/sdk/client/src/connection.rs and apps/server/src/bin/unified_server.rs.
 const CHUNK_MAGIC = 0xc7;
 const CHUNK_SIZE = 256 * 1024;
 const CHUNK_HDR = 5; // 1 magic + 2 seq + 2 total
@@ -156,7 +156,7 @@ export class ManagedWebSocket {
    * A single WebSocket message may carry one record (the historical
    * shape) or several length-prefixed records concatenated back-to-back
    * — the HarmonyPIR hint coalescing introduced 2026-05-20 (see
-   * `HINT_BATCH_BYTES` in `runtime/src/bin/unified_server.rs`) flushes
+   * `HINT_BATCH_BYTES` in `apps/server/src/bin/unified_server.rs`) flushes
    * ~750 KB of records per WS message. This method peels each
    * `[4B len LE][payload of len bytes]` record off the head of `data`
    * and resolves one pending callback per record. For any non-coalesced
@@ -216,7 +216,7 @@ export class ManagedWebSocket {
    * Accumulate one chunk frame; deliver the reassembled message once the
    * final chunk arrives. Frame layout must match `send_chunked` in
    * crates/sdk/client/src/connection.rs and `send_resp_chunked` in
-   * runtime/src/bin/unified_server.rs.
+   * apps/server/src/bin/unified_server.rs.
    */
   private handleChunkFrame(data: Uint8Array): void {
     const seq = data[5] | (data[6] << 8);

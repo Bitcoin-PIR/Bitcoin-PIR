@@ -196,7 +196,7 @@ reference:
 ### Slices 1–4 of the dynamic attestation work
 
 All landed and deployed. See commits `2858f54`, `c167579`, `ab9c0dc`,
-`dcbcd2b`, `f2fafcd`. Tooling in `bpir-admin/`.
+`dcbcd2b`, `f2fafcd`. Tooling in `apps/admin/`.
 
 ### Phase 3 Slice 1 (UKI builder)
 

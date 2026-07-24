@@ -249,7 +249,7 @@ With the shared store approach, preprocessing becomes:
 
 ## Communication & Performance (MEASURED via onionpir_bench)
 
-Benchmark binary: `runtime/src/bin/onionpir_bench.rs`
+Benchmark binary: `apps/server/src/bin/onionpir_bench.rs`
 Run with: `cargo run --release --bin onionpir_bench`
 
 ### Key exchange (one-time per session)

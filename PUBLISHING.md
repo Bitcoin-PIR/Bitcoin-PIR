@@ -87,7 +87,7 @@ registry `version` fallback.
 Extracted the shared server runtime primitives into a new publishable
 library crate `pir-runtime-core` (≈2 kLOC: `protocol` wire format,
 `table` mmap'd cuckoo reader, `eval` DPF evaluation, `handler` request
-dispatch). Both `pir-sdk-server` and the workspace-internal `runtime/`
+dispatch). Both `pir-sdk-server` and the workspace-internal `apps/server/`
 binary crate now depend on `pir-runtime-core` instead of maintaining
 parallel copies. `pir-sdk-server` dropped its unused `build` dep and
 the `publish = false` gate.

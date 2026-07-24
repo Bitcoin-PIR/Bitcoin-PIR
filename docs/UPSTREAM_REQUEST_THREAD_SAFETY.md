@@ -405,7 +405,7 @@ defer.
 
 ## 4. Acceptance test (downstream view)
 
-Downstream BitcoinPIR has `runtime/src/bin/unified_server.rs` with
+Downstream BitcoinPIR has `apps/server/src/bin/unified_server.rs` with
 one worker thread per database that processes `PirCommand` enums
 serially via an mpsc channel:
 
@@ -511,7 +511,7 @@ the test above doesn't exercise.
 
 If both fixes ship in a single upstream commit, BitcoinPIR's
 follow-up is mechanical: bump the rev in three Cargo.toml files
-(`build/`, `crates/sdk/client/`, `runtime/`), recompile, redeploy.
+(`build/`, `crates/sdk/client/`, `apps/server/`), recompile, redeploy.
 Expected wall-time improvement on pir1's i7-8700: INDEX 162 s →
 27 s, CHUNK 158 s → 27 s. Total per-query batch ≈ 60 s — under CF's
 100 s threshold with room to spare.

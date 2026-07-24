@@ -4,7 +4,7 @@
 
 ### HarmonyPIR V2 Hint Pool
 - **Protocol**: Added `REQ_HARMONY_HINTS_V2 = 0x44` — server generates PRP key per client, pre-computes hints offline
-- **Hint pool manager**: `runtime/src/hint_pool.rs` — background thread generates pool entries (key-at-a-time, rayon over 155 groups), disk persistence with `HMPOOL\x01` magic
+- **Hint pool manager**: `apps/server/src/hint_pool.rs` — background thread generates pool entries (key-at-a-time, rayon over 155 groups), disk persistence with `HMPOOL\x01` magic
 - **Server dispatch**: `unified_server.rs` — V2 arm serves pre-serialized frames from pool in <1ms
 - **Client**: `harmony.rs` — `ensure_groups_ready_v2()` with V1 fallback
 - **Deployed to Hetzner** (pir-primary + pir-secondary, both with `--pool-size 8`)

@@ -139,10 +139,10 @@ Surface measured by `rg "onionpir|push_database_chunk|decrypt_response"
 |---|---|---|
 | `crates/sdk/client/src/onion.rs` | Native + WASM client logic; per-level `onionpir::Client`, batched INDEX/CHUNK PIR | 1.1, 1.2, 1.5, 2.1, 2.4 |
 | `crates/sdk/client/src/onion_merkle.rs` | Sibling-level OnionPIR Merkle verification | 1.1, 1.2, 1.5, 2.4 |
-| `runtime/src/bin/unified_server.rs` | Production server (pir-primary on Hetzner) | 1.1, 1.3, 1.4, 2.1, 2.5, 2.6 |
-| `runtime/src/bin/onionpir_client.rs` | Standalone client binary | 1.1, 1.2, 1.5 |
-| `runtime/src/bin/onionpir_bench.rs` | Benchmark; tiny test DB | 1.1, 1.4, 1.5 |
-| `runtime/src/onionpir.rs` | Re-exports + shims (`runtime::onionpir::*`) | 1.1 |
+| `apps/server/src/bin/unified_server.rs` | Production server (pir-primary on Hetzner) | 1.1, 1.3, 1.4, 2.1, 2.5, 2.6 |
+| `apps/server/src/bin/onionpir_client.rs` | Standalone client binary | 1.1, 1.2, 1.5 |
+| `apps/server/src/bin/onionpir_bench.rs` | Benchmark; tiny test DB | 1.1, 1.4, 1.5 |
+| `apps/server/src/onionpir.rs` | Re-exports + shims (`runtime::onionpir::*`) | 1.1 |
 | `build/src/gen_2_onion.rs` | Phase-2 of the DB build pipeline | 1.3, 1.4 |
 | `build/src/gen_3_onion.rs` | Phase-3 (write `preprocessed_db.bin`) | 1.3, 1.4 |
 | `build/src/gen_4_build_merkle_onion.rs` | Build the OnionPIR Merkle tree-tops | 1.3, 1.4 |
@@ -157,7 +157,7 @@ Cargo.toml refs to bump (all currently `350ccc43`):
 
 * `build/Cargo.toml:164`
 * `crates/sdk/client/Cargo.toml:69`
-* `runtime/Cargo.toml:78`
+* `apps/server/Cargo.toml:78`
 
 ---
 
@@ -184,7 +184,7 @@ BitcoinPIR's Rust call surface is almost entirely through the high-level
 `onion_*` C symbols, so the rename impact at the Rust level is small.
 The compile errors will fall out of `cargo check`. Expected fix scope:
 < 20 sed-style edits across `crates/sdk/client/src/onion*.rs`,
-`runtime/src/bin/{unified_server,onionpir_client,onionpir_bench}.rs`.
+`apps/server/src/bin/{unified_server,onionpir_client,onionpir_bench}.rs`.
 
 Note `OnionPirParamsInfo` has a new `rns_mod_count` field between
 `poly_degree` and `coeff_val_cnt`. Read it but don't pretend it doesn't
@@ -209,7 +209,7 @@ the high-level Rust API shields most of this, but anything that
 hand-builds a wire frame needs auditing.
 
 Spots in BitcoinPIR that touch raw bytes:
-* `runtime/src/bin/unified_server.rs` — INDEX / CHUNK answer payloads
+* `apps/server/src/bin/unified_server.rs` — INDEX / CHUNK answer payloads
   pushed over WS. The wire shape is set by `PirServer::save_resp_to_stream`
   (internal); BitcoinPIR doesn't need to know the inner format, but the
   byte count and frame boundaries matter for `[harmony-hint-*]`-style
@@ -225,7 +225,7 @@ unpacked bytes — it returns a raw plaintext encoded as
 treat the return as `Vec<u8>` of entry bytes. **These will compile
 unchanged but decode garbage.** Inverse bit-unpacking with
 `bits_per_coeff = PlainMod - 1` (read `PlainMod` from `params_info`) must
-be added in app code — likely a new helper in `runtime/src/onionpir.rs`
+be added in app code — likely a new helper in `apps/server/src/onionpir.rs`
 or `crates/protocol/core/src/`.
 
 The integration doc gives the packing recipe at lines 80-94; the
@@ -296,7 +296,7 @@ across a process or page lifecycle**:
 | Layer | Persistence | Impact |
 |---|---|---|
 | `pir-sdk-client::onion::FheState` | in-memory `Vec<u8>`, dropped on session close | none |
-| `runtime/src/bin/onionpir_client.rs` | freshly generated per CLI invocation | none |
+| `apps/server/src/bin/onionpir_client.rs` | freshly generated per CLI invocation | none |
 | `web/src/onionpir_client.ts::fheSecretKey` | in-memory only; not written to localStorage / IndexedDB / sessionStorage | none |
 | `crates/sdk/client/tests/` | tests generate keys at runtime; no committed blob fixtures | none |
 | `web/src/__tests__/` | same — no committed key fixtures | none |
@@ -345,7 +345,7 @@ Spots:
   `project_reconnection_work.md` in memory) will fail to restore — design
   needs a version field on the persisted blob and a "re-keying needed"
   path.
-* `runtime/src/bin/onionpir_client.rs` standalone client — easy: just
+* `apps/server/src/bin/onionpir_client.rs` standalone client — easy: just
   generate fresh.
 * `crates/sdk/client/tests/leakage_integration_test.rs` and the wasm test
   fixtures — regenerate, no production impact.
@@ -356,7 +356,7 @@ Client-side hardcoded `PACKED_ENTRY_SIZE = 3840` constants replaced
 with `packed_entry_size()` helpers that read
 `onionpir::params_info(0).entry_size` at runtime. Touched
 `crates/sdk/client/src/onion.rs` (the public client) and
-`runtime/src/bin/onionpir_client.rs` (the standalone CLI). After commit
+`apps/server/src/bin/onionpir_client.rs` (the standalone CLI). After commit
 2's `onion_unpack` lands, the decoded bin is exactly
 `pinfo.entry_size` bytes, so the pre-port "if len ≥ PACKED_ENTRY_SIZE
 then trim else full" guard collapses to just hashing the full slice.
@@ -472,7 +472,7 @@ Action items:
 
 **SharedKeyStore (§2.1):** zero code change required. Commit 1's
 mechanical-rename sweep already updated every `KeyStore` call site
-in `runtime/src/bin/unified_server.rs` to the post-port shape:
+in `apps/server/src/bin/unified_server.rs` to the post-port shape:
 
   Old (pre-port)                        New (post-port, in tree today)
   -------------------------------       -----------------------------------
@@ -679,7 +679,7 @@ the rev of `pir-sdk-wasm` that was built.
 
 ## 5. Open questions
 
-1. **`KeyStore` collision** — `runtime/src/bin/unified_server.rs:42`
+1. **`KeyStore` collision** — `apps/server/src/bin/unified_server.rs:42`
    already imports `KeyStore` from the pre-port `onionpir` crate. Does
    that name still exist in the post-port API, or is the symbol
    `SharedKeyStore` now? Re-check after rev bump.

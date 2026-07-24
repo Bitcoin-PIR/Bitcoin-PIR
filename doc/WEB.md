@@ -46,7 +46,7 @@ verification live below the WASM boundary.
 ## File Structure
 
 ```
-runtime/src/
+apps/server/src/
 ├── bin/
 │   ├── server.rs          # WebSocket server
 │   └── client.rs          # WebSocket CLI client

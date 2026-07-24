@@ -84,7 +84,7 @@ impl TreeTop {
 
 /// Parse the tree-tops blob returned by `REQ_BUCKET_MERKLE_TREE_TOPS` (0x34).
 ///
-/// Wire format — must match `runtime/src/bin/unified_server.rs` and the
+/// Wire format — must match `apps/server/src/bin/unified_server.rs` and the
 /// Rust-native parser in `pir-sdk-client::merkle_verify::parse_tree_tops`:
 ///
 /// ```text

@@ -13,16 +13,16 @@ name = "bpir-admin"
 path = "src/main.rs"
 
 [dependencies]
-pir-core = { path = "../crates/protocol/core" }
-pir-sdk = { path = "../crates/sdk/core" }
-pir-sdk-client = { path = "../crates/sdk/client" }
+pir-core = { path = "../../crates/protocol/core" }
+pir-sdk = { path = "../../crates/sdk/core" }
+pir-sdk-client = { path = "../../crates/sdk/client" }
 # Used by `generate-identity` + `sign-identity` subcommands to build
 # IdentityCert blobs the server consumes.
-pir-identity = { path = "../crates/trust/identity" }
+pir-identity = { path = "../../crates/trust/identity" }
 # Slice D: parse the SNP report locally so `bpir-admin show-vcek-url`
 # can extract chip_id + TCB and print the AMD KDS curl commands.
-pir-attest-verify = { path = "../crates/trust/attest-verify" }
-pir-db-attest = { path = "../crates/trust/db-attest" }
+pir-attest-verify = { path = "../../crates/trust/attest-verify" }
+pir-db-attest = { path = "../../crates/trust/db-attest" }
 
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
@@ -35,4 +35,4 @@ toml = "0.8"
 tempfile = "3"
 # Used by upload-side tests to confirm the bytes we emit parse and
 # verify cleanly via the same parser the server runs.
-pir-runtime-core = { path = "../crates/protocol/runtime" }
+pir-runtime-core = { path = "../../crates/protocol/runtime" }

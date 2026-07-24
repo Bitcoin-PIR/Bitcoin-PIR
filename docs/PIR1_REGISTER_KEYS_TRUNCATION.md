@@ -5,7 +5,7 @@ the single ~3.1 MB `RegisterKeys` WebSocket message — confirmed and
 fixed: transport-level message chunking landed in commit `49db31da`.
 Messages over 256 KB are split into `[4B len][0xc7][seq][total][piece]`
 frames the peer reassembles (`crates/sdk/client/src/connection.rs`,
-`runtime/src/bin/unified_server.rs`, `web/src/ws.ts`). Deployed to
+`apps/server/src/bin/unified_server.rs`, `web/src/ws.ts`). Deployed to
 pir1 + pir2; OnionPIR verified end-to-end over Cloudflare with both
 the Rust and browser clients. The debugging history below is retained
 for context.

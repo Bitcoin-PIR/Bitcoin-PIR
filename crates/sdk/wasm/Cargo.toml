@@ -19,7 +19,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 # `fastprp` enables PRP_FASTPRP support in the upstream HarmonyPIR remote client,
 # matching the runtime server's default PRP backend
-# (`runtime/src/bin/unified_server.rs:1986` →
+# (`apps/server/src/bin/unified_server.rs:1986` →
 # `harmonypir::remote::PRP_FASTPRP`). Without this feature the WASM client now
 # rejects a PRP_FASTPRP hint stream instead of constructing HMR12 state with
 # a different permutation. The explicit failure is required because a silent
