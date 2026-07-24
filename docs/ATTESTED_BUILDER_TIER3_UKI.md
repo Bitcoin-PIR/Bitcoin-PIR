@@ -3,8 +3,9 @@
 This runbook is for the temporary VPSBG SEV-SNP builder image. It is separate
 from the production pir2 Tier 3 UKI. The builder UKI has no sshd, no
 cloudflared, and no runit service tree. It boots, mounts `/home/pir/data`, runs
-`pir-attested-builder` once in roots-only mode, writes Merkle roots, the root
-payload, manifests, and SEV-SNP evidence, then powers off. It does not produce a
+one selected attested-builder workflow, writes SEV-SNP evidence, then powers
+off. It supports both a roots-only snapshot build and a v2 re-attestation scan
+of retained production serving images. Neither mode produces a new
 server-loadable BitcoinPIR database.
 
 ## Build the UKI on VPSBG Slice 2
@@ -55,7 +56,44 @@ sudo ATTESTED_BUILDER_REPO=/home/pir/bitcoin-pir/attested-builder \
   ./scripts/build_uki_attested_builder_tier3.sh
 ```
 
-## Provision Runtime Inputs
+## Provision v2 re-attestation inputs
+
+This mode scans db 0 and db 1 in sequence. It validates the retained cuckoo,
+bin-hash, Merkle, preprocessed INDEX/NTT, and sibling images; binds their exact
+hashes into each v2 payload; obtains a new SNP report; and verifies the result
+inside the guest. It does not rebuild either database.
+
+```bash
+sudo mkdir -p /home/pir/data/attested-builder-runs
+sudo tee /home/pir/data/attested-builder/config.env >/dev/null <<'CONFIG'
+MODE=reattest-existing-v2
+RUN_ID=db-proof-v2-948454
+V2_JOB_COUNT=2
+V2_DB0_PREDECESSOR_PROOF_DIR=/home/pir/data/attestations/mainnet_948454_sev_snp
+V2_DB0_ARTIFACT_DIR=/home/pir/data/checkpoints/948454_deterministic
+V2_DB0_OUT_DIR=/home/pir/data/attestations/mainnet_948454_v2_sev_snp
+V2_DB1_PREDECESSOR_PROOF_DIR=/home/pir/data/attestations/delta_940611_948454_sev_snp
+V2_DB1_ARTIFACT_DIR=/home/pir/data/deltas/940611_948454_canonical_20260615
+V2_DB1_OUT_DIR=/home/pir/data/attestations/delta_940611_948454_v2_sev_snp
+CONFIG
+```
+
+All configured paths must be under `/home/pir/data`. Output directories must
+not already exist. Set `V2_JOB_COUNT=1` and use the db0 variables when
+intentionally running or retrying only one database.
+
+Successful outputs are written to the two configured output directories, with
+convenience links at:
+
+```text
+/home/pir/data/attested-builder-runs/v2-db0-latest
+/home/pir/data/attested-builder-runs/v2-db1-latest
+```
+
+Each directory includes `build-evidence.bin`, the SNP report and report data,
+`root-bundle-payload.bin`, `build-evidence.verify.txt`, and `SHA256SUMS`.
+
+## Provision roots-only rebuild inputs
 
 Prepare these while the server is still in Slice 2:
 
@@ -64,6 +102,7 @@ sudo mkdir -p /home/pir/data/attested-builder/inputs
 sudo mkdir -p /home/pir/data/attested-builder-runs
 sudo tee /home/pir/data/attested-builder/config.env >/dev/null <<'CONFIG'
 SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<height>.dat
+MODE=full-build
 EXPECTED_MUHASH=<64-byte-Core-display-muhash>
 NETWORK_MAGIC=f9beb4d9
 ANCHOR_HEIGHT=<height>
