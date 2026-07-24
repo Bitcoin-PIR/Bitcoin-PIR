@@ -3,7 +3,7 @@ name: Build Reproducibility
 # Hermetic cross-build determinism gate for the chain-derived-seed
 # reproducibility guarantee (docs/BUILD_REPRODUCIBILITY.md).
 #
-# `pir-core/tests/cross_build_determinism.rs` builds a small synthetic
+# `crates/protocol/core/tests/cross_build_determinism.rs` builds a small synthetic
 # UTXO fixture through the real INDEX/CHUNK cuckoo primitives twice at a
 # fixed ChainAnchor and asserts the serialized bytes are identical, plus
 # that a different anchor reshuffles the body (the chain-derived seed
@@ -22,12 +22,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pir-core/**'
+      - 'crates/protocol/core/**'
       - '.github/workflows/build-determinism.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'pir-core/**'
+      - 'crates/protocol/core/**'
       - '.github/workflows/build-determinism.yml'
   workflow_dispatch:
 

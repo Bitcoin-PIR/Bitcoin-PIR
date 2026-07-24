@@ -93,7 +93,7 @@ DPF key bytes formula:
 
 Main DB has `dpf_n=20` for INDEX (565K bins ⇒ 268 B/key) and
 `dpf_n=21` for CHUNK (1.06M bins ⇒ 286 B/key). Slot constants from
-[`pir-core/src/params.rs`](../pir-core/src/params.rs):
+[`crates/protocol/core/src/params.rs`](../crates/protocol/core/src/params.rs):
 `INDEX_SLOT_SIZE=13, INDEX_SLOTS_PER_BIN=4` (52 B/bin) and
 `CHUNK_SLOT_SIZE=44, CHUNK_SLOTS_PER_BIN=3` (132 B/bin).
 

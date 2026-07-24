@@ -1,6 +1,6 @@
 /**
  * Vitest cross-language harness for `web/src/onion-unpack.ts` mirroring
- * the 8 Rust unit tests at `pir-core/src/onion_unpack.rs`. Failure
+ * the 8 Rust unit tests at `crates/protocol/core/src/onion_unpack.rs`. Failure
  * modes the suite covers:
  *
  *   - bits_per_coeff math (default + edge cases)

@@ -34,7 +34,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pir-core/**'
+      - 'crates/protocol/**'
       - 'crates/sdk/core/**'
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
@@ -44,7 +44,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'pir-core/**'
+      - 'crates/protocol/**'
       - 'crates/sdk/core/**'
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
