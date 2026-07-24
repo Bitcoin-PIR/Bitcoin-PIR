@@ -161,10 +161,11 @@ After that milestone merges, use this order:
    into `proof-registry`. Add `verification/locks/generated-proofs.json`, rerun
    the current consumer verifier in this repository, and generate browser
    assets from the lock before deleting the original files.
-2. Reconcile the two `rootbundle` implementations. First add CI, shared golden
-   vectors, compatibility tests, and protected releases to `attested-builder`;
-   then pin an exact commit here and remove the nested copy only after existing
-   production bundles still verify.
+2. Reconcile the two `rootbundle` implementations. **Complete:**
+   `attested-builder` now has CI, shared golden vectors, compatibility tests,
+   and protected `rootbundle-v*` releases; this repository pins the exact
+   release commit and verifies retained production payloads before removing
+   the nested copy.
 3. Merge the remaining `pdf/` source changes into `Bitcoin-PIR/whitepaper` and
    delete the generated-paper copy here after a reproducible build comparison.
 4. Move in-repository crates in small path-only pull requests: trust crates,
@@ -179,7 +180,7 @@ After that milestone merges, use this order:
 7. Treat full builder extraction and `vendor/` replacement as the final phase,
    gated on byte-identical output and a fresh hermetic offline build.
 
-`attested-builder/rootbundle`, `web/public/proofs`, and `pdf` are the remaining
-duplicate sources of truth. Root-level production crates are primarily a
-layout problem and should be grouped in this repository rather than split into
-many tightly coupled repositories.
+`web/public/proofs` and `pdf` are the remaining duplicate sources of truth.
+Root-level production crates are primarily a layout problem and should be
+grouped in this repository rather than split into many tightly coupled
+repositories.

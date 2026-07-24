@@ -1723,6 +1723,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "rootbundle",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
@@ -2185,9 +2186,10 @@ dependencies = [
 [[package]]
 name = "rootbundle"
 version = "0.1.0"
+source = "git+https://github.com/Bitcoin-PIR/attested-builder.git?rev=80ad9b185760d2e36fd24baef50dd3030af8e94f#80ad9b185760d2e36fd24baef50dd3030af8e94f"
 dependencies = [
  "ed25519-dalek",
- "hex",
+ "sha2",
 ]
 
 [[package]]

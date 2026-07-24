@@ -83,7 +83,9 @@ PRs #61, #62, and #63. Continue in the order defined by
 
 - [x] Move immutable generated proof bundles into `proof-registry` and add
       `verification/locks/generated-proofs.json` plus consumer re-verification.
-- [ ] Reconcile the duplicate `rootbundle` implementations.
+- [x] Reconcile the duplicate `rootbundle` implementations: pin the protected
+      `attested-builder` release, verify shared golden and retained production
+      payloads, and remove the nested copy.
 - [ ] Move remaining `pdf/` sources into `Bitcoin-PIR/whitepaper` after a
       reproducible build comparison.
 - [ ] Group remaining in-repository crates/apps/tools in small path-only PRs.
