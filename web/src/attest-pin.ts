@@ -126,26 +126,28 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-07-22.
- * Built by `scripts/build_uki_tier3.sh` on the Hetzner build host:
- * VPSBG kernel 7.0.0-15 + the ORAM-enabled `unified_server`
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 ORAM UKI, pinned 2026-07-24.
+ * Built by `scripts/build_uki_tier3.sh` on VPSBG and archived on Hetzner:
+ * VPSBG kernel 7.0.0-28 + the ORAM-enabled `unified_server`
  * binary baked into the initramfs.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 ORAM UKI — 2026-07-22. Built from BitcoinPIR commit
-  // 837108b65374c3c05f876c1d57914e05f106c6a8:
+  // Tier 3 ORAM UKI — 2026-07-24. The measured startup script is from
+  // BitcoinPIR commit 7b6cf108da189cc3b693c3f004612dcd90a80a0f; the unchanged
+  // unified_server binary is from commit
+  // 66034c8204e19b11b8c0602aa625c2414095deb2:
   // unified_server serves db-proof query traffic and direct ORAM lookup
   // for db_id 0/1 as pir2 query-only (`--serve-queries`, no hint pool,
   // no OnionPIR) plus `--identity-*` (operator-signed identity,
   // server_id=pir2). MEASUREMENT captured from the live Tier 3 deploy via
   // `bpir-admin attest wss://weikeng2.bitcoinpir.org` after uploading
-  // UKI sha256 `3d511f88ea065ac564b8838e69d904acd1fd21d63eff1d0a5768e80c1dcaa6ce`
+  // UKI sha256 `5b8548888b5b5f8eabee5002c263179dd9b2efa8ad135efb1aefe79c3d17b13e`
   // (SEV-SNP REPORT_DATA binding verified on
   // real hardware).
   measurementHex:
-    '478fb4acdf0bd505bccfab14f46d7d81e19d782b19480433f7716c27872a003742b0e7ff8f787195533a39514887c3f7',
+    'a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86',
   binarySha256Hex:
-    '61d74a9ce4f97b3563ce76b5e2b1a0fba0d0e6c8f9934ae95b404ededac5f178',
+    '1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37',
   description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 ORAM UKI)',
 };
 
