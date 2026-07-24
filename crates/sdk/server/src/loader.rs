@@ -51,6 +51,17 @@ impl DatabaseLoader {
                 ))
             })?);
         }
+        if let Some(proof_dir) = entry.proof_v2_dir.as_ref() {
+            mapped.db_proof_v2 =
+                Some(load_database_proof_bundle(db_id, proof_dir).map_err(|e| {
+                    PirError::Config(format!(
+                        "failed to load db proof v2 for {} from {}: {}",
+                        entry.name,
+                        proof_dir.display(),
+                        e
+                    ))
+                })?);
+        }
 
         // Chain anchor (Phase C): mirror the catalog wire convention —
         // kind 0 = none, 1 = snapshot (36B ChainAnchor), 2 = delta (72B

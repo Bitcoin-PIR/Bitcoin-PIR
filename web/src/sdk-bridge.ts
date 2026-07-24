@@ -113,6 +113,15 @@ interface PirSdkWasm {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): WasmDatabaseProof;
+  /** V2-only proof verifier used by strict standalone OnionPIR. */
+  verifyDatabaseProofV2Response(
+    responseFrame: Uint8Array,
+    catalog: WasmDatabaseCatalog,
+    expectedDbId: number,
+    expectedParamsHashHex?: string | null,
+    allowedBuilderBinarySha256Hex?: string | null,
+    allowedBuilderGitCommit?: string | null,
+  ): WasmDatabaseProof;
   // ARC (Anonymous Rate-limited Credentials) presentation state. Opaque
   // wrapper over the Rust `arc::PresentationState`; mirrored in TS by
   // `web/src/credential-manager.ts::ArcCredentialManager`. The constructor
@@ -406,6 +415,12 @@ export interface WasmDatabaseProof {
   readonly builderBinarySha256Hex: string;
   readonly builderGitCommit: string;
   readonly onionEntrySize: number;
+  readonly proofVersion?: number;
+  readonly onionTotalPackedEntries?: number;
+  readonly onionIndexBinsPerTable?: number;
+  readonly onionChunkBinsPerTable?: number;
+  readonly onionIndexSlotsPerBin?: number;
+  readonly onionIndexSlotSize?: number;
   toJson(): any;
 }
 

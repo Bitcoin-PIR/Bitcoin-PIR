@@ -267,6 +267,9 @@ pub struct MappedDatabase {
     /// Optional attested-builder proof sidecar served via REQ_GET_DB_PROOF.
     /// The runtime only transports this bundle; clients/admin tooling verify it.
     pub db_proof: Option<DatabaseProofBundle>,
+    /// Optional v2 sidecar served separately so strict v2 clients never fall
+    /// back to a v1 proof that omits the complete Onion query layout.
+    pub db_proof_v2: Option<DatabaseProofBundle>,
 }
 
 impl MappedDatabase {
@@ -407,6 +410,7 @@ impl MappedDatabase {
             bucket_merkle_tree_tops, bucket_merkle_roots, bucket_merkle_root,
             manifest, manifest_root,
             db_proof: None,
+            db_proof_v2: None,
         }
     }
 

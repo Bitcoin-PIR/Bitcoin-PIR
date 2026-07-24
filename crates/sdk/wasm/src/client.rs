@@ -37,9 +37,10 @@ use pir_sdk_client::attest::{AttestVerification, SevStatus};
 #[cfg(target_arch = "wasm32")]
 use pir_sdk_client::HintProgress;
 use pir_sdk_client::{
-    verify_database_proof_response as verify_database_proof_response_payload, DatabaseProofPolicy,
-    DpfClient, HarmonyClient, OramClient, RootPolicy, VerifiedDatabaseRoots, PRP_FASTPRP,
-    PRP_HMR12,
+    verify_database_proof_response as verify_database_proof_response_payload,
+    verify_database_proof_v2_response as verify_database_proof_v2_response_payload,
+    DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, RootPolicy, VerifiedDatabaseRoots,
+    PRP_FASTPRP, PRP_HMR12,
 };
 use wasm_bindgen::prelude::*;
 
@@ -171,6 +172,7 @@ fn database_proof_policy(
 }
 
 fn database_proof_json(roots: &VerifiedDatabaseRoots) -> serde_json::Value {
+    let onion = roots.onion_layout_v2;
     serde_json::json!({
         "dbId": roots.db_id,
         "buildKind": pir_db_attest::build_kind_label(roots.build_kind),
@@ -182,6 +184,12 @@ fn database_proof_json(roots: &VerifiedDatabaseRoots) -> serde_json::Value {
         "bucketSuperRootHex": roots.bucket_super_root_hex(),
         "onionSuperRootHex": roots.onion_super_root_hex(),
         "onionEntrySize": roots.onion_entry_size,
+        "proofVersion": if onion.is_some() { 2 } else { 1 },
+        "onionTotalPackedEntries": onion.map(|layout| layout.total_packed_entries),
+        "onionIndexBinsPerTable": onion.map(|layout| layout.index_bins_per_table),
+        "onionChunkBinsPerTable": onion.map(|layout| layout.chunk_bins_per_table),
+        "onionIndexSlotsPerBin": onion.map(|layout| layout.index_slots_per_bin),
+        "onionIndexSlotSize": onion.map(|layout| layout.index_slot_size),
         "paramsHashHex": hex_encode(&roots.params_hash),
         "networkMagicHex": hex_encode(&roots.network_magic),
         "builderBinarySha256Hex": hex_encode(&roots.builder_binary_sha256),
@@ -966,6 +974,50 @@ impl WasmDatabaseProof {
         self.inner.onion_entry_size
     }
 
+    #[wasm_bindgen(getter, js_name = proofVersion)]
+    pub fn proof_version(&self) -> u8 {
+        if self.inner.onion_layout_v2.is_some() {
+            2
+        } else {
+            1
+        }
+    }
+
+    #[wasm_bindgen(getter, js_name = onionTotalPackedEntries)]
+    pub fn onion_total_packed_entries(&self) -> Option<u32> {
+        self.inner
+            .onion_layout_v2
+            .map(|layout| layout.total_packed_entries)
+    }
+
+    #[wasm_bindgen(getter, js_name = onionIndexBinsPerTable)]
+    pub fn onion_index_bins_per_table(&self) -> Option<u32> {
+        self.inner
+            .onion_layout_v2
+            .map(|layout| layout.index_bins_per_table)
+    }
+
+    #[wasm_bindgen(getter, js_name = onionChunkBinsPerTable)]
+    pub fn onion_chunk_bins_per_table(&self) -> Option<u32> {
+        self.inner
+            .onion_layout_v2
+            .map(|layout| layout.chunk_bins_per_table)
+    }
+
+    #[wasm_bindgen(getter, js_name = onionIndexSlotsPerBin)]
+    pub fn onion_index_slots_per_bin(&self) -> Option<u16> {
+        self.inner
+            .onion_layout_v2
+            .map(|layout| layout.index_slots_per_bin)
+    }
+
+    #[wasm_bindgen(getter, js_name = onionIndexSlotSize)]
+    pub fn onion_index_slot_size(&self) -> Option<u16> {
+        self.inner
+            .onion_layout_v2
+            .map(|layout| layout.index_slot_size)
+    }
+
     #[wasm_bindgen(getter, js_name = paramsHashHex)]
     pub fn params_hash_hex(&self) -> String {
         hex_encode(&self.inner.params_hash)
@@ -1027,6 +1079,32 @@ pub fn verify_database_proof_response(
         allowed_builder_git_commit,
     )?;
     let roots = verify_database_proof_response_payload(db_info, response_payload, &policy)
+        .map_err(err_to_js)?;
+    Ok(WasmDatabaseProof { inner: roots })
+}
+
+/// Strict OnionPIR verifier. It accepts only the v2 opcode/bundle/evidence
+/// stack and therefore cannot silently fall back to a v1 proof.
+#[wasm_bindgen(js_name = verifyDatabaseProofV2Response)]
+pub fn verify_database_proof_v2_response(
+    response_frame: &[u8],
+    catalog: &WasmDatabaseCatalog,
+    expected_db_id: u8,
+    expected_params_hash_hex: Option<String>,
+    allowed_builder_binary_sha256_hex: Option<String>,
+    allowed_builder_git_commit: Option<String>,
+) -> Result<WasmDatabaseProof, JsError> {
+    let response_payload =
+        database_proof_payload_from_frame(response_frame).map_err(|e| JsError::new(&e))?;
+    let db_info = catalog.inner().get(expected_db_id).ok_or_else(|| {
+        JsError::new(&format!("database {} not found in catalog", expected_db_id))
+    })?;
+    let policy = database_proof_policy(
+        expected_params_hash_hex,
+        allowed_builder_binary_sha256_hex,
+        allowed_builder_git_commit,
+    )?;
+    let roots = verify_database_proof_v2_response_payload(db_info, response_payload, &policy)
         .map_err(err_to_js)?;
     Ok(WasmDatabaseProof { inner: roots })
 }
@@ -2684,6 +2762,7 @@ mod tests {
             bucket_super_root: [3; 32],
             onion_super_root: [4; 32],
             onion_entry_size: 3328,
+            onion_layout_v2: None,
             params_hash: [5; 32],
             network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
             builder_binary_sha256: [6; 32],
@@ -2694,6 +2773,38 @@ mod tests {
         assert_eq!(json["onionEntrySize"], 3328);
         let proof = WasmDatabaseProof { inner: roots };
         assert_eq!(proof.onion_entry_size(), 3328);
+    }
+
+    #[test]
+    fn database_proof_v2_exposes_typed_onion_layout() {
+        let layout = pir_db_attest::OnionQueryLayoutV2::current(
+            948_640, 10_273, 37_954, 3_328,
+        );
+        let roots = VerifiedDatabaseRoots {
+            db_id: 0,
+            build_kind: pir_db_attest::BuildKind::Snapshot,
+            from_height: 0,
+            from_block_hash: [0; 32],
+            height: 948_454,
+            block_hash: [1; 32],
+            muhash: [2; 32],
+            bucket_super_root: [3; 32],
+            onion_super_root: [4; 32],
+            onion_entry_size: 3328,
+            onion_layout_v2: Some(layout),
+            params_hash: [5; 32],
+            network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
+            builder_binary_sha256: [6; 32],
+            builder_git_commit: "test-v2".into(),
+        };
+
+        let json = database_proof_json(&roots);
+        assert_eq!(json["proofVersion"], 2);
+        assert_eq!(json["onionTotalPackedEntries"], 948_640);
+        let proof = WasmDatabaseProof { inner: roots };
+        assert_eq!(proof.proof_version(), 2);
+        assert_eq!(proof.onion_index_bins_per_table(), Some(10_273));
+        assert_eq!(proof.onion_chunk_bins_per_table(), Some(37_954));
     }
 
     #[test]

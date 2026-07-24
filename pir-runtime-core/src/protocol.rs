@@ -65,6 +65,7 @@ pub const REQ_GET_DB_CATALOG: u8 = 0x02;
 /// (`REQ_GET_INFO_JSON`), even though that opcode is not represented in this
 /// core enum. Keep DB proof on 0x0a to avoid colliding with OnionPIR clients.
 pub const REQ_GET_DB_PROOF: u8 = 0x0a;
+pub const REQ_GET_DB_PROOF_V2: u8 = 0x0c;
 
 // 0x04 is retired (former mmap residency diagnostic). Keep it unassigned so
 // older clients receive the normal unsupported-request response rather than a
@@ -202,6 +203,7 @@ pub const RESP_PONG: u8 = 0x00;
 pub const RESP_INFO: u8 = 0x01;
 pub const RESP_DB_CATALOG: u8 = 0x02;
 pub const RESP_DB_PROOF: u8 = 0x0a;
+pub const RESP_DB_PROOF_V2: u8 = 0x0c;
 pub const RESP_ATTEST: u8 = 0x05;
 pub const RESP_HANDSHAKE: u8 = 0x06;
 pub const RESP_ANNOUNCE: u8 = 0x07;
@@ -461,6 +463,7 @@ pub struct DatabaseProofBundle {
 }
 
 pub const DATABASE_PROOF_BUNDLE_VERSION: u16 = 1;
+pub const DATABASE_PROOF_BUNDLE_VERSION_V2: u16 = 2;
 
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -468,6 +471,9 @@ pub enum Request {
     GetInfo,
     GetDbCatalog,
     GetDbProof {
+        db_id: u8,
+    },
+    GetDbProofV2 {
         db_id: u8,
     },
     /// Attestation request — 32-byte client-supplied nonce gets folded
@@ -714,6 +720,7 @@ pub enum Response {
     Info(ServerInfo),
     DbCatalog(DatabaseCatalog),
     DbProof(DatabaseProofBundle),
+    DbProofV2(DatabaseProofBundle),
     Attest(AttestResult),
     /// Server's reply to `Request::Handshake`. Carries the per-session
     /// X25519 ephemeral pubkey. After this exchange both sides have the
@@ -761,6 +768,10 @@ impl Request {
             }
             Request::GetDbProof { db_id } => {
                 payload.push(REQ_GET_DB_PROOF);
+                payload.push(*db_id);
+            }
+            Request::GetDbProofV2 { db_id } => {
+                payload.push(REQ_GET_DB_PROOF_V2);
                 payload.push(*db_id);
             }
             Request::Attest { nonce } => {
@@ -904,6 +915,15 @@ impl Request {
                     ));
                 }
                 Ok(Request::GetDbProof { db_id: data[1] })
+            }
+            REQ_GET_DB_PROOF_V2 => {
+                if data.len() != 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "db proof v2 request must carry exactly one db_id byte",
+                    ));
+                }
+                Ok(Request::GetDbProofV2 { db_id: data[1] })
             }
             REQ_ATTEST => {
                 if data.len() < 1 + 32 {
@@ -1082,7 +1102,11 @@ impl Response {
             }
             Response::DbProof(bundle) => {
                 payload.push(RESP_DB_PROOF);
-                encode_db_proof_bundle(&mut payload, bundle);
+                encode_db_proof_bundle(&mut payload, bundle, DATABASE_PROOF_BUNDLE_VERSION);
+            }
+            Response::DbProofV2(bundle) => {
+                payload.push(RESP_DB_PROOF_V2);
+                encode_db_proof_bundle(&mut payload, bundle, DATABASE_PROOF_BUNDLE_VERSION_V2);
             }
             Response::Attest(r) => {
                 payload.push(RESP_ATTEST);
@@ -1225,8 +1249,12 @@ impl Response {
                 Ok(Response::DbCatalog(cat))
             }
             RESP_DB_PROOF => {
-                let bundle = decode_db_proof_bundle(&data[1..])?;
+                let bundle = decode_db_proof_bundle(&data[1..], DATABASE_PROOF_BUNDLE_VERSION)?;
                 Ok(Response::DbProof(bundle))
+            }
+            RESP_DB_PROOF_V2 => {
+                let bundle = decode_db_proof_bundle(&data[1..], DATABASE_PROOF_BUNDLE_VERSION_V2)?;
+                Ok(Response::DbProofV2(bundle))
             }
             RESP_ATTEST => {
                 let r = decode_attest_result(&data[1..])?;
@@ -2172,8 +2200,8 @@ fn decode_db_catalog(data: &[u8]) -> io::Result<DatabaseCatalog> {
 
 // ─── Database proof encoding helpers ───────────────────────────────────────
 
-fn encode_db_proof_bundle(buf: &mut Vec<u8>, bundle: &DatabaseProofBundle) {
-    buf.extend_from_slice(&DATABASE_PROOF_BUNDLE_VERSION.to_le_bytes());
+fn encode_db_proof_bundle(buf: &mut Vec<u8>, bundle: &DatabaseProofBundle, version: u16) {
+    buf.extend_from_slice(&version.to_le_bytes());
     buf.push(bundle.db_id);
     encode_lp_bytes_u32(buf, &bundle.build_evidence);
     encode_lp_bytes_u32(buf, &bundle.root_bundle_payload);
@@ -2183,7 +2211,7 @@ fn encode_db_proof_bundle(buf: &mut Vec<u8>, bundle: &DatabaseProofBundle) {
     encode_lp_bytes_u32(buf, &bundle.server_db_manifest_toml);
 }
 
-fn decode_db_proof_bundle(data: &[u8]) -> io::Result<DatabaseProofBundle> {
+fn decode_db_proof_bundle(data: &[u8], expected_version: u16) -> io::Result<DatabaseProofBundle> {
     if data.len() < 3 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -2191,7 +2219,7 @@ fn decode_db_proof_bundle(data: &[u8]) -> io::Result<DatabaseProofBundle> {
         ));
     }
     let version = u16::from_le_bytes(data[0..2].try_into().unwrap());
-    if version != DATABASE_PROOF_BUNDLE_VERSION {
+    if version != expected_version {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unsupported db proof bundle version: {}", version),
@@ -2709,6 +2737,20 @@ mod attest_wire_tests {
         match Response::decode(&encoded[4..]).unwrap() {
             Response::DbProof(decoded) => assert_eq!(decoded, bundle),
             other => panic!("wrong response variant: {:?}", other),
+        }
+
+        let req = Request::GetDbProofV2 { db_id: 9 };
+        let encoded = req.encode();
+        assert_eq!(encoded, vec![2, 0, 0, 0, REQ_GET_DB_PROOF_V2, 9]);
+        assert!(matches!(
+            Request::decode(&encoded[4..]).unwrap(),
+            Request::GetDbProofV2 { db_id: 9 }
+        ));
+        let encoded = Response::DbProofV2(bundle.clone()).encode();
+        assert_eq!(encoded[4], RESP_DB_PROOF_V2);
+        match Response::decode(&encoded[4..]).unwrap() {
+            Response::DbProofV2(decoded) => assert_eq!(decoded, bundle),
+            other => panic!("wrong v2 response variant: {:?}", other),
         }
     }
 

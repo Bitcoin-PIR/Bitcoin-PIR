@@ -5,14 +5,18 @@ use crate::protocol::{
 };
 use crate::transport::PirTransport;
 use pir_db_attest::{
-    build_kind_label, display_hash_hex, hex32, BuildKind, ChainAnchor as AttestedChainAnchor,
-    ProofBundle, ProofDirectory,
+    build_kind_label, display_hash_hex, hex32, BuildKind, BuildParamsV2,
+    ChainAnchor as AttestedChainAnchor, OnionQueryLayoutV2, ProofBundle, ProofDirectory,
+    EVIDENCE_VERSION_V2,
 };
 use pir_sdk::{DatabaseCatalog, DatabaseInfo, DatabaseKind, PirError, PirResult};
 
 pub const REQ_GET_DB_PROOF: u8 = 0x0a;
 pub const RESP_DB_PROOF: u8 = 0x0a;
+pub const REQ_GET_DB_PROOF_V2: u8 = 0x0c;
+pub const RESP_DB_PROOF_V2: u8 = 0x0c;
 pub const DATABASE_PROOF_BUNDLE_VERSION: u16 = 1;
+pub const DATABASE_PROOF_BUNDLE_VERSION_V2: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatabaseProofBundle {
@@ -67,6 +71,7 @@ pub struct VerifiedDatabaseRoots {
     pub bucket_super_root: [u8; 32],
     pub onion_super_root: [u8; 32],
     pub onion_entry_size: u32,
+    pub onion_layout_v2: Option<OnionQueryLayoutV2>,
     pub params_hash: [u8; 32],
     pub network_magic: [u8; 4],
     pub builder_binary_sha256: [u8; 32],
@@ -102,6 +107,15 @@ pub async fn fetch_database_proof(
     let request = encode_request(REQ_GET_DB_PROOF, &[db_id]);
     let response = transport.roundtrip(&request).await?;
     decode_database_proof_response(&response)
+}
+
+pub async fn fetch_database_proof_v2(
+    transport: &mut dyn PirTransport,
+    db_id: u8,
+) -> PirResult<DatabaseProofBundle> {
+    let request = encode_request(REQ_GET_DB_PROOF_V2, &[db_id]);
+    let response = transport.roundtrip(&request).await?;
+    decode_database_proof_v2_response(&response)
 }
 
 pub async fn fetch_database_catalog(
@@ -143,6 +157,20 @@ pub fn verify_database_proof(
     verify_against_catalog_and_policy(db_info, &verified, policy)
 }
 
+pub fn verify_database_proof_v2(
+    db_info: &DatabaseInfo,
+    bundle: &DatabaseProofBundle,
+    policy: &DatabaseProofPolicy,
+) -> PirResult<VerifiedDatabaseRoots> {
+    let roots = verify_database_proof(db_info, bundle, policy)?;
+    if roots.onion_layout_v2.is_none() {
+        return Err(PirError::VerificationFailed(
+            "strict OnionPIR requires database proof v2".into(),
+        ));
+    }
+    Ok(roots)
+}
+
 /// Decode and verify a raw `RESP_DB_PROOF` payload without owning a
 /// transport or client session.
 ///
@@ -162,20 +190,52 @@ pub fn verify_database_proof_response(
     verify_database_proof(db_info, &bundle, policy)
 }
 
+pub fn verify_database_proof_v2_response(
+    db_info: &DatabaseInfo,
+    response_payload: &[u8],
+    policy: &DatabaseProofPolicy,
+) -> PirResult<VerifiedDatabaseRoots> {
+    let bundle = decode_database_proof_v2_response(response_payload)?;
+    verify_database_proof_v2(db_info, &bundle, policy)
+}
+
 pub fn decode_database_proof_response(data: &[u8]) -> PirResult<DatabaseProofBundle> {
+    decode_database_proof_response_for(
+        data,
+        RESP_DB_PROOF,
+        DATABASE_PROOF_BUNDLE_VERSION,
+        "RESP_DB_PROOF (0x0a)",
+    )
+}
+
+pub fn decode_database_proof_v2_response(data: &[u8]) -> PirResult<DatabaseProofBundle> {
+    decode_database_proof_response_for(
+        data,
+        RESP_DB_PROOF_V2,
+        DATABASE_PROOF_BUNDLE_VERSION_V2,
+        "RESP_DB_PROOF_V2 (0x0c)",
+    )
+}
+
+fn decode_database_proof_response_for(
+    data: &[u8],
+    expected_opcode: u8,
+    expected_version: u16,
+    expected_label: &'static str,
+) -> PirResult<DatabaseProofBundle> {
     if data.is_empty() {
         return Err(PirError::Decode("db proof response empty".into()));
     }
     if data[0] == RESP_ERROR {
         return Err(PirError::ServerError(decode_error_message(data)));
     }
-    if data[0] != RESP_DB_PROOF {
+    if data[0] != expected_opcode {
         return Err(PirError::UnexpectedResponse {
-            expected: "RESP_DB_PROOF (0x0a)",
+            expected: expected_label,
             actual: format!("0x{:02x}", data[0]),
         });
     }
-    decode_database_proof_bundle(&data[1..])
+    decode_database_proof_bundle(&data[1..], expected_version)
 }
 
 fn verify_against_catalog_and_policy(
@@ -219,6 +279,27 @@ fn verify_against_catalog_and_policy(
     if let Some(expected) = policy.expected_params_hash {
         expect_arr("params_hash", &expected, &evidence.params_hash)?;
     }
+    let onion_layout_v2 = if evidence.version == EVIDENCE_VERSION_V2 {
+        let layout = evidence.onion_layout_v2.ok_or_else(|| {
+            PirError::VerificationFailed("v2 evidence missing typed Onion layout".into())
+        })?;
+        layout
+            .validate()
+            .map_err(|e| PirError::VerificationFailed(format!("invalid v2 Onion layout: {e}")))?;
+        let params = BuildParamsV2 {
+            index_bins_per_table: evidence.index_bins_per_table,
+            chunk_bins_per_table: evidence.chunk_bins_per_table,
+            onion: layout,
+        };
+        expect_arr(
+            "params_hash_v2",
+            &params.params_hash(),
+            &evidence.params_hash,
+        )?;
+        Some(layout)
+    } else {
+        None
+    };
     if !policy.allowed_builder_binary_sha256.is_empty()
         && !policy
             .allowed_builder_binary_sha256
@@ -259,6 +340,7 @@ fn verify_against_catalog_and_policy(
         bucket_super_root: evidence.bucket_super_root,
         onion_super_root: evidence.onion_super_root,
         onion_entry_size: evidence.onion_entry_size,
+        onion_layout_v2,
         params_hash: evidence.params_hash,
         network_magic: evidence.network_magic,
         builder_binary_sha256: evidence.builder_binary_sha256,
@@ -266,12 +348,15 @@ fn verify_against_catalog_and_policy(
     })
 }
 
-fn decode_database_proof_bundle(data: &[u8]) -> PirResult<DatabaseProofBundle> {
+fn decode_database_proof_bundle(
+    data: &[u8],
+    expected_version: u16,
+) -> PirResult<DatabaseProofBundle> {
     if data.len() < 3 {
         return Err(PirError::Decode("db proof bundle too short".into()));
     }
     let version = u16::from_le_bytes(data[0..2].try_into().unwrap());
-    if version != DATABASE_PROOF_BUNDLE_VERSION {
+    if version != expected_version {
         return Err(PirError::Decode(format!(
             "unsupported db proof bundle version: {}",
             version
@@ -563,6 +648,7 @@ mod tests {
         let all_artifacts_manifest_sha256 = b"all artifacts\n".to_vec();
         let server_db_manifest_toml = b"[[file]]\npath='batch_pir_cuckoo.bin'\n".to_vec();
         let evidence = pir_db_attest::BuildEvidence {
+            version: pir_db_attest::EVIDENCE_VERSION_V1,
             builder_git_commit: "abc123".into(),
             builder_binary_sha256: [1u8; 32],
             tee_platform: "sev-snp".into(),
@@ -594,9 +680,17 @@ mod tests {
             database_manifest_sha256: sha256(&database_manifest_sha256),
             all_artifacts_manifest_sha256: sha256(&all_artifacts_manifest_sha256),
             server_db_manifest_sha256: sha256(&server_db_manifest_toml),
+            evidence_mode: pir_db_attest::EvidenceMode::FullBuild,
+            predecessor_evidence_sha256: None,
+            predecessor_report_sha256: None,
+            onion_layout_v2: None,
         };
         let build_evidence = evidence.encode().unwrap();
-        let report_data = pir_db_attest::report_data_for_evidence_bytes(&build_evidence).unwrap();
+        let report_data = pir_db_attest::report_data_for_evidence_bytes(
+            pir_db_attest::EVIDENCE_VERSION_V1,
+            &build_evidence,
+        )
+        .unwrap();
         let mut sev_snp_report = vec![
             0u8;
             pir_db_attest::SEV_SNP_REPORT_DATA_OFFSET
@@ -649,9 +743,44 @@ mod tests {
         (bundle, db_info)
     }
 
-    fn encode_proof_response(bundle: &DatabaseProofBundle) -> Vec<u8> {
+    fn sample_bundle_v2() -> (DatabaseProofBundle, DatabaseInfo) {
+        let (mut bundle, db_info) = sample_bundle();
+        let mut evidence = pir_db_attest::BuildEvidence::decode(&bundle.build_evidence).unwrap();
+        let layout = OnionQueryLayoutV2::current(116_030, 965, 4_792, 3_328);
+        let params = BuildParamsV2 {
+            index_bins_per_table: evidence.index_bins_per_table,
+            chunk_bins_per_table: evidence.chunk_bins_per_table,
+            onion: layout,
+        };
+        let mut payload = RootBundlePayload::decode(&bundle.root_bundle_payload).unwrap();
+        payload.params_hash = params.params_hash();
+        bundle.root_bundle_payload = payload.encode().unwrap();
+        evidence.version = EVIDENCE_VERSION_V2;
+        evidence.evidence_mode = pir_db_attest::EvidenceMode::ReattestExisting;
+        evidence.predecessor_evidence_sha256 = Some([9u8; 32]);
+        evidence.predecessor_report_sha256 = Some([10u8; 32]);
+        evidence.onion_layout_v2 = Some(layout);
+        evidence.params_hash = params.params_hash();
+        evidence.root_bundle_payload_sha256 = sha256(&bundle.root_bundle_payload);
+        bundle.build_evidence = evidence.encode().unwrap();
+        let report_data = pir_db_attest::report_data_for_evidence_bytes(
+            EVIDENCE_VERSION_V2,
+            &bundle.build_evidence,
+        )
+        .unwrap();
+        bundle.sev_snp_report[pir_db_attest::SEV_SNP_REPORT_DATA_OFFSET
+            ..pir_db_attest::SEV_SNP_REPORT_DATA_OFFSET + pir_db_attest::SEV_SNP_REPORT_DATA_LEN]
+            .copy_from_slice(&report_data);
+        (bundle, db_info)
+    }
+
+    fn encode_proof_response_version(
+        bundle: &DatabaseProofBundle,
+        version: u16,
+        opcode: u8,
+    ) -> Vec<u8> {
         let mut body = Vec::new();
-        body.extend_from_slice(&DATABASE_PROOF_BUNDLE_VERSION.to_le_bytes());
+        body.extend_from_slice(&version.to_le_bytes());
         body.push(bundle.db_id);
         lp(&mut body, &bundle.build_evidence);
         lp(&mut body, &bundle.root_bundle_payload);
@@ -659,9 +788,13 @@ mod tests {
         lp(&mut body, &bundle.database_manifest_sha256);
         lp(&mut body, &bundle.all_artifacts_manifest_sha256);
         lp(&mut body, &bundle.server_db_manifest_toml);
-        let mut response = vec![RESP_DB_PROOF];
+        let mut response = vec![opcode];
         response.extend_from_slice(&body);
         response
+    }
+
+    fn encode_proof_response(bundle: &DatabaseProofBundle) -> Vec<u8> {
+        encode_proof_response_version(bundle, DATABASE_PROOF_BUNDLE_VERSION, RESP_DB_PROOF)
     }
 
     fn encode_catalog_response(db: &DatabaseInfo) -> Vec<u8> {
@@ -753,6 +886,62 @@ mod tests {
         assert_eq!(verified.db_id, db_info.db_id);
         assert_eq!(verified.onion_super_root, [8u8; 32]);
         assert_eq!(verified.onion_entry_size, 3328);
+    }
+
+    #[test]
+    fn v2_verifier_recomputes_and_returns_typed_onion_layout() {
+        let (bundle, db_info) = sample_bundle_v2();
+        let response = encode_proof_response_version(
+            &bundle,
+            DATABASE_PROOF_BUNDLE_VERSION_V2,
+            RESP_DB_PROOF_V2,
+        );
+        let verified =
+            verify_database_proof_v2_response(&db_info, &response, &DatabaseProofPolicy::mainnet())
+                .unwrap();
+        let layout = verified.onion_layout_v2.unwrap();
+        assert_eq!(layout.total_packed_entries, 116_030);
+        assert_eq!(layout.index_bins_per_table, 965);
+        assert_eq!(layout.chunk_bins_per_table, 4_792);
+    }
+
+    #[test]
+    fn v2_verifier_never_falls_back_to_v1() {
+        let (bundle, db_info) = sample_bundle();
+        let response = encode_proof_response(&bundle);
+        let err =
+            verify_database_proof_v2_response(&db_info, &response, &DatabaseProofPolicy::mainnet())
+                .unwrap_err();
+        assert!(matches!(err, PirError::UnexpectedResponse { .. }));
+    }
+
+    #[test]
+    fn v2_verifier_rejects_layout_not_committed_by_params_hash() {
+        let (mut bundle, db_info) = sample_bundle_v2();
+        let mut evidence = pir_db_attest::BuildEvidence::decode(&bundle.build_evidence).unwrap();
+        evidence
+            .onion_layout_v2
+            .as_mut()
+            .unwrap()
+            .chunk_bins_per_table += 1;
+        bundle.build_evidence = evidence.encode().unwrap();
+        let report_data = pir_db_attest::report_data_for_evidence_bytes(
+            EVIDENCE_VERSION_V2,
+            &bundle.build_evidence,
+        )
+        .unwrap();
+        bundle.sev_snp_report[pir_db_attest::SEV_SNP_REPORT_DATA_OFFSET
+            ..pir_db_attest::SEV_SNP_REPORT_DATA_OFFSET + pir_db_attest::SEV_SNP_REPORT_DATA_LEN]
+            .copy_from_slice(&report_data);
+        let response = encode_proof_response_version(
+            &bundle,
+            DATABASE_PROOF_BUNDLE_VERSION_V2,
+            RESP_DB_PROOF_V2,
+        );
+        let err =
+            verify_database_proof_v2_response(&db_info, &response, &DatabaseProofPolicy::mainnet())
+                .unwrap_err();
+        assert!(err.to_string().contains("params_hash_v2 mismatch"));
     }
 
     #[test]

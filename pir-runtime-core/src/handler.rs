@@ -168,6 +168,14 @@ impl RequestHandler {
                 Some(bundle) => Response::DbProof(bundle.clone()),
                 None => Response::Error(format!("db proof not configured for db_id {}", db_id)),
             },
+            Request::GetDbProofV2 { db_id } => match self
+                .state
+                .get_db(*db_id)
+                .and_then(|db| db.db_proof_v2.as_ref())
+            {
+                Some(bundle) => Response::DbProofV2(bundle.clone()),
+                None => Response::Error(format!("db proof v2 not configured for db_id {}", db_id)),
+            },
             Request::IndexBatch(query) => self.handle_index_batch(query),
             Request::ChunkBatch(query) => self.handle_chunk_batch(query),
             Request::BucketMerkleSibBatch(query) => self.handle_bucket_merkle_sib_batch(query),
@@ -673,10 +681,17 @@ mod dos_guard_tests {
     }
 
     fn make_handler() -> RequestHandler {
-        make_handler_with_proof(None)
+        make_handler_with_proofs(None, None)
     }
 
     fn make_handler_with_proof(db_proof: Option<DatabaseProofBundle>) -> RequestHandler {
+        make_handler_with_proofs(db_proof, None)
+    }
+
+    fn make_handler_with_proofs(
+        db_proof: Option<DatabaseProofBundle>,
+        db_proof_v2: Option<DatabaseProofBundle>,
+    ) -> RequestHandler {
         let db = MappedDatabase {
             descriptor: DatabaseDescriptor {
                 name: "dos-test".into(),
@@ -696,6 +711,7 @@ mod dos_guard_tests {
             manifest_root: None,
             manifest: None,
             db_proof,
+            db_proof_v2,
         };
         RequestHandler::new(vec![db])
     }
@@ -739,6 +755,29 @@ mod dos_guard_tests {
         expect_error(
             h.handle_request(&Request::GetDbProof { db_id: 0 }),
             "db proof not configured",
+        );
+    }
+
+    #[test]
+    fn get_db_proof_v2_returns_only_the_v2_bundle() {
+        let v1 = sample_db_proof();
+        let mut v2 = sample_db_proof();
+        v2.build_evidence = b"evidence-v2".to_vec();
+        let h = make_handler_with_proofs(Some(v1), Some(v2.clone()));
+
+        match h.handle_request(&Request::GetDbProofV2 { db_id: 0 }) {
+            Response::DbProofV2(actual) => assert_eq!(actual, v2),
+            other => panic!("expected DbProofV2, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn get_db_proof_v2_never_falls_back_to_v1() {
+        let h = make_handler_with_proof(Some(sample_db_proof()));
+
+        expect_error(
+            h.handle_request(&Request::GetDbProofV2 { db_id: 0 }),
+            "db proof v2 not configured",
         );
     }
 
