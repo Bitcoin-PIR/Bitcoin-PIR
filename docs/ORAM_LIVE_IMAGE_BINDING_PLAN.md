@@ -1,11 +1,14 @@
 # ORAM live-image binding
 
-Status: regenerate-on-boot implementation is tracked by BitcoinPIR PR #70.
-The proof-producing and trusted-state-separation changes landed in
-Bitcoin-PIR/oram PRs #4 and #5. The selected production model discards prior
-mutable ORAM state and rebuilds from proof-bound inputs before listening. This
-document also retains the more complex persistent-lineage design for any future
-node that cannot afford regeneration.
+Status: **production rollout complete as of 2026-07-24**. BitcoinPIR PR #70
+landed the regenerate-on-boot implementation, and PR #71 fixed the final
+trusted-state path contract and published the deployed pins. The
+proof-producing and trusted-state-separation changes landed in Bitcoin-PIR/oram
+PRs #4 and #5. The selected production model discards prior mutable ORAM state
+and rebuilds from proof-bound inputs before listening. This document also
+retains the more complex persistent-lineage design for any future node that
+cannot afford regeneration; that design is not an outstanding requirement for
+the current deployment.
 
 ## Regenerate-on-boot rollout status
 
@@ -21,12 +24,17 @@ node that cannot afford regeneration.
       source/proof mutation tests.
 - [x] Require the frontend trust-chain manifest and production pin to agree on
       `fromMuhashHex`.
-- [ ] Merge the implementation and build the final binaries from the merged
+- [x] Merge the implementation and build the final binaries from the merged
       commit.
-- [ ] Build, archive, upload, and boot the final Tier 3 UKI.
-- [ ] Pass AMD attestation, encrypted-channel, operator-identity, db 0/db 1
+- [x] Build, archive, upload, and boot the final Tier 3 UKI.
+- [x] Pass AMD attestation, encrypted-channel, operator-identity, db 0/db 1
       proof, padded ORAM, and strict browser acceptance gates.
-- [ ] Publish the final binary/UKI/MEASUREMENT pins and deployment record.
+- [x] Publish the final binary/UKI/MEASUREMENT pins and deployment record.
+
+The final deployment record and reviewed values are in
+[`STRICT_VERIFICATION_PROGRESS.md`](STRICT_VERIFICATION_PROGRESS.md) and
+[`PHASE3_ROADMAP.md`](PHASE3_ROADMAP.md). The archived production UKI is
+`main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi`.
 
 ## The missing link
 
