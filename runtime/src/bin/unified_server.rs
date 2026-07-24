@@ -201,6 +201,9 @@ struct CliArgs {
     /// Optional per-database direct-entry ORAM image directories.
     /// Repeatable as `--direct-oram-db <db_id>=<dir>`.
     direct_oram_dbs: Vec<(u8, PathBuf)>,
+    /// Optional per-database trusted controller/auth state directories.
+    /// Repeatable as `--direct-oram-trusted-state-db <db_id>=<dir>`.
+    direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)>,
     /// Public deterministic evictions drained after each direct ORAM read.
     direct_oram_drain_per_access: u64,
     /// Fixed direct ORAM access budget per ORAM lookup request.
@@ -247,6 +250,22 @@ fn parse_direct_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
     Ok((db_id, PathBuf::from(dir_raw)))
 }
 
+fn parse_direct_oram_trusted_state_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
+    let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
+        return Err("--direct-oram-trusted-state-db expects <db_id>=<dir>".into());
+    };
+    let db_id = db_id_raw.parse::<u8>().map_err(|e| {
+        format!(
+            "invalid --direct-oram-trusted-state-db db_id `{}`: {}",
+            db_id_raw, e
+        )
+    })?;
+    if dir_raw.is_empty() {
+        return Err("--direct-oram-trusted-state-db requires a non-empty directory".into());
+    }
+    Ok((db_id, PathBuf::from(dir_raw)))
+}
+
 fn fatal_cli(msg: impl AsRef<str>) -> ! {
     eprintln!("ERROR: {}", msg.as_ref());
     std::process::exit(2);
@@ -286,6 +305,7 @@ fn parse_args() -> CliArgs {
     let mut cuckoo_oram_no_save = false;
     let mut direct_oram_dir: Option<PathBuf> = None;
     let mut direct_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
+    let mut direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut direct_oram_drain_per_access: u64 = 2;
     let mut direct_oram_access_budget: usize = 75;
     let mut direct_oram_encrypted = false;
@@ -478,6 +498,15 @@ fn parse_args() -> CliArgs {
                 direct_oram_dbs.push(parsed);
                 i += 1;
             }
+            "--direct-oram-trusted-state-db" => {
+                let spec = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--direct-oram-trusted-state-db requires <db_id>=<dir>");
+                });
+                let parsed =
+                    parse_direct_oram_trusted_state_db_arg(spec).unwrap_or_else(|e| fatal_cli(e));
+                direct_oram_trusted_state_dbs.push(parsed);
+                i += 1;
+            }
             "--direct-oram-drain-per-access" => {
                 direct_oram_drain_per_access =
                     args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2);
@@ -552,6 +581,7 @@ fn parse_args() -> CliArgs {
         cuckoo_oram_no_save,
         direct_oram_dir,
         direct_oram_dbs,
+        direct_oram_trusted_state_dbs,
         direct_oram_drain_per_access,
         direct_oram_access_budget,
         direct_oram_encrypted,
@@ -1372,9 +1402,37 @@ struct DirectOramTables {
 
 #[cfg(feature = "cuckoo-oram")]
 impl DirectOramTables {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn open(
         oram_dir: &std::path::Path,
+        drain_per_access: u64,
+        access_budget: usize,
+        encrypted: bool,
+        key_hex: Option<&str>,
+        state_key_hex: Option<&str>,
+        cache_levels: usize,
+        auth_store: bool,
+        save_state: bool,
+    ) -> Result<Self, String> {
+        Self::open_with_trusted_state(
+            oram_dir,
+            None,
+            drain_per_access,
+            access_budget,
+            encrypted,
+            key_hex,
+            state_key_hex,
+            cache_levels,
+            auth_store,
+            save_state,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_with_trusted_state(
+        oram_dir: &std::path::Path,
+        trusted_state_dir: Option<&std::path::Path>,
         drain_per_access: u64,
         access_budget: usize,
         encrypted: bool,
@@ -1390,6 +1448,7 @@ impl DirectOramTables {
         Ok(Self {
             index: DirectOramIndexTable::open(
                 oram_dir,
+                trusted_state_dir,
                 drain_per_access,
                 encrypted,
                 key_hex,
@@ -1400,6 +1459,7 @@ impl DirectOramTables {
             )?,
             chunk: DirectOramChunkTable::open(
                 oram_dir,
+                trusted_state_dir,
                 drain_per_access,
                 encrypted,
                 key_hex,
@@ -1427,6 +1487,7 @@ impl DirectOramIndexTable {
     #[allow(clippy::too_many_arguments)]
     fn open(
         oram_dir: &std::path::Path,
+        trusted_state_dir: Option<&std::path::Path>,
         drain_per_access: u64,
         encrypted: bool,
         key_hex: Option<&str>,
@@ -1435,7 +1496,11 @@ impl DirectOramIndexTable {
         auth_store: bool,
         save_state: bool,
     ) -> Result<Self, String> {
-        let paths = DirectOramPaths::new(oram_dir, DirectLevel::Index);
+        let paths = DirectOramPaths::new_with_trusted_state(
+            oram_dir,
+            trusted_state_dir,
+            DirectLevel::Index,
+        );
         let metadata = DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
         if metadata.level != DirectLevel::Index {
             return Err(format!(
@@ -1556,6 +1621,7 @@ impl DirectOramChunkTable {
     #[allow(clippy::too_many_arguments)]
     fn open(
         oram_dir: &std::path::Path,
+        trusted_state_dir: Option<&std::path::Path>,
         drain_per_access: u64,
         encrypted: bool,
         key_hex: Option<&str>,
@@ -1564,7 +1630,11 @@ impl DirectOramChunkTable {
         auth_store: bool,
         save_state: bool,
     ) -> Result<Self, String> {
-        let paths = DirectOramPaths::new(oram_dir, DirectLevel::Chunk);
+        let paths = DirectOramPaths::new_with_trusted_state(
+            oram_dir,
+            trusted_state_dir,
+            DirectLevel::Chunk,
+        );
         let metadata = DirectTableMetadata::load(&paths.metadata).map_err(|e| e.to_string())?;
         if metadata.level != DirectLevel::Chunk {
             return Err(format!(
@@ -2353,16 +2423,26 @@ struct DirectOramPaths {
 
 #[cfg(feature = "cuckoo-oram")]
 impl DirectOramPaths {
+    #[cfg(test)]
     fn new(oram_dir: &std::path::Path, level: DirectLevel) -> Self {
+        Self::new_with_trusted_state(oram_dir, None, level)
+    }
+
+    fn new_with_trusted_state(
+        oram_dir: &std::path::Path,
+        trusted_state_dir: Option<&std::path::Path>,
+        level: DirectLevel,
+    ) -> Self {
         let label = format!("direct-{}", level.label());
+        let trusted_state_dir = trusted_state_dir.unwrap_or(oram_dir);
         Self {
             meta_image: oram_dir.join(format!("{label}.meta.oram")),
             payload_image: oram_dir.join(format!("{label}.payload.oram")),
             meta_hash_image: oram_dir.join(format!("{label}.meta.hash.oram")),
             payload_hash_image: oram_dir.join(format!("{label}.payload.hash.oram")),
-            state: oram_dir.join(format!("{label}.state")),
-            auth_state: oram_dir.join(format!("{label}.auth.state")),
-            metadata: oram_dir.join(format!("{label}.metadata")),
+            state: trusted_state_dir.join(format!("{label}.state")),
+            auth_state: trusted_state_dir.join(format!("{label}.auth.state")),
+            metadata: trusted_state_dir.join(format!("{label}.metadata")),
         }
     }
 }
@@ -4411,11 +4491,13 @@ async fn main() {
             args.direct_oram_cache_levels,
             args.direct_oram_auth_store,
             args.direct_oram_no_save,
+            args.direct_oram_trusted_state_dbs.as_slice(),
         );
         if args.cuckoo_oram_dir.is_some()
             || !args.cuckoo_oram_dbs.is_empty()
             || args.direct_oram_dir.is_some()
             || !args.direct_oram_dbs.is_empty()
+            || !args.direct_oram_trusted_state_dbs.is_empty()
         {
             eprintln!(
                 "ERROR: ORAM flags require building unified_server with --features cuckoo-oram \
@@ -4509,6 +4591,7 @@ async fn main() {
     #[cfg(feature = "cuckoo-oram")]
     let direct_oram = {
         let mut requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
+        let mut trusted_state_requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
         if let Some(oram_dir) = args.direct_oram_dir.as_ref() {
             requested.insert(0, oram_dir.clone());
         }
@@ -4521,6 +4604,27 @@ async fn main() {
                 std::process::exit(2);
             }
         }
+        for (db_id, trusted_state_dir) in &args.direct_oram_trusted_state_dbs {
+            if trusted_state_requested
+                .insert(*db_id, trusted_state_dir.clone())
+                .is_some()
+            {
+                eprintln!(
+                    "ERROR: duplicate Direct ORAM trusted-state configuration for db_id={}",
+                    db_id
+                );
+                std::process::exit(2);
+            }
+        }
+        for db_id in trusted_state_requested.keys() {
+            if !requested.contains_key(db_id) {
+                eprintln!(
+                    "ERROR: Direct ORAM trusted-state configured without an image directory for db_id={}",
+                    db_id
+                );
+                std::process::exit(2);
+            }
+        }
 
         if requested.is_empty() {
             println!("  Direct ORAM: disabled (use --direct-oram-db <db_id>=<dir> to enable)");
@@ -4528,6 +4632,7 @@ async fn main() {
         } else {
             let mut opened = HashMap::new();
             for (db_id, oram_dir) in requested {
+                let trusted_state_dir = trusted_state_requested.remove(&db_id);
                 let Some((_, db_label, _db_path)) = db_paths
                     .iter()
                     .find(|(candidate, _, _)| *candidate == db_id)
@@ -4541,18 +4646,23 @@ async fn main() {
                 };
 
                 println!(
-                    "  Direct ORAM: enabled for db_id={} name={}, dir={}, access_budget={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
+                    "  Direct ORAM: enabled for db_id={} name={}, dir={}, trusted_state_dir={}, access_budget={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
                     db_id,
                     db_label,
                     oram_dir.display(),
+                    trusted_state_dir
+                        .as_deref()
+                        .unwrap_or(&oram_dir)
+                        .display(),
                     args.direct_oram_access_budget,
                     args.direct_oram_drain_per_access,
                     args.direct_oram_encrypted,
                     args.direct_oram_cache_levels,
                     args.direct_oram_auth_store,
                 );
-                let tables = DirectOramTables::open(
+                let tables = DirectOramTables::open_with_trusted_state(
                     &oram_dir,
+                    trusted_state_dir.as_deref(),
                     args.direct_oram_drain_per_access,
                     args.direct_oram_access_budget,
                     args.direct_oram_encrypted,
@@ -7826,6 +7936,51 @@ mod harmony_dos_guard_tests {
 
         std::fs::remove_dir_all(&db_dir).ok();
         std::fs::remove_dir_all(&oram_dir).ok();
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn direct_oram_opens_controller_state_and_metadata_from_trusted_directory() {
+        let db_dir = temp_dir("direct_lookup_trusted_db");
+        let oram_dir = temp_dir("direct_lookup_trusted_img");
+        let trusted_state_dir = temp_dir("direct_lookup_trusted_state");
+        std::fs::create_dir_all(&oram_dir).unwrap();
+        std::fs::create_dir_all(&trusted_state_dir).unwrap();
+        let fixture = write_direct_lookup_files(&db_dir);
+
+        let pack = 2usize;
+        for level in [DirectLevel::Index, DirectLevel::Chunk] {
+            build_test_direct_oram_image(&db_dir, &oram_dir, level, pack);
+            let disk_paths = DirectOramPaths::new(&oram_dir, level);
+            let trusted_paths =
+                DirectOramPaths::new_with_trusted_state(&oram_dir, Some(&trusted_state_dir), level);
+            std::fs::rename(&disk_paths.state, &trusted_paths.state).unwrap();
+            std::fs::rename(&disk_paths.metadata, &trusted_paths.metadata).unwrap();
+        }
+
+        let tables = DirectOramTables::open_with_trusted_state(
+            &oram_dir,
+            Some(&trusted_state_dir),
+            2,
+            8,
+            false,
+            None,
+            None,
+            0,
+            false,
+            true,
+        )
+        .unwrap();
+        let got = direct_native_lookup_batch(&tables, &[fixture.found_sh]).unwrap();
+        assert!(got[0].found);
+        assert!(trusted_state_dir.join("direct-index.state").exists());
+        assert!(trusted_state_dir.join("direct-chunk.state").exists());
+        assert!(!oram_dir.join("direct-index.state").exists());
+        assert!(!oram_dir.join("direct-chunk.state").exists());
+
+        std::fs::remove_dir_all(&db_dir).ok();
+        std::fs::remove_dir_all(&oram_dir).ok();
+        std::fs::remove_dir_all(&trusted_state_dir).ok();
     }
 
     #[cfg(feature = "cuckoo-oram")]

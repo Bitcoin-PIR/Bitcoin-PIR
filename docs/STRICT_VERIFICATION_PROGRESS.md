@@ -141,10 +141,21 @@ tests did not expose:
 - a client built without the `onion` feature fails explicitly instead of
   returning an unverified empty result.
 
-This native canary deliberately does not claim to automate the production web
-runtime/binary pin, operator-identity, secure-channel, or temporary v1 Onion
-layout gates. Those browser-level gates remain covered by release smokes; an
-end-to-end browser canary is a non-blocking automation follow-up.
+The native canary deliberately does not claim to exercise the browser runtime.
+A separate scheduled/manual Playwright canary now covers that boundary against
+`https://www.bitcoinpir.org/`: it performs one strict query with DPF-PIR,
+HarmonyPIR, OnionPIR, and ORAM TEE, checks the runtime/operator verdicts and
+encrypted-channel path, requires automatic result Merkle verification where
+the protocol exposes it, and confirms that every query tears down its sockets.
+The OnionPIR query also exercises the temporary v1 layout/tree-top preflight;
+that gate remains required until database-proof v2 is activated.
+
+The initial live run on 2026-07-22 passed all four backends in 2.1 minutes from
+a fresh Chromium profile. Pull requests only parse and discover the suite; live
+production queries are restricted to the scheduled workflow or an explicit
+manual run, and failure traces/screenshots/video are retained as artifacts. A
+post-rebase run on 2026-07-24 exposed and fixed an initialization race in the
+test harness, then passed all four backends again in 2.1 minutes.
 
 The server-side HarmonyPIR hint-pool hardening was deployed on 2026-07-20 from
 commit `d126f36a`. Hetzner and the VPSBG Tier 3 UKI use the same ORAM-enabled
@@ -165,13 +176,26 @@ passed on the full-feature UKI after it reopened state written by the diagnostic
 UKI. Hetzner intentionally remains on the independently pinned 2026-07-20
 binary above.
 
+On 2026-07-24, VPSBG moved to the boot-regeneration UKI built from measured
+startup commit `7b6cf108`. It reuses the unchanged `unified_server` binary from
+BitcoinPIR commit `66034c82` (SHA-256 `1134b8a4...09c37`) and the source-bound
+`oramctl` from bitcoinpir-oram commit `cd2c1a22`. The UKI SHA-256 is
+`5b854888...7b13e` and its live launch MEASUREMENT is
+`a3a8fb0f...04040b86`. Every boot now regenerates both authenticated ORAM
+images from proof-bound inputs in SEV-protected tmpfs, verifies the emitted-page
+Merkle roots and the exact published bulk/trusted-state path contract, and only
+then opens the query server. Fixed-pin AMD attestation, the encrypted channel,
+dummy padded lookups, and known-present padded results for both db_id 0 and
+db_id 1 passed against the live full-feature UKI.
+
 ## Non-blocking follow-ups
 
 The strict-root rollout above is closed. The following improvements do not
 reopen it:
 
-- Automate the remaining browser-only runtime, identity, encrypted-channel,
-  and v1 Onion layout gates without weakening the native database-root canary.
+- [x] Automate the browser-only runtime, identity, encrypted-channel, automatic
+  result-verification, teardown, and v1 Onion layout gates without weakening
+  the native database-root canary.
 - [x] Harden malformed HarmonyPIR V2 streams by rejecting duplicate group IDs,
   mismatched record lengths, and inconsistent preamble/terminal metadata at
   the frame where they appear. Full-stream failures now discard the single V2
@@ -188,7 +212,6 @@ reopen it:
 - Follow [the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md)
   for every new snapshot or delta generation.
 
-The separate ORAM live-image byte-match claim remains out of scope. The static
-strict ORAM source-binding proof is not evidence that the deployed runtime has
-the byte-identical ORAM image open; that stronger deployment claim must be
-tracked and validated independently.
+The separate ORAM live-image claim remains out of scope for the completed
+strict-root rollout. Its threat model and implementation sequence are tracked
+in [ORAM_LIVE_IMAGE_BINDING_PLAN.md](ORAM_LIVE_IMAGE_BINDING_PLAN.md).
