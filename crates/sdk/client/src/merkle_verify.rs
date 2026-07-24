@@ -497,6 +497,40 @@ pub trait BucketMerkleSiblingQuerier: Send {
         }
         Ok(out)
     }
+
+    /// Ordered batch spanning every sibling level for one table type.
+    /// Targets depend only on the leaf position, so implementations may send
+    /// all levels before receiving any response. The default keeps the legacy
+    /// sequential-level behaviour.
+    async fn query_levels(
+        &mut self,
+        table_type: u8,
+        levels: &[SiblingLevelPlan],
+        db_id: u8,
+    ) -> PirResult<Vec<Vec<Vec<Option<Vec<u8>>>>>> {
+        let mut out = Vec::with_capacity(levels.len());
+        for level in levels {
+            out.push(
+                self.query_passes(
+                    table_type,
+                    level.level,
+                    level.level_bins_per_table,
+                    &level.passes,
+                    db_id,
+                )
+                .await?,
+            );
+        }
+        Ok(out)
+    }
+}
+
+/// All padded passes required for one Merkle sibling level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiblingLevelPlan {
+    pub level: usize,
+    pub level_bins_per_table: u32,
+    pub passes: Vec<Vec<Option<u32>>>,
 }
 
 // ─── DPF sibling querier ────────────────────────────────────────────────────
@@ -520,6 +554,18 @@ pub struct DpfSiblingQuerier<'a> {
     leakage_recorder: Option<Arc<dyn LeakageRecorder>>,
 }
 
+struct PreparedDpfSiblingRound {
+    table_type: u8,
+    level: usize,
+    db_id: u8,
+    pass_targets: Vec<Option<u32>>,
+    request0: Vec<u8>,
+    request1: Vec<u8>,
+    request0_bytes: u64,
+    request1_bytes: u64,
+    items_per_group: Vec<u32>,
+}
+
 impl<'a> DpfSiblingQuerier<'a> {
     pub fn new(
         conn0: &'a mut dyn PirTransport,
@@ -538,6 +584,91 @@ impl<'a> DpfSiblingQuerier<'a> {
     /// structured `RoundProfile`s; passing `None` silences emission.
     pub fn set_leakage_recorder(&mut self, recorder: Option<Arc<dyn LeakageRecorder>>) {
         self.leakage_recorder = recorder;
+    }
+
+    fn prepare_round(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        level_bins_per_table: u32,
+        pass_targets: &[Option<u32>],
+        db_id: u8,
+    ) -> PreparedDpfSiblingRound {
+        let num_groups = level_bins_per_table as u64;
+        let dpf_n = compute_dpf_n(num_groups as usize);
+        let mut s0_keys = Vec::with_capacity(pass_targets.len());
+        let mut s1_keys = Vec::with_capacity(pass_targets.len());
+        for target in pass_targets {
+            let alpha = match *target {
+                Some(target) => target as u64,
+                None if num_groups == 0 => 0,
+                None => self.rng.next_u64() % num_groups,
+            };
+            let (key0, key1) = self.dpf.gen(alpha, dpf_n);
+            s0_keys.push(key0.to_bytes());
+            s1_keys.push(key1.to_bytes());
+        }
+        let round_id = (table_type as u16) * 100 + level as u16;
+        let request0 = encode_sibling_batch(db_id, round_id, &s0_keys);
+        let request1 = encode_sibling_batch(db_id, round_id, &s1_keys);
+        PreparedDpfSiblingRound {
+            table_type,
+            level,
+            db_id,
+            pass_targets: pass_targets.to_vec(),
+            request0_bytes: request0.len() as u64,
+            request1_bytes: request1.len() as u64,
+            items_per_group: s0_keys.iter().map(|_| 1).collect(),
+            request0,
+            request1,
+        }
+    }
+
+    fn finish_round(
+        &self,
+        round: &PreparedDpfSiblingRound,
+        response0: &[u8],
+        response1: &[u8],
+    ) -> PirResult<Vec<Option<Vec<u8>>>> {
+        if let Some(recorder) = &self.leakage_recorder {
+            let kind = match round.table_type {
+                1 => RoundKind::ChunkMerkleSiblings { level: round.level as u8 },
+                _ => RoundKind::IndexMerkleSiblings { level: round.level as u8 },
+            };
+            for (server_id, request_bytes, response_bytes) in [
+                (0, round.request0_bytes, response0.len() as u64),
+                (1, round.request1_bytes, response1.len() as u64),
+            ] {
+                recorder.record_round("dpf", RoundProfile {
+                    kind,
+                    server_id,
+                    db_id: Some(round.db_id),
+                    request_bytes,
+                    response_bytes,
+                    items: round.items_per_group.clone(),
+                });
+            }
+        }
+        if response0.len() < 4 || response1.len() < 4 {
+            return Err(PirError::Protocol("sibling response missing length prefix".into()));
+        }
+        let rows0 = decode_sibling_batch(&response0[4..])?;
+        let rows1 = decode_sibling_batch(&response1[4..])?;
+        let mut out = vec![None; round.pass_targets.len()];
+        for (group, target) in round.pass_targets.iter().enumerate() {
+            if target.is_none()
+                || group >= rows0.len()
+                || group >= rows1.len()
+                || rows0[group].is_empty()
+                || rows1[group].is_empty()
+            {
+                continue;
+            }
+            let mut row = rows0[group][0].clone();
+            xor_into(&mut row, &rows1[group][0]);
+            out[group] = Some(row);
+        }
+        Ok(out)
     }
 }
 
@@ -636,6 +767,55 @@ impl BucketMerkleSiblingQuerier for DpfSiblingQuerier<'_> {
             let mut row = r0[g][0].clone();
             xor_into(&mut row, &r1[g][0]);
             out[g] = Some(row);
+        }
+        Ok(out)
+    }
+
+    async fn query_levels(
+        &mut self,
+        table_type: u8,
+        levels: &[SiblingLevelPlan],
+        db_id: u8,
+    ) -> PirResult<Vec<Vec<Vec<Option<Vec<u8>>>>>> {
+        let mut prepared = Vec::with_capacity(levels.len());
+        for level in levels {
+            let mut rounds = Vec::with_capacity(level.passes.len());
+            for pass in &level.passes {
+                rounds.push(self.prepare_round(
+                    table_type,
+                    level.level,
+                    level.level_bins_per_table,
+                    pass,
+                    db_id,
+                ));
+            }
+            prepared.push(rounds);
+        }
+
+        for rounds in &mut prepared {
+            for round in rounds {
+                self.conn0.send(std::mem::take(&mut round.request0)).await?;
+                self.conn1.send(std::mem::take(&mut round.request1)).await?;
+            }
+        }
+
+        // Drain the entire ordered response wave before decoding evidence.
+        let mut responses = Vec::with_capacity(prepared.len());
+        for rounds in &prepared {
+            let mut level_responses = Vec::with_capacity(rounds.len());
+            for _ in rounds {
+                level_responses.push((self.conn0.recv().await?, self.conn1.recv().await?));
+            }
+            responses.push(level_responses);
+        }
+
+        let mut out = Vec::with_capacity(prepared.len());
+        for (rounds, level_responses) in prepared.iter().zip(&responses) {
+            let mut level_out = Vec::with_capacity(rounds.len());
+            for (round, (response0, response1)) in rounds.iter().zip(level_responses) {
+                level_out.push(self.finish_round(round, response0, response1)?);
+            }
+            out.push(level_out);
         }
         Ok(out)
     }
@@ -1054,26 +1234,12 @@ async fn verify_sibling_levels(
         }
     }
 
-    // For each sibling level, run `max_items_per_group` passes pipelined
-    // through the querier in a single batch. Each pass is itself
-    // K-padded: the querier sends one (real or dummy) sub-request per
-    // group for every slot. Within a level, passes are INDEPENDENT
-    // (different items use different group slots, all sourced from the
-    // SAME pre-pass `node_idx`), so sending all of them back-to-back
-    // on one socket and draining the responses pipelined is identical
-    // to running them sequentially — except N RTTs collapse into
-    // ~one wall-clock RTT.
-    //
-    // The hash-update step that divides `node_idx[i] /= arity` is
-    // deferred until ALL passes at this level return — passes' targets
-    // were already computed off the level-L node_idx before the batch
-    // was issued, so the division would have no effect on this level's
-    // requests but it WOULD invalidate the next level's. We therefore
-    // collect per-pass (item, parent_hash, parent_idx) updates first,
-    // then apply them as a batch after the level completes.
+    // Precompute every level target from the leaf position. Earlier sibling
+    // hashes affect only the local hash walk, never a later query index.
+    let mut level_plans = Vec::with_capacity(level_groups_count.len());
+    let mut level_pass_groups = Vec::with_capacity(level_groups_count.len());
+    let mut planned_node_idx = node_idx.clone();
     for (level, &groups_at_level) in level_groups_count.iter().enumerate() {
-        // Build all pass_targets for this level using the CURRENT
-        // node_idx (level-L view).
         let mut all_passes: Vec<Vec<Option<u32>>> = Vec::with_capacity(max_items_per_group);
         let mut pass_groups: Vec<HashMap<usize, usize>> = Vec::with_capacity(max_items_per_group);
         for pass in 0..max_items_per_group {
@@ -1087,25 +1253,41 @@ async fn verify_sibling_levels(
                 .map(|g| {
                     pass_group_to_item
                         .get(&g)
-                        .map(|&item_idx| node_idx[item_idx] / arity as u32)
+                        .map(|&item_idx| planned_node_idx[item_idx] / arity as u32)
                 })
                 .collect();
             all_passes.push(pass_targets);
             pass_groups.push(pass_group_to_item);
         }
+        level_plans.push(SiblingLevelPlan {
+            level,
+            level_bins_per_table: groups_at_level,
+            passes: all_passes,
+        });
+        level_pass_groups.push(pass_groups);
+        for idx in &mut planned_node_idx {
+            *idx /= arity as u32;
+        }
+    }
 
-        // One pipelined batch over the querier — implementations that
-        // override the default `query_passes` (Harmony today) collapse
-        // these into one wall-clock RTT.
-        let batch_rows = querier
-            .query_passes(table_type, level, groups_at_level, &all_passes, db_id)
-            .await?;
-        if batch_rows.len() != max_items_per_group {
+    // Transport implementations can now send every level in one wave. Decode
+    // and walk locally only after all responses have been drained.
+    let all_level_rows = querier.query_levels(table_type, &level_plans, db_id).await?;
+    if all_level_rows.len() != level_plans.len() {
+        return Err(PirError::Protocol(format!(
+            "Merkle querier returned {} level results, expected {}",
+            all_level_rows.len(), level_plans.len()
+        )));
+    }
+    for (level_idx, batch_rows) in all_level_rows.into_iter().enumerate() {
+        let level = level_plans[level_idx].level;
+        let pass_groups = &level_pass_groups[level_idx];
+        if batch_rows.len() != pass_groups.len() {
             return Err(PirError::Protocol(format!(
                 "Merkle L{}: querier returned {} pass results, expected {}",
                 level,
                 batch_rows.len(),
-                max_items_per_group
+                pass_groups.len()
             )));
         }
 
@@ -1279,6 +1461,17 @@ mod tests {
         calls: usize,
     }
 
+    #[derive(Default)]
+    struct BatchCaptureQuerier {
+        levels: Vec<SiblingLevelPlan>,
+        pass_calls: usize,
+    }
+
+    struct OrderingTransport {
+        id: u8,
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
     #[async_trait]
     impl BucketMerkleSiblingQuerier for StaticSiblingQuerier {
         async fn query_pass(
@@ -1295,6 +1488,50 @@ mod tests {
                 .map(|target| target.as_ref().and(self.row.clone()))
                 .collect())
         }
+    }
+
+    #[async_trait]
+    impl BucketMerkleSiblingQuerier for BatchCaptureQuerier {
+        async fn query_pass(
+            &mut self,
+            _table_type: u8,
+            _level: usize,
+            _level_bins_per_table: u32,
+            targets: &[Option<u32>],
+            _db_id: u8,
+        ) -> PirResult<Vec<Option<Vec<u8>>>> {
+            self.pass_calls += 1;
+            Ok(vec![None; targets.len()])
+        }
+
+        async fn query_levels(
+            &mut self,
+            _table_type: u8,
+            levels: &[SiblingLevelPlan],
+            _db_id: u8,
+        ) -> PirResult<Vec<Vec<Vec<Option<Vec<u8>>>>>> {
+            self.levels = levels.to_vec();
+            Ok(levels.iter().map(|level| {
+                level.passes.iter().map(|pass| vec![None; pass.len()]).collect()
+            }).collect())
+        }
+    }
+
+    #[async_trait]
+    impl PirTransport for OrderingTransport {
+        async fn send(&mut self, _data: Vec<u8>) -> PirResult<()> {
+            self.events.lock().unwrap().push(format!("s{}", self.id));
+            Ok(())
+        }
+        async fn recv(&mut self) -> PirResult<Vec<u8>> {
+            self.events.lock().unwrap().push(format!("r{}", self.id));
+            Ok(vec![0; 4])
+        }
+        async fn roundtrip(&mut self, _request: &[u8]) -> PirResult<Vec<u8>> {
+            unreachable!("DPF pipeline uses split send/recv")
+        }
+        async fn close(&mut self) -> PirResult<()> { Ok(()) }
+        fn url(&self) -> &str { "mock://ordering" }
     }
 
     async fn verify_one_sibling_row(row: Option<Vec<u8>>) -> (bool, usize) {
@@ -1320,6 +1557,42 @@ mod tests {
                 .await
                 .unwrap();
         (verified[0], querier.calls)
+    }
+
+    #[tokio::test]
+    async fn sibling_targets_for_all_levels_are_batched_before_hash_walk() {
+        let contents: Vec<Vec<u8>> = (0..512u32).map(|i| vec![i as u8; 68]).collect();
+        let leaves: Vec<Hash256> = contents.iter().enumerate()
+            .map(|(i, content)| compute_bin_leaf_hash(i as u32, content)).collect();
+        let tree = MerkleTreeN::build(&leaves, BUCKET_MERKLE_ARITY);
+        let top = TreeTop { cache_from_level: 2, levels: tree.levels[2..].to_vec() };
+        let items = vec![SubItem {
+            pbc_group: 0,
+            bin_index: 73,
+            bin_content: contents[73].clone(),
+        }];
+        let mut querier = BatchCaptureQuerier::default();
+        let verified = verify_sibling_levels(&mut querier, &items, 512, 1, 0, &[top], 0)
+            .await.unwrap();
+        assert_eq!(verified, vec![false]);
+        assert_eq!(querier.pass_calls, 0);
+        assert_eq!(querier.levels[0].passes, vec![vec![Some(9)]]);
+        assert_eq!(querier.levels[1].passes, vec![vec![Some(1)]]);
+    }
+
+    #[tokio::test]
+    async fn dpf_cross_level_pipeline_sends_all_rounds_before_receiving() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut conn0 = OrderingTransport { id: 0, events: events.clone() };
+        let mut conn1 = OrderingTransport { id: 1, events: events.clone() };
+        let mut querier = DpfSiblingQuerier::new(&mut conn0, &mut conn1);
+        let levels = vec![
+            SiblingLevelPlan { level: 0, level_bins_per_table: 1024, passes: vec![vec![Some(7)]] },
+            SiblingLevelPlan { level: 1, level_bins_per_table: 128, passes: vec![vec![Some(0)]] },
+        ];
+        assert!(querier.query_levels(0, &levels, 0).await.is_err());
+        assert_eq!(*events.lock().unwrap(),
+            vec!["s0", "s1", "s0", "s1", "r0", "r1", "r0", "r1"]);
     }
 
     /// Build a small per-group Merkle tree, turn it into a `TreeTop` that

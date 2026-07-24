@@ -37,7 +37,8 @@ use crate::hint_cache;
 use crate::merkle_verify::{
     fetch_tree_tops, verify_bucket_merkle_batch_generic,
     verify_bucket_merkle_batch_parallel, verify_tree_tops_super_root, BucketMerkleItem,
-    BucketMerkleSiblingQuerier, TreeTop, BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
+    BucketMerkleSiblingQuerier, SiblingLevelPlan, TreeTop, BUCKET_MERKLE_ARITY,
+    BUCKET_MERKLE_SIB_ROW_SIZE,
 };
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use crate::transport::PirTransport;
@@ -6547,6 +6548,206 @@ struct HarmonySiblingQuerier<'a> {
     recorded: &'a mut Vec<RoundProfile>,
 }
 
+struct PreparedHarmonySiblingLevel {
+    table_type: u8,
+    level: usize,
+    db_id: u8,
+    targets: Vec<Vec<Option<u32>>>,
+    requests: Vec<Vec<u8>>,
+    request_bytes: Vec<u64>,
+    items_per_group: Vec<Vec<u32>>,
+}
+
+impl HarmonySiblingQuerier<'_> {
+    fn sibling_group_mut(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        group: u8,
+    ) -> PirResult<&mut HarmonyGroup> {
+        match table_type {
+            0 => self.index_sib_groups.get_mut(&(level, group)),
+            1 => self.chunk_sib_groups.get_mut(&(level, group)),
+            other => return Err(PirError::InvalidState(format!(
+                "unknown sibling table_type {}", other
+            ))),
+        }
+        .ok_or_else(|| PirError::InvalidState(format!(
+            "missing sibling group (table={}, level={}, group={})",
+            table_type, level, group
+        )))
+    }
+
+    fn prepare_cross_level(
+        &mut self,
+        table_type: u8,
+        level: usize,
+        passes: &[Vec<Option<u32>>],
+        db_id: u8,
+    ) -> PirResult<PreparedHarmonySiblingLevel> {
+        if passes.is_empty() || passes.len() > 2 {
+            return Err(PirError::InvalidState(format!(
+                "Harmony cross-level pipeline supports one or two passes, got {}",
+                passes.len()
+            )));
+        }
+        let table_k = passes[0].len();
+        if passes.iter().any(|pass| pass.len() != table_k) {
+            return Err(PirError::InvalidState(
+                "Harmony cross-level pipeline received unequal pass widths".into(),
+            ));
+        }
+        let wire_level = match table_type {
+            0 => 10u8.checked_add(level as u8),
+            1 => 20u8.checked_add(level as u8),
+            _ => None,
+        }
+        .ok_or_else(|| PirError::InvalidState(format!(
+            "sibling level {} does not fit in wire byte", level
+        )))?;
+
+        let mut bytes_by_pass: Vec<Vec<Vec<u8>>> = (0..passes.len())
+            .map(|_| Vec::with_capacity(table_k))
+            .collect();
+        for group_idx in 0..table_k {
+            let group_id = group_idx as u8;
+            let group = self.sibling_group_mut(table_type, level, group_id)?;
+            if passes.len() == 2 {
+                if let (Some(target0), Some(target1)) =
+                    (passes[0][group_idx], passes[1][group_idx])
+                {
+                    let (request0, request1) = group
+                        .build_request_pair(target0, target1)
+                        .map_err(|error| PirError::BackendState(format!(
+                            "sib build_request_pair: {:?}", error
+                        )))?
+                        .into_parts();
+                    bytes_by_pass[0].push(request0.into_bytes());
+                    bytes_by_pass[1].push(request1.into_bytes());
+                    continue;
+                }
+            }
+            for (pass_idx, pass) in passes.iter().enumerate() {
+                let bytes = match pass[group_idx] {
+                    Some(target) => group.build_request(target)
+                        .map_err(|error| PirError::BackendState(format!(
+                            "sib build_request: {:?}", error
+                        )))?
+                        .into_bytes(),
+                    None => group.build_synthetic_dummy(),
+                };
+                bytes_by_pass[pass_idx].push(bytes);
+            }
+        }
+
+        let batch_items_by_pass: Vec<Vec<BatchItem>> = bytes_by_pass.iter()
+            .map(|pass| pass.iter().enumerate().map(|(group, bytes)| {
+                Ok(BatchItem {
+                    group_id: group as u8,
+                    indices: bytes_to_u32_vec(bytes)?,
+                })
+            }).collect::<PirResult<Vec<_>>>())
+            .collect::<PirResult<Vec<_>>>()?;
+        let mut requests = Vec::with_capacity(passes.len());
+        for (pass_idx, items) in batch_items_by_pass.iter().enumerate() {
+            let round_id = if passes.len() == 1 {
+                (table_type as u16) * 100 + level as u16
+            } else {
+                (table_type as u16) * 1000 + (level as u16) * 10 + pass_idx as u16
+            };
+            requests.push(encode_batch_query(wire_level, round_id, db_id, items));
+        }
+        Ok(PreparedHarmonySiblingLevel {
+            table_type,
+            level,
+            db_id,
+            targets: passes.to_vec(),
+            request_bytes: requests.iter().map(|request| request.len() as u64).collect(),
+            items_per_group: batch_items_by_pass.iter().map(|items| {
+                items.iter().map(|item| item.indices.len() as u32).collect()
+            }).collect(),
+            requests,
+        })
+    }
+
+    fn finish_cross_level(
+        &mut self,
+        prepared: &PreparedHarmonySiblingLevel,
+        responses: &[Vec<u8>],
+    ) -> PirResult<Vec<Vec<Option<Vec<u8>>>>> {
+        if responses.len() != prepared.targets.len()
+            || responses.iter().any(|response| response.len() < 4)
+        {
+            return Err(PirError::Protocol(format!(
+                "Harmony sibling level {} returned malformed response count",
+                prepared.level
+            )));
+        }
+        let decoded: Vec<_> = responses.iter()
+            .map(|response| decode_batch_response(&response[4..]))
+            .collect::<PirResult<Vec<_>>>()?;
+        let table_k = prepared.targets[0].len();
+        let mut out = vec![vec![None; table_k]; prepared.targets.len()];
+
+        for group_idx in 0..table_k {
+            let group_id = group_idx as u8;
+            let group = self.sibling_group_mut(
+                prepared.table_type,
+                prepared.level,
+                group_id,
+            )?;
+            if prepared.targets.len() == 2
+                && prepared.targets[0][group_idx].is_some()
+                && prepared.targets[1][group_idx].is_some()
+            {
+                let response0 = decoded[0].get(&group_id).ok_or_else(|| {
+                    PirError::Protocol(format!("missing sibling h=0 group {}", group_id))
+                })?;
+                let response1 = decoded[1].get(&group_id).ok_or_else(|| {
+                    PirError::Protocol(format!("missing sibling h=1 group {}", group_id))
+                })?;
+                let (row0, row1) = group.process_response_pair(response0, response1)
+                    .map_err(|error| PirError::BackendState(format!(
+                        "sib process_response_pair: {:?}", error
+                    )))?;
+                if row0.len() != BUCKET_MERKLE_SIB_ROW_SIZE
+                    || row1.len() != BUCKET_MERKLE_SIB_ROW_SIZE
+                {
+                    return Err(PirError::Protocol(
+                        "pipelined sibling pair has wrong row size".into(),
+                    ));
+                }
+                out[0][group_idx] = Some(row0);
+                out[1][group_idx] = Some(row1);
+                continue;
+            }
+            for pass_idx in 0..prepared.targets.len() {
+                if prepared.targets[pass_idx][group_idx].is_none() {
+                    continue;
+                }
+                let response = decoded[pass_idx].get(&group_id).ok_or_else(|| {
+                    PirError::Protocol(format!(
+                        "missing sibling response for pass {}, group {}",
+                        pass_idx, group_id
+                    ))
+                })?;
+                let row = group.process_response(response)
+                    .map_err(|error| PirError::BackendState(format!(
+                        "sib process_response: {:?}", error
+                    )))?;
+                if row.len() != BUCKET_MERKLE_SIB_ROW_SIZE {
+                    return Err(PirError::Protocol(format!(
+                        "sibling row has {} bytes, expected {}",
+                        row.len(), BUCKET_MERKLE_SIB_ROW_SIZE
+                    )));
+                }
+                out[pass_idx][group_idx] = Some(row);
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[async_trait]
 impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
     async fn query_pass(
@@ -7052,6 +7253,78 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
         }
 
         Ok(vec![out_h0, out_h1])
+    }
+
+    async fn query_levels(
+        &mut self,
+        table_type: u8,
+        levels: &[SiblingLevelPlan],
+        db_id: u8,
+    ) -> PirResult<Vec<Vec<Vec<Option<Vec<u8>>>>>> {
+        if levels.iter().any(|level| level.passes.len() > 2) {
+            let mut out = Vec::with_capacity(levels.len());
+            for level in levels {
+                out.push(self.query_passes(
+                    table_type,
+                    level.level,
+                    level.level_bins_per_table,
+                    &level.passes,
+                    db_id,
+                ).await?);
+            }
+            return Ok(out);
+        }
+
+        // State is disjoint across (level, group_id). Same-level collisions
+        // still use HarmonyGroup's atomic pair API in prepare_cross_level.
+        let mut prepared = Vec::with_capacity(levels.len());
+        for level in levels {
+            prepared.push(self.prepare_cross_level(
+                table_type,
+                level.level,
+                &level.passes,
+                db_id,
+            )?);
+        }
+        for level in &mut prepared {
+            for request in &mut level.requests {
+                self.query_conn.send(std::mem::take(request)).await?;
+            }
+        }
+        // One ordered recv stream: concurrent recv on a single WebSocket would
+        // lose the protocol's implicit request/response correlation.
+        let mut responses = Vec::with_capacity(prepared.len());
+        for level in &prepared {
+            let mut level_responses = Vec::with_capacity(level.requests.len());
+            for _ in &level.requests {
+                level_responses.push(self.query_conn.recv().await?);
+            }
+            responses.push(level_responses);
+        }
+
+        // Record all drained rounds before proof decoding, so malformed
+        // evidence cannot truncate the observed leakage profile.
+        for (level, level_responses) in prepared.iter().zip(&responses) {
+            let kind = match level.table_type {
+                1 => RoundKind::ChunkMerkleSiblings { level: level.level as u8 },
+                _ => RoundKind::IndexMerkleSiblings { level: level.level as u8 },
+            };
+            for (pass, response) in level_responses.iter().enumerate() {
+                self.recorded.push(RoundProfile {
+                    kind,
+                    server_id: 0,
+                    db_id: Some(level.db_id),
+                    request_bytes: level.request_bytes[pass],
+                    response_bytes: response.len() as u64,
+                    items: level.items_per_group[pass].clone(),
+                });
+            }
+        }
+        let mut out = Vec::with_capacity(prepared.len());
+        for (level, level_responses) in prepared.iter().zip(&responses) {
+            out.push(self.finish_cross_level(level, level_responses)?);
+        }
+        Ok(out)
     }
 }
 
