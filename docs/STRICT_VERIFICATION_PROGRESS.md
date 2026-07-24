@@ -174,6 +174,18 @@ passed on the full-feature UKI after it reopened state written by the diagnostic
 UKI. Hetzner intentionally remains on the independently pinned 2026-07-20
 binary above.
 
+On 2026-07-24, VPSBG moved to the boot-regeneration UKI built from measured
+startup commit `7b6cf108`. It reuses the unchanged `unified_server` binary from
+BitcoinPIR commit `66034c82` (SHA-256 `1134b8a4...09c37`) and the source-bound
+`oramctl` from bitcoinpir-oram commit `cd2c1a22`. The UKI SHA-256 is
+`5b854888...7b13e` and its live launch MEASUREMENT is
+`a3a8fb0f...04040b86`. Every boot now regenerates both authenticated ORAM
+images from proof-bound inputs in SEV-protected tmpfs, verifies the emitted-page
+Merkle roots and the exact published bulk/trusted-state path contract, and only
+then opens the query server. Fixed-pin AMD attestation, the encrypted channel,
+dummy padded lookups, and known-present padded results for both db_id 0 and
+db_id 1 passed against the live full-feature UKI.
+
 ## Non-blocking follow-ups
 
 The strict-root rollout above is closed. The following improvements do not
@@ -196,7 +208,6 @@ reopen it:
 - Follow [the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md)
   for every new snapshot or delta generation.
 
-The separate ORAM live-image byte-match claim remains out of scope. The static
-strict ORAM source-binding proof is not evidence that the deployed runtime has
-the byte-identical ORAM image open; that stronger deployment claim must be
-tracked and validated independently.
+The separate ORAM live-image claim remains out of scope for the completed
+strict-root rollout. Its threat model and implementation sequence are tracked
+in [ORAM_LIVE_IMAGE_BINDING_PLAN.md](ORAM_LIVE_IMAGE_BINDING_PLAN.md).

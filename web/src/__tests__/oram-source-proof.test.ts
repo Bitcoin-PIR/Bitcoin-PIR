@@ -35,7 +35,7 @@ describe('ORAM source-binding proof', () => {
       '8030603977422561841',
     );
     expect(status.verified?.manifest.liveDeployment.status).toBe(
-      'strict-source-bound-live-on-pir2',
+      'strict-source-bound-boot-regeneration-live-on-pir2',
     );
     expect(status.verified?.manifest.liveDeployment.pir2BinarySha256).toBe(
       PIR2_TIER3_PIN.binarySha256Hex,
@@ -44,10 +44,10 @@ describe('ORAM source-binding proof', () => {
       PIR2_TIER3_PIN.measurementHex,
     );
     expect(status.verified?.manifest.liveDeployment.pir2UkiSha256).toBe(
-      '3d511f88ea065ac564b8838e69d904acd1fd21d63eff1d0a5768e80c1dcaa6ce',
+      '5b8548888b5b5f8eabee5002c263179dd9b2efa8ad135efb1aefe79c3d17b13e',
     );
     expect(status.verified?.manifest.liveDeployment.currentPir2RuntimeBitcoinPirCommit).toBe(
-      '837108b65374c3c05f876c1d57914e05f106c6a8',
+      '66034c8204e19b11b8c0602aa625c2414095deb2',
     );
   });
 

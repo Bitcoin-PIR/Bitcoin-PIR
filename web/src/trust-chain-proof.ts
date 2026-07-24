@@ -33,6 +33,7 @@ export interface TrustChainManifest {
     buildKind: 'snapshot' | 'delta' | string;
     fromHeight: number;
     fromBlockHashHex: string;
+    fromMuhashHex?: string;
     height: number;
     blockHashHex: string;
     muhashHex: string;
@@ -244,6 +245,7 @@ export function trustChainPinFromManifest(manifest: TrustChainManifest): Databas
     fromHeight: manifest.anchor.fromHeight,
     height: manifest.anchor.height,
     fromBlockHashHex: manifest.anchor.fromBlockHashHex,
+    fromMuhashHex: manifest.anchor.fromMuhashHex,
     blockHashHex: manifest.anchor.blockHashHex,
     muhashHex: manifest.anchor.muhashHex,
     bucketSuperRootHex: manifest.anchor.bucketSuperRootHex,
@@ -317,6 +319,18 @@ function compareManifestToDbPin(
   if (status.state !== 'verified') {
     mismatches.push(...(status.mismatches ?? []).map((m) => `manifest DB pin: ${m}`));
   }
+  if (manifest.anchor.buildKind === 'delta') {
+    if (!pin.fromMuhashHex) {
+      mismatches.push('production DB pin is missing delta fromMuhashHex');
+    } else {
+      compareHex(
+        'manifest delta from MuHash pin',
+        manifest.anchor.fromMuhashHex ?? '',
+        pin.fromMuhashHex,
+        mismatches,
+      );
+    }
+  }
 }
 
 function compareBhtmAttestationToManifest(
@@ -378,6 +392,7 @@ function compareFromLeafToManifestAndDbAnchor(
     mismatches.push(`BHTM from leaf tree size: expected ${manifest.bhtmProof.treeSize}, got ${leaf.treeSize}`);
   }
   compareHex('BHTM from leaf block hash', leaf.blockHashDisplayHex, manifest.anchor.fromBlockHashHex, mismatches);
+  compareHex('BHTM from leaf Core MuHash', leaf.coreMuhashDisplayHex, manifest.anchor.fromMuhashHex ?? '', mismatches);
   compareHex('BHTM from leaf hash', leaf.leafHashHex, manifest.bhtmProof.fromLeafHashHex ?? '', mismatches);
   compareHex('BHTM from leaf tree_root', leaf.treeRootHex, manifest.bhtmProof.treeRootHex, mismatches);
 }
@@ -464,6 +479,9 @@ function validateManifestShape(manifest: TrustChainManifest): void {
     throw new Error(`unsupported trust-chain buildKind ${manifest.anchor.buildKind}`);
   }
   if (manifest.anchor.buildKind === 'delta') {
+    if (!isHexBytes(manifest.anchor.fromMuhashHex, 32)) {
+      throw new Error('delta trust-chain manifest missing or invalid anchor.fromMuhashHex');
+    }
     if (!manifest.bhtmProof.artifacts?.fromLeafProof) {
       throw new Error('delta trust-chain manifest missing BHTM fromLeafProof artifact');
     }

@@ -9,6 +9,7 @@
     "buildKind": "delta",
     "fromHeight": 940611,
     "fromBlockHashHex": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+    "fromMuhashHex": "aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b",
     "height": 948454,
     "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
     "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",

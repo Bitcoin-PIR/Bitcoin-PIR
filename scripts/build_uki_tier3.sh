@@ -82,13 +82,34 @@ done
     exit 1
 }
 
-# Phase 3.2: unified_server binary must be built and present.
+# Phase 3.2: unified_server and oramctl binaries must be built and present.
 BINARY=${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}
 [ -x "$BINARY" ] || {
     echo "error: $BINARY not executable" >&2
     echo "       run: cargo build --release -p runtime --features cuckoo-oram --bin unified_server" >&2
     exit 1
 }
+if [ -n "${ORAMCTL:-}" ]; then
+    ORAMCTL_BIN="$ORAMCTL"
+elif [ -x /home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl ]; then
+    ORAMCTL_BIN=/home/pir/BitcoinPIR/vendor/bitcoinpir-oram/target/release/oramctl
+else
+    ORAMCTL_BIN=/home/pir/bitcoin-pir/oram/target/release/oramctl
+fi
+[ -x "$ORAMCTL_BIN" ] || {
+    echo "error: $ORAMCTL_BIN not executable" >&2
+    echo "       run: cd /home/pir/bitcoin-pir/oram && cargo build --release --bin oramctl" >&2
+    echo "       or set ORAMCTL=/path/to/oramctl" >&2
+    exit 1
+}
+export BPIR_ORAMCTL_BIN="$ORAMCTL_BIN"
+
+BHTM_FROM_LEAF_PROOF=${BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json}
+[ -r "$BHTM_FROM_LEAF_PROOF" ] || {
+    echo "error: BHTM from-leaf proof not readable: $BHTM_FROM_LEAF_PROOF" >&2
+    exit 1
+}
+export BPIR_BHTM_FROM_LEAF_PROOF="$BHTM_FROM_LEAF_PROOF"
 
 # ─── Kernel auto-detection ──────────────────────────────────────────────────
 # Prefer explicit KERNEL=/boot/vmlinuz-<ver> in the environment.
@@ -181,15 +202,23 @@ done
 # MEASUREMENT via the initramfs cpio).
 if command -v sha256sum >/dev/null 2>&1; then
     BIN_HASH=$(sha256sum "$BINARY" | awk '{print $1}')
+    ORAMCTL_HASH=$(sha256sum "$ORAMCTL_BIN" | awk '{print $1}')
+    BHTM_PROOF_HASH=$(sha256sum "$BHTM_FROM_LEAF_PROOF" | awk '{print $1}')
 else
     BIN_HASH=$(shasum -a 256 "$BINARY" | awk '{print $1}')
+    ORAMCTL_HASH=$(shasum -a 256 "$ORAMCTL_BIN" | awk '{print $1}')
+    BHTM_PROOF_HASH=$(shasum -a 256 "$BHTM_FROM_LEAF_PROOF" | awk '{print $1}')
 fi
 
 echo "kernel:                   $KERNEL"
 echo "kernel version:           $KVER"
 echo "cloudflared:              /usr/local/bin/cloudflared ($(/usr/local/bin/cloudflared --version 2>&1 | head -1))"
 echo "unified_server:           $BINARY"
+echo "oramctl:                  $ORAMCTL_BIN"
+echo "BHTM from-leaf proof:     $BHTM_FROM_LEAF_PROOF"
 echo "binary sha256:            $BIN_HASH"
+echo "oramctl sha256:           $ORAMCTL_HASH"
+echo "BHTM proof sha256:        $BHTM_PROOF_HASH"
 
 # ─── Generate initramfs ────────────────────────────────────────────────────
 # --add network            : pulls in dracut's network plumbing (mostly
@@ -293,7 +322,9 @@ echo "tier3 uki sha256:         $UKI_SHA"
     "kernel=$KERNEL" \
     "kernel_version=$KVER" \
     "unified_server=$BINARY" \
-    "binary_sha256=$BIN_HASH"
+    "binary_sha256=$BIN_HASH" \
+    "oramctl_sha256=$ORAMCTL_HASH" \
+    "bhtm_from_leaf_sha256=$BHTM_PROOF_HASH"
 echo
 echo "Next steps (Phase 3.2 acceptance):"
 echo "  0. (One-time, before first deploy of this Tier 3 variant) provision"

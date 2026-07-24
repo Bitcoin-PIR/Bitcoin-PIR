@@ -7,8 +7,18 @@ the underlying Bitcoin chain.
 
 ## Status
 
-The build pipeline is **byte-deterministic today, but only if every
-operator runs the same release binary**:
+Current status as of 2026-07-24:
+
+- active snapshot and delta builds derive placement and tag seeds from their
+  committed Bitcoin chain anchors;
+- server loading and DPF/Harmony native clients recompute and verify those
+  anchor-derived seeds, while WASM surfaces the same verification result;
+- database proofs and production pins authenticate the block height/hash used
+  by strict clients; and
+- CI runs a small synthetic cross-build determinism test on clean runners.
+
+The original pre-migration baseline was byte-deterministic only when every
+operator ran the same release binary:
 
 - `bitcoind dumptxoutset` is byte-deterministic at a given block hash.
   The UTXO set has a fixed serialization order and Bitcoin Core's
@@ -17,7 +27,7 @@ operator runs the same release binary**:
   no `OsRng`, no `thread_rng`, no `SystemTime` seeding anywhere in
   `build/src/` or `pir-core/src/`. All `Instant::now()` calls are
   timing logs only.
-- All PRG seeds flow from three hardcoded constants in source:
+- All PRG seeds originally flowed from three hardcoded constants in source:
 
   | Constant | Value | Purpose |
   | --- | --- | --- |
@@ -218,26 +228,23 @@ more entropy (e.g., future FHE-layer pre-randomization).
   fabricates a matching anchor+seed pair — that needs the client check
   below.
 
-### Remaining
+### Completion and deferred follow-ups
 
-1. **Client-side verification wiring.** Clients (`pir-sdk-client`,
-   `pir-sdk-wasm`, the standalone TS OnionPIR client) still trust the
-   header seed. They should read the anchor from the v2 header (or the
-   attest response) and `verify_anchor_seeds(&header, domain, tag_domain)`,
-   refusing to query on mismatch. **Trust model (per project owner):**
-   the seed is a deterministic function of the anchor block-header hash,
-   so a client that can *see the block hash used* can recompute the seed
-   and confirm it matches; how the client independently confirms that
-   block hash is left open (Bitcoin light client, baked-in pin,
-   attestation `REPORT_DATA`, or multi-operator quorum — many viable
-   paths). The verifier code is trivial; the anchor-delivery channel is
-   the remaining design choice.
-2. **CI cross-build check.** GitHub Actions workflow that runs
-   `./scripts/build_full.sh <snapshot> <height>` twice on clean
-   checkouts at the same `<height>`, then `sha256sum`-compares the
-   output cuckoo files. Deferred until first multi-operator deployment.
-3. **HarmonyPIR keys not affected** — query-time, client-derived;
-   no build-side seed.
+1. **Client-side verification wiring — complete.** Shared SDK database metadata
+   reconstructs the committed headers and calls `verify_anchor_seeds`; DPF and
+   Harmony clients fail before querying on a mismatch. WASM exposes the same
+   `anchorVerified` result, while strict database-proof and production-pin
+   checks authenticate the displayed block anchors. The browser additionally
+   verifies both delta endpoint inclusion proofs and links their block hashes
+   to mempool.space for independent inspection.
+2. **Cross-build CI — synthetic gate landed; full production build deferred.**
+   `.github/workflows/build-determinism.yml` runs
+   `pir-core/tests/cross_build_determinism.rs` on clean runners and compares
+   serialized outputs. Running the entire multi-hour
+   `scripts/build_full.sh <snapshot> <height>` twice and comparing all large
+   production artifacts remains deferred until the first multi-operator build.
+3. **HarmonyPIR keys are not affected** — they are query-time,
+   client-derived and have no build-side seed.
 
 ## Merkle tables — exempt from chain-derivation (resolved)
 
@@ -257,10 +264,9 @@ The only fixed Merkle seed (`0xBA7C_51B1_… + level`) lived in the
 **legacy N-ary tree Merkle** (`merkle_builder.rs` / `gen_4_build_merkle_dpf`
 / `test_merkle_verify*`), which the active pipeline never built. Those
 builders were **removed** rather than chain-derived. The inert
-server/protocol/reference-client N-ary load+verify path (opcodes
-`0x31`/`0x32`, the `MappedDatabase.merkle_*` fields) is slated for
-removal in a focused follow-up; it is cleanly separated from the live
-per-bucket path (opcodes `0x33`/`0x34`).
+server/protocol/reference-client N-ary load+verify path has also been removed.
+Opcodes `0x31`/`0x32` remain reserved only so they cannot be reused
+accidentally; the live per-bucket path uses opcodes `0x33`/`0x34`.
 
 **Onion anchor coverage** is complete: `onion_index_meta.bin` +
 `onion_chunk_cuckoo.bin` + `onion_index_all.bin` all embed the anchor,
