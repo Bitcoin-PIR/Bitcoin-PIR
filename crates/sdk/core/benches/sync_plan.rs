@@ -67,6 +67,10 @@ fn build_catalog(num_full: u8, num_deltas: u8) -> DatabaseCatalog {
             dpf_n_index: 10,
             dpf_n_chunk: 11,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
         next_db_id = next_db_id.checked_add(1).expect("catalog overflow (u8 db_id)");
     }
@@ -89,6 +93,10 @@ fn build_catalog(num_full: u8, num_deltas: u8) -> DatabaseCatalog {
             dpf_n_index: 8,
             dpf_n_chunk: 9,
             has_bucket_merkle: false,
+            index_master_seed: 0,
+            chunk_master_seed: 0,
+            anchor_kind: 0,
+            anchor_bytes: Vec::new(),
         });
         next_db_id = next_db_id.checked_add(1).expect("catalog overflow (u8 db_id)");
         prev_tip = new_tip;
