@@ -173,7 +173,7 @@ It must not be described as a fresh full build.
 - [x] Archive and independently verify the new bundles. The reviewed evidence
       digests and `params_hash_v2` values are recorded in
       `PHASE3_ROADMAP.md`.
-- [ ] Publish the reviewed production `params_hash_v2`/builder pins in the
+- [x] Publish the reviewed production `params_hash_v2`/builder pins in the
       strict-client activation PR.
 - [x] Configure and deploy `proof_v2_dir` on Hetzner and VPSBG using a runtime
       binary that supports the v2 opcode.

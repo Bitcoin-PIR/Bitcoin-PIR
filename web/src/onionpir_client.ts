@@ -41,7 +41,6 @@ import {
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './types.js';
 import type { DatabaseProofPin, DatabaseProofStatus } from './db-proof.js';
-import type { OnionQueryLayoutPin } from './attest-pin.js';
 import type {
   DatabaseCatalog,
   OnionPirMerkleInfoJson,
@@ -76,7 +75,16 @@ const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
 // Operator-signed identity (shared across all backends; 0x07).
 const REQ_ANNOUNCE              = 0x07;
-const REQ_GET_DB_PROOF          = 0x0A;
+const REQ_GET_DB_PROOF_V2       = 0x0C;
+
+/** Exact v2-only request frame. Kept as a pure helper so no-fallback wire
+ * behavior is covered without a live socket. */
+export function databaseProofV2Request(dbId: number): Uint8Array {
+  if (!Number.isInteger(dbId) || dbId < 0 || dbId > 0xff) {
+    throw new Error(`database proof v2 db id must be a byte, got ${dbId}`);
+  }
+  return new Uint8Array([2, 0, 0, 0, REQ_GET_DB_PROOF_V2, dbId]);
+}
 
 // NOTE: moved from 0x30-0x32 to 0x50-0x52 to avoid collision with
 // REQ_MERKLE_SIBLING_BATCH (0x31) and REQ_MERKLE_TREE_TOP (0x32).
@@ -700,7 +708,6 @@ export interface OnionPirClientConfig {
   /** Production enables this fail-closed proof/root gate. */
   strictVerification?: boolean;
   databaseProofPins?: readonly DatabaseProofPin[];
-  onionQueryLayoutPins?: readonly OnionQueryLayoutPin[];
   onDatabaseProof?: (dbId: number, status: DatabaseProofStatus) => void;
   onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
   onLog?: (message: string, level: 'info' | 'success' | 'error') => void;
@@ -713,6 +720,19 @@ interface InstalledOnionRoot {
   height: number;
   onionSuperRootHex: string;
   onionEntrySize: number;
+  totalPackedEntries: number;
+  indexBinsPerTable: number;
+  chunkBinsPerTable: number;
+  indexK: number;
+  chunkK: number;
+  tagSeed: bigint;
+  indexMasterSeed: bigint;
+  chunkMasterSeed: bigint;
+  indexSlotsPerBin: number;
+  indexSlotSize: number;
+  merkleArity: number;
+  merkleIndexNumPt: number;
+  merkleDataNumPt: number;
   generation: number;
 }
 
@@ -901,7 +921,6 @@ export class OnionPirWebClient {
   private installedOnionRoots = new Map<number, InstalledOnionRoot>();
   private verifiedTreeTops = new Map<number, VerifiedTreeTopBinding>();
   private databaseProofStatuses = new Map<number, DatabaseProofStatus>();
-  private verifiedLayoutDbIds = new Set<number>();
 
   // Test hook: one-shot override of the computed scripthashes for the next
   // queryBatch() call. Consumed on use and then cleared. Used by harnesses
@@ -938,86 +957,9 @@ export class OnionPirWebClient {
     this.installedOnionRoots.clear();
     this.verifiedTreeTops.clear();
     this.databaseProofStatuses.clear();
-    this.verifiedLayoutDbIds.clear();
     this.registeredDbs.clear();
     this.fheClientId = 0;
     this.fheSecretKey = null;
-  }
-
-  private layoutPinForDb(dbId: number): OnionQueryLayoutPin | undefined {
-    return this.config.onionQueryLayoutPins?.find((pin) => pin.dbId === dbId);
-  }
-
-  private validateStrictLayoutPins(): void {
-    const catalog = this.catalog;
-    const serverInfo = this.serverInfo;
-    const pins = this.config.onionQueryLayoutPins ?? [];
-    if (!catalog || !serverInfo) {
-      throw new Error('strict OnionPIR layout validation requires server info and catalog');
-    }
-    if (pins.length === 0) {
-      throw new Error('strict OnionPIR requires pinned query layouts');
-    }
-
-    const catalogIds = catalog.databases.map((db) => db.dbId);
-    const pinIds = pins.map((pin) => pin.dbId);
-    const duplicates = pinIds.filter((id, i) => pinIds.indexOf(id) !== i);
-    const missing = catalogIds.filter((id) => !pinIds.includes(id));
-    const unexpected = pinIds.filter((id) => !catalogIds.includes(id));
-    if (duplicates.length || missing.length || unexpected.length) {
-      throw new Error(
-        `strict OnionPIR layout pin coverage failed: duplicates=${[...new Set(duplicates)]}; ` +
-        `missing=${missing}; unexpected=${unexpected}`,
-      );
-    }
-
-    const failures: string[] = [];
-    const check = (dbId: number, field: string, actual: unknown, expected: unknown) => {
-      if (actual !== expected) {
-        failures.push(`db ${dbId} ${field}: expected ${String(expected)}, got ${String(actual)}`);
-      }
-    };
-    const hex64 = (value: bigint) => value.toString(16).padStart(16, '0').toLowerCase();
-
-    for (const pin of pins) {
-      const db = catalog.databases.find((entry) => entry.dbId === pin.dbId);
-      const advertised = this.getOnionPirForDb(pin.dbId);
-      const merkle = this.getOnionPirMerkleForDb(pin.dbId);
-      if (!db || !advertised || !merkle) {
-        failures.push(`db ${pin.dbId}: OnionPIR layout or Merkle metadata unavailable`);
-        continue;
-      }
-
-      check(pin.dbId, 'catalog.index_k', db.indexK, pin.indexK);
-      check(pin.dbId, 'catalog.chunk_k', db.chunkK, pin.chunkK);
-      check(pin.dbId, 'catalog.tag_seed', hex64(db.tagSeed), pin.tagSeedHex);
-      check(pin.dbId, 'catalog.index_master_seed', hex64(db.indexMasterSeed), pin.indexMasterSeedHex);
-      check(pin.dbId, 'catalog.chunk_master_seed', hex64(db.chunkMasterSeed), pin.chunkMasterSeedHex);
-
-      check(pin.dbId, 'onion.total_packed_entries', advertised.total_packed_entries, pin.totalPackedEntries);
-      check(pin.dbId, 'onion.index_bins_per_table', advertised.index_bins_per_table, pin.indexBinsPerTable);
-      check(pin.dbId, 'onion.chunk_bins_per_table', advertised.chunk_bins_per_table, pin.chunkBinsPerTable);
-      check(pin.dbId, 'onion.index_k', advertised.index_k, pin.indexK);
-      check(pin.dbId, 'onion.chunk_k', advertised.chunk_k, pin.chunkK);
-      check(pin.dbId, 'onion.tag_seed', hex64(advertised.tag_seed), pin.tagSeedHex);
-      check(pin.dbId, 'onion.index_slots_per_bin', advertised.index_slots_per_bin, pin.indexSlotsPerBin);
-      check(pin.dbId, 'onion.index_slot_size', advertised.index_slot_size, pin.indexSlotSize);
-
-      check(pin.dbId, 'merkle.arity', merkle.arity, pin.merkleArity);
-      check(pin.dbId, 'merkle.index.k', merkle.index.k, pin.merkleIndexK);
-      check(pin.dbId, 'merkle.data.k', merkle.data.k, pin.merkleDataK);
-      check(pin.dbId, 'merkle.index.num_pt', merkle.index.num_pt, pin.merkleIndexNumPt);
-      check(pin.dbId, 'merkle.data.num_pt', merkle.data.num_pt, pin.merkleDataNumPt);
-
-      const indexEntrySize = this.wasmModule!.paramsInfo(pin.indexBinsPerTable).entrySize;
-      const chunkEntrySize = this.wasmModule!.paramsInfo(pin.chunkBinsPerTable).entrySize;
-      check(pin.dbId, 'local index entry_size', indexEntrySize, pin.onionEntrySize);
-      check(pin.dbId, 'local chunk entry_size', chunkEntrySize, pin.onionEntrySize);
-      check(pin.dbId, 'merkle sibling entry_size', pin.merkleArity * 32, pin.onionEntrySize);
-    }
-    if (failures.length > 0) {
-      throw new Error(`strict OnionPIR query-layout mismatch: ${failures.join('; ')}`);
-    }
   }
 
   private catalogToSdkHandle(): any {
@@ -1104,19 +1046,19 @@ export class OnionPirWebClient {
    * the active DB does not expose its own `onionpir` block.
    */
   private updateParamsForActiveDb(): void {
-    if (this.isStrictVerification() && this.verifiedLayoutDbIds.has(this.dbId)) {
-      const pin = this.layoutPinForDb(this.dbId);
-      if (!pin) throw new Error(`strict OnionPIR layout pin missing for dbId=${this.dbId}`);
-      this.indexK = pin.indexK;
-      this.chunkK = pin.chunkK;
-      this.indexBins = pin.indexBinsPerTable;
-      this.chunkBins = pin.chunkBinsPerTable;
-      this.tagSeed = BigInt(`0x${pin.tagSeedHex}`);
-      this.indexMasterSeed = BigInt(`0x${pin.indexMasterSeedHex}`);
-      this.chunkMasterSeed = BigInt(`0x${pin.chunkMasterSeedHex}`);
-      this.totalPacked = pin.totalPackedEntries;
-      this.indexSlotsPerBin = pin.indexSlotsPerBin;
-      this.indexSlotSize = pin.indexSlotSize;
+    if (this.isStrictVerification()) {
+      const installed = this.installedOnionRoots.get(this.dbId);
+      if (!installed || installed.generation !== this.sessionGeneration) return;
+      this.indexK = installed.indexK;
+      this.chunkK = installed.chunkK;
+      this.indexBins = installed.indexBinsPerTable;
+      this.chunkBins = installed.chunkBinsPerTable;
+      this.tagSeed = installed.tagSeed;
+      this.indexMasterSeed = installed.indexMasterSeed;
+      this.chunkMasterSeed = installed.chunkMasterSeed;
+      this.totalPacked = installed.totalPackedEntries;
+      this.indexSlotsPerBin = installed.indexSlotsPerBin;
+      this.indexSlotSize = installed.indexSlotSize;
       return;
     }
     const opi = this.getOnionPirForDb(this.dbId) ?? this.serverInfo?.onionpir;
@@ -1246,7 +1188,6 @@ export class OnionPirWebClient {
           catalog.databases.map((db) => db.dbId),
           proofPins,
         );
-        this.validateStrictLayoutPins();
         await verifyInstallAndPreflightDatabaseProofs({
           client: this,
           pins: proofPins,
@@ -1330,7 +1271,7 @@ export class OnionPirWebClient {
     );
   }
 
-  /** Fetch and verify one DB proof. This method is deliberately stateless. */
+  /** Fetch and verify one v2 DB proof. Strict OnionPIR never falls back to v1. */
   async verifyDatabaseProof(
     dbId: number,
     expectedParamsHashHex?: string | null,
@@ -1338,7 +1279,7 @@ export class OnionPirWebClient {
     allowedBuilderGitCommit?: string | null,
   ): Promise<WasmDatabaseProof> {
     if (!this.ws?.isOpen()) throw new Error('Not connected');
-    const request = new Uint8Array([2, 0, 0, 0, REQ_GET_DB_PROOF, dbId & 0xff]);
+    const request = databaseProofV2Request(dbId);
     const response = await this.sendRaw(request);
     this.recordRound({
       kind: 'info',
@@ -1350,7 +1291,7 @@ export class OnionPirWebClient {
     });
     const catalogHandle = this.catalogToSdkHandle();
     try {
-      return requireSdkWasm().verifyDatabaseProofResponse(
+      return requireSdkWasm().verifyDatabaseProofV2Response(
         response,
         catalogHandle,
         dbId,
@@ -1363,22 +1304,68 @@ export class OnionPirWebClient {
     }
   }
 
-  /** Consume a pin-matched proof handle and install its Onion root locally. */
+  /** Consume a pin-matched v2 proof and install its root + typed layout. */
   installVerifiedDatabaseProof(proof: WasmDatabaseProof): void {
     try {
-      const pin = this.layoutPinForDb(proof.dbId);
       const catalogEntry = this.catalog?.databases.find((db) => db.dbId === proof.dbId);
-      if (!pin || !catalogEntry) {
-        throw new Error(`strict OnionPIR install has no layout/catalog entry for db ${proof.dbId}`);
+      const advertised = this.getOnionPirForDb(proof.dbId);
+      const merkle = this.getOnionPirMerkleForDb(proof.dbId);
+      if (!catalogEntry || !advertised || !merkle) {
+        throw new Error(`strict OnionPIR install has no catalog/query/Merkle entry for db ${proof.dbId}`);
       }
-      if (proof.onionEntrySize !== pin.onionEntrySize) {
-        throw new Error(
-          `db ${proof.dbId} onion_entry_size mismatch: proof ${proof.onionEntrySize}, ` +
-          `pin ${pin.onionEntrySize}`,
-        );
+      const typed = {
+        totalPackedEntries: proof.onionTotalPackedEntries,
+        indexBinsPerTable: proof.onionIndexBinsPerTable,
+        chunkBinsPerTable: proof.onionChunkBinsPerTable,
+        indexSlotsPerBin: proof.onionIndexSlotsPerBin,
+        indexSlotSize: proof.onionIndexSlotSize,
+      };
+      if (proof.proofVersion !== 2 || Object.values(typed).some(
+        (value) => !Number.isInteger(value) || (value ?? 0) <= 0,
+      )) {
+        throw new Error(`db ${proof.dbId} proof is missing a valid v2 Onion layout`);
       }
       if (proof.height !== catalogEntry.height || proof.fromHeight !== catalogEntry.baseHeight) {
         throw new Error(`db ${proof.dbId} proof/catalog height changed during install`);
+      }
+      const totalPackedEntries = typed.totalPackedEntries!;
+      const indexBinsPerTable = typed.indexBinsPerTable!;
+      const chunkBinsPerTable = typed.chunkBinsPerTable!;
+      const indexSlotsPerBin = typed.indexSlotsPerBin!;
+      const indexSlotSize = typed.indexSlotSize!;
+      const indexK = 75;
+      const chunkK = 80;
+      const merkleArity = proof.onionEntrySize / 32;
+      const merkleIndexNumPt = Math.ceil(indexBinsPerTable / merkleArity);
+      const merkleDataNumPt = Math.ceil(chunkBinsPerTable / merkleArity);
+      const mismatches: string[] = [];
+      const check = (field: string, actual: unknown, expected: unknown) => {
+        if (actual !== expected) mismatches.push(`${field}: expected ${String(expected)}, got ${String(actual)}`);
+      };
+      check('catalog.index_bins', catalogEntry.indexBinsPerTable, indexBinsPerTable);
+      check('catalog.chunk_bins', catalogEntry.chunkBinsPerTable, chunkBinsPerTable);
+      check('catalog.index_k', catalogEntry.indexK, indexK);
+      check('catalog.chunk_k', catalogEntry.chunkK, chunkK);
+      check('onion.total_packed_entries', advertised.total_packed_entries, totalPackedEntries);
+      check('onion.index_bins', advertised.index_bins_per_table, indexBinsPerTable);
+      check('onion.chunk_bins', advertised.chunk_bins_per_table, chunkBinsPerTable);
+      check('onion.index_k', advertised.index_k, indexK);
+      check('onion.chunk_k', advertised.chunk_k, chunkK);
+      check('onion.tag_seed', advertised.tag_seed, catalogEntry.tagSeed);
+      check('onion.index_master_seed', advertised.index_master_seed, catalogEntry.indexMasterSeed);
+      check('onion.chunk_master_seed', advertised.chunk_master_seed, catalogEntry.chunkMasterSeed);
+      check('onion.index_slots_per_bin', advertised.index_slots_per_bin, indexSlotsPerBin);
+      check('onion.index_slot_size', advertised.index_slot_size, indexSlotSize);
+      check('merkle.arity', merkle.arity, merkleArity);
+      check('merkle.index.k', merkle.index.k, indexK);
+      check('merkle.data.k', merkle.data.k, chunkK);
+      check('merkle.index.num_pt', merkle.index.num_pt, merkleIndexNumPt);
+      check('merkle.data.num_pt', merkle.data.num_pt, merkleDataNumPt);
+      check('local index entry_size', this.wasmModule!.paramsInfo(indexBinsPerTable).entrySize, proof.onionEntrySize);
+      check('local chunk entry_size', this.wasmModule!.paramsInfo(chunkBinsPerTable).entrySize, proof.onionEntrySize);
+      check('Merkle sibling entry_size', merkleArity * 32, proof.onionEntrySize);
+      if (mismatches.length > 0) {
+        throw new Error(`db ${proof.dbId} proof-v2 query-layout mismatch: ${mismatches.join('; ')}`);
       }
       const root = proof.onionSuperRootHex.toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(root)) {
@@ -1391,10 +1378,22 @@ export class OnionPirWebClient {
         height: proof.height,
         onionSuperRootHex: root,
         onionEntrySize: proof.onionEntrySize,
+        totalPackedEntries,
+        indexBinsPerTable,
+        chunkBinsPerTable,
+        indexK,
+        chunkK,
+        tagSeed: catalogEntry.tagSeed,
+        indexMasterSeed: catalogEntry.indexMasterSeed,
+        chunkMasterSeed: catalogEntry.chunkMasterSeed,
+        indexSlotsPerBin,
+        indexSlotSize,
+        merkleArity,
+        merkleIndexNumPt,
+        merkleDataNumPt,
         generation: this.sessionGeneration,
       });
       this.verifiedTreeTops.delete(proof.dbId);
-      this.verifiedLayoutDbIds.add(proof.dbId);
     } finally {
       proof.free();
     }
@@ -1529,8 +1528,7 @@ export class OnionPirWebClient {
         !this.strictReady ||
         !installed || installed.generation !== this.sessionGeneration ||
         !binding || binding.generation !== this.sessionGeneration ||
-        binding.rootHex !== installed.onionSuperRootHex ||
-        !this.verifiedLayoutDbIds.has(dbId)
+        binding.rootHex !== installed.onionSuperRootHex
       ) {
         throw new Error(
           `strict OnionPIR query rejected: db ${dbId} proof/layout/tree-tops are not ready`,

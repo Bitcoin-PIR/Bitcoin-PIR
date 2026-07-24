@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "registry": {
+    "repository": "https://github.com/Bitcoin-PIR/proof-registry",
+    "commit": "4e19b0bc675715c88e5c11364ac9e0236c2cb359"
+  },
+  "verificationProfile": "bitcoinpir/database-proof-v2/reattest-existing",
+  "acceptedVerifier": {
+    "repository": "https://github.com/Bitcoin-PIR/attested-builder",
+    "commit": "d49a199e290ccbb05b6481c5ba691cb516aa76bb",
+    "tool": "pir-attested-builder verify-build-evidence",
+    "toolSha256": "9a8ed087487de16757865470a2ffbceff02ab5dac69cd54fcf4dd49fc2a8d092"
+  },
+  "bundles": [
+    {
+      "dbId": 0,
+      "manifestSha256": "895d15ec8b9d62c20e2ece98481144b2b0de0d390d150046bfbc46205ea7488f",
+      "verificationRecordSha256": "0e5f718fc742bb6110e7b3c5380c87949a5ff3ef8f12628be025b430e0d5842d",
+      "deploymentRecordSha256": "97e9684ac320d6df9e5523649adb74dc0d46740206e2355426de8ee96a722a9c",
+      "proofFields": {
+        "proofVersion": 2,
+        "buildKind": "snapshot",
+        "fromHeight": 0,
+        "fromBlockHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "height": 948454,
+        "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+        "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+        "bucketSuperRootHex": "45def9b3c191cd28e630dae51f32d3e2f85f4d8ccf38c0712a23136967f2ec0b",
+        "onionSuperRootHex": "e83efa5730c47b94e8e6af09b1cb76a9e006634645fd39c939bd7b8ea554f8b4",
+        "paramsHashHex": "a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563",
+        "networkMagicHex": "f9beb4d9",
+        "builderBinarySha256Hex": "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c",
+        "builderGitCommit": "d49a199e290ccbb05b6481c5ba691cb516aa76bb",
+        "onionEntrySize": 3328,
+        "onionTotalPackedEntries": 948640,
+        "onionIndexBinsPerTable": 10273,
+        "onionChunkBinsPerTable": 37954,
+        "onionIndexSlotsPerBin": 221,
+        "onionIndexSlotSize": 15
+      }
+    },
+    {
+      "dbId": 1,
+      "manifestSha256": "7d235d1abfa96a208d28f0ac1d189af19c3856fb21871d7b51410ee858d921aa",
+      "verificationRecordSha256": "86ad8e2d5578f277255e918f918bd71c16157d436e9f236079139e7efee61ad0",
+      "deploymentRecordSha256": "2ec2a7439b0e6c3c7d21a82aba580474f7a5217b7616f737a93d05223abc6025",
+      "proofFields": {
+        "proofVersion": 2,
+        "buildKind": "delta",
+        "fromHeight": 940611,
+        "fromBlockHashHex": "000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99",
+        "height": 948454,
+        "blockHashHex": "00000000000000000001ef683c02c383315db7e917c69d20f79e05985560a4e4",
+        "muhashHex": "cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee",
+        "bucketSuperRootHex": "e2ba2eee6788424309a95f771893d5401cc8e3ceec6188dc2708900e211a910a",
+        "onionSuperRootHex": "f86baa3966a61cdcd70d8c0ad9bed233f591806eb351db2ae35ac0192a3fe997",
+        "paramsHashHex": "fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d",
+        "networkMagicHex": "f9beb4d9",
+        "builderBinarySha256Hex": "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c",
+        "builderGitCommit": "d49a199e290ccbb05b6481c5ba691cb516aa76bb",
+        "onionEntrySize": 3328,
+        "onionTotalPackedEntries": 116030,
+        "onionIndexBinsPerTable": 965,
+        "onionChunkBinsPerTable": 4792,
+        "onionIndexSlotsPerBin": 221,
+        "onionIndexSlotSize": 15
+      }
+    }
+  ]
+}

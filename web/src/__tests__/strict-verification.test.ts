@@ -25,6 +25,13 @@ const PIN: DatabaseProofPin = {
   networkMagicHex: 'f9beb4d9',
   builderBinarySha256Hex: '77'.repeat(32),
   builderGitCommit: 'deadbeef',
+  onionEntrySize: 3_328,
+  proofVersion: 2,
+  onionTotalPackedEntries: 1_000,
+  onionIndexBinsPerTable: 100,
+  onionChunkBinsPerTable: 200,
+  onionIndexSlotsPerBin: 221,
+  onionIndexSlotSize: 15,
 };
 
 type TrackedProof = WasmDatabaseProof & { freeMock: ReturnType<typeof vi.fn> };
@@ -46,6 +53,12 @@ function proofHandle(pin: DatabaseProofPin, overrides: Partial<WasmDatabaseProof
     builderBinarySha256Hex: pin.builderBinarySha256Hex,
     builderGitCommit: pin.builderGitCommit,
     onionEntrySize: pin.onionEntrySize ?? 3_328,
+    proofVersion: pin.proofVersion,
+    onionTotalPackedEntries: pin.onionTotalPackedEntries,
+    onionIndexBinsPerTable: pin.onionIndexBinsPerTable,
+    onionChunkBinsPerTable: pin.onionChunkBinsPerTable,
+    onionIndexSlotsPerBin: pin.onionIndexSlotsPerBin,
+    onionIndexSlotSize: pin.onionIndexSlotSize,
     toJson: () => ({}),
     free: freeMock,
     freeMock,
@@ -177,6 +190,13 @@ describe('strict database proof flow', () => {
     ['networkMagicHex', '0b110907'],
     ['builderBinarySha256Hex', 'aa'.repeat(32)],
     ['builderGitCommit', 'badc0de'],
+    ['onionEntrySize', 1_024],
+    ['proofVersion', 1],
+    ['onionTotalPackedEntries', 999],
+    ['onionIndexBinsPerTable', 99],
+    ['onionChunkBinsPerTable', 199],
+    ['onionIndexSlotsPerBin', 220],
+    ['onionIndexSlotSize', 14],
   ] as const)('rejects a mismatch in production-pin field %s', async (field, value) => {
     const handle = proofHandle(PIN, { [field]: value });
     const client: StrictDatabaseProofClient = {

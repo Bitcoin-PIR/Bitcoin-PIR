@@ -1,0 +1,46 @@
+name: Generated proof consumer lock
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pir-db-attest/**'
+      - 'verification/locks/generated-proofs.json'
+      - 'verification/scripts/verify_generated_proofs.py'
+      - '.github/workflows/generated-proof-lock.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pir-db-attest/**'
+      - 'verification/locks/generated-proofs.json'
+      - 'verification/scripts/verify_generated_proofs.py'
+      - '.github/workflows/generated-proof-lock.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Registry integrity + independent proof replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout BitcoinPIR
+        uses: actions/checkout@v7
+
+      - name: Checkout locked proof registry commit
+        uses: actions/checkout@v7
+        with:
+          repository: Bitcoin-PIR/proof-registry
+          ref: 4e19b0bc675715c88e5c11364ac9e0236c2cb359
+          path: proof-registry
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --profile minimal
+
+      - name: Validate registry lock and replay both proof directories
+        run: >-
+          python3 verification/scripts/verify_generated_proofs.py
+          --registry-root proof-registry

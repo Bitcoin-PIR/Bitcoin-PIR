@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   assertConsistentOnionMerkleLeaves,
+  databaseProofV2Request,
   decodeBatchResult,
   OnionPirWebClient,
   responsePayloadFromFrame,
 } from '../onionpir_client.js';
-import { PRODUCTION_ONION_QUERY_LAYOUT_PINS } from '../attest-pin.js';
 
 function frame(payload: number[]): Uint8Array {
   const out = new Uint8Array(4 + payload.length);
@@ -15,6 +15,12 @@ function frame(payload: number[]): Uint8Array {
 }
 
 describe('strict OnionPIR wire parsing', () => {
+  it('uses only the v2 database-proof opcode and rejects invalid DB IDs', () => {
+    expect([...databaseProofV2Request(1)]).toEqual([2, 0, 0, 0, 0x0c, 1]);
+    expect(() => databaseProofV2Request(-1)).toThrow('must be a byte');
+    expect(() => databaseProofV2Request(256)).toThrow('must be a byte');
+  });
+
   it('accepts exactly one complete length-prefixed response', () => {
     expect([...responsePayloadFromFrame(frame([0x50, 0xaa]), 0x50)])
       .toEqual([0x50, 0xaa]);
@@ -94,12 +100,43 @@ describe('strict OnionPIR session lifecycle', () => {
     const client = new OnionPirWebClient({
       serverUrl: 'wss://example.invalid',
       strictVerification: true,
-      onionQueryLayoutPins: PRODUCTION_ONION_QUERY_LAYOUT_PINS,
     });
     const internal = client as any;
     internal.sessionGeneration = 7;
+    internal.wasmModule = { paramsInfo: () => ({ entrySize: 3_328 }) };
     internal.catalog = {
-      databases: [{ dbId: 0, baseHeight: 0, height: 948_454 }],
+      databases: [{
+        dbId: 0,
+        baseHeight: 0,
+        height: 948_454,
+        indexBinsPerTable: 10_273,
+        chunkBinsPerTable: 37_954,
+        indexK: 75,
+        chunkK: 80,
+        tagSeed: 1n,
+        indexMasterSeed: 2n,
+        chunkMasterSeed: 3n,
+      }],
+    };
+    internal.serverInfo = {
+      onionpir: {
+        total_packed_entries: 948_640,
+        index_bins_per_table: 10_273,
+        chunk_bins_per_table: 37_954,
+        index_k: 75,
+        chunk_k: 80,
+        tag_seed: 1n,
+        index_master_seed: 2n,
+        chunk_master_seed: 3n,
+        index_slots_per_bin: 221,
+        index_slot_size: 15,
+      },
+      onionpir_merkle: {
+        arity: 104,
+        super_root: 'ab'.repeat(32),
+        index: { k: 75, num_pt: 99 },
+        data: { k: 80, num_pt: 365 },
+      },
     };
 
     client.installVerifiedDatabaseProof({
@@ -109,6 +146,12 @@ describe('strict OnionPIR session lifecycle', () => {
       height: 948_454,
       onionSuperRootHex: 'ab'.repeat(32),
       onionEntrySize: 3_328,
+      proofVersion: 2,
+      onionTotalPackedEntries: 948_640,
+      onionIndexBinsPerTable: 10_273,
+      onionChunkBinsPerTable: 37_954,
+      onionIndexSlotsPerBin: 221,
+      onionIndexSlotSize: 15,
       free,
     } as any);
 

@@ -243,74 +243,56 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
 
-/**
- * Query-layout values needed by the standalone OnionPIR client.
- *
- * The v1 database proof authenticates the Onion super-root and the packed
- * plaintext entry size, but its `index_bins_per_table` /
- * `chunk_bins_per_table` fields describe the shared DPF tables rather than
- * the separately packed OnionPIR tables.  Until a v2 proof commits the full
- * Onion layout, production must pin this remaining query shape explicitly.
- * A server-info response is only accepted when every field below matches.
- */
-export interface OnionQueryLayoutPin {
-  dbId: number;
-  totalPackedEntries: number;
-  indexBinsPerTable: number;
-  chunkBinsPerTable: number;
-  indexK: number;
-  chunkK: number;
-  tagSeedHex: string;
-  indexMasterSeedHex: string;
-  chunkMasterSeedHex: string;
-  indexSlotsPerBin: number;
-  indexSlotSize: number;
-  onionEntrySize: number;
-  merkleArity: number;
-  merkleIndexK: number;
-  merkleDataK: number;
-  merkleIndexNumPt: number;
-  merkleDataNumPt: number;
-}
-
-export const PRODUCTION_ONION_QUERY_LAYOUT_PINS: OnionQueryLayoutPin[] = [
+/** Strict OnionPIR pins for the v2-only proof opcode. Unlike the v1 pins
+ * above (retained for DPF/Harmony compatibility), these bind the complete
+ * typed Onion query layout and replace the temporary per-field layout pins. */
+export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
   {
     dbId: 0,
-    totalPackedEntries: 948_640,
-    indexBinsPerTable: 10_273,
-    chunkBinsPerTable: 37_954,
-    indexK: 75,
-    chunkK: 80,
-    tagSeedHex: 'f0b13554de8352f6',
-    indexMasterSeedHex: 'c97f21d6d9364b72',
-    chunkMasterSeedHex: '367867dd7bc05649',
-    indexSlotsPerBin: 221,
-    indexSlotSize: 15,
+    buildKind: 'snapshot',
+    fromHeight: 0,
+    height: 948454,
+    fromBlockHashHex: MAINNET_948454_DB_PROOF_PIN.fromBlockHashHex,
+    blockHashHex: MAINNET_948454_DB_PROOF_PIN.blockHashHex,
+    muhashHex: MAINNET_948454_DB_PROOF_PIN.muhashHex,
+    bucketSuperRootHex: MAINNET_948454_DB_PROOF_PIN.bucketSuperRootHex,
+    onionSuperRootHex: MAINNET_948454_DB_PROOF_PIN.onionSuperRootHex,
+    paramsHashHex: 'a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563',
+    networkMagicHex: 'f9beb4d9',
+    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
+    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
     onionEntrySize: 3_328,
-    merkleArity: 104,
-    merkleIndexK: 75,
-    merkleDataK: 80,
-    merkleIndexNumPt: 99,
-    merkleDataNumPt: 365,
+    proofVersion: 2,
+    onionTotalPackedEntries: 948_640,
+    onionIndexBinsPerTable: 10_273,
+    onionChunkBinsPerTable: 37_954,
+    onionIndexSlotsPerBin: 221,
+    onionIndexSlotSize: 15,
+    description: 'mainnet_948454 database proof v2 with complete OnionPIR layout binding',
   },
   {
     dbId: 1,
-    totalPackedEntries: 116_030,
-    indexBinsPerTable: 965,
-    chunkBinsPerTable: 4_792,
-    indexK: 75,
-    chunkK: 80,
-    tagSeedHex: 'ffa0120f182d4a0d',
-    indexMasterSeedHex: '1c353b0854eab60f',
-    chunkMasterSeedHex: '1545e02440952c73',
-    indexSlotsPerBin: 221,
-    indexSlotSize: 15,
+    buildKind: 'delta',
+    fromHeight: 940611,
+    height: 948454,
+    fromBlockHashHex: DELTA_940611_948454_DB_PROOF_PIN.fromBlockHashHex,
+    fromMuhashHex: DELTA_940611_948454_DB_PROOF_PIN.fromMuhashHex,
+    blockHashHex: DELTA_940611_948454_DB_PROOF_PIN.blockHashHex,
+    muhashHex: DELTA_940611_948454_DB_PROOF_PIN.muhashHex,
+    bucketSuperRootHex: DELTA_940611_948454_DB_PROOF_PIN.bucketSuperRootHex,
+    onionSuperRootHex: DELTA_940611_948454_DB_PROOF_PIN.onionSuperRootHex,
+    paramsHashHex: 'fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d',
+    networkMagicHex: 'f9beb4d9',
+    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
+    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
     onionEntrySize: 3_328,
-    merkleArity: 104,
-    merkleIndexK: 75,
-    merkleDataK: 80,
-    merkleIndexNumPt: 10,
-    merkleDataNumPt: 47,
+    proofVersion: 2,
+    onionTotalPackedEntries: 116_030,
+    onionIndexBinsPerTable: 965,
+    onionChunkBinsPerTable: 4_792,
+    onionIndexSlotsPerBin: 221,
+    onionIndexSlotSize: 15,
+    description: 'delta_940611_948454 database proof v2 with complete OnionPIR layout binding',
   },
 ];
 
