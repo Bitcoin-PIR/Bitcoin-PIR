@@ -70,9 +70,9 @@ Tracking PRs: `Bitcoin-PIR/attested-builder` #1 and BitcoinPIR #69.
       serving; rotate reviewed runtime pins without a fallback window.
 - [x] Verify the db 0/db 1 v2 wire responses and evidence digests on both
       production hosts.
-- [ ] Switch strict native/WASM/Web clients to v2, remove temporary v1 Onion
+- [x] Switch strict native/WASM/Web clients to v2, remove temporary v1 Onion
       layout pins, and fail closed rather than falling back to v1.
-- [ ] Pass all strict production browser/native canaries after the client
+- [x] Pass all strict production browser/native canaries after the client
       cutover.
 
 ## 5. Continue repository-boundary migration

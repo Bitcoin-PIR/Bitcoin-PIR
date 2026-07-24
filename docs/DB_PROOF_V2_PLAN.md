@@ -1,7 +1,7 @@
 # Database proof v2: complete OnionPIR layout binding
 
-Status: the producer and consumer capability implementations are merged, and
-the production server-side dual-serving rollout is complete. The
+Status: the producer, consumer capability, and fail-closed client activation
+implementations are merged, and the production rollout is complete. The
 [attested-builder producer PR](https://github.com/Bitcoin-PIR/attested-builder/pull/1)
 implements canonical v2 evidence plus existing-artifact re-attestation. The
 [consumer PR #69](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/69) implements
@@ -9,10 +9,13 @@ dual-serving, native/WASM verification, typed Onion layout installation, and
 an explicit v2-only native verification method. Canonical db 0/db 1 v2 bundles
 have now been independently verified, archived, staged identically, and loaded
 by both production hosts using BitcoinPIR commit
-`81dd96d442d39200fee7e6c97f5c308f38126756`. The deployed v1 strict client path
-and temporary per-field layout pins intentionally remain in place until the
-separate fail-closed client activation PR publishes reviewed v2 pins and moves
-all supported clients together. There is no v2-to-v1 fallback in that cutover.
+`81dd96d442d39200fee7e6c97f5c308f38126756`. Client activation PR #75 pins the
+reviewed registry commit and v2 fields, switches strict native/WASM/Web Onion
+clients to the v2-only verifier, and removes the temporary per-field layout
+pins. Production fixes #76 and #77 align the proof-backed Onion layout with the
+shared catalog and select the BHTM anchor pin by proof version. Strict Onion
+queries never fall back from v2 to v1; DPF/Harmony retain their explicitly
+pinned v1 compatibility proofs.
 
 ## Goal and trust model
 
@@ -167,7 +170,7 @@ It must not be described as a fresh full build.
       typed installation checks against live catalog/Merkle geometry. Preserve
       the existing v1 method during the staged migration.
 - [x] Expose the v2-only stateless verifier and typed layout getters to WASM.
-      The production web client deliberately continues to request v1.
+      The production Web Onion client now requests only the v2 opcode.
 - [x] Generate v2 evidence and SNP reports for production db 0 and db 1 on the
       attested builder.
 - [x] Archive and independently verify the new bundles. The reviewed evidence
@@ -177,14 +180,20 @@ It must not be described as a fresh full build.
       strict-client activation PR.
 - [x] Configure and deploy `proof_v2_dir` on Hetzner and VPSBG using a runtime
       binary that supports the v2 opcode.
-- [ ] Submit the activation PR: switch strict native/web Onion clients to v2,
+- [x] Submit and merge activation PR #75: switch strict native/web Onion clients to v2,
       consume only proof-backed layout values, and remove
       `PRODUCTION_ONION_QUERY_LAYOUT_PINS` without any fallback.
-- [ ] Publish the activation web client and run strict browser/native canaries
+- [x] Publish the activation web client and run strict browser/native canaries
       against both servers before retiring v1.
 
-The unchecked items are activation gates. Merging the implementation PRs alone
-must not be described as a production v2 rollout.
+The activation gates closed on 2026-07-24. The native production Onion canary
+passed both database IDs, v2 proof installation, tree-top preflight, fresh and
+delta queries, result Merkle verification, and teardown. After fixes #76 and
+#77, browser canary run
+[`30107315509`](https://github.com/Bitcoin-PIR/Bitcoin-PIR/actions/runs/30107315509)
+passed DPF-PIR, HarmonyPIR, OnionPIR, and ORAM TEE against the published site in
+2.3 minutes. The v1 proof opcode remains available only for explicitly pinned
+DPF/Harmony compatibility; strict Onion has no v2-to-v1 fallback.
 
 The pre-production inventory below determined which consistency checks could
 be reconstructed from final artifacts alone. Missing intermediate files did

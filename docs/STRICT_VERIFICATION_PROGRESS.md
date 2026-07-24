@@ -147,8 +147,8 @@ A separate scheduled/manual Playwright canary now covers that boundary against
 HarmonyPIR, OnionPIR, and ORAM TEE, checks the runtime/operator verdicts and
 encrypted-channel path, requires automatic result Merkle verification where
 the protocol exposes it, and confirms that every query tears down its sockets.
-The OnionPIR query also exercises the temporary v1 layout/tree-top preflight;
-that gate remains required until database-proof v2 is activated.
+The OnionPIR query now exercises the v2-only proof verifier, proof-backed typed
+layout installation, and tree-top preflight with no v1 fallback.
 
 The initial live run on 2026-07-22 passed all four backends in 2.1 minutes from
 a fresh Chromium profile. Pull requests only parse and discover the suite; live
@@ -213,11 +213,15 @@ reopen it:
   completely consumed pool-unavailable response may reuse a connection for V1
   fallback. Strict Merkle binding already prevented malformed hints from
   yielding trusted data; this closes the fail-fast and recovery gap.
-- Complete the client-side activation stage of the separately scoped
-  [v2 database-proof migration](DB_PROOF_V2_PLAN.md). Production evidence and
-  dual-serving sidecars now exist on the servers; the remaining cutover must
-  publish reviewed `params_hash_v2` pins, switch strict Onion clients to the
-  v2-only verifier, and remove the temporary v1 layout pins without fallback.
+- [x] Complete the client-side activation stage of the separately scoped
+  [v2 database-proof migration](DB_PROOF_V2_PLAN.md). PR #75 published the
+  reviewed proof-registry lock and `params_hash_v2` pins, moved strict native,
+  WASM, and Web Onion clients to the v2-only verifier, and removed the
+  temporary layout pins. Production fixes #76 and #77 passed the full browser
+  canary in run
+  [`30107315509`](https://github.com/Bitcoin-PIR/Bitcoin-PIR/actions/runs/30107315509):
+  all four backends verified their runtime/pin policy, encrypted channel,
+  query result, and per-query teardown in 2.3 minutes.
 - Follow [the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md)
   for every new snapshot or delta generation.
 
