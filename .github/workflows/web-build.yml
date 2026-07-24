@@ -39,6 +39,7 @@ on:
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
       - 'web/**'
+      - 'verification/locks/generated-proofs.json'
       - '.github/workflows/web-build.yml'
   pull_request:
     branches: [main]
@@ -48,6 +49,7 @@ on:
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
       - 'web/**'
+      - 'verification/locks/generated-proofs.json'
       - '.github/workflows/web-build.yml'
   workflow_dispatch:
 

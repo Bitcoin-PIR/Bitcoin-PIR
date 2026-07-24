@@ -43,6 +43,14 @@ export interface DatabaseProofPin {
   /** Present in current attested-builder evidence; optional for older/static
    * manifest-derived pins that predate this field. */
   onionEntrySize?: number;
+  /** V2-only fields. When present, every typed Onion layout value exposed by
+   * the verified WASM proof must match before the handle can be installed. */
+  proofVersion?: number;
+  onionTotalPackedEntries?: number;
+  onionIndexBinsPerTable?: number;
+  onionChunkBinsPerTable?: number;
+  onionIndexSlotsPerBin?: number;
+  onionIndexSlotSize?: number;
   description?: string;
 }
 
@@ -119,6 +127,12 @@ export function verifyDatabaseProofAgainstPin(
   cmp('builderBinarySha256Hex', true);
   cmp('builderGitCommit');
   if (pin.onionEntrySize !== undefined) cmp('onionEntrySize');
+  if (pin.proofVersion !== undefined) cmp('proofVersion');
+  if (pin.onionTotalPackedEntries !== undefined) cmp('onionTotalPackedEntries');
+  if (pin.onionIndexBinsPerTable !== undefined) cmp('onionIndexBinsPerTable');
+  if (pin.onionChunkBinsPerTable !== undefined) cmp('onionChunkBinsPerTable');
+  if (pin.onionIndexSlotsPerBin !== undefined) cmp('onionIndexSlotsPerBin');
+  if (pin.onionIndexSlotSize !== undefined) cmp('onionIndexSlotSize');
 
   return {
     state: mismatches.length === 0 ? 'verified' : 'unverified',

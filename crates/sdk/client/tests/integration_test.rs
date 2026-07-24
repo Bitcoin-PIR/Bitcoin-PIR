@@ -145,6 +145,45 @@ const PRODUCTION_DATABASE_PINS: [ProductionDatabasePin; 2] = [
     },
 ];
 
+/// V2 is activated only for strict OnionPIR. DPF/Harmony keep the v1 opcode
+/// during the compatibility window, so their production pins above remain
+/// intentionally unchanged.
+fn production_onion_v2_pin(mut pin: ProductionDatabasePin) -> ProductionDatabasePin {
+    pin.params_hash_hex = match pin.db_id {
+        0 => "a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563",
+        1 => "fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d",
+        id => panic!("no production OnionPIR v2 pin for db {id}"),
+    };
+    pin.builder_binary_sha256_hex =
+        "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c";
+    pin.builder_git_commit = "d49a199e290ccbb05b6481c5ba691cb516aa76bb";
+    pin
+}
+
+fn assert_matches_production_onion_v2_layout(
+    roots: &VerifiedDatabaseRoots,
+    pin: ProductionDatabasePin,
+) {
+    let layout = roots
+        .onion_layout_v2
+        .unwrap_or_else(|| panic!("db {} strict OnionPIR proof fell back to v1", pin.db_id));
+    let (total_packed, index_bins, chunk_bins) = match pin.db_id {
+        0 => (948_640, 10_273, 37_954),
+        1 => (116_030, 965, 4_792),
+        id => panic!("no production OnionPIR v2 layout for db {id}"),
+    };
+    assert_eq!(layout.total_packed_entries, total_packed);
+    assert_eq!(layout.index_bins_per_table, index_bins);
+    assert_eq!(layout.chunk_bins_per_table, chunk_bins);
+    assert_eq!(layout.entry_size, 3_328);
+    assert_eq!(layout.index_slots_per_bin, 221);
+    assert_eq!(layout.index_slot_size, 15);
+    assert_eq!(layout.index_k, 75);
+    assert_eq!(layout.chunk_k, 80);
+    assert_eq!(layout.merkle_arity, 104);
+    assert_eq!(layout.merkle_hash_bytes, 32);
+}
+
 /// The ordinary ignored integration suite still runs on pull requests and
 /// pushes. The heavier strict production canaries are enabled explicitly by
 /// the scheduled/manual workflow steps, avoiding duplicate live queries.
@@ -954,8 +993,9 @@ mod onion_tests {
         assert_missing_verified_root(missing_root, "OnionPIR", 0);
 
         for pin in PRODUCTION_DATABASE_PINS[..1].iter().copied() {
+            let pin = production_onion_v2_pin(pin);
             let roots = client
-                .verify_database_proof(pin.db_id, &production_proof_policy(pin))
+                .verify_database_proof_v2(pin.db_id, &production_proof_policy(pin))
                 .await
                 .unwrap_or_else(|error| {
                     panic!(
@@ -964,6 +1004,7 @@ mod onion_tests {
                     )
                 });
             assert_matches_production_pin(&roots, pin);
+            assert_matches_production_onion_v2_layout(&roots, pin);
             client
                 .install_verified_database_roots(roots)
                 .unwrap_or_else(|error| {
@@ -981,8 +1022,9 @@ mod onion_tests {
         assert_missing_verified_root(missing_delta_root, "OnionPIR", 1);
 
         for pin in PRODUCTION_DATABASE_PINS[1..].iter().copied() {
+            let pin = production_onion_v2_pin(pin);
             let roots = client
-                .verify_database_proof(pin.db_id, &production_proof_policy(pin))
+                .verify_database_proof_v2(pin.db_id, &production_proof_policy(pin))
                 .await
                 .unwrap_or_else(|error| {
                     panic!(
@@ -991,6 +1033,7 @@ mod onion_tests {
                     )
                 });
             assert_matches_production_pin(&roots, pin);
+            assert_matches_production_onion_v2_layout(&roots, pin);
             client
                 .install_verified_database_roots(roots)
                 .unwrap_or_else(|error| {

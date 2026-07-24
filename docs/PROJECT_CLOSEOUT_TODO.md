@@ -62,7 +62,9 @@ Tracking PRs: `Bitcoin-PIR/attested-builder` #1 and BitcoinPIR #69.
       UKI.
 - [x] Re-attest both existing layouts and archive canonical v2 evidence, SNP
       reports, inputs, and independent verifier output.
-- [ ] Import the evidence into the proof registry/lock flow before activation.
+- [x] Import the evidence into the proof registry and pin the merged registry
+      commit, verification records, deployment records, and replayed proof
+      fields in the consumer lock before activation.
 - [x] Stage identical v2 sidecars on Hetzner and VPSBG.
 - [x] Rebuild and deploy the server binary and Tier 3 UKI required for dual
       serving; rotate reviewed runtime pins without a fallback window.
@@ -79,7 +81,7 @@ The initial HarmonyPIR, SDK-directory, and formal-proof milestone is complete in
 PRs #61, #62, and #63. Continue in the order defined by
 `REPOSITORY_BOUNDARIES.md`:
 
-- [ ] Move immutable generated proof bundles into `proof-registry` and add
+- [x] Move immutable generated proof bundles into `proof-registry` and add
       `verification/locks/generated-proofs.json` plus consumer re-verification.
 - [ ] Reconcile the duplicate `rootbundle` implementations.
 - [ ] Move remaining `pdf/` sources into `Bitcoin-PIR/whitepaper` after a
