@@ -39,12 +39,12 @@ arc = { git = "...", rev = "..." }
 # crates/sdk/client/Cargo.toml
 libdpf = { git = "...", rev = "..." }
 harmonypir = { git = "...", rev = "..." }
-pir-db-attest = { path = "../../../pir-db-attest" }
+pir-db-attest = { path = "../../trust/db-attest" }
 onionpir = { git = "...", rev = "...", optional = true }
 
 # crates/sdk/wasm/Cargo.toml
 arc = { git = "...", rev = "..." }
-pir-db-attest = { path = "../../../pir-db-attest" }
+pir-db-attest = { path = "../../trust/db-attest" }
 pir-sdk-client = { path = "../client", version = "0.1.0" }
 ```
 
