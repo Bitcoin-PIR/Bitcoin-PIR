@@ -110,7 +110,7 @@ jobs:
       - name: Build pir-sdk-wasm (wasm32 target validation)
         run: |
           cp Cargo.toml Cargo.toml.bak
-          printf '[workspace]\nresolver = "2"\nmembers = ["pir-core", "crates/sdk/core", "crates/sdk/wasm"]\n' > Cargo.toml
+          printf '[workspace]\nresolver = "2"\nmembers = ["crates/protocol/core", "crates/sdk/core", "crates/sdk/wasm"]\n' > Cargo.toml
           wasm-pack build crates/sdk/wasm --target web --out-dir pkg
           mv Cargo.toml.bak Cargo.toml
 
