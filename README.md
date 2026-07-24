@@ -67,7 +67,9 @@ BitcoinPIR/
 │   ├── server/        Production server and diagnostic binaries
 │   ├── admin/         Operator CLI
 │   └── dev-issuer/    Development-only rate-limit issuer and gate
-├── build/             Database generation pipeline
+├── tools/
+│   ├── db-builder/    Database generation pipeline
+│   └── block-reader/  Bitcoin Core block/UTXO inspection utilities
 ├── web/               Production browser query application
 ├── explorer/          bitcoinjs adapter
 ├── electrum_plugin/   Electrum plugin

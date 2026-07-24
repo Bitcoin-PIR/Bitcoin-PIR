@@ -89,13 +89,20 @@ PRs #61, #62, and #63. Continue in the order defined by
 - [x] Move the remaining `pdf/` sources into `Bitcoin-PIR/whitepaper`, record
       the exact upstream revision and generated PDF digest, and delete the
       duplicate after two clean builds produced byte-identical output.
-- [ ] Group remaining in-repository crates/apps/tools in small path-only PRs.
-- [ ] Extract a reusable Web client package while keeping production trust
-      policy in this repository.
-- [ ] Consider standalone explorer/Electrum/development-issuer repositories only
-      after they consume the shared strict client flow.
-- [ ] Handle full builder extraction and `vendor/` replacement last, gated on a
-      byte-identical hermetic offline build.
+- [x] Group remaining in-repository crates/apps/tools in small path-only PRs:
+      trust crates in PR #84, protocol crates in PR #85, applications in PR
+      #87, and builder/reader tools in the final layout PR.
+
+The following are future architecture projects rather than unfinished rollout
+work. They require their own design and acceptance criteria before becoming
+backlog commitments:
+
+- extract a reusable Web client package while keeping production trust policy
+  in this repository;
+- consider standalone explorer/Electrum/development-issuer repositories only
+  after they consume the shared strict client flow; and
+- handle full builder extraction and `vendor/` replacement last, gated on a
+  byte-identical hermetic offline build.
 
 ## 6. Independent non-blocking maintenance
 
@@ -114,3 +121,10 @@ PRs #61, #62, and #63. Continue in the order defined by
 - Any new snapshot or delta follows `DATABASE_ROOT_ROTATION_RUNBOOK.md`.
 - Historical or superseded checklists are not reopened unless current code or
   production evidence demonstrates an actual gap.
+- Until the repository has a stable aggregate required-check context, merges
+  are manual: inspect every applicable Actions result and do not rely on GitHub
+  auto-merge to wait for path-filtered workflows.
+
+Once the final tools-layout PR merges, this closeout has no remaining rollout
+or repository-layout backlog. The architecture projects above are deliberately
+uncommitted future work and do not block new feature development.

@@ -44,14 +44,9 @@ electrum_plugin/pir_privacy/_vendor/
 
 # Java / Gradle
 .gradle/
-# Unanchored `build/` (Gradle output dirs at any depth) also shadowed the
-# tracked Rust workspace crate at /build/ — new files under build/src/
-# were silently untracked (review finding I3). Re-include the top-level
-# crate dir: the dir-only negation just re-opens traversal into /build/,
-# so file-level rules above (Cargo.lock, *.log, …) still apply inside it,
-# while nested build/ dirs elsewhere stay ignored.
+# Build output directories. The Rust database-builder crate lives under
+# `tools/db-builder/`, so this rule no longer shadows tracked source.
 build/
-!/build/
 !gradle/wrapper/gradle-wrapper.jar
 *.class
 

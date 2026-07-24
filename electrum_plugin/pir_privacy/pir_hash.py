@@ -1,7 +1,7 @@
 """
 Hash functions for the Batch PIR system.
 
-Ports the splitmix64-based functions from web/src/hash.ts / build/src/common.rs.
+Ports the splitmix64-based functions from web/src/hash.ts / tools/db-builder/src/common.rs.
 All 64-bit arithmetic uses Python int masked with & MASK64.
 """
 

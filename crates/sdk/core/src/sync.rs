@@ -433,7 +433,7 @@ pub struct DeltaData {
 
 /// Decode delta data from raw chunk bytes.
 ///
-/// Delta format (matches `build/src/delta_gen_1_build_chunks.rs` and
+/// Delta format (matches `tools/db-builder/src/delta_gen_1_build_chunks.rs` and
 /// `web/src/codec.ts::decodeDeltaData`):
 /// ```text
 /// [varint num_spent]
@@ -1205,7 +1205,7 @@ mod tests {
 
     // ─── Wire-format compatibility tests ─────────────────────────────────
     //
-    // The build pipeline (`build/src/delta_gen_1_build_chunks.rs:88-108`
+    // The build pipeline (`tools/db-builder/src/delta_gen_1_build_chunks.rs:88-108`
     // and `delta_gen_1_onion.rs:300-317`) encodes delta chunks as:
     //   [varint num_spent]
     //     per spent: [32B txid][varint vout]
@@ -1229,7 +1229,7 @@ mod tests {
     }
 
     /// Encode one spent + two new entries using the real on-wire varint
-    /// format. Mirrors `build/src/delta_gen_1_build_chunks.rs`.
+    /// format. Mirrors `tools/db-builder/src/delta_gen_1_build_chunks.rs`.
     fn encode_wire_format_sample() -> (Vec<u8>, UtxoEntry, UtxoEntry, [u8; 36]) {
         let spent_txid = [0xAAu8; 32];
         let spent_vout: u32 = 3;

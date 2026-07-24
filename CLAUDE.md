@@ -188,8 +188,8 @@ pattern. Wire round count per level becomes `2 × n_servers × n_levels
 
 **Server-side compatibility:** the build script replicates each
 scripthash's INDEX entry to all 3 candidate groups
-([build/src/build_cuckoo_generic.rs:87-90](build/src/build_cuckoo_generic.rs:87)
-and [build/src/gen_4_build_merkle.rs:236-239](build/src/gen_4_build_merkle.rs:236)),
+([tools/db-builder/src/build_cuckoo_generic.rs:87-90](tools/db-builder/src/build_cuckoo_generic.rs:87)
+and [tools/db-builder/src/gen_4_build_merkle.rs:236-239](tools/db-builder/src/gen_4_build_merkle.rs:236)),
 so any candidate group can serve the query. No server changes were
 required.
 
@@ -308,7 +308,7 @@ cost the project deliberately decided against.
 - `pir-runtime-core` — shared server primitives (admin, attest, channel,
   eval, handler, manifest, protocol, table). Extracted from `apps/server/` as a
   publishable lib crate.
-- `apps/server/`, `build/`, `block_reader/` — internal
+- `apps/server/`, `tools/db-builder/`, `tools/block-reader/` — internal
   binary crates (`publish = false`).
 
 ### Web integration

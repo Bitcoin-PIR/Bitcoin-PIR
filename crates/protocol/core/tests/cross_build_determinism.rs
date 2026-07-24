@@ -10,7 +10,7 @@
 //! output bytes and trip the SHA-256 equality assertion here.
 //!
 //! These helpers mirror the INDEX and CHUNK serialization paths of the
-//! production builder [`build/src/build_cuckoo_generic.rs`] over a small
+//! production builder [`tools/db-builder/src/build_cuckoo_generic.rs`] over a small
 //! synthetic in-memory fixture, build each path twice, and compare. The
 //! build glue (group assignment → per-group cuckoo tables → sequential
 //! slot serialization) is intentionally duplicated rather than imported
