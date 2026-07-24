@@ -16,16 +16,16 @@ complete.
       publication complete in `ORAM_LIVE_IMAGE_BINDING_PLAN.md`.
 - [x] Reconcile `BUILD_REPRODUCIBILITY.md` with the landed client-side anchor
       verification and synthetic cross-build determinism CI.
-- [ ] Merge this documentation reconciliation into `main`.
+- [x] Merge this documentation reconciliation into `main` (PR #72).
 
 ## 1. Automate browser-only strict production gates
 
 Tracking PR: BitcoinPIR #67.
 
-- [ ] Rebase or merge current `main` into the PR branch.
-- [ ] Review the Playwright assertions for runtime pin, operator identity,
+- [x] Rebase or merge current `main` into the PR branch.
+- [x] Review the Playwright assertions for runtime pin, operator identity,
       encrypted channel, result verification, and per-query disconnect.
-- [ ] Re-run local Web tests and the production browser canary.
+- [x] Re-run local Web tests and the production browser canary.
 - [ ] Mark the PR ready, merge it, and confirm the scheduled/manual workflow is
       present on `main`.
 
