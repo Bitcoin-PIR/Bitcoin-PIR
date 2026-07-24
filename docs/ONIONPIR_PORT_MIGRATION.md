@@ -143,9 +143,9 @@ Surface measured by `rg "onionpir|push_database_chunk|decrypt_response"
 | `apps/server/src/bin/onionpir_client.rs` | Standalone client binary | 1.1, 1.2, 1.5 |
 | `apps/server/src/bin/onionpir_bench.rs` | Benchmark; tiny test DB | 1.1, 1.4, 1.5 |
 | `apps/server/src/onionpir.rs` | Re-exports + shims (`runtime::onionpir::*`) | 1.1 |
-| `build/src/gen_2_onion.rs` | Phase-2 of the DB build pipeline | 1.3, 1.4 |
-| `build/src/gen_3_onion.rs` | Phase-3 (write `preprocessed_db.bin`) | 1.3, 1.4 |
-| `build/src/gen_4_build_merkle_onion.rs` | Build the OnionPIR Merkle tree-tops | 1.3, 1.4 |
+| `tools/db-builder/src/gen_2_onion.rs` | Phase-2 of the DB build pipeline | 1.3, 1.4 |
+| `tools/db-builder/src/gen_3_onion.rs` | Phase-3 (write `preprocessed_db.bin`) | 1.3, 1.4 |
+| `tools/db-builder/src/gen_4_build_merkle_onion.rs` | Build the OnionPIR Merkle tree-tops | 1.3, 1.4 |
 | `web/src/onionpir_client.ts` | Hand-rolled TS client (SEAL doesn't compile to wasm32) | **§2.6 + special** — see §4 below |
 | `web/public/wasm/onionpir_client.{js,d.ts}` | Currently a stub | possibly replaced by upstream's new WASM client (`bitcoin-pir/OnionPIRv2/wasm/`) |
 | `web/src/__tests__/onion_*.ts` | Vitest fixtures around the TS client | shape-changes only |
@@ -155,7 +155,7 @@ Surface measured by `rg "onionpir|push_database_chunk|decrypt_response"
 
 Cargo.toml refs to bump (all currently `350ccc43`):
 
-* `build/Cargo.toml:164`
+* `tools/db-builder/Cargo.toml:164`
 * `crates/sdk/client/Cargo.toml:69`
 * `apps/server/Cargo.toml:78`
 
@@ -262,7 +262,7 @@ Original design notes below:
 §1.3 (preprocessed DB header changed) + §1.4 (`push_database_chunk` →
 `push_plaintexts`).
 
-`build/src/gen_2_onion.rs` and `build/src/gen_3_onion.rs` are the
+`tools/db-builder/src/gen_2_onion.rs` and `tools/db-builder/src/gen_3_onion.rs` are the
 primary touch points. They currently:
 1. Build a Vec of byte-packed entries per cuckoo bin.
 2. Hand them to `Server::push_database_chunk`.
@@ -408,7 +408,7 @@ Specific changes:
 
 Surviving hardcoded 3840 / ARITY=120:
 
-  build/src/test_merkle_verify_onion.rs — test-only binary that
+  tools/db-builder/src/test_merkle_verify_onion.rs — test-only binary that
   verifies pre-built Merkle output. It still has
   `const ARITY: usize = 120` + `const PACKED_ENTRY_SIZE: usize = 3840`.
   Reading those from the tree-top metadata file (which `gen_4` now
@@ -451,7 +451,7 @@ Action items:
 1. `docs/onionpir_plan.md` references `EntrySize = 3840 bytes` in the
    first global-constant section. Refresh once `params_info(0)` is the
    single source of truth.
-2. `rg "3840|65536|2 \*\* 16|1 << 16"` in `build/src/gen_*onion.rs` —
+2. `rg "3840|65536|2 \*\* 16|1 << 16"` in `tools/db-builder/src/gen_*onion.rs` —
    replace any hardcoded constants with reads from
    `onionpir::params_info(num_entries)`. Initial grep is clean
    (no hardcoded `65536` in onion-related files today), but verify
@@ -460,7 +460,7 @@ Action items:
    used `6 hashes, 65536 bins, load ~0.65`. With the new ~40 K bin
    count at the same load factor, insertion-failure rate rises. Re-fit
    empirically via the existing build pipeline. Touches:
-   * `build/src/gen_1_onion.rs` (or wherever the cuckoo plan lives)
+   * `tools/db-builder/src/gen_1_onion.rs` (or wherever the cuckoo plan lives)
    * `crates/protocol/core/src/cuckoo*.rs` if the constants are shared with the
      client.
 4. **Verify no bitmask modular reduction.** Initial grep

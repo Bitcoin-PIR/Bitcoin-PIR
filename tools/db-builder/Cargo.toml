@@ -139,7 +139,7 @@ name = "experiment_onion_sibling_pir"
 path = "src/experiment_onion_sibling_pir.rs"
 
 [dependencies]
-pir-core = { path = "../crates/protocol/core" }
+pir-core = { path = "../../crates/protocol/core" }
 bitcoin = "0.32.7"
 txoutset = "0.4"
 memmap2 = "0.9"

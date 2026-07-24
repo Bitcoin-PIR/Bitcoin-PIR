@@ -64,7 +64,7 @@ harmony-oram = ["cuckoo-oram"]
 [dependencies]
 pir-core = { path = "../../crates/protocol/core" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
-build = { path = "../../build" }
+build = { path = "../../tools/db-builder" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b" }
 harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "97288656b9b8cc393de7a8bc4d30d769404c2f39", default-features = false }

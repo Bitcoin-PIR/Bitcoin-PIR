@@ -170,9 +170,10 @@ After that milestone merges, use this order:
    delete the generated-paper copy here after a reproducible build comparison.
    **Complete:** the exact upstream commit and generated PDF digest are pinned
    in `verification/locks/whitepaper.json`; two clean builds were byte-identical.
-4. Move in-repository crates in small path-only pull requests: trust crates,
-   protocol/runtime crates, server/admin applications, then tools/ops/docs.
-   Package names and public APIs remain stable.
+4. **Complete:** move in-repository crates in small path-only pull requests:
+   trust crates, protocol/runtime crates, server/admin/development-issuer
+   applications, then database-builder/block-reader tools. Package names and
+   public APIs remain stable.
 5. Extract a reusable `packages/web-client` while keeping the production Web
    application and strict trust policy here. Make `playground` consume that
    package instead of vendored source.
@@ -183,6 +184,8 @@ After that milestone merges, use this order:
    gated on byte-identical output and a fresh hermetic offline build.
 
 The duplicate sources of truth identified for this phase have been removed or
-replaced by exact consumer locks and generated assets. Root-level production
-crates are primarily a layout problem and should be grouped in this repository
-rather than split into many tightly coupled repositories.
+replaced by exact consumer locks and generated assets. Production crates and
+tools are grouped by responsibility without splitting tightly coupled
+integration code across more repositories. The production Web app remains
+here; package extraction is a future API-design project, not unfinished
+directory cleanup.

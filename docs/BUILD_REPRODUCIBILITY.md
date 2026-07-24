@@ -25,7 +25,7 @@ operator ran the same release binary:
   `muhash` is a public commitment to the snapshot contents.
 - The build pipeline introduces **no system randomness**:
   no `OsRng`, no `thread_rng`, no `SystemTime` seeding anywhere in
-  `build/src/` or `crates/protocol/core/src/`. All `Instant::now()` calls are
+  `tools/db-builder/src/` or `crates/protocol/core/src/`. All `Instant::now()` calls are
   timing logs only.
 - All PRG seeds originally flowed from three hardcoded constants in source:
 
@@ -179,11 +179,11 @@ more entropy (e.g., future FHE-layer pre-randomization).
       `ANCHOR_MAGIC_DELTA_XOR = 0x0000_0002_0000_0000`). Anchor bytes
       (36 snapshot / 72 delta) are appended after the legacy header.
 - [x] **Build sites emit v2 MAGIC when `--anchor` is supplied.**
-      [build/src/build_cuckoo_generic.rs](../build/src/build_cuckoo_generic.rs)
+      [tools/db-builder/src/build_cuckoo_generic.rs](../tools/db-builder/src/build_cuckoo_generic.rs)
       switched to `write_header_with_anchor`. Anchor-less builds remain
       byte-identical to legacy.
 - [x] **Readers accept both legacy and v2 MAGIC.**
-      [build/src/common.rs](../build/src/common.rs)::`read_cuckoo_header`/`read_chunk_cuckoo_header`
+      [tools/db-builder/src/common.rs](../tools/db-builder/src/common.rs)::`read_cuckoo_header`/`read_chunk_cuckoo_header`
       and [crates/protocol/runtime/src/table.rs](../crates/protocol/runtime/src/table.rs)
       delegate to `read_cuckoo_header_with_anchor`. Server can load
       both old and new databases without changes.
@@ -200,8 +200,8 @@ more entropy (e.g., future FHE-layer pre-randomization).
 ### Phase C2 — landed
 
 - **OnionPIR custom file headers carry the anchor.**
-  [build/src/gen_2_onion.rs](../build/src/gen_2_onion.rs) (chunk cuckoo,
-  `0xBA7C_0010_0000_0001`) and [build/src/gen_3_onion.rs](../build/src/gen_3_onion.rs)
+  [tools/db-builder/src/gen_2_onion.rs](../tools/db-builder/src/gen_2_onion.rs) (chunk cuckoo,
+  `0xBA7C_0010_0000_0001`) and [tools/db-builder/src/gen_3_onion.rs](../tools/db-builder/src/gen_3_onion.rs)
   (index meta, `0xBA7C_0010_0000_0002`) XOR the same snapshot/delta
   marker into their bespoke magics and append the 36/72-byte anchor.
   [apps/server/src/bin/unified_server.rs](../apps/server/src/bin/unified_server.rs)

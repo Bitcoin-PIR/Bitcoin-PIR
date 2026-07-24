@@ -126,7 +126,7 @@ pinning rather than SEV hardware attestation.
 |----|-----|-------|
 | I1 | major | Privacy **leakage suite never runs in CI** (`leakage_integration_test.rs` is `#[ignore]`d + invoked nowhere); ~half of 678 Rust tests not in CI; no `cargo fmt --check`; clippy on one crate only. Adding `--test leakage_integration_test -- --ignored` to the daily canary is a one-line, high-value fix |
 | I2 | major | `libdpf` floats unpinned (no `rev`) in `crates/sdk/client/Cargo.toml:60`, `crates/protocol/runtime/Cargo.toml:25`, `apps/server/Cargo.toml:66`, and `.cargo/config.toml`; pinned only by `Cargo.lock`. Every other git dep is rev-pinned |
-| I3 | major | `.gitignore:47` (`build/`) shadows the Rust `build/` workspace crate — new files under `build/src/` are silently untracked |
+| I3 | major | `.gitignore:47` (`build/`) shadows the Rust `build/` workspace crate — new files under `tools/db-builder/src/` are silently untracked |
 | I4 | major | `PLAN_*.md` design docs are gitignored (`.gitignore:54`) but referenced as normative from `CLAUDE.md`, source comments, and the then-local EasyCrypt README (now [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md)) — dangling links for any cloner |
 | I5 | major⚠ | `docs/RATELIMIT_INTEGRATION.md:187` asserts a committed live `TUNNEL_TOKEN` in `deploy/cloudflared_tunnel.env`. File not in tracked tree; **confirm the token was rotated / history scrubbed**, then fix the doc |
 | I6 | minor | CI uses `dtolnay/rust-toolchain@stable`, which exports `RUSTUP_TOOLCHAIN` and bypasses the `rust-toolchain.toml` 1.94.1 pin |
@@ -168,6 +168,14 @@ pinning rather than SEV hardware attestation.
   declared MIT/Apache-2.0 license texts. All three complete `cargo package`
   packaging, verification, and compilation; remaining downstream registry
   blockers are recorded in `PUBLISHING.md`.
+
+### Status update (2026-07-25): I2/I3 closed
+
+- **I2**: every `libdpf` dependency now carries the same exact `rev` pin; the
+  workspace lock and offline source replacement retain that revision.
+- **I3**: the Rust package keeps its package name `build` but its source now
+  lives at `tools/db-builder/`. The ordinary `build/` ignore rule is reserved
+  for generated output and can no longer hide database-builder source files.
 
 ---
 

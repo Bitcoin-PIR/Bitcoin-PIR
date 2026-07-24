@@ -5,7 +5,7 @@ Provides PBC cuckoo placement, round planning, varint decoding, UTXO data
 parsing, and index/chunk result scanning. These are pure functions with no
 protocol-specific dependencies.
 
-Mirrors web/src/pbc.ts + web/src/codec.ts and build/src/common.rs.
+Mirrors web/src/pbc.ts + web/src/codec.ts and tools/db-builder/src/common.rs.
 """
 
 from __future__ import annotations

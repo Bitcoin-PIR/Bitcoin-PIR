@@ -1,7 +1,7 @@
 /**
  * Hash functions for the Batch PIR system.
  *
- * Ports the splitmix64-based functions from build/src/common.rs.
+ * Ports the splitmix64-based functions from tools/db-builder/src/common.rs.
  * All 64-bit arithmetic uses BigInt to match the Rust implementation exactly.
  */
 

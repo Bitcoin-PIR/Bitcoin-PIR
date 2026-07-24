@@ -16,7 +16,7 @@ name = "utxo_delta"
 path = "src/utxo_delta.rs"
 
 [dependencies]
-pir-core = { path = "../crates/protocol/core" }
+pir-core = { path = "../../crates/protocol/core" }
 bitcoin = "0.32.7"
 brk_reader = "0.2"
 brk_rpc = "0.2"

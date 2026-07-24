@@ -1288,7 +1288,7 @@ impl DpfClient {
         // Compute candidate groups for our script hash.
         //
         // NOTE: the server REPLICATES every scripthash into all 3 candidate
-        // groups at build time (see `build/src/build_cuckoo_generic.rs:87-90`
+        // groups at build time (see `tools/db-builder/src/build_cuckoo_generic.rs:87-90`
         // and `gen_4_build_merkle.rs:236-239`). Any one of the 3 groups is
         // therefore sufficient to retrieve an entry. For a single-query round
         // we just pick the first group — matching the reference Rust client
@@ -2868,7 +2868,7 @@ fn plan_chunk_rounds(chunk_ids: &[u32], k: usize) -> Vec<Vec<(u32, usize)>> {
 
 /// Decode UTXO entries from assembled chunk bytes.
 ///
-/// Wire format (matches `build/src/build_utxo_chunks.rs::serialize_group_sorted`
+/// Wire format (matches `tools/db-builder/src/build_utxo_chunks.rs::serialize_group_sorted`
 /// and the reference decoder at `pir_core::codec::parse_utxo_data`):
 ///
 ///   `[varint num_utxos][per entry: 32B txid | varint vout | varint amount]`

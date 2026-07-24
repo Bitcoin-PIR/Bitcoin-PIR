@@ -1,7 +1,7 @@
 /**
  * Constants for the Batch PIR system.
  *
- * Must match build/src/common.rs exactly.
+ * Must match tools/db-builder/src/common.rs exactly.
  */
 
 // ─── Index-level constants ─────────────────────────────────────────────────

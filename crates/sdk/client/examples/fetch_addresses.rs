@@ -2,7 +2,7 @@
 //!
 //! Derives each address's PIR script hash exactly the way the build
 //! pipeline does — `HASH160(scriptPubKey)`, see
-//! `build/src/gen_0_utxo_set.rs` — then runs a full DPF sync against the
+//! `tools/db-builder/src/gen_0_utxo_set.rs` — then runs a full DPF sync against the
 //! production servers and prints the decoded UTXO set plus the
 //! per-bucket Merkle verification verdict.
 //!

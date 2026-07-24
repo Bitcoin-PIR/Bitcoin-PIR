@@ -14,7 +14,7 @@
 - [ ] **Tree-tops = 9.1 MB, sibling data = 4.6 GB.** These are quoted numbers — re-measure against the current on-disk files before release. `ls -la /Volumes/Bitcoin/data/.../merkle_bucket_*`.
 - [ ] **INDEX ~565K bins, CHUNK ~1.06M bins.** Check current actual bin counts — the whitepaper now cites these for HarmonyPIR hint budget.
 - [ ] **HarmonyPIR hint budget ~530 / ~730** per group. Recompute `M = N/T = N/floor(sqrt(2N).round())` for both current bin counts.
-- [ ] **Dust threshold `≤ 576`** and `MAX_UTXOS_PER_SPK = 100`. Confirm they still match `build/src/gen_1_onion.rs`.
+- [ ] **Dust threshold `≤ 576`** and `MAX_UTXOS_PER_SPK = 100`. Confirm they still match `tools/db-builder/src/gen_1_onion.rs`.
 - [ ] **OnionPIR numbers** (3840 B entry, ~815K entries, ~95.9% packing, 24 GB with shared store). These weren't touched in this pass, but they are easy to let drift — worth re-verifying against the current build output.
 
 ## Protocol & wire format
@@ -32,7 +32,7 @@
 
 ## Section 7 (Delta) — content pass
 - [ ] **Read Section 7 end-to-end.** Especially the wire format: does the code serialize `[num_spent][spent entries][num_new][new entries]` in that order? (Cross-check `decodeDeltaData` in `web/src/codec.ts` and the Rust build pipeline.)
-- [ ] **"Spent list omits amount."** Verify — this is a design claim worth double-checking in `build/src/delta_gen_0_compute_delta.rs`.
+- [ ] **"Spent list omits amount."** Verify — this is a design claim worth double-checking in `tools/db-builder/src/delta_gen_0_compute_delta.rs`.
 - [ ] **Dust filter applied to both sides of delta.** The paper claims this — confirm the code path.
 - [ ] **Catalog `name` format.** The paper uses "`delta_940611_944000`" as an example; confirm the naming convention in a current `databases.toml`.
 

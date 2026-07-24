@@ -1,7 +1,7 @@
 """
 Constants for the Batch PIR system.
 
-Must match web/src/constants.ts and build/src/common.rs exactly.
+Must match web/src/constants.ts and tools/db-builder/src/common.rs exactly.
 """
 
 # ── Index-level constants ──────────────────────────────────────────────────

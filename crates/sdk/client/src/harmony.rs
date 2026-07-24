@@ -3302,7 +3302,7 @@ impl HarmonyClient {
 
         // Pick the first of 3 candidate groups. The server replicates each
         // scripthash into ALL 3 candidate groups at build time
-        // (see `build/src/build_cuckoo_generic.rs:87-90` and
+        // (see `tools/db-builder/src/build_cuckoo_generic.rs:87-90` and
         // `gen_4_build_merkle.rs:236-239`), so any one is sufficient to
         // retrieve an entry. This matches the reference Rust DPF binary
         // (`apps/server/src/bin/client.rs:246`) and every web TS client's
@@ -6415,7 +6415,7 @@ fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
 /// Decode UTXO entries from assembled chunk bytes.
 ///
 /// Wire format (matches the build pipeline at
-/// `build/src/build_utxo_chunks.rs::serialize_group_sorted` and the
+/// `tools/db-builder/src/build_utxo_chunks.rs::serialize_group_sorted` and the
 /// reference decoder at `pir_core::codec::parse_utxo_data`):
 ///
 ///   `[varint num_utxos][per entry: 32B txid | varint vout | varint amount]`
