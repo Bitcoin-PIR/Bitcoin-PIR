@@ -34,9 +34,12 @@ async function queryOnce(
   await page.locator(inputSelector).fill(CANARY_ADDRESS);
   await button.click();
   await expect(button).toHaveText('Querying…');
-  await expect(results).toContainText(CANARY_ADDRESS, { timeout: QUERY_TIMEOUT });
   await expect(button).toBeEnabled({ timeout: QUERY_TIMEOUT });
   await expect(button).toHaveText('Query UTXOs');
+  await expect(page.locator('#log')).not.toContainText(
+    /(?:connection failed:|query error:|batch error:)/i,
+  );
+  await expect(results).toContainText(CANARY_ADDRESS);
   return results;
 }
 

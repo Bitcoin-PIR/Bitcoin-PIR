@@ -109,8 +109,10 @@ describe('strict OnionPIR session lifecycle', () => {
         dbId: 0,
         baseHeight: 0,
         height: 948_454,
-        indexBinsPerTable: 10_273,
-        chunkBinsPerTable: 37_954,
+        // Standard proof-catalog bins are DPF geometry and intentionally
+        // differ from the proof-backed Onion layout below.
+        indexBinsPerTable: 567_558,
+        chunkBinsPerTable: 1_066_928,
         indexK: 75,
         chunkK: 80,
         tagSeed: 1n,
@@ -126,8 +128,10 @@ describe('strict OnionPIR session lifecycle', () => {
         index_k: 75,
         chunk_k: 80,
         tag_seed: 1n,
-        index_master_seed: 2n,
-        chunk_master_seed: 3n,
+        // Optional legacy diagnostic fields may be absent (parsed as 0);
+        // strict query placement still uses the proof-verified catalog seeds.
+        index_master_seed: 0n,
+        chunk_master_seed: 0n,
         index_slots_per_bin: 221,
         index_slot_size: 15,
       },

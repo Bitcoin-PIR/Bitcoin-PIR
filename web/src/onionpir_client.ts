@@ -1342,8 +1342,10 @@ export class OnionPirWebClient {
       const check = (field: string, actual: unknown, expected: unknown) => {
         if (actual !== expected) mismatches.push(`${field}: expected ${String(expected)}, got ${String(actual)}`);
       };
-      check('catalog.index_bins', catalogEntry.indexBinsPerTable, indexBinsPerTable);
-      check('catalog.chunk_bins', catalogEntry.chunkBinsPerTable, chunkBinsPerTable);
+      // The standard proof catalog carries the shared DPF table bins. Onion
+      // has separately packed tables, so its bins are bound by the v2 layout
+      // and checked against the Onion query metadata below, not against the
+      // standard catalog's indexBinsPerTable/chunkBinsPerTable.
       check('catalog.index_k', catalogEntry.indexK, indexK);
       check('catalog.chunk_k', catalogEntry.chunkK, chunkK);
       check('onion.total_packed_entries', advertised.total_packed_entries, totalPackedEntries);
@@ -1352,8 +1354,16 @@ export class OnionPirWebClient {
       check('onion.index_k', advertised.index_k, indexK);
       check('onion.chunk_k', advertised.chunk_k, chunkK);
       check('onion.tag_seed', advertised.tag_seed, catalogEntry.tagSeed);
-      check('onion.index_master_seed', advertised.index_master_seed, catalogEntry.indexMasterSeed);
-      check('onion.chunk_master_seed', advertised.chunk_master_seed, catalogEntry.chunkMasterSeed);
+      // Per-DB server-info predates the catalog extension on some production
+      // nodes and reports absent master seeds as 0. Query placement uses the
+      // chain-derived, proof-verified catalog values stored below. If the
+      // diagnostic JSON does publish a seed, require it to agree as well.
+      if (advertised.index_master_seed !== 0n) {
+        check('onion.index_master_seed', advertised.index_master_seed, catalogEntry.indexMasterSeed);
+      }
+      if (advertised.chunk_master_seed !== 0n) {
+        check('onion.chunk_master_seed', advertised.chunk_master_seed, catalogEntry.chunkMasterSeed);
+      }
       check('onion.index_slots_per_bin', advertised.index_slots_per_bin, indexSlotsPerBin);
       check('onion.index_slot_size', advertised.index_slot_size, indexSlotSize);
       check('merkle.arity', merkle.arity, merkleArity);
