@@ -26,15 +26,15 @@ Tracking PR: BitcoinPIR #67.
 - [x] Review the Playwright assertions for runtime pin, operator identity,
       encrypted channel, result verification, and per-query disconnect.
 - [x] Re-run local Web tests and the production browser canary.
-- [ ] Mark the PR ready, merge it, and confirm the scheduled/manual workflow is
+- [x] Mark the PR ready, merge it, and confirm the scheduled/manual workflow is
       present on `main`.
 
 ## 2. Fail fast on malformed HarmonyPIR V2 streams
 
 Tracking PR: BitcoinPIR #68.
 
-- [ ] Rebase or merge current `main` into the PR branch.
-- [ ] Review duplicate-group, preamble, terminal-metadata, and socket-discard
+- [x] Rebase or merge current `main` into the PR branch.
+- [x] Review duplicate-group, preamble, terminal-metadata, and socket-discard
       behavior, including regression coverage.
 - [ ] Run the SDK, WASM, Web, and formal-wire-shape gates affected by the diff.
 - [ ] Mark the PR ready and merge it.
