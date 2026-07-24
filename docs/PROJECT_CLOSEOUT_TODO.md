@@ -48,14 +48,17 @@ Tracking PRs: `Bitcoin-PIR/attested-builder` #1 and BitcoinPIR #69.
       input.
 - [x] Review BitcoinPIR #69's v2 parser, typed Onion layout, dual-serving wire
       path, WASM handle, and strict no-fallback behavior.
-- [ ] Rebase, rerun all affected Rust/WASM/Web/formal gates, and merge #69 as a
+- [x] Rebase, rerun all affected Rust/WASM/Web/formal gates, and merge #69 as a
       capability-only change.
 - [ ] Keep the deployed v1 path and explicit Onion layout pins active until v2
       evidence exists and passes the production activation gates below.
 
 ## 4. Activate database proof v2 in production
 
-- [ ] Inventory both hosts' retained db 0/db 1 Onion artifacts.
+- [x] Inventory Hetzner's retained db 0/db 1 Onion artifacts and implement the
+      final-serving-image re-attestation path in `attested-builder` PR #4.
+- [ ] Confirm the same retained paths on VPSBG before booting the re-attestation
+      UKI.
 - [ ] Re-attest both existing layouts and archive canonical v2 evidence, SNP
       reports, inputs, and independent verifier output.
 - [ ] Import the evidence into the proof registry/lock flow before activation.

@@ -1,7 +1,6 @@
 # Database proof v2: complete OnionPIR layout binding
 
-Status: the producer implementation is merged and the consumer implementation
-is in final review. The
+Status: the producer and consumer capability implementations are merged. The
 [attested-builder producer PR](https://github.com/Bitcoin-PIR/attested-builder/pull/1)
 implements canonical v2 evidence plus existing-artifact re-attestation. The
 [consumer PR #69](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/69) implements
@@ -153,6 +152,11 @@ It must not be described as a fresh full build.
       placement, legal cuckoo bins, entry-derived index geometry, and commits
       both the predecessor evidence and SNP-report digests. This re-seals
       existing artifacts without rebuilding the database.
+- [x] Support production's retained final serving images when the raw packed,
+      index-bin, and sibling-row inputs have been deleted. `attested-builder`
+      PR #4 validates their headers/geometry and exact deterministic chunk
+      placements, rebuilds ordered roots from retained leaf hashes, and binds
+      every scanned serving image by SHA-256 in the new v2 payload.
 - [x] Add a distinct `REQ_GET_DB_PROOF_V2` wire request and optional
       `proof_v2_dir`, while preserving v1 serving for old clients.
 - [x] Recompute `params_hash_v2` in Rust/WASM and return a typed verified
@@ -191,10 +195,21 @@ databases under:
 - `/home/pir/data/deltas/940611_948454_canonical_20260615`
 
 Both directories contain `onion_index_meta.bin`,
-`onion_chunk_cuckoo.bin`, the packed/index tables and bin hashes, the Onion
-Merkle roots/siblings/tree-tops, and `MANIFEST.toml`. This is sufficient to
-implement and benchmark the existing-artifact checker without starting a new
-database build.
+`onion_chunk_cuckoo.bin`, the ordered index/data bin hashes, Onion Merkle
+roots/tree-tops, preprocessed sibling databases, `onion_index_all.bin`,
+`onion_shared_ntt.bin`, and `MANIFEST.toml`. They do **not** retain
+`onion_packed_entries.bin`, `onion_index_bins.bin`, or raw sibling-row files.
+The final-serving-image path added in `attested-builder` PR #4 is therefore
+required; the original raw-table-only scanner would not run on production.
+
+A read-only full placement audit on Hetzner confirmed db 0 has 948,640 packed
+entries in 2,845,920 exact deterministic placements and db 1 has 116,030
+entries in 348,090 placements. Every entry appears in exactly its three
+anchor-derived groups and in a legal cuckoo position. The retained preprocessed
+INDEX, NTT, and sibling headers also match the formats now enforced by the
+re-attester. This is sufficient to re-seal the layouts without a database
+rebuild; client-side Merkle verification still binds returned plaintexts to the
+proof-bound Onion root.
 
 The current manifests use an all-zero placeholder hash for the large DPF and
 Onion cuckoo files. The re-attester must therefore verify the actual tables

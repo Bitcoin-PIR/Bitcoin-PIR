@@ -247,6 +247,27 @@ echo
 cat <<EOF
 Before booting this UKI, provision runtime inputs on VPSBG Slice 2:
 
+For database-proof v2 re-attestation of the retained production layouts:
+
+  sudo mkdir -p /home/pir/data/attested-builder-runs
+  sudo tee /home/pir/data/attested-builder/config.env >/dev/null <<'CONFIG'
+MODE=reattest-existing-v2
+RUN_ID=db-proof-v2-948454
+V2_JOB_COUNT=2
+V2_DB0_PREDECESSOR_PROOF_DIR=/home/pir/data/attestations/mainnet_948454_sev_snp
+V2_DB0_ARTIFACT_DIR=/home/pir/data/checkpoints/948454_deterministic
+V2_DB0_OUT_DIR=/home/pir/data/attestations/mainnet_948454_v2_sev_snp
+V2_DB1_PREDECESSOR_PROOF_DIR=/home/pir/data/attestations/delta_940611_948454_sev_snp
+V2_DB1_ARTIFACT_DIR=/home/pir/data/deltas/940611_948454_canonical_20260615
+V2_DB1_OUT_DIR=/home/pir/data/attestations/delta_940611_948454_v2_sev_snp
+CONFIG
+
+The v2 mode scans and hashes the retained final serving images; it does not
+rebuild the snapshot or delta. On success, both output directories contain the
+new evidence, SNP report, verifier transcript, and SHA256SUMS.
+
+For a full roots-only snapshot rebuild instead:
+
   sudo mkdir -p /home/pir/data/attested-builder/inputs /home/pir/data/attested-builder-runs
   sudo tee /home/pir/data/attested-builder/config.env >/dev/null <<'CONFIG'
 SNAPSHOT=/home/pir/data/attested-builder/inputs/txoutset_<height>.dat
