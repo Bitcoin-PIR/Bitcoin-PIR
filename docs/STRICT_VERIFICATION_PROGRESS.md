@@ -153,7 +153,9 @@ that gate remains required until database-proof v2 is activated.
 The initial live run on 2026-07-22 passed all four backends in 2.1 minutes from
 a fresh Chromium profile. Pull requests only parse and discover the suite; live
 production queries are restricted to the scheduled workflow or an explicit
-manual run, and failure traces/screenshots/video are retained as artifacts.
+manual run, and failure traces/screenshots/video are retained as artifacts. A
+post-rebase run on 2026-07-24 exposed and fixed an initialization race in the
+test harness, then passed all four backends again in 2.1 minutes.
 
 The server-side HarmonyPIR hint-pool hardening was deployed on 2026-07-20 from
 commit `d126f36a`. Hetzner and the VPSBG Tier 3 UKI use the same ORAM-enabled

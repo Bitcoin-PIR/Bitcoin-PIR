@@ -12,6 +12,12 @@ test.describe.configure({ mode: 'serial' });
 
 async function openBackend(page: Page, tabName: string): Promise<void> {
   await page.goto(`/?strict-canary=${Date.now()}`, { waitUntil: 'domcontentloaded' });
+  // The production bundle attaches backend listeners near the end of its
+  // module. DOMContentLoaded can fire while that module is still evaluating,
+  // so wait for the final static-proof startup task to report before clicking.
+  await expect(page.locator('#log')).toContainText(
+    /ORAM TEE: ORAM source binding verified|ORAM source-binding proof check failed/,
+  );
   await expect(page.getByRole('tab', { name: tabName, exact: true })).toBeVisible();
   await page.getByRole('tab', { name: tabName, exact: true }).click();
 }
@@ -58,7 +64,7 @@ async function expectLogContains(page: Page, ...messages: string[]): Promise<voi
 
 async function expectNoFatalLog(page: Page): Promise<void> {
   const fatal = page.locator('#log').getByText(
-    /(?:UNVERIFIED|chain validation failed|DB proof .* unavailable|query error:|batch error:|connection failed:)/i,
+    /(?:UNVERIFIED|chain validation failed|DB proof .* unavailable|ORAM source-binding proof check failed|query error:|batch error:|connection failed:)/i,
   );
   await expect(fatal).toHaveCount(0);
 }
