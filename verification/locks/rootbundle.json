@@ -1,0 +1,11 @@
+{
+  "repository": "Bitcoin-PIR/attested-builder",
+  "commit": "80ad9b185760d2e36fd24baef50dd3030af8e94f",
+  "release_tag": "rootbundle-v0.1.0",
+  "release_url": "https://github.com/Bitcoin-PIR/attested-builder/releases/tag/rootbundle-v0.1.0",
+  "tag_ruleset_id": 19697993,
+  "golden_bundle_sha256": "71c32a0dbaf5d2fad4d2778fca5c6c88f317a0606358b4c49f429d368ebcd4dc",
+  "production_payload_sha256": [
+    "cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f"
+  ]
+}

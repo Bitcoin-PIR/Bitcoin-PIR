@@ -65,8 +65,9 @@ Known cleanups:
 ### 1. Shared Verifier Library
 
 - Add a shared verifier crate for attested-builder evidence.
-- Reuse the existing canonical `rootbundle` encoding from
-  `attested-builder/rootbundle`.
+- Reuse the canonical `rootbundle` encoding from the exact protected
+  `Bitcoin-PIR/attested-builder` revision recorded in
+  `verification/locks/rootbundle.json`.
 - Decode and verify:
   - `build-evidence.bin`
   - `root-bundle-payload.bin`

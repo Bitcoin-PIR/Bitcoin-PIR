@@ -48,10 +48,10 @@ pir-db-attest = { path = "../../../pir-db-attest" }
 pir-sdk-client = { path = "../client", version = "0.1.0" }
 ```
 
-`pir-db-attest` is currently `publish = false` and has an unpublished path
-dependency on `rootbundle`. HarmonyPIR client state now comes directly from
-the revision-pinned upstream `harmonypir` crate; the former workspace-local
-WASM wrapper has been retired.
+`pir-db-attest` is currently `publish = false` and consumes `rootbundle` from
+an exact protected `Bitcoin-PIR/attested-builder` revision. HarmonyPIR client
+state now comes directly from the revision-pinned upstream `harmonypir` crate;
+the former workspace-local WASM wrapper has been retired.
 
 All git dependencies above are revision-pinned, which is appropriate
 for reproducible workspace builds, but a pin is not a crates.io source.
@@ -70,10 +70,10 @@ registry `version` fallback.
    not intended for crates.io, move the required code behind a
    publishable workspace interface instead.
 
-2. **Resolve the internal path-only crates.** Make `rootbundle` and
-   `pir-db-attest` publishable in dependency order and give each path
-   dependency a `version`, or fold their public functionality into an
-   already-publishable crate.
+2. **Resolve unpublished trust crates.** Publish compatible `rootbundle` and
+   `pir-db-attest` versions in dependency order, or fold their public
+   functionality into an already-publishable crate. The exact git pin is a
+   reproducible source for this workspace, but not a crates.io dependency.
 
 3. **Re-run packaging from the registry form.** Run `cargo package`
    and `cargo publish --dry-run` for each dependent crate. `--list`
