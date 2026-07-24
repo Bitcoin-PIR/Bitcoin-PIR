@@ -46,11 +46,11 @@ onion = ["dep:onionpir", "dep:rand"]
 # `onion_leakage_dump` example (Phase 2.3) needs; cost is the serde
 # crate, no runtime overhead unless callers actually serialise.
 pir-sdk = { version = "0.1.0", path = "../core", features = ["serde"] }
-pir-core = { version = "0.1.0", path = "../../../pir-core" }
+pir-core = { version = "0.1.0", path = "../../protocol/core" }
 # Pure-crypto handshake + AEAD primitives shared with the server
 # (pir-runtime-core::channel). Compiles to wasm32 (verified — uses
 # RustCrypto's pure-Rust x25519-dalek + chacha20poly1305 + hkdf).
-pir-channel = { version = "0.1.0", path = "../../../pir-channel" }
+pir-channel = { version = "0.1.0", path = "../../protocol/channel" }
 # Attested-builder DB proof verifier. Pure parsing/hash logic; the runtime
 # server only transports proof bytes, clients decide policy.
 pir-db-attest = { path = "../../trust/db-attest" }

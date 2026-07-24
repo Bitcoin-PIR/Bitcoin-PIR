@@ -15,7 +15,7 @@ categories = ["cryptography", "cryptography::cryptocurrencies", "network-program
 
 [dependencies]
 # Re-export core primitives
-pir-core = { version = "0.1.0", path = "../../../pir-core" }
+pir-core = { version = "0.1.0", path = "../../protocol/core" }
 
 # Async runtime traits
 async-trait = "0.1"

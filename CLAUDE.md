@@ -356,7 +356,7 @@ YPIR_*_PLAN.md were deleted 2026-04-19 — all superseded or rejected.
 - `crates/sdk/wasm/src/`: `lib.rs`, `client.rs`, `merkle_verify.rs`,
   `metrics.rs`, `tracing_bridge.rs`.
 - `crates/sdk/server/src/`: `server.rs`, `loader.rs`, `config.rs`.
-- `pir-runtime-core/src/`: `protocol.rs`, `table.rs`, `eval.rs`,
+- `crates/protocol/runtime/src/`: `protocol.rs`, `table.rs`, `eval.rs`,
   `handler.rs`.
 - `web/src/`: `sdk-bridge.ts`, `dpf-adapter.ts`, `types.ts`,
   `sync-controller.ts`.

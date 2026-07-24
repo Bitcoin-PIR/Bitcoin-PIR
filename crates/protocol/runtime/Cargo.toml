@@ -15,13 +15,13 @@ keywords = ["pir", "privacy", "bitcoin", "cryptography", "server"]
 categories = ["cryptography", "cryptography::cryptocurrencies", "network-programming::server"]
 
 [dependencies]
-pir-core = { version = "0.1.0", path = "../pir-core" }
-pir-channel = { version = "0.1.0", path = "../pir-channel" }
+pir-core = { version = "0.1.0", path = "../core" }
+pir-channel = { version = "0.1.0", path = "../channel" }
 # Two-tier operator-signed identity bundle returned by REQ_ANNOUNCE.
 # Pure crypto (Ed25519 sign/verify + canonical wire encoding) — the
 # server-side I/O wrapper (loading the identity key + cert from disk,
 # building the per-boot ChannelManifest) lives in `crate::identity`.
-pir-identity = { version = "0.1.0", path = "../crates/trust/identity" }
+pir-identity = { version = "0.1.0", path = "../../trust/identity" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 memmap2 = "0.9"
 rayon = "1.10"

@@ -3,7 +3,7 @@
  * unpack the OnionPIRv2 plaintext byte-stream format used after the
  * SEAL-free upstream port (onionpir rev 92fceb01+).
  *
- * The Rust reference is `pir-core/src/onion_unpack.rs`. Both
+ * The Rust reference is `crates/protocol/core/src/onion_unpack.rs`. Both
  * implementations operate on the same algorithm (rolling-buffer bit
  * concatenation, per upstream INTEGRATION.md §1.4 / §1.5) and
  * **must** stay byte-identical so the web client (which goes through
