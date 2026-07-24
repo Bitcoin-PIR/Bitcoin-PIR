@@ -96,9 +96,9 @@ PRs #61, #62, and #63. Continue in the order defined by
 
 ## 6. Independent non-blocking maintenance
 
-- [ ] Resolve issue #18 by producing empirical DPF/Harmony wire fixtures and
-      evaluating the all-Merkle-levels-parallel optimization.
-- [ ] Review and merge or close outstanding dependency-update PRs separately
+- [x] Resolve issue #18 by producing empirical DPF/Harmony wire fixtures and
+      implementing the all-Merkle-levels-parallel optimization.
+- [x] Review and merge or close outstanding dependency-update PRs separately
       from the security and proof activation sequence.
 
 ## Closeout invariants

@@ -49,12 +49,12 @@ total bytes on the wire:
 2. **INDEX/CHUNK Merkle in parallel** —
    [`verify_bucket_merkle_batch_parallel`](../crates/sdk/client/src/merkle_verify.rs:808)
    uses `tokio::try_join!` (native) / `futures::future::try_join` (wasm32).
-
-**Not yet exploited:** sibling fetches *across* Merkle levels are still
-sequential, even though DPF alpha at level L is a pure function of
-`bin_index` (= `bin_index / 8^(L+1)`) and has no hash-chain dependency
-on prior levels. Implementing this would collapse the 12 / 6 / 2
-IndexMerkleSiblings wall-clock count to ~1 wave per server.
+3. **Across-level sibling pipelining** — `query_levels` precomputes every
+   target as `bin_index / 8^(L+1)`, sends all levels in a fixed order, drains
+   all responses in that order, and only then performs the local hash walk.
+   This collapses the DPF/Harmony sibling phase to one transport wave without
+   concurrent receives on a single WebSocket. Total round and byte counts are
+   unchanged.
 
 ---
 
@@ -158,15 +158,10 @@ common relay providers:
   All three protocols fit comfortably per round.
 - Fastly OHTTP Relay: no published limit.
 
-For latency, each OHTTP exchange adds one relay → gateway → target
-RTT versus direct HTTPS. The current fresh-client record counts are
-23 / 23 / 10, before any cross-level client-side parallelization
-optimizations land.
-
-The "all Merkle levels in parallel" refactor (see [§1 wall-clock
-note](#whats-wall-clock-vs-total)) would collapse Merkle wall-clock to
-≈ 1 wave per server without touching the protocol — a 3× per-query
-latency improvement on DPF/Harmony.
+For latency, each OHTTP exchange adds one relay → gateway → target RTT versus
+direct HTTPS. The current fresh-client record counts remain 23 / 23 / 10.
+Cross-level client-side pipelining changes wall-clock scheduling, not the
+leakage-visible number, order, or size of wire records.
 
 ---
 
@@ -185,18 +180,18 @@ Completed on 2026-07-24 with `dpf_leakage_dump.rs`,
 `harmony_leakage_dump.rs`, the two checked-in fixtures, and a Vitest regression
 that pins byte-identical not-found transcripts plus exact round/byte totals.
 
-### 5.2 All-Merkle-levels-in-parallel refactor
+### 5.2 All-Merkle-levels-in-parallel refactor — complete
 
-Replace the `for level in 0..n_levels { … await … }` loop in
-`verify_sibling_levels` with a concurrent issue (Promise.all / try_join_all)
-of all sibling DPF batches across all levels. DPF alpha at level L is
-`bin_index / 8^(L+1)` — pure function of leaf position, no dependency
-on the level-L−1 hash chain. The local hash-walk runs after all
-responses arrive.
+Completed on 2026-07-24 in the native DPF and Harmony sibling queriers.
+`verify_sibling_levels` now constructs all level/pass targets before I/O;
+each backend performs an ordered all-send/all-receive wave and the local hash
+walk begins only after every response is drained. Harmony keeps the atomic
+pair API for two real requests to the same group, and layouts requiring more
+than two same-group passes conservatively retain the serial fallback.
 
-Expected impact: wall-clock Merkle phase collapses from L sequential
-RTTs to 1 parallel wave per server. ~3× latency reduction per query on
-DPF/Harmony. Zero protocol change.
+This is deliberately transport pipelining rather than `try_join_all` over
+`recv`: a single WebSocket's response order is the correlation mechanism.
+There is no protocol or leakage-shape change.
 
 ### 5.3 Documented decisions, not action items
 
