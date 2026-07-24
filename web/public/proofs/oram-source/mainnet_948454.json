@@ -272,15 +272,15 @@
   },
   "liveDeployment": {
     "status": "strict-source-bound-boot-regeneration-live-on-pir2",
-    "verifiedAtUtc": "2026-07-24T01:52:40Z",
-    "currentPir2RuntimeBitcoinPirCommit": "66034c8204e19b11b8c0602aa625c2414095deb2",
+    "verifiedAtUtc": "2026-07-24T12:03:31Z",
+    "currentPir2RuntimeBitcoinPirCommit": "81dd96d442d39200fee7e6c97f5c308f38126756",
     "currentPir2RuntimeOramCommit": "cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b",
     "strictRebuildOramCommit": "5f366492504d8e853cbd60d25a6adbf021a78746",
-    "pir2UkiSha256": "5b8548888b5b5f8eabee5002c263179dd9b2efa8ad135efb1aefe79c3d17b13e",
-    "pir2BinarySha256": "1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37",
-    "pir2MeasurementHex": "a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86",
-    "pir2ChannelPubkeyHex": "d5e712c8a718c284d8cfa70a3cd910a04068f566f1ce46a36ef40121c928ae61",
-    "hetznerArchivePath": "/home/pir/uki-archive/tier3/main-7b6cf108-trusted-path-fix-20260724T001409Z-5b8548888b5b.efi",
-    "note": "The published proof certifies a strict source-bound ORAM rebuild at bitcoinpir-oram commit 5f36649. The live pir2 Tier 3 UKI uses the measured startup script from BitcoinPIR commit 7b6cf108, the unchanged unified_server binary from commit 66034c82, and bitcoinpir-oram commit cd2c1a22. Every boot copies the proof-bound direct inputs into SEV-protected tmpfs, regenerates both authenticated ORAM images with fresh randomness, checks emitted-page Merkle roots before installing trusted state, validates every published bulk and trusted-state path, and only then opens the query server. Live checks passed: bpir-admin attest atomically matched the binary, measurement, and REPORT_DATA while validating ARK-to-ASK-to-VCEK plus the same report signature; channel-test revalidated the AMD chain and encrypted session; padded direct ORAM smoke requests returned known-present results for db_id 0 and db_id 1. The channel pubkey recorded here is observational and changes on process restart; verifiers must obtain it from the fresh attestation response and check REPORT_DATA instead of pinning it."
+    "pir2UkiSha256": "34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681",
+    "pir2BinarySha256": "cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e",
+    "pir2MeasurementHex": "d7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245",
+    "pir2ChannelPubkeyHex": "06dfac7d93624a4f75d36aaae4bfcf5abfa6d1715be64bc92f43e6d78fb06608",
+    "hetznerArchivePath": "/home/pir/uki-archive/tier3/main-81dd96d4-db-proof-v2-20260724T112036Z-34b04d1bfc05.efi",
+    "note": "The published proof certifies a strict source-bound ORAM rebuild at bitcoinpir-oram commit 5f36649. The live pir2 Tier 3 UKI uses the measured startup script and unified_server from BitcoinPIR commit 81dd96d4, plus bitcoinpir-oram commit cd2c1a22. It dual-serves the reviewed database-proof-v2 sidecars while retaining v1 compatibility. Every boot copies the proof-bound direct inputs into SEV-protected tmpfs, regenerates both authenticated ORAM images with fresh randomness, checks emitted-page Merkle roots before installing trusted state, validates every published bulk and trusted-state path, and only then opens the query server. Live checks passed: bpir-admin attest atomically matched the binary, measurement, and REPORT_DATA while validating ARK-to-ASK-to-VCEK plus the same report signature; channel-test revalidated the AMD chain and encrypted session; the v2 wire responses matched both reviewed build-evidence digests; padded direct ORAM smoke requests returned known-present results for db_id 0 and db_id 1. The channel pubkey recorded here is observational and changes on process restart; verifiers must obtain it from the fresh attestation response and check REPORT_DATA instead of pinning it."
   }
 }

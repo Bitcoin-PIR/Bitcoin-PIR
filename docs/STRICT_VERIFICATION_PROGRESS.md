@@ -176,17 +176,27 @@ passed on the full-feature UKI after it reopened state written by the diagnostic
 UKI. Hetzner intentionally remains on the independently pinned 2026-07-20
 binary above.
 
-On 2026-07-24, VPSBG moved to the boot-regeneration UKI built from measured
-startup commit `7b6cf108`. It reuses the unchanged `unified_server` binary from
-BitcoinPIR commit `66034c82` (SHA-256 `1134b8a4...09c37`) and the source-bound
-`oramctl` from bitcoinpir-oram commit `cd2c1a22`. The UKI SHA-256 is
-`5b854888...7b13e` and its live launch MEASUREMENT is
-`a3a8fb0f...04040b86`. Every boot now regenerates both authenticated ORAM
+On 2026-07-24, VPSBG moved to the database-proof-v2 boot-regeneration UKI built
+from BitcoinPIR commit `81dd96d4`. Its `unified_server` SHA-256 is
+`cc4ec24b...5e16b1e`; it uses the source-bound `oramctl` from bitcoinpir-oram
+commit `cd2c1a22`. The UKI SHA-256 is `34b04d1b...93b681` and its live launch
+MEASUREMENT is `d7ae6fb8...5d3245`. Every boot now regenerates both authenticated ORAM
 images from proof-bound inputs in SEV-protected tmpfs, verifies the emitted-page
 Merkle roots and the exact published bulk/trusted-state path contract, and only
 then opens the query server. Fixed-pin AMD attestation, the encrypted channel,
 dummy padded lookups, and known-present padded results for both db_id 0 and
-db_id 1 passed against the live full-feature UKI.
+db_id 1 passed against the live full-feature UKI. The runtime also returned
+strictly framed v2 proof responses for both database IDs; their build-evidence
+SHA-256 values matched the independently verified production bundles
+`e9795887...f055517` and `59bd47d0...1c0509`. After the VPSBG acceptance
+passed, the exact same `cc4ec24b...5e16b1e` binary and sidecars were rolled
+through Hetzner's secondary and primary services. Both loaded db 0/db 1 v2,
+kept `NRestarts=0`, and returned the same evidence digests over the public
+WebSocket endpoint. Hetzner's encrypted channel passed; as expected for that
+host, its binary pin and operator identity are not hardware-backed by SEV. A
+pre-publication browser canary built with the rotated pir1/pir2 pins then passed
+DPF-PIR, HarmonyPIR, OnionPIR, and ORAM TEE queries with automatic result
+verification and per-query teardown.
 
 ## Non-blocking follow-ups
 
@@ -203,12 +213,11 @@ reopen it:
   completely consumed pool-unavailable response may reuse a connection for V1
   fallback. Strict Merkle binding already prevented malformed hints from
   yielding trusted data; this closes the fail-fast and recovery gap.
-- Implement the separately scoped
-  [v2 database-proof migration](DB_PROOF_V2_PLAN.md), which commits the three
-  remaining OnionPIR layout values and replaces the explicit v1 layout pins
-  only after new builder evidence and production sidecars exist. Until then,
-  the production client safely fails closed against the explicit pins in
-  `web/src/attest-pin.ts`.
+- Complete the client-side activation stage of the separately scoped
+  [v2 database-proof migration](DB_PROOF_V2_PLAN.md). Production evidence and
+  dual-serving sidecars now exist on the servers; the remaining cutover must
+  publish reviewed `params_hash_v2` pins, switch strict Onion clients to the
+  v2-only verifier, and remove the temporary v1 layout pins without fallback.
 - Follow [the database/root rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md)
   for every new snapshot or delta generation.
 

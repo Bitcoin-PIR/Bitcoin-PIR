@@ -1,16 +1,18 @@
 # Database proof v2: complete OnionPIR layout binding
 
-Status: the producer and consumer capability implementations are merged. The
+Status: the producer and consumer capability implementations are merged, and
+the production server-side dual-serving rollout is complete. The
 [attested-builder producer PR](https://github.com/Bitcoin-PIR/attested-builder/pull/1)
 implements canonical v2 evidence plus existing-artifact re-attestation. The
 [consumer PR #69](https://github.com/Bitcoin-PIR/Bitcoin-PIR/pull/69) implements
 dual-serving, native/WASM verification, typed Onion layout installation, and
-an explicit v2-only native verification method. It intentionally leaves the
-deployed v1 strict call path and temporary per-field layout pins in place so
-the capability PR can merge before production sidecars exist. Production
-activation remains a separate fail-closed cutover. The deployed v1 strict flow
-continues to fail closed against the explicit layout pins until v2 evidence,
-runtime configuration, frontend pins, and deployment all move together.
+an explicit v2-only native verification method. Canonical db 0/db 1 v2 bundles
+have now been independently verified, archived, staged identically, and loaded
+by both production hosts using BitcoinPIR commit
+`81dd96d442d39200fee7e6c97f5c308f38126756`. The deployed v1 strict client path
+and temporary per-field layout pins intentionally remain in place until the
+separate fail-closed client activation PR publishes reviewed v2 pins and moves
+all supported clients together. There is no v2-to-v1 fallback in that cutover.
 
 ## Goal and trust model
 
@@ -142,7 +144,7 @@ It must not be described as a fresh full build.
    OnionPIR, then follow the rollback rules in
    `DATABASE_ROOT_ROTATION_RUNBOOK.md` if any host or proof disagrees.
 
-## Implementation status (2026-07-22)
+## Implementation status (2026-07-24)
 
 - [x] Freeze canonical `BuildParamsV2`, evidence domains, fixed-width encoding,
       and a producer/verifier golden hash vector.
@@ -166,11 +168,14 @@ It must not be described as a fresh full build.
       the existing v1 method during the staged migration.
 - [x] Expose the v2-only stateless verifier and typed layout getters to WASM.
       The production web client deliberately continues to request v1.
-- [ ] Generate v2 evidence and SNP reports for production db 0 and db 1 on the
+- [x] Generate v2 evidence and SNP reports for production db 0 and db 1 on the
       attested builder.
-- [ ] Archive and independently verify the new bundles, then add reviewed
-      production `params_hash_v2`/builder pins.
-- [ ] Configure and deploy `proof_v2_dir` on Hetzner and VPSBG using a runtime
+- [x] Archive and independently verify the new bundles. The reviewed evidence
+      digests and `params_hash_v2` values are recorded in
+      `PHASE3_ROADMAP.md`.
+- [ ] Publish the reviewed production `params_hash_v2`/builder pins in the
+      strict-client activation PR.
+- [x] Configure and deploy `proof_v2_dir` on Hetzner and VPSBG using a runtime
       binary that supports the v2 opcode.
 - [ ] Submit the activation PR: switch strict native/web Onion clients to v2,
       consume only proof-backed layout values, and remove
@@ -181,10 +186,10 @@ It must not be described as a fresh full build.
 The unchecked items are activation gates. Merging the implementation PRs alone
 must not be described as a production v2 rollout.
 
-Before starting the producer PR, inventory the retained files on both hosts
-and record which consistency checks can be reconstructed from final artifacts
-alone. Missing intermediate files can change the cost estimate, but they do
-not justify accepting an uncommitted server-info value.
+The pre-production inventory below determined which consistency checks could
+be reconstructed from final artifacts alone. Missing intermediate files did
+not justify accepting an uncommitted server-info value; the final-serving-image
+re-attestation path was implemented and used instead.
 
 ### Initial artifact inventory (2026-07-20)
 
@@ -214,7 +219,9 @@ proof-bound Onion root.
 The current manifests use an all-zero placeholder hash for the large DPF and
 Onion cuckoo files. The re-attester must therefore verify the actual tables
 against their Merkle roots and proof-bound super-roots; verifying only
-`MANIFEST.toml` is insufficient. VPSBG's corresponding on-disk inventory
-still needs to be recorded before the SEV run; its SSH endpoint was not
-reachable during this read-only inventory, so no claim is made about missing
-files there.
+`MANIFEST.toml` is insufficient. Before the SEV run, the required final-serving
+inputs and both database layouts were confirmed through the measured
+re-attestation workflow on VPSBG. The resulting db 0/db 1 v2 bundles were
+independently verified and then staged byte-identically on VPSBG and Hetzner;
+the production runtime now loads both sidecars while retaining the v1
+compatibility opcode.

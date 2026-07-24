@@ -132,22 +132,21 @@ export interface ServerAttestPin {
  * binary baked into the initramfs.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Tier 3 ORAM UKI — 2026-07-24. The measured startup script is from
-  // BitcoinPIR commit 7b6cf108da189cc3b693c3f004612dcd90a80a0f; the unchanged
-  // unified_server binary is from commit
-  // 66034c8204e19b11b8c0602aa625c2414095deb2:
-  // unified_server serves db-proof query traffic and direct ORAM lookup
+  // Tier 3 ORAM + database-proof-v2 UKI — 2026-07-24. The measured startup
+  // script and unified_server binary are both built from BitcoinPIR commit
+  // 81dd96d442d39200fee7e6c97f5c308f38126756. unified_server dual-serves
+  // v1/v2 DB proofs and direct ORAM lookup
   // for db_id 0/1 as pir2 query-only (`--serve-queries`, no hint pool,
   // no OnionPIR) plus `--identity-*` (operator-signed identity,
   // server_id=pir2). MEASUREMENT captured from the live Tier 3 deploy via
   // `bpir-admin attest wss://weikeng2.bitcoinpir.org` after uploading
-  // UKI sha256 `5b8548888b5b5f8eabee5002c263179dd9b2efa8ad135efb1aefe79c3d17b13e`
+  // UKI sha256 `34b04d1bfc0501c0cc222aff446a55de0a74d4e5218a21a05bf8756f8293b681`
   // (SEV-SNP REPORT_DATA binding verified on
   // real hardware).
   measurementHex:
-    'a3a8fb0fb514c44314c96d442088b1646a3fe62f37b118648bcf1ff7d6a3a66039ba80728e5e189847001a9f04040b86',
+    'd7ae6fb895380b1408b5ba7640a2eaa091754fc6279b62eb96f4bd1eee5532e95bc1df3b1485a06b3f43d648d05d3245',
   binarySha256Hex:
-    '1134b8a4c33ffab8c545107983f00c8ef367986e7ea2c2ecd575919102d09c37',
+    'cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e',
   description: 'weikeng2.bitcoinpir.org (VPSBG, SEV-SNP, Tier 3 ORAM UKI)',
 };
 
@@ -160,13 +159,14 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Bumped 2026-07-20: pir1 redeployed from BitcoinPIR commit
-  // d126f36adb1ec4da7f23dcfe97a81f7503b6829f with the strict-verification
-  // canary follow-up and durable, non-blocking HarmonyPIR V2 hint pool.
+  // Bumped 2026-07-24: pir1 redeployed from BitcoinPIR commit
+  // 81dd96d442d39200fee7e6c97f5c308f38126756. Both runtime services
+  // dual-serve database proofs v1/v2 while retaining the durable,
+  // non-blocking HarmonyPIR V2 hint pool.
   // Both Hetzner systemd services use this binary. This remains independent
   // from the pir2 Tier 3 UKI measurement pin.
   binarySha256Hex:
-    '4cf7d467032d7c7c48147495a0307771fd196dac403a7feb62d6f4f7502045b4',
+    'cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e',
   description: 'weikeng1.bitcoinpir.org (Hetzner i7-8700, no SEV)',
 };
 
