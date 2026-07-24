@@ -43,8 +43,8 @@ A **mechanism demo**, live and working end-to-end:
 
 | Layer | Location | State |
 |---|---|---|
-| Server verify (ARC) | `pir-runtime-core/src/arc_verifier.rs` | ✅ done; real key load via `from_secret_key_file` |
-| Server verify (Cashu) | `pir-runtime-core/src/cashu_verifier.rs` | ✅ done (BDHKE + spent-set) |
+| Server verify (ARC) | `crates/protocol/runtime/src/arc_verifier.rs` | ✅ done; real key load via `from_secret_key_file` |
+| Server verify (Cashu) | `crates/protocol/runtime/src/cashu_verifier.rs` | ✅ done (BDHKE + spent-set) |
 | Server gate | `runtime/src/bin/unified_server.rs` (`--require-arc` / `--require-cashu` / `--arc-key` / `--cashu-keyset`) | ✅ opt-in, **off in prod** |
 | WASM obtain | `crates/sdk/wasm/src/arc.rs` (`WasmArcCredentialRequest`, `WasmArcPresentationState`), `crates/sdk/wasm/src/cashu.rs` (`WasmCashuBlind`) | ✅ done |
 | Web obtain/present | `web/src/payment-client.ts`, `cashu-bat.ts`, `credential-manager.ts`, `arc-present.ts` | ✅ done (point at issuer; HTTP) |

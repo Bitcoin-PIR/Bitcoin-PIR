@@ -16,12 +16,12 @@ categories = ["cryptography", "cryptography::cryptocurrencies", "network-program
 [dependencies]
 # Core SDK types and traits
 pir-sdk = { version = "0.1.0", path = "../core" }
-pir-core = { version = "0.1.0", path = "../../../pir-core" }
+pir-core = { version = "0.1.0", path = "../../protocol/core" }
 
 # Shared server runtime primitives (wire protocol, mmap tables, DPF
 # evaluation, request dispatch). Lives in its own publishable crate so
 # `runtime/` binaries and `pir-sdk-server` both consume the same types.
-pir-runtime-core = { version = "0.1.0", path = "../../../pir-runtime-core" }
+pir-runtime-core = { version = "0.1.0", path = "../../protocol/runtime" }
 
 # Configuration
 serde = { version = "1.0", features = ["derive"] }

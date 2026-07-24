@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "pir-core",
-    "pir-channel",
+    "crates/protocol/core",
+    "crates/protocol/channel",
     "crates/trust/identity",
     "crates/trust/attest-verify",
     "crates/trust/db-attest",
     "crates/sdk/core",
-    "pir-runtime-core",
+    "crates/protocol/runtime",
     "crates/sdk/server",
     "crates/sdk/client",
     "crates/sdk/wasm",

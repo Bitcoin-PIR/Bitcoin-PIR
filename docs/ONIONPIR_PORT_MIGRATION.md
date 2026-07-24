@@ -226,7 +226,7 @@ treat the return as `Vec<u8>` of entry bytes. **These will compile
 unchanged but decode garbage.** Inverse bit-unpacking with
 `bits_per_coeff = PlainMod - 1` (read `PlainMod` from `params_info`) must
 be added in app code — likely a new helper in `runtime/src/onionpir.rs`
-or `pir-core/src/`.
+or `crates/protocol/core/src/`.
 
 The integration doc gives the packing recipe at lines 80-94; the
 unpacking is the same loop inverted.
@@ -323,7 +323,7 @@ actually shipped in this commit:
    unpack-to-bytes step. Using BigInt for the rolling buffer (39-bit
    coefficient case requires >53 bits of state, which JS `number`
    cannot hold). Eight vitest cases mirror the eight Rust unit tests
-   in `pir-core/src/onion_unpack.rs` — both pass green.
+   in `crates/protocol/core/src/onion_unpack.rs` — both pass green.
 
 3. **Migration plan updated** to capture the audit findings so a
    future session doesn't re-design re-key flows that aren't needed.
@@ -461,7 +461,7 @@ Action items:
    count at the same load factor, insertion-failure rate rises. Re-fit
    empirically via the existing build pipeline. Touches:
    * `build/src/gen_1_onion.rs` (or wherever the cuckoo plan lives)
-   * `pir-core/src/cuckoo*.rs` if the constants are shared with the
+   * `crates/protocol/core/src/cuckoo*.rs` if the constants are shared with the
      client.
 4. **Verify no bitmask modular reduction.** Initial grep
    (`entry_id & (num_bins - 1)`-style patterns) over onion files came

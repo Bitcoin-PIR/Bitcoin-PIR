@@ -30,7 +30,7 @@ fastprp = ["pir-sdk-client/fastprp"]
 
 [dependencies]
 pir-sdk = { version = "0.1.0", path = "../core" }
-pir-core = { version = "0.1.0", path = "../../../pir-core" }
+pir-core = { version = "0.1.0", path = "../../protocol/core" }
 # Native PIR client — on wasm32 its transport layer becomes
 # `WasmWebSocketTransport` (web-sys WebSocket), so the same client structs
 # work in the browser. On native it stays tokio-tungstenite; we only hit
@@ -41,7 +41,7 @@ pir-sdk-client = { version = "0.1.0", path = "../client", default-features = fal
 # `WasmDpfClient::attest` / `WasmHarmonyClient::attest` (so the SEV-SNP
 # REPORT_DATA commits to the *exact* X25519 eph pubkey used in the
 # subsequent `upgradeToSecureChannel` handshake).
-pir-channel = { version = "0.1.0", path = "../../../pir-channel" }
+pir-channel = { version = "0.1.0", path = "../../protocol/channel" }
 arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
 # Cashu BDHKE blind/unblind (the `cashu` module's WasmCashuBlind). k256 +
 # sha2 compile cleanly to wasm32; the hash_to_curve here is byte-identical
@@ -107,7 +107,7 @@ console_error_panic_hook = "0.1"
 # don't normally affect `wasm-pack build`, but the target-gate makes
 # the intent explicit and survives any future resolver shifts.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-pir-runtime-core = { version = "0.1.0", path = "../../../pir-runtime-core" }
+pir-runtime-core = { version = "0.1.0", path = "../../protocol/runtime" }
 
 # Per-package profile overrides must live at the workspace root; Cargo
 # ignores `[profile.*]` here and emits a warning on every build. For

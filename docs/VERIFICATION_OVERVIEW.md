@@ -120,7 +120,7 @@ items regardless of outcome (found at h=0, found at h=1, not-found,
 whale). Pre-closure: a found-at-h=0 query could emit 1 item; the
 asymmetry leaked the cuckoo position.
 
-- Spec: `pir-core/src/params.rs:154` (`INDEX_CUCKOO_NUM_HASHES`).
+- Spec: `crates/protocol/core/src/params.rs:154` (`INDEX_CUCKOO_NUM_HASHES`).
 - Doc: `CLAUDE.md` § "Merkle INDEX Item-Count Symmetry".
 - Code: `crates/sdk/client/src/{dpf,harmony,onion}.rs::items_from_trace`
   (each scripthash contributes both probed positions to the trace
@@ -244,7 +244,7 @@ Multi-query (curated colliding scripthash batches):
 ## Key files & commits
 
 ### Code
-- `pir-core/src/params.rs` — privacy-relevant constants.
+- `crates/protocol/core/src/params.rs` — privacy-relevant constants.
 - `crates/sdk/client/src/{dpf,harmony,onion}.rs` — per-backend Rust
   client, including the per-helper Kani harnesses inline.
 - `crates/sdk/client/src/merkle_verify.rs` — bucket-Merkle verification.

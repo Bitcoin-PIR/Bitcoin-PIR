@@ -25,7 +25,7 @@ operator ran the same release binary:
   `muhash` is a public commitment to the snapshot contents.
 - The build pipeline introduces **no system randomness**:
   no `OsRng`, no `thread_rng`, no `SystemTime` seeding anywhere in
-  `build/src/` or `pir-core/src/`. All `Instant::now()` calls are
+  `build/src/` or `crates/protocol/core/src/`. All `Instant::now()` calls are
   timing logs only.
 - All PRG seeds originally flowed from three hardcoded constants in source:
 
@@ -65,7 +65,7 @@ does not control `block_hash` — the chain produces it.
 ## Design
 
 The centralized seed-derivation API lives in
-[`pir-core/src/seeds.rs`](../pir-core/src/seeds.rs).
+[`crates/protocol/core/src/seeds.rs`](../crates/protocol/core/src/seeds.rs).
 
 ### Chain anchor types
 
@@ -135,7 +135,7 @@ more entropy (e.g., future FHE-layer pre-randomization).
 
 ### Phase A — landed
 
-- [x] `pir-core/src/seeds.rs` with `ChainAnchor`, `DeltaAnchor`,
+- [x] `crates/protocol/core/src/seeds.rs` with `ChainAnchor`, `DeltaAnchor`,
       `derive_seed_u64`, `derive_seed_32`, domain constants,
       `SnapshotSeeds` / `DeltaSeeds` derive helpers.
 - [x] Unit tests covering determinism, domain separation, height
@@ -171,7 +171,7 @@ more entropy (e.g., future FHE-layer pre-randomization).
 ### Phase C — landed
 
 - [x] **Header extension** *(backward-compatible wire-format change)*.
-      [pir-core/src/cuckoo.rs](../pir-core/src/cuckoo.rs) gains
+      [crates/protocol/core/src/cuckoo.rs](../crates/protocol/core/src/cuckoo.rs) gains
       `HeaderAnchor` enum, `write_header_with_anchor`,
       `read_cuckoo_header_with_anchor`, `verify_anchor_seeds`. v2
       MAGIC is the legacy MAGIC XOR'd with a 1-byte marker
@@ -184,7 +184,7 @@ more entropy (e.g., future FHE-layer pre-randomization).
       byte-identical to legacy.
 - [x] **Readers accept both legacy and v2 MAGIC.**
       [build/src/common.rs](../build/src/common.rs)::`read_cuckoo_header`/`read_chunk_cuckoo_header`
-      and [pir-runtime-core/src/table.rs](../pir-runtime-core/src/table.rs)
+      and [crates/protocol/runtime/src/table.rs](../crates/protocol/runtime/src/table.rs)
       delegate to `read_cuckoo_header_with_anchor`. Server can load
       both old and new databases without changes.
 - [x] **6 unit tests in [pir-core::cuckoo::tests]**: snapshot + delta
@@ -217,7 +217,7 @@ more entropy (e.g., future FHE-layer pre-randomization).
 ### Phase C3 — landed
 
 - **Server-side self-verification on load.**
-  [pir-runtime-core/src/table.rs](../pir-runtime-core/src/table.rs)
+  [crates/protocol/runtime/src/table.rs](../crates/protocol/runtime/src/table.rs)
   `MappedSubTable` now surfaces the header's `master_seed` + `anchor`;
   `MappedDatabase::load` calls `verify_anchor_consistency` on the INDEX
   and CHUNK tables — recomputing the seeds from the embedded anchor and
@@ -239,7 +239,7 @@ more entropy (e.g., future FHE-layer pre-randomization).
    to mempool.space for independent inspection.
 2. **Cross-build CI — synthetic gate landed; full production build deferred.**
    `.github/workflows/build-determinism.yml` runs
-   `pir-core/tests/cross_build_determinism.rs` on clean runners and compares
+   `crates/protocol/core/tests/cross_build_determinism.rs` on clean runners and compares
    serialized outputs. Running the entire multi-hour
    `scripts/build_full.sh <snapshot> <height>` twice and comparing all large
    production artifacts remains deferred until the first multi-operator build.

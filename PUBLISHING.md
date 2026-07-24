@@ -32,7 +32,7 @@ upstream refactoring, no ETA.
 The affected packages currently contain these non-registry dependencies:
 
 ```toml
-# pir-runtime-core/Cargo.toml
+# crates/protocol/runtime/Cargo.toml
 libdpf = { git = "...", rev = "..." }
 arc = { git = "...", rev = "..." }
 
