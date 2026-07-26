@@ -693,6 +693,7 @@ where
                 record,
                 current_exact,
                 quote_signing_key,
+                observed_at,
                 settled_at,
                 amount_received_msat,
                 settlement_evidence_digest,
@@ -724,6 +725,7 @@ where
                     expired_record,
                     expired_snapshot,
                     quote_signing_key,
+                    observed_at,
                     settled_at,
                     amount_received_msat,
                     settlement_evidence_digest,
@@ -739,6 +741,7 @@ where
                     record,
                     current_exact,
                     quote_signing_key,
+                    observed_at,
                     settled_at,
                     amount_received_msat,
                     settlement_evidence_digest,
@@ -770,25 +773,43 @@ where
         record: QuoteRecord,
         current_exact: Vec<u8>,
         quote_signing_key: &SigningKey,
+        observed_at: u64,
         settled_at: u64,
         amount_received_msat: u64,
         settlement_evidence_digest: [u8; 32],
         next_status: Bolt11QuoteStatusV1,
     ) -> Result<QuoteReconcileResultV1, IssuerCoreErrorV1> {
+        let current = Bolt11QuoteV1::decode(&current_exact)
+            .map_err(|_| IssuerCoreErrorV1::PermanentMismatch)?;
+        // Backend settlement timestamps are authoritative payment evidence,
+        // while issuer observation time is only local bookkeeping.  Sign the
+        // earliest strictly monotonic lifecycle time justified by that
+        // evidence.  In particular, an on-time payment first observed after
+        // invoice expiry must remain PaymentSettled instead of being assigned
+        // a post-expiry status timestamp and rejected by the wire protocol.
+        let transition_time = settled_at.max(
+            current
+                .status_updated_at
+                .checked_add(1)
+                .ok_or(IssuerCoreErrorV1::PermanentMismatch)?,
+        );
+        if transition_time > observed_at {
+            return Err(IssuerCoreErrorV1::RetryableUnavailable);
+        }
         let next = sign_persisted_transition(
             &record,
             &current_exact,
             quote_signing_key,
-            settled_at,
+            observed_at,
             next_status,
-            settled_at,
+            transition_time,
         )?;
         let write = self
             .store
             .record_settlement(&QuoteSettlement {
                 quote_id: record.quote_id,
                 settled_at,
-                observed_at: settled_at,
+                observed_at: transition_time,
                 settled_amount_msat: amount_received_msat,
                 settlement_evidence_digest,
                 exact_signed_quote_response: next,
@@ -1049,6 +1070,15 @@ fn sign_persisted_transition(
         quote_signing_key,
         expected_status_for_state(record.state)?,
     )?;
+    // Lightning backends such as Core Lightning report both invoice creation
+    // and settlement at whole-second precision.  A valid payment can therefore
+    // settle in the same second as the signed InvoiceOpen snapshot.  Keep the
+    // backend's exact settlement time as evidence, but wait for a later issuer
+    // observation before signing the lifecycle successor so the wire-level
+    // transition time remains strictly monotonic.
+    if transition_time <= quote.status_updated_at {
+        return Err(IssuerCoreErrorV1::RetryableUnavailable);
+    }
     let expected = persisted_expectation(record, &delegation)?;
     let verified = quote
         .verify_persisted_for_transition(expected, &delegation, verification_time)

@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -19,6 +19,7 @@ interface FixtureProviderV1 {
   name: string;
   issuer_id: string;
   policy_signing_pubkey: string;
+  expected_payee_pubkey: string;
   policy_path: string;
   quote_delegation_path: string;
   scopes: FixtureScopeV1[];
@@ -34,9 +35,16 @@ interface FixtureInventoryV1 {
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+type LightningBackendModeV1 = 'fake' | 'cln-regtest';
+
 export default async function globalSetup(): Promise<() => Promise<void>> {
   const webOrigin = process.env.BITCOINPIR_PAYMENT_REAL_WEB_ORIGIN;
   if (!webOrigin) throw new Error('real issuer E2E web origin was not configured');
+  const backendMode = lightningBackendMode();
+  if (backendMode === 'cln-regtest'
+      && process.env.BITCOINPIR_PAYMENT_CLN_ACKNOWLEDGE_LOCAL_REGTEST_ONLY !== '1') {
+    throw new Error('CLN E2E requires explicit local-regtest-only acknowledgement');
+  }
 
   const runtimeRoot = await mkdtemp(join(tmpdir(), 'bitcoinpir-payment-real-e2e-'));
   await chmod(runtimeRoot, 0o700);
@@ -72,6 +80,41 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       throw new Error('deterministic fixture is missing provider-0');
     }
 
+    const providerRoot = join(fixtureRoot, provider.name);
+    const secretRoot = join(providerRoot, 'secrets');
+    let quoteDelegation = fixturePath(fixtureRoot, provider.quote_delegation_path);
+    let expectedPayeePubkey = provider.expected_payee_pubkey;
+    let clnSocket: { path: string; uid: number } | null = null;
+    if (backendMode === 'cln-regtest') {
+      expectedPayeePubkey = canonicalCompressedPubkey(
+        requiredEnvironment('BITCOINPIR_PAYMENT_CLN_PAYEE_PUBKEY'),
+      );
+      clnSocket = await checkedClnSocket(
+        requiredEnvironment('BITCOINPIR_PAYMENT_CLN_RPC_SOCKET'),
+      );
+      quoteDelegation = join(providerRoot, 'public', 'quote-key-delegation-cln-regtest-v1.bin');
+      runChecked(join(repositoryRoot, 'target/debug/bpir-admin'), [
+        'payment-artifact',
+        'quote-delegation',
+        '--issuer-root-key',
+        join(secretRoot, 'issuer-root-ed25519.key'),
+        '--quote-signing-key',
+        join(secretRoot, 'quote-ed25519.key'),
+        '--network',
+        'regtest',
+        '--expected-payee-pubkey-hex',
+        expectedPayeePubkey,
+        '--key-epoch',
+        '2',
+        '--not-before',
+        '1700000000',
+        '--not-after',
+        '2000000000',
+        '--out',
+        quoteDelegation,
+      ]);
+    }
+
     const storeParent = join(runtimeRoot, 'store');
     const floorParent = join(runtimeRoot, 'floor');
     await mkdir(storeParent, { mode: 0o700 });
@@ -92,10 +135,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
 
     const issuerPort = await reserveLoopbackPort();
     const issuerOrigin = `http://127.0.0.1:${issuerPort}`;
-    const providerRoot = join(fixtureRoot, provider.name);
-    const secretRoot = join(providerRoot, 'secrets');
     const args = [
-      'serve-fake',
+      backendMode === 'fake' ? 'serve-fake' : 'serve-cln',
       '--bind',
       `127.0.0.1:${issuerPort}`,
       '--allow-origin',
@@ -105,7 +146,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       '--rollback-authority',
       rollbackAuthority,
       '--quote-delegation',
-      fixturePath(fixtureRoot, provider.quote_delegation_path),
+      quoteDelegation,
       '--quote-signing-key',
       join(secretRoot, 'quote-ed25519.key'),
       '--credential-derivation-key',
@@ -114,13 +155,25 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       `${fixturePath(fixtureRoot, provider.policy_path)}=${provider.policy_signing_pubkey}`,
       '--receipt-signing-key',
       join(secretRoot, 'receipt-ed25519.key'),
-      '--fake-lightning-signing-key',
-      join(secretRoot, 'fake-lightning-secp256k1.key'),
-      '--fake-lightning-derivation-seed',
-      join(secretRoot, 'fake-lightning-derivation.key'),
       '--reconciliation-interval-seconds',
-      '300',
+      backendMode === 'fake' ? '300' : '1',
     ];
+    if (backendMode === 'fake') {
+      args.push(
+        '--fake-lightning-signing-key',
+        join(secretRoot, 'fake-lightning-secp256k1.key'),
+        '--fake-lightning-derivation-seed',
+        join(secretRoot, 'fake-lightning-derivation.key'),
+      );
+    } else {
+      if (!clnSocket) throw new Error('checked CLN socket metadata is unavailable');
+      args.push(
+        '--cln-rpc-socket',
+        clnSocket.path,
+        '--cln-rpc-expected-uid',
+        String(clnSocket.uid),
+      );
+    }
     for (const scope of provider.scopes) {
       const bat = scope.offers.find((offer) => offer.method === 'cashu-bat');
       const arc = scope.offers.find((offer) => offer.method === 'arc-experimental');
@@ -152,6 +205,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
 
     process.env.BITCOINPIR_PAYMENT_REAL_FIXTURE = fixtureRoot;
     process.env.BITCOINPIR_PAYMENT_REAL_ISSUER_ORIGIN = issuerOrigin;
+    process.env.BITCOINPIR_PAYMENT_REAL_EXPECTED_PAYEE = expectedPayeePubkey;
+    process.env.BITCOINPIR_PAYMENT_REAL_SETTLEMENT_MODE =
+      backendMode === 'fake' ? 'fake' : 'external';
     return async () => {
       await terminate(issuer);
       await rm(runtimeRoot, { recursive: true, force: true });
@@ -161,6 +217,36 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     await rm(runtimeRoot, { recursive: true, force: true });
     throw error;
   }
+}
+
+function lightningBackendMode(): LightningBackendModeV1 {
+  const value = process.env.BITCOINPIR_PAYMENT_REAL_BACKEND ?? 'fake';
+  if (value === 'fake' || value === 'cln-regtest') return value;
+  throw new Error('BITCOINPIR_PAYMENT_REAL_BACKEND must be fake or cln-regtest');
+}
+
+function requiredEnvironment(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required for the selected payment E2E backend`);
+  return value;
+}
+
+function canonicalCompressedPubkey(value: string): string {
+  if (!/^(02|03)[0-9a-f]{64}$/.test(value)) {
+    throw new Error('CLN payee must be one canonical lowercase compressed secp256k1 public key');
+  }
+  return value;
+}
+
+async function checkedClnSocket(value: string): Promise<{ path: string; uid: number }> {
+  const path = resolve(value);
+  if (path !== value) throw new Error('CLN RPC socket must be an absolute normalized path');
+  const metadata = await lstat(path);
+  if (!metadata.isSocket()) throw new Error('CLN RPC path is not a Unix socket');
+  if ((metadata.mode & 0o777) !== 0o600) {
+    throw new Error('CLN RPC socket must be owner-only mode 0600 for this E2E');
+  }
+  return { path, uid: metadata.uid };
 }
 
 function runChecked(command: string, args: string[]): void {

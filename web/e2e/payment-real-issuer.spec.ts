@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 import { expect, type Page, test } from '@playwright/test';
@@ -34,7 +35,10 @@ interface FixtureInventoryV1 {
 }
 
 interface HarnessApi {
-  initialize(fixture: RealIssuerHarnessFixtureV1): Promise<{
+  initialize(
+    fixture: RealIssuerHarnessFixtureV1,
+    authorization?: 'bolt11-direct-receipt' | 'cashu-bat' | 'arc-experimental',
+  ): Promise<{
     providerIdHex: string;
     policyDigestHex: string;
     scopeIdHex: string;
@@ -49,15 +53,23 @@ interface HarnessApi {
   ): Promise<{ ok: true; count: number } | { ok: false; error: string }>;
   recoveryCount(): Promise<number>;
   capabilityCount(): Promise<number>;
+  capabilityInventory(): Promise<Array<{
+    providerIdHex: string;
+    policyDigestHex: string;
+    scopeIdHex: string;
+    offerId: number;
+    scheme: string;
+    count: number;
+  }>>;
+  capabilityBinding(): {
+    providerIdHex: string;
+    policyDigestHex: string;
+    scopeIdHex: string;
+    offerId: number;
+    scheme: string;
+  };
   takeAndVerifyCapability(): Promise<number | null>;
   localStorageSnapshot(): Record<string, string>;
-}
-
-declare global {
-  interface Window {
-    paymentRealIssuerTest: HarnessApi;
-    __paymentRealLocalStorageWrites?: Array<[string, string]>;
-  }
 }
 
 test.beforeEach(async ({ context }) => {
@@ -103,8 +115,12 @@ test('real WASM claims from a real no-funds issuer and exactly recovers a lost r
     expect(accepted.offerEndpoint).toBe('https://issuer-0.fixture.invalid');
 
     const started = await call(page, 'startAcquisition');
-    expect(started.invoice).toMatch(/^lnbcrt1/);
+    expect(started.invoice).toMatch(/^lnbcrt[0-9]+[munp]?1/);
     expect(started.status).toBe('invoice-open');
+    if (fixture.settlementMode === 'external') {
+      payClnRegtestInvoice(started.invoice);
+      await waitPastCurrentUnixSecond();
+    }
     await expect(call(page, 'settleAndPoll')).resolves.toBe('payment-settled');
 
     const lost = await call(page, 'claimWithLostResponse');
@@ -124,10 +140,11 @@ test('real WASM claims from a real no-funds issuer and exactly recovers a lost r
       count: 1,
     });
 
-    expect(claimBodies).toHaveLength(2);
+    expect(claimBodies.length).toBeGreaterThanOrEqual(2);
     expect(claimBodies[0].length).toBeGreaterThan(0);
-    expect(claimBodies[1]).toEqual(claimBodies[0]);
-    expect(claimStatuses).toEqual([200, 200]);
+    for (const body of claimBodies.slice(1)) expect(body).toEqual(claimBodies[0]);
+    expect(claimStatuses.slice(-2)).toEqual([200, 200]);
+    expect(claimStatuses.slice(0, -2).every((status) => status === 503)).toBe(true);
     await expect(call(page, 'recoveryCount')).resolves.toBe(0);
     await expect(call(page, 'capabilityCount')).resolves.toBe(1);
     const verifiedLength = await call(page, 'takeAndVerifyCapability');
@@ -148,6 +165,53 @@ test('real WASM claims from a real no-funds issuer and exactly recovers a lost r
       expect(claim.includes(Buffer.from('bitcoin-address-query-sentinel', 'utf8'))).toBe(false);
     }
   });
+
+for (const authorization of ['cashu-bat', 'arc-experimental'] as const) {
+  test(`real CLN regtest issues and verifies ${authorization} capabilities`, async ({ context }) => {
+    const fixture = await loadFixture();
+    test.skip(fixture.settlementMode !== 'external', 'requires the opt-in local CLN regtest');
+    const issuerOrigin = requiredEnvironment('BITCOINPIR_PAYMENT_REAL_ISSUER_ORIGIN');
+    const claimBodies: Buffer[] = [];
+    context.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.origin === issuerOrigin && url.pathname.endsWith('/claim')) {
+        claimBodies.push(request.postDataBuffer() ?? Buffer.alloc(0));
+      }
+    });
+
+    const page = await readyPage(context.newPage());
+    await call(page, 'initialize', fixture, authorization);
+    const started = await call(page, 'startAcquisition');
+    expect(started.invoice).toMatch(/^lnbcrt[0-9]+[munp]?1/);
+    payClnRegtestInvoice(started.invoice);
+    await waitPastCurrentUnixSecond();
+    await expect(call(page, 'settleAndPoll')).resolves.toBe('payment-settled');
+
+    const lost = await call(page, 'claimWithLostResponse');
+    expect(lost).toContain('simulated claim response loss after issuer commit');
+    await page.reload();
+    await waitReady(page);
+    await call(page, 'initialize', fixture, authorization);
+    const restored = await call(page, 'resumeAndClaim', started.recoveryId);
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) throw new Error(restored.error);
+    expect(restored.count).toBeGreaterThan(0);
+    const inventory = await call(page, 'capabilityInventory');
+    const currentBinding = await call(page, 'capabilityBinding');
+    expect(inventory).toContainEqual({ ...currentBinding, count: restored.count });
+    await expect(call(page, 'capabilityCount')).resolves.toBe(restored.count);
+    const verifiedLength = await call(page, 'takeAndVerifyCapability');
+    expect(verifiedLength).not.toBeNull();
+    expect(verifiedLength).toBeGreaterThan(0);
+    expect(claimBodies.length).toBeGreaterThanOrEqual(2);
+    for (const body of claimBodies.slice(1)) expect(body).toEqual(claimBodies[0]);
+    for (const claim of claimBodies) {
+      expect(claim.includes(Buffer.from(started.invoice, 'utf8'))).toBe(false);
+      expect(claim.includes(Buffer.from('bitcoin-address-query-sentinel', 'utf8'))).toBe(false);
+    }
+    expect(await call(page, 'localStorageSnapshot')).toEqual({});
+  });
+}
 
 let cachedFixture:
   | (RealIssuerHarnessFixtureV1 & { scopeId: string; offerId: number })
@@ -174,13 +238,60 @@ async function loadFixture(): Promise<RealIssuerHarnessFixtureV1> {
   cachedFixture = {
     providerIdHex: provider.provider_id,
     policySigningPubkeyHex: provider.policy_signing_pubkey,
-    expectedPayeePubkeyHex: provider.expected_payee_pubkey,
+    expectedPayeePubkeyHex: requiredEnvironment('BITCOINPIR_PAYMENT_REAL_EXPECTED_PAYEE'),
     policyBytes: Array.from(await readFile(join(root, provider.policy_path))),
     issuerOrigin: requiredEnvironment('BITCOINPIR_PAYMENT_REAL_ISSUER_ORIGIN'),
+    settlementMode: settlementMode(),
     scopeId: scope.scope_id,
     offerId: offer.offer_id,
   };
   return cachedFixture;
+}
+
+function settlementMode(): RealIssuerHarnessFixtureV1['settlementMode'] {
+  const value = requiredEnvironment('BITCOINPIR_PAYMENT_REAL_SETTLEMENT_MODE');
+  if (value === 'fake' || value === 'external') return value;
+  throw new Error('payment E2E settlement mode is invalid');
+}
+
+function payClnRegtestInvoice(invoice: string): void {
+  const executable = process.env.BITCOINPIR_PAYMENT_CLN_CLI ?? '/opt/homebrew/bin/lightning-cli';
+  const payerDirectory = requiredEnvironment('BITCOINPIR_PAYMENT_CLN_PAYER_DIR');
+  const result = spawnSync(executable, [
+    '--lightning-dir',
+    payerDirectory,
+    '--network=regtest',
+    '--notifications=none',
+    'xpay',
+    invoice,
+  ], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`local CLN regtest payment failed (${result.status ?? 'spawn'})`, {
+      cause: result.error,
+    });
+  }
+  let response: unknown;
+  try {
+    response = JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error('local CLN regtest payer returned non-JSON output', { cause: error });
+  }
+  if (!response || typeof response !== 'object') {
+    throw new Error('local CLN regtest payer returned an invalid response');
+  }
+}
+
+async function waitPastCurrentUnixSecond(): Promise<void> {
+  const paidSecond = Math.floor(Date.now() / 1000);
+  const deadline = Date.now() + 2_500;
+  while (Math.floor(Date.now() / 1000) <= paidSecond) {
+    if (Date.now() >= deadline) throw new Error('wall clock did not advance after CLN payment');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
 }
 
 function fixtureScopeId(): string {

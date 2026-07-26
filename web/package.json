@@ -10,6 +10,7 @@
     "build-web": "vite build",
     "test": "vitest run",
     "test:e2e:payment-real-issuer": "tsc -p tsconfig.payment-real-e2e.json && playwright test --config playwright.payment-real-issuer.config.ts",
+    "test:e2e:payment-cln-regtest": "tsc -p tsconfig.payment-real-e2e.json && playwright test --config playwright.payment-cln-regtest.config.ts",
     "test:e2e:payment-vault": "tsc -p tsconfig.payment-e2e.json && playwright test --config playwright.payment.config.ts",
     "test:e2e:strict-production": "playwright test --config playwright.production.config.ts"
   },

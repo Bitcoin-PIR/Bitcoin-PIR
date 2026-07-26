@@ -26,6 +26,7 @@ export interface RealIssuerHarnessFixtureV1 {
   expectedPayeePubkeyHex: string;
   policyBytes: number[];
   issuerOrigin: string;
+  settlementMode: 'fake' | 'external';
 }
 
 let vaultPromise: Promise<AdmissionCredentialVaultV1> | null = null;
@@ -34,6 +35,7 @@ let selectedScope: ServiceScopeViewV1 | null = null;
 let selectedOffer: ServiceOfferViewV1 | null = null;
 let expectedPayee: Uint8Array | null = null;
 let issuerOrigin = '';
+let settlementMode: RealIssuerHarnessFixtureV1['settlementMode'] = 'fake';
 let activeAcquisition: Bolt11AcquisitionHandleV1 | null = null;
 let loseNextClaimResponse = false;
 const settledQuotes = new Set<string>();
@@ -45,6 +47,8 @@ function vault(): Promise<AdmissionCredentialVaultV1> {
 
 async function initialize(
   fixture: RealIssuerHarnessFixtureV1,
+  authorization: 'bolt11-direct-receipt' | 'cashu-bat' | 'arc-experimental' =
+    'bolt11-direct-receipt',
 ): Promise<{
   providerIdHex: string;
   policyDigestHex: string;
@@ -66,6 +70,7 @@ async function initialize(
     33,
   );
   issuerOrigin = canonicalLoopbackOrigin(fixture.issuerOrigin);
+  settlementMode = fixture.settlementMode;
   const policyFrame = frameSignedPolicy(Uint8Array.from(fixture.policyBytes));
   const channel = new sdk.WasmStandaloneOnionServiceAdmissionV1(
     0,
@@ -108,10 +113,10 @@ async function initialize(
   selectedScope = view.scopes.find((scope) => scope.workload === 'dpf-query') ?? null;
   selectedOffer = selectedScope?.offers.find(
     (offer) => offer.acquisition === 'bolt11'
-      && offer.authorization === 'bolt11-direct-receipt',
+      && offer.authorization === authorization,
   ) ?? null;
   if (!selectedScope || !selectedOffer) {
-    throw new Error('verified fixture policy has no DPF direct-receipt offer');
+    throw new Error(`verified fixture policy has no DPF ${authorization} offer`);
   }
   if (view.providerIdHex !== fixture.providerIdHex.toLowerCase()
       || selectedOffer.issuerIdHex.length !== 64
@@ -160,11 +165,26 @@ async function settleAndPoll(): Promise<string> {
 async function claimWithLostResponse(): Promise<string> {
   if (!activeAcquisition) throw new Error('no active acquisition');
   loseNextClaimResponse = true;
-  try {
-    await activeAcquisition.claim();
-    return 'unexpected success';
-  } catch (error) {
-    return (error as Error).message;
+  const deadline = performance.now() + 3_000;
+  for (;;) {
+    try {
+      await activeAcquisition.claim();
+      return 'unexpected success';
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message.includes('HTTP 503') && performance.now() < deadline) {
+        // The issuer's lifecycle clock has one-second precision.  Retry once
+        // the next second can exist instead of burning the mutation rate
+        // budget with a tight loop at the same impossible timestamp.
+        const nextSecond = (Math.floor(Date.now() / 1_000) + 1) * 1_000 + 10;
+        await new Promise((resolveWait) => setTimeout(
+          resolveWait,
+          Math.max(25, nextSecond - Date.now()),
+        ));
+        continue;
+      }
+      return message;
+    }
   }
 }
 
@@ -195,12 +215,76 @@ async function capabilityCount(): Promise<number> {
   return (await vault()).countCapabilities(binding());
 }
 
+async function capabilityInventory(): Promise<Array<{
+  providerIdHex: string;
+  policyDigestHex: string;
+  scopeIdHex: string;
+  offerId: number;
+  scheme: string;
+  count: number;
+}>> {
+  return (await vault()).listCapabilityInventory();
+}
+
+function capabilityBinding(): AdmissionCapabilityBindingV1 {
+  return binding();
+}
+
 async function takeAndVerifyCapability(): Promise<number | null> {
   const policy = requirePolicy();
   const scope = requireScope();
   const offer = requireOffer();
+  const exactBinding = binding();
+  if (exactBinding.scheme === 'arc-experimental') {
+    const sdk = requireSdkWasm();
+    const presentation = await (await vault()).advanceArcCredential(
+      exactBinding,
+      (serializedState) => {
+        const state = sdk.WasmArcPresentationState.deserialize(serializedState);
+        let prepared: ReturnType<typeof state.prepare_presentation> | null = null;
+        try {
+          prepared = state.prepare_presentation();
+          const nextState = prepared.successor_state_bytes();
+          const remaining = Number(prepared.remaining());
+          if (!Number.isSafeInteger(remaining) || remaining < 0) {
+            throw new Error('ARC successor returned an invalid remaining count');
+          }
+          let terminal = false;
+          return {
+            nextState,
+            remaining,
+            releaseAfterPersisted: () => {
+              if (!prepared || terminal) throw new Error('ARC transition is already terminal');
+              terminal = true;
+              try {
+                return prepared.release_after_persisted();
+              } finally {
+                prepared.free();
+                prepared = null;
+              }
+            },
+            discard: () => {
+              if (!prepared || terminal) return;
+              terminal = true;
+              prepared.free();
+              prepared = null;
+            },
+          };
+        } finally {
+          state.free();
+        }
+      },
+    );
+    if (!presentation) return null;
+    policy.validateAuthorizationProof(
+      hexToBytes(scope.scopeIdHex),
+      offer.offerId,
+      presentation,
+    );
+    return presentation.length;
+  }
   const capability = await (await vault()).takeSingleUseCapability(
-    binding(),
+    exactBinding,
     (proof) => policy.validateAuthorizationProof(
       hexToBytes(scope.scopeIdHex),
       offer.offerId,
@@ -225,7 +309,9 @@ async function issuerFetch(input: RequestInfo | URL, init?: RequestInit): Promis
     throw new Error('test fetch refused a non-fixture issuer origin');
   }
   const target = new URL(`${requested.pathname}${requested.search}`, `${issuerOrigin}/`);
-  if (requested.pathname.endsWith('/status')) await settleQuoteBeforeStatus(requested.pathname);
+  if (settlementMode === 'fake' && requested.pathname.endsWith('/status')) {
+    await settleQuoteBeforeStatus(requested.pathname);
+  }
 
   const isClaim = requested.pathname.endsWith('/claim');
   const response = await fetch(target, init);
@@ -285,12 +371,18 @@ function binding(): AdmissionCapabilityBindingV1 {
   const policy = requirePolicy();
   const scope = requireScope();
   const offer = requireOffer();
+  const scheme = offer.authorization;
+  if (scheme !== 'bolt11-direct-receipt'
+      && scheme !== 'cashu-bat'
+      && scheme !== 'arc-experimental') {
+    throw new Error('selected fixture offer is not a BOLT11 capability scheme');
+  }
   return {
     providerIdHex: policy.providerIdHex,
     policyDigestHex: policy.policyDigestHex,
     scopeIdHex: scope.scopeIdHex,
     offerId: offer.offerId,
-    scheme: 'bolt11-direct-receipt',
+    scheme,
   };
 }
 
@@ -370,6 +462,8 @@ const api = {
   resumeAndClaim,
   recoveryCount,
   capabilityCount,
+  capabilityInventory,
+  capabilityBinding,
   takeAndVerifyCapability,
   localStorageSnapshot,
 };

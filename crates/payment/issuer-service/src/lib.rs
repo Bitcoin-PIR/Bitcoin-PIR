@@ -728,6 +728,15 @@ where
         ) {
             return Err(IssuerServiceErrorV1::Conflict);
         }
+        // Quote lifecycle timestamps are whole seconds.  If the settled
+        // lifecycle transition has this same timestamp, a CredentialClaimed
+        // successor cannot yet satisfy the strict monotonic-time invariant. The
+        // exact claim body is already replay-stable, so tell the client to
+        // retry instead of misclassifying this normal clock boundary as an
+        // internal error.
+        if now_unix <= quote.status_updated_at {
+            return Err(IssuerServiceErrorV1::RetryableUnavailable);
+        }
         let delegation_guard = Bolt11QuoteKeyRollbackGuardV1::from_persisted(
             envelope.quote_intent.issuer_id,
             envelope.quote_intent.network,

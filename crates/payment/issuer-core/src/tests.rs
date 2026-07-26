@@ -787,6 +787,81 @@ fn restart_reconciles_open_quote_to_exact_settlement() {
 }
 
 #[test]
+fn same_second_settlement_retries_then_preserves_paid_and_transition_times() {
+    let harness = Harness::new(NOW);
+    harness.create_quote();
+    let record = harness.record();
+    harness
+        .backend
+        .node
+        .observe_settlement(&record.backend_label, EXACT_AMOUNT_MSAT, NOW)
+        .expect("observe same-second settlement");
+
+    assert_eq!(
+        expect_core_error(harness.core.reconcile_by_backend_label(
+            &record.backend_label,
+            &harness.fixture.quote_key,
+            NOW,
+        )),
+        IssuerCoreErrorV1::RetryableUnavailable
+    );
+    let still_open = harness.record();
+    assert_eq!(still_open.state, QuoteState::InvoiceOpen);
+    assert!(still_open.settlement_commit.is_none());
+
+    let settled = harness
+        .core
+        .reconcile_by_backend_label(
+            &record.backend_label,
+            &harness.fixture.quote_key,
+            NOW + 1,
+        )
+        .expect("later observation commits same-second payment");
+    assert_eq!(settled.durable_state(), QuoteState::PaymentSettled);
+    let quote =
+        Bolt11QuoteV1::decode(settled.exact_signed_quote_response()).expect("decode quote");
+    assert_eq!(quote.status_updated_at, NOW + 1);
+
+    let persisted = harness.record();
+    assert_eq!(persisted.settled_at, Some(NOW));
+    assert_eq!(persisted.settlement_observed_at, Some(NOW + 1));
+}
+
+#[test]
+fn on_time_settlement_first_observed_after_expiry_keeps_payment_time_on_wire() {
+    let harness = Harness::new(NOW);
+    harness.create_quote();
+    let record = harness.record();
+    let expiry = record.invoice_expires_at.expect("invoice expiry");
+    let settled_at = expiry - 1;
+    let observed_at = expiry + 100;
+    harness
+        .backend
+        .node
+        .observe_settlement(&record.backend_label, EXACT_AMOUNT_MSAT, settled_at)
+        .expect("observe on-time settlement after issuer outage");
+
+    let settled = harness
+        .core
+        .reconcile_by_backend_label(
+            &record.backend_label,
+            &harness.fixture.quote_key,
+            observed_at,
+        )
+        .expect("late observation preserves on-time settlement classification");
+    assert_eq!(settled.durable_state(), QuoteState::PaymentSettled);
+    let quote =
+        Bolt11QuoteV1::decode(settled.exact_signed_quote_response()).expect("decode quote");
+    assert_eq!(quote.status, Bolt11QuoteStatusV1::PaymentSettled);
+    assert_eq!(quote.status_updated_at, settled_at);
+    assert!(quote.status_updated_at <= quote.invoice_expires_at);
+
+    let persisted = harness.record();
+    assert_eq!(persisted.settled_at, Some(settled_at));
+    assert_eq!(persisted.settlement_observed_at, Some(settled_at));
+}
+
+#[test]
 fn expiry_then_late_settlement_is_two_durable_transitions() {
     let harness = Harness::new(NOW);
     harness.create_quote();

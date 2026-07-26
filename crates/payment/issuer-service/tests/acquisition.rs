@@ -15,16 +15,19 @@ use pir_issuer_store::{
     StoreOptions,
 };
 use pir_lightning_backend::FakeLightningNodeV1;
-use pir_payment_crypto::K256CashuMintKeyringV1;
+use pir_payment_crypto::{blind_cashu_message_v1, sign_bip340_prehash_v1, K256CashuMintKeyringV1};
 use pir_service_protocol::{
     derive_bat_key_id_v1, derive_issuer_id, AcquisitionMethod, AuthPaddingClassV1, AuthScheme,
-    BackendId, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1, Bolt11QuoteKeyRollbackGuardV1,
-    CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1,
-    DeploymentStatus, EntitlementLimitsV1, FreeModeV1, LightningNetworkV1, PolicyRollbackGuardV1,
-    PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationClaimsV1,
-    ProviderClearingAuthorizationV1, ServiceOfferV1, ServicePolicyEpochFloorsV1, ServicePolicyV1,
-    ServiceScopePolicyV1, ServiceScopeV1, SettlementModesV1, SettlementRuleV1, SettlementUnitV1,
-    VerificationMode, WorkloadId,
+    BackendId, BitcoinPirCashuBatIssuanceRequestItemV1, Bolt11QuoteClaimEnvelopeV1,
+    Bolt11QuoteClaimV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
+    Bolt11QuoteKeyRollbackGuardV1, Bolt11QuoteStatusV1, Bolt11QuoteV1,
+    CredentialIssuanceRequestItemsV1, CredentialIssuanceRequestV1, CredentialKeyBindingClaimsV1,
+    CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
+    EntitlementLimitsV1, FreeModeV1, LightningNetworkV1, PolicyRollbackGuardV1, PriceV1,
+    PrivacyLeakageV1, ProviderClearingAuthorizationClaimsV1, ProviderClearingAuthorizationV1,
+    ServiceOfferV1, ServicePolicyEpochFloorsV1, ServicePolicyV1, ServiceScopePolicyV1,
+    ServiceScopeV1, SettlementModesV1, SettlementRuleV1, SettlementUnitV1, VerificationMode,
+    WorkloadId,
 };
 use tempfile::Builder;
 
@@ -709,6 +712,180 @@ fn exact_quote_create_recovers_after_policy_rotation_and_conflicts_on_changed_bo
         Err(IssuerServiceErrorV1::Conflict)
     );
     assert_eq!(fixture.scope_id, fixture.intent.scope_id);
+}
+
+#[test]
+fn same_second_settlement_claim_retries_without_write_then_replays_exactly() {
+    let directory = Builder::new()
+        .prefix("bitcoinpir-issuer-same-second-claim-test-")
+        .tempdir()
+        .expect("temporary directory");
+    let authority = Arc::new(
+        SqliteIssuerRollbackFloorAuthorityV1::create(
+            directory.path().join("floor.sqlite3"),
+            StoreOptions::default().busy_timeout,
+        )
+        .expect("rollback authority"),
+    );
+    let lightning = Arc::new(
+        FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
+            .expect("fake Lightning"),
+    );
+    let fixture = fixture(lightning.payee_pubkey());
+    let store = IssuerStore::create(
+        directory.path().join("issuer.sqlite3"),
+        [0x38; 16],
+        fixture.issuer_id,
+        LightningNetworkV1::Regtest,
+        StoreOptions::default(),
+        authority,
+    )
+    .expect("issuer store");
+    let _installed = store
+        .register_service_policy(&fixture.policy, &fixture.policy_key.verifying_key(), NOW)
+        .expect("install policy");
+    let service = IssuerAcquisitionServiceV1::new(
+        store.clone(),
+        Arc::clone(&lightning),
+        Arc::new(SequentialIds(AtomicU8::new(0x76))),
+        QuoteSigningMaterialV1::new(fixture.delegation.clone(), fixture.quote_key.clone())
+            .expect("quote material"),
+        Vec::new(),
+        Vec::new(),
+        Some(bat_keyring(&[11])),
+        None,
+        IssuerCredentialDerivationKeyV1::from_bytes([9; 32]).expect("derivation key"),
+        NOW,
+    )
+    .expect("acquisition service");
+
+    let initial = Bolt11QuoteV1::decode(
+        &service
+            .create_quote(&fixture.intent.encode().expect("intent encoding"), NOW)
+            .expect("create quote"),
+    )
+    .expect("decode initial quote");
+    let open_record = store
+        .quote(&initial.quote_id)
+        .expect("read open quote")
+        .expect("open quote");
+    let settled_at = NOW + 1;
+    lightning
+        .set_time(settled_at)
+        .expect("advance fake Lightning clock");
+    lightning
+        .observe_settlement(&open_record.backend_label, initial.amount_msat, settled_at)
+        .expect("observe settlement");
+    let report = service
+        .reconcile_quote_batch(None, 16, settled_at)
+        .expect("reconcile settlement");
+    assert_eq!(report.transitioned, 1);
+
+    let settled_record = store
+        .quote(&initial.quote_id)
+        .expect("read settled quote")
+        .expect("settled quote");
+    assert_eq!(settled_record.state, QuoteState::PaymentSettled);
+    let settled = Bolt11QuoteV1::decode(
+        settled_record
+            .settled_signed_quote_response
+            .as_deref()
+            .expect("settled signed quote"),
+    )
+    .expect("decode settled quote");
+    assert_eq!(settled.status, Bolt11QuoteStatusV1::PaymentSettled);
+    assert_eq!(settled.status_updated_at, settled_at);
+
+    let items = (0..fixture.intent.credential_count)
+        .map(|index| {
+            let byte = u8::try_from(index + 1).expect("small credential count");
+            BitcoinPirCashuBatIssuanceRequestItemV1 {
+                blinded_message: blind_cashu_message_v1(&[byte; 32], &scalar_bytes(byte + 16))
+                    .expect("blind BAT request"),
+            }
+        })
+        .collect();
+    let credential_request = CredentialIssuanceRequestV1 {
+        issuer_id: fixture.issuer_id,
+        quote_id: settled.quote_id,
+        quote_request_digest: settled.request_digest,
+        authorization: AuthScheme::BitcoinPirCashuBatV1,
+        credential_binding_digest: fixture.intent.credential_binding_digest,
+        credential_key_id: fixture.intent.credential_key_id.clone(),
+        items: CredentialIssuanceRequestItemsV1::BitcoinPirCashuBat(items),
+    };
+    let mut claim = Bolt11QuoteClaimV1 {
+        issuer_id: fixture.issuer_id,
+        quote_id: settled.quote_id,
+        quote_request_digest: settled.request_digest,
+        credential_request_digest: credential_request
+            .request_digest()
+            .expect("credential request digest"),
+        claim_pubkey_xonly: fixture.intent.claim_pubkey_xonly,
+        idempotency_key: fixture.intent.idempotency_key,
+        signature: [1; 64],
+    };
+    let claim_digest = claim.bip340_signing_digest().expect("claim digest");
+    let (claim_pubkey, signature) =
+        sign_bip340_prehash_v1(&scalar_bytes(5), &claim_digest, &[0x78; 32]).expect("sign claim");
+    assert_eq!(claim_pubkey, fixture.intent.claim_pubkey_xonly);
+    claim.signature = signature;
+    let canonical_envelope = Bolt11QuoteClaimEnvelopeV1 {
+        quote_intent: fixture.intent.clone(),
+        claim,
+        credential_request,
+    }
+    .encode()
+    .expect("claim envelope encoding");
+
+    let first_error = service
+        .claim_quote(&settled.quote_id, &canonical_envelope, settled_at)
+        .expect_err("same-second claim must be retryable");
+    assert_eq!(first_error, IssuerServiceErrorV1::RetryableUnavailable);
+    assert_eq!(first_error.http_status(), 503);
+    assert!(store
+        .claim(&settled.quote_id)
+        .expect("read absent claim")
+        .is_none());
+    assert_eq!(
+        store
+            .operational_inventory()
+            .expect("inventory after retryable claim")
+            .claim_rows,
+        0
+    );
+    assert_eq!(
+        store
+            .quote(&settled.quote_id)
+            .expect("read quote after retryable claim")
+            .expect("quote after retryable claim")
+            .state,
+        QuoteState::PaymentSettled
+    );
+
+    let issued = service
+        .claim_quote(&settled.quote_id, &canonical_envelope, settled_at + 1)
+        .expect("next-second claim succeeds");
+    assert!(!issued.is_empty());
+    assert_eq!(
+        store
+            .quote(&settled.quote_id)
+            .expect("read claimed quote")
+            .expect("claimed quote")
+            .state,
+        QuoteState::CredentialClaimed
+    );
+    assert_eq!(
+        store
+            .operational_inventory()
+            .expect("inventory after successful claim")
+            .claim_rows,
+        1
+    );
+    let replay = service
+        .claim_quote(&settled.quote_id, &canonical_envelope, settled_at + 2)
+        .expect("exact claim replay succeeds");
+    assert_eq!(replay, issued);
 }
 
 #[test]
