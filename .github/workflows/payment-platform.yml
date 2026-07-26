@@ -109,6 +109,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
       - name: Install pinned Rust toolchain with wasm32
-        run: rustup toolchain install --profile minimal --target wasm32-unknown-unknown
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add wasm32-unknown-unknown
       - name: Check WASM without native provider storage
         run: cargo check --offline --target wasm32-unknown-unknown -p pir-sdk-wasm

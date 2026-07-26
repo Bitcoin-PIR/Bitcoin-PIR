@@ -29,7 +29,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install --profile minimal --target wasm32-unknown-unknown
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add wasm32-unknown-unknown
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
