@@ -162,6 +162,22 @@ paths as an incomplete, unusable ceremony. Inspect them, then manually remove
 only files proven to have been created by that failed attempt before rerunning.
 The CLI never automatically deletes ambiguous state.
 
+Validate an existing provider store and independent rollback authority without
+starting a listener:
+
+```sh
+bpir-admin service-store-check \
+  --provider-id-hex "$PROVIDER_ID" \
+  --store /srv/bitcoinpir/provider-state/admission.sqlite3 \
+  --rollback-authority /mnt/independent-floor/bitcoinpir/floor.sqlite3
+```
+
+The command uses the serving-equivalent `open_existing` path and prints only
+identity, generation, aggregate row counts and `startup_check_ms`. An exact
+store/authority match is read-only; exactly one legitimate unanchored SQLite
+successor may complete its idempotent authority CAS, as at real startup. See
+`STAGING_STORE_DRILL.md` for the no-funds backup/restore and SLO procedure.
+
 ## Deterministic no-funds fixture
 
 Generate the full local integration fixture with either command:

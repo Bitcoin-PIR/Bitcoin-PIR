@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node", "@playwright/test"]
+  },
+  "include": [
+    "e2e/payment-real-issuer*.ts",
+    "playwright.payment-real-issuer.config.ts",
+    "vite.payment-real-issuer.config.ts"
+  ],
+  "exclude": ["node_modules", "dist", "dist-web"]
+}

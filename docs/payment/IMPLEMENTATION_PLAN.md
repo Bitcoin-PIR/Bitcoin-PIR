@@ -96,8 +96,10 @@ Exit criteria:
 
 Build the HTTP service over the issuer store with authenticated status polling,
 exact idempotency, fake Lightning settlement events, direct receipt/BAT/ARC
-issuance, shared online redeem, provider ledger credit, blind settlement-note
-deposit and payout outbox. Real payout execution remains disabled.
+issuance, shared online redeem, provider ledger credit and payout outbox.
+Define the blind settlement-note deposit and keyset surfaces in the canonical
+protocol/store, but keep their HTTP routes disabled until a retained-keyset
+operations ceremony is reviewed. Real payout execution remains disabled.
 
 Exit criteria:
 

@@ -1,7 +1,7 @@
 {
   "schema": "BitcoinPIR/wire-shape-contract/v1",
-  "contractVersion": 1,
-  "description": "Public protocol parameters and leakage axes covered by the EasyCrypt simulator-property proof.",
+  "contractVersion": 2,
+  "description": "Public PIR and Payment V1 authorization parameters, observer boundaries, and leakage axes covered by the EasyCrypt simulator-property proof.",
   "proofBinding": {
     "format": "BitcoinPIR/easycrypt-contract-binding/v1",
     "source": "ContractBinding.ec"
@@ -33,14 +33,80 @@
     "harmony_hint_refresh",
     "onion_key_register",
     "info",
+    "service_authorization",
     "merkle_tree_tops"
   ],
   "admittedLeakage": [
     "index_max_items_per_group_per_level",
     "chunk_max_items_per_group_per_level",
     "session_query_index",
-    "query_db_id"
+    "query_db_id",
+    "authorization_scheme_by_server",
+    "authorization_scope_id_by_server",
+    "authorization_operation_by_server",
+    "authorization_timing_by_server",
+    "authorization_result_shape_by_server"
   ],
+  "serviceAuthorization": {
+    "roundKind": "service_authorization",
+    "independentPerServer": true,
+    "transport": {
+      "secureChannelRequired": true,
+      "requestOpcode": 14,
+      "responseOpcode": 14,
+      "request": {
+        "paddingClassWireId": 1,
+        "bodyBytes": 16384,
+        "canonicalPaddingByte": 0,
+        "innerOpcodeBytes": 1,
+        "innerPlaintextBytes": 16385,
+        "encryptedMagicBytes": 1,
+        "encryptedSequenceBytes": 8,
+        "aeadTagBytes": 16,
+        "sealedPayloadBytes": 16410,
+        "outerLengthPrefixBytes": 4,
+        "applicationRecordBytes": 16414
+      },
+      "response": {
+        "fixedLength": false,
+        "resultShapeObservableFromCiphertextLength": true
+      }
+    },
+    "observerModel": {
+      "networkObserverWithoutChannelKeys": {
+        "requestShapeHides": [
+          "authorization_scheme",
+          "service_scope_id",
+          "authorization_operation",
+          "credential_proof_length"
+        ],
+        "admittedLeakage": [
+          "authorization_occurrence_and_timing",
+          "authorization_result_shape"
+        ]
+      },
+      "providerAfterChannelDecryption": {
+        "observableFields": [
+          "authorization_scheme",
+          "service_scope_id",
+          "authorization_operation",
+          "credential_presentation",
+          "authorization_timing",
+          "authorization_result"
+        ],
+        "forbiddenFields": [
+          "bolt11_invoice",
+          "payment_hash",
+          "payment_preimage",
+          "payer_identity",
+          "peer_provider_id",
+          "provider_pair_id",
+          "pir_query_payload",
+          "pir_result"
+        ]
+      }
+    }
+  },
   "explicitNonClaims": [
     "NC-CRYPTOGRAPHIC-REDUCTIONS",
     "NC-IMPLEMENTATION-REFINEMENT",
@@ -52,6 +118,9 @@
   ],
   "implementationSurfaceIds": [
     "pir_core::params",
+    "pir_channel::Session",
+    "pir_service_protocol::AuthBeginV1",
+    "pir_runtime_core::service_admission",
     "pir_sdk::leakage",
     "pir_sdk_client::dpf",
     "pir_sdk_client::harmony",

@@ -6166,6 +6166,7 @@ fn load_strict_service_admission_v1(
     }
 
     let options = StoreOptions::default();
+    let store_startup_check_started = Instant::now();
     let rollback_authority = Arc::new(
         SqliteRollbackFloorAuthorityV1::open_existing(&canonical_rollback, options.busy_timeout)
             .map_err(|error| format!("failed to open rollback authority: {error}"))?,
@@ -6173,6 +6174,19 @@ fn load_strict_service_admission_v1(
     let provider_store =
         ProviderStore::open_existing(&canonical_store, provider_id, options, rollback_authority)
             .map_err(|error| format!("failed to open provider spend store: {error}"))?;
+    let store_inventory = provider_store
+        .operational_inventory()
+        .map_err(|error| format!("failed to read provider store operational inventory: {error}"))?;
+    println!(
+        "  Provider store startup check: elapsed_ms={} store_generation={} spend_commit_seq={} namespace_rows={} spent_capability_rows={} free_rate_limit_bucket_rows={} cashu_swap_intent_rows={}",
+        store_startup_check_started.elapsed().as_millis(),
+        store_inventory.observed_store_generation,
+        store_inventory.observed_spend_commit_seq,
+        store_inventory.namespace_rows,
+        store_inventory.spent_capability_rows,
+        store_inventory.free_rate_limit_bucket_rows,
+        store_inventory.cashu_swap_intent_rows,
+    );
 
     let free_ip_subject_key = match args.service_free_ip_key_path.as_deref() {
         Some(path) => Some(

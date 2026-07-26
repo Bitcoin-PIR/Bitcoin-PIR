@@ -21,6 +21,8 @@
 //!   signing without a listener or Lightning backend.
 //! - `service-store-init` — explicitly create a provider admission store and
 //!   its independently configured rollback-floor authority.
+//! - `service-store-check` — run the serving-equivalent provider-store open
+//!   and report aggregate startup/SLO counters without starting a listener.
 //! - `payment-v1-no-funds-fixture` — emit deterministic public test vectors
 //!   for two providers, five payment methods, and five workloads.
 //!
@@ -40,6 +42,7 @@ mod payment_artifact;
 mod payment_fixture;
 mod service_keygen;
 mod service_policy;
+mod service_store_check;
 mod service_store_init;
 mod show_vcek_url;
 mod sign_identity;
@@ -91,6 +94,10 @@ enum Command {
     /// Explicitly create a provider store and separate rollback authority.
     #[command(name = "service-store-init")]
     ServiceStoreInit(service_store_init::ServiceStoreInitArgs),
+    /// Fail-closed provider store/rollback-floor startup and SLO check.
+    /// May reconcile one legitimate unanchored successor, like serving startup.
+    #[command(name = "service-store-check")]
+    ServiceStoreCheck(service_store_check::ServiceStoreCheckArgs),
     /// Build and self-verify offline Payment V1 protocol artifacts.
     #[command(name = "payment-artifact")]
     PaymentArtifact(payment_artifact::PaymentArtifactArgs),
@@ -174,6 +181,13 @@ async fn main() {
                 1
             }
         },
+        Command::ServiceStoreCheck(args) => match service_store_check::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("service-store-check: {}", e);
+                1
+            }
+        },
         Command::PaymentArtifact(args) => match payment_artifact::run(args) {
             Ok(()) => 0,
             Err(e) => {
@@ -212,6 +226,7 @@ mod cli_tests {
         for subcommand in [
             "service-keygen",
             "service-store-init",
+            "service-store-check",
             "payment-artifact",
             "payment-v1-no-funds-fixture",
         ] {
@@ -233,6 +248,22 @@ mod cli_tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::ServiceStoreInit(_)));
+    }
+
+    #[test]
+    fn service_store_check_cli_requires_explicit_paths_and_provider() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-check",
+            "--provider-id-hex",
+            &hex::encode([1u8; 32]),
+            "--store",
+            "/private/provider.sqlite3",
+            "--rollback-authority",
+            "/independent/floor.sqlite3",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::ServiceStoreCheck(_)));
     }
 
     #[test]

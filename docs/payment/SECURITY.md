@@ -41,7 +41,11 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
 17. Provider and issuer logs omit invoices, payment hashes/preimages, raw
     query addresses, results, peer identity, and browser recovery secrets.
 18. Authentication plaintext is padded to a declared length class before
-    encryption. Any remaining method/size/timing leakage is documented.
+    encryption. For V1 the complete request application record is fixed at
+    16,414 bytes. This hides method, scope, operation variant and proof length
+    only from request-size observation by a party without channel keys; it does
+    not hide them from the provider, and it does not hide authorization timing
+    or the variable response shape.
 19. Browser token selection and burn is atomic across tabs and binds the exact
     provider, policy digest, scope, offer and scheme in its lock and encrypted
     record authentication. No bearer token, ARC nonce state, invoice, or query
@@ -99,11 +103,15 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     successor commits with an atomic exact-predecessor CAS; issuer-side versions
     increment by one, concurrent branches cannot both commit, and terminal
     states never reverse.
-37. Status recovery uses current provider registration plus the exact original
-    request and issuer-signed initial response. Initial and historical
-    signatures resolve by signed key ID from a current-plus-retained keyring
-    bound to the same issuer lineage. Read-only status polling returns live
-    latest state and is never satisfied from an idempotency cache.
+37. Fresh status recovery uses only the current provider registration plus the
+    exact original request and issuer-signed initial response. Every accepted
+    registration epoch is retained, but an old provider request key may be
+    consulted only when the canonical request digest already matches the
+    payout's durable latest exact status response; it cannot authorize a fresh
+    nonce or a new CAS. Initial and historical issuer signatures resolve by
+    signed key ID from a current-plus-retained keyring bound to the same issuer
+    lineage. Read-only status polling returns live latest state and is never
+    satisfied from an idempotency cache.
 38. BOLT11 quote status is disclosed only after a fresh claim-key BIP340
     signature and atomic nonce consumption. Quote-ID knowledge is not status
     read authority, and status requests are POST bodies rather than URL query
@@ -165,7 +173,8 @@ keys or origins must never be described as proof of non-collusion.
 Depending on the chosen offer, a provider necessarily learns:
 
 - that one authorization for one of its published scopes was used;
-- the selected backend/workload and entitlement profile;
+- the selected authorization scheme, backend/workload, scope, operation and
+  entitlement profile, plus the credential presentation needed to authorize;
 - the approximate start time, connection metadata, and the existing PIR wire
   leakage for that backend;
 - a provider-local spent identifier or an online issuer redemption outcome.
@@ -305,8 +314,12 @@ credentials, addresses/results or peer-provider/pair identifiers.
 - query state-machine tests for every backend/workload;
 - browser multi-tab and storage-loss tests;
 - grep/static assertions for forbidden wire/log fields;
-- external formal wire-shape contract updated for auth round and admitted
-  method/scope/timing leakage;
+- product-side executable wire-shape contract and Rust conformance tests cover
+  the secure-channel auth round, exact request framing, independent per-server
+  selection, and the separate network/provider observer projections;
+- external EasyCrypt proof, proof manifest, product proof lock and trusted CI
+  verification record updated together for the admitted per-server
+  method/scope/operation/timing/result-shape leakage;
 - reproducible offline build and dependency audit;
 - admission-disabled configuration validation followed by a no-funds enforced
   canary; no credential-consuming shadow mode is permitted;

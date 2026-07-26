@@ -40,10 +40,10 @@ pub use types::{
     CashuManifestEpochFloor, CashuSwapIntentInsertV1, CashuSwapIntentStateV1, CashuSwapIntentV1,
     CashuSwapSealedRecoveryV1, CredentialEpochFloor, ExclusiveKeyLineage, FreeIpRateLimitRequestV1,
     NamespaceCloseOutcome, NamespaceInstallOutcome, NamespaceStatus, NewCashuSwapIntentV1,
-    NewSpendNamespace, PolicyHead, PolicyStateUpdate, PolicyUpdateOutcome, SpendCommit,
-    SpendNamespace, SpendReadBack, SpendRequest, StoreIdentity, StoreOptions,
-    MAX_CASHU_RECOVERY_CIPHERTEXT_BYTES_V1, MAX_CASHU_RECOVERY_NONCE_BYTES_V1, MAX_FLOOR_UPDATES,
-    MAX_SIGNED_POLICY_BYTES, SCHEMA_VERSION,
+    NewSpendNamespace, PolicyHead, PolicyStateUpdate, PolicyUpdateOutcome,
+    ProviderStoreOperationalInventoryV1, SpendCommit, SpendNamespace, SpendReadBack, SpendRequest,
+    StoreIdentity, StoreOptions, MAX_CASHU_RECOVERY_CIPHERTEXT_BYTES_V1,
+    MAX_CASHU_RECOVERY_NONCE_BYTES_V1, MAX_FLOOR_UPDATES, MAX_SIGNED_POLICY_BYTES, SCHEMA_VERSION,
 };
 
 use crate::schema::{APPLICATION_ID, SCHEMA};
@@ -258,6 +258,42 @@ impl ProviderStore {
     pub fn identity(&self) -> StoreResult<StoreIdentity> {
         let connection = self.open_checked(false)?;
         read_identity(&connection)
+    }
+
+    /// Returns aggregate row counts after rechecking the independent rollback
+    /// authority. This supports startup SLO/capacity observation without
+    /// exposing spend keys, subjects, namespaces, or protocol transcripts.
+    pub fn operational_inventory(&self) -> StoreResult<ProviderStoreOperationalInventoryV1> {
+        let connection = self.open_checked(false)?;
+        let raw: (i64, i64, i64, i64, i64, i64) = connection.query_row(
+            "SELECT (SELECT store_generation FROM store_identity WHERE singleton = 1), \
+                    (SELECT spend_commit_seq FROM store_identity WHERE singleton = 1), \
+                    (SELECT COUNT(*) FROM spend_namespaces), \
+                    (SELECT COUNT(*) FROM spent_capabilities), \
+                    (SELECT COUNT(*) FROM free_ip_rate_limit_buckets), \
+                    (SELECT COUNT(*) FROM cashu_swap_intents)",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+        let inventory = ProviderStoreOperationalInventoryV1 {
+            observed_store_generation: db_u64(raw.0, "negative observed store generation")?,
+            observed_spend_commit_seq: db_u64(raw.1, "negative observed spend commit sequence")?,
+            namespace_rows: db_u64(raw.2, "negative namespace row count")?,
+            spent_capability_rows: db_u64(raw.3, "negative spent capability row count")?,
+            free_rate_limit_bucket_rows: db_u64(raw.4, "negative Free bucket row count")?,
+            cashu_swap_intent_rows: db_u64(raw.5, "negative Cashu swap intent row count")?,
+        };
+        self.reconcile_rollback_floor(&connection)?;
+        Ok(inventory)
     }
 
     /// Recommended and only high-level namespace installation path.

@@ -22,6 +22,7 @@ use pir_service_protocol::{
     FreePowProofV1, OperationStartV1, PowChallengeResponseV1, PriceV1, ServiceOfferV1,
     VerificationMode, WorkloadId,
 };
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 /// One signed policy accepted against an independently pinned provider.
@@ -358,7 +359,7 @@ impl WasmAcceptedRetainedServiceRedemptionV1 {
             .verified_offer_for_redemption_v1(now_unix)
             .map_err(|error| JsError::new(&error.to_string()))?;
         let scope = verified.scope();
-        serde_wasm_bindgen::to_value(&serde_json::json!({
+        json_compatible_js_value_v1(&serde_json::json!({
             "providerIdHex": self.provider_id_hex(),
             "policyDigestHex": self.policy_digest_hex(),
             "scope": {
@@ -619,7 +620,7 @@ impl WasmAcceptedServicePolicyV1 {
                 })
             })
             .collect();
-        serde_wasm_bindgen::to_value(&serde_json::json!({
+        json_compatible_js_value_v1(&serde_json::json!({
             "providerIdHex": self.provider_id_hex(),
             "policyDigestHex": self.policy_digest_hex(),
             "policyEpoch": self.policy_epoch(),
@@ -733,13 +734,25 @@ pub(crate) fn build_retained_proof_v1(
 
 pub(crate) fn grant_json_v1(grant: &AuthGrantedV1) -> JsValue {
     // A half-stream attach secret never enters this general-purpose summary.
-    serde_wasm_bindgen::to_value(&serde_json::json!({
+    json_compatible_js_value_v1(&grant_json_value_v1(grant)).unwrap_or(JsValue::NULL)
+}
+
+fn grant_json_value_v1(grant: &AuthGrantedV1) -> serde_json::Value {
+    serde_json::json!({
         "scopeIdHex": hex::encode(grant.scope_id),
         "enforcedProfile": grant.enforced_profile,
         "expiresInMs": grant.expires_in_ms,
         "hasHarmonyAttach": grant.harmony_attach.is_some(),
-    }))
-    .unwrap_or(JsValue::NULL)
+    })
+}
+
+/// TypeScript-facing `*Json()` methods promise plain JSON objects. The
+/// serde-wasm-bindgen default represents maps as JavaScript `Map` values,
+/// which makes ordinary property access such as `view.scopes` undefined.
+fn json_compatible_js_value_v1(
+    value: &serde_json::Value,
+) -> Result<JsValue, serde_wasm_bindgen::Error> {
+    value.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
 }
 
 fn service_offer_json_v1(offer: &ServiceOfferV1) -> serde_json::Value {
@@ -861,5 +874,43 @@ const fn workload_label(value: WorkloadId) -> &'static str {
         WorkloadId::HarmonyQueryJobV1 => "harmony-query",
         WorkloadId::OnionEvaluateJobV1 => "onion-session",
         WorkloadId::TeeOramQueryV1 => "tee-oram-query",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grant_json_value_matches_the_plain_typescript_object_contract() {
+        let grant = AuthGrantedV1 {
+            scope_id: [0x2a; 32],
+            enforced_profile: 17,
+            expires_in_ms: 9_000,
+            harmony_attach: None,
+        };
+        let value = grant_json_value_v1(&grant);
+        let object = value.as_object().expect("grant JSON object");
+        let expected_scope_id = hex::encode([0x2a; 32]);
+        assert_eq!(
+            object.get("scopeIdHex").and_then(|value| value.as_str()),
+            Some(expected_scope_id.as_str())
+        );
+        assert_eq!(
+            object
+                .get("enforcedProfile")
+                .and_then(|value| value.as_u64()),
+            Some(17)
+        );
+        assert_eq!(
+            object.get("expiresInMs").and_then(|value| value.as_u64()),
+            Some(9_000)
+        );
+        assert_eq!(
+            object
+                .get("hasHarmonyAttach")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
     }
 }

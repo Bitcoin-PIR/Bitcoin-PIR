@@ -218,7 +218,10 @@ impl IssuerSettlementKeyringExpectationV1<'_> {
         Ok(())
     }
 
-    fn resolve_for_issuer(
+    /// Resolves a signed response key ID only within this caller-supplied,
+    /// issuer-bound current/retained lineage. This never accepts a key from a
+    /// response or network payload as trust material.
+    pub fn resolve_for_issuer(
         &self,
         expected_issuer_id: &[u8; 32],
         signed_key_id: &[u8; 16],
@@ -2674,6 +2677,65 @@ impl VerifiedPayoutSnapshotV1 {
     }
 }
 
+/// Reconstructs the issuer-authenticated latest payout snapshot from exact
+/// bytes already protected by a rollback-detecting durable store.
+///
+/// This is deliberately narrower than client status verification: it does not
+/// authorize a request or accept a browser-supplied state claim. The caller
+/// must load `initial_response` and `latest_status_response` from its trusted
+/// payout row, compare the returned fields with that row, and only then use the
+/// snapshot as the predecessor of a store-CAS status successor. It exists so a
+/// restarted issuer can continue a payout without retaining an in-memory
+/// typestate object or the historical polling request that produced the latest
+/// signed snapshot.
+pub fn verify_persisted_payout_snapshot_for_store_v1(
+    payout_request: &ProviderPayoutRequestV1,
+    initial_response: &IssuerPayoutResponseV1,
+    latest_status_response: Option<&IssuerPayoutStatusResponseV1>,
+    issuer_keyring: &IssuerSettlementKeyringExpectationV1<'_>,
+) -> Result<VerifiedPayoutSnapshotV1, ServiceProtocolError> {
+    let initial = verify_payout_initial_response_for_exact_request(
+        initial_response,
+        payout_request,
+        issuer_keyring,
+    )?;
+    let Some(latest) = latest_status_response else {
+        return Ok(initial);
+    };
+    latest.validate()?;
+    let signing_key = issuer_keyring.resolve_for_issuer(
+        &initial_response.issuer_id,
+        &latest.issuer_settlement_key_id,
+    )?;
+    verify_issuer_signature(
+        latest.issuer_settlement_key_id,
+        &latest.signature,
+        &latest.signing_preimage()?,
+        signing_key,
+    )?;
+    if latest.issuer_id != initial_response.issuer_id
+        || latest.provider_id != initial_response.provider_id
+        || latest.account_id != initial_response.account_id
+        || latest.payout_id != initial_response.payout_id
+        || latest.payout_request_digest != initial_response.request_digest
+        || latest.payout_target_id != initial_response.payout_target_id
+        || latest.unit != initial_response.unit
+        || latest.payout_value != initial_response.payout_value
+        || latest.total_debit != initial_response.total_debit
+        || latest.ledger_transaction_id != initial_response.ledger_transaction_id
+        || latest.state_version <= initial.state_version
+        || latest.updated_at <= initial.updated_at
+    {
+        return Err(binding_error(
+            "IssuerPayoutStatusResponseV1.persisted_snapshot",
+        ));
+    }
+    // Every V1 state is reachable from the durably authenticated initial
+    // Accepted state. The store's exact-version CAS and rollback floor, not
+    // this restart helper, prove that intermediate transitions were committed.
+    Ok(VerifiedPayoutSnapshotV1::from_status(latest))
+}
+
 /// Exact durable predecessor that an issuer store must compare before
 /// committing a signed payout-status successor. Matching only `payout_id` is
 /// insufficient: concurrent workers starting from the same version could
@@ -2928,6 +2990,41 @@ pub fn verify_new_payout_status_request_for(
     }
     request_auth.verify_for(&request.request_digest()?, registration)?;
     Ok(initial)
+}
+
+/// Authenticates an exact payout-status request whose signed response is
+/// already present in a rollback-protected issuer store.
+///
+/// The caller MUST first prove that the request digest matches the durable
+/// latest-status response for this payout. This helper never authorizes a new
+/// status successor. It evaluates the retained provider registration at the
+/// start of its signed validity window so ordinary registration expiry cannot
+/// strand bytes that were committed before an HTTP response was lost.
+pub fn verify_committed_payout_status_replay_auth_v1(
+    request: &ProviderPayoutStatusRequestV1,
+    payout_context: &PayoutStatusContextV1<'_>,
+    request_auth: &ProviderSettlementRequestAuthV1,
+    registration: &ProviderSettlementRegistrationExpectationV1<'_>,
+    issuer_keyring: &IssuerSettlementKeyringExpectationV1<'_>,
+) -> Result<VerifiedPayoutSnapshotV1, ServiceProtocolError> {
+    let historical_registration = ProviderSettlementRegistrationExpectationV1 {
+        registration_digest: registration.registration_digest,
+        provider_id: registration.provider_id,
+        issuer_id: registration.issuer_id,
+        settlement_account_id: registration.settlement_account_id,
+        provider_request_key: registration.provider_request_key,
+        issuer_settlement_key: registration.issuer_settlement_key,
+        not_before: registration.not_before,
+        not_after: registration.not_after,
+        now_unix: registration.not_before,
+    };
+    verify_new_payout_status_request_for(
+        request,
+        payout_context,
+        request_auth,
+        &historical_registration,
+        issuer_keyring,
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

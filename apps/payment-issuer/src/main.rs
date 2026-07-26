@@ -26,8 +26,8 @@ use pir_issuer_core::{QuoteIdSourceErrorV1, QuoteIdSourceV1};
 use pir_issuer_credentials::IssuerCredentialDerivationKeyV1;
 use pir_issuer_service::{
     ensure_shared_clearing_binding_material_v1, IssuerAcquisitionServiceV1, IssuerServiceErrorV1,
-    QuoteSigningMaterialV1, ReceiptSigningMaterialV1, SharedIssuerClearingServiceV1,
-    TrustedClearingProviderV1,
+    QuoteSigningMaterialV1, ReceiptSigningMaterialV1, SettlementPayoutPolicyV1,
+    SharedIssuerClearingServiceV1, TrustedClearingProviderV1,
 };
 use pir_issuer_store::{
     BatKeyLineageRegistration, IssuerStore, ProviderSettlementRegistrationWriteV1, QuoteCapacityV1,
@@ -47,15 +47,22 @@ use pir_payment_crypto::K256CashuMintKeyringV1;
 use pir_service_protocol::{
     AuthScheme, Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
     IssuerClearingApprovalV1, LightningNetworkV1, ProviderClearingAuthorizationV1,
+    ProviderPayoutEnvelopeV1, ProviderPayoutIntentEnvelopeV1, ProviderPayoutStatusEnvelopeV1,
     ProviderRedeemEnvelopeV1, ServicePolicyV1, SettlementModesV1, SettlementUnitV1,
     MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1, MAX_BOLT11_QUOTE_INTENT_LEN,
     MAX_BOLT11_QUOTE_KEY_DELEGATION_LEN, MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN,
-    MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1, MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1,
+    MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1, MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
+    MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1,
 };
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+// The only 320 KiB settlement envelope is the 64-note deposit model, which
+// this executable does not serve. Keep the public listener capped by the
+// larger of the actually executable claim/redeem/ledger-only surfaces.
 const MAX_HTTP_BODY_BYTES: usize = MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1;
+const _: () = assert!(MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1 <= MAX_HTTP_BODY_BYTES);
+const _: () = assert!(MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1 <= MAX_HTTP_BODY_BYTES);
 const MAX_HTTP_RESPONSE_BYTES: usize = MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1;
 const DEFAULT_MAX_CONNECTIONS: usize = 64;
 const DEFAULT_MAX_OUTSTANDING_QUOTES: u64 = 256;
@@ -79,6 +86,18 @@ const CT_ISSUANCE_RESPONSE: &str = "application/vnd.bitcoinpir.credential-issuan
 const CT_REDEEM: &str = "application/vnd.bitcoinpir.redeem-v1";
 const CT_REDEEM_RESULT: &str = "application/vnd.bitcoinpir.redeem-result-v1";
 const CT_FAKE_SETTLEMENT: &str = "application/vnd.bitcoinpir.fake-settlement-v1";
+const CT_BALANCE_ENVELOPE: &str = "application/vnd.bitcoinpir.provider-balance-envelope-v1";
+const CT_BALANCE_RESPONSE: &str = "application/vnd.bitcoinpir.issuer-balance-response-v1";
+const CT_PAYOUT_INTENT_ENVELOPE: &str =
+    "application/vnd.bitcoinpir.provider-payout-intent-envelope-v1";
+const CT_PAYOUT_INTENT_RESPONSE: &str =
+    "application/vnd.bitcoinpir.issuer-payout-intent-response-v1";
+const CT_PAYOUT_ENVELOPE: &str = "application/vnd.bitcoinpir.provider-payout-envelope-v1";
+const CT_PAYOUT_RESPONSE: &str = "application/vnd.bitcoinpir.issuer-payout-response-v1";
+const CT_PAYOUT_STATUS_ENVELOPE: &str =
+    "application/vnd.bitcoinpir.provider-payout-status-envelope-v1";
+const CT_PAYOUT_STATUS_RESPONSE: &str =
+    "application/vnd.bitcoinpir.issuer-payout-status-response-v1";
 
 #[derive(Parser, Debug)]
 #[command(name = "payment-issuer", version)]
@@ -91,6 +110,9 @@ struct Cli {
 enum Command {
     /// Create a fresh issuer store and its separate rollback authority.
     InitStore(InitStoreArgs),
+    /// Run the production issuer-store open/integrity path without a listener.
+    /// May reconcile one legitimate unanchored successor, like serving startup.
+    CheckStore(StoreCheckArgs),
     /// Run the local-only fake-Lightning HTTP integration service.
     ServeFake(ServeFakeArgs),
     /// Run the loopback HTTP service backed by a local Core Lightning node.
@@ -119,6 +141,18 @@ impl From<NetworkArg> for LightningNetworkV1 {
 
 #[derive(Args, Debug)]
 struct InitStoreArgs {
+    #[arg(long)]
+    store: PathBuf,
+    #[arg(long)]
+    rollback_authority: PathBuf,
+    #[arg(long)]
+    issuer_id_hex: String,
+    #[arg(long, value_enum)]
+    network: NetworkArg,
+}
+
+#[derive(Args, Debug)]
+struct StoreCheckArgs {
     #[arg(long)]
     store: PathBuf,
     #[arg(long)]
@@ -205,9 +239,21 @@ struct ServeCommonArgs {
     /// Issuer Ed25519 settlement signing key; required when clearing is enabled.
     #[arg(long)]
     issuer_settlement_signing_key: Option<PathBuf>,
+    /// Repeat one retained raw Ed25519 settlement verifying key for recovery
+    /// of payouts accepted before a signing-key rotation.
+    #[arg(long = "retained-issuer-settlement-verifying-key")]
+    retained_issuer_settlement_verifying_keys: Vec<PathBuf>,
     /// Independent deterministic redeem-response derivation key.
     #[arg(long)]
     redeem_response_derivation_key: Option<PathBuf>,
+    /// Commercial issuer fee, in the authorization's settlement unit, quoted
+    /// only in newly signed provider payout intents.
+    #[arg(long)]
+    clearing_payout_fee: Option<u64>,
+    /// Validity of a newly signed payout intent. Required explicitly so
+    /// commercial policy is never inferred from credential entitlement.
+    #[arg(long)]
+    clearing_payout_intent_ttl_seconds: Option<u64>,
 }
 
 #[derive(Args, Debug)]
@@ -329,6 +375,8 @@ struct ServerState {
     quote_rate: FixedWindowRateLimiterV1,
     status_rate: FixedWindowRateLimiterV1,
     mutation_rate: FixedWindowRateLimiterV1,
+    #[cfg(test)]
+    now_unix_override: Option<u64>,
 }
 
 impl core::fmt::Debug for ServerState {
@@ -544,9 +592,45 @@ fn is_exact_redeem_replay(store: &IssuerStore, canonical_envelope: &[u8]) -> boo
         .is_ok_and(|existing| existing.is_some())
 }
 
+fn is_exact_payout_intent_replay(store: &IssuerStore, canonical_envelope: &[u8]) -> bool {
+    let Ok(envelope) = ProviderPayoutIntentEnvelopeV1::decode(canonical_envelope) else {
+        return false;
+    };
+    store
+        .payout_intent_by_idempotency(&envelope.request)
+        .is_ok_and(|existing| existing.is_some())
+}
+
+fn is_exact_payout_replay(store: &IssuerStore, canonical_envelope: &[u8]) -> bool {
+    let Ok(envelope) = ProviderPayoutEnvelopeV1::decode(canonical_envelope) else {
+        return false;
+    };
+    store
+        .payout_by_idempotency(&envelope.request)
+        .is_ok_and(|existing| existing.is_some())
+}
+
+fn is_exact_payout_status_replay(store: &IssuerStore, canonical_envelope: &[u8]) -> bool {
+    let Ok(envelope) = ProviderPayoutStatusEnvelopeV1::decode(canonical_envelope) else {
+        return false;
+    };
+    let Ok(request_digest) = envelope.request.request_digest() else {
+        return false;
+    };
+    let Ok(Some(record)) = store.payout_by_id(&envelope.request.payout_id) else {
+        return false;
+    };
+    let Some(exact) = record.exact_latest_status_response else {
+        return false;
+    };
+    pir_service_protocol::IssuerPayoutStatusResponseV1::decode(&exact)
+        .is_ok_and(|response| response.request_digest == request_digest)
+}
+
 fn main() {
     let result = match Cli::parse().command {
         Command::InitStore(args) => init_store(args),
+        Command::CheckStore(args) => check_store(args),
         Command::ServeFake(args) => serve_fake(args),
         #[cfg(unix)]
         Command::ServeCln(args) => serve_cln(args),
@@ -555,6 +639,56 @@ fn main() {
         eprintln!("payment-issuer: {error}");
         std::process::exit(1);
     }
+}
+
+fn check_store(args: StoreCheckArgs) -> Result<(), String> {
+    let issuer_id = decode_fixed_hex::<32>(&args.issuer_id_hex, "issuer ID")?;
+    if issuer_id.iter().all(|byte| *byte == 0) {
+        return Err("issuer ID must not be all zero".to_owned());
+    }
+    let store_path = validate_existing_private_database_path(&args.store, "issuer store")?;
+    let authority_path = validate_existing_private_database_path(
+        &args.rollback_authority,
+        "issuer rollback authority",
+    )?;
+    if private_database_paths_alias_v1(&store_path, &authority_path)? {
+        return Err("store and rollback authority resolve to the same file/inode".to_owned());
+    }
+
+    let options = StoreOptions::default();
+    let started = Instant::now();
+    let authority =
+        SqliteIssuerRollbackFloorAuthorityV1::open_existing(&authority_path, options.busy_timeout)
+            .map_err(|error| format!("open issuer rollback authority: {error}"))?;
+    let store = IssuerStore::open_existing(
+        &store_path,
+        issuer_id,
+        args.network.into(),
+        options,
+        Arc::new(authority),
+    )
+    .map_err(|error| format!("open issuer store: {error}"))?;
+    let identity = store
+        .identity()
+        .map_err(|error| format!("read issuer store identity: {error}"))?;
+    let inventory = store
+        .operational_inventory()
+        .map_err(|error| format!("read issuer store inventory: {error}"))?;
+
+    println!("issuer_id={}", hex::encode(identity.issuer_id));
+    println!(
+        "store_instance_id={}",
+        hex::encode(identity.store_instance_id)
+    );
+    println!("schema_version={}", identity.schema_version);
+    println!("commit_seq={}", inventory.observed_commit_seq);
+    println!("startup_check_ms={}", started.elapsed().as_millis());
+    println!("quote_rows={}", inventory.quote_rows);
+    println!("claim_rows={}", inventory.claim_rows);
+    println!("retained_policy_rows={}", inventory.retained_policy_rows);
+    println!("redemption_rows={}", inventory.redemption_rows);
+    println!("payout_rows={}", inventory.payout_rows);
+    Ok(())
 }
 
 fn init_store(args: InitStoreArgs) -> Result<(), String> {
@@ -895,6 +1029,7 @@ fn serve_with_backend(
     if private_database_paths_alias_v1(&canonical_store, &canonical_authority)? {
         return Err("store and rollback authority resolve to the same file/inode".to_owned());
     }
+    let store_startup_check_started = Instant::now();
     let authority = Arc::new(
         SqliteIssuerRollbackFloorAuthorityV1::open_existing(
             &canonical_authority,
@@ -910,6 +1045,19 @@ fn serve_with_backend(
         authority,
     )
     .map_err(|error| format!("open issuer store failed: {error}"))?;
+    let store_inventory = store
+        .operational_inventory()
+        .map_err(|error| format!("read issuer store operational inventory failed: {error}"))?;
+    println!(
+        "issuer_store_startup_check_ms={} commit_seq={} quote_rows={} claim_rows={} retained_policy_rows={} redemption_rows={} payout_rows={}",
+        store_startup_check_started.elapsed().as_millis(),
+        store_inventory.observed_commit_seq,
+        store_inventory.quote_rows,
+        store_inventory.claim_rows,
+        store_inventory.retained_policy_rows,
+        store_inventory.redemption_rows,
+        store_inventory.payout_rows,
+    );
 
     let now_unix = system_time_unix()?;
     delegation
@@ -1048,6 +1196,8 @@ fn serve_with_backend(
         quote_rate,
         status_rate,
         mutation_rate,
+        #[cfg(test)]
+        now_unix_override: None,
     });
     let active = Arc::new(AtomicUsize::new(0));
     spawn_reconciliation_worker(Arc::clone(&state), reconciliation_config)?;
@@ -1223,7 +1373,10 @@ fn load_ledger_clearing(
         || !args.clearing_approvals.is_empty()
         || !args.clearing_payout_targets.is_empty()
         || args.issuer_settlement_signing_key.is_some()
-        || args.redeem_response_derivation_key.is_some();
+        || !args.retained_issuer_settlement_verifying_keys.is_empty()
+        || args.redeem_response_derivation_key.is_some()
+        || args.clearing_payout_fee.is_some()
+        || args.clearing_payout_intent_ttl_seconds.is_some();
     if !any_configured {
         return Ok(None);
     }
@@ -1243,12 +1396,32 @@ fn load_ledger_clearing(
         .redeem_response_derivation_key
         .as_deref()
         .ok_or_else(|| "clearing requires --redeem-response-derivation-key".to_owned())?;
+    let payout_fee = args
+        .clearing_payout_fee
+        .ok_or_else(|| "clearing requires explicit --clearing-payout-fee".to_owned())?;
+    let payout_intent_ttl_seconds = args.clearing_payout_intent_ttl_seconds.ok_or_else(|| {
+        "clearing requires explicit --clearing-payout-intent-ttl-seconds".to_owned()
+    })?;
+    let payout_policy = SettlementPayoutPolicyV1::new(payout_fee, payout_intent_ttl_seconds)
+        .map_err(|_| "clearing payout fee or intent TTL is outside V1 bounds".to_owned())?;
 
     let mut settlement_key_bytes =
         read_secret_exact::<32>(settlement_key_path, "issuer settlement signing key")?;
     let issuer_settlement_signing_key = SigningKey::from_bytes(&settlement_key_bytes);
     settlement_key_bytes.zeroize();
     let settlement_verifying_key = issuer_settlement_signing_key.verifying_key();
+    let mut retained_settlement_verifying_keys =
+        Vec::with_capacity(args.retained_issuer_settlement_verifying_keys.len());
+    for path in &args.retained_issuer_settlement_verifying_keys {
+        let exact = read_public_file(path, 32, "retained issuer settlement verifying key")?;
+        let bytes: [u8; 32] = exact
+            .try_into()
+            .map_err(|_| "retained issuer settlement verifying key must be 32 bytes".to_owned())?;
+        retained_settlement_verifying_keys.push(
+            VerifyingKey::from_bytes(&bytes)
+                .map_err(|_| "retained issuer settlement verifying key is invalid".to_owned())?,
+        );
+    }
 
     let mut derivation_key_bytes =
         read_secret_exact::<32>(derivation_key_path, "redeem response derivation key")?;
@@ -1428,9 +1601,11 @@ fn load_ledger_clearing(
         bat_keyring,
         arc_keyring,
         issuer_settlement_signing_key,
+        retained_settlement_verifying_keys,
         None,
         Vec::new(),
         response_derivation_key,
+        payout_policy,
     )
     .map(Some)
     .map_err(|error| format!("build shared issuer clearing service failed: {error}"))
@@ -1557,6 +1732,13 @@ fn route_request(
     state: &ServerState,
     request: &ParsedRequest,
 ) -> Result<(&'static str, Vec<u8>), IssuerServiceErrorV1> {
+    #[cfg(test)]
+    let now_unix = state
+        .now_unix_override
+        .map(Ok)
+        .unwrap_or_else(system_time_unix)
+        .map_err(|_| IssuerServiceErrorV1::Internal)?;
+    #[cfg(not(test))]
     let now_unix = system_time_unix().map_err(|_| IssuerServiceErrorV1::Internal)?;
     match request.path.as_str() {
         "/v1/quotes/bolt11" => {
@@ -1604,6 +1786,60 @@ fn route_request(
                 .ok_or(IssuerServiceErrorV1::NotFound)?
                 .redeem(&request.body, now_unix)
                 .map(|body| (CT_REDEEM_RESULT, body))
+        }
+        "/v1/settlement/balance" => {
+            require_executable_settlement_request(request, CT_BALANCE_ENVELOPE)?;
+            if !state.status_rate.try_acquire(Instant::now()) {
+                return Err(IssuerServiceErrorV1::RetryableUnavailable);
+            }
+            state
+                .clearing
+                .as_ref()
+                .ok_or(IssuerServiceErrorV1::NotFound)?
+                .balance(&request.body, now_unix)
+                .map(|body| (CT_BALANCE_RESPONSE, body))
+        }
+        "/v1/settlement/payout-intents" => {
+            require_executable_settlement_request(request, CT_PAYOUT_INTENT_ENVELOPE)?;
+            if !is_exact_payout_intent_replay(&state.store, &request.body)
+                && !state.mutation_rate.try_acquire(Instant::now())
+            {
+                return Err(IssuerServiceErrorV1::RetryableUnavailable);
+            }
+            state
+                .clearing
+                .as_ref()
+                .ok_or(IssuerServiceErrorV1::NotFound)?
+                .payout_intent(&request.body, now_unix)
+                .map(|body| (CT_PAYOUT_INTENT_RESPONSE, body))
+        }
+        "/v1/settlement/payouts" => {
+            require_executable_settlement_request(request, CT_PAYOUT_ENVELOPE)?;
+            if !is_exact_payout_replay(&state.store, &request.body)
+                && !state.mutation_rate.try_acquire(Instant::now())
+            {
+                return Err(IssuerServiceErrorV1::RetryableUnavailable);
+            }
+            state
+                .clearing
+                .as_ref()
+                .ok_or(IssuerServiceErrorV1::NotFound)?
+                .payout(&request.body, now_unix)
+                .map(|body| (CT_PAYOUT_RESPONSE, body))
+        }
+        "/v1/settlement/payout-status" => {
+            require_executable_settlement_request(request, CT_PAYOUT_STATUS_ENVELOPE)?;
+            if !is_exact_payout_status_replay(&state.store, &request.body)
+                && !state.status_rate.try_acquire(Instant::now())
+            {
+                return Err(IssuerServiceErrorV1::RetryableUnavailable);
+            }
+            state
+                .clearing
+                .as_ref()
+                .ok_or(IssuerServiceErrorV1::NotFound)?
+                .payout_status(&request.body, now_unix)
+                .map(|body| (CT_PAYOUT_STATUS_RESPONSE, body))
         }
         "/__test/fake/settle" => {
             // This route must be indistinguishable from an unknown path in
@@ -1683,6 +1919,17 @@ fn require_content_type(
     } else {
         Err(IssuerServiceErrorV1::InvalidRequest)
     }
+}
+
+fn require_executable_settlement_request(
+    request: &ParsedRequest,
+    expected_content_type: &str,
+) -> Result<(), IssuerServiceErrorV1> {
+    require_content_type(request, expected_content_type)?;
+    if request.body.len() > MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1 {
+        return Err(IssuerServiceErrorV1::InvalidRequest);
+    }
+    Ok(())
 }
 
 fn parse_quote_action_path(path: &str) -> Option<([u8; 32], &str)> {
@@ -2368,6 +2615,802 @@ fn read_secret_exact_unix<const N: usize>(path: &Path, label: &str) -> Result<[u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pir_payment_crypto::{cashu_hash_to_curve_v1, sign_bip340_prehash_v1};
+    use pir_service_protocol::{
+        bind_auth_begin_v1, credential_presentation_digest, derive_bat_key_id_v1, derive_issuer_id,
+        paid_receipt_key_id, AcquisitionMethod, AuthBeginV1, AuthPaddingClassV1, BackendId,
+        BitcoinPirCashuBatProofV1, Bolt11QuoteClaimV1, Bolt11QuoteKeyRollbackGuardV1,
+        Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1,
+        CheckedCredentialIssuanceResponseV1, CredentialIssuanceRequestItemsV1,
+        CredentialIssuanceRequestV1, CredentialIssuanceResponseV1, CredentialKeyBindingClaimsV1,
+        CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
+        EntitlementLimitsV1, FreeModeV1, IssuerBalanceResponseV1, IssuerPayoutIntentResponseV1,
+        IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1, OperationStartV1,
+        ParsedBolt11InvoiceV1, PayoutStateV1, PolicyRollbackGuardV1, PriceV1, PrivacyLeakageV1,
+        ProviderBalanceEnvelopeV1, ProviderBalanceRequestV1, ProviderClearingAuthorizationClaimsV1,
+        ProviderClearingRequestAuthV1, ProviderPayoutIntentRequestV1, ProviderPayoutRequestV1,
+        ProviderPayoutStatusRequestV1, ProviderRedeemRequestV1, ProviderSettlementRequestAuthV1,
+        ServiceOfferV1, ServicePolicyEpochFloorsV1, ServiceScopePolicyV1, ServiceScopeV1,
+        SettlementDestinationV1, SettlementRuleV1, TrustedCatalogResolutionV1, VerificationMode,
+        WorkloadId,
+    };
+    use pir_service_store::{
+        verify_provider_local_bearer_spend_v1, ProviderStore, SqliteRollbackFloorAuthorityV1,
+        StoreError as ProviderStoreError, StoreOptions as ProviderStoreOptions,
+    };
+
+    fn http_exchange(
+        state: Arc<ServerState>,
+        method: &str,
+        path: &str,
+        request_content_type: Option<&str>,
+        accept: &str,
+        body: &[u8],
+    ) -> (u16, String, Vec<u8>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test issuer listener");
+        let address = listener.local_addr().expect("test issuer address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept test issuer request");
+            handle_connection(stream, &state);
+        });
+
+        let mut stream = TcpStream::connect(address).expect("connect test issuer");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set client read timeout");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("set client write timeout");
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nAccept: {accept}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            body.len()
+        );
+        if let Some(content_type) = request_content_type {
+            request.push_str(&format!("Content-Type: {content_type}\r\n"));
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .expect("write test issuer headers");
+        stream.write_all(body).expect("write test issuer body");
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .expect("read test issuer response");
+        server.join().expect("test issuer server thread");
+
+        let header_end = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+            .expect("HTTP response header terminator");
+        let header = std::str::from_utf8(&response[..header_end]).expect("ASCII HTTP response");
+        let mut lines = header.split("\r\n");
+        let status = lines
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u16>().ok())
+            .expect("HTTP response status");
+        let mut content_type = None;
+        let mut content_length = None;
+        for line in lines {
+            if let Some(value) = line.strip_prefix("Content-Type: ") {
+                content_type = Some(value.to_owned());
+            }
+            if let Some(value) = line.strip_prefix("Content-Length: ") {
+                content_length = value.parse::<usize>().ok();
+            }
+        }
+        let response_body = response[header_end..].to_vec();
+        assert_eq!(content_length, Some(response_body.len()));
+        (
+            status,
+            content_type.expect("HTTP response content type"),
+            response_body,
+        )
+    }
+
+    fn wait_until_after(timestamp: u64) -> u64 {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let now = system_time_unix().expect("system clock");
+            if now > timestamp {
+                return now;
+            }
+            assert!(Instant::now() < deadline, "system clock did not advance");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    const SETTLEMENT_HTTP_PROVIDER_ID: [u8; 32] = [0x71; 32];
+    const SETTLEMENT_HTTP_SCOPE_ID: [u8; 32] = [0x72; 32];
+    const SETTLEMENT_HTTP_ACCOUNT_ID: [u8; 32] = [0x73; 32];
+    const SETTLEMENT_HTTP_PAYOUT_TARGET_ID: [u8; 32] = [0x74; 32];
+    const SETTLEMENT_HTTP_ISSUER_ROOT: [u8; 32] = [0x75; 32];
+    const SETTLEMENT_HTTP_QUOTE_KEY: [u8; 32] = [0x76; 32];
+    const SETTLEMENT_HTTP_OPERATOR_KEY: [u8; 32] = [0x77; 32];
+    const SETTLEMENT_HTTP_CLEARING_KEY: [u8; 32] = [0x78; 32];
+    const SETTLEMENT_HTTP_PROVIDER_REQUEST_KEY: [u8; 32] = [0x79; 32];
+    const SETTLEMENT_HTTP_SIGNING_KEY: [u8; 32] = [0x7a; 32];
+    const SETTLEMENT_HTTP_BAT_KEY: [u8; 32] = [0x7b; 32];
+
+    struct SettlementHttpFixture {
+        _directory: tempfile::TempDir,
+        store_path: PathBuf,
+        rollback_path: PathBuf,
+        issuer_id: [u8; 32],
+        binding: CredentialKeyBindingV1,
+        authorization: ProviderClearingAuthorizationV1,
+        now_unix: u64,
+        registration_not_after: u64,
+    }
+
+    impl SettlementHttpFixture {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().expect("settlement HTTP directory");
+            let store_path = directory.path().join("issuer.sqlite3");
+            let rollback_path = directory.path().join("issuer-floor.sqlite3");
+            let now_unix = system_time_unix().expect("system clock");
+            let not_before = now_unix.saturating_sub(60);
+            let registration_not_after = now_unix + 120;
+            let issuer_root = SigningKey::from_bytes(&SETTLEMENT_HTTP_ISSUER_ROOT);
+            let issuer_id = derive_issuer_id(&issuer_root.verifying_key().to_bytes());
+            let rollback = Arc::new(
+                SqliteIssuerRollbackFloorAuthorityV1::create(
+                    &rollback_path,
+                    StoreOptions::default().busy_timeout,
+                )
+                .expect("settlement HTTP rollback floor"),
+            );
+            let store = IssuerStore::create(
+                &store_path,
+                [0x31; 16],
+                issuer_id,
+                LightningNetworkV1::Regtest,
+                StoreOptions::default(),
+                rollback,
+            )
+            .expect("settlement HTTP issuer store");
+            let provider_request = SigningKey::from_bytes(&SETTLEMENT_HTTP_PROVIDER_REQUEST_KEY);
+            let _ = store
+                .register_provider_settlement(&ProviderSettlementRegistrationWriteV1 {
+                    registration_epoch: 1,
+                    provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+                    settlement_account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
+                    provider_request_verifying_key: provider_request.verifying_key().to_bytes(),
+                    payout_target_id: SETTLEMENT_HTTP_PAYOUT_TARGET_ID,
+                    not_before,
+                    not_after: registration_not_after,
+                })
+                .expect("register settlement HTTP provider");
+
+            let bat_keyring = Self::bat_keyring();
+            let bat_public_key = bat_keyring.denomination_public_keys()[0];
+            let credential_key_id = derive_bat_key_id_v1(
+                &SETTLEMENT_HTTP_PROVIDER_ID,
+                &SETTLEMENT_HTTP_SCOPE_ID,
+                7,
+                9,
+                1,
+                &bat_public_key,
+            );
+            let binding = CredentialKeyBindingV1::sign(
+                CredentialKeyBindingClaimsV1 {
+                    provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+                    scope_id: SETTLEMENT_HTTP_SCOPE_ID,
+                    offer_id: 7,
+                    scheme: AuthScheme::BitcoinPirCashuBatV1,
+                    keyset_epoch: 1,
+                    entitlement_profile: 9,
+                    unit: CredentialUnitV1::Auth,
+                    amount: 1,
+                    presentation_limit: 1,
+                    not_before,
+                    not_after: registration_not_after,
+                    credential_key_id: credential_key_id.to_vec(),
+                    verification_key: bat_public_key.to_vec(),
+                },
+                &issuer_root,
+            )
+            .expect("settlement HTTP BAT binding");
+            let _ = store
+                .register_bat_key_lineage(&BatKeyLineageRegistration {
+                    raw_public_key: bat_public_key,
+                    provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+                    scope_id: SETTLEMENT_HTTP_SCOPE_ID,
+                    offer_id: 7,
+                    entitlement_profile: 9,
+                    keyset_epoch: 1,
+                    credential_key_id,
+                })
+                .expect("register settlement HTTP BAT lineage");
+
+            let operator = SigningKey::from_bytes(&SETTLEMENT_HTTP_OPERATOR_KEY);
+            let clearing = SigningKey::from_bytes(&SETTLEMENT_HTTP_CLEARING_KEY);
+            let settlement = SigningKey::from_bytes(&SETTLEMENT_HTTP_SIGNING_KEY);
+            let authorization = ProviderClearingAuthorizationV1::sign(
+                ProviderClearingAuthorizationClaimsV1 {
+                    authorization_id: [0x7c; 16],
+                    authorization_epoch: 1,
+                    provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+                    issuer_id,
+                    settlement_account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
+                    clearing_verifying_key: clearing.verifying_key().to_bytes(),
+                    not_before,
+                    not_after: registration_not_after,
+                    rules: vec![SettlementRuleV1 {
+                        credential_binding_digest: binding
+                            .binding_digest()
+                            .expect("settlement HTTP binding digest"),
+                        unit: SettlementUnitV1::AuthCredit,
+                        accepted_value: 10,
+                        provider_credit: 9,
+                        issuer_fee: 1,
+                        denomination_profile: 1,
+                        settlement_modes: SettlementModesV1::from_bits(
+                            SettlementModesV1::LEDGER_CREDIT,
+                        )
+                        .expect("ledger-only settlement mode"),
+                        blind_output_minimum_validity_seconds: 0,
+                        blind_output_keyset: None,
+                    }],
+                },
+                &operator,
+            )
+            .expect("settlement HTTP authorization");
+            let approval = IssuerClearingApprovalV1::sign(
+                &authorization,
+                not_before,
+                registration_not_after,
+                &settlement,
+            )
+            .expect("settlement HTTP approval");
+            let _ = store
+                .register_clearing_authorization(
+                    &authorization,
+                    &approval,
+                    &operator.verifying_key(),
+                    &settlement.verifying_key(),
+                    now_unix,
+                )
+                .expect("register settlement HTTP authorization");
+            drop(store);
+
+            Self {
+                _directory: directory,
+                store_path,
+                rollback_path,
+                issuer_id,
+                binding,
+                authorization,
+                now_unix,
+                registration_not_after,
+            }
+        }
+
+        fn bat_keyring() -> Arc<K256CashuMintKeyringV1> {
+            Arc::new(
+                K256CashuMintKeyringV1::from_secret_keys([SETTLEMENT_HTTP_BAT_KEY])
+                    .expect("settlement HTTP BAT keyring"),
+            )
+        }
+
+        fn credential(&self) -> Vec<u8> {
+            let secret_raw = [0x7d; 32];
+            let hashed = cashu_hash_to_curve_v1(&secret_raw).expect("hash settlement HTTP BAT");
+            let keyring = Self::bat_keyring();
+            let signed = keyring
+                .blind_sign_with_dleq_v1(
+                    &keyring.denomination_public_keys()[0],
+                    &hashed,
+                    &[0x7e; 32],
+                )
+                .expect("sign settlement HTTP BAT");
+            BitcoinPirCashuBatProofV1 {
+                secret_raw,
+                c: *signed.blinded_signature(),
+            }
+            .encode()
+            .expect("encode settlement HTTP BAT")
+            .to_vec()
+        }
+
+        fn state(&self, now_unix_override: u64) -> Arc<ServerState> {
+            let rollback = Arc::new(
+                SqliteIssuerRollbackFloorAuthorityV1::open_existing(
+                    &self.rollback_path,
+                    StoreOptions::default().busy_timeout,
+                )
+                .expect("reopen settlement HTTP rollback floor"),
+            );
+            let store = IssuerStore::open_existing(
+                &self.store_path,
+                self.issuer_id,
+                LightningNetworkV1::Regtest,
+                StoreOptions::default(),
+                rollback,
+            )
+            .expect("reopen settlement HTTP issuer store");
+            let fake_lightning = Arc::new(
+                FakeLightningNodeV1::new(
+                    LightningNetworkV1::Regtest,
+                    [0x13; 32],
+                    [0x14; 32],
+                    self.now_unix.saturating_sub(10),
+                )
+                .expect("settlement HTTP fake Lightning"),
+            );
+            let issuer_root = SigningKey::from_bytes(&SETTLEMENT_HTTP_ISSUER_ROOT);
+            let quote_signing_key = SigningKey::from_bytes(&SETTLEMENT_HTTP_QUOTE_KEY);
+            let delegation = Bolt11QuoteKeyDelegationV1::sign(
+                LightningNetworkV1::Regtest,
+                fake_lightning.payee_pubkey(),
+                1,
+                self.now_unix.saturating_sub(60),
+                self.now_unix + 3_600,
+                quote_signing_key.verifying_key().to_bytes(),
+                &issuer_root,
+            )
+            .expect("settlement HTTP quote delegation");
+            let delegation_bytes = delegation.encode().expect("encode quote delegation");
+            let bat_keyring = Self::bat_keyring();
+            let acquisition = IssuerAcquisitionServiceV1::new_with_quote_capacity(
+                store.clone(),
+                Arc::new(RuntimeLightningBackendV1::Fake(fake_lightning)),
+                Arc::new(OsQuoteIdSourceV1),
+                QuoteSigningMaterialV1::new(delegation.clone(), quote_signing_key)
+                    .expect("settlement HTTP quote material"),
+                Vec::new(),
+                Vec::new(),
+                Some(Arc::clone(&bat_keyring)),
+                None,
+                IssuerCredentialDerivationKeyV1::from_bytes([0x15; 32])
+                    .expect("settlement HTTP credential derivation"),
+                QuoteCapacityV1::new(16, 128).expect("settlement HTTP quote capacity"),
+                self.now_unix,
+            )
+            .expect("settlement HTTP acquisition service");
+            let clearing = SharedIssuerClearingServiceV1::new(
+                store.clone(),
+                vec![TrustedClearingProviderV1 {
+                    provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+                    operator_key: SigningKey::from_bytes(&SETTLEMENT_HTTP_OPERATOR_KEY)
+                        .verifying_key(),
+                    minimum_authorization_epoch: 1,
+                }],
+                Some(bat_keyring),
+                None,
+                SigningKey::from_bytes(&SETTLEMENT_HTTP_SIGNING_KEY),
+                Vec::new(),
+                None,
+                Vec::new(),
+                RedeemResponseDerivationKeyV1::from_bytes([0x16; 32])
+                    .expect("settlement HTTP response derivation"),
+                SettlementPayoutPolicyV1::new(2, 100).expect("settlement HTTP payout policy"),
+            )
+            .expect("settlement HTTP clearing service");
+            Arc::new(ServerState {
+                acquisition,
+                current_quote_delegation: delegation_bytes.clone(),
+                quote_delegations: BTreeMap::from([(delegation.quote_key_id, delegation_bytes)]),
+                clearing: Some(clearing),
+                store,
+                fake_lightning: None,
+                allow_origin: None,
+                quote_rate: FixedWindowRateLimiterV1::new(100, "settlement HTTP quote rate")
+                    .expect("settlement HTTP quote rate"),
+                status_rate: FixedWindowRateLimiterV1::new(100, "settlement HTTP status rate")
+                    .expect("settlement HTTP status rate"),
+                mutation_rate: FixedWindowRateLimiterV1::new(100, "settlement HTTP mutation rate")
+                    .expect("settlement HTTP mutation rate"),
+                now_unix_override: Some(now_unix_override),
+            })
+        }
+    }
+
+    #[test]
+    fn shared_issuer_settlement_http_roundtrip_restarts_and_replays_after_expiry() {
+        let fixture = SettlementHttpFixture::new();
+        let state = fixture.state(fixture.now_unix);
+        let oversized_ledger_envelope = [0; MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1 + 1];
+        let (status, _, _) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/settlement/balance",
+            Some(CT_BALANCE_ENVELOPE),
+            CT_BALANCE_RESPONSE,
+            &oversized_ledger_envelope,
+        );
+        assert_eq!(status, 400, "ledger-only route enforces its 8 KiB cap");
+        let (status, _, _) = http_exchange(
+            Arc::clone(&state),
+            "GET",
+            "/v1/settlement/keysets",
+            None,
+            "application/octet-stream",
+            &[],
+        );
+        assert_eq!(status, 404, "settlement keysets are not executable");
+        let (status, _, _) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/settlement/deposits",
+            Some("application/vnd.bitcoinpir.provider-settlement-deposit-envelope-v1"),
+            "application/octet-stream",
+            &[],
+        );
+        assert_eq!(status, 404, "settlement deposits are not executable");
+        let authorization_digest = fixture
+            .authorization
+            .authorization_digest()
+            .expect("settlement HTTP authorization digest");
+        let clearing = SigningKey::from_bytes(&SETTLEMENT_HTTP_CLEARING_KEY);
+        let provider_request = SigningKey::from_bytes(&SETTLEMENT_HTTP_PROVIDER_REQUEST_KEY);
+
+        let credential = fixture.credential();
+        let redeem_request = ProviderRedeemRequestV1 {
+            authorization_digest,
+            issuer_id: fixture.issuer_id,
+            provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+            scope_id: SETTLEMENT_HTTP_SCOPE_ID,
+            offer_id: 7,
+            credential_binding_digest: fixture
+                .binding
+                .binding_digest()
+                .expect("settlement HTTP binding digest"),
+            scheme: AuthScheme::BitcoinPirCashuBatV1,
+            credential_digest: credential_presentation_digest(
+                AuthScheme::BitcoinPirCashuBatV1,
+                &credential,
+            )
+            .expect("settlement HTTP credential digest"),
+            accepted_value: 10,
+            denomination_profile: 1,
+            idempotency_key: [0x81; 32],
+            destination: SettlementDestinationV1::LedgerCredit {
+                account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
+            },
+        };
+        let redeem_envelope = ProviderRedeemEnvelopeV1 {
+            request_auth: ProviderClearingRequestAuthV1::sign(
+                authorization_digest,
+                redeem_request
+                    .request_digest()
+                    .expect("settlement HTTP redeem digest"),
+                &clearing,
+            ),
+            request: redeem_request,
+            credential_binding: fixture.binding.clone(),
+            canonical_credential: credential.clone(),
+        }
+        .encode()
+        .expect("settlement HTTP redeem envelope");
+        let (status, content_type, redeem_response) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/redeems",
+            Some(CT_REDEEM),
+            CT_REDEEM_RESULT,
+            &redeem_envelope,
+        );
+        assert_eq!((status, content_type.as_str()), (200, CT_REDEEM_RESULT));
+        assert!(
+            !redeem_response
+                .windows(credential.len())
+                .any(|window| window == credential.as_slice()),
+            "issuer response must not echo the bearer credential"
+        );
+        let (status, content_type, replayed_redeem) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/redeems",
+            Some(CT_REDEEM),
+            CT_REDEEM_RESULT,
+            &redeem_envelope,
+        );
+        assert_eq!((status, content_type.as_str()), (200, CT_REDEEM_RESULT));
+        assert_eq!(replayed_redeem, redeem_response);
+
+        let balance_request = ProviderBalanceRequestV1 {
+            authorization_digest,
+            issuer_id: fixture.issuer_id,
+            provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+            account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
+            unit: SettlementUnitV1::AuthCredit,
+            idempotency_key: [0x82; 32],
+        };
+        let balance_envelope = ProviderBalanceEnvelopeV1 {
+            request_auth: ProviderClearingRequestAuthV1::sign(
+                authorization_digest,
+                balance_request
+                    .request_digest()
+                    .expect("settlement HTTP balance digest"),
+                &clearing,
+            ),
+            request: balance_request.clone(),
+        }
+        .encode()
+        .expect("settlement HTTP balance envelope");
+        let (status, content_type, balance_response) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/settlement/balance",
+            Some(CT_BALANCE_ENVELOPE),
+            CT_BALANCE_RESPONSE,
+            &balance_envelope,
+        );
+        assert_eq!((status, content_type.as_str()), (200, CT_BALANCE_RESPONSE));
+        let balance = IssuerBalanceResponseV1::decode(&balance_response)
+            .expect("decode settlement HTTP balance");
+        assert_eq!((balance.available_value, balance.reserved_value), (9, 0));
+
+        let intent_request = ProviderPayoutIntentRequestV1 {
+            authorization_digest,
+            issuer_id: fixture.issuer_id,
+            provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+            account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
+            payout_target_id: SETTLEMENT_HTTP_PAYOUT_TARGET_ID,
+            unit: SettlementUnitV1::AuthCredit,
+            payout_value: 7,
+            idempotency_key: [0x83; 32],
+        };
+        let intent_envelope = ProviderPayoutIntentEnvelopeV1 {
+            request_auth: ProviderClearingRequestAuthV1::sign(
+                authorization_digest,
+                intent_request
+                    .request_digest()
+                    .expect("settlement HTTP intent digest"),
+                &clearing,
+            ),
+            request: intent_request.clone(),
+        }
+        .encode()
+        .expect("settlement HTTP payout-intent envelope");
+        let (status, content_type, intent_response_bytes) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/settlement/payout-intents",
+            Some(CT_PAYOUT_INTENT_ENVELOPE),
+            CT_PAYOUT_INTENT_RESPONSE,
+            &intent_envelope,
+        );
+        assert_eq!(
+            (status, content_type.as_str()),
+            (200, CT_PAYOUT_INTENT_RESPONSE)
+        );
+        let intent_response = IssuerPayoutIntentResponseV1::decode(&intent_response_bytes)
+            .expect("decode settlement HTTP payout intent");
+        assert_eq!(
+            (intent_response.issuer_fee, intent_response.total_debit),
+            (2, 9)
+        );
+        let (status, _, replayed_intent) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/settlement/payout-intents",
+            Some(CT_PAYOUT_INTENT_ENVELOPE),
+            CT_PAYOUT_INTENT_RESPONSE,
+            &intent_envelope,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(replayed_intent, intent_response_bytes);
+
+        let payout_request = ProviderPayoutRequestV1 {
+            authorization_digest,
+            issuer_id: fixture.issuer_id,
+            provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+            account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
+            payout_target_id: SETTLEMENT_HTTP_PAYOUT_TARGET_ID,
+            payout_intent_id: intent_response.payout_intent_id,
+            payout_intent_digest: intent_response
+                .payout_intent_digest()
+                .expect("settlement HTTP signed intent digest"),
+            unit: SettlementUnitV1::AuthCredit,
+            payout_value: 7,
+            total_debit: 9,
+            idempotency_key: [0x84; 32],
+        };
+        let payout_envelope = ProviderPayoutEnvelopeV1 {
+            request_auth: ProviderClearingRequestAuthV1::sign(
+                authorization_digest,
+                payout_request
+                    .request_digest()
+                    .expect("settlement HTTP payout digest"),
+                &clearing,
+            ),
+            request: payout_request.clone(),
+            intent_request: intent_request.clone(),
+            intent_response: intent_response.clone(),
+        }
+        .encode()
+        .expect("settlement HTTP payout envelope");
+        let (status, content_type, payout_response_bytes) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/settlement/payouts",
+            Some(CT_PAYOUT_ENVELOPE),
+            CT_PAYOUT_RESPONSE,
+            &payout_envelope,
+        );
+        assert_eq!((status, content_type.as_str()), (200, CT_PAYOUT_RESPONSE));
+        let payout_response = IssuerPayoutResponseV1::decode(&payout_response_bytes)
+            .expect("decode settlement HTTP payout");
+        assert_eq!(payout_response.state, PayoutStateV1::Accepted);
+        let (status, _, replayed_payout) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/settlement/payouts",
+            Some(CT_PAYOUT_ENVELOPE),
+            CT_PAYOUT_RESPONSE,
+            &payout_envelope,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(replayed_payout, payout_response_bytes);
+        drop(state);
+
+        // Reopen every service/store handle before the first status request.
+        // This exercises the executable restart path rather than retaining an
+        // in-memory payout typestate.
+        let restarted = fixture.state(fixture.now_unix + 5);
+        let registration = restarted
+            .store
+            .provider_settlement_registration(&SETTLEMENT_HTTP_PROVIDER_ID)
+            .expect("read settlement HTTP registration")
+            .expect("settlement HTTP registration exists");
+        let status_request = ProviderPayoutStatusRequestV1 {
+            registration_digest: registration.registration_digest,
+            issuer_id: fixture.issuer_id,
+            provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
+            account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
+            payout_id: payout_response.payout_id,
+            payout_request_digest: payout_request
+                .request_digest()
+                .expect("settlement HTTP payout request digest"),
+            request_nonce: [0x85; 32],
+        };
+        let status_auth = ProviderSettlementRequestAuthV1::sign(
+            registration.registration_digest,
+            status_request
+                .request_digest()
+                .expect("settlement HTTP status digest"),
+            &provider_request,
+        );
+        let status_envelope_value = ProviderPayoutStatusEnvelopeV1 {
+            request: status_request.clone(),
+            request_auth: status_auth.clone(),
+            payout_request: payout_request.clone(),
+            initial_payout_response: payout_response.clone(),
+        };
+        let status_envelope = status_envelope_value
+            .encode()
+            .expect("settlement HTTP status envelope");
+        let (status, content_type, status_response_bytes) = http_exchange(
+            Arc::clone(&restarted),
+            "POST",
+            "/v1/settlement/payout-status",
+            Some(CT_PAYOUT_STATUS_ENVELOPE),
+            CT_PAYOUT_STATUS_RESPONSE,
+            &status_envelope,
+        );
+        assert_eq!(
+            (status, content_type.as_str()),
+            (200, CT_PAYOUT_STATUS_RESPONSE)
+        );
+        let status_response = IssuerPayoutStatusResponseV1::decode(&status_response_bytes)
+            .expect("decode settlement HTTP payout status");
+        assert_eq!(status_response.state_version, 2);
+        let (status, _, replayed_status) = http_exchange(
+            Arc::clone(&restarted),
+            "POST",
+            "/v1/settlement/payout-status",
+            Some(CT_PAYOUT_STATUS_ENVELOPE),
+            CT_PAYOUT_STATUS_RESPONSE,
+            &status_envelope,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(replayed_status, status_response_bytes);
+        drop(restarted);
+
+        // Exact durable bytes remain recoverable after authorization and
+        // registration expiry; fresh reads/mutations remain fail-closed.
+        let expired = fixture.state(fixture.registration_not_after + 1);
+        for (path, request_type, accept, body, expected) in [
+            (
+                "/v1/redeems",
+                CT_REDEEM,
+                CT_REDEEM_RESULT,
+                redeem_envelope.as_slice(),
+                redeem_response.as_slice(),
+            ),
+            (
+                "/v1/settlement/payout-intents",
+                CT_PAYOUT_INTENT_ENVELOPE,
+                CT_PAYOUT_INTENT_RESPONSE,
+                intent_envelope.as_slice(),
+                intent_response_bytes.as_slice(),
+            ),
+            (
+                "/v1/settlement/payouts",
+                CT_PAYOUT_ENVELOPE,
+                CT_PAYOUT_RESPONSE,
+                payout_envelope.as_slice(),
+                payout_response_bytes.as_slice(),
+            ),
+            (
+                "/v1/settlement/payout-status",
+                CT_PAYOUT_STATUS_ENVELOPE,
+                CT_PAYOUT_STATUS_RESPONSE,
+                status_envelope.as_slice(),
+                status_response_bytes.as_slice(),
+            ),
+        ] {
+            let (status, content_type, replayed) = http_exchange(
+                Arc::clone(&expired),
+                "POST",
+                path,
+                Some(request_type),
+                accept,
+                body,
+            );
+            assert_eq!((status, content_type.as_str()), (200, accept));
+            assert_eq!(replayed, expected);
+        }
+
+        let mut tampered_status = status_envelope_value.clone();
+        tampered_status.request_auth.signature[0] ^= 1;
+        let (status, _, _) = http_exchange(
+            Arc::clone(&expired),
+            "POST",
+            "/v1/settlement/payout-status",
+            Some(CT_PAYOUT_STATUS_ENVELOPE),
+            CT_PAYOUT_STATUS_RESPONSE,
+            &tampered_status
+                .encode()
+                .expect("tampered settlement HTTP status envelope"),
+        );
+        assert_eq!(status, 401, "exact replay still requires provider auth");
+
+        let mut fresh_status_request = status_request;
+        fresh_status_request.request_nonce = [0x86; 32];
+        let fresh_status_envelope = ProviderPayoutStatusEnvelopeV1 {
+            request_auth: ProviderSettlementRequestAuthV1::sign(
+                registration.registration_digest,
+                fresh_status_request
+                    .request_digest()
+                    .expect("fresh expired status digest"),
+                &provider_request,
+            ),
+            request: fresh_status_request,
+            payout_request,
+            initial_payout_response: payout_response,
+        }
+        .encode()
+        .expect("fresh expired status envelope");
+        let (status, _, _) = http_exchange(
+            Arc::clone(&expired),
+            "POST",
+            "/v1/settlement/payout-status",
+            Some(CT_PAYOUT_STATUS_ENVELOPE),
+            CT_PAYOUT_STATUS_RESPONSE,
+            &fresh_status_envelope,
+        );
+        assert_eq!(
+            status, 401,
+            "expired registration cannot create a successor"
+        );
+        let (status, _, _) = http_exchange(
+            expired,
+            "POST",
+            "/v1/settlement/balance",
+            Some(CT_BALANCE_ENVELOPE),
+            CT_BALANCE_RESPONSE,
+            &balance_envelope,
+        );
+        assert_eq!(
+            status, 401,
+            "expired clearing auth cannot read a fresh balance"
+        );
+    }
 
     #[test]
     fn route_quote_ids_require_lowercase_exact_hex() {
@@ -2464,6 +3507,24 @@ mod tests {
         let error = require_fake_settlement_backend(None).unwrap_err();
         assert_eq!(error.http_status(), 404);
         assert_eq!(error.public_code(), "not_found");
+    }
+
+    #[test]
+    fn cli_exposes_offline_store_check() {
+        let cli = Cli::try_parse_from([
+            "payment-issuer",
+            "check-store",
+            "--store",
+            "/private/issuer.sqlite3",
+            "--rollback-authority",
+            "/independent/floor.sqlite3",
+            "--issuer-id-hex",
+            &hex::encode([0x11_u8; 32]),
+            "--network",
+            "regtest",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Command::CheckStore(_)));
     }
 
     #[cfg(unix)]
@@ -2616,6 +3677,22 @@ mod tests {
         assert_eq!(identity.network, LightningNetworkV1::Regtest);
         assert_eq!(identity.commit_seq, 0);
         assert_eq!(identity.schema_version, ISSUER_STORE_SCHEMA_VERSION);
+
+        check_store(StoreCheckArgs {
+            store: store.clone(),
+            rollback_authority: authority.clone(),
+            issuer_id_hex: hex::encode([0x55; 32]),
+            network: NetworkArg::Regtest,
+        })
+        .unwrap();
+        assert!(check_store(StoreCheckArgs {
+            store,
+            rollback_authority: authority,
+            issuer_id_hex: hex::encode([0x56; 32]),
+            network: NetworkArg::Regtest,
+        })
+        .unwrap_err()
+        .contains("identity mismatch"));
     }
 
     #[cfg(unix)]
@@ -2698,5 +3775,441 @@ mod tests {
             validate_existing_private_database_path(&hard_link, "issuer rollback authority")
                 .unwrap();
         assert!(private_database_paths_alias_v1(&canonical_file, &canonical_hard).unwrap());
+    }
+
+    #[test]
+    fn fake_http_quote_claim_issues_one_provider_spendable_receipt() {
+        let now = system_time_unix().expect("system clock");
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let fake_lightning = Arc::new(
+            FakeLightningNodeV1::new(
+                LightningNetworkV1::Regtest,
+                [0x03; 32],
+                [0x07; 32],
+                now.saturating_sub(10),
+            )
+            .expect("fake Lightning node"),
+        );
+
+        let issuer_root = SigningKey::from_bytes(&[0x41; 32]);
+        let issuer_id = derive_issuer_id(&issuer_root.verifying_key().to_bytes());
+        let provider_id = [0x51; 32];
+        let scope = ServiceScopeV1 {
+            provider_id,
+            backend: BackendId::DpfPirV1,
+            workload: WorkloadId::DpfEvaluateJobV1,
+            protocol_version: 1,
+            dataset: DatasetBindingV1::Class { class_id: 7 },
+            operation_profile: 11,
+            entitlement_profile: 101,
+        };
+        let scope_id = scope.scope_id();
+        let receipt_key = SigningKey::from_bytes(&[0x42; 32]);
+        let receipt_key_id = paid_receipt_key_id(&receipt_key.verifying_key()).to_vec();
+        let credential_binding = CredentialKeyBindingV1::sign(
+            CredentialKeyBindingClaimsV1 {
+                provider_id,
+                scope_id,
+                offer_id: 9,
+                scheme: AuthScheme::Bolt11DirectReceiptV1,
+                keyset_epoch: 1,
+                entitlement_profile: scope.entitlement_profile,
+                unit: CredentialUnitV1::Entitlement,
+                amount: 1,
+                presentation_limit: 1,
+                not_before: now.saturating_sub(60),
+                not_after: now + 3_600,
+                credential_key_id: receipt_key_id.clone(),
+                verification_key: receipt_key.verifying_key().to_bytes().to_vec(),
+            },
+            &issuer_root,
+        )
+        .expect("direct-receipt binding");
+        let offer = ServiceOfferV1 {
+            offer_id: 9,
+            acquisition: AcquisitionMethod::Bolt11V1,
+            free_mode: FreeModeV1::NotFree,
+            free_quota: 0,
+            free_window_seconds: 0,
+            free_pow_difficulty_bits: 0,
+            priority_class: 1,
+            authorization: AuthScheme::Bolt11DirectReceiptV1,
+            verification: VerificationMode::ProviderLocal,
+            deployment_status: DeploymentStatus::Stable,
+            price: PriceV1::MilliSatoshi(1_000),
+            issuer_id,
+            key_id: receipt_key_id,
+            credential_binding: Some(credential_binding),
+            cashu_mint_manifest: None,
+            endpoint: "https://issuer.test.invalid".to_owned(),
+            invoice_expiry_seconds: 60,
+            claim_window_seconds: 120,
+            minimum_credential_validity_seconds: 300,
+            retired_policy_grace_seconds: 1_000,
+            credential_count: 1,
+            credential_presentation_limit: 1,
+            privacy_leakage: PrivacyLeakageV1::from_bits(PrivacyLeakageV1::DIRECT_PAYMENT_TO_SPEND)
+                .expect("direct-receipt privacy leakage"),
+        };
+        let policy_key = SigningKey::from_bytes(&[0x43; 32]);
+        let policy = ServicePolicyV1::sign(
+            provider_id,
+            1,
+            now.saturating_sub(60),
+            now + 3_000,
+            AuthPaddingClassV1::Class16KiB,
+            vec![ServiceScopePolicyV1 {
+                scope: scope.clone(),
+                limits: EntitlementLimitsV1 {
+                    max_logical_inputs: 1,
+                    max_frames: 64,
+                    max_request_bytes: 2 * 1024 * 1024,
+                    max_response_bytes: 2 * 1024 * 1024,
+                    max_wall_time_ms: 20_000,
+                    max_concurrent_sockets: 1,
+                    max_hint_groups: 0,
+                    max_work_units: 10_000,
+                },
+                offers: vec![offer],
+            }],
+            &policy_key,
+        )
+        .expect("signed service policy");
+        let verified_policy = policy
+            .verify_current_for_acquisition(
+                &provider_id,
+                now,
+                &PolicyRollbackGuardV1::initial(),
+                &ServicePolicyEpochFloorsV1::initial(),
+                &policy_key.verifying_key(),
+            )
+            .expect("verified service policy");
+        let verified_offer = verified_policy.offer(&scope_id, 9).expect("verified offer");
+
+        let quote_key = SigningKey::from_bytes(&[0x44; 32]);
+        let delegation = Bolt11QuoteKeyDelegationV1::sign(
+            LightningNetworkV1::Regtest,
+            fake_lightning.payee_pubkey(),
+            1,
+            now.saturating_sub(60),
+            now + 3_600,
+            quote_key.verifying_key().to_bytes(),
+            &issuer_root,
+        )
+        .expect("quote-key delegation");
+        let claim_secret = [0x05; 32];
+        let (claim_pubkey_xonly, _) =
+            sign_bip340_prehash_v1(&claim_secret, &[0x11; 32], &[0; 32]).expect("claim public key");
+        let quote_guard = Bolt11QuoteKeyRollbackGuardV1::initial(
+            issuer_id,
+            LightningNetworkV1::Regtest,
+            fake_lightning.payee_pubkey(),
+        )
+        .expect("initial quote guard");
+        let (intent, _) = Bolt11QuoteIntentV1::from_verified_offer_guarded(
+            &verified_offer,
+            &delegation,
+            &quote_guard,
+            now,
+            claim_pubkey_xonly,
+            [0x61; 32],
+        )
+        .expect("verified quote intent");
+
+        let issuer_floor = Arc::new(
+            SqliteIssuerRollbackFloorAuthorityV1::create(
+                directory.path().join("issuer-floor.sqlite3"),
+                StoreOptions::default().busy_timeout,
+            )
+            .expect("issuer rollback floor"),
+        );
+        let issuer_store = IssuerStore::create(
+            directory.path().join("issuer.sqlite3"),
+            [0x11; 16],
+            issuer_id,
+            LightningNetworkV1::Regtest,
+            StoreOptions::default(),
+            issuer_floor,
+        )
+        .expect("issuer store");
+        let _ = issuer_store
+            .register_service_policy(&policy, &policy_key.verifying_key(), now)
+            .expect("register service policy");
+        let runtime_lightning =
+            Arc::new(RuntimeLightningBackendV1::Fake(Arc::clone(&fake_lightning)));
+        let acquisition = IssuerAcquisitionServiceV1::new_with_quote_capacity(
+            issuer_store.clone(),
+            runtime_lightning,
+            Arc::new(OsQuoteIdSourceV1),
+            QuoteSigningMaterialV1::new(delegation.clone(), quote_key)
+                .expect("quote signing material"),
+            Vec::new(),
+            vec![ReceiptSigningMaterialV1::new(receipt_key)],
+            None,
+            None,
+            IssuerCredentialDerivationKeyV1::from_bytes([0x09; 32])
+                .expect("credential derivation key"),
+            QuoteCapacityV1::new(16, 128).expect("quote capacity"),
+            now,
+        )
+        .expect("issuer acquisition service");
+        let delegation_bytes = delegation.encode().expect("delegation encoding");
+        let state = Arc::new(ServerState {
+            acquisition,
+            current_quote_delegation: delegation_bytes.clone(),
+            quote_delegations: BTreeMap::from([(delegation.quote_key_id, delegation_bytes)]),
+            clearing: None,
+            store: issuer_store,
+            fake_lightning: Some(Arc::clone(&fake_lightning)),
+            allow_origin: None,
+            quote_rate: FixedWindowRateLimiterV1::new(100, "test quote rate").expect("quote rate"),
+            status_rate: FixedWindowRateLimiterV1::new(100, "test status rate")
+                .expect("status rate"),
+            mutation_rate: FixedWindowRateLimiterV1::new(100, "test mutation rate")
+                .expect("mutation rate"),
+            now_unix_override: None,
+        });
+
+        let (status, content_type, current_delegation) = http_exchange(
+            Arc::clone(&state),
+            "GET",
+            "/v1/quote-keys/current",
+            None,
+            CT_QUOTE_KEY_DELEGATION,
+            &[],
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, CT_QUOTE_KEY_DELEGATION);
+        assert_eq!(
+            Bolt11QuoteKeyDelegationV1::decode(&current_delegation)
+                .expect("HTTP delegation")
+                .quote_key_id,
+            delegation.quote_key_id
+        );
+
+        let intent_bytes = intent.encode().expect("intent encoding");
+        let (status, content_type, initial_bytes) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/v1/quotes/bolt11",
+            Some(CT_QUOTE_INTENT),
+            CT_QUOTE,
+            &intent_bytes,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, CT_QUOTE);
+        let initial = Bolt11QuoteV1::decode(&initial_bytes).expect("initial HTTP quote");
+        let parsed_initial =
+            ParsedBolt11InvoiceV1::parse(&initial.invoice).expect("parse fake BOLT11 invoice");
+        initial
+            .verify_for_payment(
+                &intent,
+                &delegation,
+                &parsed_initial,
+                system_time_unix().unwrap(),
+            )
+            .expect("payable HTTP quote");
+
+        let settled_at = wait_until_after(initial.status_updated_at);
+        let mut settlement = Vec::with_capacity(48);
+        settlement.extend_from_slice(&initial.quote_id);
+        settlement.extend_from_slice(&initial.amount_msat.to_le_bytes());
+        settlement.extend_from_slice(&settled_at.to_le_bytes());
+        let (status, content_type, response) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            "/__test/fake/settle",
+            Some(CT_FAKE_SETTLEMENT),
+            "application/octet-stream",
+            &settlement,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/octet-stream");
+        assert!(response.is_empty());
+
+        let mut status_request = Bolt11QuoteStatusRequestV1 {
+            issuer_id,
+            quote_id: initial.quote_id,
+            quote_request_digest: intent.request_digest().expect("intent digest"),
+            claim_pubkey_xonly,
+            requested_at: system_time_unix().expect("status request time"),
+            request_nonce: [0x62; 32],
+            signature: [1; 64],
+        };
+        let status_digest = status_request
+            .bip340_signing_digest()
+            .expect("status signing digest");
+        let (signed_pubkey, status_signature) =
+            sign_bip340_prehash_v1(&claim_secret, &status_digest, &[0x63; 32])
+                .expect("status signature");
+        assert_eq!(signed_pubkey, claim_pubkey_xonly);
+        status_request.signature = status_signature;
+        let status_path = format!("/v1/quotes/{}/status", hex::encode(initial.quote_id));
+        let (status, content_type, settled_bytes) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            &status_path,
+            Some(CT_STATUS_REQUEST),
+            CT_QUOTE,
+            &status_request.encode().expect("status request encoding"),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, CT_QUOTE);
+        let settled = Bolt11QuoteV1::decode(&settled_bytes).expect("settled HTTP quote");
+        assert_eq!(settled.status, Bolt11QuoteStatusV1::PaymentSettled);
+
+        let claim_now = wait_until_after(settled.status_updated_at);
+        let parsed_settled =
+            ParsedBolt11InvoiceV1::parse(&settled.invoice).expect("parse settled invoice");
+        let verified_quote = settled
+            .verify_for_claim_submission(&intent, &delegation, &parsed_settled, claim_now)
+            .expect("claimable settled quote");
+        let issuance_request = CredentialIssuanceRequestV1 {
+            issuer_id,
+            quote_id: settled.quote_id,
+            quote_request_digest: settled.request_digest,
+            authorization: AuthScheme::Bolt11DirectReceiptV1,
+            credential_binding_digest: intent.credential_binding_digest,
+            credential_key_id: intent.credential_key_id.clone(),
+            items: CredentialIssuanceRequestItemsV1::DirectPaidReceipt,
+        };
+        let mut claim = Bolt11QuoteClaimV1 {
+            issuer_id,
+            quote_id: settled.quote_id,
+            quote_request_digest: settled.request_digest,
+            credential_request_digest: issuance_request
+                .request_digest()
+                .expect("issuance request digest"),
+            claim_pubkey_xonly,
+            idempotency_key: intent.idempotency_key,
+            signature: [1; 64],
+        };
+        let claim_digest = claim.bip340_signing_digest().expect("claim signing digest");
+        let (signed_pubkey, claim_signature) =
+            sign_bip340_prehash_v1(&claim_secret, &claim_digest, &[0x64; 32])
+                .expect("claim signature");
+        assert_eq!(signed_pubkey, claim_pubkey_xonly);
+        claim.signature = claim_signature;
+        let envelope = Bolt11QuoteClaimEnvelopeV1 {
+            quote_intent: intent.clone(),
+            claim,
+            credential_request: issuance_request.clone(),
+        }
+        .encode()
+        .expect("claim envelope encoding");
+        let claim_path = format!("/v1/quotes/{}/claim", hex::encode(settled.quote_id));
+        let (status, content_type, issuance_bytes) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            &claim_path,
+            Some(CT_CLAIM_ENVELOPE),
+            CT_ISSUANCE_RESPONSE,
+            &envelope,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, CT_ISSUANCE_RESPONSE);
+        let (replay_status, replay_content_type, replay_bytes) = http_exchange(
+            Arc::clone(&state),
+            "POST",
+            &claim_path,
+            Some(CT_CLAIM_ENVELOPE),
+            CT_ISSUANCE_RESPONSE,
+            &envelope,
+        );
+        assert_eq!(replay_status, 200);
+        assert_eq!(replay_content_type, CT_ISSUANCE_RESPONSE);
+        assert_eq!(replay_bytes, issuance_bytes);
+
+        let issuance = CredentialIssuanceResponseV1::decode(&issuance_bytes, None)
+            .expect("issuance response encoding");
+        let receipt = match issuance
+            .verify_for_verified_quote(
+                &issuance_request,
+                &verified_quote,
+                verified_offer
+                    .offer()
+                    .credential_binding
+                    .as_ref()
+                    .expect("receipt binding"),
+            )
+            .expect("verified issuance response")
+        {
+            CheckedCredentialIssuanceResponseV1::DirectPaidReceipts(receipts) => {
+                assert_eq!(receipts.len(), 1);
+                receipts.into_iter().next().expect("issued receipt")
+            }
+            _ => panic!("direct-receipt quote returned another credential scheme"),
+        };
+
+        let provider_floor = Arc::new(
+            SqliteRollbackFloorAuthorityV1::create(
+                directory.path().join("provider-floor.sqlite3"),
+                ProviderStoreOptions::default().busy_timeout,
+            )
+            .expect("provider rollback floor"),
+        );
+        let provider_store = ProviderStore::create(
+            directory.path().join("provider.sqlite3"),
+            [0x21; 16],
+            provider_id,
+            ProviderStoreOptions::default(),
+            provider_floor.clone(),
+        )
+        .expect("provider store");
+        let _ = provider_store
+            .install_verified_offer_namespace_v1(&verified_offer, claim_now, None)
+            .expect("install receipt namespace");
+        let operation = OperationStartV1::DpfQuery { db_id: 0 };
+        let auth = AuthBeginV1 {
+            policy_digest: verified_offer.policy_digest(),
+            scope_id,
+            offer_id: 9,
+            scheme: AuthScheme::Bolt11DirectReceiptV1,
+            key_id: verified_offer.offer().key_id.clone(),
+            operation: operation.clone(),
+            proof: receipt.encode().expect("receipt proof encoding"),
+        };
+        let auth = AuthBeginV1::decode_padded_for(
+            &auth
+                .encode_padded_for(policy.auth_padding_class)
+                .expect("padded authorization"),
+            policy.auth_padding_class,
+        )
+        .expect("canonical authorization frame");
+        let catalog = |candidate: &OperationStartV1| {
+            (candidate == &operation).then(|| {
+                TrustedCatalogResolutionV1::new(
+                    0,
+                    scope.backend,
+                    scope.workload,
+                    scope.protocol_version,
+                    scope.dataset.clone(),
+                    scope.operation_profile,
+                )
+            })
+        };
+        let attempt = bind_auth_begin_v1(&auth, verified_offer, &catalog, None)
+            .expect("bind issued receipt to provider operation");
+        let spend = verify_provider_local_bearer_spend_v1(&attempt, claim_now, None)
+            .expect("verify issued provider receipt");
+        provider_store
+            .spend_verified_provider_local_v1(spend)
+            .expect("commit issued provider receipt");
+
+        let reopened = ProviderStore::open_existing(
+            directory.path().join("provider.sqlite3"),
+            provider_id,
+            ProviderStoreOptions::default(),
+            provider_floor,
+        )
+        .expect("reopen provider store");
+        let replay_attempt = bind_auth_begin_v1(&auth, verified_offer, &catalog, None)
+            .expect("rebind exact receipt after restart");
+        let replay_spend = verify_provider_local_bearer_spend_v1(&replay_attempt, claim_now, None)
+            .expect("reverify exact receipt after restart");
+        assert!(matches!(
+            reopened.spend_verified_provider_local_v1(replay_spend),
+            Err(ProviderStoreError::AlreadySpent)
+        ));
     }
 }

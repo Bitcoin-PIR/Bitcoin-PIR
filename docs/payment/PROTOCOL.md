@@ -236,6 +236,21 @@ The padded canonical encoding begins with `version:u8 = 1`; the in-memory
 structure does not duplicate that constant. Padding is canonical all-zero
 bytes so it cannot become a client-controlled tagging channel.
 
+The executable wire-shape contract fixes the complete request record, not only
+the authorization body:
+
+```text
+body                         16,384 bytes
+opcode || body               16,385 bytes
+0xfe || sequence || AEAD(...) 16,410 bytes
+u32 length || sealed payload 16,414 bytes
+```
+
+The last number is the BitcoinPIR application record and excludes WebSocket,
+TLS and lower-layer framing. Each provider receives its own independently
+selected authorization request; the contract contains no peer-server or pair
+identifier.
+
 `OperationStartV1` contains only preconditions the server can cheaply validate
 before spending:
 
@@ -271,11 +286,17 @@ pub enum AuthResultV1 {
 }
 ```
 
-`AUTH_BEGIN_V1` requests are the fixed 16 KiB privacy class. V1 result bodies
-are canonical but variable length: an encrypted observer can distinguish a
-grant-shaped response from a rejection-shaped response. It still cannot infer
-the selected authorization scheme from request length. Padding result bodies
-is a compatible future privacy hardening, not a claim made by V1.
+`AUTH_BEGIN_V1` requests are the fixed 16 KiB privacy class. A network observer
+without the secure-channel key cannot infer the authorization scheme, service
+scope, operation variant or proof length from the request record length. It can
+still observe that an authorization occurred and its traffic timing. The
+provider decrypts the request and necessarily learns the selected scheme,
+scope, operation, credential presentation and arrival time.
+
+V1 result bodies are canonical but variable length, so a ciphertext observer
+can distinguish response shapes such as a grant from a rejection. Padding
+result bodies and traffic timing are compatible future privacy hardening; V1
+makes no claim that either is hidden.
 
 `retry_after_ms` is advisory for acquiring a new entitlement or selecting a
 different provider. It never authorizes resending a spent proof.
@@ -698,18 +719,29 @@ twice.
 
 ### Settlement
 
+Executable ledger-only `payment-issuer` routes:
+
 ```text
-GET  /v1/settlement/keysets
-POST /v1/settlement/deposits
 POST /v1/settlement/balance
 POST /v1/settlement/payout-intents
 POST /v1/settlement/payouts
 POST /v1/settlement/payout-status
 ```
 
-Deposit is authenticated, batched, idempotent, and double-spend safe. Actual
-Lightning payout is an operator action outside the query path and requires
-separate production/funds approval in this project.
+The following are transport-neutral model/store surfaces only and are **not
+routed by `payment-issuer`** in V1:
+
+```text
+GET  /v1/settlement/keysets
+POST /v1/settlement/deposits
+```
+
+The modeled deposit is authenticated, batched, idempotent, and double-spend
+safe, but serving it requires a separate retained-keyset operations ceremony
+that is not enabled. This distinction also keeps the executable HTTP listener
+at the smaller ledger-envelope bound rather than the deposit-only 64-note
+bound. Actual Lightning payout is an operator action outside the query path
+and requires separate production/funds approval in this project.
 
 Every retained settlement Cashu keyset registry is local trusted context bound
 to one `issuer_id`; a matching keyset ID from a different issuer lineage is
@@ -732,11 +764,20 @@ requires a `VerifiedPayoutExecutionV1` and an issuer-store callback that commits
 intent consumption, debit/reservation, payout, exact signed response, and
 outbox atomically; a lost uniqueness race returns no signed success response.
 
-Status polling uses a current provider-registration key, a fresh nonce, the
-exact original payout request, and the issuer-signed initial response. It is a
-live latest-snapshot read, not an idempotency-cached response. Signed
-`state_version` and `updated_at` strictly increase along
-`Accepted -> InFlight -> Succeeded|Failed`; terminal states cannot reverse.
+Fresh status polling uses a current provider-registration key, a fresh nonce,
+the exact original payout request, and the issuer-signed initial response. A
+fresh nonce commits a same-state signed successor through exact-predecessor
+CAS, so its signed `state_version` and `updated_at` increase. If that HTTP
+response is lost, an exact retry of the request matching the durable latest
+status returns the identical stored bytes, including after ordinary provider
+registration expiry or provider request-key rotation; only then may the issuer
+resolve the request's registration digest in its append-only local history and
+verify the historical key. That history cannot authorize a successor. A
+different nonce continues to require the current registration, even while the
+old registration's signed validity window has not expired. Registration
+history is retained indefinitely in V1 because only the latest exact status
+response is stored per payout. States progress only along
+`Accepted -> InFlight -> Succeeded|Failed`, and terminal states cannot reverse.
 Producing a status successor likewise requires a store compare-and-swap over
 the exact verified predecessor `(payout_id, request digest, ledger transaction,
 state, state_version, updated_at)`. A committed issuer-side successor increments

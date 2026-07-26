@@ -1062,3 +1062,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "directory_fake_relay_tests.rs"]
+mod directory_fake_relay_tests;

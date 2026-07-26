@@ -1641,7 +1641,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerExpectedPayeeV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerExpectedPayeeV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError, renderSecurityBadgeTextRowsV1 } from './src/index.ts';
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
             if (ok) console.log('[PIR] SDK WASM loaded');
@@ -2185,25 +2185,24 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             el.style.display = 'block';
 
             const rows = [];
-            rows.push(`<span class="ab-state">${stateLabel}</span>`);
             if (info.binarySha256Hex) {
-                rows.push(`<div class="ab-row"><span class="ab-label">binary</span><span class="ab-val" title="${info.binarySha256Hex}">${truncate(info.binarySha256Hex, 24)}</span></div>`);
+                rows.push({ label: 'binary', value: truncate(info.binarySha256Hex, 24), title: info.binarySha256Hex });
             }
             if (info.launchMeasurementHex) {
-                rows.push(`<div class="ab-row"><span class="ab-label">measurement</span><span class="ab-val" title="${info.launchMeasurementHex}">${truncate(info.launchMeasurementHex, 24)}</span></div>`);
+                rows.push({ label: 'measurement', value: truncate(info.launchMeasurementHex, 24), title: info.launchMeasurementHex });
             }
             if (info.serverStaticPubHex) {
-                rows.push(`<div class="ab-row"><span class="ab-label">channel pk</span><span class="ab-val" title="${info.serverStaticPubHex}">${truncate(info.serverStaticPubHex, 24)}</span></div>`);
+                rows.push({ label: 'channel pk', value: truncate(info.serverStaticPubHex, 24), title: info.serverStaticPubHex });
             }
             if (info.gitRev) {
-                rows.push(`<div class="ab-row"><span class="ab-label">git rev</span><span class="ab-val" title="${info.gitRev}">${truncate(info.gitRev, 12)}</span></div>`);
+                rows.push({ label: 'git rev', value: truncate(info.gitRev, 12), title: info.gitRev });
             }
             if (info.vcekChain) {
                 const chainLabel = info.vcekChain === 'pass' ? '✓ chain validated'
                                  : info.vcekChain === 'fail' ? `✗ chain failed: ${info.vcekChainError || 'unknown'}`
                                  : info.vcekChain === 'skipped' ? '— chain not bundled by server'
                                  : info.vcekChain;
-                rows.push(`<div class="ab-row"><span class="ab-label">vcek</span><span class="ab-val">${chainLabel}</span></div>`);
+                rows.push({ label: 'vcek', value: String(chainLabel) });
             }
             if (info.pinStatus) {
                 const pinLabel = info.pinStatus === 'match' ? '🔒 build-time pin matched'
@@ -2211,12 +2210,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                : info.pinStatus === 'binary-mismatch' ? `⚠ ${info.pinError || 'binary sha pin mismatch'}`
                                : info.pinStatus === 'no-pin' ? '— no build-time pin configured'
                                : info.pinStatus;
-                rows.push(`<div class="ab-row"><span class="ab-label">pin</span><span class="ab-val" title="${info.pinError || ''}">${pinLabel}</span></div>`);
+                rows.push({ label: 'pin', value: String(pinLabel), title: String(info.pinError || '') });
             }
             if (info.sevStatus) {
-                rows.push(`<div class="ab-row"><span class="ab-label">sev status</span><span class="ab-val">${info.sevStatus}</span></div>`);
+                rows.push({ label: 'sev status', value: String(info.sevStatus) });
             }
-            el.innerHTML = rows.join('');
+            renderSecurityBadgeTextRowsV1(el, String(stateLabel), rows);
         }
 
         // Operator-signed identity badge, populated from the adapter's
@@ -2237,22 +2236,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             el.style.display = 'block';
 
             const rows = [];
+            let stateLabel;
             if (oid.state === 'verified') {
-                rows.push(`<span class="ab-state">🔏 Operator-endorsed — ${oid.serverId || 'identity'} verified</span>`);
+                stateLabel = `🔏 Operator-endorsed — ${oid.serverId || 'identity'} verified`;
                 if (oid.operatorPubkeyHex) {
-                    rows.push(`<div class="ab-row"><span class="ab-label">operator</span><span class="ab-val" title="${oid.operatorPubkeyHex}">${truncate(oid.operatorPubkeyHex, 24)}</span></div>`);
+                    rows.push({ label: 'operator', value: truncate(oid.operatorPubkeyHex, 24), title: oid.operatorPubkeyHex });
                 }
                 if (oid.identityPubkeyHex) {
-                    rows.push(`<div class="ab-row"><span class="ab-label">identity</span><span class="ab-val" title="${oid.identityPubkeyHex}">${truncate(oid.identityPubkeyHex, 24)}</span></div>`);
+                    rows.push({ label: 'identity', value: truncate(oid.identityPubkeyHex, 24), title: oid.identityPubkeyHex });
                 }
                 if (oid.gitRev) {
-                    rows.push(`<div class="ab-row"><span class="ab-label">git rev</span><span class="ab-val" title="${oid.gitRev}">${truncate(oid.gitRev, 12)}</span></div>`);
+                    rows.push({ label: 'git rev', value: truncate(oid.gitRev, 12), title: oid.gitRev });
                 }
             } else {
-                rows.push(`<span class="ab-state">⚠ Operator identity UNVERIFIED</span>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">reason</span><span class="ab-val" title="${oid.error || ''}">${oid.error || 'check failed'}</span></div>`);
+                stateLabel = '⚠ Operator identity UNVERIFIED';
+                rows.push({ label: 'reason', value: String(oid.error || 'check failed'), title: String(oid.error || '') });
             }
-            el.innerHTML = rows.join('');
+            renderSecurityBadgeTextRowsV1(el, stateLabel, rows);
         }
 
         function escapeHtml(value) {

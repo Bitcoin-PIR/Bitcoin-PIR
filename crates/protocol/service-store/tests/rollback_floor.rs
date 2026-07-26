@@ -251,6 +251,13 @@ fn fresh_create_and_normal_restart_require_the_exact_external_floor() {
     let identity = store.identity().unwrap();
     assert_eq!(identity.store_generation, 0);
     assert_eq!(identity.spend_commit_seq, 0);
+    let inventory = store.operational_inventory().unwrap();
+    assert_eq!(inventory.observed_store_generation, 0);
+    assert_eq!(inventory.observed_spend_commit_seq, 0);
+    assert_eq!(inventory.namespace_rows, 0);
+    assert_eq!(inventory.spent_capability_rows, 0);
+    assert_eq!(inventory.free_rate_limit_bucket_rows, 0);
+    assert_eq!(inventory.cashu_swap_intent_rows, 0);
     assert_eq!(
         authority.floor().unwrap().rollback_commitment,
         identity.rollback_commitment

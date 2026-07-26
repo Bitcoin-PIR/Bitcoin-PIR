@@ -6,6 +6,9 @@ on:
     paths:
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
       - 'apps/payment-issuer/**'
       - 'apps/admin/**'
       - 'apps/server/**'
@@ -18,15 +21,20 @@ on:
       - 'crates/protocol/service-store/**'
       - 'crates/sdk/client/**'
       - 'crates/sdk/wasm/**'
+      - 'crates/trust/**'
       - 'docs/payment/**'
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-local-check.sh'
+      - 'web/**'
       - '.github/workflows/payment-platform.yml'
   pull_request:
     branches: [main]
     paths:
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
       - 'apps/payment-issuer/**'
       - 'apps/admin/**'
       - 'apps/server/**'
@@ -39,9 +47,11 @@ on:
       - 'crates/protocol/service-store/**'
       - 'crates/sdk/client/**'
       - 'crates/sdk/wasm/**'
+      - 'crates/trust/**'
       - 'docs/payment/**'
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-local-check.sh'
+      - 'web/**'
       - '.github/workflows/payment-platform.yml'
   workflow_dispatch:
 
@@ -51,13 +61,15 @@ permissions:
 jobs:
   protocol-and-persistence:
     name: Protocol, stores, adapters, issuer and runtime
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install --profile minimal
       - name: Test payment platform offline
@@ -88,10 +100,36 @@ jobs:
           -p pir-payment-crypto
           --features provider-store
           --test provider_store_bat_adapter
+      - name: Deny warnings across dedicated Payment V1 crates and issuer
+        run: >-
+          cargo clippy --offline --all-targets --no-deps
+          -p pir-service-protocol
+          -p pir-service-store
+          -p pir-payment-crypto
+          -p pir-lightning-backend
+          -p pir-issuer-store
+          -p pir-issuer-core
+          -p pir-issuer-credentials
+          -p pir-issuer-clearing
+          -p pir-issuer-service
+          -p pir-provider-clearing-client
+          -p pir-cashu-client
+          -p pir-arc-adapter
+          -p pir-directory-nostr
+          -p payment-issuer
+          -p bpir-admin
+          -- -D warnings
+      - name: Exercise bounded Payment V1 adversarial corpus
+        run: |
+          cargo test --offline -p pir-service-protocol --test payment_v1_adversarial
+          cargo test --offline -p pir-runtime-core --test service_admission_adversarial
+          cargo test --offline -p runtime --bin unified_server service_http::adversarial_tests::
       - name: Check unified server admission wiring
         run: cargo check --offline -p runtime --bin unified_server
       - name: Exercise loopback two-provider process admission
-        run: cargo test --offline -p runtime --test payment_v1_process_e2e
+        run: |
+          cargo test --offline -p runtime --test payment_v1_process_e2e
+          cargo test --offline -p runtime --test payment_v1_methods_process_e2e
       - name: Exercise deterministic no-funds operator fixture
         run: |
           fixture_root="$(mktemp -d "${RUNNER_TEMP}/bpir-payment-v1-fixture.XXXXXX")"
@@ -101,16 +139,77 @@ jobs:
 
   wasm-boundary:
     name: Browser payment and directory boundary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install pinned Rust toolchain with wasm32
         run: |
           rustup toolchain install --profile minimal
           rustup target add wasm32-unknown-unknown
       - name: Check WASM without native provider storage
         run: cargo check --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
+
+  browser-storage-boundary:
+    name: Chromium vault and real no-funds issuer boundaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain with wasm32
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add wasm32-unknown-unknown
+      - name: Install pinned WASM tools without executing a remote installer
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo +1.94.1 install wasm-pack \
+            --version 0.14.0 \
+            --locked \
+            --root "$RUNNER_TEMP/wasm-pack"
+          cargo +1.94.1 install wasm-bindgen-cli \
+            --version 0.2.114 \
+            --locked \
+            --root "$RUNNER_TEMP/wasm-pack"
+          echo "$RUNNER_TEMP/wasm-pack/bin" >> "$GITHUB_PATH"
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+      - name: Install pinned web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Install Chromium test runtime
+        working-directory: web
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Generate current pir-sdk-wasm browser package
+        run: >-
+          CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm
+          --target web --out-dir pkg --mode no-install --no-opt
+          -- --locked --offline
+      - name: Exercise local multi-tab vault and claim recovery
+        working-directory: web
+        run: npm run test:e2e:payment-vault
+      - name: Exercise real WASM against the loopback no-funds issuer
+        working-directory: web
+        run: npm run test:e2e:payment-real-issuer
+      - name: Upload browser boundary failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: payment-vault-browser-${{ github.run_id }}
+          path: |
+            web/test-results/payment-vault/
+            web/test-results/payment-real-issuer/
+          if-no-files-found: ignore
+          retention-days: 14

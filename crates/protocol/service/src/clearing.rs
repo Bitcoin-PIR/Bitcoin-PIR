@@ -1114,6 +1114,31 @@ pub fn verify_committed_redeem_replay_auth_v1(
 ) -> Result<(), ServiceProtocolError> {
     request.validate()?;
     request.validate_against_authorization(authorization)?;
+    verify_committed_clearing_request_auth_v1(
+        &request.authorization_digest,
+        &request.request_digest()?,
+        authorization,
+        issuer_approval,
+        request_auth,
+        expectation,
+    )
+}
+
+/// Authenticates an exact request whose economic response is already present
+/// in a rollback-protected issuer store. It never authorizes a new mutation.
+///
+/// The caller must first match the request against the durable idempotency row
+/// and perform operation-specific binding checks. Historical signature
+/// validity is evaluated at the start of the authorization/approval overlap so
+/// routine expiry does not strand a response lost at the HTTP boundary.
+pub fn verify_committed_clearing_request_auth_v1(
+    expected_authorization_digest: &[u8; 32],
+    expected_request_digest: &[u8; 32],
+    authorization: &ProviderClearingAuthorizationV1,
+    issuer_approval: &IssuerClearingApprovalV1,
+    request_auth: &ProviderClearingRequestAuthV1,
+    expectation: &CommittedRedeemReplayExpectationV1<'_>,
+) -> Result<(), ServiceProtocolError> {
     let verification_time = authorization
         .claims
         .not_before
@@ -1127,8 +1152,8 @@ pub fn verify_committed_redeem_replay_auth_v1(
         });
     }
     request_auth.verify_for(
-        &request.authorization_digest,
-        &request.request_digest()?,
+        expected_authorization_digest,
+        expected_request_digest,
         authorization,
         issuer_approval,
         &ProviderClearingExpectationV1 {

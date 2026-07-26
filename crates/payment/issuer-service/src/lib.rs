@@ -12,7 +12,9 @@ use std::sync::Arc;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use pir_arc_adapter::{ArcIssuanceCanonicalizerV1, ArcSecretKeyringV1};
 use pir_issuer_clearing::{
-    prepare_redeem_response_v1, RedeemResponseDerivationKeyV1, SharedIssuerCredentialVerifierV1,
+    prepare_payout_intent_response_v1, prepare_redeem_response_v1,
+    sign_and_commit_payout_execution_v1, sign_and_commit_payout_status_v1,
+    RedeemResponseDerivationKeyV1, SharedIssuerCredentialVerifierV1,
 };
 use pir_issuer_core::{
     Bolt11IssuerCoreV1, IssuerCoreErrorV1, QuoteIdSourceV1, QuoteReconcileDispositionV1,
@@ -23,22 +25,31 @@ use pir_issuer_credentials::{
     IssuerCredentialDerivationKeyV1, PreparedCredentialIssuanceV1,
 };
 use pir_issuer_store::{
-    ClaimCryptographicVerificationInput, ClaimWrite, IssuerStore, QuoteCapacityV1, QuoteState,
-    QuoteStatusBip340Input, StoreError, VerifiedRedeemCommitV1,
+    ClaimCryptographicVerificationInput, ClaimWrite, IssuerStore,
+    ProviderSettlementRegistrationRecordV1, QuoteCapacityV1, QuoteState, QuoteStatusBip340Input,
+    StoreError, VerifiedRedeemCommitV1,
 };
 use pir_lightning_backend::LightningInvoiceBackendV1;
 use pir_payment_crypto::{
     K256Bip340PrehashVerifierV1, K256CashuDleqVerifierV1, K256CashuMintKeyringV1,
 };
 use pir_service_protocol::{
+    verify_committed_clearing_request_auth_v1, verify_committed_payout_status_replay_auth_v1,
     verify_committed_redeem_replay_auth_v1, verify_ledger_redeem_response_for_exact_request_v1,
-    verify_redeem_response_for_exact_request, AcquisitionMethod, AuthScheme,
-    Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
-    Bolt11QuoteKeyRollbackGuardV1, Bolt11QuoteStatusRequestV1, Bolt11QuoteStatusV1, Bolt11QuoteV1,
-    CashuKeysetBindingV1, CommittedRedeemReplayExpectationV1, IssuerClearingApprovalV1,
-    ParsedBolt11InvoiceV1, PolicyRollbackGuardV1, ProviderClearingAuthorizationV1,
-    ProviderClearingExpectationV1, ProviderRedeemEnvelopeV1, RetainedSettlementKeysetExpectationV1,
-    ServicePolicyEpochFloorsV1, ServicePolicyV1, SettlementDestinationV1,
+    verify_new_balance_request_for, verify_new_payout_request_for,
+    verify_new_payout_status_request_for, verify_payout_initial_response_for_exact_request,
+    verify_persisted_payout_snapshot_for_store_v1, verify_redeem_response_for_exact_request,
+    AcquisitionMethod, AuthScheme, Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1,
+    Bolt11QuoteKeyDelegationV1, Bolt11QuoteKeyRollbackGuardV1, Bolt11QuoteStatusRequestV1,
+    Bolt11QuoteStatusV1, Bolt11QuoteV1, CashuKeysetBindingV1, CommittedRedeemReplayExpectationV1,
+    IssuerBalanceResponseV1, IssuerClearingApprovalV1, IssuerPayoutIntentResponseV1,
+    IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1, IssuerSettlementKeyringExpectationV1,
+    ParsedBolt11InvoiceV1, PayoutCommitErrorV1, PayoutExecutionContextV1, PayoutStatusContextV1,
+    PolicyRollbackGuardV1, ProviderBalanceEnvelopeV1, ProviderClearingAuthorizationV1,
+    ProviderClearingExpectationV1, ProviderPayoutEnvelopeV1, ProviderPayoutIntentEnvelopeV1,
+    ProviderPayoutStatusEnvelopeV1, ProviderRedeemEnvelopeV1,
+    ProviderSettlementRegistrationExpectationV1, RetainedSettlementKeysetExpectationV1,
+    ServicePolicyEpochFloorsV1, ServicePolicyV1, SettlementDestinationV1, MAX_SERVICE_VALUE_V1,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1157,6 +1168,28 @@ pub struct TrustedClearingProviderV1 {
     pub minimum_authorization_epoch: u64,
 }
 
+/// Operator-selected commercial policy for provider payouts. It is kept out
+/// of signed credential and PIR authorization semantics: changing this value
+/// changes only newly issued payout intents, never ticket value or query
+/// entitlement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SettlementPayoutPolicyV1 {
+    pub issuer_fee: u64,
+    pub intent_ttl_seconds: u64,
+}
+
+impl SettlementPayoutPolicyV1 {
+    pub fn new(issuer_fee: u64, intent_ttl_seconds: u64) -> Result<Self, IssuerServiceErrorV1> {
+        if issuer_fee > MAX_SERVICE_VALUE_V1 || !(1..=86_400).contains(&intent_ttl_seconds) {
+            return Err(IssuerServiceErrorV1::InvalidRequest);
+        }
+        Ok(Self {
+            issuer_fee,
+            intent_ttl_seconds,
+        })
+    }
+}
+
 impl fmt::Debug for TrustedClearingProviderV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1178,9 +1211,19 @@ pub struct SharedIssuerClearingServiceV1 {
     bat_keyring: Option<Arc<K256CashuMintKeyringV1>>,
     arc_keyring_experimental: Option<Arc<ArcSecretKeyringV1>>,
     issuer_settlement_signing_key: SigningKey,
+    retained_issuer_settlement_keys: Vec<VerifyingKey>,
     settlement_keyring: Option<Arc<K256CashuMintKeyringV1>>,
     retained_settlement_keysets: Vec<CashuKeysetBindingV1>,
     response_derivation_key: RedeemResponseDerivationKeyV1,
+    payout_policy: SettlementPayoutPolicyV1,
+}
+
+struct LoadedClearingContextV1 {
+    authorization: ProviderClearingAuthorizationV1,
+    approval: IssuerClearingApprovalV1,
+    operator_key: VerifyingKey,
+    minimum_authorization_epoch: u64,
+    registration: ProviderSettlementRegistrationRecordV1,
 }
 
 impl fmt::Debug for SharedIssuerClearingServiceV1 {
@@ -1195,6 +1238,11 @@ impl fmt::Debug for SharedIssuerClearingServiceV1 {
                 "settlement_keyset_count",
                 &self.retained_settlement_keysets.len(),
             )
+            .field(
+                "retained_settlement_signing_key_count",
+                &self.retained_issuer_settlement_keys.len(),
+            )
+            .field("payout_policy", &self.payout_policy)
             .finish_non_exhaustive()
     }
 }
@@ -1207,9 +1255,11 @@ impl SharedIssuerClearingServiceV1 {
         bat_keyring: Option<Arc<K256CashuMintKeyringV1>>,
         arc_keyring_experimental: Option<Arc<ArcSecretKeyringV1>>,
         issuer_settlement_signing_key: SigningKey,
+        retained_issuer_settlement_keys: Vec<VerifyingKey>,
         settlement_keyring: Option<Arc<K256CashuMintKeyringV1>>,
         retained_settlement_keysets: Vec<CashuKeysetBindingV1>,
         response_derivation_key: RedeemResponseDerivationKeyV1,
+        payout_policy: SettlementPayoutPolicyV1,
     ) -> Result<Self, IssuerServiceErrorV1> {
         providers.sort_by_key(|provider| provider.provider_id);
         if providers.is_empty()
@@ -1223,15 +1273,25 @@ impl SharedIssuerClearingServiceV1 {
         {
             return Err(IssuerServiceErrorV1::InvalidRequest);
         }
+        let current_settlement_key = issuer_settlement_signing_key.verifying_key();
+        let mut retained_key_bytes = BTreeSet::new();
+        if retained_issuer_settlement_keys.iter().any(|key| {
+            key.to_bytes() == current_settlement_key.to_bytes()
+                || !retained_key_bytes.insert(key.to_bytes())
+        }) {
+            return Err(IssuerServiceErrorV1::InvalidRequest);
+        }
         Ok(Self {
             store,
             providers,
             bat_keyring,
             arc_keyring_experimental,
             issuer_settlement_signing_key,
+            retained_issuer_settlement_keys,
             settlement_keyring,
             retained_settlement_keysets,
             response_derivation_key,
+            payout_policy,
         })
     }
 
@@ -1290,6 +1350,11 @@ impl SharedIssuerClearingServiceV1 {
             let historical_operator_key =
                 VerifyingKey::from_bytes(&authorization.operator_verifying_key)
                     .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            let keyring =
+                self.issuer_settlement_keyring(&identity.issuer_id, &settlement_verifying_key);
+            let historical_approval_key = keyring
+                .resolve_for_issuer(&identity.issuer_id, &approval.issuer_settlement_key_id)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
             verify_committed_redeem_replay_auth_v1(
                 &envelope.request,
                 &authorization,
@@ -1299,18 +1364,21 @@ impl SharedIssuerClearingServiceV1 {
                     provider_id: &provider.provider_id,
                     issuer_id: &identity.issuer_id,
                     operator_key: &historical_operator_key,
-                    issuer_settlement_key: &settlement_verifying_key,
+                    issuer_settlement_key: historical_approval_key,
                 },
             )
             .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
             let response =
                 pir_service_protocol::ProviderRedeemResponseV1::decode(&existing.exact_response)
                     .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            let historical_response_key = keyring
+                .resolve_for_issuer(&identity.issuer_id, &response.issuer_settlement_key_id)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
             self.verify_redeem_response(
                 &response,
                 &envelope.request,
                 &authorization,
-                &settlement_verifying_key,
+                historical_response_key,
                 now_unix,
             )?;
             return Ok(existing.exact_response);
@@ -1361,6 +1429,518 @@ impl SharedIssuerClearingServiceV1 {
             })
             .map_err(map_store_error)?;
         Ok(committed.value.exact_response)
+    }
+
+    /// `POST /v1/settlement/balance` body handler. This is a live signed read;
+    /// its request nonce is authenticated but not persisted as an economic
+    /// idempotency key.
+    pub fn balance(
+        &self,
+        canonical_envelope: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let envelope = ProviderBalanceEnvelopeV1::decode(canonical_envelope)
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        let context = self.load_clearing_context(
+            &envelope.request.provider_id,
+            &envelope.request.authorization_digest,
+        )?;
+        let settlement_key = self.issuer_settlement_signing_key.verifying_key();
+        let expectation = self.clearing_expectation(&context, &settlement_key, now_unix);
+        verify_new_balance_request_for(
+            &envelope.request,
+            &context.authorization,
+            &context.approval,
+            &envelope.request_auth,
+            &expectation,
+        )
+        .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        let balance = self
+            .store
+            .provider_ledger_balance(&envelope.request.provider_id)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::NotFound)?;
+        if balance.account_id != envelope.request.account_id
+            || balance.unit != envelope.request.unit
+        {
+            return Err(IssuerServiceErrorV1::Unauthorized);
+        }
+        IssuerBalanceResponseV1::sign(
+            IssuerBalanceResponseV1 {
+                issuer_settlement_key_id: [0; 16],
+                request_digest: envelope
+                    .request
+                    .request_digest()
+                    .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?,
+                authorization_digest: envelope.request.authorization_digest,
+                issuer_id: envelope.request.issuer_id,
+                provider_id: envelope.request.provider_id,
+                account_id: envelope.request.account_id,
+                unit: envelope.request.unit,
+                available_value: balance.available_value,
+                reserved_value: balance.reserved_value,
+                ledger_sequence: balance.ledger_sequence,
+                as_of_unix: now_unix,
+                signature: [0; 64],
+            },
+            &self.issuer_settlement_signing_key,
+        )
+        .and_then(|response| response.encode())
+        .map_err(|_| IssuerServiceErrorV1::Internal)
+    }
+
+    /// `POST /v1/settlement/payout-intents` body handler. Commercial fee and
+    /// expiry policy are supplied by operator configuration and snapshotted in
+    /// the signed, durably idempotent response.
+    pub fn payout_intent(
+        &self,
+        canonical_envelope: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let envelope = ProviderPayoutIntentEnvelopeV1::decode(canonical_envelope)
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        let context = self.load_clearing_context(
+            &envelope.request.provider_id,
+            &envelope.request.authorization_digest,
+        )?;
+        let settlement_key = self.issuer_settlement_signing_key.verifying_key();
+        let expectation = self.clearing_expectation(&context, &settlement_key, now_unix);
+        if let Some(existing) = self
+            .store
+            .payout_intent_by_idempotency(&envelope.request)
+            .map_err(map_store_error)?
+        {
+            self.verify_committed_clearing_auth(
+                &envelope.request.authorization_digest,
+                &envelope
+                    .request
+                    .request_digest()
+                    .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?,
+                &context,
+                &envelope.request_auth,
+            )?;
+            let response = IssuerPayoutIntentResponseV1::decode(&existing.exact_response)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            let keyring = self.issuer_settlement_keyring(
+                &context.authorization.claims.issuer_id,
+                &settlement_key,
+            );
+            let signing_key = keyring
+                .resolve_for_issuer(
+                    &envelope.request.issuer_id,
+                    &response.issuer_settlement_key_id,
+                )
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            response
+                .verify_for_exact_request(&envelope.request, signing_key)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            return Ok(existing.exact_response);
+        }
+        pir_service_protocol::verify_new_payout_intent_request_for(
+            &envelope.request,
+            &context.registration.payout_target_id,
+            &context.authorization,
+            &context.approval,
+            &envelope.request_auth,
+            &expectation,
+        )
+        .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        let expires_at = now_unix
+            .checked_add(self.payout_policy.intent_ttl_seconds)
+            .ok_or(IssuerServiceErrorV1::InvalidRequest)?;
+        let response = prepare_payout_intent_response_v1(
+            &envelope.request,
+            self.payout_policy.issuer_fee,
+            expires_at,
+            &self.issuer_settlement_signing_key,
+        )
+        .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        match self.store.commit_payout_intent(
+            &envelope.request,
+            &response,
+            &context.authorization,
+            &context.approval,
+            &envelope.request_auth,
+            &expectation,
+        ) {
+            Ok(committed) => Ok(committed.value.exact_response),
+            Err(StoreError::PayoutIntentIdempotencyConflict) => self
+                .store
+                .payout_intent_by_idempotency(&envelope.request)
+                .map_err(map_store_error)?
+                .map(|record| record.exact_response)
+                .ok_or(IssuerServiceErrorV1::Conflict),
+            Err(error) => Err(map_store_error(error)),
+        }
+    }
+
+    /// `POST /v1/settlement/payouts` body handler. A success response cannot
+    /// escape until intent consumption, balance reservation, payout record and
+    /// outbox command commit atomically.
+    pub fn payout(
+        &self,
+        canonical_envelope: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let envelope = ProviderPayoutEnvelopeV1::decode(canonical_envelope)
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        let context = self.load_clearing_context(
+            &envelope.request.provider_id,
+            &envelope.request.authorization_digest,
+        )?;
+        let settlement_key = self.issuer_settlement_signing_key.verifying_key();
+        let expectation = self.clearing_expectation(&context, &settlement_key, now_unix);
+        let stored_intent = self
+            .store
+            .payout_intent_by_idempotency(&envelope.intent_request)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::NotFound)?;
+        if stored_intent.exact_response
+            != envelope
+                .intent_response
+                .encode()
+                .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
+        {
+            return Err(IssuerServiceErrorV1::Conflict);
+        }
+        let payout_context = PayoutExecutionContextV1 {
+            intent_request: &envelope.intent_request,
+            intent_response: &envelope.intent_response,
+            registered_payout_target_id: &context.registration.payout_target_id,
+        };
+        if let Some(existing) = self
+            .store
+            .payout_by_idempotency(&envelope.request)
+            .map_err(map_store_error)?
+        {
+            self.verify_committed_clearing_auth(
+                &envelope.request.authorization_digest,
+                &envelope
+                    .request
+                    .request_digest()
+                    .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?,
+                &context,
+                &envelope.request_auth,
+            )?;
+            let response = IssuerPayoutResponseV1::decode(&existing.exact_initial_response)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            let keyring =
+                self.issuer_settlement_keyring(&envelope.request.issuer_id, &settlement_key);
+            verify_payout_initial_response_for_exact_request(
+                &response,
+                &envelope.request,
+                &keyring,
+            )
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+            return Ok(existing.exact_initial_response);
+        }
+        let execution = verify_new_payout_request_for(
+            &envelope.request,
+            &payout_context,
+            &context.authorization,
+            &context.approval,
+            &envelope.request_auth,
+            &expectation,
+        )
+        .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        let mut committer = self.store.payout_execution_committer(&settlement_key);
+        match sign_and_commit_payout_execution_v1(
+            &execution,
+            now_unix,
+            &self.issuer_settlement_signing_key,
+            &mut committer,
+        ) {
+            Ok(response) => response
+                .encode()
+                .map_err(|_| IssuerServiceErrorV1::Internal),
+            Err(PayoutCommitErrorV1::Conflict { .. }) => self
+                .store
+                .payout_by_idempotency(&envelope.request)
+                .map_err(map_store_error)?
+                .map(|record| record.exact_initial_response)
+                .ok_or(IssuerServiceErrorV1::Conflict),
+            Err(PayoutCommitErrorV1::Store(error)) => Err(map_store_error(error)),
+            Err(PayoutCommitErrorV1::Protocol(_)) => Err(IssuerServiceErrorV1::InvalidRequest),
+        }
+    }
+
+    /// `POST /v1/settlement/payout-status` body handler. Exact retries return
+    /// the already committed response and may use the request's retained
+    /// provider registration after rotation. Fresh nonces use only the current
+    /// registration and produce a same-state signed successor through the
+    /// store's exact-predecessor CAS.
+    pub fn payout_status(
+        &self,
+        canonical_envelope: &[u8],
+        now_unix: u64,
+    ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let envelope = ProviderPayoutStatusEnvelopeV1::decode(canonical_envelope)
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        let identity = self.store.identity().map_err(map_store_error)?;
+        let current_settlement_key = self.issuer_settlement_signing_key.verifying_key();
+        let issuer_keyring = IssuerSettlementKeyringExpectationV1 {
+            issuer_id: &identity.issuer_id,
+            current_key: &current_settlement_key,
+            retained_keys: &self.retained_issuer_settlement_keys,
+        };
+        let payout_context = PayoutStatusContextV1 {
+            payout_request: &envelope.payout_request,
+            initial_payout_response: &envelope.initial_payout_response,
+        };
+        let record = self
+            .store
+            .payout_by_id(&envelope.request.payout_id)
+            .map_err(map_store_error)?;
+        let status_request_digest = envelope
+            .request
+            .request_digest()
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        let exact_replay = record
+            .as_ref()
+            .filter(|record| record.provider_id == envelope.request.provider_id)
+            .and_then(|record| record.exact_latest_status_response.as_deref())
+            .and_then(|exact| IssuerPayoutStatusResponseV1::decode(exact).ok())
+            .is_some_and(|response| response.request_digest == status_request_digest);
+        let current_registration = self
+            .store
+            .provider_settlement_registration(&envelope.request.provider_id)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::Unauthorized)?;
+        let registration = if exact_replay
+            && current_registration.registration_digest != envelope.request.registration_digest
+        {
+            self.store
+                .historical_provider_settlement_registration(
+                    &envelope.request.provider_id,
+                    &envelope.request.registration_digest,
+                )
+                .map_err(map_store_error)?
+                .ok_or(IssuerServiceErrorV1::Unauthorized)?
+        } else {
+            current_registration
+        };
+        let provider_request_key =
+            VerifyingKey::from_bytes(&registration.provider_request_verifying_key)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let registration_expectation = ProviderSettlementRegistrationExpectationV1 {
+            registration_digest: &registration.registration_digest,
+            provider_id: &registration.provider_id,
+            issuer_id: &identity.issuer_id,
+            settlement_account_id: &registration.settlement_account_id,
+            provider_request_key: &provider_request_key,
+            issuer_settlement_key: &current_settlement_key,
+            not_before: registration.not_before,
+            not_after: registration.not_after,
+            now_unix,
+        };
+        if exact_replay {
+            verify_committed_payout_status_replay_auth_v1(
+                &envelope.request,
+                &payout_context,
+                &envelope.request_auth,
+                &registration_expectation,
+                &issuer_keyring,
+            )
+            .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        } else {
+            verify_new_payout_status_request_for(
+                &envelope.request,
+                &payout_context,
+                &envelope.request_auth,
+                &registration_expectation,
+                &issuer_keyring,
+            )
+            .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
+        }
+        let record = record.ok_or(IssuerServiceErrorV1::NotFound)?;
+        let exact_initial = envelope
+            .initial_payout_response
+            .encode()
+            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
+        if record.exact_initial_response != exact_initial
+            || record.request_digest
+                != envelope
+                    .payout_request
+                    .request_digest()
+                    .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
+        {
+            return Err(IssuerServiceErrorV1::Conflict);
+        }
+        let latest = record
+            .exact_latest_status_response
+            .as_deref()
+            .map(IssuerPayoutStatusResponseV1::decode)
+            .transpose()
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let current = verify_persisted_payout_snapshot_for_store_v1(
+            &envelope.payout_request,
+            &envelope.initial_payout_response,
+            latest.as_ref(),
+            &issuer_keyring,
+        )
+        .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        if current.payout_id() != &record.payout_id
+            || current.payout_request_digest() != &record.request_digest
+            || current.ledger_transaction_id() != &record.ledger_transaction_id
+            || current.state() != record.state
+            || current.state_version() != record.state_version
+            || current.updated_at() != record.updated_at
+        {
+            return Err(IssuerServiceErrorV1::Internal);
+        }
+        if let (Some(latest), Some(exact)) = (
+            latest.as_ref(),
+            record.exact_latest_status_response.as_ref(),
+        ) {
+            if latest.request_digest == status_request_digest {
+                return Ok(exact.clone());
+            }
+        }
+        if now_unix <= current.updated_at() {
+            return Err(IssuerServiceErrorV1::RetryableUnavailable);
+        }
+        let mut committer = self.store.payout_status_committer(&current_settlement_key);
+        match sign_and_commit_payout_status_v1(
+            &envelope.request,
+            &envelope.initial_payout_response,
+            &current,
+            current.state(),
+            now_unix,
+            &self.issuer_settlement_signing_key,
+            &mut committer,
+        ) {
+            Ok(response) => response
+                .encode()
+                .map_err(|_| IssuerServiceErrorV1::Internal),
+            Err(PayoutCommitErrorV1::Conflict { .. }) => {
+                let raced = self
+                    .store
+                    .payout_by_id(&envelope.request.payout_id)
+                    .map_err(map_store_error)?
+                    .ok_or(IssuerServiceErrorV1::NotFound)?;
+                let Some(exact) = raced.exact_latest_status_response else {
+                    return Err(IssuerServiceErrorV1::RetryableUnavailable);
+                };
+                let response = IssuerPayoutStatusResponseV1::decode(&exact)
+                    .map_err(|_| IssuerServiceErrorV1::Internal)?;
+                if response.request_digest == status_request_digest {
+                    Ok(exact)
+                } else {
+                    Err(IssuerServiceErrorV1::RetryableUnavailable)
+                }
+            }
+            Err(PayoutCommitErrorV1::Store(error)) => Err(map_store_error(error)),
+            Err(PayoutCommitErrorV1::Protocol(_)) => Err(IssuerServiceErrorV1::Internal),
+        }
+    }
+
+    fn load_clearing_context(
+        &self,
+        provider_id: &[u8; 32],
+        authorization_digest: &[u8; 32],
+    ) -> Result<LoadedClearingContextV1, IssuerServiceErrorV1> {
+        let provider = self
+            .providers
+            .binary_search_by_key(provider_id, |provider| provider.provider_id)
+            .ok()
+            .map(|index| &self.providers[index])
+            .ok_or(IssuerServiceErrorV1::Unauthorized)?;
+        let authorization_record = self
+            .store
+            .clearing_authorization(authorization_digest)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::Unauthorized)?;
+        let authorization =
+            ProviderClearingAuthorizationV1::decode(&authorization_record.exact_authorization)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let approval = IssuerClearingApprovalV1::decode(&authorization_record.exact_approval)
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let registration = self
+            .store
+            .provider_settlement_registration(provider_id)
+            .map_err(map_store_error)?
+            .ok_or(IssuerServiceErrorV1::Unauthorized)?;
+        if &authorization.claims.provider_id != provider_id
+            || authorization
+                .authorization_digest()
+                .map_err(|_| IssuerServiceErrorV1::Internal)?
+                != *authorization_digest
+            || registration.provider_id != *provider_id
+        {
+            return Err(IssuerServiceErrorV1::Unauthorized);
+        }
+        Ok(LoadedClearingContextV1 {
+            authorization,
+            approval,
+            operator_key: provider.operator_key,
+            minimum_authorization_epoch: provider.minimum_authorization_epoch,
+            registration,
+        })
+    }
+
+    fn clearing_expectation<'a>(
+        &'a self,
+        context: &'a LoadedClearingContextV1,
+        settlement_key: &'a VerifyingKey,
+        now_unix: u64,
+    ) -> ProviderClearingExpectationV1<'a> {
+        ProviderClearingExpectationV1 {
+            provider_id: &context.authorization.claims.provider_id,
+            issuer_id: &context.authorization.claims.issuer_id,
+            operator_key: &context.operator_key,
+            issuer_settlement_key: settlement_key,
+            now_unix,
+            minimum_authorization_epoch: context.minimum_authorization_epoch,
+        }
+    }
+
+    fn issuer_settlement_keyring<'a>(
+        &'a self,
+        issuer_id: &'a [u8; 32],
+        current_key: &'a VerifyingKey,
+    ) -> IssuerSettlementKeyringExpectationV1<'a> {
+        IssuerSettlementKeyringExpectationV1 {
+            issuer_id,
+            current_key,
+            retained_keys: &self.retained_issuer_settlement_keys,
+        }
+    }
+
+    fn verify_committed_clearing_auth(
+        &self,
+        authorization_digest: &[u8; 32],
+        request_digest: &[u8; 32],
+        context: &LoadedClearingContextV1,
+        request_auth: &pir_service_protocol::ProviderClearingRequestAuthV1,
+    ) -> Result<(), IssuerServiceErrorV1> {
+        let historical_operator_key =
+            VerifyingKey::from_bytes(&context.authorization.operator_verifying_key)
+                .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        let current_settlement_key = self.issuer_settlement_signing_key.verifying_key();
+        let keyring = self.issuer_settlement_keyring(
+            &context.authorization.claims.issuer_id,
+            &current_settlement_key,
+        );
+        let historical_settlement_key = keyring
+            .resolve_for_issuer(
+                &context.authorization.claims.issuer_id,
+                &context.approval.issuer_settlement_key_id,
+            )
+            .map_err(|_| IssuerServiceErrorV1::Internal)?;
+        verify_committed_clearing_request_auth_v1(
+            authorization_digest,
+            request_digest,
+            &context.authorization,
+            &context.approval,
+            request_auth,
+            &CommittedRedeemReplayExpectationV1 {
+                provider_id: &context.authorization.claims.provider_id,
+                issuer_id: &context.authorization.claims.issuer_id,
+                operator_key: &historical_operator_key,
+                issuer_settlement_key: historical_settlement_key,
+            },
+        )
+        .map_err(|_| IssuerServiceErrorV1::Unauthorized)
     }
 
     fn verify_redeem_response<'a>(
@@ -1448,7 +2028,17 @@ fn map_store_error(error: StoreError) -> IssuerServiceErrorV1 {
         | StoreError::QuoteAlreadyClaimed
         | StoreError::QuoteNotSettled
         | StoreError::ClaimDeadlineExpired
-        | StoreError::StatusNonceReplay => IssuerServiceErrorV1::Conflict,
+        | StoreError::StatusNonceReplay
+        | StoreError::RedeemIdempotencyConflict
+        | StoreError::CredentialAlreadySpent
+        | StoreError::SettlementDepositIdempotencyConflict
+        | StoreError::SettlementNoteAlreadySpent
+        | StoreError::SettlementLedgerSequenceConflict
+        | StoreError::PayoutIntentIdempotencyConflict
+        | StoreError::PayoutIntentAlreadyConsumed
+        | StoreError::PayoutIdempotencyConflict
+        | StoreError::InsufficientProviderBalance
+        | StoreError::PayoutStatusConflict => IssuerServiceErrorV1::Conflict,
         StoreError::Io(_)
         | StoreError::Sqlite(_)
         | StoreError::PayoutOutboxUnavailable
@@ -1463,3 +2053,6 @@ fn map_store_error(error: StoreError) -> IssuerServiceErrorV1 {
         _ => IssuerServiceErrorV1::Internal,
     }
 }
+
+#[cfg(test)]
+mod settlement_service_tests;

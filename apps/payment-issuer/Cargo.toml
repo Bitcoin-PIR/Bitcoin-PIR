@@ -31,6 +31,7 @@ zeroize = "1"
 rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
+pir-service-store = { path = "../../crates/protocol/service-store" }
 tempfile = "3"
 
 [lints.rust]

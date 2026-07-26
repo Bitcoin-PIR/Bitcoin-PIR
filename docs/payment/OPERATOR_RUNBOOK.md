@@ -194,6 +194,7 @@ Issuer store creation is explicit:
 
 ```sh
 cargo run --offline -p payment-issuer -- init-store --help
+cargo run --offline -p payment-issuer -- check-store --help
 ```
 
 `init-store` canonicalizes each parent before creation, refuses overwrite and
@@ -202,6 +203,12 @@ files to 0600, and reopens the exact generation-zero store and authority before
 reporting success. If any post-creation step fails, the command deliberately
 does not delete or reuse either path: inspect both, then manually remove only
 files proven to belong to that failed ceremony.
+
+`check-store` runs the production full-history open and rollback-floor path
+without starting a listener, then reports aggregate row counts and
+`startup_check_ms`. It can complete the one-successor lost-CAS reconciliation
+allowed at real startup, so run it only against the intended isolated restore
+candidate or during a quiesced startup ceremony.
 
 Provider serving likewise opens an already-created schema-v5 store and an
 existing rollback authority. It does not create or migrate them at startup.
@@ -232,15 +239,21 @@ public/staging listener:
    preflight budget (32 encoded WebSocket messages and 16 MiB, with atomic
    chunk-group reservation), then add separate reverse-proxy/edge tree-top
    frequency, bandwidth and aggregate egress protection;
-3. independent rollback-authority backup/restore drill;
+3. independent rollback-authority backup/restore drill, beginning with the
+   reproducible no-funds procedure in `STAGING_STORE_DRILL.md` and then
+   repeating it against the selected independently administered authority;
 4. provision a filesystem quota and alerts for issuer/provider database, WAL,
    free space and backup growth; terminal economic rows remain retained, so
    active admission limits do not bound disk usage and ad-hoc deletion is
    forbidden;
-5. retain the implemented loopback two-provider direct-receipt/DPF process
-   check, then complete the remaining fixture-driven HTTP/browser/fake-issuer/
-   two-provider E2E and non-DPF process paths; the local process test uses
-   `NoSevHost`/`dangerous_unpaired_*` and is not production trust-chain
+   record the `startup_check_ms` and aggregate row counters emitted by the
+   issuer/provider startup paths, set environment-specific activation limits,
+   and reject the rollout if either store exceeds them;
+5. retain the implemented loopback two-provider direct-receipt, Free, BAT and
+   experimental-ARC DPF process checks, then complete the remaining
+   fixture-driven HTTP/browser/fake-issuer/two-provider E2E, standard-Cashu
+   success and non-DPF process paths; the local process tests use
+   `NoSevHost`/`dangerous_unpaired_*` and are not production trust-chain
    evidence;
 6. approved regtest/signet Core Lightning canary and external Cashu mint
    compatibility/outage drill;

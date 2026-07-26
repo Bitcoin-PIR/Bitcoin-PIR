@@ -185,6 +185,9 @@ export class AdmissionCredentialVaultV1 {
   /**
    * Select and retire one single-use capability under a cross-tab lock.
    * ARC is rejected here because it needs an atomic state advance instead.
+   * The exclusive lock is the local reservation: validation failure releases
+   * it with the encrypted record unchanged, while validation success commits
+   * deletion before any payload bytes are returned to application code.
    */
   async takeSingleUseCapability(
     binding: AdmissionCapabilityBindingV1,

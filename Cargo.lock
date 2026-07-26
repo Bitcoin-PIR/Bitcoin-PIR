@@ -1742,6 +1742,7 @@ dependencies = [
  "pir-lightning-backend",
  "pir-payment-crypto",
  "pir-service-protocol",
+ "pir-service-store",
  "rustix",
  "tempfile",
  "zeroize",
@@ -2530,6 +2531,7 @@ dependencies = [
 name = "runtime"
 version = "0.1.0"
 dependencies = [
+ "arc",
  "bitcoinpir-oram",
  "build",
  "ed25519-dalek",
@@ -2550,6 +2552,7 @@ dependencies = [
  "pir-service-protocol",
  "pir-service-store",
  "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "rayon",
  "rustix",
  "rustls",

@@ -4,9 +4,9 @@ use k256::{ProjectivePoint, Scalar};
 use pir_issuer_store::{
     BatKeyLineageRegistration, ClaimCryptographicVerificationInput, ClaimWrite, DelegationAdvance,
     IssuerRollbackFloorAuthorityErrorV1, IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1,
-    IssuerStore, QuoteCapacityV1, QuoteExpiry, QuoteFinalization, QuoteReservation,
-    QuoteSettlement, QuoteState, QuoteStatusBip340Input, SettlementKeyLineageRegistration,
-    StoreError, StoreOptions, WriteDisposition, SCHEMA_VERSION,
+    IssuerStore, ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry,
+    QuoteFinalization, QuoteReservation, QuoteSettlement, QuoteState, QuoteStatusBip340Input,
+    SettlementKeyLineageRegistration, StoreError, StoreOptions, WriteDisposition, SCHEMA_VERSION,
 };
 use pir_service_protocol::{
     derive_bat_key_id_v1, derive_cashu_keyset_id_v2, derive_issuer_id, paid_receipt_key_id,
@@ -944,6 +944,13 @@ fn explicit_create_open_identity_schema_and_privacy_boundary() {
     assert_eq!(identity.network, LightningNetworkV1::Regtest);
     assert_eq!(identity.schema_version, SCHEMA_VERSION);
     assert_eq!(identity.commit_seq, 0);
+    let inventory = store.operational_inventory().unwrap();
+    assert_eq!(inventory.observed_commit_seq, 0);
+    assert_eq!(inventory.quote_rows, 0);
+    assert_eq!(inventory.claim_rows, 0);
+    assert_eq!(inventory.retained_policy_rows, 0);
+    assert_eq!(inventory.redemption_rows, 0);
+    assert_eq!(inventory.payout_rows, 0);
     let floor = test_path.authority.floor().unwrap();
     assert_eq!(floor.store_instance_id, identity.store_instance_id);
     assert_eq!(floor.issuer_id, identity.issuer_id);
@@ -983,7 +990,8 @@ fn explicit_create_open_identity_schema_and_privacy_boundary() {
              UNION ALL SELECT name FROM pragma_table_info('quote_delegation_heads') \
              UNION ALL SELECT name FROM pragma_table_info('quote_status_nonces') \
              UNION ALL SELECT name FROM pragma_table_info('bat_key_lineages') \
-             UNION ALL SELECT name FROM pragma_table_info('settlement_key_lineages')",
+             UNION ALL SELECT name FROM pragma_table_info('settlement_key_lineages') \
+             UNION ALL SELECT name FROM pragma_table_info('provider_registration_history')",
         )
         .unwrap()
         .query_map([], |row| row.get(0))
@@ -1016,6 +1024,232 @@ fn explicit_create_open_identity_schema_and_privacy_boundary() {
     assert!(all_columns
         .iter()
         .any(|column| column == "claim_idempotency_digest"));
+}
+
+#[test]
+fn provider_registration_rotation_retains_digest_addressed_history() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let provider_id = [0x31; 32];
+    let account_id = [0x33; 32];
+    let payout_target_id = [0x34; 32];
+    let first_key = SigningKey::from_bytes(&[0x22; 32]);
+    let second_key = SigningKey::from_bytes(&[0x23; 32]);
+    let first_registration = ProviderSettlementRegistrationWriteV1 {
+        registration_epoch: 1,
+        provider_id,
+        settlement_account_id: account_id,
+        provider_request_verifying_key: first_key.verifying_key().to_bytes(),
+        payout_target_id,
+        not_before: 1_000,
+        not_after: 5_000,
+    };
+    let first = store
+        .register_provider_settlement(&first_registration)
+        .expect("register first provider key");
+    assert_eq!(first.disposition, WriteDisposition::Committed);
+    assert_eq!(first.commit.commit_seq, 1);
+    assert!(
+        store
+            .historical_provider_settlement_registration(
+                &provider_id,
+                &first.value.registration_digest,
+            )
+            .expect("read first registration history")
+            == Some(first.value.clone())
+    );
+
+    let replay = store
+        .register_provider_settlement(&first_registration)
+        .expect("replay first provider key");
+    assert_eq!(replay.disposition, WriteDisposition::ExactReplay);
+    assert_eq!(store.identity().expect("identity").commit_seq, 1);
+
+    let second_registration = ProviderSettlementRegistrationWriteV1 {
+        registration_epoch: 2,
+        provider_id,
+        settlement_account_id: account_id,
+        provider_request_verifying_key: second_key.verifying_key().to_bytes(),
+        payout_target_id,
+        not_before: 1_500,
+        not_after: 7_000,
+    };
+    let second = store
+        .register_provider_settlement(&second_registration)
+        .expect("rotate provider key");
+    assert_eq!(second.disposition, WriteDisposition::Committed);
+    assert_eq!(second.commit.commit_seq, 2);
+    assert!(
+        store
+            .provider_settlement_registration(&provider_id)
+            .expect("read current registration")
+            == Some(second.value.clone())
+    );
+    assert!(
+        store
+            .historical_provider_settlement_registration(
+                &provider_id,
+                &first.value.registration_digest,
+            )
+            .expect("read retained first registration")
+            == Some(first.value.clone())
+    );
+    assert!(
+        store
+            .historical_provider_settlement_registration(
+                &provider_id,
+                &second.value.registration_digest,
+            )
+            .expect("read retained current registration")
+            == Some(second.value.clone())
+    );
+    assert!(store
+        .historical_provider_settlement_registration(&[0x41; 32], &first.value.registration_digest)
+        .expect("wrong provider history lookup")
+        .is_none());
+    assert!(store
+        .historical_provider_settlement_registration(&provider_id, &[0x42; 32])
+        .expect("wrong digest history lookup")
+        .is_none());
+
+    let mut rollback = first_registration.clone();
+    rollback.registration_epoch = 1;
+    rollback.provider_request_verifying_key = second_key.verifying_key().to_bytes();
+    assert!(matches!(
+        store.register_provider_settlement(&rollback),
+        Err(StoreError::ProviderRegistrationRollback)
+    ));
+    let mut account_fork = second_registration.clone();
+    account_fork.registration_epoch = 3;
+    account_fork.settlement_account_id = [0x43; 32];
+    assert!(matches!(
+        store.register_provider_settlement(&account_fork),
+        Err(StoreError::ProviderRegistrationFork)
+    ));
+    let mut target_fork = second_registration;
+    target_fork.registration_epoch = 3;
+    target_fork.payout_target_id = [0x44; 32];
+    assert!(matches!(
+        store.register_provider_settlement(&target_fork),
+        Err(StoreError::ProviderRegistrationFork)
+    ));
+    assert_eq!(store.identity().expect("identity").commit_seq, 2);
+
+    drop(store);
+    let reopened = open_store(&test_path).expect("reopen issuer store");
+    assert!(
+        reopened
+            .historical_provider_settlement_registration(
+                &provider_id,
+                &first.value.registration_digest,
+            )
+            .expect("read history after restart")
+            == Some(first.value)
+    );
+}
+
+#[test]
+fn provider_registration_history_digest_corruption_fails_closed() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let provider_id = [0x31; 32];
+    let registration = store
+        .register_provider_settlement(&ProviderSettlementRegistrationWriteV1 {
+            registration_epoch: 1,
+            provider_id,
+            settlement_account_id: [0x33; 32],
+            provider_request_verifying_key: SigningKey::from_bytes(&[0x22; 32])
+                .verifying_key()
+                .to_bytes(),
+            payout_target_id: [0x34; 32],
+            not_before: 1_000,
+            not_after: 5_000,
+        })
+        .expect("register provider");
+    let rotated = store
+        .register_provider_settlement(&ProviderSettlementRegistrationWriteV1 {
+            registration_epoch: 2,
+            provider_id,
+            settlement_account_id: [0x33; 32],
+            provider_request_verifying_key: SigningKey::from_bytes(&[0x23; 32])
+                .verifying_key()
+                .to_bytes(),
+            payout_target_id: [0x34; 32],
+            not_before: 1_500,
+            not_after: 7_000,
+        })
+        .expect("rotate provider");
+    assert_eq!(rotated.disposition, WriteDisposition::Committed);
+    let connection = Connection::open(&test_path.database).expect("open database");
+    connection
+        .execute(
+            "UPDATE provider_registration_history SET provider_request_verifying_key = ?1 \
+             WHERE registration_digest = ?2",
+            rusqlite::params![
+                SigningKey::from_bytes(&[0x24; 32])
+                    .verifying_key()
+                    .to_bytes()
+                    .as_slice(),
+                registration.value.registration_digest.as_slice(),
+            ],
+        )
+        .expect("tamper retained registration");
+    drop(connection);
+    assert!(matches!(
+        store.historical_provider_settlement_registration(
+            &provider_id,
+            &registration.value.registration_digest,
+        ),
+        Err(StoreError::SchemaMismatch(_))
+    ));
+    assert!(store
+        .provider_settlement_registration(&provider_id)
+        .expect("current registration remains readable")
+        .is_some());
+    drop(store);
+    assert!(matches!(
+        open_store(&test_path),
+        Err(StoreError::SchemaMismatch(_))
+    ));
+}
+
+#[test]
+fn current_provider_registration_must_match_its_history_commit() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path);
+    let provider_id = [0x31; 32];
+    let account_id = [0x33; 32];
+    let payout_target_id = [0x34; 32];
+    for (registration_epoch, seed) in [(1, 0x22), (2, 0x23)] {
+        let write = store
+            .register_provider_settlement(&ProviderSettlementRegistrationWriteV1 {
+                registration_epoch,
+                provider_id,
+                settlement_account_id: account_id,
+                provider_request_verifying_key: SigningKey::from_bytes(&[seed; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                payout_target_id,
+                not_before: 1_000 + registration_epoch,
+                not_after: 5_000 + registration_epoch,
+            })
+            .expect("register provider epoch");
+        assert_eq!(write.disposition, WriteDisposition::Committed);
+    }
+    let connection = Connection::open(&test_path.database).expect("open database");
+    connection
+        .execute(
+            "UPDATE provider_registration_history SET commit_seq = 1 \
+             WHERE provider_id = ?1 AND registration_epoch = 2",
+            rusqlite::params![provider_id.as_slice()],
+        )
+        .expect("tamper current history commit marker");
+    drop(connection);
+    drop(store);
+    assert!(matches!(
+        open_store(&test_path),
+        Err(StoreError::SchemaMismatch(_))
+    ));
 }
 
 #[test]
@@ -1170,6 +1404,33 @@ fn stale_backup_restore_is_rejected_by_the_independent_authority() {
             authority_generation: 2,
         })
     ));
+}
+
+#[test]
+fn backup_at_the_exact_issuer_generation_restores_normally() {
+    let live = TestPath::new();
+    let store = create_store(&live);
+    let reservation = reservation(0x4f, 0x97, &delegation(1, 0x22));
+    let _ = store.reserve_quote(&reservation).unwrap();
+    copy_database_without_wal(&live.database, &live.backup);
+    assert_eq!(live.authority.floor().unwrap().store_generation, 1);
+    drop(store);
+
+    remove_sqlite_sidecars(&live.database);
+    std::fs::copy(&live.backup, &live.database).unwrap();
+    let restored = open_store(&live).unwrap();
+    assert_eq!(restored.identity().unwrap().commit_seq, 1);
+    let inventory = restored.operational_inventory().unwrap();
+    assert_eq!(inventory.observed_commit_seq, 1);
+    assert_eq!(inventory.quote_rows, 1);
+    assert_eq!(
+        restored
+            .quote(&reservation.quote_id)
+            .unwrap()
+            .unwrap()
+            .intent_digest,
+        reservation.intent_digest
+    );
 }
 
 #[test]

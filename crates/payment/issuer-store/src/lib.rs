@@ -28,24 +28,24 @@ pub use types::{
     ArcKeyLineageV1, AuthenticatedQuoteStatus, BatKeyLineage, BatKeyLineageRegistration,
     ClaimCryptographicVerificationInput, ClaimCryptographicVerifier, ClaimRecord, ClaimWrite,
     ClearingAuthorizationRecordV1, CommitMarker, DelegationAdvance, DelegationHead, DurableWrite,
-    IssuerServicePolicyRecordV1, LedgerTransactionKindV1, PayoutIntentRecordV1,
-    PayoutOutboxCommandV1, PayoutOutboxStateV1, PayoutRecordV1, ProviderLedgerBalanceV1,
-    ProviderSettlementRegistrationRecordV1, ProviderSettlementRegistrationWriteV1, QuoteCapacityV1,
-    QuoteExpiry, QuoteFinalization, QuoteReconciliationCandidateV1, QuoteRecord, QuoteReservation,
-    QuoteSettlement, QuoteState, QuoteStatusBip340Input, QuoteStatusBip340Verifier, ReceiptSerial,
-    RedeemRecordV1, SettlementDepositRecordV1, SettlementKeyLineage,
-    SettlementKeyLineageRegistration, SharedCredentialCryptographicVerifierV1,
-    SharedCredentialSpendSinkV1, SharedCredentialVerificationInputV1, StoreIdentity, StoreOptions,
-    VerifiedRedeemCommitV1, VerifiedSharedIssuerRedeemV1, WriteDisposition,
-    MAX_EXACT_CLAIM_REQUEST_BYTES, MAX_EXACT_CLAIM_RESPONSE_BYTES,
-    MAX_EXACT_CLEARING_APPROVAL_BYTES, MAX_EXACT_CLEARING_AUTHORIZATION_BYTES,
-    MAX_EXACT_DELEGATION_BYTES, MAX_EXACT_INTENT_BYTES, MAX_EXACT_PAYOUT_INTENT_REQUEST_BYTES,
-    MAX_EXACT_PAYOUT_INTENT_RESPONSE_BYTES, MAX_EXACT_PAYOUT_REQUEST_BYTES,
-    MAX_EXACT_PAYOUT_RESPONSE_BYTES, MAX_EXACT_PAYOUT_STATUS_RESPONSE_BYTES,
-    MAX_EXACT_REDEEM_REQUEST_BYTES, MAX_EXACT_REDEEM_RESPONSE_BYTES,
-    MAX_EXACT_SERVICE_POLICY_BYTES, MAX_EXACT_SETTLEMENT_DEPOSIT_REQUEST_BYTES,
-    MAX_EXACT_SETTLEMENT_DEPOSIT_RESPONSE_BYTES, MAX_INVOICE_BYTES, MAX_RECEIPT_SERIALS_PER_CLAIM,
-    MAX_SIGNED_QUOTE_BYTES, SCHEMA_VERSION,
+    IssuerServicePolicyRecordV1, IssuerStoreOperationalInventoryV1, LedgerTransactionKindV1,
+    PayoutIntentRecordV1, PayoutOutboxCommandV1, PayoutOutboxStateV1, PayoutRecordV1,
+    ProviderLedgerBalanceV1, ProviderSettlementRegistrationRecordV1,
+    ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry, QuoteFinalization,
+    QuoteReconciliationCandidateV1, QuoteRecord, QuoteReservation, QuoteSettlement, QuoteState,
+    QuoteStatusBip340Input, QuoteStatusBip340Verifier, ReceiptSerial, RedeemRecordV1,
+    SettlementDepositRecordV1, SettlementKeyLineage, SettlementKeyLineageRegistration,
+    SharedCredentialCryptographicVerifierV1, SharedCredentialSpendSinkV1,
+    SharedCredentialVerificationInputV1, StoreIdentity, StoreOptions, VerifiedRedeemCommitV1,
+    VerifiedSharedIssuerRedeemV1, WriteDisposition, MAX_EXACT_CLAIM_REQUEST_BYTES,
+    MAX_EXACT_CLAIM_RESPONSE_BYTES, MAX_EXACT_CLEARING_APPROVAL_BYTES,
+    MAX_EXACT_CLEARING_AUTHORIZATION_BYTES, MAX_EXACT_DELEGATION_BYTES, MAX_EXACT_INTENT_BYTES,
+    MAX_EXACT_PAYOUT_INTENT_REQUEST_BYTES, MAX_EXACT_PAYOUT_INTENT_RESPONSE_BYTES,
+    MAX_EXACT_PAYOUT_REQUEST_BYTES, MAX_EXACT_PAYOUT_RESPONSE_BYTES,
+    MAX_EXACT_PAYOUT_STATUS_RESPONSE_BYTES, MAX_EXACT_REDEEM_REQUEST_BYTES,
+    MAX_EXACT_REDEEM_RESPONSE_BYTES, MAX_EXACT_SERVICE_POLICY_BYTES,
+    MAX_EXACT_SETTLEMENT_DEPOSIT_REQUEST_BYTES, MAX_EXACT_SETTLEMENT_DEPOSIT_RESPONSE_BYTES,
+    MAX_INVOICE_BYTES, MAX_RECEIPT_SERIALS_PER_CLAIM, MAX_SIGNED_QUOTE_BYTES, SCHEMA_VERSION,
 };
 
 pub use clearing_ops::{
@@ -223,6 +223,42 @@ impl IssuerStore {
         self.confirm_anchored_read(&connection, identity)
     }
 
+    /// Returns aggregate row counts after rechecking the external rollback
+    /// authority on both sides of the read. This is intended for startup SLO
+    /// and capacity observation; it never returns row identifiers or payment
+    /// material.
+    pub fn operational_inventory(&self) -> StoreResult<IssuerStoreOperationalInventoryV1> {
+        let connection = self.open_checked(false)?;
+        let raw: (i64, i64, i64, i64, i64, i64) = connection.query_row(
+            "SELECT (SELECT commit_seq FROM store_identity WHERE singleton = 1), \
+                    (SELECT COUNT(*) FROM quotes), \
+                    (SELECT COUNT(*) FROM claims), \
+                    (SELECT COUNT(*) FROM issuer_service_policies), \
+                    (SELECT COUNT(*) FROM redemptions), \
+                    (SELECT COUNT(*) FROM payouts)",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+        let inventory = IssuerStoreOperationalInventoryV1 {
+            observed_commit_seq: db::db_u64(raw.0, "negative observed commit sequence")?,
+            quote_rows: db::db_u64(raw.1, "negative quote row count")?,
+            claim_rows: db::db_u64(raw.2, "negative claim row count")?,
+            retained_policy_rows: db::db_u64(raw.3, "negative retained policy row count")?,
+            redemption_rows: db::db_u64(raw.4, "negative redemption row count")?,
+            payout_rows: db::db_u64(raw.5, "negative payout row count")?,
+        };
+        self.confirm_anchored_read(&connection, inventory)
+    }
+
     /// Stable Lightning-backend idempotency label for one quote id.
     pub fn backend_label_for_quote(&self, quote_id: &[u8; 32]) -> StoreResult<String> {
         if db::is_zero(quote_id) {
@@ -244,6 +280,7 @@ impl IssuerStore {
         self.reconcile_rollback_floor(&connection)?;
         if run_integrity_check {
             quote_ops::verify_all_quote_histories(self, &connection)?;
+            clearing_ops::verify_all_provider_registration_histories(self, &connection)?;
         }
         Ok(connection)
     }

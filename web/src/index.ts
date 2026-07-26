@@ -344,6 +344,8 @@ export type {
   ProductAdmissionPanelRoleV1,
   ProductProviderChoiceV1,
 } from './product-admission-ui.js';
+export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
+export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export {
   directoryBoundProviderTrustAnchorV1,
   manualProviderAdmissionTrustAnchorV1,

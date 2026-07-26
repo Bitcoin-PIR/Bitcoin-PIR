@@ -451,6 +451,37 @@ pub(crate) const PROVIDER_REGISTRATIONS_SQL: &str = r#"CREATE TABLE provider_reg
     commit_seq                    INTEGER NOT NULL CHECK (commit_seq > 0)
 ) STRICT, WITHOUT ROWID"#;
 
+/// Append-only provider request-key history used only to authenticate an
+/// exact payout-status response replay after the current registration rotates.
+/// Fresh requests and payout mutations continue to consult
+/// `provider_registrations` exclusively.
+pub(crate) const PROVIDER_REGISTRATION_HISTORY_SQL: &str = r#"CREATE TABLE provider_registration_history (
+    issuer_id                     BLOB NOT NULL CHECK (
+        length(issuer_id) = 32 AND issuer_id != zeroblob(32)
+    ),
+    provider_id                   BLOB NOT NULL CHECK (
+        length(provider_id) = 32 AND provider_id != zeroblob(32)
+    ),
+    registration_epoch            INTEGER NOT NULL CHECK (registration_epoch > 0),
+    registration_digest           BLOB NOT NULL PRIMARY KEY CHECK (
+        length(registration_digest) = 32 AND registration_digest != zeroblob(32)
+    ),
+    settlement_account_id         BLOB NOT NULL CHECK (
+        length(settlement_account_id) = 32 AND settlement_account_id != zeroblob(32)
+    ),
+    provider_request_verifying_key BLOB NOT NULL CHECK (
+        length(provider_request_verifying_key) = 32 AND
+        provider_request_verifying_key != zeroblob(32)
+    ),
+    payout_target_id              BLOB NOT NULL CHECK (
+        length(payout_target_id) = 32 AND payout_target_id != zeroblob(32)
+    ),
+    not_before                    INTEGER NOT NULL CHECK (not_before > 0),
+    not_after                     INTEGER NOT NULL CHECK (not_after >= not_before),
+    commit_seq                    INTEGER NOT NULL CHECK (commit_seq > 0),
+    UNIQUE (issuer_id, provider_id, registration_epoch)
+) STRICT, WITHOUT ROWID"#;
+
 pub(crate) fn redemptions_sql() -> String {
     format!(
         r#"CREATE TABLE redemptions (
@@ -806,6 +837,10 @@ pub(crate) fn schema() -> Vec<(&'static str, String)> {
         ("payout_intents", payout_intents_sql()),
         ("payout_outbox", PAYOUT_OUTBOX_SQL.to_owned()),
         ("payouts", payouts_sql()),
+        (
+            "provider_registration_history",
+            PROVIDER_REGISTRATION_HISTORY_SQL.to_owned(),
+        ),
         (
             "provider_registrations",
             PROVIDER_REGISTRATIONS_SQL.to_owned(),

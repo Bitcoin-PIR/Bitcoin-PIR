@@ -411,3 +411,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "service_http_adversarial_tests.rs"]
+mod adversarial_tests;

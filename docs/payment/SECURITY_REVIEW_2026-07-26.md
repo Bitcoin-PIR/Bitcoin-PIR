@@ -7,11 +7,11 @@ not the external cryptographic review required for ARC.
 
 ## Result
 
-- P0 open: **0**
-- P1 open: **0**
-- implementation P2 findings fixed in this review: **all closed**
-- operational P2 residual: **1** — issuer startup integrity validation remains
-  O(total retained quote history)
+- implementation-code P0 open: **0**
+- implementation-code P1 open: **0**, subject to final pushed GitHub CI
+- production-activation P1 blockers: **open**, as listed below
+- accepted implementation/operational residuals: **multiple**, explicitly
+  listed below rather than compressed into one misleading count
 
 Production deployment, remote-server operation, public relay/external mint
 access and real Lightning funds remain separate approval gates.
@@ -24,12 +24,16 @@ access and real Lightning funds remain separate approval gates.
 - independent provider stores, rollback floors, replay and concurrency;
 - BOLT11 quote creation, settlement, claim, key rotation and crash recovery;
 - shared issuer clearing, provider accounting and payout state;
+- ledger-only settlement HTTP routes and the provider settlement client,
+  including exact-response recovery across request-key rotation;
 - Core Lightning RPC and HTTP listener boundaries;
 - Rust SDK, WASM, encrypted browser vault, multi-tab reservation and product
   admission orchestration;
 - Nostr directory validation, rollback and split-view handling;
 - two-provider process integration, command-line fail-closed behavior,
-  logging fields and documented production boundaries.
+  logging fields and documented production boundaries;
+- the product-to-`protocol-proofs` Payment V1 wire-shape lock and its
+  content-addressed GitHub EasyCrypt verification record.
 
 ## Closed findings
 
@@ -76,18 +80,61 @@ access and real Lightning funds remain separate approval gates.
     spends that exact receipt successfully at provider 1. Provider 0 accepts
     its own receipt and rejects replay after a process restart. No shared spent
     set or pair identifier is involved.
+11. **Provider request-key rotation could strand an exact payout-status replay.**
+    Provider registration epochs are now written to append-only issuer history
+    in the same rollback-anchored transaction that updates the current row.
+    Fresh status and every financial mutation still require the current
+    registration. A historical key is consulted only after the issuer has
+    found a durable latest status response whose stored request digest exactly
+    matches the canonical retry and whose provider matches. Current-to-history
+    consistency, canonical registration digests, issuer lineage and commit
+    bounds are part of store integrity validation. The implementation is
+    covered by the focused issuer-store and issuer-service payout/restart
+    suites.
+12. **Generated WASM service-policy objects were exposed to TypeScript as
+    `Map` values.** The TypeScript-facing service JSON surfaces now use the
+    JSON-compatible serializer. The real generated-WASM Chromium boundary
+    exercises ordinary object property access rather than a test double.
+13. **Initial provider payout sent before its recovery transcript was durable.**
+    The client now exposes prepare/restore/submit typestate: only prepare or an
+    exact rollback-protected restore can construct the private submit marker,
+    and submit rechecks the pending state before POST. The pending floor binds
+    the complete canonical envelope, intent, registration and predecessor.
+    An outcome-unknown restart resends the exact bytes; fresh preparation uses
+    real current time, the current registration and current issuer key, while
+    retained material is exact-replay-only. A repeated payout can advance only
+    from an atomically archived terminal `Succeeded`/`Failed` predecessor.
+    Focused tests prove one economic side effect under lost-response recovery
+    and concurrent exact submit. The independent audit reran all ten client
+    cases and warnings-as-errors clippy; this implementation P1 is closed.
 
-## Open release blockers and accepted residuals
+## P1 production activation blockers and accepted residuals
+
+### Independent rollback authority is not deployed
+
+Both provider and issuer serving paths require a monotonic rollback floor and
+fail closed when it is missing or inconsistent. The bundled implementation is
+a separately configured SQLite file. That is useful for local verification but
+is **not** an independent production failure or administrative domain: a
+coordinated database-plus-floor restore can make a stale pair self-consistent.
+Production activation therefore requires a reviewed, linearizable floor
+adapter and deployment whose custody, backup, restore, monitoring and failover
+are independent of the payment database. No such production adapter or
+deployment has been accepted in this work. The transport-neutral provider
+client also has no production `ProviderSettlementStateStoreV1` adapter or payout
+worker; its library typestate is not authorization to activate settlement.
 
 ### Operational P2: retained-history startup cost
 
 `IssuerStore::open_existing` performs full retained-history integrity checks,
-including quote replay-image validation. The newer readiness queries are
-horizon-bounded, but the complete startup path remains O(total retained
-history). Before staging activation, operators must measure startup latency and
-memory at explicit retained-row thresholds, define an SLO and refuse activation
-when it is exceeded. Before sustained high-volume production, design and review
-an authenticated archive/retention format; ad-hoc row deletion is forbidden.
+including quote replay-image and append-only provider-registration validation.
+The newer readiness queries are horizon-bounded, but the complete startup path
+remains O(total retained issuer history), and V1 has no provider-registration
+history GC. Before staging activation, operators must measure startup latency
+and memory at explicit retained-row thresholds, define an SLO and refuse
+activation when it is exceeded. Before sustained high-volume production,
+design and review an authenticated archive/retention format; ad-hoc row
+deletion is forbidden.
 
 ### ARC remains experimental
 
@@ -104,6 +151,11 @@ helpers. It proves the local secure wire and admission gate, not production
 identity, binary pin, hardware attestation, database proof/trusted root,
 tree-top preflight or inclusion verification.
 
+Standard Cashu success has not crossed a real provider-process/external-mint
+boundary, and Harmony hint/query, Onion and TEE-ORAM have not crossed the real
+provider-process boundary under Payment V1. The canonical in-process matrix is
+valuable gate coverage, but it is not equivalent to those release E2Es.
+
 ### Browser and shared-infrastructure boundaries
 
 The non-extractable WebCrypto key prevents accidental plaintext persistence;
@@ -112,6 +164,25 @@ capability is burned before send, and an ambiguous network failure is not
 automatically retried or refunded. Using one online shared issuer for both PIR
 legs remains an explicit correlation/availability tradeoff even though the
 provider-bound capabilities are cryptographically unrelated.
+
+Before production, the browser boundary still needs an explicit XSS/CSP and
+dependency review, deployed-origin testing and user manual acceptance. The
+issuer/provider edges still need production TLS, source-aware abuse controls,
+telemetry, overload evidence, process supervision, backup/restore drills and
+operator key-custody acceptance. These are activation blockers, not claims
+that the local cryptographic or persistence tests exercise a deployed system.
+
+### Attribution, exact-replay and correlation residuals
+
+Persistent Free IP quota requires a deployment-specific, authenticated client
+source boundary; the local loopback tests do not prove correct attribution
+through a production proxy. Exact durable replay is intentionally looked up
+before an expired credential/registration is rejected so that a lost response
+remains recoverable. That creates a bounded database-read DoS surface which
+must remain behind loopback listener policy and production edge rate controls.
+A shared issuer or central directory also retains timing/availability and
+traffic-analysis correlation risk even though neither sends a provider-pair ID
+and the two provider-bound credentials are unrelated.
 
 ### Rotation and capacity constraints
 
@@ -125,16 +196,83 @@ remains mandatory.
 
 ## Verification evidence at review close
 
-- issuer: `payment-issuer` 14 tests; issuer-service 4 unit + 5 acquisition;
-  issuer-store 1 unit + 30 integration — all passed;
-- loopback provider process E2E: 2 passed, 0 failed;
-- Web: strict TypeScript build passed; 324 tests passed and 2 were explicitly
-  skipped; production Vite bundle passed;
-- fresh WASM bindings, wasm32 checks, no-funds fixture, dependency audits and
-  the complete reproducible command are recorded in `LOCAL_ACCEPTANCE.md` and
-  `scripts/payment-v1-local-check.sh`;
-- final tree checks must remain green after this record is added and before the
-  branch is pushed.
+- The external proof lock binds
+  `Bitcoin-PIR/protocol-proofs@c519f1960aa9567ac324856f30c71071b04a4a17`,
+  manifest digest
+  `5763b9a4e5e40f7eed1f1f1eadeb44950c6b4172ea55c995ca24f062e0ee860d`
+  and GitHub EasyCrypt run
+  [`30202980581`](https://github.com/Bitcoin-PIR/protocol-proofs/actions/runs/30202980581).
+  Its downloaded verification record is stored at
+  `verification/records/formal/c97d8fff7b072154e78fb0388a076cb849a2d99e9968be7a9cd0d838268b54d8.json`
+  and hashes to its filename. The local lock check in `LOCAL_ACCEPTANCE.md`
+  passes against the current product contract.
+- The loopback provider-process commands in `LOCAL_ACCEPTANCE.md` pass for
+  direct receipt (two cases) and for the Free/BAT/experimental-ARC DPF method
+  adapter (one case), including cross-provider rejection and restart
+  persistence. Standard Cashu and non-DPF process success remain release gaps.
+- The payment-vault Playwright command passed its four Chromium cases. The
+  real-issuer Playwright command passed its one generated-WASM plus real
+  loopback `payment-issuer serve-fake` case. Neither test used a wallet, a
+  Lightning node, a remote service or funds. Exact commands are recorded in
+  `LOCAL_ACCEPTANCE.md`.
+- The final append-only registration-history implementation passed three
+  focused issuer-store cases and the issuer-service payout/restart case. Old
+  keys recover only an exact durable latest response; fresh requests remain
+  current-registration-only. The provider settlement client independently
+  passed all ten focused cases, including initial-payout persist-before-send,
+  outcome-unknown/restart exact replay, independent pending-floor rollback,
+  terminal repeat-payout chaining and concurrent one-economic-effect submit;
+  warnings-as-errors clippy also passed. After Payment implementation source
+  edits stopped, `scripts/payment-v1-local-check.sh --full` completed with
+  exit code zero,
+  including the complete offline Rust suite, Payment clippy, wasm32 and fresh
+  WASM generation, 326 passing Web unit tests, the four-case vault boundary
+  and the one-case real-WASM/no-funds-issuer boundary. The pushed GitHub CI
+  record is still required before merge.
+- The bounded Payment HTTP adversarial boundary passed its three focused cases.
+- Payment browser CI, the general Web PR gate and the Pages build no longer
+  execute a remote `curl | sh` installer or permit `wasm-pack` to download its
+  own CLI during the build. They install `wasm-pack 0.14.0` and lockfile-matched
+  `wasm-bindgen-cli 0.2.114` with Cargo `--locked` under Rust 1.94.1, then build
+  with `--mode no-install`, `--no-opt` and Cargo locked/offline. This also
+  prevents execution of an unpinned ambient `wasm-opt`. The Pages build no
+  longer rewrites the root workspace before compiling. Its Cargo/npm build job
+  has contents-read permission only; Pages write/OIDC is confined to the
+  separate deploy job. Newly used workflow actions are pinned to exact commit
+  SHAs; Node is fixed to supported LTS 24.18.0 on Ubuntu 24.04; the
+  Payment/Web filters watch toolchain, Cargo configuration, vendor, trust and
+  Web inputs. The Pages build also reruns strict TypeScript, unit tests and both
+  local no-funds Chromium Payment boundaries, so it cannot publish while those
+  gates fail in a parallel workflow. The scheduled strict-production canary
+  uses the same fixed Node/runner/action boundary and refuses implicit `npx`
+  package installation, but was not triggered here. A cold local smoke of the
+  exact pinned installation commands passed; the exact build command also
+  passed locally. YAML parsing and diff checks passed for this change; GitHub
+  CI remains authoritative after push. Disabling
+  post-link `wasm-opt` trades some possible artifact-size optimization for a
+  closed executable supply chain. The current local baseline is 3,600,060
+  bytes raw / 1,195,176 bytes gzip for `pir_sdk_wasm_bg.wasm`, and the local
+  real-WASM Chromium case loaded it successfully; deployed-origin load
+  performance remains a staging/manual gate. No Pages deployment was run
+  during this review.
+- The 2026-07-26 production-dependency check
+  `npm audit --omit=dev --audit-level=moderate` reported zero vulnerabilities.
+  `cargo audit` exited successfully with no vulnerability finding and four
+  allowed warnings, not zero warnings: indirect `bincode 1.3.3` is
+  unmaintained; indirect `memmap2 0.9.10` is covered by RUSTSEC-2026-0186
+  (patched in 0.9.11, which the current vendor has not supplied) but this tree
+  does not call the affected `advise_range`/`flush_range` APIs; indirect
+  `rand 0.8.5` is covered by RUSTSEC-2026-0097 (patched in 0.8.6, also not yet
+  supplied by the vendor) whose trigger requires recursive `ThreadRng` use in
+  a custom logger, while this tree defines no custom logger; indirect
+  `spin 0.9.8` is yanked through the SEV/tracing dependency path. These remain
+  vendored-upstream residuals. This Payment change does not silently refresh
+  the complete vendor tree.
+- Fresh WASM bindings, wasm32 checks, the no-funds fixture and all reproducible
+  commands are recorded in `LOCAL_ACCEPTANCE.md` and
+  `scripts/payment-v1-local-check.sh`. This review intentionally avoids a stale
+  aggregate test count; the final CI record is authoritative for the complete
+  tree.
 
 ## Review verdict
 
@@ -142,5 +280,10 @@ The architecture correctly keeps invoice, payment hash, preimage and payer
 state out of PIR providers. Each provider independently advertises and consumes
 one workload-specific capability, and neither provider needs to know the peer.
 The implementation is appropriate for a draft PR and approved no-funds staging
-preparation. Production activation remains blocked on the items above, the ARC
-review, approved external canaries and user manual acceptance.
+preparation. Production activation remains blocked on an actually independent
+rollback-floor deployment, production browser/edge/operations review, the ARC
+review, external CLN/Cashu/Nostr/staging canaries, the remaining process E2Es
+and user manual acceptance. The initial-payout implementation P1 is closed;
+the absence of a concrete production provider store/worker/independent-floor
+adapter remains an activation blocker. No remote operation or real-funds test
+was performed by this review.

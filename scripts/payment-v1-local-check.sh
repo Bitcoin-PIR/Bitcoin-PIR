@@ -15,15 +15,16 @@ network.
            It never starts a listener.
   --full   The complete offline payment-platform Rust suite, operator tooling,
            loopback-only unified-server process E2E and WASM checks, plus web
-           typecheck/tests/bundle.
+           typecheck/tests/bundle, a local Chromium multi-tab vault test, and
+           a real-WASM/loopback no-funds issuer acquisition test.
            This is the default.
 
-Full mode starts only temporary unified-server listeners explicitly bound to
-127.0.0.1; the process test kills and waits for every child. Neither mode
-contacts a Lightning node or Cashu mint, publishes to a Nostr relay, deploys a
-server, uses real funds, or modifies source files. Cargo, the JavaScript package
-manager, and tests may update their normal local build caches (for example
-target/ and web/node_modules cache metadata).
+Full mode starts only temporary unified-server, Vite and fake issuer listeners
+explicitly bound to 127.0.0.1; the tests kill and wait for every child. Neither
+mode contacts a Lightning node or Cashu mint, publishes to a Nostr relay,
+deploys a server, uses real funds, or modifies source files. Cargo, the
+JavaScript package manager, and tests may update their normal local build caches
+(for example target/ and web/node_modules cache metadata).
 EOF
 }
 
@@ -71,7 +72,7 @@ if [[ "$mode" == "quick" ]]; then
   exit 0
 fi
 
-echo "[5/7] full offline platform, operator tooling, and server wiring"
+echo "[5/8] full offline platform, operator tooling, and server wiring"
 cargo test --offline \
   -p pir-channel \
   -p pir-service-protocol \
@@ -94,6 +95,7 @@ cargo test --offline \
   -p bpir-admin
 cargo test --offline -p runtime --bin unified_server
 cargo test --offline -p runtime --test payment_v1_process_e2e
+cargo test --offline -p runtime --test payment_v1_methods_process_e2e
 cargo check --offline -p runtime --bin unified_server
 
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/bpir-payment-v1-fixture.XXXXXX")"
@@ -101,14 +103,34 @@ trap 'rm -rf -- "$fixture_root"' EXIT HUP INT TERM
 scripts/fixtures/generate-payment-v1-no-funds.sh "$fixture_root/generated"
 test -s "$fixture_root/generated/fixture.json"
 
-echo "[6/7] WASM target and generated binding boundary"
+echo "[6/8] warnings denied in dedicated Payment V1 crates and tools"
+cargo clippy --offline --all-targets --no-deps \
+  -p pir-service-protocol \
+  -p pir-service-store \
+  -p pir-payment-crypto \
+  -p pir-lightning-backend \
+  -p pir-issuer-store \
+  -p pir-issuer-core \
+  -p pir-issuer-credentials \
+  -p pir-issuer-clearing \
+  -p pir-issuer-service \
+  -p pir-provider-clearing-client \
+  -p pir-cashu-client \
+  -p pir-arc-adapter \
+  -p pir-directory-nostr \
+  -p payment-issuer \
+  -p bpir-admin \
+  -- -D warnings
+
+echo "[7/8] WASM target and generated binding boundary"
 cargo check --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
 if ! command -v wasm-pack >/dev/null 2>&1; then
   echo "payment-v1-local-check: wasm-pack is required in full mode" >&2
   exit 1
 fi
 CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm \
-  --target web --out-dir pkg --mode no-install -- --offline
+  --target web --out-dir pkg --mode no-install --no-opt \
+  -- --locked --offline
 
 if [[ ! -d web/node_modules ]]; then
   echo "payment-v1-local-check: web/node_modules is absent; refusing network install" >&2
@@ -116,7 +138,12 @@ if [[ ! -d web/node_modules ]]; then
   exit 1
 fi
 
-echo "[7/7] web strict typecheck, unit tests, and production bundle"
-(cd web && npm run build && npm test && npm run build-web)
+echo "[8/8] web typecheck, unit tests, bundle, and local Chromium payment boundaries"
+(cd web \
+  && npm run build \
+  && npm test \
+  && npm run build-web \
+  && npm run test:e2e:payment-vault \
+  && npm run test:e2e:payment-real-issuer)
 
 echo "payment-v1-local-check: full mode complete (no network, no funds)"

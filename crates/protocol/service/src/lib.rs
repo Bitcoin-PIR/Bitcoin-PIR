@@ -23,6 +23,7 @@ mod quote_wasm;
 mod receipt;
 mod scope;
 mod settlement;
+mod settlement_http;
 
 pub use attach::{
     try_attach_waiting_slot, HarmonyAttachGrantV1, HarmonyAttachRejectCodeV1,
@@ -60,17 +61,17 @@ pub use challenge::{
 };
 pub use clearing::{
     credential_presentation_digest, issuer_settlement_key_id,
-    verify_committed_redeem_replay_auth_v1, verify_new_redeem_request_for, BlindSettlementOutputV1,
-    CommittedRedeemReplayExpectationV1, IssuerClearingApprovalV1,
-    ProviderClearingAuthorizationClaimsV1, ProviderClearingAuthorizationV1,
-    ProviderClearingExpectationV1, ProviderClearingRequestAuthV1, ProviderRedeemEnvelopeV1,
-    ProviderRedeemRequestV1, SettlementDestinationV1, SettlementModesV1, SettlementRuleV1,
-    SettlementUnitV1, CLEARING_AUTH_DIGEST_DOMAIN, CLEARING_AUTH_SIGNATURE_DOMAIN,
-    CLEARING_REQUEST_SIGNATURE_DOMAIN, CREDENTIAL_PRESENTATION_DIGEST_DOMAIN,
-    ISSUER_CLEARING_APPROVAL_SIGNATURE_DOMAIN, ISSUER_SETTLEMENT_KEY_ID_DOMAIN,
-    MAX_PROVIDER_REDEEM_CREDENTIAL_LEN_V1, MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1,
-    MAX_SETTLEMENT_DENOMINATIONS, MAX_SETTLEMENT_OUTPUTS, MAX_SETTLEMENT_RULES,
-    PROVIDER_REDEEM_REQUEST_DIGEST_DOMAIN,
+    verify_committed_clearing_request_auth_v1, verify_committed_redeem_replay_auth_v1,
+    verify_new_redeem_request_for, BlindSettlementOutputV1, CommittedRedeemReplayExpectationV1,
+    IssuerClearingApprovalV1, ProviderClearingAuthorizationClaimsV1,
+    ProviderClearingAuthorizationV1, ProviderClearingExpectationV1, ProviderClearingRequestAuthV1,
+    ProviderRedeemEnvelopeV1, ProviderRedeemRequestV1, SettlementDestinationV1, SettlementModesV1,
+    SettlementRuleV1, SettlementUnitV1, CLEARING_AUTH_DIGEST_DOMAIN,
+    CLEARING_AUTH_SIGNATURE_DOMAIN, CLEARING_REQUEST_SIGNATURE_DOMAIN,
+    CREDENTIAL_PRESENTATION_DIGEST_DOMAIN, ISSUER_CLEARING_APPROVAL_SIGNATURE_DOMAIN,
+    ISSUER_SETTLEMENT_KEY_ID_DOMAIN, MAX_PROVIDER_REDEEM_CREDENTIAL_LEN_V1,
+    MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1, MAX_SETTLEMENT_DENOMINATIONS, MAX_SETTLEMENT_OUTPUTS,
+    MAX_SETTLEMENT_RULES, PROVIDER_REDEEM_REQUEST_DIGEST_DOMAIN,
 };
 pub use directory::{
     DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1, DirectoryOperatorAssertionV1,
@@ -146,14 +147,15 @@ pub use scope::{
 };
 pub use settlement::{
     settlement_denomination_key_fingerprint_v1, settlement_note_presentation_digest,
-    settlement_note_spend_key_v1, verify_ledger_redeem_response_for_exact_request_v1,
-    verify_new_balance_request_for, verify_new_balance_response_for,
-    verify_new_payout_intent_request_for, verify_new_payout_intent_response_for,
-    verify_new_payout_request_for, verify_new_payout_response_for,
-    verify_new_payout_status_request_for, verify_new_payout_status_response_for,
-    verify_new_redeem_response_for, verify_new_settlement_deposit_request_for,
-    verify_new_settlement_deposit_response_for, verify_payout_initial_response_for_exact_request,
-    verify_payout_status_successor_for_store_v1, verify_redeem_response_for_exact_request,
+    settlement_note_spend_key_v1, verify_committed_payout_status_replay_auth_v1,
+    verify_ledger_redeem_response_for_exact_request_v1, verify_new_balance_request_for,
+    verify_new_balance_response_for, verify_new_payout_intent_request_for,
+    verify_new_payout_intent_response_for, verify_new_payout_request_for,
+    verify_new_payout_response_for, verify_new_payout_status_request_for,
+    verify_new_payout_status_response_for, verify_new_redeem_response_for,
+    verify_new_settlement_deposit_request_for, verify_new_settlement_deposit_response_for,
+    verify_payout_initial_response_for_exact_request, verify_payout_status_successor_for_store_v1,
+    verify_persisted_payout_snapshot_for_store_v1, verify_redeem_response_for_exact_request,
     BlindSettlementSignatureV1, CashuDleqVerificationInputV1, CashuDleqVerifierV1,
     CashuSettlementNoteVerificationInputV1, CashuSettlementNoteVerifierV1, IssuerBalanceResponseV1,
     IssuerPayoutIntentResponseV1, IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1,
@@ -179,6 +181,11 @@ pub use settlement::{
     PROVIDER_SETTLEMENT_REQUEST_SIGNATURE_DOMAIN_V1,
     SETTLEMENT_DENOMINATION_KEY_FINGERPRINT_DOMAIN_V1,
     SETTLEMENT_NOTE_PRESENTATION_DIGEST_DOMAIN_V1, SETTLEMENT_NOTE_SPEND_KEY_DOMAIN_V1,
+};
+pub use settlement_http::{
+    ProviderBalanceEnvelopeV1, ProviderPayoutEnvelopeV1, ProviderPayoutIntentEnvelopeV1,
+    ProviderPayoutStatusEnvelopeV1, ProviderSettlementDepositEnvelopeV1,
+    MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1, MAX_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
 };
 
 /// Current version of all V1 structures in this crate.

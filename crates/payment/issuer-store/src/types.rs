@@ -62,6 +62,22 @@ pub struct StoreIdentity {
     pub schema_version: u32,
 }
 
+/// Aggregate, non-secret row counts for startup-capacity observation.
+///
+/// These counters deliberately expose no quote IDs, invoices, payment hashes,
+/// credentials, provider pairings, or timestamps. Operators can combine them
+/// with the measured `open_existing` latency to define a staging activation
+/// SLO for the store's full retained-history integrity check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IssuerStoreOperationalInventoryV1 {
+    pub observed_commit_seq: u64,
+    pub quote_rows: u64,
+    pub claim_rows: u64,
+    pub retained_policy_rows: u64,
+    pub redemption_rows: u64,
+    pub payout_rows: u64,
+}
+
 /// One provider policy retained by the issuer for current acquisition and
 /// later paid-claim recovery. The exact signed policy and its verifying key
 /// are durable issuer-local trust state; neither is accepted from a claim

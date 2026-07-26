@@ -166,6 +166,89 @@ fn prepare_new_private_file_path(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// Validate an existing sensitive SQLite file using the same owner, mode,
+/// canonical-parent, and final-component rules required by serving startup.
+pub(crate) fn validate_existing_private_file_path(
+    path: &Path,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let configured = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect configured {label} {}: {error}", path.display()))?;
+    if configured.file_type().is_symlink() || !configured.file_type().is_file() {
+        return Err(format!(
+            "configured {label} must be a non-symlink regular file: {}",
+            path.display()
+        ));
+    }
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("{label} is not a file path: {}", path.display()))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canonical_parent = std::fs::canonicalize(parent)
+        .map_err(|error| format!("canonicalize {label} parent {}: {error}", parent.display()))?;
+    ensure_serving_private_directory(&canonical_parent, label)?;
+    let canonical = canonical_parent.join(file_name);
+    let resolved = std::fs::symlink_metadata(&canonical)
+        .map_err(|error| format!("inspect resolved {label} {}: {error}", canonical.display()))?;
+    if resolved.file_type().is_symlink() || !resolved.file_type().is_file() {
+        return Err(format!(
+            "resolved {label} must be a non-symlink regular file: {}",
+            canonical.display()
+        ));
+    }
+    ensure_owner_only_file(&resolved, &canonical, label)?;
+    ensure_same_file(&configured, &resolved, label)?;
+    Ok(canonical)
+}
+
+pub(crate) fn private_database_paths_alias(first: &Path, second: &Path) -> Result<bool, String> {
+    if first == second {
+        return Ok(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let first = std::fs::symlink_metadata(first)
+            .map_err(|error| format!("inspect {}: {error}", first.display()))?;
+        let second = std::fs::symlink_metadata(second)
+            .map_err(|error| format!("inspect {}: {error}", second.display()))?;
+        Ok(first.dev() == second.dev() && first.ino() == second.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        Err("sensitive SQLite path alias checks are unsupported on non-Unix platforms".to_owned())
+    }
+}
+
+#[cfg(unix)]
+fn ensure_serving_private_directory(path: &Path, label: &str) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect {label} parent {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_dir()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o700
+    {
+        return Err(format!(
+            "{label} parent must be a real directory owned by this user with mode 0700: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_serving_private_directory(path: &Path, label: &str) -> Result<(), String> {
+    Err(format!(
+        "{label} parent {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
+        path.display()
+    ))
+}
+
 #[cfg(unix)]
 fn set_private_directory(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -212,6 +295,60 @@ fn set_owner_only(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("set owner-only permissions on {}: {error}", path.display()))
+}
+
+#[cfg(unix)]
+fn ensure_owner_only_file(
+    metadata: &std::fs::Metadata,
+    path: &Path,
+    label: &str,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o777 != 0o600 {
+        return Err(format!(
+            "{label} must be owned by the effective user with mode 0600: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_owner_only_file(
+    _metadata: &std::fs::Metadata,
+    path: &Path,
+    label: &str,
+) -> Result<(), String> {
+    Err(format!(
+        "{label} {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
+        path.display()
+    ))
+}
+
+#[cfg(unix)]
+fn ensure_same_file(
+    configured: &std::fs::Metadata,
+    resolved: &std::fs::Metadata,
+    label: &str,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if configured.dev() != resolved.dev() || configured.ino() != resolved.ino() {
+        return Err(format!(
+            "configured {label} changed while its canonical parent was resolved"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_same_file(
+    _configured: &std::fs::Metadata,
+    _resolved: &std::fs::Metadata,
+    label: &str,
+) -> Result<(), String> {
+    Err(format!(
+        "{label} is unsupported on non-Unix platforms because file identity checks cannot be enforced"
+    ))
 }
 
 #[cfg(not(unix))]

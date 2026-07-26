@@ -47,6 +47,8 @@ const SYSTEM_ACCOUNT_CREDENTIAL_SOURCE: u8 = 1;
 const SYSTEM_ACCOUNT_ISSUER_FEE: u8 = 2;
 const SYSTEM_ACCOUNT_BLIND_LIABILITY: u8 = 3;
 
+type RawProviderRegistration = (i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64, i64, i64);
+
 /// Deterministic transaction identity used both when constructing the signed
 /// redeem response and when atomically committing its ledger postings.
 pub fn issuer_redeem_ledger_transaction_id_v1(
@@ -241,6 +243,33 @@ impl IssuerStore {
             ],
         )?;
         transaction.execute(
+            "INSERT INTO provider_registration_history (issuer_id, provider_id, \
+             registration_epoch, registration_digest, settlement_account_id, \
+             provider_request_verifying_key, payout_target_id, not_before, not_after, \
+             commit_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                self.handle.expected_issuer_id.as_slice(),
+                candidate.provider_id.as_slice(),
+                sql_integer(
+                    candidate.registration_epoch,
+                    "registration epoch exceeds SQLite range"
+                )?,
+                candidate.registration_digest.as_slice(),
+                candidate.settlement_account_id.as_slice(),
+                candidate.provider_request_verifying_key.as_slice(),
+                candidate.payout_target_id.as_slice(),
+                sql_integer(
+                    candidate.not_before,
+                    "registration not_before exceeds SQLite range"
+                )?,
+                sql_integer(
+                    candidate.not_after,
+                    "registration not_after exceeds SQLite range"
+                )?,
+                sql_integer(sequence, "commit sequence exceeds SQLite range")?,
+            ],
+        )?;
+        transaction.execute(
             "INSERT INTO ledger_accounts (account_id, issuer_id, provider_id, unit, \
              available_value, reserved_value, ledger_sequence, commit_seq) \
              VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5) \
@@ -276,6 +305,32 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_provider_registration(&connection, self, provider_id)?;
+        self.confirm_anchored_read(&connection, value)
+    }
+
+    /// Reads one retained provider registration by its canonical digest.
+    ///
+    /// This history is recovery-only trust state. Callers must not use it for
+    /// a fresh request or any new ledger/payout mutation; the settlement
+    /// service consults it only after proving that the exact status response
+    /// bytes for the same request digest are already durable.
+    pub fn historical_provider_settlement_registration(
+        &self,
+        provider_id: &[u8; 32],
+        registration_digest: &[u8; 32],
+    ) -> StoreResult<Option<ProviderSettlementRegistrationRecordV1>> {
+        if is_zero(provider_id) || is_zero(registration_digest) {
+            return Err(StoreError::InvalidInput(
+                "provider id or registration digest is all zero",
+            ));
+        }
+        let connection = self.open_checked(false)?;
+        let value = read_provider_registration_history(
+            &connection,
+            self,
+            provider_id,
+            registration_digest,
+        )?;
         self.confirm_anchored_read(&connection, value)
     }
 
@@ -886,8 +941,7 @@ fn read_provider_registration(
     store: &IssuerStore,
     provider_id: &[u8; 32],
 ) -> StoreResult<Option<ProviderSettlementRegistrationRecordV1>> {
-    type Raw = (i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64, i64, i64);
-    let raw: Option<Raw> = connection
+    let raw: Option<RawProviderRegistration> = connection
         .query_row(
             "SELECT registration_epoch, registration_digest, settlement_account_id, \
              provider_request_verifying_key, payout_target_id, not_before, not_after, commit_seq \
@@ -910,38 +964,94 @@ fn read_provider_registration(
             },
         )
         .optional()?;
-    raw.map(|raw| {
-        let record = ProviderSettlementRegistrationRecordV1 {
-            registration_epoch: db_u64(raw.0, "negative registration epoch")?,
-            registration_digest: fixed_blob(raw.1, "invalid registration digest")?,
-            provider_id: *provider_id,
-            settlement_account_id: fixed_blob(raw.2, "invalid settlement account id")?,
-            provider_request_verifying_key: fixed_blob(raw.3, "invalid provider request key")?,
-            payout_target_id: fixed_blob(raw.4, "invalid payout target id")?,
-            not_before: db_u64(raw.5, "negative registration not_before")?,
-            not_after: db_u64(raw.6, "negative registration not_after")?,
-            commit: marker(store, db_u64(raw.7, "negative registration commit")?),
-        };
-        let rebuilt = build_provider_registration(
+    let record = raw
+        .map(|raw| decode_provider_registration(store, *provider_id, raw))
+        .transpose()?;
+    if let Some(record) = &record {
+        let historical = read_provider_registration_history(
+            connection,
             store,
-            &ProviderSettlementRegistrationWriteV1 {
-                registration_epoch: record.registration_epoch,
-                provider_id: record.provider_id,
-                settlement_account_id: record.settlement_account_id,
-                provider_request_verifying_key: record.provider_request_verifying_key,
-                payout_target_id: record.payout_target_id,
-                not_before: record.not_before,
-                not_after: record.not_after,
-            },
+            provider_id,
+            &record.registration_digest,
         )?;
-        if !provider_registration_matches(&record, &rebuilt) {
+        if historical.as_ref() != Some(record) {
             return Err(StoreError::SchemaMismatch(
-                "provider settlement registration digest mismatch".to_owned(),
+                "current provider registration is missing from retained history".to_owned(),
             ));
         }
-        Ok(record)
-    })
-    .transpose()
+    }
+    Ok(record)
+}
+
+fn read_provider_registration_history(
+    connection: &Connection,
+    store: &IssuerStore,
+    provider_id: &[u8; 32],
+    registration_digest: &[u8; 32],
+) -> StoreResult<Option<ProviderSettlementRegistrationRecordV1>> {
+    let raw: Option<RawProviderRegistration> = connection
+        .query_row(
+            "SELECT registration_epoch, registration_digest, settlement_account_id, \
+             provider_request_verifying_key, payout_target_id, not_before, not_after, commit_seq \
+             FROM provider_registration_history WHERE issuer_id = ?1 AND provider_id = ?2 \
+             AND registration_digest = ?3",
+            params![
+                store.handle.expected_issuer_id.as_slice(),
+                provider_id.as_slice(),
+                registration_digest.as_slice(),
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(|raw| decode_provider_registration(store, *provider_id, raw))
+        .transpose()
+}
+
+fn decode_provider_registration(
+    store: &IssuerStore,
+    provider_id: [u8; 32],
+    raw: RawProviderRegistration,
+) -> StoreResult<ProviderSettlementRegistrationRecordV1> {
+    let record = ProviderSettlementRegistrationRecordV1 {
+        registration_epoch: db_u64(raw.0, "negative registration epoch")?,
+        registration_digest: fixed_blob(raw.1, "invalid registration digest")?,
+        provider_id,
+        settlement_account_id: fixed_blob(raw.2, "invalid settlement account id")?,
+        provider_request_verifying_key: fixed_blob(raw.3, "invalid provider request key")?,
+        payout_target_id: fixed_blob(raw.4, "invalid payout target id")?,
+        not_before: db_u64(raw.5, "negative registration not_before")?,
+        not_after: db_u64(raw.6, "negative registration not_after")?,
+        commit: marker(store, db_u64(raw.7, "negative registration commit")?),
+    };
+    let rebuilt = build_provider_registration(
+        store,
+        &ProviderSettlementRegistrationWriteV1 {
+            registration_epoch: record.registration_epoch,
+            provider_id: record.provider_id,
+            settlement_account_id: record.settlement_account_id,
+            provider_request_verifying_key: record.provider_request_verifying_key,
+            payout_target_id: record.payout_target_id,
+            not_before: record.not_before,
+            not_after: record.not_after,
+        },
+    )?;
+    if !provider_registration_matches(&record, &rebuilt) {
+        return Err(StoreError::SchemaMismatch(
+            "provider settlement registration digest mismatch".to_owned(),
+        ));
+    }
+    Ok(record)
 }
 
 fn provider_registration_matches(
@@ -956,6 +1066,41 @@ fn provider_registration_matches(
         && left.payout_target_id == right.payout_target_id
         && left.not_before == right.not_before
         && left.not_after == right.not_after
+}
+
+pub(crate) fn verify_all_provider_registration_histories(
+    store: &IssuerStore,
+    connection: &Connection,
+) -> StoreResult<()> {
+    let mut statement = connection.prepare(
+        "SELECT provider_id, registration_digest FROM provider_registration_history \
+         ORDER BY provider_id, registration_epoch",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (provider_id, registration_digest) in rows {
+        let provider_id = fixed_blob(provider_id, "invalid historical provider id")?;
+        let registration_digest = fixed_blob(
+            registration_digest,
+            "invalid historical provider registration digest",
+        )?;
+        if read_provider_registration_history(
+            connection,
+            store,
+            &provider_id,
+            &registration_digest,
+        )?
+        .is_none()
+        {
+            return Err(StoreError::SchemaMismatch(
+                "retained provider registration disappeared during integrity check".to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn read_clearing_authorization(

@@ -94,3 +94,5 @@ bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "cd2c
 [dev-dependencies]
 tempfile = "3"
 pir-sdk-client = { path = "../../crates/sdk/client" }
+arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
+rand_chacha = "0.3"

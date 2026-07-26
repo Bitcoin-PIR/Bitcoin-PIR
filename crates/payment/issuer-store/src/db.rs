@@ -290,6 +290,7 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             (SELECT COUNT(*) FROM arc_key_lineages WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM bat_key_lineages WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM settlement_key_lineages WHERE issuer_id != ?1) + \
+            (SELECT COUNT(*) FROM provider_registration_history WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM provider_registrations WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM clearing_authorizations WHERE issuer_id != ?1) + \
             (SELECT COUNT(*) FROM ledger_accounts WHERE issuer_id != ?1) + \
@@ -305,6 +306,36 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
     )?;
     if foreign_rows != 0 {
         return Err(StoreError::IssuerMismatch);
+    }
+
+    let bad_provider_registration_history: i64 = connection.query_row(
+        "SELECT \
+            (SELECT COUNT(*) FROM provider_registrations c \
+                LEFT JOIN provider_registration_history h \
+                  ON h.issuer_id = c.issuer_id AND h.provider_id = c.provider_id \
+                 AND h.registration_epoch = c.registration_epoch \
+                WHERE h.registration_digest IS NULL \
+                   OR h.registration_digest != c.registration_digest \
+                   OR h.settlement_account_id != c.settlement_account_id \
+                   OR h.provider_request_verifying_key != c.provider_request_verifying_key \
+                   OR h.payout_target_id != c.payout_target_id \
+                   OR h.not_before != c.not_before OR h.not_after != c.not_after \
+                   OR h.commit_seq != c.commit_seq) + \
+            (SELECT COUNT(*) FROM provider_registration_history h \
+                LEFT JOIN provider_registrations c \
+                  ON c.issuer_id = h.issuer_id AND c.provider_id = h.provider_id \
+                WHERE c.provider_id IS NULL \
+                   OR h.settlement_account_id != c.settlement_account_id \
+                   OR h.payout_target_id != c.payout_target_id \
+                   OR h.registration_epoch > c.registration_epoch \
+                   OR h.commit_seq > c.commit_seq)",
+        [],
+        |row| row.get(0),
+    )?;
+    if bad_provider_registration_history != 0 {
+        return Err(StoreError::SchemaMismatch(
+            "current and retained provider registrations disagree".to_owned(),
+        ));
     }
 
     let bad_claim_states: i64 = connection.query_row(
@@ -391,6 +422,7 @@ fn run_integrity_checks(connection: &Connection, handle: &StoreHandle) -> StoreR
             UNION ALL SELECT commit_seq FROM arc_key_lineages \
             UNION ALL SELECT commit_seq FROM bat_key_lineages \
             UNION ALL SELECT commit_seq FROM settlement_key_lineages \
+            UNION ALL SELECT commit_seq FROM provider_registration_history \
             UNION ALL SELECT commit_seq FROM provider_registrations \
             UNION ALL SELECT commit_seq FROM clearing_authorizations \
             UNION ALL SELECT commit_seq FROM ledger_accounts \

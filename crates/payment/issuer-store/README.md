@@ -7,19 +7,24 @@ and credential issuer. It owns only:
 - one claim per quote with an independent idempotency namespace;
 - authenticated, nonce-consuming private quote-status reads;
 - issuer-global paid-receipt serial uniqueness;
-- immutable Cashu BAT and settlement denomination key lineages; and
+- immutable Cashu BAT, experimental ARC and settlement key lineages;
+- retained signed provider-policy and credential/Cashu epoch floors;
+- current provider settlement registrations plus append-only request-key
+  history for exact payout-status response recovery;
+- shared-issuer redemption, settlement deposits and balanced provider ledger;
+- payout intents and a durable at-least-once execution/status outbox; and
 - the per-payee quote-key delegation rollback/fork guard.
 
-Schema version 2 persists the immutable lower and upper bounds accepted for a
-Lightning-node-assigned invoice creation timestamp. This makes a `Reserved`
-quote safely replayable after an issuer restart without pretending that LND or
-CLN lets the caller select the BOLT11 timestamp. Version 1 databases are
-rejected; this crate performs no implicit migration, so any future migration
-must be an explicit offline operator procedure coordinated with the external
-rollback authority.
+The current on-disk schema is version 5. It includes the immutable lower and
+upper bounds accepted for a Lightning-node-assigned invoice timestamp, an
+exact reserved-quote recovery deadline, active-capacity/recovery-horizon
+indexes, retained policy/key lineage, clearing ledger and payout state. Older
+schemas are rejected; this crate performs no implicit migration, so any future
+migration must be an explicit offline operator procedure coordinated with the
+external rollback authority.
 
 It deliberately contains no HTTP server, Lightning client, wallet keys,
-provider balances, payout logic, payer identity, browser IP, PIR query, Bitcoin
+external payout executor, payer identity, browser IP, PIR query, Bitcoin
 address, or peer-server data.
 
 The store canonical-decodes every persisted protocol object, verifies the
@@ -86,12 +91,19 @@ process-local mutex, a copy stored beside SQLite, or a caller-managed integer
 floor is not sufficient. Deployments without such an authority must not expose
 paid issuance.
 
-The generation-advancing mutations are `advance_delegation`, `reserve_quote`,
-`finalize_quote`, `mark_invoice_expired`, `record_settlement`, `record_claim`,
-`consume_quote_status_request`, `register_bat_key_lineage`, and
-`register_settlement_key_lineage`. Every one uses the same commit-then-CAS
-barrier. Exact idempotent replays do not create a generation, but still require
-the database and authority to match before returning.
+Every quote, authenticated status, retained-policy/key-lineage, clearing,
+ledger, settlement and payout mutation uses the same commit-then-CAS barrier.
+Exact idempotent replays do not create a generation, but still require the
+database and authority to match before returning.
+
+Provider registration rotation keeps one mutable current row and writes every
+accepted epoch, including the current epoch, into digest-addressed history in
+the same anchored transaction. Only the current row authorizes fresh reads or
+financial mutations. A historical request key may authenticate only an exact
+payout-status request whose request digest already appears in the payout's
+durable latest signed status response. Registration history has no V1 garbage
+collector: deleting it can strand a lost-response retry, and any future archive
+or retention policy needs a separately reviewed recovery proof.
 
 Read APIs also check the authority both before and after materializing their
 result. A concurrent SQLite successor that appears in the commit-before-CAS
@@ -108,9 +120,9 @@ contains the invoice. `claim` and `claim_by_idempotency_key` return internal
 claim records whose exact response contains issued credentials. None of these
 internal persistence reads is authorization to expose the data over a network.
 
-This crate still does not implement credential/BAT redemption, a provider
-settlement ledger, durable outbox, provider balance accounting, or payout
-execution. Those are separate production components and remain pending; quote
-settlement evidence and key lineages here must not be described as provider
-bookkeeping or payout support. Passing this crate's tests is therefore not
-sufficient evidence to enable a payment service.
+This crate persists verified shared-issuer redemption, settlement deposits,
+provider balances and the payout outbox. It deliberately does not perform
+Lightning RPC, execute an external payout, operate an HTTP listener, or decide
+commercial policy; those effects remain in bounded adapters/workers. Passing
+this crate's tests is therefore not sufficient evidence to enable a payment
+service or real-funds payout.

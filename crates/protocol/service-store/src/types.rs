@@ -44,6 +44,20 @@ pub struct StoreIdentity {
     pub schema_version: u32,
 }
 
+/// Aggregate, non-secret row counts for provider startup-capacity observation.
+///
+/// No namespace ID, spend key, IP-derived subject, Cashu transcript, policy
+/// bytes, timing, or query material is exposed by this summary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProviderStoreOperationalInventoryV1 {
+    pub observed_store_generation: u64,
+    pub observed_spend_commit_seq: u64,
+    pub namespace_rows: u64,
+    pub spent_capability_rows: u64,
+    pub free_rate_limit_bucket_rows: u64,
+    pub cashu_swap_intent_rows: u64,
+}
+
 /// Durable namespace state. Closed namespaces can never be reopened.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i64)]

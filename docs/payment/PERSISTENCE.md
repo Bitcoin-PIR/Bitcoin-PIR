@@ -291,8 +291,8 @@ response uses NUT-09 with the identical blinded outputs.
 
 One issuer database atomically contains:
 
-- provider registrations, operator trust anchors, clearing keys and epoch
-  floors;
+- one current provider registration plus append-only, digest-addressed
+  registration history, operator trust anchors, clearing keys and epoch floors;
 - quote intent, deterministic Lightning backend label, invoice mapping and
   exact signed quote response;
 - quote claims and exact issuance response bytes;
@@ -318,12 +318,23 @@ procedure. No row may be removed until an audited retention/archive design
 preserves exact-response recovery, accounting and rollback commitments;
 ad-hoc SQL deletion or vacuuming is not an archival mechanism.
 
+Every accepted provider registration epoch is inserted into retained history
+in the same rollback-anchored transaction that installs it as current. Account
+and payout-target identities remain immutable across rotation. Fresh status
+requests and every debt/payout mutation use only the current row; a historical
+request key is read only after the issuer has matched the canonical request
+digest to the payout's durable **latest** exact status response. V1 retains
+this history indefinitely. Schema v5 is still pre-release and includes this
+table at fresh initialization; an already-created incompatible v5 database is
+rejected rather than implicitly migrated.
+
 Readiness and reconciliation queries use persisted horizon indexes and do not
 decode expired quote rows. Full store open still verifies every retained quote
-history, however, so startup integrity work remains O(total retained history)
-until that audited archive format exists. Monitor retained-row count and startup
-latency, budget maintenance windows, and fail activation if the measured bound
-is exceeded; do not bypass full verification to make a restart faster.
+history and provider-registration digest, however, so startup integrity work
+remains O(total retained history) until that audited archive format exists.
+Monitor retained-row count and startup latency, budget maintenance windows, and
+fail activation if the measured bound is exceeded; do not bypass full
+verification to make a restart faster.
 
 Authenticated quote-status reads store only a domain-separated nonce digest.
 At most 64 live nonce digests may exist for one quote during the five-minute
