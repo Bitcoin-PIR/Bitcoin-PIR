@@ -803,6 +803,57 @@
         }
         .verification-dialog-close:hover { color: var(--ink); background: var(--sunken); }
         .verification-dialog-body { padding: 18px; overflow-y: auto; max-height: calc(100vh - 96px); }
+
+        /* Commercial admission is a compact, query-local gate. It follows the
+           existing dense form language instead of becoming a second dashboard. */
+        .admission-config {
+            margin-top: 12px;
+            padding: 12px;
+            border: 1px solid var(--line);
+            border-radius: var(--r);
+            background: var(--sunken);
+        }
+        .admission-config summary { cursor: pointer; font-weight: 700; font-size: 12px; }
+        .admission-config-grid { display: grid; gap: 10px; margin-top: 10px; }
+        .admission-config-grid textarea { min-height: 92px; font-family: var(--mono); font-size: 11px; }
+        .admission-config-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .admission-config-status { font-size: 11.5px; color: var(--ink-mute); }
+        .product-admission-panel { display: grid; gap: 8px; margin: 14px 0 10px; }
+        .admission-notice {
+            margin: 0; padding: 8px 10px; border-left: 3px solid var(--warn);
+            background: var(--sunken); color: var(--ink-mute); font-size: 11.5px;
+        }
+        .admission-notice.error { border-left-color: var(--err); color: var(--err); }
+        .admission-transport-boundary {
+            margin: 6px 0 10px;
+            color: var(--ink-mute);
+            font-size: 11px;
+            line-height: 1.45;
+        }
+        .admission-provider-row {
+            display: grid; gap: 5px; padding: 10px;
+            border: 1px solid var(--line-soft); border-radius: var(--r); background: var(--panel);
+            overflow-wrap: anywhere;
+        }
+        .admission-provider-heading { display: grid; grid-template-columns: minmax(95px, .45fr) minmax(170px, 1fr); gap: 8px; align-items: center; }
+        .admission-provider-heading strong { font-size: 12px; }
+        .admission-provider-row select { width: 100%; min-width: 0; }
+        .admission-provider-identity, .admission-provider-terms,
+        .admission-provider-warning, .admission-provider-status {
+            font-family: var(--mono); font-size: 10.5px; color: var(--ink-mute);
+        }
+        .admission-provider-warning.experimental { color: var(--err); font-weight: 700; }
+        .admission-provider-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+        .admission-provider-actions textarea { flex: 1 1 260px; min-width: 0; font-family: var(--mono); font-size: 10.5px; }
+        .admission-shared-issuer { display: flex; align-items: flex-start; gap: 7px; font-size: 10.5px; color: var(--ink-mute); }
+        .admission-provider-row :focus-visible, .admission-config :focus-visible {
+            outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent); outline-offset: 2px;
+        }
+        @media (max-width: 640px) {
+            .admission-provider-heading { grid-template-columns: 1fr; }
+            .admission-config-actions > * { width: 100%; }
+            .admission-provider-actions > button { flex: 1 1 140px; }
+        }
     </style>
     <!-- OnionPIR WASM (post-port ES module) loaded dynamically via
          `await import('/wasm/onionpir_client.mjs')` in
@@ -849,6 +900,25 @@
                         <span class="name">ORAM TEE</span>
                     </button>
                 </div>
+                <details class="admission-config" id="admissionConfig">
+                    <summary>Commercial admission trust configuration</summary>
+                    <div class="admission-config-grid">
+                        <label for="admissionBootstrapJson">Trusted bootstrap JSON (endpoint, provider/policy/operator keys, server/binary/measurement/database pins, optional Lightning payee)</label>
+                        <textarea id="admissionBootstrapJson" class="input" autocomplete="off" spellcheck="false" placeholder="No production trust bootstrap is bundled. Paste a complete V1 bootstrap for this page load only."></textarea>
+                        <div class="admission-config-actions">
+                            <button type="button" id="admissionApplyBootstrap" class="btn">Apply in memory</button>
+                            <span id="admissionConfigStatus" class="admission-config-status" role="status" aria-live="polite">Commercial admission unconfigured; all queries fail closed.</span>
+                        </div>
+                        <label for="admissionDirectoryRelays">Optional Nostr directory relays (one wss:// URL per line; explicit refresh only, at least two complete relays)</label>
+                        <textarea id="admissionDirectoryRelays" class="input" rows="2" autocomplete="off" spellcheck="false"></textarea>
+                        <label for="admissionDirectoryKey">Pinned directory Ed25519 public key (independent bootstrap)</label>
+                        <input id="admissionDirectoryKey" class="input" autocomplete="off" spellcheck="false">
+                        <div class="admission-config-actions">
+                            <button type="button" id="admissionRefreshDirectory" class="btn ghost">Refresh directory now</button>
+                            <span>Directory health and advertised pins are discovery metadata, never trust roots.</span>
+                        </div>
+                    </div>
+                </details>
             </section>
 
         <!-- ═══ DPF Tab ═══ -->
@@ -948,6 +1018,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
+                            <div id="dpfAdmissionPanel" class="product-admission-panel" aria-label="DPF provider admission"></div>
                             <div style="margin-top: 10px;">
                                 <button id="queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1134,6 +1205,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="op-syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
+                            <div id="opAdmissionPanel" class="product-admission-panel" aria-label="OnionPIR provider admission"></div>
                             <div style="margin-top: 10px;">
                                 <button id="op-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1305,6 +1377,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="hp-syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
+                            <div id="hpAdmissionPanel" class="product-admission-panel" aria-label="HarmonyPIR provider admission"></div>
                             <div style="margin-top: 10px;">
                                 <button id="hp-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1464,6 +1537,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 <button id="oram-connectBtn" class="btn">Connect</button>
                                 <button id="oram-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
                             </div>
+                            <div id="oramAdmissionPanel" class="product-admission-panel" aria-label="ORAM provider admission"></div>
                             <div style="margin-top: 10px;">
                                 <button id="oram-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1516,7 +1590,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                         </select>
                                         <span id="oram-dbInfo" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute); margin-left: 10px;"></span>
                                         <div style="margin-top: 6px; font-size: 11.5px; color: var(--ink-mute);">
-                                            Requests are padded to 25 ORAM slots and capped at 5 real script hashes per frame.
+                                            One entitlement sends one atomic request padded to 25 ORAM slots, with at most 25 real script hashes. It is never split or retried.
                                         </div>
                                     </div>
                                 </details>
@@ -1567,7 +1641,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerExpectedPayeeV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError } from './src/index.ts';
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
             if (ok) console.log('[PIR] SDK WASM loaded');
@@ -1632,6 +1706,354 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         let client = null;
+
+        // ─── Product admission state (query-independent, no localStorage) ──
+        let productTrustedBootstrap = null;
+        let verifiedDirectoryCatalog = null;
+        let admissionVaultPromise = null;
+        const admissionControllers = { dpf: null, onion: null, harmony: null, oram: null };
+        const admissionPanels = {
+            dpf: new ProductAdmissionPanelV1({
+                root: document.getElementById('dpfAdmissionPanel'),
+                roles: [{ role: 'server0', label: 'Server 0' }, { role: 'server1', label: 'Server 1' }],
+                transportCompatibilityNotice: 'Current browser DPF transport opens both selected endpoints together for strict verification. Provider/offer/payment decisions remain independent; a future transport split can expose the controller’s already-supported one-leg-at-a-time flow.',
+                onStateChange: snapshot => updateAdmissionQueryButton('queryBtn', snapshot),
+            }),
+            onion: new ProductAdmissionPanelV1({
+                root: document.getElementById('opAdmissionPanel'),
+                roles: [{ role: 'onion', label: 'Onion provider' }],
+                onStateChange: snapshot => updateAdmissionQueryButton('op-queryBtn', snapshot),
+            }),
+            harmony: new ProductAdmissionPanelV1({
+                root: document.getElementById('hpAdmissionPanel'),
+                roles: [{ role: 'hint', label: 'Hint provider' }, { role: 'query', label: 'Query provider' }],
+                transportCompatibilityNotice: 'Current browser Harmony transport opens the hint and query endpoints together for strict verification. Their scopes, prices, credentials and issuer checks remain independent; no peer identifier is sent on either admission wire.',
+                onStateChange: snapshot => updateAdmissionQueryButton('hp-queryBtn', snapshot),
+            }),
+            oram: new ProductAdmissionPanelV1({
+                root: document.getElementById('oramAdmissionPanel'),
+                roles: [{ role: 'oram', label: 'ORAM provider' }],
+                onStateChange: snapshot => updateAdmissionQueryButton('oram-queryBtn', snapshot),
+            }),
+        };
+
+        function updateAdmissionQueryButton(id, snapshot) {
+            const button = document.getElementById(id);
+            if (!button || button.disabled) return;
+            button.textContent = snapshot?.phase === 'ready-to-query'
+                ? 'Run one verified query'
+                : snapshot?.phase === 'selecting'
+                    ? 'Query blocked · authorize providers above'
+                    : 'Start strict admission';
+        }
+
+        function allDirectoryEntries() {
+            return verifiedDirectoryCatalog?.shards?.flatMap(shard => shard.entries) ?? [];
+        }
+
+        function matchingDirectoryEntry(provider) {
+            return allDirectoryEntries().find(entry =>
+                entry.providerIdHex === provider.providerIdHex
+                && entry.policySigningKeyEd25519Hex === provider.policySigningKeyHex
+                && entry.operatorPubkeyEd25519Hex === provider.operatorSigningKeyHex
+                && entry.stableServerId === provider.stableServerId) ?? null;
+        }
+
+        function renderTrustedProviderOptions() {
+            const providers = productTrustedBootstrap?.providers ?? [];
+            const choices = providers.map(provider => ({
+                providerIdHex: provider.providerIdHex,
+                label: provider.label,
+                source: matchingDirectoryEntry(provider) ? 'directory' : 'manual',
+            }));
+            Object.values(admissionPanels).forEach(panel => panel.setProviderOptions(choices));
+        }
+
+        function providerById(providerIdHex) {
+            const provider = productTrustedBootstrap?.providers.find(item => item.providerIdHex === providerIdHex);
+            if (!provider) throw new Error('selected provider is absent from the in-memory trusted bootstrap');
+            return provider;
+        }
+
+        function trustForProvider(provider) {
+            const entry = matchingDirectoryEntry(provider);
+            return entry
+                ? directoryBoundProviderTrustAnchorV1(entry, provider)
+                : manualProviderAdmissionTrustAnchorV1(provider);
+        }
+
+        function selectedAdmissionProviders(kind) {
+            if (!productTrustedBootstrap) throw new Error('commercial admission is unconfigured');
+            const ids = admissionPanels[kind].selectedProviderIds();
+            const selected = Object.fromEntries(Object.entries(ids).map(([role, id]) => [role, providerById(id)]));
+            const values = Object.values(selected);
+            if (values.length === 2 && values[0].providerIdHex === values[1].providerIdHex) {
+                throw new Error('independent PIR roles must select distinct provider identities');
+            }
+            return selected;
+        }
+
+        function canonicalJson(value) {
+            if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+            if (value && typeof value === 'object') {
+                return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+            }
+            return JSON.stringify(value);
+        }
+
+        function sharedDatabasePins(first, second) {
+            if (canonicalJson(first.databaseProofPins) !== canonicalJson(second.databaseProofPins)) {
+                throw new Error('the selected pair does not independently pin the same database proof set');
+            }
+            return first.databaseProofPins;
+        }
+
+        function sharedArkFingerprint(first, second) {
+            const left = first.expectedArkFingerprintHex ?? '';
+            const right = second.expectedArkFingerprintHex ?? '';
+            if (left !== right) throw new Error('the selected pair requires different ARK roots unsupported by one adapter session');
+            return providerArkFingerprintV1(first);
+        }
+
+        async function admissionVault() {
+            admissionVaultPromise ??= AdmissionCredentialVaultV1.open();
+            return admissionVaultPromise;
+        }
+
+        async function closeAdmissionAttempt(kind, message = 'Start a new strict admission attempt.') {
+            const controller = admissionControllers[kind];
+            admissionControllers[kind] = null;
+            if (controller) await controller.close().catch(() => {});
+            admissionPanels[kind].detach(message);
+        }
+
+        async function closeAllAdmissionAttempts(message) {
+            await Promise.all(Object.keys(admissionControllers).map(kind => closeAdmissionAttempt(kind, message)));
+        }
+
+        document.getElementById('admissionApplyBootstrap').addEventListener('click', async () => {
+            const status = document.getElementById('admissionConfigStatus');
+            const textarea = document.getElementById('admissionBootstrapJson');
+            try {
+                const parsed = parseProductTrustedBootstrapV1(textarea.value);
+                await closeAllAdmissionAttempts('Trusted bootstrap changed; start a new strict admission attempt.');
+                productTrustedBootstrap = parsed;
+                verifiedDirectoryCatalog = null;
+                textarea.value = '';
+                renderTrustedProviderOptions();
+                status.textContent = `${parsed.providers.length} trusted provider bootstrap(s) loaded in memory; no connection was made.`;
+            } catch {
+                productTrustedBootstrap = null;
+                verifiedDirectoryCatalog = null;
+                renderTrustedProviderOptions();
+                status.textContent = 'Rejected invalid trusted bootstrap; commercial admission remains fail closed.';
+            }
+        });
+
+        document.getElementById('admissionRefreshDirectory').addEventListener('click', async () => {
+            const status = document.getElementById('admissionConfigStatus');
+            const relays = document.getElementById('admissionDirectoryRelays').value
+                .split('\n').map(value => value.trim()).filter(Boolean);
+            const pinnedDirectoryPubkeyHex = document.getElementById('admissionDirectoryKey').value.trim();
+            let vault = null;
+            try {
+                if (!productTrustedBootstrap) throw new Error('bootstrap required');
+                status.textContent = 'Refreshing all 16 directory shards from independent relays…';
+                vault = await DirectoryRollbackVaultV1.open();
+                verifiedDirectoryCatalog = await refreshNostrDirectoryV1({
+                    relays,
+                    pinnedDirectoryPubkeyHex,
+                    vault,
+                });
+                await closeAllAdmissionAttempts('Directory trust changed; start a new strict admission attempt.');
+                renderTrustedProviderOptions();
+                status.textContent = 'Directory catalog verified across at least two complete relays and rollback state committed.';
+            } catch {
+                status.textContent = 'Directory refresh rejected; the last trusted bootstrap remains, with no automatic retry.';
+            } finally {
+                vault?.close();
+            }
+        });
+
+        renderTrustedProviderOptions();
+
+        function validateQueryInputBeforeAdmission(kind) {
+            const textareaId = {
+                dpf: 'scriptPubkeys', onion: 'op-scriptPubkeys',
+                harmony: 'hp-scriptPubkeys', oram: 'oram-scriptPubkeys',
+            }[kind];
+            const values = document.getElementById(textareaId).value
+                .split('\n').map(value => value.trim()).filter(Boolean);
+            if (values.length === 0) throw new Error('at least one address or scriptPubKey is required');
+            if (!values.some(value =>
+                (/^[0-9a-fA-F]+$/.test(value) && value.length % 2 === 0)
+                || addressToScriptPubKey(value))) {
+                throw new Error('no valid address or scriptPubKey is present');
+            }
+            if (kind === 'oram' && values.length > 25) {
+                throw new Error('one ORAM entitlement permits one atomic request with at most 25 inputs');
+            }
+        }
+
+        async function prepareProductAdmission(kind) {
+            const selected = selectedAdmissionProviders(kind);
+            const vault = await admissionVault();
+            const topology = kind === 'dpf' || kind === 'harmony'
+                ? 'independent-pair'
+                : 'single-provider';
+            const controller = new ProductAdmissionControllerV1({ topology, vault });
+            admissionControllers[kind] = controller;
+            admissionPanels[kind].attach(controller);
+            await controller.prepare(async () => {
+                if (kind === 'dpf') {
+                    const first = selected.server0;
+                    const second = selected.server1;
+                    const connected = await connect(first, second);
+                    const dbId = Number.parseInt(document.getElementById('dbSelect').value, 10) || 0;
+                    return {
+                        legs: [
+                            {
+                                role: 'server0', label: 'Server 0',
+                                session: new ProviderAdmissionSessionV1(
+                                    vault, connected.serviceAdmissionPort(0, dbId), trustForProvider(first),
+                                    { backend: 'dpf-pir', workload: 'dpf-query' },
+                                ),
+                                backend: 'dpf-pir', workload: 'dpf-query',
+                                network: productTrustedBootstrap.network,
+                                expectedLightningPayeePubkey: providerExpectedPayeeV1(first),
+                            },
+                            {
+                                role: 'server1', label: 'Server 1',
+                                session: new ProviderAdmissionSessionV1(
+                                    vault, connected.serviceAdmissionPort(1, dbId), trustForProvider(second),
+                                    { backend: 'dpf-pir', workload: 'dpf-query' },
+                                ),
+                                backend: 'dpf-pir', workload: 'dpf-query',
+                                network: productTrustedBootstrap.network,
+                                expectedLightningPayeePubkey: providerExpectedPayeeV1(second),
+                            },
+                        ],
+                        close: () => { if (client === connected) disconnect(true); else connected.disconnect(); },
+                    };
+                }
+                if (kind === 'onion') {
+                    const provider = selected.onion;
+                    const connected = await opConnect(provider);
+                    const dbId = connected.getDbId();
+                    return {
+                        legs: [{
+                            role: 'onion', label: 'Onion provider',
+                            session: new ProviderAdmissionSessionV1(
+                                vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
+                                { backend: 'onion-pir', workload: 'onion-session' },
+                            ),
+                            backend: 'onion-pir', workload: 'onion-session',
+                            network: productTrustedBootstrap.network,
+                            expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
+                        }],
+                        close: () => { if (opClient === connected) opDisconnect(true); else connected.disconnect(); },
+                    };
+                }
+                if (kind === 'harmony') {
+                    const hintProvider = selected.hint;
+                    const queryProvider = selected.query;
+                    const connected = await hpConnect(hintProvider, queryProvider);
+                    const dbId = connected.getDbId();
+                    const datasetIdHex = connected.getMerkleRootHex();
+                    if (!/^[0-9a-f]{64}$/.test(datasetIdHex ?? '') || /^0{64}$/.test(datasetIdHex)) {
+                        throw new Error('verified Harmony dataset root is unavailable');
+                    }
+                    const resource = {
+                        datasetIdHex,
+                        variant: hpCurrentPrp,
+                        restore: async binding => {
+                            const restored = await connected.restoreHintsFromCache(binding);
+                            hpHintsLoaded = restored;
+                            if (restored) {
+                                document.getElementById('hp-offlineContainer').style.display = 'block';
+                                document.getElementById('hp-offlineStatus').textContent = 'Restored from exact bound cache';
+                                document.getElementById('hp-offlineFill').style.width = '100%';
+                                document.getElementById('hp-offlineLabel').textContent = 'Provider, policy, scope, offer, dataset and PRP binding verified.';
+                            }
+                            return restored;
+                        },
+                        acquireAfterAuthorization: async binding => {
+                            document.getElementById('hp-offlineContainer').style.display = 'block';
+                            if (!await hpFetchHints(connected)) throw new Error('authorized hint download failed');
+                            hpHintsLoaded = true;
+                            await connected.saveHintsToCache(binding);
+                        },
+                        persistAfterQuery: binding => connected.saveHintsToCache(binding),
+                    };
+                    return {
+                        legs: [
+                            {
+                                role: 'hint', label: 'Hint provider',
+                                session: new ProviderAdmissionSessionV1(
+                                    vault, connected.hintServiceAdmissionPort(dbId), trustForProvider(hintProvider),
+                                    { backend: 'harmony-pir', workload: 'harmony-hint' },
+                                ),
+                                backend: 'harmony-pir', workload: 'harmony-hint',
+                                network: productTrustedBootstrap.network,
+                                expectedLightningPayeePubkey: providerExpectedPayeeV1(hintProvider),
+                                resource,
+                            },
+                            {
+                                role: 'query', label: 'Query provider',
+                                session: new ProviderAdmissionSessionV1(
+                                    vault, connected.queryServiceAdmissionPort(dbId), trustForProvider(queryProvider),
+                                    { backend: 'harmony-pir', workload: 'harmony-query' },
+                                ),
+                                backend: 'harmony-pir', workload: 'harmony-query',
+                                network: productTrustedBootstrap.network,
+                                expectedLightningPayeePubkey: providerExpectedPayeeV1(queryProvider),
+                            },
+                        ],
+                        close: () => { if (hpClient === connected) hpDisconnect(true, true); else connected.disconnect(); },
+                    };
+                }
+                const provider = selected.oram;
+                const connected = await oramConnect(provider);
+                const dbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
+                return {
+                    legs: [{
+                        role: 'oram', label: 'ORAM provider',
+                        session: new ProviderAdmissionSessionV1(
+                            vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
+                            { backend: 'tee-oram', workload: 'tee-oram-query' },
+                        ),
+                        backend: 'tee-oram', workload: 'tee-oram-query',
+                        network: productTrustedBootstrap.network,
+                        expectedLightningPayeePubkey: providerExpectedPayeeV1(provider),
+                    }],
+                    close: () => { if (oramClient === connected) oramDisconnect(true); else connected.disconnect(); },
+                };
+            });
+            admissionPanels[kind].render(controller.snapshot());
+            return controller;
+        }
+
+        async function runProductAdmissionQuery(kind, query) {
+            validateQueryInputBeforeAdmission(kind);
+            let controller = admissionControllers[kind];
+            const phase = controller?.snapshot().phase ?? 'idle';
+            if (!controller || phase === 'idle' || phase === 'failed' || phase === 'querying') {
+                if (controller) await closeAdmissionAttempt(kind);
+                controller = await prepareProductAdmission(kind);
+                log(`${kind}: strict verification and signed policy complete; select and authorize each exact offer.`, 'success');
+                return;
+            }
+            if (!controller.canQuery()) {
+                admissionPanels[kind].render(controller.snapshot());
+                log(`${kind}: query blocked until every independent provider role is authorized.`, 'error');
+                return;
+            }
+            try {
+                await controller.executeQuery(query);
+            } finally {
+                await closeAdmissionAttempt(kind, 'Previous one-query connection closed. Start a new strict admission attempt.');
+            }
+        }
 
         /** Pick n random elements from an array (Fisher-Yates shuffle, take first n) */
         function pickRandom(arr, n) {
@@ -2601,7 +3023,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     statusSpan.textContent = err.message;
                     statusSpan.style.color = '#92400e';
                     btn.disabled = false;
-                    console.error('Batch Merkle verify error:', err);
+                    if (autoStart) throw err;
                 }
             };
 
@@ -2612,14 +3034,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return Promise.resolve(null);
         }
 
-        async function connect() {
-            const server0Url = document.getElementById('server0Url').value.trim();
-            const server1Url = document.getElementById('server1Url').value.trim();
-
-            if (!server0Url || !server1Url) {
-                log('Please enter both server URLs', 'error');
-                return;
+        async function connect(provider0, provider1) {
+            if (!provider0?.endpoint || !provider1?.endpoint) {
+                throw new Error('DPF commercial admission requires two complete trusted provider bootstraps');
             }
+            const server0Url = provider0.endpoint;
+            const server1Url = provider1.endpoint;
+            document.getElementById('server0Url').value = server0Url;
+            document.getElementById('server1Url').value = server1Url;
 
             resetBasicVerification(['dpf0', 'dpf1']);
             renderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', {
@@ -2636,16 +3058,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     server0Url,
                     server1Url,
                     strictVerification: true,
-                    // Slice 3 build-time pins. Production topology: server0=pir1
-                    // (Hetzner, no SEV — only binary sha pinnable), server1=pir2
-                    // (VPSBG Tier 3 — both MEASUREMENT + binary sha pinned).
-                    // Update PIR1_PIN / PIR2_TIER3_PIN in src/attest-pin.ts when
-                    // the operator re-bakes + republishes.
-                    expectedServer0Pin: PIR1_PIN,
-                    expectedServer1Pin: PIR2_TIER3_PIN,
-                    expectedServer0Id: 'pir1',
-                    expectedServer1Id: 'pir2',
-                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                    expectedArkFingerprint: sharedArkFingerprint(provider0, provider1),
+                    expectedServer0Pin: provider0.serverPin,
+                    expectedServer1Pin: provider1.serverPin,
+                    expectedServer0Id: provider0.stableServerId,
+                    expectedServer1Id: provider1.stableServerId,
+                    pinnedOperatorPubkey0: providerOperatorKeyV1(provider0),
+                    pinnedOperatorPubkey1: providerOperatorKeyV1(provider1),
+                    databaseProofPins: sharedDatabasePins(provider0, provider1),
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
                             log(`DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
@@ -2712,8 +3132,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 refreshSyncStateUI();
             } catch (error) {
                 log(`Connection failed: ${error.message}`, 'error');
+                client?.disconnect();
                 client = null;
+                throw error;
             }
+            return client;
         }
 
         function populateDbSelector() {
@@ -2809,9 +3232,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function queryUtxos() {
             if (!client || !client.isConnected()) {
-                log('Not connected. Connecting first...', 'info');
-                await connect();
-                if (!client) return;
+                throw new Error('DPF query requires the live strictly verified admission connection');
             }
 
             const textarea = document.getElementById('scriptPubkeys');
@@ -2927,15 +3348,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         let verificationRootHex = '';
                         await addBatchMerkleButton(resultsContainer, verifiablePairs.map(pair => pair.result), 'dpf',
                             async (results, onProg) => {
-                                if (!client || !client.isConnected()) await connect();
-                                if (!client || !client.isConnected()) throw new Error('Unable to connect for verification');
-                                try {
-                                    const verdicts = await client.verifyMerkleBatch(results, onProg);
-                                    verificationRootHex = client.getMerkleRootHex() || '';
-                                    return verdicts;
-                                } finally {
-                                    disconnect(true);
-                                }
+                                if (!client || !client.isConnected()) throw new Error('live strict DPF connection lost before verification');
+                                const verdicts = await client.verifyMerkleBatch(results, onProg);
+                                verificationRootHex = client.getMerkleRootHex() || '';
+                                return verdicts;
                             },
                             () => verificationRootHex,
                             undefined,
@@ -2952,6 +3368,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log(`Batch error: ${error.message}`, 'error');
                 setProgress(0, '');
                 hideProgress();
+                throw error;
             }
 
             document.getElementById('queryBtn').disabled = false;
@@ -2963,14 +3380,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                // Every query owns its transport lifecycle. Cached query data may
-                // remain in the browser, but no socket survives this action.
-                if (client) disconnect(true);
-                await queryUtxos();
+                await runProductAdmissionQuery('dpf', queryUtxos);
+            } catch (error) {
+                log(`DPF admission: ${publicAdmissionError(error)}`, 'error');
             } finally {
-                disconnect(true);
                 button.disabled = false;
-                button.textContent = 'Query UTXOs';
+                admissionPanels.dpf.render(admissionControllers.dpf?.snapshot() ?? null);
+                updateAdmissionQueryButton('queryBtn', admissionControllers.dpf?.snapshot() ?? null);
             }
         }
 
@@ -3015,11 +3431,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function planSync() {
-            if (!client || !client.isConnected()) {
-                log('Not connected. Connecting first...', 'info');
-                await connect();
-                if (!client) return;
-            }
+            log('Sync is disabled in commercial admission V1 because it can issue multiple queries.', 'error');
+            return;
 
             const parsed = parseScriptInputs('scriptPubkeys');
             if (!parsed) return;
@@ -3081,6 +3494,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function executeSync() {
+            log('Sync execution is disabled in commercial admission V1.', 'error');
+            return;
             if (!pendingSync || !client || !client.isConnected()) return;
             const { plan, lines, scriptHashes } = pendingSync;
             const N = scriptHashes.length;
@@ -3297,8 +3712,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         wireDeltaExampleButtons('hp-', 'hp-scriptPubkeys');
 
         // ─── Main buttons (DPF) ────────────────────────────────────────
-        document.getElementById('connectBtn').addEventListener('click', connect);
-        document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+        document.getElementById('connectBtn').addEventListener('click', runDpfQueryOnce);
+        document.getElementById('disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('dpf'));
         document.getElementById('queryBtn').addEventListener('click', runDpfQueryOnce);
         document.getElementById('syncBtn').addEventListener('click', planSync);
         document.getElementById('syncConfirmBtn').addEventListener('click', executeSync);
@@ -3467,9 +3882,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             log(`OnionPIR: Switched to db_id=${newDbId}`, 'info');
         }
 
-        async function opConnect() {
-            const serverUrl = document.getElementById('op-serverUrl').value.trim();
-            if (!serverUrl) { log('Please enter a server URL', 'error'); return; }
+        async function opConnect(provider) {
+            if (!provider?.endpoint) {
+                throw new Error('OnionPIR commercial admission requires a complete trusted provider bootstrap');
+            }
+            const serverUrl = provider.endpoint;
+            document.getElementById('op-serverUrl').value = serverUrl;
 
             let candidate = null;
             try {
@@ -3481,7 +3899,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 candidate = new OnionPirWebClient({
                     serverUrl,
                     strictVerification: true,
-                    databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS,
+                    expectedArkFingerprint: providerArkFingerprintV1(provider),
+                    expectedServerPin: provider.serverPin,
+                    expectedServerId: provider.stableServerId,
+                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
+                    databaseProofPins: provider.databaseProofPins,
                     onConnectionStateChange: (state, message) => {
                         log(`OnionPIR: ${state}${message ? ' - ' + message : ''}`,
                             state === 'connected' ? 'success' : state === 'disconnected' ? 'error' : 'info');
@@ -3515,7 +3937,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log(`OnionPIR connection failed: ${error.message}`, 'error');
                 opClient = null;
                 opSetDataIntegrity('no', error.message);
+                throw error;
             }
+            return opClient;
         }
 
         function opDisconnect(preserveResults = false) {
@@ -3533,11 +3957,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // ─── OnionPIR sync flow (mirrors DPF) ─────────────────────────────
         async function opPlanSync() {
-            if (!opClient || !opClient.isConnected()) {
-                log('OnionPIR: Not connected. Connecting first...', 'info');
-                await opConnect();
-                if (!opClient) return;
-            }
+            log('OnionPIR sync is disabled in commercial admission V1 because it can issue multiple queries.', 'error');
+            return;
 
             const parsed = parseOpScriptInputs();
             if (!parsed) return;
@@ -3623,6 +4044,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function opExecuteSync() {
+            log('OnionPIR sync execution is disabled in commercial admission V1.', 'error');
+            return;
             if (!opPendingSync || !opClient || !opClient.isConnected()) return;
             const { plan, lines, scriptHashes } = opPendingSync;
             const N = scriptHashes.length;
@@ -3743,9 +4166,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function opQueryUtxos() {
             if (!opClient || !opClient.isConnected()) {
-                log('OnionPIR: Not connected. Connecting first...', 'info');
-                await opConnect();
-                if (!opClient) return;
+                throw new Error('OnionPIR query requires the live strictly verified admission connection');
             }
 
             const textarea = document.getElementById('op-scriptPubkeys');
@@ -3838,9 +4259,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             } catch (error) {
                 log(`OnionPIR error: ${error.message}`, 'error');
                 opSetDataIntegrity('no', error.message);
-                console.error(error);
                 opSetProgress(0, '');
                 opHideProgress();
+                throw error;
             }
 
             document.getElementById('op-queryBtn').disabled = false;
@@ -3852,12 +4273,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                if (opClient) opDisconnect(true);
-                await opQueryUtxos();
+                await runProductAdmissionQuery('onion', opQueryUtxos);
+            } catch (error) {
+                log(`OnionPIR admission: ${publicAdmissionError(error)}`, 'error');
             } finally {
-                opDisconnect(true);
                 button.disabled = false;
-                button.textContent = 'Query UTXOs';
+                admissionPanels.onion.render(admissionControllers.onion?.snapshot() ?? null);
+                updateAdmissionQueryButton('op-queryBtn', admissionControllers.onion?.snapshot() ?? null);
             }
         }
 
@@ -3891,8 +4313,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
 
         // OnionPIR buttons
-        document.getElementById('op-connectBtn').addEventListener('click', opConnect);
-        document.getElementById('op-disconnectBtn').addEventListener('click', opDisconnect);
+        document.getElementById('op-connectBtn').addEventListener('click', runOnionQueryOnce);
+        document.getElementById('op-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('onion'));
         document.getElementById('op-queryBtn').addEventListener('click', runOnionQueryOnce);
         document.getElementById('op-syncBtn').addEventListener('click', opPlanSync);
         document.getElementById('op-syncConfirmBtn').addEventListener('click', opExecuteSync);
@@ -4019,50 +4441,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         async function hpSwitchDb(newDbId) {
             if (!hpClient) return;
             if (newDbId === hpClient.getDbId()) return;
-
-            const statusDiv = document.getElementById('hp-status');
-            const prevStatusClass = statusDiv.className;
-            document.getElementById('hp-queryBtn').disabled = true;
-            try {
-                // Cache the current DB's hints before switching so a round-trip is free.
-                if (hpHintsLoaded) {
-                    statusDiv.textContent = 'Status: Caching hints...';
-                    statusDiv.className = 'status connecting';
-                    await hpClient.saveHintsToCache();
-                }
-
-                hpClient.setDbId(newDbId);
-                hpHintsLoaded = false;
-                log(`HarmonyPIR: Switched to db_id=${newDbId}`, 'info');
-
-                // Try a cache hit first (instant); otherwise re-init groups and re-download.
-                if (await hpClient.restoreHintsFromCache(hpCurrentPrp)) {
-                    hpHintsLoaded = true;
-                    statusDiv.textContent = 'Status: Ready';
-                    statusDiv.className = 'status connected';
-                    const offlineLabel = document.getElementById('hp-offlineLabel');
-                    if (offlineLabel) {
-                        offlineLabel.textContent = 'Hints restored from cache (~' + hpClient.estimateHintSize() + ' MB). Ready for queries.';
-                    }
-                    log(`HarmonyPIR: Restored cached hints for db=${newDbId}`, 'success');
-                } else {
-                    await hpClient.initGroups();
-                    document.getElementById('hp-offlineContainer').style.display = 'block';
-                    statusDiv.textContent = 'Status: Downloading hints for new database...';
-                    statusDiv.className = 'status connecting';
-                    await hpFetchHints();
-                    if (hpHintsLoaded) {
-                        statusDiv.textContent = 'Status: Ready';
-                        statusDiv.className = 'status connected';
-                    }
-                }
-            } catch (error) {
-                log(`HarmonyPIR db switch failed: ${error.message}`, 'error');
-                statusDiv.textContent = 'Status: Error switching database';
-                statusDiv.className = prevStatusClass;
-            } finally {
-                document.getElementById('hp-queryBtn').disabled = false;
-            }
+            hpClient.setDbId(newDbId);
+            hpHintsLoaded = false;
+            await closeAdmissionAttempt('harmony', 'Database changed; start a new strict admission attempt.');
+            log(`HarmonyPIR: db_id=${newDbId} selected; old policy, grant, and hint binding invalidated.`, 'info');
         }
 
         function hpSetButtons(connected) {
@@ -4124,14 +4506,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         let hpConnecting = false;
         let hpSwitchingPrp = false;
-        async function hpConnect() {
+        async function hpConnect(hintProvider, queryProvider) {
             if (hpConnecting || hpSwitchingPrp) return; // prevent double-click or race with PRP switch
-            const hintServerUrl = document.getElementById('hp-hintServerUrl').value.trim();
-            const queryServerUrl = document.getElementById('hp-queryServerUrl').value.trim();
-            if (!hintServerUrl || !queryServerUrl) {
-                log('HarmonyPIR: Please enter both server URLs', 'error');
-                return;
+            if (!hintProvider?.endpoint || !queryProvider?.endpoint) {
+                throw new Error('HarmonyPIR commercial admission requires independent hint/query bootstraps');
             }
+            const hintServerUrl = hintProvider.endpoint;
+            const queryServerUrl = queryProvider.endpoint;
+            document.getElementById('hp-hintServerUrl').value = hintServerUrl;
+            document.getElementById('hp-queryServerUrl').value = queryServerUrl;
 
             resetBasicVerification(['hpHint', 'hpQuery']);
             renderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', {
@@ -4140,57 +4523,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 mismatches: [],
                 error: 'waiting for latest delta trust-chain proof',
             });
-
-            // Fast reconnect: if client exists with hints, just reconnect query server.
-            if (hpClient && hpHintsLoaded) {
-                const reconnectingClient = hpClient;
-                const statusDiv = document.getElementById('hp-status');
-                hpConnecting = true;
-                document.getElementById('hp-connectBtn').disabled = true;
-                try {
-                    statusDiv.textContent = 'Status: Reconnecting...';
-                    statusDiv.className = 'status connecting';
-                    await reconnectingClient.reconnectQueryServer();
-                    // Strict reconnect creates a fresh native session, so its
-                    // installed roots and in-memory hint groups are new too.
-                    // Restore the browser cache (or download again) before the
-                    // wrapper becomes queryable.
-                    let hintsReady = reconnectingClient.hintsLoaded;
-                    if (!hintsReady) {
-                        statusDiv.textContent = 'Status: Checking persisted hints...';
-                        hintsReady = await reconnectingClient.restoreHintsFromCache(hpCurrentPrp);
-                    }
-                    if (!hintsReady) {
-                        await reconnectingClient.initGroups();
-                        hintsReady = await hpFetchHints(reconnectingClient);
-                    }
-                    if (!hintsReady) throw new Error('hints could not be restored or downloaded');
-                    if (hpClient !== reconnectingClient) {
-                        reconnectingClient.disconnect();
-                        return;
-                    }
-                    hpHintsLoaded = true;
-                    statusDiv.textContent = 'Status: Ready';
-                    statusDiv.className = 'status connected';
-                    hpSetButtons(true);
-                    document.getElementById('hp-connectBtn').disabled = false;
-                    log('HarmonyPIR: Reconnected (hints preserved)', 'success');
-                } catch (error) {
-                    log(`HarmonyPIR reconnect failed: ${error.message}`, 'error');
-                    if (hpClient === reconnectingClient) {
-                        reconnectingClient.disconnect();
-                        hpClient = null;
-                        hpHintsLoaded = false;
-                    }
-                    statusDiv.textContent = 'Status: Disconnected';
-                    statusDiv.className = 'status disconnected';
-                    hpSetButtons(false);
-                    document.getElementById('hp-connectBtn').disabled = false;
-                } finally {
-                    hpConnecting = false;
-                }
-                return;
-            }
 
             hpConnecting = true;
             document.getElementById('hp-connectBtn').disabled = true;
@@ -4214,12 +4546,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     queryServerUrl,
                     prpBackend: hpCurrentPrp,
                     strictVerification: true,
-                    // Slice 3 pins. Hint server = pir1 (no SEV), query server = pir2 (Tier 3).
-                    expectedServer0Pin: PIR1_PIN,
-                    expectedServer1Pin: PIR2_TIER3_PIN,
-                    expectedServer0Id: 'pir1',
-                    expectedServer1Id: 'pir2',
-                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                    expectedArkFingerprint: sharedArkFingerprint(hintProvider, queryProvider),
+                    expectedServer0Pin: hintProvider.serverPin,
+                    expectedServer1Pin: queryProvider.serverPin,
+                    expectedServer0Id: hintProvider.stableServerId,
+                    expectedServer1Id: queryProvider.stableServerId,
+                    pinnedHintOperatorPubkey: providerOperatorKeyV1(hintProvider),
+                    pinnedQueryOperatorPubkey: providerOperatorKeyV1(queryProvider),
+                    databaseProofPins: sharedDatabasePins(hintProvider, queryProvider),
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
                             log(`HarmonyPIR DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
@@ -4300,42 +4634,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 await candidate.connectQueryServer();
                 await candidate.fetchServerInfo();
-                await candidate.initGroups();
-
-                let candidateHintsLoaded = false;
-
-                document.getElementById('hp-offlineContainer').style.display = 'block';
-
-                // Try IndexedDB-persisted hints first; falls back to fresh download.
-                statusDiv.textContent = 'Status: Checking persisted hints...';
-                statusDiv.className = 'status connecting';
-                const restored = await candidate.restoreHintsFromCache(hpCurrentPrp);
-                if (restored) {
-                    candidateHintsLoaded = true;
-                    const offlineStatus = document.getElementById('hp-offlineStatus');
-                    const offlineFill = document.getElementById('hp-offlineFill');
-                    const offlineLabel = document.getElementById('hp-offlineLabel');
-                    offlineStatus.textContent = 'Restored from browser storage';
-                    offlineFill.style.width = '100%';
-                    offlineFill.style.backgroundColor = '#28a745';
-                    const remaining = await candidate.getMinQueriesRemaining();
-                    offlineLabel.textContent =
-                        'Hints restored (~' + candidate.estimateHintSize() + ' MB, ' +
-                        remaining + ' queries available). No re-download required.';
-                    log('HarmonyPIR: Hints restored from IndexedDB', 'success');
-                } else {
-                    statusDiv.textContent = 'Status: Connected (downloading hints...)';
-                    statusDiv.className = 'status connected';
-                    document.getElementById('hp-offlineStatus').textContent = 'Downloading...';
-                    candidateHintsLoaded = await hpFetchHints(candidate);
-                    if (!candidateHintsLoaded) {
-                        throw new Error('hints could not be downloaded');
-                    }
-                }
-
-                if (candidateHintsLoaded) {
-                    statusDiv.textContent = 'Status: Ready';
-                }
+                const candidateHintsLoaded = false;
+                statusDiv.textContent = 'Status: Strictly verified; hint admission required';
+                statusDiv.className = 'status connected';
+                document.getElementById('hp-offlineContainer').style.display = 'none';
 
                 // Update UI when query server disconnects (e.g. idle timeout).
                 const connectedCandidate = candidate;
@@ -4368,6 +4670,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 hpHintsLoaded = false;
                 hpSetButtons(false);
                 document.getElementById('hp-offlineContainer').style.display = 'none';
+                throw error;
             } finally {
                 hpConnecting = false;
                 // Re-enable connect button only if not connected.
@@ -4375,6 +4678,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     document.getElementById('hp-connectBtn').disabled = false;
                 }
             }
+            return hpClient;
         }
 
         function hpDisconnect(full = false, preserveResults = false) {
@@ -4408,16 +4712,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function persistHarmonyHintsAndDisconnect(preserveResults = true) {
-            const clientToClose = hpClient;
-            try {
-                if (clientToClose && hpHintsLoaded) {
-                    await hpExclusive(() => clientToClose.saveHintsToCache());
-                }
-            } catch (error) {
-                log(`HarmonyPIR hint cache save failed: ${error.message || error}`, 'error');
-            } finally {
-                if (hpClient) hpDisconnect(true, preserveResults);
-            }
+            // Exact-bound persistence is owned by ProductAdmissionResourceV1;
+            // a caller without that provider/policy/scope/offer binding must
+            // never create or overwrite a hint cache record.
+            if (hpClient) hpDisconnect(true, preserveResults);
         }
 
         // ─── HarmonyPIR sync flow ─────────────────────────────────────────
@@ -4448,6 +4746,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function hpPlanSync() {
+            log('HarmonyPIR sync is disabled in commercial admission V1 because it can issue multiple queries.', 'error');
+            return;
             if (hpSwitchingPrp) { log('HarmonyPIR: PRP switch in progress, please wait.', 'error'); return; }
             if (!hpClient || !hpHintsLoaded) {
                 log('HarmonyPIR: Auto-connecting...', 'info');
@@ -4515,6 +4815,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function hpExecuteSync() {
+            log('HarmonyPIR sync execution is disabled in commercial admission V1.', 'error');
+            return;
             if (!hpPendingSync || !hpClient || !hpHintsLoaded) return;
             const { plan, lines, scriptHashes } = hpPendingSync;
             const N = scriptHashes.length;
@@ -4819,12 +5121,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 return;
             }
             if (!hpClient || !hpHintsLoaded) {
-                log('HarmonyPIR: Auto-connecting...', 'info');
-                await hpConnect();
-                if (!hpClient || !hpHintsLoaded) {
-                    log('HarmonyPIR: Connection or hint download failed.', 'error');
-                    return;
-                }
+                throw new Error('HarmonyPIR query requires authorized exact hints on the live strict connection');
             }
 
             const textarea = document.getElementById('hp-scriptPubkeys');
@@ -4904,15 +5201,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     let verificationRootHex = '';
                     await addBatchMerkleButton(resultsContainer, hpVerifiablePairs.map(pair => pair.result), 'harmonypir',
                         async (results, onProg) => {
-                            if (!hpClient || !hpHintsLoaded) await hpConnect();
-                            if (!hpClient || !hpHintsLoaded) throw new Error('Unable to connect for verification');
-                            try {
-                                const verdicts = await hpExclusive(() => hpClient.verifyMerkleBatch(results, onProg));
-                                verificationRootHex = hpClient.getMerkleRootHex() || '';
-                                return verdicts;
-                            } finally {
-                                await persistHarmonyHintsAndDisconnect(true);
-                            }
+                            if (!hpClient || !hpHintsLoaded) throw new Error('live strict Harmony connection lost before verification');
+                            const verdicts = await hpExclusive(() => hpClient.verifyMerkleBatch(results, onProg));
+                            verificationRootHex = hpClient.getMerkleRootHex() || '';
+                            return verdicts;
                         },
                         () => verificationRootHex,
                         dbLabel,
@@ -4925,9 +5217,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log(`HarmonyPIR batch complete: ${found}/${N} found`, 'success');
             } catch (error) {
                 log(`HarmonyPIR error: ${error.message}`, 'error');
-                console.error(error);
                 hpSetProgress(0, '');
                 hpHideProgress();
+                throw error;
             }
 
             document.getElementById('hp-queryBtn').disabled = false;
@@ -4939,14 +5231,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                // Harmony hints may persist in IndexedDB, but the client, worker
-                // pool, and both sockets are torn down after every query.
-                if (hpClient) await persistHarmonyHintsAndDisconnect(true);
-                await hpQueryUtxos();
+                await runProductAdmissionQuery('harmony', hpQueryUtxos);
+            } catch (error) {
+                log(`HarmonyPIR admission: ${publicAdmissionError(error)}`, 'error');
             } finally {
-                await persistHarmonyHintsAndDisconnect(true);
                 button.disabled = false;
-                button.textContent = 'Query UTXOs';
+                admissionPanels.harmony.render(admissionControllers.harmony?.snapshot() ?? null);
+                updateAdmissionQueryButton('hp-queryBtn', admissionControllers.harmony?.snapshot() ?? null);
             }
         }
 
@@ -4954,83 +5245,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('hp-prpSelect').addEventListener('change', async (e) => {
             const newPrp = parseInt(e.target.value);
             if (newPrp === hpCurrentPrp) return;
-            const oldPrp = hpCurrentPrp;
             hpCurrentPrp = newPrp;
             const names = ['HMR12', 'FastPRP'];
-            log(`HarmonyPIR: PRP changed to ${names[newPrp] ?? 'HMR12'}.`, 'info');
-
-            if (!hpClient) return;
-            if (hpSwitchingPrp) return; // already switching
-
-            const statusDiv = document.getElementById('hp-status');
-            // Flip hpSwitchingPrp synchronously (before yielding to the
-            // queue) so any synchronous-path checks elsewhere — e.g.
-            // `hpSwitchDb`'s early-out and `hpQueryBatch`'s in-flight
-            // guard — see "PRP switch in progress" right away rather
-            // than only after our queue slot starts running.
-            hpSwitchingPrp = true;
-            try {
-                // Run the entire PRP swap (saveHintsToCache → tear-down
-                // → loadWasm → reconnect → restore-or-fetch hints)
-                // through the hpClient queue. Without this, a Merkle
-                // prewarm IIFE that's still running from a prior sync
-                // could be suspended inside `verifyMerkleBatch` (holding
-                // `&mut self`) when the user flips the PRP dropdown,
-                // and the very first await here would trip wasm-
-                // bindgen's recursive-use guard.
-                await hpExclusive(async () => {
-                    // Save current hints to cache before switching.
-                    if (hpHintsLoaded) {
-                        statusDiv.textContent = 'Status: Saving hints...';
-                        await hpClient.saveHintsToCache();
-                    }
-
-                    // Tear down old pool (different WASM binary needed).
-                    hpClient.disconnectQueryServer();
-                    hpClient.terminatePool();
-                    hpHintsLoaded = false;
-
-                    // Load new WASM + reconnect.
-                    statusDiv.textContent = 'Status: Loading ' + names[newPrp] + '...';
-                    statusDiv.className = 'status connecting';
-                    hpClient.updatePrpBackend(newPrp);
-                    await hpClient.loadWasm();
-                    await hpClient.connectQueryServer();
-                    await hpClient.fetchServerInfo();
-
-                    // Try restoring cached hints for the new backend.
-                    if (await hpClient.restoreHintsFromCache(newPrp)) {
-                        hpHintsLoaded = true;
-                        statusDiv.textContent = 'Status: Ready';
-                        statusDiv.className = 'status connected';
-                        hpSetButtons(true);
-                        const offlineLabel = document.getElementById('hp-offlineLabel');
-                        if (offlineLabel) {
-                            offlineLabel.textContent = 'Hints restored from cache (~' + hpClient.estimateHintSize() + ' MB). Ready for queries.';
-                        }
-                        log(`HarmonyPIR: Restored cached ${names[newPrp]} hints`, 'success');
-                    } else {
-                        // No cache — download fresh hints.
-                        await hpClient.initGroups();
-                        document.getElementById('hp-offlineContainer').style.display = 'block';
-                        statusDiv.textContent = 'Status: Connected (downloading hints...)';
-                        statusDiv.className = 'status connected';
-                        hpSetButtons(true);
-                        await hpFetchHints();
-                        if (hpHintsLoaded) {
-                            statusDiv.textContent = 'Status: Ready';
-                        }
-                    }
-                });
-            } catch (error) {
-                log(`HarmonyPIR PRP switch failed: ${error.message}`, 'error');
-                statusDiv.textContent = 'Status: Disconnected';
-                statusDiv.className = 'status disconnected';
-                hpClient = null;
-                hpHintsLoaded = false;
-            } finally {
-                hpSwitchingPrp = false;
-            }
+            await closeAdmissionAttempt('harmony', 'PRP backend changed; start a new strict admission attempt.');
+            if (hpClient) hpDisconnect(true, true);
+            log(`HarmonyPIR: PRP changed to ${names[newPrp] ?? 'HMR12'}; live policy/grants invalidated.`, 'info');
         });
 
         // HarmonyPIR example buttons
@@ -5063,8 +5282,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
 
         // HarmonyPIR buttons
-        document.getElementById('hp-connectBtn').addEventListener('click', hpConnect);
-        document.getElementById('hp-disconnectBtn').addEventListener('click', hpDisconnect);
+        document.getElementById('hp-connectBtn').addEventListener('click', runHarmonyQueryOnce);
+        document.getElementById('hp-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('harmony'));
         document.getElementById('hp-queryBtn').addEventListener('click', runHarmonyQueryOnce);
         document.getElementById('hp-syncBtn').addEventListener('click', hpPlanSync);
         document.getElementById('hp-syncConfirmBtn').addEventListener('click', hpExecuteSync);
@@ -5155,12 +5374,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             advancedDetails.style.display = 'block';
         }
 
-        async function oramConnect() {
-            const serverUrl = document.getElementById('oram-serverUrl').value.trim();
-            if (!serverUrl) {
-                log('ORAM: Please enter a server URL', 'error');
-                return;
+        async function oramConnect(provider) {
+            if (!provider?.endpoint) {
+                throw new Error('ORAM commercial admission requires a complete trusted provider bootstrap');
             }
+            const serverUrl = provider.endpoint;
+            document.getElementById('oram-serverUrl').value = serverUrl;
 
             resetBasicVerification(['oram']);
             renderBitcoinAnchorBadge('oram-bitcoinAnchorBadge', 'ORAM TEE', {
@@ -5179,16 +5398,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 oramClient = new OramPirClientAdapter({
                     serverUrl,
-                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
-                    expectedServerPin: PIR2_TIER3_PIN,
+                    expectedArkFingerprint: providerArkFingerprintV1(provider),
+                    expectedServerPin: provider.serverPin,
+                    expectedServerId: provider.stableServerId,
+                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
                     verifyOperatorIdentity: true,
-                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                    databaseProofPins: provider.databaseProofPins,
                     batchPlanner: {
                         accessBudget: 75,
                         indexReadsPerScriptHash: 2,
                         expectedChunkReadsPerScriptHash: 1,
                         paddedSlotCount: 25,
-                        maxScriptHashesPerRequest: 5,
+                        maxScriptHashesPerRequest: 25,
                     },
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
@@ -5244,7 +5465,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 statusDiv.textContent = 'Status: Disconnected';
                 statusDiv.className = 'status disconnected';
                 oramSetButtons(false);
+                throw error;
             }
+            return oramClient;
         }
 
         function oramDisconnect(preserveResults = false) {
@@ -5262,9 +5485,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function oramQueryUtxos() {
             if (!oramClient || !oramClient.isConnected()) {
-                log('ORAM: Auto-connecting...', 'info');
-                await oramConnect();
-                if (!oramClient || !oramClient.isConnected()) return;
+                throw new Error('ORAM query requires the live strictly verified admission connection');
             }
 
             const textarea = document.getElementById('oram-scriptPubkeys');
@@ -5349,9 +5570,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log(`ORAM batch complete: ${found}/${N} ${verb}`, 'success');
             } catch (error) {
                 log(`ORAM query error: ${error.message}`, 'error');
-                console.error(error);
                 oramSetProgress(0, '');
                 oramHideProgress();
+                throw error;
             }
 
             document.getElementById('oram-queryBtn').disabled = false;
@@ -5363,12 +5584,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                if (oramClient) oramDisconnect(true);
-                await oramQueryUtxos();
+                await runProductAdmissionQuery('oram', oramQueryUtxos);
+            } catch (error) {
+                log(`ORAM admission: ${publicAdmissionError(error)}`, 'error');
             } finally {
-                oramDisconnect(true);
                 button.disabled = false;
-                button.textContent = 'Query UTXOs';
+                admissionPanels.oram.render(admissionControllers.oram?.snapshot() ?? null);
+                updateAdmissionQueryButton('oram-queryBtn', admissionControllers.oram?.snapshot() ?? null);
             }
         }
 
@@ -5394,8 +5616,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('oram-pickRandom3Btn').addEventListener('click', () => {
             document.getElementById('oram-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 3).join('\n');
         });
-        document.getElementById('oram-connectBtn').addEventListener('click', oramConnect);
-        document.getElementById('oram-disconnectBtn').addEventListener('click', oramDisconnect);
+        document.getElementById('oram-connectBtn').addEventListener('click', runOramQueryOnce);
+        document.getElementById('oram-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('oram'));
         document.getElementById('oram-queryBtn').addEventListener('click', runOramQueryOnce);
         document.getElementById('oram-dbSelect').addEventListener('change', () => {
             const catalog = oramClient?.getCatalog();

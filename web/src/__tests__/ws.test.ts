@@ -120,6 +120,43 @@ describe('ManagedWebSocket', () => {
     ws.disconnect();
   });
 
+  it('filters a pong after secure-record decoding without stealing FIFO', async () => {
+    const ws = new ManagedWebSocket({ url: 'ws://test' });
+    await ws.connect();
+    const mock = MockWebSocket.instances[0];
+    ws.setFrameCodec({
+      encode: (frame) => frame.slice(),
+      decode: (frame) => {
+        if (frame[4] === 0x90) return new Uint8Array([1, 0, 0, 0, 0x00]);
+        return new Uint8Array([2, 0, 0, 0, 0x01, 0xAA]);
+      },
+    });
+
+    const pending = ws.sendRaw(new Uint8Array([1, 0, 0, 0, 0x44]));
+    // The ciphertext record has a two-byte payload, while the authenticated
+    // plaintext is a one-byte pong. Filtering must use the decoded length.
+    mock.receiveMessage(new Uint8Array([2, 0, 0, 0, 0x90, 0x01]));
+    mock.receiveMessage(new Uint8Array([2, 0, 0, 0, 0x91, 0x02]));
+
+    expect(await pending).toEqual(new Uint8Array([2, 0, 0, 0, 0x01, 0xAA]));
+    ws.disconnect();
+  });
+
+  it('fails closed and rejects pending requests on secure-record decode error', async () => {
+    const ws = new ManagedWebSocket({ url: 'ws://test' });
+    await ws.connect();
+    const mock = MockWebSocket.instances[0];
+    ws.setFrameCodec({
+      encode: (frame) => frame.slice(),
+      decode: () => { throw new Error('bad tag'); },
+    });
+
+    const pending = ws.sendRaw(new Uint8Array([1, 0, 0, 0, 0x44]));
+    mock.receiveMessage(new Uint8Array([2, 0, 0, 0, 0x91, 0x02]));
+    await expect(pending).rejects.toThrow('Disconnected');
+    expect(ws.isOpen()).toBe(false);
+  });
+
   it('times out after configured duration', async () => {
     const ws = new ManagedWebSocket({
       url: 'ws://test',

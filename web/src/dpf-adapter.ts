@@ -59,6 +59,10 @@ import {
 } from './strict-verification.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
+import {
+  assertLiveOperatorIdentityV1,
+  type ServiceAdmissionPortV1,
+} from './service-admission.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -210,6 +214,45 @@ export function gateOperatorIdentity(
   }
 }
 
+/** Resolve two local operator pins without introducing a cross-server ID. */
+export function resolveIndependentOperatorPinsV1(options: {
+  strictVerification: boolean;
+  first?: Uint8Array;
+  second?: Uint8Array;
+  legacyShared?: Uint8Array;
+}): readonly [Uint8Array, Uint8Array] {
+  if (options.strictVerification) {
+    const first = exactOperatorPin('first operator pin', options.first);
+    const second = exactOperatorPin('second operator pin', options.second);
+    if (equalBytes(first, second)) {
+      throw new Error('strict two-provider verification requires distinct operator pins');
+    }
+    return [first, second];
+  }
+  const fallback = options.legacyShared ?? PIR_OPERATOR_PUBKEY;
+  return [
+    exactOperatorPin('first operator pin', options.first ?? fallback),
+    exactOperatorPin('second operator pin', options.second ?? fallback),
+  ];
+}
+
+function exactOperatorPin(field: string, value: Uint8Array | undefined): Uint8Array {
+  if (!(value instanceof Uint8Array) || value.length !== 32) {
+    throw new Error(`${field} must be exactly 32 bytes`);
+  }
+  if (value.every((byte) => byte === 0)) throw new Error(`${field} must be non-zero`);
+  return value.slice();
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
+}
+
 export interface BatchPirClientConfig {
   server0Url: string;
   server1Url: string;
@@ -283,7 +326,7 @@ export interface BatchPirClientConfig {
   /**
    * If `true`, after attesting each server the adapter also fetches its
    * operator-signed identity (REQ_ANNOUNCE) and verifies it against
-   * `pinnedOperatorPubkey` + the attested channel key, populating
+   * that server's per-leg operator pin + the attested channel key, populating
    * `operatorIdentity.serverN`. Default `false`: production servers
    * don't yet run with `--identity-*` (they'd report `'unconfigured'`)
    * and the default pin is a DEV stand-in — see `PIR_OPERATOR_PUBKEY`.
@@ -291,11 +334,17 @@ export interface BatchPirClientConfig {
    */
   verifyOperatorIdentity?: boolean;
   /**
-   * Operator (Tier-1) pubkey to pin announce bundles against. Defaults
-   * to `PIR_OPERATOR_PUBKEY` from `./attest-pin.ts` (currently a DEV
-   * stand-in). Pass a real published key here, or update the constant.
+   * Legacy shared operator pin. Advisory mode falls back to this value (or
+   * the development constant) for compatibility.
+   * @deprecated It cannot satisfy strict two-provider independence; use the
+   * two per-leg fields below.
    */
   pinnedOperatorPubkey?: Uint8Array;
+  /** Exact Tier-1 operator key for server 0. */
+  pinnedOperatorPubkey0?: Uint8Array;
+  /** Exact Tier-1 operator key for server 1. Strict mode requires it to
+   * differ from `pinnedOperatorPubkey0`. */
+  pinnedOperatorPubkey1?: Uint8Array;
   /**
    * Replay/staleness cap (seconds) on the announce bundle's `issuedAt`.
    * `issuedAt` is the server's *boot time*, so set this generously
@@ -514,6 +563,68 @@ export class BatchPirClientAdapter {
 
   getDatabaseProofStatus(dbId: number): DatabaseProofStatus | undefined {
     return this.databaseProofs.get(dbId);
+  }
+
+  /**
+   * Build an independent admission port for exactly one DPF provider. The
+   * caller creates one `ProviderAdmissionSessionV1` per server; no peer ID or
+   * shared capability crosses either connection.
+   */
+  serviceAdmissionPort(serverIndex: 0 | 1, dbId: number): ServiceAdmissionPortV1 {
+    const client = (): WasmDpfClient => {
+      if (!this.wasmClient) throw new Error('Not connected');
+      if (!this.isStrictVerification() || !this.strictReady) {
+        throw new Error('V1 service admission requires completed strict verification');
+      }
+      return this.wasmClient;
+    };
+    return {
+      assertTrustAnchor: (trust) => {
+        client();
+        assertLiveOperatorIdentityV1(
+          trust,
+          serverIndex === 0 ? this.operatorIdentity.server0 : this.operatorIdentity.server1,
+        );
+      },
+      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
+        client().fetchServicePolicy(
+          serverIndex,
+          dbId,
+          providerId,
+          policyKey,
+          nowUnix,
+          checkpoint,
+        ),
+      fetchRetainedRedemption: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedServiceRedemption(
+        serverIndex,
+        dbId,
+        providerId,
+        policyKey,
+        policyDigest,
+        scopeId,
+        offerId,
+        nowUnix,
+      ),
+      assertSessionBinding: (policy) =>
+        client().verifyServicePolicySession(serverIndex, policy),
+      assertRetainedSessionBinding: (policy, nowUnix) =>
+        client().verifyRetainedServiceSession(serverIndex, policy, nowUnix),
+      authorize: (policy, scopeId, offerId, proof) =>
+        client().authorizeService(serverIndex, dbId, policy, scopeId, offerId, proof),
+      authorizeRetained: (policy, proof, nowUnix) =>
+        client().authorizeRetainedService(serverIndex, dbId, policy, proof, nowUnix),
+      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
+        client().requestServicePowChallenge(
+          serverIndex,
+          dbId,
+          policy,
+          scopeId,
+          offerId,
+          nowUnix,
+        ),
+    };
   }
 
   // ── Merkle accessors ─────────────────────────────────────────────────
@@ -782,6 +893,14 @@ export class BatchPirClientAdapter {
   private async attestAndUpgrade(): Promise<void> {
     if (!this.wasmClient) return;
     this.secureChannelEstablished = false;
+    const operatorPins = this.config.verifyOperatorIdentity
+      ? resolveIndependentOperatorPinsV1({
+        strictVerification: this.isStrictVerification(),
+        first: this.config.pinnedOperatorPubkey0,
+        second: this.config.pinnedOperatorPubkey1,
+        legacyShared: this.config.pinnedOperatorPubkey,
+      })
+      : null;
 
     const attestOne = async (idx: 0 | 1): Promise<WasmAttestVerification | null> => {
       try {
@@ -1007,9 +1126,8 @@ export class BatchPirClientAdapter {
         // channel decision so announce() rides the encrypted channel when it
         // came up; binds against the attested serverStaticPub from `att*`.
         if (this.config.verifyOperatorIdentity) {
-          const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
-          const oid0 = await this.verifyOperatorIdentityOne(0, att0, pin);
-          const oid1 = await this.verifyOperatorIdentityOne(1, att1, pin);
+          const oid0 = await this.verifyOperatorIdentityOne(0, att0, operatorPins![0]);
+          const oid1 = await this.verifyOperatorIdentityOne(1, att1, operatorPins![1]);
           this.operatorIdentity.server0 = oid0;
           this.operatorIdentity.server1 = oid1;
           this.config.onOperatorIdentity?.(0, oid0);

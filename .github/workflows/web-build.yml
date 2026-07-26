@@ -18,11 +18,10 @@ name: Web client build + tests
 #      interface drift between `sdk-bridge.ts` and WASM-generated
 #      stubs, etc.) are never gated.
 #
-#   3. **vitest unit tests.** `web/src/__tests__/` includes the
-#      pure-helper TS-side analog of the Kani harnesses
-#      (`onion_pad_chunk_ids.test.ts`, `onion_chunk_slot_classifier.test.ts`,
-#      `leakage.test.ts`, `onion_leakage_corpus.test.ts`, etc.) — 138
-#      tests at last count. Currently never run in CI.
+#   3. **vitest unit tests.** `web/src/__tests__/` includes pure-helper
+#      TS-side analogs of the Kani harnesses plus the Payment V1 admission,
+#      recovery, and provider-selection tests. This suite is never inferred
+#      from a stale hard-coded test count.
 #
 # This workflow plugs all three gaps with a single PR-time job. The
 # wasm-pack output is reused by the tsc step (the regenerated
@@ -34,7 +33,12 @@ on:
   push:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'crates/protocol/**'
+      - 'crates/payment/crypto/**'
+      - 'crates/payment/arc-adapter/**'
+      - 'crates/directory/nostr/**'
       - 'crates/sdk/core/**'
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
@@ -44,7 +48,12 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'crates/protocol/**'
+      - 'crates/payment/crypto/**'
+      - 'crates/payment/arc-adapter/**'
+      - 'crates/directory/nostr/**'
       - 'crates/sdk/core/**'
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
@@ -88,11 +97,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # Separate cache key from `pir-sdk-integration.yml` and
-          # `deploy-web.yml` — this workflow uses a trimmed workspace
-          # (no `pir-sdk-client`, no native-only deps), so the target
-          # dir layout differs from those jobs and sharing the cache
-          # would cause collisions.
+          # Keep a workflow-specific cache key so PR validation cannot reuse
+          # incompatible artifacts from release or live-integration jobs.
           key: ${{ runner.os }}-cargo-web-build-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-web-build-
@@ -101,18 +107,12 @@ jobs:
         working-directory: web
         run: npm ci
 
-      # Build pir-sdk-wasm with a trimmed workspace. The full workspace
-      # contains crates that don't compile to wasm32 (the `onion`
-      # feature pulls SEAL via a C++ toolchain). Same pattern as
-      # `deploy-web.yml` —
-      # mirror the `[workspace]` munging exactly so this job catches
-      # any drift in what's-wasm-buildable.
+      # Build from the real workspace graph. Rewriting the root manifest to a
+      # three-member synthetic workspace hid pir-sdk-wasm's actual path
+      # dependencies (including pir-sdk-client, pir-channel, service policy,
+      # directory, and payment adapters) and could silently drift from Cargo.
       - name: Build pir-sdk-wasm (wasm32 target validation)
-        run: |
-          cp Cargo.toml Cargo.toml.bak
-          printf '[workspace]\nresolver = "2"\nmembers = ["crates/protocol/core", "crates/sdk/core", "crates/sdk/wasm"]\n' > Cargo.toml
-          wasm-pack build crates/sdk/wasm --target web --out-dir pkg
-          mv Cargo.toml.bak Cargo.toml
+        run: wasm-pack build crates/sdk/wasm --target web --out-dir pkg
 
       # `npm run build` = `tsc`. Strict typecheck of every .ts file
       # under web/src/, including the test files. Catches drift in
@@ -122,10 +122,8 @@ jobs:
         working-directory: web
         run: npm run build
 
-      # `npm test` = `vitest run`. 138 tests across 11 files at last
-      # count, including the chunk_max / index_max closure helper
-      # tests (`onion_pad_chunk_ids.test.ts`,
-      # `onion_chunk_slot_classifier.test.ts`).
+      # `npm test` = `vitest run`, including chunk_max/index_max closure
+      # helpers and Payment V1 admission/recovery tests.
       #
       # Excludes the live cross-language diff (`onion_leakage_diff.test.ts`)
       # — that test is gated on `RUN_LIVE_DIFF=1` because it requires
@@ -134,6 +132,10 @@ jobs:
       - name: Run vitest unit tests
         working-directory: web
         run: npm test
+
+      - name: Build production web bundle
+        working-directory: web
+        run: npm run build-web
 
       # Parse and discover the browser canary without issuing live production
       # queries on every PR. The scheduled workflow owns those queries.

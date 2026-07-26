@@ -115,9 +115,10 @@ export class CashuBatPool {
  * each returned signature into a `Bat`. The blinding factors never leave
  * WASM.
  *
- * Requires the SDK WASM module (initialised here, idempotently). In the demo
- * `issuerUrl` is the `dev-issuer`; in production it would be the
- * Lightning-backed mint after a paid invoice.
+ * Requires the SDK WASM module (initialised here, idempotently). `issuerUrl`
+ * is the legacy `dev-issuer`. Production Payment V1 does not repoint these
+ * `/dev/*` calls; it uses the signed-offer acquisition and admission flow in
+ * `service-acquisition.ts` / `service-admission.ts`.
  *
  * @throws if `count` is not a positive integer, the mint is unreachable, or
  *   the response is malformed (errors surface from `payment-client`).

@@ -9,9 +9,11 @@ the user* — can be seen working, not just asserted. Every byte boundary is
 also covered by automated tests (see "What's tested" below); the demo is the
 human-visible capstone.
 
-> **This is a demo, not production rate limiting** (free issuance, dev gate,
-> servers ungated). For the gap to real rate limiting and a sequenced
-> integration plan, see [`RATELIMIT_INTEGRATION.md`](RATELIMIT_INTEGRATION.md).
+> **This is a legacy mechanism demo, not Payment V1 or production rate
+> limiting** (free issuance, process-local state, co-located dev gate). Its
+> `0x08`/`0x09` frames cannot unlock the enforced Payment V1 server gate. For
+> the maintained architecture and integration index, see
+> [`RATELIMIT_INTEGRATION.md`](RATELIMIT_INTEGRATION.md).
 
 ## Run it
 
@@ -79,14 +81,14 @@ mint ── dev-issuer ── obtain ── browser (WASM) ── present ──
   `CashuBatPool`) to the dev-issuer's `/dev/arc/verify` /
   `/dev/cashu/verify`.
 
-> **Demo vs production.** The dev-issuer co-locates the verify gate so the demo
+> **Demo vs Payment V1.** The dev-issuer co-locates the verify gate so the demo
 > needs no PIR database. The gate runs the *identical* crypto to
 > `pir_runtime_core::{arc_verifier, cashu_verifier}` (the same
 > `arc::verify_presentation`; the same Cashu `C == k·hash_to_curve(secret)` +
-> spent-set). In production the same present frames go over **WebSocket** to
-> the PIR server's gate (`unified_server --require-arc --arc-key … --require-cashu
-> --cashu-keyset …`, which the dev-issuer prints a launch line for); only the
-> transport differs.
+> spent-set). Those legacy verifier primitives remain useful test baselines,
+> but production-shaped admission uses the signed, provider/scope/offer-bound
+> Payment V1 messages and durable store. The old present frames are not
+> translated into a Payment V1 grant.
 
 The credential issuer here is **free** (no payment). In production the same
 endpoints would be served by a Lightning-backed mint after a paid invoice.

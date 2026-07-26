@@ -29,10 +29,10 @@
 //! ```
 
 use js_sys::Uint8Array;
-use wasm_bindgen::prelude::*;
 use pir_sdk::{
     BucketRef, DatabaseCatalog, DatabaseInfo, DatabaseKind, QueryResult, SyncPlan, UtxoEntry,
 };
+use wasm_bindgen::prelude::*;
 
 /// Per-bucket bin Merkle verifier — pure SHA-256 walk exposed to JS so the
 /// web client can drop its duplicate TS verifier.
@@ -45,8 +45,8 @@ use pir_sdk::{
 pub mod merkle_verify;
 pub use merkle_verify::{
     bucket_merkle_leaf_hash, bucket_merkle_parent_n, bucket_merkle_sha256,
-    verify_bucket_merkle_item, xor_buffers, WasmBucketMerkleTreeTops,
-    BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
+    verify_bucket_merkle_item, xor_buffers, WasmBucketMerkleTreeTops, BUCKET_MERKLE_ARITY,
+    BUCKET_MERKLE_SIB_ROW_SIZE,
 };
 
 /// ARC (Anonymous Rate-limited Credentials) presentation state.
@@ -58,6 +58,31 @@ pub mod arc;
 /// for the browser to blind a secret, send it to the mint, and unblind the
 /// returned signature into a single-use BAT.
 pub mod cashu;
+
+/// Strict standard Cashu V3/V4 token importer. Wallet serialization remains
+/// browser-local and is normalized into the service protocol's canonical
+/// spend bytes only after exact signed-manifest checks.
+mod standard_cashu;
+
+/// Browser-side BOLT11 quote acquisition and recovery state machine.
+pub mod bolt11;
+
+/// Strict signed service-policy and provider-local admission bindings.
+pub mod service;
+pub use service::{
+    initial_service_policy_checkpoint_v1, WasmAcceptedServicePolicyV1, WasmServicePowChallengeV1,
+};
+
+/// Strict Nostr directory verification and persist-before-select typestate.
+/// Relay sockets and durable storage remain browser-owned; signatures,
+/// replacement ordering, rollback, split-view and shard binding remain Rust.
+pub mod directory;
+pub use directory::{directory_full_catalog_req_json_v1, WasmDirectoryCatalogCandidateV1};
+
+/// Same-socket attestation and encrypted-frame bridge for the standalone
+/// browser OnionPIR/SEAL implementation.
+pub mod standalone_channel;
+pub use standalone_channel::WasmStandaloneSecureChannelV1;
 
 /// Async PIR clients (`WasmDpfClient` / `WasmHarmonyClient` / `WasmOramClient`) wrapping the
 /// native `pir-sdk-client` structs. On wasm32 they use
@@ -148,21 +173,13 @@ fn parse_bucket_refs(val: Option<&serde_json::Value>) -> Result<Vec<BucketRef>, 
         let pbc_group = item
             .get("pbcGroup")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| {
-                JsError::new(&format!(
-                    "bucket ref {}: missing u32 'pbcGroup'",
-                    i
-                ))
-            })? as u32;
+            .ok_or_else(|| JsError::new(&format!("bucket ref {}: missing u32 'pbcGroup'", i)))?
+            as u32;
         let bin_index = item
             .get("binIndex")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| {
-                JsError::new(&format!(
-                    "bucket ref {}: missing u32 'binIndex'",
-                    i
-                ))
-            })? as u32;
+            .ok_or_else(|| JsError::new(&format!("bucket ref {}: missing u32 'binIndex'", i)))?
+            as u32;
         let bin_content_hex = item
             .get("binContent")
             .and_then(|v| v.as_str())
@@ -218,9 +235,7 @@ fn bucket_refs_to_json(refs: &[BucketRef]) -> serde_json::Value {
 /// * `indexBins` / `chunkBins` — optional inspector-state arrays
 ///   (see `parse_bucket_refs`); missing ⇒ empty vec (legacy shape).
 /// * `matchedIndexIdx` — optional u64 ⇒ `Some(usize)`; missing ⇒ `None`.
-pub(crate) fn parse_query_result_json(
-    data: &serde_json::Value,
-) -> Result<QueryResult, JsError> {
+pub(crate) fn parse_query_result_json(data: &serde_json::Value) -> Result<QueryResult, JsError> {
     let entries_arr = data
         .get("entries")
         .and_then(|e| e.as_array())
@@ -228,12 +243,9 @@ pub(crate) fn parse_query_result_json(
 
     let mut entries = Vec::with_capacity(entries_arr.len());
     for entry_val in entries_arr {
-        let txid_hex = entry_val
-            .get("txid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let txid_bytes = hex_decode(txid_hex)
-            .map_err(|e| JsError::new(&format!("invalid txid hex: {}", e)))?;
+        let txid_hex = entry_val.get("txid").and_then(|v| v.as_str()).unwrap_or("");
+        let txid_bytes =
+            hex_decode(txid_hex).map_err(|e| JsError::new(&format!("invalid txid hex: {}", e)))?;
         let mut txid = [0u8; 32];
         if txid_bytes.len() == 32 {
             txid.copy_from_slice(&txid_bytes);
@@ -241,10 +253,7 @@ pub(crate) fn parse_query_result_json(
 
         entries.push(UtxoEntry {
             txid,
-            vout: entry_val
-                .get("vout")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32,
+            vout: entry_val.get("vout").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             amount_sats: entry_val
                 .get("amount")
                 .or_else(|| entry_val.get("amountSats"))
@@ -277,8 +286,7 @@ pub(crate) fn parse_query_result_json(
     // empty / missing string ⇒ `None` (matches full-snapshot shape).
     let raw_chunk_data = match data.get("rawChunkData").and_then(|v| v.as_str()) {
         Some(s) if !s.is_empty() => Some(
-            hex_decode(s)
-                .map_err(|e| JsError::new(&format!("invalid rawChunkData hex: {}", e)))?,
+            hex_decode(s).map_err(|e| JsError::new(&format!("invalid rawChunkData hex: {}", e)))?,
         ),
         _ => None,
     };
@@ -364,22 +372,13 @@ impl WasmDatabaseCatalog {
         let mut databases = Vec::with_capacity(databases_arr.len());
 
         for db_val in databases_arr {
-            let db_id = db_val
-                .get("dbId")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u8;
-            let db_type = db_val
-                .get("dbType")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let db_id = db_val.get("dbId").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let db_type = db_val.get("dbType").and_then(|v| v.as_u64()).unwrap_or(0);
             let base_height = db_val
                 .get("baseHeight")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
-            let height = db_val
-                .get("height")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
+            let height = db_val.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
             let kind = if db_type == 0 {
                 DatabaseKind::Full
@@ -406,14 +405,8 @@ impl WasmDatabaseCatalog {
                     .or_else(|| db_val.get("chunkBinsPerTable"))
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32,
-                index_k: db_val
-                    .get("indexK")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(75) as u8,
-                chunk_k: db_val
-                    .get("chunkK")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(80) as u8,
+                index_k: db_val.get("indexK").and_then(|v| v.as_u64()).unwrap_or(75) as u8,
+                chunk_k: db_val.get("chunkK").and_then(|v| v.as_u64()).unwrap_or(80) as u8,
                 tag_seed: parse_tag_seed(db_val.get("tagSeed")),
                 dpf_n_index: db_val
                     .get("dpfNIndex")

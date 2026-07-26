@@ -293,7 +293,12 @@ mod tests {
 
     /// Build the same well-formed single-entry catalog as
     /// `decode_catalog_single_entry`, with caller-chosen geometry.
-    fn catalog_with_geometry(index_bins: u32, chunk_bins: u32, index_k: u8, chunk_k: u8) -> Vec<u8> {
+    fn catalog_with_geometry(
+        index_bins: u32,
+        chunk_bins: u32,
+        index_k: u8,
+        chunk_k: u8,
+    ) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.push(1u8); // num_dbs
         buf.push(0u8); // db_id
@@ -320,8 +325,8 @@ mod tests {
     #[test]
     fn decode_catalog_rejects_k_below_pbc_minimum() {
         for (ik, ck) in [(2u8, 80u8), (75, 2), (0, 0), (1, 1)] {
-            let err = decode_catalog(&catalog_with_geometry(750_000, 1_500_000, ik, ck))
-                .unwrap_err();
+            let err =
+                decode_catalog(&catalog_with_geometry(750_000, 1_500_000, ik, ck)).unwrap_err();
             match err {
                 PirError::Decode(msg) => assert!(
                     msg.contains("k out of range"),

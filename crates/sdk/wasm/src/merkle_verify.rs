@@ -133,10 +133,7 @@ pub fn parse_tree_tops_bytes(data: &[u8]) -> Result<Vec<TreeTop>, String> {
             let n = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
             off += 4;
             if off + n * 32 > data.len() {
-                return Err(format!(
-                    "truncated hashes for tree {} level {}",
-                    t, lvl
-                ));
+                return Err(format!("truncated hashes for tree {} level {}", t, lvl));
             }
             let mut nodes = Vec::with_capacity(n);
             for _ in 0..n {
@@ -484,7 +481,10 @@ mod tests {
         // bind fails.
         let content = (5u64).to_le_bytes();
         let ok = verify_bucket_merkle_item(6, &content, 0, &[], &tops);
-        assert!(!ok, "verifier should reject a leaf presented at the wrong index");
+        assert!(
+            !ok,
+            "verifier should reject a leaf presented at the wrong index"
+        );
     }
 
     #[test]
@@ -578,6 +578,8 @@ mod tests {
         // false rather than panic.
         let content = (3u64).to_le_bytes();
         let short_row = vec![0u8; 200];
-        assert!(!verify_bucket_merkle_item(3, &content, 0, &short_row, &tops));
+        assert!(!verify_bucket_merkle_item(
+            3, &content, 0, &short_row, &tops
+        ));
     }
 }

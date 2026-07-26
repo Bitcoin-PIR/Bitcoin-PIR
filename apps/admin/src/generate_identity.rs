@@ -53,9 +53,7 @@ pub struct GenerateIdentityArgs {
 }
 
 pub fn run(args: GenerateIdentityArgs) -> Result<(), String> {
-    let out = args
-        .out
-        .unwrap_or_else(|| default_path_for(args.purpose));
+    let out = args.out.unwrap_or_else(|| default_path_for(args.purpose));
 
     if out.exists() && !args.force {
         return Err(format!(
@@ -77,7 +75,10 @@ pub fn run(args: GenerateIdentityArgs) -> Result<(), String> {
 
     crate::keygen::write_secret_key_unix(&out, &seed)?;
 
-    eprintln!("wrote secret key (32 bytes, mode 0600) to {}", out.display());
+    eprintln!(
+        "wrote secret key (32 bytes, mode 0600) to {}",
+        out.display()
+    );
     eprintln!();
     match args.purpose {
         IdentityPurpose::Server => {

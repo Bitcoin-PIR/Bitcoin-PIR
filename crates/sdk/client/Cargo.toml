@@ -51,6 +51,12 @@ pir-core = { version = "0.1.0", path = "../../protocol/core" }
 # (pir-runtime-core::channel). Compiles to wasm32 (verified — uses
 # RustCrypto's pure-Rust x25519-dalek + chacha20poly1305 + hkdf).
 pir-channel = { version = "0.1.0", path = "../../protocol/channel" }
+# Signed, provider-specific service policy and authorization wire codecs.
+# Pure Rust and shared by native + wasm32 clients.
+pir-service-protocol = { version = "0.1.0", path = "../../protocol/service" }
+# Reviewed BIP340 prehash signing/verification and Cashu BAT wallet helpers
+# used by the restart-safe BOLT11 acquisition state machine.
+pir-payment-crypto = { version = "0.1.0", path = "../../payment/crypto" }
 # Attested-builder DB proof verifier. Pure parsing/hash logic; the runtime
 # server only transports proof bytes, clients decide policy.
 pir-db-attest = { path = "../../trust/db-attest" }

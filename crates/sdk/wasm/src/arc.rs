@@ -9,7 +9,19 @@ use arc::{
     ClientSecrets, Credential, CredentialRequest, CredentialResponse, PresentationState,
     ServerPublicKey,
 };
+use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
+
+const ARC_VAULT_STATE_MAGIC_V1: &[u8; 8] = b"BPIRARC1";
+const REVIEWED_ARC_STATE_LEN_V1: usize = 1 + 32 + 32 + 8 + 8 + 32 + (3 * 33);
+const CREDENTIAL_PRESENTATION_CONTEXT_DOMAIN: &[u8] =
+    pir_service_protocol::CREDENTIAL_PRESENTATION_CONTEXT_DOMAIN;
+
+#[derive(Clone, Copy)]
+struct ReviewedArcBindingStateV1 {
+    binding_digest: [u8; 32],
+    public_key_fingerprint: [u8; 32],
+}
 
 /// Opaque handle wrapping an ARC `PresentationState` + `Credential`.
 ///
@@ -24,6 +36,7 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub struct WasmArcPresentationState {
     state: PresentationState,
+    reviewed_binding: Option<ReviewedArcBindingStateV1>,
 }
 
 #[wasm_bindgen]
@@ -57,7 +70,10 @@ impl WasmArcPresentationState {
 
         let credential = Credential { m1, u, u_prime, x1 };
         let state = make_presentation_state(credential, presentation_context, limit);
-        Ok(WasmArcPresentationState { state })
+        Ok(WasmArcPresentationState {
+            state,
+            reviewed_binding: None,
+        })
     }
 
     /// Produce the next presentation.
@@ -65,6 +81,11 @@ impl WasmArcPresentationState {
     /// Returns the wire-format presentation bytes (to send to the server in
     /// `REQ_CREDENTIAL_PRESENT`), or throws if the credential is exhausted.
     pub fn present(&mut self) -> Result<Vec<u8>, JsError> {
+        if self.reviewed_binding.is_some() {
+            return Err(JsError::new(
+                "reviewed ARC state requires prepare_presentation and durable successor persistence",
+            ));
+        }
         let mut rng = rand_core::OsRng;
         let (new_state, _nonce, presentation) = present(&self.state, &mut rng)
             .map_err(|e| JsError::new(&format!("ARC present failed: {}", e)))?;
@@ -72,9 +93,26 @@ impl WasmArcPresentationState {
         Ok(presentation.to_bytes())
     }
 
+    /// Prepare a successor and withhold its presentation until the browser
+    /// vault has durably stored `successor_state_bytes()`.
+    pub fn prepare_presentation(&self) -> Result<WasmPreparedArcPresentationV1, JsError> {
+        let mut rng = rand_core::OsRng;
+        let (successor, _nonce, presentation) = present(&self.state, &mut rng)
+            .map_err(|e| JsError::new(&format!("ARC present failed: {}", e)))?;
+        Ok(WasmPreparedArcPresentationV1 {
+            successor: WasmArcPresentationState {
+                state: successor,
+                reviewed_binding: self.reviewed_binding,
+            },
+            presentation: Some(presentation.to_bytes()),
+        })
+    }
+
     /// How many presentations remain before exhaustion.
     pub fn remaining(&self) -> u64 {
-        self.state.presentation_limit.saturating_sub(self.state.next_nonce)
+        self.state
+            .presentation_limit
+            .saturating_sub(self.state.next_nonce)
     }
 
     /// The presentation limit for this credential.
@@ -87,10 +125,25 @@ impl WasmArcPresentationState {
         self.state.next_nonce
     }
 
-    /// Serialize the full state for persistence (e.g., localStorage).
+    /// Serialize the full state for encrypted provider-bound persistence.
     ///
     /// Format: `[credential: 131B][pres_ctx_len: 4B LE][pres_ctx][next_nonce: 8B LE][limit: 8B LE]`
     pub fn serialize(&self) -> Vec<u8> {
+        if let Some(binding) = self.reviewed_binding {
+            let mut out =
+                Vec::with_capacity(ARC_VAULT_STATE_MAGIC_V1.len() + REVIEWED_ARC_STATE_LEN_V1);
+            out.extend_from_slice(ARC_VAULT_STATE_MAGIC_V1);
+            out.push(1);
+            out.extend_from_slice(&binding.binding_digest);
+            out.extend_from_slice(&binding.public_key_fingerprint);
+            out.extend_from_slice(&self.state.presentation_limit.to_le_bytes());
+            out.extend_from_slice(&self.state.next_nonce.to_le_bytes());
+            out.extend_from_slice(&serialize_scalar(&self.state.credential.m1));
+            out.extend_from_slice(&serialize_element(&self.state.credential.u));
+            out.extend_from_slice(&serialize_element(&self.state.credential.u_prime));
+            out.extend_from_slice(&serialize_element(&self.state.credential.x1));
+            return out;
+        }
         let cred_bytes = serialize_credential(&self.state.credential);
         let ctx = &self.state.presentation_context;
         let mut out = Vec::with_capacity(131 + 4 + ctx.len() + 8 + 8);
@@ -104,6 +157,9 @@ impl WasmArcPresentationState {
 
     /// Deserialize state previously produced by `serialize()`.
     pub fn deserialize(bytes: &[u8]) -> Result<WasmArcPresentationState, JsError> {
+        if bytes.starts_with(ARC_VAULT_STATE_MAGIC_V1) {
+            return deserialize_reviewed_arc_state_v1(&bytes[ARC_VAULT_STATE_MAGIC_V1.len()..]);
+        }
         if bytes.len() < 131 + 4 {
             return Err(JsError::new("serialized state too short"));
         }
@@ -117,8 +173,8 @@ impl WasmArcPresentationState {
         let next_nonce = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
         let limit = u64::from_le_bytes(bytes[off + 8..off + 16].try_into().unwrap());
 
-        let m1 = deserialize_scalar(&credential_bytes[..32])
-            .map_err(|_| JsError::new("invalid m1"))?;
+        let m1 =
+            deserialize_scalar(&credential_bytes[..32]).map_err(|_| JsError::new("invalid m1"))?;
         let u = deserialize_element(&credential_bytes[32..65])
             .map_err(|e| JsError::new(&format!("invalid u: {}", e)))?;
         let u_prime = deserialize_element(&credential_bytes[65..98])
@@ -130,8 +186,101 @@ impl WasmArcPresentationState {
         // Create state then manually set nonce to restored value
         let mut state = make_presentation_state(credential, &pres_ctx, limit);
         state.next_nonce = next_nonce;
-        Ok(WasmArcPresentationState { state })
+        Ok(WasmArcPresentationState {
+            state,
+            reviewed_binding: None,
+        })
     }
+}
+
+/// ARC presentation transition whose wire bytes remain inaccessible until
+/// the caller explicitly acknowledges durable successor-state persistence.
+#[wasm_bindgen]
+pub struct WasmPreparedArcPresentationV1 {
+    successor: WasmArcPresentationState,
+    presentation: Option<Vec<u8>>,
+}
+
+#[wasm_bindgen]
+impl WasmPreparedArcPresentationV1 {
+    pub fn successor_state_bytes(&self) -> Vec<u8> {
+        self.successor.serialize()
+    }
+
+    pub fn remaining(&self) -> u64 {
+        self.successor.remaining()
+    }
+
+    /// The strict Web vault calls this only after its IndexedDB transaction
+    /// commits. Consuming the bytes prevents a second release from one handle.
+    pub fn release_after_persisted(&mut self) -> Result<Vec<u8>, JsError> {
+        self.presentation
+            .take()
+            .ok_or_else(|| JsError::new("ARC presentation was already released"))
+    }
+}
+
+fn deserialize_reviewed_arc_state_v1(bytes: &[u8]) -> Result<WasmArcPresentationState, JsError> {
+    if bytes.len() != REVIEWED_ARC_STATE_LEN_V1 || bytes[0] != 1 {
+        return Err(JsError::new(
+            "invalid reviewed ARC client state length or version",
+        ));
+    }
+    let binding_digest: [u8; 32] = bytes[1..33]
+        .try_into()
+        .map_err(|_| JsError::new("invalid ARC binding digest"))?;
+    let public_key_fingerprint: [u8; 32] = bytes[33..65]
+        .try_into()
+        .map_err(|_| JsError::new("invalid ARC public-key fingerprint"))?;
+    if binding_digest.iter().all(|byte| *byte == 0)
+        || public_key_fingerprint.iter().all(|byte| *byte == 0)
+    {
+        return Err(JsError::new(
+            "reviewed ARC binding identifiers must be non-zero",
+        ));
+    }
+    let presentation_limit = u64::from_le_bytes(
+        bytes[65..73]
+            .try_into()
+            .map_err(|_| JsError::new("invalid ARC presentation limit"))?,
+    );
+    let next_nonce = u64::from_le_bytes(
+        bytes[73..81]
+            .try_into()
+            .map_err(|_| JsError::new("invalid ARC next nonce"))?,
+    );
+    if !(2..=1024).contains(&presentation_limit) || next_nonce > presentation_limit {
+        return Err(JsError::new("reviewed ARC nonce/limit state is invalid"));
+    }
+    let m1 =
+        deserialize_scalar(&bytes[81..113]).map_err(|_| JsError::new("invalid reviewed ARC m1"))?;
+    let u = deserialize_element(&bytes[113..146])
+        .map_err(|_| JsError::new("invalid reviewed ARC u"))?;
+    let u_prime = deserialize_element(&bytes[146..179])
+        .map_err(|_| JsError::new("invalid reviewed ARC u_prime"))?;
+    let x1 = deserialize_element(&bytes[179..212])
+        .map_err(|_| JsError::new("invalid reviewed ARC x1"))?;
+    let mut context_hasher = Sha256::new();
+    context_hasher.update(CREDENTIAL_PRESENTATION_CONTEXT_DOMAIN);
+    context_hasher.update(binding_digest);
+    let presentation_context: [u8; 32] = context_hasher.finalize().into();
+    let value = WasmArcPresentationState {
+        state: PresentationState {
+            credential: Credential { m1, u, u_prime, x1 },
+            presentation_context: presentation_context.to_vec(),
+            next_nonce,
+            presentation_limit,
+        },
+        reviewed_binding: Some(ReviewedArcBindingStateV1 {
+            binding_digest,
+            public_key_fingerprint,
+        }),
+    };
+    let encoded = value.serialize();
+    if encoded[ARC_VAULT_STATE_MAGIC_V1.len()..] != *bytes {
+        return Err(JsError::new("reviewed ARC state is non-canonical"));
+    }
+    Ok(value)
 }
 
 /// Opaque handle for the client side of ARC issuance ("obtain" leg).
@@ -235,17 +384,13 @@ mod tests {
 
         // Issuer side (what dev-issuer does).
         let parsed = CredentialRequest::from_bytes(&req_bytes).expect("parse request");
-        let response =
-            arc::create_credential_response(&sk, &pk, &parsed, &mut rng).expect("issue");
+        let response = arc::create_credential_response(&sk, &pk, &parsed, &mut rng).expect("issue");
         let resp_bytes = response.to_bytes();
         assert_eq!(resp_bytes.len(), 454);
 
         // Client finalizes via the WASM binding.
         let pk_bytes = pk.to_bytes();
-        let cred = req
-            .finalize(&pk_bytes, &resp_bytes)
-            .ok()
-            .expect("finalize");
+        let cred = req.finalize(&pk_bytes, &resp_bytes).ok().expect("finalize");
         assert_eq!(cred.len(), 131);
 
         // Feed into the presentation-state binding and present once.

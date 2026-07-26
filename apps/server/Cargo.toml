@@ -64,6 +64,19 @@ harmony-oram = ["cuckoo-oram"]
 [dependencies]
 pir-core = { path = "../../crates/protocol/core" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
+pir-service-protocol = { path = "../../crates/protocol/service" }
+pir-service-store = { path = "../../crates/protocol/service-store" }
+pir-payment-crypto = { path = "../../crates/payment/crypto", features = ["provider-store"] }
+pir-arc-adapter = { path = "../../crates/payment/arc-adapter", features = ["provider-store"] }
+pir-cashu-client = { path = "../../crates/payment/cashu-client" }
+pir-provider-clearing-client = { path = "../../crates/payment/provider-clearing-client" }
+ed25519-dalek = "2"
+hex = "0.4"
+zeroize = "1"
+rustix = { version = "1", features = ["fs", "process"] }
+httparse = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
 build = { path = "../../tools/db-builder" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b" }
@@ -77,3 +90,7 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+pir-sdk-client = { path = "../../crates/sdk/client" }

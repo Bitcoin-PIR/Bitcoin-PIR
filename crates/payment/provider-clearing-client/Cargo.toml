@@ -1,0 +1,23 @@
+[package]
+name = "pir-provider-clearing-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Provider-side shared issuer redemption adapter for BitcoinPIR admission"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+
+[dependencies]
+ed25519-dalek = "2"
+hmac = "0.12"
+pir-runtime-core = { path = "../../protocol/runtime" }
+pir-service-protocol = { path = "../../protocol/service" }
+sha2 = "0.10"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+pir-issuer-clearing = { path = "../issuer-clearing" }
+
+[lints.rust]
+unsafe_code = "forbid"

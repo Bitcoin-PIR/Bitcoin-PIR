@@ -11,6 +11,25 @@
 //!     [--checkpoint /path/to/checkpoint <height>]...
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
+#[path = "../service_http.rs"]
+mod service_http;
+
+use pir_runtime_core::free_admission::{
+    FreeAdmissionCommitterV1, FreeIpSubjectKeyV1, FreeRateLimitStateV1,
+};
+use pir_runtime_core::harmony_attach_runtime::HarmonyAttachRegistryV1;
+use pir_runtime_core::service_admission::{
+    encode_auth_result_response_v1, encode_harmony_attach_result_response_v1,
+    encode_pow_challenge_response_v1, encode_service_policy_response_v1, AdmissionEnforcementV1,
+    AdmissionMethodRouteV1, BackendFrameKindV1, BackendFramePermitV1, BackendFrameV1,
+    CompositeAdmissionMethodCommitterV1, ConnectionAdmissionGateV1, ProviderStoreBearerCommitterV1,
+    ServiceWireRequestV1,
+};
+use pir_runtime_core::service_policy_runtime::{
+    activate_retained_service_policy_v1, activate_service_policy_v1,
+    validate_policy_method_coverage_v1, validate_retained_policy_method_coverage_v1,
+    ActivatedRetainedServicePolicyV1, ActivatedServicePolicyV1,
+};
 use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
 use runtime::eval::{self, GroupTiming};
@@ -21,21 +40,63 @@ use runtime::table::{
     DatabaseDescriptor, DatabaseType, MappedDatabase, MappedSubTable, ServerState,
 };
 
+use ed25519_dalek::VerifyingKey;
 use futures_util::{SinkExt, StreamExt};
 use libdpf::DpfKey;
 use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
 use rayon::prelude::*;
-#[cfg(feature = "cuckoo-oram")]
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io::Read;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::accept_async;
+use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio_tungstenite::accept_async_with_config;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
+
+use pir_arc_adapter::{
+    ArcPresentationCanonicalizerV1 as ExperimentalArcPresentationCanonicalizerV1, ArcSecretKeyV1,
+    ArcSecretKeyringV1,
+};
+use pir_payment_crypto::K256CashuMintKeyringV1;
+use pir_service_protocol::{
+    BackendId as ServiceBackendIdV1, DatasetBindingV1, HarmonyAttachRejectCodeV1,
+    HarmonyAttachResultV1, HarmonyAttachTransitionErrorV1, IssuerClearingApprovalV1,
+    OperationStartV1, ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1,
+    ServicePolicyRequestV1, ServicePolicyResponseV1, ServicePolicyV1, ServiceProtocolError,
+    TrustedCatalogResolutionV1, VerifiedServiceOfferV1, WorkloadId as ServiceWorkloadIdV1,
+};
+use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
+use zeroize::{Zeroize, Zeroizing};
+
+use pir_cashu_client::{
+    CashuMintRouteV1, CashuMintTransportFailureKindV1, CashuMintTransportFailureV1,
+    CashuMintTransportV1, ChaCha20Poly1305RecoveryCipherV1, StandardCashuAdmissionCommitterV1,
+    StandardCashuClientV1,
+};
+use pir_provider_clearing_client::{
+    ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1, SharedIssuerRedeemEnvelopeV1,
+    SharedIssuerRedeemTransportV1, SharedIssuerTransportErrorV1,
+};
+use service_http::{HttpsPostErrorV1, StrictHttpsClientV1};
+
+/// Detailed per-connection/per-query logging is a privacy-dangerous local
+/// diagnostic mode. Production/default logging must never depend on request
+/// identity, shape, selected database, byte count, or elapsed time.
+static UNSAFE_DEBUG_QUERY_LOGGING: AtomicBool = AtomicBool::new(false);
+
+macro_rules! unsafe_debug_log {
+    ($($arg:tt)*) => {
+        if UNSAFE_DEBUG_QUERY_LOGGING.load(Ordering::Relaxed) {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 // HarmonyPIR imports
 use harmonypir::params::Params;
@@ -100,6 +161,10 @@ enum ServerRole {
 }
 
 struct CliArgs {
+    /// IP address to bind. The production-compatible default remains the
+    /// dual-stack wildcard; local integration harnesses can explicitly bind
+    /// 127.0.0.1 so the test listener is never exposed off-host.
+    bind_address: IpAddr,
     port: u16,
     data_dir: PathBuf,
     role: ServerRole,
@@ -123,6 +188,7 @@ struct CliArgs {
     /// Directory containing the AMD VCEK chain PEMs. Expected files:
     ///   - cert_chain.pem  (ASK + ARK concatenated, as AMD KDS returns)
     ///   - vcek.pem        (the per-chip VCEK for the current TCB)
+    ///
     /// If unset (or files missing), the AttestResult ships empty cert
     /// fields and the browser-side verifier falls back to V2-binding-
     /// only mode. Operator's responsibility to refresh after TCB
@@ -142,6 +208,61 @@ struct CliArgs {
     arc_key_path: Option<PathBuf>,
     require_cashu: bool,
     cashu_keysets: Vec<(String, String)>,
+    /// Enforce the production V1 service admission state machine. This first
+    /// integration slice is deliberately fail-closed until a verified policy
+    /// source and all advertised method adapters are configured.
+    require_service_auth_v1: bool,
+    /// Canonical operator-signed ServicePolicyV1 bytes. Required with strict
+    /// V1 admission; never fetched from an untrusted network location.
+    service_policy_path: Option<PathBuf>,
+    /// Canonical, older signed policies retained solely for redeeming already
+    /// issued credentials during each offer's bounded grace period.
+    service_retained_policy_paths: Vec<PathBuf>,
+    /// Trusted provider audience and the single V1 policy verification key.
+    /// This key must remain stable while any retained policy grace window is
+    /// live; V1 deliberately has no unauthenticated historical-key list.
+    service_provider_id_hex: Option<String>,
+    service_policy_key_hex: Option<String>,
+    /// Existing provider spend database and separately restored rollback-floor
+    /// authority database. Startup never creates either implicitly.
+    service_store_path: Option<PathBuf>,
+    service_rollback_authority_path: Option<PathBuf>,
+    /// Secret HMAC key for provider-local durable IP quota cohorts.
+    service_free_ip_key_path: Option<PathBuf>,
+    /// Assert that the TCP peer address is the real client address. This is
+    /// deliberately separate from the HMAC key because a local reverse proxy
+    /// would otherwise collapse every user into one free-rate bucket.
+    service_trust_direct_peer_ip: bool,
+    /// Raw 32-byte provider-local Cashu BAT denomination secrets. Repeatable.
+    service_bat_key_paths: Vec<PathBuf>,
+    /// Experimental provider-local ARC private keys, each encoded as
+    /// `<hex-key-id>=<raw-128-byte-key-path>`.
+    service_arc_key_specs: Vec<String>,
+    /// Standard Cashu merchant recovery keys as `<epoch>=<raw-32-byte-path>`.
+    service_cashu_recovery_key_specs: Vec<String>,
+    service_cashu_recovery_active_epoch: Option<u64>,
+    /// One shared issuer clearing relationship for this provider runtime.
+    service_shared_authorization_path: Option<PathBuf>,
+    service_shared_issuer_approval_path: Option<PathBuf>,
+    service_shared_operator_key_hex: Option<String>,
+    service_shared_issuer_settlement_key_hex: Option<String>,
+    service_shared_clearing_key_path: Option<PathBuf>,
+    service_shared_idempotency_key_path: Option<PathBuf>,
+    service_shared_minimum_authorization_epoch: Option<u64>,
+    /// Hard cap on live TCP/WebSocket tasks. Connections over the cap are
+    /// dropped before allocating a WebSocket parser.
+    max_connections: usize,
+    /// Hard cap on concurrent service AUTH commits, including blocking
+    /// external Cashu/shared-issuer calls.
+    service_max_concurrent_auth: usize,
+    websocket_handshake_timeout_ms: u64,
+    connection_idle_timeout_ms: u64,
+    /// Absolute lifetime of an enforced-mode connection before it commits a
+    /// service grant. Unlike the idle timeout, WebSocket Ping/control traffic
+    /// cannot extend this deadline.
+    service_pre_auth_timeout_ms: u64,
+    /// Explicitly enables privacy-dangerous per-connection/per-query logs.
+    unsafe_debug_query_logging: bool,
     /// Whether this server accepts HarmonyPIR hint requests
     /// (`REQ_HARMONY_HINTS` / `REQ_HARMONY_HINTS_V2`). Default `false`;
     /// must be explicitly enabled via `--serve-hints`. Combined with
@@ -273,6 +394,7 @@ fn fatal_cli(msg: impl AsRef<str>) -> ! {
 
 fn parse_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
+    let mut bind_address = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
     let mut port = 8091u16;
     let mut data_dir = PathBuf::from("/Volumes/Bitcoin/data/checkpoints/940611");
     let mut role = ServerRole::Primary;
@@ -288,6 +410,32 @@ fn parse_args() -> CliArgs {
     let mut arc_key_path: Option<PathBuf> = None;
     let mut require_cashu = false;
     let mut cashu_keysets: Vec<(String, String)> = Vec::new();
+    let mut require_service_auth_v1 = false;
+    let mut service_policy_path: Option<PathBuf> = None;
+    let mut service_retained_policy_paths: Vec<PathBuf> = Vec::new();
+    let mut service_provider_id_hex: Option<String> = None;
+    let mut service_policy_key_hex: Option<String> = None;
+    let mut service_store_path: Option<PathBuf> = None;
+    let mut service_rollback_authority_path: Option<PathBuf> = None;
+    let mut service_free_ip_key_path: Option<PathBuf> = None;
+    let mut service_trust_direct_peer_ip = false;
+    let mut service_bat_key_paths: Vec<PathBuf> = Vec::new();
+    let mut service_arc_key_specs: Vec<String> = Vec::new();
+    let mut service_cashu_recovery_key_specs: Vec<String> = Vec::new();
+    let mut service_cashu_recovery_active_epoch: Option<u64> = None;
+    let mut service_shared_authorization_path: Option<PathBuf> = None;
+    let mut service_shared_issuer_approval_path: Option<PathBuf> = None;
+    let mut service_shared_operator_key_hex: Option<String> = None;
+    let mut service_shared_issuer_settlement_key_hex: Option<String> = None;
+    let mut service_shared_clearing_key_path: Option<PathBuf> = None;
+    let mut service_shared_idempotency_key_path: Option<PathBuf> = None;
+    let mut service_shared_minimum_authorization_epoch: Option<u64> = None;
+    let mut max_connections: usize = 128;
+    let mut service_max_concurrent_auth: usize = 32;
+    let mut websocket_handshake_timeout_ms: u64 = 10_000;
+    let mut connection_idle_timeout_ms: u64 = 30_000;
+    let mut service_pre_auth_timeout_ms: u64 = 120_000;
+    let mut unsafe_debug_query_logging = false;
     let mut serve_hints = false;
     let mut serve_queries = false;
     let mut identity_key_path: Option<PathBuf> = None;
@@ -318,6 +466,14 @@ fn parse_args() -> CliArgs {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--bind-address" => {
+                bind_address = args
+                    .get(i + 1)
+                    .unwrap_or_else(|| fatal_cli("--bind-address requires an IP address"))
+                    .parse::<IpAddr>()
+                    .unwrap_or_else(|_| fatal_cli("--bind-address requires a valid IP address"));
+                i += 1;
+            }
             "--port" | "-p" => {
                 port = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(8091);
                 i += 1;
@@ -410,6 +566,140 @@ fn parse_args() -> CliArgs {
                     }
                 }
                 i += 1;
+            }
+            "--require-service-auth-v1" => {
+                require_service_auth_v1 = true;
+            }
+            "--service-policy" => {
+                service_policy_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-retained-policy" => {
+                if let Some(path) = args.get(i + 1) {
+                    service_retained_policy_paths.push(PathBuf::from(path));
+                }
+                i += 1;
+            }
+            "--service-provider-id-hex" => {
+                service_provider_id_hex = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--service-policy-key-hex" => {
+                service_policy_key_hex = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--service-store" => {
+                service_store_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-rollback-authority" => {
+                service_rollback_authority_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-free-ip-key" => {
+                service_free_ip_key_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-trust-direct-peer-ip" => {
+                service_trust_direct_peer_ip = true;
+            }
+            "--service-bat-key" => {
+                if let Some(path) = args.get(i + 1) {
+                    service_bat_key_paths.push(PathBuf::from(path));
+                }
+                i += 1;
+            }
+            "--service-arc-key" => {
+                if let Some(spec) = args.get(i + 1) {
+                    service_arc_key_specs.push(spec.clone());
+                }
+                i += 1;
+            }
+            "--service-cashu-recovery-key" => {
+                if let Some(spec) = args.get(i + 1) {
+                    service_cashu_recovery_key_specs.push(spec.clone());
+                }
+                i += 1;
+            }
+            "--service-cashu-recovery-active-epoch" => {
+                service_cashu_recovery_active_epoch =
+                    args.get(i + 1).and_then(|value| value.parse().ok());
+                i += 1;
+            }
+            "--service-shared-authorization" => {
+                service_shared_authorization_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-shared-issuer-approval" => {
+                service_shared_issuer_approval_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-shared-operator-key-hex" => {
+                service_shared_operator_key_hex = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--service-shared-issuer-settlement-key-hex" => {
+                service_shared_issuer_settlement_key_hex = args.get(i + 1).cloned();
+                i += 1;
+            }
+            "--service-shared-clearing-key" => {
+                service_shared_clearing_key_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-shared-idempotency-key" => {
+                service_shared_idempotency_key_path = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--service-shared-minimum-authorization-epoch" => {
+                service_shared_minimum_authorization_epoch =
+                    args.get(i + 1).and_then(|value| value.parse().ok());
+                i += 1;
+            }
+            "--max-connections" => {
+                max_connections = args
+                    .get(i + 1)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_else(|| fatal_cli("--max-connections requires an integer"));
+                i += 1;
+            }
+            "--service-max-concurrent-auth" => {
+                service_max_concurrent_auth = args
+                    .get(i + 1)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_else(|| {
+                        fatal_cli("--service-max-concurrent-auth requires an integer")
+                    });
+                i += 1;
+            }
+            "--websocket-handshake-timeout-ms" => {
+                websocket_handshake_timeout_ms = args
+                    .get(i + 1)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_else(|| {
+                        fatal_cli("--websocket-handshake-timeout-ms requires an integer")
+                    });
+                i += 1;
+            }
+            "--connection-idle-timeout-ms" => {
+                connection_idle_timeout_ms = args
+                    .get(i + 1)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_else(|| {
+                        fatal_cli("--connection-idle-timeout-ms requires an integer")
+                    });
+                i += 1;
+            }
+            "--service-pre-auth-timeout-ms" => {
+                service_pre_auth_timeout_ms = args
+                    .get(i + 1)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_else(|| {
+                        fatal_cli("--service-pre-auth-timeout-ms requires an integer")
+                    });
+                i += 1;
+            }
+            "--unsafe-debug-query-logging" => {
+                unsafe_debug_query_logging = true;
             }
             "--serve-hints" => {
                 serve_hints = true;
@@ -543,12 +833,29 @@ fn parse_args() -> CliArgs {
             "--direct-oram-no-save" => {
                 direct_oram_no_save = true;
             }
-            _ => {}
+            unknown => fatal_cli(format!("unknown argument: {unknown}")),
         }
         i += 1;
     }
 
+    if !(1..=4_096).contains(&max_connections) {
+        fatal_cli("--max-connections must be in 1..=4096");
+    }
+    if !(1..=1_024).contains(&service_max_concurrent_auth) {
+        fatal_cli("--service-max-concurrent-auth must be in 1..=1024");
+    }
+    if !(1_000..=60_000).contains(&websocket_handshake_timeout_ms) {
+        fatal_cli("--websocket-handshake-timeout-ms must be in 1000..=60000");
+    }
+    if !(10_000..=600_000).contains(&connection_idle_timeout_ms) {
+        fatal_cli("--connection-idle-timeout-ms must be in 10000..=600000");
+    }
+    if !(10_000..=600_000).contains(&service_pre_auth_timeout_ms) {
+        fatal_cli("--service-pre-auth-timeout-ms must be in 10000..=600000");
+    }
+
     CliArgs {
+        bind_address,
         port,
         data_dir,
         role,
@@ -564,6 +871,32 @@ fn parse_args() -> CliArgs {
         arc_key_path,
         require_cashu,
         cashu_keysets,
+        require_service_auth_v1,
+        service_policy_path,
+        service_retained_policy_paths,
+        service_provider_id_hex,
+        service_policy_key_hex,
+        service_store_path,
+        service_rollback_authority_path,
+        service_free_ip_key_path,
+        service_trust_direct_peer_ip,
+        service_bat_key_paths,
+        service_arc_key_specs,
+        service_cashu_recovery_key_specs,
+        service_cashu_recovery_active_epoch,
+        service_shared_authorization_path,
+        service_shared_issuer_approval_path,
+        service_shared_operator_key_hex,
+        service_shared_issuer_settlement_key_hex,
+        service_shared_clearing_key_path,
+        service_shared_idempotency_key_path,
+        service_shared_minimum_authorization_epoch,
+        max_connections,
+        service_max_concurrent_auth,
+        websocket_handshake_timeout_ms,
+        connection_idle_timeout_ms,
+        service_pre_auth_timeout_ms,
+        unsafe_debug_query_logging,
         serve_hints,
         serve_queries,
         identity_key_path,
@@ -3280,6 +3613,12 @@ struct UnifiedServerData {
     cashu_verifier: Option<std::sync::Mutex<pir_runtime_core::cashu_verifier::CashuVerifier>>,
     /// Whether Cashu BAT presentation is required for PIR queries.
     require_cashu: bool,
+    /// Enforce the V1 policy/auth/grant gate for every expensive backend
+    /// frame. Legacy 0x08/0x09 success bits never modify this gate.
+    service_admission_enforcement: AdmissionEnforcementV1,
+    /// Present exactly when strict V1 admission activated a canonical signed
+    /// policy and all its advertised method routes at startup.
+    service_admission: Option<StrictServiceAdmissionRuntimeV1>,
     /// Whether this server accepts `REQ_HARMONY_HINTS` /
     /// `REQ_HARMONY_HINTS_V2` opcodes (set via `--serve-hints`).
     /// Mirrors `CliArgs::serve_hints`. Gated in the dispatch loop.
@@ -3287,6 +3626,236 @@ struct UnifiedServerData {
     /// Whether this server accepts PIR query opcodes (DPF + OnionPIR +
     /// HarmonyPIR query phase). Mirrors `CliArgs::serve_queries`.
     serve_queries: bool,
+}
+
+struct StrictServiceAdmissionRuntimeV1 {
+    policy: ActivatedServicePolicyV1,
+    retained_policies: BTreeMap<[u8; 32], ActivatedRetainedServicePolicyV1>,
+    provider_store: ProviderStore,
+    free_rate_limits: Arc<FreeRateLimitStateV1>,
+    free_ip_subject_key: Option<FreeIpSubjectKeyV1>,
+    trust_direct_peer_ip: bool,
+    bat_keyring: Option<K256CashuMintKeyringV1>,
+    experimental_arc_keyring: Option<ArcSecretKeyringV1>,
+    cashu_recovery_cipher: Option<ChaCha20Poly1305RecoveryCipherV1>,
+    shared_issuer: Option<SharedIssuerRuntimeConfigV1>,
+    http_transport: ProviderAdmissionHttpsTransportV1,
+    harmony_attach_registry: Arc<HarmonyAttachRegistryV1>,
+    monotonic_origin: Instant,
+}
+
+struct SharedIssuerRuntimeConfigV1 {
+    authorization: ProviderClearingAuthorizationV1,
+    issuer_approval: IssuerClearingApprovalV1,
+    operator_verifying_key: VerifyingKey,
+    issuer_settlement_verifying_key: VerifyingKey,
+    clearing_signing_key: ed25519_dalek::SigningKey,
+    minimum_authorization_epoch: u64,
+    idempotency_key: Zeroizing<[u8; 32]>,
+}
+
+impl core::fmt::Debug for SharedIssuerRuntimeConfigV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("SharedIssuerRuntimeConfigV1")
+            .field("provider_id", &self.authorization.claims.provider_id)
+            .field("issuer_id", &self.authorization.claims.issuer_id)
+            .field(
+                "minimum_authorization_epoch",
+                &self.minimum_authorization_epoch,
+            )
+            .field("clearing_signing_key", &"[REDACTED]")
+            .field("idempotency_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl SharedIssuerRuntimeConfigV1 {
+    fn committer<'a>(
+        &self,
+        transport: &'a dyn SharedIssuerRedeemTransportV1,
+    ) -> Result<SharedIssuerAdmissionCommitterV1<'a>, pir_service_protocol::ServiceProtocolError>
+    {
+        SharedIssuerAdmissionCommitterV1::new(
+            self.authorization.clone(),
+            self.issuer_approval.clone(),
+            self.operator_verifying_key,
+            self.issuer_settlement_verifying_key,
+            self.clearing_signing_key.clone(),
+            self.minimum_authorization_epoch,
+            ProviderRedeemIdempotencyKeyV1::from_bytes(*self.idempotency_key)?,
+            transport,
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ProviderAdmissionHttpsTransportV1 {
+    client: StrictHttpsClientV1,
+}
+
+impl CashuMintTransportV1 for ProviderAdmissionHttpsTransportV1 {
+    fn post_json(
+        &self,
+        mint_endpoint: &str,
+        route: CashuMintRouteV1,
+        request_json: &[u8],
+        max_response_bytes: usize,
+    ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
+        self.client
+            .post(
+                mint_endpoint,
+                route.path(),
+                "application/json",
+                "application/json",
+                request_json,
+                max_response_bytes,
+            )
+            .map_err(|error| CashuMintTransportFailureV1 {
+                kind: match error {
+                    HttpsPostErrorV1::DefinitelyNotSent => CashuMintTransportFailureKindV1::Network,
+                    HttpsPostErrorV1::OutcomeUnknown => CashuMintTransportFailureKindV1::Timeout,
+                    HttpsPostErrorV1::HttpStatus(404) => CashuMintTransportFailureKindV1::NotFound,
+                    HttpsPostErrorV1::HttpStatus(_) => CashuMintTransportFailureKindV1::HttpError,
+                    HttpsPostErrorV1::InvalidResponse => {
+                        CashuMintTransportFailureKindV1::InvalidContentType
+                    }
+                },
+                http_status: match error {
+                    HttpsPostErrorV1::HttpStatus(status) => Some(status),
+                    _ => None,
+                },
+            })
+    }
+}
+
+impl SharedIssuerRedeemTransportV1 for ProviderAdmissionHttpsTransportV1 {
+    fn redeem(
+        &self,
+        envelope: SharedIssuerRedeemEnvelopeV1<'_>,
+        max_response_bytes: usize,
+    ) -> Result<Vec<u8>, SharedIssuerTransportErrorV1> {
+        let body = ProviderRedeemEnvelopeV1 {
+            request: envelope.request.clone(),
+            request_auth: envelope.request_auth.clone(),
+            credential_binding: envelope.credential_binding.clone(),
+            canonical_credential: envelope.canonical_credential.to_vec(),
+        }
+        .encode()
+        .map_err(|_| SharedIssuerTransportErrorV1::ScopeUnavailable)?;
+        self.client
+            .post(
+                envelope.endpoint,
+                "/v1/redeems",
+                "application/vnd.bitcoinpir.redeem-v1",
+                "application/vnd.bitcoinpir.redeem-result-v1",
+                &body,
+                max_response_bytes,
+            )
+            .map_err(|error| match error {
+                HttpsPostErrorV1::DefinitelyNotSent => SharedIssuerTransportErrorV1::NotSent {
+                    retry_after_ms: 1_000,
+                },
+                HttpsPostErrorV1::HttpStatus(400 | 409 | 410 | 422) => {
+                    SharedIssuerTransportErrorV1::InvalidOrSpent
+                }
+                HttpsPostErrorV1::HttpStatus(401 | 403 | 404) => {
+                    SharedIssuerTransportErrorV1::ScopeUnavailable
+                }
+                HttpsPostErrorV1::OutcomeUnknown | HttpsPostErrorV1::HttpStatus(_) => {
+                    SharedIssuerTransportErrorV1::OutcomeUnknown
+                }
+                HttpsPostErrorV1::InvalidResponse => SharedIssuerTransportErrorV1::InvalidResponse,
+            })
+    }
+}
+
+impl StrictServiceAdmissionRuntimeV1 {
+    fn all_policies(&self) -> impl Iterator<Item = &ServicePolicyV1> {
+        std::iter::once(self.policy.policy()).chain(
+            self.retained_policies
+                .values()
+                .map(ActivatedRetainedServicePolicyV1::policy),
+        )
+    }
+
+    fn response_for_policy_request(
+        &self,
+        request: ServicePolicyRequestV1,
+        now_unix: u64,
+    ) -> Option<(ServicePolicyResponseV1, [u8; 32])> {
+        match request {
+            ServicePolicyRequestV1::Current => {
+                self.policy.verify_current(now_unix).ok()?;
+                Some((self.policy.response(), self.policy.policy_digest()))
+            }
+            ServicePolicyRequestV1::Retained { policy_digest } => {
+                let retained = self.retained_policies.get(&policy_digest)?;
+                retained
+                    .has_live_redemption(now_unix)
+                    .then(|| (retained.response(), policy_digest))
+            }
+        }
+    }
+
+    fn policy_for_digest(&self, policy_digest: &[u8; 32]) -> Option<&ServicePolicyV1> {
+        if policy_digest == &self.policy.policy_digest() {
+            Some(self.policy.policy())
+        } else {
+            self.retained_policies
+                .get(policy_digest)
+                .map(ActivatedRetainedServicePolicyV1::policy)
+        }
+    }
+
+    fn verified_offer_for_authorization(
+        &self,
+        policy_digest: &[u8; 32],
+        scope_id: &[u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<Option<VerifiedServiceOfferV1<'_>>, ServiceProtocolError> {
+        if policy_digest == &self.policy.policy_digest() {
+            return self
+                .policy
+                .verified_offer(scope_id, offer_id, now_unix)
+                .map(Some);
+        }
+        let Some(retained) = self.retained_policies.get(policy_digest) else {
+            return Ok(None);
+        };
+        retained
+            .verified_offer_for_redemption(scope_id, offer_id, now_unix)
+            .map(Some)
+    }
+
+    fn is_current_policy_digest(&self, policy_digest: &[u8; 32]) -> bool {
+        policy_digest == &self.policy.policy_digest()
+    }
+
+    fn supports(&self, route: AdmissionMethodRouteV1) -> bool {
+        match route {
+            AdmissionMethodRouteV1::FreeOpenBestEffort
+            | AdmissionMethodRouteV1::FreeProofOfWork
+            | AdmissionMethodRouteV1::FreeAnonymousTicketProviderLocal
+            | AdmissionMethodRouteV1::Bolt11DirectReceiptProviderLocal => true,
+            AdmissionMethodRouteV1::FreeIpRateLimited => {
+                self.free_ip_subject_key.is_some()
+                    && self.trust_direct_peer_ip
+                    && self.free_rate_limits.is_persistent()
+            }
+            AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal => self.bat_keyring.is_some(),
+            AdmissionMethodRouteV1::ArcProviderLocalExperimental => {
+                self.experimental_arc_keyring.is_some()
+            }
+            AdmissionMethodRouteV1::StandardCashuMintOnline => self.cashu_recovery_cipher.is_some(),
+            AdmissionMethodRouteV1::FreeAnonymousTicketSharedIssuerOnline
+            | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
+            | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
+                self.shared_issuer.is_some()
+            }
+        }
+    }
 }
 
 impl UnifiedServerData {
@@ -3320,6 +3889,399 @@ impl UnifiedServerData {
     fn has_any_onionpir_merkle(&self) -> bool {
         self.onionpir_merkle.iter().any(|m| m.is_some())
     }
+
+    #[cfg(feature = "cuckoo-oram")]
+    fn has_oram_for(&self, db_id: u8) -> bool {
+        self.direct_oram.contains_key(&db_id) || self.cuckoo_oram.contains_key(&db_id)
+    }
+
+    #[cfg(not(feature = "cuckoo-oram"))]
+    fn has_oram_for(&self, _db_id: u8) -> bool {
+        false
+    }
+
+    fn service_operation_is_local_v1(&self, operation: &OperationStartV1) -> bool {
+        let db_id = match operation {
+            OperationStartV1::DpfQuery { db_id }
+            | OperationStartV1::HarmonyHint { db_id, .. }
+            | OperationStartV1::HarmonyQuery { db_id }
+            | OperationStartV1::OnionSession { db_id }
+            | OperationStartV1::TeeOramQuery { db_id } => *db_id,
+        };
+        if self.state.get_db(db_id).is_none() {
+            return false;
+        }
+        match operation {
+            OperationStartV1::DpfQuery { .. } | OperationStartV1::HarmonyQuery { .. } => {
+                self.serve_queries
+            }
+            OperationStartV1::HarmonyHint { .. } => {
+                self.serve_hints
+                    && self
+                        .hint_pool
+                        .as_ref()
+                        .is_some_and(|pool| pool.database_id() == db_id)
+            }
+            OperationStartV1::OnionSession { .. } => {
+                self.serve_queries && self.onionpir_tx_for(db_id).is_some()
+            }
+            OperationStartV1::TeeOramQuery { .. } => self.serve_queries && self.has_oram_for(db_id),
+        }
+    }
+
+    /// Resolve an untrusted operation from actual loaded state plus the exact
+    /// activated provider policy. Multiple matching scopes fail closed: the
+    /// wire request is not allowed to choose an operation profile indirectly.
+    fn resolve_service_operation_for_policy_v1(
+        &self,
+        policy: &ServicePolicyV1,
+        operation: &OperationStartV1,
+    ) -> Option<TrustedCatalogResolutionV1> {
+        if !self.service_operation_is_local_v1(operation) {
+            return None;
+        }
+        let db_id = match operation {
+            OperationStartV1::DpfQuery { db_id }
+            | OperationStartV1::HarmonyHint { db_id, .. }
+            | OperationStartV1::HarmonyQuery { db_id }
+            | OperationStartV1::OnionSession { db_id }
+            | OperationStartV1::TeeOramQuery { db_id } => *db_id,
+        };
+        let database = self.state.get_db(db_id)?;
+        let root = database.manifest_root?;
+        let (backend, workload) = operation.required_service();
+        let protocol_version = match backend {
+            ServiceBackendIdV1::HarmonyPirV2 => 2,
+            ServiceBackendIdV1::DpfPirV1
+            | ServiceBackendIdV1::OnionPirV1
+            | ServiceBackendIdV1::TeeOramV1 => 1,
+        };
+        let mut matching = policy.scopes.iter().filter(|scope_policy| {
+            let scope = &scope_policy.scope;
+            scope.provider_id == policy.provider_id
+                && scope.backend == backend
+                && scope.workload == workload
+                && scope.protocol_version == protocol_version
+                && scope.dataset == DatasetBindingV1::ManifestRoot { root }
+        });
+        let scope = &matching.next()?.scope;
+        if matching.next().is_some() {
+            return None;
+        }
+        Some(TrustedCatalogResolutionV1::new(
+            db_id,
+            backend,
+            workload,
+            protocol_version,
+            DatasetBindingV1::ManifestRoot { root },
+            scope.operation_profile,
+        ))
+    }
+
+    fn validate_service_policy_catalog_v1(&self) -> Result<(), String> {
+        let Some(runtime) = self.service_admission.as_ref() else {
+            return Ok(());
+        };
+        for policy in runtime.all_policies() {
+            let policy_digest = policy
+                .policy_digest()
+                .map_err(|error| format!("invalid activated service policy: {error}"))?;
+            for scope_policy in &policy.scopes {
+                let scope = &scope_policy.scope;
+                let DatasetBindingV1::ManifestRoot { root } = &scope.dataset else {
+                    return Err(format!(
+                        "strict service scope {} in policy {} is not bound to an exact database manifest root",
+                        hex::encode(scope.scope_id()),
+                        hex::encode(policy_digest),
+                    ));
+                };
+                let root = *root;
+                let locally_served =
+                    self.state
+                        .databases
+                        .iter()
+                        .enumerate()
+                        .any(|(index, database)| {
+                            let Ok(db_id) = u8::try_from(index) else {
+                                return false;
+                            };
+                            if database.manifest_root != Some(root) {
+                                return false;
+                            }
+                            match (scope.backend, scope.workload) {
+                                (
+                                    ServiceBackendIdV1::DpfPirV1,
+                                    ServiceWorkloadIdV1::DpfEvaluateJobV1,
+                                ) => self.service_operation_is_local_v1(
+                                    &OperationStartV1::DpfQuery { db_id },
+                                ),
+                                (
+                                    ServiceBackendIdV1::HarmonyPirV2,
+                                    ServiceWorkloadIdV1::HarmonyHintBundleV1,
+                                ) => self.service_operation_is_local_v1(
+                                    &OperationStartV1::HarmonyHint {
+                                        db_id,
+                                        transport: pir_service_protocol::HintTransport::V2Full,
+                                        session_token: None,
+                                        primary_side: None,
+                                    },
+                                ),
+                                (
+                                    ServiceBackendIdV1::HarmonyPirV2,
+                                    ServiceWorkloadIdV1::HarmonyQueryJobV1,
+                                ) => self.service_operation_is_local_v1(
+                                    &OperationStartV1::HarmonyQuery { db_id },
+                                ),
+                                (
+                                    ServiceBackendIdV1::OnionPirV1,
+                                    ServiceWorkloadIdV1::OnionEvaluateJobV1,
+                                ) => self.service_operation_is_local_v1(
+                                    &OperationStartV1::OnionSession { db_id },
+                                ),
+                                (
+                                    ServiceBackendIdV1::TeeOramV1,
+                                    ServiceWorkloadIdV1::TeeOramQueryV1,
+                                ) => self.service_operation_is_local_v1(
+                                    &OperationStartV1::TeeOramQuery { db_id },
+                                ),
+                                _ => false,
+                            }
+                        });
+                if !locally_served {
+                    return Err(format!(
+                        "strict service scope {} in policy {} is not backed by a loaded database and enabled workload",
+                        hex::encode(scope.scope_id()),
+                        hex::encode(policy_digest),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn backend_frame_for_service_gate(
+    server: &UnifiedServerData,
+    payload: &[u8],
+) -> Result<Option<BackendFrameV1>, String> {
+    let Some((&variant, body)) = payload.split_first() else {
+        return Ok(None);
+    };
+    let request_bytes = u64::try_from(payload.len())
+        .map_err(|_| "request length does not fit admission counter".to_owned())?;
+    let counted = |kind, db_id, logical_inputs: usize, hint_groups: usize, work_units: usize| {
+        Ok(Some(BackendFrameV1 {
+            kind,
+            db_id,
+            logical_inputs: u64::try_from(logical_inputs)
+                .map_err(|_| "logical input count overflow".to_owned())?,
+            hint_groups: u64::try_from(hint_groups)
+                .map_err(|_| "hint group count overflow".to_owned())?,
+            request_bytes,
+            work_units: u64::try_from(work_units.max(1))
+                .map_err(|_| "work-unit count overflow".to_owned())?,
+        }))
+    };
+
+    match variant {
+        REQ_INDEX_BATCH | REQ_CHUNK_BATCH | REQ_BUCKET_MERKLE_SIB_BATCH => {
+            let request = Request::decode(payload).map_err(|error| error.to_string())?;
+            let (kind, query) = match request {
+                Request::IndexBatch(query) => (BackendFrameKindV1::DpfIndexBatch, query),
+                Request::ChunkBatch(query) => (BackendFrameKindV1::DpfChunkBatch, query),
+                Request::BucketMerkleSibBatch(query) => {
+                    (BackendFrameKindV1::DpfMerkleSiblingBatch, query)
+                }
+                _ => return Err("runtime decoder returned a mismatched DPF request".into()),
+            };
+            let work_units = query
+                .keys
+                .iter()
+                .map(Vec::len)
+                .try_fold(0usize, usize::checked_add)
+                .ok_or_else(|| "DPF work-unit count overflow".to_owned())?;
+            counted(kind, query.db_id, query.keys.len(), 0, work_units)
+        }
+        REQ_HARMONY_HINTS => {
+            let Request::HarmonyHints(request) =
+                Request::decode(payload).map_err(|error| error.to_string())?
+            else {
+                return Err("runtime decoder returned a mismatched Harmony hint request".into());
+            };
+            counted(
+                BackendFrameKindV1::HarmonyHintLegacyV1,
+                request.db_id,
+                0,
+                request.group_ids.len(),
+                request.group_ids.len(),
+            )
+        }
+        REQ_HARMONY_HINTS_V2 => {
+            let Request::HarmonyHintsV2(request) =
+                Request::decode(payload).map_err(|error| error.to_string())?
+            else {
+                return Err("runtime decoder returned a mismatched Harmony V2 request".into());
+            };
+            let database = server
+                .state
+                .get_db(request.db_id)
+                .ok_or_else(|| format!("unknown db_id {}", request.db_id))?;
+            let groups = database
+                .index
+                .params
+                .k
+                .checked_add(database.chunk.params.k)
+                .ok_or_else(|| "Harmony group count overflow".to_owned())?;
+            counted(
+                BackendFrameKindV1::HarmonyHintV2Full,
+                request.db_id,
+                0,
+                groups,
+                groups,
+            )
+        }
+        REQ_HARMONY_HINTS_V2_HALF => {
+            let Request::HarmonyHintsV2Half(request) =
+                Request::decode(payload).map_err(|error| error.to_string())?
+            else {
+                return Err("runtime decoder returned a mismatched Harmony V2-half request".into());
+            };
+            let database = server
+                .state
+                .get_db(request.db_id)
+                .ok_or_else(|| format!("unknown db_id {}", request.db_id))?;
+            let (side, groups) = match request.side {
+                0 => (
+                    pir_service_protocol::HarmonyHintSideV1::Index,
+                    database.index.params.k,
+                ),
+                1 => (
+                    pir_service_protocol::HarmonyHintSideV1::Chunk,
+                    database.chunk.params.k,
+                ),
+                value => return Err(format!("invalid Harmony V2-half side {}", value)),
+            };
+            counted(
+                BackendFrameKindV1::HarmonyHintV2Half {
+                    session_token: request.session_token,
+                    side,
+                },
+                request.db_id,
+                0,
+                groups,
+                groups,
+            )
+        }
+        REQ_HARMONY_QUERY => {
+            let Request::HarmonyQuery(request) =
+                Request::decode(payload).map_err(|error| error.to_string())?
+            else {
+                return Err("runtime decoder returned a mismatched Harmony query".into());
+            };
+            counted(
+                BackendFrameKindV1::HarmonyQuery,
+                request.db_id,
+                request.indices.len(),
+                0,
+                request.indices.len(),
+            )
+        }
+        REQ_HARMONY_BATCH_QUERY => {
+            let Request::HarmonyBatchQuery(request) =
+                Request::decode(payload).map_err(|error| error.to_string())?
+            else {
+                return Err("runtime decoder returned a mismatched Harmony batch query".into());
+            };
+            let logical_inputs = request
+                .items
+                .iter()
+                .flat_map(|item| item.sub_queries.iter())
+                .map(Vec::len)
+                .try_fold(0usize, usize::checked_add)
+                .ok_or_else(|| "Harmony logical input count overflow".to_owned())?;
+            counted(
+                BackendFrameKindV1::HarmonyBatchQuery,
+                request.db_id,
+                logical_inputs,
+                0,
+                logical_inputs,
+            )
+        }
+        REQ_ORAM_LOOKUP => {
+            let Request::OramLookup(request) =
+                Request::decode(payload).map_err(|error| error.to_string())?
+            else {
+                return Err("runtime decoder returned a mismatched ORAM query".into());
+            };
+            counted(
+                BackendFrameKindV1::TeeOramQuery,
+                request.db_id,
+                request.script_hashes.len(),
+                0,
+                request.script_hashes.len(),
+            )
+        }
+        REQ_REGISTER_KEYS => {
+            let request = RegisterKeysMsg::decode(body).map_err(|error| error.to_string())?;
+            counted(
+                BackendFrameKindV1::OnionRegisterKeys,
+                request.db_id,
+                0,
+                0,
+                1,
+            )
+        }
+        REQ_ONIONPIR_INDEX_QUERY
+        | REQ_ONIONPIR_CHUNK_QUERY
+        | REQ_ONIONPIR_MERKLE_INDEX_SIBLING
+        | REQ_ONIONPIR_MERKLE_DATA_SIBLING => {
+            let request = OnionPirBatchQuery::decode(body).map_err(|error| error.to_string())?;
+            let kind = match variant {
+                REQ_ONIONPIR_INDEX_QUERY => BackendFrameKindV1::OnionIndexQuery,
+                REQ_ONIONPIR_CHUNK_QUERY => BackendFrameKindV1::OnionChunkQuery,
+                REQ_ONIONPIR_MERKLE_INDEX_SIBLING => BackendFrameKindV1::OnionMerkleIndexSibling,
+                REQ_ONIONPIR_MERKLE_DATA_SIBLING => BackendFrameKindV1::OnionMerkleDataSibling,
+                _ => unreachable!("matched exact OnionPIR opcode set"),
+            };
+            counted(
+                kind,
+                request.db_id,
+                request.queries.len(),
+                0,
+                request.queries.len(),
+            )
+        }
+        _ => Ok(None),
+    }
+}
+
+fn service_gate_allows_ungranted_opcode(variant: u8) -> bool {
+    matches!(
+        variant,
+        REQ_PING
+            | REQ_GET_INFO
+            | 0x03 // REQ_GET_INFO_JSON
+            | REQ_GET_DB_CATALOG
+            | REQ_GET_DB_PROOF
+            | REQ_GET_DB_PROOF_V2
+            | REQ_ATTEST
+            | REQ_ANNOUNCE
+            | REQ_HANDSHAKE
+            | REQ_SERVICE_POLICY_V1
+            | REQ_AUTH_BEGIN_V1
+            | REQ_POW_CHALLENGE_V1
+            | REQ_HARMONY_ATTACH_V1
+            | REQ_ADMIN_AUTH_CHALLENGE
+            | REQ_ADMIN_AUTH_RESPONSE
+            | REQ_ADMIN_DB_UPLOAD_BEGIN
+            | REQ_ADMIN_DB_UPLOAD_CHUNK
+            | REQ_ADMIN_DB_UPLOAD_FINALIZE
+            | REQ_ADMIN_DB_ACTIVATE
+            | REQ_BUCKET_MERKLE_TREE_TOPS
+            | REQ_HARMONY_GET_INFO
+            | REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP
+            | REQ_ONIONPIR_MERKLE_DATA_TREE_TOP
+    )
 }
 
 /// Per-group OnionPIR Merkle metadata for one DB (Phase 3 per-group
@@ -3883,7 +4845,7 @@ impl UnifiedServerData {
                     Ok(v) => v,
                     Err(e) => return Response::Error(format!("Direct ORAM lookup failed: {}", e)),
                 };
-                println!(
+                unsafe_debug_log!(
                     "[direct-oram-lookup] db={} slots={}, budget={} in {:.2?}",
                     query.db_id,
                     query.script_hashes.len(),
@@ -3945,7 +4907,7 @@ impl UnifiedServerData {
                 Ok(v) => v,
                 Err(e) => return Response::Error(format!("ORAM lookup failed: {}", e)),
             };
-            println!(
+            unsafe_debug_log!(
                 "[oram-lookup] db={} {} scripthash(es) in {:.2?}",
                 query.db_id,
                 query.script_hashes.len(),
@@ -3993,7 +4955,7 @@ impl UnifiedServerData {
 // Returns (ark, ask, vcek). Empty Vecs on any I/O or parse failure;
 // caller logs and continues — AttestResult ships empty cert fields and
 // the browser falls back to V2-binding-only mode.
-fn load_vcek_chain(dir: &PathBuf) -> std::io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+fn load_vcek_chain(dir: &Path) -> std::io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let chain_path = dir.join("cert_chain.pem");
     let vcek_path = dir.join("vcek.pem");
     let chain_bytes = std::fs::read(&chain_path)?;
@@ -4020,11 +4982,11 @@ fn split_cert_chain_ask_then_ark(bytes: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     // Find the END of the first block, including its line.
     let first_end = s.find("-----END")?;
     let after_first_end = first_end + s[first_end..].find('\n')? + 1;
-    let first_block = s[..after_first_end].as_bytes().to_vec();
+    let first_block = s.as_bytes()[..after_first_end].to_vec();
     // The remainder should start with the second BEGIN line.
     let rest = &s[after_first_end..];
     let second_begin = rest.find("-----BEGIN")?;
-    let second_block = rest[second_begin..].as_bytes().to_vec();
+    let second_block = rest.as_bytes()[second_begin..].to_vec();
     if second_block.is_empty() {
         return None;
     }
@@ -4046,6 +5008,428 @@ fn build_announce_response(announcement_bundle: &Option<Vec<u8>>) -> Response {
         None => Response::Error(
             "announce not configured: server lacks identity key or operator cert".into(),
         ),
+    }
+}
+
+/// Private response-budget seam used by the connection sink. Production uses
+/// the connection's signed admission grant; tests use a tiny deterministic
+/// budget to prove no encoded response can bypass this layer.
+trait ServiceResponseBudgetV1 {
+    fn reserve_service_response_bytes_v1(&mut self, bytes: u64) -> Result<(), String>;
+}
+
+const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 32;
+const MAX_PRE_AUTH_EGRESS_BYTES_V1: u64 = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+struct PreAuthEgressBudgetV1 {
+    message_limit: u32,
+    byte_limit: u64,
+    messages_used: u32,
+    bytes_used: u64,
+    terminal: bool,
+}
+
+impl PreAuthEgressBudgetV1 {
+    const fn production() -> Self {
+        Self {
+            message_limit: MAX_PRE_AUTH_EGRESS_MESSAGES_V1,
+            byte_limit: MAX_PRE_AUTH_EGRESS_BYTES_V1,
+            messages_used: 0,
+            bytes_used: 0,
+            terminal: false,
+        }
+    }
+
+    #[cfg(test)]
+    const fn with_limits(message_limit: u32, byte_limit: u64) -> Self {
+        Self {
+            message_limit,
+            byte_limit,
+            messages_used: 0,
+            bytes_used: 0,
+            terminal: false,
+        }
+    }
+
+    fn reserve(&mut self, messages: u32, bytes: u64) -> Result<(), String> {
+        if self.terminal {
+            return Err("pre-authorization egress budget is terminal".into());
+        }
+        if messages == 0 || bytes == 0 {
+            self.terminal = true;
+            return Err("pre-authorization egress reservation is empty".into());
+        }
+        let Some(next_messages) = self.messages_used.checked_add(messages) else {
+            self.terminal = true;
+            return Err("pre-authorization message counter overflow".into());
+        };
+        let Some(next_bytes) = self.bytes_used.checked_add(bytes) else {
+            self.terminal = true;
+            return Err("pre-authorization byte counter overflow".into());
+        };
+        if next_messages > self.message_limit || next_bytes > self.byte_limit {
+            self.terminal = true;
+            return Err("pre-authorization egress budget exceeded".into());
+        }
+        self.messages_used = next_messages;
+        self.bytes_used = next_bytes;
+        Ok(())
+    }
+}
+
+fn is_pre_auth_egress_opcode_v1(variant: u8) -> bool {
+    matches!(
+        variant,
+        REQ_PING
+            | REQ_GET_INFO
+            | 0x03 // REQ_GET_INFO_JSON
+            | REQ_GET_DB_CATALOG
+            | REQ_GET_DB_PROOF
+            | REQ_GET_DB_PROOF_V2
+            | REQ_ATTEST
+            | REQ_ANNOUNCE
+            | REQ_HANDSHAKE
+            | REQ_SERVICE_POLICY_V1
+            | REQ_POW_CHALLENGE_V1
+            | REQ_BUCKET_MERKLE_TREE_TOPS
+            | REQ_HARMONY_GET_INFO
+            | REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP
+            | REQ_ONIONPIR_MERKLE_DATA_TREE_TOP
+    )
+}
+
+impl ServiceResponseBudgetV1 for ConnectionAdmissionGateV1 {
+    fn reserve_service_response_bytes_v1(&mut self, bytes: u64) -> Result<(), String> {
+        self.reserve_response_bytes(bytes)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Sink wrapper that accounts the actual application-encoded WebSocket Binary
+/// bytes after secure-channel sealing and outer framing, immediately before
+/// they reach the underlying socket. Signed backend grants use their policy
+/// response limit; ungated verification/preflight opcodes use a separate
+/// fixed per-connection message+byte budget. Exhausting either fails closed.
+struct ServiceAdmissionSink<S, B = ConnectionAdmissionGateV1> {
+    inner: S,
+    response_budget: B,
+    meter_current_response: bool,
+    meter_current_pre_auth_response: bool,
+    pre_reserved_response_bytes: u64,
+    pre_reserved_response_messages: u32,
+    pre_auth_egress_budget: PreAuthEgressBudgetV1,
+}
+
+impl<S> ServiceAdmissionSink<S, ConnectionAdmissionGateV1> {
+    fn new(inner: S, enforcement: AdmissionEnforcementV1) -> Self {
+        Self {
+            inner,
+            response_budget: ConnectionAdmissionGateV1::new(enforcement),
+            meter_current_response: false,
+            meter_current_pre_auth_response: false,
+            pre_reserved_response_bytes: 0,
+            pre_reserved_response_messages: 0,
+            pre_auth_egress_budget: PreAuthEgressBudgetV1::production(),
+        }
+    }
+
+    fn admission_gate_mut(&mut self) -> &mut ConnectionAdmissionGateV1 {
+        &mut self.response_budget
+    }
+
+    fn active_chunk_request_limit(&self) -> Option<usize> {
+        self.response_budget
+            .active_request_byte_limit()
+            .and_then(|limit| usize::try_from(limit).ok())
+            // Outer length plus encrypted-channel magic/sequence/tag. Keep a
+            // little versioning headroom while the plaintext limit remains
+            // authoritative after decryption.
+            .map(|limit| limit.saturating_add(64).min(MAX_REASSEMBLED))
+    }
+
+    fn has_committed_service_grant(&self) -> bool {
+        self.response_budget.granted_scope_id().is_some()
+    }
+
+    fn meter_backend_response(&mut self, _permit: BackendFramePermitV1) {
+        self.meter_current_response = true;
+    }
+}
+
+/// Return the next socket-read budget and whether expiry means the absolute
+/// pre-authorization deadline fired. Only enforced admission uses that
+/// deadline; after an authorization has durably committed, the ordinary idle
+/// timeout applies. In particular, repeatedly receiving Ping frames cannot
+/// reset `pre_auth_elapsed`.
+fn connection_read_timeout_v1(
+    enforcement: AdmissionEnforcementV1,
+    has_committed_grant: bool,
+    pre_auth_elapsed: Duration,
+    pre_auth_timeout: Duration,
+    idle_timeout: Duration,
+) -> Option<(Duration, bool)> {
+    if enforcement != AdmissionEnforcementV1::Enforced || has_committed_grant {
+        return Some((idle_timeout, false));
+    }
+    let remaining = pre_auth_timeout.checked_sub(pre_auth_elapsed)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    if remaining <= idle_timeout {
+        Some((remaining, true))
+    } else {
+        Some((idle_timeout, false))
+    }
+}
+
+#[cfg(test)]
+mod connection_resource_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn enforced_pre_auth_deadline_is_absolute_and_not_an_idle_reset() {
+        let pre_auth = Duration::from_secs(120);
+        let idle = Duration::from_secs(30);
+        assert_eq!(
+            connection_read_timeout_v1(
+                AdmissionEnforcementV1::Enforced,
+                false,
+                Duration::from_secs(0),
+                pre_auth,
+                idle,
+            ),
+            Some((idle, false))
+        );
+        // A Ping may cause another call, but elapsed time comes from the
+        // unchanged connection origin, so only ten seconds remain.
+        assert_eq!(
+            connection_read_timeout_v1(
+                AdmissionEnforcementV1::Enforced,
+                false,
+                Duration::from_secs(110),
+                pre_auth,
+                idle,
+            ),
+            Some((Duration::from_secs(10), true))
+        );
+        assert_eq!(
+            connection_read_timeout_v1(
+                AdmissionEnforcementV1::Enforced,
+                false,
+                pre_auth,
+                pre_auth,
+                idle,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn committed_or_explicit_legacy_connections_use_idle_timeout() {
+        let idle = Duration::from_secs(30);
+        for (enforcement, committed) in [
+            (AdmissionEnforcementV1::Enforced, true),
+            (AdmissionEnforcementV1::ExplicitLegacyMode, false),
+        ] {
+            assert_eq!(
+                connection_read_timeout_v1(
+                    enforcement,
+                    committed,
+                    Duration::from_secs(600),
+                    Duration::from_secs(120),
+                    idle,
+                ),
+                Some((idle, false))
+            );
+        }
+    }
+}
+
+impl<S, B> ServiceAdmissionSink<S, B> {
+    /// Start one inbound application request. Any unused group reservation
+    /// remains charged (there are no refunds after a partial/network failure),
+    /// but must never be applied to a later request.
+    fn begin_request(&mut self) {
+        self.meter_current_response = false;
+        self.meter_current_pre_auth_response = false;
+        self.pre_reserved_response_bytes = 0;
+        self.pre_reserved_response_messages = 0;
+    }
+
+    fn meter_pre_auth_response_for_opcode(&mut self, variant: u8) {
+        self.meter_current_pre_auth_response = is_pre_auth_egress_opcode_v1(variant);
+    }
+
+    fn pre_auth_egress_is_terminal(&self) -> bool {
+        self.pre_auth_egress_budget.terminal
+    }
+
+    #[cfg(test)]
+    fn with_test_budget(inner: S, response_budget: B) -> Self {
+        Self {
+            inner,
+            response_budget,
+            meter_current_response: false,
+            meter_current_pre_auth_response: false,
+            pre_reserved_response_bytes: 0,
+            pre_reserved_response_messages: 0,
+            pre_auth_egress_budget: PreAuthEgressBudgetV1::production(),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_test_pre_auth_egress_limits(&mut self, messages: u32, bytes: u64) {
+        self.pre_auth_egress_budget = PreAuthEgressBudgetV1::with_limits(messages, bytes);
+    }
+
+    #[cfg(test)]
+    fn meter_response_for_test(&mut self) {
+        self.meter_current_response = true;
+    }
+}
+
+impl<S, B> ServiceAdmissionSink<S, B>
+where
+    B: ServiceResponseBudgetV1,
+{
+    fn budget_error(reason: impl Into<String>) -> tokio_tungstenite::tungstenite::Error {
+        tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(reason.into()))
+    }
+
+    #[allow(clippy::result_large_err)] // Must return the underlying Sink::Error unchanged.
+    fn reserve_encoded_bytes(
+        &mut self,
+        bytes: usize,
+    ) -> tokio_tungstenite::tungstenite::Result<()> {
+        if self.pre_auth_egress_budget.terminal {
+            return Err(Self::budget_error(
+                "pre-authorization egress budget is terminal",
+            ));
+        }
+        if !self.meter_current_response && !self.meter_current_pre_auth_response {
+            return Ok(());
+        }
+        let bytes = u64::try_from(bytes)
+            .map_err(|_| Self::budget_error("encoded response length exceeds u64"))?;
+        if self.pre_reserved_response_bytes != 0 {
+            if bytes > self.pre_reserved_response_bytes || self.pre_reserved_response_messages == 0
+            {
+                return Err(Self::budget_error(
+                    "encoded response exceeded its atomic group reservation",
+                ));
+            }
+            self.pre_reserved_response_bytes -= bytes;
+            self.pre_reserved_response_messages -= 1;
+            return Ok(());
+        }
+        if self.meter_current_response {
+            self.response_budget
+                .reserve_service_response_bytes_v1(bytes)
+                .map_err(|error| {
+                    Self::budget_error(format!("service response budget rejected send: {error}"))
+                })?;
+        }
+        if self.meter_current_pre_auth_response {
+            self.pre_auth_egress_budget
+                .reserve(1, bytes)
+                .map_err(Self::budget_error)?;
+        }
+        Ok(())
+    }
+
+    /// Reserve a multi-message encoded response before its first byte is sent.
+    /// If the signed limit is too small the gate becomes terminal and the
+    /// underlying sink observes no partial result.
+    #[allow(clippy::result_large_err)] // Must return the underlying Sink::Error unchanged.
+    fn reserve_response_group(
+        &mut self,
+        messages: usize,
+        bytes: usize,
+    ) -> tokio_tungstenite::tungstenite::Result<()> {
+        if self.pre_auth_egress_budget.terminal {
+            return Err(Self::budget_error(
+                "pre-authorization egress budget is terminal",
+            ));
+        }
+        if !self.meter_current_response && !self.meter_current_pre_auth_response {
+            return Ok(());
+        }
+        let messages = u32::try_from(messages)
+            .map_err(|_| Self::budget_error("encoded response group message count exceeds u32"))?;
+        let bytes = u64::try_from(bytes)
+            .map_err(|_| Self::budget_error("encoded response group length exceeds u64"))?;
+        if messages == 0 || bytes == 0 {
+            return Err(Self::budget_error("encoded response group is empty"));
+        }
+        if self.meter_current_response {
+            self.response_budget
+                .reserve_service_response_bytes_v1(bytes)
+                .map_err(|error| {
+                    Self::budget_error(format!("service response budget rejected group: {error}"))
+                })?;
+        }
+        if self.meter_current_pre_auth_response {
+            self.pre_auth_egress_budget
+                .reserve(messages, bytes)
+                .map_err(Self::budget_error)?;
+        }
+        self.pre_reserved_response_bytes = self
+            .pre_reserved_response_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| Self::budget_error("response group reservation overflow"))?;
+        self.pre_reserved_response_messages = self
+            .pre_reserved_response_messages
+            .checked_add(messages)
+            .ok_or_else(|| Self::budget_error("response group message reservation overflow"))?;
+        Ok(())
+    }
+}
+
+impl<S, B> futures_util::Sink<tokio_tungstenite::tungstenite::Message>
+    for ServiceAdmissionSink<S, B>
+where
+    S: futures_util::Sink<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
+    B: ServiceResponseBudgetV1 + Unpin,
+{
+    type Error = tokio_tungstenite::tungstenite::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.inner).poll_ready(cx)
+    }
+
+    fn start_send(
+        self: std::pin::Pin<&mut Self>,
+        item: tokio_tungstenite::tungstenite::Message,
+    ) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        if let tokio_tungstenite::tungstenite::Message::Binary(bytes) = &item {
+            this.reserve_encoded_bytes(bytes.len())?;
+        }
+        std::pin::Pin::new(&mut this.inner).start_send(item)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.inner).poll_flush(cx)
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.inner).poll_close(cx)
     }
 }
 
@@ -4193,7 +5577,16 @@ where
 const CHUNK_MAGIC: u8 = 0xc7;
 const CHUNK_SIZE: usize = 256 * 1024;
 const CHUNK_HDR: usize = 1 + 2 + 2; // magic + seq + total
-const MAX_REASSEMBLED: usize = 64 * 1024 * 1024;
+const MAX_REASSEMBLED: usize = 16 * 1024 * 1024;
+// Client uploads larger than this use BitcoinPIR's 256 KiB chunk envelope.
+// Keeping the WebSocket parser itself small bounds memory before application
+// admission logic sees the frame.
+const MAX_WS_MESSAGE_BYTES: usize = 512 * 1024;
+// Process-wide cap across all partially/completely reassembled client
+// requests.  This is independent of the connection count and signed grant
+// limits so many slow clients cannot each retain a 16 MiB buffer.
+const MAX_GLOBAL_REASSEMBLY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CHUNK_FRAMES: usize = MAX_REASSEMBLED.div_ceil(CHUNK_SIZE);
 
 /// Target accumulation size before flushing a coalesced HarmonyPIR hint
 /// batch as one WebSocket Binary message. Per-group hint records
@@ -4219,17 +5612,18 @@ const HINT_BATCH_BYTES: usize = 768 * 1024;
 /// chunk-capable clients. `allow_chunk` is the per-connection
 /// `client_supports_chunks` flag — false for legacy / WASM DPF/Harmony
 /// clients, which never receive a large enough OnionPIR message anyway.
-async fn send_resp_chunked<S>(
-    sink: &mut S,
+async fn send_resp_chunked<S, B>(
+    sink: &mut ServiceAdmissionSink<S, B>,
     session: Option<&mut pir_runtime_core::channel::Session>,
     payload: Vec<u8>,
     allow_chunk: bool,
 ) -> tokio_tungstenite::tungstenite::Result<()>
 where
-    S: futures_util::SinkExt<
+    S: futures_util::Sink<
             tokio_tungstenite::tungstenite::Message,
             Error = tokio_tungstenite::tungstenite::Error,
         > + Unpin,
+    B: ServiceResponseBudgetV1 + Unpin,
 {
     use tokio_tungstenite::tungstenite::{Error as TungError, Message};
     // Frame (and optionally seal) exactly like send_resp.
@@ -4262,6 +5656,15 @@ where
             to_send.len()
         ))));
     }
+    let encoded_group_bytes = to_send
+        .len()
+        .checked_add(
+            total
+                .checked_mul(4 + CHUNK_HDR)
+                .ok_or_else(|| TungError::Io(std::io::Error::other("chunk framing overflow")))?,
+        )
+        .ok_or_else(|| TungError::Io(std::io::Error::other("chunk response size overflow")))?;
+    sink.reserve_response_group(total, encoded_group_bytes)?;
     for seq in 0..total {
         let start = seq * CHUNK_SIZE;
         let end = (start + CHUNK_SIZE).min(to_send.len());
@@ -4277,11 +5680,930 @@ where
     Ok(())
 }
 
+const SERVICE_CONFIG_FILE_LIMIT_V1: usize = 64 * 1024;
+
+fn current_unix_seconds_v1() -> Result<u64, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "system clock is before the Unix epoch".to_owned())?
+        .as_secs();
+    if now == 0 {
+        return Err("system clock returned zero Unix time".to_owned());
+    }
+    Ok(now)
+}
+
+fn read_regular_file_bounded_v1(
+    path: &std::path::Path,
+    maximum: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to inspect {label} {}: {error}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("{label} is not a regular file: {}", path.display()));
+    }
+    let maximum_u64 = u64::try_from(maximum).map_err(|_| format!("{label} limit overflow"))?;
+    if metadata.len() > maximum_u64 {
+        return Err(format!(
+            "{label} is {} bytes, above the {} byte limit",
+            metadata.len(),
+            maximum
+        ));
+    }
+    let file = File::open(path)
+        .map_err(|error| format!("failed to open {label} {}: {error}", path.display()))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(maximum_u64.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read {label} {}: {error}", path.display()))?;
+    if bytes.len() > maximum {
+        return Err(format!(
+            "{label} changed while reading and exceeded its size limit"
+        ));
+    }
+    Ok(bytes)
+}
+
+fn decode_fixed_hex_v1<const N: usize>(input: &str, label: &str) -> Result<[u8; N], String> {
+    if input.len() != N.saturating_mul(2) {
+        return Err(format!(
+            "{label} must be exactly {} lowercase or uppercase hex characters",
+            N.saturating_mul(2)
+        ));
+    }
+    let bytes = hex::decode(input).map_err(|_| format!("{label} is not valid hex"))?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("{label} is not exactly {N} bytes"))
+}
+
+fn read_exact_secret_v1<const N: usize>(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<[u8; N], String> {
+    #[cfg(unix)]
+    {
+        read_exact_secret_unix_v1(path, label)
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Keep the portable path deliberately conservative. Unix builds use
+        // read_exact_secret_unix_v1 so inspection and reading share one FD.
+        let mut bytes = read_regular_file_bounded_v1(path, N, label)?;
+        if bytes.len() != N {
+            bytes.zeroize();
+            return Err(format!("{label} must contain exactly {N} raw bytes"));
+        }
+        let result = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| format!("{label} must contain exactly {N} raw bytes"));
+        bytes.zeroize();
+        result
+    }
+}
+
+#[cfg(unix)]
+fn read_exact_secret_unix_v1<const N: usize>(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<[u8; N], String> {
+    use rustix::fs::{self, FileType, Mode, OFlags};
+
+    // O_NOFOLLOW makes the single open reject a symlink. fstat below and both
+    // reads operate on this exact descriptor, never on the path again.
+    let fd = fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("failed to open {label} {}: {error}", path.display()))?;
+    let stat = fs::fstat(&fd)
+        .map_err(|error| format!("failed to inspect open {label} {}: {error}", path.display()))?;
+    if !FileType::from_raw_mode(stat.st_mode).is_file() {
+        return Err(format!("{label} is not a regular file: {}", path.display()));
+    }
+    if stat.st_uid != rustix::process::geteuid().as_raw() {
+        return Err(format!("{label} must be owned by the effective user"));
+    }
+    if stat.st_mode & 0o077 != 0 {
+        return Err(format!("{label} must not be group/world accessible"));
+    }
+    if u64::try_from(stat.st_size).ok() != Some(N as u64) {
+        return Err(format!("{label} must contain exactly {N} raw bytes"));
+    }
+
+    let mut file = File::from(fd);
+    let mut bytes = [0u8; N];
+    if let Err(error) = file.read_exact(&mut bytes) {
+        bytes.zeroize();
+        return Err(format!(
+            "failed to read {label} {}: {error}",
+            path.display()
+        ));
+    }
+    let mut extra = [0u8; 1];
+    match file.read(&mut extra) {
+        Ok(0) => Ok(bytes),
+        Ok(_) => {
+            bytes.zeroize();
+            Err(format!("{label} changed while it was read"))
+        }
+        Err(error) => {
+            bytes.zeroize();
+            Err(format!(
+                "failed to finish reading {label} {}: {error}",
+                path.display()
+            ))
+        }
+    }
+}
+
+/// Resolve one sensitive SQLite database through an owner-only canonical
+/// parent. The 0700 directory is the local single-user boundary protecting
+/// both the main file and SQLite's runtime `-wal`/`-shm` sidecars; the final
+/// component must independently be a real euid-owned mode-0600 file.
+fn validate_existing_private_sqlite_path_v1(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let configured = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to inspect {label} {}: {error}", path.display()))?;
+    if configured.file_type().is_symlink() || !configured.file_type().is_file() {
+        return Err(format!(
+            "{label} must be a non-symlink regular file: {}",
+            path.display()
+        ));
+    }
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("{label} path has no filename: {}", path.display()))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let canonical_parent = parent.canonicalize().map_err(|error| {
+        format!(
+            "failed to resolve {label} parent {}: {error}",
+            parent.display()
+        )
+    })?;
+    ensure_private_sqlite_parent_v1(&canonical_parent, label)?;
+    let canonical = canonical_parent.join(file_name);
+    let resolved = std::fs::symlink_metadata(&canonical).map_err(|error| {
+        format!(
+            "failed to inspect resolved {label} {}: {error}",
+            canonical.display()
+        )
+    })?;
+    if resolved.file_type().is_symlink() || !resolved.file_type().is_file() {
+        return Err(format!(
+            "resolved {label} must be a non-symlink regular file: {}",
+            canonical.display()
+        ));
+    }
+    ensure_private_sqlite_file_v1(&resolved, &canonical, label)?;
+    ensure_same_sqlite_file_v1(&configured, &resolved, label)?;
+    Ok(canonical)
+}
+
+#[cfg(unix)]
+fn ensure_private_sqlite_parent_v1(path: &std::path::Path, label: &str) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "failed to inspect {label} parent {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_dir()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o700
+    {
+        return Err(format!(
+            "{label} parent must be a real directory owned by the effective user with mode 0700: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_sqlite_parent_v1(path: &std::path::Path, label: &str) -> Result<(), String> {
+    Err(format!(
+        "{label} parent {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
+        path.display()
+    ))
+}
+
+#[cfg(unix)]
+fn ensure_private_sqlite_file_v1(
+    metadata: &std::fs::Metadata,
+    path: &std::path::Path,
+    label: &str,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(format!(
+            "{label} must be owned by the effective user: {}",
+            path.display()
+        ));
+    }
+    if metadata.mode() & 0o777 != 0o600 {
+        return Err(format!("{label} must have mode 0600: {}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_sqlite_file_v1(
+    _metadata: &std::fs::Metadata,
+    path: &std::path::Path,
+    label: &str,
+) -> Result<(), String> {
+    Err(format!(
+        "{label} {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
+        path.display()
+    ))
+}
+
+#[cfg(unix)]
+fn ensure_same_sqlite_file_v1(
+    configured: &std::fs::Metadata,
+    resolved: &std::fs::Metadata,
+    label: &str,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if configured.dev() != resolved.dev() || configured.ino() != resolved.ino() {
+        return Err(format!(
+            "configured {label} changed while its canonical parent was resolved"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_same_sqlite_file_v1(
+    _configured: &std::fs::Metadata,
+    _resolved: &std::fs::Metadata,
+    label: &str,
+) -> Result<(), String> {
+    Err(format!(
+        "{label} is unsupported on non-Unix platforms because file identity checks cannot be enforced"
+    ))
+}
+
+fn private_sqlite_paths_alias_v1(
+    first: &std::path::Path,
+    second: &std::path::Path,
+) -> Result<bool, String> {
+    if first == second {
+        return Ok(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let first_metadata = std::fs::symlink_metadata(first)
+            .map_err(|error| format!("failed to inspect {}: {error}", first.display()))?;
+        let second_metadata = std::fs::symlink_metadata(second)
+            .map_err(|error| format!("failed to inspect {}: {error}", second.display()))?;
+        Ok(first_metadata.dev() == second_metadata.dev()
+            && first_metadata.ino() == second_metadata.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        Err("sensitive SQLite path alias checks are unsupported on non-Unix platforms".to_owned())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod secret_loader_tests_v1 {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use tempfile::tempdir;
+
+    fn write_secret(path: &std::path::Path, bytes: &[u8], mode: u32) {
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn exact_secret_loader_rejects_symlink() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.key");
+        let link = dir.path().join("link.key");
+        write_secret(&target, &[0x11; 32], 0o600);
+        symlink(&target, &link).unwrap();
+
+        assert!(read_exact_secret_v1::<32>(&link, "test key").is_err());
+    }
+
+    #[test]
+    fn exact_secret_loader_rejects_group_or_world_access() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("wide.key");
+        write_secret(&path, &[0x22; 32], 0o640);
+
+        let error = read_exact_secret_v1::<32>(&path, "test key").unwrap_err();
+        assert!(error.contains("group/world"));
+    }
+
+    #[test]
+    fn exact_secret_loader_rejects_wrong_length() {
+        let dir = tempdir().unwrap();
+        let short = dir.path().join("short.key");
+        let long = dir.path().join("long.key");
+        write_secret(&short, &[0x33; 31], 0o600);
+        write_secret(&long, &[0x44; 33], 0o600);
+
+        assert!(read_exact_secret_v1::<32>(&short, "test key").is_err());
+        assert!(read_exact_secret_v1::<32>(&long, "test key").is_err());
+    }
+
+    fn private_directory(path: &std::path::Path) {
+        fs::create_dir_all(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn sensitive_sqlite_path_requires_private_parent_owner_mode_and_no_symlink() {
+        let dir = tempdir().unwrap();
+        let private = dir.path().join("private");
+        private_directory(&private);
+        let database = private.join("provider.sqlite3");
+        fs::write(&database, b"state").unwrap();
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(
+            validate_existing_private_sqlite_path_v1(&database, "provider store")
+                .unwrap_err()
+                .contains("mode 0600")
+        );
+
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            validate_existing_private_sqlite_path_v1(&database, "provider store").unwrap(),
+            private.canonicalize().unwrap().join("provider.sqlite3")
+        );
+        let link = private.join("provider-link.sqlite3");
+        symlink(&database, &link).unwrap();
+        assert!(
+            validate_existing_private_sqlite_path_v1(&link, "provider store")
+                .unwrap_err()
+                .contains("non-symlink")
+        );
+
+        let public = dir.path().join("public");
+        fs::create_dir(&public).unwrap();
+        fs::set_permissions(&public, fs::Permissions::from_mode(0o755)).unwrap();
+        let public_database = public.join("provider.sqlite3");
+        fs::write(&public_database, b"state").unwrap();
+        fs::set_permissions(&public_database, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            validate_existing_private_sqlite_path_v1(&public_database, "provider store")
+                .unwrap_err()
+                .contains("mode 0700")
+        );
+    }
+
+    #[test]
+    fn sensitive_sqlite_path_detects_same_inode_alias() {
+        let dir = tempdir().unwrap();
+        let private = dir.path().join("private");
+        private_directory(&private);
+        let store = private.join("provider.sqlite3");
+        let authority = private.join("authority.sqlite3");
+        fs::write(&store, b"state").unwrap();
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(&store, &authority).unwrap();
+        let store = validate_existing_private_sqlite_path_v1(&store, "provider store").unwrap();
+        let authority =
+            validate_existing_private_sqlite_path_v1(&authority, "provider rollback authority")
+                .unwrap();
+        assert!(private_sqlite_paths_alias_v1(&store, &authority).unwrap());
+    }
+}
+
+fn load_strict_service_admission_v1(
+    args: &CliArgs,
+    now_unix: u64,
+) -> Result<Option<StrictServiceAdmissionRuntimeV1>, String> {
+    let has_partial_configuration = args.service_policy_path.is_some()
+        || !args.service_retained_policy_paths.is_empty()
+        || args.service_provider_id_hex.is_some()
+        || args.service_policy_key_hex.is_some()
+        || args.service_store_path.is_some()
+        || args.service_rollback_authority_path.is_some()
+        || args.service_free_ip_key_path.is_some()
+        || args.service_trust_direct_peer_ip
+        || !args.service_bat_key_paths.is_empty()
+        || !args.service_arc_key_specs.is_empty()
+        || !args.service_cashu_recovery_key_specs.is_empty()
+        || args.service_cashu_recovery_active_epoch.is_some()
+        || args.service_shared_authorization_path.is_some()
+        || args.service_shared_issuer_approval_path.is_some()
+        || args.service_shared_operator_key_hex.is_some()
+        || args.service_shared_issuer_settlement_key_hex.is_some()
+        || args.service_shared_clearing_key_path.is_some()
+        || args.service_shared_idempotency_key_path.is_some()
+        || args.service_shared_minimum_authorization_epoch.is_some();
+    if !args.require_service_auth_v1 {
+        if has_partial_configuration {
+            return Err(
+                "service-admission configuration requires --require-service-auth-v1; refusing to ignore security-sensitive flags"
+                    .to_owned(),
+            );
+        }
+        return Ok(None);
+    }
+    if args.require_arc || args.require_cashu {
+        return Err(
+            "--require-service-auth-v1 cannot be combined with legacy --require-arc/--require-cashu gates"
+                .to_owned(),
+        );
+    }
+
+    let policy_path = args
+        .service_policy_path
+        .as_deref()
+        .ok_or_else(|| "--service-policy is required".to_owned())?;
+    let provider_id = decode_fixed_hex_v1::<32>(
+        args.service_provider_id_hex
+            .as_deref()
+            .ok_or_else(|| "--service-provider-id-hex is required".to_owned())?,
+        "--service-provider-id-hex",
+    )?;
+    if provider_id.iter().all(|byte| *byte == 0) {
+        return Err("--service-provider-id-hex must not be all zero".to_owned());
+    }
+    let verifying_key_bytes = decode_fixed_hex_v1::<32>(
+        args.service_policy_key_hex
+            .as_deref()
+            .ok_or_else(|| "--service-policy-key-hex is required".to_owned())?,
+        "--service-policy-key-hex",
+    )?;
+    let verifying_key = VerifyingKey::from_bytes(&verifying_key_bytes)
+        .map_err(|_| "--service-policy-key-hex is not a valid Ed25519 public key".to_owned())?;
+    let provider_store_path = args
+        .service_store_path
+        .as_deref()
+        .ok_or_else(|| "--service-store is required".to_owned())?;
+    let rollback_path = args
+        .service_rollback_authority_path
+        .as_deref()
+        .ok_or_else(|| "--service-rollback-authority is required".to_owned())?;
+    let canonical_store =
+        validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
+    let canonical_rollback =
+        validate_existing_private_sqlite_path_v1(rollback_path, "provider rollback authority")?;
+    if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
+        return Err(
+            "provider store and rollback authority must be different files/inodes".to_owned(),
+        );
+    }
+
+    let options = StoreOptions::default();
+    let rollback_authority = Arc::new(
+        SqliteRollbackFloorAuthorityV1::open_existing(&canonical_rollback, options.busy_timeout)
+            .map_err(|error| format!("failed to open rollback authority: {error}"))?,
+    );
+    let provider_store =
+        ProviderStore::open_existing(&canonical_store, provider_id, options, rollback_authority)
+            .map_err(|error| format!("failed to open provider spend store: {error}"))?;
+
+    let free_ip_subject_key = match args.service_free_ip_key_path.as_deref() {
+        Some(path) => Some(
+            FreeIpSubjectKeyV1::from_bytes(read_exact_secret_v1::<32>(
+                path,
+                "service Free IP HMAC key",
+            )?)
+            .map_err(|error| format!("invalid service Free IP HMAC key: {error}"))?,
+        ),
+        None => None,
+    };
+    if args.service_trust_direct_peer_ip && free_ip_subject_key.is_none() {
+        return Err("--service-trust-direct-peer-ip requires --service-free-ip-key".to_owned());
+    }
+
+    let bat_keyring = if args.service_bat_key_paths.is_empty() {
+        None
+    } else {
+        let mut secret_keys = Vec::with_capacity(args.service_bat_key_paths.len());
+        for path in &args.service_bat_key_paths {
+            secret_keys.push(read_exact_secret_v1::<32>(path, "service Cashu BAT key")?);
+        }
+        let result = K256CashuMintKeyringV1::from_secret_keys(secret_keys.iter().copied())
+            .map_err(|error| format!("invalid service Cashu BAT keyring: {error}"));
+        secret_keys.zeroize();
+        Some(result?)
+    };
+
+    let experimental_arc_keyring = if args.service_arc_key_specs.is_empty() {
+        None
+    } else {
+        let mut keys = Vec::with_capacity(args.service_arc_key_specs.len());
+        for spec in &args.service_arc_key_specs {
+            let (key_id_hex, path) = spec.split_once('=').ok_or_else(|| {
+                "--service-arc-key must be <hex-key-id>=<raw-128-byte-key-path>".to_owned()
+            })?;
+            let key_id = hex::decode(key_id_hex)
+                .map_err(|_| "--service-arc-key key ID is not valid hex".to_owned())?;
+            if key_id.is_empty() || key_id.len() > pir_service_protocol::MAX_CREDENTIAL_KEY_ID_LEN {
+                return Err(format!(
+                    "--service-arc-key key ID must contain 1..={} bytes",
+                    pir_service_protocol::MAX_CREDENTIAL_KEY_ID_LEN
+                ));
+            }
+            if path.is_empty() {
+                return Err("--service-arc-key path is empty".to_owned());
+            }
+            let secret = Zeroizing::new(read_exact_secret_v1::<
+                { pir_arc_adapter::ARC_SECRET_KEY_LEN_V1 },
+            >(
+                std::path::Path::new(path),
+                "experimental ARC private key",
+            )?);
+            keys.push(
+                ArcSecretKeyV1::from_zeroizing_bytes(key_id, secret)
+                    .map_err(|error| format!("invalid experimental ARC private key: {error}"))?,
+            );
+        }
+        Some(
+            ArcSecretKeyringV1::new(keys)
+                .map_err(|error| format!("invalid experimental ARC keyring: {error}"))?,
+        )
+    };
+
+    let cashu_recovery_cipher = match (
+        args.service_cashu_recovery_active_epoch,
+        args.service_cashu_recovery_key_specs.is_empty(),
+    ) {
+        (None, true) => None,
+        (Some(active_epoch), false) if active_epoch != 0 => {
+            let mut keys = Vec::with_capacity(args.service_cashu_recovery_key_specs.len());
+            for spec in &args.service_cashu_recovery_key_specs {
+                let (epoch, path) = spec.split_once('=').ok_or_else(|| {
+                    "--service-cashu-recovery-key must be <epoch>=<raw-32-byte-path>"
+                        .to_owned()
+                })?;
+                let epoch = epoch.parse::<u64>().map_err(|_| {
+                    "--service-cashu-recovery-key epoch must be a non-zero u64".to_owned()
+                })?;
+                if epoch == 0 || path.is_empty() {
+                    return Err(
+                        "--service-cashu-recovery-key epoch and path must be non-empty/non-zero"
+                            .to_owned(),
+                    );
+                }
+                keys.push((
+                    epoch,
+                    read_exact_secret_v1::<32>(
+                        std::path::Path::new(path),
+                        "standard Cashu recovery key",
+                    )?,
+                ));
+            }
+            Some(
+                ChaCha20Poly1305RecoveryCipherV1::new(active_epoch, keys).map_err(|error| {
+                    format!("invalid standard Cashu recovery keyring: {error:?}")
+                })?,
+            )
+        }
+        _ => {
+            return Err(
+                "standard Cashu requires both --service-cashu-recovery-active-epoch and at least one --service-cashu-recovery-key"
+                    .to_owned(),
+            )
+        }
+    };
+
+    let shared_field_count = [
+        args.service_shared_authorization_path.is_some(),
+        args.service_shared_issuer_approval_path.is_some(),
+        args.service_shared_operator_key_hex.is_some(),
+        args.service_shared_issuer_settlement_key_hex.is_some(),
+        args.service_shared_clearing_key_path.is_some(),
+        args.service_shared_idempotency_key_path.is_some(),
+        args.service_shared_minimum_authorization_epoch.is_some(),
+    ]
+    .into_iter()
+    .filter(|configured| *configured)
+    .count();
+    let shared_issuer = if shared_field_count == 0 {
+        None
+    } else if shared_field_count != 7 {
+        return Err(
+            "shared issuer clearing requires all --service-shared-* authorization, approval, operator key, issuer settlement key, clearing key, idempotency key and minimum epoch fields"
+                .to_owned(),
+        );
+    } else {
+        let authorization_bytes = read_regular_file_bounded_v1(
+            args.service_shared_authorization_path
+                .as_deref()
+                .expect("count checked"),
+            SERVICE_CONFIG_FILE_LIMIT_V1,
+            "provider clearing authorization",
+        )?;
+        let authorization = ProviderClearingAuthorizationV1::decode(&authorization_bytes)
+            .map_err(|error| format!("invalid provider clearing authorization: {error}"))?;
+        if authorization
+            .encode()
+            .map_err(|error| format!("invalid provider clearing authorization: {error}"))?
+            != authorization_bytes
+        {
+            return Err("provider clearing authorization is not canonical".to_owned());
+        }
+        let approval_bytes = read_regular_file_bounded_v1(
+            args.service_shared_issuer_approval_path
+                .as_deref()
+                .expect("count checked"),
+            SERVICE_CONFIG_FILE_LIMIT_V1,
+            "issuer clearing approval",
+        )?;
+        let issuer_approval = IssuerClearingApprovalV1::decode(&approval_bytes)
+            .map_err(|error| format!("invalid issuer clearing approval: {error}"))?;
+        if issuer_approval.encode() != approval_bytes {
+            return Err("issuer clearing approval is not canonical".to_owned());
+        }
+        let operator_verifying_key = VerifyingKey::from_bytes(&decode_fixed_hex_v1::<32>(
+            args.service_shared_operator_key_hex
+                .as_deref()
+                .expect("count checked"),
+            "--service-shared-operator-key-hex",
+        )?)
+        .map_err(|_| "shared operator key is not valid Ed25519".to_owned())?;
+        let issuer_settlement_verifying_key = VerifyingKey::from_bytes(&decode_fixed_hex_v1::<32>(
+            args.service_shared_issuer_settlement_key_hex
+                .as_deref()
+                .expect("count checked"),
+            "--service-shared-issuer-settlement-key-hex",
+        )?)
+        .map_err(|_| "shared issuer settlement key is not valid Ed25519".to_owned())?;
+        let mut clearing_key_bytes = read_exact_secret_v1::<32>(
+            args.service_shared_clearing_key_path
+                .as_deref()
+                .expect("count checked"),
+            "provider clearing signing key",
+        )?;
+        let clearing_signing_key = ed25519_dalek::SigningKey::from_bytes(&clearing_key_bytes);
+        clearing_key_bytes.zeroize();
+        let idempotency_key = Zeroizing::new(read_exact_secret_v1::<32>(
+            args.service_shared_idempotency_key_path
+                .as_deref()
+                .expect("count checked"),
+            "provider clearing idempotency key",
+        )?);
+        let minimum_authorization_epoch = args
+            .service_shared_minimum_authorization_epoch
+            .expect("count checked");
+        if minimum_authorization_epoch == 0 {
+            return Err("shared minimum authorization epoch must be non-zero".to_owned());
+        }
+        Some(SharedIssuerRuntimeConfigV1 {
+            authorization,
+            issuer_approval,
+            operator_verifying_key,
+            issuer_settlement_verifying_key,
+            clearing_signing_key,
+            minimum_authorization_epoch,
+            idempotency_key,
+        })
+    };
+
+    let http_transport = ProviderAdmissionHttpsTransportV1 {
+        client: StrictHttpsClientV1::new(Duration::from_secs(5), Duration::from_secs(15))?,
+    };
+    if let Some(shared) = shared_issuer.as_ref() {
+        shared
+            .committer(&http_transport)
+            .map_err(|error| format!("shared issuer clearing configuration is invalid: {error}"))?;
+        shared
+            .authorization
+            .verify_for(
+                &provider_id,
+                &shared.authorization.claims.issuer_id,
+                &shared.operator_verifying_key,
+                now_unix,
+                shared.minimum_authorization_epoch,
+            )
+            .map_err(|error| format!("provider clearing authorization is not current: {error}"))?;
+        shared
+            .issuer_approval
+            .verify_for(
+                &shared.authorization,
+                &shared.issuer_settlement_verifying_key,
+                now_unix,
+                shared.minimum_authorization_epoch,
+            )
+            .map_err(|error| format!("issuer clearing approval is not current: {error}"))?;
+    }
+
+    let signed_policy = read_regular_file_bounded_v1(
+        policy_path,
+        SERVICE_CONFIG_FILE_LIMIT_V1,
+        "signed service policy",
+    )?;
+    let policy = activate_service_policy_v1(
+        &signed_policy,
+        provider_id,
+        verifying_key,
+        &provider_store,
+        now_unix,
+        experimental_arc_keyring
+            .as_ref()
+            .map(|keyring| keyring as &dyn pir_service_store::ArcExclusiveKeyLineageVerifierV1),
+    )
+    .map_err(|error| format!("failed to activate signed service policy: {error}"))?;
+    let mut retained_policies = BTreeMap::new();
+    for retained_path in &args.service_retained_policy_paths {
+        let retained_bytes = read_regular_file_bounded_v1(
+            retained_path,
+            SERVICE_CONFIG_FILE_LIMIT_V1,
+            "retained signed service policy",
+        )?;
+        let retained =
+            activate_retained_service_policy_v1(&retained_bytes, &policy).map_err(|error| {
+                format!(
+                    "failed to activate retained service policy {}: {error} \
+                     (V1 requires every retained policy to verify under the current \
+                     --service-policy-key-hex)",
+                    retained_path.display()
+                )
+            })?;
+        let digest = retained.policy_digest();
+        if retained_policies.insert(digest, retained).is_some() {
+            return Err(format!(
+                "duplicate retained service policy digest {}",
+                hex::encode(digest)
+            ));
+        }
+    }
+    let free_rate_limits = Arc::new(FreeRateLimitStateV1::provider_store(
+        provider_store.clone(),
+        pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
+    ));
+    let runtime = StrictServiceAdmissionRuntimeV1 {
+        policy,
+        retained_policies,
+        provider_store,
+        free_rate_limits,
+        free_ip_subject_key,
+        trust_direct_peer_ip: args.service_trust_direct_peer_ip,
+        bat_keyring,
+        experimental_arc_keyring,
+        cashu_recovery_cipher,
+        shared_issuer,
+        http_transport,
+        harmony_attach_registry: Arc::new(HarmonyAttachRegistryV1::default()),
+        monotonic_origin: Instant::now(),
+    };
+    validate_policy_method_coverage_v1(runtime.policy.policy(), |route| runtime.supports(route))
+        .map_err(|error| format!("incomplete service admission configuration: {error}"))?;
+    for retained in runtime.retained_policies.values() {
+        validate_retained_policy_method_coverage_v1(retained.policy(), |route| {
+            runtime.supports(route)
+        })
+        .map_err(|error| {
+            format!(
+                "incomplete retained-policy redemption configuration for {}: {error}",
+                hex::encode(retained.policy_digest())
+            )
+        })?;
+        for scope_policy in &retained.policy().scopes {
+            let scope_id = scope_policy.scope.scope_id();
+            for offer in &scope_policy.offers {
+                if offer.credential_binding.is_none() {
+                    continue;
+                }
+                let verified_offer = retained
+                    .verified_offer_for_redemption(
+                        &scope_id,
+                        offer.offer_id,
+                        retained.policy().issued_at,
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "retained policy {} has an invalid redemption offer: {error}",
+                            hex::encode(retained.policy_digest())
+                        )
+                    })?;
+                let readiness = runtime
+                    .provider_store
+                    .verify_existing_verified_offer_namespace_v1(
+                        &verified_offer,
+                        retained.policy().issued_at,
+                        runtime.experimental_arc_keyring.as_ref().map(|keyring| {
+                            keyring as &dyn pir_service_store::ArcExclusiveKeyLineageVerifierV1
+                        }),
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "retained policy {} is missing exact durable redemption state: {error}",
+                            hex::encode(retained.policy_digest())
+                        )
+                    })?;
+                if readiness
+                    == pir_service_store::VerifiedOfferNamespaceReadinessV1::UnsupportedExperimental
+                {
+                    return Err(format!(
+                        "retained policy {} requires an unavailable experimental ARC adapter",
+                        hex::encode(retained.policy_digest())
+                    ));
+                }
+            }
+        }
+    }
+
+    for configured_policy in runtime.all_policies() {
+        for scope in &configured_policy.scopes {
+            for offer in &scope.offers {
+                if offer.credential_binding.is_none() {
+                    continue;
+                }
+                if offer.verification == pir_service_protocol::VerificationMode::SharedIssuerOnline
+                {
+                    let shared = runtime.shared_issuer.as_ref().ok_or_else(|| {
+                        "policy advertises shared issuer redemption without clearing configuration"
+                            .to_owned()
+                    })?;
+                    let binding = offer.credential_binding.as_ref().ok_or_else(|| {
+                        "shared issuer offer is missing its credential binding".to_owned()
+                    })?;
+                    let digest = binding
+                        .binding_digest()
+                        .map_err(|error| format!("invalid shared issuer binding: {error}"))?;
+                    let rule = shared
+                        .authorization
+                        .rule_for_binding(&digest)
+                        .ok_or_else(|| {
+                            "shared issuer clearing authorization has no rule for an advertised offer"
+                                .to_owned()
+                        })?;
+                    if offer.issuer_id != shared.authorization.claims.issuer_id
+                        || scope.scope.provider_id != shared.authorization.claims.provider_id
+                        || rule.accepted_value != binding.claims.amount
+                    {
+                        return Err(
+                            "shared issuer offer audience or value does not match clearing authorization"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(keyring) = runtime.bat_keyring.as_ref() {
+        let retained = keyring.denomination_public_keys();
+        for configured_policy in runtime.all_policies() {
+            for scope in &configured_policy.scopes {
+                for offer in &scope.offers {
+                    if offer.credential_binding.is_none() {
+                        continue;
+                    }
+                    if offer.authorization == pir_service_protocol::AuthScheme::BitcoinPirCashuBatV1
+                        && offer.verification
+                            == pir_service_protocol::VerificationMode::ProviderLocal
+                    {
+                        let verification_key = offer
+                            .credential_binding
+                            .as_ref()
+                            .and_then(|binding| {
+                                <[u8; 33]>::try_from(binding.claims.verification_key.as_slice())
+                                    .ok()
+                            })
+                            .ok_or_else(|| {
+                                "provider-local BAT offer has no exact 33-byte verification key"
+                                    .to_owned()
+                            })?;
+                        if !retained.contains(&verification_key) {
+                            return Err(
+                                "provider-local BAT offer references a key not retained by this server"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(Some(runtime))
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
     let args = parse_args();
+    UNSAFE_DEBUG_QUERY_LOGGING.store(args.unsafe_debug_query_logging, Ordering::Relaxed);
+    if args.unsafe_debug_query_logging {
+        eprintln!(
+            "!!! UNSAFE DEBUG QUERY LOGGING ENABLED: logs may expose peer IPs, client IDs, request timing, database/group selections and byte sizes; never enable in production !!!"
+        );
+    }
     let role_name = match args.role {
         ServerRole::Primary => "primary",
         ServerRole::Secondary => "secondary",
@@ -4308,7 +6630,7 @@ async fn main() {
     }
 
     println!("=== Unified PIR Server ({}) ===", role_name);
-    println!("  Port:     {}", args.port);
+    println!("  Bind:     {}:{}", args.bind_address, args.port);
     println!(
         "  Mode:     hints={}, queries={}",
         if args.serve_hints { "yes" } else { "no" },
@@ -5181,7 +7503,7 @@ async fn main() {
                             let t = Instant::now();
                             key_store.set_galois_keys(client_id, &galois_keys);
                             key_store.set_gsw_key(client_id, &gsw_keys);
-                            println!(
+                            unsafe_debug_log!(
                                 "  [OnionPIR:{}] client {} keys registered in {:.2?}",
                                 worker_label,
                                 client_id,
@@ -5261,7 +7583,11 @@ async fn main() {
                                     .collect();
                                 (kind, results)
                             } else {
-                                eprintln!("[OnionPIR:{}] unknown level {}", worker_label, level);
+                                unsafe_debug_log!(
+                                    "[OnionPIR:{}] unknown level {}",
+                                    worker_label,
+                                    level
+                                );
                                 ("unknown", Vec::new())
                             };
                             // OnionPIRv2 port: report empty/nonempty result split
@@ -5284,7 +7610,7 @@ async fn main() {
                                 .find(|r| !r.is_empty())
                                 .map(|r| r.len())
                                 .unwrap_or(0);
-                            println!(
+                            unsafe_debug_log!(
                                 "  [OnionPIR:{}] {} r{} {} queries in {:.2?} (empty={}/{}, nonempty_total={}B, resp_len={}B, client_id={})",
                                 worker_label, name, round_id, queries.len(), t.elapsed(),
                                 empty_count, results.len(), nonempty_bytes, first_resp_len, client_id,
@@ -5372,8 +7698,16 @@ async fn main() {
         args.identity_server_id.as_deref(),
     ) {
         (Some(key_path), Some(cert_path), Some(server_id)) => {
-            match pir_runtime_core::identity::load_identity_key(key_path).and_then(|sk| {
-                pir_runtime_core::identity::load_identity_cert(cert_path).map(|cert| (sk, cert))
+            let identity_key =
+                read_exact_secret_v1::<32>(key_path, "identity signing key").map(|mut seed| {
+                    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+                    seed.zeroize();
+                    key
+                });
+            match identity_key.and_then(|sk| {
+                pir_runtime_core::identity::load_identity_cert(cert_path)
+                    .map(|cert| (sk, cert))
+                    .map_err(|error| error.to_string())
             }) {
                 Ok((sk, cert)) => {
                     // Manifest roots in db_id order — same as the V2
@@ -5474,15 +7808,46 @@ async fn main() {
         None => args.data_dir.clone(),
     };
     println!("  Data root: {}", data_root.display());
+    let service_admission = load_strict_service_admission_v1(
+        &args,
+        current_unix_seconds_v1().unwrap_or_else(|error| fatal_cli(error)),
+    )
+    .unwrap_or_else(|error| fatal_cli(format!("service admission V1: {error}")));
+    let service_admission_enforcement = if let Some(runtime) = service_admission.as_ref() {
+        println!(
+            "  Service admission V1: enforced (policy epoch={}, digest={})",
+            runtime.policy.policy().policy_epoch,
+            hex::encode(runtime.policy.policy_digest())
+        );
+        if !runtime.retained_policies.is_empty() {
+            println!(
+                "  Retained policies: {} redemption-only (the single V1 policy key must remain stable through every live grace window)",
+                runtime.retained_policies.len()
+            );
+        }
+        if runtime.trust_direct_peer_ip {
+            println!("  Free IP quotas: direct TCP peer explicitly trusted");
+        }
+        AdmissionEnforcementV1::Enforced
+    } else {
+        println!(
+            "  Service admission V1: explicit legacy migration mode (0x0d/0x0e never unlock backend work)"
+        );
+        AdmissionEnforcementV1::ExplicitLegacyMode
+    };
 
     // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
     let (arc_verifier, require_arc) = if args.require_arc {
         let verifier = match &args.arc_key_path {
             Some(path) => {
-                let v = pir_runtime_core::arc_verifier::ArcVerifier::from_secret_key_file(path)
+                let mut secret = read_exact_secret_v1::<128>(path, "ARC key").unwrap_or_else(|e| {
+                    panic!("failed to load ARC key from {}: {e}", path.display())
+                });
+                let v = pir_runtime_core::arc_verifier::ArcVerifier::from_secret_key_bytes(&secret)
                     .unwrap_or_else(|e| {
                         panic!("failed to load ARC key from {}: {e}", path.display())
                     });
+                secret.zeroize();
                 println!(
                     "  ARC: enabled — verification required (shared key loaded from {})",
                     path.display()
@@ -5577,9 +7942,14 @@ async fn main() {
         require_arc,
         cashu_verifier,
         require_cashu,
+        service_admission_enforcement,
+        service_admission,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
     });
+    server
+        .validate_service_policy_catalog_v1()
+        .unwrap_or_else(|error| fatal_cli(format!("service admission V1 catalog: {error}")));
 
     // Background task: garbage-collect V2-half pending entries whose
     // matching second half never arrived. Runs every 10 s; entries
@@ -5611,13 +7981,11 @@ async fn main() {
 
     // ── Accept WebSocket connections ────────────────────────────────────
 
-    // Bind dual-stack: `[::]:port` accepts both IPv6 connections AND IPv4
-    // connections (via v4-mapped addresses) on Linux when the system default
-    // `IPV6_V6ONLY=0` is in effect (true by default on Ubuntu). This matters
-    // for cloudflared and similar reverse-proxies that resolve `localhost`
-    // to `::1` first per RFC 6724 happy-eyeballs — binding only `0.0.0.0`
-    // would silently refuse those connections.
-    let addr: SocketAddr = format!("[::]:{}", args.port).parse().unwrap();
+    // The default `[::]:port` preserves the production dual-stack behavior:
+    // it accepts IPv6 and (where IPV6_V6ONLY=0) IPv4-mapped connections. An
+    // explicit --bind-address lets operators and deterministic local tests
+    // narrow the listener to one interface without a proxy or firewall trick.
+    let addr = SocketAddr::new(args.bind_address, args.port);
     let listener = TcpListener::bind(addr).await.expect("bind");
     println!("Listening on ws://{}", addr);
     println!("  Role: {}", role_name);
@@ -5654,6 +8022,12 @@ async fn main() {
     println!();
 
     let client_counter = std::sync::atomic::AtomicU64::new(1);
+    let connection_limiter = Arc::new(Semaphore::new(args.max_connections));
+    let service_auth_limiter = Arc::new(Semaphore::new(args.service_max_concurrent_auth));
+    let reassembly_limiter = Arc::new(Semaphore::new(MAX_GLOBAL_REASSEMBLY_BYTES));
+    let websocket_handshake_timeout = Duration::from_millis(args.websocket_handshake_timeout_ms);
+    let connection_idle_timeout = Duration::from_millis(args.connection_idle_timeout_ms);
+    let service_pre_auth_timeout = Duration::from_millis(args.service_pre_auth_timeout_ms);
 
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -5663,20 +8037,53 @@ async fn main() {
                 continue;
             }
         };
+        let connection_permit = match Arc::clone(&connection_limiter).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                // Drop before WebSocket parsing. The reverse proxy/edge is
+                // expected to convert saturation into its normal retry path.
+                drop(stream);
+                continue;
+            }
+        };
 
         let client_id = client_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let server = Arc::clone(&server);
+        let service_auth_limiter = Arc::clone(&service_auth_limiter);
+        let reassembly_limiter = Arc::clone(&reassembly_limiter);
 
         tokio::spawn(async move {
-            let ws = match accept_async(stream).await {
-                Ok(ws) => ws,
-                Err(e) => {
-                    eprintln!("[{}] Handshake failed: {}", peer, e);
+            let _connection_permit = connection_permit;
+            #[allow(deprecated)]
+            let ws_config = WebSocketConfig {
+                max_send_queue: None,
+                write_buffer_size: 128 * 1024,
+                max_write_buffer_size: 2 * 1024 * 1024,
+                max_message_size: Some(MAX_WS_MESSAGE_BYTES),
+                max_frame_size: Some(MAX_WS_MESSAGE_BYTES),
+                accept_unmasked_frames: false,
+            };
+            let ws = match tokio::time::timeout(
+                websocket_handshake_timeout,
+                accept_async_with_config(stream, Some(ws_config)),
+            )
+            .await
+            {
+                Ok(Ok(ws)) => ws,
+                Ok(Err(e)) => {
+                    unsafe_debug_log!("[{}] Handshake failed: {}", peer, e);
+                    return;
+                }
+                Err(_) => {
+                    unsafe_debug_log!("[{}] Handshake timed out", peer);
                     return;
                 }
             };
-            println!("[{}] Connected (id={})", peer, client_id);
-            let (mut sink, mut ws_stream) = ws.split();
+            unsafe_debug_log!("[{}] Connected (id={})", peer, client_id);
+            let (raw_sink, mut ws_stream) = ws.split();
+            let mut sink =
+                ServiceAdmissionSink::new(raw_sink, server.service_admission_enforcement);
+            let pre_auth_started = Instant::now();
 
             // Per-connection admin auth state. Lives until the connection
             // drops; disconnecting is logging out.
@@ -5695,6 +8102,7 @@ async fn main() {
             // Privacy-conscious clients (the browser SDK) wrap every
             // application frame; legacy clients keep working.
             let mut channel_session: Option<pir_runtime_core::channel::Session> = None;
+            let mut free_admission: Option<FreeAdmissionCommitterV1> = None;
 
             // Per-connection ARC state: set to true after the first valid
             // REQ_CREDENTIAL_PRESENT. The presentation_context for this
@@ -5713,69 +8121,163 @@ async fn main() {
             let mut chunk_acc: Vec<u8> = Vec::new();
             let mut chunk_expected: u16 = 0;
             let mut chunk_total: u16 = 0;
+            let mut chunk_permits = Vec::new();
             let mut client_supports_chunks = false;
 
-            while let Some(msg) = ws_stream.next().await {
+            loop {
+                if sink.pre_auth_egress_is_terminal() {
+                    unsafe_debug_log!("[{}] pre-authorization egress budget exhausted", peer);
+                    break;
+                }
+                let Some((read_timeout, pre_auth_deadline_is_limiting)) =
+                    connection_read_timeout_v1(
+                        server.service_admission_enforcement,
+                        sink.has_committed_service_grant(),
+                        pre_auth_started.elapsed(),
+                        service_pre_auth_timeout,
+                        connection_idle_timeout,
+                    )
+                else {
+                    unsafe_debug_log!("[{}] pre-authorization deadline expired", peer);
+                    break;
+                };
+                let Some(msg) = (match tokio::time::timeout(read_timeout, ws_stream.next()).await {
+                    Ok(message) => message,
+                    Err(_) => {
+                        if pre_auth_deadline_is_limiting {
+                            unsafe_debug_log!("[{}] pre-authorization deadline expired", peer);
+                        } else {
+                            unsafe_debug_log!("[{}] idle timeout", peer);
+                        }
+                        break;
+                    }
+                }) else {
+                    break;
+                };
                 let msg = match msg {
                     Ok(m) => m,
                     Err(e) => {
-                        eprintln!("[{}] Read error: {}", peer, e);
+                        unsafe_debug_log!("[{}] Read error: {}", peer, e);
                         break;
                     }
                 };
+                // Response accounting is scoped to exactly one inbound
+                // application request. A typed backend permit below is the
+                // only production path that turns it on again.
+                sink.begin_request();
 
                 let raw_bin = match msg {
                     Message::Binary(b) => b,
                     Message::Ping(p) => {
+                        // Control traffic cannot keep a partial upload alive.
+                        chunk_acc.clear();
+                        chunk_permits.clear();
+                        chunk_expected = 0;
                         let _ = sink.send(Message::Pong(p)).await;
                         continue;
                     }
                     Message::Close(_) => break,
-                    _ => continue,
+                    _ => {
+                        chunk_acc.clear();
+                        chunk_permits.clear();
+                        chunk_expected = 0;
+                        continue;
+                    }
                 };
 
                 // Transport-level chunk reassembly. A chunk frame is
                 // `[4B len][CHUNK_MAGIC][seq:u16][total:u16][piece]`; a
                 // normal message never carries CHUNK_MAGIC at offset 4.
+                let mut completed_chunk_permits = Vec::new();
                 let bin: Vec<u8> = if raw_bin.len() >= 4 + CHUNK_HDR && raw_bin[4] == CHUNK_MAGIC {
                     client_supports_chunks = true;
                     let seq = u16::from_le_bytes([raw_bin[5], raw_bin[6]]);
                     let total = u16::from_le_bytes([raw_bin[7], raw_bin[8]]);
-                    if total == 0 || seq != chunk_expected {
-                        eprintln!(
-                            "[{}] bad chunk frame (seq={} total={} expected={}) — resetting",
-                            peer, seq, total, chunk_expected
+                    let declared = usize::try_from(u32::from_le_bytes([
+                        raw_bin[0], raw_bin[1], raw_bin[2], raw_bin[3],
+                    ]))
+                    .unwrap_or(usize::MAX);
+                    let allowed_reassembled = if server.service_admission_enforcement
+                        == AdmissionEnforcementV1::Enforced
+                    {
+                        let Some(limit) = sink.active_chunk_request_limit() else {
+                            unsafe_debug_log!("[{}] pre-authorization chunk upload rejected", peer);
+                            break;
+                        };
+                        limit
+                    } else {
+                        MAX_REASSEMBLED
+                    };
+                    if declared != raw_bin.len().saturating_sub(4)
+                        || total == 0
+                        || usize::from(total) > MAX_CHUNK_FRAMES
+                        || seq >= total
+                        || seq != chunk_expected
+                    {
+                        unsafe_debug_log!(
+                            "[{}] bad chunk frame (seq={} total={} expected={}) — closing",
+                            peer,
+                            seq,
+                            total,
+                            chunk_expected
                         );
-                        chunk_acc.clear();
-                        chunk_expected = 0;
-                        continue;
+                        break;
                     }
                     if seq == 0 {
                         chunk_total = total;
                         chunk_acc.clear();
+                        chunk_permits.clear();
                     } else if total != chunk_total {
-                        eprintln!("[{}] chunk total changed mid-stream — resetting", peer);
-                        chunk_acc.clear();
-                        chunk_expected = 0;
-                        continue;
+                        unsafe_debug_log!("[{}] chunk total changed mid-stream — closing", peer);
+                        break;
                     }
                     let piece = &raw_bin[4 + CHUNK_HDR..];
-                    if chunk_acc.len() + piece.len() > MAX_REASSEMBLED {
-                        eprintln!("[{}] reassembled message exceeds cap — resetting", peer);
-                        chunk_acc.clear();
-                        chunk_expected = 0;
-                        continue;
+                    let Some(next_len) = chunk_acc.len().checked_add(piece.len()) else {
+                        break;
+                    };
+                    if piece.is_empty() || next_len > allowed_reassembled {
+                        unsafe_debug_log!(
+                            "[{}] reassembled message exceeds active cap — closing",
+                            peer
+                        );
+                        break;
+                    }
+                    let Ok(piece_permits) = u32::try_from(piece.len()) else {
+                        break;
+                    };
+                    let permit = match Arc::clone(&reassembly_limiter)
+                        .try_acquire_many_owned(piece_permits)
+                    {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            unsafe_debug_log!("[{}] global reassembly budget exhausted", peer);
+                            break;
+                        }
+                    };
+                    if chunk_acc.try_reserve(piece.len()).is_err() {
+                        unsafe_debug_log!("[{}] reassembly allocation failed", peer);
+                        break;
                     }
                     chunk_acc.extend_from_slice(piece);
+                    chunk_permits.push(permit);
                     chunk_expected += 1;
                     if chunk_expected < chunk_total {
                         continue; // wait for the next chunk frame
                     }
                     chunk_expected = 0;
+                    completed_chunk_permits = std::mem::take(&mut chunk_permits);
                     std::mem::take(&mut chunk_acc)
                 } else {
-                    raw_bin.to_vec()
+                    if !chunk_acc.is_empty() {
+                        unsafe_debug_log!("[{}] non-chunk frame interrupted chunk upload", peer);
+                        break;
+                    }
+                    raw_bin
                 };
+                // Hold process-wide permits until this request has completed
+                // decoding and backend dispatch; early `continue` paths drop
+                // them automatically.
+                let _completed_chunk_permits = completed_chunk_permits;
 
                 if bin.len() < 5 {
                     continue;
@@ -5802,7 +8304,7 @@ async fn main() {
                                     decrypted.as_slice()
                                 }
                                 Err(e) => {
-                                    eprintln!("[{}] channel open failed: {}", peer, e);
+                                    unsafe_debug_log!("[{}] channel open failed: {}", peer, e);
                                     let err =
                                         Response::Error(format!("channel open failed: {}", e));
                                     let _ = send_resp(
@@ -5816,7 +8318,7 @@ async fn main() {
                             }
                         }
                         None => {
-                            eprintln!(
+                            unsafe_debug_log!(
                                 "[{}] received encrypted frame without established session",
                                 peer
                             );
@@ -5835,6 +8337,74 @@ async fn main() {
                 }
                 let variant = payload[0];
                 let body = &payload[1..];
+                sink.meter_pre_auth_response_for_opcode(variant);
+
+                // Production V1 admission gate. This check runs before every
+                // legacy credential/mode gate and before any blocking PIR,
+                // hint, OnionPIR, or ORAM work. Therefore a successful legacy
+                // 0x08/0x09 presentation cannot unlock an enforced V1 server.
+                if server.service_admission_enforcement == AdmissionEnforcementV1::Enforced {
+                    let backend_frame = match backend_frame_for_service_gate(&server, payload) {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            let gate_error = sink
+                                .admission_gate_mut()
+                                .reject_malformed_backend_frame(request_was_encrypted);
+                            let response = Response::Error(format!(
+                                "service admission rejected malformed backend frame ({gate_error}): {error}"
+                            ));
+                            let _ =
+                                send_resp(&mut sink, channel_session.as_mut(), response.encode())
+                                    .await;
+                            continue;
+                        }
+                    };
+                    if let Some(backend_frame) = backend_frame {
+                        let now_monotonic_ms = u64::try_from(
+                            server
+                                .service_admission
+                                .as_ref()
+                                .expect("enforced service runtime")
+                                .monotonic_origin
+                                .elapsed()
+                                .as_millis(),
+                        )
+                        .unwrap_or(u64::MAX);
+                        match sink.admission_gate_mut().permit_backend_frame(
+                            request_was_encrypted,
+                            &backend_frame,
+                            now_monotonic_ms,
+                        ) {
+                            Ok(permit) => sink.meter_backend_response(permit),
+                            Err(error) => {
+                                let response = Response::Error(format!(
+                                    "service authorization required: {}",
+                                    error
+                                ));
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                                continue;
+                            }
+                        }
+                    } else if !service_gate_allows_ungranted_opcode(variant) {
+                        // Unknown/new opcodes and legacy credential frames are
+                        // denied by default. Adding a future expensive backend
+                        // requires an explicit BackendFrameV1 mapping and DFA
+                        // rule; it cannot inherit an existing grant by
+                        // omission.
+                        let response = Response::Error(format!(
+                            "opcode 0x{:02x} is not admitted by service authorization V1",
+                            variant
+                        ));
+                        let _ =
+                            send_resp(&mut sink, channel_session.as_mut(), response.encode()).await;
+                        continue;
+                    }
+                }
 
                 // ARC gate: if --require-arc is set and no valid credential
                 // presented yet, reject PIR-bearing request variants. Whitelisted
@@ -5975,6 +8545,596 @@ async fn main() {
                         };
                         let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                     }
+                    REQ_SERVICE_POLICY_V1 => {
+                        if !request_was_encrypted {
+                            let response = Response::Error(
+                                "REQ_SERVICE_POLICY_V1 requires the authenticated encrypted channel"
+                                    .into(),
+                            );
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                response.encode(),
+                            )
+                            .await;
+                            continue;
+                        }
+                        match ServiceWireRequestV1::decode_inner_payload(payload) {
+                            Ok(Some(ServiceWireRequestV1::Policy(request))) => {
+                                let Some(runtime) = server.service_admission.as_ref() else {
+                                    let response = Response::Error(
+                                        "server is in explicit legacy migration mode; V1 policy/auth never falls back to legacy credentials"
+                                            .into(),
+                                    );
+                                    let _ = send_resp(
+                                        &mut sink,
+                                        channel_session.as_mut(),
+                                        response.encode(),
+                                    )
+                                    .await;
+                                    continue;
+                                };
+                                let now_unix = match current_unix_seconds_v1() {
+                                    Ok(now) => now,
+                                    Err(_) => {
+                                        let response = Response::Error(
+                                            "service policy unavailable: system clock invalid"
+                                                .into(),
+                                        );
+                                        let _ = send_resp(
+                                            &mut sink,
+                                            channel_session.as_mut(),
+                                            response.encode(),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                };
+                                let Some((policy_response, served_policy_digest)) =
+                                    runtime.response_for_policy_request(request, now_unix)
+                                else {
+                                    let response = Response::Error(
+                                        "requested service policy unavailable or outside redemption grace"
+                                            .into(),
+                                    );
+                                    let _ = send_resp(
+                                        &mut sink,
+                                        channel_session.as_mut(),
+                                        response.encode(),
+                                    )
+                                    .await;
+                                    continue;
+                                };
+                                let encoded = match encode_service_policy_response_v1(
+                                    &policy_response,
+                                ) {
+                                    Ok(encoded) => encoded,
+                                    Err(error) => {
+                                        unsafe_debug_log!(
+                                            "[{}] activated service policy encoding failed: {}",
+                                            peer, error
+                                        );
+                                        let response = Response::Error(
+                                            "service policy encoding failed".into(),
+                                        );
+                                        let _ = send_resp(
+                                            &mut sink,
+                                            channel_session.as_mut(),
+                                            response.encode(),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    encoded,
+                                )
+                                .await
+                                {
+                                    unsafe_debug_log!(
+                                        "[{}] service policy send failed: {}",
+                                        peer,
+                                        error
+                                    );
+                                    break;
+                                }
+                                if let Err(error) = sink.admission_gate_mut().policy_served(
+                                    true,
+                                    served_policy_digest,
+                                ) {
+                                    unsafe_debug_log!(
+                                        "[{}] service policy gate transition failed after send: {}",
+                                        peer, error
+                                    );
+                                    break;
+                                }
+                            }
+                            Ok(_) => unreachable!("matched service-policy opcode"),
+                            Err(error) => {
+                                let response = Response::Error(format!(
+                                    "malformed REQ_SERVICE_POLICY_V1: {}",
+                                    error
+                                ));
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    REQ_AUTH_BEGIN_V1 => {
+                        let result = if !request_was_encrypted {
+                            pir_service_protocol::AuthResultV1::Rejected(
+                                pir_service_protocol::AuthRejectedV1 {
+                                    code: pir_service_protocol::AuthRejectCode::SecureChannelRequired,
+                                    retry_after_ms: 0,
+                                },
+                            )
+                        } else if let Ok(_service_auth_permit) = service_auth_limiter.try_acquire() {
+                            match ServiceWireRequestV1::decode_inner_payload(payload) {
+                                Ok(Some(ServiceWireRequestV1::Auth(request))) => {
+                                    let Some(runtime) = server.service_admission.as_ref() else {
+                                        let unavailable = pir_service_protocol::AuthResultV1::Rejected(
+                                            pir_service_protocol::AuthRejectedV1 {
+                                                code: pir_service_protocol::AuthRejectCode::ScopeUnavailable,
+                                                retry_after_ms: 0,
+                                            },
+                                        );
+                                        let response = encode_auth_result_response_v1(&unavailable)
+                                            .expect("bounded rejection encoding");
+                                        let _ = send_resp(
+                                            &mut sink,
+                                            channel_session.as_mut(),
+                                            response,
+                                        )
+                                        .await;
+                                        continue;
+                                    };
+                                    let now_unix = match current_unix_seconds_v1() {
+                                        Ok(now) => now,
+                                        Err(_) => {
+                                            let unavailable = pir_service_protocol::AuthResultV1::Rejected(
+                                                pir_service_protocol::AuthRejectedV1 {
+                                                    code: pir_service_protocol::AuthRejectCode::ScopeUnavailable,
+                                                    retry_after_ms: 0,
+                                                },
+                                            );
+                                            let response = encode_auth_result_response_v1(&unavailable)
+                                                .expect("bounded rejection encoding");
+                                            let _ = send_resp(
+                                                &mut sink,
+                                                channel_session.as_mut(),
+                                                response,
+                                            )
+                                            .await;
+                                            continue;
+                                        }
+                                    };
+                                    match (
+                                        runtime.policy_for_digest(&request.policy_digest),
+                                        runtime.verified_offer_for_authorization(
+                                            &request.policy_digest,
+                                            &request.scope_id,
+                                            request.offer_id,
+                                            now_unix,
+                                        ),
+                                    ) {
+                                        (Some(selected_policy), Ok(Some(verified_offer))) => {
+                                            let mut provider_local = ProviderStoreBearerCommitterV1::new(
+                                                &runtime.provider_store,
+                                                runtime
+                                                    .bat_keyring
+                                                    .as_ref()
+                                                    .map(|keyring| keyring as &dyn pir_service_store::CashuBatProofVerifierV1),
+                                            );
+                                            if let Some(keyring) =
+                                                runtime.experimental_arc_keyring.as_ref()
+                                            {
+                                                provider_local = provider_local
+                                                    .with_arc_adapter_v1(keyring);
+                                            }
+                                            let arc_canonicalizer = if verified_offer
+                                                .offer()
+                                                .authorization
+                                                == pir_service_protocol::AuthScheme::ArcV1Experimental
+                                            {
+                                                ExperimentalArcPresentationCanonicalizerV1::from_verified_offer_v1(
+                                                    &verified_offer,
+                                                    now_unix,
+                                                )
+                                                .ok()
+                                            } else {
+                                                None
+                                            };
+                                            let mut composite =
+                                                CompositeAdmissionMethodCommitterV1::new()
+                                                    .with_provider_local(&provider_local);
+                                            if let Some(free) = free_admission.as_ref() {
+                                                composite = composite.with_free(free);
+                                            }
+                                            let standard_cashu = runtime
+                                                .cashu_recovery_cipher
+                                                .as_ref()
+                                                .map(|cipher| {
+                                                    StandardCashuAdmissionCommitterV1::new(
+                                                        StandardCashuClientV1::new(
+                                                            &runtime.provider_store,
+                                                            &runtime.http_transport,
+                                                            cipher,
+                                                        ),
+                                                    )
+                                                });
+                                            if let Some(committer) = standard_cashu.as_ref() {
+                                                composite =
+                                                    composite.with_standard_cashu(committer);
+                                            }
+                                            let shared_issuer = runtime
+                                                .shared_issuer
+                                                .as_ref()
+                                                .and_then(|config| {
+                                                    config
+                                                        .committer(&runtime.http_transport)
+                                                        .ok()
+                                                });
+                                            if let Some(committer) = shared_issuer.as_ref() {
+                                                composite =
+                                                    composite.with_shared_issuer(committer);
+                                            }
+                                            let trusted_catalog = |operation: &OperationStartV1| {
+                                                server.resolve_service_operation_for_policy_v1(
+                                                    selected_policy,
+                                                    operation,
+                                                )
+                                            };
+                                            let monotonic_now_ms = || {
+                                                u64::try_from(
+                                                    runtime.monotonic_origin.elapsed().as_millis(),
+                                                )
+                                                .unwrap_or(u64::MAX)
+                                            };
+                                            tokio::task::block_in_place(|| {
+                                                sink.admission_gate_mut().authorize_and_commit_with_harmony_registry(
+                                                    true,
+                                                    &request,
+                                                    verified_offer,
+                                                    &trusted_catalog,
+                                                    arc_canonicalizer.as_ref().map(
+                                                        |canonicalizer| {
+                                                            canonicalizer
+                                                                as &dyn pir_service_protocol::ArcPresentationCanonicalizerV1
+                                                        },
+                                                    ),
+                                                    &composite,
+                                                    Some(&runtime.harmony_attach_registry),
+                                                    now_unix,
+                                                    &monotonic_now_ms,
+                                                )
+                                            })
+                                        }
+                                        _ => pir_service_protocol::AuthResultV1::Rejected(
+                                            pir_service_protocol::AuthRejectedV1 {
+                                                code: pir_service_protocol::AuthRejectCode::PolicyChanged,
+                                                retry_after_ms: 0,
+                                            },
+                                        ),
+                                    }
+                                }
+                                Ok(_) => unreachable!("matched auth-begin opcode"),
+                                Err(error) => {
+                                    let response = Response::Error(format!(
+                                        "malformed REQ_AUTH_BEGIN_V1: {}",
+                                        error
+                                    ));
+                                    let _ = send_resp(
+                                        &mut sink,
+                                        channel_session.as_mut(),
+                                        response.encode(),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            pir_service_protocol::AuthResultV1::Rejected(
+                                pir_service_protocol::AuthRejectedV1 {
+                                    code: pir_service_protocol::AuthRejectCode::ServerBusy,
+                                    retry_after_ms: 1_000,
+                                },
+                            )
+                        };
+                        let response = encode_auth_result_response_v1(&result)
+                            .unwrap_or_else(|error| {
+                                Response::Error(format!(
+                                    "failed to encode RESP_AUTH_RESULT_V1: {}",
+                                    error
+                                ))
+                                .encode()
+                            });
+                        let _ = send_resp(
+                            &mut sink,
+                            channel_session.as_mut(),
+                            response,
+                        )
+                        .await;
+                    }
+                    REQ_POW_CHALLENGE_V1 => {
+                        if !request_was_encrypted {
+                            let response = Response::Error(
+                                "PoW challenge requires the authenticated encrypted channel"
+                                    .into(),
+                            );
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                response.encode(),
+                            )
+                            .await;
+                            continue;
+                        }
+                        let request = match ServiceWireRequestV1::decode_inner_payload(payload) {
+                            Ok(Some(ServiceWireRequestV1::PowChallenge(request))) => request,
+                            Ok(_) => unreachable!("matched PoW challenge opcode"),
+                            Err(error) => {
+                                let response = Response::Error(format!(
+                                    "malformed REQ_POW_CHALLENGE_V1: {error}"
+                                ));
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let Some(runtime) = server.service_admission.as_ref() else {
+                            let response = Response::Error(
+                                "service admission V1 is not enabled".into(),
+                            );
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                response.encode(),
+                            )
+                            .await;
+                            continue;
+                        };
+                        let Some(free) = free_admission.as_ref() else {
+                            let response = Response::Error(
+                                "Free admission is not bound to this secure channel".into(),
+                            );
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                response.encode(),
+                            )
+                            .await;
+                            continue;
+                        };
+                        let now_unix = match current_unix_seconds_v1() {
+                            Ok(now) => now,
+                            Err(_) => {
+                                let response =
+                                    Response::Error("service clock unavailable".into());
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        if !runtime.is_current_policy_digest(&request.policy_digest) {
+                            let response = Response::Error(
+                                "PoW challenges are available only under the current policy"
+                                    .into(),
+                            );
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                response.encode(),
+                            )
+                            .await;
+                            continue;
+                        }
+                        let verified_offer = match runtime.policy.verified_offer(
+                            &request.scope_id,
+                            request.offer_id,
+                            now_unix,
+                        ) {
+                            Ok(offer) => offer,
+                            Err(_) => {
+                                let response =
+                                    Response::Error("service offer unavailable".into());
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let catalog_matches = server
+                            .resolve_service_operation_for_policy_v1(
+                                runtime.policy.policy(),
+                                &request.operation,
+                            )
+                            .is_some_and(|resolution| {
+                                let scope = verified_offer.scope();
+                                resolution.backend() == scope.backend
+                                    && resolution.workload() == scope.workload
+                                    && resolution.protocol_version() == scope.protocol_version
+                                    && resolution.dataset() == &scope.dataset
+                                    && resolution.operation_profile() == scope.operation_profile
+                            });
+                        if !catalog_matches
+                            || sink
+                                .admission_gate_mut()
+                                .permit_pow_challenge(true, &request.policy_digest)
+                                .is_err()
+                        {
+                            let response =
+                                Response::Error("PoW challenge scope unavailable".into());
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                response.encode(),
+                            )
+                            .await;
+                            continue;
+                        }
+                        let challenge = match free.issue_pow_challenge(
+                            *request,
+                            verified_offer,
+                            now_unix,
+                            60,
+                        ) {
+                            Ok(challenge) => challenge,
+                            Err(_) => {
+                                let response =
+                                    Response::Error("PoW challenge unavailable".into());
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let encoded = match encode_pow_challenge_response_v1(&challenge) {
+                            Ok(encoded) => encoded,
+                            Err(_) => {
+                                let response =
+                                    Response::Error("PoW challenge encoding failed".into());
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let _ = send_resp(
+                            &mut sink,
+                            channel_session.as_mut(),
+                            encoded,
+                        )
+                        .await;
+                    }
+                    REQ_HARMONY_ATTACH_V1 => {
+                        let result = if !request_was_encrypted {
+                            HarmonyAttachResultV1::Rejected {
+                                code: HarmonyAttachRejectCodeV1::SecureChannelRequired,
+                            }
+                        } else {
+                            let request = match ServiceWireRequestV1::decode_inner_payload(payload) {
+                                Ok(Some(ServiceWireRequestV1::HarmonyAttach(request))) => request,
+                                Ok(_) => unreachable!("matched Harmony attach opcode"),
+                                Err(error) => {
+                                    let response = Response::Error(format!(
+                                        "malformed REQ_HARMONY_ATTACH_V1: {error}"
+                                    ));
+                                    let _ = send_resp(
+                                        &mut sink,
+                                        channel_session.as_mut(),
+                                        response.encode(),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                            };
+                            let Some(runtime) = server.service_admission.as_ref() else {
+                                let result = HarmonyAttachResultV1::Rejected {
+                                    code: HarmonyAttachRejectCodeV1::NoWaitingOperation,
+                                };
+                                let encoded = encode_harmony_attach_result_response_v1(&result)
+                                    .expect("bounded Harmony attach rejection");
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    encoded,
+                                )
+                                .await;
+                                continue;
+                            };
+                            if sink
+                                .admission_gate_mut()
+                                .permit_harmony_attach(true, &request.policy_digest)
+                                .is_err()
+                            {
+                                HarmonyAttachResultV1::Rejected {
+                                    code: HarmonyAttachRejectCodeV1::WrongBinding,
+                                }
+                            } else {
+                                let now_monotonic_ms = u64::try_from(
+                                    runtime.monotonic_origin.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX);
+                                match runtime
+                                    .harmony_attach_registry
+                                    .try_attach_v1(&request, now_monotonic_ms)
+                                {
+                                    Ok(attached) => {
+                                        let operation_id = *attached.operation_id();
+                                        match sink
+                                            .admission_gate_mut()
+                                            .install_attached_harmony_grant_v1(
+                                                true,
+                                                attached,
+                                                now_monotonic_ms,
+                                            ) {
+                                            Ok(()) => HarmonyAttachResultV1::Attached {
+                                                operation_id,
+                                            },
+                                            Err(_) => HarmonyAttachResultV1::Rejected {
+                                                code: HarmonyAttachRejectCodeV1::WrongBinding,
+                                            },
+                                        }
+                                    }
+                                    Err(error) => HarmonyAttachResultV1::Rejected {
+                                        code: match error {
+                                            HarmonyAttachTransitionErrorV1::NoWaitingOperation => {
+                                                HarmonyAttachRejectCodeV1::NoWaitingOperation
+                                            }
+                                            HarmonyAttachTransitionErrorV1::Expired => {
+                                                HarmonyAttachRejectCodeV1::Expired
+                                            }
+                                            HarmonyAttachTransitionErrorV1::WrongBinding => {
+                                                HarmonyAttachRejectCodeV1::WrongBinding
+                                            }
+                                            HarmonyAttachTransitionErrorV1::WrongSide => {
+                                                HarmonyAttachRejectCodeV1::WrongSide
+                                            }
+                                            HarmonyAttachTransitionErrorV1::AlreadyAttached => {
+                                                HarmonyAttachRejectCodeV1::AlreadyAttached
+                                            }
+                                        },
+                                    },
+                                }
+                            }
+                        };
+                        let response = encode_harmony_attach_result_response_v1(&result)
+                            .unwrap_or_else(|error| {
+                                Response::Error(format!(
+                                    "failed to encode RESP_HARMONY_ATTACH_V1: {error}"
+                                ))
+                                .encode()
+                            });
+                        let _ = send_resp(
+                            &mut sink,
+                            channel_session.as_mut(),
+                            response,
+                        )
+                        .await;
+                    }
                     REQ_CREDENTIAL_PRESENT => {
                         // Wire format:
                         //   [1B variant=0x08]
@@ -6094,11 +9254,11 @@ async fn main() {
                         };
                         let result = match admin_state.verify_response(&signature, cfg) {
                             Ok(()) => {
-                                println!("[{}] admin authenticated", peer);
+                                println!("admin authenticated");
                                 pir_runtime_core::protocol::AdminAuthResult { ok: true, msg: "ok".into() }
                             }
                             Err(e) => {
-                                eprintln!("[{}] admin auth failed: {}", peer, e);
+                                eprintln!("admin auth failed: {}", e);
                                 pir_runtime_core::protocol::AdminAuthResult { ok: false, msg: e.to_string() }
                             }
                         };
@@ -6123,11 +9283,11 @@ async fn main() {
                             Request::AdminDbUploadBegin { name, manifest_toml } => {
                                 let r = match admin_state.begin_upload(name.clone(), manifest_toml, &server.data_root) {
                                     Ok(()) => {
-                                        println!("[{}] admin upload BEGIN {:?}", peer, name);
+                                        println!("admin upload BEGIN {:?}", name);
                                         pir_runtime_core::protocol::AdminAck { ok: true, msg: "ok".into() }
                                     }
                                     Err(e) => {
-                                        eprintln!("[{}] admin upload BEGIN failed: {}", peer, e);
+                                        eprintln!("admin upload BEGIN failed: {}", e);
                                         pir_runtime_core::protocol::AdminAck { ok: false, msg: e.to_string() }
                                     }
                                 };
@@ -6158,7 +9318,10 @@ async fn main() {
                             Request::AdminDbActivate { name, target_path } => {
                                 let r = match admin_state.activate(&name, &target_path, &server.data_root) {
                                     Ok(()) => {
-                                        println!("[{}] admin ACTIVATE {:?} → {:?} (restart server to load)", peer, name, target_path);
+                                        println!(
+                                            "admin ACTIVATE {:?} → {:?} (restart server to load)",
+                                            name, target_path
+                                        );
                                         pir_runtime_core::protocol::AdminAck {
                                             ok: true,
                                             msg: "activated; restart server to load".into(),
@@ -6220,19 +9383,72 @@ async fn main() {
                         // key until it processes RESP_HANDSHAKE. So we mint
                         // the Session AFTER the send, and the next inbound
                         // frame the client sends will be encrypted.
+                        if channel_session.is_some() {
+                            let err = Response::Error(
+                                "secure channel is already established on this connection".into(),
+                            );
+                            let _ = send_resp(
+                                &mut sink,
+                                channel_session.as_mut(),
+                                err.encode(),
+                            )
+                            .await;
+                            break;
+                        }
                         if let Ok(Request::Handshake { client_eph_pub, nonce }) = Request::decode(payload) {
                             let server_hs = server.channel_keypair.new_handshake();
                             let server_eph_pub = server_hs.server_eph_pub();
                             let new_session = server_hs.complete_handshake(&client_eph_pub, &nonce);
+                            let new_free_admission = match server.service_admission.as_ref() {
+                                Some(runtime) => {
+                                    let ip_subject = if runtime.trust_direct_peer_ip {
+                                        runtime
+                                            .free_ip_subject_key
+                                            .as_ref()
+                                            .map(|key| key.subject(&runtime.policy.policy().provider_id, peer.ip()))
+                                    } else {
+                                        None
+                                    };
+                                    match FreeAdmissionCommitterV1::new(
+                                        runtime.policy.policy().provider_id,
+                                        new_session.service_authorization_exporter_v1(),
+                                        ip_subject,
+                                        Arc::clone(&runtime.free_rate_limits),
+                                    ) {
+                                        Ok(committer) => Some(committer),
+                                        Err(error) => {
+                                            unsafe_debug_log!(
+                                                "[{}] failed to bind Free admission to secure channel: {}",
+                                                peer, error
+                                            );
+                                            let err = Response::Error(
+                                                "secure-channel service binding failed".into(),
+                                            );
+                                            let _ = send_resp(&mut sink, None, err.encode()).await;
+                                            break;
+                                        }
+                                    }
+                                }
+                                None => None,
+                            };
                             let resp = Response::Handshake(
                                 pir_runtime_core::protocol::HandshakeResult { server_eph_pub },
                             );
                             // Cleartext send (force `None` so send_resp doesn't seal).
-                            let _ = send_resp(&mut sink, None, resp.encode()).await;
+                            if let Err(error) = send_resp(&mut sink, None, resp.encode()).await {
+                                unsafe_debug_log!(
+                                    "[{}] handshake response send failed: {}",
+                                    peer,
+                                    error
+                                );
+                                break;
+                            }
                             // Now switch the connection into encrypted mode for
                             // all subsequent client→server and server→client
                             // frames.
                             channel_session = Some(new_session);
+                            free_admission = new_free_admission;
+                            sink.admission_gate_mut().secure_channel_established();
                         } else {
                             let err = Response::Error(
                                 "malformed REQ_HANDSHAKE (expected client_eph_pub:32 + nonce:32)".into(),
@@ -6253,7 +9469,7 @@ async fn main() {
                                 let n = q.keys.len();
                                 let (batch, dpf_sum, fetch_sum) = s.process_index_batch(&q, db);
                                 let wall = t.elapsed();
-                                println!("[index] db={} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, n, wall, dpf_sum, fetch_sum);
+                                unsafe_debug_log!("[index] db={} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, n, wall, dpf_sum, fetch_sum);
                                 Response::IndexBatch(batch)
                             }).await.unwrap();
                             let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
@@ -6272,7 +9488,7 @@ async fn main() {
                                 let round = q.round_id;
                                 let (batch, dpf_sum, fetch_sum) = s.process_chunk_batch(&q, db);
                                 let wall = t.elapsed();
-                                println!("[chunk] db={} r{} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, round, n, wall, dpf_sum, fetch_sum);
+                                unsafe_debug_log!("[chunk] db={} r{} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, round, n, wall, dpf_sum, fetch_sum);
                                 Response::ChunkBatch(batch)
                             }).await.unwrap();
                             let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
@@ -6308,7 +9524,7 @@ async fn main() {
                                 let sib = &sib_tables[level];
                                 let (batch, dpf_sum, fetch_sum) = s.process_generic_batch(&q, sib);
                                 let wall = t.elapsed();
-                                println!("[bkt-merkle-sib] db={} T{} L{} {} groups {:.2?} | dpf {:.2?} fetch {:.2?}",
+                                unsafe_debug_log!("[bkt-merkle-sib] db={} T{} L{} {} groups {:.2?} | dpf {:.2?} fetch {:.2?}",
                                     q.db_id, table_type, level, n, wall, dpf_sum, fetch_sum);
                                 Response::BucketMerkleSibBatch(batch)
                             }).await.unwrap();
@@ -6329,7 +9545,7 @@ async fn main() {
                             msg.push(RESP_BUCKET_MERKLE_TREE_TOPS);
                             msg.extend_from_slice(tops);
                             let _ = send_resp(&mut sink, channel_session.as_mut(), msg).await;
-                            println!("[bkt-merkle-tops] db={} sent {} bytes", db_id, tops.len());
+                            unsafe_debug_log!("[bkt-merkle-tops] db={} sent {} bytes", db_id, tops.len());
                         } else {
                             let err = Response::Error(format!("db {} has no bucket merkle tree-tops", db_id));
                             let _ = send_resp(&mut sink, channel_session.as_mut(), err.encode()).await;
@@ -6437,7 +9653,7 @@ async fn main() {
                                     let batch = std::mem::take(&mut pending);
                                     pending_bytes = 0;
                                     if let Err(e) = send_resp_batch(&mut sink, channel_session.as_mut(), batch).await {
-                                        eprintln!("[{}] Send error: {}", peer, e);
+                                        unsafe_debug_log!("[{}] Send error: {}", peer, e);
                                         break;
                                     }
                                     batches += 1;
@@ -6446,12 +9662,12 @@ async fn main() {
                             }
                             if !pending.is_empty() {
                                 if let Err(e) = send_resp_batch(&mut sink, channel_session.as_mut(), pending).await {
-                                    eprintln!("[{}] Final-batch send error: {}", peer, e);
+                                    unsafe_debug_log!("[{}] Final-batch send error: {}", peer, e);
                                 } else {
                                     batches += 1;
                                 }
                             }
-                            println!("[harmony-hint] db={} L{} {}/{} groups in {:.2?} ({} WS batches)",
+                            unsafe_debug_log!("[harmony-hint] db={} L{} {}/{} groups in {:.2?} ({} WS batches)",
                                 db_id, level, sent, num, t_start.elapsed(), batches);
                         }
                     }
@@ -6520,7 +9736,7 @@ async fn main() {
                         //    PRP key out of it before building HarmonyGroup
                         //    instances.)
                         if let Err(e) = send_resp(&mut sink, channel_session.as_mut(), entry.key_preamble.clone()).await {
-                            eprintln!("[{}] V2 preamble send error: {}", peer, e);
+                            unsafe_debug_log!("[{}] V2 preamble send error: {}", peer, e);
                             continue;
                         }
 
@@ -6546,7 +9762,7 @@ async fn main() {
                                 let batch = std::mem::take(&mut pending);
                                 pending_bytes = 0;
                                 if let Err(e) = send_resp_batch(&mut sink, channel_session.as_mut(), batch).await {
-                                    eprintln!("[{}] V2 frame batch send error: {}", peer, e);
+                                    unsafe_debug_log!("[{}] V2 frame batch send error: {}", peer, e);
                                     break;
                                 }
                                 batches += 1;
@@ -6555,7 +9771,7 @@ async fn main() {
                         }
                         if !pending.is_empty() {
                             if let Err(e) = send_resp_batch(&mut sink, channel_session.as_mut(), pending).await {
-                                eprintln!("[{}] V2 final-batch send error: {}", peer, e);
+                                unsafe_debug_log!("[{}] V2 final-batch send error: {}", peer, e);
                             } else {
                                 batches += 1;
                             }
@@ -6573,13 +9789,9 @@ async fn main() {
                         let _ = send_resp(&mut sink, channel_session.as_mut(), terminal).await;
 
                         let elapsed = t_start.elapsed();
-                        println!(
-                            "[harmony-hint-v2] db={} {} groups served from pool ({} WS batches, prp_key={:02x?}...) in {:.2?}",
-                            db_id,
-                            sent,
-                            batches,
-                            &entry.prp_key[..4],
-                            elapsed,
+                        unsafe_debug_log!(
+                            "[harmony-hint-v2] db={} {} groups served from pool ({} WS batches) in {:.2?}",
+                            db_id, sent, batches, elapsed,
                         );
                     }
                     REQ_HARMONY_HINTS_V2_HALF => {
@@ -6725,7 +9937,7 @@ async fn main() {
                         )
                         .await
                         {
-                            eprintln!(
+                            unsafe_debug_log!(
                                 "[{}] V2-half preamble send error: {}",
                                 peer, e
                             );
@@ -6763,7 +9975,7 @@ async fn main() {
                                 )
                                 .await
                                 {
-                                    eprintln!(
+                                    unsafe_debug_log!(
                                         "[{}] V2-half frame batch send error (side={}, group={}): {}",
                                         peer, side, sent, e
                                     );
@@ -6781,7 +9993,7 @@ async fn main() {
                             )
                             .await
                             {
-                                eprintln!(
+                                unsafe_debug_log!(
                                     "[{}] V2-half final-batch send error (side={}): {}",
                                     peer, side, e
                                 );
@@ -6805,15 +10017,9 @@ async fn main() {
 
                         let elapsed = t_start.elapsed();
                         let side_name = if side == 0 { "INDEX" } else { "CHUNK" };
-                        println!(
-                            "[harmony-hint-v2-half] db={} side={} {} groups served from pool ({} WS batches, prp_key={:02x?}..., token={:02x?}...) in {:.2?}",
-                            db_id,
-                            side_name,
-                            sent,
-                            batches,
-                            &entry_arc.prp_key[..4],
-                            &token[..4],
-                            elapsed,
+                        unsafe_debug_log!(
+                            "[harmony-hint-v2-half] db={} side={} {} groups served from pool ({} WS batches) in {:.2?}",
+                            db_id, side_name, sent, batches, elapsed,
                         );
                     }
                     REQ_HARMONY_QUERY => {
@@ -6843,7 +10049,7 @@ async fn main() {
                             let db_id = q.db_id;
                             let s = Arc::clone(&server);
                             let resp = tokio::task::spawn_blocking(move || s.handle_harmony_batch_query(&q)).await.unwrap();
-                            println!("[harmony-batch] db={} L{} {} groups in {:.2?}", db_id, level, n, t.elapsed());
+                            unsafe_debug_log!("[harmony-batch] db={} L{} {} groups in {:.2?}", db_id, level, n, t.elapsed());
                             let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
@@ -6968,7 +10174,7 @@ async fn main() {
                         msg.push(RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP);
                         msg.extend_from_slice(top);
                         let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), msg, client_supports_chunks).await;
-                        println!("[onion-merkle-tree-tops] db={} (index req) sent {} bytes", db_id, top.len());
+                        unsafe_debug_log!("[onion-merkle-tree-tops] db={} (index req) sent {} bytes", db_id, top.len());
                     }
                     REQ_ONIONPIR_MERKLE_DATA_TREE_TOP if server.has_any_onionpir_merkle() => {
                         // Optional db_id byte: payload[1] if present, else 0.
@@ -6990,7 +10196,7 @@ async fn main() {
                         msg.push(RESP_ONIONPIR_MERKLE_DATA_TREE_TOP);
                         msg.extend_from_slice(top);
                         let _ = send_resp_chunked(&mut sink, channel_session.as_mut(), msg, client_supports_chunks).await;
-                        println!("[onion-merkle-tree-tops] db={} (data req) sent {} bytes", db_id, top.len());
+                        unsafe_debug_log!("[onion-merkle-tree-tops] db={} (data req) sent {} bytes", db_id, top.len());
                     }
                     REQ_ONIONPIR_MERKLE_INDEX_SIBLING if server.has_any_onionpir() => {
                         // round_id encoding: sibling_level * 100 + pbc_round_index
@@ -7064,8 +10270,307 @@ async fn main() {
                 verifier.lock().unwrap().remove_context(&ctx);
             }
 
-            println!("[{}] Disconnected (id={})", peer, client_id);
+            unsafe_debug_log!("[{}] Disconnected (id={})", peer, client_id);
         });
+    }
+}
+
+#[cfg(test)]
+mod service_admission_dispatch_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        messages: Vec<Message>,
+    }
+
+    impl futures_util::Sink<Message> for RecordingSink {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.get_mut().messages.push(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    struct TestResponseBudget {
+        limit: u64,
+        used: u64,
+        terminal: bool,
+    }
+
+    impl ServiceResponseBudgetV1 for TestResponseBudget {
+        fn reserve_service_response_bytes_v1(&mut self, bytes: u64) -> Result<(), String> {
+            if self.terminal {
+                return Err("terminal response budget".into());
+            }
+            let next = self
+                .used
+                .checked_add(bytes)
+                .ok_or_else(|| "test response counter overflow".to_owned())?;
+            if next > self.limit {
+                self.terminal = true;
+                return Err("test response budget exceeded".into());
+            }
+            self.used = next;
+            Ok(())
+        }
+    }
+
+    fn test_sink(limit: u64) -> ServiceAdmissionSink<RecordingSink, TestResponseBudget> {
+        ServiceAdmissionSink::with_test_budget(
+            RecordingSink::default(),
+            TestResponseBudget {
+                limit,
+                used: 0,
+                terminal: false,
+            },
+        )
+    }
+
+    #[test]
+    fn every_known_expensive_opcode_requires_a_typed_grant() {
+        for opcode in [
+            REQ_INDEX_BATCH,
+            REQ_CHUNK_BATCH,
+            REQ_BUCKET_MERKLE_SIB_BATCH,
+            REQ_HARMONY_HINTS,
+            REQ_HARMONY_HINTS_V2,
+            REQ_HARMONY_HINTS_V2_HALF,
+            REQ_HARMONY_QUERY,
+            REQ_HARMONY_BATCH_QUERY,
+            REQ_ORAM_LOOKUP,
+            REQ_REGISTER_KEYS,
+            REQ_ONIONPIR_INDEX_QUERY,
+            REQ_ONIONPIR_CHUNK_QUERY,
+            REQ_ONIONPIR_MERKLE_INDEX_SIBLING,
+            REQ_ONIONPIR_MERKLE_DATA_SIBLING,
+        ] {
+            assert!(
+                !service_gate_allows_ungranted_opcode(opcode),
+                "expensive opcode 0x{opcode:02x} bypasses the V1 grant"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_credentials_cannot_unlock_v1_and_preflight_remains_available() {
+        assert!(!service_gate_allows_ungranted_opcode(
+            REQ_CREDENTIAL_PRESENT
+        ));
+        assert!(!service_gate_allows_ungranted_opcode(REQ_CASHU_BAT_PRESENT));
+        for opcode in [
+            REQ_SERVICE_POLICY_V1,
+            REQ_AUTH_BEGIN_V1,
+            REQ_BUCKET_MERKLE_TREE_TOPS,
+            REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+            REQ_ONIONPIR_MERKLE_DATA_TREE_TOP,
+        ] {
+            assert!(service_gate_allows_ungranted_opcode(opcode));
+        }
+    }
+
+    #[tokio::test]
+    async fn metered_response_counts_actual_encoded_bytes_and_blocks_overflow() {
+        let mut sink = test_sink(8);
+        sink.begin_request();
+        sink.meter_response_for_test();
+
+        send_resp(&mut sink, None, vec![0; 8]).await.unwrap();
+        assert_eq!(sink.response_budget.used, 8);
+        assert_eq!(sink.inner.messages.len(), 1);
+
+        assert!(send_resp(&mut sink, None, vec![0]).await.is_err());
+        assert!(sink.response_budget.terminal);
+        assert_eq!(
+            sink.inner.messages.len(),
+            1,
+            "the over-limit result must not reach the underlying socket"
+        );
+    }
+
+    #[tokio::test]
+    async fn chunked_response_reserves_the_whole_encoded_group_before_first_send() {
+        let first_chunk_wire_bytes = CHUNK_SIZE + 4 + CHUNK_HDR;
+        let mut sink = test_sink(u64::try_from(first_chunk_wire_bytes).unwrap());
+        sink.begin_request();
+        sink.meter_response_for_test();
+
+        let response = vec![0; CHUNK_SIZE + 1];
+        assert!(send_resp_chunked(&mut sink, None, response, true)
+            .await
+            .is_err());
+        assert!(sink.response_budget.terminal);
+        assert!(
+            sink.inner.messages.is_empty(),
+            "an oversized multi-chunk result must fail atomically"
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_egress_has_independent_message_and_byte_limits() {
+        let mut sink = test_sink(0);
+        sink.set_test_pre_auth_egress_limits(2, 64);
+
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_BUCKET_MERKLE_TREE_TOPS);
+        send_resp(&mut sink, None, vec![0; 32]).await.unwrap();
+        assert_eq!(sink.response_budget.used, 0);
+        assert_eq!(sink.pre_auth_egress_budget.messages_used, 1);
+        assert_eq!(sink.pre_auth_egress_budget.bytes_used, 32);
+
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_GET_DB_PROOF_V2);
+        send_resp(&mut sink, None, vec![0; 32]).await.unwrap();
+        assert_eq!(sink.pre_auth_egress_budget.messages_used, 2);
+        assert_eq!(sink.pre_auth_egress_budget.bytes_used, 64);
+
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP);
+        assert!(send_resp(&mut sink, None, vec![0]).await.is_err());
+        assert!(sink.pre_auth_egress_is_terminal());
+        assert_eq!(sink.inner.messages.len(), 2);
+
+        // Terminal is connection-wide: changing to an unmetered opcode cannot
+        // recover or send an authorization response on this connection.
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_AUTH_BEGIN_V1);
+        assert!(send_resp(&mut sink, None, vec![0]).await.is_err());
+        assert_eq!(sink.inner.messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn preflight_chunk_group_reserves_messages_and_bytes_before_first_send() {
+        let mut sink = test_sink(0);
+        sink.set_test_pre_auth_egress_limits(1, u64::MAX);
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_ONIONPIR_MERKLE_DATA_TREE_TOP);
+
+        assert!(
+            send_resp_chunked(&mut sink, None, vec![0; CHUNK_SIZE + 1], true)
+                .await
+                .is_err()
+        );
+        assert!(sink.pre_auth_egress_is_terminal());
+        assert!(sink.inner.messages.is_empty());
+    }
+
+    #[test]
+    fn exact_verification_and_tree_top_opcodes_are_bounded_but_auth_is_not() {
+        for opcode in [
+            REQ_ATTEST,
+            REQ_ANNOUNCE,
+            REQ_HANDSHAKE,
+            REQ_GET_DB_PROOF,
+            REQ_GET_DB_PROOF_V2,
+            REQ_SERVICE_POLICY_V1,
+            REQ_BUCKET_MERKLE_TREE_TOPS,
+            REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+            REQ_ONIONPIR_MERKLE_DATA_TREE_TOP,
+        ] {
+            assert!(is_pre_auth_egress_opcode_v1(opcode));
+        }
+        assert!(!is_pre_auth_egress_opcode_v1(REQ_AUTH_BEGIN_V1));
+        assert!(!is_pre_auth_egress_opcode_v1(REQ_HARMONY_ATTACH_V1));
+    }
+
+    #[test]
+    fn default_runtime_logging_forbidden_field_scan() {
+        fn direct_log_calls<'a>(source: &'a str, needle: &str) -> Vec<&'a str> {
+            let mut calls = Vec::new();
+            let mut offset = 0;
+            while let Some(relative) = source[offset..].find(needle) {
+                let start = offset + relative;
+                if needle == "println!(" && start != 0 && source.as_bytes()[start - 1] == b'e' {
+                    offset = start + needle.len();
+                    continue;
+                }
+                let tail = &source[start..];
+                let end = tail.find(");").map(|end| end + 2).unwrap_or(tail.len());
+                calls.push(&tail[..end]);
+                offset = start + end;
+            }
+            calls
+        }
+
+        assert!(!UNSAFE_DEBUG_QUERY_LOGGING.load(Ordering::Relaxed));
+        let source = include_str!("unified_server.rs");
+        let runtime = source
+            .split_once("let client_counter =")
+            .expect("runtime logging scan start marker")
+            .1
+            .split_once("#[cfg(test)]\nmod service_admission_dispatch_tests")
+            .expect("runtime logging scan end marker")
+            .0;
+        let compact: String = runtime
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+
+        // Detailed calls must use `unsafe_debug_log!`; direct default log
+        // macros in the live connection loop may contain only aggregate/admin
+        // operational events.
+        for forbidden in [
+            "println!(\"[{}]",
+            "eprintln!(\"[{}]",
+            "println!(\"[index]",
+            "println!(\"[chunk]",
+            "println!(\"[harmony-",
+            "println!(\"[bkt-merkle",
+            "println!(\"[onion-merkle",
+            "eprintln!(\"[OnionPIR:",
+        ] {
+            assert!(
+                !compact.contains(forbidden),
+                "default runtime log contains forbidden correlation field: {forbidden}"
+            );
+        }
+        for call in direct_log_calls(runtime, "println!(")
+            .into_iter()
+            .chain(direct_log_calls(runtime, "eprintln!("))
+        {
+            for forbidden_field in [
+                "peer",
+                "client_id",
+                "elapsed",
+                "q.db_id",
+                "db_id",
+                "group_ids",
+                "groups",
+                ".len()",
+                "bytes",
+                "seq",
+                "round_id",
+            ] {
+                assert!(
+                    !call.contains(forbidden_field),
+                    "default runtime log contains `{forbidden_field}`: {call}"
+                );
+            }
+        }
+        assert!(source.contains("--unsafe-debug-query-logging"));
+        assert!(source.contains("UNSAFE DEBUG QUERY LOGGING ENABLED"));
     }
 }
 

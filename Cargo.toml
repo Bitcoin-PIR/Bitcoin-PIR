@@ -3,6 +3,19 @@ resolver = "2"
 members = [
     "crates/protocol/core",
     "crates/protocol/channel",
+    "crates/protocol/service",
+    "crates/protocol/service-store",
+    "crates/payment/issuer-store",
+    "crates/payment/crypto",
+    "crates/payment/cashu-client",
+    "crates/payment/arc-adapter",
+    "crates/payment/lightning-backend",
+    "crates/payment/issuer-credentials",
+    "crates/payment/issuer-clearing",
+    "crates/payment/provider-clearing-client",
+    "crates/payment/issuer-core",
+    "crates/payment/issuer-service",
+    "crates/directory/nostr",
     "crates/trust/identity",
     "crates/trust/attest-verify",
     "crates/trust/db-attest",
@@ -16,6 +29,7 @@ members = [
     "apps/server",
     "tools/block-reader",
     "apps/dev-issuer",
+    "apps/payment-issuer",
 ]
 exclude = ["electrum_plugin/harmonypir-python", "vendor/bitcoinpir-oram"]
 

@@ -35,21 +35,28 @@ use crate::db_proof::{
 };
 use crate::hint_cache;
 use crate::merkle_verify::{
-    fetch_tree_tops, verify_bucket_merkle_batch_generic,
-    verify_bucket_merkle_batch_parallel, verify_tree_tops_super_root, BucketMerkleItem,
-    BucketMerkleSiblingQuerier, SiblingLevelPlan, TreeTop, BUCKET_MERKLE_ARITY,
-    BUCKET_MERKLE_SIB_ROW_SIZE,
+    fetch_tree_tops, verify_bucket_merkle_batch_generic, verify_bucket_merkle_batch_parallel,
+    verify_tree_tops_super_root, BucketMerkleItem, BucketMerkleSiblingQuerier, SiblingLevelPlan,
+    TreeTop, BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
 };
-use crate::verified_roots::{RootPolicy, VerifiedRootState};
-use crate::transport::PirTransport;
 use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
+use crate::service::{
+    dangerous_unpaired_authorize_retained_service_redemption_v1,
+    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_service_redemption_v1,
+    fetch_verified_service_policy_v1, request_pow_challenge_v1,
+    verify_service_policy_session_v1 as verify_policy_transport_session_v1,
+    AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
+};
+use crate::transport::PirTransport;
+use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
+use ed25519_dalek::VerifyingKey;
 use harmonypir::remote::{PrpBackend, RemoteClient as HarmonyGroup};
 use pir_core::params::{
-    CHUNK_CUCKOO_NUM_HASHES, CHUNK_SIZE, CHUNK_SLOT_SIZE, CHUNK_SLOTS_PER_BIN,
-    INDEX_CUCKOO_NUM_HASHES, INDEX_SLOT_SIZE, INDEX_SLOTS_PER_BIN, NUM_HASHES, TAG_SIZE,
+    CHUNK_CUCKOO_NUM_HASHES, CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, CHUNK_SLOT_SIZE,
+    INDEX_CUCKOO_NUM_HASHES, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, NUM_HASHES, TAG_SIZE,
 };
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
@@ -57,6 +64,7 @@ use pir_sdk::{
     PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, StateListener,
     SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
 };
+use pir_service_protocol::{AuthorizationProofV1, HintTransport, OperationStartV1, ProviderId};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -87,10 +95,7 @@ enum V2HintFetchOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum V2KeyPreambleOutcome {
-    Key {
-        prp_backend: u8,
-        prp_key: [u8; 16],
-    },
+    Key { prp_backend: u8, prp_key: [u8; 16] },
     PoolUnavailable,
 }
 
@@ -227,9 +232,9 @@ fn new_harmony_group(
 }
 
 fn serialize_harmony_group(group: &HarmonyGroup) -> PirResult<Vec<u8>> {
-    group.serialize_legacy_state().map_err(|error| {
-        PirError::BackendState(format!("serialize HarmonyPIR group: {error}"))
-    })
+    group
+        .serialize_legacy_state()
+        .map_err(|error| PirError::BackendState(format!("serialize HarmonyPIR group: {error}")))
 }
 
 /// Which group-map `fetch_and_load_hints_into` should write into.
@@ -394,10 +399,7 @@ pub(crate) enum IndexGroupRole {
 /// duplicate wins so the structural invariant is observably equivalent
 /// to the pre-Option-B single-real-group path when the placement list
 /// has exactly one entry.
-pub(crate) fn classify_index_groups(
-    placements: &[(u8, u32)],
-    k_index: u8,
-) -> Vec<IndexGroupRole> {
+pub(crate) fn classify_index_groups(placements: &[(u8, u32)], k_index: u8) -> Vec<IndexGroupRole> {
     let mut roles = vec![IndexGroupRole::Dummy; k_index as usize];
     for &(group, target_bin) in placements {
         if (group as usize) < (k_index as usize) {
@@ -451,9 +453,7 @@ fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
 /// Flatten a per-query traces list into a padded item list plus the
 /// `item_index → query_index` backmapping the verifier needs to fold
 /// per-item verdicts back to per-query verdicts.
-fn collect_merkle_items_from_traces(
-    traces: &[QueryTraces],
-) -> (Vec<BucketMerkleItem>, Vec<usize>) {
+fn collect_merkle_items_from_traces(traces: &[QueryTraces]) -> (Vec<BucketMerkleItem>, Vec<usize>) {
     let mut items = Vec::new();
     let mut item_to_query = Vec::new();
     for (qi, trace) in traces.iter().enumerate() {
@@ -756,7 +756,9 @@ impl HarmonyClient {
         }
     }
 
-    pub fn root_policy(&self) -> RootPolicy { self.verified_roots.policy() }
+    pub fn root_policy(&self) -> RootPolicy {
+        self.verified_roots.policy()
+    }
 
     pub fn set_root_policy(&mut self, policy: RootPolicy) {
         self.verified_roots.set_policy(policy);
@@ -766,7 +768,9 @@ impl HarmonyClient {
         &mut self,
         roots: VerifiedDatabaseRoots,
     ) -> PirResult<()> {
-        let catalog = self.catalog.as_ref()
+        let catalog = self
+            .catalog
+            .as_ref()
             .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
         let db_id = roots.db_id;
         self.verified_roots.install(catalog, roots)?;
@@ -809,21 +813,453 @@ impl HarmonyClient {
         self.verified_roots.get(db_id)
     }
 
+    /// Fetch the signed policy from either independently operated Harmony
+    /// provider (`0 = hint`, `1 = query`) after the DB proof root is installed.
+    pub async fn fetch_service_policy_v1(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        now_unix: u64,
+        checkpoint: &ServicePolicyCheckpointV1,
+    ) -> PirResult<AcceptedServicePolicyV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "service policy requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match provider_index {
+            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
+                )))
+            }
+        };
+        fetch_verified_service_policy_v1(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            now_unix,
+            checkpoint,
+        )
+        .await
+    }
+
+    /// Exact historical policy fetch for redemption only. Provider index 0 is
+    /// hint and 1 is query; neither learns the other selection.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fetch_retained_service_redemption_v1(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        expected_policy_digest: [u8; 32],
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<AcceptedRetiredServiceRedemptionV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained service redemption requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match provider_index {
+            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
+            )))
+            }
+        };
+        fetch_retained_service_redemption_v1(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            expected_policy_digest,
+            scope_id,
+            offer_id,
+            now_unix,
+        )
+        .await
+    }
+
+    pub fn verify_retained_service_session_v1(
+        &self,
+        provider_index: u8,
+        accepted: &AcceptedRetiredServiceRedemptionV1,
+    ) -> PirResult<()> {
+        let transport = match provider_index {
+            0 => self.hint_conn.as_ref().ok_or(PirError::NotConnected)?,
+            1 => self.query_conn.as_ref().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
+            )))
+            }
+        };
+        let exporter = transport
+            .service_authorization_exporter_v1()
+            .ok_or_else(|| {
+                PirError::VerificationFailed(
+                    "retained redemption requires an authenticated secure channel".into(),
+                )
+            })?;
+        accepted.verify_service_authorization_exporter_v1(&exporter)
+    }
+
+    pub async fn authorize_retained_hint_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedRetiredServiceRedemptionV1,
+        proof: AuthorizationProofV1,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_retained_service_session_v1(0, accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained hint authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
+        dangerous_unpaired_authorize_retained_service_redemption_v1(
+            transport.as_mut(),
+            accepted,
+            OperationStartV1::HarmonyHint {
+                db_id,
+                transport: HintTransport::V2Full,
+                session_token: None,
+                primary_side: None,
+            },
+            proof,
+            now_unix,
+        )
+        .await
+    }
+
+    pub async fn authorize_retained_query_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedRetiredServiceRedemptionV1,
+        proof: AuthorizationProofV1,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_retained_service_session_v1(1, accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained query authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        dangerous_unpaired_authorize_retained_service_redemption_v1(
+            transport.as_mut(),
+            accepted,
+            OperationStartV1::HarmonyQuery { db_id },
+            proof,
+            now_unix,
+        )
+        .await
+    }
+
+    /// Verify that `accepted` was fetched on the currently connected Harmony
+    /// provider side (`0 = hint`, `1 = query`). Call before capability retire.
+    pub fn verify_service_policy_session_v1(
+        &self,
+        provider_index: u8,
+        accepted: &AcceptedServicePolicyV1,
+    ) -> PirResult<()> {
+        let transport = match provider_index {
+            0 => self.hint_conn.as_ref().ok_or(PirError::NotConnected)?,
+            1 => self.query_conn.as_ref().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
+                )))
+            }
+        };
+        verify_policy_transport_session_v1(transport.as_ref(), accepted)
+    }
+
+    /// Recheck strict-pair freshness and the live hint-provider channel. Call
+    /// immediately before retiring the hint capability.
+    pub fn verify_hint_service_pair_ready_v1(
+        &self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        now_unix: u64,
+    ) -> PirResult<()> {
+        pair.verify_first_offer_current_v1(now_unix)?;
+        self.verify_service_policy_session_v1(0, pair.first().accepted_policy())
+    }
+
+    /// Recheck strict-pair freshness and the live query-provider channel. Call
+    /// immediately before retiring the query capability.
+    pub fn verify_query_service_pair_ready_v1(
+        &self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        now_unix: u64,
+    ) -> PirResult<()> {
+        pair.verify_second_offer_current_v1(now_unix)?;
+        self.verify_service_policy_session_v1(1, pair.second().accepted_policy())
+    }
+
+    /// Dangerous one-provider compatibility entry point for the Harmony hint
+    /// workload. Native strict callers must use
+    /// [`Self::authorize_hint_service_pair_v1`]. Hint pricing is distinct from
+    /// query pricing. V2 half transport requires a caller-supplied non-zero
+    /// pairing token and side for the same provider's two sockets.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn dangerous_unpaired_authorize_hint_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        proof: AuthorizationProofV1,
+        transport: HintTransport,
+        session_token: Option<[u8; 16]>,
+        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_service_policy_session_v1(0, accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "hint authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let hint_conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
+        dangerous_unpaired_authorize_service_operation_v1(
+            hint_conn.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::HarmonyHint {
+                db_id,
+                transport,
+                session_token,
+                primary_side,
+            },
+            proof,
+        )
+        .await
+    }
+
+    /// Dangerous compatibility entry point for an already-retired hint proof.
+    /// A failed readiness check cannot preserve that capability. Prefer
+    /// [`Self::authorize_hint_service_pair_v1`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn dangerous_already_retired_authorize_hint_service_pair_v1(
+        &mut self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        db_id: u8,
+        now_unix: u64,
+        proof: AuthorizationProofV1,
+        transport: HintTransport,
+        session_token: Option<[u8; 16]>,
+        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_hint_service_pair_ready_v1(pair, now_unix)?;
+        let selected = pair.first();
+        self.dangerous_unpaired_authorize_hint_service_v1(
+            db_id,
+            selected.accepted_policy(),
+            selected.verified_offer().scope().scope_id(),
+            selected.offer().offer_id,
+            proof,
+            transport,
+            session_token,
+            primary_side,
+        )
+        .await
+    }
+
+    /// Retire and authorize the independently priced hint capability. The
+    /// deferred producer is called only after the strict pair, policy freshness,
+    /// and live hint-channel binding pass. The offer's workload is checked
+    /// again before any bytes are sent.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn authorize_hint_service_pair_v1<Producer, Produced>(
+        &mut self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        db_id: u8,
+        now_unix: u64,
+        produce_after_ready: Producer,
+        transport: HintTransport,
+        session_token: Option<[u8; 16]>,
+        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1>
+    where
+        Producer: FnOnce() -> Produced,
+        Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
+    {
+        let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
+            || self.verify_hint_service_pair_ready_v1(pair, now_unix),
+            produce_after_ready,
+        )
+        .await?;
+        self.dangerous_already_retired_authorize_hint_service_pair_v1(
+            pair,
+            db_id,
+            now_unix,
+            proof,
+            transport,
+            session_token,
+            primary_side,
+        )
+        .await
+    }
+
+    /// Dangerous one-provider compatibility entry point for the Harmony query
+    /// workload. Native strict callers must use
+    /// [`Self::authorize_query_service_pair_v1`].
+    pub async fn dangerous_unpaired_authorize_query_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        proof: AuthorizationProofV1,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_service_policy_session_v1(1, accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "query authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        dangerous_unpaired_authorize_service_operation_v1(
+            query_conn.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::HarmonyQuery { db_id },
+            proof,
+        )
+        .await
+    }
+
+    /// Dangerous compatibility entry point for an already-retired query proof.
+    /// Prefer [`Self::authorize_query_service_pair_v1`].
+    pub async fn dangerous_already_retired_authorize_query_service_pair_v1(
+        &mut self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        db_id: u8,
+        now_unix: u64,
+        proof: AuthorizationProofV1,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_query_service_pair_ready_v1(pair, now_unix)?;
+        let selected = pair.second();
+        self.dangerous_unpaired_authorize_query_service_v1(
+            db_id,
+            selected.accepted_policy(),
+            selected.verified_offer().scope().scope_id(),
+            selected.offer().offer_id,
+            proof,
+        )
+        .await
+    }
+
+    /// Retire and authorize the independently priced query capability. The
+    /// deferred producer is not called until the strict pair, policy freshness,
+    /// and live query-channel binding pass.
+    pub async fn authorize_query_service_pair_v1<Producer, Produced>(
+        &mut self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        db_id: u8,
+        now_unix: u64,
+        produce_after_ready: Producer,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1>
+    where
+        Producer: FnOnce() -> Produced,
+        Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
+    {
+        let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
+            || self.verify_query_service_pair_ready_v1(pair, now_unix),
+            produce_after_ready,
+        )
+        .await?;
+        self.dangerous_already_retired_authorize_query_service_pair_v1(pair, db_id, now_unix, proof)
+            .await
+    }
+
+    pub async fn request_hint_pow_challenge_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::PowChallengeResponseV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "hint proof-of-work challenge requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let hint_conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
+        request_pow_challenge_v1(
+            hint_conn.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::HarmonyHint {
+                db_id,
+                transport: HintTransport::V2Full,
+                session_token: None,
+                primary_side: None,
+            },
+            now_unix,
+        )
+        .await
+    }
+
+    pub async fn request_query_pow_challenge_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::PowChallengeResponseV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "query proof-of-work challenge requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        request_pow_challenge_v1(
+            query_conn.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::HarmonyQuery { db_id },
+            now_unix,
+        )
+        .await
+    }
+
     async fn preflight_bucket_tree_tops(&mut self, db: &DatabaseInfo) -> PirResult<()> {
         let Some(roots) = self.verified_roots.get(db.db_id).cloned() else {
             return self.verified_roots.require_db(db.db_id);
         };
         if !db.has_bucket_merkle {
             return Err(PirError::VerificationFailed(format!(
-                "db_id {} has verified bucket root but catalog disables bucket Merkle", db.db_id
+                "db_id {} has verified bucket root but catalog disables bucket Merkle",
+                db.db_id
             )));
         }
-        if self.verified_tree_tops.contains_key(&db.db_id) { return Ok(()); }
+        if self.verified_tree_tops.contains_key(&db.db_id) {
+            return Ok(());
+        }
         let leakage = self.leakage_recorder.clone();
         let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
         let tops = fetch_tree_tops(conn, db.db_id, leakage.as_ref(), "harmony", 0).await?;
         verify_tree_tops_super_root(
-            &tops, db.index_k as usize, db.chunk_k as usize, &roots.bucket_super_root,
+            &tops,
+            db.index_k as usize,
+            db.chunk_k as usize,
+            &roots.bucket_super_root,
         )?;
         self.verified_tree_tops.insert(db.db_id, tops);
         Ok(())
@@ -1031,17 +1467,13 @@ impl HarmonyClient {
     /// configured.
     fn cache_path_for(&self, db_info: &DatabaseInfo) -> Option<PathBuf> {
         let dir = self.hint_cache_dir.as_ref()?;
-        let key = hint_cache::CacheKey::from_db_info(
-            self.master_prp_key,
-            self.prp_backend,
-            db_info,
-        );
+        let key =
+            hint_cache::CacheKey::from_db_info(self.master_prp_key, self.prp_backend, db_info);
         Some(dir.join(key.filename()))
     }
 }
 
 impl HarmonyClient {
-
     /// The two server URLs this client was configured with, in
     /// `(hint_server, query_server)` order. Useful for display-only
     /// surfaces that want to show "connected to …" without
@@ -1058,20 +1490,21 @@ impl HarmonyClient {
         server_index: u8,
         nonce: [u8; 32],
     ) -> PirResult<crate::attest::AttestVerification> {
-        let conn = match server_index {
-            0 => self.hint_conn.as_mut().ok_or_else(|| {
-                PirError::Protocol("attest: hint server not connected".into())
-            })?,
-            1 => self.query_conn.as_mut().ok_or_else(|| {
-                PirError::Protocol("attest: query server not connected".into())
-            })?,
-            _ => {
-                return Err(PirError::Protocol(format!(
-                    "attest: server_index must be 0 (hint) or 1 (query), got {}",
-                    server_index
-                )))
-            }
-        };
+        let conn =
+            match server_index {
+                0 => self.hint_conn.as_mut().ok_or_else(|| {
+                    PirError::Protocol("attest: hint server not connected".into())
+                })?,
+                1 => self.query_conn.as_mut().ok_or_else(|| {
+                    PirError::Protocol("attest: query server not connected".into())
+                })?,
+                _ => {
+                    return Err(PirError::Protocol(format!(
+                        "attest: server_index must be 0 (hint) or 1 (query), got {}",
+                        server_index
+                    )))
+                }
+            };
         crate::attest::attest(conn.as_mut(), nonce).await
     }
 
@@ -1081,20 +1514,21 @@ impl HarmonyClient {
         &mut self,
         server_index: u8,
     ) -> PirResult<crate::announce::AnnounceVerification> {
-        let conn = match server_index {
-            0 => self.hint_conn.as_mut().ok_or_else(|| {
-                PirError::Protocol("announce: hint server not connected".into())
-            })?,
-            1 => self.query_conn.as_mut().ok_or_else(|| {
-                PirError::Protocol("announce: query server not connected".into())
-            })?,
-            _ => {
-                return Err(PirError::Protocol(format!(
-                    "announce: server_index must be 0 (hint) or 1 (query), got {}",
-                    server_index
-                )))
-            }
-        };
+        let conn =
+            match server_index {
+                0 => self.hint_conn.as_mut().ok_or_else(|| {
+                    PirError::Protocol("announce: hint server not connected".into())
+                })?,
+                1 => self.query_conn.as_mut().ok_or_else(|| {
+                    PirError::Protocol("announce: query server not connected".into())
+                })?,
+                _ => {
+                    return Err(PirError::Protocol(format!(
+                        "announce: server_index must be 0 (hint) or 1 (query), got {}",
+                        server_index
+                    )))
+                }
+            };
         crate::announce::announce(conn.as_mut()).await
     }
 
@@ -1392,11 +1826,7 @@ impl HarmonyClient {
     /// otherwise the sibling maps stay empty so the next
     /// [`ensure_sibling_groups_ready`](Self::ensure_sibling_groups_ready)
     /// will fetch them from the server.
-    pub fn load_hints_bytes(
-        &mut self,
-        bytes: &[u8],
-        db_info: &DatabaseInfo,
-    ) -> PirResult<()> {
+    pub fn load_hints_bytes(&mut self, bytes: &[u8], db_info: &DatabaseInfo) -> PirResult<()> {
         let expected_fp =
             hint_cache::CacheKey::from_db_info(self.master_prp_key, self.prp_backend, db_info)
                 .fingerprint();
@@ -1443,32 +1873,26 @@ impl HarmonyClient {
         self.sibling_hints_loaded = None;
 
         for (&gid, bytes) in &bundle.main_index {
-            let group = HarmonyGroup::deserialize_legacy_state(
-                bytes,
-                &self.master_prp_key,
-                gid as u32,
-            )
-            .map_err(|e| {
-                PirError::BackendState(format!(
-                    "deserialize main INDEX group {}: {:?}",
-                    gid, e
-                ))
-            })?;
+            let group =
+                HarmonyGroup::deserialize_legacy_state(bytes, &self.master_prp_key, gid as u32)
+                    .map_err(|e| {
+                        PirError::BackendState(format!(
+                            "deserialize main INDEX group {}: {:?}",
+                            gid, e
+                        ))
+                    })?;
             self.index_groups.insert(gid, group);
         }
         for (&gid, bytes) in &bundle.main_chunk {
             let group_id = (k_index + gid as usize) as u32;
-            let group = HarmonyGroup::deserialize_legacy_state(
-                bytes,
-                &self.master_prp_key,
-                group_id,
-            )
-            .map_err(|e| {
-                PirError::BackendState(format!(
-                    "deserialize main CHUNK group {}: {:?}",
-                    gid, e
-                ))
-            })?;
+            let group =
+                HarmonyGroup::deserialize_legacy_state(bytes, &self.master_prp_key, group_id)
+                    .map_err(|e| {
+                        PirError::BackendState(format!(
+                            "deserialize main CHUNK group {}: {:?}",
+                            gid, e
+                        ))
+                    })?;
             self.chunk_groups.insert(gid, group);
         }
 
@@ -1483,17 +1907,14 @@ impl HarmonyClient {
             let sl = level as usize;
             let g = gid as usize;
             let group_id = ((k_index + k_chunk) + sl * k_index + g) as u32;
-            let group = HarmonyGroup::deserialize_legacy_state(
-                bytes,
-                &self.master_prp_key,
-                group_id,
-            )
-            .map_err(|e| {
-                PirError::BackendState(format!(
-                    "deserialize INDEX sib L{} g{}: {:?}",
-                    sl, g, e
-                ))
-            })?;
+            let group =
+                HarmonyGroup::deserialize_legacy_state(bytes, &self.master_prp_key, group_id)
+                    .map_err(|e| {
+                        PirError::BackendState(format!(
+                            "deserialize INDEX sib L{} g{}: {:?}",
+                            sl, g, e
+                        ))
+                    })?;
             self.index_sib_groups.insert((sl, gid), group);
         }
         for (&(level, gid), bytes) in &bundle.chunk_sib {
@@ -1501,17 +1922,14 @@ impl HarmonyClient {
             let g = gid as usize;
             let group_id =
                 ((k_index + k_chunk) + index_sib_levels * k_index + sl * k_chunk + g) as u32;
-            let group = HarmonyGroup::deserialize_legacy_state(
-                bytes,
-                &self.master_prp_key,
-                group_id,
-            )
-            .map_err(|e| {
-                PirError::BackendState(format!(
-                    "deserialize CHUNK sib L{} g{}: {:?}",
-                    sl, g, e
-                ))
-            })?;
+            let group =
+                HarmonyGroup::deserialize_legacy_state(bytes, &self.master_prp_key, group_id)
+                    .map_err(|e| {
+                        PirError::BackendState(format!(
+                            "deserialize CHUNK sib L{} g{}: {:?}",
+                            sl, g, e
+                        ))
+                    })?;
             self.chunk_sib_groups.insert((sl, gid), group);
         }
 
@@ -1522,8 +1940,7 @@ impl HarmonyClient {
         // caller's `db_info`, and the bundle header has already been
         // fingerprint-checked, so this length compare is a sanity
         // guard rather than a trust boundary.
-        let full_main =
-            bundle.main_index.len() == k_index && bundle.main_chunk.len() == k_chunk;
+        let full_main = bundle.main_index.len() == k_index && bundle.main_chunk.len() == k_chunk;
         if full_main {
             self.loaded_db_id = Some(db_info.db_id);
             // Tentatively claim sibling state if any are present; the
@@ -1724,9 +2141,9 @@ impl HarmonyClient {
             anchor_kind,
             anchor_bytes,
         };
-        db_info
-            .verify_anchor_seeds()
-            .map_err(|e| PirError::Protocol(format!("chain-anchor seed verification failed: {}", e)))?;
+        db_info.verify_anchor_seeds().map_err(|e| {
+            PirError::Protocol(format!("chain-anchor seed verification failed: {}", e))
+        })?;
         Ok(db_info)
     }
 
@@ -1770,9 +2187,7 @@ impl HarmonyClient {
         // Any cache error is swallowed and we fall through to network
         // fetch — the cache is a fast path, never a correctness
         // dependency. I/O errors propagate so the caller sees them.
-        if self.restore_hints_from_cache(db_info)?
-            && self.loaded_db_id == Some(db_info.db_id)
-        {
+        if self.restore_hints_from_cache(db_info)? && self.loaded_db_id == Some(db_info.db_id) {
             // Cache hit: emit one terminal tick so progress observers
             // mark the bar full even though no per-group wire roundtrips
             // happened.
@@ -1811,7 +2226,9 @@ impl HarmonyClient {
         let want_v1_parallel =
             matches!(std::env::var("HARMONY_USE_V1_PARALLEL").as_deref(), Ok("1"));
         if (want_v1_parallel || !use_v2_for_db) && self.hint_conn_secondary.is_some() {
-            return self.ensure_groups_ready_v1_parallel(db_info, progress).await;
+            return self
+                .ensure_groups_ready_v1_parallel(db_info, progress)
+                .await;
         }
         if use_v2_for_db && self.hint_conn_secondary.is_some() {
             match self.ensure_groups_ready_v2_half(db_info, progress).await {
@@ -1820,7 +2237,9 @@ impl HarmonyClient {
                     log::warn!(
                         "[PIR-AUDIT] V2 hint pool temporarily unavailable; falling back to V1"
                     );
-                    return self.ensure_groups_ready_v1_parallel(db_info, progress).await;
+                    return self
+                        .ensure_groups_ready_v1_parallel(db_info, progress)
+                        .await;
                 }
                 Err(e) => return Err(e),
             }
@@ -1836,7 +2255,9 @@ impl HarmonyClient {
             }
         }
         if self.hint_conn_secondary.is_some() {
-            return self.ensure_groups_ready_v1_parallel(db_info, progress).await;
+            return self
+                .ensure_groups_ready_v1_parallel(db_info, progress)
+                .await;
         }
 
         let k_index = db_info.index_k as usize;
@@ -1880,13 +2301,8 @@ impl HarmonyClient {
                     p.on_group_complete(done, total, "index");
                 }
             };
-            self.fetch_and_load_hints_with_callback(
-                db_info.db_id,
-                0,
-                k_index as u8,
-                &mut on_index,
-            )
-            .await?;
+            self.fetch_and_load_hints_with_callback(db_info.db_id, 0, k_index as u8, &mut on_index)
+                .await?;
         }
         {
             let mut on_chunk = |_gid: u8| {
@@ -1895,13 +2311,8 @@ impl HarmonyClient {
                     p.on_group_complete(done, total, "chunk");
                 }
             };
-            self.fetch_and_load_hints_with_callback(
-                db_info.db_id,
-                1,
-                k_chunk as u8,
-                &mut on_chunk,
-            )
-            .await?;
+            self.fetch_and_load_hints_with_callback(db_info.db_id, 1, k_chunk as u8, &mut on_chunk)
+                .await?;
         }
 
         self.loaded_db_id = Some(db_info.db_id);
@@ -2296,25 +2707,21 @@ impl HarmonyClient {
             // 1. Receive key preamble.
             let preamble = conn.recv().await?;
             let mut total_resp: u64 = preamble.len() as u64;
-            let (prp_backend, prp_key) = match parse_v2_key_preamble(
-                &preamble,
-                expected_total_groups,
-                label,
-            )? {
-                V2KeyPreambleOutcome::Key {
-                    prp_backend,
-                    prp_key,
-                } => (prp_backend, prp_key),
-                V2KeyPreambleOutcome::PoolUnavailable => {
-                    return Ok(HalfDrainOutcome::PoolUnavailable);
-                }
-            };
+            let (prp_backend, prp_key) =
+                match parse_v2_key_preamble(&preamble, expected_total_groups, label)? {
+                    V2KeyPreambleOutcome::Key {
+                        prp_backend,
+                        prp_key,
+                    } => (prp_backend, prp_key),
+                    V2KeyPreambleOutcome::PoolUnavailable => {
+                        return Ok(HalfDrainOutcome::PoolUnavailable);
+                    }
+                };
 
             // 2. Build all `num_groups` HarmonyGroup instances using
             //    the just-received key. This is the CPU-heavy part —
             //    overlapped with the upcoming `recv()` waits.
-            let mut groups: HashMap<u8, HarmonyGroup> =
-                HashMap::with_capacity(num_groups as usize);
+            let mut groups: HashMap<u8, HarmonyGroup> = HashMap::with_capacity(num_groups as usize);
             for g in 0..num_groups {
                 let group = new_harmony_group(
                     bins,
@@ -2325,10 +2732,7 @@ impl HarmonyClient {
                     prp_backend,
                 )
                 .map_err(|e| {
-                    PirError::BackendState(format!(
-                        "{}: HarmonyGroup init: {:?}",
-                        label, e
-                    ))
+                    PirError::BackendState(format!("{}: HarmonyGroup init: {:?}", label, e))
                 })?;
                 groups.insert(g, group);
             }
@@ -2375,10 +2779,7 @@ impl HarmonyClient {
                 }
                 *was_seen = true;
                 let group = groups.get_mut(&group_id).ok_or_else(|| {
-                    PirError::Protocol(format!(
-                        "{}: unexpected group {}",
-                        label, group_id
-                    ))
+                    PirError::Protocol(format!("{}: unexpected group {}", label, group_id))
                 })?;
                 group
                     .load_hints(hints_data)
@@ -2922,7 +3323,12 @@ impl HarmonyClient {
         self.ensure_groups_ready(db_info, None).await?;
         let t_hint = t_hint_start.elapsed();
         if _bench {
-            eprintln!("[HARMONY_BENCH] db={} queries={} ensure_groups_ready: {:?}", db_info.db_id, script_hashes.len(), t_hint);
+            eprintln!(
+                "[HARMONY_BENCH] db={} queries={} ensure_groups_ready: {:?}",
+                db_info.db_id,
+                script_hashes.len(),
+                t_hint
+            );
         }
 
         log::info!(
@@ -2949,7 +3355,10 @@ impl HarmonyClient {
             .await?;
         let t_index = t_index_start.elapsed();
         if _bench {
-            eprintln!("[HARMONY_BENCH] db={} INDEX phase: {:?}", db_info.db_id, t_index);
+            eprintln!(
+                "[HARMONY_BENCH] db={} INDEX phase: {:?}",
+                db_info.db_id, t_index
+            );
         }
 
         // Phase 2: per-scripthash CHUNK + result assembly. Each query
@@ -2981,11 +3390,9 @@ impl HarmonyClient {
         for (found_info, _ibins, _matched) in outcomes.iter() {
             let (real_chunk_ids, is_whale, has_real_match): (Vec<u32>, bool, bool) =
                 match found_info {
-                    Some((start, num, whale)) if *num > 0 => (
-                        (*start..*start + *num as u32).collect(),
-                        *whale,
-                        true,
-                    ),
+                    Some((start, num, whale)) if *num > 0 => {
+                        ((*start..*start + *num as u32).collect(), *whale, true)
+                    }
                     Some((_start, _num, whale)) => (Vec::new(), *whale, true),
                     None => (Vec::new(), false, false),
                 };
@@ -3005,8 +3412,10 @@ impl HarmonyClient {
             .query_chunk_phase_batched(&per_q_real_chunks, db_info)
             .await?;
 
-        for (i, ((_found_info, index_bins, matched_idx), (chunk_data, chunk_bins))) in
-            outcomes.into_iter().zip(chunk_results.into_iter()).enumerate()
+        for (i, ((_found_info, index_bins, matched_idx), (chunk_data, chunk_bins))) in outcomes
+            .into_iter()
+            .zip(chunk_results.into_iter())
+            .enumerate()
         {
             let q_traces = QueryTraces {
                 index_bins,
@@ -3018,7 +3427,8 @@ impl HarmonyClient {
             let has_real_match = per_q_has_match[i];
             log::info!(
                 "[PIR-AUDIT] HarmonyPIR CHUNK: query #{} fetching {} real chunk(s)",
-                i, real_count,
+                i,
+                real_count,
             );
 
             // `chunk_data` holds exactly this scripthash's real chunks;
@@ -3079,7 +3489,12 @@ impl HarmonyClient {
 
         let t_chunk = t_chunk_start.elapsed();
         if _bench {
-            eprintln!("[HARMONY_BENCH] db={} CHUNK phase ({} queries): {:?}", db_info.db_id, script_hashes.len(), t_chunk);
+            eprintln!(
+                "[HARMONY_BENCH] db={} CHUNK phase ({} queries): {:?}",
+                db_info.db_id,
+                script_hashes.len(),
+                t_chunk
+            );
         }
 
         let t_merkle_start = Instant::now();
@@ -3094,7 +3509,10 @@ impl HarmonyClient {
         }
         let t_merkle = t_merkle_start.elapsed();
         if _bench {
-            eprintln!("[HARMONY_BENCH] db={} Merkle verification: {:?}", db_info.db_id, t_merkle);
+            eprintln!(
+                "[HARMONY_BENCH] db={} Merkle verification: {:?}",
+                db_info.db_id, t_merkle
+            );
             eprintln!("[HARMONY_BENCH] db={} TOTAL execute_step: {:?}  (hint {:?} / index {:?} / chunk {:?} / merkle {:?})",
                 db_info.db_id, t_step_start.elapsed(), t_hint, t_index, t_chunk, t_merkle);
         }
@@ -3160,8 +3578,9 @@ impl HarmonyClient {
 
         // Per-scripthash output buffers.
         let mut found_info: Vec<Option<(u32, u8, bool)>> = vec![None; n];
-        let mut index_bins_per_sh: Vec<Vec<IndexBinTrace>> =
-            (0..n).map(|_| Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES)).collect();
+        let mut index_bins_per_sh: Vec<Vec<IndexBinTrace>> = (0..n)
+            .map(|_| Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES))
+            .collect();
         let mut matched_idx_per_sh: Vec<Option<usize>> = vec![None; n];
 
         // Pair-mode batching requires exactly 2 cuckoo positions per
@@ -3178,16 +3597,10 @@ impl HarmonyClient {
                 std::array::from_fn(|_| Vec::with_capacity(round.len()));
             for h in 0..INDEX_CUCKOO_NUM_HASHES {
                 for &(sh_idx, pbc_group) in round {
-                    let key = pir_core::hash::derive_cuckoo_key(
-                        db_info.index_master_seed,
-                        pbc_group,
-                        h,
-                    );
-                    let target_bin = pir_core::hash::cuckoo_hash(
-                        &script_hashes[sh_idx],
-                        key,
-                        index_bins,
-                    );
+                    let key =
+                        pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, pbc_group, h);
+                    let target_bin =
+                        pir_core::hash::cuckoo_hash(&script_hashes[sh_idx], key, index_bins);
                     placements_per_h[h].push((pbc_group as u8, target_bin as u32));
                 }
             }
@@ -3221,16 +3634,10 @@ impl HarmonyClient {
                 let answers = answers_per_h[h];
                 for &(sh_idx, pbc_group) in round {
                     let g = pbc_group as u8;
-                    let key = pir_core::hash::derive_cuckoo_key(
-                        db_info.index_master_seed,
-                        pbc_group,
-                        h,
-                    );
-                    let target_bin = pir_core::hash::cuckoo_hash(
-                        &script_hashes[sh_idx],
-                        key,
-                        index_bins,
-                    ) as u32;
+                    let key =
+                        pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, pbc_group, h);
+                    let target_bin =
+                        pir_core::hash::cuckoo_hash(&script_hashes[sh_idx], key, index_bins) as u32;
                     let answer = answers.get(&g).ok_or_else(|| {
                         PirError::Protocol(format!(
                             "INDEX round group {} dropped for sh_idx {}",
@@ -3253,8 +3660,7 @@ impl HarmonyClient {
                         continue;
                     }
 
-                    let my_tag =
-                        pir_core::hash::compute_tag(tag_seed, &script_hashes[sh_idx]);
+                    let my_tag = pir_core::hash::compute_tag(tag_seed, &script_hashes[sh_idx]);
                     if let Some(entry) = find_entry_in_index_result(answer, my_tag) {
                         let is_whale = entry.1 == 0;
                         log::info!(
@@ -3266,7 +3672,10 @@ impl HarmonyClient {
                     } else {
                         log::info!(
                             "[PIR-AUDIT] HarmonyPIR INDEX[sh={}] miss at h={} (group={}, bin={})",
-                            sh_idx, h, pbc_group, target_bin,
+                            sh_idx,
+                            h,
+                            pbc_group,
+                            target_bin,
                         );
                     }
                 }
@@ -3278,7 +3687,13 @@ impl HarmonyClient {
         let _ = placement;
 
         Ok((0..n)
-            .map(|i| (found_info[i], std::mem::take(&mut index_bins_per_sh[i]), matched_idx_per_sh[i]))
+            .map(|i| {
+                (
+                    found_info[i],
+                    std::mem::take(&mut index_bins_per_sh[i]),
+                    matched_idx_per_sh[i],
+                )
+            })
             .collect())
     }
 
@@ -3338,14 +3753,11 @@ impl HarmonyClient {
         // Each extra probe costs one padded HarmonyPIR INDEX round (K queries,
         // server-side still padded) on found@h=0 queries.
         for h in 0..INDEX_CUCKOO_NUM_HASHES {
-            let key =
-                pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, real_group, h);
+            let key = pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, real_group, h);
             let target_bin = pir_core::hash::cuckoo_hash(script_hash, key, index_bins);
 
             let placements = [(real_group as u8, target_bin as u32)];
-            let mut round_results = self
-                .run_index_round(db_info.db_id, &placements, h)
-                .await?;
+            let mut round_results = self.run_index_round(db_info.db_id, &placements, h).await?;
             let answer = round_results.remove(&(real_group as u8)).ok_or_else(|| {
                 PirError::Protocol(format!(
                     "INDEX round dropped real group {} response",
@@ -3379,7 +3791,9 @@ impl HarmonyClient {
             } else {
                 log::info!(
                     "[PIR-AUDIT] HarmonyPIR INDEX miss at cuckoo h={} (group={}, bin={})",
-                    h, real_group, target_bin
+                    h,
+                    real_group,
+                    target_bin
                 );
             }
         }
@@ -3523,8 +3937,10 @@ impl HarmonyClient {
         // (the HarmonyPIR per-group invariant from CLAUDE.md). Capturing
         // `batch_items[g].indices.len()` lets a test assert the invariant
         // directly from the leakage profile.
-        let items_per_group: Vec<u32> =
-            batch_items.iter().map(|it| it.indices.len() as u32).collect();
+        let items_per_group: Vec<u32> = batch_items
+            .iter()
+            .map(|it| it.indices.len() as u32)
+            .collect();
         let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
         let response = conn.roundtrip(&request).await?;
         self.record_round(RoundProfile {
@@ -3545,9 +3961,9 @@ impl HarmonyClient {
             if !matches!(roles[g as usize], IndexGroupRole::Real(_)) {
                 continue;
             }
-            let data = raw_results.get(&g).ok_or_else(|| {
-                PirError::Protocol(format!("no INDEX response for group {}", g))
-            })?;
+            let data = raw_results
+                .get(&g)
+                .ok_or_else(|| PirError::Protocol(format!("no INDEX response for group {}", g)))?;
             let group = self
                 .index_groups
                 .get_mut(&g)
@@ -3799,9 +4215,7 @@ impl HarmonyClient {
                 .ok_or_else(|| PirError::InvalidState("missing INDEX real group".into()))?;
             let (answer_h0, answer_h1) = group
                 .process_response_pair(data_h0, data_h1)
-                .map_err(|e| {
-                    PirError::BackendState(format!("process_response_pair: {:?}", e))
-                })?;
+                .map_err(|e| PirError::BackendState(format!("process_response_pair: {:?}", e)))?;
             out_h0.insert(g, answer_h0);
             out_h1.insert(g, answer_h1);
         }
@@ -3839,7 +4253,16 @@ impl HarmonyClient {
             log::info!(
                 "[PIR-AUDIT] HarmonyPIR CHUNK round-presence padding: emitting 1 dummy K_CHUNK-padded round (all-synthetic, no real chunks)"
             );
-            let _ = self.run_chunk_round(db_info.db_id, &[], chunk_bins, db_info.chunk_master_seed, 0, 0).await?;
+            let _ = self
+                .run_chunk_round(
+                    db_info.db_id,
+                    &[],
+                    chunk_bins,
+                    db_info.chunk_master_seed,
+                    0,
+                    0,
+                )
+                .await?;
             return Ok((Vec::new(), Vec::new()));
         }
 
@@ -3850,8 +4273,7 @@ impl HarmonyClient {
         // does; for now we fall back to whichever hash function places
         // the chunk in a free group.
         let mut pending: Vec<(u32, u8)> = Vec::new(); // (chunk_id, group)
-        let mut used_groups: std::collections::HashSet<u8> =
-            std::collections::HashSet::new();
+        let mut used_groups: std::collections::HashSet<u8> = std::collections::HashSet::new();
         for &cid in chunk_ids {
             let candidates = pir_core::hash::derive_int_groups_3(cid, k_chunk);
             let mut placed = false;
@@ -3882,8 +4304,7 @@ impl HarmonyClient {
 
         let mut chunk_data: HashMap<u32, Vec<u8>> = HashMap::new();
         let mut chunk_trace_map: HashMap<u32, ChunkBinTrace> = HashMap::new();
-        let mut recovered: std::collections::HashSet<u32> =
-            std::collections::HashSet::new();
+        let mut recovered: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         for h in 0..CHUNK_CUCKOO_NUM_HASHES {
             let still_needed: Vec<(u32, u8)> = pending
@@ -3897,7 +4318,14 @@ impl HarmonyClient {
             }
 
             let round_answers = self
-                .run_chunk_round(db_info.db_id, &still_needed, chunk_bins, db_info.chunk_master_seed, h, h as u16)
+                .run_chunk_round(
+                    db_info.db_id,
+                    &still_needed,
+                    chunk_bins,
+                    db_info.chunk_master_seed,
+                    h,
+                    h as u16,
+                )
                 .await?;
 
             for (cid, group_id) in &still_needed {
@@ -4009,7 +4437,14 @@ impl HarmonyClient {
                 n,
             );
             let _ = self
-                .run_chunk_round_pair(db_info.db_id, &[], chunk_bins, db_info.chunk_master_seed, 0, 1)
+                .run_chunk_round_pair(
+                    db_info.db_id,
+                    &[],
+                    chunk_bins,
+                    db_info.chunk_master_seed,
+                    0,
+                    1,
+                )
                 .await?;
             return Ok((0..n).map(|_| (Vec::new(), Vec::new())).collect());
         }
@@ -4033,12 +4468,7 @@ impl HarmonyClient {
             .iter()
             .map(|&(_, _, cid)| pir_core::hash::derive_int_groups_3(cid, k_chunk))
             .collect();
-        let rounds = pir_core::pbc::pbc_plan_rounds(
-            &candidate_groups,
-            k_chunk,
-            NUM_HASHES,
-            500,
-        );
+        let rounds = pir_core::pbc::pbc_plan_rounds(&candidate_groups, k_chunk, NUM_HASHES, 500);
         log::info!(
             "[PIR-AUDIT] HarmonyPIR CHUNK batched: {} total chunks across {} queries → {} PBC round(s) × {} cuckoo positions = {} wire round(s) (K_CHUNK={})",
             flat.len(),
@@ -4136,8 +4566,7 @@ impl HarmonyClient {
                         pbc_group as usize,
                         h,
                     );
-                    let bin_index =
-                        pir_core::hash::cuckoo_hash_int(cid, key, chunk_bins) as u32;
+                    let bin_index = pir_core::hash::cuckoo_hash_int(cid, key, chunk_bins) as u32;
                     chunk_data.insert((sh_idx, slot), data.to_vec());
                     chunk_traces.insert(
                         (sh_idx, slot),
@@ -4263,11 +4692,11 @@ impl HarmonyClient {
             // the join.
             let mut index_sib_groups = std::mem::take(&mut self.index_sib_groups);
             let mut chunk_sib_groups = std::mem::take(&mut self.chunk_sib_groups);
-            let mut hint_primary =
-                self.hint_conn.take().ok_or(PirError::NotConnected)?;
-            let mut hint_secondary = self.hint_conn_secondary.take().expect(
-                "checked is_some above; field is private and not mutated mid-await",
-            );
+            let mut hint_primary = self.hint_conn.take().ok_or(PirError::NotConnected)?;
+            let mut hint_secondary = self
+                .hint_conn_secondary
+                .take()
+                .expect("checked is_some above; field is private and not mutated mid-await");
 
             let index_fut = async {
                 let mut profiles = Vec::with_capacity(index_sib_levels);
@@ -4286,10 +4715,7 @@ impl HarmonyClient {
                             prp_backend,
                         )
                         .map_err(|e| {
-                            PirError::BackendState(format!(
-                                "INDEX sib HarmonyGroup init: {:?}",
-                                e
-                            ))
+                            PirError::BackendState(format!("INDEX sib HarmonyGroup init: {:?}", e))
                         })?;
                         index_sib_groups.insert((sl, g as u8), group);
                     }
@@ -4331,17 +4757,12 @@ impl HarmonyClient {
                             sib_w,
                             0,
                             &master_prp_key,
-                            ((k_index + k_chunk)
-                                + index_sib_levels * k_index
-                                + sl * k_chunk
-                                + g) as u32,
+                            ((k_index + k_chunk) + index_sib_levels * k_index + sl * k_chunk + g)
+                                as u32,
                             prp_backend,
                         )
                         .map_err(|e| {
-                            PirError::BackendState(format!(
-                                "CHUNK sib HarmonyGroup init: {:?}",
-                                e
-                            ))
+                            PirError::BackendState(format!("CHUNK sib HarmonyGroup init: {:?}", e))
                         })?;
                         chunk_sib_groups.insert((sl, g as u8), group);
                     }
@@ -4444,7 +4865,9 @@ impl HarmonyClient {
                 }
                 log::info!(
                     "[PIR-AUDIT] HarmonyPIR INDEX sib L{}: loaded hints for {} groups (n={})",
-                    sl, k_index, level_n
+                    sl,
+                    k_index,
+                    level_n
                 );
             }
 
@@ -4464,10 +4887,8 @@ impl HarmonyClient {
                         //   k_offset = (k_index + k_chunk)
                         //            + index_sib_levels * k_index
                         //            + sl * k_chunk
-                        ((k_index + k_chunk)
-                            + index_sib_levels * k_index
-                            + sl * k_chunk
-                            + g) as u32,
+                        ((k_index + k_chunk) + index_sib_levels * k_index + sl * k_chunk + g)
+                            as u32,
                         self.prp_backend,
                     )
                     .map_err(|e| {
@@ -4494,7 +4915,9 @@ impl HarmonyClient {
                 }
                 log::info!(
                     "[PIR-AUDIT] HarmonyPIR CHUNK sib L{}: loaded hints for {} groups (n={})",
-                    sl, k_chunk, level_n
+                    sl,
+                    k_chunk,
+                    level_n
                 );
             }
         }
@@ -4548,7 +4971,11 @@ impl HarmonyClient {
                         .get(qi)
                         .and_then(|r| r.as_ref().map(|x| x.is_whale))
                         .unwrap_or(false);
-                    if is_whale { "WHALE" } else { "FOUND" }
+                    if is_whale {
+                        "WHALE"
+                    } else {
+                        "FOUND"
+                    }
                 }
                 None => "NOT FOUND",
             };
@@ -4627,9 +5054,7 @@ impl HarmonyClient {
         db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<bool>>> {
         if items.is_empty() {
-            log::info!(
-                "[PIR-AUDIT] HarmonyPIR Merkle: no items to verify — nothing to do"
-            );
+            log::info!("[PIR-AUDIT] HarmonyPIR Merkle: no items to verify — nothing to do");
             return Ok(vec![None; num_queries]);
         }
 
@@ -4643,7 +5068,8 @@ impl HarmonyClient {
         };
 
         // Ensure sibling groups + hints are initialised.
-        self.ensure_sibling_groups_ready(db_info, &tree_tops).await?;
+        self.ensure_sibling_groups_ready(db_info, &tree_tops)
+            .await?;
 
         // Drive the shared verifier with a Harmony-specific sibling querier.
         let index_k = db_info.index_k as usize;
@@ -4715,10 +5141,7 @@ impl HarmonyClient {
             // ── Single-socket fallback: one querier verifies INDEX then
             // CHUNK sequentially, so `merkle_rounds_first` already ends
             // up in canonical INDEX-then-CHUNK order on its own.
-            let query_conn = self
-                .query_conn
-                .as_mut()
-                .ok_or(PirError::NotConnected)?;
+            let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
             let mut querier = HarmonySiblingQuerier {
                 query_conn,
                 index_sib_groups: &mut index_sib_groups,
@@ -4955,10 +5378,7 @@ impl HarmonyClient {
         // Translate `Option<bool>` to `bool` for the public surface:
         // `None` (no items attached) maps to `true` — consistent with
         // the "nothing to falsify" reading above.
-        Ok(verdicts
-            .into_iter()
-            .map(|v| v.unwrap_or(true))
-            .collect())
+        Ok(verdicts.into_iter().map(|v| v.unwrap_or(true)).collect())
     }
 
     /// Like [`PirClient::sync`], but drives a [`SyncProgress`] observer
@@ -5018,7 +5438,8 @@ impl HarmonyClient {
                 .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
 
             for step in &plan.steps {
-                let db = catalog.get(step.db_id)
+                let db = catalog
+                    .get(step.db_id)
                     .ok_or(PirError::DatabaseNotFound(step.db_id))?
                     .clone();
                 self.preflight_bucket_tree_tops(&db).await?;
@@ -5248,11 +5669,8 @@ impl HarmonyClient {
                 .ok_or_else(|| PirError::InvalidState(format!("missing CHUNK group {}", g)))?;
             let bytes = match role {
                 ChunkGroupRole::Real(cid) => {
-                    let key = pir_core::hash::derive_cuckoo_key(
-                        chunk_master_seed,
-                        g as usize,
-                        hash_fn,
-                    );
+                    let key =
+                        pir_core::hash::derive_cuckoo_key(chunk_master_seed, g as usize, hash_fn);
                     let target_bin = pir_core::hash::cuckoo_hash_int(cid, key, chunk_bins);
                     let req = group.build_request(target_bin as u32).map_err(|e| {
                         PirError::BackendState(format!("build_request (chunk): {:?}", e))
@@ -5271,8 +5689,10 @@ impl HarmonyClient {
         let request = encode_batch_query(1, round_id, db_id, &batch_items);
         let dt_build = t_build.elapsed();
         let request_bytes = request.len() as u64;
-        let items_per_group: Vec<u32> =
-            batch_items.iter().map(|it| it.indices.len() as u32).collect();
+        let items_per_group: Vec<u32> = batch_items
+            .iter()
+            .map(|it| it.indices.len() as u32)
+            .collect();
         let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
         let t_wire = Instant::now();
         let response = conn.roundtrip(&request).await?;
@@ -5302,9 +5722,9 @@ impl HarmonyClient {
             if !matches!(roles[g as usize], ChunkGroupRole::Real(_)) {
                 continue;
             }
-            let data = raw_results.get(&g).ok_or_else(|| {
-                PirError::Protocol(format!("no CHUNK response for group {}", g))
-            })?;
+            let data = raw_results
+                .get(&g)
+                .ok_or_else(|| PirError::Protocol(format!("no CHUNK response for group {}", g)))?;
             let group = self
                 .chunk_groups
                 .get_mut(&g)
@@ -5318,7 +5738,8 @@ impl HarmonyClient {
         if std::env::var("HARMONY_BENCH").is_ok() {
             eprintln!(
                 "[HARMONY_BENCH]   CHUNK round decode: {:?}  ({} real groups)",
-                dt_decode, out.len(),
+                dt_decode,
+                out.len(),
             );
         }
         Ok(out)
@@ -5380,16 +5801,10 @@ impl HarmonyClient {
                 .ok_or_else(|| PirError::InvalidState(format!("missing CHUNK group {}", g)))?;
             let (bytes_h0, bytes_h1) = match role {
                 ChunkGroupRole::Real(cid) => {
-                    let key_h0 = pir_core::hash::derive_cuckoo_key(
-                        chunk_master_seed,
-                        g as usize,
-                        0,
-                    );
-                    let key_h1 = pir_core::hash::derive_cuckoo_key(
-                        chunk_master_seed,
-                        g as usize,
-                        1,
-                    );
+                    let key_h0 =
+                        pir_core::hash::derive_cuckoo_key(chunk_master_seed, g as usize, 0);
+                    let key_h1 =
+                        pir_core::hash::derive_cuckoo_key(chunk_master_seed, g as usize, 1);
                     let bin_h0 = pir_core::hash::cuckoo_hash_int(cid, key_h0, chunk_bins) as u32;
                     let bin_h1 = pir_core::hash::cuckoo_hash_int(cid, key_h1, chunk_bins) as u32;
                     let pair = group.build_request_pair(bin_h0, bin_h1).map_err(|e| {
@@ -5557,7 +5972,8 @@ impl HarmonyClient {
         if std::env::var("HARMONY_BENCH").is_ok() {
             eprintln!(
                 "[HARMONY_BENCH]   CHUNK pair decode: {:?}  ({} real groups × 2)",
-                dt_decode, out_h0.len(),
+                dt_decode,
+                out_h0.len(),
             );
         }
 
@@ -5640,7 +6056,9 @@ async fn fetch_and_load_main_hints_into_map(
             )));
         }
         if body.len() < 14 {
-            return Err(PirError::Protocol("main hint response header truncated".into()));
+            return Err(PirError::Protocol(
+                "main hint response header truncated".into(),
+            ));
         }
         let group_id = body[1];
         let hints_data = &body[14..];
@@ -5757,7 +6175,9 @@ async fn fetch_and_load_sib_hints_into_map(
             )));
         }
         if body.len() < 14 {
-            return Err(PirError::Protocol("sib hint response header truncated".into()));
+            return Err(PirError::Protocol(
+                "sib hint response header truncated".into(),
+            ));
         }
         let group_id = body[1];
         let hints_data = &body[14..];
@@ -5877,8 +6297,7 @@ impl PirClient for HarmonyClient {
                 }
                 (true, false) => {
                     let hint_secondary = WsConnection::connect(&self.hint_server_url);
-                    let (h, hs, q) =
-                        tokio::try_join!(hint_primary, hint_secondary, query_primary)?;
+                    let (h, hs, q) = tokio::try_join!(hint_primary, hint_secondary, query_primary)?;
                     Ok((
                         Box::new(h) as Box<dyn PirTransport>,
                         Some(Box::new(hs) as Box<dyn PirTransport>),
@@ -5917,10 +6336,8 @@ impl PirClient for HarmonyClient {
             let query_primary = WasmWebSocketTransport::connect(&self.query_server_url);
             match (hint_pool >= 2, query_pool >= 2) {
                 (true, true) => {
-                    let hint_secondary =
-                        WasmWebSocketTransport::connect(&self.hint_server_url);
-                    let query_secondary =
-                        WasmWebSocketTransport::connect(&self.query_server_url);
+                    let hint_secondary = WasmWebSocketTransport::connect(&self.hint_server_url);
+                    let query_secondary = WasmWebSocketTransport::connect(&self.query_server_url);
                     // Pair-up two try_joins to avoid needing a 4-arg variant.
                     let (a, b) = futures::future::try_join(
                         futures::future::try_join(hint_primary, hint_secondary),
@@ -5937,8 +6354,7 @@ impl PirClient for HarmonyClient {
                     ))
                 }
                 (true, false) => {
-                    let hint_secondary =
-                        WasmWebSocketTransport::connect(&self.hint_server_url);
+                    let hint_secondary = WasmWebSocketTransport::connect(&self.hint_server_url);
                     let (h, hs, q) =
                         futures::future::try_join3(hint_primary, hint_secondary, query_primary)
                             .await?;
@@ -5950,8 +6366,7 @@ impl PirClient for HarmonyClient {
                     ))
                 }
                 (false, true) => {
-                    let query_secondary =
-                        WasmWebSocketTransport::connect(&self.query_server_url);
+                    let query_secondary = WasmWebSocketTransport::connect(&self.query_server_url);
                     let (h, q, qs) =
                         futures::future::try_join3(hint_primary, query_primary, query_secondary)
                             .await?;
@@ -5975,8 +6390,7 @@ impl PirClient for HarmonyClient {
         }
         .await;
 
-        let (hint_conn, hint_conn_secondary, query_conn, query_conn_secondary) = match dial_result
-        {
+        let (hint_conn, hint_conn_secondary, query_conn, query_conn_secondary) = match dial_result {
             Ok(v) => v,
             Err(e) => {
                 // Handshake failed — fall back to `Disconnected`, not
@@ -6013,8 +6427,16 @@ impl PirClient for HarmonyClient {
 
         log::info!(
             "Connected to HarmonyPIR servers (hint pool size {}, query pool size {})",
-            if self.hint_conn_secondary.is_some() { 2 } else { 1 },
-            if self.query_conn_secondary.is_some() { 2 } else { 1 },
+            if self.hint_conn_secondary.is_some() {
+                2
+            } else {
+                1
+            },
+            if self.query_conn_secondary.is_some() {
+                2
+            } else {
+                1
+            },
         );
         self.fire_connect(&self.hint_server_url);
         if self.hint_conn_secondary.is_some() {
@@ -6157,7 +6579,8 @@ impl PirClient for HarmonyClient {
             .unwrap_or_else(|| vec![None; script_hashes.len()]);
 
         for step in &plan.steps {
-            let db = catalog.get(step.db_id)
+            let db = catalog
+                .get(step.db_id)
                 .ok_or(PirError::DatabaseNotFound(step.db_id))?
                 .clone();
             self.preflight_bucket_tree_tops(&db).await?;
@@ -6387,7 +6810,9 @@ fn find_entry_in_index_result(result: &[u8], expected_tag: u64) -> Option<(u32, 
         let slot_tag = u64::from_le_bytes(result[base..base + TAG_SIZE].try_into().unwrap());
         if slot_tag == expected_tag {
             let start_chunk_id = u32::from_le_bytes(
-                result[base + TAG_SIZE..base + TAG_SIZE + 4].try_into().unwrap(),
+                result[base + TAG_SIZE..base + TAG_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
             );
             let num_chunks = result[base + TAG_SIZE + 4];
             return Some((start_chunk_id, num_chunks));
@@ -6568,14 +6993,19 @@ impl HarmonySiblingQuerier<'_> {
         match table_type {
             0 => self.index_sib_groups.get_mut(&(level, group)),
             1 => self.chunk_sib_groups.get_mut(&(level, group)),
-            other => return Err(PirError::InvalidState(format!(
-                "unknown sibling table_type {}", other
-            ))),
+            other => {
+                return Err(PirError::InvalidState(format!(
+                    "unknown sibling table_type {}",
+                    other
+                )))
+            }
         }
-        .ok_or_else(|| PirError::InvalidState(format!(
-            "missing sibling group (table={}, level={}, group={})",
-            table_type, level, group
-        )))
+        .ok_or_else(|| {
+            PirError::InvalidState(format!(
+                "missing sibling group (table={}, level={}, group={})",
+                table_type, level, group
+            ))
+        })
     }
 
     fn prepare_cross_level(
@@ -6602,9 +7032,9 @@ impl HarmonySiblingQuerier<'_> {
             1 => 20u8.checked_add(level as u8),
             _ => None,
         }
-        .ok_or_else(|| PirError::InvalidState(format!(
-            "sibling level {} does not fit in wire byte", level
-        )))?;
+        .ok_or_else(|| {
+            PirError::InvalidState(format!("sibling level {} does not fit in wire byte", level))
+        })?;
 
         let mut bytes_by_pass: Vec<Vec<Vec<u8>>> = (0..passes.len())
             .map(|_| Vec::with_capacity(table_k))
@@ -6613,14 +7043,13 @@ impl HarmonySiblingQuerier<'_> {
             let group_id = group_idx as u8;
             let group = self.sibling_group_mut(table_type, level, group_id)?;
             if passes.len() == 2 {
-                if let (Some(target0), Some(target1)) =
-                    (passes[0][group_idx], passes[1][group_idx])
+                if let (Some(target0), Some(target1)) = (passes[0][group_idx], passes[1][group_idx])
                 {
                     let (request0, request1) = group
                         .build_request_pair(target0, target1)
-                        .map_err(|error| PirError::BackendState(format!(
-                            "sib build_request_pair: {:?}", error
-                        )))?
+                        .map_err(|error| {
+                            PirError::BackendState(format!("sib build_request_pair: {:?}", error))
+                        })?
                         .into_parts();
                     bytes_by_pass[0].push(request0.into_bytes());
                     bytes_by_pass[1].push(request1.into_bytes());
@@ -6629,10 +7058,11 @@ impl HarmonySiblingQuerier<'_> {
             }
             for (pass_idx, pass) in passes.iter().enumerate() {
                 let bytes = match pass[group_idx] {
-                    Some(target) => group.build_request(target)
-                        .map_err(|error| PirError::BackendState(format!(
-                            "sib build_request: {:?}", error
-                        )))?
+                    Some(target) => group
+                        .build_request(target)
+                        .map_err(|error| {
+                            PirError::BackendState(format!("sib build_request: {:?}", error))
+                        })?
                         .into_bytes(),
                     None => group.build_synthetic_dummy(),
                 };
@@ -6640,13 +7070,19 @@ impl HarmonySiblingQuerier<'_> {
             }
         }
 
-        let batch_items_by_pass: Vec<Vec<BatchItem>> = bytes_by_pass.iter()
-            .map(|pass| pass.iter().enumerate().map(|(group, bytes)| {
-                Ok(BatchItem {
-                    group_id: group as u8,
-                    indices: bytes_to_u32_vec(bytes)?,
-                })
-            }).collect::<PirResult<Vec<_>>>())
+        let batch_items_by_pass: Vec<Vec<BatchItem>> = bytes_by_pass
+            .iter()
+            .map(|pass| {
+                pass.iter()
+                    .enumerate()
+                    .map(|(group, bytes)| {
+                        Ok(BatchItem {
+                            group_id: group as u8,
+                            indices: bytes_to_u32_vec(bytes)?,
+                        })
+                    })
+                    .collect::<PirResult<Vec<_>>>()
+            })
             .collect::<PirResult<Vec<_>>>()?;
         let mut requests = Vec::with_capacity(passes.len());
         for (pass_idx, items) in batch_items_by_pass.iter().enumerate() {
@@ -6662,10 +7098,14 @@ impl HarmonySiblingQuerier<'_> {
             level,
             db_id,
             targets: passes.to_vec(),
-            request_bytes: requests.iter().map(|request| request.len() as u64).collect(),
-            items_per_group: batch_items_by_pass.iter().map(|items| {
-                items.iter().map(|item| item.indices.len() as u32).collect()
-            }).collect(),
+            request_bytes: requests
+                .iter()
+                .map(|request| request.len() as u64)
+                .collect(),
+            items_per_group: batch_items_by_pass
+                .iter()
+                .map(|items| items.iter().map(|item| item.indices.len() as u32).collect())
+                .collect(),
             requests,
         })
     }
@@ -6683,7 +7123,8 @@ impl HarmonySiblingQuerier<'_> {
                 prepared.level
             )));
         }
-        let decoded: Vec<_> = responses.iter()
+        let decoded: Vec<_> = responses
+            .iter()
             .map(|response| decode_batch_response(&response[4..]))
             .collect::<PirResult<Vec<_>>>()?;
         let table_k = prepared.targets[0].len();
@@ -6691,11 +7132,7 @@ impl HarmonySiblingQuerier<'_> {
 
         for group_idx in 0..table_k {
             let group_id = group_idx as u8;
-            let group = self.sibling_group_mut(
-                prepared.table_type,
-                prepared.level,
-                group_id,
-            )?;
+            let group = self.sibling_group_mut(prepared.table_type, prepared.level, group_id)?;
             if prepared.targets.len() == 2
                 && prepared.targets[0][group_idx].is_some()
                 && prepared.targets[1][group_idx].is_some()
@@ -6706,10 +7143,15 @@ impl HarmonySiblingQuerier<'_> {
                 let response1 = decoded[1].get(&group_id).ok_or_else(|| {
                     PirError::Protocol(format!("missing sibling h=1 group {}", group_id))
                 })?;
-                let (row0, row1) = group.process_response_pair(response0, response1)
-                    .map_err(|error| PirError::BackendState(format!(
-                        "sib process_response_pair: {:?}", error
-                    )))?;
+                let (row0, row1) =
+                    group
+                        .process_response_pair(response0, response1)
+                        .map_err(|error| {
+                            PirError::BackendState(format!(
+                                "sib process_response_pair: {:?}",
+                                error
+                            ))
+                        })?;
                 if row0.len() != BUCKET_MERKLE_SIB_ROW_SIZE
                     || row1.len() != BUCKET_MERKLE_SIB_ROW_SIZE
                 {
@@ -6731,14 +7173,14 @@ impl HarmonySiblingQuerier<'_> {
                         pass_idx, group_id
                     ))
                 })?;
-                let row = group.process_response(response)
-                    .map_err(|error| PirError::BackendState(format!(
-                        "sib process_response: {:?}", error
-                    )))?;
+                let row = group.process_response(response).map_err(|error| {
+                    PirError::BackendState(format!("sib process_response: {:?}", error))
+                })?;
                 if row.len() != BUCKET_MERKLE_SIB_ROW_SIZE {
                     return Err(PirError::Protocol(format!(
                         "sibling row has {} bytes, expected {}",
-                        row.len(), BUCKET_MERKLE_SIB_ROW_SIZE
+                        row.len(),
+                        BUCKET_MERKLE_SIB_ROW_SIZE
                     )));
                 }
                 out[pass_idx][group_idx] = Some(row);
@@ -6762,18 +7204,18 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
 
         // Wire `level` byte: 10+L for INDEX sib L, 20+L for CHUNK sib L.
         let wire_level: u8 = match table_type {
-            0 => 10u8
-                .checked_add(level as u8)
-                .ok_or_else(|| PirError::InvalidState(format!(
+            0 => 10u8.checked_add(level as u8).ok_or_else(|| {
+                PirError::InvalidState(format!(
                     "INDEX sib level {} does not fit in wire byte",
                     level
-                )))?,
-            1 => 20u8
-                .checked_add(level as u8)
-                .ok_or_else(|| PirError::InvalidState(format!(
+                ))
+            })?,
+            1 => 20u8.checked_add(level as u8).ok_or_else(|| {
+                PirError::InvalidState(format!(
                     "CHUNK sib level {} does not fit in wire byte",
                     level
-                )))?,
+                ))
+            })?,
             other => {
                 return Err(PirError::InvalidState(format!(
                     "unknown sibling table_type {}",
@@ -6805,9 +7247,9 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
 
             let bytes = if let Some(t) = *target {
                 real_slots.push(g);
-                let req = group.build_request(t).map_err(|e| {
-                    PirError::BackendState(format!("sib build_request: {:?}", e))
-                })?;
+                let req = group
+                    .build_request(t)
+                    .map_err(|e| PirError::BackendState(format!("sib build_request: {:?}", e)))?;
                 req.into_bytes()
             } else {
                 group.build_synthetic_dummy()
@@ -6827,8 +7269,10 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
         // exactly `T - 1` indices (CLAUDE.md "HarmonyPIR Per-Group
         // Request-Count Symmetry"). Capture the actual `indices.len()`
         // so a test can assert the invariant directly.
-        let items_per_group: Vec<u32> =
-            batch_items.iter().map(|it| it.indices.len() as u32).collect();
+        let items_per_group: Vec<u32> = batch_items
+            .iter()
+            .map(|it| it.indices.len() as u32)
+            .collect();
         let t_send = Instant::now();
         let response = self.query_conn.roundtrip(&request).await?;
         let dt_wire = t_send.elapsed();
@@ -6870,14 +7314,11 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                 _ => None,
             };
             let group = group.ok_or_else(|| {
-                PirError::InvalidState(format!(
-                    "sib group vanished mid-pass ({}, {})",
-                    level, g
-                ))
+                PirError::InvalidState(format!("sib group vanished mid-pass ({}, {})", level, g))
             })?;
-            let row = group.process_response(data).map_err(|e| {
-                PirError::BackendState(format!("sib process_response: {:?}", e))
-            })?;
+            let row = group
+                .process_response(data)
+                .map_err(|e| PirError::BackendState(format!("sib process_response: {:?}", e)))?;
             if row.len() != BUCKET_MERKLE_SIB_ROW_SIZE {
                 return Err(PirError::Protocol(format!(
                     "sib response has {} bytes, expected {}",
@@ -7028,10 +7469,7 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
             match *pat {
                 PassPattern::RealReal(t0, t1) => {
                     let pair = group.build_request_pair(t0, t1).map_err(|e| {
-                        PirError::BackendState(format!(
-                            "sib build_request_pair: {:?}",
-                            e
-                        ))
+                        PirError::BackendState(format!("sib build_request_pair: {:?}", e))
                     })?;
                     let (req_1, req_2) = pair.into_parts();
                     bytes_h0.push(req_1.into_bytes());
@@ -7157,10 +7595,7 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                 _ => None,
             };
             let group = group.ok_or_else(|| {
-                PirError::InvalidState(format!(
-                    "sib group vanished mid-batch ({}, {})",
-                    level, g
-                ))
+                PirError::InvalidState(format!("sib group vanished mid-batch ({}, {})", level, g))
             })?;
 
             match *pat {
@@ -7177,13 +7612,9 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
                             g, table_type, level
                         ))
                     })?;
-                    let (row0, row1) = group
-                        .process_response_pair(data_h0, data_h1)
-                        .map_err(|e| {
-                            PirError::BackendState(format!(
-                                "sib process_response_pair: {:?}",
-                                e
-                            ))
+                    let (row0, row1) =
+                        group.process_response_pair(data_h0, data_h1).map_err(|e| {
+                            PirError::BackendState(format!("sib process_response_pair: {:?}", e))
                         })?;
                     if row0.len() != BUCKET_MERKLE_SIB_ROW_SIZE
                         || row1.len() != BUCKET_MERKLE_SIB_ROW_SIZE
@@ -7264,13 +7695,16 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
         if levels.iter().any(|level| level.passes.len() > 2) {
             let mut out = Vec::with_capacity(levels.len());
             for level in levels {
-                out.push(self.query_passes(
-                    table_type,
-                    level.level,
-                    level.level_bins_per_table,
-                    &level.passes,
-                    db_id,
-                ).await?);
+                out.push(
+                    self.query_passes(
+                        table_type,
+                        level.level,
+                        level.level_bins_per_table,
+                        &level.passes,
+                        db_id,
+                    )
+                    .await?,
+                );
             }
             return Ok(out);
         }
@@ -7306,8 +7740,12 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
         // evidence cannot truncate the observed leakage profile.
         for (level, level_responses) in prepared.iter().zip(&responses) {
             let kind = match level.table_type {
-                1 => RoundKind::ChunkMerkleSiblings { level: level.level as u8 },
-                _ => RoundKind::IndexMerkleSiblings { level: level.level as u8 },
+                1 => RoundKind::ChunkMerkleSiblings {
+                    level: level.level as u8,
+                },
+                _ => RoundKind::IndexMerkleSiblings {
+                    level: level.level as u8,
+                },
             };
             for (pass, response) in level_responses.iter().enumerate() {
                 self.recorded.push(RoundProfile {
@@ -7707,12 +8145,7 @@ mod tests {
         response_frame(body)
     }
 
-    fn v2_key_preamble_frame(
-        backend: u8,
-        level: u8,
-        total_groups: u8,
-        key: [u8; 16],
-    ) -> Vec<u8> {
+    fn v2_key_preamble_frame(backend: u8, level: u8, total_groups: u8, key: [u8; 16]) -> Vec<u8> {
         let mut body = vec![RESP_HARMONY_HINTS_KEY, backend, level, total_groups];
         body.extend_from_slice(&key);
         response_frame(body)
@@ -7781,10 +8214,7 @@ mod tests {
         let mut db = session_db_info();
         db.db_id = 0;
         let mut client = HarmonyClient::new("wss://hint", "wss://query");
-        client.connect_with_transport(
-            Box::new(hint),
-            Box::new(MockTransport::new("wss://query")),
-        );
+        client.connect_with_transport(Box::new(hint), Box::new(MockTransport::new("wss://query")));
 
         client.ensure_groups_ready(&db, None).await.unwrap();
         assert_eq!(client.loaded_db_id, Some(0));
@@ -7859,20 +8289,8 @@ mod tests {
             "wss://hint-primary",
             [
                 v2_key_preamble_frame(PRP_HMR12, 0xFF, 3, key),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
-                ),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
-                ),
+                v1_hint_frame(0, 8, 4, 4, 4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE),
+                v1_hint_frame(0, 8, 4, 4, 4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE),
             ],
             closed.clone(),
             sends.clone(),
@@ -7908,20 +8326,8 @@ mod tests {
             "wss://hint-primary",
             [
                 v2_key_preamble_frame(PRP_HMR12, 0xFF, 2, key),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
-                ),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
-                ),
+                v1_hint_frame(0, 8, 4, 4, 4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE),
+                v1_hint_frame(0, 8, 4, 4, 4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE),
                 v2_terminal_frame(0xFF),
             ],
             closed.clone(),
@@ -7955,20 +8361,8 @@ mod tests {
             "wss://hint-primary",
             [
                 v2_key_preamble_frame(PRP_HMR12, 0xFF, 2, key),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
-                ),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
-                ),
+                v1_hint_frame(0, 8, 4, 4, 4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE),
+                v1_hint_frame(0, 8, 4, 4, 4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE),
                 v2_terminal_frame(0xFE),
             ],
             closed.clone(),
@@ -8004,20 +8398,8 @@ mod tests {
             "wss://hint-primary",
             [
                 v2_key_preamble_frame(PRP_HMR12, 0xFF, 3, key),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
-                ),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE,
-                ),
+                v1_hint_frame(0, 8, 4, 4, 4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE),
+                v1_hint_frame(0, 8, 4, 4, 4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE),
             ],
             primary_closed.clone(),
             primary_sends.clone(),
@@ -8026,13 +8408,7 @@ mod tests {
             "wss://hint-secondary",
             [
                 v2_key_preamble_frame(PRP_HMR12, 0xFF, 3, key),
-                v1_hint_frame(
-                    0,
-                    8,
-                    4,
-                    4,
-                    4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE,
-                ),
+                v1_hint_frame(0, 8, 4, 4, 4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE),
                 v2_terminal_frame(0xFF),
             ],
             secondary_closed.clone(),
@@ -8088,7 +8464,9 @@ mod tests {
         client.hint_conn_secondary = Some(Box::new(secondary));
 
         let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
-        assert!(matches!(error, PirError::ServerError(reason) if reason == "unexpected V2 failure"));
+        assert!(
+            matches!(error, PirError::ServerError(reason) if reason == "unexpected V2 failure")
+        );
         assert!(primary_closed.load(Ordering::SeqCst));
         assert!(secondary_closed.load(Ordering::SeqCst));
         assert!(client.hint_conn.is_none());
@@ -8245,8 +8623,7 @@ mod tests {
     /// the core value prop of the `PirTransport` trait.
     #[test]
     fn connect_with_transport_marks_connected() {
-        let mut client =
-            HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+        let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
         assert!(!client.is_connected());
         client.connect_with_transport(
             Box::new(MockTransport::new("wss://mock-hint")),
@@ -8327,12 +8704,7 @@ mod tests {
 
         client
             .upgrade_to_secure_channel_with_seeds(
-                [0x11; 32],
-                [0x21; 32],
-                [0x31; 32],
-                [0x12; 32],
-                [0x22; 32],
-                [0x32; 32],
+                [0x11; 32], [0x21; 32], [0x31; 32], [0x12; 32], [0x22; 32], [0x32; 32],
             )
             .await
             .unwrap();
@@ -8411,8 +8783,8 @@ mod tests {
 
     #[test]
     fn with_hint_cache_dir_sets_and_reads() {
-        let client = HarmonyClient::new("wss://h", "wss://q")
-            .with_hint_cache_dir("/tmp/pir-test-cache");
+        let client =
+            HarmonyClient::new("wss://h", "wss://q").with_hint_cache_dir("/tmp/pir-test-cache");
         assert_eq!(
             client.hint_cache_dir(),
             Some(std::path::Path::new("/tmp/pir-test-cache"))
@@ -8531,8 +8903,7 @@ mod tests {
             pir_core::merkle::sha256(b"persist-restore")[0]
         ));
         // Fresh client writes a cache file.
-        let mut client = HarmonyClient::new("wss://h", "wss://q")
-            .with_hint_cache_dir(&tmp);
+        let mut client = HarmonyClient::new("wss://h", "wss://q").with_hint_cache_dir(&tmp);
         client.set_master_key([0x77u8; 16]);
         client.catalog = Some(DatabaseCatalog {
             databases: vec![info.clone()],
@@ -8541,8 +8912,7 @@ mod tests {
         client.persist_hints_to_cache(&info).unwrap();
 
         // Second client reads it back.
-        let mut client2 = HarmonyClient::new("wss://h", "wss://q")
-            .with_hint_cache_dir(&tmp);
+        let mut client2 = HarmonyClient::new("wss://h", "wss://q").with_hint_cache_dir(&tmp);
         client2.set_master_key([0x77u8; 16]);
         // No catalog needed on restore — fingerprint includes db shape
         // + master key, both of which we supply here directly.
@@ -8555,8 +8925,7 @@ mod tests {
         // Cold-cache path: different master key → fingerprint mismatch
         // → `restore_hints_from_cache` returns false (not an error),
         // the groups stay invalidated.
-        let mut client3 = HarmonyClient::new("wss://h", "wss://q")
-            .with_hint_cache_dir(&tmp);
+        let mut client3 = HarmonyClient::new("wss://h", "wss://q").with_hint_cache_dir(&tmp);
         client3.set_master_key([0x88u8; 16]); // different key
         let restored3 = client3.restore_hints_from_cache(&info).unwrap();
         assert!(!restored3);
@@ -8582,8 +8951,7 @@ mod tests {
             std::process::id(),
             pir_core::merkle::sha256(b"missing")[0]
         ));
-        let mut client = HarmonyClient::new("wss://h", "wss://q")
-            .with_hint_cache_dir(&tmp);
+        let mut client = HarmonyClient::new("wss://h", "wss://q").with_hint_cache_dir(&tmp);
         // No file yet → cold cache returns false.
         let restored = client.restore_hints_from_cache(&info).unwrap();
         assert!(!restored);
@@ -8600,8 +8968,7 @@ mod tests {
             std::process::id(),
             pir_core::merkle::sha256(b"noop")[0]
         ));
-        let client = HarmonyClient::new("wss://h", "wss://q")
-            .with_hint_cache_dir(&tmp);
+        let client = HarmonyClient::new("wss://h", "wss://q").with_hint_cache_dir(&tmp);
         client.persist_hints_to_cache(&info).unwrap();
         // No file should have been written.
         let path = client.cache_path_for(&info).unwrap();
@@ -8618,8 +8985,7 @@ mod tests {
     #[test]
     fn cache_path_for_uses_fingerprint_filename() {
         let info = sample_db_info();
-        let client = HarmonyClient::new("wss://h", "wss://q")
-            .with_hint_cache_dir("/tmp/dir");
+        let client = HarmonyClient::new("wss://h", "wss://q").with_hint_cache_dir("/tmp/dir");
         let path = client.cache_path_for(&info).unwrap();
         assert_eq!(path.parent(), Some(std::path::Path::new("/tmp/dir")));
         let filename = path.file_name().unwrap().to_string_lossy();
@@ -8698,10 +9064,7 @@ mod tests {
             Box::new(MockTransport::new("wss://mock-query")),
         );
         assert!(old.events.lock().unwrap().is_empty());
-        assert_eq!(
-            &*new.events.lock().unwrap(),
-            &[ConnectionState::Connected]
-        );
+        assert_eq!(&*new.events.lock().unwrap(), &[ConnectionState::Connected]);
     }
 
     /// Smoke test: `server_urls()` echoes the constructor arguments in
@@ -8761,12 +9124,7 @@ mod tests {
         // min must be Some and equal the group budget.
         let min = client.min_queries_remaining();
         assert!(min.is_some());
-        let max_q = client
-            .index_groups
-            .values()
-            .next()
-            .unwrap()
-            .max_queries();
+        let max_q = client.index_groups.values().next().unwrap().max_queries();
         assert_eq!(min, Some(max_q));
     }
 
@@ -8810,12 +9168,9 @@ mod tests {
 
         // Cross-check against hint_cache::CacheKey directly — that's
         // the authoritative source for the blob-header fingerprint.
-        let expected = hint_cache::CacheKey::from_db_info(
-            client.master_prp_key,
-            client.prp_backend,
-            &info,
-        )
-        .fingerprint();
+        let expected =
+            hint_cache::CacheKey::from_db_info(client.master_prp_key, client.prp_backend, &info)
+                .fingerprint();
         assert_eq!(fp1, expected);
     }
 
@@ -8863,8 +9218,7 @@ mod tests {
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
-            let mut client =
-                HarmonyClient::new("wss://mock-hint", "wss://mock-query");
+            let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
             client.connect_with_transport(
                 Box::new(MockTransport::new("wss://mock-hint")),
                 Box::new(MockTransport::new("wss://mock-query")),
@@ -8951,8 +9305,20 @@ mod tests {
         let recorder = Arc::new(AtomicMetrics::new());
         client.set_metrics_recorder(Some(recorder.clone()));
 
-        client.hint_conn.as_mut().unwrap().send(vec![1, 2, 3]).await.unwrap();
-        client.query_conn.as_mut().unwrap().send(vec![4, 5]).await.unwrap();
+        client
+            .hint_conn
+            .as_mut()
+            .unwrap()
+            .send(vec![1, 2, 3])
+            .await
+            .unwrap();
+        client
+            .query_conn
+            .as_mut()
+            .unwrap()
+            .send(vec![4, 5])
+            .await
+            .unwrap();
 
         let snap = recorder.snapshot();
         assert_eq!(snap.bytes_sent, 5);
@@ -8976,7 +9342,13 @@ mod tests {
         );
 
         client.set_metrics_recorder(None);
-        client.hint_conn.as_mut().unwrap().send(vec![9; 42]).await.unwrap();
+        client
+            .hint_conn
+            .as_mut()
+            .unwrap()
+            .send(vec![9; 42])
+            .await
+            .unwrap();
         client.disconnect().await.unwrap();
 
         let snap = recorder.snapshot();

@@ -1,5 +1,5 @@
 /**
- * IndexedDB persistence for HarmonyPIR hint state (v2 schema).
+ * IndexedDB persistence for HarmonyPIR hint state (v3 schema).
  *
  * Stores the opaque byte blob produced by `WasmHarmonyClient.saveHints()`
  * (self-describing, fingerprinted — see `crates/sdk/client/src/hint_cache.rs`)
@@ -8,7 +8,10 @@
  * so this binding has to be persisted next to the hint blob — otherwise a
  * restored hint bundle can't be replayed.
  *
- * Records are keyed by `(serverUrl, dbId, prpBackend)`. The 16-byte
+ * Records are keyed by the exact verified admission binding plus dataset and
+ * PRP backend. Endpoint-only v2 records are deliberately discarded: they do
+ * not prove which provider, signed policy, scope, and offer paid for the
+ * expensive hint download. The 16-byte
  * `fingerprintHex` is an integrity/debug field; the authoritative
  * cross-check happens inside `WasmHarmonyClient.loadHints(bytes, catalog, db_id)`
  * which re-derives and compares the fingerprint before accepting the blob.
@@ -22,15 +25,29 @@
  */
 
 const DB_NAME = 'harmonypir-hints';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = 'hints';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+
+export interface HarmonyHintCacheBindingV1 {
+  providerIdHex: string;
+  policyDigestHex: string;
+  scopeIdHex: string;
+  offerId: number;
+  datasetIdHex: string;
+  prpBackend: number;
+}
 
 /** Stored IndexedDB record (v2). */
 export interface StoredHints {
   cacheKey: string;
-  serverUrl: string;
   dbId: number;
+  providerIdHex: string;
+  policyDigestHex: string;
+  scopeIdHex: string;
+  offerId: number;
+  datasetIdHex: string;
+  prpBackend: number;
   /** Effective backend selected by V2 hint setup. */
   backend: number;
   /** Effective 16-byte master PRP key bound to the hint bytes. */
@@ -43,8 +60,22 @@ export interface StoredHints {
   schemaVersion: number;
 }
 
-export function buildCacheKey(serverUrl: string, dbId: number, backend: number): string {
-  return `${serverUrl}|${dbId}|${backend}`;
+export function buildCacheKey(binding: HarmonyHintCacheBindingV1, dbId: number): string {
+  const provider = canonicalHex32('providerIdHex', binding.providerIdHex);
+  const policy = canonicalHex32('policyDigestHex', binding.policyDigestHex);
+  const scope = canonicalHex32('scopeIdHex', binding.scopeIdHex);
+  const dataset = canonicalHex32('datasetIdHex', binding.datasetIdHex);
+  if (!Number.isSafeInteger(binding.offerId) || binding.offerId <= 0) {
+    throw new Error('Harmony hint offerId must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(binding.prpBackend) || binding.prpBackend < 0
+      || binding.prpBackend > 0xffff_ffff) {
+    throw new Error('Harmony hint PRP backend is invalid');
+  }
+  if (!Number.isSafeInteger(dbId) || dbId < 0 || dbId > 0xffff_ffff) {
+    throw new Error('Harmony hint dbId is invalid');
+  }
+  return `${provider}|${policy}|${scope}|${binding.offerId}|${dataset}|${dbId}|${binding.prpBackend}`;
 }
 
 function idbAvailable(): boolean {
@@ -56,9 +87,9 @@ function openDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      // v1 -> v2 schema migration: drop any legacy store and re-create.
-      // The old record shape (`groups: Map<number, Uint8Array>`) can't be
-      // replayed by the native Rust client, so salvaging it isn't useful.
+      // Endpoint-only v2 records and older layouts cannot prove the exact
+      // admission binding. Drop them rather than silently treating an old
+      // hint purchase as valid under a rotated policy or different provider.
       if (db.objectStoreNames.contains(STORE)) {
         db.deleteObjectStore(STORE);
       }
@@ -131,4 +162,11 @@ export function fingerprintToHex(fp: Uint8Array): string {
   let out = '';
   for (const b of fp) out += b.toString(16).padStart(2, '0');
   return out;
+}
+
+function canonicalHex32(field: string, value: string): string {
+  if (!/^[0-9a-f]{64}$/.test(value) || /^0{64}$/.test(value)) {
+    throw new Error(`${field} must be non-zero lowercase 32-byte hex`);
+  }
+  return value;
 }

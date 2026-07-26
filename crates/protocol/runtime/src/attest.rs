@@ -21,8 +21,8 @@ use std::sync::OnceLock;
 
 /// Re-export for callers building REPORT_DATA without a `pir_core` import.
 pub use pir_core::attest::{
-    build_report_data, combine_manifest_roots, extract_report_data,
-    REPORT_DATA_DOMAIN_TAG, SEV_SNP_REPORT_DATA_LEN, SEV_SNP_REPORT_DATA_OFFSET,
+    build_report_data, combine_manifest_roots, extract_report_data, REPORT_DATA_DOMAIN_TAG,
+    SEV_SNP_REPORT_DATA_LEN, SEV_SNP_REPORT_DATA_OFFSET,
 };
 
 /// Git commit (with `-dirty` suffix if the working tree had local
@@ -133,7 +133,9 @@ pub fn fetch_report(user_data: [u8; 64]) -> io::Result<Option<Vec<u8>>> {
     // header — so skip 32 bytes.
     const KERNEL_HEADER_LEN: usize = 32;
     const REPORT_LEN: usize = 1184;
-    Ok(Some(resp.data[KERNEL_HEADER_LEN..KERNEL_HEADER_LEN + REPORT_LEN].to_vec()))
+    Ok(Some(
+        resp.data[KERNEL_HEADER_LEN..KERNEL_HEADER_LEN + REPORT_LEN].to_vec(),
+    ))
 }
 
 /// SHA-256 of the running binary (read from `/proc/self/exe`),
@@ -163,10 +165,17 @@ mod tests {
         match fetch_report(user_data) {
             Ok(None) => { /* expected on non-SEV hosts */ }
             Ok(Some(report)) => {
-                assert!(report.len() >= 1184, "v5 report should be ≥1184 bytes, got {}", report.len());
+                assert!(
+                    report.len() >= 1184,
+                    "v5 report should be ≥1184 bytes, got {}",
+                    report.len()
+                );
             }
             Err(e) => {
-                eprintln!("fetch_report errored (acceptable in sandboxed test env): {}", e);
+                eprintln!(
+                    "fetch_report errored (acceptable in sandboxed test env): {}",
+                    e
+                );
             }
         }
     }

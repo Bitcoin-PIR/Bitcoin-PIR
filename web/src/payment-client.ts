@@ -2,10 +2,11 @@
  * HTTP client for the credential issuer (the "obtain" leg of anonymous
  * rate-limiting).
  *
- * In the demo this talks to `dev-issuer` — a DEV-ONLY free issuer with no
- * payment. In production the same endpoints would be served by the
- * Lightning-backed payment service after a paid invoice. Either way the wire
- * shapes are identical: raw binary bodies, no JSON.
+ * This talks only to `dev-issuer` — a DEV-ONLY free issuer with no payment.
+ * These `/dev/*` endpoints and legacy `0x08`/`0x09` frames are not the
+ * production Payment V1 seam and cannot unlock its enforced server gate.
+ * Production-shaped acquisition lives in `service-acquisition.ts` and the
+ * provider/scope/offer-bound admission modules.
  *
  * Typical ARC obtain flow (pairs with the `WasmArcCredentialRequest` WASM
  * binding and `ArcCredentialManager`):

@@ -39,8 +39,8 @@
 //! only after that binding succeeds. [`crate::RootPolicy::RequireVerified`]
 //! additionally refuses queries for databases without installed roots.
 
-use async_trait::async_trait;
 use crate::transport::PirTransport;
+use async_trait::async_trait;
 use libdpf::Dpf;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, Hash256, ZERO_HASH};
 use pir_core::params::compute_dpf_n;
@@ -117,7 +117,10 @@ pub(crate) fn verify_tree_tops_super_root(
     if tree_tops.len() != exact {
         return Err(PirError::VerificationFailed(format!(
             "bucket tree-tops count mismatch: expected {} ({} INDEX + {} CHUNK), got {}",
-            exact, index_k, chunk_k, tree_tops.len()
+            exact,
+            index_k,
+            chunk_k,
+            tree_tops.len()
         )));
     }
     let mut hasher = Sha256::new();
@@ -391,9 +394,7 @@ pub async fn fetch_tree_tops(
     }
     // Response: [4B len][1B variant=0x34][blob...]
     if raw.len() < 6 {
-        return Err(PirError::Protocol(
-            "tree-tops response too short".into(),
-        ));
+        return Err(PirError::Protocol("tree-tops response too short".into()));
     }
     let variant = raw[4];
     if variant == 0xFF {
@@ -401,8 +402,7 @@ pub async fn fetch_tree_tops(
         // rejects the tree-tops request — that's a skew between what
         // the catalog claims and what the server actually implements.
         return Err(PirError::ProtocolSkew {
-            expected: "bucket_merkle support (per catalog has_bucket_merkle=true)"
-                .into(),
+            expected: "bucket_merkle support (per catalog has_bucket_merkle=true)".into(),
             actual: "RESP_ERROR from REQ_BUCKET_MERKLE_TREE_TOPS".into(),
         });
     }
@@ -567,10 +567,7 @@ struct PreparedDpfSiblingRound {
 }
 
 impl<'a> DpfSiblingQuerier<'a> {
-    pub fn new(
-        conn0: &'a mut dyn PirTransport,
-        conn1: &'a mut dyn PirTransport,
-    ) -> Self {
+    pub fn new(conn0: &'a mut dyn PirTransport, conn1: &'a mut dyn PirTransport) -> Self {
         Self {
             conn0,
             conn1,
@@ -632,25 +629,34 @@ impl<'a> DpfSiblingQuerier<'a> {
     ) -> PirResult<Vec<Option<Vec<u8>>>> {
         if let Some(recorder) = &self.leakage_recorder {
             let kind = match round.table_type {
-                1 => RoundKind::ChunkMerkleSiblings { level: round.level as u8 },
-                _ => RoundKind::IndexMerkleSiblings { level: round.level as u8 },
+                1 => RoundKind::ChunkMerkleSiblings {
+                    level: round.level as u8,
+                },
+                _ => RoundKind::IndexMerkleSiblings {
+                    level: round.level as u8,
+                },
             };
             for (server_id, request_bytes, response_bytes) in [
                 (0, round.request0_bytes, response0.len() as u64),
                 (1, round.request1_bytes, response1.len() as u64),
             ] {
-                recorder.record_round("dpf", RoundProfile {
-                    kind,
-                    server_id,
-                    db_id: Some(round.db_id),
-                    request_bytes,
-                    response_bytes,
-                    items: round.items_per_group.clone(),
-                });
+                recorder.record_round(
+                    "dpf",
+                    RoundProfile {
+                        kind,
+                        server_id,
+                        db_id: Some(round.db_id),
+                        request_bytes,
+                        response_bytes,
+                        items: round.items_per_group.clone(),
+                    },
+                );
             }
         }
         if response0.len() < 4 || response1.len() < 4 {
-            return Err(PirError::Protocol("sibling response missing length prefix".into()));
+            return Err(PirError::Protocol(
+                "sibling response missing length prefix".into(),
+            ));
         }
         let rows0 = decode_sibling_batch(&response0[4..])?;
         let rows1 = decode_sibling_batch(&response1[4..])?;
@@ -1129,8 +1135,7 @@ pub async fn verify_bucket_merkle_batch_parallel(
     #[cfg(not(target_arch = "wasm32"))]
     let (index_verified, chunk_verified) = tokio::try_join!(index_fut, chunk_fut)?;
     #[cfg(target_arch = "wasm32")]
-    let (index_verified, chunk_verified) =
-        futures::future::try_join(index_fut, chunk_fut).await?;
+    let (index_verified, chunk_verified) = futures::future::try_join(index_fut, chunk_fut).await?;
 
     // ── Combine results ────────────────────────────────────────────────
     let mut result = vec![true; items.len()];
@@ -1211,11 +1216,7 @@ async fn verify_sibling_levels(
     for (i, it) in items.iter().enumerate() {
         items_by_group.entry(it.pbc_group).or_default().push(i);
     }
-    let max_items_per_group = items_by_group
-        .values()
-        .map(|v| v.len())
-        .max()
-        .unwrap_or(1);
+    let max_items_per_group = items_by_group.values().map(|v| v.len()).max().unwrap_or(1);
 
     // Compute per-level group count (bins_per_table at each Merkle level).
     // This MUST match the server's table layout exactly.
@@ -1272,11 +1273,14 @@ async fn verify_sibling_levels(
 
     // Transport implementations can now send every level in one wave. Decode
     // and walk locally only after all responses have been drained.
-    let all_level_rows = querier.query_levels(table_type, &level_plans, db_id).await?;
+    let all_level_rows = querier
+        .query_levels(table_type, &level_plans, db_id)
+        .await?;
     if all_level_rows.len() != level_plans.len() {
         return Err(PirError::Protocol(format!(
             "Merkle querier returned {} level results, expected {}",
-            all_level_rows.len(), level_plans.len()
+            all_level_rows.len(),
+            level_plans.len()
         )));
     }
     for (level_idx, batch_rows) in all_level_rows.into_iter().enumerate() {
@@ -1511,9 +1515,16 @@ mod tests {
             _db_id: u8,
         ) -> PirResult<Vec<Vec<Vec<Option<Vec<u8>>>>>> {
             self.levels = levels.to_vec();
-            Ok(levels.iter().map(|level| {
-                level.passes.iter().map(|pass| vec![None; pass.len()]).collect()
-            }).collect())
+            Ok(levels
+                .iter()
+                .map(|level| {
+                    level
+                        .passes
+                        .iter()
+                        .map(|pass| vec![None; pass.len()])
+                        .collect()
+                })
+                .collect())
         }
     }
 
@@ -1530,8 +1541,12 @@ mod tests {
         async fn roundtrip(&mut self, _request: &[u8]) -> PirResult<Vec<u8>> {
             unreachable!("DPF pipeline uses split send/recv")
         }
-        async fn close(&mut self) -> PirResult<()> { Ok(()) }
-        fn url(&self) -> &str { "mock://ordering" }
+        async fn close(&mut self) -> PirResult<()> {
+            Ok(())
+        }
+        fn url(&self) -> &str {
+            "mock://ordering"
+        }
     }
 
     async fn verify_one_sibling_row(row: Option<Vec<u8>>) -> (bool, usize) {
@@ -1552,20 +1567,25 @@ mod tests {
             bin_content: bin_contents[7].clone(),
         }];
         let mut querier = StaticSiblingQuerier { row, calls: 0 };
-        let verified =
-            verify_sibling_levels(&mut querier, &items, 64, 1, 0, &[top], 0)
-                .await
-                .unwrap();
+        let verified = verify_sibling_levels(&mut querier, &items, 64, 1, 0, &[top], 0)
+            .await
+            .unwrap();
         (verified[0], querier.calls)
     }
 
     #[tokio::test]
     async fn sibling_targets_for_all_levels_are_batched_before_hash_walk() {
         let contents: Vec<Vec<u8>> = (0..512u32).map(|i| vec![i as u8; 68]).collect();
-        let leaves: Vec<Hash256> = contents.iter().enumerate()
-            .map(|(i, content)| compute_bin_leaf_hash(i as u32, content)).collect();
+        let leaves: Vec<Hash256> = contents
+            .iter()
+            .enumerate()
+            .map(|(i, content)| compute_bin_leaf_hash(i as u32, content))
+            .collect();
         let tree = MerkleTreeN::build(&leaves, BUCKET_MERKLE_ARITY);
-        let top = TreeTop { cache_from_level: 2, levels: tree.levels[2..].to_vec() };
+        let top = TreeTop {
+            cache_from_level: 2,
+            levels: tree.levels[2..].to_vec(),
+        };
         let items = vec![SubItem {
             pbc_group: 0,
             bin_index: 73,
@@ -1573,7 +1593,8 @@ mod tests {
         }];
         let mut querier = BatchCaptureQuerier::default();
         let verified = verify_sibling_levels(&mut querier, &items, 512, 1, 0, &[top], 0)
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(verified, vec![false]);
         assert_eq!(querier.pass_calls, 0);
         assert_eq!(querier.levels[0].passes, vec![vec![Some(9)]]);
@@ -1583,16 +1604,32 @@ mod tests {
     #[tokio::test]
     async fn dpf_cross_level_pipeline_sends_all_rounds_before_receiving() {
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut conn0 = OrderingTransport { id: 0, events: events.clone() };
-        let mut conn1 = OrderingTransport { id: 1, events: events.clone() };
+        let mut conn0 = OrderingTransport {
+            id: 0,
+            events: events.clone(),
+        };
+        let mut conn1 = OrderingTransport {
+            id: 1,
+            events: events.clone(),
+        };
         let mut querier = DpfSiblingQuerier::new(&mut conn0, &mut conn1);
         let levels = vec![
-            SiblingLevelPlan { level: 0, level_bins_per_table: 1024, passes: vec![vec![Some(7)]] },
-            SiblingLevelPlan { level: 1, level_bins_per_table: 128, passes: vec![vec![Some(0)]] },
+            SiblingLevelPlan {
+                level: 0,
+                level_bins_per_table: 1024,
+                passes: vec![vec![Some(7)]],
+            },
+            SiblingLevelPlan {
+                level: 1,
+                level_bins_per_table: 128,
+                passes: vec![vec![Some(0)]],
+            },
         ];
         assert!(querier.query_levels(0, &levels, 0).await.is_err());
-        assert_eq!(*events.lock().unwrap(),
-            vec!["s0", "s1", "s0", "s1", "r0", "r1", "r0", "r1"]);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["s0", "s1", "s0", "s1", "r0", "r1", "r0", "r1"]
+        );
     }
 
     /// Build a small per-group Merkle tree, turn it into a `TreeTop` that
@@ -1608,11 +1645,7 @@ mod tests {
 
     /// Walk a tree-top only (no sibling levels) from leaf to root, matching
     /// the logic in `verify_sibling_levels`. Used to exercise the top-walk.
-    fn walk_top_only(
-        leaf_hash: Hash256,
-        mut idx: u32,
-        top: &TreeTop,
-    ) -> Hash256 {
+    fn walk_top_only(leaf_hash: Hash256, mut idx: u32, top: &TreeTop) -> Hash256 {
         let arity = BUCKET_MERKLE_ARITY;
         let mut hash = leaf_hash;
         for cl in 0..top.levels.len().saturating_sub(1) {
@@ -1654,8 +1687,14 @@ mod tests {
     #[test]
     fn tree_tops_super_root_requires_exact_ordered_roots() {
         let tops = vec![
-            TreeTop { cache_from_level: 0, levels: vec![vec![[1; 32]]] },
-            TreeTop { cache_from_level: 0, levels: vec![vec![[2; 32]]] },
+            TreeTop {
+                cache_from_level: 0,
+                levels: vec![vec![[1; 32]]],
+            },
+            TreeTop {
+                cache_from_level: 0,
+                levels: vec![vec![[2; 32]]],
+            },
         ];
         let mut hasher = Sha256::new();
         hasher.update([1; 32]);

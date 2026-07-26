@@ -9,19 +9,30 @@ use crate::db_proof::{
     fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 use crate::merkle_verify::{
-    fetch_tree_tops, verify_bucket_merkle_batch_dpf, verify_tree_tops_super_root,
-    BucketMerkleItem, TreeTop,
+    fetch_tree_tops, verify_bucket_merkle_batch_dpf, verify_tree_tops_super_root, BucketMerkleItem,
+    TreeTop,
 };
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
+use crate::service::{
+    dangerous_unpaired_authorize_retained_service_redemption_v1,
+    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_service_redemption_v1,
+    fetch_verified_service_policy_v1, request_pow_challenge_v1,
+    verify_service_policy_session_v1 as verify_policy_transport_session_v1,
+    AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
+};
 use crate::transport::PirTransport;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
+use ed25519_dalek::VerifyingKey;
 use libdpf::Dpf;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
     DatabaseInfo, DatabaseKind, Instant, LeakageRecorder, PirBackendType, PirClient, PirError,
     PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, StateListener,
     SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
+};
+use pir_service_protocol::{
+    AuthorizationProofV1, OperationStartV1, PowChallengeResponseV1, ProviderId,
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -147,12 +158,18 @@ pub(crate) fn plan_index_pbc_rounds(
 ) -> (Vec<Vec<(usize, usize)>>, Vec<IndexPlanSlot>) {
     let rounds = pir_core::pbc::pbc_plan_rounds(candidate_groups, k, NUM_HASHES, 500);
     let mut placement = vec![
-        IndexPlanSlot { round_id: 0, pbc_group: 0 };
+        IndexPlanSlot {
+            round_id: 0,
+            pbc_group: 0
+        };
         candidate_groups.len()
     ];
     for (round_id, round) in rounds.iter().enumerate() {
         for &(sh_idx, pbc_group) in round {
-            placement[sh_idx] = IndexPlanSlot { round_id, pbc_group };
+            placement[sh_idx] = IndexPlanSlot {
+                round_id,
+                pbc_group,
+            };
         }
     }
     (rounds, placement)
@@ -279,9 +296,7 @@ fn items_from_trace(trace: &QueryTraces) -> Vec<BucketMerkleItem> {
 /// Flatten a per-query traces list into a padded item list plus the
 /// `item_index → query_index` backmapping the verifier needs to fold
 /// per-item verdicts back to per-query verdicts.
-fn collect_merkle_items_from_traces(
-    traces: &[QueryTraces],
-) -> (Vec<BucketMerkleItem>, Vec<usize>) {
+fn collect_merkle_items_from_traces(traces: &[QueryTraces]) -> (Vec<BucketMerkleItem>, Vec<usize>) {
     let mut items = Vec::new();
     let mut item_to_query = Vec::new();
     for (qi, trace) in traces.iter().enumerate() {
@@ -467,7 +482,9 @@ impl DpfClient {
         }
     }
 
-    pub fn root_policy(&self) -> RootPolicy { self.verified_roots.policy() }
+    pub fn root_policy(&self) -> RootPolicy {
+        self.verified_roots.policy()
+    }
 
     pub fn set_root_policy(&mut self, policy: RootPolicy) {
         self.verified_roots.set_policy(policy);
@@ -478,7 +495,9 @@ impl DpfClient {
         &mut self,
         roots: VerifiedDatabaseRoots,
     ) -> PirResult<()> {
-        let catalog = self.catalog.as_ref()
+        let catalog = self
+            .catalog
+            .as_ref()
             .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
         let db_id = roots.db_id;
         self.verified_roots.install(catalog, roots)?;
@@ -514,21 +533,348 @@ impl DpfClient {
         self.verified_roots.get(db_id)
     }
 
+    /// Fetch and verify one DPF provider's signed service policy after this
+    /// connection has installed the database proof root. `server_index` is
+    /// independent: callers maintain a separate provider pin, rollback
+    /// checkpoint, offer choice, and capability pool for 0 and 1.
+    pub async fn fetch_service_policy_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        now_unix: u64,
+        checkpoint: &ServicePolicyCheckpointV1,
+    ) -> PirResult<AcceptedServicePolicyV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "service policy requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match server_index {
+            0 => self.conn0.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        fetch_verified_service_policy_v1(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            now_unix,
+            checkpoint,
+        )
+        .await
+    }
+
+    /// Fetch one exact retained policy solely for an already-issued
+    /// credential. No current rollback checkpoint is read or advanced.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fetch_retained_service_redemption_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        expected_policy_digest: [u8; 32],
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<AcceptedRetiredServiceRedemptionV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained service redemption requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match server_index {
+            0 => self.conn0.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        fetch_retained_service_redemption_v1(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            expected_policy_digest,
+            scope_id,
+            offer_id,
+            now_unix,
+        )
+        .await
+    }
+
+    pub fn verify_retained_service_session_v1(
+        &self,
+        server_index: u8,
+        accepted: &AcceptedRetiredServiceRedemptionV1,
+    ) -> PirResult<()> {
+        let transport = match server_index {
+            0 => self.conn0.as_ref().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_ref().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        let exporter = transport
+            .service_authorization_exporter_v1()
+            .ok_or_else(|| {
+                PirError::VerificationFailed(
+                    "retained redemption requires an authenticated secure channel".into(),
+                )
+            })?;
+        accepted.verify_service_authorization_exporter_v1(&exporter)
+    }
+
+    pub async fn authorize_retained_service_redemption_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        accepted: &AcceptedRetiredServiceRedemptionV1,
+        proof: AuthorizationProofV1,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_retained_service_session_v1(server_index, accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match server_index {
+            0 => self.conn0.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        dangerous_unpaired_authorize_retained_service_redemption_v1(
+            transport.as_mut(),
+            accepted,
+            OperationStartV1::DpfQuery { db_id },
+            proof,
+            now_unix,
+        )
+        .await
+    }
+
+    /// Verify that `accepted` was fetched on the currently connected DPF side.
+    /// Call immediately before retiring a one-shot capability.
+    pub fn verify_service_policy_session_v1(
+        &self,
+        server_index: u8,
+        accepted: &AcceptedServicePolicyV1,
+    ) -> PirResult<()> {
+        let transport = match server_index {
+            0 => self.conn0.as_ref().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_ref().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        verify_policy_transport_session_v1(transport.as_ref(), accepted)
+    }
+
+    /// Recheck both strict-pair freshness and the live DPF channel binding.
+    /// Native vault code should call this immediately before durably retiring
+    /// the selected side's one-shot capability.
+    pub fn verify_service_pair_side_ready_v1(
+        &self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        server_index: u8,
+        now_unix: u64,
+    ) -> PirResult<()> {
+        let selected = match server_index {
+            0 => {
+                pair.verify_first_offer_current_v1(now_unix)?;
+                pair.first()
+            }
+            1 => {
+                pair.verify_second_offer_current_v1(now_unix)?;
+                pair.second()
+            }
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        self.verify_service_policy_session_v1(server_index, selected.accepted_policy())
+    }
+
+    /// Low-level one-provider authorization that does not prove the caller
+    /// checked the peer selection. Native strict two-provider callers must use
+    /// [`Self::authorize_service_pair_side_v1`].
+    ///
+    /// This remains public only for compatibility with single-provider adapter
+    /// orchestration. There is no automatic retry after entry.
+    pub async fn dangerous_unpaired_authorize_service_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        proof: AuthorizationProofV1,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_service_policy_session_v1(server_index, accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "service authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match server_index {
+            0 => self.conn0.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        dangerous_unpaired_authorize_service_operation_v1(
+            transport.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::DpfQuery { db_id },
+            proof,
+        )
+        .await
+    }
+
+    /// Dangerous compatibility entry point for a proof that the caller has
+    /// already retired from durable storage. A failed readiness check can no
+    /// longer preserve that capability. Prefer
+    /// [`Self::authorize_service_pair_side_v1`], whose deferred producer is
+    /// invoked only after the pair and live channel pass their checks.
+    pub async fn dangerous_already_retired_authorize_service_pair_side_v1(
+        &mut self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        server_index: u8,
+        db_id: u8,
+        now_unix: u64,
+        proof: AuthorizationProofV1,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_service_pair_side_ready_v1(pair, server_index, now_unix)?;
+        let selected = match server_index {
+            0 => pair.first(),
+            1 => pair.second(),
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        self.dangerous_unpaired_authorize_service_v1(
+            server_index,
+            db_id,
+            selected.accepted_policy(),
+            selected.verified_offer().scope().scope_id(),
+            selected.offer().offer_id,
+            proof,
+        )
+        .await
+    }
+
+    /// Retire and authorize the capability selected for one side of an already
+    /// verified strict pair. Pair order is the DPF server order
+    /// (`0 = first`, `1 = second`). The producer must perform the durable vault
+    /// retirement and return its decoded proof; it is never called when the
+    /// policy is stale or belongs to another secure-channel session.
+    pub async fn authorize_service_pair_side_v1<Producer, Produced>(
+        &mut self,
+        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        server_index: u8,
+        db_id: u8,
+        now_unix: u64,
+        produce_after_ready: Producer,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1>
+    where
+        Producer: FnOnce() -> Produced,
+        Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
+    {
+        let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
+            || self.verify_service_pair_side_ready_v1(pair, server_index, now_unix),
+            produce_after_ready,
+        )
+        .await?;
+        self.dangerous_already_retired_authorize_service_pair_side_v1(
+            pair,
+            server_index,
+            db_id,
+            now_unix,
+            proof,
+        )
+        .await
+    }
+
+    pub async fn request_service_pow_challenge_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<PowChallengeResponseV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "proof-of-work challenge requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = match server_index {
+            0 => self.conn0.as_mut().ok_or(PirError::NotConnected)?,
+            1 => self.conn1.as_mut().ok_or(PirError::NotConnected)?,
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        request_pow_challenge_v1(
+            transport.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::DpfQuery { db_id },
+            now_unix,
+        )
+        .await
+    }
+
     async fn preflight_bucket_tree_tops(&mut self, db: &DatabaseInfo) -> PirResult<()> {
         let Some(roots) = self.verified_roots.get(db.db_id).cloned() else {
             return self.verified_roots.require_db(db.db_id);
         };
         if !db.has_bucket_merkle {
             return Err(PirError::VerificationFailed(format!(
-                "db_id {} has verified bucket root but catalog disables bucket Merkle", db.db_id
+                "db_id {} has verified bucket root but catalog disables bucket Merkle",
+                db.db_id
             )));
         }
-        if self.verified_tree_tops.contains_key(&db.db_id) { return Ok(()); }
+        if self.verified_tree_tops.contains_key(&db.db_id) {
+            return Ok(());
+        }
         let leakage = self.leakage_recorder.clone();
         let conn = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
         let tops = fetch_tree_tops(conn, db.db_id, leakage.as_ref(), "dpf", 0).await?;
         verify_tree_tops_super_root(
-            &tops, db.index_k as usize, db.chunk_k as usize, &roots.bucket_super_root,
+            &tops,
+            db.index_k as usize,
+            db.chunk_k as usize,
+            &roots.bucket_super_root,
         )?;
         self.verified_tree_tops.insert(db.db_id, tops);
         Ok(())
@@ -825,9 +1171,9 @@ impl DpfClient {
         crate::protocol::validate_db_geometry(&db_info)?;
         // Refuse to proceed if the server's seeds don't match the chain
         // anchor it claims (no-op for legacy DBs).
-        db_info
-            .verify_anchor_seeds()
-            .map_err(|e| PirError::Protocol(format!("chain-anchor seed verification failed: {}", e)))?;
+        db_info.verify_anchor_seeds().map_err(|e| {
+            PirError::Protocol(format!("chain-anchor seed verification failed: {}", e))
+        })?;
         Ok(db_info)
     }
 
@@ -905,11 +1251,9 @@ impl DpfClient {
             // then emits a dummy round-presence CHUNK round.
             let (real_chunk_ids, is_whale, has_real_match): (Vec<u32>, bool, bool) =
                 match found_info {
-                    Some((start, num, whale)) if num > 0 => (
-                        (start..start + num as u32).collect(),
-                        whale,
-                        true,
-                    ),
+                    Some((start, num, whale)) if num > 0 => {
+                        ((start..start + num as u32).collect(), whale, true)
+                    }
                     Some((_start, _num, whale)) => {
                         // Whale: matched but `num_chunks == 0`. No real
                         // chunks; emit no real UTXO entries.
@@ -921,10 +1265,10 @@ impl DpfClient {
             let real_count = real_chunk_ids.len();
             log::info!(
                 "[PIR-AUDIT] CHUNK: query #{} fetching {} real chunk(s)",
-                i, real_count,
+                i,
+                real_count,
             );
-            let (chunk_data, chunk_bins) =
-                self.query_chunk_level(&real_chunk_ids, db_info).await?;
+            let (chunk_data, chunk_bins) = self.query_chunk_level(&real_chunk_ids, db_info).await?;
             q_traces.chunk_bins = chunk_bins;
 
             // `chunk_data` holds exactly this scripthash's real chunks;
@@ -1038,7 +1382,11 @@ impl DpfClient {
                         .get(qi)
                         .and_then(|r| r.as_ref().map(|x| x.is_whale))
                         .unwrap_or(false);
-                    if is_whale { "WHALE" } else { "FOUND" }
+                    if is_whale {
+                        "WHALE"
+                    } else {
+                        "FOUND"
+                    }
                 }
                 None => "NOT FOUND",
             };
@@ -1328,13 +1676,7 @@ impl DpfClient {
         // alpha through `dpf.gen` to produce the wire keys.
         let dpf = Dpf::with_default_key();
         let mut rng = SimpleRng::new();
-        let alphas = build_index_alphas(
-            k,
-            assigned_group,
-            &my_locs_arr,
-            bins,
-            || rng.next_u64(),
-        );
+        let alphas = build_index_alphas(k, assigned_group, &my_locs_arr, bins, || rng.next_u64());
 
         let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(k);
         let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(k);
@@ -1448,7 +1790,9 @@ impl DpfClient {
             } else {
                 log::info!(
                     "[PIR-AUDIT] INDEX miss at cuckoo h={} (group={}, bin={})",
-                    h, assigned_group, bin_index
+                    h,
+                    assigned_group,
+                    bin_index
                 );
             }
         }
@@ -1515,7 +1859,9 @@ impl DpfClient {
 
         log::info!(
             "[PIR-AUDIT] INDEX batched query: {} queries planned into {} PBC round(s) (K={})",
-            n, rounds.len(), k,
+            n,
+            rounds.len(),
+            k,
         );
 
         // Pre-compute each scripthash's cuckoo positions in ITS PLANNED
@@ -1537,8 +1883,9 @@ impl DpfClient {
 
         // Per-scripthash output buffers.
         let mut found_info: Vec<Option<(u32, u8, bool)>> = vec![None; n];
-        let mut index_bins_per_sh: Vec<Vec<IndexBinTrace>> =
-            (0..n).map(|_| Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES)).collect();
+        let mut index_bins_per_sh: Vec<Vec<IndexBinTrace>> = (0..n)
+            .map(|_| Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES))
+            .collect();
         let mut matched_idx_per_sh: Vec<Option<usize>> = vec![None; n];
 
         let dpf = Dpf::with_default_key();
@@ -1553,12 +1900,7 @@ impl DpfClient {
             }
 
             // Build alpha matrix and DPF keys (same shape every round).
-            let alphas = build_index_alphas_batched(
-                k,
-                &placed_locs,
-                bins,
-                || rng.next_u64(),
-            );
+            let alphas = build_index_alphas_batched(k, &placed_locs, bins, || rng.next_u64());
             let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(k);
             let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(k);
             for group_alphas in &alphas {
@@ -1658,7 +2000,10 @@ impl DpfClient {
                     } else {
                         log::info!(
                             "[PIR-AUDIT] INDEX[sh={}] miss at h={} (group={}, bin={})",
-                            sh_idx, h, pbc_group, bin_index,
+                            sh_idx,
+                            h,
+                            pbc_group,
+                            bin_index,
                         );
                     }
                 }
@@ -1666,7 +2011,13 @@ impl DpfClient {
         }
 
         Ok((0..n)
-            .map(|i| (found_info[i], std::mem::take(&mut index_bins_per_sh[i]), matched_idx_per_sh[i]))
+            .map(|i| {
+                (
+                    found_info[i],
+                    std::mem::take(&mut index_bins_per_sh[i]),
+                    matched_idx_per_sh[i],
+                )
+            })
             .collect())
     }
 
@@ -1855,7 +2206,10 @@ impl DpfClient {
                         );
                         log::info!(
                             "[PIR-AUDIT] CHUNK FOUND: chunk_id={}, group={}, bin={}, cuckoo_h={}",
-                            chunk_id, group_id, bin_index, h
+                            chunk_id,
+                            group_id,
+                            bin_index,
+                            h
                         );
                         found_any = true;
                         break;
@@ -1907,12 +2261,14 @@ impl DpfClient {
         nonce: [u8; 32],
     ) -> PirResult<crate::attest::AttestVerification> {
         let conn = match server_index {
-            0 => self.conn0.as_mut().ok_or_else(|| {
-                PirError::Protocol("attest: server0 not connected".into())
-            })?,
-            1 => self.conn1.as_mut().ok_or_else(|| {
-                PirError::Protocol("attest: server1 not connected".into())
-            })?,
+            0 => self
+                .conn0
+                .as_mut()
+                .ok_or_else(|| PirError::Protocol("attest: server0 not connected".into()))?,
+            1 => self
+                .conn1
+                .as_mut()
+                .ok_or_else(|| PirError::Protocol("attest: server1 not connected".into()))?,
             _ => {
                 return Err(PirError::Protocol(format!(
                     "attest: server_index must be 0 or 1, got {}",
@@ -1934,12 +2290,14 @@ impl DpfClient {
         server_index: u8,
     ) -> PirResult<crate::announce::AnnounceVerification> {
         let conn = match server_index {
-            0 => self.conn0.as_mut().ok_or_else(|| {
-                PirError::Protocol("announce: server0 not connected".into())
-            })?,
-            1 => self.conn1.as_mut().ok_or_else(|| {
-                PirError::Protocol("announce: server1 not connected".into())
-            })?,
+            0 => self
+                .conn0
+                .as_mut()
+                .ok_or_else(|| PirError::Protocol("announce: server0 not connected".into()))?,
+            1 => self
+                .conn1
+                .as_mut()
+                .ok_or_else(|| PirError::Protocol("announce: server1 not connected".into()))?,
             _ => {
                 return Err(PirError::Protocol(format!(
                     "announce: server_index must be 0 or 1, got {}",
@@ -2124,8 +2482,16 @@ impl DpfClient {
             // isn't lost to the `None` return convention.
             let with_inspector = match qr {
                 Some(mut r) => {
-                    r.index_bins = trace.index_bins.iter().map(index_trace_to_bucket_ref).collect();
-                    r.chunk_bins = trace.chunk_bins.iter().map(chunk_trace_to_bucket_ref).collect();
+                    r.index_bins = trace
+                        .index_bins
+                        .iter()
+                        .map(index_trace_to_bucket_ref)
+                        .collect();
+                    r.chunk_bins = trace
+                        .chunk_bins
+                        .iter()
+                        .map(chunk_trace_to_bucket_ref)
+                        .collect();
                     r.matched_index_idx = trace.matched_index_idx;
                     Some(r)
                 }
@@ -2137,7 +2503,11 @@ impl DpfClient {
                     // `matched_index_idx.is_none()`, and (by the symmetry
                     // invariant) `index_bins.len() == INDEX_CUCKOO_NUM_HASHES`.
                     let mut r = QueryResult::empty();
-                    r.index_bins = trace.index_bins.iter().map(index_trace_to_bucket_ref).collect();
+                    r.index_bins = trace
+                        .index_bins
+                        .iter()
+                        .map(index_trace_to_bucket_ref)
+                        .collect();
                     // chunk_bins empty by construction for not-found.
                     r.matched_index_idx = trace.matched_index_idx;
                     Some(r)
@@ -2223,10 +2593,7 @@ impl DpfClient {
         // Translate `Option<bool>` to `bool` for the public surface:
         // `None` (no items attached) maps to `true` — consistent with
         // the "nothing to falsify" reading above.
-        Ok(verdicts
-            .into_iter()
-            .map(|v| v.unwrap_or(true))
-            .collect())
+        Ok(verdicts.into_iter().map(|v| v.unwrap_or(true)).collect())
     }
 
     /// Like [`PirClient::sync`], but drives a [`SyncProgress`] observer
@@ -2288,7 +2655,8 @@ impl DpfClient {
                 .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
 
             for step in &plan.steps {
-                let db = catalog.get(step.db_id)
+                let db = catalog
+                    .get(step.db_id)
                     .ok_or(PirError::DatabaseNotFound(step.db_id))?
                     .clone();
                 self.preflight_bucket_tree_tops(&db).await?;
@@ -2549,7 +2917,8 @@ impl PirClient for DpfClient {
             .unwrap_or_else(|| vec![None; script_hashes.len()]);
 
         for step in &plan.steps {
-            let db = catalog.get(step.db_id)
+            let db = catalog
+                .get(step.db_id)
                 .ok_or(PirError::DatabaseNotFound(step.db_id))?
                 .clone();
             self.preflight_bucket_tree_tops(&db).await?;
@@ -2797,8 +3166,11 @@ fn find_entry_in_index_result(result: &[u8], expected_tag: u64) -> Option<(u32, 
         }
         let slot_tag = u64::from_le_bytes(result[base..base + TAG_SIZE].try_into().unwrap());
         if slot_tag == expected_tag {
-            let start_chunk_id =
-                u32::from_le_bytes(result[base + TAG_SIZE..base + TAG_SIZE + 4].try_into().unwrap());
+            let start_chunk_id = u32::from_le_bytes(
+                result[base + TAG_SIZE..base + TAG_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
+            );
             let num_chunks = result[base + TAG_SIZE + 4] as u32;
             return Some((start_chunk_id, num_chunks));
         }
@@ -2990,10 +3362,10 @@ mod kani_harnesses {
         let raw: u8 = kani::any();
         kani::assume(raw < 4);
         match raw {
-            0 => Some(0),  // matched at h=0
-            1 => Some(1),  // matched at h=1
-            2 => Some(7),  // out-of-range (degenerate / bug-shape input)
-            _ => None,     // not matched
+            0 => Some(0), // matched at h=0
+            1 => Some(1), // matched at h=1
+            2 => Some(7), // out-of-range (degenerate / bug-shape input)
+            _ => None,    // not matched
         }
     }
 
@@ -3336,19 +3708,17 @@ mod kani_harnesses {
         let mask: u8 = kani::any();
         kani::assume(mask < 16);
         let placed_locs: Vec<Option<[u64; INDEX_CUCKOO_NUM_HASHES]>> = (0..4u8)
-            .map(|g| if (mask >> g) & 1 == 1 {
-                Some([100 + g as u64, 200 + g as u64])
-            } else {
-                None
+            .map(|g| {
+                if (mask >> g) & 1 == 1 {
+                    Some([100 + g as u64, 200 + g as u64])
+                } else {
+                    None
+                }
             })
             .collect();
 
-        let alphas = build_index_alphas_batched(
-            /* k */ 4,
-            &placed_locs,
-            /* bins */ 8,
-            || 0u64,
-        );
+        let alphas =
+            build_index_alphas_batched(/* k */ 4, &placed_locs, /* bins */ 8, || 0u64);
 
         assert_eq!(alphas.len(), 4);
         for g in 0..4 {
@@ -3372,12 +3742,8 @@ mod kani_harnesses {
             (0..4).map(|_| None).collect();
         placed_locs[g] = Some([7, 11]);
 
-        let alphas = build_index_alphas_batched(
-            /* k */ 4,
-            &placed_locs,
-            /* bins */ 8,
-            || 0u64,
-        );
+        let alphas =
+            build_index_alphas_batched(/* k */ 4, &placed_locs, /* bins */ 8, || 0u64);
 
         assert_eq!(alphas[g][0], 7);
         assert_eq!(alphas[g][1], 11);
@@ -3393,7 +3759,7 @@ mod kani_harnesses {
     fn build_index_alphas_batched_unplaced_groups_bounded_by_bins() {
         let mut placed_locs: Vec<Option<[u64; INDEX_CUCKOO_NUM_HASHES]>> =
             (0..4).map(|_| None).collect();
-        placed_locs[0] = Some([0, 0]);  // anchor one placement
+        placed_locs[0] = Some([0, 0]); // anchor one placement
 
         // Symbolic random callback; every call returns a fresh symbolic u64.
         let alphas = build_index_alphas_batched(
@@ -3408,12 +3774,13 @@ mod kani_harnesses {
                 assert!(
                     alphas[g][h] < 8,
                     "unplaced group {} hash {}: alpha {} should be < bins=8",
-                    g, h, alphas[g][h],
+                    g,
+                    h,
+                    alphas[g][h],
                 );
             }
         }
     }
-
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -3613,10 +3980,7 @@ mod tests {
             Box::new(MockTransport::new("wss://mock-1")),
         );
         assert!(old.events.lock().unwrap().is_empty());
-        assert_eq!(
-            &*new.events.lock().unwrap(),
-            &[ConnectionState::Connected]
-        );
+        assert_eq!(&*new.events.lock().unwrap(), &[ConnectionState::Connected]);
     }
 
     /// Smoke test: `server_urls()` echoes the constructor arguments in
@@ -3791,8 +4155,20 @@ mod tests {
         // Drive one send through each transport directly — this is
         // the fastest way to prove the recorder is wired without
         // standing up a full PIR query round.
-        client.conn0.as_mut().unwrap().send(vec![1, 2, 3]).await.unwrap();
-        client.conn1.as_mut().unwrap().send(vec![4, 5]).await.unwrap();
+        client
+            .conn0
+            .as_mut()
+            .unwrap()
+            .send(vec![1, 2, 3])
+            .await
+            .unwrap();
+        client
+            .conn1
+            .as_mut()
+            .unwrap()
+            .send(vec![4, 5])
+            .await
+            .unwrap();
 
         let snap = recorder.snapshot();
         assert_eq!(snap.bytes_sent, 5);
@@ -3818,7 +4194,13 @@ mod tests {
         client.set_metrics_recorder(None);
         // Neither the client-level disconnect callback nor the
         // transport-level send callback should fire now.
-        client.conn0.as_mut().unwrap().send(vec![9; 42]).await.unwrap();
+        client
+            .conn0
+            .as_mut()
+            .unwrap()
+            .send(vec![9; 42])
+            .await
+            .unwrap();
         client.disconnect().await.unwrap();
 
         let snap = recorder.snapshot();
@@ -4281,9 +4663,12 @@ mod tests {
     #[test]
     fn check_batch_response_shape_rejects_undersized_response() {
         // num_groups = 1 against a K=75 request.
-        let one_group =
-            decode_batch_response(&make_batch_response_body(1, INDEX_CUCKOO_NUM_HASHES, &[0; 4]))
-                .unwrap();
+        let one_group = decode_batch_response(&make_batch_response_body(
+            1,
+            INDEX_CUCKOO_NUM_HASHES,
+            &[0; 4],
+        ))
+        .unwrap();
         let err = check_batch_response_shape(&one_group, 75, INDEX_CUCKOO_NUM_HASHES, "test")
             .unwrap_err();
         assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
@@ -4304,13 +4689,15 @@ mod tests {
     /// tolerated (the callers index only the requested groups/results).
     #[test]
     fn check_batch_response_shape_accepts_honest_and_oversized() {
-        let full =
-            decode_batch_response(&make_batch_response_body(75, INDEX_CUCKOO_NUM_HASHES, &[0; 4]))
-                .unwrap();
+        let full = decode_batch_response(&make_batch_response_body(
+            75,
+            INDEX_CUCKOO_NUM_HASHES,
+            &[0; 4],
+        ))
+        .unwrap();
         assert!(check_batch_response_shape(&full, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_ok());
 
-        let oversized =
-            decode_batch_response(&make_batch_response_body(80, 3, &[0; 4])).unwrap();
+        let oversized = decode_batch_response(&make_batch_response_body(80, 3, &[0; 4])).unwrap();
         assert!(
             check_batch_response_shape(&oversized, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_ok()
         );

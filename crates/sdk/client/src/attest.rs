@@ -149,6 +149,35 @@ pub async fn attest<T: PirTransport + ?Sized>(
         }
     }
 
+    verify_attest_response(&response, nonce)
+}
+
+/// Verify one already-received `RESP_ATTEST` payload.
+///
+/// This is the transport-free half of [`attest`]. Browser clients whose
+/// protocol implementation must share a WebSocket with a non-Rust backend
+/// (notably the standalone OnionPIR/SEAL client) use it to keep attestation
+/// parsing and REPORT_DATA verification in the audited Rust implementation.
+/// `response` is the response payload without the outer four-byte length
+/// prefix and therefore starts with [`RESP_ATTEST`].
+pub fn verify_attest_response(response: &[u8], nonce: [u8; 32]) -> PirResult<AttestVerification> {
+    if response.is_empty() {
+        return Err(PirError::Protocol("empty attest response".into()));
+    }
+    match response[0] {
+        RESP_ATTEST => {}
+        RESP_ERROR => {
+            return Err(PirError::ServerError(
+                String::from_utf8_lossy(&response[1..]).to_string(),
+            ));
+        }
+        value => {
+            return Err(PirError::Protocol(format!(
+                "unexpected response variant 0x{value:02x} for attest"
+            )));
+        }
+    }
+
     let parsed = decode_attest_response(&response[1..])?;
     let expected = build_report_data(
         nonce,
@@ -512,13 +541,8 @@ mod tests {
         // Server's chip-signed REPORT_DATA was computed against the
         // real pubkey (this is the only thing the chip can sign — the
         // server can't lie to the chip about its own boot-time key).
-        let real_preimage = build_report_data(
-            nonce,
-            &manifest_roots,
-            binary_sha256,
-            real_pubkey,
-            &git_rev,
-        );
+        let real_preimage =
+            build_report_data(nonce, &manifest_roots, binary_sha256, real_pubkey, &git_rev);
         let mut sev_blob = vec![0u8; 1184];
         sev_blob[SEV_SNP_REPORT_DATA_OFFSET..SEV_SNP_REPORT_DATA_OFFSET + 64]
             .copy_from_slice(&real_preimage);

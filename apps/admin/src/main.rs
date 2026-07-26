@@ -16,6 +16,13 @@
 //! - `db-proof verify` — verify attested-builder evidence, root bundle,
 //!   artifact manifests, and SEV-SNP REPORT_DATA binding for a database
 //!   build proof directory.
+//! - `service-keygen`, `payment-artifact`, and `service-policy` — offline
+//!   Payment V1 key generation, canonical artifact construction, and policy
+//!   signing without a listener or Lightning backend.
+//! - `service-store-init` — explicitly create a provider admission store and
+//!   its independently configured rollback-floor authority.
+//! - `payment-v1-no-funds-fixture` — emit deterministic public test vectors
+//!   for two providers, five payment methods, and five workloads.
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -26,8 +33,14 @@ use clap::{Parser, Subcommand};
 mod attest;
 mod channel_test;
 mod db_proof;
+mod directory_artifact;
 mod generate_identity;
 mod keygen;
+mod payment_artifact;
+mod payment_fixture;
+mod service_keygen;
+mod service_policy;
+mod service_store_init;
 mod show_vcek_url;
 mod sign_identity;
 mod upload;
@@ -69,6 +82,24 @@ enum Command {
     /// Verify attested-builder database build proof artifacts.
     #[command(name = "db-proof")]
     DbProof(db_proof::DbProofArgs),
+    /// Offline canonical service-policy signing, validation and inspection.
+    #[command(name = "service-policy")]
+    ServicePolicy(service_policy::ServicePolicyArgs),
+    /// Generate a role-labelled service/payment key without printing secrets.
+    #[command(name = "service-keygen")]
+    ServiceKeygen(service_keygen::ServiceKeygenArgs),
+    /// Explicitly create a provider store and separate rollback authority.
+    #[command(name = "service-store-init")]
+    ServiceStoreInit(service_store_init::ServiceStoreInitArgs),
+    /// Build and self-verify offline Payment V1 protocol artifacts.
+    #[command(name = "payment-artifact")]
+    PaymentArtifact(payment_artifact::PaymentArtifactArgs),
+    /// Emit the deterministic two-provider Payment V1 no-funds fixture.
+    #[command(name = "payment-v1-no-funds-fixture")]
+    PaymentV1NoFundsFixture(payment_fixture::PaymentFixtureArgs),
+    /// Build and self-verify offline Nostr directory publishing artifacts.
+    #[command(name = "directory-artifact")]
+    DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -122,6 +153,100 @@ async fn main() {
                 1
             }
         },
+        Command::ServicePolicy(args) => match service_policy::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("service-policy: {}", e);
+                1
+            }
+        },
+        Command::ServiceKeygen(args) => match service_keygen::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("service-keygen: {}", e);
+                1
+            }
+        },
+        Command::ServiceStoreInit(args) => match service_store_init::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("service-store-init: {}", e);
+                1
+            }
+        },
+        Command::PaymentArtifact(args) => match payment_artifact::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("payment-artifact: {}", e);
+                1
+            }
+        },
+        Command::PaymentV1NoFundsFixture(args) => match payment_fixture::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("payment-v1-no-funds-fixture: {}", e);
+                1
+            }
+        },
+        Command::DirectoryArtifact(args) => match directory_artifact::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("directory-artifact: {}", e);
+                1
+            }
+        },
     };
     std::process::exit(exit_code);
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn payment_and_store_commands_are_present_in_help() {
+        Cli::command().debug_assert();
+        let mut command = Cli::command();
+        let help = command.render_long_help().to_string();
+        for subcommand in [
+            "service-keygen",
+            "service-store-init",
+            "payment-artifact",
+            "payment-v1-no-funds-fixture",
+        ] {
+            assert!(help.contains(subcommand), "missing {subcommand} from help");
+        }
+    }
+
+    #[test]
+    fn service_store_init_cli_requires_explicit_paths_and_provider() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-init",
+            "--provider-id-hex",
+            &hex::encode([1u8; 32]),
+            "--store",
+            "/private/provider.sqlite3",
+            "--rollback-authority",
+            "/independent/floor.sqlite3",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::ServiceStoreInit(_)));
+    }
+
+    #[test]
+    fn no_funds_fixture_cli_requires_explicit_acknowledgement_at_runtime() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "payment-v1-no-funds-fixture",
+            "--out",
+            "/tmp/payment-v1-fixture",
+        ])
+        .unwrap();
+        let Command::PaymentV1NoFundsFixture(args) = parsed.command else {
+            panic!("wrong subcommand");
+        };
+        assert!(!args.acknowledge_deterministic_test_keys);
+    }
 }

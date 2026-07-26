@@ -5,9 +5,7 @@
 //! per-credential rate limit.
 
 use arc::group::{deserialize_scalar, serialize_element, serialize_scalar};
-use arc::{
-    verify_presentation, Presentation, ServerPrivateKey, ServerPublicKey,
-};
+use arc::{verify_presentation, Presentation, ServerPrivateKey, ServerPublicKey};
 use std::collections::HashMap;
 
 /// Serialized size of an ARC private key: 4 × 32-byte scalars
@@ -82,7 +80,12 @@ impl ArcVerifier {
             .map_err(|e| format!("bad x2 scalar: {e}"))?;
         let x0_blinding = deserialize_scalar(&secret_key_bytes[96..128])
             .map_err(|e| format!("bad x0_blinding scalar: {e}"))?;
-        let sk = ServerPrivateKey { x0, x1, x2, x0_blinding };
+        let sk = ServerPrivateKey {
+            x0,
+            x1,
+            x2,
+            x0_blinding,
+        };
         let pk = sk.public_key();
         Ok(Self {
             secret_key: sk,
@@ -249,8 +252,7 @@ mod tests {
         let presentation_context = b"demo-session-001";
 
         // 1. Client builds a blinded credential request.
-        let (secrets, request) =
-            arc::create_credential_request(request_context, &mut rng).unwrap();
+        let (secrets, request) = arc::create_credential_request(request_context, &mut rng).unwrap();
 
         // 2. Issuer signs it with the shared key.
         let response = arc::create_credential_response(
@@ -301,19 +303,18 @@ mod tests {
 
         // Issue + present under key A.
         let (sk_a, pk_a) = arc::setup_server(&mut rng);
-        let (secrets, request) =
-            arc::create_credential_request(request_context, &mut rng).unwrap();
-        let response =
-            arc::create_credential_response(&sk_a, &pk_a, &request, &mut rng).unwrap();
-        let credential =
-            arc::finalize_credential(&secrets, &pk_a, &request, &response).unwrap();
+        let (secrets, request) = arc::create_credential_request(request_context, &mut rng).unwrap();
+        let response = arc::create_credential_response(&sk_a, &pk_a, &request, &mut rng).unwrap();
+        let credential = arc::finalize_credential(&secrets, &pk_a, &request, &response).unwrap();
         let state = arc::make_presentation_state(credential, b"ctx", 50);
         let (_s, _n, presentation) = arc::present(&state, &mut rng).unwrap();
 
         // Verify under an unrelated key B.
         let mut verifier_b = ArcVerifier::generate();
-        let result =
-            verifier_b.verify(request_context, b"ctx", &presentation.to_bytes(), 50);
-        assert!(result.is_err(), "presentation verified under the wrong key!");
+        let result = verifier_b.verify(request_context, b"ctx", &presentation.to_bytes(), 50);
+        assert!(
+            result.is_err(),
+            "presentation verified under the wrong key!"
+        );
     }
 }

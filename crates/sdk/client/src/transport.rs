@@ -111,6 +111,14 @@ pub trait PirTransport: Send + Sync {
     /// an in-memory mock.
     fn url(&self) -> &str;
 
+    /// Export the service-authorization binding for an authenticated secure
+    /// channel. Raw WebSocket transports deliberately return `None`; callers
+    /// MUST fail closed instead of sending service policy or capability
+    /// messages before the channel upgrade.
+    fn service_authorization_exporter_v1(&self) -> Option<[u8; 32]> {
+        None
+    }
+
     /// Install a metrics recorder. The transport fires per-frame
     /// [`on_bytes_sent`](PirMetrics::on_bytes_sent) /
     /// [`on_bytes_received`](PirMetrics::on_bytes_received) callbacks
@@ -166,6 +174,10 @@ impl<T: PirTransport + ?Sized> PirTransport for Box<T> {
 
     fn url(&self) -> &str {
         (**self).url()
+    }
+
+    fn service_authorization_exporter_v1(&self) -> Option<[u8; 32]> {
+        (**self).service_authorization_exporter_v1()
     }
 
     fn set_metrics_recorder(
@@ -307,9 +319,10 @@ pub(crate) mod mock {
             if self.closed {
                 return Err(PirError::ConnectionClosed("mock closed".into()));
             }
-            let frame = self.responses.pop_front().ok_or_else(|| {
-                PirError::Protocol("mock: no enqueued response".into())
-            })?;
+            let frame = self
+                .responses
+                .pop_front()
+                .ok_or_else(|| PirError::Protocol("mock: no enqueued response".into()))?;
             self.fire_bytes_received(frame.len());
             Ok(frame)
         }
@@ -329,9 +342,10 @@ pub(crate) mod mock {
             // Mimic WsConnection::roundtrip's "strip 4-byte length prefix"
             // behaviour — tests enqueue the full frame, the mock returns
             // what a real `roundtrip` would.
-            let frame = self.responses.pop_front().ok_or_else(|| {
-                PirError::Protocol("mock: no enqueued response".into())
-            })?;
+            let frame = self
+                .responses
+                .pop_front()
+                .ok_or_else(|| PirError::Protocol("mock: no enqueued response".into()))?;
             if frame.len() < 4 {
                 // Short-frame: byte counts already fired for send, recv
                 // is suppressed (matches the WsConnection partial-success

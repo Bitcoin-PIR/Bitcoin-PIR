@@ -114,7 +114,10 @@ impl AdminConnectionState {
         signature: &[u8; 64],
         config: &AdminConfig,
     ) -> Result<(), AuthError> {
-        let nonce = self.pending_challenge.take().ok_or(AuthError::NoChallenge)?;
+        let nonce = self
+            .pending_challenge
+            .take()
+            .ok_or(AuthError::NoChallenge)?;
 
         let mut signed_blob = Vec::with_capacity(ADMIN_AUTH_DOMAIN_TAG.len() + 32);
         signed_blob.extend_from_slice(ADMIN_AUTH_DOMAIN_TAG);
@@ -173,7 +176,12 @@ impl AdminConnectionState {
 
         self.uploads.insert(
             name.clone(),
-            UploadState { name, staging_dir, manifest, manifest_bytes: manifest_toml },
+            UploadState {
+                name,
+                staging_dir,
+                manifest,
+                manifest_bytes: manifest_toml,
+            },
         );
         Ok(())
     }
@@ -241,8 +249,7 @@ impl AdminConnectionState {
             .uploads
             .get(name)
             .ok_or_else(|| UploadError::UnknownUpload(name.to_string()))?;
-        let safe_target =
-            validate_relative_path(target_path).map_err(UploadError::InvalidName)?;
+        let safe_target = validate_relative_path(target_path).map_err(UploadError::InvalidName)?;
         let target_abs = data_root.join(safe_target);
         if let Some(parent) = target_abs.parent() {
             fs::create_dir_all(parent)
@@ -368,7 +375,10 @@ pub enum AuthError {
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoChallenge => write!(f, "no pending challenge — call REQ_ADMIN_AUTH_CHALLENGE first"),
+            Self::NoChallenge => write!(
+                f,
+                "no pending challenge — call REQ_ADMIN_AUTH_CHALLENGE first"
+            ),
             Self::BadSignature => write!(f, "signature did not verify against admin pubkey"),
         }
     }
@@ -520,7 +530,9 @@ mod tests {
 
         // Stream chunks for each file.
         for (path, content) in files {
-            state.write_chunk("snap1", path, 0, content).expect("write_chunk");
+            state
+                .write_chunk("snap1", path, 0, content)
+                .expect("write_chunk");
         }
 
         let root = state.finalize_upload("snap1").expect("finalize");
@@ -589,7 +601,11 @@ mod tests {
             .unwrap();
 
         let err = state.write_chunk("x", "stranger.bin", 0, b"x").unwrap_err();
-        assert!(matches!(err, UploadError::FileNotInManifest(_)), "got {:?}", err);
+        assert!(
+            matches!(err, UploadError::FileNotInManifest(_)),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -601,12 +617,17 @@ mod tests {
         let mut s = String::from("[manifest]\nversion = 1\n\n[files]\n");
         s.push_str(&format!(
             "\"../escape.bin\" = \"{}\"\n",
-            sha256(b"x").iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            sha256(b"x")
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
         ));
         state
             .begin_upload("x".into(), s.into_bytes(), data_root.path())
             .unwrap();
-        let err = state.write_chunk("x", "../escape.bin", 0, b"x").unwrap_err();
+        let err = state
+            .write_chunk("x", "../escape.bin", 0, b"x")
+            .unwrap_err();
         assert!(matches!(err, UploadError::InvalidName(_)), "got {:?}", err);
     }
 
@@ -614,7 +635,11 @@ mod tests {
     fn unknown_upload_name_returns_unknown_error() {
         let mut state = AdminConnectionState::default();
         let err = state.write_chunk("nope", "a.bin", 0, b"x").unwrap_err();
-        assert!(matches!(err, UploadError::UnknownUpload(_)), "got {:?}", err);
+        assert!(
+            matches!(err, UploadError::UnknownUpload(_)),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -651,7 +676,9 @@ mod tests {
         state
             .begin_upload("upload1".into(), manifest_for(files), data_root.path())
             .unwrap();
-        state.write_chunk("upload1", "new.bin", 0, b"new content").unwrap();
+        state
+            .write_chunk("upload1", "new.bin", 0, b"new content")
+            .unwrap();
         state.finalize_upload("upload1").unwrap();
         state.activate("upload1", "main", data_root.path()).unwrap();
 
@@ -669,7 +696,12 @@ mod tests {
             let err = state
                 .begin_upload(bad.into(), manifest_for(&[]), data_root.path())
                 .unwrap_err();
-            assert!(matches!(err, UploadError::InvalidName(_)), "name={:?} gave {:?}", bad, err);
+            assert!(
+                matches!(err, UploadError::InvalidName(_)),
+                "name={:?} gave {:?}",
+                bad,
+                err
+            );
         }
     }
 

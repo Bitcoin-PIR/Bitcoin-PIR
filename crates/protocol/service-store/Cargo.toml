@@ -1,0 +1,23 @@
+[package]
+name = "pir-service-store"
+version = "0.1.0"
+edition = "2021"
+autotests = false
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Fail-closed provider-local persistence for BitcoinPIR admission capabilities"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-service-store"
+keywords = ["pir", "payments", "sqlite", "privacy"]
+categories = ["database", "cryptography"]
+
+[dependencies]
+pir-service-protocol = { path = "../service" }
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled", "backup"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+ed25519-dalek = "2"
+tempfile = "3"

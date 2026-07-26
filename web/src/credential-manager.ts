@@ -2,8 +2,9 @@
  * ARC (Anonymous Rate-limited Credentials) client-side manager.
  *
  * Manages an ARC credential's presentation state: calls into WASM for the
- * cryptographic operations, tracks remaining query budget, and persists
- * state to localStorage so the credential survives page reloads.
+ * cryptographic operations and tracks remaining query budget in memory.
+ * Production persistence is owned by `AdmissionCredentialVaultV1`, which
+ * encrypts the serialized state in IndexedDB and serializes multi-tab use.
  *
  * ## Usage
  *
@@ -23,18 +24,13 @@
  * // Send presBytes in REQ_CREDENTIAL_PRESENT to the server
  * console.log(`Remaining: ${mgr.remaining}`);
  *
- * // Persist for next page load:
- * mgr.save();
- *
- * // Restore later:
- * const restored = ArcCredentialManager.load(presCtx);
+ * // Production callers persist mgr.serializeState() through
+ * // AdmissionCredentialVaultV1; never write ARC state to localStorage.
  * ```
  */
 
 import { requireSdkWasm } from './sdk-bridge';
 import { REQ_CREDENTIAL_PRESENT } from './constants';
-
-const STORAGE_KEY = 'bitcoinpir.arc.credential';
 
 /** Minimum remaining queries before UI should warn the user to re-issue. */
 export const ARC_LOW_WARNING = 5;
@@ -42,10 +38,8 @@ export const ARC_LOW_WARNING = 5;
 export interface ArcCredentialState {
   /** Serialized WasmArcPresentationState bytes. */
   stateBytes: Uint8Array;
-  /** When this was last saved (ms since epoch). */
-  savedAt: number;
-  /** Presentation context used (needed for restoration). */
-  presCtx: Uint8Array;
+  /** Remaining presentations represented by stateBytes. */
+  remaining: number;
 }
 
 /**
@@ -166,69 +160,12 @@ export class ArcCredentialManager {
     return this.remaining <= 0;
   }
 
-  /** Save state to localStorage. */
-  save(): void {
+  /** Snapshot for encrypted, provider-bound IndexedDB persistence. */
+  serializeState(): ArcCredentialState {
     const wasmState = this.state as { serialize(): Uint8Array };
-    const entry: ArcCredentialState = {
-      stateBytes: wasmState.serialize(),
-      savedAt: Date.now(),
-      presCtx: this._presCtx,
+    return {
+      stateBytes: wasmState.serialize().slice(),
+      remaining: this.remaining,
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      stateBytes: arrayBufferToBase64(entry.stateBytes),
-      savedAt: entry.savedAt,
-      presCtx: arrayBufferToBase64(entry.presCtx),
-    }));
   }
-
-  /**
-   * Restore from localStorage. Returns null if no saved state exists.
-   *
-   * @param fallbackPresCtx Used if saved state is missing or corrupted
-   */
-  static load(fallbackPresCtx?: Uint8Array): ArcCredentialManager | null {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      const data = JSON.parse(raw);
-      const stateBytes = base64ToArrayBuffer(data.stateBytes);
-      const presCtx = data.presCtx
-        ? base64ToArrayBuffer(data.presCtx)
-        : fallbackPresCtx;
-      if (!presCtx) return null;
-
-      const sdk = requireSdkWasm();
-      const wasmState = sdk.WasmArcPresentationState.deserialize(stateBytes);
-      const mgr = Object.create(ArcCredentialManager.prototype);
-      mgr.state = wasmState;
-      mgr._presCtx = presCtx;
-      mgr._limit = Number(wasmState.limit());
-      return mgr;
-    } catch {
-      localStorage.removeItem(STORAGE_KEY);
-      return null;
-    }
-  }
-
-  /** Delete saved state. */
-  static clear(): void {
-    localStorage.removeItem(STORAGE_KEY);
-  }
-}
-
-function arrayBufferToBase64(buf: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < buf.length; i++) {
-    binary += String.fromCharCode(buf[i]);
-  }
-  return btoa(binary);
-}
-
-function base64ToArrayBuffer(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 }

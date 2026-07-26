@@ -51,18 +51,26 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
 use crate::db_proof::{
-    fetch_database_proof, fetch_database_proof_v2, verify_database_proof,
-    verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
+    fetch_database_proof, fetch_database_proof_v2, verify_database_proof, verify_database_proof_v2,
+    DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
+use crate::service::{
+    dangerous_unpaired_authorize_service_operation_v1, fetch_verified_service_policy_v1,
+    request_pow_challenge_v1,
+    verify_service_policy_session_v1 as verify_policy_transport_session_v1,
+    AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
+};
 use crate::transport::PirTransport;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
+use ed25519_dalek::VerifyingKey;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant,
     LeakageRecorder, PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult,
     RoundKind, RoundProfile, ScriptHash, SyncPlan, SyncResult, SyncStep,
 };
+use pir_service_protocol::{AuthorizationProofV1, OperationStartV1, ProviderId};
 use std::sync::Arc;
 
 // ─── CHUNK Round-Presence Symmetry: per-slot classifier ────────────────────
@@ -84,6 +92,7 @@ use std::sync::Arc;
 /// entry on the wire — the classifier collapses them into the
 /// same `AppendDummy` action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(kani)]
 pub(crate) struct ChunkSlotInput {
     pub entry_id: u32,
     pub num_entries: u8,
@@ -100,6 +109,7 @@ pub(crate) struct ChunkSlotInput {
 /// round absence. The fix is captured by `classify_chunk_slots`
 /// returning `slots.len()` actions for any input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(kani)]
 pub(crate) enum ChunkSlotAction {
     AppendReal { entry_id: u32, num_entries: u8 },
     AppendDummy,
@@ -124,9 +134,8 @@ pub(crate) enum ChunkSlotAction {
 ///   distinction maps to `num_entries > 0`: `Real` iff the INDEX
 ///   scan returned a non-whale match, `Dummy` otherwise (not-found
 ///   or whale).
-pub(crate) fn classify_chunk_slots(
-    slots: &[ChunkSlotInput],
-) -> Vec<ChunkSlotAction> {
+#[cfg(kani)]
+pub(crate) fn classify_chunk_slots(slots: &[ChunkSlotInput]) -> Vec<ChunkSlotAction> {
     slots
         .iter()
         .map(|s| {
@@ -499,7 +508,9 @@ impl OnionClient {
         }
     }
 
-    pub fn root_policy(&self) -> RootPolicy { self.verified_roots.policy() }
+    pub fn root_policy(&self) -> RootPolicy {
+        self.verified_roots.policy()
+    }
 
     pub fn set_root_policy(&mut self, policy: RootPolicy) {
         self.verified_roots.set_policy(policy);
@@ -510,7 +521,9 @@ impl OnionClient {
         db_id: u8,
         policy: &DatabaseProofPolicy,
     ) -> PirResult<VerifiedDatabaseRoots> {
-        if !self.is_connected() { return Err(PirError::NotConnected); }
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
         let query_catalog = match &self.catalog {
             Some(c) => c.clone(),
             None => self.fetch_catalog().await?,
@@ -535,7 +548,9 @@ impl OnionClient {
         db_id: u8,
         policy: &DatabaseProofPolicy,
     ) -> PirResult<VerifiedDatabaseRoots> {
-        if !self.is_connected() { return Err(PirError::NotConnected); }
+        if !self.is_connected() {
+            return Err(PirError::NotConnected);
+        }
         let query_catalog = match &self.catalog {
             Some(c) => c.clone(),
             None => self.fetch_catalog().await?,
@@ -570,7 +585,9 @@ impl OnionClient {
         &mut self,
         roots: VerifiedDatabaseRoots,
     ) -> PirResult<()> {
-        let catalog = self.catalog.as_ref()
+        let catalog = self
+            .catalog
+            .as_ref()
             .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
         let db_id = roots.db_id;
         let verified_layout = roots.onion_layout_v2;
@@ -667,6 +684,91 @@ impl OnionClient {
         self.verified_roots.get(db_id)
     }
 
+    pub async fn fetch_service_policy_v1(
+        &mut self,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        now_unix: u64,
+        checkpoint: &ServicePolicyCheckpointV1,
+    ) -> PirResult<AcceptedServicePolicyV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "service policy requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        fetch_verified_service_policy_v1(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            now_unix,
+            checkpoint,
+        )
+        .await
+    }
+
+    /// Verify that `accepted` belongs to this exact OnionPIR connection. Call
+    /// immediately before retiring a one-shot capability.
+    pub fn verify_service_policy_session_v1(
+        &self,
+        accepted: &AcceptedServicePolicyV1,
+    ) -> PirResult<()> {
+        let transport = self.conn.as_ref().ok_or(PirError::NotConnected)?;
+        verify_policy_transport_session_v1(transport.as_ref(), accepted)
+    }
+
+    pub async fn authorize_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        proof: AuthorizationProofV1,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_service_policy_session_v1(accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "service authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        dangerous_unpaired_authorize_service_operation_v1(
+            transport.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::OnionSession { db_id },
+            proof,
+        )
+        .await
+    }
+
+    pub async fn request_service_pow_challenge_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::PowChallengeResponseV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "proof-of-work challenge requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
+        request_pow_challenge_v1(
+            transport.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::OnionSession { db_id },
+            now_unix,
+        )
+        .await
+    }
+
     /// Fetch and bind a database's OnionPIR Merkle tree-tops to an explicitly
     /// installed proof root before any address query is sent.
     ///
@@ -700,7 +802,9 @@ impl OnionClient {
         let Some(roots) = self.verified_roots.get(db_id).cloned() else {
             return self.verified_roots.require_db(db_id);
         };
-        if self.verified_tree_tops.contains(&db_id) { return Ok(()); }
+        if self.verified_tree_tops.contains(&db_id) {
+            return Ok(());
+        }
         let mut info = self.onion_merkle.get(&db_id).cloned().ok_or_else(|| {
             PirError::VerificationFailed(format!("db_id {} has no OnionPIR Merkle metadata", db_id))
         })?;
@@ -824,9 +928,7 @@ impl OnionClient {
 
     /// Send REQ_ANNOUNCE and parse the operator-signed identity bundle.
     /// See [`super::DpfClient::announce`] for full semantics.
-    pub async fn announce(
-        &mut self,
-    ) -> PirResult<crate::announce::AnnounceVerification> {
+    pub async fn announce(&mut self) -> PirResult<crate::announce::AnnounceVerification> {
         let conn = self
             .conn
             .as_mut()
@@ -865,8 +967,7 @@ impl OnionClient {
             .conn
             .take()
             .ok_or_else(|| PirError::Protocol("upgrade: server not connected".into()))?;
-        let wrapped =
-            crate::channel::establish(raw, server_static_pub, eph_seed, hs_nonce).await?;
+        let wrapped = crate::channel::establish(raw, server_static_pub, eph_seed, hs_nonce).await?;
         self.conn = Some(Box::new(wrapped));
         Ok(())
     }
@@ -983,10 +1084,7 @@ impl OnionClient {
             .get(&db_info.db_id)
             .cloned()
             .ok_or_else(|| {
-                PirError::InvalidState(format!(
-                    "no OnionPIR params for db_id={}",
-                    db_info.db_id
-                ))
+                PirError::InvalidState(format!("no OnionPIR params for db_id={}", db_info.db_id))
             })?;
 
         self.ensure_fhe_initialised()?;
@@ -1328,7 +1426,10 @@ impl OnionClient {
             level_clients: HashMap::new(),
             registered: HashSet::new(),
         });
-        log::info!("[PIR-AUDIT] OnionPIR generated FHE keys (client_id=0x{:016x})", client_id);
+        log::info!(
+            "[PIR-AUDIT] OnionPIR generated FHE keys (client_id=0x{:016x})",
+            client_id
+        );
         Ok(())
     }
 
@@ -1371,9 +1472,7 @@ impl OnionClient {
         });
 
         if response.is_empty() || response[0] != RESP_KEYS_ACK {
-            return Err(PirError::Protocol(
-                "expected RESP_KEYS_ACK (0x50)".into(),
-            ));
+            return Err(PirError::Protocol("expected RESP_KEYS_ACK (0x50)".into()));
         }
 
         self.fhe
@@ -1381,10 +1480,7 @@ impl OnionClient {
             .expect("fhe present")
             .registered
             .insert(db_id);
-        log::info!(
-            "[PIR-AUDIT] OnionPIR registered keys for db_id={}",
-            db_id
-        );
+        log::info!("[PIR-AUDIT] OnionPIR registered keys for db_id={}", db_id);
         Ok(())
     }
 
@@ -1554,25 +1650,22 @@ impl OnionClient {
             // None of these are recoverable without re-generating the
             // session keys; surface a typed PirError so the caller can
             // tear down the session and retry from scratch.
-            let client = onionpir::Client::from_secret_key(
-                num_entries,
-                fhe.client_id,
-                &fhe.secret_key,
-            )
-            .ok_or_else(|| {
-                PirError::InvalidState(format!(
-                    "OnionPIR Client::from_secret_key returned None for \
+            let client =
+                onionpir::Client::from_secret_key(num_entries, fhe.client_id, &fhe.secret_key)
+                    .ok_or_else(|| {
+                        PirError::InvalidState(format!(
+                            "OnionPIR Client::from_secret_key returned None for \
                      (num_entries={}, client_id={}, sk_len={}). \
                      Most likely cause: the secret key was generated under \
                      a different onionpir rev / ACTIVE_CONFIG than the \
                      currently-loaded library, or a future persistence \
                      layer wrote a pre-port SEAL-serialized key. \
                      Recovery: drop the FheState and call keygen fresh.",
-                    num_entries,
-                    fhe.client_id,
-                    fhe.secret_key.len()
-                ))
-            })?;
+                            num_entries,
+                            fhe.client_id,
+                            fhe.secret_key.len()
+                        ))
+                    })?;
             fhe.level_clients.insert(key, SendClient(client));
         }
         Ok(&mut fhe.level_clients.get_mut(&key).unwrap().0)
@@ -1646,9 +1739,8 @@ impl OnionClient {
             // Per-group item count: every group sends exactly
             // INDEX_CUCKOO_NUM_HASHES queries (the same Merkle INDEX
             // Item-Count Symmetry invariant DPF / Harmony preserve).
-            let items_per_group: Vec<u32> = (0..k)
-                .map(|_| INDEX_CUCKOO_NUM_HASHES as u32)
-                .collect();
+            let items_per_group: Vec<u32> =
+                (0..k).map(|_| INDEX_CUCKOO_NUM_HASHES as u32).collect();
             let batch = self
                 .onionpir_batch_rpc(
                     &msg,
@@ -1776,9 +1868,9 @@ impl OnionClient {
 
         for ir_opt in index_results.iter() {
             let real_chunks: Vec<u32> = match ir_opt {
-                Some(ir) if ir.num_entries > 0 => {
-                    (0..ir.num_entries as u32).map(|i| ir.entry_id + i).collect()
-                }
+                Some(ir) if ir.num_entries > 0 => (0..ir.num_entries as u32)
+                    .map(|i| ir.entry_id + i)
+                    .collect(),
                 _ => Vec::new(),
             };
             for &eid in &real_chunks {
@@ -1851,25 +1943,19 @@ impl OnionClient {
 
             for &(ei, group) in round {
                 let eid = unique[ei];
-                cuckoo_cache
-                    .entry(group)
-                    .or_insert_with(|| {
-                        build_chunk_cuckoo_for_group(group, &reverse_index, chunk_bins)
-                    });
+                cuckoo_cache.entry(group).or_insert_with(|| {
+                    build_chunk_cuckoo_for_group(group, &reverse_index, chunk_bins)
+                });
 
                 let keys = chunk_derive_keys(group);
-                let bin = find_in_chunk_cuckoo(
-                    cuckoo_cache.get(&group).unwrap(),
-                    eid,
-                    &keys,
-                    chunk_bins,
-                )
-                .ok_or_else(|| {
-                    PirError::InvalidState(format!(
-                        "entry_id {} not in chunk cuckoo for group {}",
-                        eid, group
-                    ))
-                })?;
+                let bin =
+                    find_in_chunk_cuckoo(cuckoo_cache.get(&group).unwrap(), eid, &keys, chunk_bins)
+                        .ok_or_else(|| {
+                            PirError::InvalidState(format!(
+                                "entry_id {} not in chunk cuckoo for group {}",
+                                eid, group
+                            ))
+                        })?;
 
                 round_queries.push(Q {
                     entry_id: eid,
@@ -1963,11 +2049,7 @@ impl OnionClient {
                 // leaf index within it.
                 data_merkle.insert(
                     q.entry_id,
-                    (
-                        pir_core::merkle::sha256(packed),
-                        q.group,
-                        q.bin as u32,
-                    ),
+                    (pir_core::merkle::sha256(packed), q.group, q.bin as u32),
                 );
             }
         }
@@ -1998,9 +2080,8 @@ impl PirClient for OnionClient {
         // Native → tokio-tungstenite; WASM → web-sys WebSocket. OnionPIR
         // has a single server so no try_join is needed.
         #[cfg(not(target_arch = "wasm32"))]
-        let conn: Box<dyn PirTransport> = {
-            Box::new(WsConnection::connect(&self.server_url).await?)
-        };
+        let conn: Box<dyn PirTransport> =
+            { Box::new(WsConnection::connect(&self.server_url).await?) };
         #[cfg(target_arch = "wasm32")]
         let conn: Box<dyn PirTransport> = {
             use crate::wasm_transport::WasmWebSocketTransport;
@@ -2227,10 +2308,8 @@ fn scan_index_bin(
         }
         let slot_tag = u64::from_le_bytes(entry_bytes[off..off + 8].try_into().ok()?);
         if slot_tag == tag && slot_tag != 0 {
-            let entry_id =
-                u32::from_le_bytes(entry_bytes[off + 8..off + 12].try_into().ok()?);
-            let byte_offset =
-                u16::from_le_bytes(entry_bytes[off + 12..off + 14].try_into().ok()?);
+            let entry_id = u32::from_le_bytes(entry_bytes[off + 8..off + 12].try_into().ok()?);
+            let byte_offset = u16::from_le_bytes(entry_bytes[off + 12..off + 14].try_into().ok()?);
             let num_entries = entry_bytes[off + 14];
             return Some(IndexResult {
                 entry_id,
@@ -2411,8 +2490,8 @@ fn build_chunk_cuckoo_for_group(
                 break;
             }
 
-            let alt_h =
-                (current_hash_fn + 1 + kick % (CHUNK_CUCKOO_NUM_HASHES - 1)) % CHUNK_CUCKOO_NUM_HASHES;
+            let alt_h = (current_hash_fn + 1 + kick % (CHUNK_CUCKOO_NUM_HASHES - 1))
+                % CHUNK_CUCKOO_NUM_HASHES;
             let alt_bin = chunk_cuckoo_hash(evicted, keys[alt_h], bins_per_table);
             let final_bin = if alt_bin == current_bin {
                 let h2 = (alt_h + 1) % CHUNK_CUCKOO_NUM_HASHES;
@@ -2734,7 +2813,15 @@ fn build_catalog(
             }
             // Override index/chunk bins with OnionPIR-specific values if present.
             let (opi_bins_idx, opi_bins_chunk, opi_index_k, opi_chunk_k, opi_tag_seed) =
-                onion_level_params(json, d.db_id, top_index_bins, top_chunk_bins, top_index_k, top_chunk_k, top_tag_seed);
+                onion_level_params(
+                    json,
+                    d.db_id,
+                    top_index_bins,
+                    top_chunk_bins,
+                    top_index_k,
+                    top_chunk_k,
+                    top_tag_seed,
+                );
             dbs.push(DatabaseInfo {
                 db_id: d.db_id,
                 kind: d.kind,
@@ -2768,7 +2855,13 @@ fn build_catalog(
     ids.sort();
     for id in ids {
         let (bins_idx, bins_chunk, index_k, chunk_k, tag_seed) = onion_level_params(
-            json, id, top_index_bins, top_chunk_bins, top_index_k, top_chunk_k, top_tag_seed,
+            json,
+            id,
+            top_index_bins,
+            top_chunk_bins,
+            top_index_k,
+            top_chunk_k,
+            top_tag_seed,
         );
         dbs.push(DatabaseInfo {
             db_id: id,
@@ -2907,10 +3000,22 @@ mod kani_harnesses {
         let raw: u8 = kani::any();
         kani::assume(raw < 4);
         match raw {
-            0 => ChunkSlotInput { entry_id: 0, num_entries: 0 }, // not-found sentinel
-            1 => ChunkSlotInput { entry_id: kani::any(), num_entries: 0 }, // whale
-            2 => ChunkSlotInput { entry_id: kani::any(), num_entries: 1 }, // small-found
-            _ => ChunkSlotInput { entry_id: kani::any(), num_entries: kani::any() }, // generic-found
+            0 => ChunkSlotInput {
+                entry_id: 0,
+                num_entries: 0,
+            }, // not-found sentinel
+            1 => ChunkSlotInput {
+                entry_id: kani::any(),
+                num_entries: 0,
+            }, // whale
+            2 => ChunkSlotInput {
+                entry_id: kani::any(),
+                num_entries: 1,
+            }, // small-found
+            _ => ChunkSlotInput {
+                entry_id: kani::any(),
+                num_entries: kani::any(),
+            }, // generic-found
         }
     }
 
@@ -2961,8 +3066,13 @@ mod kani_harnesses {
         assert_eq!(actions.len(), 1);
         match (slot.num_entries, &actions[0]) {
             (0, ChunkSlotAction::AppendDummy) => {}
-            (n, ChunkSlotAction::AppendReal { num_entries, entry_id })
-                if n > 0 && *num_entries == n && *entry_id == slot.entry_id => {}
+            (
+                n,
+                ChunkSlotAction::AppendReal {
+                    num_entries,
+                    entry_id,
+                },
+            ) if n > 0 && *num_entries == n && *entry_id == slot.entry_id => {}
             _ => panic!(
                 "CHUNK Round-Presence Symmetry P2: action must be \
                  AppendReal iff num_entries > 0, AppendDummy iff == 0. \
@@ -2983,15 +3093,27 @@ mod kani_harnesses {
         let entry_id: u32 = kani::any();
         let num_entries: u8 = kani::any();
         kani::assume(num_entries > 0);
-        let slot = ChunkSlotInput { entry_id, num_entries };
+        let slot = ChunkSlotInput {
+            entry_id,
+            num_entries,
+        };
 
         let actions = classify_chunk_slots(&[slot]);
 
         assert_eq!(actions.len(), 1);
         match actions[0] {
-            ChunkSlotAction::AppendReal { entry_id: e, num_entries: n } => {
-                assert_eq!(e, entry_id, "entry_id must round-trip through the classifier");
-                assert_eq!(n, num_entries, "num_entries must round-trip through the classifier");
+            ChunkSlotAction::AppendReal {
+                entry_id: e,
+                num_entries: n,
+            } => {
+                assert_eq!(
+                    e, entry_id,
+                    "entry_id must round-trip through the classifier"
+                );
+                assert_eq!(
+                    n, num_entries,
+                    "num_entries must round-trip through the classifier"
+                );
             }
             ChunkSlotAction::AppendDummy => panic!(
                 "num_entries > 0 must produce AppendReal — Dummy on a \
@@ -3010,7 +3132,10 @@ mod kani_harnesses {
     #[kani::unwind(4)]
     fn classify_chunk_slots_zero_entries_means_dummy() {
         let entry_id: u32 = kani::any();
-        let slot = ChunkSlotInput { entry_id, num_entries: 0 };
+        let slot = ChunkSlotInput {
+            entry_id,
+            num_entries: 0,
+        };
 
         let actions = classify_chunk_slots(&[slot]);
 
@@ -3191,7 +3316,10 @@ mod tests {
     #[test]
     fn test_extract_json_object_nested() {
         let j = r#"{"outer":{"inner":{"a":1}},"x":2}"#;
-        assert_eq!(extract_json_object(j, "outer"), Some(r#"{"inner":{"a":1}}"#));
+        assert_eq!(
+            extract_json_object(j, "outer"),
+            Some(r#"{"inner":{"a":1}}"#)
+        );
         assert_eq!(extract_json_object(j, "inner"), Some(r#"{"a":1}"#));
     }
 
@@ -3282,7 +3410,10 @@ mod tests {
         client.install_verified_database_roots(roots).unwrap();
 
         assert!(client.verified_database_roots(db.db_id).is_some());
-        assert_eq!(client.onion_params.get(&db.db_id).unwrap().total_packed, 777);
+        assert_eq!(
+            client.onion_params.get(&db.db_id).unwrap().total_packed,
+            777
+        );
     }
 
     #[tokio::test]
@@ -3565,17 +3696,15 @@ mod tests {
                             assert_eq!(s.0.id(), exp_id, "id() disagrees across threads");
                         } else {
                             let sk = s.0.export_secret_key();
-                            assert_eq!(
-                                sk, exp_sk,
-                                "export_secret_key() disagrees across threads"
-                            );
+                            assert_eq!(sk, exp_sk, "export_secret_key() disagrees across threads");
                         }
                     }
                 })
             })
             .collect();
         for h in handles {
-            h.join().expect("thread panicked — possible data race in &self FFI path");
+            h.join()
+                .expect("thread panicked — possible data race in &self FFI path");
         }
     }
 
@@ -3624,9 +3753,7 @@ mod tests {
         use crate::transport::mock::MockTransport;
         let mut client = OnionClient::new("wss://mock-onion");
         assert!(!client.is_connected());
-        client.connect_with_transport(Box::new(MockTransport::new(
-            "wss://mock-onion",
-        )));
+        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
         assert!(client.is_connected());
     }
 
@@ -3733,9 +3860,7 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let mut client = OnionClient::new("wss://mock-onion");
-            client.connect_with_transport(Box::new(MockTransport::new(
-                "wss://mock-onion",
-            )));
+            client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
         });
 
         let captured = String::from_utf8(buf.lock().unwrap().clone())
@@ -3771,9 +3896,7 @@ mod tests {
         let mut client = OnionClient::new("wss://mock-onion");
         client.set_metrics_recorder(Some(recorder.clone()));
 
-        client.connect_with_transport(Box::new(MockTransport::new(
-            "wss://mock-onion",
-        )));
+        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
 
         let snap = recorder.snapshot();
         assert_eq!(
@@ -3794,9 +3917,7 @@ mod tests {
         let mut client = OnionClient::new("wss://mock-onion");
         client.set_metrics_recorder(Some(recorder.clone()));
 
-        client.connect_with_transport(Box::new(MockTransport::new(
-            "wss://mock-onion",
-        )));
+        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
         client.disconnect().await.unwrap();
 
         let snap = recorder.snapshot();
@@ -3815,16 +3936,20 @@ mod tests {
         use pir_sdk::AtomicMetrics;
 
         let mut client = OnionClient::new("wss://mock-onion");
-        client.connect_with_transport(Box::new(MockTransport::new(
-            "wss://mock-onion",
-        )));
+        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
 
         // Install the recorder post-connect.
         let recorder = Arc::new(AtomicMetrics::new());
         client.set_metrics_recorder(Some(recorder.clone()));
 
         // Drive one send through the transport directly.
-        client.conn.as_mut().unwrap().send(vec![1, 2, 3, 4, 5, 6, 7]).await.unwrap();
+        client
+            .conn
+            .as_mut()
+            .unwrap()
+            .send(vec![1, 2, 3, 4, 5, 6, 7])
+            .await
+            .unwrap();
 
         let snap = recorder.snapshot();
         assert_eq!(snap.bytes_sent, 7);
@@ -3842,15 +3967,19 @@ mod tests {
         let recorder = Arc::new(AtomicMetrics::new());
         let mut client = OnionClient::new("wss://mock-onion");
         client.set_metrics_recorder(Some(recorder.clone()));
-        client.connect_with_transport(Box::new(MockTransport::new(
-            "wss://mock-onion",
-        )));
+        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
 
         // Uninstall mid-session.
         client.set_metrics_recorder(None);
         // Neither the client-level disconnect callback nor the
         // transport-level send callback should fire now.
-        client.conn.as_mut().unwrap().send(vec![9; 42]).await.unwrap();
+        client
+            .conn
+            .as_mut()
+            .unwrap()
+            .send(vec![9; 42])
+            .await
+            .unwrap();
         client.disconnect().await.unwrap();
 
         let snap = recorder.snapshot();

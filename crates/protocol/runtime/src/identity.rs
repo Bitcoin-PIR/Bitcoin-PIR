@@ -295,13 +295,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         let path = dir.path().join("identity.cert");
         fs::write(&path, cert.encode()).unwrap();
         let loaded = load_identity_cert(&path).unwrap();
@@ -314,13 +308,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         let path = dir.path().join("identity.cert");
         let mut bytes = cert.encode();
         // Flip a byte in the server_id field — preimage diverges.
@@ -335,13 +323,7 @@ mod tests {
     fn build_bundle_with_matching_key_and_cert_succeeds() {
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         let identity = build_announcement_bundle(
             &id_sk,
             cert,
@@ -354,8 +336,7 @@ mod tests {
         )
         .unwrap();
         // Encoded bundle round-trips and verifies end-to-end.
-        let parsed =
-            pir_identity::AnnouncementBundle::decode(&identity.encoded_bundle).unwrap();
+        let parsed = pir_identity::AnnouncementBundle::decode(&identity.encoded_bundle).unwrap();
         parsed.cert.verify().unwrap();
         parsed.verify_chain().unwrap();
         assert_eq!(parsed.cert.server_id, "pir1");
@@ -394,25 +375,11 @@ mod tests {
     fn build_bundle_rejects_server_id_mismatch() {
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         // Server is started with server_id = "pir2" but cert says "pir1".
-        let err = build_announcement_bundle(
-            &id_sk,
-            cert,
-            "pir2",
-            [0u8; 32],
-            [0u8; 32],
-            "v",
-            vec![],
-            0,
-        )
-        .unwrap_err();
+        let err =
+            build_announcement_bundle(&id_sk, cert, "pir2", [0u8; 32], [0u8; 32], "v", vec![], 0)
+                .unwrap_err();
         assert!(matches!(err, IdentityLoadError::PubkeyMismatch { .. }));
     }
 }

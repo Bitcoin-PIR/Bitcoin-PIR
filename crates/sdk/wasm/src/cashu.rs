@@ -81,10 +81,11 @@ impl WasmCashuBlind {
     /// Throws on a malformed point. (`C` verifies as `C == k·hash_to_curve
     /// (secret)` on the server.)
     pub fn unblind(&self, keyset_pubkey: &[u8], signature: &[u8]) -> Result<Vec<u8>, JsError> {
-        let k_point =
-            parse_point(keyset_pubkey).ok_or_else(|| JsError::new("invalid keyset pubkey (want 33-byte compressed point)"))?;
-        let c_prime =
-            parse_point(signature).ok_or_else(|| JsError::new("invalid blind signature (want 33-byte compressed point)"))?;
+        let k_point = parse_point(keyset_pubkey)
+            .ok_or_else(|| JsError::new("invalid keyset pubkey (want 33-byte compressed point)"))?;
+        let c_prime = parse_point(signature).ok_or_else(|| {
+            JsError::new("invalid blind signature (want 33-byte compressed point)")
+        })?;
         let c = c_prime - k_point * self.r;
         Ok(compress(&c).to_vec())
     }
@@ -186,7 +187,10 @@ mod tests {
         let c_prime = compress(&(b_point * k));
 
         // Client unblinds via the WASM binding.
-        let c = blind.unblind(&keyset_pubkey, &c_prime).ok().expect("unblind");
+        let c = blind
+            .unblind(&keyset_pubkey, &c_prime)
+            .ok()
+            .expect("unblind");
         let c_hex = hex::encode(&c);
 
         // Assemble the authA token exactly as cashu-bat.ts does.

@@ -1,0 +1,29 @@
+[package]
+name = "pir-issuer-clearing"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Shared issuer credential verification and settlement response construction for BitcoinPIR"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+
+[dependencies]
+ed25519-dalek = "2"
+hmac = "0.12"
+pir-arc-adapter = { path = "../arc-adapter" }
+pir-issuer-store = { path = "../issuer-store" }
+pir-payment-crypto = { path = "../crypto" }
+pir-service-protocol = { path = "../../protocol/service" }
+sha2 = "0.10"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+rand_chacha = "0.3"
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

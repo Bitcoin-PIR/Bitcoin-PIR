@@ -1,0 +1,114 @@
+name: Payment platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'apps/payment-issuer/**'
+      - 'apps/admin/**'
+      - 'apps/server/**'
+      - 'crates/protocol/channel/**'
+      - 'crates/protocol/core/**'
+      - 'crates/directory/nostr/**'
+      - 'crates/payment/**'
+      - 'crates/protocol/runtime/**'
+      - 'crates/protocol/service/**'
+      - 'crates/protocol/service-store/**'
+      - 'crates/sdk/client/**'
+      - 'crates/sdk/wasm/**'
+      - 'docs/payment/**'
+      - 'scripts/fixtures/**'
+      - 'scripts/payment-v1-local-check.sh'
+      - '.github/workflows/payment-platform.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'apps/payment-issuer/**'
+      - 'apps/admin/**'
+      - 'apps/server/**'
+      - 'crates/protocol/channel/**'
+      - 'crates/protocol/core/**'
+      - 'crates/directory/nostr/**'
+      - 'crates/payment/**'
+      - 'crates/protocol/runtime/**'
+      - 'crates/protocol/service/**'
+      - 'crates/protocol/service-store/**'
+      - 'crates/sdk/client/**'
+      - 'crates/sdk/wasm/**'
+      - 'docs/payment/**'
+      - 'scripts/fixtures/**'
+      - 'scripts/payment-v1-local-check.sh'
+      - '.github/workflows/payment-platform.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-and-persistence:
+    name: Protocol, stores, adapters, issuer and runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --profile minimal
+      - name: Test payment platform offline
+        run: >-
+          cargo test --offline
+          -p pir-channel
+          -p pir-service-protocol
+          -p pir-service-store
+          -p pir-payment-crypto
+          -p pir-lightning-backend
+          -p pir-issuer-store
+          -p pir-issuer-core
+          -p pir-issuer-credentials
+          -p pir-issuer-clearing
+          -p pir-issuer-service
+          -p pir-provider-clearing-client
+          -p pir-cashu-client
+          -p pir-arc-adapter
+          -p pir-directory-nostr
+          -p pir-runtime-core
+          -p pir-sdk-client
+          -p pir-sdk-wasm
+          -p payment-issuer
+          -p bpir-admin
+      - name: Test concrete provider-store Cashu BAT verifier boundary
+        run: >-
+          cargo test --offline
+          -p pir-payment-crypto
+          --features provider-store
+          --test provider_store_bat_adapter
+      - name: Check unified server admission wiring
+        run: cargo check --offline -p runtime --bin unified_server
+      - name: Exercise loopback two-provider process admission
+        run: cargo test --offline -p runtime --test payment_v1_process_e2e
+      - name: Exercise deterministic no-funds operator fixture
+        run: |
+          fixture_root="$(mktemp -d "${RUNNER_TEMP}/bpir-payment-v1-fixture.XXXXXX")"
+          trap 'rm -rf -- "$fixture_root"' EXIT
+          scripts/fixtures/generate-payment-v1-no-funds.sh "$fixture_root/generated"
+          test -s "$fixture_root/generated/fixture.json"
+
+  wasm-boundary:
+    name: Browser payment and directory boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust toolchain with wasm32
+        run: rustup toolchain install --profile minimal --target wasm32-unknown-unknown
+      - name: Check WASM without native provider storage
+        run: cargo check --offline --target wasm32-unknown-unknown -p pir-sdk-wasm

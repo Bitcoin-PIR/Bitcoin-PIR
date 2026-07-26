@@ -17,6 +17,8 @@ categories = ["cryptography", "cryptography::cryptocurrencies", "network-program
 [dependencies]
 pir-core = { version = "0.1.0", path = "../core" }
 pir-channel = { version = "0.1.0", path = "../channel" }
+pir-service-protocol = { version = "0.1.0", path = "../service" }
+pir-service-store = { version = "0.1.0", path = "../service-store" }
 # Two-tier operator-signed identity bundle returned by REQ_ANNOUNCE.
 # Pure crypto (Ed25519 sign/verify + canonical wire encoding) — the
 # server-side I/O wrapper (loading the identity key + cert from disk,
@@ -32,9 +34,12 @@ ed25519-dalek = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 getrandom = "0.2"
+parking_lot = "0.12"
+hmac = "0.12"
 arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
 k256 = { version = "0.13", features = ["arithmetic", "ecdsa"] }
 sha2 = "0.10"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 hex = "0.4"
 serde_json = "1"
 

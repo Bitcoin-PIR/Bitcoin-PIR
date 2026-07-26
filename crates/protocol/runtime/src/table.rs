@@ -71,7 +71,8 @@ impl MappedSubTable {
     pub fn load(path: &Path, params: TableParams) -> Self {
         println!("  Loading sub-table: {}", path.display());
         let f = File::open(path).unwrap_or_else(|e| panic!("open {}: {}", path.display(), e));
-        let mmap = unsafe { Mmap::map(&f) }.unwrap_or_else(|e| panic!("mmap {}: {}", path.display(), e));
+        let mmap =
+            unsafe { Mmap::map(&f) }.unwrap_or_else(|e| panic!("mmap {}: {}", path.display(), e));
 
         // Phase C: accept legacy MAGIC and v2 MAGIC variants (snapshot/delta
         // anchor appended). Caller already validates the file via the
@@ -125,11 +126,24 @@ impl MappedSubTable {
         {
             use libc::{madvise, MADV_SEQUENTIAL};
             unsafe {
-                madvise(mmap.as_ptr() as *mut libc::c_void, mmap.len(), MADV_SEQUENTIAL);
+                madvise(
+                    mmap.as_ptr() as *mut libc::c_void,
+                    mmap.len(),
+                    MADV_SEQUENTIAL,
+                );
             }
         }
 
-        MappedSubTable { mmap, params, bins_per_table, table_byte_size, data_offset, tag_seed, master_seed, anchor }
+        MappedSubTable {
+            mmap,
+            params,
+            bins_per_table,
+            table_byte_size,
+            data_offset,
+            tag_seed,
+            master_seed,
+            anchor,
+        }
     }
 
     /// Get the byte slice for a specific group's sub-table.
@@ -277,7 +291,11 @@ impl MappedDatabase {
     ///
     /// Automatically detects and loads Merkle sub-tables if present.
     pub fn load(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
-        println!("[DB:{}] Loading from {}", descriptor.name, base_dir.display());
+        println!(
+            "[DB:{}] Loading from {}",
+            descriptor.name,
+            base_dir.display()
+        );
 
         // Verify MANIFEST.toml first if present. Aborts startup on mismatch
         // — refusing to mmap unaccounted bytes is the safety boundary that
@@ -352,7 +370,9 @@ impl MappedDatabase {
         // INDEX sibling tables: merkle_bucket_index_sib_L0.bin, L1.bin, ...
         for level in 0.. {
             let path = base_dir.join(format!("merkle_bucket_index_sib_L{}.bin", level));
-            if !path.exists() { break; }
+            if !path.exists() {
+                break;
+            }
             let magic = 0xBA7C_B000_0000_0000u64 | ((level as u64) << 16);
             let params = pir_core::params::TableParams {
                 k: descriptor.index_params.k,
@@ -366,14 +386,19 @@ impl MappedDatabase {
                 header_size: 32,
                 has_tag_seed: false,
             };
-            println!("  Loading bucket Merkle INDEX sib L{} (slot=256B)...", level);
+            println!(
+                "  Loading bucket Merkle INDEX sib L{} (slot=256B)...",
+                level
+            );
             bucket_merkle_index_siblings.push(MappedSubTable::load(&path, params));
         }
 
         // CHUNK sibling tables: merkle_bucket_chunk_sib_L0.bin, L1.bin, ...
         for level in 0.. {
             let path = base_dir.join(format!("merkle_bucket_chunk_sib_L{}.bin", level));
-            if !path.exists() { break; }
+            if !path.exists() {
+                break;
+            }
             let magic = 0xBA7C_B000_0000_0000u64 | (1u64 << 40) | ((level as u64) << 16);
             let params = pir_core::params::TableParams {
                 k: descriptor.chunk_params.k,
@@ -387,11 +412,15 @@ impl MappedDatabase {
                 header_size: 32,
                 has_tag_seed: false,
             };
-            println!("  Loading bucket Merkle CHUNK sib L{} (slot=256B)...", level);
+            println!(
+                "  Loading bucket Merkle CHUNK sib L{} (slot=256B)...",
+                level
+            );
             bucket_merkle_chunk_siblings.push(MappedSubTable::load(&path, params));
         }
 
-        let bucket_merkle_tree_tops = std::fs::read(base_dir.join("merkle_bucket_tree_tops.bin")).ok();
+        let bucket_merkle_tree_tops =
+            std::fs::read(base_dir.join("merkle_bucket_tree_tops.bin")).ok();
         let bucket_merkle_roots = std::fs::read(base_dir.join("merkle_bucket_roots.bin")).ok();
         let bucket_merkle_root = std::fs::read(base_dir.join("merkle_bucket_root.bin")).ok();
 
@@ -405,10 +434,16 @@ impl MappedDatabase {
         }
 
         MappedDatabase {
-            descriptor, index, chunk,
-            bucket_merkle_index_siblings, bucket_merkle_chunk_siblings,
-            bucket_merkle_tree_tops, bucket_merkle_roots, bucket_merkle_root,
-            manifest, manifest_root,
+            descriptor,
+            index,
+            chunk,
+            bucket_merkle_index_siblings,
+            bucket_merkle_chunk_siblings,
+            bucket_merkle_tree_tops,
+            bucket_merkle_roots,
+            bucket_merkle_root,
+            manifest,
+            manifest_root,
             db_proof: None,
             db_proof_v2: None,
         }
@@ -531,8 +566,7 @@ impl CuckooTablePair {
         let chunk_cuckoo = unsafe { Mmap::map(&f) }.expect("mmap chunk cuckoo");
         let chunk_bins_per_table = read_chunk_cuckoo_header(&chunk_cuckoo);
         let chunk_slot_size = 4 + CHUNK_SIZE;
-        let chunk_table_byte_size =
-            chunk_bins_per_table * CHUNK_SLOTS_PER_BIN * chunk_slot_size;
+        let chunk_table_byte_size = chunk_bins_per_table * CHUNK_SLOTS_PER_BIN * chunk_slot_size;
         println!(
             "  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
             chunk_bins_per_table,
@@ -600,7 +634,10 @@ mod tests {
         let bins_per_table = 1usize;
         let table_byte_size = params.table_byte_size(bins_per_table);
 
-        let anchor = ChainAnchor { block_hash: [0xAB; 32], block_height: 948_454 };
+        let anchor = ChainAnchor {
+            block_hash: [0xAB; 32],
+            block_height: 948_454,
+        };
         let header = write_header_with_anchor(
             &params,
             bins_per_table,
@@ -608,7 +645,11 @@ mod tests {
             Some(&HeaderAnchor::Snapshot(anchor)),
         );
         let expected_offset = params.header_size + CHAIN_ANCHOR_BYTES;
-        assert_eq!(header.len(), expected_offset, "anchored header = legacy + 36");
+        assert_eq!(
+            header.len(),
+            expected_offset,
+            "anchored header = legacy + 36"
+        );
 
         // Marker at the first byte of group 0's real table. The anchor bytes
         // are never 0x5A, so reading it back proves we skipped the anchor.
@@ -618,13 +659,22 @@ mod tests {
         bytes.extend_from_slice(&tables);
 
         let path = temp_path("snap");
-        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
         let st = MappedSubTable::load(&path, params);
 
-        assert_eq!(st.data_offset, expected_offset, "data_offset must skip the v2 anchor");
+        assert_eq!(
+            st.data_offset, expected_offset,
+            "data_offset must skip the v2 anchor"
+        );
         let g0 = st.group_bytes(0);
         assert_eq!(g0.len(), table_byte_size);
-        assert_eq!(g0[0], 0x5A, "group_bytes(0) must start at real table data, past the anchor");
+        assert_eq!(
+            g0[0], 0x5A,
+            "group_bytes(0) must start at real table data, past the anchor"
+        );
 
         std::fs::remove_file(&path).ok();
     }
@@ -643,7 +693,10 @@ mod tests {
         bytes.extend_from_slice(&vec![0u8; k * table_byte_size]);
 
         let path = temp_path("tgb_range");
-        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
         let st = MappedSubTable::load(&path, params);
 
         assert_eq!(st.try_group_bytes(0).unwrap(), st.group_bytes(0));
@@ -669,7 +722,10 @@ mod tests {
         bytes.extend_from_slice(&vec![0u8; table_byte_size]);
 
         let path = temp_path("tgb_short");
-        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
         let st = MappedSubTable::load(&path, params);
 
         assert!(st.try_group_bytes(0).is_some());
@@ -696,7 +752,10 @@ mod tests {
         bytes.extend_from_slice(&tables);
 
         let path = temp_path("legacy");
-        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
         let st = MappedSubTable::load(&path, params);
 
         assert_eq!(st.data_offset, header_size);
