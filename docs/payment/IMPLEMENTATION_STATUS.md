@@ -260,6 +260,14 @@ operator has activated the path with real money or public infrastructure.
 - [x] Direct receipt and BAT production ProviderStore adapters persist/reject
       replay across restart; Free, Cashu and experimental ARC have focused
       persistence and concurrency suites.
+- [x] The GitHub-closeout run exposed a conservative same-database
+      rollback-floor acknowledgement race: a later writer could anchor a
+      successor before an earlier caller received its CAS result, consuming
+      quota while returning an error but never over-granting. Post-commit
+      confirmation now reconciles only through the same SQLite connection;
+      deterministic same-lineage and cloned-fork tests, 500 repeated Free
+      contention runs, the full 79-test store suite and independent review
+      pass. A conflicting cloned fork remains fail closed.
 - [x] Fake-Lightning backend, quote/claim state machines, issuer stores,
       clearing/settlement models and Core Lightning RPC mapping have
       deterministic no-funds tests.
@@ -449,11 +457,12 @@ findings and must not be collapsed into that count.
    Onion or TEE-ORAM across provider process boundaries.
 6. **External dependency canaries.** The disposable local CLN and CDK runners
    and one short-lived public Nostr transport/readback smoke are complete.
-   Persistent Testnet4 Lightning, an external WebPKI Cashu mint, production
-   catalog publication and monitored relay selection remain staging gates. The
-   final topology also needs production identity/attestation/pins, TLS/edge
-   controls, outage/restart drills, compatibility observations and
-   data-retention review.
+   Persistent default-signet Lightning, including an external check of the
+   default-signet challenge that the coarse CLN `signet` identity cannot prove,
+   an external WebPKI Cashu mint, production catalog publication and monitored
+   relay selection remain staging gates. The final topology also needs
+   production identity/attestation/pins, TLS/edge controls, outage/restart
+   drills, compatibility observations and data-retention review.
 7. **ARC review.** ARC must remain hidden behind an experimental offer/UX label
    and must not be a production-required method until independent review is
    closed.

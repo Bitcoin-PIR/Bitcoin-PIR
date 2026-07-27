@@ -911,7 +911,7 @@
                         </div>
                         <label for="admissionDirectoryRelays">Optional Nostr directory relays (one wss:// URL per line; explicit refresh only, at least two complete relays)</label>
                         <textarea id="admissionDirectoryRelays" class="input" rows="2" autocomplete="off" spellcheck="false"></textarea>
-                        <label for="admissionDirectoryKey">Pinned directory Ed25519 public key (independent bootstrap)</label>
+                        <label for="admissionDirectoryKey">Pinned directory Nostr x-only secp256k1 public key (64 lowercase hex; independent bootstrap)</label>
                         <input id="admissionDirectoryKey" class="input" autocomplete="off" spellcheck="false">
                         <div class="admission-config-actions">
                             <button type="button" id="admissionRefreshDirectory" class="btn ghost">Refresh directory now</button>
