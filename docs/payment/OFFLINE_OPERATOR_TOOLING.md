@@ -1,9 +1,12 @@
 # Payment V1 offline operator tooling
 
-`bpir-admin` provides offline builders for Payment V1 keys, signed protocol
-artifacts, provider persistence, and a deterministic integration fixture. None
-of these commands starts a listener, talks to a Lightning node, creates an
-invoice, or moves funds.
+`bpir-admin` primarily provides offline builders for Payment V1 keys, signed
+protocol artifacts, provider persistence, and a deterministic integration
+fixture. No command starts a listener, creates a Lightning invoice, or moves
+funds. There are two explicit network exceptions: `cashu-custody spent-confirm`
+performs one bounded NUT-07 HTTPS check, and `directory-artifact publish` sends
+already-signed public artifacts to configured Nostr relays. Every other builder
+and inspection path remains offline.
 
 Production deployment, remote-server operations, and real Lightning funds are
 separate ceremonies and are not authorized by running these commands.
@@ -34,6 +37,54 @@ fixtures, not as a recommendation to centralize browser claim keys.
 
 ARC uses a 128-byte four-scalar key and remains experimental pending an
 independent cryptographic review.
+
+## Nostr directory publication
+
+Directory assertion, entry, and checkpoint construction remains offline and is
+documented in `DIRECTORY_PROTOCOL.md`. The separate publish transport accepts
+no secret or signing-key argument. It verifies exact canonical artifacts
+against an explicit BIP340 directory-public-key pin, then sends them unchanged
+to two through eight credential-free public `wss://` relay hostnames.
+
+It requires one positive NIP-01 OK for each event on each relay, applies one
+bounded total timeout per relay, does not use proxies, redirects, relay AUTH or
+automatic retries, and exits nonzero on partial success. Exact artifacts are
+idempotent and may be rerun manually. Distinct hostnames are only a syntactic
+guard; selecting relays with genuinely independent operators and infrastructure
+is an operator responsibility. The local transport-neutral WebSocket tests do
+not establish public-relay or WebPKI interoperability. Publisher artifact
+loading, like readback below, is supported only from a trusted local
+Unix/POSIX filesystem: metadata stability checks do not make a stalled
+NFS/FUSE read deadline-bounded or defend against a privileged filesystem.
+
+After an explicitly approved staging publish, read the same frozen public
+artifact back without exposing a signing key:
+
+```sh
+node scripts/payment-v1-nostr-readback.mjs \
+  --artifact directory-checkpoints.json \
+  --relay wss://relay-one.example \
+  --relay wss://relay-two.example/nostr \
+  --expected-set-digest-hex "$EVENT_SET_DIGEST_FROM_PUBLISH" \
+  --timeout-ms 60000
+```
+
+This helper requires the lockfile-pinned `ws` development dependency already
+installed under `web/node_modules`. It disables redirects and compression,
+sets a transport-level maximum payload, requests only the frozen event IDs and
+requires every exact event value once plus EOSE on every relay. The publisher
+prints one domain-separated event-set digest on every bounded outcome line;
+readback requires that exact public digest and recomputes every NIP-01 event ID
+before dialing, so a success transcript is bound to the Rust-verified set. Raw relay URLs
+must pass the same canonical grammar as the Rust publisher. Artifact inputs
+share one 5 MiB limit and must remain the same regular file across a bounded,
+non-symlink/nonblocking open and read; FIFO, device, mutation and size races
+fail closed. Run it on a local POSIX filesystem; `O_NONBLOCK` is not a
+wall-clock bound for a stalled NFS/FUSE regular file. It has no publish path
+and never reads a key. Public relay smoke,
+production catalog publication and ongoing directory operation remain three
+separate states. The hostname grammar is syntactic; use production DNS/egress
+controls if relay-name rebinding to private networks is in scope.
 
 ## Root-signed quote-key delegation
 
@@ -177,6 +228,96 @@ identity, generation, aggregate row counts and `startup_check_ms`. An exact
 store/authority match is read-only; exactly one legitimate unanchored SQLite
 successor may complete its idempotent authority CAS, as at real startup. See
 `STAGING_STORE_DRILL.md` for the no-funds backup/restore and SLO procedure.
+
+## Standard Cashu custody and export
+
+The online provider uses two independent owner-only AEAD keyrings: one for
+NUT-03/NUT-09 recovery material and another for received-note custody. Configure
+an exact finite exposure cap for every accepted mint/unit; do not reuse either
+keyring across providers. Inspect the exact server options with:
+
+```sh
+cargo run --offline -p runtime --bin unified_server -- --help
+```
+
+The standard-Cashu portion of each provider's serving configuration has this
+shape (paths and caps are operator-specific):
+
+```sh
+--service-cashu-recovery-key 1=/private/provider-0/cashu-recovery-1.key \
+--service-cashu-recovery-active-epoch 1 \
+--service-cashu-custody-key 1=/private/provider-0/cashu-custody-1.key \
+--service-cashu-custody-active-epoch 1 \
+--service-cashu-exposure-limit "$MINT_ID:sat:100000:512"
+```
+
+Repeat a key option to retain old epochs during rotation. The same epoch
+number in the two domains is allowed, but the raw key bytes must differ. Every
+configured cap must correspond to an exact current/retained policy manifest,
+and every referenced manifest must have exactly one cap; unused or missing
+entries fail startup.
+
+Offline custody operations are grouped under:
+
+```sh
+bpir-admin cashu-custody --help
+bpir-admin cashu-custody recipient-keygen --help
+bpir-admin cashu-custody inventory --help
+bpir-admin cashu-custody export-prepare --help
+bpir-admin cashu-custody export-replay --help
+bpir-admin cashu-custody decrypt --help
+bpir-admin cashu-custody acknowledge --help
+bpir-admin cashu-custody spent-confirm --help
+```
+
+Generate one distinct provider-bound recipient keypair on the external-wallet
+side. Move only its public artifact to the provider operator. `export-prepare`
+requires an explicit nonzero export ID, exact mint/unit, maximum lot count,
+that provider-bound public artifact and every historical online custody-key
+epoch needed to decrypt selected lots. It atomically reserves at most 512
+notes/16 keyset groups, constructs a canonical no-memo/no-DLEQ `cashuB`, seals
+it to the recipient and persists the exact envelope before writing `--out`.
+
+If output delivery is lost, use `export-replay`; never invent a new export ID
+for the same reserved notes. On the recipient workstation, `decrypt` writes an
+owner-only `cashuB` file and never prints the bearer token. Import and secure
+that token in the chosen wallet before acknowledgement. `acknowledge` requires
+the exact artifact digest and the long, explicit
+`--confirm-external-wallet-took-custody-not-settlement` flag. ACK records only
+external-wallet custody: it does **not** release local exposure and does not
+assert NUT-05, Lightning settlement or provider payout.
+
+Release exposure later with one explicit, operator-initiated NUT-07 check:
+
+```sh
+bpir-admin cashu-custody spent-confirm \
+  --provider-id-hex "$PROVIDER_ID" \
+  --store /srv/bitcoinpir/provider-state/admission.sqlite3 \
+  --rollback-authority /mnt/independent-floor/bitcoinpir/floor.sqlite3 \
+  --export-id-hex "$EXPORT_ID_1" \
+  --export-id-hex "$EXPORT_ID_2" \
+  --custody-key "1=/private/provider-0/cashu-custody-1.key" \
+  --confirm-nut07-old-notes-spent-not-settlement-or-payout
+```
+
+Every selected nonterminal export must already be delivery-acknowledged and
+must resolve to the same canonical mint endpoint and unit. Repeated export IDs
+are checked in one bounded strict-HTTPS request; there is no `curl`, redirect,
+ambient proxy credential, polling or automatic retry. The response must contain
+the same ordered `Y` values and one canonical state for every note, and every
+state must be `SPENT` before any retirement write begins. Each export then uses
+a fresh current rollback-floor snapshot and its own observation digest, so the
+wider HTTP-batch digest is never stored as a cross-export link.
+
+If a later per-export commit fails after an earlier one committed, the command
+reports the exact position and stops. Rerun the same export-ID selection
+explicitly: terminal exports replay without contacting the mint or loading
+custody keys, while remaining acknowledged exports are checked once again.
+NUT-07 proves only that these old notes are spent; it does not prove settlement
+or payout. Schedule it independently of PIR queries because state checks can
+otherwise strengthen sender/receiver timing correlation. Store only aggregate
+inventory/IDs/digests in the ceremony record—no token, note secret, raw `Y`,
+witness, recovery ciphertext or query identifier.
 
 ## Deterministic no-funds fixture
 

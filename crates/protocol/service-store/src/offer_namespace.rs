@@ -4,6 +4,7 @@ use pir_service_protocol::{
     bat_verification_key_fingerprint_v1, AuthScheme, CredentialKeyBindingV1, FreeModeV1,
     ServiceProtocolError, VerificationMode, VerifiedServiceOfferV1,
 };
+use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -84,8 +85,8 @@ pub(crate) fn verify_existing_verified_offer_namespace_v1(
         arc_lineage_verifier,
     )? {
         DerivedOfferNamespaceV1::Namespace(expected) => {
-            let actual = store
-                .namespace(&expected.namespace_id)?
+            let connection = store.open_checked(false)?;
+            let actual = crate::read_namespace(&connection, &expected.namespace_id)?
                 .ok_or(StoreError::NamespaceMissing)?;
             if actual.scheme != expected.scheme
                 || actual.issuer_id != expected.issuer_id
@@ -97,6 +98,29 @@ pub(crate) fn verify_existing_verified_offer_namespace_v1(
             }
             if actual.status != NamespaceStatus::Active {
                 return Err(StoreError::NamespaceClosed);
+            }
+            if let Some(lineage) = expected.exclusive_key_lineage {
+                let persisted: Option<Vec<u8>> = connection
+                    .query_row(
+                        "SELECT lineage_digest FROM exclusive_key_lineages \
+                         WHERE scheme = ?1 AND key_fingerprint = ?2",
+                        params![
+                            i64::from(expected.scheme),
+                            lineage.key_fingerprint.as_slice()
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let persisted = persisted.ok_or_else(|| {
+                    StoreError::SchemaMismatch(
+                        "namespace is missing its exclusive key lineage".to_owned(),
+                    )
+                })?;
+                if crate::fixed_blob::<32>(persisted, "invalid exclusive lineage digest")?
+                    != lineage.lineage_digest
+                {
+                    return Err(StoreError::ExclusiveKeyLineageConflict);
+                }
             }
             Ok(VerifiedOfferNamespaceReadinessV1::Ready)
         }

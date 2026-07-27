@@ -307,26 +307,33 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
+ "futures-util",
  "getrandom 0.2.17",
  "hex",
  "k256",
  "pir-arc-adapter",
  "pir-attest-verify",
+ "pir-cashu-client",
+ "pir-cashu-custody",
  "pir-core",
  "pir-db-attest",
  "pir-directory-nostr",
  "pir-identity",
+ "pir-payment-crypto",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
  "pir-service-protocol",
  "pir-service-store",
+ "pir-strict-https",
  "rustix",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "toml",
  "zeroize",
 ]
@@ -1806,7 +1813,9 @@ dependencies = [
 name = "pir-cashu-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chacha20poly1305",
+ "ciborium",
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
@@ -1818,9 +1827,24 @@ dependencies = [
  "rand_core 0.6.4",
  "rusqlite",
  "serde",
+ "serde_bytes",
  "serde_json",
  "sha2",
  "tempfile",
+ "zeroize",
+]
+
+[[package]]
+name = "pir-cashu-custody"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "hex",
+ "hkdf",
+ "sha2",
+ "static_assertions",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -1967,6 +1991,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "zeroize",
 ]
 
@@ -2079,6 +2104,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
@@ -2146,6 +2172,7 @@ dependencies = [
  "k256",
  "lightning-invoice",
  "sha2",
+ "zeroize",
 ]
 
 [[package]]
@@ -2157,6 +2184,17 @@ dependencies = [
  "rusqlite",
  "sha2",
  "tempfile",
+ "zeroize",
+]
+
+[[package]]
+name = "pir-strict-https"
+version = "0.1.0"
+dependencies = [
+ "httparse",
+ "rustls",
+ "webpki-roots 0.26.11",
+ "zeroize",
 ]
 
 [[package]]
@@ -2538,7 +2576,6 @@ dependencies = [
  "futures-util",
  "harmonypir",
  "hex",
- "httparse",
  "libdpf",
  "memmap2",
  "onionpir",
@@ -2551,17 +2588,16 @@ dependencies = [
  "pir-sdk-client",
  "pir-service-protocol",
  "pir-service-store",
+ "pir-strict-https",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
  "rustix",
- "rustls",
  "serde",
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.24.0",
  "toml",
- "webpki-roots 0.26.11",
  "zeroize",
 ]
 

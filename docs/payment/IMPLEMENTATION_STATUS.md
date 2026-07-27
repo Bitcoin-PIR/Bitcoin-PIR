@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-07-26. This document describes repository code and local
+Status snapshot: 2026-07-27. This document describes repository code and local
 tests, not a production deployment. “Implemented” means that a code path exists;
 “tested” names the boundary actually exercised. It does not mean that an
 operator has activated the path with real money or public infrastructure.
@@ -49,9 +49,12 @@ operator has activated the path with real money or public infrastructure.
       pre-existing durable provider spend state.
 - [x] Signed policy activation with provider identity, policy epoch/fork,
       credential-keyset and Cashu-manifest rollback floors.
-- [x] ProviderStore schema v5 with global provider-local spend uniqueness,
-      BAT raw-key lineage, durable Free IP quota state and standard-Cashu swap
-      recovery intents.
+- [x] ProviderStore schema v7 with global provider-local spend uniqueness,
+      BAT raw-key lineage, durable Free IP quota state, standard-Cashu swap
+      recovery intents, finite per-mint/unit custody exposure, encrypted
+      provider-note lots, rollback-anchored offline export batches and
+      digest-only all-SPENT custody-retirement evidence. Delivery ACK remains
+      inside the exposure cap; only `SpentConfirmed` releases it.
 - [x] ProviderStore and IssuerStore require a separate monotonic rollback-floor
       authority. Serving binaries open existing stores and fail closed on
       missing, stale, wrong-identity or wrong-schema state.
@@ -91,8 +94,10 @@ operator has activated the path with real money or public infrastructure.
 - [x] Provider-local direct BOLT11 receipt issuance and durable receipt spend.
 - [x] Standard Cashu eCash merchant swap with exact-value NUT-03, NUT-09/NUT-07
       recovery, NUT-12 verification, encrypted recovery material and
-      at-most-once grant issuance. The external mint remains the authoritative
-      spender and an online availability dependency.
+      at-most-once grant issuance. Grant issuance atomically stores a separate,
+      note-only custody lot; recovery and custody use distinct keyrings. The
+      external mint remains the authoritative spender and an online
+      availability dependency.
 - [x] BitcoinPIR Cashu BAT blind/unblind/DLEQ path, provider-local verification,
       raw-DHKE-key lineage and durable spend adapter.
 - [x] Scoped ARC draft-01 issuance/presentation, client nonce typestate,
@@ -142,7 +147,10 @@ operator has activated the path with real money or public infrastructure.
       response recovery.
 - [x] Native Core Lightning adapter over a checked local Unix JSON-RPC socket.
       It validates the returned invoice, amount, network, payee, creation time,
-      expiry and payment hash and does not expose the preimage.
+      expiry and payment hash and does not expose the preimage. Each RPC has
+      one absolute wall-clock deadline across Unix-socket connect, complete
+      request write and complete response read; trickled bytes cannot refresh
+      that budget, and write-before/after failure classification is preserved.
 - [x] Pure-Rust/WASM BOLT11 parser with signature recovery, canonical lowercase
       round-trip, fixed non-zero amount, network and payee verification. The
       browser controller persists encrypted recovery state before displaying
@@ -156,13 +164,32 @@ operator has activated the path with real money or public infrastructure.
       process-wide request-rate limits. `serve-fake` is a deterministic local
       harness; `serve-cln` uses a checked local Core Lightning Unix RPC socket.
       Neither substitutes for a separately operated production TLS/abuse edge.
+- [x] The shared strict HTTPS client gives DNS plus all candidate addresses one
+      bounded connect deadline and gives TLS handshake plus the full request and
+      response one I/O deadline. Resolver workers and returned addresses are
+      capped, multi-address attempts share the remaining budget, and a timeout
+      after any application request byte remains outcome-unknown.
 - [x] Native SDK and WASM service-policy/auth helpers, browser encrypted
       capability/quote vaults, multi-tab locks and local independent-provider
       offer checks.
+- [x] Selected high-risk, application-controllable owned mutable copies added by
+      Payment V1 are best-effort zeroized at the server secure-channel boundary,
+      SDK/WASM intermediate-copy boundary, unreleased WASM batch/ARC-handle
+      boundary, and after asynchronous browser vault success or failure. This
+      is lifetime reduction only: public Rust `Vec<u8>`/typed return
+      allocations, some browser BOLT11 request/response/recovery buffers,
+      immutable JavaScript JSON/Base64/invoice/token strings, and browser,
+      WebCrypto, wasm-bindgen, allocator and OS copies remain explicit P2
+      residuals. This is not a forensic-erasure claim. ARC remains
+      experimental.
 - [x] Strict browser standard-Cashu V3/V4 import normalizes wallet tokens to
-      canonical `StandardCashuSpendV1`, rejects unknown/witness/DLEQ/NUT-10
-      fields, and closes mint, unit, keyset, denomination, fees and amount to
-      the exact signed offer before encrypted-vault installation.
+      canonical `StandardCashuSpendV1`, rejects unknown fields, witness and
+      NUT-10 conditions, accepts only the known NUT-12 wallet metadata shape,
+      verifies each `dleq.e/s/r` proof against the signed manifest denomination
+      key and the proof's exact `secret` and `C`, then strips every DLEQ value
+      locally and never sends it to a PIR provider. It closes mint, unit,
+      keyset, denomination, fees and amount to the exact signed offer before
+      encrypted-vault installation.
 - [x] Browser capabilities and BOLT11 recovery bind the exact policy digest in
       authenticated storage and lock selection. The IndexedDB v3 migration
       deletes legacy capability/recovery records that cannot prove that bind.
@@ -180,9 +207,32 @@ operator has activated the path with real money or public infrastructure.
       production WASM verification and durable rollback acceptance. It covers
       independent-provider/key separation plus tamper, wrong-key, expiry and
       rollback rejection; it is not evidence of public-relay interoperability.
-- [x] Offline `bpir-admin service-keygen`, `service-policy` and
-      `directory-artifact` commands. Directory tooling emits artifacts; it does
-      not publish them to a relay.
+- [x] Offline `bpir-admin service-keygen`, `service-policy`, directory assertion,
+      entry and checkpoint builders, plus an explicit native
+      `directory-artifact publish` transport. Publishing accepts no signing key,
+      requires a pinned directory public key, two through eight credential-free
+      public `wss://` relay hostnames, exact per-event positive OK and bounded
+      per-relay time/bytes. It attempts every relay and fails the command on any
+      partial result; exact immutable artifacts can be rerun manually.
+- [x] The staging-only Nostr readback tool accepts no key or publish operation,
+      mirrors the Rust canonical public-`wss://` grammar on the raw input, and
+      requires the Rust publisher's domain-separated event-set digest, valid
+      recomputed NIP-01 event IDs, exact frozen event values and EOSE. Artifact inputs share one
+      5 MiB budget and are opened without following the final symlink or
+      blocking on a raced FIFO/device; pre/post `fstat` checks reject mutation.
+      Node black-box tests cover URL aliases, symlink, FIFO, device, oversized
+      and aggregate-oversized inputs and run in the payment CI browser job.
+- [x] Offline `bpir-admin cashu-custody` tooling generates a provider-bound
+      X25519 recipient key, reports aggregate inventory, atomically reserves a
+      bounded note batch, persists one immutable recipient-sealed artifact
+      before release, replays the exact artifact, decrypts to an owner-only
+      canonical `cashuB` file and requires an explicit external-custody-only
+      acknowledgement. ACK does not release exposure. The explicit one-shot
+      `spent-confirm` command batches same-mint/unit exports through the strict
+      HTTPS Cashu client, accepts only exact all-`SPENT` NUT-07 results, refreshes
+      the rollback floor for every per-export commit and supports network-free,
+      key-free exact terminal replay. It does not poll or claim NUT-05,
+      Lightning settlement or provider payout.
 - [x] Dedicated payment-platform CI workflow for Rust, unified-server wiring,
       wasm32 compilation and both local Chromium boundaries: multi-tab vault
       fault injection and generated-WASM/real-loopback-issuer acquisition. Its
@@ -256,6 +306,17 @@ operator has activated the path with real money or public infrastructure.
       admission opcodes and the strict issuer/mint HTTP response boundary. The
       gate requires no network-installed fuzz tooling and retains explicit
       case-count/input-size bounds.
+- [x] An opt-in disposable CDK 0.17.3 fake-wallet runner starts only a random
+      loopback HTTP mint, obtains a real padded V4 `cashuB` token containing
+      NUT-12 wallet metadata, and proves the production WASM importer accepts
+      and normalizes it without forwarding DLEQ material. It then runs the
+      production provider-side NUT-03 state machine against that real CDK mint,
+      verifies the official full NUT-02 V2 keyset derivation and NUT-12 DLEQ,
+      atomically commits the grant plus custody notes, and proves resume does
+      not send a second swap. It uses no Lightning node or real funds and maps
+      only one synthetic test identity to loopback; the production WebPKI HTTPS
+      transport is unchanged. An unmodified provider-process/public-mint E2E
+      remains a staging gap.
 - [x] The product-owned wire-shape contract and compiled Rust conformance tests
       bind all five authorization methods and all five workload starts to one
       16,414-byte encrypted application request record. They separately admit
@@ -274,39 +335,76 @@ operator has activated the path with real money or public infrastructure.
 
 The exact reproducible commands are in `LOCAL_ACCEPTANCE.md` and
 `scripts/payment-v1-local-check.sh`. These are library and loopback provider
-process integration tests. They are **not** evidence of a public-relay,
-external-mint, real-node, production proof-chain or deployed
+process integration tests. A separate authorized short-lived Nostr smoke is
+recorded below; none of this is evidence of an external mint, persistent public
+Lightning node, production catalog, production proof-chain or deployed
 browser/issuer/two-provider end-to-end run.
+
+The current 2026-07-27 closeout completed
+`scripts/payment-v1-local-check.sh --full` from a fresh isolated Cargo target
+with exit code zero: complete offline Rust/platform coverage, dedicated Payment
+clippy, wasm32 plus fresh generated bindings, 333 passing Web unit tests with
+two intentional skips, Chromium vault 4/4 and generated-WASM/real local issuer
+1/1. Separate opt-in no-real-funds runs passed CLN local regtest 3/3 and both
+CDK 0.17.3 interoperability cases. Exact boundaries and the one infrastructure
+contention retry are recorded in `LOCAL_ACCEPTANCE.md`; pushed GitHub CI remains
+authoritative before merge.
 
 ## Implemented but not production-activated
 
-- [ ] The `payment-issuer serve-cln` executable path is implemented but has not
-      been connected to a node. It deliberately binds loopback and expects an
-      exact-owner local Unix RPC socket. Production TLS ingress, source-aware
-      abuse controls, process supervision and operational key custody remain
-      deployment work.
-- [ ] No real Lightning node has been connected and no real invoice has been
-      paid as part of this work. Real-funds operation needs explicit approval.
-- [ ] No external Cashu mint has been contacted. Mint compatibility,
-      availability, fee behavior and recovery have not been canary-tested.
-- [ ] No public Nostr relay has been read or written. Native relay transport is
-      not implemented; browser relay transport and offline publisher artifacts
-      are implemented.
+- [ ] The `payment-issuer serve-cln` executable path is implemented and has
+      crossed the disposable two-node local-regtest boundary below, but has not
+      been connected to a persistent, external or public-network node. It
+      deliberately binds loopback and expects an exact-owner local Unix RPC
+      socket. Production TLS ingress, source-aware abuse controls, process
+      supervision and operational key custody remain deployment work.
+- [x] The opt-in local-regtest runner connects the production CLN adapter to two
+      disposable Core Lightning nodes, opens a regtest-only channel and pays a
+      real BOLT11 invoice with valueless mined coins. It never reaches a public
+      Lightning network or uses real funds; either still needs explicit
+      approval.
+- [x] A disposable loopback CDK 0.17.3 fake-wallet mint has exercised padded V4
+      import, provider-side NUT-03 swap/NUT-12 verification, custody commit and
+      one-shot NUT-07 verification that the original NUT-03 inputs are `SPENT`
+      and the fresh provider-custody outputs are `UNSPENT`. CDK 0.17.3 exposes
+      custody receive only through bearer-token argv, so this runner
+      intentionally does not prove custody `UNSPENT -> SPENT` or execute admin
+      retirement against CDK. No public/WebPKI Cashu mint has been contacted,
+      and production availability, fee behavior and recovery have not been
+      canary-tested.
+- [x] Native Nostr publisher transport is implemented and covered through
+      transport-neutral local WebSocket sessions, including positive, reject,
+      duplicate/unexpected/missing, non-text, oversized, timeout and partial
+      failure behavior. Distinct hostnames do not prove independent operators.
+- [x] One authorized public-relay smoke published a 30-minute, empty 16-shard
+      checkpoint signed by a disposable test key. nos.lol and
+      `relay.primal.net` each returned 16 positive matching OKs, then returned
+      all 16 exact event values plus EOSE on ID-filtered readback. Damus failed
+      at the transport boundary and was not counted as success. The test key
+      and local artifact were deleted; this is public transport/relay-policy
+      evidence, not a production catalog or proof of relay-operator
+      independence.
 - [x] The main browser UI exposes an inline payment/access row for each selected
       provider and drives strict offer selection, acquisition/recovery, vault
       reservation and authorization before query. Harmony hint and query remain
       separate selections. This is unit-tested product wiring, not evidence of
       a deployed browser-to-two-server network E2E.
-- [ ] No production deployment, remote-server operation, key installation,
-      database migration or real-money operation has been performed. Each
-      requires fresh user approval immediately before execution.
+- [ ] A dedicated production directory key has been generated locally in an
+      owner-only repository-external directory, but it has not been backed up,
+      copied to a host or used to sign/publish a production catalog. No
+      production deployment, remote-server operation, database migration or
+      real-money operation has been performed. Each still requires its explicit
+      deployment ceremony and approval boundary.
 - [ ] No user manual acceptance test has been performed.
 
-## Release blockers
+## Production release blockers and gates
 
-The following are P1 production-activation blockers, not follow-up polish.
-The initial-payout implementation P1 is closed; these deployment blockers
-remain open:
+The implementation-code P1 findings, including initial payout
+persist-before-send, are closed. One production data-integrity P1 remains: an
+actually independent linearizable rollback authority is not deployed. The
+other numbered items below are mandatory production release, operations,
+external-review or manual-acceptance gates; they are not all implementation P1
+findings and must not be collapsed into that count.
 
 1. **Issuer production edge.** Both listeners cap simultaneous TCP connections,
    header/body size and I/O time and enforce process-wide quote, status,
@@ -335,11 +433,11 @@ remain open:
    settlement payout additionally has no concrete production
    `ProviderSettlementStateStoreV1` adapter or worker; the transport-neutral
    library cannot be activated by itself.
-4. **First production store ceremony.** Payment V1 has no released v4 store to
-   migrate. The fresh-v5 initialization tool exists, but independent backup /
+4. **First production store ceremony.** Payment V1 has no released v6 store to
+   migrate. The fresh-v7 initialization tool exists, but independent backup /
    rollback-authority placement, restore drills and operational custody still
    need environment-specific acceptance. Development v4 state is not migration
-   input; see `PROVIDER_STORE_V4_MIGRATION.md`.
+   input; see `PROVIDER_STORE_V7_MIGRATION.md`.
 5. **Reproducible network E2E.** A committed deterministic no-funds fixture
    assembles two independent providers, all five workloads/methods and issuer
    artifacts. The current acceptance additionally launches two independent
@@ -349,11 +447,13 @@ remain open:
    not launch the browser, issuer and both providers as one fault-injected
    topology; it does not execute standard Cashu success, Harmony hint/query,
    Onion or TEE-ORAM across provider process boundaries.
-6. **External dependency canaries.** Core Lightning, an external Cashu mint and
-   public Nostr relays need approved regtest/signet/staging canaries. The final
-   staging topology also needs production identity/attestation/pins,
-   TLS/edge controls, outage and restart drills, compatibility observations
-   and data-retention review. None was contacted in local acceptance.
+6. **External dependency canaries.** The disposable local CLN and CDK runners
+   and one short-lived public Nostr transport/readback smoke are complete.
+   Persistent Testnet4 Lightning, an external WebPKI Cashu mint, production
+   catalog publication and monitored relay selection remain staging gates. The
+   final topology also needs production identity/attestation/pins, TLS/edge
+   controls, outage/restart drills, compatibility observations and
+   data-retention review.
 7. **ARC review.** ARC must remain hidden behind an experimental offer/UX label
    and must not be a production-required method until independent review is
    closed.
@@ -383,6 +483,7 @@ they do not remove common-infrastructure traffic analysis.
 
 ## Production guard
 
-Production deployment, remote-server operations, public relay publication,
-external mint access and real Lightning funds are outside the completed work.
-They require a fresh, explicit user approval immediately before execution.
+Production deployment, remote-server operations, production-catalog
+public-relay publication, external mint access and real Lightning funds are
+outside the completed work. They require a fresh, explicit user approval
+immediately before execution.

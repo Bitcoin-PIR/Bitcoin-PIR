@@ -30,8 +30,10 @@ tells you to start the dev-issuer).
 
 ## What you'll see
 
-**ARC column (multi-show):** one credential authorises *N* unlinkable
-presentations.
+**ARC column (multi-show, experimental):** one credential is designed to
+authorise *N* presentations without a stable presentation identifier under the
+draft ARC assumptions. This privacy claim remains subject to independent
+cryptographic review.
 - **Mint credential** → blinds a request in WASM (226 B), sends it to the
   issuer, finalises the 454 B response into a 131 B credential.
 - **Present once** → each presentation is accepted by the gate; the quota
@@ -56,7 +58,7 @@ presentations.
 | Shape | One credential, *N* presentations | Pool of *N* one-time tokens |
 | Crypto | Algebraic MAC (P-256) + range proof | BDHKE (secp256k1) |
 | Rate limit | Range proof bounds the nonce to `[0, limit)`; tags dedup per context | One token = one query; spent-set dedup |
-| Unlinkability | Presentations are mutually unlinkable | Tokens are unlinkable to issuance |
+| Unlinkability goal | Experimental: presentations should be mutually unlinkable under the draft assumptions | Blind issuance aims to unlink tokens from issuance |
 | Wire (present) | `REQ_CREDENTIAL_PRESENT` (0x08) | `REQ_CASHU_BAT_PRESENT` (0x09), `authA…` |
 | Issued blob | 131-byte credential | `{id, secret, C}` per BAT |
 | Best when | Many queries per credential, fixed budget | Simple pay-per-query metering |
@@ -90,8 +92,10 @@ mint ── dev-issuer ── obtain ── browser (WASM) ── present ──
 > Payment V1 messages and durable store. The old present frames are not
 > translated into a Payment V1 grant.
 
-The credential issuer here is **free** (no payment). In production the same
-endpoints would be served by a Lightning-backed mint after a paid invoice.
+The credential issuer here is **free** (no payment). Production Payment V1
+does not reuse these endpoints or legacy frames. Its issuer acquisition APIs
+and signed, provider-bound credential protocol are documented separately in
+[`payment/PROTOCOL.md`](payment/PROTOCOL.md).
 
 ## What's tested (no browser required)
 
@@ -112,4 +116,4 @@ endpoints would be served by a Lightning-backed mint after a paid invoice.
 | HTTP client | [`web/src/payment-client.ts`](../web/src/payment-client.ts) |
 | BAT pool | [`web/src/cashu-bat.ts`](../web/src/cashu-bat.ts), [`web/src/credential-manager.ts`](../web/src/credential-manager.ts) |
 | Demo page | [`web/ratelimit-demo.html`](../web/ratelimit-demo.html), [`web/src/ratelimit-demo.ts`](../web/src/ratelimit-demo.ts) |
-| Server gate (prod) | [`apps/server/src/bin/unified_server.rs`](../apps/server/src/bin/unified_server.rs) (`--require-arc` / `--require-cashu`) |
+| Legacy/demo server gate | [`apps/server/src/bin/unified_server.rs`](../apps/server/src/bin/unified_server.rs) (`--allow-experimental-arc --require-arc` / `--require-cashu`) |

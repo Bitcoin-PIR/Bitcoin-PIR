@@ -47,7 +47,7 @@ pub use binding::{
 };
 pub use cashu_manifest::{
     derive_cashu_keyset_id_v2, derive_cashu_mint_id, is_canonical_cashu_keyset_id_v2,
-    CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1,
+    validate_cashu_unit_v1, CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1,
     StandardCashuMintExpectationV1, StandardCashuMintManifestV1, CASHU_KEYSET_ID_V2_LEN,
     CASHU_MINT_ID_DOMAIN, CASHU_MINT_MANIFEST_DIGEST_DOMAIN, MAX_CASHU_DENOMINATION_KEYS,
     MAX_CASHU_INPUT_KEYSETS, MAX_CASHU_KEYSET_ENCODING_LEN, MAX_CASHU_KEYSET_ID_LEN,
@@ -74,8 +74,8 @@ pub use clearing::{
     MAX_SETTLEMENT_RULES, PROVIDER_REDEEM_REQUEST_DIGEST_DOMAIN,
 };
 pub use directory::{
-    DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1, DirectoryOperatorAssertionV1,
-    DirectoryTransportV1, VerifiedDirectoryOperatorAssertionV1,
+    is_canonical_public_wss_endpoint_v1, DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1,
+    DirectoryOperatorAssertionV1, DirectoryTransportV1, VerifiedDirectoryOperatorAssertionV1,
     DIRECTORY_OPERATOR_ASSERTION_DIGEST_DOMAIN_V1,
     DIRECTORY_OPERATOR_ASSERTION_SIGNATURE_DOMAIN_V1, MAX_DIRECTORY_ASSERTION_LEN_V1,
     MAX_DIRECTORY_ASSERTION_VALIDITY_SECONDS_V1, MAX_DIRECTORY_ENDPOINTS_V1,

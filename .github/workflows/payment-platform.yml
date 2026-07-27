@@ -12,6 +12,7 @@ on:
       - 'apps/payment-issuer/**'
       - 'apps/admin/**'
       - 'apps/server/**'
+      - 'crates/net/**'
       - 'crates/protocol/channel/**'
       - 'crates/protocol/core/**'
       - 'crates/directory/nostr/**'
@@ -25,6 +26,10 @@ on:
       - 'docs/payment/**'
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-local-check.sh'
+      - 'scripts/payment-v1-cdk-regtest-e2e.sh'
+      - 'scripts/payment-v1-cln-regtest-e2e.sh'
+      - 'scripts/payment-v1-nostr-readback.mjs'
+      - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'web/**'
       - '.github/workflows/payment-platform.yml'
   pull_request:
@@ -38,6 +43,7 @@ on:
       - 'apps/payment-issuer/**'
       - 'apps/admin/**'
       - 'apps/server/**'
+      - 'crates/net/**'
       - 'crates/protocol/channel/**'
       - 'crates/protocol/core/**'
       - 'crates/directory/nostr/**'
@@ -51,6 +57,10 @@ on:
       - 'docs/payment/**'
       - 'scripts/fixtures/**'
       - 'scripts/payment-v1-local-check.sh'
+      - 'scripts/payment-v1-cdk-regtest-e2e.sh'
+      - 'scripts/payment-v1-cln-regtest-e2e.sh'
+      - 'scripts/payment-v1-nostr-readback.mjs'
+      - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'web/**'
       - '.github/workflows/payment-platform.yml'
   workflow_dispatch:
@@ -76,6 +86,7 @@ jobs:
         run: >-
           cargo test --offline
           -p pir-channel
+          -p pir-strict-https
           -p pir-service-protocol
           -p pir-service-store
           -p pir-payment-crypto
@@ -87,6 +98,7 @@ jobs:
           -p pir-issuer-service
           -p pir-provider-clearing-client
           -p pir-cashu-client
+          -p pir-cashu-custody
           -p pir-arc-adapter
           -p pir-directory-nostr
           -p pir-runtime-core
@@ -100,9 +112,15 @@ jobs:
           -p pir-payment-crypto
           --features provider-store
           --test provider_store_bat_adapter
+      - name: Test concrete provider-store experimental ARC boundary
+        run: >-
+          cargo test --offline
+          -p pir-arc-adapter
+          --features provider-store
       - name: Deny warnings across dedicated Payment V1 crates and issuer
         run: >-
           cargo clippy --offline --all-targets --no-deps
+          -p pir-strict-https
           -p pir-service-protocol
           -p pir-service-store
           -p pir-payment-crypto
@@ -114,6 +132,7 @@ jobs:
           -p pir-issuer-service
           -p pir-provider-clearing-client
           -p pir-cashu-client
+          -p pir-cashu-custody
           -p pir-arc-adapter
           -p pir-directory-nostr
           -p payment-issuer
@@ -123,7 +142,7 @@ jobs:
         run: |
           cargo test --offline -p pir-service-protocol --test payment_v1_adversarial
           cargo test --offline -p pir-runtime-core --test service_admission_adversarial
-          cargo test --offline -p runtime --bin unified_server service_http::adversarial_tests::
+          cargo test --offline -p pir-strict-https
       - name: Check unified server admission wiring
         run: cargo check --offline -p runtime --bin unified_server
       - name: Exercise loopback two-provider process admission
@@ -136,6 +155,11 @@ jobs:
           trap 'rm -rf -- "$fixture_root"' EXIT
           scripts/fixtures/generate-payment-v1-no-funds.sh "$fixture_root/generated"
           test -s "$fixture_root/generated/fixture.json"
+      - name: Validate opt-in external interoperability runners
+        run: >-
+          bash -n
+          scripts/payment-v1-cdk-regtest-e2e.sh
+          scripts/payment-v1-cln-regtest-e2e.sh
 
   wasm-boundary:
     name: Browser payment and directory boundary
@@ -189,6 +213,11 @@ jobs:
       - name: Install pinned web dependencies
         working-directory: web
         run: npm ci
+      - name: Exercise bounded Nostr relay readback inputs
+        run: |
+          node --check scripts/payment-v1-nostr-readback.mjs
+          node --test scripts/payment-v1-nostr-readback.test.mjs
+          node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
       - name: Install Chromium test runtime
         working-directory: web
         run: npx --no-install playwright install --with-deps chromium

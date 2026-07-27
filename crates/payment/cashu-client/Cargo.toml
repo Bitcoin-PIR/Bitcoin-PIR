@@ -21,10 +21,13 @@ default = []
 insecure-dev-sqlite-store = ["dep:rusqlite"]
 
 [dependencies]
+base64 = "0.22"
+ciborium = "0.2"
 pir-payment-crypto = { path = "../crypto" }
 pir-service-protocol = { path = "../../protocol/service" }
 rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"], optional = true }
 serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
 serde_json = "1"
 sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1", features = ["derive"] }

@@ -289,10 +289,34 @@ outputs before it submits the user's proofs to the mint's NUT-03 swap. It grants
 service only after the mint invalidates the inputs and returns valid signatures
 for those outputs. If the swap response is lost, the provider recovers the
 same outputs with NUT-09; it must never replay the inputs with new outputs.
-NUT-02 input fees are included in the exact-value calculation. Proof-level
-NUT-12 DLEQ material, especially `dleq.r`, is rejected by the browser encoder
-and PIR server decoder and never crosses the PIR wire; otherwise the provider
-could collude with the mint to link issuance to spend.
+NUT-02 input fees are included in the exact-value calculation. A wallet token
+may contain the known NUT-12 `dleq.e/s/r` metadata used for wallet recovery.
+The browser accepts only that bounded known shape and first verifies the
+NUT-12 `e/s/r` proof against the signed manifest denomination key and the
+proof's exact `secret` and `C`. It then strips all DLEQ material locally and
+emits a canonical `StandardCashuSpendV1`; an invalid proof, unknown field,
+witness or NUT-10 condition fails closed. The PIR server decoder therefore
+never receives `dleq.r` or any proof-level DLEQ value. Forwarding that material
+would let a provider collude with the mint to link issuance to spend.
+
+The provider stores two separately authenticated ciphertext domains. Recovery
+custody contains the exact NUT-03/NUT-09 request, output secrets and blindings;
+note custody contains only provider-created received notes and the minimum
+mint/keyset metadata needed to move them into an external wallet. A finite cap
+per exact mint/unit limits unresolved value and note count before NUT-03. Grant
+issuance and note-custody insertion are one rollback-anchored transaction.
+
+Offline export reserves a bounded cohort, persists one immutable artifact
+bound to a provider-specific recipient key, and only then releases its bytes.
+The encrypted artifact contains a canonical standard `cashuB` token with no
+BitcoinPIR identifier, memo or DLEQ metadata. An explicit acknowledgement says
+only that an external wallet took custody and does not release local exposure.
+Only a later owner-initiated, exact all-`SPENT` NUT-07 confirmation releases
+that exposure. The state check is one bounded same-mint/unit operation outside
+the PIR query path; every export gets independent digest-only evidence, and no
+raw `Y`, witness or wider HTTP-batch identifier is persisted. Neither ACK nor
+spent confirmation proves a NUT-05 melt, Lightning settlement or provider
+payout.
 
 This is a merchant use of standard Cashu eCash and remains distinct from Cashu
 BAT. First-version offers require exact value after input fees and do not
@@ -457,9 +481,11 @@ capability; the wallet atomically selects it for one provider, and the mint's
 global spent state rejects reuse. Neither case adds a pair identifier.
 
 As a local safety check, the client rejects two selected providers whose
-strictly verified policies expose the same raw BAT verification-key
-fingerprint. This comparison stays entirely in the client; neither provider,
-issuer, nor directory receives the selected peer or a pair identifier.
+strictly verified policies expose the same raw BAT or ARC verification-key
+fingerprint. Both raw-key comparisons happen before any explicit shared-issuer
+override is considered. The comparison stays entirely in the client; neither
+provider, issuer, nor directory receives the selected peer or a pair
+identifier.
 
 If the client reaches only one provider, any capability already durably spent
 there remains spent. The product deliberately provides no automatic recovery

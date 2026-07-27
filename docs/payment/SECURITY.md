@@ -139,6 +139,37 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
 43. A strict two-provider browser verifies each live announce bundle with its
     own independently selected operator pin. Missing, swapped, or equal pins
     fail closed; the deprecated single-pin adapter field is advisory only.
+44. Standard-Cashu recovery keys, online note-custody keys and offline export
+    recipient keys are separate domains. Provider 0 and provider 1 do not reuse
+    any of them.
+45. A standard-Cashu grant is impossible without the same durable transaction
+    installing a bounded encrypted provider-note lot and globally unique note
+    fingerprints. Exact finite `(mint_id, unit)` value/note caps are checked
+    before NUT-03; there is no unlimited fallback.
+46. Cashu custody export binds one export ID immutably to provider, mint, unit,
+    requested lot bound and recipient key ID, persists one exact sealed
+    artifact before release and never interprets external-custody ACK as
+    settlement or payout.
+47. Payment-authority network timeouts are absolute wall-clock budgets, not
+    idle timers. DNS plus all HTTPS candidate addresses share one connect
+    deadline; TLS, request and response share one I/O deadline; one CLN RPC
+    shares one local-socket connect/write/read deadline. Once any mutation
+    request byte may have been sent, timeout remains outcome-unknown and is
+    recovered only through the exact idempotency protocol.
+48. A Nostr directory readback never accepts a signing key or publish path.
+    Relay destinations use the same raw canonical public-`wss://` grammar as
+    the Rust publisher. Readback requires the publisher's domain-separated
+    event-set digest and recomputes every NIP-01 event ID; every artifact is a
+    stable regular file read under one cumulative bound before exact
+    event-value comparison. URL
+    normalization, symlinks, devices, FIFOs or a changing file never relax the
+    boundary.
+
+The canonical relay grammar is a syntactic boundary, not DNS-rebinding
+protection or proof that a hostname resolves only to public addresses. Relay
+targets are explicit operator inputs. A production publisher/readback host
+MUST also use reviewed DNS and egress policy if access to loopback, private or
+metadata networks is in its threat model.
 
 For invariant 15, “durable spend” is scheme-specific: the local uniqueness
 transaction for offline/local proofs, the mint's NUT-03 input invalidation for
@@ -146,11 +177,13 @@ standard eCash, or the shared issuer's atomic redeem for online BAT/ARC. A
 second local commit must never become authoritative after an external spender
 has already committed.
 
-Before selecting two providers, the strict client compares the raw BAT
+Before selecting two providers, the strict client compares the raw BAT and ARC
 verification-key fingerprints in their independently verified policies. It
-rejects a pair that advertises the same raw BAT key, without sending either
-provider the peer identity. This catches copied keys across self-run or
-different issuers, which no provider-local or per-issuer registry can detect.
+rejects a pair that advertises the same raw key for either method, without
+sending either provider the peer identity. Both raw-key comparisons must pass
+before an explicit shared-issuer override can permit a common issuer identity.
+This catches copied keys across self-run or different issuers, which no
+provider-local or per-issuer registry can detect.
 
 The analogous issuer-ID and HTTPS-origin checks are only negative safety
 checks: equality proves an obvious shared correlation boundary, but different
@@ -210,6 +243,31 @@ Lightning does not itself reveal the Bitcoin address queried unless the
 application, logs, browser storage, or timing joins the payment to the PIR
 operation. The architecture's token separation reduces that application join;
 it cannot eliminate global timing analysis.
+
+## Process-memory handling boundary
+
+Bearer material is erased on a best-effort basis wherever this implementation
+retains an owned mutable buffer. The server wraps the complete plaintext frame
+returned by secure-channel opening in a zeroizing guard, and the decoded
+authorization proof has its own zeroizing drop path. Native SDK and standalone
+WASM paths likewise zeroize controllable intermediate plaintext copies. A
+WASM-issued capability batch and an unreleased experimental-ARC presentation
+are zeroized when their handles are freed. The browser waits for the encrypted
+vault transaction to settle, then overwrites its mutable issuance/import copy
+on both success and failure; it must not erase that copy before the asynchronous
+vault operation has consumed it.
+
+These controls are memory-lifetime reduction, not forensic erasure. Immutable
+JavaScript strings used for JSON, Base64, BOLT11 invoices and imported `cashuB`
+tokens cannot be overwritten. `wasm-bindgen`, the WASM allocator, JavaScript
+GC/JIT, WebCrypto, browser message queues and operating-system buffers may make
+copies outside application control. Process abort, crash dumps, swap and a
+malicious browser extension are also outside the zeroizing-drop guarantee.
+Strict mode still ensures that browser/WebSocket/OS network queues receive the
+secure-channel ciphertext rather than a plaintext PIR authorization frame.
+Security claims MUST say "best-effort zeroization" and MUST NOT promise
+forensic process-memory erasure. ARC remains experimental until its wrapper and
+cryptography receive an independent review.
 
 ## Threats and required controls
 

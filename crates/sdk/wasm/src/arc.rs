@@ -11,6 +11,7 @@ use arc::{
 };
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
+use zeroize::Zeroize;
 
 const ARC_VAULT_STATE_MAGIC_V1: &[u8; 8] = b"BPIRARC1";
 const REVIEWED_ARC_STATE_LEN_V1: usize = 1 + 32 + 32 + 8 + 8 + 32 + (3 * 33);
@@ -199,6 +200,14 @@ impl WasmArcPresentationState {
 pub struct WasmPreparedArcPresentationV1 {
     successor: WasmArcPresentationState,
     presentation: Option<Vec<u8>>,
+}
+
+impl Drop for WasmPreparedArcPresentationV1 {
+    fn drop(&mut self) {
+        if let Some(presentation) = self.presentation.as_mut() {
+            presentation.zeroize();
+        }
+    }
 }
 
 #[wasm_bindgen]

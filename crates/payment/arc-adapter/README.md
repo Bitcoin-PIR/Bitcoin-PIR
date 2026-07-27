@@ -44,9 +44,12 @@ issuer-global tag consumption, and provider crediting.
 `ArcExclusiveKeyLineageV1` supplies the raw-key fingerprint, complete binding
 digest, and a domain-separated lineage digest needed by the provider store.
 Offer installation must atomically enforce a permanent
-`raw_public_key_fingerprint -> lineage_digest` mapping. The current adapter
-does not pretend an in-memory keyring is that authority; runtime ARC remains
-fail closed until the durable provider-store namespace accepts this input.
+`raw_public_key_fingerprint -> lineage_digest` mapping. The adapter does not
+pretend an in-memory keyring is that authority: the provider runtime now passes
+this input to the durable ProviderStore and retained-policy startup rechecks the
+exact lineage. Runtime activation additionally requires the explicit
+`--allow-experimental-arc` acknowledgement; that flag is for isolated testing
+and does not authorize production use.
 
 ARC remains `experimental`. Passing these functional tests and the upstream
 working-group vectors is not an independent cryptographic review. Production

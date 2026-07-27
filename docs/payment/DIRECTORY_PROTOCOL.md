@@ -358,14 +358,14 @@ address or payment event.
 Low-bandwidth single-shard fetch remains an explicit privacy tradeoff, never a
 method/provider-pair lookup API.
 
-## Offline publisher artifacts
+## Publisher artifacts and relay transport
 
-`bpir-admin directory-artifact` builds signed artifacts only; it never opens a
-relay connection. Keep the Ed25519 operator key, Ed25519 service-policy key,
-and BIP340 directory key in separately generated files and custody domains.
-The tool rejects operator/policy key equality, detects reuse of the directory
-secret seed for either Ed25519 role when those roles are present, and accepts
-repeatable `--reserved-xonly-pubkey-hex` pins for other secp256k1 roles.
+The `assertion`, `entry`, and `checkpoints` commands build signed artifacts
+offline. Keep the Ed25519 operator key, Ed25519 service-policy key, and BIP340
+directory key in separately generated files and custody domains. The builders
+reject operator/policy key equality, detect reuse of the directory secret seed
+for either Ed25519 role when those roles are present, and accept repeatable
+`--reserved-xonly-pubkey-hex` pins for other secp256k1 roles.
 
 First generate and verify an operator assertion from the canonical signed
 policy. Every endpoint must be a canonical public `wss://` URL:
@@ -430,6 +430,73 @@ operator actions. Publishing must send the emitted EVENT messages unchanged
 to every configured relay and persist the last `created_at` for each `d`
 coordinate before advancing an entry sequence or checkpoint epoch.
 
+The explicit `publish` command is the only directory-artifact command that
+opens the network. It accepts one or more already-signed canonical entry EVENT
+files and/or exact 16-message checkpoint arrays; it never accepts or reads a
+signing key. Pin the expected directory public key and publish the same frozen
+artifacts to between two and eight relay hostnames:
+
+```sh
+bpir-admin directory-artifact publish \
+  --artifact pir-a.entry.event.json \
+  --artifact directory-checkpoints.json \
+  --relay wss://relay-one.example \
+  --relay wss://relay-two.example/nostr \
+  --directory-pubkey-hex "$DIRECTORY_PUBKEY" \
+  --now-unix "$NOW" \
+  --relay-timeout-seconds 60
+```
+
+Before dialing, every EVENT is verified through the production entry or
+checkpoint parser against that key and time. Duplicate IDs, noncanonical bytes,
+mixed/incomplete checkpoint bundles, and expired or malformed events fail
+closed. Relay URLs must be canonical credential-free public `wss://` URLs with
+distinct hostnames. Different hostnames do **not** prove different operators,
+registrable domains, infrastructure, or legal control; the directory operator
+must audit those independence properties when selecting relays.
+
+Each relay gets one direct WebPKI TLS WebSocket and each exact EVENT text is
+followed by exactly one bounded NIP-01 `["OK", id, true, ...]`. V1 intentionally
+rejects `false`, unknown/out-of-order/duplicate/missing OK, `NOTICE`, `CLOSED`,
+oversized replies, and every non-text WebSocket message including Ping/Pong.
+There is no proxy, credential, redirect, relay-auth or automatic retry path.
+The single timeout bounds connect plus all sends and acknowledgements for that
+relay. This strict control-frame policy must be included in relay compatibility
+testing; a relay that injects Ping/Pong during the short publish exchange is not
+compatible with this V1 publisher.
+
+Publishing to multiple relays is not atomic. The command attempts every relay,
+prints only relay hostname, event count and a bounded result code, and exits
+nonzero if any relay fails. Each line also includes one domain-separated
+digest of the sorted event-ID/signature set, never an event ID. It never logs
+event content, signature or ID. An
+operator may safely rerun the exact immutable artifact: positive OK for an
+already-stored event is treated as success, while a negative OK is always a
+failure. Preserve artifacts and the external per-`d` `created_at`/sequence
+ledger before advancing; the transport does not mutate that ledger.
+
+For an approved staging readback, `scripts/payment-v1-nostr-readback.mjs`
+loads no key and has no publish operation. It uses the Web package's
+lockfile-pinned WebSocket implementation with redirect/compression disabled and
+a transport-level payload limit, validates raw relay URLs with the Rust
+publisher's canonical grammar, and reads stable regular artifacts under one
+cumulative 5 MiB budget. Symlink, FIFO, device, mutation and oversized inputs
+fail before network I/O. Both the Rust publisher artifact loader and the
+staging readback tool require a trusted local Unix/POSIX filesystem. Same-FD
+pre/post metadata checks reject observable identity, mode, size, mtime or ctime
+changes, but `O_NONBLOCK` does not give a stalled NFS/FUSE regular-file read a
+wall-clock deadline and a privileged or malicious filesystem can forge
+metadata. Non-Unix publisher input fails closed. The tool requests the frozen
+artifact's exact IDs and
+requires the exact publisher-reported set digest, recomputes each NIP-01 event
+ID, and requires every exact event value once followed by EOSE from each relay.
+A
+positive publish OK and successful immediate readback are compatibility
+observations, not a durability SLA or proof of relay-operator independence.
+Canonical hostname syntax also does not prevent DNS rebinding; production
+operators must add DNS and egress policy when private-network access is in the
+publisher/readback threat model.
+
 ## Required implementation tests
 
 - locked NIP-01 canonical-preimage/event-ID fixture, independent secp256k1
@@ -447,6 +514,11 @@ coordinate before advancing an entry sequence or checkpoint epoch.
 - unexpected tags and JSON fields capable of carrying payment or peer artifacts
   fail closed;
 - catalog fetch request shape contains no pair, query, address, or method;
+- exact publisher transport requires positive per-event/per-relay OK, rejects
+  false, duplicate, unexpected, missing, non-text, oversized and timed-out
+  replies, and reports partial success as a command failure;
+- readback rejects URL normalization aliases, symlink/FIFO/device/changing
+  artifacts and per-file or cumulative size violations before any relay dial;
 - manual endpoint path works without directory availability.
 
 External specifications:

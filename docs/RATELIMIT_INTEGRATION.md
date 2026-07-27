@@ -13,7 +13,9 @@ architecture or an operating instruction.
   mechanism demo. They must not be deployed as a payment service.
 - Legacy `--require-arc`, `--require-cashu`, `REQ_CREDENTIAL_PRESENT (0x08)`
   and `REQ_CASHU_BAT_PRESENT (0x09)` remain compatibility/demo paths. They do
-  not authorize work when the enforced Payment V1 gate is enabled.
+  not authorize work when the enforced Payment V1 gate is enabled. Even the
+  legacy ARC demo requires the explicit `--allow-experimental-arc`
+  acknowledgement and remains prohibited in production.
 - The untracked lowercase-tree prototype is non-reproducible evidence only.
   It is not a migration source. See
   [`payment/LEGACY_PROTOTYPE_AUDIT.md`](payment/LEGACY_PROTOTYPE_AUDIT.md).
@@ -61,14 +63,22 @@ in-memory, one-attempt acknowledgement.
 - persistence and crash semantics:
   [`payment/PERSISTENCE.md`](payment/PERSISTENCE.md)
 - security and privacy invariants:
-  [`payment/SECURITY.md`](payment/SECURITY.md), with the latest implementation
-  review recorded in
+  [`payment/SECURITY.md`](payment/SECURITY.md). The retained
   [`payment/SECURITY_REVIEW_2026-07-26.md`](payment/SECURITY_REVIEW_2026-07-26.md)
+  is a historical snapshot and contains a dated delta for the later schema-v7,
+  CLN/CDK, custody, strict-HTTPS and Nostr work;
 - current implementation state:
   [`payment/IMPLEMENTATION_STATUS.md`](payment/IMPLEMENTATION_STATUS.md)
 - operator and local acceptance procedures:
   [`payment/OPERATOR_RUNBOOK.md`](payment/OPERATOR_RUNBOOK.md) and
   [`payment/LOCAL_ACCEPTANCE.md`](payment/LOCAL_ACCEPTANCE.md)
+- Lightning staging and disposable local CLN:
+  [`payment/LIGHTNING_STAGING.md`](payment/LIGHTNING_STAGING.md) and
+  [`payment/CLN_REGTEST.md`](payment/CLN_REGTEST.md)
+- current ProviderStore replacement ceremony:
+  [`payment/PROVIDER_STORE_V7_MIGRATION.md`](payment/PROVIDER_STORE_V7_MIGRATION.md)
+- Nostr directory protocol and publication boundary:
+  [`payment/DIRECTORY_PROTOCOL.md`](payment/DIRECTORY_PROTOCOL.md)
 - ARC review gate:
   [`payment/ARC_EXPERIMENTAL_REVIEW.md`](payment/ARC_EXPERIMENTAL_REVIEW.md)
 

@@ -1,8 +1,13 @@
 # Payment v1 local acceptance
 
-Status: no-funds developer acceptance. This procedure does not deploy, contact
-a Lightning node or Cashu mint, publish to a Nostr relay, or operate a public
-PIR server.
+Status: no-funds developer acceptance. The default quick/full commands do not
+deploy, contact a Lightning node or Cashu mint, publish to a Nostr relay, or
+operate a public PIR server. A separate opt-in interoperability command starts
+one disposable loopback-only CDK fake-wallet mint; it uses no Lightning or real
+funds and never contacts a public mint. A separately authorized 2026-07-27
+Nostr smoke contacted public relays with one short-lived empty checkpoint and
+is recorded explicitly under “Directory checks”; it is not part of either
+default command.
 
 ## Prerequisites
 
@@ -41,6 +46,28 @@ Full local check:
 scripts/payment-v1-local-check.sh --full
 ```
 
+Optional real-CDK token-format and provider-side NUT-03/NUT-12 interoperability
+(outside the default offline suite) requires exact `cdk-mintd` and `cdk-cli`
+0.17.3 binaries:
+
+```sh
+BITCOINPIR_CDK_MINTD=/absolute/path/to/cdk-mintd \
+BITCOINPIR_CDK_CLI=/absolute/path/to/cdk-cli \
+  scripts/payment-v1-cdk-regtest-e2e.sh
+```
+
+The runner binds a random `127.0.0.1` port, creates only fake-wallet ecash,
+passes owner-only token/keyset files to an ignored production-WASM import test,
+stops the child and removes its private temporary directory. It validates
+padded V4 `cashuB`, current `m,u,t` structure and local stripping of known
+NUT-12 wallet metadata. It also exercises the provider's NUT-03/NUT-12 swap and
+custody path. One exact NUT-07 request proves the original NUT-03 inputs are
+`SPENT` and the newly committed custody outputs are `UNSPENT` through an
+explicit test-only loopback endpoint mapping. It does not prove custody
+`UNSPENT -> SPENT` or execute admin retirement against CDK: cdk-cli 0.17.3
+accepts custody receive only as a bearer token in process argv, which this
+runner deliberately refuses to expose.
+
 The full command mirrors the Rust/WASM portions of
 `.github/workflows/payment-platform.yml`, regenerates the WASM JS/TypeScript
 bindings, and adds the Web unit suite plus the local Chromium multi-tab vault
@@ -68,13 +95,60 @@ smoke of the exact pinned installation commands passed; the exact
 locked/offline/no-install/no-opt build command is checked below, and pushed
 workflow runs remain authoritative.
 
-After the Payment implementation source edits stopped on 2026-07-26,
+As a historical 2026-07-26 baseline before the later CLN/CDK/custody/Nostr
+changes, after that day's Payment implementation source edits stopped,
 `scripts/payment-v1-local-check.sh --full` completed with exit code zero. It
 included four passing multi-tab vault cases, one passing
 generated-WASM/real-loopback-issuer case, 326 passing Web unit tests, both
 provider process suites, the five-method x five-workload matrix, dedicated
 Payment clippy with warnings denied, wasm32 checking and fresh WASM generation.
 The pushed workflow run remains the authoritative CI record before merge.
+
+The current 2026-07-27 closeout run used a fresh isolated Cargo target and one
+build job so concurrent review processes could not share artifacts or locks:
+
+```sh
+CARGO_TARGET_DIR=/tmp/bitcoinpir-final-20260727 \
+CARGO_BUILD_JOBS=1 \
+  scripts/payment-v1-local-check.sh --full
+```
+
+It completed with exit code zero after source edits stopped. The run included
+the complete offline Rust platform/payment suite, 39 unified-server tests, both
+provider-process suites, 10 Node Nostr readback cases, Payment clippy with
+warnings denied, wasm32 and fresh WASM generation, strict TypeScript and bundle
+builds, **333 passing Web unit tests** with two intentional skips, all four
+Chromium multi-tab vault cases, and the generated-WASM/real-loopback-issuer
+case. Its two opt-in CLN Playwright cases were intentionally skipped because
+the default full run never starts a Lightning node.
+
+Separate opt-in no-real-funds evidence on 2026-07-27 also passed:
+
+- `scripts/payment-v1-cln-regtest-e2e.sh
+  --acknowledge-local-regtest-only`: 3/3 against disposable Bitcoin Core and
+  two Core Lightning nodes, including a real local channel/routed BOLT11
+  payment and generated-WASM BAT/experimental-ARC acquisition. The first
+  attempt timed out in Playwright global setup while another reviewer held the
+  shared Cargo target lock; its children were cleaned and the isolated retry
+  passed, so it is recorded as infrastructure contention rather than a
+  protocol failure.
+- `scripts/payment-v1-cdk-regtest-e2e.sh` with exact CDK 0.17.3 binaries: the
+  real V4 import case and provider NUT-03/NUT-12 plus input-`SPENT` / fresh
+  custody-`UNSPENT` NUT-07 case both passed. Custody `UNSPENT -> SPENT` and
+  admin retirement were intentionally not attempted because CDK 0.17.3's CLI
+  would place the bearer token in process argv. The verified official
+  Apple-arm64 SHA-256 digests were
+  `78390b850e6e24f11af1848f54004bdf7439771d81970b115241922435e944b9`
+  (`cdk-cli`) and
+  `05b2e8cb01c2500a0200264947eb5b41cb82fcfc02263de6c0c1af7d531b89ab`
+  (`cdk-mintd`).
+- `npm audit --omit=dev --audit-level=moderate` reported zero vulnerabilities;
+  `cargo audit` reported no vulnerability finding and the four allowed
+  upstream/vendor warnings listed below.
+
+These records used no public Lightning network, real funds, public Cashu mint,
+remote PIR server, production catalog or production database. GitHub checks on
+the pushed commit remain authoritative before merge.
 
 The exact `--no-opt` package generated locally on 2026-07-26 contained a
 `pir_sdk_wasm_bg.wasm` of 3,600,060 bytes raw and 1,195,176 bytes with gzip.
@@ -107,10 +181,10 @@ the complete vendor tree as an incidental Payment change.
 | Method | Focused command/boundary | What it proves | What it does not prove |
 |---|---|---|---|
 | Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, and `payment_v1_methods_process_e2e` | open and durable IP-quota authorization through the real provider process plus canonical Free authorization at every backend gate | public-IP attribution behind a real proxy or production DDoS resistance |
-| Direct BOLT11 receipt | `cargo test --offline -p pir-lightning-backend`, issuer lifecycle tests and `direct_receipt_production_committer_spend_survives_store_restart` | fake invoice state, signed receipt admission and replay rejection across ProviderStore restart | a real wallet/node payment or production issuer listener |
-| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client` plus the runtime matrix | exact swap/recovery state machine, mint response validation and backend admission with deterministic test transports | compatibility or availability of an external mint |
+| Direct BOLT11 receipt | `cargo test --offline -p pir-lightning-backend`, issuer lifecycle tests, `direct_receipt_production_committer_spend_survives_store_restart`, and optional `scripts/payment-v1-cln-regtest-e2e.sh --acknowledge-local-regtest-only` | fake lifecycle/state tests, signed receipt admission and replay rejection across ProviderStore restart, plus a real local CLN socket/channel/BOLT11 payment and generated-WASM acquisition path | a public-network or real-value wallet payment, production ingress, or production Lightning operations |
+| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, and optional `scripts/payment-v1-cdk-regtest-e2e.sh` | exact swap/recovery/grant-to-custody state machine, finite exposure through ACK, bounded immutable export, in-process exact NUT-07 all-SPENT retirement with digest-only evidence, backend admission with deterministic transports, and real CDK V4 import plus provider-side NUT-03/NUT-12 verification, custody commit, original-input `SPENT` and fresh-custody `UNSPENT` | an unmodified provider process against a public WebPKI mint, custody `UNSPENT -> SPENT`/admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
 | Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, and `payment_v1_methods_process_e2e` | real blind/DLEQ/unblind proof through a real provider process and provider-local durable BAT spend/restart rejection | a public/shared Cashu service or production key custody |
-| ARC experimental | `cargo test --offline -p pir-arc-adapter`, the runtime matrix, and `payment_v1_methods_process_e2e` | real draft-01 issuance/presentation through a real provider process plus nonce/tag persistence and restart rejection | independent cryptographic review or permission to advertise ARC as stable |
+| ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, and `payment_v1_methods_process_e2e` | real draft-01 issuance/presentation through a real provider process plus nonce/tag persistence and restart rejection | independent cryptographic review, complete IETF protocol interoperability, or permission to advertise ARC as stable |
 
 The cross-product test is:
 
@@ -170,6 +244,42 @@ the deterministic mint transport in `pir-cashu-client`: the production HTTPS
 client trusts only the fixed WebPKI roots, so this suite does not add a test CA
 or TLS bypass. The five-method x five-workload in-process matrix remains the
 process-independent coverage for standard Cashu, Harmony, Onion and TEE-ORAM.
+The separate opt-in CDK runner exercises the real provider-side client against
+a loopback CDK mint through an exact test-only endpoint mapping; it does not
+alter or exercise the unified-server production WebPKI transport.
+
+## Standard Cashu custody boundary
+
+Full mode and Payment Platform CI include:
+
+```sh
+cargo test --offline -p pir-cashu-client
+cargo test --offline -p pir-cashu-custody
+cargo test --offline -p pir-service-store cashu_custody
+cargo test --offline -p bpir-admin cashu_custody
+
+# Optional: requires separately installed CDK 0.17.3 binaries and uses only a
+# disposable loopback fake-wallet mint.
+scripts/payment-v1-cdk-regtest-e2e.sh
+```
+
+Together these cover separate recovery/custody AEAD domains, finite exact
+mint/unit caps before submission, atomic grant-plus-note custody, cross-intent
+note uniqueness, 512-note/16-keyset export selection, overflow lots left
+available, immutable recipient binding, persist-before-release, byte-identical
+replay, recipient-sealed envelope authentication, owner-only output and
+explicit external-custody-only acknowledgement, ACK-still-counted exposure,
+strict ordered NUT-07 parsing, same-mint/unit multi-export batching, exact
+all-`SPENT` retirement, current-floor refresh and key/network-free terminal
+replay. The default full-mode portion uses generated fake notes and an
+in-process NUT-07 transport; it does not prove that a wallet accepted or
+redeemed the exported token, nor that an external mint interoperates. The
+opt-in CDK runner additionally obtains a real padded V4 token, checks the
+official full NUT-02 V2 keyset derivation, executes the production provider-side
+NUT-03 request and NUT-12 DLEQ verification, commits the received notes to
+custody, and proves restart/resume does not send a second swap. Its transport
+maps only the signed synthetic test identity to the validated loopback mint;
+production HTTPS/WebPKI behavior is unchanged.
 
 ## Fake Lightning and issuer checks
 
@@ -262,9 +372,10 @@ real current time/current registration/current issuer key; and concurrent or
 repeated payouts preserve one monotonic terminal-predecessor chain. This closes
 the send-before-persist implementation P1.
 
-The full command passed for the current local tree; pushed branch CI remains
-authoritative before merge. The client is transport-neutral and the repository
-still does not select a production transport, concrete persistent
+The dated current-tree acceptance record above supplies the exact command and
+counts; pushed branch CI remains authoritative before merge. The client is
+transport-neutral and the repository still does not select a production
+transport, concrete persistent
 `ProviderSettlementStateStoreV1`, truly independent floor adapter or payout
 worker. Therefore no passing library test enables production settlement.
 
@@ -276,14 +387,19 @@ together.
 
 ## Directory checks
 
-Offline directory codecs, split-view rules and publisher artifact generation:
+Offline directory codecs, split-view rules, publisher artifact generation, and
+the transport-neutral native publisher session:
 
 ```sh
 cargo test --offline -p pir-directory-nostr
 cargo test --offline -p bpir-admin directory_artifact
+cargo test --offline -p bpir-admin directory_publish
 cargo test --offline -p pir-sdk-wasm \
   signed_publish_to_fake_relays_reads_two_independent_providers_and_fails_closed
 cargo run --offline -p bpir-admin -- directory-artifact --help
+node --check scripts/payment-v1-nostr-readback.mjs
+node --test scripts/payment-v1-nostr-readback.test.mjs
+node scripts/payment-v1-nostr-readback.mjs --help
 ```
 
 The focused WASM test passes a real Rust-generated publisher artifact through
@@ -291,7 +407,31 @@ two deterministic process-local NIP-01 relay implementations, all 16 shards,
 the production catalog verifier and rollback state. It covers two independent
 providers plus tamper, wrong-key, expiry and rollback rejection. These commands
 do not contact or publish to a public Nostr relay and do not prove public-relay
-interoperability.
+interoperability. The admin publisher tests additionally use transport-neutral
+in-memory WebSockets to prove exact EVENT bytes, ordered positive OK handling,
+all-relay attempts, nonzero partial failure, timeout and rejection of false,
+duplicate/unexpected/missing, non-text and oversized replies. They deliberately
+do not prove WebPKI, public relay policy, operator independence, or compatibility
+with relays that inject Ping/Pong control frames during the publish exchange.
+
+The staging-only readback script resolves the lockfile-pinned `ws` dependency
+from `web/node_modules`, disables compression and redirects, and applies a
+transport-level `maxPayload` before parsing relay data. It never reads a key or
+publishes. Given the already Rust-verified frozen artifact, it requests exact
+event IDs and requires every event value exactly once plus EOSE from each
+relay. JSON object field ordering is not treated as event data.
+
+On 2026-07-27, a separately authorized public smoke generated a disposable
+directory key and a 30-minute empty 16-shard checkpoint. The same immutable
+artifact received 16/16 matching positive OKs from both `wss://nos.lol` and
+`wss://relay.primal.net`; ID-filtered readback then returned all 16 exact event
+values and EOSE from both. `wss://relay.damus.io` failed at the transport
+boundary for publish and readback and was correctly excluded from success.
+The disposable private key and local artifact were deleted after the test.
+The event contained no provider entry, payment or query data. This establishes
+one public WebPKI/relay-policy interoperability observation only: it is not a
+production catalog, a durability SLA, or proof that the two successful
+hostnames have independent operators/infrastructure.
 
 ## Formal Payment V1 wire-shape lock
 
@@ -382,11 +522,16 @@ The generated fixture advertises an invalid HTTPS issuer hostname so it cannot
 be mistaken for a deployable endpoint. A test-only fetch adapter accepts only
 that exact fixture origin and maps its paths to the random loopback issuer; it
 does not relax production endpoint validation. The fake-settlement route is
-the only payment source: no wallet, Core Lightning socket, external Cashu mint,
-Nostr relay, remote network or real funds participate. The provider-side
+the only payment source in the default full local check: no wallet, Core
+Lightning socket, external Cashu mint, Nostr relay, remote network or real
+funds participate there. The separate opt-in CLN-regtest runner connects the
+production adapter to disposable local CLN nodes and pays a real BOLT11 invoice
+using valueless regtest coins. The provider-side
 secure-channel exporter is synthetic, and this boundary does not launch either
 PIR provider, execute a PIR query, verify the production proof chain, or cover
-BAT/ARC acquisition.
+BAT/ARC acquisition in its default fake-backend run. The opt-in CLN-regtest
+variant covers generated-WASM BAT/ARC acquisition and recovery without real
+funds, but still does not launch a PIR provider.
 
 ## Expected acceptance record
 
@@ -409,11 +554,16 @@ At minimum, a release candidate needs evidence for:
 
 ## Not exercised by this procedure
 
-- real Lightning payment, routing, notification or refund behavior;
-- an actual Core Lightning socket connection or paid invoice (the executable
-  adapter and deterministic RPC mapping tests are covered);
-- external Cashu mint interoperability;
-- public Nostr relay behavior;
+- public-network or real-value Lightning payment, routing, notification or
+  refund behavior (the opt-in runner covers a local CLN socket, local channel
+  routing and a paid regtest BOLT11 invoice);
+- an unmodified unified-server provider NUT-03 path against a public/WebPKI
+  Cashu mint (the opt-in local CDK runner covers the same provider-side client,
+  real CDK response and custody commit, but uses an exact test-only loopback
+  transport mapping);
+- production-catalog publication, ongoing public-relay durability and
+  DNS/egress-rebinding controls (one short-lived empty public-relay
+  publish/readback compatibility smoke is recorded above);
 - an actually independent production rollback-floor adapter and restore domain;
 - production TLS/reverse proxy, quote-spam controls, load tests for the global
   connection/auth limits, or tree-top bandwidth overload at the edge;

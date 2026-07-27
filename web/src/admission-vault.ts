@@ -202,9 +202,24 @@ export class AdmissionCredentialVaultV1 {
       if (!match) return null;
       // Local canonical validation must complete while the record is still
       // recoverable. Once deleted, all network outcomes are ambiguous.
-      validateBeforeRetire?.(match.plain.payload.slice());
+      if (validateBeforeRetire) {
+        const validationCopy = match.plain.payload.slice();
+        try {
+          validateBeforeRetire(validationCopy);
+        } catch (error) {
+          match.plain.payload.fill(0);
+          throw error;
+        } finally {
+          validationCopy.fill(0);
+        }
+      }
       // Delete-before-return is the client-side half of at-most-once use.
-      await deleteValue(this.db, RECORD_STORE, match.id);
+      try {
+        await deleteValue(this.db, RECORD_STORE, match.id);
+      } catch (error) {
+        match.plain.payload.fill(0);
+        throw error;
+      }
       return match.plain;
     });
   }
@@ -221,7 +236,11 @@ export class AdmissionCredentialVaultV1 {
       let count = 0;
       for (const row of rows) {
         const plain = await this.decryptRecord(row);
-        if (sameBinding(plain, binding)) count += 1;
+        try {
+          if (sameBinding(plain, binding)) count += 1;
+        } finally {
+          plain.payload.fill(0);
+        }
       }
       return count;
     });
@@ -242,18 +261,22 @@ export class AdmissionCredentialVaultV1 {
     const inventory = new Map<string, AdmissionCapabilityInventoryV1>();
     for (const row of rows) {
       const capability = await this.decryptRecord(row);
-      if (provider !== null && capability.providerIdHex !== provider) continue;
-      const binding: AdmissionCapabilityBindingV1 = {
-        providerIdHex: capability.providerIdHex,
-        policyDigestHex: capability.policyDigestHex,
-        scopeIdHex: capability.scopeIdHex,
-        offerId: capability.offerId,
-        scheme: capability.scheme,
-      };
-      const key = lockName(binding);
-      const existing = inventory.get(key);
-      if (existing) existing.count += 1;
-      else inventory.set(key, { ...binding, count: 1 });
+      try {
+        if (provider !== null && capability.providerIdHex !== provider) continue;
+        const binding: AdmissionCapabilityBindingV1 = {
+          providerIdHex: capability.providerIdHex,
+          policyDigestHex: capability.policyDigestHex,
+          scopeIdHex: capability.scopeIdHex,
+          offerId: capability.offerId,
+          scheme: capability.scheme,
+        };
+        const key = lockName(binding);
+        const existing = inventory.get(key);
+        if (existing) existing.count += 1;
+        else inventory.set(key, { ...binding, count: 1 });
+      } finally {
+        capability.payload.fill(0);
+      }
     }
     return [...inventory.values()].sort((left, right) =>
       left.policyDigestHex.localeCompare(right.policyDigestHex)
@@ -277,7 +300,14 @@ export class AdmissionCredentialVaultV1 {
     return withExclusiveLock(lockName(binding), async () => {
       const match = await this.findExact(binding);
       if (!match) return null;
-      const advanced = advance(match.plain.payload.slice());
+      const serializedState = match.plain.payload.slice();
+      let advanced: ArcAdvanceV1;
+      try {
+        advanced = advance(serializedState);
+      } finally {
+        serializedState.fill(0);
+        match.plain.payload.fill(0);
+      }
       if (
         !(advanced.nextState instanceof Uint8Array) ||
         advanced.nextState.length === 0 ||
@@ -287,6 +317,11 @@ export class AdmissionCredentialVaultV1 {
         typeof advanced.releaseAfterPersisted !== 'function' ||
         typeof advanced.discard !== 'function'
       ) {
+        try {
+          if (typeof advanced.discard === 'function') advanced.discard();
+        } finally {
+          if (advanced.nextState instanceof Uint8Array) advanced.nextState.fill(0);
+        }
         throw new Error('ARC advance callback returned an invalid state transition');
       }
       try {
@@ -302,12 +337,22 @@ export class AdmissionCredentialVaultV1 {
       } catch (error) {
         advanced.discard();
         throw error;
+      } finally {
+        advanced.nextState.fill(0);
       }
-      const presentation = advanced.releaseAfterPersisted();
-      if (!(presentation instanceof Uint8Array) || presentation.length === 0) {
-        throw new Error('ARC transition released an invalid presentation after persistence');
+      let presentation: Uint8Array | null = null;
+      try {
+        presentation = advanced.releaseAfterPersisted();
+        if (!(presentation instanceof Uint8Array) || presentation.length === 0) {
+          throw new Error('ARC transition released an invalid presentation after persistence');
+        }
+        return presentation.slice();
+      } catch (error) {
+        advanced.discard();
+        throw error;
+      } finally {
+        presentation?.fill(0);
       }
-      return presentation.slice();
     });
   }
 
@@ -709,6 +754,7 @@ export class AdmissionCredentialVaultV1 {
     for (const row of rows) {
       const plain = await this.decryptRecord(row);
       if (sameBinding(plain, binding)) return { id: row.id, plain };
+      plain.payload.fill(0);
     }
     return null;
   }
@@ -735,15 +781,17 @@ export class AdmissionCredentialVaultV1 {
   }
 
   private async decryptRecord(row: CipherRecordV1): Promise<AdmissionCapabilityV1> {
+    let decrypted: Uint8Array | null = null;
+    let capability: AdmissionCapabilityV1 | null = null;
     try {
-      const decrypted = await this.decryptBoundBytes(
+      decrypted = await this.decryptBoundBytes(
         row,
         RECORD_AAD_DOMAIN,
         'admission capability authentication failed',
       );
       const parsed = JSON.parse(new TextDecoder().decode(decrypted)) as PlainRecordV1;
       if (parsed.version !== 2) throw new Error('version');
-      const capability: AdmissionCapabilityV1 = {
+      capability = {
         providerIdHex: parsed.providerIdHex,
         policyDigestHex: parsed.policyDigestHex,
         scopeIdHex: parsed.scopeIdHex,
@@ -755,8 +803,11 @@ export class AdmissionCredentialVaultV1 {
       await requireBoundRowMatches(row, capability);
       return capability;
     } catch {
+      capability?.payload.fill(0);
       // Do not silently skip a damaged entry and select a different token.
       throw new Error('admission capability authentication or decoding failed');
+    } finally {
+      decrypted?.fill(0);
     }
   }
 }

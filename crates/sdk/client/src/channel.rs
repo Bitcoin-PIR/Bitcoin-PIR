@@ -31,6 +31,7 @@
 use async_trait::async_trait;
 use pir_channel::{ClientHandshake, Direction, Session, ENCRYPTED_FRAME_MAGIC, SESSION_KEY_LEN};
 use pir_sdk::{PirError, PirResult};
+use zeroize::Zeroizing;
 
 use crate::transport::PirTransport;
 
@@ -204,7 +205,7 @@ impl<T: PirTransport> PirTransport for SecureChannelTransport<T> {
                 "secure channel: inner recv returned <4 bytes".into(),
             ));
         }
-        let opened = self.open_incoming(&raw[4..])?;
+        let opened = Zeroizing::new(self.open_incoming(&raw[4..])?);
         let mut out = Vec::with_capacity(4 + opened.len());
         out.extend_from_slice(&(opened.len() as u32).to_le_bytes());
         out.extend_from_slice(&opened);

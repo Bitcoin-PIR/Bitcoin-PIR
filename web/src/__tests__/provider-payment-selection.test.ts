@@ -30,6 +30,7 @@ function offer(overrides: Partial<ServiceOfferViewV1> = {}): ServiceOfferViewV1 
     issuerIdHex: '31'.repeat(32),
     keyIdHex: '41'.repeat(32),
     batVerificationKeyFingerprintHex: '51'.repeat(32),
+    arcVerificationKeyFingerprintHex: '',
     endpoint: 'https://issuer-a.example',
     credentialCount: 1,
     credentialPresentationLimit: 1,
@@ -56,6 +57,53 @@ describe('local independent-provider payment selection', () => {
       { trust: trust(2, 12, 22), offer: offer() },
       { allowSharedIssuerCorrelation: true },
     )).toThrow(/raw Cashu BAT verification key/);
+  });
+
+  it('rejects a copied raw ARC key even if shared issuer correlation is explicitly allowed', () => {
+    const arcOffer = offer({
+      authorization: 'arc-experimental',
+      deploymentStatus: 'experimental',
+      batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '61'.repeat(32),
+      credentialPresentationLimit: 10,
+    });
+    expect(() => assertIndependentProviderOfferPairV1(
+      { trust: trust(1, 11, 21), offer: arcOffer },
+      { trust: trust(2, 12, 22), offer: { ...arcOffer, offerId: 2 } },
+      { allowSharedIssuerCorrelation: true },
+    )).toThrow(/raw ARC verification key/);
+  });
+
+  it('accepts two ARC raw keys after explicit shared-issuer correlation opt-in', () => {
+    const first = offer({
+      authorization: 'arc-experimental',
+      deploymentStatus: 'experimental',
+      batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '61'.repeat(32),
+      credentialPresentationLimit: 10,
+    });
+    expect(() => assertIndependentProviderOfferPairV1(
+      { trust: trust(1, 11, 21), offer: first },
+      { trust: trust(2, 12, 22), offer: {
+        ...first,
+        offerId: 2,
+        arcVerificationKeyFingerprintHex: '62'.repeat(32),
+      } },
+      { allowSharedIssuerCorrelation: true },
+    )).not.toThrow();
+  });
+
+  it('fails closed when a non-ARC offer exposes an ARC raw-key fingerprint', () => {
+    expect(() => assertIndependentProviderOfferPairV1(
+      { trust: trust(1, 11, 21), offer: offer({
+        arcVerificationKeyFingerprintHex: '61'.repeat(32),
+      }) },
+      { trust: trust(2, 12, 22), offer: offer({
+        issuerIdHex: '32'.repeat(32),
+        endpoint: 'https://issuer-b.example',
+        batVerificationKeyFingerprintHex: '52'.repeat(32),
+      }) },
+    )).toThrow(/non-ARC offer/);
   });
 
   it('rejects one paid issuer or origin by default and requires explicit opt-in', () => {

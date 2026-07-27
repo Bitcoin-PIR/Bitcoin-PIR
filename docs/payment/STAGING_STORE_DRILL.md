@@ -9,7 +9,7 @@ does not authorize production deployment or the use of production secrets.
 The commands below exercise:
 
 - deterministic two-provider, five-method, five-workload fixture generation;
-- explicit issuer/provider schema-v5 initialization;
+- explicit issuer schema-v5 and provider schema-v7 initialization;
 - owner-only database paths and separately configured rollback authorities;
 - the same full `open_existing` integrity and rollback-floor checks used by
   serving startup;
@@ -65,7 +65,8 @@ cargo run --locked --offline -p payment-issuer -- init-store \
   --rollback-authority "$drill_root/issuer-floor/floor.sqlite3"
 ```
 
-Both commands must report schema version 5. On Unix, each parent must be mode
+The provider command must report schema version 7 and the issuer command
+schema version 5. On Unix, each parent must be mode
 0700 and each SQLite file mode 0600. Repeating either initialization against
 the same paths must fail; it never overwrites or adopts existing state.
 
@@ -106,7 +107,9 @@ aggregate fields. Record at least:
 - issuer `quote_rows`, `claim_rows`, `retained_policy_rows`,
   `redemption_rows`, and `payout_rows`;
 - provider `namespace_rows`, `spent_capability_rows`,
-  `free_rate_limit_bucket_rows`, and `cashu_swap_intent_rows`;
+  `free_rate_limit_bucket_rows`, `cashu_swap_intent_rows`,
+  `cashu_custody_lot_rows`, `cashu_custody_note_rows` and
+  `cashu_custody_export_batch_rows`;
 - cold and warm `startup_check_ms` observations on the intended storage class.
 
 The actual issuer and provider processes emit the same aggregate inventory and

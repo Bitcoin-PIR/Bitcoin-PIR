@@ -34,6 +34,13 @@ interface FixtureInventoryV1 {
 }
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const cargoTargetRoot = process.env.CARGO_TARGET_DIR
+  ? resolve(repositoryRoot, process.env.CARGO_TARGET_DIR)
+  : join(repositoryRoot, 'target');
+
+function cargoDebugBinary(name: string): string {
+  return join(cargoTargetRoot, 'debug', process.platform === 'win32' ? `${name}.exe` : name);
+}
 
 type LightningBackendModeV1 = 'fake' | 'cln-regtest';
 
@@ -60,7 +67,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     ]);
 
     const fixtureRoot = join(runtimeRoot, 'fixture');
-    runChecked(join(repositoryRoot, 'target/debug/bpir-admin'), [
+    runChecked(cargoDebugBinary('bpir-admin'), [
       'payment-v1-no-funds-fixture',
       '--acknowledge-deterministic-test-keys',
       '--out',
@@ -93,7 +100,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         requiredEnvironment('BITCOINPIR_PAYMENT_CLN_RPC_SOCKET'),
       );
       quoteDelegation = join(providerRoot, 'public', 'quote-key-delegation-cln-regtest-v1.bin');
-      runChecked(join(repositoryRoot, 'target/debug/bpir-admin'), [
+      runChecked(cargoDebugBinary('bpir-admin'), [
         'payment-artifact',
         'quote-delegation',
         '--issuer-root-key',
@@ -121,7 +128,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     await mkdir(floorParent, { mode: 0o700 });
     const store = join(storeParent, 'issuer.sqlite');
     const rollbackAuthority = join(floorParent, 'rollback.sqlite');
-    runChecked(join(repositoryRoot, 'target/debug/payment-issuer'), [
+    runChecked(cargoDebugBinary('payment-issuer'), [
       'init-store',
       '--store',
       store,
@@ -151,6 +158,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       join(secretRoot, 'quote-ed25519.key'),
       '--credential-derivation-key',
       join(secretRoot, 'credential-derivation.key'),
+      '--allow-experimental-arc',
       '--service-policy',
       `${fixturePath(fixtureRoot, provider.policy_path)}=${provider.policy_signing_pubkey}`,
       '--receipt-signing-key',
@@ -188,7 +196,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       );
     }
 
-    const startedIssuer = spawn(join(repositoryRoot, 'target/debug/payment-issuer'), args, {
+    const startedIssuer = spawn(cargoDebugBinary('payment-issuer'), args, {
       cwd: repositoryRoot,
       env: { ...process.env, CARGO_NET_OFFLINE: 'true' },
       stdio: ['pipe', 'pipe', 'pipe'],

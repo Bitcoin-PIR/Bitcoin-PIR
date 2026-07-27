@@ -9,6 +9,7 @@
 use js_sys::Uint8Array;
 use pir_channel::{ClientHandshake, Direction, Session};
 use wasm_bindgen::prelude::*;
+use zeroize::Zeroizing;
 
 use crate::client::WasmAttestVerification;
 
@@ -154,9 +155,11 @@ impl WasmStandaloneSecureChannelV1 {
             .session
             .as_mut()
             .ok_or_else(|| JsError::new("secure channel is not established"))?;
-        let opened = session
-            .open(Direction::ServerToClient, payload)
-            .map_err(|error| JsError::new(&format!("secure-channel open: {error}")))?;
+        let opened = Zeroizing::new(
+            session
+                .open(Direction::ServerToClient, payload)
+                .map_err(|error| JsError::new(&format!("secure-channel open: {error}")))?,
+        );
         Ok(prefix_payload(&opened))
     }
 

@@ -47,6 +47,17 @@ namespace. This prevents the same serial from being replayed through a second
 scope or retained keyset. The store contains no raw IP, query, invoice,
 payment hash, or raw capability columns.
 
+Schema v7 keeps delivery-acknowledged standard-Cashu lots inside the exact
+per-mint/unit exposure cap. Only an owner-initiated, exact NUT-07 all-`SPENT`
+confirmation moves an export and every member lot to `SpentConfirmed`. The
+same rollback-anchored transaction persists digest-only evidence bound to the
+provider/store, precondition floor, export/artifact, ordered members, note
+fingerprints, transient Y set and a domain-separated exact per-export NUT-07
+observation digest. The wider HTTP batch digest is deliberately not stored,
+so batching does not create a durable cross-export identifier. The store keeps
+no raw Y or per-note NUT-07 state. See
+[`PROVIDER_STORE_V7_MIGRATION.md`](../../../docs/payment/PROVIDER_STORE_V7_MIGRATION.md).
+
 Schema v5 adds rollback-anchored `IpRateLimited` buckets keyed only by a
 provider-local 32-byte HMAC subject plus scope/offer, highest window, and
 count. It stores neither raw IP nor a cross-provider identifier; restart does
@@ -56,12 +67,13 @@ coarse hour buckets, and an opaque AEAD recovery envelope. The native
 `pir-cashu-client` default build implements its persistence trait directly for
 `ProviderStore`. `PREPARED -> SUBMITTED` must be externally anchored before
 the caller may send NUT-03, and no API transitions a submitted intent back to
-prepared. ProviderStore does not auto-migrate prior schemas; see
-[`PROVIDER_STORE_V4_MIGRATION.md`](../../../docs/payment/PROVIDER_STORE_V4_MIGRATION.md).
+prepared. ProviderStore does not auto-migrate prior schemas. Development-only
+v6 is rejected and must be replaced through the explicit v7 ceremony.
 
 Schemes with a raw verification key that must be exclusive to one
-cryptographic lineage (Cashu BAT in v1) install an `ExclusiveKeyLineage` with
-their namespace. The store permanently binds `(scheme, raw-key fingerprint)`
+cryptographic lineage (Cashu BAT and experimental ARC in v1) install an
+`ExclusiveKeyLineage` with their namespace. The store permanently binds
+`(scheme, raw-key fingerprint)`
 to one immutable lineage digest across active and retained policies, closed
 namespaces, and restarts. Reusing the same fingerprint in the same lineage is
 idempotent; rebinding it to another lineage fails closed. This is a
@@ -71,16 +83,20 @@ keys for the two independent PIR providers.
 Production callers should pass a protocol-level `VerifiedServiceOfferV1` to
 `ProviderStore::install_verified_offer_namespace_v1`. It deterministically
 derives all namespace fields, refuses a store/provider mismatch, installs the
-BAT raw-key lineage guard, and explicitly routes offers whose authoritative
+BAT/ARC raw-key lineage guard, and explicitly routes offers whose authoritative
 state lives elsewhere. Open/IP/PoW Free grants, standard Cashu, and
 shared-issuer redemption return `NotApplicable`; provider-local ARC returns
-`UnsupportedExperimental` until its reviewed nullifier and lineage types exist.
+`UnsupportedExperimental` unless the explicitly experimental reviewed adapter
+is supplied. Retained-policy readiness rechecks both the exact namespace and
+its permanent exclusive-key lineage before startup can serve it.
 The low-level installer is crate-private and exists only for controlled unit
-tests; downstream production code has no API that can omit BAT lineage state.
+tests; downstream production code has no API that can omit BAT/ARC lineage state.
 
 Likewise, raw `SpendRequest` and `PolicyStateUpdate` persistence methods are
 crate-private. Runtime integration must use
 `verify_provider_local_bearer_spend_v1` plus
 `spend_verified_provider_local_v1`, and
 `apply_verified_policy_state_v1`. Cashu BAT additionally requires an explicit
-reviewed `CashuBatProofVerifierV1`; provider-local ARC remains blocked.
+reviewed `CashuBatProofVerifierV1`. Provider-local ARC remains blocked when no
+explicit experimental adapter is supplied; the runtime constructs that adapter
+only after the exact ARC opt-in, key-pair and policy guards succeed.

@@ -37,13 +37,25 @@ pub use rollback::{
 };
 pub use sqlite_rollback::SqliteRollbackFloorAuthorityV1;
 pub use types::{
-    CashuManifestEpochFloor, CashuSwapIntentInsertV1, CashuSwapIntentStateV1, CashuSwapIntentV1,
-    CashuSwapSealedRecoveryV1, CredentialEpochFloor, ExclusiveKeyLineage, FreeIpRateLimitRequestV1,
-    NamespaceCloseOutcome, NamespaceInstallOutcome, NamespaceStatus, NewCashuSwapIntentV1,
+    CashuCustodyExportArtifactPersistV1, CashuCustodyExportArtifactV1, CashuCustodyExportBatchV1,
+    CashuCustodyExportReservationV1, CashuCustodyExportStateV1, CashuCustodyExposureLimitsV1,
+    CashuCustodyInventoryV1, CashuCustodyLotStateV1, CashuCustodyLotV1,
+    CashuCustodyRetirementCheckableSnapshotV1, CashuCustodyRetirementCompletedSnapshotV1,
+    CashuCustodyRetirementEvidenceV1, CashuCustodyRetirementNoteCheckV1,
+    CashuCustodyRetirementNoteStateV1, CashuCustodyRetirementSnapshotRequestV1,
+    CashuCustodyRetirementSnapshotV1, CashuCustodySealedBlobV1,
+    CashuCustodySpentConfirmationRequestV1, CashuCustodySpentConfirmationV1,
+    CashuManifestEpochFloor, CashuSwapGrantClaimV1, CashuSwapIntentInsertV1,
+    CashuSwapIntentStateV1, CashuSwapIntentV1, CashuSwapSealedRecoveryV1, CredentialEpochFloor,
+    ExclusiveKeyLineage, FreeIpRateLimitRequestV1, NamespaceCloseOutcome, NamespaceInstallOutcome,
+    NamespaceStatus, NewCashuCustodyExportV1, NewCashuCustodyLotV1, NewCashuSwapIntentV1,
     NewSpendNamespace, PolicyHead, PolicyStateUpdate, PolicyUpdateOutcome,
     ProviderStoreOperationalInventoryV1, SpendCommit, SpendNamespace, SpendReadBack, SpendRequest,
-    StoreIdentity, StoreOptions, MAX_CASHU_RECOVERY_CIPHERTEXT_BYTES_V1,
-    MAX_CASHU_RECOVERY_NONCE_BYTES_V1, MAX_FLOOR_UPDATES, MAX_SIGNED_POLICY_BYTES, SCHEMA_VERSION,
+    StoreIdentity, StoreOptions, MAX_CASHU_CUSTODY_EXPORT_ARTIFACT_BYTES_V1,
+    MAX_CASHU_CUSTODY_EXPORT_KEYSET_GROUPS_V1, MAX_CASHU_CUSTODY_EXPORT_LOTS_V1,
+    MAX_CASHU_CUSTODY_EXPORT_NOTES_V1, MAX_CASHU_CUSTODY_NOTES_PER_LOT_V1,
+    MAX_CASHU_RECOVERY_CIPHERTEXT_BYTES_V1, MAX_CASHU_RECOVERY_NONCE_BYTES_V1, MAX_FLOOR_UPDATES,
+    MAX_SIGNED_POLICY_BYTES, SCHEMA_VERSION,
 };
 
 use crate::schema::{APPLICATION_ID, SCHEMA};
@@ -58,7 +70,6 @@ use std::sync::Arc;
 
 const MAX_BUSY_TIMEOUT_MILLIS: u128 = 60_000;
 const MAX_KEY_ID_BYTES: usize = 66;
-const MAX_CASHU_UNIT_BYTES: usize = 64;
 
 /// Handle to exactly one provider's SQLite spend authority.
 ///
@@ -265,13 +276,17 @@ impl ProviderStore {
     /// exposing spend keys, subjects, namespaces, or protocol transcripts.
     pub fn operational_inventory(&self) -> StoreResult<ProviderStoreOperationalInventoryV1> {
         let connection = self.open_checked(false)?;
-        let raw: (i64, i64, i64, i64, i64, i64) = connection.query_row(
+        let raw: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = connection.query_row(
             "SELECT (SELECT store_generation FROM store_identity WHERE singleton = 1), \
                     (SELECT spend_commit_seq FROM store_identity WHERE singleton = 1), \
                     (SELECT COUNT(*) FROM spend_namespaces), \
                     (SELECT COUNT(*) FROM spent_capabilities), \
                     (SELECT COUNT(*) FROM free_ip_rate_limit_buckets), \
-                    (SELECT COUNT(*) FROM cashu_swap_intents)",
+                    (SELECT COUNT(*) FROM cashu_swap_intents), \
+                    (SELECT COUNT(*) FROM cashu_custody_lots), \
+                    (SELECT COUNT(*) FROM cashu_custody_notes), \
+                    (SELECT COUNT(*) FROM cashu_custody_export_batches), \
+                    (SELECT COUNT(*) FROM cashu_custody_retirement_evidence)",
             [],
             |row| {
                 Ok((
@@ -281,6 +296,10 @@ impl ProviderStore {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
                 ))
             },
         )?;
@@ -291,6 +310,16 @@ impl ProviderStore {
             spent_capability_rows: db_u64(raw.3, "negative spent capability row count")?,
             free_rate_limit_bucket_rows: db_u64(raw.4, "negative Free bucket row count")?,
             cashu_swap_intent_rows: db_u64(raw.5, "negative Cashu swap intent row count")?,
+            cashu_custody_lot_rows: db_u64(raw.6, "negative Cashu custody lot row count")?,
+            cashu_custody_note_rows: db_u64(raw.7, "negative Cashu custody note row count")?,
+            cashu_custody_export_batch_rows: db_u64(
+                raw.8,
+                "negative Cashu custody export batch row count",
+            )?,
+            cashu_custody_retirement_evidence_rows: db_u64(
+                raw.9,
+                "negative Cashu custody retirement evidence row count",
+            )?,
         };
         self.reconcile_rollback_floor(&connection)?;
         Ok(inventory)
@@ -1654,13 +1683,10 @@ fn validate_policy_update(update: &PolicyStateUpdate) -> StoreResult<()> {
     Ok(())
 }
 
-fn validate_cashu_unit(unit: &str) -> StoreResult<()> {
-    if unit.is_empty()
-        || unit.len() > MAX_CASHU_UNIT_BYTES
-        || !unit.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
-    {
+pub(crate) fn validate_cashu_unit(unit: &str) -> StoreResult<()> {
+    if pir_service_protocol::validate_cashu_unit_v1(unit).is_err() {
         return Err(StoreError::InvalidInput(
-            "Cashu unit must be 1..=64 printable ASCII bytes",
+            "Cashu unit must match the canonical V1 unit alphabet",
         ));
     }
     Ok(())
@@ -1877,6 +1903,11 @@ mod rollback_floor_tests {
 #[cfg(test)]
 mod cashu_swap_v4_tests {
     include!("../tests/cashu_swap_v4.rs");
+}
+
+#[cfg(test)]
+mod cashu_custody_v7_tests {
+    include!("../tests/cashu_custody_v7.rs");
 }
 
 #[cfg(test)]

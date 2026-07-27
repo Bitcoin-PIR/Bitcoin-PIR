@@ -91,6 +91,7 @@ function freeOffer(offerId: number): ServiceOfferViewV1 {
     issuerIdHex: '00'.repeat(32),
     keyIdHex: '',
     batVerificationKeyFingerprintHex: '',
+    arcVerificationKeyFingerprintHex: '',
     endpoint: '',
     credentialCount: 1,
     credentialPresentationLimit: 1,
@@ -115,6 +116,9 @@ function paidOffer(
     issuerIdHex: `${offerId.toString(16).padStart(2, '0')}`.repeat(32),
     keyIdHex: '71'.repeat(16),
     batVerificationKeyFingerprintHex: authorization === 'cashu-bat' ? '81'.repeat(32) : '',
+    arcVerificationKeyFingerprintHex: authorization === 'arc-experimental'
+      ? `${(offerId + 0x80).toString(16).padStart(2, '0')}`.repeat(32)
+      : '',
     endpoint: 'https://issuer.example',
     credentialCount: 1,
     credentialPresentationLimit: authorization === 'arc-experimental' ? 10 : 1,

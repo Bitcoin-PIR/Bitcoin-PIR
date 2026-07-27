@@ -1,7 +1,9 @@
-//! Offline construction of directory assertions and NIP-01 publish messages.
+//! Construction and publication of directory assertions and NIP-01 messages.
 //!
-//! This module performs no network I/O. Every artifact is decoded and verified
-//! through the production protocol implementation before an atomic 0600 write.
+//! Artifact construction performs no network I/O. Every artifact is decoded
+//! and verified through the production protocol implementation before an
+//! atomic 0600 write. The explicit `publish` subcommand delegates transport to
+//! `directory_publish` and never loads a signing key.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -24,8 +26,8 @@ use pir_service_protocol::{
 };
 use serde_json::value::RawValue;
 
-const MAX_EVENT_MESSAGE_BYTES_V1: usize = MAX_NOSTR_EVENT_BYTES_V1 + 32;
-const MAX_CHECKPOINT_BUNDLE_BYTES_V1: usize =
+pub(crate) const MAX_EVENT_MESSAGE_BYTES_V1: usize = MAX_NOSTR_EVENT_BYTES_V1 + 32;
+pub(crate) const MAX_CHECKPOINT_BUNDLE_BYTES_V1: usize =
     MAX_EVENT_MESSAGE_BYTES_V1 * DIRECTORY_SHARD_COUNT_V1 as usize + 2;
 const MAX_ENTRY_INPUTS_V1: usize = 16 * 1_024;
 
@@ -43,6 +45,8 @@ enum DirectoryArtifactCommand {
     Entry(EntryArgs),
     /// Build one signed checkpoint EVENT for each of the 16 coarse shards.
     Checkpoints(CheckpointArgs),
+    /// Publish already-signed EVENT artifacts unchanged to every relay.
+    Publish(crate::directory_publish::DirectoryPublishArgs),
 }
 
 #[derive(Args, Debug)]
@@ -150,11 +154,12 @@ struct CheckpointArgs {
     force: bool,
 }
 
-pub fn run(args: DirectoryArtifactArgs) -> Result<(), String> {
+pub async fn run(args: DirectoryArtifactArgs) -> Result<(), String> {
     match args.command {
         DirectoryArtifactCommand::Assertion(args) => build_assertion(args),
         DirectoryArtifactCommand::Entry(args) => build_entry(args),
         DirectoryArtifactCommand::Checkpoints(args) => build_checkpoints(args),
+        DirectoryArtifactCommand::Publish(args) => crate::directory_publish::run(args).await,
     }
 }
 
@@ -534,7 +539,7 @@ fn decode_reserved_xonly_keys(values: &[String]) -> Result<Vec<[u8; 32]>, String
         .collect()
 }
 
-fn parse_event_message(bytes: &[u8], label: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn parse_event_message(bytes: &[u8], label: &str) -> Result<Vec<u8>, String> {
     if bytes.is_empty() || bytes.len() > MAX_EVENT_MESSAGE_BYTES_V1 {
         return Err(format!("{label} size is outside the allowed bound"));
     }
@@ -551,7 +556,7 @@ fn parse_event_message(bytes: &[u8], label: &str) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("{label} event encoding failed: {error}"))
 }
 
-fn encode_json_array(items: &[Vec<u8>], max: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn encode_json_array(items: &[Vec<u8>], max: usize) -> Result<Vec<u8>, String> {
     let estimated = items.iter().try_fold(2usize, |total, item| {
         total
             .checked_add(item.len())
@@ -616,17 +621,45 @@ fn decode_lower_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u
 }
 
 #[cfg(unix)]
-fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PublicFileSnapshotV1 {
+    device: u128,
+    inode: u128,
+    mode: u64,
+    size: i128,
+    modified_seconds: i128,
+    modified_nanoseconds: i128,
+    changed_seconds: i128,
+    changed_nanoseconds: i128,
+}
+
+#[cfg(unix)]
+fn public_file_snapshot_v1(stat: &rustix::fs::Stat) -> PublicFileSnapshotV1 {
+    PublicFileSnapshotV1 {
+        device: stat.st_dev as u128,
+        inode: stat.st_ino as u128,
+        mode: stat.st_mode as u64,
+        size: stat.st_size as i128,
+        modified_seconds: stat.st_mtime as i128,
+        modified_nanoseconds: stat.st_mtime_nsec as i128,
+        changed_seconds: stat.st_ctime as i128,
+        changed_nanoseconds: stat.st_ctime_nsec as i128,
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
     use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 
     let fd = rustix_fs::open(
         path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
     )
     .map_err(|error| format!("open {label} {} failed: {error}", path.display()))?;
     let stat = rustix_fs::fstat(&fd)
         .map_err(|error| format!("inspect {label} {} failed: {error}", path.display()))?;
+    let snapshot = public_file_snapshot_v1(&stat);
     if !FileType::from_raw_mode(stat.st_mode).is_file() || stat.st_size <= 0 {
         return Err(format!("{label} must be a non-empty regular file"));
     }
@@ -636,27 +669,24 @@ fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, 
     }
     let file = fs::File::from(fd);
     let mut bytes = Vec::with_capacity(length);
-    file.take((max as u64).saturating_add(1))
+    (&file)
+        .take((max as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| format!("read {label} {} failed: {error}", path.display()))?;
-    if bytes.len() != length || bytes.len() > max {
+    let after = rustix_fs::fstat(&file)
+        .map_err(|error| format!("reinspect {label} {} failed: {error}", path.display()))?;
+    if bytes.len() != length || bytes.len() > max || public_file_snapshot_v1(&after) != snapshot {
         return Err(format!("{label} changed while it was read"));
     }
     Ok(bytes)
 }
 
 #[cfg(not(unix))]
-fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("read {label} metadata failed: {error}"))?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(format!("{label} must be a non-symlink regular file"));
-    }
-    let bytes = fs::read(path).map_err(|error| format!("read {label} failed: {error}"))?;
-    if bytes.is_empty() || bytes.len() > max {
-        return Err(format!("{label} size is outside the allowed bound"));
-    }
-    Ok(bytes)
+pub(crate) fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
+    let _ = (path, max);
+    Err(format!(
+        "reading {label} requires a local Unix/POSIX filesystem"
+    ))
 }
 
 #[cfg(unix)]
@@ -983,5 +1013,84 @@ mod tests {
         fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
         let error = load_directory_key(&target, &[], &[]).unwrap_err();
         assert!(error.contains("mode 0600/0400"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_artifact_reader_rejects_symlink_fifo_and_oversize_without_blocking() {
+        use std::os::unix::fs::symlink;
+        use std::process::Command;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let artifact = directory.path().join("artifact.json");
+        let link = directory.path().join("artifact-link.json");
+        fs::write(&artifact, b"{}").unwrap();
+        assert_eq!(
+            read_public_bounded(&artifact, 2, "test artifact").unwrap(),
+            b"{}"
+        );
+        symlink(&artifact, &link).unwrap();
+        assert!(read_public_bounded(&link, 2, "test artifact").is_err());
+        assert!(read_public_bounded(&artifact, 1, "test artifact").is_err());
+
+        let fifo = directory.path().join("artifact.fifo");
+        let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(status.success());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            sender
+                .send(read_public_bounded(&fifo, 2, "test artifact"))
+                .ok();
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("FIFO rejection must not wait for a writer");
+        assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_artifact_snapshot_detects_every_stability_field_change() {
+        let before = PublicFileSnapshotV1 {
+            device: 1,
+            inode: 2,
+            mode: 0o100600,
+            size: 3,
+            modified_seconds: 4,
+            modified_nanoseconds: 5,
+            changed_seconds: 6,
+            changed_nanoseconds: 7,
+        };
+        let changes = [
+            PublicFileSnapshotV1 {
+                device: 8,
+                ..before
+            },
+            PublicFileSnapshotV1 { inode: 8, ..before },
+            PublicFileSnapshotV1 {
+                mode: 0o100400,
+                ..before
+            },
+            PublicFileSnapshotV1 { size: 8, ..before },
+            PublicFileSnapshotV1 {
+                modified_seconds: 8,
+                ..before
+            },
+            PublicFileSnapshotV1 {
+                modified_nanoseconds: 8,
+                ..before
+            },
+            PublicFileSnapshotV1 {
+                changed_seconds: 8,
+                ..before
+            },
+            PublicFileSnapshotV1 {
+                changed_nanoseconds: 8,
+                ..before
+            },
+        ];
+        assert!(changes.iter().all(|after| *after != before));
     }
 }

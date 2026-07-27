@@ -59,7 +59,9 @@ Use distinct keys for:
 - experimental ARC keys;
 - provider clearing authentication;
 - issuer settlement and payout signing;
-- browser/provider recovery encryption.
+- browser/provider recovery encryption;
+- standard-Cashu recovery AEAD, received-note custody AEAD and offline export
+  recipient keys, all distinct per provider.
 
 Generate supported role-labelled keys with:
 
@@ -179,14 +181,27 @@ all old grace windows end (while rotating credential keys inside signed policy
 as needed), or publish a deliberately reviewed future protocol version with an
 authenticated policy-key succession proof.
 
-Build and self-verify directory artifacts offline:
+Build and self-verify directory artifacts offline, then inspect the explicit
+publisher help separately:
 
 ```sh
 cargo run --offline -p bpir-admin -- directory-artifact --help
+cargo run --offline -p bpir-admin -- directory-artifact publish --help
 ```
 
-The tool does not publish. Publication to a public relay requires separate
-approval and relay-specific operational controls.
+Only `directory-artifact publish` opens a relay connection. It reads no signing
+key: freeze and review the already-signed entry/checkpoint files, pin the
+expected directory public key, and select two through eight credential-free
+public `wss://` relay hostnames. Distinct hostnames are not evidence of distinct
+operators or infrastructure; audit that independently.
+
+The publisher sends every exact EVENT to every relay, requires one positive
+matching NIP-01 OK per event, and uses a bounded total timeout for each relay.
+It attempts all relays but exits nonzero on partial success. Preserve the exact
+artifacts and rerun them manually after resolving the failed relay; never
+advance the external per-`d` timestamp/sequence ledger based on a partial run.
+There is no automatic retry, proxy, redirect, relay AUTH, or signing fallback.
+Normal output contains only relay hostname, event count and result code.
 
 ## 5. Bootstrap stores
 
@@ -210,12 +225,25 @@ without starting a listener, then reports aggregate row counts and
 allowed at real startup, so run it only against the intended isolated restore
 candidate or during a quiesced startup ceremony.
 
-Provider serving likewise opens an already-created schema-v5 store and an
+Provider serving likewise opens an already-created schema-v7 store and an
 existing rollback authority. It does not create or migrate them at startup.
-Create first-release state with `bpir-admin service-store-init`. There is no
-released/production ProviderStore v4 to migrate; discard pre-release v4
-development state rather than improvising an in-place SQLite edit. See
-`PROVIDER_STORE_V4_MIGRATION.md`.
+Create new state with `bpir-admin service-store-init`; use the explicit offline
+replacement procedure for any v6 candidate rather than improvising an in-place
+SQLite edit. See `PROVIDER_STORE_V7_MIGRATION.md`.
+
+For every standard-Cashu mint/unit in a current or retained policy, configure
+one exact finite value/note exposure cap plus distinct recovery and custody
+keyrings. Run `bpir-admin cashu-custody inventory` before activation and
+rehearse provider-bound recipient key generation, bounded export, exact replay,
+offline decrypt and external-custody-only acknowledgement with disposable
+notes. Never acknowledge before a wallet has durably taken custody. ACK remains
+inside the configured exposure cap. Rehearse the separate explicit
+`cashu-custody spent-confirm` operation against those disposable notes: it must
+use one strict-HTTPS NUT-07 request for each selected same-mint/unit batch,
+accept only exact all-`SPENT`, refresh the rollback floor before each export
+commit, stop without automatic retry on partial failure, and make an exact
+terminal replay without keys or another mint request. Treat this only as proof
+that the old notes were spent, never as NUT-05, Lightning settlement or payout.
 
 Back up store identities, public configuration and recovery procedure without
 putting invoice, payment hash/preimage, bearer capability, proof secret,
@@ -255,11 +283,16 @@ public/staging listener:
    success and non-DPF process paths; the local process tests use
    `NoSevHost`/`dangerous_unpaired_*` and are not production trust-chain
    evidence;
-6. approved regtest/signet Core Lightning canary and external Cashu mint
-   compatibility/outage drill;
+6. retain the disposable local CDK fake-wallet token-import check, then run an
+   approved WebPKI Cashu mint NUT-03/recovery/outage canary; separately run an
+   approved regtest/signet Core Lightning canary;
 7. approved relay split-view/outage drill;
 8. logging/metrics review against `SECURITY.md`;
-9. ARC kept experimental and optional pending independent review.
+9. ARC kept experimental and optional pending independent review. Local ARC
+   integration requires `--allow-experimental-arc` on each configured
+   `unified_server` and `payment-issuer`; the acknowledgement without an ARC
+   policy/key, or ARC policy/key without the acknowledgement, fails startup.
+   This flag never authorizes production deployment.
 
 Built-in listener limits are not a substitute for the first item.
 Per-entitlement `max_concurrent_sockets`, Harmony shared-socket accounting, the
@@ -343,10 +376,10 @@ recovery ceremony.
 
 ### First-release ProviderStore initialization
 
-There is no released/production v4 state. Before a new v5 store accepts a
+There is no released/production v6 state. Before a fresh v7 store accepts a
 mutation, an aborted initialization may be discarded only after inspecting its
 exact paths. After the first mutation, never return to a pre-release store or an
-older v5 snapshot; drain traffic and fix forward from the latest authoritative
+older v7 snapshot; drain traffic and fix forward from the latest authoritative
 state. Any future released schema change requires a separately reviewed,
 versioned offline migration tool.
 

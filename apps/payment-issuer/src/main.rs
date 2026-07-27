@@ -227,6 +227,10 @@ struct ServeCommonArgs {
     /// Repeat `<credential-key-id-hex>=<raw-128-byte-arc-key-path>`.
     #[arg(long = "arc-key")]
     arc_keys: Vec<String>,
+    /// Explicit acknowledgement required before any current/retained service
+    /// policy may use experimental ARC or any ARC private key is loaded.
+    #[arg(long)]
+    allow_experimental_arc: bool,
     /// Repeat one canonical operator-signed provider clearing authorization.
     #[arg(long = "clearing-authorization")]
     clearing_authorizations: Vec<PathBuf>,
@@ -280,6 +284,7 @@ struct ServeClnArgs {
     /// Optional exact group owner. When omitted, the socket must be owner-only.
     #[arg(long)]
     cln_rpc_expected_gid: Option<u32>,
+    /// Absolute wall-clock deadline for each Core Lightning JSON-RPC call.
     #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=30))]
     cln_rpc_timeout_seconds: u64,
 }
@@ -923,6 +928,12 @@ fn serve_with_backend(
     backend_config: BackendConfigV1,
 ) -> Result<(), String> {
     validate_loopback_bind(args.bind)?;
+    if !args.allow_experimental_arc && !args.arc_keys.is_empty() {
+        return Err(
+            "experimental ARC key configuration requires explicit --allow-experimental-arc; ARC is unaudited and production-disabled"
+                .to_owned(),
+        );
+    }
     if args.max_connections == 0 || args.max_connections > 4_096 {
         return Err("--max-connections must be in 1..=4096".to_owned());
     }
@@ -1069,7 +1080,8 @@ fn serve_with_backend(
             now_unix,
         )
         .map_err(|_| "current quote delegation is not authentic and live".to_owned())?;
-    let mut policies = Vec::with_capacity(args.service_policies.len());
+    let mut policy_registrations = Vec::with_capacity(args.service_policies.len());
+    let mut configured_arc_usage = ExperimentalArcIssuerPolicyUsageV1::default();
     for spec in &args.service_policies {
         let (path, key_hex) = spec.rsplit_once('=').ok_or_else(|| {
             "--service-policy must be <signed-policy-path>=<ed25519-public-key-hex>".to_owned()
@@ -1091,6 +1103,45 @@ fn serve_with_backend(
         let key_bytes = decode_fixed_hex::<32>(key_hex, "service policy public key")?;
         let key = VerifyingKey::from_bytes(&key_bytes)
             .map_err(|_| "service policy public key is invalid".to_owned())?;
+        configured_arc_usage.include(experimental_arc_policy_usage_v1(
+            &policy,
+            &delegation.issuer_id,
+        ));
+        policy_registrations.push((policy, key));
+    }
+    let mut retained_arc_usage = ExperimentalArcIssuerPolicyUsageV1::default();
+    for record in store
+        .service_policies_requiring_credential_material(now_unix)
+        .map_err(|error| format!("read retained service policy requirements failed: {error}"))?
+    {
+        let policy = ServicePolicyV1::decode(&record.exact_policy)
+            .map_err(|_| "retained service policy is not canonical V1".to_owned())?;
+        if policy
+            .encode()
+            .map_err(|_| "retained service policy encode failed".to_owned())?
+            != record.exact_policy
+        {
+            return Err("retained service policy is non-canonical".to_owned());
+        }
+        retained_arc_usage.include(experimental_arc_policy_usage_v1(
+            &policy,
+            &delegation.issuer_id,
+        ));
+    }
+    configured_arc_usage.include(retained_arc_usage);
+    validate_experimental_arc_opt_in_v1(
+        args.allow_experimental_arc,
+        configured_arc_usage,
+        !args.arc_keys.is_empty(),
+    )?;
+    if configured_arc_usage.any || !args.arc_keys.is_empty() {
+        eprintln!(
+            "!!! WARNING: EXPERIMENTAL ARC ENABLED FOR THIS PAYMENT ISSUER; THE PINNED DRAFT-01 IMPLEMENTATION IS UNAUDITED AND MUST NOT BE USED IN PRODUCTION !!!"
+        );
+    }
+
+    let mut policies = Vec::with_capacity(policy_registrations.len());
+    for (policy, key) in policy_registrations {
         let _registration = store
             .register_service_policy(&policy, &key, now_unix)
             .map_err(|error| format!("register service policy failed: {error}"))?;
@@ -1313,6 +1364,62 @@ fn register_policy_key_lineages(
                 _ => {}
             }
         }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ExperimentalArcIssuerPolicyUsageV1 {
+    any: bool,
+    issued_here: bool,
+}
+
+impl ExperimentalArcIssuerPolicyUsageV1 {
+    fn include(&mut self, other: Self) {
+        self.any |= other.any;
+        self.issued_here |= other.issued_here;
+    }
+}
+
+fn experimental_arc_policy_usage_v1(
+    policy: &ServicePolicyV1,
+    issuer_id: &[u8; 32],
+) -> ExperimentalArcIssuerPolicyUsageV1 {
+    let mut usage = ExperimentalArcIssuerPolicyUsageV1::default();
+    for scope in &policy.scopes {
+        for offer in &scope.offers {
+            if offer.authorization == AuthScheme::ArcV1Experimental {
+                usage.any = true;
+                usage.issued_here |= &offer.issuer_id == issuer_id;
+            }
+        }
+    }
+    usage
+}
+
+fn validate_experimental_arc_opt_in_v1(
+    allow_experimental_arc: bool,
+    current_or_retained_arc_usage: ExperimentalArcIssuerPolicyUsageV1,
+    arc_keys_configured: bool,
+) -> Result<(), String> {
+    let configured = current_or_retained_arc_usage.any || arc_keys_configured;
+    if !allow_experimental_arc && configured {
+        return Err(
+            "experimental ARC policy/key configuration requires explicit --allow-experimental-arc; ARC is unaudited and production-disabled"
+                .to_owned(),
+        );
+    }
+    if allow_experimental_arc && !configured {
+        return Err(
+            "--allow-experimental-arc was supplied but no current/retained ARC policy or ARC key is configured"
+                .to_owned(),
+        );
+    }
+    if current_or_retained_arc_usage.issued_here && !arc_keys_configured {
+        return Err(
+            "current/retained ARC policy requires at least one --arc-key in the payment issuer"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -3510,6 +3617,28 @@ mod tests {
     }
 
     #[test]
+    fn experimental_arc_acknowledgement_and_configuration_must_be_exactly_paired() {
+        let none = ExperimentalArcIssuerPolicyUsageV1::default();
+        let external = ExperimentalArcIssuerPolicyUsageV1 {
+            any: true,
+            issued_here: false,
+        };
+        let issued_here = ExperimentalArcIssuerPolicyUsageV1 {
+            any: true,
+            issued_here: true,
+        };
+
+        assert!(validate_experimental_arc_opt_in_v1(false, none, false).is_ok());
+        assert!(validate_experimental_arc_opt_in_v1(true, none, false).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(false, external, false).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(false, none, true).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(true, external, false).is_ok());
+        assert!(validate_experimental_arc_opt_in_v1(true, issued_here, false).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(true, none, true).is_ok());
+        assert!(validate_experimental_arc_opt_in_v1(true, issued_here, true).is_ok());
+    }
+
+    #[test]
     fn cli_exposes_offline_store_check() {
         let cli = Cli::try_parse_from([
             "payment-issuer",
@@ -3543,6 +3672,7 @@ mod tests {
             "/tmp/quote.key",
             "--credential-derivation-key",
             "/tmp/credential.key",
+            "--allow-experimental-arc",
             "--cln-rpc-socket",
             "/tmp/lightning-rpc",
             "--cln-rpc-expected-uid",
@@ -3553,6 +3683,7 @@ mod tests {
             panic!("expected serve-cln command");
         };
         assert_eq!(args.common.bind, "127.0.0.1:5610".parse().unwrap());
+        assert!(args.common.allow_experimental_arc);
         assert_eq!(args.cln_rpc_expected_uid, 501);
         assert_eq!(args.cln_rpc_timeout_seconds, 10);
         assert_eq!(

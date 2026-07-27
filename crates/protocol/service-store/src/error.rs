@@ -43,6 +43,17 @@ pub enum StoreError {
     CashuSwapIntentMissing,
     CashuSwapIntentConflict,
     CashuSwapStateConflict,
+    CashuCustodyExposureExceeded,
+    CashuCustodyLotMissing,
+    CashuCustodyLotConflict,
+    CashuCustodyExportMissing,
+    CashuCustodyExportConflict,
+    CashuCustodyStateConflict,
+    CashuCustodyUnavailable,
+    CashuCustodyNotesNotFullySpent,
+    CashuCustodyRetirementFloorMismatch,
+    CashuCustodyRetirementEvidenceMissing,
+    CashuCustodyRetirementEvidenceConflict,
     FreeIpQuotaExhausted,
     FreeIpClockRollback,
     ServiceProtocol(pir_service_protocol::ServiceProtocolError),
@@ -133,6 +144,36 @@ impl fmt::Display for StoreError {
             }
             Self::CashuSwapStateConflict => {
                 write!(f, "Cashu swap intent transition conflicts with durable state")
+            }
+            Self::CashuCustodyExposureExceeded => {
+                write!(f, "Cashu custody exposure limit would be exceeded")
+            }
+            Self::CashuCustodyLotMissing => write!(f, "Cashu custody lot is missing"),
+            Self::CashuCustodyLotConflict => {
+                write!(f, "Cashu custody lot conflicts with durable state")
+            }
+            Self::CashuCustodyExportMissing => write!(f, "Cashu custody export is missing"),
+            Self::CashuCustodyExportConflict => {
+                write!(f, "Cashu custody export conflicts with durable state")
+            }
+            Self::CashuCustodyStateConflict => {
+                write!(f, "Cashu custody transition conflicts with durable state")
+            }
+            Self::CashuCustodyUnavailable => {
+                write!(f, "no available Cashu custody lot matches the export request")
+            }
+            Self::CashuCustodyNotesNotFullySpent => {
+                write!(f, "Cashu custody notes are not all confirmed spent")
+            }
+            Self::CashuCustodyRetirementFloorMismatch => write!(
+                f,
+                "Cashu custody retirement check is stale or belongs to another store"
+            ),
+            Self::CashuCustodyRetirementEvidenceMissing => {
+                write!(f, "Cashu custody retirement evidence is missing")
+            }
+            Self::CashuCustodyRetirementEvidenceConflict => {
+                write!(f, "Cashu custody retirement evidence conflicts with durable state")
             }
             Self::FreeIpQuotaExhausted => write!(f, "free IP quota is exhausted"),
             Self::FreeIpClockRollback => write!(f, "free IP quota clock rollback was rejected"),

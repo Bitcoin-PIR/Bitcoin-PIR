@@ -1,5 +1,11 @@
 # Payment V1 implementation security review — 2026-07-26
 
+> Historical snapshot: the body of this review is bound to repository commit
+> `bc465c76` and records the evidence available on 2026-07-26. Later CLN, CDK,
+> Cashu-custody-v7 and public-Nostr work must not be inferred from statements in
+> the historical body. The additive 2026-07-27 delta at the end is the current
+> closeout record; where the two differ, the dated delta controls.
+
 Status: independent agent review of the implementation tree on
 `codex/payment-platform`. This record is suitable for draft-PR and no-funds
 staging preparation. It is **not** production activation approval and it is
@@ -151,10 +157,12 @@ helpers. It proves the local secure wire and admission gate, not production
 identity, binary pin, hardware attestation, database proof/trusted root,
 tree-top preflight or inclusion verification.
 
-Standard Cashu success has not crossed a real provider-process/external-mint
-boundary, and Harmony hint/query, Onion and TEE-ORAM have not crossed the real
-provider-process boundary under Payment V1. The canonical in-process matrix is
-valuable gate coverage, but it is not equivalent to those release E2Es.
+At the 2026-07-26 snapshot, standard Cashu success had not crossed a real
+provider-process/external-mint boundary. Harmony hint/query, Onion and TEE-ORAM
+had likewise not crossed the real provider-process boundary under Payment V1.
+The canonical in-process matrix was valuable gate coverage, but was not
+equivalent to those release E2Es. Later CDK evidence is recorded only in the
+dated closeout delta below.
 
 ### Browser and shared-infrastructure boundaries
 
@@ -287,3 +295,109 @@ and user manual acceptance. The initial-payout implementation P1 is closed;
 the absence of a concrete production provider store/worker/independent-floor
 adapter remains an activation blocker. No remote operation or real-funds test
 was performed by this review.
+
+## 2026-07-27 additive closeout delta
+
+This delta reviews the later CLN deadline, standard-Cashu custody, Nostr
+publisher/readback and best-effort secret-lifetime changes in the current
+`codex/payment-platform` worktree. It supersedes only contradictory evidence
+statements in the historical body above; it does not convert local test
+coverage into production approval.
+
+### Current finding disposition
+
+- implementation-code P0 open: **0**;
+- implementation-code P1 open: **0**, subject to the pushed GitHub CI result;
+- production-activation P1: **1 architectural blocker** remains: the bundled
+  rollback floor is another local SQLite file, not a reviewed linearizable
+  authority in an independent failure and administrative domain;
+- a production provider settlement state adapter and worker are not deployed,
+  so payout remains disabled. That gap, production edge, distributed abuse
+  control, backup/restore ceremony, monitoring, external canaries, browser/XSS
+  review, ARC review and user manual acceptance are explicit release gates,
+  not additional items in the counted production data-integrity P1 total.
+
+The final independent static deadline and sensitive-buffer reviews found no
+additional P0/P1. ARC remains experimental and production-disabled until its
+independent cryptographic and implementation review is complete.
+
+### Current verification evidence
+
+- With source edits stopped, an isolated
+  `CARGO_TARGET_DIR=/tmp/bitcoinpir-final-20260727 CARGO_BUILD_JOBS=1
+  scripts/payment-v1-local-check.sh --full` completed with exit code zero. It
+  covered the complete offline Payment/platform Rust suites, 39 unified-server
+  tests, both loopback provider-process suites, the 10-case Node Nostr
+  readback suite, dedicated Payment clippy with warnings denied, wasm32, fresh
+  WASM generation, TypeScript and production bundle builds, **333 passing Web
+  unit tests** with two intentional leakage-diff skips, four passing Chromium
+  multi-tab vault cases, and one passing generated-WASM/real-loopback-issuer
+  case with the two opt-in CLN cases skipped by the default no-funds run.
+- The opt-in CLN runner separately passed all three real local-regtest cases
+  against disposable Bitcoin Core plus two Core Lightning nodes: a channel and
+  routed BOLT11 payment, then generated-WASM direct/BAT/experimental-ARC
+  acquisition. It used only valueless regtest coins. An earlier attempt hit
+  Playwright's global-setup timeout while an unrelated reviewer held the shared
+  Cargo target lock; all temporary children were cleaned, and the isolated
+  retry passed 3/3. This was infrastructure contention, not a protocol test
+  failure.
+- The opt-in CDK 0.17.3 fake-wallet runner passed both ignored interoperability
+  cases: real padded V4 `cashuB` import, and provider-side NUT-03 plus NUT-12
+  verification/custody commit followed by NUT-07 proof that the original inputs
+  were `SPENT` and fresh custody outputs were `UNSPENT`. It deliberately did
+  not pass bearer tokens in process argv, so real-CDK custody
+  `UNSPENT -> SPENT` and admin retirement remain unproved. The verified
+  official Apple-arm64 SHA-256 digests were
+  `78390b850e6e24f11af1848f54004bdf7439771d81970b115241922435e944b9`
+  for `cdk-cli` and
+  `05b2e8cb01c2500a0200264947eb5b41cb82fcfc02263de6c0c1af7d531b89ab`
+  for `cdk-mintd`.
+- The separately authorized public Nostr smoke used a disposable key and empty
+  short-lived checkpoint, not the production directory key. The owner-only
+  production key exists only in its repository-external local directory; it
+  has not been backed up, copied to a host, used to sign a production catalog
+  or published.
+- `npm audit --omit=dev --audit-level=moderate` again reported zero
+  vulnerabilities. `cargo audit` exited zero with no vulnerability finding and
+  the same four allowed upstream/vendor warnings documented above:
+  `bincode 1.3.3`, `memmap2 0.9.10`, `rand 0.8.5` and yanked `spin 0.9.8`.
+
+No public-network Lightning node, real funds, external WebPKI Cashu mint,
+production catalog, remote PIR server or production database participated in
+these tests.
+
+### Accepted P2 and environmental residuals
+
+- Deadline guarantees are process-local monotonic elapsed-time budgets, not
+  kernel cancellation or real-time scheduling guarantees. HTTPS uses one
+  connect budget for resolver wait plus all TCP candidates and a second I/O
+  budget for TLS handshake, complete request write and response read-to-EOF.
+  A timed-out system resolver may continue in a capped background worker. The
+  current trickle test exercises the deadline TCP wrapper; it is structural
+  coverage for rustls I/O, not a full end-to-end trickled-TLS test.
+- CLN creates one deadline before local-socket path validation and spends its
+  remainder on connect, full write and full read. Filesystem metadata calls are
+  not preemptible by that budget. After any positive application-byte write,
+  timeout, EOF, oversize, framing, JSON or unverifiable response is
+  outcome-unknown and may recover only by lookup or byte-exact replay under
+  the same durable private label. A deterministic real Unix zero-byte-write
+  failure injection remains absent; the semantic precommit boundary is tested.
+- Publisher and readback stable-file checks assume a protected local
+  Unix/POSIX regular filesystem with coherent metadata. Same-file-descriptor
+  pre/post snapshots cover device, inode, mode, size, mtime and ctime, and Rust
+  synthetic tests mutate each field. Node has symlink/FIFO/device/size and
+  aggregate-bound tests but no deterministic live changing-file case. NFS,
+  FUSE, a writable parent, same-UID compromise, root compromise or a malicious
+  filesystem are availability/operations trust boundaries, not properties
+  repaired by `O_NONBLOCK` or relay timeouts.
+- Payment-owned mutable buffers are cleared on the reviewed server, Rust SDK,
+  WASM wrapper and asynchronous Web success/error paths on a best-effort
+  basis. Immutable JavaScript strings, JSON/Base64, wasm-bindgen/WebCrypto/GC,
+  allocator history, browser networking and OS buffers can retain copies. No
+  forensic-erasure claim is made. Some public Rust `Vec<u8>` bearer APIs and
+  BOLT11 recovery/request copies remain P2 hardening opportunities.
+
+The privacy verdict is unchanged: invoices, payment hashes, preimages and
+payer data remain outside PIR providers and the PIR query wire. The residual
+shared-issuer timing correlation described above remains, which is why the
+strict default selects provider and payment method independently for each leg.

@@ -23,6 +23,8 @@
 //!   its independently configured rollback-floor authority.
 //! - `service-store-check` — run the serving-equivalent provider-store open
 //!   and report aggregate startup/SLO counters without starting a listener.
+//! - `cashu-custody` — owner-only standard-Cashu custody inventory, export,
+//!   decrypt, acknowledgement, and explicit one-shot NUT-07 retirement.
 //! - `payment-v1-no-funds-fixture` — emit deterministic public test vectors
 //!   for two providers, five payment methods, and five workloads.
 //!
@@ -33,9 +35,11 @@
 use clap::{Parser, Subcommand};
 
 mod attest;
+mod cashu_custody;
 mod channel_test;
 mod db_proof;
 mod directory_artifact;
+mod directory_publish;
 mod generate_identity;
 mod keygen;
 mod payment_artifact;
@@ -98,13 +102,18 @@ enum Command {
     /// May reconcile one legitimate unanchored successor, like serving startup.
     #[command(name = "service-store-check")]
     ServiceStoreCheck(service_store_check::ServiceStoreCheckArgs),
+    /// Owner-only standard-Cashu custody operations. Only explicit
+    /// `spent-confirm` contacts the exact mint over strict HTTPS for NUT-07;
+    /// no command opens a listener or contacts a wallet/PIR server.
+    #[command(name = "cashu-custody")]
+    CashuCustody(cashu_custody::CashuCustodyArgs),
     /// Build and self-verify offline Payment V1 protocol artifacts.
     #[command(name = "payment-artifact")]
     PaymentArtifact(payment_artifact::PaymentArtifactArgs),
     /// Emit the deterministic two-provider Payment V1 no-funds fixture.
     #[command(name = "payment-v1-no-funds-fixture")]
     PaymentV1NoFundsFixture(payment_fixture::PaymentFixtureArgs),
-    /// Build and self-verify offline Nostr directory publishing artifacts.
+    /// Build, self-verify, or publish signed Nostr directory artifacts.
     #[command(name = "directory-artifact")]
     DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
 }
@@ -188,6 +197,13 @@ async fn main() {
                 1
             }
         },
+        Command::CashuCustody(args) => match cashu_custody::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("cashu-custody: {}", e);
+                1
+            }
+        },
         Command::PaymentArtifact(args) => match payment_artifact::run(args) {
             Ok(()) => 0,
             Err(e) => {
@@ -202,7 +218,7 @@ async fn main() {
                 1
             }
         },
-        Command::DirectoryArtifact(args) => match directory_artifact::run(args) {
+        Command::DirectoryArtifact(args) => match directory_artifact::run(args).await {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("directory-artifact: {}", e);
@@ -227,8 +243,10 @@ mod cli_tests {
             "service-keygen",
             "service-store-init",
             "service-store-check",
+            "cashu-custody",
             "payment-artifact",
             "payment-v1-no-funds-fixture",
+            "directory-artifact",
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");
         }
@@ -264,6 +282,29 @@ mod cli_tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::ServiceStoreCheck(_)));
+    }
+
+    #[test]
+    fn directory_publish_cli_accepts_repeated_artifacts_and_relays() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "directory-artifact",
+            "publish",
+            "--artifact",
+            "entry.event.json",
+            "--artifact",
+            "checkpoints.json",
+            "--relay",
+            "wss://one.example",
+            "--relay",
+            "wss://two.example/nostr",
+            "--directory-pubkey-hex",
+            &hex::encode([1u8; 32]),
+            "--now-unix",
+            "1500",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::DirectoryArtifact(_)));
     }
 
     #[test]

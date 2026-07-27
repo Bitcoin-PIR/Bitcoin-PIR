@@ -20,8 +20,8 @@
 //! The ARC private key is loaded from / generated to `--arc-key <path>` using
 //! the canonical 128-byte `x0 || x1 || x2 || x0_blinding` layout, byte-exact
 //! with `pir_runtime_core::arc_verifier::ArcVerifier`, so the demo PIR server
-//! can be launched with `--require-arc --arc-key <same path>` and will verify
-//! credentials this issuer mints.
+//! can be launched with `--allow-experimental-arc --require-arc --arc-key
+//! <same path>` and will verify credentials this issuer mints.
 //!
 //! (Cashu `/dev/cashu/*` endpoints are added in Phase 2.)
 
@@ -138,8 +138,15 @@ fn main() {
     println!("│             GET /dev/cashu/keyset  POST /dev/cashu/mint   POST /dev/cashu/verify");
     println!("│ NOTE        verify endpoints co-locate the credential gate (same logic as");
     println!("│             unified_server) so the demo needs no PIR database.");
-    println!("│ server      unified_server --require-arc --arc-key {} \\", arc_key_path.display());
-    println!("│                 --require-cashu --cashu-keyset {}", cashu_keyset_arg);
+    println!("│ server      unified_server --allow-experimental-arc \\");
+    println!(
+        "│                 --require-arc --arc-key {} \\",
+        arc_key_path.display()
+    );
+    println!(
+        "│                 --require-cashu --cashu-keyset {}",
+        cashu_keyset_arg
+    );
     println!("└─────────────────────────────────────────────────────────────");
 
     for stream in listener.incoming() {

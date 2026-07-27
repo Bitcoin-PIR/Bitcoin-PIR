@@ -1,6 +1,6 @@
 //! Runtime adapter for authoritative standard-Cashu admission.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
@@ -12,17 +12,20 @@ use pir_runtime_core::service_admission::{
 };
 use pir_service_protocol::{
     check_standard_cashu_spend_for_offer, AuthorizationProofV1, BoundAuthAttemptV1,
-    StandardCashuMintManifestV1, MAX_STANDARD_CASHU_PROOFS_V1,
+    StandardCashuMintManifestV1,
 };
 use rand_core::OsRng;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    CashuClientErrorV1, CashuOutputMaterialV1, CashuRecoveryAadV1, CashuRecoveryCipherErrorV1,
-    CashuRecoveryCipherV1, CashuSealedRecoveryV1, CashuSwapProgressV1, StandardCashuClientV1,
+    CashuClientErrorV1, CashuCustodyAadV1, CashuCustodyBundleV1, CashuCustodyCipherErrorV1,
+    CashuCustodyCipherV1, CashuOutputMaterialV1, CashuRecoveryAadV1, CashuRecoveryCipherErrorV1,
+    CashuRecoveryCipherV1, CashuSealedCustodyV1, CashuSealedRecoveryV1, CashuSwapProgressV1,
+    SensitiveBytes32SetV1, StandardCashuClientV1,
 };
 
 const CASHU_RECOVERY_NONCE_LEN_V1: usize = 24;
+const CASHU_CUSTODY_NONCE_LEN_V1: usize = 24;
 
 /// Authenticated recovery cipher with explicit key epochs.  Operators load the
 /// keys from a secret store; only the epoch and a fresh public nonce enter the
@@ -122,6 +125,165 @@ impl CashuRecoveryCipherV1 for ChaCha20Poly1305RecoveryCipherV1 {
     }
 }
 
+/// A separately configured AEAD keyring for note-only custody material. The
+/// distinct type and AAD make accidental recovery-domain reuse impossible at
+/// the trait boundary.
+pub struct ChaCha20Poly1305CustodyCipherV1 {
+    active_epoch: u64,
+    keys: BTreeMap<u64, Zeroizing<[u8; 32]>>,
+}
+
+impl core::fmt::Debug for ChaCha20Poly1305CustodyCipherV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ChaCha20Poly1305CustodyCipherV1")
+            .field("active_epoch", &self.active_epoch)
+            .field("loaded_epoch_count", &self.keys.len())
+            .finish()
+    }
+}
+
+impl ChaCha20Poly1305CustodyCipherV1 {
+    pub fn new(
+        active_epoch: u64,
+        keys: impl IntoIterator<Item = (u64, [u8; 32])>,
+    ) -> Result<Self, CashuCustodyCipherErrorV1> {
+        if active_epoch == 0 {
+            return Err(CashuCustodyCipherErrorV1::UnknownKeyEpoch);
+        }
+        let mut loaded = BTreeMap::new();
+        for (epoch, mut key) in keys {
+            if epoch == 0 || key.iter().all(|byte| *byte == 0) || loaded.contains_key(&epoch) {
+                key.zeroize();
+                return Err(CashuCustodyCipherErrorV1::UnknownKeyEpoch);
+            }
+            loaded.insert(epoch, Zeroizing::new(key));
+        }
+        if !loaded.contains_key(&active_epoch) {
+            return Err(CashuCustodyCipherErrorV1::UnknownKeyEpoch);
+        }
+        Ok(Self {
+            active_epoch,
+            keys: loaded,
+        })
+    }
+}
+
+impl CashuCustodyCipherV1 for ChaCha20Poly1305CustodyCipherV1 {
+    fn seal(
+        &self,
+        aad: &CashuCustodyAadV1,
+        plaintext: &[u8],
+    ) -> Result<CashuSealedCustodyV1, CashuCustodyCipherErrorV1> {
+        let key = self
+            .keys
+            .get(&self.active_epoch)
+            .ok_or(CashuCustodyCipherErrorV1::UnknownKeyEpoch)?;
+        let mut nonce = vec![0u8; CASHU_CUSTODY_NONCE_LEN_V1];
+        getrandom(&mut nonce).map_err(|_| CashuCustodyCipherErrorV1::Unavailable)?;
+        let ciphertext = XChaCha20Poly1305::new(Key::from_slice(key.as_ref()))
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: &aad.encode(),
+                },
+            )
+            .map_err(|_| CashuCustodyCipherErrorV1::Unavailable)?;
+        Ok(CashuSealedCustodyV1 {
+            key_epoch: self.active_epoch,
+            nonce,
+            ciphertext,
+        })
+    }
+
+    fn open(
+        &self,
+        aad: &CashuCustodyAadV1,
+        sealed: &CashuSealedCustodyV1,
+    ) -> Result<Vec<u8>, CashuCustodyCipherErrorV1> {
+        if sealed.nonce.len() != CASHU_CUSTODY_NONCE_LEN_V1 {
+            return Err(CashuCustodyCipherErrorV1::InvalidPlaintext);
+        }
+        let key = self
+            .keys
+            .get(&sealed.key_epoch)
+            .ok_or(CashuCustodyCipherErrorV1::UnknownKeyEpoch)?;
+        XChaCha20Poly1305::new(Key::from_slice(key.as_ref()))
+            .decrypt(
+                XNonce::from_slice(&sealed.nonce),
+                Payload {
+                    msg: &sealed.ciphertext,
+                    aad: &aad.encode(),
+                },
+            )
+            .map_err(|_| CashuCustodyCipherErrorV1::AuthenticationFailed)
+    }
+}
+
+/// Decryption-only custody keyring for offline export tooling. It has no
+/// active epoch and cannot accidentally seal new operational custody lots.
+pub struct ChaCha20Poly1305CustodyDecryptorV1 {
+    keys: BTreeMap<u64, Zeroizing<[u8; 32]>>,
+}
+
+impl core::fmt::Debug for ChaCha20Poly1305CustodyDecryptorV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ChaCha20Poly1305CustodyDecryptorV1")
+            .field("loaded_epoch_count", &self.keys.len())
+            .finish()
+    }
+}
+
+impl ChaCha20Poly1305CustodyDecryptorV1 {
+    pub fn new(
+        keys: impl IntoIterator<Item = (u64, [u8; 32])>,
+    ) -> Result<Self, CashuCustodyCipherErrorV1> {
+        let mut loaded = BTreeMap::new();
+        for (epoch, mut key) in keys {
+            if epoch == 0 || key.iter().all(|byte| *byte == 0) || loaded.contains_key(&epoch) {
+                key.zeroize();
+                return Err(CashuCustodyCipherErrorV1::UnknownKeyEpoch);
+            }
+            loaded.insert(epoch, Zeroizing::new(key));
+        }
+        if loaded.is_empty() {
+            return Err(CashuCustodyCipherErrorV1::UnknownKeyEpoch);
+        }
+        Ok(Self { keys: loaded })
+    }
+
+    pub fn open_bundle(
+        &self,
+        aad: &CashuCustodyAadV1,
+        sealed: &CashuSealedCustodyV1,
+    ) -> Result<CashuCustodyBundleV1, CashuClientErrorV1> {
+        sealed.validate()?;
+        if sealed.nonce.len() != CASHU_CUSTODY_NONCE_LEN_V1 {
+            return Err(CashuClientErrorV1::InvalidCustodyCiphertextEnvelope);
+        }
+        let key = self
+            .keys
+            .get(&sealed.key_epoch)
+            .ok_or(CashuClientErrorV1::CustodyCipherUnavailable)?;
+        let plaintext = Zeroizing::new(
+            XChaCha20Poly1305::new(Key::from_slice(key.as_ref()))
+                .decrypt(
+                    XNonce::from_slice(&sealed.nonce),
+                    Payload {
+                        msg: &sealed.ciphertext,
+                        aad: &aad.encode(),
+                    },
+                )
+                .map_err(|_| CashuClientErrorV1::CustodyAuthenticationFailed)?,
+        );
+        let bundle = CashuCustodyBundleV1::decode_canonical(&plaintext)?;
+        bundle.validate_for_aad(aad)?;
+        Ok(bundle)
+    }
+}
+
 /// Fresh provider-wallet output material.  The exact output denominations are
 /// derived solely from the signed active keyset and exact signed offer price.
 #[derive(Clone, Copy, Debug, Default)]
@@ -133,50 +295,32 @@ impl OsRandomCashuOutputMaterialGeneratorV1 {
         manifest: &StandardCashuMintManifestV1,
         value: u64,
     ) -> Result<Vec<CashuOutputMaterialV1>, CashuClientErrorV1> {
-        let amounts = exact_greedy_denominations_v1(manifest, value)?;
-        let mut seen_secrets = HashSet::with_capacity(amounts.len());
-        let mut seen_blindings = HashSet::with_capacity(amounts.len());
+        let amounts = crate::solve_cashu_output_denominations_v1(manifest, value)?;
+        let mut seen_secrets = SensitiveBytes32SetV1::with_capacity(amounts.len());
+        let mut seen_blindings = SensitiveBytes32SetV1::with_capacity(amounts.len());
         let mut materials = Vec::with_capacity(amounts.len());
         for amount in amounts {
-            let secret = loop {
-                let mut candidate = [0u8; 32];
-                getrandom(&mut candidate).map_err(|_| CashuClientErrorV1::InvalidOutputMaterial)?;
-                if candidate.iter().any(|byte| *byte != 0) && seen_secrets.insert(candidate) {
+            let secret: Zeroizing<[u8; 32]> = loop {
+                let mut candidate = Zeroizing::new([0u8; 32]);
+                getrandom(&mut *candidate)
+                    .map_err(|_| CashuClientErrorV1::InvalidOutputMaterial)?;
+                if candidate.iter().any(|byte| *byte != 0) && seen_secrets.insert(*candidate) {
                     break candidate;
                 }
             };
-            let blinding = loop {
+            let blinding: Zeroizing<[u8; 32]> = loop {
                 let scalar = Scalar::random(&mut OsRng);
-                let candidate: [u8; 32] = scalar.to_bytes().into();
-                if candidate.iter().any(|byte| *byte != 0) && seen_blindings.insert(candidate) {
+                let candidate: Zeroizing<[u8; 32]> = Zeroizing::new(scalar.to_bytes().into());
+                if candidate.iter().any(|byte| *byte != 0) && seen_blindings.insert(*candidate) {
                     break candidate;
                 }
             };
-            materials.push(CashuOutputMaterialV1::new(amount, secret, blinding));
+            materials.push(CashuOutputMaterialV1::from_zeroizing(
+                amount, secret, blinding,
+            ));
         }
         Ok(materials)
     }
-}
-
-fn exact_greedy_denominations_v1(
-    manifest: &StandardCashuMintManifestV1,
-    value: u64,
-) -> Result<Vec<u64>, CashuClientErrorV1> {
-    if value == 0 {
-        return Err(CashuClientErrorV1::InvalidOutputMaterial);
-    }
-    let mut remaining = value;
-    let mut amounts = Vec::new();
-    for key in manifest.active_output_keyset.keys.iter().rev() {
-        while remaining >= key.amount && amounts.len() < MAX_STANDARD_CASHU_PROOFS_V1 {
-            amounts.push(key.amount);
-            remaining -= key.amount;
-        }
-    }
-    if remaining != 0 || amounts.is_empty() || amounts.len() > MAX_STANDARD_CASHU_PROOFS_V1 {
-        return Err(CashuClientErrorV1::InvalidOutputMaterial);
-    }
-    Ok(amounts)
 }
 
 /// Exact standard-Cashu runtime adapter.  A grant is returned only after the
@@ -249,18 +393,36 @@ impl AdmissionMethodCommitterV1 for StandardCashuAdmissionCommitterV1<'_> {
                 | CashuClientErrorV1::InvalidMintPoint
                 | CashuClientErrorV1::InvalidMintScalar
                 | CashuClientErrorV1::MintResponseMismatch
-                | CashuClientErrorV1::MintDleqVerificationFailed,
+                | CashuClientErrorV1::MintDleqVerificationFailed
+                | CashuClientErrorV1::MintDefiniteRejection
+                | CashuClientErrorV1::InvalidCashuToken,
             ) => Err(AdmissionCommitErrorV1::InvalidOrSpent),
             Err(
                 CashuClientErrorV1::InvalidCiphertextEnvelope
                 | CashuClientErrorV1::RecoveryCipherUnavailable
                 | CashuClientErrorV1::RecoveryAuthenticationFailed
                 | CashuClientErrorV1::RecoveryPlaintextInvalid
+                | CashuClientErrorV1::InvalidCustodyCiphertextEnvelope
+                | CashuClientErrorV1::CustodyCipherUnavailable
+                | CashuClientErrorV1::CustodyAuthenticationFailed
+                | CashuClientErrorV1::InvalidCustodyPlaintext
                 | CashuClientErrorV1::StoreUnavailable
                 | CashuClientErrorV1::StoreConflict
                 | CashuClientErrorV1::IntentNotFound
-                | CashuClientErrorV1::StateConflict,
+                | CashuClientErrorV1::StateConflict
+                | CashuClientErrorV1::Nut07CheckUnavailable
+                | CashuClientErrorV1::Nut07ResponseInvalid,
             ) => Err(AdmissionCommitErrorV1::InternalAfterSpend),
+            Err(
+                CashuClientErrorV1::InvalidExposureLimits
+                | CashuClientErrorV1::NoExactDenominationSolution
+                | CashuClientErrorV1::DenominationSearchLimitExceeded,
+            ) => Err(AdmissionCommitErrorV1::ScopeUnavailable),
+            Err(CashuClientErrorV1::ExposureLimitExceeded) => {
+                Err(AdmissionCommitErrorV1::ServerBusy {
+                    retry_after_ms: 60_000,
+                })
+            }
         }
     }
 }
@@ -276,11 +438,14 @@ mod tests {
         let aad = CashuRecoveryAadV1 {
             intent_id: [1; 16],
             mint_id: [2; 32],
+            manifest_digest: [8; 32],
+            unit_digest: [9; 32],
             input_set_digest: [3; 32],
             request_digest: [4; 32],
             output_set_digest: [5; 32],
             offer_binding_digest: [6; 32],
             settlement_value: 7,
+            expected_output_count: 1,
         };
         let sealed = cipher.seal(&aad, b"secret recovery").unwrap();
         assert_eq!(sealed.key_epoch, 2);

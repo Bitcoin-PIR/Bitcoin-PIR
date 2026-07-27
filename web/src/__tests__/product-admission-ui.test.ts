@@ -16,6 +16,7 @@ function offer(overrides: Partial<ServiceOfferViewV1>): ServiceOfferViewV1 {
     issuerIdHex: '00'.repeat(32),
     keyIdHex: '',
     batVerificationKeyFingerprintHex: '',
+    arcVerificationKeyFingerprintHex: '',
     endpoint: '',
     credentialCount: 0,
     credentialPresentationLimit: 0,
@@ -54,7 +55,8 @@ describe('signed offer privacy wording', () => {
     }))).toMatch(/mint is online at redemption.*not invoice\/hash/i);
     expect(privacyLabelForOfferV1(offer({
       acquisition: 'bolt11', authorization: 'arc-experimental', freeMode: 'not-free',
-      deploymentStatus: 'experimental', privacyLeakageBits: (1 << 2) | (1 << 5),
+      deploymentStatus: 'experimental', arcVerificationKeyFingerprintHex: '91'.repeat(32),
+      privacyLeakageBits: (1 << 2) | (1 << 5),
     }))).toMatch(/EXPERIMENTAL ARC.*not independently reviewed/i);
   });
 });

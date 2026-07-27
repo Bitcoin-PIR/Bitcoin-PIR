@@ -49,12 +49,11 @@ pub struct ClnRpcResponseV1 {
 
 impl ClnRpcResponseV1 {
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, ClnRpcTransportErrorV1> {
+        let bytes = Zeroizing::new(bytes);
         if bytes.is_empty() || bytes.len() > MAX_CLN_RPC_RESPONSE_BYTES_V1 {
             return Err(ClnRpcTransportErrorV1::InvalidResponse);
         }
-        Ok(Self {
-            bytes: Zeroizing::new(bytes),
-        })
+        Ok(Self { bytes })
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -262,7 +261,13 @@ where
             method,
             params,
         };
-        let mut encoded = serde_json::to_vec(&request)
+        // The request carries the durable anonymous invoice label. Allocate
+        // its full checked bound once so serialization and delimiter appends
+        // cannot leave linkable prefixes behind in abandoned Vec allocations.
+        let mut encoded = Zeroizing::new(Vec::with_capacity(
+            MAX_CLN_RPC_REQUEST_BYTES_V1.saturating_add(2),
+        ));
+        serde_json::to_writer(&mut *encoded, &request)
             .map_err(|_| RpcCallErrorV1::Backend(LightningBackendErrorV1::InvalidRequest))?;
         if encoded.len() > MAX_CLN_RPC_REQUEST_BYTES_V1 {
             return Err(RpcCallErrorV1::Backend(
@@ -518,13 +523,71 @@ fn decode_hex_nibble(value: u8) -> u8 {
 #[cfg(unix)]
 mod unix_transport {
     use super::*;
+    use socket2::{Domain, SockAddr, Socket, Type};
     use std::fs;
-    use std::io::{Read, Write};
+    use std::io::{self, Read, Write};
+    use std::os::fd::OwnedFd;
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use zeroize::Zeroize;
+
+    fn deadline_after(timeout: Duration) -> Result<Instant, ClnRpcTransportErrorV1> {
+        Instant::now()
+            .checked_add(timeout)
+            .ok_or(ClnRpcTransportErrorV1::UnavailableBeforeWrite)
+    }
+
+    fn remaining(deadline: Instant) -> io::Result<Duration> {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "CLN RPC deadline elapsed"))
+    }
+
+    struct DeadlineUnixStreamV1 {
+        inner: UnixStream,
+        deadline: Instant,
+        bytes_written: usize,
+    }
+
+    impl DeadlineUnixStreamV1 {
+        const fn new(inner: UnixStream, deadline: Instant) -> Self {
+            Self {
+                inner,
+                deadline,
+                bytes_written: 0,
+            }
+        }
+
+        const fn bytes_written(&self) -> usize {
+            self.bytes_written
+        }
+    }
+
+    impl Read for DeadlineUnixStreamV1 {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let remaining = remaining(self.deadline)?;
+            self.inner.set_read_timeout(Some(remaining))?;
+            self.inner.read(buffer)
+        }
+    }
+
+    impl Write for DeadlineUnixStreamV1 {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            let remaining = remaining(self.deadline)?;
+            self.inner.set_write_timeout(Some(remaining))?;
+            let written = self.inner.write(buffer)?;
+            self.bytes_written = self.bytes_written.saturating_add(written);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            remaining(self.deadline)?;
+            self.inner.flush()
+        }
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct UnixClnRpcSocketPolicyV1 {
@@ -581,37 +644,92 @@ mod unix_transport {
             {
                 return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
             }
+            // One wall-clock deadline covers connection, the complete request,
+            // and the complete double-newline-framed response. Recomputing the
+            // remaining timeout on every lower-level I/O prevents trickled
+            // traffic from refreshing the budget.
+            let deadline = deadline_after(self.timeout)?;
             let identity = self.checked_metadata()?;
-            let mut stream = UnixStream::connect(&self.socket_path)
+            let address = SockAddr::unix(&self.socket_path)
                 .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+            let socket = Socket::new(Domain::UNIX, Type::STREAM, None)
+                .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+            socket
+                .connect_timeout(
+                    &address,
+                    remaining(deadline)
+                        .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?,
+                )
+                .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+            let owned_fd = OwnedFd::from(socket);
+            let stream = UnixStream::from(owned_fd);
             if self.checked_metadata()? != identity {
                 return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
             }
-            stream
-                .set_read_timeout(Some(self.timeout))
-                .and_then(|_| stream.set_write_timeout(Some(self.timeout)))
-                .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
-            stream
-                .write_all(request)
-                .map_err(|_| ClnRpcTransportErrorV1::ResponseLostAfterWrite)?;
-            let mut response = Zeroizing::new(Vec::with_capacity(4_096));
+            remaining(deadline).map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+            let mut stream = DeadlineUnixStreamV1::new(stream, deadline);
+            if stream.write_all(request).is_err() {
+                return Err(if stream.bytes_written() == 0 {
+                    ClnRpcTransportErrorV1::UnavailableBeforeWrite
+                } else {
+                    ClnRpcTransportErrorV1::ResponseLostAfterWrite
+                });
+            }
+            // CLN may include the payment preimage in an otherwise ignored
+            // response field. Allocate the full bounded frame once so socket
+            // reads never abandon a linkable response prefix during growth.
+            let mut response = Zeroizing::new(Vec::with_capacity(
+                MAX_CLN_RPC_RESPONSE_BYTES_V1.saturating_add(2),
+            ));
             let mut chunk = Zeroizing::new([0u8; 4_096]);
             loop {
-                let read = stream
-                    .read(chunk.as_mut())
-                    .map_err(|_| ClnRpcTransportErrorV1::ResponseLostAfterWrite)?;
+                let frame_limit = MAX_CLN_RPC_RESPONSE_BYTES_V1 + 2;
+                let read_bound = frame_limit
+                    .saturating_sub(response.len())
+                    .saturating_add(1)
+                    .min(chunk.len());
+                let read = stream.read(&mut chunk[..read_bound]).map_err(|_| {
+                    if response.len() >= MAX_CLN_RPC_RESPONSE_BYTES_V1 {
+                        // A full maximum-sized payload without the required
+                        // delimiter is already an invalid frame. Some Unix
+                        // kernels report EINVAL rather than EOF when the peer
+                        // closes after filling the receive window.
+                        ClnRpcTransportErrorV1::InvalidResponse
+                    } else {
+                        ClnRpcTransportErrorV1::ResponseLostAfterWrite
+                    }
+                })?;
                 if read == 0 {
-                    return Err(ClnRpcTransportErrorV1::ResponseLostAfterWrite);
+                    return Err(if response.is_empty() {
+                        ClnRpcTransportErrorV1::ResponseLostAfterWrite
+                    } else {
+                        // EOF after any response prefix is an authenticated
+                        // framing failure, not an absence of a response. A
+                        // mutating RPC still maps either post-write outcome to
+                        // OutcomeUnknown at the backend boundary.
+                        ClnRpcTransportErrorV1::InvalidResponse
+                    });
+                }
+                let next_len = response
+                    .len()
+                    .checked_add(read)
+                    .ok_or(ClnRpcTransportErrorV1::InvalidResponse)?;
+                if next_len > frame_limit {
+                    // Do not append first: crossing the reserved bound would
+                    // reallocate and abandon an unwiped response prefix that
+                    // may contain a payment preimage.
+                    chunk[..read].zeroize();
+                    return Err(ClnRpcTransportErrorV1::InvalidResponse);
                 }
                 response.extend_from_slice(&chunk[..read]);
                 chunk[..read].zeroize();
-                if response.len() > MAX_CLN_RPC_RESPONSE_BYTES_V1 + 2 {
-                    return Err(ClnRpcTransportErrorV1::InvalidResponse);
-                }
                 if response.ends_with(b"\n\n") {
                     let message_len = response.len() - 2;
                     response.truncate(message_len);
                     return ClnRpcResponseV1::from_bytes(std::mem::take(&mut *response));
+                }
+                if response.len() == frame_limit {
+                    return Err(ClnRpcTransportErrorV1::InvalidResponse);
                 }
             }
         }
@@ -1131,6 +1249,114 @@ mod tests {
         .unwrap();
         let response = transport.call(b"{\"ping\":1}\n\n").unwrap();
         assert_eq!(response.as_bytes(), b"{\"pong\":1}");
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_transport_deadline_is_not_refreshed_by_trickled_response() {
+        use std::fs;
+        use std::io::{Read, Write};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::net::UnixListener;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "bitcoinpir-cln-rpc-deadline-test-{}-{id}.sock",
+            std::process::id()
+        ));
+        assert!(!path.exists());
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let uid = fs::symlink_metadata(&path).unwrap().uid();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\n\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            for byte in b"{\"result\":true}" {
+                thread::sleep(Duration::from_millis(40));
+                if stream.write_all(&[*byte]).is_err() {
+                    break;
+                }
+            }
+        });
+        let transport = UnixClnRpcTransportV1::new(
+            path.clone(),
+            UnixClnRpcSocketPolicyV1 {
+                expected_uid: uid,
+                expected_gid: None,
+            },
+            Duration::from_millis(120),
+        )
+        .unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            transport.call(b"{\"ping\":1}\n\n").unwrap_err(),
+            ClnRpcTransportErrorV1::ResponseLostAfterWrite
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(350),
+            "per-read timeouts refreshed the absolute CLN RPC deadline"
+        );
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_transport_rejects_fragmented_response_before_crossing_fixed_capacity() {
+        use std::fs;
+        use std::io::{Read, Write};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::net::UnixListener;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::thread;
+        use std::time::Duration;
+
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "bitcoinpir-cln-rpc-oversize-test-{}-{id}.sock",
+            std::process::id()
+        ));
+        assert!(!path.exists());
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let uid = fs::symlink_metadata(&path).unwrap().uid();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\n\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let mut oversized = vec![b'x'; MAX_CLN_RPC_RESPONSE_BYTES_V1 + 3];
+            oversized[..20].copy_from_slice(b"payment_preimage=000");
+            let _ = stream.write_all(&oversized);
+        });
+        let transport = UnixClnRpcTransportV1::new(
+            path.clone(),
+            UnixClnRpcSocketPolicyV1 {
+                expected_uid: uid,
+                expected_gid: None,
+            },
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(
+            transport.call(b"{\"ping\":1}\n\n").unwrap_err(),
+            ClnRpcTransportErrorV1::InvalidResponse
+        );
         server.join().unwrap();
         fs::remove_file(path).unwrap();
     }

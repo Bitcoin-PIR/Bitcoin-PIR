@@ -158,9 +158,80 @@ impl CashuRecoveryCipherV1 for TestRecoveryCipherV1 {
     }
 }
 
+impl CashuCustodyCipherV1 for TestRecoveryCipherV1 {
+    fn seal(
+        &self,
+        aad: &CashuCustodyAadV1,
+        plaintext: &[u8],
+    ) -> Result<CashuSealedCustodyV1, CashuCustodyCipherErrorV1> {
+        let nonce = self.nonce.fetch_add(1, Ordering::SeqCst).to_le_bytes();
+        let mut ciphertext = plaintext
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ self.key[index % self.key.len()])
+            .collect::<Vec<_>>();
+        let tag = test_cipher_tag_domain(
+            b"BitcoinPIR/test-only-cashu-custody-cipher/v1",
+            &self.key,
+            &aad.encode(),
+            &nonce,
+            &ciphertext,
+        );
+        ciphertext.extend_from_slice(&tag);
+        Ok(CashuSealedCustodyV1 {
+            key_epoch: 1,
+            nonce: nonce.to_vec(),
+            ciphertext,
+        })
+    }
+
+    fn open(
+        &self,
+        aad: &CashuCustodyAadV1,
+        sealed: &CashuSealedCustodyV1,
+    ) -> Result<Vec<u8>, CashuCustodyCipherErrorV1> {
+        if sealed.key_epoch != 1 || sealed.ciphertext.len() < 32 {
+            return Err(CashuCustodyCipherErrorV1::UnknownKeyEpoch);
+        }
+        let split = sealed.ciphertext.len() - 32;
+        let (ciphertext, tag) = sealed.ciphertext.split_at(split);
+        let expected = test_cipher_tag_domain(
+            b"BitcoinPIR/test-only-cashu-custody-cipher/v1",
+            &self.key,
+            &aad.encode(),
+            &sealed.nonce,
+            ciphertext,
+        );
+        if tag != expected {
+            return Err(CashuCustodyCipherErrorV1::AuthenticationFailed);
+        }
+        Ok(ciphertext
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ self.key[index % self.key.len()])
+            .collect())
+    }
+}
+
 fn test_cipher_tag(key: &[u8; 32], aad: &[u8], nonce: &[u8], ciphertext: &[u8]) -> [u8; 32] {
+    test_cipher_tag_domain(
+        b"BitcoinPIR/test-only-cashu-recovery-cipher/v1",
+        key,
+        aad,
+        nonce,
+        ciphertext,
+    )
+}
+
+fn test_cipher_tag_domain(
+    domain: &[u8],
+    key: &[u8; 32],
+    aad: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"BitcoinPIR/test-only-cashu-recovery-cipher/v1");
+    hasher.update(domain);
     hasher.update(key);
     hasher.update(aad);
     hasher.update(nonce);
@@ -175,10 +246,17 @@ enum SwapReply {
     TimeoutUncommitted,
     NotFoundUncommitted,
     InvalidJsonCommitted,
+    InvalidJsonUncommitted,
     BadDleqCommitted,
     WrongOrderCommitted,
     WrongAmountCommitted,
     WrongKeysetCommitted,
+    DefiniteReject,
+    Malformed400,
+    Http408Nut00,
+    Http425Nut00,
+    Http429Nut00,
+    Http500Nut00,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -297,7 +375,15 @@ impl CashuMintTransportV1 for FakeMintTransportV1 {
                         state.stored_response = Some(response.clone());
                         state.check_reply = CheckReply::Uniform(CashuProofStateJsonV1::Spent);
                     }
-                    SwapReply::TimeoutUncommitted | SwapReply::NotFoundUncommitted => {}
+                    SwapReply::TimeoutUncommitted
+                    | SwapReply::NotFoundUncommitted
+                    | SwapReply::DefiniteReject
+                    | SwapReply::InvalidJsonUncommitted
+                    | SwapReply::Malformed400
+                    | SwapReply::Http408Nut00
+                    | SwapReply::Http425Nut00
+                    | SwapReply::Http429Nut00
+                    | SwapReply::Http500Nut00 => {}
                 }
                 match state.swap_reply {
                     SwapReply::Normal
@@ -306,13 +392,28 @@ impl CashuMintTransportV1 for FakeMintTransportV1 {
                     | SwapReply::WrongAmountCommitted
                     | SwapReply::WrongKeysetCommitted => Ok(encode_json_v1(&response).unwrap()),
                     SwapReply::InvalidJsonCommitted => Ok(b"{".to_vec()),
+                    SwapReply::InvalidJsonUncommitted => Ok(b"{".to_vec()),
                     SwapReply::TimeoutCommitted | SwapReply::TimeoutUncommitted => {
                         Err(transport_failure(CashuMintTransportFailureKindV1::Timeout))
                     }
-                    SwapReply::NotFoundUncommitted => Err(CashuMintTransportFailureV1 {
-                        kind: CashuMintTransportFailureKindV1::NotFound,
-                        http_status: Some(404),
-                    }),
+                    SwapReply::NotFoundUncommitted => Err(CashuMintTransportFailureV1::ambiguous(
+                        CashuMintTransportFailureKindV1::NotFound,
+                        Some(404),
+                    )),
+                    SwapReply::DefiniteReject => {
+                        Err(CashuMintTransportFailureV1::from_http_status(
+                            400,
+                            br#"{"code":10001,"detail":"proof verification failed"}"#,
+                        ))
+                    }
+                    SwapReply::Malformed400 => Err(CashuMintTransportFailureV1::from_http_status(
+                        400,
+                        b"not-json",
+                    )),
+                    SwapReply::Http408Nut00 => Err(nut00_http_failure(408)),
+                    SwapReply::Http425Nut00 => Err(nut00_http_failure(425)),
+                    SwapReply::Http429Nut00 => Err(nut00_http_failure(429)),
+                    SwapReply::Http500Nut00 => Err(nut00_http_failure(500)),
                 }
             }
             CashuMintRouteV1::Restore => {
@@ -359,10 +460,10 @@ impl CashuMintTransportV1 for FakeMintTransportV1 {
                     RestoreReply::Timeout => {
                         Err(transport_failure(CashuMintTransportFailureKindV1::Timeout))
                     }
-                    RestoreReply::NotFound => Err(CashuMintTransportFailureV1 {
-                        kind: CashuMintTransportFailureKindV1::NotFound,
-                        http_status: Some(404),
-                    }),
+                    RestoreReply::NotFound => Err(CashuMintTransportFailureV1::ambiguous(
+                        CashuMintTransportFailureKindV1::NotFound,
+                        Some(404),
+                    )),
                     RestoreReply::InvalidJson => Ok(b"not-json".to_vec()),
                 }
             }
@@ -383,7 +484,8 @@ impl CashuMintTransportV1 for FakeMintTransportV1 {
                 Ok(encode_json_v1(&CashuPostCheckStateResponseJsonV1 {
                     states: request
                         .ys
-                        .into_iter()
+                        .iter()
+                        .cloned()
                         .zip(states)
                         .map(|(y, proof_state)| CashuProofStateEntryJsonV1 {
                             y,
@@ -399,10 +501,14 @@ impl CashuMintTransportV1 for FakeMintTransportV1 {
 }
 
 fn transport_failure(kind: CashuMintTransportFailureKindV1) -> CashuMintTransportFailureV1 {
-    CashuMintTransportFailureV1 {
-        kind,
-        http_status: None,
-    }
+    CashuMintTransportFailureV1::ambiguous(kind, None)
+}
+
+fn nut00_http_failure(status: u16) -> CashuMintTransportFailureV1 {
+    CashuMintTransportFailureV1::from_http_status(
+        status,
+        br#"{"code":10001,"detail":"proof verification failed"}"#,
+    )
 }
 
 struct Fixture {
@@ -432,6 +538,10 @@ impl Fixture {
 }
 
 fn fixture(price: u64) -> Fixture {
+    fixture_with_unit(price, "sat")
+}
+
+fn fixture_with_unit(price: u64, unit: &str) -> Fixture {
     assert!((1..=3).contains(&price));
     let keys = [1u64, 2, 4]
         .into_iter()
@@ -441,8 +551,8 @@ fn fixture(price: u64) -> Fixture {
         })
         .collect::<Vec<_>>();
     let keyset = CashuKeysetBindingV1 {
-        keyset_id: derive_cashu_keyset_id_v2(&keys, "sat", 0, Some(100_000)).unwrap(),
-        unit: "sat".to_owned(),
+        keyset_id: derive_cashu_keyset_id_v2(&keys, unit, 0, Some(100_000)).unwrap(),
+        unit: unit.to_owned(),
         input_fee_ppk: 0,
         final_expiry: Some(100_000),
         keys,
@@ -450,7 +560,7 @@ fn fixture(price: u64) -> Fixture {
     let manifest = StandardCashuMintManifestV1 {
         manifest_epoch: 1,
         mint_endpoint: "https://mint.example".to_owned(),
-        unit: "sat".to_owned(),
+        unit: unit.to_owned(),
         required_nuts: CashuRequiredNutsV1::required_v1(),
         accepted_input_keysets: vec![keyset.clone()],
         active_output_keyset: keyset.clone(),
@@ -496,7 +606,7 @@ fn fixture(price: u64) -> Fixture {
         verification: VerificationMode::StandardCashuMintOnline,
         deployment_status: DeploymentStatus::Stable,
         price: PriceV1::Cashu {
-            unit: "sat".to_owned(),
+            unit: unit.to_owned(),
             amount: price,
         },
         issuer_id: manifest.mint_id(),
@@ -581,11 +691,25 @@ fn output_materials(price: u64, tweak: u8) -> Vec<CashuOutputMaterialV1> {
 }
 
 fn client<'a>(
-    store: &'a InsecureDevSqliteCashuSwapStoreV1,
+    store: &'a dyn CashuSwapStoreV1,
     mint: &'a FakeMintTransportV1,
     cipher: &'a TestRecoveryCipherV1,
 ) -> StandardCashuClientV1<'a> {
-    StandardCashuClientV1::new(store, mint, cipher)
+    client_with_limits(
+        store,
+        mint,
+        cipher,
+        CashuCustodyExposureLimitsV1::new(1_000_000, 1_000_000).unwrap(),
+    )
+}
+
+fn client_with_limits<'a>(
+    store: &'a dyn CashuSwapStoreV1,
+    mint: &'a FakeMintTransportV1,
+    cipher: &'a TestRecoveryCipherV1,
+    limits: CashuCustodyExposureLimitsV1,
+) -> StandardCashuClientV1<'a> {
+    StandardCashuClientV1::new(store, mint, cipher, cipher, limits)
 }
 
 fn mint_public_key(amount: u64) -> [u8; 33] {
@@ -1033,7 +1157,7 @@ fn concurrent_callers_issue_one_swap_and_one_grant() {
         let mint = Arc::clone(&mint);
         let cipher = Arc::clone(&cipher);
         threads.push(std::thread::spawn(move || {
-            client(&store, &mint, &cipher).start_swap(
+            client(store.as_ref(), &mint, &cipher).start_swap(
                 &fixture.spend,
                 &fixture.checked,
                 &fixture.verified_offer(),
@@ -1158,7 +1282,7 @@ fn production_provider_store_adapter_completes_once_and_survives_restart() {
             fixture.policy.provider_id,
             Arc::clone(&authority),
         );
-        let progress = StandardCashuClientV1::new(&store, &mint, &cipher)
+        let progress = client(&store, &mint, &cipher)
             .start_swap(
                 &fixture.spend,
                 &fixture.checked,
@@ -1181,7 +1305,7 @@ fn production_provider_store_adapter_completes_once_and_survives_restart() {
         Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
-    let replay = StandardCashuClientV1::new(&reopened, &mint, &cipher)
+    let replay = client(&reopened, &mint, &cipher)
         .start_swap(
             &fixture.spend,
             &fixture.checked,
@@ -1220,7 +1344,7 @@ fn lost_submit_anchor_response_never_causes_nut03_side_effect_or_retry() {
         // must treat the error as a hard prohibition on sending NUT-03.
         authority.lose_response_at(2);
         assert_eq!(
-            StandardCashuClientV1::new(&store, &mint, &cipher).start_swap(
+            client(&store, &mint, &cipher).start_swap(
                 &fixture.spend,
                 &fixture.checked,
                 &fixture.verified_offer(),
@@ -1241,7 +1365,7 @@ fn lost_submit_anchor_response_never_causes_nut03_side_effect_or_retry() {
         Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
-    let progress = StandardCashuClientV1::new(&reopened, &mint, &cipher)
+    let progress = client(&reopened, &mint, &cipher)
         .start_swap(
             &fixture.spend,
             &fixture.checked,
@@ -1284,7 +1408,7 @@ fn lost_wallet_commit_anchor_response_recovers_notes_without_second_nut03() {
         // Generation 3 stores the fully verified/unblinded provider notes.
         authority.lose_response_at(3);
         assert_eq!(
-            StandardCashuClientV1::new(&store, &mint, &cipher).start_swap(
+            client(&store, &mint, &cipher).start_swap(
                 &fixture.spend,
                 &fixture.checked,
                 &fixture.verified_offer(),
@@ -1305,7 +1429,7 @@ fn lost_wallet_commit_anchor_response_recovers_notes_without_second_nut03() {
         Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
-    let progress = StandardCashuClientV1::new(&reopened, &mint, &cipher)
+    let progress = client(&reopened, &mint, &cipher)
         .resume_swap(
             &fixture.spend,
             &fixture.checked,
@@ -1343,7 +1467,7 @@ fn lost_grant_claim_anchor_response_never_reissues_grant_or_nut03() {
         // also advances spend_commit_seq. A lost response must return no grant.
         authority.lose_response_at(4);
         assert_eq!(
-            StandardCashuClientV1::new(&store, &mint, &cipher).start_swap(
+            client(&store, &mint, &cipher).start_swap(
                 &fixture.spend,
                 &fixture.checked,
                 &fixture.verified_offer(),
@@ -1365,7 +1489,7 @@ fn lost_grant_claim_anchor_response_never_reissues_grant_or_nut03() {
         Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
-    let replay = StandardCashuClientV1::new(&reopened, &mint, &cipher)
+    let replay = client(&reopened, &mint, &cipher)
         .resume_swap(
             &fixture.spend,
             &fixture.checked,
@@ -1379,4 +1503,772 @@ fn lost_grant_claim_anchor_response_never_reissues_grant_or_nut03() {
     let identity = reopened.identity().unwrap();
     assert_eq!(identity.store_generation, 4);
     assert_eq!(identity.spend_commit_seq, 1);
+}
+
+#[test]
+fn finite_exposure_limits_are_mandatory_and_enforced_before_nut03() {
+    assert_eq!(
+        CashuCustodyExposureLimitsV1::new(0, 1),
+        Err(CashuClientErrorV1::InvalidExposureLimits)
+    );
+    assert_eq!(
+        CashuCustodyExposureLimitsV1::new(1, u64::MAX - 1),
+        Err(CashuClientErrorV1::InvalidExposureLimits)
+    );
+    let fixture = fixture(3);
+    let store = InsecureDevSqliteCashuSwapStoreV1::open_in_memory().unwrap();
+    let mint = FakeMintTransportV1::new(
+        SwapReply::Normal,
+        RestoreReply::Stored,
+        CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
+    );
+    let cipher = TestRecoveryCipherV1::default();
+    assert_eq!(
+        client_with_limits(
+            &store,
+            &mint,
+            &cipher,
+            CashuCustodyExposureLimitsV1::new(2, 10).unwrap(),
+        )
+        .start_swap(
+            &fixture.spend,
+            &fixture.checked,
+            &fixture.verified_offer(),
+            &fixture.manifest,
+            output_materials(3, 0),
+            100,
+        ),
+        Err(CashuClientErrorV1::ExposureLimitExceeded)
+    );
+    assert_eq!(mint.calls(), (0, 0, 0));
+}
+
+#[test]
+fn only_strict_http_400_nut00_is_a_definite_rejection() {
+    let valid = br#"{"code":10001,"detail":"proof verification failed"}"#;
+    let definite = CashuMintTransportFailureV1::from_http_status(400, valid);
+    assert_eq!(
+        definite.kind(),
+        CashuMintTransportFailureKindV1::DefiniteRejection
+    );
+    assert_eq!(definite.http_status(), Some(400));
+
+    for (status, body) in [
+        (400, b"not-json".as_slice()),
+        (400, br#"{"code":10001}"#.as_slice()),
+        (
+            400,
+            br#"{"code":10001,"detail":"x","extra":true}"#.as_slice(),
+        ),
+        (400, br#"{"code":0,"detail":"x"}"#.as_slice()),
+        (408, valid.as_slice()),
+        (425, valid.as_slice()),
+        (429, valid.as_slice()),
+        (500, valid.as_slice()),
+        (503, valid.as_slice()),
+    ] {
+        assert_ne!(
+            CashuMintTransportFailureV1::from_http_status(status, body).kind(),
+            CashuMintTransportFailureKindV1::DefiniteRejection,
+            "status {status} and body {body:?} must remain ambiguous",
+        );
+    }
+    let oversized = format!(r#"{{"code":10001,"detail":"{}"}}"#, "x".repeat(4_096));
+    assert_ne!(
+        CashuMintTransportFailureV1::from_http_status(400, oversized.as_bytes()).kind(),
+        CashuMintTransportFailureKindV1::DefiniteRejection
+    );
+    assert_eq!(
+        CashuMintTransportFailureV1::ambiguous(
+            CashuMintTransportFailureKindV1::DefiniteRejection,
+            Some(400),
+        )
+        .kind(),
+        CashuMintTransportFailureKindV1::HttpError
+    );
+}
+
+#[test]
+fn repeated_invalid_proofs_release_exposure_without_terminal_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("definite-rejections.sqlite3");
+    let mint = FakeMintTransportV1::new(
+        SwapReply::DefiniteReject,
+        RestoreReply::Empty,
+        CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
+    );
+    let cipher = TestRecoveryCipherV1::default();
+    let limits = CashuCustodyExposureLimitsV1::new(1, 1).unwrap();
+
+    for marker in 0..32u8 {
+        // Reopen between every rejection to prove the release is durable and
+        // does not accumulate terminal rows across process restarts.
+        let store = InsecureDevSqliteCashuSwapStoreV1::open(&path).unwrap();
+        let mut fixture = fixture(1);
+        fixture.spend.proofs[0].secret = format!("invalid-proof-{marker:02x}");
+        fixture.checked = {
+            let verified = fixture.verified_offer();
+            check_standard_cashu_spend_for_offer(&fixture.spend, &verified, 100).unwrap()
+        };
+        let context = CheckedContextV1::new(
+            &fixture.spend,
+            &fixture.checked,
+            &fixture.verified_offer(),
+            &fixture.manifest,
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            client_with_limits(&store, &mint, &cipher, limits).start_swap(
+                &fixture.spend,
+                &fixture.checked,
+                &fixture.verified_offer(),
+                &fixture.manifest,
+                output_materials(1, marker.wrapping_add(1)),
+                100,
+            ),
+            Err(CashuClientErrorV1::MintDefiniteRejection)
+        );
+        assert!(store
+            .load_by_input(&fixture.checked.mint_id, &context.input_set_digest)
+            .unwrap()
+            .is_none());
+        drop(store);
+    }
+    assert_eq!(mint.calls(), (32, 0, 0));
+    let connection = rusqlite::Connection::open(path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM cashu_swap_intents", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn ambiguous_http_errors_never_release_or_resubmit() {
+    for reply in [
+        SwapReply::Malformed400,
+        SwapReply::NotFoundUncommitted,
+        SwapReply::InvalidJsonUncommitted,
+        SwapReply::Http408Nut00,
+        SwapReply::Http425Nut00,
+        SwapReply::Http429Nut00,
+        SwapReply::Http500Nut00,
+    ] {
+        let fixture = fixture(1);
+        let store = InsecureDevSqliteCashuSwapStoreV1::open_in_memory().unwrap();
+        let mint = FakeMintTransportV1::new(
+            reply,
+            RestoreReply::Empty,
+            CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
+        );
+        let cipher = TestRecoveryCipherV1::default();
+        let context = CheckedContextV1::new(
+            &fixture.spend,
+            &fixture.checked,
+            &fixture.verified_offer(),
+            &fixture.manifest,
+            100,
+        )
+        .unwrap();
+        let first = client(&store, &mint, &cipher)
+            .start_swap(
+                &fixture.spend,
+                &fixture.checked,
+                &fixture.verified_offer(),
+                &fixture.manifest,
+                output_materials(1, 1),
+                100,
+            )
+            .unwrap();
+        assert!(matches!(first, CashuSwapProgressV1::RecoveryPending { .. }));
+        let second = client(&store, &mint, &cipher)
+            .start_swap(
+                &fixture.spend,
+                &fixture.checked,
+                &fixture.verified_offer(),
+                &fixture.manifest,
+                output_materials(1, 2),
+                101,
+            )
+            .unwrap();
+        assert!(matches!(
+            second,
+            CashuSwapProgressV1::RecoveryPending { .. }
+        ));
+        assert_eq!(mint.calls().0, 1);
+        assert_eq!(
+            store
+                .load_by_input(&fixture.checked.mint_id, &context.input_set_digest)
+                .unwrap()
+                .unwrap()
+                .state,
+            CashuSwapStateV1::Submitted
+        );
+    }
+}
+
+#[test]
+fn canonical_units_with_digits_and_underscores_complete_custody_grant() {
+    for unit in ["usd1", "usd_1"] {
+        let fixture = fixture_with_unit(1, unit);
+        let store = InsecureDevSqliteCashuSwapStoreV1::open_in_memory().unwrap();
+        let mint = FakeMintTransportV1::new(
+            SwapReply::Normal,
+            RestoreReply::Stored,
+            CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
+        );
+        let cipher = TestRecoveryCipherV1::default();
+        assert!(matches!(
+            client(&store, &mint, &cipher).start_swap(
+                &fixture.spend,
+                &fixture.checked,
+                &fixture.verified_offer(),
+                &fixture.manifest,
+                output_materials(1, 1),
+                100,
+            ),
+            Ok(CashuSwapProgressV1::Grant(_))
+        ));
+    }
+}
+
+#[test]
+fn repeated_output_rng_across_swaps_cannot_duplicate_y_or_create_a_second_grant() {
+    let first = fixture(1);
+    let mut second = fixture(1);
+    second.spend.proofs[0].secret = "different-input-secret".to_owned();
+    second.checked = {
+        let verified = second.verified_offer();
+        check_standard_cashu_spend_for_offer(&second.spend, &verified, 100).unwrap()
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cashu.sqlite");
+    let store = InsecureDevSqliteCashuSwapStoreV1::open(&path).unwrap();
+    let mint = FakeMintTransportV1::new(
+        SwapReply::Normal,
+        RestoreReply::Stored,
+        CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
+    );
+    let cipher = TestRecoveryCipherV1::default();
+    assert!(matches!(
+        client(&store, &mint, &cipher).start_swap(
+            &first.spend,
+            &first.checked,
+            &first.verified_offer(),
+            &first.manifest,
+            output_materials(1, 0),
+            100,
+        ),
+        Ok(CashuSwapProgressV1::Grant(_))
+    ));
+    assert_eq!(
+        client(&store, &mint, &cipher).start_swap(
+            &second.spend,
+            &second.checked,
+            &second.verified_offer(),
+            &second.manifest,
+            output_materials(1, 0),
+            101,
+        ),
+        Err(CashuClientErrorV1::StoreConflict)
+    );
+    drop(store);
+    let connection = rusqlite::Connection::open(path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM cashu_custody_lots", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM cashu_custody_notes", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM cashu_swap_intents WHERE state = 3",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM cashu_swap_intents WHERE state = 2",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
+fn recovery_codec_fixture(
+    output_count: usize,
+    with_response: bool,
+) -> CashuSwapRecoveryPlaintextV1 {
+    let outputs = (0..output_count)
+        .map(|index| CashuOutputRecoveryV1 {
+            amount: u64::try_from(index + 1).unwrap(),
+            secret_bytes: SensitiveBytes32V1::new([0x11u8.wrapping_add(index as u8); 32]),
+            blinding_scalar: SensitiveBytes32V1::new([0x41u8.wrapping_add(index as u8); 32]),
+        })
+        .collect::<Vec<_>>();
+    let received_notes = if with_response {
+        (0..output_count)
+            .map(|index| {
+                let mut signature = [0x61u8.wrapping_add(index as u8); 33];
+                signature[0] = if index & 1 == 0 { 0x02 } else { 0x03 };
+                CashuReceivedNoteRecoveryV1 {
+                    amount: u64::try_from(index + 1).unwrap(),
+                    secret_bytes: SensitiveBytes32V1::new([0x21u8.wrapping_add(index as u8); 32]),
+                    unblinded_signature: SensitiveRecoveryBytesV1::new(signature),
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    CashuSwapRecoveryPlaintextV1 {
+        version: CASHU_RECOVERY_CODEC_VERSION_V1,
+        request_json: SensitiveRecoveryStringV1::new(
+            r#"{"inputs":["recovery-secret"],"outputs":["blinded-output"]}"#.to_owned(),
+        ),
+        outputs,
+        response_json: with_response.then(|| {
+            SensitiveRecoveryStringV1::new(
+                r#"{"signatures":["mint-controlled-response"]}"#.to_owned(),
+            )
+        }),
+        received_notes,
+    }
+}
+
+fn recovery_codec_zeroized_drop_count() -> usize {
+    RECOVERY_CODEC_ZEROIZED_DROPS_V1.with(std::cell::Cell::get)
+}
+
+#[test]
+fn sealed_recovery_and_custody_envelopes_redact_debug_and_zeroize_on_drop() {
+    assert!(std::mem::needs_drop::<CashuSealedRecoveryV1>());
+    assert!(std::mem::needs_drop::<CashuSealedCustodyV1>());
+
+    let recovery = CashuSealedRecoveryV1 {
+        key_epoch: 6,
+        nonce: b"sensitive-recovery-nonce".to_vec(),
+        ciphertext: b"sensitive-recovery-ciphertext".to_vec(),
+    };
+    assert_eq!(
+        format!("{recovery:?}"),
+        "CashuSealedRecoveryV1 { envelope: \"[REDACTED]\" }"
+    );
+
+    let custody = CashuSealedCustodyV1 {
+        key_epoch: 7,
+        nonce: b"sensitive-custody-nonce".to_vec(),
+        ciphertext: b"sensitive-custody-ciphertext".to_vec(),
+    };
+    assert_eq!(
+        format!("{custody:?}"),
+        "CashuSealedCustodyV1 { envelope: \"[REDACTED]\" }"
+    );
+}
+
+#[test]
+fn recovery_binary_codec_roundtrips_canonically_without_reallocation() {
+    for with_response in [false, true] {
+        let recovery = recovery_codec_fixture(2, with_response);
+        let plaintext = encode_recovery_plaintext_v1(&recovery).unwrap();
+        assert_eq!(
+            &plaintext[..CASHU_RECOVERY_MAGIC_V1.len()],
+            CASHU_RECOVERY_MAGIC_V1
+        );
+        assert_eq!(plaintext[8], CASHU_RECOVERY_CODEC_VERSION_V1);
+        assert_eq!(plaintext[9], u8::from(with_response));
+        assert!(plaintext.capacity() >= MAX_CASHU_RECOVERY_PLAINTEXT_BYTES_V1);
+
+        let decoded = decode_recovery_plaintext_v1(&plaintext).unwrap();
+        assert_eq!(decoded.version, CASHU_RECOVERY_CODEC_VERSION_V1);
+        assert_eq!(
+            decoded.request_json.as_bytes(),
+            recovery.request_json.as_bytes()
+        );
+        assert!(decoded.request_json.capacity() >= decoded.request_json.as_bytes().len());
+        assert_eq!(decoded.outputs.len(), recovery.outputs.len());
+        assert!(decoded.outputs.capacity() >= decoded.outputs.len());
+        for (actual, expected) in decoded.outputs.iter().zip(&recovery.outputs) {
+            assert_eq!(actual.amount, expected.amount);
+            assert_eq!(
+                actual.secret_bytes.as_array(),
+                expected.secret_bytes.as_array()
+            );
+            assert_eq!(
+                actual.blinding_scalar.as_array(),
+                expected.blinding_scalar.as_array()
+            );
+        }
+        assert_eq!(
+            decoded.response_json.as_ref().map(|value| value.as_bytes()),
+            recovery
+                .response_json
+                .as_ref()
+                .map(|value| value.as_bytes())
+        );
+        assert!(decoded.received_notes == recovery.received_notes);
+        assert!(decoded.received_notes.capacity() >= decoded.received_notes.len());
+
+        let reencoded = encode_recovery_plaintext_v1(&decoded).unwrap();
+        assert_eq!(reencoded.as_slice(), plaintext.as_slice());
+    }
+}
+
+#[test]
+fn recovery_binary_codec_rejects_tamper_truncation_trailing_and_oversize() {
+    let recovery = recovery_codec_fixture(1, true);
+    let plaintext = encode_recovery_plaintext_v1(&recovery).unwrap();
+
+    for (offset, value) in [(0usize, b'X'), (8, 2), (9, 0x80), (10, 1)] {
+        let mut tampered = Zeroizing::new(plaintext.as_slice().to_vec());
+        tampered[offset] = value;
+        assert!(matches!(
+            decode_recovery_plaintext_v1(&tampered),
+            Err(CashuClientErrorV1::RecoveryPlaintextInvalid)
+        ));
+    }
+    for truncated_len in 0..plaintext.len() {
+        assert!(matches!(
+            decode_recovery_plaintext_v1(&plaintext[..truncated_len]),
+            Err(CashuClientErrorV1::RecoveryPlaintextInvalid)
+        ));
+    }
+
+    let mut trailing = encode_recovery_plaintext_v1(&recovery).unwrap();
+    let original_capacity = trailing.capacity();
+    trailing.push(0);
+    assert_eq!(trailing.capacity(), original_capacity);
+    assert!(matches!(
+        decode_recovery_plaintext_v1(&trailing),
+        Err(CashuClientErrorV1::RecoveryPlaintextInvalid)
+    ));
+
+    let mut impossible_count = Zeroizing::new(plaintext.as_slice().to_vec());
+    impossible_count[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(
+        decode_recovery_plaintext_v1(&impossible_count),
+        Err(CashuClientErrorV1::RecoveryPlaintextInvalid)
+    ));
+
+    let mut oversized_recovery = recovery_codec_fixture(1, false);
+    oversized_recovery.request_json =
+        SensitiveRecoveryStringV1::new("x".repeat(MAX_CASHU_MINT_JSON_BYTES_V1 + 1));
+    assert!(matches!(
+        encode_recovery_plaintext_v1(&oversized_recovery),
+        Err(CashuClientErrorV1::RecoveryPlaintextInvalid)
+    ));
+    let oversized_plaintext = Zeroizing::new(vec![0u8; MAX_CASHU_RECOVERY_PLAINTEXT_BYTES_V1 + 1]);
+    assert!(matches!(
+        decode_recovery_plaintext_v1(&oversized_plaintext),
+        Err(CashuClientErrorV1::RecoveryPlaintextInvalid)
+    ));
+}
+
+#[test]
+fn recovery_binary_codec_failure_drops_every_constructed_sensitive_field() {
+    let recovery = recovery_codec_fixture(2, false);
+    let mut plaintext = encode_recovery_plaintext_v1(&recovery).unwrap();
+    let request_len =
+        usize::try_from(u32::from_le_bytes(plaintext[16..20].try_into().unwrap())).unwrap();
+    let second_amount_offset =
+        CASHU_RECOVERY_HEADER_BYTES_V1 + request_len + CASHU_OUTPUT_RECOVERY_BYTES_V1;
+    plaintext[second_amount_offset..second_amount_offset + 8].fill(0);
+
+    let before = recovery_codec_zeroized_drop_count();
+    assert!(matches!(
+        decode_recovery_plaintext_v1(&plaintext),
+        Err(CashuClientErrorV1::RecoveryPlaintextInvalid)
+    ));
+    // The request and both 32-byte fields in the first completed output were
+    // owned before the second output failed, and all three were wiped.
+    assert_eq!(recovery_codec_zeroized_drop_count() - before, 3);
+}
+
+#[test]
+fn custody_cipher_is_domain_bound_and_offline_decryptor_validates_the_bundle() {
+    let fixture = fixture(3);
+    let store = InsecureDevSqliteCashuSwapStoreV1::open_in_memory().unwrap();
+    let mint = FakeMintTransportV1::new(
+        SwapReply::Normal,
+        RestoreReply::Stored,
+        CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
+    );
+    let test_cipher = TestRecoveryCipherV1::default();
+    let test_client = client(&store, &mint, &test_cipher);
+    let context = CheckedContextV1::new(
+        &fixture.spend,
+        &fixture.checked,
+        &fixture.verified_offer(),
+        &fixture.manifest,
+        100,
+    )
+    .unwrap();
+    let (new_intent, recovery) = test_client
+        .prepare_intent(&context, output_materials(3, 0))
+        .unwrap();
+    let request: CashuPostSwapRequestJsonV1 =
+        decode_json_v1(recovery.request_json.as_bytes()).unwrap();
+    let response = encode_json_v1(&valid_mint_response(&request)).unwrap();
+    let notes = verify_mint_response_v1(&recovery, &context, &response).unwrap();
+    let record = StoredCashuSwapIntentV1 {
+        intent_id: new_intent.intent_id,
+        mint_id: new_intent.mint_id,
+        manifest_digest: new_intent.manifest_digest,
+        unit: new_intent.unit,
+        input_set_digest: new_intent.input_set_digest,
+        request_digest: new_intent.request_digest,
+        output_set_digest: new_intent.output_set_digest,
+        offer_binding_digest: new_intent.offer_binding_digest,
+        settlement_value: new_intent.settlement_value,
+        expected_output_count: new_intent.expected_output_count,
+        state: CashuSwapStateV1::WalletStored,
+        sealed_recovery: new_intent.sealed_recovery,
+        created_bucket: new_intent.created_bucket,
+        updated_bucket: new_intent.created_bucket,
+    };
+    let built = build_custody_lot_v1(&record, &context, &notes).unwrap();
+    let plaintext = built.bundle.encode_canonical().unwrap();
+    assert!(!plaintext
+        .windows(b"input-secret-one".len())
+        .any(|window| window == b"input-secret-one"));
+    for forbidden in [
+        b"intent".as_slice(),
+        b"offer",
+        b"request",
+        b"response",
+        b"query",
+    ] {
+        assert!(!plaintext
+            .windows(forbidden.len())
+            .any(|window| window == forbidden));
+    }
+
+    let cipher = ChaCha20Poly1305CustodyCipherV1::new(7, [(7, [0x41; 32])]).unwrap();
+    let sealed = cipher.seal(&built.aad, &plaintext).unwrap();
+    let decryptor = ChaCha20Poly1305CustodyDecryptorV1::new([(7, [0x41; 32])]).unwrap();
+    let opened = decryptor.open_bundle(&built.aad, &sealed).unwrap();
+    assert_eq!(opened.note_set_digest(), built.bundle.note_set_digest());
+
+    let mut wrong_aad = built.aad;
+    wrong_aad.settlement_value += 1;
+    assert_eq!(
+        decryptor.open_bundle(&wrong_aad, &sealed),
+        Err(CashuClientErrorV1::CustodyAuthenticationFailed)
+    );
+    let mut tampered = sealed;
+    tampered.ciphertext[0] ^= 1;
+    assert_eq!(
+        decryptor.open_bundle(&built.aad, &tampered),
+        Err(CashuClientErrorV1::CustodyAuthenticationFailed)
+    );
+    let debug = format!("{:?}", tampered);
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains(&hex::encode(&tampered.ciphertext)));
+}
+
+#[test]
+fn official_cashub_v4_vector_round_trips_semantically_and_debug_redacts_secrets() {
+    const OFFICIAL: &str = "cashuBo2F0gqJhaUgA_9SLj17PgGFwgaNhYQFhc3hAYWNjMTI0MzVlN2I4NDg0YzNjZjE4NTAxNDkyMThhZjkwZjcxNmE1MmJmNGE1ZWQzNDdlNDhlY2MxM2Y3NzM4OGFjWCECRFODGd5IXVW-07KaZCvuWHk3WrnnpiDhHki6SCQh88-iYWlIAK0mjE0fWCZhcIKjYWECYXN4QDEzMjNkM2Q0NzA3YTU4YWQyZTIzYWRhNGU5ZjFmNDlmNWE1YjRhYzdiNzA4ZWIwZDYxZjczOGY0ODMwN2U4ZWVhY1ghAjRWqhENhLSsdHrr2Cw7AFrKUL9Ffr1XN6RBT6w659lNo2FhAWFzeEA1NmJjYmNiYjdjYzY0MDZiM2ZhNWQ1N2QyMTc0ZjRlZmY4YjQ0MDJiMTc2OTI2ZDNhNTdkM2MzZGNiYjU5ZDU3YWNYIQJzEpxXGeWZN5qXSmJjY8MzxWyvwObQGr5G1YCCgHicY2FtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1Y3NhdA";
+    let token = CashuTokenV4V1::decode_cashub(OFFICIAL).unwrap();
+    let encoded = token.encode_cashub().unwrap();
+    assert_eq!(CashuTokenV4V1::decode_cashub(&encoded).unwrap(), token);
+    assert_ne!(encoded.as_str(), OFFICIAL);
+    let debug = format!("{token:?}");
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("acc12435e7b8484c3cf1850149218af90f716a52bf4a5ed347e48ecc13f77388"));
+}
+
+#[test]
+fn custody_export_groups_keyset_rotations_and_uses_full_ids_on_short_collision() {
+    fn bundle(keyset_id: String, secret_byte: u8, digest_byte: u8) -> CashuCustodyBundleV1 {
+        CashuCustodyBundleV1::new(
+            "https://mint.example".into(),
+            "sat".into(),
+            keyset_id,
+            [digest_byte.wrapping_add(30); 32],
+            vec![CashuCustodyNoteV1::new(
+                1,
+                lower_hex(&[secret_byte; 32]),
+                compressed_point(&ProjectivePoint::GENERATOR),
+                [digest_byte; 32],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    let shared_prefix = "0102030405060708";
+    let first_id = format!("{shared_prefix}{}", "11".repeat(25));
+    let second_id = format!("{shared_prefix}{}", "22".repeat(25));
+    let encoded =
+        encode_cashub_from_custody_bundles_v1(&[bundle(second_id, 2, 2), bundle(first_id, 1, 1)])
+            .unwrap();
+    let decoded = CashuTokenV4V1::decode_cashub(&encoded).unwrap();
+    assert_eq!(decoded.groups().len(), 2);
+    assert!(decoded
+        .groups()
+        .iter()
+        .all(|group| group.keyset_id().len() == 33));
+    assert_eq!(
+        decoded
+            .groups()
+            .iter()
+            .map(|group| group.proofs().len())
+            .sum::<usize>(),
+        2
+    );
+    assert!(
+        cashub_encoded_upper_bound_v1(512, 16, 2_048, 16).unwrap()
+            <= MAX_CASHUB_SERIALIZED_CHARS_V1
+    );
+}
+
+#[test]
+fn custody_note_and_bundle_debug_redact_stable_linkage_markers() {
+    let endpoint = "https://stable-debug-mint.example";
+    let keyset_id = format!("01{}", "ab".repeat(32));
+    let secret = lower_hex(&[0x44; 32]);
+    let c = compressed_point(&ProjectivePoint::GENERATOR);
+    let y_digest = [0x55; 32];
+    let note_set_digest = [0x66; 32];
+    let amount = 987_654_321_u64;
+    let bundle = CashuCustodyBundleV1::new(
+        endpoint.to_owned(),
+        "sat".to_owned(),
+        keyset_id.clone(),
+        note_set_digest,
+        vec![CashuCustodyNoteV1::new(amount, secret.clone(), c, y_digest).unwrap()],
+    )
+    .unwrap();
+
+    let note_debug = format!("{:?}", bundle.notes()[0]);
+    let bundle_debug = format!("{bundle:?}");
+    let combined = format!("{note_debug}\n{bundle_debug}");
+    for stable_marker in [
+        endpoint.to_owned(),
+        keyset_id,
+        secret,
+        hex::encode(c),
+        hex::encode(y_digest),
+        hex::encode(note_set_digest),
+        amount.to_string(),
+    ] {
+        assert!(
+            !combined.contains(&stable_marker),
+            "custody Debug leaked a stable linkage marker"
+        );
+    }
+    assert!(combined.contains("[REDACTED"));
+}
+
+#[test]
+fn custody_export_limits_keyset_groups_not_custody_lots() {
+    fn bundle(keyset_id: String, marker: u8) -> CashuCustodyBundleV1 {
+        CashuCustodyBundleV1::new(
+            "https://mint.example".into(),
+            "sat".into(),
+            keyset_id,
+            [marker.wrapping_add(30); 32],
+            vec![CashuCustodyNoteV1::new(
+                1,
+                lower_hex(&[marker; 32]),
+                compressed_point(&ProjectivePoint::GENERATOR),
+                [marker; 32],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    let shared_keyset = "11".repeat(33);
+    let same_keyset_lots = (1..=17)
+        .map(|marker| bundle(shared_keyset.clone(), marker))
+        .collect::<Vec<_>>();
+    let encoded = encode_cashub_from_custody_bundles_v1(&same_keyset_lots).unwrap();
+    let decoded = CashuTokenV4V1::decode_cashub(&encoded).unwrap();
+    assert_eq!(decoded.groups().len(), 1);
+    assert_eq!(decoded.groups()[0].proofs().len(), 17);
+
+    let distinct_keysets = (1..=17)
+        .map(|marker| bundle(format!("{marker:02x}{}", "ab".repeat(32)), marker))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        encode_cashub_from_custody_bundles_v1(&distinct_keysets),
+        Err(CashuClientErrorV1::InvalidItemCount)
+    );
+}
+
+#[test]
+fn cdk_style_padded_cashub_dleq_is_accepted_but_never_reexported() {
+    use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+    use ciborium::value::Value;
+
+    let proof = Value::Map(vec![
+        (Value::Text("a".into()), Value::Integer(1u64.into())),
+        (Value::Text("s".into()), Value::Text("11".repeat(32))),
+        (
+            Value::Text("c".into()),
+            Value::Bytes(compressed_point(&ProjectivePoint::GENERATOR).to_vec()),
+        ),
+        (
+            Value::Text("d".into()),
+            Value::Map(vec![
+                (Value::Text("e".into()), Value::Bytes(vec![1; 32])),
+                (Value::Text("s".into()), Value::Bytes(vec![2; 32])),
+                (Value::Text("r".into()), Value::Bytes(vec![3; 32])),
+            ]),
+        ),
+    ]);
+    let root = Value::Map(vec![
+        (
+            Value::Text("m".into()),
+            Value::Text("https://mint.example".into()),
+        ),
+        (Value::Text("u".into()), Value::Text("sat".into())),
+        (
+            Value::Text("t".into()),
+            Value::Array(vec![Value::Map(vec![
+                (Value::Text("i".into()), Value::Bytes(vec![1; 8])),
+                (Value::Text("p".into()), Value::Array(vec![proof])),
+            ])]),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(&root, &mut bytes).unwrap();
+    let padded = format!("cashuB{}", URL_SAFE.encode(bytes));
+    let decoded = CashuTokenV4V1::decode_cashub(&padded).unwrap();
+    let clean = decoded.encode_cashub().unwrap();
+    assert!(!clean.ends_with('='));
+    assert_eq!(CashuTokenV4V1::decode_cashub(&clean).unwrap(), decoded);
+}
+
+#[test]
+#[ignore = "requires BITCOINPIR_CDK_CASHUB_TOKEN from the disposable CDK interop runner"]
+fn cdk_cashub_token_strict_semantic_round_trip() {
+    let serialized = std::env::var("BITCOINPIR_CDK_CASHUB_TOKEN")
+        .expect("the ignored CDK interop test requires BITCOINPIR_CDK_CASHUB_TOKEN");
+    let decoded = CashuTokenV4V1::decode_cashub(&serialized)
+        .expect("CDK token must be strict canonical Cashu V4");
+    let reencoded = decoded.encode_cashub().unwrap();
+    let reparsed = CashuTokenV4V1::decode_cashub(&reencoded).unwrap();
+    assert_eq!(decoded, reparsed);
 }

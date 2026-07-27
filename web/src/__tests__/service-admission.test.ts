@@ -17,6 +17,7 @@ import {
   type ServiceAdmissionPortV1,
   type ServiceAdmissionVaultV1,
 } from '../service-admission.js';
+import type { AdmissionCapabilityV1 } from '../admission-vault.js';
 import type {
   ServiceOfferViewV1,
   ServicePolicyViewV1,
@@ -154,6 +155,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '00'.repeat(32),
       keyIdHex: '',
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: '',
       credentialCount: 1,
       credentialPresentationLimit: 1,
@@ -181,6 +183,65 @@ describe('provider admission orchestration', () => {
     return session;
   }
 
+  function sessionForOffer(offer: ServiceOfferViewV1): ProviderAdmissionSessionV1 {
+    const view = policy(offer);
+    const port: ServiceAdmissionPortV1 = {
+      assertTrustAnchor: vi.fn(),
+      assertSessionBinding: vi.fn(),
+      fetchPolicy: async () => accepted(view),
+      authorize: async () => { throw new Error('unused'); },
+      requestPowChallenge: async () => { throw new Error('unused'); },
+    };
+    return new ProviderAdmissionSessionV1(
+      vault,
+      port,
+      { providerId, policySigningKey: policyKey },
+      { backend: 'dpf-pir', workload: 'dpf-query' },
+    );
+  }
+
+  function arcOffer(fingerprint = '79'.repeat(32)): ServiceOfferViewV1 {
+    return {
+      offerId: 92,
+      acquisition: 'bolt11',
+      authorization: 'arc-experimental',
+      freeMode: 'not-free',
+      verification: 'provider-local',
+      deploymentStatus: 'experimental',
+      priorityClass: 1,
+      price: { kind: 'msat', amount: '1000' },
+      issuerIdHex: '57'.repeat(32),
+      keyIdHex: '68'.repeat(16),
+      batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: fingerprint,
+      endpoint: 'https://issuer.invalid',
+      credentialCount: 1,
+      credentialPresentationLimit: 10,
+      privacyLeakageBits: 0,
+    };
+  }
+
+  it('strictly accepts only a non-zero lowercase ARC raw-key fingerprint', async () => {
+    await expect(sessionForOffer(arcOffer()).refreshPolicy()).resolves.toMatchObject({
+      scopes: [{ offers: [{ arcVerificationKeyFingerprintHex: '79'.repeat(32) }] }],
+    });
+    await expect(sessionForOffer(arcOffer('')).refreshPolicy()).rejects.toThrow(/lowercase/);
+    await expect(sessionForOffer(arcOffer('ab'.repeat(32).toUpperCase())).refreshPolicy())
+      .rejects.toThrow(/lowercase/);
+    await expect(sessionForOffer(arcOffer('00'.repeat(32))).refreshPolicy())
+      .rejects.toThrow(/lowercase/);
+  });
+
+  it('rejects an ARC raw-key fingerprint on a non-ARC policy offer', async () => {
+    const polluted = {
+      ...arcOffer(),
+      authorization: 'bolt11-direct-receipt' as const,
+      deploymentStatus: 'stable' as const,
+      credentialPresentationLimit: 1,
+    };
+    await expect(sessionForOffer(polluted).refreshPolicy()).rejects.toThrow(/non-ARC/);
+  });
+
   it('commits the provider checkpoint before free authorization', async () => {
     const view = policy({
       offerId: 1,
@@ -194,6 +255,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '00'.repeat(32),
       keyIdHex: '',
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: '',
       credentialCount: 1,
       credentialPresentationLimit: 1,
@@ -240,6 +302,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '00'.repeat(32),
       keyIdHex: '',
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: '',
       credentialCount: 1,
       credentialPresentationLimit: 1,
@@ -288,6 +351,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '59'.repeat(32),
       keyIdHex: '6a'.repeat(16),
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: 'https://issuer-e.invalid',
       credentialCount: 1,
       credentialPresentationLimit: 1,
@@ -337,13 +401,19 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '59'.repeat(32),
       keyIdHex: '6a'.repeat(32),
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: 'https://mint.example',
       credentialCount: 1,
       credentialPresentationLimit: 1,
       privacyLeakageBits: 3,
     });
     const handle = accepted(view);
-    const importToken = vi.fn(() => new Uint8Array([7, 7]));
+    const importedPayloads: Uint8Array[] = [];
+    const importToken = vi.fn(() => {
+      const payload = new Uint8Array([7, 7]);
+      importedPayloads.push(payload);
+      return payload;
+    });
     handle.importStandardCashuToken = importToken;
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
@@ -364,14 +434,34 @@ describe('provider admission orchestration', () => {
       scopeIdHex: scopeHex,
       offerId: 4,
     });
-    const putCapability = vi.fn(async () => 'vault-record-id');
+    let releasePut!: () => void;
+    let markPutEntered!: () => void;
+    const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
+    const putEntered = new Promise<void>((resolve) => { markPutEntered = resolve; });
+    let persistedCapability: Record<string, unknown> | undefined;
+    const putCapability = vi.fn(async (capability: AdmissionCapabilityV1) => {
+      expect(capability.payload).toEqual(new Uint8Array([7, 7]));
+      markPutEntered();
+      await putGate;
+      expect(capability.payload).toEqual(new Uint8Array([7, 7]));
+      persistedCapability = { ...capability, payload: capability.payload.slice() };
+      return 'vault-record-id';
+    });
 
+    const pendingImport = selected.importStandardCashuToken({
+      vault: { putCapability } as never,
+      serializedToken: 'cashuBfixture',
+    });
+    await putEntered;
+    expect(importedPayloads[0]).toEqual(new Uint8Array([7, 7]));
     await expect(selected.importStandardCashuToken({
       vault: { putCapability } as never,
       serializedToken: 'cashuBfixture',
-    })).resolves.toBe('vault-record-id');
+    })).rejects.toThrow(/already in flight/);
+    releasePut();
+    await expect(pendingImport).resolves.toBe('vault-record-id');
     expect(importToken).toHaveBeenCalledOnce();
-    expect(putCapability).toHaveBeenCalledWith({
+    expect(persistedCapability).toEqual({
       providerIdHex: providerHex,
       policyDigestHex: '44'.repeat(32),
       scopeIdHex: scopeHex,
@@ -379,6 +469,19 @@ describe('provider admission orchestration', () => {
       scheme: 'cashu-ecash',
       payload: new Uint8Array([7, 7]),
     });
+    expect(importedPayloads[0]).toEqual(new Uint8Array(2));
+
+    const rejectCapability = vi.fn(async (capability: AdmissionCapabilityV1) => {
+      expect(capability.payload).toEqual(new Uint8Array([7, 7]));
+      await Promise.resolve();
+      expect(capability.payload).toEqual(new Uint8Array([7, 7]));
+      throw new Error('vault write failed');
+    });
+    await expect(selected.importStandardCashuToken({
+      vault: { putCapability: rejectCapability } as never,
+      serializedToken: 'cashuBfixture',
+    })).rejects.toThrow(/vault write failed/);
+    expect(importedPayloads[1]).toEqual(new Uint8Array(2));
     expect((session as unknown as { importStandardCashuToken?: unknown })
       .importStandardCashuToken).toBeUndefined();
   });
@@ -396,12 +499,23 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '55'.repeat(32),
       keyIdHex: '66'.repeat(16),
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: 'https://issuer.invalid',
       credentialCount: 1,
       credentialPresentationLimit: 1,
       privacyLeakageBits: 1,
     });
-    const authorize = vi.fn(async () => { throw new Error('connection lost'); });
+    let retiredProof: Uint8Array | undefined;
+    const authorize = vi.fn(async (
+      _policy: WasmAcceptedServicePolicyV1,
+      _scope: Uint8Array,
+      _offer: number,
+      proof: Uint8Array,
+    ) => {
+      retiredProof = proof;
+      expect(proof).toEqual(new Uint8Array([1, 2, 3]));
+      throw new Error('connection lost');
+    });
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
@@ -425,6 +539,7 @@ describe('provider admission orchestration', () => {
       AmbiguousCapabilitySpendErrorV1,
     );
     expect(authorize).toHaveBeenCalledTimes(1);
+    expect(retiredProof).toEqual(new Uint8Array(3));
     expect(retiredBinding).toEqual({
       providerIdHex: providerHex,
       policyDigestHex: '44'.repeat(32),
@@ -447,6 +562,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '58'.repeat(32),
       keyIdHex: '69'.repeat(16),
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: 'https://issuer-d.invalid',
       credentialCount: 1,
       credentialPresentationLimit: 1,
@@ -494,6 +610,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '00'.repeat(32),
       keyIdHex: '',
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: '',
       credentialCount: 1,
       credentialPresentationLimit: 1,
@@ -543,6 +660,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '57'.repeat(32),
       keyIdHex: '68'.repeat(16),
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: 'https://issuer-c.invalid',
       credentialCount: 1,
       credentialPresentationLimit: 1,
@@ -592,6 +710,34 @@ describe('provider admission orchestration', () => {
     await expect(authorization).resolves.toMatchObject({ enforcedProfile: 3 });
   });
 
+  it('rejects retained ARC metadata without its canonical raw-key fingerprint', async () => {
+    const offer = arcOffer('');
+    const port: ServiceAdmissionPortV1 = {
+      assertTrustAnchor: vi.fn(),
+      fetchPolicy: async () => { throw new Error('unused'); },
+      fetchRetainedRedemption: async () => retainedAccepted(offer),
+      assertSessionBinding: vi.fn(),
+      assertRetainedSessionBinding: vi.fn(),
+      authorize: async () => { throw new Error('unused'); },
+      authorizeRetained: async () => { throw new Error('must not send'); },
+      requestPowChallenge: async () => { throw new Error('unused'); },
+    };
+    const session = new ProviderAdmissionSessionV1(
+      vault,
+      port,
+      { providerId, policySigningKey: policyKey },
+      { backend: 'dpf-pir', workload: 'dpf-query' },
+    );
+    await expect(session.inspectRetainedCapability({
+      providerIdHex: providerHex,
+      policyDigestHex: '44'.repeat(32),
+      scopeIdHex: scopeHex,
+      offerId: offer.offerId,
+      scheme: 'arc-experimental',
+    })).rejects.toThrow(/lowercase/);
+    expect(retiredBinding).toBeNull();
+  });
+
   it('redeems one retained capability only against its exact historical selector', async () => {
     const offer: ServiceOfferViewV1 = {
       offerId: 17,
@@ -605,18 +751,27 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '57'.repeat(32),
       keyIdHex: '68'.repeat(16),
       batVerificationKeyFingerprintHex: '78'.repeat(32),
+      arcVerificationKeyFingerprintHex: '',
       endpoint: 'https://issuer.invalid',
       credentialCount: 1,
       credentialPresentationLimit: 1,
       privacyLeakageBits: 0,
     };
     const retained = retainedAccepted(offer);
-    const authorizeRetained = vi.fn(async () => ({
-      scopeIdHex: scopeHex,
-      enforcedProfile: 3,
-      expiresInMs: 1000,
-      hasHarmonyAttach: false,
-    }));
+    let retiredProof: Uint8Array | undefined;
+    const authorizeRetained = vi.fn(async (
+      _policy: WasmAcceptedRetainedServiceRedemptionV1,
+      proof: Uint8Array,
+    ) => {
+      retiredProof = proof;
+      expect(proof).toEqual(new Uint8Array([1, 2, 3]));
+      return {
+        scopeIdHex: scopeHex,
+        enforcedProfile: 3,
+        expiresInMs: 1000,
+        hasHarmonyAttach: false,
+      };
+    });
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       fetchPolicy: async () => { throw new Error('current policy must not be fetched'); },
@@ -651,6 +806,7 @@ describe('provider admission orchestration', () => {
     });
     expect(retiredBinding).toEqual(binding);
     expect(authorizeRetained).toHaveBeenCalledOnce();
+    expect(retiredProof).toEqual(new Uint8Array(3));
   });
 
   it('rejects a retained scheme mismatch before retiring proof bytes', async () => {
@@ -666,6 +822,7 @@ describe('provider admission orchestration', () => {
       issuerIdHex: '58'.repeat(32),
       keyIdHex: '69'.repeat(16),
       batVerificationKeyFingerprintHex: '',
+      arcVerificationKeyFingerprintHex: '',
       endpoint: 'https://issuer.invalid',
       credentialCount: 1,
       credentialPresentationLimit: 1,

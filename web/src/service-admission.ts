@@ -384,10 +384,14 @@ export class ProviderAdmissionSessionV1 {
             remaining,
             releaseAfterPersisted: () => {
               const transition = prepared!;
+              let nextPresentation: Uint8Array | null = null;
               try {
-                const nextPresentation = transition.release_after_persisted();
+                nextPresentation = transition.release_after_persisted();
                 accepted.validateAuthorizationProof(scopeId, offerId, nextPresentation);
                 return nextPresentation;
+              } catch (error) {
+                nextPresentation?.fill(0);
+                throw error;
               } finally {
                 transition.free();
                 prepared = null;
@@ -437,6 +441,8 @@ export class ProviderAdmissionSessionV1 {
         );
       }
       throw cause;
+    } finally {
+      proof.fill(0);
     }
     } finally {
       this.transitionInFlight = null;
@@ -493,6 +499,8 @@ export class ProviderAdmissionSessionV1 {
           'retained service authorization failed after a one-shot proof was retired; do not retry it',
           { cause },
         );
+      } finally {
+        proof.fill(0);
       }
     } finally {
       retained?.free();
@@ -606,19 +614,23 @@ export class ProviderAdmissionSessionV1 {
         options.serializedToken,
         nowUnix,
       );
-      accepted.validateAuthorizationProof(scopeId, offer.offerId, payload);
-      this.assertCurrentPairSelection(selection, scopeIdHex, offerId);
-      this.port.assertSessionBinding(accepted);
-      return options.vault.putCapability({
-        ...capabilityBinding(
-          this.view.providerIdHex,
-          this.view.policyDigestHex,
-          scope,
-          offer,
-          'cashu-ecash',
-        ),
-        payload,
-      });
+      try {
+        accepted.validateAuthorizationProof(scopeId, offer.offerId, payload);
+        this.assertCurrentPairSelection(selection, scopeIdHex, offerId);
+        this.port.assertSessionBinding(accepted);
+        return await options.vault.putCapability({
+          ...capabilityBinding(
+            this.view.providerIdHex,
+            this.view.policyDigestHex,
+            scope,
+            offer,
+            'cashu-ecash',
+          ),
+          payload,
+        });
+      } finally {
+        payload.fill(0);
+      }
     } finally {
       this.transitionInFlight = null;
     }
@@ -721,10 +733,14 @@ export class ProviderAdmissionSessionV1 {
             remaining,
             releaseAfterPersisted: () => {
               const transition = prepared!;
+              let nextPresentation: Uint8Array | null = null;
               try {
-                const nextPresentation = transition.release_after_persisted();
+                nextPresentation = transition.release_after_persisted();
                 accepted.validateAuthorizationProof(nextPresentation);
                 return nextPresentation;
+              } catch (error) {
+                nextPresentation?.fill(0);
+                throw error;
               } finally {
                 transition.free();
                 prepared = null;
@@ -1008,14 +1024,7 @@ function validatePolicyView(
         throw new Error('service policy view contains an invalid or duplicate offer ID');
       }
       ids.add(offer.offerId);
-      if (offer.authorization === 'cashu-bat') {
-        canonicalHex32(
-          'BAT verification-key fingerprint',
-          offer.batVerificationKeyFingerprintHex,
-        );
-      } else if (offer.batVerificationKeyFingerprintHex !== '') {
-        throw new Error('non-BAT offer contains a BAT verification-key fingerprint');
-      }
+      validateOfferVerificationKeyFingerprints(offer);
     }
   }
 }
@@ -1179,6 +1188,7 @@ function validateRetainedRedemptionView(
       && view.offer.deploymentStatus !== 'experimental') {
     throw new Error('retained ARC offer is not marked experimental');
   }
+  validateOfferVerificationKeyFingerprints(view.offer);
   const limits = view.scope.limits;
   if (!limits || !Number.isSafeInteger(limits.maxFrames) || limits.maxFrames <= 0
       || !Number.isSafeInteger(limits.maxWallTimeMs) || limits.maxWallTimeMs <= 0
@@ -1199,6 +1209,7 @@ function retainedSchemeForOffer(offer: ServiceOfferViewV1): AdmissionSchemeV1 {
     }
     return 'free-anonymous-ticket';
   }
+  if (offer.authorization === 'arc-experimental') return 'arc-experimental';
   return schemeForPaidOffer(offer.authorization);
 }
 
@@ -1244,6 +1255,32 @@ function canonicalHex32(field: string, value: string): string {
     throw new Error(`${field} must be non-zero 32-byte hex`);
   }
   return value.toLowerCase();
+}
+
+function canonicalLowerHex32(field: string, value: string): string {
+  if (!/^[0-9a-f]{64}$/.test(value) || /^0{64}$/.test(value)) {
+    throw new Error(`${field} must be non-zero lowercase 32-byte hex`);
+  }
+  return value;
+}
+
+function validateOfferVerificationKeyFingerprints(offer: ServiceOfferViewV1): void {
+  if (offer.authorization === 'cashu-bat') {
+    canonicalHex32(
+      'BAT verification-key fingerprint',
+      offer.batVerificationKeyFingerprintHex,
+    );
+  } else if (offer.batVerificationKeyFingerprintHex !== '') {
+    throw new Error('non-BAT offer contains a BAT verification-key fingerprint');
+  }
+  if (offer.authorization === 'arc-experimental') {
+    canonicalLowerHex32(
+      'ARC verification-key fingerprint',
+      offer.arcVerificationKeyFingerprintHex,
+    );
+  } else if (offer.arcVerificationKeyFingerprintHex !== '') {
+    throw new Error('non-ARC offer contains an ARC verification-key fingerprint');
+  }
 }
 
 function hexToBytes32(field: string, value: string): Uint8Array {
@@ -1301,6 +1338,7 @@ function offerFingerprintV1(offer: ServiceOfferViewV1): string {
     offer.issuerIdHex,
     offer.keyIdHex,
     offer.batVerificationKeyFingerprintHex,
+    offer.arcVerificationKeyFingerprintHex,
     offer.endpoint,
     offer.credentialCount,
     offer.credentialPresentationLimit,

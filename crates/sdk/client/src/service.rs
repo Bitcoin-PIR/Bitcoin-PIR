@@ -24,6 +24,7 @@ use pir_service_protocol::{
 
 use crate::protocol::encode_request;
 use crate::transport::PirTransport;
+use zeroize::Zeroizing;
 
 const CHECKPOINT_VERSION_V1: u8 = 1;
 const MAX_CHECKPOINT_CREDENTIAL_FLOORS_V1: usize = 1_024;
@@ -550,7 +551,7 @@ pub fn accept_service_policy_response_v1(
             "service policy acceptance requires a non-zero secure-channel exporter".into(),
         ));
     }
-    let body = expect_response_opcode(&response, RESP_SERVICE_POLICY_V1, "service policy")?;
+    let body = expect_response_opcode(response, RESP_SERVICE_POLICY_V1, "service policy")?;
     let response = ServicePolicyResponseV1::decode(body).map_err(protocol_decode_error)?;
     let policy = response.policy;
     let (policy_digest, next_checkpoint) = {
@@ -607,7 +608,7 @@ pub fn accept_retained_service_policy_response_v1(
             "retained-policy acceptance requires a non-zero secure-channel exporter".into(),
         ));
     }
-    let body = expect_response_opcode(&response, RESP_SERVICE_POLICY_V1, "retained policy")?;
+    let body = expect_response_opcode(response, RESP_SERVICE_POLICY_V1, "retained policy")?;
     let policy = ServicePolicyResponseV1::decode(body)
         .map_err(protocol_decode_error)?
         .policy;
@@ -857,9 +858,9 @@ pub async fn dangerous_unpaired_authorize_service_operation_v1(
 ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
     let exporter = require_secure_service_channel(transport)?;
     accepted.verify_service_authorization_exporter_v1(&exporter)?;
-    let request = dangerous_unpaired_build_service_authorization_request_v1(
+    let request = Zeroizing::new(dangerous_unpaired_build_service_authorization_request_v1(
         accepted, scope_id, offer_id, operation, proof,
-    )?;
+    )?);
     let response = transport.roundtrip(&request).await?;
     dangerous_unpaired_accept_service_authorization_response_v1(&response, accepted, scope_id)
 }
@@ -877,9 +878,11 @@ pub async fn dangerous_unpaired_authorize_retained_service_redemption_v1(
 ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
     let exporter = require_secure_service_channel(transport)?;
     accepted.verify_service_authorization_exporter_v1(&exporter)?;
-    let request = dangerous_unpaired_build_retained_service_authorization_request_v1(
-        accepted, operation, proof, now_unix,
-    )?;
+    let request = Zeroizing::new(
+        dangerous_unpaired_build_retained_service_authorization_request_v1(
+            accepted, operation, proof, now_unix,
+        )?,
+    );
     let response = transport.roundtrip(&request).await?;
     dangerous_unpaired_accept_retained_service_authorization_response_v1(&response, accepted)
 }
@@ -913,10 +916,8 @@ pub fn dangerous_unpaired_build_retained_service_authorization_request_v1(
         operation,
         proof,
     };
-    Ok(encode_request(
-        REQ_AUTH_BEGIN_V1,
-        &auth.encode_padded().map_err(protocol_decode_error)?,
-    ))
+    let padded = Zeroizing::new(auth.encode_padded().map_err(protocol_decode_error)?);
+    Ok(encode_request(REQ_AUTH_BEGIN_V1, &padded))
 }
 
 /// Dangerous unpaired primitive: build a one-shot authorization request
@@ -943,10 +944,8 @@ pub fn dangerous_unpaired_build_service_authorization_request_v1(
         operation,
         proof,
     };
-    Ok(encode_request(
-        REQ_AUTH_BEGIN_V1,
-        &auth.encode_padded().map_err(protocol_decode_error)?,
-    ))
+    let padded = Zeroizing::new(auth.encode_padded().map_err(protocol_decode_error)?);
+    Ok(encode_request(REQ_AUTH_BEGIN_V1, &padded))
 }
 
 /// Dangerous unpaired primitive: verify one provider's authorization response

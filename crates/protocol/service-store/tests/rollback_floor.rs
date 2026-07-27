@@ -258,6 +258,9 @@ fn fresh_create_and_normal_restart_require_the_exact_external_floor() {
     assert_eq!(inventory.spent_capability_rows, 0);
     assert_eq!(inventory.free_rate_limit_bucket_rows, 0);
     assert_eq!(inventory.cashu_swap_intent_rows, 0);
+    assert_eq!(inventory.cashu_custody_lot_rows, 0);
+    assert_eq!(inventory.cashu_custody_note_rows, 0);
+    assert_eq!(inventory.cashu_custody_export_batch_rows, 0);
     assert_eq!(
         authority.floor().unwrap().rollback_commitment,
         identity.rollback_commitment

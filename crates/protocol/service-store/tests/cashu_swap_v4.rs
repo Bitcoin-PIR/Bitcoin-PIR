@@ -1,5 +1,6 @@
 use pir_service_store::{
-    CashuSwapIntentStateV1, CashuSwapSealedRecoveryV1, NewCashuSwapIntentV1, ProviderStore,
+    CashuCustodyExposureLimitsV1, CashuCustodySealedBlobV1, CashuSwapIntentStateV1,
+    CashuSwapSealedRecoveryV1, NewCashuCustodyLotV1, NewCashuSwapIntentV1, ProviderStore,
     RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1, StoreError,
     StoreOptions, SCHEMA_VERSION,
 };
@@ -110,17 +111,55 @@ fn intent() -> NewCashuSwapIntentV1 {
     NewCashuSwapIntentV1 {
         intent_id: [0xa1; 16],
         mint_id: [0xa2; 32],
+        manifest_digest: [0xa9; 32],
+        unit: "sat".to_owned(),
         input_set_digest: [0xa3; 32],
         request_digest: [0xa4; 32],
         output_set_digest: [0xa5; 32],
         offer_binding_digest: [0xa6; 32],
         settlement_value: 7,
+        expected_output_count: 2,
         sealed_recovery: CashuSwapSealedRecoveryV1 {
             key_epoch: 3,
             nonce: vec![0xa7; 24],
             ciphertext: vec![0xa8; 128],
         },
         created_bucket: 100,
+    }
+}
+
+fn limits() -> CashuCustodyExposureLimitsV1 {
+    CashuCustodyExposureLimitsV1 {
+        max_unsettled_value: 1_000,
+        max_unsettled_notes: 100,
+    }
+}
+
+fn limits_below_existing_exposure() -> CashuCustodyExposureLimitsV1 {
+    CashuCustodyExposureLimitsV1 {
+        max_unsettled_value: 1,
+        max_unsettled_notes: 1,
+    }
+}
+
+fn custody_y(prefix: u8, fill: u8) -> [u8; 33] {
+    let mut value = [fill; 33];
+    value[0] = prefix;
+    value
+}
+
+fn custody_lot() -> NewCashuCustodyLotV1 {
+    NewCashuCustodyLotV1 {
+        lot_id: [0xc1; 16],
+        manifest_digest: [0xa9; 32],
+        active_keyset_digest: [0xca; 32],
+        note_set_digest: [0xcb; 32],
+        note_ys: vec![custody_y(0x02, 0xc2), custody_y(0x03, 0xc3)],
+        sealed_notes: CashuCustodySealedBlobV1 {
+            key_epoch: 5,
+            nonce: vec![0xc4; 24],
+            ciphertext: vec![0xc5; 96],
+        },
     }
 }
 
@@ -155,14 +194,16 @@ fn remove_sqlite_sidecars(path: &Path) {
 }
 
 #[test]
-fn schema_v5_exact_replay_is_idempotent_and_conflicts_fail_closed() {
+fn schema_v7_exact_replay_is_idempotent_and_conflicts_fail_closed() {
     let path = TestPath::new();
     let authority = Arc::new(MemoryRollbackAuthority::default());
     let store = create_store(&path.database, Arc::clone(&authority));
-    assert_eq!(SCHEMA_VERSION, 5);
+    assert_eq!(SCHEMA_VERSION, 7);
 
     let proposed = intent();
-    let inserted = store.insert_cashu_swap_intent_v1(&proposed).unwrap();
+    let inserted = store
+        .insert_cashu_swap_intent_v1(&proposed, limits())
+        .unwrap();
     assert!(inserted.inserted);
     assert_eq!(inserted.intent.state, CashuSwapIntentStateV1::Prepared);
     assert_eq!(store.identity().unwrap().store_generation, 1);
@@ -175,12 +216,28 @@ fn schema_v5_exact_replay_is_idempotent_and_conflicts_fail_closed() {
         nonce: vec![0xc7; 24],
         ciphertext: vec![0xc8; 64],
     };
-    let replayed = store.insert_cashu_swap_intent_v1(&replay).unwrap();
+    let replayed = store
+        .insert_cashu_swap_intent_v1(&replay, limits())
+        .unwrap();
     assert!(!replayed.inserted);
     assert_eq!(replayed.intent.sealed_recovery, proposed.sealed_recovery);
     assert_eq!(store.identity().unwrap().store_generation, 1);
+    let replayed_while_admission_is_closed = store
+        .insert_cashu_swap_intent_v1(&proposed, limits_below_existing_exposure())
+        .unwrap();
+    assert!(!replayed_while_admission_is_closed.inserted);
 
     for conflicting in [
+        {
+            let mut value = proposed.clone();
+            value.manifest_digest[0] ^= 1;
+            value
+        },
+        {
+            let mut value = proposed.clone();
+            value.unit = "msat".to_owned();
+            value
+        },
         {
             let mut value = proposed.clone();
             value.request_digest[0] ^= 1;
@@ -203,19 +260,24 @@ fn schema_v5_exact_replay_is_idempotent_and_conflicts_fail_closed() {
         },
         {
             let mut value = proposed.clone();
+            value.expected_output_count += 1;
+            value
+        },
+        {
+            let mut value = proposed.clone();
             value.intent_id[0] ^= 1;
             value
         },
     ] {
         assert!(matches!(
-            store.insert_cashu_swap_intent_v1(&conflicting),
+            store.insert_cashu_swap_intent_v1(&conflicting, limits()),
             Err(StoreError::CashuSwapIntentConflict)
         ));
     }
     let mut reused_intent_id = proposed.clone();
     reused_intent_id.input_set_digest[0] ^= 1;
     assert!(matches!(
-        store.insert_cashu_swap_intent_v1(&reused_intent_id),
+        store.insert_cashu_swap_intent_v1(&reused_intent_id, limits()),
         Err(StoreError::CashuSwapIntentConflict)
     ));
     assert_eq!(store.identity().unwrap().store_generation, 1);
@@ -234,11 +296,14 @@ fn schema_v5_exact_replay_is_idempotent_and_conflicts_fail_closed() {
         [
             "intent_id",
             "mint_id",
+            "manifest_digest",
+            "unit",
             "input_set_digest",
             "request_digest",
             "output_set_digest",
             "offer_binding_digest",
             "settlement_value",
+            "expected_output_count",
             "state",
             "recovery_key_epoch",
             "recovery_nonce",
@@ -266,7 +331,9 @@ fn dfa_is_monotonic_across_restart_and_grant_is_claimed_once() {
     let authority = Arc::new(MemoryRollbackAuthority::default());
     let store = create_store(&path.database, Arc::clone(&authority));
     let proposed = intent();
-    store.insert_cashu_swap_intent_v1(&proposed).unwrap();
+    store
+        .insert_cashu_swap_intent_v1(&proposed, limits())
+        .unwrap();
 
     assert!(matches!(
         store.commit_cashu_swap_wallet_v1(&proposed.intent_id, &replacement_recovery(), 101),
@@ -277,7 +344,7 @@ fn dfa_is_monotonic_across_restart_and_grant_is_claimed_once() {
         Err(StoreError::CashuSwapStateConflict)
     ));
     assert!(matches!(
-        store.claim_cashu_swap_grant_once_v1(&proposed.intent_id, 101),
+        store.claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 101),
         Err(StoreError::CashuSwapStateConflict)
     ));
     assert_eq!(store.identity().unwrap().store_generation, 1);
@@ -314,7 +381,7 @@ fn dfa_is_monotonic_across_restart_and_grant_is_claimed_once() {
         .begin_cashu_swap_submission_v1(&proposed.intent_id, 102)
         .unwrap());
     assert!(matches!(
-        reopened.claim_cashu_swap_grant_once_v1(&proposed.intent_id, 102),
+        reopened.claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 102),
         Err(StoreError::CashuSwapStateConflict)
     ));
     assert_eq!(reopened.identity().unwrap().store_generation, 3);
@@ -331,12 +398,18 @@ fn dfa_is_monotonic_across_restart_and_grant_is_claimed_once() {
         .unwrap());
     assert_eq!(reopened.identity().unwrap().store_generation, 4);
 
-    assert!(reopened
-        .claim_cashu_swap_grant_once_v1(&proposed.intent_id, 104)
-        .unwrap());
-    assert!(!reopened
-        .claim_cashu_swap_grant_once_v1(&proposed.intent_id, 104)
-        .unwrap());
+    assert!(
+        reopened
+            .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 104)
+            .unwrap()
+            .issued
+    );
+    assert!(
+        !reopened
+            .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 104)
+            .unwrap()
+            .issued
+    );
     let identity = reopened.identity().unwrap();
     assert_eq!(identity.store_generation, 5);
     assert_eq!(identity.spend_commit_seq, 1);
@@ -365,7 +438,7 @@ fn concurrent_prepare_submit_and_grant_each_have_one_winner() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                store.insert_cashu_swap_intent_v1(&proposed)
+                store.insert_cashu_swap_intent_v1(&proposed, limits())
             })
         })
         .collect::<Vec<_>>();
@@ -408,13 +481,13 @@ fn concurrent_prepare_submit_and_grant_each_have_one_winner() {
             let intent_id = proposed.intent_id;
             std::thread::spawn(move || {
                 barrier.wait();
-                store.claim_cashu_swap_grant_once_v1(&intent_id, 103)
+                store.claim_cashu_swap_grant_once_v1(&intent_id, &custody_lot(), 103)
             })
         })
         .collect::<Vec<_>>();
     let granted = grants
         .into_iter()
-        .map(|worker| worker.join().unwrap().unwrap())
+        .map(|worker| worker.join().unwrap().unwrap().issued)
         .filter(|value| *value)
         .count();
     assert_eq!(granted, 1);
@@ -424,12 +497,119 @@ fn concurrent_prepare_submit_and_grant_each_have_one_winner() {
 }
 
 #[test]
+fn definite_rejection_delete_has_one_winner_releases_exposure_and_survives_restart() {
+    let path = TestPath::new();
+    let authority = Arc::new(MemoryRollbackAuthority::default());
+    let store = Arc::new(create_store(&path.database, Arc::clone(&authority)));
+    let proposed = intent();
+    store
+        .insert_cashu_swap_intent_v1(&proposed, limits())
+        .unwrap();
+    store
+        .begin_cashu_swap_submission_v1(&proposed.intent_id, 101)
+        .unwrap();
+
+    let barrier = Arc::new(Barrier::new(WORKERS));
+    let deletes = (0..WORKERS)
+        .map(|_| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            let intent_id = proposed.intent_id;
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.delete_cashu_swap_intent_after_definite_rejection_v1(&intent_id)
+            })
+        })
+        .collect::<Vec<_>>();
+    let deleted = deletes
+        .into_iter()
+        .map(|worker| worker.join().unwrap().unwrap())
+        .filter(|value| *value)
+        .count();
+    assert_eq!(deleted, 1);
+    let identity = store.identity().unwrap();
+    assert_eq!(identity.store_generation, 3);
+    assert_eq!(identity.spend_commit_seq, 0);
+    assert_eq!(
+        store
+            .operational_inventory()
+            .unwrap()
+            .cashu_swap_intent_rows,
+        0
+    );
+    assert_eq!(authority.floor().store_generation, 3);
+    drop(store);
+
+    let reopened = ProviderStore::open_existing(
+        &path.database,
+        PROVIDER,
+        StoreOptions::default(),
+        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
+    )
+    .unwrap();
+    assert!(reopened
+        .cashu_swap_intent_by_input_v1(&proposed.mint_id, &proposed.input_set_digest)
+        .unwrap()
+        .is_none());
+    assert!(
+        reopened
+            .insert_cashu_swap_intent_v1(
+                &proposed,
+                CashuCustodyExposureLimitsV1 {
+                    max_unsettled_value: proposed.settlement_value,
+                    max_unsettled_notes: u64::from(proposed.expected_output_count),
+                },
+            )
+            .unwrap()
+            .inserted
+    );
+    assert!(reopened
+        .begin_cashu_swap_submission_v1(&proposed.intent_id, 102)
+        .unwrap());
+
+    // The delete is already durable if the independent rollback authority
+    // accepted generation 6 but its acknowledgement was lost.
+    authority.lose_response_at(6);
+    assert!(matches!(
+        reopened.delete_cashu_swap_intent_after_definite_rejection_v1(&proposed.intent_id),
+        Err(StoreError::UnanchoredCommit {
+            store_generation: 6,
+            ..
+        })
+    ));
+    assert_eq!(authority.floor().store_generation, 6);
+    drop(reopened);
+
+    let recovered = ProviderStore::open_existing(
+        &path.database,
+        PROVIDER,
+        StoreOptions::default(),
+        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
+    )
+    .unwrap();
+    assert!(recovered
+        .cashu_swap_intent_by_input_v1(&proposed.mint_id, &proposed.input_set_digest)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        recovered
+            .operational_inventory()
+            .unwrap()
+            .cashu_swap_intent_rows,
+        0
+    );
+    assert_eq!(recovered.identity().unwrap().spend_commit_seq, 0);
+}
+
+#[test]
 fn lost_submit_cas_response_recovers_as_submitted_without_new_generation() {
     let path = TestPath::new();
     let authority = Arc::new(MemoryRollbackAuthority::default());
     let store = create_store(&path.database, Arc::clone(&authority));
     let proposed = intent();
-    store.insert_cashu_swap_intent_v1(&proposed).unwrap();
+    store
+        .insert_cashu_swap_intent_v1(&proposed, limits())
+        .unwrap();
     authority.lose_response_at(2);
 
     assert!(matches!(
@@ -466,7 +646,9 @@ fn stale_prepared_backup_cannot_reenable_nut03_or_grant() {
     let authority = Arc::new(MemoryRollbackAuthority::default());
     let store = create_store(&path.database, Arc::clone(&authority));
     let proposed = intent();
-    store.insert_cashu_swap_intent_v1(&proposed).unwrap();
+    store
+        .insert_cashu_swap_intent_v1(&proposed, limits())
+        .unwrap();
     copy_database_without_wal(&path.database, &path.backup);
 
     store
@@ -476,7 +658,7 @@ fn stale_prepared_backup_cannot_reenable_nut03_or_grant() {
         .commit_cashu_swap_wallet_v1(&proposed.intent_id, &replacement_recovery(), 102)
         .unwrap();
     store
-        .claim_cashu_swap_grant_once_v1(&proposed.intent_id, 103)
+        .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 103)
         .unwrap();
     assert_eq!(authority.floor().store_generation, 4);
     drop(store);
@@ -493,15 +675,46 @@ fn stale_prepared_backup_cannot_reenable_nut03_or_grant() {
 }
 
 #[test]
-fn schema_v3_is_strictly_rejected_without_automatic_migration() {
+fn prior_v6_schema_is_strictly_rejected_without_automatic_migration() {
     let path = TestPath::new();
     let authority = Arc::new(MemoryRollbackAuthority::default());
     let store = create_store(&path.database, Arc::clone(&authority));
     drop(store);
     let connection = Connection::open(&path.database).unwrap();
-    connection.pragma_update(None, "user_version", 3).unwrap();
+    connection.pragma_update(None, "user_version", 6).unwrap();
     connection
-        .execute("UPDATE store_identity SET schema_version = 3", [])
+        .execute("UPDATE store_identity SET schema_version = 6", [])
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        ProviderStore::open_existing(
+            &path.database,
+            PROVIDER,
+            StoreOptions::default(),
+            authority,
+        ),
+        Err(StoreError::SchemaMismatch(message)) if message == "user_version is unsupported"
+    ));
+    let connection = Connection::open(&path.database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+}
+
+#[test]
+fn prior_v5_schema_is_strictly_rejected_without_automatic_migration() {
+    let path = TestPath::new();
+    let authority = Arc::new(MemoryRollbackAuthority::default());
+    let store = create_store(&path.database, Arc::clone(&authority));
+    drop(store);
+    let connection = Connection::open(&path.database).unwrap();
+    connection.pragma_update(None, "user_version", 5).unwrap();
+    connection
+        .execute("UPDATE store_identity SET schema_version = 5", [])
         .unwrap();
     connection
         .execute("DROP TABLE cashu_swap_intents", [])
@@ -522,7 +735,7 @@ fn schema_v3_is_strictly_rejected_without_automatic_migration() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        3
+        5
     );
     assert_eq!(
         connection

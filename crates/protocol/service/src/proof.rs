@@ -5,11 +5,12 @@
 //! providers never have to accept JSON, legacy Cashu variants, or optional
 //! proof fields on the PIR wire.
 
-use core::cmp::Ordering;
+use core::{cmp::Ordering, fmt, mem};
 use std::collections::HashSet;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::cashu_manifest::is_valid_compressed_point;
 use crate::codec::{expect_v1, put_bytes_u16, put_bytes_u32, Decoder};
@@ -22,6 +23,7 @@ use crate::{
 pub const FREE_POW_PROOF_LEN_V1: usize = 1 + 32 + 8;
 pub const MAX_STANDARD_CASHU_PROOFS_V1: usize = 64;
 pub const MAX_STANDARD_CASHU_SECRET_LEN_V1: usize = 1_024;
+const STANDARD_CASHU_PROOF_FIXED_WIRE_LEN_V1: usize = CASHU_KEYSET_ID_V2_LEN + 8 + 2 + 33;
 pub const BAT_PROOF_LEN_V1: usize = 1 + 32 + 33;
 pub const MAX_ARC_PRESENTATION_LEN_V1: usize = MAX_AUTH_PROOF_LEN - 5;
 
@@ -372,12 +374,31 @@ pub fn verify_free_anonymous_ticket_for_offer(
 /// IDs, canonical UTF-8 secrets, and compressed secp256k1 `C` points.  Witness
 /// and proof-level DLEQ fields have no representation here; in particular,
 /// the wallet's private DLEQ blinding scalar `r` can never cross this wire.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StandardCashuProofV1 {
     pub keyset_id: String,
     pub amount: u64,
     pub secret: String,
     pub c: [u8; 33],
+}
+
+impl fmt::Debug for StandardCashuProofV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StandardCashuProofV1")
+            .field("keyset_id", &self.keyset_id)
+            .field("amount", &self.amount)
+            .field("secret", &"[REDACTED]")
+            .field("c", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for StandardCashuProofV1 {
+    fn drop(&mut self) {
+        self.secret.zeroize();
+        self.c.zeroize();
+    }
 }
 
 impl StandardCashuProofV1 {
@@ -422,9 +443,19 @@ impl StandardCashuProofV1 {
 }
 
 /// Canonically sorted standard Cashu input list.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StandardCashuSpendV1 {
     pub proofs: Vec<StandardCashuProofV1>,
+}
+
+impl fmt::Debug for StandardCashuSpendV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StandardCashuSpendV1")
+            .field("proof_count", &self.proofs.len())
+            .field("proofs", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl StandardCashuSpendV1 {
@@ -439,22 +470,34 @@ impl StandardCashuSpendV1 {
         Ok(value)
     }
 
+    /// The returned bytes intentionally remain caller-owned because they are
+    /// the next-hop bearer passed into `AuthBeginV1`.
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         self.validate()?;
-        let mut out = Vec::with_capacity(2 + self.proofs.len() * 112);
+        let encoded_len = self.proofs.iter().try_fold(2usize, |len, proof| {
+            len.checked_add(STANDARD_CASHU_PROOF_FIXED_WIRE_LEN_V1)
+                .and_then(|len| len.checked_add(proof.secret.len()))
+                .ok_or(ServiceProtocolError::InvalidValue {
+                    field: "StandardCashuSpendV1",
+                    reason: "encoded length overflow",
+                })
+        })?;
+        if encoded_len > MAX_AUTH_PROOF_LEN {
+            return Err(ServiceProtocolError::FieldTooLong {
+                field: "StandardCashuSpendV1",
+                len: encoded_len,
+                max: MAX_AUTH_PROOF_LEN,
+            });
+        }
+
+        let mut out = Zeroizing::new(Vec::with_capacity(encoded_len));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.push(self.proofs.len() as u8);
         for proof in &self.proofs {
             proof.encode_into(&mut out)?;
         }
-        if out.len() > MAX_AUTH_PROOF_LEN {
-            return Err(ServiceProtocolError::FieldTooLong {
-                field: "StandardCashuSpendV1",
-                len: out.len(),
-                max: MAX_AUTH_PROOF_LEN,
-            });
-        }
-        Ok(out)
+        debug_assert_eq!(out.len(), encoded_len);
+        Ok(mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -485,23 +528,32 @@ impl StandardCashuSpendV1 {
             let keyset_id = String::from_utf8(keyset_id_bytes.to_vec())
                 .map_err(|_| ServiceProtocolError::InvalidUtf8("StandardCashuProofV1.keyset_id"))?;
             let amount = decoder.u64("StandardCashuProofV1.amount")?;
-            let secret_bytes = decoder.bytes_u16(
+            let mut secret_bytes = Zeroizing::new(decoder.bytes_u16(
                 "StandardCashuProofV1.secret",
                 MAX_STANDARD_CASHU_SECRET_LEN_V1,
-            )?;
-            let secret = String::from_utf8(secret_bytes)
-                .map_err(|_| ServiceProtocolError::InvalidUtf8("StandardCashuProofV1.secret"))?;
+            )?);
+            let mut secret = match String::from_utf8(mem::take(&mut *secret_bytes)) {
+                Ok(secret) => Zeroizing::new(secret),
+                Err(error) => {
+                    let _invalid_secret = Zeroizing::new(error.into_bytes());
+                    return Err(ServiceProtocolError::InvalidUtf8(
+                        "StandardCashuProofV1.secret",
+                    ));
+                }
+            };
+            let c = decoder.fixed("StandardCashuProofV1.c")?;
             proofs.push(StandardCashuProofV1 {
                 keyset_id,
                 amount,
-                secret,
-                c: decoder.fixed("StandardCashuProofV1.c")?,
+                secret: mem::take(&mut *secret),
+                c,
             });
         }
         decoder.finish()?;
         let value = Self { proofs };
         value.validate()?;
-        if value.encode()?.as_slice() != bytes {
+        let canonical = Zeroizing::new(value.encode()?);
+        if canonical.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "StandardCashuSpendV1",
                 reason: "non-canonical proof-list encoding",
@@ -541,7 +593,7 @@ impl StandardCashuSpendV1 {
                     reason: "proofs must be strictly sorted in canonical V1 order",
                 });
             }
-            if !secrets.insert(proof.secret.as_str()) || !points.insert(proof.c) {
+            if !secrets.insert(proof.secret.as_str()) || !points.insert(&proof.c) {
                 return Err(ServiceProtocolError::InvalidValue {
                     field: "StandardCashuSpendV1.proofs",
                     reason: "duplicate Cashu secrets or C points are forbidden",
@@ -951,13 +1003,50 @@ pub enum FreeAuthorizationProofV1 {
     AnonymousTicket(Box<FreeAnonymousTicketV1>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AuthorizationProofV1 {
     Free(FreeAuthorizationProofV1),
     Bolt11DirectReceipt(Box<PaidReceiptV1>),
     StandardCashu(StandardCashuSpendV1),
     BitcoinPirCashuBat(BitcoinPirCashuBatProofV1),
     ArcExperimental(ArcPresentationV1),
+}
+
+impl fmt::Debug for AuthorizationProofV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Free(FreeAuthorizationProofV1::OpenBestEffort) => {
+                formatter.write_str("AuthorizationProofV1::Free(OpenBestEffort)")
+            }
+            Self::Free(FreeAuthorizationProofV1::IpRateLimited) => {
+                formatter.write_str("AuthorizationProofV1::Free(IpRateLimited)")
+            }
+            Self::Free(FreeAuthorizationProofV1::ProofOfWork(_)) => formatter
+                .debug_tuple("AuthorizationProofV1::Free(ProofOfWork)")
+                .field(&"[REDACTED]")
+                .finish(),
+            Self::Free(FreeAuthorizationProofV1::AnonymousTicket(_)) => formatter
+                .debug_tuple("AuthorizationProofV1::Free(AnonymousTicket)")
+                .field(&"[REDACTED]")
+                .finish(),
+            Self::Bolt11DirectReceipt(_) => formatter
+                .debug_tuple("AuthorizationProofV1::Bolt11DirectReceipt")
+                .field(&"[REDACTED]")
+                .finish(),
+            Self::StandardCashu(spend) => formatter
+                .debug_tuple("AuthorizationProofV1::StandardCashu")
+                .field(spend)
+                .finish(),
+            Self::BitcoinPirCashuBat(_) => formatter
+                .debug_tuple("AuthorizationProofV1::BitcoinPirCashuBat")
+                .field(&"[REDACTED]")
+                .finish(),
+            Self::ArcExperimental(_) => formatter
+                .debug_tuple("AuthorizationProofV1::ArcExperimental")
+                .field(&"[REDACTED]")
+                .finish(),
+        }
+    }
 }
 
 impl AuthorizationProofV1 {
@@ -1109,9 +1198,10 @@ mod tests {
         derive_cashu_keyset_id_v2, AcquisitionMethod, AuthPaddingClassV1, BackendId,
         CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1,
         CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1,
-        DeploymentStatus, EntitlementLimitsV1, PolicyRollbackGuardV1, PriceV1, PrivacyLeakageV1,
-        ServiceOfferV1, ServicePolicyEpochFloorsV1, ServicePolicyV1, ServiceScopePolicyV1,
-        ServiceScopeV1, StandardCashuMintManifestV1, VerificationMode, WorkloadId,
+        DeploymentStatus, EntitlementLimitsV1, PaidReceiptBindingV1, PolicyRollbackGuardV1,
+        PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyEpochFloorsV1, ServicePolicyV1,
+        ServiceScopePolicyV1, ServiceScopeV1, StandardCashuMintManifestV1, VerificationMode,
+        WorkloadId,
     };
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     use k256::{ProjectivePoint, Scalar};
@@ -1351,6 +1441,116 @@ mod tests {
     }
 
     #[test]
+    fn authorization_debug_redacts_every_bearer_payload() {
+        assert!(core::mem::needs_drop::<StandardCashuProofV1>());
+
+        let cashu_secret = "cashu-proof-debug-canary";
+        let cashu_c = point(701);
+        let cashu_spend =
+            StandardCashuSpendV1::new_canonical(vec![cashu_proof(0x71, 8, cashu_secret, 701)])
+                .unwrap();
+        let cashu_proof_rendered = format!("{:?}", cashu_spend.proofs[0]);
+        assert!(cashu_proof_rendered.contains("[REDACTED]"));
+        assert!(!cashu_proof_rendered.contains(cashu_secret));
+        assert!(!cashu_proof_rendered.contains(&format!("{cashu_c:?}")));
+
+        let cashu_spend_rendered = format!("{cashu_spend:?}");
+        assert!(cashu_spend_rendered.contains("[REDACTED]"));
+        assert!(!cashu_spend_rendered.contains(cashu_secret));
+        assert!(!cashu_spend_rendered.contains(&format!("{cashu_c:?}")));
+
+        let assert_wrapped_redacted = |proof: &AuthorizationProofV1, forbidden: &[String]| {
+            let rendered = format!("{proof:?}");
+            assert!(rendered.contains("[REDACTED]"), "{rendered}");
+            for canary in forbidden {
+                assert!(!rendered.contains(canary), "{rendered}");
+            }
+        };
+
+        assert_wrapped_redacted(
+            &AuthorizationProofV1::StandardCashu(cashu_spend),
+            &[cashu_secret.to_owned(), format!("{cashu_c:?}")],
+        );
+
+        let receipt_serial = [0x72; 32];
+        let receipt_signature = [0x73; 64];
+        let receipt = PaidReceiptV1 {
+            issuer_id: [0x74; 32],
+            key_id: [0x75; 16],
+            serial: receipt_serial,
+            binding: PaidReceiptBindingV1 {
+                scope_id: [0x76; 32],
+                offer_id: 7,
+                policy_digest: [0x77; 32],
+                entitlement_profile: 8,
+            },
+            not_before: 9,
+            not_after: 10,
+            signature: receipt_signature,
+        };
+        assert_wrapped_redacted(
+            &AuthorizationProofV1::Bolt11DirectReceipt(Box::new(receipt)),
+            &[
+                format!("{receipt_serial:?}"),
+                format!("{receipt_signature:?}"),
+            ],
+        );
+
+        let bat_secret = [0x78; 32];
+        let bat_c = point(702);
+        assert_wrapped_redacted(
+            &AuthorizationProofV1::BitcoinPirCashuBat(BitcoinPirCashuBatProofV1 {
+                secret_raw: bat_secret,
+                c: bat_c,
+            }),
+            &[format!("{bat_secret:?}"), format!("{bat_c:?}")],
+        );
+
+        let arc_payload = b"arc-presentation-debug-canary".to_vec();
+        let arc_payload_rendered = format!("{arc_payload:?}");
+        assert_wrapped_redacted(
+            &AuthorizationProofV1::ArcExperimental(
+                ArcPresentationV1::from_canonical_bytes(arc_payload).unwrap(),
+            ),
+            &[arc_payload_rendered],
+        );
+
+        let ticket_serial = [0x79; 32];
+        let ticket_signature = [0x7a; 64];
+        let ticket = FreeAnonymousTicketV1 {
+            provider_id: [0x7b; 32],
+            scope_id: [0x7c; 32],
+            offer_id: 11,
+            policy_digest: [0x7d; 32],
+            entitlement_profile: 12,
+            issuer_id: [0x7e; 32],
+            key_id: [0x7f; 16],
+            serial: ticket_serial,
+            not_before: 13,
+            not_after: 14,
+            signature: ticket_signature,
+        };
+        assert_wrapped_redacted(
+            &AuthorizationProofV1::Free(FreeAuthorizationProofV1::AnonymousTicket(Box::new(
+                ticket,
+            ))),
+            &[
+                format!("{ticket_serial:?}"),
+                format!("{ticket_signature:?}"),
+            ],
+        );
+
+        let pow_challenge_id = [0x80; 32];
+        assert_wrapped_redacted(
+            &AuthorizationProofV1::Free(FreeAuthorizationProofV1::ProofOfWork(FreePowProofV1 {
+                challenge_id: pow_challenge_id,
+                nonce: 15,
+            })),
+            &[format!("{pow_challenge_id:?}")],
+        );
+    }
+
+    #[test]
     fn pow_has_fixed_golden_encoding_and_rejects_trailing() {
         let proof = FreePowProofV1 {
             challenge_id: [0x11; 32],
@@ -1538,6 +1738,7 @@ mod tests {
         assert_eq!(spend.proofs[0].keyset_id, keyset(1));
         assert_eq!(spend.total_amount().unwrap(), 6);
         let encoded = spend.encode().unwrap();
+        assert_eq!(encoded.capacity(), encoded.len());
         assert_eq!(StandardCashuSpendV1::decode(&encoded).unwrap(), spend);
     }
 
@@ -1568,7 +1769,15 @@ mod tests {
         assert!(duplicate_secret.is_err());
 
         let spend = StandardCashuSpendV1::new_canonical(vec![cashu_proof(1, 1, "a", 1)]).unwrap();
-        let mut witness_like_trailing = spend.encode().unwrap();
+        let encoded = spend.encode().unwrap();
+        let mut truncated_c = encoded.clone();
+        truncated_c.pop();
+        assert!(matches!(
+            StandardCashuSpendV1::decode(&truncated_c),
+            Err(ServiceProtocolError::Truncated("StandardCashuProofV1.c"))
+        ));
+
+        let mut witness_like_trailing = encoded;
         witness_like_trailing.extend_from_slice(b"witness");
         assert!(matches!(
             StandardCashuSpendV1::decode(&witness_like_trailing),

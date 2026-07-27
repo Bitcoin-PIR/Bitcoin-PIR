@@ -4,13 +4,13 @@
 rate-limiting demo (ARC + Cashu Blind Auth). No payment, no Lightning, no PIR
 database. **Do not deploy to production.**
 
-It stands in for the Lightning-backed payment service *and* the PIR server's
-credential gate so the whole `mint → obtain → present → verify` loop runs as a
-single process. The verify endpoints use the exact same crypto as
-`pir_runtime_core::{arc_verifier, cashu_verifier}`; the present-frame bytes are
-byte-identical to the PIR server's WebSocket `REQ_CREDENTIAL_PRESENT` (0x08) /
-`REQ_CASHU_BAT_PRESENT` (0x09) frames — only the transport differs (HTTP here,
-WebSocket in production).
+It stands in for the old free issuer *and* legacy verifier gate so the
+`mint → obtain → present → verify` demonstration runs as one process. The
+verify endpoints exercise the same legacy primitives as
+`pir_runtime_core::{arc_verifier, cashu_verifier}`; their `0x08`/`0x09` frames
+are compatibility/demo frames only. They cannot unlock enforced Payment V1,
+whose provider-, scope-, offer- and policy-bound admission messages are a
+different protocol.
 
 ## Run the demo
 
@@ -45,16 +45,18 @@ spending down N presentations; Cashu shows a pool of single-use BATs, with a
 - `--cashu-key <path>` (default `cashu_key.bin`) — 32-byte secp256k1 scalar.
 - `--port <n>` (default `5601`).
 
-## Presenting against a real PIR server instead
+## Legacy server-gate compatibility test
 
-The issuer prints a ready-to-run launch line on startup, e.g.:
+The issuer prints a launch line for exercising the legacy gate in a disposable
+PIR process, e.g.:
 
 ```
-unified_server --require-arc --arc-key arc_key.bin \
+unified_server --allow-experimental-arc --require-arc --arc-key arc_key.bin \
     --require-cashu --cashu-keyset <id>:<hex>
 ```
 
-A client then presents the same frames over WebSocket
+A demo client can then present the same legacy frames over WebSocket
 (`web/src/arc-present.ts::sendArcPresentation`, or `cashu-bat`'s
 `buildPresentFrame` via `ManagedWebSocket.sendRaw`). The dev-issuer's
-`/dev/*/verify` endpoints exist only so the demo needs no PIR database.
+`/dev/*/verify` endpoints exist only so the demo needs no PIR database. Do not
+reuse these endpoints or frames for Payment V1 production admission.

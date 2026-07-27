@@ -22,6 +22,7 @@ const issuerHex = '22'.repeat(32);
 const scopeHex = '33'.repeat(32);
 const payee = new Uint8Array([2, ...new Uint8Array(32).fill(4)]);
 const recoveryId = '55'.repeat(32);
+const issuedCapabilityPayloads: Uint8Array[] = [];
 
 class FakeAcquisition {
   hasQuote: boolean;
@@ -57,12 +58,16 @@ class FakeAcquisition {
     if (this.claimMarker === 0) this.claimMarker = 9;
     return new Uint8Array([8, this.claimMarker]);
   };
-  finish_claim = () => ({
-    free: vi.fn(),
-    scheme: 'bolt11-direct-receipt',
-    count: () => 1,
-    capability: () => new Uint8Array([10, 11]),
-  });
+  finish_claim = () => {
+    const payload = new Uint8Array([10, 11]);
+    issuedCapabilityPayloads.push(payload);
+    return {
+      free: vi.fn(),
+      scheme: 'bolt11-direct-receipt',
+      count: () => 1,
+      capability: () => payload,
+    };
+  };
 }
 
 function signedOffer(): ServiceOfferViewV1 {
@@ -78,6 +83,7 @@ function signedOffer(): ServiceOfferViewV1 {
     issuerIdHex: issuerHex,
     keyIdHex: '44'.repeat(16),
     batVerificationKeyFingerprintHex: '',
+    arcVerificationKeyFingerprintHex: '',
     endpoint: 'https://issuer.example',
     credentialCount: 1,
     credentialPresentationLimit: 1,
@@ -99,6 +105,7 @@ function signedScope(offer: ServiceOfferViewV1): ServiceScopeViewV1 {
 
 describe('BOLT11 acquisition HTTP and recovery ordering', () => {
   beforeEach(() => {
+    issuedCapabilityPayloads.length = 0;
     mocked.sdk = {
       initial_bolt11_quote_key_checkpoint_v1: () => new Uint8Array([1]),
       WasmBolt11AcquisitionV1: { restore: (state: Uint8Array) => new FakeAcquisition(state) },
@@ -179,7 +186,7 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
 
   it('persists rollback/recovery before invoice and persists exact claim before POST', async () => {
     const events: string[] = [];
-    const acquisition = new FakeAcquisition();
+    let acquisition = new FakeAcquisition();
     const offer = signedOffer();
     const scope = signedScope(offer);
     const policy = {
@@ -196,6 +203,7 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
     } as unknown as WasmAcceptedServicePolicyV1;
     let storedRecovery: Record<string, any> | null = null;
     let lockTail = Promise.resolve<unknown>(undefined);
+    let rejectCompletion = false;
     const vault = {
       advanceQuoteKeyCheckpoint: async (
         _issuer: string,
@@ -230,6 +238,9 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
             complete: async (capabilities: unknown[]) => {
               events.push('complete-atomic');
               expect(capabilities).toHaveLength(1);
+              expect((capabilities[0] as { payload: Uint8Array }).payload)
+                .toEqual(new Uint8Array([10, 11]));
+              if (rejectCompletion) throw new Error('vault write failed');
               storedRecovery = null;
               return ['88'.repeat(32)];
             },
@@ -282,6 +293,26 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
     await expect(controller.pollStatus()).resolves.toBe('payment-settled');
     await expect(controller.claim()).resolves.toBe(1);
     expect(events.at(-1)).toBe('complete-atomic');
+    expect(issuedCapabilityPayloads).toEqual([new Uint8Array(2)]);
+
+    rejectCompletion = true;
+    acquisition = new FakeAcquisition();
+    const failedController = await Bolt11AcquisitionControllerV1.start({
+      vault,
+      policy,
+      scope,
+      offer,
+      network: 'bitcoin',
+      expectedPayeePubkey: payee,
+      fetchImpl,
+    });
+    await expect(failedController.pollStatus()).resolves.toBe('payment-settled');
+    await expect(failedController.claim()).rejects.toThrow(/vault write failed/);
+    expect(issuedCapabilityPayloads).toEqual([
+      new Uint8Array(2),
+      new Uint8Array(2),
+    ]);
+    failedController.close();
   });
 
   it('replays the exact claim after response loss and prevents a queued stale poll overwrite', async () => {

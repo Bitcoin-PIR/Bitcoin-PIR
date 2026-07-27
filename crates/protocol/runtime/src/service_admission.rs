@@ -39,12 +39,35 @@ use crate::harmony_attach_runtime::{
 /// Canonically decoded service request from the inner PIR record payload
 /// (`opcode || body`). Encryption is checked by the connection gate/handler,
 /// not inferred from these plaintext bytes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum ServiceWireRequestV1 {
     Policy(ServicePolicyRequestV1),
     Auth(Box<AuthBeginV1>),
     PowChallenge(Box<PowChallengeRequestV1>),
     HarmonyAttach(Box<HarmonyAttachV1>),
+}
+
+impl fmt::Debug for ServiceWireRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Policy(request) => formatter
+                .debug_tuple("ServiceWireRequestV1::Policy")
+                .field(request)
+                .finish(),
+            Self::Auth(request) => formatter
+                .debug_tuple("ServiceWireRequestV1::Auth")
+                .field(request)
+                .finish(),
+            Self::PowChallenge(request) => formatter
+                .debug_tuple("ServiceWireRequestV1::PowChallenge")
+                .field(request)
+                .finish(),
+            Self::HarmonyAttach(request) => formatter
+                .debug_tuple("ServiceWireRequestV1::HarmonyAttach")
+                .field(request)
+                .finish(),
+        }
+    }
 }
 
 impl ServiceWireRequestV1 {
@@ -287,7 +310,8 @@ impl AdmissionMethodCommitterV1 for CompositeAdmissionMethodCommitterV1<'_> {
 
 /// Production-safe adapter for the provider-local bearer subset. ARC remains
 /// explicitly experimental: it is available only when a reviewed adapter is
-/// injected here, and unified-server startup does not inject or activate one.
+/// injected here. Unified-server may inject one only after its explicit
+/// experimental acknowledgement and keyring checks both succeed.
 /// Every shared-issuer route still fails closed.
 pub struct ProviderStoreBearerCommitterV1<'a> {
     store: &'a ProviderStore,
@@ -418,6 +442,17 @@ fn map_provider_store_commit_error(error: StoreError) -> AdmissionCommitErrorV1 
         | StoreError::PolicyRollback
         | StoreError::PolicyFork
         | StoreError::CredentialFloorRollback
+        | StoreError::CashuCustodyExposureExceeded
+        | StoreError::CashuCustodyLotMissing
+        | StoreError::CashuCustodyLotConflict
+        | StoreError::CashuCustodyExportMissing
+        | StoreError::CashuCustodyExportConflict
+        | StoreError::CashuCustodyStateConflict
+        | StoreError::CashuCustodyUnavailable
+        | StoreError::CashuCustodyNotesNotFullySpent
+        | StoreError::CashuCustodyRetirementFloorMismatch
+        | StoreError::CashuCustodyRetirementEvidenceMissing
+        | StoreError::CashuCustodyRetirementEvidenceConflict
         | StoreError::CashuFloorRollback
         | StoreError::CashuSwapIntentMissing
         | StoreError::CashuSwapIntentConflict
@@ -2293,6 +2328,10 @@ mod tests {
             AdmissionCommitErrorV1::ScopeUnavailable
         );
         assert_eq!(
+            map_provider_store_commit_error(StoreError::CashuCustodyRetirementEvidenceConflict),
+            AdmissionCommitErrorV1::ScopeUnavailable
+        );
+        assert_eq!(
             map_provider_store_commit_error(StoreError::InternalAfterSpend {
                 read_back: pir_service_store::SpendReadBack::Present,
                 database_error: "commit outcome ambiguous".to_owned(),
@@ -2360,6 +2399,26 @@ mod tests {
         );
         payload.pop();
         assert!(ServiceWireRequestV1::decode_inner_payload(&payload).is_err());
+    }
+
+    #[test]
+    fn service_wire_debug_keeps_nested_auth_proof_redacted() {
+        let raw_proof = b"service-wire-auth-proof-debug-canary".to_vec();
+        let request = ServiceWireRequestV1::Auth(Box::new(AuthBeginV1 {
+            policy_digest: [1; 32],
+            scope_id: [2; 32],
+            offer_id: 3,
+            scheme: AuthScheme::BitcoinPirCashuBatV1,
+            key_id: b"public-key-id".to_vec(),
+            operation: OperationStartV1::DpfQuery { db_id: 4 },
+            proof: raw_proof.clone(),
+        }));
+
+        let rendered = format!("{request:?}");
+
+        assert!(rendered.contains("ServiceWireRequestV1::Auth"));
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains(&format!("{raw_proof:?}")));
     }
 
     #[test]

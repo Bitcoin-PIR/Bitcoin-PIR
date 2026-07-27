@@ -120,6 +120,7 @@ hex = "0.4"
 # not-found-heavy wallet syncs. Pure-Rust, no C deps; already a
 # transitive dep via pir-channel.
 sha2 = { version = "0.10", default-features = false }
+zeroize = "1"
 
 # ─── Native (tokio + tungstenite) target deps ───────────────────────────────
 # The tokio reactor does not run on `wasm32-unknown-unknown`. Everything that

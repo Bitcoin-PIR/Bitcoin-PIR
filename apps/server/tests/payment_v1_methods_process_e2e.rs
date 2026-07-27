@@ -125,6 +125,7 @@ impl ServerProcess {
                 "--disable-onion",
                 "--serve-queries",
                 "--require-service-auth-v1",
+                "--allow-experimental-arc",
                 "--service-policy",
                 fixture.policy_path.to_str().expect("UTF-8 test path"),
                 "--service-provider-id-hex",

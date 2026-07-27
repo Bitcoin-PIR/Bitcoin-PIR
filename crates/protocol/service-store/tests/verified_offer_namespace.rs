@@ -17,8 +17,9 @@ use pir_service_store::{
     ArcExclusiveKeyLineageVerifierV1, ArcPresentationSpendVerifierV1, ArcVerifiedSpendSinkV1,
     ExclusiveKeyLineage, NamespaceInstallOutcome, NewSpendNamespace, ProviderStore, StoreError,
     StoreOptions, VerifiedOfferNamespaceInstallOutcomeV1, VerifiedOfferNamespaceNotApplicableV1,
+    VerifiedOfferNamespaceReadinessV1,
 };
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tempfile::{Builder, TempDir};
@@ -624,6 +625,74 @@ fn arc_exact_namespace_replay_is_idempotent_but_expired_binding_fails_closed() {
     assert!(matches!(
         verify_provider_local_arc_spend_v1(&bound, 301, &adapter),
         Err(StoreError::ServiceProtocol(_))
+    ));
+}
+
+#[test]
+fn arc_retained_readiness_rejects_missing_exclusive_key_lineage() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path.database, 44);
+    let service_scope = scope(7);
+    let offer = bearer_offer(
+        &service_scope,
+        74,
+        AuthScheme::ArcV1Experimental,
+        VerificationMode::ProviderLocal,
+        1,
+    );
+    let (policy, key) = signed_policy(service_scope, offer, 1);
+    let verified = verified_offer(&policy, &key);
+    let adapter = FakeReviewedArcAdapterV1::default();
+    let _ = store
+        .install_verified_offer_namespace_v1(&verified, 150, Some(&adapter))
+        .unwrap();
+    assert_eq!(
+        store
+            .verify_existing_verified_offer_namespace_v1(&verified, 150, Some(&adapter))
+            .unwrap(),
+        VerifiedOfferNamespaceReadinessV1::Ready
+    );
+
+    Connection::open(&test_path.database)
+        .unwrap()
+        .execute("DELETE FROM exclusive_key_lineages", [])
+        .unwrap();
+    assert!(matches!(
+        store.verify_existing_verified_offer_namespace_v1(&verified, 150, Some(&adapter)),
+        Err(StoreError::SchemaMismatch(message))
+            if message == "namespace is missing its exclusive key lineage"
+    ));
+}
+
+#[test]
+fn arc_retained_readiness_rejects_tampered_exclusive_key_lineage() {
+    let test_path = TestPath::new();
+    let store = create_store(&test_path.database, 45);
+    let service_scope = scope(8);
+    let offer = bearer_offer(
+        &service_scope,
+        75,
+        AuthScheme::ArcV1Experimental,
+        VerificationMode::ProviderLocal,
+        1,
+    );
+    let (policy, key) = signed_policy(service_scope, offer, 1);
+    let verified = verified_offer(&policy, &key);
+    let adapter = FakeReviewedArcAdapterV1::default();
+    let _ = store
+        .install_verified_offer_namespace_v1(&verified, 150, Some(&adapter))
+        .unwrap();
+
+    Connection::open(&test_path.database)
+        .unwrap()
+        .execute(
+            "UPDATE exclusive_key_lineages SET lineage_digest = ?1",
+            params![[0xee_u8; 32].as_slice()],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.verify_existing_verified_offer_namespace_v1(&verified, 150, Some(&adapter)),
+        Err(StoreError::ExclusiveKeyLineageConflict)
     ));
 }
 

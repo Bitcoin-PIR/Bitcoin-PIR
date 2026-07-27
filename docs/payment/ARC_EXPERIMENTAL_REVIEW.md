@@ -9,10 +9,12 @@ in production before an independent cryptographic review.
 The workspace pins `https://github.com/Bitcoin-PIR/arc.git` at
 `de6c1709eee0faa32985d5a452be11904ee95de4`. The crate describes itself as a
 Rust port of `draft-ietf-privacypass-arc-crypto-01` over P-256 and exercises the
-working-group proof vectors. As of this review, the IETF working repository's
-current tagged cryptographic draft is also `draft-ietf-privacypass-arc-crypto-01`.
-Draft alignment and passing vectors are necessary interoperability evidence;
-they are not an independent security audit.
+working-group proof vectors. As of 2026-07-27, the IETF Datatracker still lists
+`draft-ietf-privacypass-arc-crypto-01` as the latest revision, while its working
+group state is `Dead WG Document`. Draft alignment and passing vectors are
+necessary primitive-level evidence; they are neither an independent security
+audit nor evidence that BitcoinPIR implements the complete Privacy Pass ARC
+issuance/redemption framing.
 
 Primary sources:
 
@@ -20,6 +22,8 @@ Primary sources:
   <https://github.com/ietf-wg-privacypass/draft-arc/blob/main/draft-ietf-privacypass-arc-crypto.md>
 - ARC issuance/redemption protocol draft:
   <https://github.com/ietf-wg-privacypass/draft-arc/blob/main/draft-ietf-privacypass-arc-protocol.md>
+- IETF Datatracker status:
+  <https://datatracker.ietf.org/doc/draft-ietf-privacypass-arc-crypto/>
 
 The existing code under `crates/protocol/runtime/src/arc_verifier.rs`,
 `apps/dev-issuer`, and the old WASM/Web presentation path is a demo baseline,
@@ -39,6 +43,13 @@ not the v1 production adapter:
 
 Those paths remain compatibility/demo fixtures only. They cannot authorize a
 v1 query and must not be silently wrapped by the new gate.
+
+The v1 `unified_server` and `payment-issuer` additionally require the explicit
+`--allow-experimental-arc` acknowledgement for every current/retained ARC
+policy and ARC private-key configuration. Supplying the acknowledgement without
+an ARC configuration also fails closed. Startup emits a prominent warning. The
+flag exists only for isolated integration testing and does not override the
+production prohibition above.
 
 ## Required fixed contexts
 
@@ -147,8 +158,9 @@ least assess:
   working-group vectors, including transcript/domain separation;
 - proof parsing, point/scalar canonicality, subgroup/identity handling and
   malformed-input resource bounds;
-- nonce range proof and behavior for every permitted presentation limit,
-  including 1, 2, non-powers of two and the configured maximum;
+- nonce range proof behavior, including rejection of unsupported limit 1 and
+  verification of permitted limit 2, non-powers of two and the configured
+  maximum;
 - tag uniqueness/replay behavior under the fixed BitcoinPIR contexts;
 - issuer maliciousness, key compromise, multi-key/key-rotation and raw-key
   lineage assumptions;

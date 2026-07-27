@@ -1117,14 +1117,22 @@ export class OnionPirWebClient {
           // The ProviderAdmissionSession has already retired/advanced proof
           // bytes before this method is entered.
           const request = state.authorizationRequest(policy, scopeId, offerId, proof);
-          const response = await this.sendRaw(request);
-          return state.acceptAuthorizationResponse(response, policy, scopeId);
+          try {
+            const response = await this.sendRaw(request);
+            return state.acceptAuthorizationResponse(response, policy, scopeId);
+          } finally {
+            request.fill(0);
+          }
         }),
       authorizeRetained: (policy, proof, nowUnix) =>
         roundtrip(async (state) => {
           const request = state.retainedAuthorizationRequest(policy, proof, nowUnix);
-          const response = await this.sendRaw(request);
-          return state.acceptRetainedAuthorizationResponse(response, policy, nowUnix);
+          try {
+            const response = await this.sendRaw(request);
+            return state.acceptRetainedAuthorizationResponse(response, policy, nowUnix);
+          } finally {
+            request.fill(0);
+          }
         }),
       requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
         roundtrip(async (state) => {

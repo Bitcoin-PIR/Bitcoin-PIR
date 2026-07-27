@@ -60,7 +60,13 @@ preflight/inclusion, real issuer/browser, external dependency, or non-DPF
 process-level cells. Standard Cashu success remains behind a deterministic
 mint transport because the production client accepts only WebPKI roots; the
 tests do not introduce a local CA bypass. Those remaining boundaries are
-listed in `LOCAL_ACCEPTANCE.md`.
+listed in `LOCAL_ACCEPTANCE.md`. Separately,
+`scripts/payment-v1-cdk-regtest-e2e.sh` uses a disposable loopback CDK 0.17.3
+fake-wallet mint to exercise the real provider-side NUT-03/NUT-12 client and
+custody commit plus one-shot exact NUT-07 proof that original inputs are
+`SPENT` and fresh custody outputs are `UNSPENT` through a test-only endpoint
+mapping. It does not prove custody `UNSPENT -> SPENT`/admin retirement and is
+not a unified-server or public-WebPKI process cell.
 
 ## Negative protocol tests
 
@@ -68,8 +74,9 @@ listed in `LOCAL_ACCEPTANCE.md`.
 - wrong backend, workload, dataset rule, operation profile, or entitlement;
 - Harmony query token used for hints and vice versa;
 - provider A token used at provider B;
-- client rejects a selected provider pair that advertises the same raw BAT
-  verification-key fingerprint, without making a pair-specific network call;
+- client rejects a selected provider pair that advertises the same raw BAT or
+  ARC verification-key fingerprint, before any shared-issuer override and
+  without making a pair-specific network call;
 - stale or unknown policy digest;
 - Free proof attempts to select or upgrade a different signed free mode;
 - forged free quota/window/PoW target/priority is ignored or rejected;
@@ -133,8 +140,9 @@ Cashu-specific:
 - restoring a `PREPARED` backup after submit/grant fails against the external
   floor and cannot revive NUT-03 or the grant;
 - lost swap response is recovered with NUT-09 using identical outputs;
-- proof-level `dleq.r/e/s` and witness fields are rejected before they cross
-  the PIR wire, not merely stripped before forwarding to the mint;
+- browser import accepts only the bounded known NUT-12 `dleq.e/s/r` shape,
+  strips it locally, and proves none of it crosses the PIR wire; witness,
+  NUT-10 and unknown proof fields fail closed;
 - BAT presentation and shared redeem contain no DLEQ proof/blinding scalar;
 - BAT spend keys remain identical when only policy/audience-derived metadata is
   rebound, while different raw DHKE keys produce different spend keys;
@@ -143,6 +151,33 @@ Cashu-specific:
 - duplicate proof inside one request fails atomically;
 - standard V4 short/full IDs and base64 variants are accepted only by the
   wallet import layer and normalize to one full-ID binary PIR proof;
+- distinct recovery and custody keys/AAD cannot decrypt each other's records;
+- finite value/note exposure is enforced atomically before NUT-03 for the exact
+  mint/unit, including 2/8 concurrent admissions and overflow boundaries;
+- `WALLET_STORED -> GRANT_ISSUED` atomically inserts exactly one encrypted
+  note-only lot plus globally unique provider-local note fingerprints;
+- export selection never exceeds 512 notes or 16 keyset groups, leaves
+  overflow lots available and permits more than 16 lots sharing one keyset;
+- export ID replay requires the same provider/mint/unit/max-lots/recipient key,
+  persists/releases one exact envelope and conflicts on changed bytes;
+- recipient-sealed export tampering, wrong provider/key, noncontributory X25519
+  keys, truncation/trailing data and size overflow fail closed;
+- custody acknowledgement requires the exact artifact digest and transitions
+  the batch/members atomically without claiming NUT-05/Lightning/payout or
+  releasing finite custody exposure;
+- explicit `spent-confirm` batches only same-mint/unit exports into one bounded
+  strict-HTTPS NUT-07 request, performs no polling or automatic retry, and
+  rejects missing/extra/reordered/duplicate `Y`, unknown states, oversized
+  witnesses and any `UNSPENT`/`PENDING` note without a retirement write;
+- all-`SPENT` confirmation binds the immutable artifact, exact ordered member
+  IDs, sealed-lot metadata and stored note fingerprints; each per-export commit
+  refreshes the current rollback floor and persists only its own observation
+  digest rather than the wider HTTP-batch digest;
+- exact terminal replay requires neither custody keys nor another mint request;
+  a partial multi-export commit stops, reports prior commits and is safe to
+  rerun explicitly, while NUT-07 evidence never claims settlement or payout;
+- the opt-in disposable CDK runner imports one real padded V4 token with known
+  DLEQ wallet metadata through production WASM and leaks none of that metadata;
 - Cashu eCash and BAT decoders reject each other's encodings.
 
 ## Backend state-machine tests
@@ -218,6 +253,14 @@ Cashu-specific:
 - claim signature cannot be replayed with changed blinded outputs;
 - BIP340 claim/status adapters use prehash verification (no accidental second
   SHA-256) and pass official positive and negative BIP340 vectors;
+- injected DNS plus all candidate addresses share one connect deadline, and
+  the deadline-enforcing TCP wrapper rejects a trickled response without
+  refreshing the full-request I/O deadline; a full rustls-plus-HTTP trickle
+  integration remains separate staging evidence;
+- a trickled CLN Unix-socket response exceeds one RPC wall-clock deadline and
+  remains response-lost-after-write; the semantic precommit suite covers
+  unavailable-before-write, while a deterministic real Unix-transport
+  zero-byte-write failure case remains an evidence gap;
 - BitcoinPIR quote claims reject NUT-20-domain signatures and standard NUT-04
   claims reject BitcoinPIR-domain signatures;
 - paid old-policy quote and receipt remain usable through the declared grace
@@ -291,10 +334,28 @@ Cashu-specific:
   independent provider control;
 - catalog download does not send a requested provider pair or payment method;
 - live verified policy/identity mismatch overrides directory discovery;
+- native publication verifies a frozen EVENT against an explicit directory-key
+  pin and sends its exact bytes without loading a signing key;
+- every relay/event requires one matching positive NIP-01 OK; false,
+  unexpected, out-of-order, duplicate, missing, `NOTICE`/`CLOSED`, non-text,
+  oversized and timed-out replies fail closed;
+- two through eight relay hostnames are all attempted, partial success is a
+  nonzero result, and an exact artifact can be rerun without automatic retry;
+- staging readback loads no key, applies a WebSocket transport payload limit,
+  requests only frozen event IDs and requires each exact event value once plus
+  EOSE; raw URL normalization aliases, symlink/FIFO/device/changing files and
+  per-file or cumulative size violations fail before dialing; publish/readback
+  success remains distinct from catalog deployment;
 - manual endpoint plus pinned operator fingerprint works without the directory.
 
 Real-money tests are excluded until separately approved. Regtest/signet or a
 deterministic fake Lightning backend is used by default.
+
+The Rust publisher reader has a deterministic every-field snapshot-stability
+test plus FIFO/symlink/oversize cases. The Node readback suite covers the same
+object-type and size boundaries but does not yet deterministically mutate a
+regular file during its read; that remains a P2 coverage gap, not permission to
+accept a changing artifact.
 
 ## Shared clearing and settlement tests
 
@@ -410,7 +471,10 @@ WASM capability validation/single-use consumption, and the absence of invoice
 or query-sentinel bytes from claims and `localStorage`. Its provider channel
 exporter and signed policy response framing are test fixtures; it does not
 launch a provider, execute a query, use a wallet/Lightning node or real funds,
-or exercise BAT/ARC acquisition.
+or exercise BAT/ARC acquisition in the default fake-backend CI job. The opt-in
+local CLN-regtest variant adds generated-WASM BAT/ARC acquisition, payment,
+lost-claim-response and reload recovery without real funds; it is not a default
+release gate and still does not launch a PIR provider.
 
 ## Formal Payment V1 lock
 
@@ -454,6 +518,11 @@ cover payment cryptography, XSS, edge abuse, operator custody or deployment.
 | preflight | n/a | spent | disconnect, surface failure |
 | query | n/a | spent | disconnect, surface failure |
 | inclusion verification | n/a | spent | fail closed; never display unverified result |
+| Cashu custody export reservation | no lots reserved | exact members remain reserved | rerun the same export ID and recipient; never choose fresh members |
+| Cashu export artifact delivery | reserved lots, no released artifact until durable persist | exact artifact is durable | `export-replay` writes byte-identical artifact; never reseal |
+| external-wallet custody acknowledgement | provider still counts reserved exposure | exact batch/members acknowledged and still counted | replay exact artifact digest; ACK means custody only and does not release exposure |
+| explicit custody NUT-07 check | no retirement write | no write unless the exact response is all `SPENT` | no polling/automatic retry; operator may explicitly rerun the same selection |
+| sequential multi-export spent confirmation | no export retired yet | earlier exports may be terminal while a later fresh-floor commit fails | stop and report the position; exact rerun skips terminal exports without mint/key access and rechecks only remaining exports |
 | settlement deposit | notes retained before commit | ledger may have committed | idempotent deposit lookup/retry |
 | provider payout submission | exact canonical request must be persisted before send | issuer payout may have committed | resend only the persisted request; verify and atomically install response plus floor |
 
@@ -474,7 +543,7 @@ The explicit commands are:
 ```sh
 cargo test --offline -p pir-service-protocol --test payment_v1_adversarial
 cargo test --offline -p pir-runtime-core --test service_admission_adversarial
-cargo test --offline -p runtime --bin unified_server service_http::adversarial_tests::
+cargo test --offline -p pir-strict-https
 ```
 
 1. fast codec/model/property and bounded adversarial decoder tests;
@@ -493,15 +562,18 @@ cargo test --offline -p runtime --bin unified_server service_http::adversarial_t
    gates, and Pages reruns TypeScript/unit and both no-funds Chromium Payment
    boundaries before publishing;
 8. fuzz, dependency, forbidden-field, formal-contract, and offline-build jobs;
-9. optional ignored regtest/signet canary; no mainnet funds in CI.
+9. optional ignored disposable loopback CDK fake-wallet import and approved
+   regtest/signet canaries; no mainnet funds in CI.
 
 ## Production-only acceptance gates
 
 None of the default commands may use funds or remote infrastructure. Separate
 approval and an isolated experimental/staging environment are required for:
 
-- a Core Lightning regtest/signet node and wallet lifecycle, an external
-  WebPKI-trusted Cashu mint, and public Nostr relay interoperability;
+- a persistent or externally operated Core Lightning regtest/signet node and
+  wallet lifecycle, an external WebPKI-trusted Cashu mint, and
+  production-catalog public Nostr relay interoperability including TLS, relay
+  policy, control frames and independently operated relay selection;
 - a browser/issuer/two-provider topology with production
   identity/attestation/binary/database pins and mandatory Merkle verification;
 - standard Cashu and Harmony hint/query, Onion and TEE-ORAM provider-process
@@ -515,6 +587,11 @@ approval and an isolated experimental/staging environment are required for:
   upstream/vendor audit warnings, deployed-origin and user manual acceptance;
 - independent ARC cryptographic and implementation review.
 
-Passing local CI does not authorize any of these activities. No remote server,
-external CLN/Cashu/Nostr service or real Lightning funds were used to establish
-the local evidence in this document.
+Passing local CI does not authorize any of these activities. The opt-in CDK
+runner uses a disposable loopback fake-wallet mint only; the opt-in CLN runner
+uses two disposable local nodes and valueless regtest coins only. No remote
+server, external CLN/Cashu service, production-catalog Nostr service or real
+Lightning funds were used to establish the default local-suite evidence in
+this document. The separately authorized short-lived empty-catalog public
+Nostr smoke is recorded in `LOCAL_ACCEPTANCE.md` and does not satisfy this
+production gate.

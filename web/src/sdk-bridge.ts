@@ -557,6 +557,8 @@ export interface ServiceOfferViewV1 {
   keyIdHex: string;
   /** Raw BAT DHKE key fingerprint; empty for every non-BAT authorization. */
   batVerificationKeyFingerprintHex: string;
+  /** Raw ARC draft-01 verification-key fingerprint; empty for every non-ARC authorization. */
+  arcVerificationKeyFingerprintHex: string;
   endpoint: string;
   credentialCount: number;
   credentialPresentationLimit: number;

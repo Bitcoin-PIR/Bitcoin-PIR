@@ -21,7 +21,7 @@ use pir_service_protocol::{
     CredentialKeyBindingExpectationV1, LightningNetworkV1,
 };
 use wasm_bindgen::prelude::*;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const RECOVERY_VERSION_V1: u8 = 1;
 const MAX_RECOVERY_STATE_LEN_V1: usize = 4 * 1024 * 1024;
@@ -327,6 +327,12 @@ impl WasmBolt11AcquisitionV1 {
 pub struct WasmIssuedCapabilitiesV1 {
     scheme: String,
     capabilities: Vec<Vec<u8>>,
+}
+
+impl Drop for WasmIssuedCapabilitiesV1 {
+    fn drop(&mut self) {
+        self.capabilities.zeroize();
+    }
 }
 
 #[wasm_bindgen]

@@ -49,6 +49,7 @@ echo "[1/5] canonical five-method x five-workload admission matrix"
 cargo test --offline -p pir-runtime-core --test service_admission_matrix
 
 echo "[2/5] real provider-store receipt/BAT adapters and durable replay boundary"
+cargo test --offline -p pir-strict-https
 cargo test --offline -p pir-payment-crypto --features provider-store \
   --test provider_store_bat_adapter
 cargo test --offline -p pir-runtime-core --test service_admission_matrix \
@@ -57,7 +58,8 @@ cargo test --offline -p pir-runtime-core --test service_admission_matrix \
 echo "[3/5] Free, standard Cashu, and experimental ARC persistence/concurrency"
 cargo test --offline -p pir-service-store free_ip_rate_limit
 cargo test --offline -p pir-cashu-client
-cargo test --offline -p pir-arc-adapter
+cargo test --offline -p pir-cashu-custody
+cargo test --offline -p pir-arc-adapter --features provider-store
 
 echo "[4/5] fake-Lightning, quote/claim lifecycle, and native/WASM client boundaries"
 cargo test --offline -p pir-lightning-backend
@@ -75,6 +77,7 @@ fi
 echo "[5/8] full offline platform, operator tooling, and server wiring"
 cargo test --offline \
   -p pir-channel \
+  -p pir-strict-https \
   -p pir-service-protocol \
   -p pir-service-store \
   -p pir-payment-crypto \
@@ -86,6 +89,7 @@ cargo test --offline \
   -p pir-issuer-service \
   -p pir-provider-clearing-client \
   -p pir-cashu-client \
+  -p pir-cashu-custody \
   -p pir-arc-adapter \
   -p pir-directory-nostr \
   -p pir-runtime-core \
@@ -102,9 +106,18 @@ fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/bpir-payment-v1-fixture.XXXXXX")"
 trap 'rm -rf -- "$fixture_root"' EXIT HUP INT TERM
 scripts/fixtures/generate-payment-v1-no-funds.sh "$fixture_root/generated"
 test -s "$fixture_root/generated/fixture.json"
+if [[ ! -d web/node_modules ]]; then
+  echo "payment-v1-local-check: web/node_modules is absent; refusing network install" >&2
+  echo "Install pinned web dependencies separately, then rerun --full." >&2
+  exit 1
+fi
+node --check scripts/payment-v1-nostr-readback.mjs
+node --test scripts/payment-v1-nostr-readback.test.mjs
+node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
 
 echo "[6/8] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --offline --all-targets --no-deps \
+  -p pir-strict-https \
   -p pir-service-protocol \
   -p pir-service-store \
   -p pir-payment-crypto \
@@ -116,6 +129,7 @@ cargo clippy --offline --all-targets --no-deps \
   -p pir-issuer-service \
   -p pir-provider-clearing-client \
   -p pir-cashu-client \
+  -p pir-cashu-custody \
   -p pir-arc-adapter \
   -p pir-directory-nostr \
   -p payment-issuer \
@@ -131,12 +145,6 @@ fi
 CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm \
   --target web --out-dir pkg --mode no-install --no-opt \
   -- --locked --offline
-
-if [[ ! -d web/node_modules ]]; then
-  echo "payment-v1-local-check: web/node_modules is absent; refusing network install" >&2
-  echo "Install pinned web dependencies separately, then rerun --full." >&2
-  exit 1
-fi
 
 echo "[8/8] web typecheck, unit tests, bundle, and local Chromium payment boundaries"
 (cd web \

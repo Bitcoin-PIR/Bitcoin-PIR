@@ -4,6 +4,7 @@
 //! invoice, payment hash, payer, query identifier, or Bitcoin address.
 
 use ed25519_dalek::VerifyingKey;
+use pir_arc_adapter::{arc_public_key_fingerprint_v1, ARC_PUBLIC_KEY_LEN_V1};
 use pir_sdk_client::{
     accept_pow_challenge_response_v1, accept_retained_service_policy_response_v1,
     accept_service_policy_response_v1, build_pow_challenge_request_v1,
@@ -522,9 +523,11 @@ impl WasmAcceptedServicePolicyV1 {
     }
 
     /// Strictly import a wallet Cashu V3/V4 token for one exact signed offer.
-    /// This performs no network request. Unknown fields, witness/DLEQ data,
-    /// NUT-10 secrets, wrong mint/unit/keyset/denomination/amount, duplicate
-    /// proofs, and non-canonical encodings fail before any vault write.
+    /// This performs no network request. Known NUT-12 DLEQ metadata is
+    /// verified locally and stripped; its private `r` never enters the
+    /// provider wire. Unknown fields, witness data, NUT-10 secrets, wrong
+    /// mint/unit/keyset/denomination/amount, duplicate proofs, and
+    /// non-canonical encodings fail before any vault write.
     #[wasm_bindgen(js_name = importStandardCashuToken)]
     pub fn import_standard_cashu_token(
         &self,
@@ -557,57 +560,7 @@ impl WasmAcceptedServicePolicyV1 {
                 let offers: Vec<serde_json::Value> = scope_policy
                     .offers
                     .iter()
-                    .map(|offer| {
-                        let bat_verification_key_fingerprint_hex =
-                            if offer.authorization == AuthScheme::BitcoinPirCashuBatV1 {
-                                offer
-                                    .credential_binding
-                                    .as_ref()
-                                    .and_then(|binding| {
-                                        let key: [u8; 33] = binding
-                                            .claims
-                                            .verification_key
-                                            .as_slice()
-                                            .try_into()
-                                            .ok()?;
-                                        bat_verification_key_fingerprint_v1(&key).ok()
-                                    })
-                                    .map(hex::encode)
-                                    .unwrap_or_default()
-                            } else {
-                                String::new()
-                            };
-                        let price = match &offer.price {
-                            PriceV1::Free => serde_json::json!({ "kind": "free" }),
-                            PriceV1::MilliSatoshi(amount) => serde_json::json!({
-                                "kind": "msat",
-                                "amount": amount.to_string(),
-                            }),
-                            PriceV1::Cashu { unit, amount } => serde_json::json!({
-                                "kind": "cashu",
-                                "unit": unit,
-                                "amount": amount.to_string(),
-                            }),
-                        };
-                        serde_json::json!({
-                            "offerId": offer.offer_id,
-                            "acquisition": acquisition_label(offer.acquisition),
-                            "authorization": auth_scheme_label(offer.authorization),
-                            "freeMode": free_mode_label(offer.free_mode),
-                            "verification": verification_label(offer.verification),
-                            "deploymentStatus": deployment_label(offer.deployment_status),
-                            "priorityClass": offer.priority_class,
-                            "price": price,
-                            "issuerIdHex": hex::encode(offer.issuer_id),
-                            "keyIdHex": hex::encode(&offer.key_id),
-                            "batVerificationKeyFingerprintHex":
-                                bat_verification_key_fingerprint_hex,
-                            "endpoint": offer.endpoint,
-                            "credentialCount": offer.credential_count,
-                            "credentialPresentationLimit": offer.credential_presentation_limit,
-                            "privacyLeakageBits": offer.privacy_leakage.bits(),
-                        })
-                    })
+                    .map(service_offer_json_v1)
                     .collect();
                 serde_json::json!({
                     "scopeIdHex": hex::encode(scope_policy.scope.scope_id()),
@@ -771,6 +724,7 @@ fn service_offer_json_v1(offer: &ServiceOfferV1) -> serde_json::Value {
     } else {
         String::new()
     };
+    let arc_verification_key_fingerprint_hex = arc_verification_key_fingerprint_hex_v1(offer);
     let price = match &offer.price {
         PriceV1::Free => serde_json::json!({ "kind": "free" }),
         PriceV1::MilliSatoshi(amount) => serde_json::json!({
@@ -795,11 +749,28 @@ fn service_offer_json_v1(offer: &ServiceOfferV1) -> serde_json::Value {
         "issuerIdHex": hex::encode(offer.issuer_id),
         "keyIdHex": hex::encode(&offer.key_id),
         "batVerificationKeyFingerprintHex": bat_verification_key_fingerprint_hex,
+        "arcVerificationKeyFingerprintHex": arc_verification_key_fingerprint_hex,
         "endpoint": offer.endpoint,
         "credentialCount": offer.credential_count,
         "credentialPresentationLimit": offer.credential_presentation_limit,
         "privacyLeakageBits": offer.privacy_leakage.bits(),
     })
+}
+
+fn arc_verification_key_fingerprint_hex_v1(offer: &ServiceOfferV1) -> String {
+    if offer.authorization != AuthScheme::ArcV1Experimental {
+        return String::new();
+    }
+    offer
+        .credential_binding
+        .as_ref()
+        .and_then(|binding| {
+            let key: [u8; ARC_PUBLIC_KEY_LEN_V1] =
+                binding.claims.verification_key.as_slice().try_into().ok()?;
+            arc_public_key_fingerprint_v1(&key).ok()
+        })
+        .map(hex::encode)
+        .unwrap_or_default()
 }
 
 fn limits_json_v1(limits: &EntitlementLimitsV1) -> serde_json::Value {
@@ -880,6 +851,10 @@ const fn workload_label(value: WorkloadId) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
+    use pir_service_protocol::{
+        CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1, PrivacyLeakageV1,
+    };
 
     #[test]
     fn grant_json_value_matches_the_plain_typescript_object_contract() {
@@ -911,6 +886,81 @@ mod tests {
                 .get("hasHarmonyAttach")
                 .and_then(|value| value.as_bool()),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn service_offer_json_exposes_only_the_arc_raw_key_fingerprint_for_arc() {
+        let mut rng = rand_core::OsRng;
+        let (_, public_key) = arc::setup_server(&mut rng);
+        let public_key_bytes = public_key.to_bytes();
+        let expected_fingerprint =
+            hex::encode(arc_public_key_fingerprint_v1(&public_key_bytes).unwrap());
+        let credential_key_id = vec![0x41; 16];
+        let binding = CredentialKeyBindingV1::sign(
+            CredentialKeyBindingClaimsV1 {
+                provider_id: [0x11; 32],
+                scope_id: [0x22; 32],
+                offer_id: 7,
+                scheme: AuthScheme::ArcV1Experimental,
+                keyset_epoch: 1,
+                entitlement_profile: 3,
+                unit: CredentialUnitV1::Auth,
+                amount: 1,
+                presentation_limit: 2,
+                not_before: 100,
+                not_after: 1_000,
+                credential_key_id: credential_key_id.clone(),
+                verification_key: public_key_bytes.to_vec(),
+            },
+            &SigningKey::from_bytes(&[0x33; 32]),
+        )
+        .unwrap();
+        let mut offer = ServiceOfferV1 {
+            offer_id: 7,
+            acquisition: AcquisitionMethod::Bolt11V1,
+            free_mode: FreeModeV1::NotFree,
+            free_quota: 0,
+            free_window_seconds: 0,
+            free_pow_difficulty_bits: 0,
+            priority_class: 1,
+            authorization: AuthScheme::ArcV1Experimental,
+            verification: VerificationMode::ProviderLocal,
+            deployment_status: DeploymentStatus::Experimental,
+            price: PriceV1::MilliSatoshi(1_000),
+            issuer_id: binding.issuer_id,
+            key_id: credential_key_id,
+            credential_binding: Some(binding),
+            cashu_mint_manifest: None,
+            endpoint: "https://issuer.invalid".into(),
+            invoice_expiry_seconds: 60,
+            claim_window_seconds: 60,
+            minimum_credential_validity_seconds: 60,
+            retired_policy_grace_seconds: 300,
+            credential_count: 1,
+            credential_presentation_limit: 2,
+            privacy_leakage: PrivacyLeakageV1::NONE,
+        };
+
+        let arc_json = service_offer_json_v1(&offer);
+        let arc_fingerprint = arc_json["arcVerificationKeyFingerprintHex"]
+            .as_str()
+            .unwrap();
+        assert_eq!(arc_fingerprint, expected_fingerprint);
+        assert_eq!(arc_fingerprint.len(), 64);
+        assert!(arc_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert_eq!(
+            arc_json["batVerificationKeyFingerprintHex"].as_str(),
+            Some("")
+        );
+
+        offer.authorization = AuthScheme::Bolt11DirectReceiptV1;
+        let non_arc_json = service_offer_json_v1(&offer);
+        assert_eq!(
+            non_arc_json["arcVerificationKeyFingerprintHex"].as_str(),
+            Some("")
         );
     }
 }

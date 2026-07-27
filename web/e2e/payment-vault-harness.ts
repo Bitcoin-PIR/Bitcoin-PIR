@@ -43,6 +43,7 @@ const offer: ServiceOfferViewV1 = {
   issuerIdHex: ISSUER_ID,
   keyIdHex: '55'.repeat(16),
   batVerificationKeyFingerprintHex: '',
+  arcVerificationKeyFingerprintHex: '',
   endpoint: location.origin,
   credentialCount: 1,
   credentialPresentationLimit: 1,

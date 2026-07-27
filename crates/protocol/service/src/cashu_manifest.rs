@@ -171,7 +171,7 @@ impl CashuKeysetBindingV1 {
                 reason: "V1 integration accepts only canonical lowercase NUT-02 keyset ID V2",
             });
         }
-        validate_cashu_unit(&self.unit)?;
+        validate_cashu_unit_v1(&self.unit)?;
         if self.final_expiry == Some(0) {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "CashuKeysetBindingV1.final_expiry",
@@ -396,7 +396,7 @@ impl StandardCashuMintManifestV1 {
                 reason: "must be a canonical HTTPS mint base URL",
             });
         }
-        validate_cashu_unit(&self.unit)?;
+        validate_cashu_unit_v1(&self.unit)?;
         self.required_nuts.validate()?;
         if self.accepted_input_keysets.is_empty()
             || self.accepted_input_keysets.len() > MAX_CASHU_INPUT_KEYSETS
@@ -445,7 +445,7 @@ pub fn derive_cashu_keyset_id_v2(
     input_fee_ppk: u32,
     final_expiry: Option<u64>,
 ) -> Result<String, ServiceProtocolError> {
-    validate_cashu_unit(unit)?;
+    validate_cashu_unit_v1(unit)?;
     if keys.is_empty() || keys.len() > MAX_CASHU_DENOMINATION_KEYS {
         return Err(ServiceProtocolError::TooManyItems {
             field: "CashuKeysetBindingV1.keys",
@@ -497,7 +497,9 @@ pub fn derive_cashu_keyset_id_v2(
     Ok(id)
 }
 
-fn validate_cashu_unit(unit: &str) -> Result<(), ServiceProtocolError> {
+/// Validate the canonical V1 Cashu unit alphabet shared by signed policy,
+/// runtime admission, custody, and offline export tooling.
+pub fn validate_cashu_unit_v1(unit: &str) -> Result<(), ServiceProtocolError> {
     if unit.is_empty()
         || unit.len() > MAX_PRICE_UNIT_LEN
         || !unit.is_ascii()
@@ -646,5 +648,16 @@ mod tests {
                 7,
             )
             .is_err());
+    }
+
+    #[test]
+    fn canonical_cashu_unit_validator_accepts_digits_and_underscores() {
+        for accepted in ["sat", "usd1", "usd_1", "a0_b1", "_sat"] {
+            validate_cashu_unit_v1(accepted).unwrap();
+        }
+        for rejected in ["", "USD", "usd-1", "usd 1"] {
+            assert!(validate_cashu_unit_v1(rejected).is_err());
+        }
+        assert!(validate_cashu_unit_v1(&"a".repeat(MAX_PRICE_UNIT_LEN + 1)).is_err());
     }
 }

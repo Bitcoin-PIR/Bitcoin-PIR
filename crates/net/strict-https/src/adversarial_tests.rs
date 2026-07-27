@@ -1,7 +1,6 @@
-//! Deterministic malformed HTTP/1.1 response corpus for the payment authority
-//! client. This module is compiled only by the `unified_server` unit-test
-//! target and can access the private parser without widening its production
-//! API.
+//! Deterministic malformed HTTP/1.1 response corpus for the strict payment
+//! authority client. It can access the private parser without widening the
+//! production API.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

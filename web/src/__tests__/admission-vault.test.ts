@@ -125,6 +125,59 @@ describe('provider-scoped admission vault validation', () => {
     })).resolves.toMatchObject({ payload: new Uint8Array([7]) });
   });
 
+  it('zeroizes validation and ARC transition scratch buffers', async () => {
+    const vault = await AdmissionCredentialVaultV1.open();
+    opened.push(vault);
+    const binding = {
+      providerIdHex: provider,
+      policyDigestHex: policyDigest,
+      scopeIdHex: scope,
+      offerId: 7,
+      scheme: 'cashu-bat' as const,
+    };
+    await vault.putCapability({ ...binding, payload: new Uint8Array([7, 8, 9]) });
+    let validationCopy: Uint8Array | undefined;
+    await expect(vault.takeSingleUseCapability(binding, (candidate) => {
+      validationCopy = candidate;
+      throw new Error('reject fixture');
+    })).rejects.toThrow(/reject fixture/);
+    expect(validationCopy).toEqual(new Uint8Array(3));
+    const retired = await vault.takeSingleUseCapability(binding);
+    expect(retired?.payload).toEqual(new Uint8Array([7, 8, 9]));
+    retired?.payload.fill(0);
+
+    const arcBinding = { ...binding, offerId: 8, scheme: 'arc-experimental' as const };
+    await vault.putCapability({ ...arcBinding, payload: new Uint8Array([1, 2, 3]) });
+    let serializedState: Uint8Array | undefined;
+    const successor = new Uint8Array([4, 5, 6]);
+    const presentation = new Uint8Array([7, 8, 9]);
+    const released = await vault.advanceArcCredential(arcBinding, (state) => {
+      serializedState = state;
+      return {
+        nextState: successor,
+        remaining: 1,
+        releaseAfterPersisted: () => presentation,
+        discard: () => undefined,
+      };
+    });
+    expect(serializedState).toEqual(new Uint8Array(3));
+    expect(successor).toEqual(new Uint8Array(3));
+    expect(presentation).toEqual(new Uint8Array(3));
+    expect(released).toEqual(new Uint8Array([7, 8, 9]));
+    released?.fill(0);
+
+    const invalidSuccessor = new Uint8Array([9, 9, 9]);
+    let discardedInvalidTransition = false;
+    await expect(vault.advanceArcCredential(arcBinding, () => ({
+      nextState: invalidSuccessor,
+      remaining: -1,
+      releaseAfterPersisted: () => new Uint8Array([1]),
+      discard: () => { discardedInvalidTransition = true; },
+    }))).rejects.toThrow(/invalid state transition/);
+    expect(discardedInvalidTransition).toBe(true);
+    expect(invalidSuccessor).toEqual(new Uint8Array(3));
+  });
+
   it('lists only aggregate non-secret retained bindings scoped by provider', async () => {
     const vault = await AdmissionCredentialVaultV1.open();
     opened.push(vault);

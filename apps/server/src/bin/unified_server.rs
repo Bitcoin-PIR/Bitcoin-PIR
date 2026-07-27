@@ -11,9 +11,6 @@
 //!     [--checkpoint /path/to/checkpoint <height>]...
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
-#[path = "../service_http.rs"]
-mod service_http;
-
 use pir_runtime_core::free_admission::{
     FreeAdmissionCommitterV1, FreeIpSubjectKeyV1, FreeRateLimitStateV1,
 };
@@ -71,19 +68,21 @@ use pir_service_protocol::{
     ServicePolicyRequestV1, ServicePolicyResponseV1, ServicePolicyV1, ServiceProtocolError,
     TrustedCatalogResolutionV1, VerifiedServiceOfferV1, WorkloadId as ServiceWorkloadIdV1,
 };
-use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
+use pir_service_store::{
+    CashuCustodyInventoryV1, ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 use pir_cashu_client::{
-    CashuMintRouteV1, CashuMintTransportFailureKindV1, CashuMintTransportFailureV1,
-    CashuMintTransportV1, ChaCha20Poly1305RecoveryCipherV1, StandardCashuAdmissionCommitterV1,
-    StandardCashuClientV1,
+    CashuCustodyExposureLimitsV1, CashuMintRouteV1, CashuMintTransportFailureKindV1,
+    CashuMintTransportFailureV1, CashuMintTransportV1, ChaCha20Poly1305CustodyCipherV1,
+    ChaCha20Poly1305RecoveryCipherV1, StandardCashuAdmissionCommitterV1, StandardCashuClientV1,
 };
 use pir_provider_clearing_client::{
     ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1, SharedIssuerRedeemEnvelopeV1,
     SharedIssuerRedeemTransportV1, SharedIssuerTransportErrorV1,
 };
-use service_http::{HttpsPostErrorV1, StrictHttpsClientV1};
+use pir_strict_https::{HttpsPostErrorV1, StrictHttpsClientV1};
 
 /// Detailed per-connection/per-query logging is a privacy-dangerous local
 /// diagnostic mode. Production/default logging must never depend on request
@@ -238,9 +237,19 @@ struct CliArgs {
     /// Experimental provider-local ARC private keys, each encoded as
     /// `<hex-key-id>=<raw-128-byte-key-path>`.
     service_arc_key_specs: Vec<String>,
+    /// Explicit acknowledgement required before any current/retained V1 policy
+    /// may advertise experimental ARC or any provider-local ARC key is loaded.
+    allow_experimental_arc: bool,
     /// Standard Cashu merchant recovery keys as `<epoch>=<raw-32-byte-path>`.
     service_cashu_recovery_key_specs: Vec<String>,
     service_cashu_recovery_active_epoch: Option<u64>,
+    /// Separately keyed standard Cashu note-custody encryption. Recovery and
+    /// custody key material are intentionally not interchangeable.
+    service_cashu_custody_key_specs: Vec<String>,
+    service_cashu_custody_active_epoch: Option<u64>,
+    /// Finite exposure caps as
+    /// `<mint-id-hex>:<unit>:<max-unsettled-value>:<max-unsettled-notes>`.
+    service_cashu_exposure_limit_specs: Vec<String>,
     /// One shared issuer clearing relationship for this provider runtime.
     service_shared_authorization_path: Option<PathBuf>,
     service_shared_issuer_approval_path: Option<PathBuf>,
@@ -421,8 +430,12 @@ fn parse_args() -> CliArgs {
     let mut service_trust_direct_peer_ip = false;
     let mut service_bat_key_paths: Vec<PathBuf> = Vec::new();
     let mut service_arc_key_specs: Vec<String> = Vec::new();
+    let mut allow_experimental_arc = false;
     let mut service_cashu_recovery_key_specs: Vec<String> = Vec::new();
     let mut service_cashu_recovery_active_epoch: Option<u64> = None;
+    let mut service_cashu_custody_key_specs: Vec<String> = Vec::new();
+    let mut service_cashu_custody_active_epoch: Option<u64> = None;
+    let mut service_cashu_exposure_limit_specs: Vec<String> = Vec::new();
     let mut service_shared_authorization_path: Option<PathBuf> = None;
     let mut service_shared_issuer_approval_path: Option<PathBuf> = None;
     let mut service_shared_operator_key_hex: Option<String> = None;
@@ -615,6 +628,9 @@ fn parse_args() -> CliArgs {
                 }
                 i += 1;
             }
+            "--allow-experimental-arc" => {
+                allow_experimental_arc = true;
+            }
             "--service-cashu-recovery-key" => {
                 if let Some(spec) = args.get(i + 1) {
                     service_cashu_recovery_key_specs.push(spec.clone());
@@ -624,6 +640,23 @@ fn parse_args() -> CliArgs {
             "--service-cashu-recovery-active-epoch" => {
                 service_cashu_recovery_active_epoch =
                     args.get(i + 1).and_then(|value| value.parse().ok());
+                i += 1;
+            }
+            "--service-cashu-custody-key" => {
+                if let Some(spec) = args.get(i + 1) {
+                    service_cashu_custody_key_specs.push(spec.clone());
+                }
+                i += 1;
+            }
+            "--service-cashu-custody-active-epoch" => {
+                service_cashu_custody_active_epoch =
+                    args.get(i + 1).and_then(|value| value.parse().ok());
+                i += 1;
+            }
+            "--service-cashu-exposure-limit" => {
+                if let Some(spec) = args.get(i + 1) {
+                    service_cashu_exposure_limit_specs.push(spec.clone());
+                }
                 i += 1;
             }
             "--service-shared-authorization" => {
@@ -882,8 +915,12 @@ fn parse_args() -> CliArgs {
         service_trust_direct_peer_ip,
         service_bat_key_paths,
         service_arc_key_specs,
+        allow_experimental_arc,
         service_cashu_recovery_key_specs,
         service_cashu_recovery_active_epoch,
+        service_cashu_custody_key_specs,
+        service_cashu_custody_active_epoch,
+        service_cashu_exposure_limit_specs,
         service_shared_authorization_path,
         service_shared_issuer_approval_path,
         service_shared_operator_key_hex,
@@ -3638,6 +3675,8 @@ struct StrictServiceAdmissionRuntimeV1 {
     bat_keyring: Option<K256CashuMintKeyringV1>,
     experimental_arc_keyring: Option<ArcSecretKeyringV1>,
     cashu_recovery_cipher: Option<ChaCha20Poly1305RecoveryCipherV1>,
+    cashu_custody_cipher: Option<ChaCha20Poly1305CustodyCipherV1>,
+    cashu_exposure_limits: BTreeMap<([u8; 32], String), CashuCustodyExposureLimitsV1>,
     shared_issuer: Option<SharedIssuerRuntimeConfigV1>,
     http_transport: ProviderAdmissionHttpsTransportV1,
     harmony_attach_registry: Arc<HarmonyAttachRegistryV1>,
@@ -3711,20 +3750,22 @@ impl CashuMintTransportV1 for ProviderAdmissionHttpsTransportV1 {
                 request_json,
                 max_response_bytes,
             )
-            .map_err(|error| CashuMintTransportFailureV1 {
-                kind: match error {
-                    HttpsPostErrorV1::DefinitelyNotSent => CashuMintTransportFailureKindV1::Network,
-                    HttpsPostErrorV1::OutcomeUnknown => CashuMintTransportFailureKindV1::Timeout,
-                    HttpsPostErrorV1::HttpStatus(404) => CashuMintTransportFailureKindV1::NotFound,
-                    HttpsPostErrorV1::HttpStatus(_) => CashuMintTransportFailureKindV1::HttpError,
-                    HttpsPostErrorV1::InvalidResponse => {
-                        CashuMintTransportFailureKindV1::InvalidContentType
-                    }
-                },
-                http_status: match error {
-                    HttpsPostErrorV1::HttpStatus(status) => Some(status),
-                    _ => None,
-                },
+            .map_err(|error| match error {
+                HttpsPostErrorV1::DefinitelyNotSent => CashuMintTransportFailureV1::ambiguous(
+                    CashuMintTransportFailureKindV1::Network,
+                    None,
+                ),
+                HttpsPostErrorV1::OutcomeUnknown => CashuMintTransportFailureV1::ambiguous(
+                    CashuMintTransportFailureKindV1::Timeout,
+                    None,
+                ),
+                HttpsPostErrorV1::HttpStatus { status, body } => {
+                    CashuMintTransportFailureV1::from_http_status(status, body.as_slice())
+                }
+                HttpsPostErrorV1::InvalidResponse => CashuMintTransportFailureV1::ambiguous(
+                    CashuMintTransportFailureKindV1::InvalidContentType,
+                    None,
+                ),
             })
     }
 }
@@ -3756,13 +3797,15 @@ impl SharedIssuerRedeemTransportV1 for ProviderAdmissionHttpsTransportV1 {
                 HttpsPostErrorV1::DefinitelyNotSent => SharedIssuerTransportErrorV1::NotSent {
                     retry_after_ms: 1_000,
                 },
-                HttpsPostErrorV1::HttpStatus(400 | 409 | 410 | 422) => {
-                    SharedIssuerTransportErrorV1::InvalidOrSpent
-                }
-                HttpsPostErrorV1::HttpStatus(401 | 403 | 404) => {
-                    SharedIssuerTransportErrorV1::ScopeUnavailable
-                }
-                HttpsPostErrorV1::OutcomeUnknown | HttpsPostErrorV1::HttpStatus(_) => {
+                HttpsPostErrorV1::HttpStatus {
+                    status: 400 | 409 | 410 | 422,
+                    ..
+                } => SharedIssuerTransportErrorV1::InvalidOrSpent,
+                HttpsPostErrorV1::HttpStatus {
+                    status: 401 | 403 | 404,
+                    ..
+                } => SharedIssuerTransportErrorV1::ScopeUnavailable,
+                HttpsPostErrorV1::OutcomeUnknown | HttpsPostErrorV1::HttpStatus { .. } => {
                     SharedIssuerTransportErrorV1::OutcomeUnknown
                 }
                 HttpsPostErrorV1::InvalidResponse => SharedIssuerTransportErrorV1::InvalidResponse,
@@ -3848,7 +3891,11 @@ impl StrictServiceAdmissionRuntimeV1 {
             AdmissionMethodRouteV1::ArcProviderLocalExperimental => {
                 self.experimental_arc_keyring.is_some()
             }
-            AdmissionMethodRouteV1::StandardCashuMintOnline => self.cashu_recovery_cipher.is_some(),
+            AdmissionMethodRouteV1::StandardCashuMintOnline => {
+                self.cashu_recovery_cipher.is_some()
+                    && self.cashu_custody_cipher.is_some()
+                    && !self.cashu_exposure_limits.is_empty()
+            }
             AdmissionMethodRouteV1::FreeAnonymousTicketSharedIssuerOnline
             | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
             | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
@@ -5765,6 +5812,124 @@ fn read_exact_secret_v1<const N: usize>(
     }
 }
 
+type CashuEpochKeysV1 = (u64, Vec<(u64, [u8; 32])>);
+
+fn load_cashu_epoch_keys_v1(
+    active_epoch: Option<u64>,
+    specs: &[String],
+    active_flag: &str,
+    key_flag: &str,
+    key_label: &str,
+) -> Result<Option<CashuEpochKeysV1>, String> {
+    match (active_epoch, specs.is_empty()) {
+        (None, true) => Ok(None),
+        (Some(active_epoch), false) if active_epoch != 0 => {
+            let mut keys: Vec<(u64, [u8; 32])> = Vec::with_capacity(specs.len());
+            let mut epochs = std::collections::BTreeSet::new();
+            for spec in specs {
+                let (epoch, path) = spec
+                    .split_once('=')
+                    .ok_or_else(|| format!("{key_flag} must be <epoch>=<raw-32-byte-path>"))?;
+                let epoch = epoch
+                    .parse::<u64>()
+                    .map_err(|_| format!("{key_flag} epoch must be a non-zero u64"))?;
+                if epoch == 0 || path.is_empty() || !epochs.insert(epoch) {
+                    for (_, key) in &mut keys {
+                        key.zeroize();
+                    }
+                    return Err(format!(
+                        "{key_flag} epochs and paths must be non-empty, non-zero, and unique"
+                    ));
+                }
+                match read_exact_secret_v1::<32>(std::path::Path::new(path), key_label) {
+                    Ok(mut key) => {
+                        if keys.iter().any(|(_, existing)| existing == &key) {
+                            key.zeroize();
+                            for (_, loaded_key) in &mut keys {
+                                loaded_key.zeroize();
+                            }
+                            return Err(format!(
+                                "{key_flag} must not reuse the same key bytes across epochs"
+                            ));
+                        }
+                        keys.push((epoch, key));
+                    }
+                    Err(error) => {
+                        for (_, key) in &mut keys {
+                            key.zeroize();
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            if !epochs.contains(&active_epoch) {
+                for (_, key) in &mut keys {
+                    key.zeroize();
+                }
+                return Err(format!(
+                    "{active_flag} must select an epoch loaded by {key_flag}"
+                ));
+            }
+            Ok(Some((active_epoch, keys)))
+        }
+        _ => Err(format!(
+            "standard Cashu requires {active_flag} together with at least one {key_flag}"
+        )),
+    }
+}
+
+fn zeroize_cashu_epoch_keys_v1(material: &mut Option<CashuEpochKeysV1>) {
+    if let Some((_, keys)) = material {
+        for (_, key) in keys {
+            key.zeroize();
+        }
+    }
+}
+
+fn parse_cashu_exposure_limits_v1(
+    specs: &[String],
+) -> Result<BTreeMap<([u8; 32], String), CashuCustodyExposureLimitsV1>, String> {
+    let mut limits = BTreeMap::new();
+    for spec in specs {
+        let fields = spec.split(':').collect::<Vec<_>>();
+        if fields.len() != 4 {
+            return Err(
+                "--service-cashu-exposure-limit must be <mint-id-hex>:<unit>:<max-unsettled-value>:<max-unsettled-notes>"
+                    .to_owned(),
+            );
+        }
+        let mint_id =
+            decode_fixed_hex_v1::<32>(fields[0], "--service-cashu-exposure-limit mint ID")?;
+        if mint_id.iter().all(|byte| *byte == 0) {
+            return Err("--service-cashu-exposure-limit mint ID must not be all zero".to_owned());
+        }
+        let unit = fields[1];
+        if unit.is_empty()
+            || unit.len() > pir_service_protocol::MAX_PRICE_UNIT_LEN
+            || !unit.is_ascii()
+            || !unit
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(
+                "--service-cashu-exposure-limit unit must be bounded lowercase ASCII".to_owned(),
+            );
+        }
+        let max_value = fields[2]
+            .parse::<u64>()
+            .map_err(|_| "Cashu max-unsettled-value must be a finite non-zero u64".to_owned())?;
+        let max_notes = fields[3]
+            .parse::<u64>()
+            .map_err(|_| "Cashu max-unsettled-notes must be a finite non-zero u64".to_owned())?;
+        let value = CashuCustodyExposureLimitsV1::new(max_value, max_notes)
+            .map_err(|_| "Cashu exposure limits must be finite and non-zero".to_owned())?;
+        if limits.insert((mint_id, unit.to_owned()), value).is_some() {
+            return Err("duplicate standard Cashu exposure limit for one mint/unit".to_owned());
+        }
+    }
+    Ok(limits)
+}
+
 #[cfg(unix)]
 fn read_exact_secret_unix_v1<const N: usize>(
     path: &std::path::Path,
@@ -6024,6 +6189,120 @@ mod secret_loader_tests_v1 {
         assert!(read_exact_secret_v1::<32>(&long, "test key").is_err());
     }
 
+    #[test]
+    fn cashu_epoch_key_loader_requires_exact_paired_unique_configuration() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.key");
+        let second = dir.path().join("second.key");
+        write_secret(&first, &[0x31; 32], 0o600);
+        write_secret(&second, &[0x32; 32], 0o600);
+        let specs = vec![
+            format!("1={}", first.display()),
+            format!("2={}", second.display()),
+        ];
+        let mut loaded =
+            load_cashu_epoch_keys_v1(Some(2), &specs, "--active", "--key", "test Cashu key")
+                .unwrap();
+        assert_eq!(loaded.as_ref().unwrap().0, 2);
+        assert_eq!(loaded.as_ref().unwrap().1.len(), 2);
+        zeroize_cashu_epoch_keys_v1(&mut loaded);
+
+        assert!(
+            load_cashu_epoch_keys_v1(None, &specs, "--active", "--key", "test Cashu key",).is_err()
+        );
+        assert!(
+            load_cashu_epoch_keys_v1(Some(3), &specs, "--active", "--key", "test Cashu key",)
+                .is_err()
+        );
+        let duplicate = vec![
+            format!("1={}", first.display()),
+            format!("1={}", second.display()),
+        ];
+        assert!(load_cashu_epoch_keys_v1(
+            Some(1),
+            &duplicate,
+            "--active",
+            "--key",
+            "test Cashu key",
+        )
+        .is_err());
+
+        write_secret(&second, &[0x31; 32], 0o600);
+        let reused_bytes = vec![
+            format!("1={}", first.display()),
+            format!("2={}", second.display()),
+        ];
+        assert!(load_cashu_epoch_keys_v1(
+            Some(2),
+            &reused_bytes,
+            "--active",
+            "--key",
+            "test Cashu key",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cashu_exposure_limit_parser_rejects_unbounded_and_duplicate_entries() {
+        let mint = hex::encode([0x42; 32]);
+        let parsed = parse_cashu_exposure_limits_v1(&[format!("{mint}:sat:1000:64")])
+            .expect("finite Cashu cap");
+        let cap = parsed.get(&([0x42; 32], "sat".to_owned())).unwrap();
+        assert_eq!(cap.max_unsettled_value(), 1_000);
+        assert_eq!(cap.max_unsettled_notes(), 64);
+
+        assert!(parse_cashu_exposure_limits_v1(&[format!("{mint}:sat:0:64")]).is_err());
+        assert!(parse_cashu_exposure_limits_v1(&[format!("{mint}:sat:{}:64", u64::MAX)]).is_err());
+        assert!(parse_cashu_exposure_limits_v1(&[
+            format!("{mint}:sat:1000:64"),
+            format!("{mint}:sat:2000:128"),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn cashu_startup_inventory_must_fit_the_exact_finite_cap() {
+        let limits = CashuCustodyExposureLimitsV1::new(100, 10).unwrap();
+        let mut inventory = CashuCustodyInventoryV1 {
+            pending_intent_value: 20,
+            pending_intent_notes: 2,
+            available_lot_count: 1,
+            available_value: 30,
+            available_notes: 3,
+            reserved_lot_count: 1,
+            reserved_value: 40,
+            reserved_notes: 4,
+            acknowledged_lot_count: 1,
+            acknowledged_value: 10,
+            acknowledged_notes: 1,
+            spent_confirmed_lot_count: 1,
+            spent_confirmed_value: u64::MAX,
+            spent_confirmed_notes: u64::MAX,
+            reserved_export_count: 1,
+            materialized_export_count: 0,
+            acknowledged_export_count: 1,
+            spent_confirmed_export_count: 1,
+        };
+        assert_eq!(
+            cashu_inventory_within_limits_v1(&inventory, limits),
+            Ok(true),
+            "delivery-acknowledged custody remains exposure; only spent-confirmed custody is excluded"
+        );
+        inventory.acknowledged_value += 1;
+        assert_eq!(
+            cashu_inventory_within_limits_v1(&inventory, limits),
+            Ok(false)
+        );
+        inventory.acknowledged_value -= 1;
+        inventory.acknowledged_notes += 1;
+        assert_eq!(
+            cashu_inventory_within_limits_v1(&inventory, limits),
+            Ok(false)
+        );
+        inventory.acknowledged_value = u64::MAX;
+        assert!(cashu_inventory_within_limits_v1(&inventory, limits).is_err());
+    }
+
     fn private_directory(path: &std::path::Path) {
         fs::create_dir_all(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -6087,6 +6366,151 @@ mod secret_loader_tests_v1 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ExperimentalArcPolicyUsageV1 {
+    any: bool,
+    provider_local: bool,
+}
+
+impl ExperimentalArcPolicyUsageV1 {
+    fn include(&mut self, other: Self) {
+        self.any |= other.any;
+        self.provider_local |= other.provider_local;
+    }
+}
+
+fn experimental_arc_policy_usage_v1(policy: &ServicePolicyV1) -> ExperimentalArcPolicyUsageV1 {
+    let mut usage = ExperimentalArcPolicyUsageV1::default();
+    for scope in &policy.scopes {
+        for offer in &scope.offers {
+            if offer.authorization == pir_service_protocol::AuthScheme::ArcV1Experimental {
+                usage.any = true;
+                usage.provider_local |=
+                    offer.verification == pir_service_protocol::VerificationMode::ProviderLocal;
+            }
+        }
+    }
+    usage
+}
+
+fn inspect_experimental_arc_policy_v1(
+    canonical_signed_policy: &[u8],
+    label: &str,
+) -> Result<ExperimentalArcPolicyUsageV1, String> {
+    let policy = ServicePolicyV1::decode(canonical_signed_policy)
+        .map_err(|error| format!("{label} is not a canonical V1 service policy: {error}"))?;
+    if policy
+        .encode()
+        .map_err(|error| format!("failed to re-encode {label}: {error}"))?
+        .as_slice()
+        != canonical_signed_policy
+    {
+        return Err(format!("{label} is not canonically encoded"));
+    }
+    Ok(experimental_arc_policy_usage_v1(&policy))
+}
+
+fn validate_experimental_arc_opt_in_v1(
+    allow_experimental_arc: bool,
+    policy_usage: ExperimentalArcPolicyUsageV1,
+    provider_local_keys_configured: bool,
+) -> Result<(), String> {
+    let configured = policy_usage.any || provider_local_keys_configured;
+    if !allow_experimental_arc && configured {
+        return Err(
+            "experimental ARC policy/key configuration requires explicit --allow-experimental-arc; ARC is unaudited and production-disabled"
+                .to_owned(),
+        );
+    }
+    if allow_experimental_arc && !configured {
+        return Err(
+            "--allow-experimental-arc was supplied but no current/retained ARC policy or provider-local ARC key is configured"
+                .to_owned(),
+        );
+    }
+    if provider_local_keys_configured && !policy_usage.provider_local {
+        return Err(
+            "--service-arc-key was supplied but no current/retained provider-local ARC policy uses it"
+                .to_owned(),
+        );
+    }
+    if policy_usage.provider_local && !provider_local_keys_configured {
+        return Err(
+            "current/retained provider-local ARC policy requires at least one --service-arc-key"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_legacy_experimental_arc_cli_v1(
+    allow_experimental_arc: bool,
+    require_arc: bool,
+    arc_key_configured: bool,
+    service_admission_v1_enabled: bool,
+) -> Result<(), String> {
+    let legacy_arc_configured = require_arc || arc_key_configured;
+    if legacy_arc_configured && !allow_experimental_arc {
+        return Err(
+            "legacy experimental ARC configuration requires explicit --allow-experimental-arc; ARC is unaudited and production-disabled"
+                .to_owned(),
+        );
+    }
+    if arc_key_configured && !require_arc {
+        return Err(
+            "--arc-key requires --require-arc; refusing to ignore ARC key material".to_owned(),
+        );
+    }
+    if allow_experimental_arc && !legacy_arc_configured && !service_admission_v1_enabled {
+        return Err(
+            "--allow-experimental-arc was supplied but neither legacy ARC nor service admission V1 is configured"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod experimental_arc_opt_in_tests_v1 {
+    use super::{
+        validate_experimental_arc_opt_in_v1, validate_legacy_experimental_arc_cli_v1,
+        ExperimentalArcPolicyUsageV1,
+    };
+
+    #[test]
+    fn acknowledgement_and_arc_configuration_must_be_exactly_paired() {
+        let none = ExperimentalArcPolicyUsageV1::default();
+        let shared = ExperimentalArcPolicyUsageV1 {
+            any: true,
+            provider_local: false,
+        };
+        let provider_local = ExperimentalArcPolicyUsageV1 {
+            any: true,
+            provider_local: true,
+        };
+
+        assert!(validate_experimental_arc_opt_in_v1(false, none, false).is_ok());
+        assert!(validate_experimental_arc_opt_in_v1(true, none, false).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(false, shared, false).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(false, none, true).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(true, none, true).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(true, shared, false).is_ok());
+        assert!(validate_experimental_arc_opt_in_v1(true, shared, true).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(true, provider_local, false).is_err());
+        assert!(validate_experimental_arc_opt_in_v1(true, provider_local, true).is_ok());
+    }
+
+    #[test]
+    fn legacy_arc_requires_the_same_explicit_acknowledgement() {
+        assert!(validate_legacy_experimental_arc_cli_v1(false, false, false, false).is_ok());
+        assert!(validate_legacy_experimental_arc_cli_v1(false, true, false, false).is_err());
+        assert!(validate_legacy_experimental_arc_cli_v1(true, true, false, false).is_ok());
+        assert!(validate_legacy_experimental_arc_cli_v1(true, false, true, false).is_err());
+        assert!(validate_legacy_experimental_arc_cli_v1(true, false, false, false).is_err());
+        assert!(validate_legacy_experimental_arc_cli_v1(true, false, false, true).is_ok());
+    }
+}
+
 fn load_strict_service_admission_v1(
     args: &CliArgs,
     now_unix: u64,
@@ -6103,6 +6527,9 @@ fn load_strict_service_admission_v1(
         || !args.service_arc_key_specs.is_empty()
         || !args.service_cashu_recovery_key_specs.is_empty()
         || args.service_cashu_recovery_active_epoch.is_some()
+        || !args.service_cashu_custody_key_specs.is_empty()
+        || args.service_cashu_custody_active_epoch.is_some()
+        || !args.service_cashu_exposure_limit_specs.is_empty()
         || args.service_shared_authorization_path.is_some()
         || args.service_shared_issuer_approval_path.is_some()
         || args.service_shared_operator_key_hex.is_some()
@@ -6147,6 +6574,36 @@ fn load_strict_service_admission_v1(
     )?;
     let verifying_key = VerifyingKey::from_bytes(&verifying_key_bytes)
         .map_err(|_| "--service-policy-key-hex is not a valid Ed25519 public key".to_owned())?;
+    let signed_policy = read_regular_file_bounded_v1(
+        policy_path,
+        SERVICE_CONFIG_FILE_LIMIT_V1,
+        "signed service policy",
+    )?;
+    let mut experimental_arc_usage =
+        inspect_experimental_arc_policy_v1(&signed_policy, "signed service policy")?;
+    let mut retained_policy_inputs = Vec::with_capacity(args.service_retained_policy_paths.len());
+    for retained_path in &args.service_retained_policy_paths {
+        let retained_bytes = read_regular_file_bounded_v1(
+            retained_path,
+            SERVICE_CONFIG_FILE_LIMIT_V1,
+            "retained signed service policy",
+        )?;
+        experimental_arc_usage.include(inspect_experimental_arc_policy_v1(
+            &retained_bytes,
+            &format!("retained signed service policy {}", retained_path.display()),
+        )?);
+        retained_policy_inputs.push((retained_path.clone(), retained_bytes));
+    }
+    validate_experimental_arc_opt_in_v1(
+        args.allow_experimental_arc,
+        experimental_arc_usage,
+        !args.service_arc_key_specs.is_empty(),
+    )?;
+    if experimental_arc_usage.any {
+        eprintln!(
+            "!!! WARNING: EXPERIMENTAL ARC ENABLED FOR THIS PIR SERVER; THE PINNED DRAFT-01 IMPLEMENTATION IS UNAUDITED AND MUST NOT BE USED IN PRODUCTION !!!"
+        );
+    }
     let provider_store_path = args
         .service_store_path
         .as_deref()
@@ -6178,7 +6635,7 @@ fn load_strict_service_admission_v1(
         .operational_inventory()
         .map_err(|error| format!("failed to read provider store operational inventory: {error}"))?;
     println!(
-        "  Provider store startup check: elapsed_ms={} store_generation={} spend_commit_seq={} namespace_rows={} spent_capability_rows={} free_rate_limit_bucket_rows={} cashu_swap_intent_rows={}",
+        "  Provider store startup check: elapsed_ms={} store_generation={} spend_commit_seq={} namespace_rows={} spent_capability_rows={} free_rate_limit_bucket_rows={} cashu_swap_intent_rows={} cashu_custody_lot_rows={} cashu_custody_note_rows={} cashu_custody_export_batch_rows={}",
         store_startup_check_started.elapsed().as_millis(),
         store_inventory.observed_store_generation,
         store_inventory.observed_spend_commit_seq,
@@ -6186,6 +6643,9 @@ fn load_strict_service_admission_v1(
         store_inventory.spent_capability_rows,
         store_inventory.free_rate_limit_bucket_rows,
         store_inventory.cashu_swap_intent_rows,
+        store_inventory.cashu_custody_lot_rows,
+        store_inventory.cashu_custody_note_rows,
+        store_inventory.cashu_custody_export_batch_rows,
     );
 
     let free_ip_subject_key = match args.service_free_ip_key_path.as_deref() {
@@ -6251,48 +6711,77 @@ fn load_strict_service_admission_v1(
         )
     };
 
-    let cashu_recovery_cipher = match (
+    let mut cashu_recovery_key_material = load_cashu_epoch_keys_v1(
         args.service_cashu_recovery_active_epoch,
-        args.service_cashu_recovery_key_specs.is_empty(),
+        &args.service_cashu_recovery_key_specs,
+        "--service-cashu-recovery-active-epoch",
+        "--service-cashu-recovery-key",
+        "standard Cashu recovery key",
+    )?;
+    let mut cashu_custody_key_material = match load_cashu_epoch_keys_v1(
+        args.service_cashu_custody_active_epoch,
+        &args.service_cashu_custody_key_specs,
+        "--service-cashu-custody-active-epoch",
+        "--service-cashu-custody-key",
+        "standard Cashu custody key",
     ) {
-        (None, true) => None,
-        (Some(active_epoch), false) if active_epoch != 0 => {
-            let mut keys = Vec::with_capacity(args.service_cashu_recovery_key_specs.len());
-            for spec in &args.service_cashu_recovery_key_specs {
-                let (epoch, path) = spec.split_once('=').ok_or_else(|| {
-                    "--service-cashu-recovery-key must be <epoch>=<raw-32-byte-path>"
-                        .to_owned()
-                })?;
-                let epoch = epoch.parse::<u64>().map_err(|_| {
-                    "--service-cashu-recovery-key epoch must be a non-zero u64".to_owned()
-                })?;
-                if epoch == 0 || path.is_empty() {
-                    return Err(
-                        "--service-cashu-recovery-key epoch and path must be non-empty/non-zero"
-                            .to_owned(),
-                    );
-                }
-                keys.push((
-                    epoch,
-                    read_exact_secret_v1::<32>(
-                        std::path::Path::new(path),
-                        "standard Cashu recovery key",
-                    )?,
-                ));
-            }
-            Some(
-                ChaCha20Poly1305RecoveryCipherV1::new(active_epoch, keys).map_err(|error| {
-                    format!("invalid standard Cashu recovery keyring: {error:?}")
-                })?,
-            )
-        }
-        _ => {
-            return Err(
-                "standard Cashu requires both --service-cashu-recovery-active-epoch and at least one --service-cashu-recovery-key"
-                    .to_owned(),
-            )
+        Ok(material) => material,
+        Err(error) => {
+            zeroize_cashu_epoch_keys_v1(&mut cashu_recovery_key_material);
+            return Err(error);
         }
     };
+    if let (Some((_, recovery_keys)), Some((_, custody_keys))) = (
+        cashu_recovery_key_material.as_ref(),
+        cashu_custody_key_material.as_ref(),
+    ) {
+        if recovery_keys.iter().any(|(_, recovery_key)| {
+            custody_keys
+                .iter()
+                .any(|(_, custody_key)| recovery_key == custody_key)
+        }) {
+            zeroize_cashu_epoch_keys_v1(&mut cashu_recovery_key_material);
+            zeroize_cashu_epoch_keys_v1(&mut cashu_custody_key_material);
+            return Err(
+                "standard Cashu recovery and custody keyrings must use distinct key material"
+                    .to_owned(),
+            );
+        }
+    }
+    let cashu_recovery_cipher =
+        match cashu_recovery_key_material.take() {
+            None => None,
+            Some((active_epoch, mut keys)) => {
+                let result = ChaCha20Poly1305RecoveryCipherV1::new(
+                    active_epoch,
+                    keys.iter().map(|(epoch, key)| (*epoch, *key)),
+                );
+                for (_, key) in &mut keys {
+                    key.zeroize();
+                }
+                Some(result.map_err(|error| {
+                    format!("invalid standard Cashu recovery keyring: {error:?}")
+                })?)
+            }
+        };
+    let cashu_custody_cipher =
+        match cashu_custody_key_material.take() {
+            None => None,
+            Some((active_epoch, mut keys)) => {
+                let result = ChaCha20Poly1305CustodyCipherV1::new(
+                    active_epoch,
+                    keys.iter().map(|(epoch, key)| (*epoch, *key)),
+                );
+                for (_, key) in &mut keys {
+                    key.zeroize();
+                }
+                Some(result.map_err(|error| {
+                    format!("invalid standard Cashu custody keyring: {error:?}")
+                })?)
+            }
+        };
+    let cashu_exposure_limits =
+        parse_cashu_exposure_limits_v1(&args.service_cashu_exposure_limit_specs)?;
 
     let shared_field_count = [
         args.service_shared_authorization_path.is_some(),
@@ -6415,11 +6904,6 @@ fn load_strict_service_admission_v1(
             .map_err(|error| format!("issuer clearing approval is not current: {error}"))?;
     }
 
-    let signed_policy = read_regular_file_bounded_v1(
-        policy_path,
-        SERVICE_CONFIG_FILE_LIMIT_V1,
-        "signed service policy",
-    )?;
     let policy = activate_service_policy_v1(
         &signed_policy,
         provider_id,
@@ -6432,12 +6916,7 @@ fn load_strict_service_admission_v1(
     )
     .map_err(|error| format!("failed to activate signed service policy: {error}"))?;
     let mut retained_policies = BTreeMap::new();
-    for retained_path in &args.service_retained_policy_paths {
-        let retained_bytes = read_regular_file_bounded_v1(
-            retained_path,
-            SERVICE_CONFIG_FILE_LIMIT_V1,
-            "retained signed service policy",
-        )?;
+    for (retained_path, retained_bytes) in retained_policy_inputs {
         let retained =
             activate_retained_service_policy_v1(&retained_bytes, &policy).map_err(|error| {
                 format!(
@@ -6469,11 +6948,14 @@ fn load_strict_service_admission_v1(
         bat_keyring,
         experimental_arc_keyring,
         cashu_recovery_cipher,
+        cashu_custody_cipher,
+        cashu_exposure_limits,
         shared_issuer,
         http_transport,
         harmony_attach_registry: Arc::new(HarmonyAttachRegistryV1::default()),
         monotonic_origin: Instant::now(),
     };
+    validate_cashu_runtime_configuration_v1(&runtime)?;
     validate_policy_method_coverage_v1(runtime.policy.policy(), |route| runtime.supports(route))
         .map_err(|error| format!("incomplete service admission configuration: {error}"))?;
     for retained in runtime.retained_policies.values() {
@@ -6607,11 +7089,119 @@ fn load_strict_service_admission_v1(
     Ok(Some(runtime))
 }
 
+fn validate_cashu_runtime_configuration_v1(
+    runtime: &StrictServiceAdmissionRuntimeV1,
+) -> Result<(), String> {
+    let mut required = std::collections::BTreeSet::new();
+    for policy in runtime.all_policies() {
+        for scope in &policy.scopes {
+            for offer in &scope.offers {
+                if let Some(manifest) = offer.cashu_mint_manifest.as_ref() {
+                    required.insert((manifest.mint_id(), manifest.unit.clone()));
+                }
+            }
+        }
+    }
+
+    if required.is_empty() {
+        if runtime.cashu_recovery_cipher.is_some()
+            || runtime.cashu_custody_cipher.is_some()
+            || !runtime.cashu_exposure_limits.is_empty()
+        {
+            return Err(
+                "standard Cashu keys or limits were configured but no current/retained policy advertises standard Cashu"
+                    .to_owned(),
+            );
+        }
+        return Ok(());
+    }
+    if runtime.cashu_recovery_cipher.is_none() || runtime.cashu_custody_cipher.is_none() {
+        return Err(
+            "every standard Cashu offer requires separate recovery and custody keyrings".to_owned(),
+        );
+    }
+    for (mint_id, unit) in &required {
+        let limits = runtime
+            .cashu_exposure_limits
+            .get(&(*mint_id, unit.clone()))
+            .ok_or_else(|| {
+                format!(
+                    "standard Cashu offer for mint {} unit {} has no exact finite exposure limit",
+                    hex::encode(mint_id),
+                    unit,
+                )
+            })?;
+        let inventory = runtime
+            .provider_store
+            .cashu_custody_inventory_v1(mint_id, unit)
+            .map_err(|error| {
+                format!(
+                    "failed to validate standard Cashu exposure for mint {} unit {}: {error}",
+                    hex::encode(mint_id),
+                    unit,
+                )
+            })?;
+        if !cashu_inventory_within_limits_v1(&inventory, *limits)? {
+            return Err(format!(
+                "existing standard Cashu exposure for mint {} unit {} exceeds its configured finite cap",
+                hex::encode(mint_id),
+                unit,
+            ));
+        }
+    }
+    for (mint_id, unit) in runtime.cashu_exposure_limits.keys() {
+        if !required.contains(&(*mint_id, unit.clone())) {
+            return Err(format!(
+                "standard Cashu exposure limit for mint {} unit {} is not referenced by any current/retained policy",
+                hex::encode(mint_id),
+                unit,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn cashu_inventory_within_limits_v1(
+    inventory: &CashuCustodyInventoryV1,
+    limits: CashuCustodyExposureLimitsV1,
+) -> Result<bool, String> {
+    let unsettled_value = inventory
+        .pending_intent_value
+        .checked_add(inventory.available_value)
+        .and_then(|value| value.checked_add(inventory.reserved_value))
+        .and_then(|value| value.checked_add(inventory.acknowledged_value))
+        .ok_or_else(|| {
+            "standard Cashu startup exposure value overflowed; refusing activation".to_owned()
+        })?;
+    let unsettled_notes = inventory
+        .pending_intent_notes
+        .checked_add(inventory.available_notes)
+        .and_then(|value| value.checked_add(inventory.reserved_notes))
+        .and_then(|value| value.checked_add(inventory.acknowledged_notes))
+        .ok_or_else(|| {
+            "standard Cashu startup exposure note count overflowed; refusing activation".to_owned()
+        })?;
+    Ok(unsettled_value <= limits.max_unsettled_value()
+        && unsettled_notes <= limits.max_unsettled_notes())
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
     let args = parse_args();
+    validate_legacy_experimental_arc_cli_v1(
+        args.allow_experimental_arc,
+        args.require_arc,
+        args.arc_key_path.is_some(),
+        args.require_service_auth_v1,
+    )
+    .unwrap_or_else(|error| fatal_cli(error));
+    if args.require_arc {
+        eprintln!(
+            "!!! WARNING: EXPERIMENTAL ARC ENABLED FOR THIS PIR SERVER; THE IMPLEMENTATION IS UNAUDITED AND MUST NOT BE USED IN PRODUCTION !!!"
+        );
+    }
     UNSAFE_DEBUG_QUERY_LOGGING.store(args.unsafe_debug_query_logging, Ordering::Relaxed);
     if args.unsafe_debug_query_logging {
         eprintln!(
@@ -8303,7 +8893,7 @@ async fn main() {
                 // and dispatch the inner request as if it were cleartext.
                 // If the magic appears but no session is established, that's
                 // a protocol error (clients must REQ_HANDSHAKE first).
-                let decrypted: Vec<u8>;
+                let decrypted: Zeroizing<Vec<u8>>;
                 let request_was_encrypted = outer_payload.first()
                     == Some(&pir_runtime_core::channel::ENCRYPTED_FRAME_MAGIC);
                 let payload: &[u8] = if request_was_encrypted {
@@ -8314,7 +8904,7 @@ async fn main() {
                                 outer_payload,
                             ) {
                                 Ok(buf) => {
-                                    decrypted = buf;
+                                    decrypted = Zeroizing::new(buf);
                                     decrypted.as_slice()
                                 }
                                 Err(e) => {
@@ -8770,18 +9360,36 @@ async fn main() {
                                             if let Some(free) = free_admission.as_ref() {
                                                 composite = composite.with_free(free);
                                             }
-                                            let standard_cashu = runtime
-                                                .cashu_recovery_cipher
-                                                .as_ref()
-                                                .map(|cipher| {
-                                                    StandardCashuAdmissionCommitterV1::new(
-                                                        StandardCashuClientV1::new(
-                                                            &runtime.provider_store,
-                                                            &runtime.http_transport,
-                                                            cipher,
-                                                        ),
-                                                    )
-                                                });
+                                            let standard_cashu = match (
+                                                runtime.cashu_recovery_cipher.as_ref(),
+                                                runtime.cashu_custody_cipher.as_ref(),
+                                                verified_offer
+                                                    .offer()
+                                                    .cashu_mint_manifest
+                                                    .as_ref(),
+                                            ) {
+                                                (Some(recovery), Some(custody), Some(manifest)) => {
+                                                    runtime
+                                                        .cashu_exposure_limits
+                                                        .get(&(
+                                                            manifest.mint_id(),
+                                                            manifest.unit.clone(),
+                                                        ))
+                                                        .copied()
+                                                        .map(|limits| {
+                                                            StandardCashuAdmissionCommitterV1::new(
+                                                                StandardCashuClientV1::new(
+                                                                    &runtime.provider_store,
+                                                                    &runtime.http_transport,
+                                                                    recovery,
+                                                                    custody,
+                                                                    limits,
+                                                                ),
+                                                            )
+                                                        })
+                                                }
+                                                _ => None,
+                                            };
                                             if let Some(committer) = standard_cashu.as_ref() {
                                                 composite =
                                                     composite.with_standard_cashu(committer);

@@ -511,6 +511,37 @@ pub fn verify_cashu_nut12_dleq_v1(
     Ok(())
 }
 
+/// Verify the NUT-12 proof attached to an already-unblinded Cashu `Proof`.
+///
+/// A receiver is given `(secret, C, e, s, r)` rather than the original blind
+/// issuance transcript. NUT-12 requires reconstructing `B_ = H(secret) + rG`
+/// and `C_ = C + rA`, then checking the ordinary DLEQ relation. The private
+/// blinding scalar is accepted only at this wallet-side boundary and must not
+/// be forwarded to the mint or a service provider.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_cashu_received_proof_dleq_v1(
+    secret: &[u8],
+    unblinded_signature: &[u8; 33],
+    denomination_public_key: &[u8; 33],
+    dleq_e: &[u8; 32],
+    dleq_s: &[u8; 32],
+    blinding_scalar: &[u8; 32],
+) -> Result<(), PaymentCryptoError> {
+    let r = parse_cashu_scalar(blinding_scalar)?;
+    let y = cashu_hash_to_curve_point_v1(secret)?;
+    let a = parse_cashu_point(denomination_public_key)?;
+    let c = parse_cashu_point(unblinded_signature)?;
+    let blinded_message = compress_cashu_point(&(y + ProjectivePoint::GENERATOR * r))?;
+    let blinded_signature = compress_cashu_point(&(c + a * r))?;
+    verify_cashu_nut12_dleq_v1(
+        denomination_public_key,
+        &blinded_message,
+        &blinded_signature,
+        dleq_e,
+        dleq_s,
+    )
+}
+
 /// Derive Cashu's NUT-00 `Y = hash_to_curve(secret)` as a canonical compressed
 /// secp256k1 point.
 pub fn cashu_hash_to_curve_v1(secret: &[u8]) -> Result<[u8; 33], PaymentCryptoError> {
@@ -857,6 +888,29 @@ mod tests {
         keyring
             .verify_raw_cashu_signature(&public_key, secret, unblinded.unblinded_signature())
             .unwrap();
+        verify_cashu_received_proof_dleq_v1(
+            secret,
+            unblinded.unblinded_signature(),
+            &public_key,
+            response.dleq_e(),
+            response.dleq_s(),
+            &blinding_scalar,
+        )
+        .unwrap();
+
+        let mut tampered_r = blinding_scalar;
+        tampered_r[31] ^= 1;
+        assert_eq!(
+            verify_cashu_received_proof_dleq_v1(
+                secret,
+                unblinded.unblinded_signature(),
+                &public_key,
+                response.dleq_e(),
+                response.dleq_s(),
+                &tampered_r,
+            ),
+            Err(PaymentCryptoError::BadCashuDleqProof)
+        );
 
         let malformed_message = [0; 33];
         assert_eq!(

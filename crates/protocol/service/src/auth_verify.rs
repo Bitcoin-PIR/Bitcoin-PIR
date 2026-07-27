@@ -14,6 +14,8 @@
 //! out the selected method's cryptographic verification and atomic spend (or
 //! free-admission) transition before granting the operation.
 
+use core::fmt;
+
 use crate::proof::decode_authorization_proof_v1;
 use crate::{
     ArcPresentationCanonicalizerV1, AuthBeginV1, AuthorizationProofV1, BackendId, DatasetBindingV1,
@@ -108,12 +110,24 @@ where
 ///
 /// All fields are private. Callers can inspect the immutable bound values but
 /// cannot substitute request-controlled limits, scope, or offer data.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BoundAuthAttemptV1<'policy> {
     verified_offer: VerifiedServiceOfferV1<'policy>,
     catalog_resolution: TrustedCatalogResolutionV1,
     operation: OperationStartV1,
     proof: AuthorizationProofV1,
+}
+
+impl fmt::Debug for BoundAuthAttemptV1<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BoundAuthAttemptV1")
+            .field("verified_offer", &self.verified_offer)
+            .field("catalog_resolution", &self.catalog_resolution)
+            .field("operation", &self.operation)
+            .field("proof", &self.proof)
+            .finish()
+    }
 }
 
 impl<'policy> BoundAuthAttemptV1<'policy> {
@@ -685,7 +699,8 @@ mod tests {
         let scope_id = policy.scopes[0].scope.scope_id();
         let offer = verified_policy.offer(&scope_id, 2).unwrap();
         let catalog = catalog_for_db(7, resolution_for(7, offer.scope()));
-        let presentation = ArcPresentationV1::from_canonical_bytes(vec![1, 2, 3])
+        let presentation_payload = b"bound-arc-proof-debug-canary".to_vec();
+        let presentation = ArcPresentationV1::from_canonical_bytes(presentation_payload.clone())
             .unwrap()
             .encode()
             .unwrap();
@@ -715,8 +730,11 @@ mod tests {
         assert!(matches!(
             bound.proof(),
             AuthorizationProofV1::ArcExperimental(presentation)
-                if presentation.presentation_bytes() == [1, 2, 3]
+                if presentation.presentation_bytes() == presentation_payload.as_slice()
         ));
+        let rendered = format!("{bound:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains(&format!("{presentation_payload:?}")));
     }
 
     #[test]

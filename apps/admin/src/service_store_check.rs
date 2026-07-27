@@ -1,7 +1,10 @@
 //! Fail-closed provider-store startup/SLO probe with no listener.
 
 use clap::Args;
-use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
+use pir_service_store::{
+    ProviderStore, ProviderStoreOperationalInventoryV1, SqliteRollbackFloorAuthorityV1,
+    StoreOptions,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -84,7 +87,27 @@ pub fn run(args: ServiceStoreCheckArgs) -> Result<(), String> {
         "cashu_swap_intent_rows={}",
         inventory.cashu_swap_intent_rows
     );
+    for line in cashu_custody_inventory_lines(&inventory) {
+        println!("{line}");
+    }
     Ok(())
+}
+
+fn cashu_custody_inventory_lines(inventory: &ProviderStoreOperationalInventoryV1) -> [String; 3] {
+    [
+        format!(
+            "cashu_custody_lot_rows={}",
+            inventory.cashu_custody_lot_rows
+        ),
+        format!(
+            "cashu_custody_note_rows={}",
+            inventory.cashu_custody_note_rows
+        ),
+        format!(
+            "cashu_custody_export_batch_rows={}",
+            inventory.cashu_custody_export_batch_rows
+        ),
+    ]
 }
 
 #[cfg(all(test, unix))]
@@ -126,7 +149,27 @@ mod tests {
     #[test]
     fn serving_equivalent_check_accepts_exact_initialized_pair() {
         let (_root, store, authority) = initialized_paths();
-        run(args(store, authority)).unwrap();
+        run(args(store.clone(), authority.clone())).unwrap();
+        let timeout = Duration::from_secs(1);
+        let rollback = SqliteRollbackFloorAuthorityV1::open_existing(&authority, timeout).unwrap();
+        let opened = ProviderStore::open_existing(
+            &store,
+            [0x31; 32],
+            StoreOptions {
+                busy_timeout: timeout,
+            },
+            Arc::new(rollback),
+        )
+        .unwrap();
+        let inventory = opened.operational_inventory().unwrap();
+        assert_eq!(
+            cashu_custody_inventory_lines(&inventory),
+            [
+                "cashu_custody_lot_rows=0".to_owned(),
+                "cashu_custody_note_rows=0".to_owned(),
+                "cashu_custody_export_batch_rows=0".to_owned(),
+            ]
+        );
     }
 
     #[test]

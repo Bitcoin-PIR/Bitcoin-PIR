@@ -130,7 +130,7 @@ identifier, or insertion-order column. Namespace expiry is a public cohort
 property and permits safe garbage collection only after the policy-retention
 horizon has closed.
 
-The implemented provider schema version is `5`. Startup rejects every older
+The implemented provider schema version is `7`. Startup rejects every older
 or unknown version, a missing required table, extra schema objects, or any
 column drift; migration is an explicit offline operator action rather than an
 automatic serve-mode side effect.
@@ -233,17 +233,35 @@ files. It never silently creates an empty spent database.
 
 The external mint's atomic NUT-03 invalidation is authoritative. A successful
 swap MUST NOT be followed by a second provider-local authoritative spend
-insert. The provider persists only encrypted recovery intent:
+insert. The provider persists an encrypted recovery intent and, before issuing
+the grant, a separately encrypted note-only custody lot:
 
 ```sql
 CREATE TABLE cashu_swap_intents (
-    intent_id               BLOB NOT NULL PRIMARY KEY CHECK (length(intent_id) = 16),
-    mint_id                 BLOB NOT NULL CHECK (length(mint_id) = 32),
-    input_set_digest        BLOB NOT NULL CHECK (length(input_set_digest) = 32),
-    request_digest          BLOB NOT NULL CHECK (length(request_digest) = 32),
-    output_set_digest       BLOB NOT NULL CHECK (length(output_set_digest) = 32),
-    offer_binding_digest    BLOB NOT NULL CHECK (length(offer_binding_digest) = 32),
+    intent_id               BLOB NOT NULL PRIMARY KEY CHECK (
+        length(intent_id) = 16 AND intent_id != zeroblob(16)
+    ),
+    mint_id                 BLOB NOT NULL CHECK (
+        length(mint_id) = 32 AND mint_id != zeroblob(32)
+    ),
+    manifest_digest         BLOB NOT NULL CHECK (
+        length(manifest_digest) = 32 AND manifest_digest != zeroblob(32)
+    ),
+    unit                    TEXT NOT NULL CHECK (length(unit) BETWEEN 1 AND 64),
+    input_set_digest        BLOB NOT NULL CHECK (
+        length(input_set_digest) = 32 AND input_set_digest != zeroblob(32)
+    ),
+    request_digest          BLOB NOT NULL CHECK (
+        length(request_digest) = 32 AND request_digest != zeroblob(32)
+    ),
+    output_set_digest       BLOB NOT NULL CHECK (
+        length(output_set_digest) = 32 AND output_set_digest != zeroblob(32)
+    ),
+    offer_binding_digest    BLOB NOT NULL CHECK (
+        length(offer_binding_digest) = 32 AND offer_binding_digest != zeroblob(32)
+    ),
     settlement_value        INTEGER NOT NULL CHECK (settlement_value > 0),
+    expected_output_count   INTEGER NOT NULL CHECK (expected_output_count BETWEEN 1 AND 64),
     state                   INTEGER NOT NULL CHECK (state BETWEEN 0 AND 4),
     recovery_key_epoch      INTEGER NOT NULL CHECK (recovery_key_epoch > 0),
     recovery_nonce          BLOB NOT NULL CHECK (length(recovery_nonce) BETWEEN 1 AND 64),
@@ -254,12 +272,57 @@ CREATE TABLE cashu_swap_intents (
     updated_bucket          INTEGER NOT NULL CHECK (updated_bucket >= created_bucket),
     UNIQUE (mint_id, input_set_digest)
 ) STRICT, WITHOUT ROWID;
+
+CREATE TABLE cashu_custody_lots (
+    lot_id               BLOB NOT NULL PRIMARY KEY CHECK (
+        length(lot_id) = 16 AND lot_id != zeroblob(16)
+    ),
+    intent_id            BLOB NOT NULL UNIQUE CHECK (
+        length(intent_id) = 16 AND intent_id != zeroblob(16)
+    ),
+    mint_id              BLOB NOT NULL CHECK (
+        length(mint_id) = 32 AND mint_id != zeroblob(32)
+    ),
+    manifest_digest      BLOB NOT NULL CHECK (
+        length(manifest_digest) = 32 AND manifest_digest != zeroblob(32)
+    ),
+    active_keyset_digest BLOB NOT NULL CHECK (
+        length(active_keyset_digest) = 32 AND active_keyset_digest != zeroblob(32)
+    ),
+    note_set_digest      BLOB NOT NULL CHECK (
+        length(note_set_digest) = 32 AND note_set_digest != zeroblob(32)
+    ),
+    unit                 TEXT NOT NULL CHECK (length(unit) BETWEEN 1 AND 64),
+    settlement_value     INTEGER NOT NULL CHECK (settlement_value > 0),
+    note_count           INTEGER NOT NULL CHECK (note_count BETWEEN 1 AND 64),
+    state                INTEGER NOT NULL CHECK (state BETWEEN 1 AND 4),
+    sealed_key_epoch     INTEGER NOT NULL CHECK (sealed_key_epoch > 0),
+    sealed_nonce         BLOB NOT NULL CHECK (length(sealed_nonce) BETWEEN 1 AND 64),
+    sealed_ciphertext    BLOB NOT NULL CHECK (
+        length(sealed_ciphertext) BETWEEN 1 AND 262144
+    ),
+    FOREIGN KEY (intent_id) REFERENCES cashu_swap_intents(intent_id) ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE cashu_custody_notes (
+    note_fingerprint BLOB NOT NULL PRIMARY KEY CHECK (
+        length(note_fingerprint) = 32 AND note_fingerprint != zeroblob(32)
+    ),
+    lot_id BLOB NOT NULL CHECK (
+        length(lot_id) = 16 AND lot_id != zeroblob(16)
+    ),
+    FOREIGN KEY (lot_id) REFERENCES cashu_custody_lots(lot_id) ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
 ```
 
-The ciphertext contains the exact canonical NUT-03 request, ordered blinded
-outputs, output secrets, and blinding factors. Its encryption key is not stored
-in this database. Proof secrets, `dleq.r`, and wallet recovery material are
-never plaintext columns or logs.
+The recovery ciphertext contains the exact canonical NUT-03 request, ordered
+blinded outputs, output secrets and blinding factors. The custody ciphertext
+contains only the normalized mint endpoint, unit, active keyset, provider-
+created amount/secret/signature notes and their authenticated set digest. It
+contains no user input proof, NUT request/response JSON, offer/intent/query ID
+or exact timestamp. Recovery and custody use distinct AEAD keyrings and AAD
+domains; neither key is stored in this database. Proof secrets, `dleq.r`, note
+secrets and wallet recovery material are never plaintext columns or logs.
 
 ```text
 PREPARED --externally anchored--> SUBMITTED -> WALLET_STORED -> GRANT_ISSUED
@@ -275,17 +338,62 @@ existing envelope without a generation change. Changed request, output set,
 offer binding, amount, intent ID, or `(mint_id, input_set_digest)` ownership is
 a hard conflict.
 
+Before inserting a new intent, the same `BEGIN IMMEDIATE` transaction sums all
+pending intents plus available, reserved and delivery-acknowledged custody for
+the exact `(mint_id, unit)`. It rejects any value or note count above the
+explicit finite operator cap. The cap must be in `1..=i64::MAX`; no wildcard,
+zero or unlimited default exists. Delivery acknowledgement remains inside that
+cap. Only a terminal `SpentConfirmed` lot, backed by exact all-`SPENT` NUT-07
+evidence, is excluded from local custody exposure.
+
 Every actual state mutation advances `store_generation` and its independent
 rollback-floor CAS. The caller may send NUT-03 only after the store returns
 success for the anchored `PREPARED -> SUBMITTED` transition. Only
-`WALLET_STORED -> GRANT_ISSUED` also advances `spend_commit_seq`. Schema v5 is
-strictly opened without implicit migration. Payment V1 has no released v4
-production state; fresh initialization and pre-release compatibility rules are
-in [`PROVIDER_STORE_V4_MIGRATION.md`](PROVIDER_STORE_V4_MIGRATION.md).
+`WALLET_STORED -> GRANT_ISSUED` also advances `spend_commit_seq`; that same
+transaction inserts the authenticated custody lot and globally unique
+provider-local note fingerprints. Schema v7 is strictly opened without
+implicit migration. The explicit v6-to-v7 replacement and validation ceremony
+is in [`PROVIDER_STORE_V7_MIGRATION.md`](PROVIDER_STORE_V7_MIGRATION.md).
 
 Grant occurs only after input invalidation, full output/signature/DLEQ
 verification, and durable storage of the provider's received eCash. A lost
 response uses NUT-09 with the identical blinded outputs.
+
+### Standard Cashu custody export
+
+The online server never emits note secrets. Offline `bpir-admin cashu-custody`
+reserves available lots in one rollback-anchored transaction. Selection is
+bounded by the requested lot count, 512 total notes and 16 distinct keyset
+groups; candidates that would overflow a bound remain `Available`. The batch
+stores the exact provider, mint, unit, requested maximum and recipient key ID.
+Reusing an export ID with any different field is a conflict.
+
+The store then persists one exact opaque recipient-sealed artifact before the
+CLI may release it. The first artifact wins; identical retry returns the same
+bytes, while a different artifact conflicts. The X25519+HKDF+
+XChaCha20-Poly1305 envelope authenticates export ID, provider ID, recipient key
+ID, ephemeral key, nonce and ciphertext length. It is bounded to 256 KiB and
+contains one canonical no-memo/no-DLEQ `cashuB` token. Export recipient keys are
+provider-specific and separate from online recovery/custody keys.
+
+An explicit acknowledgement transitions the exact materialized batch and all
+members together only after an operator asserts that the external wallet took
+custody. It does **not** release local exposure and is not proof of NUT-05 melt,
+Lightning settlement or provider payout. A lost response is recovered by
+reading/releasing the immutable artifact and replaying the exact artifact
+digest; reserved/materialized/acknowledged lots are never silently returned to
+`Available`.
+
+Exposure is released only by a later explicit owner-side `spent-confirm`. The
+command decrypts the exact acknowledged lots, performs one bounded NUT-07
+request for a same-mint/unit selection, and accepts only an exact ordered
+all-`SPENT` response. Before each per-export transaction it reopens the current
+rollback floor and rechecks immutable artifact, ordered member IDs, sealed-lot
+binding and transient exact `Y` fingerprints. Durable evidence contains only a
+domain-separated per-export observation digest and aggregate commitments; raw
+`Y`, per-note state, witness and the wider HTTP-batch digest are not stored.
+NUT-07 proves only that the old exported notes were spent. It does not prove
+NUT-05, Lightning settlement or provider payout.
 
 ## Issuer store
 

@@ -110,6 +110,11 @@ For a quick taste:
 
 - [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) — Production deployment guide
 - [`doc/WEB.md`](doc/WEB.md) — Web client details
+- [`docs/RATELIMIT_INTEGRATION.md`](docs/RATELIMIT_INTEGRATION.md) — Payment V1
+  and anonymous admission integration index (implemented/pre-production; not
+  deployed)
+- [`docs/payment/IMPLEMENTATION_STATUS.md`](docs/payment/IMPLEMENTATION_STATUS.md)
+  — exact Payment method, test and production-activation status
 - [`doc/WALLET_INTEGRATION_ANALYSIS.md`](doc/WALLET_INTEGRATION_ANALYSIS.md) — How Bitcoin PIR integrates with existing wallets
 - [`Bitcoin-PIR/whitepaper`](https://github.com/Bitcoin-PIR/whitepaper) — Research paper sources, generated PDF, and benchmark material (the exact consumed revision is recorded in [`verification/locks/whitepaper.json`](verification/locks/whitepaper.json))
 

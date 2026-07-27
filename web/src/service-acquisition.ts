@@ -303,13 +303,13 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         this.requestTimeoutMs,
       );
       const issued = wasm.finish_claim(response, trustedNowUnix());
+      const capabilities: AdmissionCapabilityV1[] = [];
       try {
         const scheme = validateIssuedScheme(issued.scheme);
         const count = issued.count();
         if (!Number.isSafeInteger(count) || count <= 0 || count > 65_535) {
           throw new Error('issuer returned an invalid capability count');
         }
-        const capabilities: AdmissionCapabilityV1[] = [];
         for (let index = 0; index < count; index += 1) {
           capabilities.push({
             providerIdHex: recovery.providerIdHex,
@@ -324,6 +324,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         this.completed = true;
         return count;
       } finally {
+        for (const capability of capabilities) capability.payload.fill(0);
         issued.free();
       }
     });

@@ -58,7 +58,7 @@ impl DirectoryEndpointV1 {
             });
         }
         match self.transport {
-            DirectoryTransportV1::Wss if is_canonical_wss_endpoint(&self.url) => Ok(()),
+            DirectoryTransportV1::Wss if is_canonical_public_wss_endpoint_v1(&self.url) => Ok(()),
             DirectoryTransportV1::Wss => Err(ServiceProtocolError::InvalidValue {
                 field: "DirectoryEndpointV1.url",
                 reason: "must be a canonical public wss URL",
@@ -420,8 +420,15 @@ impl DirectoryOperatorAssertionV1 {
     }
 }
 
-fn is_canonical_wss_endpoint(endpoint: &str) -> bool {
-    if !endpoint.is_ascii()
+/// Return whether `endpoint` is the canonical, credential-free public `wss://`
+/// form accepted by the directory protocol.
+///
+/// Publisher transports reuse this exact predicate so relay destinations and
+/// provider discovery endpoints cannot drift into different URL grammars.
+pub fn is_canonical_public_wss_endpoint_v1(endpoint: &str) -> bool {
+    if endpoint.is_empty()
+        || endpoint.len() > MAX_DIRECTORY_ENDPOINT_LEN_V1
+        || !endpoint.is_ascii()
         || endpoint
             .bytes()
             .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
@@ -478,7 +485,8 @@ fn is_canonical_wss_endpoint(endpoint: &str) -> bool {
         }
     }
     if !path.is_empty()
-        && (path.ends_with('/')
+        && (path.starts_with('/')
+            || path.ends_with('/')
             || path.contains("//")
             || path.contains('%')
             || !path.bytes().all(|byte| {
@@ -663,12 +671,16 @@ mod tests {
             "wss://internal/v1",
             "wss://a.example/v1/",
             "wss://a.example/v1?x=1",
+            "wss://a.example//query",
             "wss://a.example/v1//query",
+            &format!("wss://a.example/{}", "x".repeat(MAX_DIRECTORY_ENDPOINT_LEN_V1)),
         ] {
-            assert!(!is_canonical_wss_endpoint(bad), "accepted {bad}");
+            assert!(!is_canonical_public_wss_endpoint_v1(bad), "accepted {bad}");
         }
-        assert!(is_canonical_wss_endpoint("wss://a.example/v1"));
-        assert!(is_canonical_wss_endpoint("wss://a.example:8443/v1"));
+        assert!(is_canonical_public_wss_endpoint_v1("wss://a.example/v1"));
+        assert!(is_canonical_public_wss_endpoint_v1(
+            "wss://a.example:8443/v1"
+        ));
     }
 
     #[test]

@@ -1,6 +1,9 @@
 //! Method-neutral service authorization messages.
 
+use core::{fmt, mem};
+
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::attach::{HarmonyAttachGrantV1, HarmonyHintSideV1};
 use crate::codec::{expect_v1, put_bytes_u32, Decoder};
@@ -190,7 +193,7 @@ impl OperationStartV1 {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthBeginV1 {
     pub policy_digest: [u8; 32],
     pub scope_id: ScopeId,
@@ -199,6 +202,28 @@ pub struct AuthBeginV1 {
     pub key_id: Vec<u8>,
     pub operation: OperationStartV1,
     pub proof: Vec<u8>,
+}
+
+impl fmt::Debug for AuthBeginV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthBeginV1")
+            .field("policy_digest", &self.policy_digest)
+            .field("scope_id", &self.scope_id)
+            .field("offer_id", &self.offer_id)
+            .field("scheme", &self.scheme)
+            .field("key_id", &self.key_id)
+            .field("operation", &self.operation)
+            .field("proof_len", &self.proof.len())
+            .field("proof", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for AuthBeginV1 {
+    fn drop(&mut self) {
+        self.proof.zeroize();
+    }
 }
 
 impl AuthBeginV1 {
@@ -292,7 +317,7 @@ impl AuthBeginV1 {
         let operation_bytes =
             decoder.bytes_u8("AuthBeginV1.operation", MAX_OPERATION_ENCODING_LEN)?;
         let operation = OperationStartV1::decode(&operation_bytes)?;
-        let proof = decoder.bytes_u32("AuthBeginV1.proof", MAX_AUTH_PROOF_LEN)?;
+        let mut proof = Zeroizing::new(decoder.bytes_u32("AuthBeginV1.proof", MAX_AUTH_PROOF_LEN)?);
         let padding = decoder.take_remaining();
         if padding.iter().any(|byte| *byte != 0) {
             return Err(ServiceProtocolError::InvalidValue {
@@ -307,7 +332,7 @@ impl AuthBeginV1 {
             scheme,
             key_id,
             operation,
-            proof,
+            proof: mem::take(&mut *proof),
         })
     }
 }
@@ -586,7 +611,23 @@ mod tests {
         });
         let encoded = original.encode_padded().unwrap();
         assert_eq!(encoded.len(), AUTH_FRAME_CLASS_V1);
+        assert_eq!(encoded.capacity(), AUTH_FRAME_CLASS_V1);
         assert_eq!(AuthBeginV1::decode_padded(&encoded).unwrap(), original);
+    }
+
+    #[test]
+    fn auth_debug_redacts_the_opaque_proof() {
+        assert!(core::mem::needs_drop::<AuthBeginV1>());
+
+        let mut request = auth(OperationStartV1::DpfQuery { db_id: 4 });
+        request.proof = b"auth-bearer-proof-debug-canary".to_vec();
+        let raw_proof_debug = format!("{:?}", request.proof);
+
+        let rendered = format!("{request:?}");
+
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(rendered.contains("proof_len"));
+        assert!(!rendered.contains(&raw_proof_debug));
     }
 
     #[test]
@@ -603,6 +644,17 @@ mod tests {
             Err(ServiceProtocolError::InvalidValue {
                 field: "AuthBeginV1.padding",
                 ..
+            })
+        ));
+
+        let mut malformed_operation = original.encode_padded().unwrap();
+        let operation_offset = 1 + 32 + 32 + 4 + 1 + 1 + original.key_id.len() + 1;
+        malformed_operation[operation_offset] = 0xff;
+        assert!(matches!(
+            AuthBeginV1::decode_padded(&malformed_operation),
+            Err(ServiceProtocolError::UnknownDiscriminant {
+                kind: "OperationStartV1",
+                value: 0xff,
             })
         ));
 

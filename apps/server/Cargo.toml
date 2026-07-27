@@ -70,13 +70,11 @@ pir-payment-crypto = { path = "../../crates/payment/crypto", features = ["provid
 pir-arc-adapter = { path = "../../crates/payment/arc-adapter", features = ["provider-store"] }
 pir-cashu-client = { path = "../../crates/payment/cashu-client" }
 pir-provider-clearing-client = { path = "../../crates/payment/provider-clearing-client" }
+pir-strict-https = { path = "../../crates/net/strict-https" }
 ed25519-dalek = "2"
 hex = "0.4"
 zeroize = "1"
 rustix = { version = "1", features = ["fs", "process"] }
-httparse = "1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "0.26"
 build = { path = "../../tools/db-builder" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b" }

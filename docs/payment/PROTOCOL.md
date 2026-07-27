@@ -493,12 +493,14 @@ restores an issuance-to-spend link.
 
 The payload contains only the ARC presentation and key ID. Request context,
 presentation context, fixed limit, scope, and epoch are deterministically
-derived from the trusted key binding. A reviewed typed ARC adapter must decode
-and re-encode the exact presentation, verify it under those fixed contexts,
-and return the authoritative per-presentation tag/nullifier used for durable
-consumption. Until that adapter and its persistent multi-show state are wired,
-provider-local ARC admission is unsupported rather than emulated with the old
-process-local seen-tag set. ARC remains `experimental` in every policy.
+derived from the trusted key binding. The pinned typed ARC adapter decodes and
+re-encodes the exact presentation, verifies it under those fixed contexts, and
+returns the authoritative per-presentation tag/nullifier used for durable
+consumption. Provider-local admission persists its multi-show state and never
+falls back to the old process-local seen-tag set. The strict client also
+rejects a two-provider selection whose signed policies expose the same raw ARC
+verification key. ARC nevertheless remains `experimental` in every policy
+until the independent cryptographic-review gate is closed.
 
 ## Durable spend contract
 

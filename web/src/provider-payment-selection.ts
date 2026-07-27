@@ -46,6 +46,11 @@ export function assertIndependentProviderOfferPairV1(
   if (firstBat !== null && secondBat !== null && firstBat === secondBat) {
     throw new Error('the two providers reuse one raw Cashu BAT verification key');
   }
+  const firstArc = arcFingerprint(first.offer);
+  const secondArc = arcFingerprint(second.offer);
+  if (firstArc !== null && secondArc !== null && firstArc === secondArc) {
+    throw new Error('the two providers reuse one raw ARC verification key');
+  }
 
   if (options.allowSharedIssuerCorrelation === true
       || !hasCorrelationInfrastructure(first.offer)
@@ -74,6 +79,19 @@ function batFingerprint(offer: ServiceOfferViewV1): string | null {
   return canonicalNonzeroHex32(
     'BAT verification-key fingerprint',
     offer.batVerificationKeyFingerprintHex,
+  );
+}
+
+function arcFingerprint(offer: ServiceOfferViewV1): string | null {
+  if (offer.authorization !== 'arc-experimental') {
+    if (offer.arcVerificationKeyFingerprintHex !== '') {
+      throw new Error('a non-ARC offer exposed an ARC verification-key fingerprint');
+    }
+    return null;
+  }
+  return canonicalNonzeroHex32(
+    'ARC verification-key fingerprint',
+    offer.arcVerificationKeyFingerprintHex,
   );
 }
 

@@ -138,8 +138,9 @@ Never write invoice-to-query linkage to `localStorage`.
 
 The client selects and pays each provider independently. It may find provider
 0 first and provider 1 later; neither policy nor request contains the other
-provider's identity. The client rejects raw BAT-key reuse across the two
-selected verified policies.
+provider's identity. The client rejects raw BAT- or ARC-verification-key reuse
+across the two selected verified policies before it considers an explicit
+shared-issuer override.
 
 Exit criteria:
 

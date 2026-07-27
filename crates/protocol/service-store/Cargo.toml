@@ -17,6 +17,7 @@ categories = ["database", "cryptography"]
 pir-service-protocol = { path = "../service" }
 rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled", "backup"] }
 sha2 = "0.10"
+zeroize = "1"
 
 [dev-dependencies]
 ed25519-dalek = "2"
