@@ -171,6 +171,17 @@ export type {
   RoundTimingData,
 } from './harmony-types.js';
 
+export {
+  prepareQueryInspectorRenderDataV1,
+  type QueryInspectorRenderDataV1,
+} from './query-inspector-sanitize.js';
+
+export {
+  fetchProofArtifactBytesV1,
+  resolveProofArtifactUrlV1,
+  type ProofArtifactFetchOptionsV1,
+} from './proof-artifact-fetch.js';
+
 // Backwards-compat shims for the old `pir-core-wasm` bridge. The crate has
 // been retired and all primitives it exposed are now served by `pir-sdk-wasm`,
 // so these names forward to the SDK init. New callers should import

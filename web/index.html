@@ -3,11 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-dj3WY3MqnuVHN9acKyQ3QPFmAoSN3zVe0feN2B8pUAw=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <style>
         /* ── tokens ──────────────────────────────────────────────────── */
         :root {
@@ -42,8 +40,8 @@
             --shadow-sm: 0 1px 0 oklch(90% 0.005 80 / .6);
             --shadow:    0 1px 2px oklch(40% 0.02 80 / .06), 0 2px 8px oklch(40% 0.02 80 / .04);
 
-            --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-            --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+            --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+            --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
         }
 
         * { box-sizing: border-box; }
@@ -1641,7 +1639,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerExpectedPayeeV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError, renderSecurityBadgeTextRowsV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, MAINNET_948454_ORAM_SOURCE_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerExpectedPayeeV1, providerOperatorKeyV1, refreshNostrDirectoryV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1 } from './src/index.ts';
+        window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
             if (ok) console.log('[PIR] SDK WASM loaded');
@@ -1681,10 +1680,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         function renderOpsHtml(ops) {
             return ops.map(o => {
                 if (o.type === 'opcode') {
-                    return `<span class="op">${o.text}</span>`;
+                    return `<span class="op">${escapeHtml(o.text)}</span>`;
                 } else {
-                    const lenLabel = `<span class="data-len">[${o.dataLen}B]</span>`;
-                    return `${lenLabel}<span class="data">${o.text}</span>`;
+                    const lenLabel = `<span class="data-len">[${escapeHtml(o.dataLen)}B]</span>`;
+                    return `${lenLabel}<span class="data">${escapeHtml(o.text)}</span>`;
                 }
             }).join(' ');
         }
@@ -2265,6 +2264,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             })[ch]);
         }
 
+        function renderSyncPlanTextV1(element, summary, steps) {
+            const summaryLine = document.createElement('div');
+            summaryLine.textContent = summary;
+            const stepsLine = document.createElement('div');
+            stepsLine.style.marginTop = '4px';
+            stepsLine.textContent = steps;
+            element.replaceChildren(summaryLine, stepsLine);
+        }
+
         function renderBitcoinBlockLink(point, truncate) {
             const hash = String(point?.blockHashHex || '');
             const text = `${Number(point?.height || 0).toLocaleString()} · ${truncate(hash, 24)}`;
@@ -2295,10 +2303,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const rows = [];
             rows.push(`<span class="ab-state">${escapeHtml(label)}: ${escapeHtml(stateLabel)}</span>`);
             if (proof) {
-                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${proof.muhashHex}">${truncate(proof.muhashHex, 24)}</span></div>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">bucket root</span><span class="ab-val" title="${proof.bucketSuperRootHex}">${truncate(proof.bucketSuperRootHex, 24)}</span></div>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">onion root</span><span class="ab-val" title="${proof.onionSuperRootHex}">${truncate(proof.onionSuperRootHex, 24)}</span></div>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">builder</span><span class="ab-val" title="${proof.builderBinarySha256Hex}">${truncate(proof.builderGitCommit, 12)} · ${truncate(proof.builderBinarySha256Hex, 16)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${escapeHtml(proof.muhashHex)}">${escapeHtml(truncate(proof.muhashHex, 24))}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">bucket root</span><span class="ab-val" title="${escapeHtml(proof.bucketSuperRootHex)}">${escapeHtml(truncate(proof.bucketSuperRootHex, 24))}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">onion root</span><span class="ab-val" title="${escapeHtml(proof.onionSuperRootHex)}">${escapeHtml(truncate(proof.onionSuperRootHex, 24))}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">builder</span><span class="ab-val" title="${escapeHtml(proof.builderBinarySha256Hex)}">${escapeHtml(truncate(proof.builderGitCommit, 12))} · ${escapeHtml(truncate(proof.builderBinarySha256Hex, 16))}</span></div>`);
             }
             if (info.mismatches?.length) {
                 rows.push(`<div class="ab-row"><span class="ab-label">reason</span><span class="ab-val" title="${escapeHtml(info.mismatches.join('\\n'))}">${escapeHtml(info.mismatches[0])}</span></div>`);
@@ -2346,11 +2354,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     const verificationLabel = inclusionVerified ? ' · ✓ BHTM inclusion verified' : '';
                     rows.push(`<div class="ab-row"><span class="ab-label">from block</span><span class="ab-val" title="${escapeHtml(fromPoint.blockHashHex)}">${escapeHtml(fromText + verificationLabel)}</span></div>`);
                 }
-                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${anchor.muhashHex}">${truncate(anchor.muhashHex, 24)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${escapeHtml(anchor.muhashHex)}">${escapeHtml(truncate(anchor.muhashHex, 24))}</span></div>`);
             }
             if (bhtm?.treeRootHex) {
-                rows.push(`<div class="ab-row"><span class="ab-label">bhtm root</span><span class="ab-val" title="${bhtm.treeRootHex}">${truncate(bhtm.treeRootHex, 24)}</span></div>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">bhtm quote</span><span class="ab-val" title="${bhtm.streamingUkiMeasurementHex}">${bhtm.chunk} · ${truncate(bhtm.streamingUkiMeasurementHex, 16)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">bhtm root</span><span class="ab-val" title="${escapeHtml(bhtm.treeRootHex)}">${escapeHtml(truncate(bhtm.treeRootHex, 24))}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">bhtm quote</span><span class="ab-val" title="${escapeHtml(bhtm.streamingUkiMeasurementHex)}">${escapeHtml(bhtm.chunk)} · ${escapeHtml(truncate(bhtm.streamingUkiMeasurementHex, 16))}</span></div>`);
             }
             const amdCheck = status?.checks?.find(c => c.name.includes('AMD VCEK'));
             if (amdCheck) {
@@ -2465,14 +2473,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const rows = [];
             rows.push(`<span class="ab-state">${escapeHtml(label)}: ${escapeHtml(stateLabel)}</span>`);
             if (anchor) {
-                rows.push(`<div class="ab-row"><span class="ab-label">block</span><span class="ab-val" title="${anchor.blockHashHex}">${anchor.height.toLocaleString()} · ${truncate(anchor.blockHashHex, 24)}</span></div>`);
-                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${anchor.muhashHex}">${truncate(anchor.muhashHex, 24)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">block</span><span class="ab-val" title="${escapeHtml(anchor.blockHashHex)}">${escapeHtml(anchor.height?.toLocaleString?.() || anchor.height)} · ${escapeHtml(truncate(anchor.blockHashHex, 24))}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">muhash</span><span class="ab-val" title="${escapeHtml(anchor.muhashHex)}">${escapeHtml(truncate(anchor.muhashHex, 24))}</span></div>`);
             }
             if (source?.index?.sha256 && source?.chunks?.sha256) {
-                rows.push(`<div class="ab-row"><span class="ab-label">direct inputs</span><span class="ab-val" title="${source.index.sha256}\\n${source.chunks.sha256}">index ${truncate(source.index.sha256, 16)} · chunk ${truncate(source.chunks.sha256, 16)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">direct inputs</span><span class="ab-val" title="${escapeHtml(`${source.index.sha256}\\n${source.chunks.sha256}`)}">index ${escapeHtml(truncate(source.index.sha256, 16))} · chunk ${escapeHtml(truncate(source.chunks.sha256, 16))}</span></div>`);
             }
             if (oram?.commit) {
-                rows.push(`<div class="ab-row"><span class="ab-label">oram commit</span><span class="ab-val" title="${oram.commit}">${truncate(oram.commit, 12)}</span></div>`);
+                rows.push(`<div class="ab-row"><span class="ab-label">oram commit</span><span class="ab-val" title="${escapeHtml(oram.commit)}">${escapeHtml(truncate(oram.commit, 12))}</span></div>`);
             }
             if (deployment?.status) {
                 rows.push(`<div class="ab-row"><span class="ab-label">deployment</span><span class="ab-val" title="${escapeHtml(deployment.note || deployment.status)}">${escapeHtml(deployment.status)}</span></div>`);
@@ -2544,8 +2552,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const opsHtml = renderOpsHtml(ops);
 
             // Inspect button (only for HarmonyPIR queries with inspector data)
-            const inspectBtn = (inspectorQi !== undefined && hpInspectorDataMap?.has(inspectorQi))
-                ? `<button class="qi-inspect-btn" onclick="openQueryInspector(${inspectorQi})">&#128269; Inspect</button>`
+            const inspectBtn = (Number.isSafeInteger(inspectorQi) && hpInspectorDataMap?.has(inspectorQi))
+                ? `<button class="qi-inspect-btn" type="button" data-qi-index="${inspectorQi}">&#128269; Inspect</button>`
                 : '';
 
             // Title line: address link or script label
@@ -2858,7 +2866,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             card.innerHTML = `
                 <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 10px;">
                     <h3 style="margin: 0; font-size: 14px; color: #6d5200;">
-                        &#x0394; Delta activity: <code style="color: #0c5460;">${stepLabel}</code>
+                        &#x0394; Delta activity: <code style="color: #0c5460;">${escapeHtml(stepLabel)}</code>
                         <span style="font-weight: normal; color: #888;">${stepRange.base.toLocaleString()} \u2192 ${stepRange.tip.toLocaleString()}</span>
                     </h3>
                     <div style="font-size: 12px; color: #555;">${titleHtml}</div>
@@ -3476,10 +3484,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ? 'from scratch (cache empty after reload)'
                     : 'from scratch')
                 : `from height ${persistedHeight.toLocaleString()}`;
-            planText.innerHTML =
-                `<div>Sync plan ${fromTxt} \u2192 ${plan.targetHeight.toLocaleString()}` +
-                `${plan.isFreshSync ? ' (fresh sync)' : ''}:</div>` +
-                `<div style="margin-top: 4px;">${pretty}</div>`;
+            renderSyncPlanTextV1(
+                planText,
+                `Sync plan ${fromTxt} \u2192 ${plan.targetHeight.toLocaleString()}${plan.isFreshSync ? ' (fresh sync)' : ''}:`,
+                pretty,
+            );
             planBox.style.display = 'block';
             document.getElementById('syncConfirmBtn').style.display = '';
             document.getElementById('syncCancelBtn').textContent = 'Cancel';
@@ -3999,10 +4008,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ? 'from scratch (cache empty after reload)'
                     : 'from scratch')
                 : `from height ${persistedHeight.toLocaleString()}`;
-            planText.innerHTML =
-                `<div>Sync plan ${fromTxt} \u2192 ${plan.targetHeight.toLocaleString()}` +
-                `${plan.isFreshSync ? ' (fresh sync)' : ''}:</div>` +
-                `<div style="margin-top: 4px;">${pretty}</div>`;
+            renderSyncPlanTextV1(
+                planText,
+                `Sync plan ${fromTxt} \u2192 ${plan.targetHeight.toLocaleString()}${plan.isFreshSync ? ' (fresh sync)' : ''}:`,
+                pretty,
+            );
             planBox.style.display = 'block';
             document.getElementById('op-syncConfirmBtn').style.display = '';
             document.getElementById('op-syncCancelBtn').textContent = 'Cancel';
@@ -4797,10 +4807,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     ? 'from scratch (cache empty after reload)'
                     : 'from scratch')
                 : `from height ${persistedHeight.toLocaleString()}`;
-            planText.innerHTML =
-                `<div>Sync plan ${fromTxt} \u2192 ${plan.targetHeight.toLocaleString()}` +
-                `${plan.isFreshSync ? ' (fresh sync)' : ''}:</div>` +
-                `<div style="margin-top: 4px;">${pretty}</div>`;
+            renderSyncPlanTextV1(
+                planText,
+                `Sync plan ${fromTxt} \u2192 ${plan.targetHeight.toLocaleString()}${plan.isFreshSync ? ' (fresh sync)' : ''}:`,
+                pretty,
+            );
             planBox.style.display = 'block';
             document.getElementById('hp-syncConfirmBtn').style.display = '';
             document.getElementById('hp-syncCancelBtn').textContent = 'Cancel';
@@ -5636,18 +5647,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
     <!-- Query Inspector Modal -->
     <div id="qi-modal" class="qi-modal hidden">
-        <div class="qi-overlay" onclick="closeQueryInspector()"></div>
+        <div id="qi-overlay" class="qi-overlay"></div>
         <div class="qi-content">
             <div class="qi-header">
                 <h2 id="qi-title">Query Inspector</h2>
-                <button class="qi-close" onclick="closeQueryInspector()">&times;</button>
+                <button id="qi-close" class="qi-close" type="button">&times;</button>
             </div>
             <div class="qi-stepper" id="qi-stepper"></div>
             <div class="qi-body" id="qi-body"></div>
             <div class="qi-footer">
-                <button id="qi-prev" onclick="qiPrevStep()">&#8592; Previous</button>
+                <button id="qi-prev" type="button">&#8592; Previous</button>
                 <span id="qi-step-label" style="font-size:13px;color:#666;"></span>
-                <button id="qi-next" onclick="qiNextStep()">Next &#8594;</button>
+                <button id="qi-next" type="button">Next &#8594;</button>
             </div>
         </div>
     </div>
@@ -5668,8 +5679,16 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         ];
 
         function openQueryInspector(qi) {
-            qiData = hpInspectorDataMap?.get(qi);
-            if (!qiData) return;
+            const candidate = hpInspectorDataMap?.get(qi);
+            const prepare = window.__bitcoinPirPrepareQueryInspectorRenderDataV1;
+            if (!candidate || typeof prepare !== 'function') return;
+            try {
+                qiData = prepare(candidate);
+            } catch {
+                qiData = null;
+                console.error('Query Inspector rejected malformed renderer data');
+                return;
+            }
             qiStep = 0;
             renderQiStepper();
             renderQiBody();
@@ -5690,18 +5709,25 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         function renderQiStepper() {
             const el = document.getElementById('qi-stepper');
-            el.innerHTML = QI_STEPS.map((_, i) =>
-                `<div class="qi-dot ${i < qiStep ? 'done' : i === qiStep ? 'active' : ''}" onclick="qiStep=${i};renderQiStepper();renderQiBody()"></div>`
-            ).join('');
+            el.replaceChildren(...QI_STEPS.map((_, i) => {
+                const dot = document.createElement('button');
+                dot.type = 'button';
+                dot.className = `qi-dot ${i < qiStep ? 'done' : i === qiStep ? 'active' : ''}`;
+                dot.setAttribute('aria-label', `Show query inspector step ${i + 1}`);
+                dot.addEventListener('click', () => {
+                    qiStep = i;
+                    renderQiStepper();
+                    renderQiBody();
+                });
+                return dot;
+            }));
             document.getElementById('qi-step-label').textContent = `Step ${qiStep + 1} of ${QI_STEPS.length}`;
             document.getElementById('qi-prev').disabled = qiStep === 0;
             const nextBtn = document.getElementById('qi-next');
             if (qiStep === QI_STEPS.length - 1) {
                 nextBtn.textContent = 'Close';
-                nextBtn.onclick = closeQueryInspector;
             } else {
                 nextBtn.textContent = 'Next \u2192';
-                nextBtn.onclick = qiNextStep;
             }
         }
 
@@ -5901,6 +5927,21 @@ Cell at position R = ${r}:
         // Close on Escape key
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeQueryInspector();
+        });
+        document.getElementById('qi-overlay').addEventListener('click', closeQueryInspector);
+        document.getElementById('qi-close').addEventListener('click', closeQueryInspector);
+        document.getElementById('qi-prev').addEventListener('click', qiPrevStep);
+        document.getElementById('qi-next').addEventListener('click', () => {
+            if (qiStep === QI_STEPS.length - 1) closeQueryInspector();
+            else qiNextStep();
+        });
+        document.addEventListener('click', (event) => {
+            const button = event.target instanceof Element
+                ? event.target.closest('.qi-inspect-btn[data-qi-index]')
+                : null;
+            if (!(button instanceof HTMLElement)) return;
+            const qi = Number(button.dataset.qiIndex);
+            if (Number.isSafeInteger(qi)) openQueryInspector(qi);
         });
     </script>
 

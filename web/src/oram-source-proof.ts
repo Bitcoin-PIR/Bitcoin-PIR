@@ -2,6 +2,7 @@ import { extractSnpMeasurement, extractSnpReportData } from './bhtm-proof.js';
 import type { DatabaseProofPin } from './db-proof.js';
 import { verifyDatabaseProofAgainstPin } from './db-proof.js';
 import { bytesToHex, sha256 } from './hash.js';
+import { fetchProofArtifactBytesV1 } from './proof-artifact-fetch.js';
 
 const DB_EVIDENCE_DOMAIN = new TextEncoder().encode(
   'BitcoinPIR/attested-builder/build-evidence/v1\0',
@@ -232,7 +233,7 @@ export async function verifyOramSourceProof(
 ): Promise<OramSourceProofStatus> {
   const checks: OramSourceProofCheck[] = [];
   const mismatches: string[] = [];
-  const loader = options.artifactLoader ?? fetchArtifactBytes;
+  const loader = options.artifactLoader ?? fetchProofArtifactBytesV1;
   const manifestPath = options.manifestPath ?? DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH;
 
   try {
@@ -581,14 +582,6 @@ function compareSourceFile(
   compareNumber(`${name} bytes`, evidenceSource.bytes, pin.bytes, mismatches);
   compareNumber(`${name} records`, evidenceSource.records, pin.records, mismatches);
   compareNumber(`${name} record size`, evidenceSource.record_size, pin.recordSize, mismatches);
-}
-
-async function fetchArtifactBytes(path: string): Promise<Uint8Array> {
-  const response = await fetch(path, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`failed to load ${path}: HTTP ${response.status}`);
-  }
-  return new Uint8Array(await response.arrayBuffer());
 }
 
 async function loadJson<T>(path: string, loader: (path: string) => Promise<Uint8Array>): Promise<T> {
