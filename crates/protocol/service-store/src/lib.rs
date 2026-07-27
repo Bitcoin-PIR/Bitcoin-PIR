@@ -522,7 +522,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(NamespaceInstallOutcome::Installed)
     }
 
@@ -555,7 +555,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(NamespaceCloseOutcome::Closed)
     }
 
@@ -682,7 +682,7 @@ impl ProviderStore {
             });
         }
 
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
 
         Ok(SpendCommit {
             spend_commit_seq: committed_identity.spend_commit_seq,
@@ -814,7 +814,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)
     }
 
     /// Checks the provider-global spend key. Namespace is deliberately not part
@@ -986,7 +986,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(outcome)
     }
 
@@ -1241,6 +1241,7 @@ impl ProviderStore {
 
     fn anchor_committed_identity(
         &self,
+        connection: &Connection,
         expected: &RollbackFloorV1,
         committed: &StoreIdentity,
     ) -> StoreResult<()> {
@@ -1254,6 +1255,31 @@ impl ProviderStore {
                 store_generation: next.store_generation,
                 authority_error: error.to_string(),
             })?;
+        if current == next {
+            return Ok(());
+        }
+        validate_floor_identity(&current, &next).map_err(|error| StoreError::UnanchoredCommit {
+            store_generation: next.store_generation,
+            authority_error: error.to_string(),
+        })?;
+
+        // A later writer on this exact SQLite file may reconcile and advance
+        // the linearizable floor after our COMMIT but before our CAS response.
+        // Confirm that superseding floor against the same still-open
+        // connection which committed `next`. Accepting an arbitrary higher
+        // authority floor would be unsafe: a cloned fork could have won and
+        // advanced instead.
+        if current.store_generation > next.store_generation
+            && current.spend_commit_seq >= next.spend_commit_seq
+        {
+            return self.reconcile_rollback_floor(connection).map_err(|error| {
+                StoreError::UnanchoredCommit {
+                    store_generation: next.store_generation,
+                    authority_error: error.to_string(),
+                }
+            });
+        }
+
         validate_exact_floor(&current, &next).map_err(|error| StoreError::UnanchoredCommit {
             store_generation: next.store_generation,
             authority_error: error.to_string(),

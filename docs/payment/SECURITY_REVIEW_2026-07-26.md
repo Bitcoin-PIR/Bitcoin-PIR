@@ -323,6 +323,25 @@ independent cryptographic and implementation review is complete.
 
 ### Current verification evidence
 
+- GitHub run `30231837753` on pushed commit `394988fc` exposed a real
+  availability/acknowledgement race in the Free quota concurrency test: two
+  callers returned success for a quota of three because one committed writer
+  observed that a later writer had already advanced the rollback authority.
+  There was no over-grant. The fix confirms a superseding floor only by
+  reconciling the exact SQLite connection that performed the original COMMIT;
+  an authority advance from a cloned fork still fails closed. All 13 mutation
+  call sites pass their committing connection. Deterministic same-database and
+  cloned-fork tests pass; the independent reviewer repeated each 100 times,
+  repeated the real SQLite quota contention test 500 times with exactly three
+  successes, and reported P0/P1/P2 = 0 for this correction. The full
+  service-store suite passed 79 unit tests plus two documentation tests, and
+  warnings-as-errors clippy passed.
+- After that correction,
+  `CARGO_BUILD_JOBS=1 scripts/payment-v1-local-check.sh --full` completed with
+  exit code zero. It reran the complete offline Rust/platform, provider-process,
+  clippy, wasm32, fresh-WASM, 333-test Web, four-case vault and one-case real-
+  WASM/no-funds-issuer boundaries. New pushed GitHub CI remains authoritative
+  before merge.
 - With source edits stopped, an isolated
   `CARGO_TARGET_DIR=/tmp/bitcoinpir-final-20260727 CARGO_BUILD_JOBS=1
   scripts/payment-v1-local-check.sh --full` completed with exit code zero. It

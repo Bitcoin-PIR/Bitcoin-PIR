@@ -97,12 +97,12 @@ fn quota_is_exactly_bounded_under_concurrency() {
         }));
     }
     barrier.wait();
-    let successes = workers
+    let outcomes = workers
         .into_iter()
         .map(|worker| worker.join().unwrap())
-        .filter(|result| result.is_ok())
-        .count();
-    assert_eq!(successes, 3);
+        .collect::<Vec<_>>();
+    let successes = outcomes.iter().filter(|result| result.is_ok()).count();
+    assert_eq!(successes, 3, "unexpected outcomes: {outcomes:?}");
 }
 
 #[test]

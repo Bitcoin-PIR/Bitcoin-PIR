@@ -200,7 +200,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuSwapIntentInsertV1 {
             inserted: true,
             intent: CashuSwapIntentV1 {
@@ -338,7 +338,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(true)
     }
 
@@ -480,7 +480,7 @@ impl ProviderStore {
             true,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuSwapGrantClaimV1 {
             issued: true,
             lot: CashuCustodyLotV1 {
@@ -589,7 +589,7 @@ impl ProviderStore {
             increment_spend_sequence,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(true)
     }
 
@@ -794,7 +794,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuCustodyExportReservationV1 {
             reserved: true,
             batch: CashuCustodyExportBatchV1 {
@@ -874,7 +874,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         let mut batch = existing;
         batch.state = CashuCustodyExportStateV1::ArtifactStored;
         batch.artifact = Some(CashuCustodyExportArtifactV1 {
@@ -955,7 +955,7 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(true)
     }
 
@@ -1063,7 +1063,7 @@ impl ProviderStore {
         };
         insert_retirement_evidence(&transaction, &evidence)?;
         transaction.commit()?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
+        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuCustodySpentConfirmationV1 {
             confirmed: true,
             evidence,

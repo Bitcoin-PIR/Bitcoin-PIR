@@ -11,7 +11,7 @@ use pir_service_store::{
 };
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use tempfile::{Builder, TempDir};
 
@@ -104,6 +104,42 @@ impl RollbackFloorAuthorityV1 for MemoryRollbackAuthority {
             ));
         }
         Ok(current)
+    }
+}
+
+#[derive(Debug)]
+struct BlockFirstCompareAuthority {
+    inner: Arc<MemoryRollbackAuthority>,
+    compare_calls: AtomicUsize,
+    first_compare_entered: Arc<Barrier>,
+    release_first_compare: Arc<Barrier>,
+}
+
+impl RollbackFloorAuthorityV1 for BlockFirstCompareAuthority {
+    fn load(
+        &self,
+        provider_id: &[u8; 32],
+    ) -> Result<Option<RollbackFloorV1>, RollbackFloorAuthorityErrorV1> {
+        self.inner.load(provider_id)
+    }
+
+    fn initialize(
+        &self,
+        initial: &RollbackFloorV1,
+    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
+        self.inner.initialize(initial)
+    }
+
+    fn compare_and_advance(
+        &self,
+        expected: &RollbackFloorV1,
+        next: &RollbackFloorV1,
+    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
+        if self.compare_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first_compare_entered.wait();
+            self.release_first_compare.wait();
+        }
+        self.inner.compare_and_advance(expected, next)
     }
 }
 
@@ -200,7 +236,11 @@ fn signed_open_policy(epoch: u64, issued_at: u64) -> ServicePolicyV1 {
     .unwrap()
 }
 
-fn apply_policy(store: &ProviderStore, policy: &ServicePolicyV1, now: u64) {
+fn try_apply_policy(
+    store: &ProviderStore,
+    policy: &ServicePolicyV1,
+    now: u64,
+) -> Result<(), StoreError> {
     let verified = policy
         .verify_current_for_acquisition(
             &PROVIDER,
@@ -210,7 +250,11 @@ fn apply_policy(store: &ProviderStore, policy: &ServicePolicyV1, now: u64) {
             &SigningKey::from_bytes(&POLICY_SEED).verifying_key(),
         )
         .unwrap();
-    store.apply_verified_policy_state_v1(&verified).unwrap();
+    store.apply_verified_policy_state_v1(&verified).map(|_| ())
+}
+
+fn apply_policy(store: &ProviderStore, policy: &ServicePolicyV1, now: u64) {
+    try_apply_policy(store, policy, now).unwrap();
 }
 
 fn spend_namespace() -> NewSpendNamespace {
@@ -503,4 +547,108 @@ fn concurrent_exact_policy_application_creates_one_generation() {
     }
     assert_eq!(store.identity().unwrap().store_generation, 1);
     assert_eq!(authority.floor().unwrap().store_generation, 1);
+}
+
+#[test]
+fn superseding_anchor_on_same_database_confirms_earlier_commit() {
+    let path = TestPath::new();
+    let inner = Arc::new(MemoryRollbackAuthority::default());
+    let first_compare_entered = Arc::new(Barrier::new(2));
+    let release_first_compare = Arc::new(Barrier::new(2));
+    let authority = Arc::new(BlockFirstCompareAuthority {
+        inner: Arc::clone(&inner),
+        compare_calls: AtomicUsize::new(0),
+        first_compare_entered: Arc::clone(&first_compare_entered),
+        release_first_compare: Arc::clone(&release_first_compare),
+    });
+    let store = ProviderStore::create(
+        &path.database,
+        STORE_INSTANCE,
+        PROVIDER,
+        StoreOptions::default(),
+        authority,
+    )
+    .unwrap();
+
+    let first_store = store.clone();
+    let first = std::thread::spawn(move || {
+        try_apply_policy(&first_store, &signed_open_policy(1, 100), 150)
+    });
+    first_compare_entered.wait();
+
+    // Reconciliation anchors generation 1 for the blocked caller, then this
+    // second mutation commits and anchors generation 2 before the first CAS
+    // receives its response.
+    let second = try_apply_policy(&store, &signed_open_policy(2, 101), 150);
+    release_first_compare.wait();
+
+    assert!(second.is_ok(), "second mutation failed: {second:?}");
+    let first = first.join().unwrap();
+    assert!(first.is_ok(), "earlier commit was not confirmed: {first:?}");
+    assert_eq!(store.identity().unwrap().store_generation, 2);
+    assert_eq!(inner.floor().unwrap().store_generation, 2);
+}
+
+#[test]
+fn superseding_anchor_from_cloned_fork_does_not_confirm_losing_commit() {
+    let path = TestPath::new();
+    let inner = Arc::new(MemoryRollbackAuthority::default());
+    let first_compare_entered = Arc::new(Barrier::new(2));
+    let release_first_compare = Arc::new(Barrier::new(2));
+    let authority = Arc::new(BlockFirstCompareAuthority {
+        inner: Arc::clone(&inner),
+        compare_calls: AtomicUsize::new(0),
+        first_compare_entered: Arc::clone(&first_compare_entered),
+        release_first_compare: Arc::clone(&release_first_compare),
+    });
+    let original = ProviderStore::create(
+        &path.database,
+        STORE_INSTANCE,
+        PROVIDER,
+        StoreOptions::default(),
+        authority.clone(),
+    )
+    .unwrap();
+    copy_database_without_wal(&path.database, &path.fork);
+    let fork =
+        ProviderStore::open_existing(&path.fork, PROVIDER, StoreOptions::default(), authority)
+            .unwrap();
+
+    let original_worker = original.clone();
+    let losing = std::thread::spawn(move || {
+        try_apply_policy(&original_worker, &signed_open_policy(1, 100), 150)
+    });
+    first_compare_entered.wait();
+
+    // Different policy contents create a conflicting generation-1 lineage on
+    // the cloned file. Advancing that winning fork again must not make the
+    // blocked original commit look transitively anchored.
+    let winner_one = try_apply_policy(&fork, &signed_open_policy(1, 101), 150);
+    let winner_two = try_apply_policy(&fork, &signed_open_policy(2, 102), 150);
+    release_first_compare.wait();
+
+    assert!(
+        winner_one.is_ok(),
+        "fork generation 1 failed: {winner_one:?}"
+    );
+    assert!(
+        winner_two.is_ok(),
+        "fork generation 2 failed: {winner_two:?}"
+    );
+    assert!(matches!(
+        losing.join().unwrap(),
+        Err(StoreError::UnanchoredCommit {
+            store_generation: 1,
+            ..
+        })
+    ));
+    assert!(matches!(
+        original.identity(),
+        Err(StoreError::RollbackDetected {
+            database_generation: 1,
+            authority_generation: 2
+        })
+    ));
+    assert_eq!(fork.identity().unwrap().store_generation, 2);
+    assert_eq!(inner.floor().unwrap().store_generation, 2);
 }

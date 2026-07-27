@@ -122,6 +122,40 @@ Chromium multi-tab vault cases, and the generated-WASM/real-loopback-issuer
 case. Its two opt-in CLN Playwright cases were intentionally skipped because
 the default full run never starts a Lightning node.
 
+The first pushed closeout commit (`394988fc`) then exposed a real
+rollback-floor acknowledgement race in GitHub run `30231837753`: the Free
+quota concurrency test expected three successful callers but observed two.
+The database never over-granted quota. Instead, writer A committed generation
+1, writer B reconciled and advanced the same database through generation 2,
+and writer A's delayed authority CAS response conservatively reported its
+already-committed mutation as unanchored.
+
+The correction passes the exact still-open SQLite connection that performed
+each COMMIT into post-commit anchoring. A superseding authority floor is
+accepted only after that same connection reconciles to the stable, identical
+lineage; an authority advance from a cloned database fork remains fail closed.
+All 13 provider-store mutation call sites use this boundary. Deterministic
+tests cover both same-database transitive confirmation and a conflicting
+cloned-fork rejection. Independent review repeated each new test 100 times,
+repeated the real SQLite Free concurrency case 500 times with exactly three
+successes every time, and passed all 79 service-store unit tests, both
+service-store documentation tests and warnings-as-errors clippy.
+
+After that code correction, the following complete local command also exited
+zero:
+
+```sh
+CARGO_BUILD_JOBS=1 scripts/payment-v1-local-check.sh --full
+```
+
+It reran the complete offline Rust/platform suite, both provider-process
+boundaries, service-store 79/79 plus 2/2 documentation tests, Payment clippy,
+wasm32 and fresh WASM generation, 333 Web unit tests with two intentional
+skips, the four Chromium multi-tab cases and the generated-WASM/real-loopback-
+issuer case. The final staging-document and static-label amendments were made
+before the Web/typecheck/unit/bundle/Chromium stages. Pushed GitHub CI on the
+correcting commit remains authoritative before merge.
+
 Separate opt-in no-real-funds evidence on 2026-07-27 also passed:
 
 - `scripts/payment-v1-cln-regtest-e2e.sh
