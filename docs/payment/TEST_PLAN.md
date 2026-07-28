@@ -128,9 +128,10 @@ calls the production provider/issuer Store adapters to exercise correct-domain
 opens and a crossed provider authority. It independently stops one provider
 authority backend and then the issuer authority backend while each TLS edge
 continues listening: the affected Store returns
-`RollbackAuthorityUnavailable`, the other two business domains remain usable,
-and restart against the original authority database recovers the exact issuer
-store generation and commitment. A separate stale-provider-authority case first
+`RollbackAuthorityUnavailable`, while the other two Stores remain independently
+openable and authenticated through their own authorities. Restart against the
+original authority database recovers the exact issuer store generation and
+commitment. A separate stale-provider-authority case first
 proves that the restored backup returns an authenticated empty floor, and the
 provider adapter then requires the exact `RollbackFloorMissing` result.
 Restoring the current database is required for recovery. This test does **not**
@@ -192,14 +193,17 @@ cargo test --locked --offline -p bitcoinpir-directory-relay \
 ```
 
 Two copies of the repository's production `bitcoinpir-directory-relay` binary
-use different owner-only configs, loopback ports, SQLite files and runtimes. A
-real WebSocket client publishes and cryptographically verifies the same complete
-16-shard catalog from both, proves both stale-head views remain independently
-valid before requiring the exact split-view rejection, rejects one-relay-offline,
-resolves a lost positive ACK with bounded-backoff ID readback plus idempotent
-same-event retry, and verifies independent restart recovery. The test
-deliberately does not infer relay-operator or host independence from local
-process separation.
+use different owner-only configs, SQLite files and runtimes, plus four distinct
+loopback listeners: one public read lane and one private publisher lane per
+relay. A real WebSocket client sends every signed `EVENT` through a publisher
+lane and every `REQ`/`EOSE` readback through the corresponding public lane. It
+cryptographically verifies the same complete 16-shard catalog from both,
+proves both stale-head views remain independently valid before requiring the
+exact split-view rejection, rejects one-relay-offline, resolves a lost positive
+ACK with a public-lane bounded-backoff ID barrier followed by an idempotent
+same-event publisher-lane retry, and verifies both listeners return after each
+independent process restart. The test deliberately does not infer relay-operator
+or host independence from local process separation.
 
 A separate non-default Standard Cashu process test is implemented and wired
 into Payment CI:
