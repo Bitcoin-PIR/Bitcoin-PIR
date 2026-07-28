@@ -34,6 +34,17 @@ separate authority hosts, service accounts, TLS keys, Ed25519 keys, namespaces,
 administrators, logs, and backup/restore domains. Co-location is permitted only
 for an explicitly non-production exercise.
 
+Each `edge-rollback-authority-v1` instance is also network-specific. Its Caddy
+listener binds one reviewed RFC1918/ULA address, systemd denies every address
+except loopback and the sole client's exact private IP, and the rendered
+profile closes over a static TLS certificate and owner-only key. The existing
+rollback client verifies WebPKI plus the configured leaf SPKI pin and signs the
+application request; it currently has no TLS client-certificate support. Do
+not turn on server-side mTLS alone. V1 therefore requires a narrow WireGuard or
+equivalent routed private link, the exact client-IP filter, and the
+`ROLLBACK-AUTHORITY-PRIVATE-INGRESS-APPROVED` sentinel. A later mTLS design must
+add client certificate/key custody and real-handshake tests atomically.
+
 ## Frozen active-service boundary
 
 This preparation does not modify or replace:
@@ -183,6 +194,12 @@ separate activation gates.
 The directory publisher key is a dedicated offline BIP340 key and is never
 installed on the relay. The relay sees only public signed directory events; it
 must accept writes only from the pinned publisher and only kind `30078`.
+The production publisher URL remains a canonical credential-free `wss://`
+hostname because `bpir-admin directory publish` uses WebPKI server
+authentication and no client certificate. Split DNS or an explicit private
+route resolves that hostname to the relay's private bind; Caddy and HAProxy
+both require the separately approved exact publisher-client address before the
+relay performs the signed-event check.
 
 `deploy/payment-v1/relay-selection.toml.example` deliberately starts with
 `status = "UNRESOLVED"`. While unresolved, the relay service has
@@ -202,10 +219,10 @@ Mutable branches, mutable container tags, `nostr-rs-relay` 0.9.0 at
 `b5c1f642e4f4c3b9c54f5d18d66f4c53642076b4` fail the repository gate. No
 generic third-party relay template is supplied.
 
-A resolved relay must bind its application listener to loopback, use a
-same-host WSS edge, disable access/event/body/IP logging, disable NIP-42 for the
-current publisher, retain the NIP-01 addressable-event replacement ordering,
-and enforce the
+A resolved relay must bind distinct public-reader and private-publisher
+application listeners to loopback, use the same-host WSS edge, disable
+access/event/body/IP logging, disable NIP-42 for the current publisher, retain
+the NIP-01 addressable-event replacement ordering, and enforce the
 BitcoinPIR bounds: 262,176-byte outer EVENT message, 192 KiB content, kind
 30078, and a deployment-config size no greater than 16 KiB. At least two relay
 hostnames are still required for directory use; two aliases on one Hetzner host
@@ -214,10 +231,10 @@ do not provide operator or failure independence.
 The reviewed process interface is intentionally narrow: exactly
 `bitcoinpir-directory-relay --config /absolute/owner-only.toml`, with no CLI
 overrides. The TOML must declare `profile = "bitcoinpir-directory-relay-v1"` and
-contain exactly the required fields `profile`, `listen`, `database`,
-`directory_pubkey_hex`, `max_connections`, `max_in_flight_operations`,
-`max_operations_per_second`, `max_egress_bytes_per_second`,
-`max_egress_bytes_per_connection`, `max_archive_events`, `max_archive_bytes`,
+contain exactly `public_listen`, `publisher_listen`, `database`,
+`directory_pubkey_hex`, the four global connection/operation/rate/egress caps,
+matching `max_public_*` and `max_publisher_*` reservations whose exact sums
+equal each global cap, `max_egress_bytes_per_connection`, `max_archive_events`, `max_archive_bytes`,
 `handshake_timeout_seconds`, `idle_timeout_seconds`,
 `connection_timeout_seconds`, `operation_timeout_seconds`, and
 `egress_timeout_seconds`; unknown fields and missing fields fail closed.
@@ -226,7 +243,11 @@ unit's only writable StateDirectory at
 `/var/lib/bitcoinpir-directory-relay/relay.sqlite3`. The config must be mode
 0400 or 0600 under a private parent directory.
 
-The relay reserves the exact complete snapshot response against a per-
+The relay has separate public-read and private-publisher accept loops and
+acquires a lane reservation before a shared global reservation. The public
+listener rejects EVENT writes; the publisher listener rejects REQ reads. This
+prevents public load from consuming the publisher's connection, operation,
+rate, or egress allocation. The relay reserves the exact complete snapshot response against a per-
 connection cumulative byte budget before sending its first EVENT, and applies
 a separate process-wide egress byte rate. The example intentionally does not
 allow the event-count and maximum-event-size dimensions to be saturated at the
@@ -308,19 +329,51 @@ activation actions and require separate approval.
 
 ## Rendering and preflight
 
-### P1 activation blocker: source-fair admission
+### P1 activation blocker: live source-fair evidence
 
-The supplied stock-Caddy templates have only global upstream connection caps;
-the issuer, relay and rollback-authority applications also use global budgets.
-A single low-bandwidth source can therefore starve anonymous quote creation,
-directory read/publish capacity, or rollback-floor calls without possessing a
-credential. Do not publicly activate these surfaces until the reviewed host or
-network layer supplies ephemeral source-fair admission without request/IP
-logging or source headers to the business services. Reserve a distinct private
-publisher ingress/budget for the directory, and place every rollback authority
-behind its one client's WireGuard, mTLS or equivalent narrow allowlist. These
-controls and their negative tests are required live deployment evidence, not a
-commercial pricing decision.
+The source tree now supplies a pinned-stock-Caddy front and pinned-HAProxy-2.8
+source-fair layer. Caddy sends PROXY v2 only over four protected Unix sockets;
+HAProxy keeps independent two-minute memory-only provider, issuer,
+quote-source/global, public-directory, and private-publisher buckets, then
+opens a source-free loopback connection to each business service. There is no
+header fallback, log, peers section, stats socket, StateDirectory, server-state
+file, or source-state recovery. The publisher uses a different private bind,
+an exact WireGuard/private-route client-IP check in both Caddy and HAProxy, a
+WebPKI server certificate, a dedicated ingress-approval sentinel, a separate
+application listener and stick table, and a reserved application budget.
+Rollback authorities remain outside the public HAProxy behind their one
+client's private boundary.
+The public and publisher sites nevertheless share one pinned Caddy process and
+its process-level CPU/memory/task/file budget, while all lanes share one
+HAProxy process/cgroup despite distinct frontend budgets. Public pre-routing
+TCP/TLS or HAProxy process-level pressure can therefore reduce publisher
+availability. Treat that as an explicit V1 residual risk, or split both
+publisher edge layers into separately rendered and evidenced units when a hard
+availability boundary is required.
+The two relay lanes also share one process and mutex-protected SQLite store;
+their reservations isolate admission capacity but not the duration of an
+already-running database operation.
+Both edge units require effective `StandardOutput=null` and
+`StandardError=null`, closing the remaining journald path for request errors
+that might contain a live peer address. They also set `LimitCORE=0` and
+`MemorySwapMax=0`; rendered/live checks bind hard and soft core limits, current
+and maximum cgroup swap, and reject drift. Linux can ignore `RLIMIT_CORE` when
+`kernel.core_pattern` names a pipe handler, so edge live evidence additionally
+requires the exact host policy `kernel.core_pattern=|/usr/bin/false` and binds
+that handler's canonical root-owned bytes and metadata into the trusted-command
+evidence. A default systemd-coredump or apport pipe is not accepted as
+non-persistent evidence.
+
+The code does not by itself clear this P1 blocker. Before public activation,
+the exact rendered Linux host must prove both units active, the volatile
+directory `0750`, all four sockets `0660` with the source-fair UID/GID, exact
+NSS/supplementary-group membership, effective memory/task/file limits, and no
+drop-ins. It must also prove zero current/max swap, zero hard/soft core limits,
+and the safe host core pattern. The exact pinned Caddy and HAProxy binaries must pass the real
+fairness/leak suite without skipped tests. HAProxy sees traffic only after
+Caddy accepts TCP/TLS and parses HTTP, so separate Caddy-front slowloris,
+header, handshake, firewall, and volumetric evidence is also mandatory. These
+are availability/privacy controls, not commercial pricing policy.
 
 1. Freeze exact BitcoinPIR commit, binaries, policies, directory artifacts,
    authority metadata and key-role inventory.
@@ -342,11 +395,27 @@ commercial pricing decision.
    `rollback-authority-deployment-lint` before any listener starts.
 7. Confirm provider, issuer and authority application origins are loopback;
    confirm same-host TLS edges have no redirects, access logs, identity headers
-   or unpinned certificate path.
+   or unpinned certificate path. For the public Hetzner edge, run
+   `payment-v1-source-fair-edge.test.mjs` with the exact pinned Caddy and
+   HAProxy binaries and treat any skip as failure. The HAProxy binary must be a
+   currently maintained 2.8.x build with `+SYSTEMD` in `haproxy -vv`, because
+   the unit uses `Type=notify` and `-Ws`; the CI package is only compatibility
+   evidence. Confirm the publisher bind and client address are distinct,
+   same-family RFC1918/ULA addresses; the static certificate is a WebPKI chain
+   for the canonical publisher hostname; Caddy and HAProxy reject every other
+   direct/PROXY source; the private route prevents source spoofing; the
+   publisher-private-ingress sentinel is present only after that review; and
+   rollback port 8099 is absent from HAProxy. For every rollback edge, confirm
+   the private bind, exact sole-client IP filter, static TLS/SPKI pin, and
+   private-ingress sentinel; do not claim mTLS with the current client.
 8. Start private/unrouted canaries. Verify identity, binary/attestation,
    database proof/root, signed policy, remote rollback failure behavior and
    exact method/scope matching from a strict client.
-9. Publish directory artifacts only after every advertised live value matches.
+9. Collect root Linux evidence after both edge units are active; require the
+   exact runtime directory/socket type, owner, group and mode records plus
+   effective `MemoryMax`/`TasksMax`, zero current/max swap, zero hard/soft core
+   limits, and `kernel.core_pattern=|/usr/bin/false`. Publish directory artifacts only after
+   every advertised live value matches.
 10. Provision an activation sentinel and change public routing only under the
     separately approved activation plan.
 

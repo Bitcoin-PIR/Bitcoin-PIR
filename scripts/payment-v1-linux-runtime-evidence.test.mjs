@@ -17,6 +17,7 @@ import {
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const COLLECTOR = join(SCRIPT_DIRECTORY, "payment-v1-linux-runtime-evidence.mjs");
 const COMMANDS = [
+  "/usr/bin/false",
   "/usr/bin/getent",
   "/usr/bin/getfacl",
   "/usr/bin/getfattr",
@@ -58,8 +59,11 @@ function fixture() {
       AmbientCapabilities: [""],
       CapabilityBoundingSet: [""],
       Group: ["bitcoinpir-test"],
+      LimitCORE: ["0"],
       LockPersonality: ["true"],
       MemoryDenyWriteExecute: ["true"],
+      MemoryMax: ["268435456"],
+      MemorySwapMax: ["0"],
       NoNewPrivileges: ["true"],
       PrivateDevices: ["true"],
       PrivateTmp: ["true"],
@@ -75,8 +79,11 @@ function fixture() {
       RestrictNamespaces: ["true"],
       RestrictRealtime: ["true"],
       RestrictSUIDSGID: ["true"],
+      StandardError: ["null"],
+      StandardOutput: ["null"],
       SupplementaryGroups: ["bitcoinpir-shared"],
       SystemCallArchitectures: ["native"],
+      TasksMax: ["128"],
       Type: ["simple"],
       UMask: ["0077"],
       User: ["bitcoinpir-test"],
@@ -94,6 +101,13 @@ function fixture() {
     deployment_profile: "test",
     installed_files: installedFiles,
     manifest_sha256: hash("manifest"),
+    runtime_paths: [{
+      file_type: "socket",
+      gid: 731,
+      mode: "0660",
+      target_path: "/run/bitcoinpir-test/service.sock",
+      uid: 730,
+    }],
     schema_version: 1,
     secret_files: [],
     service_identities: [{
@@ -137,8 +151,13 @@ function fixture() {
     LoadCredential: "",
     LoadState: "loaded",
     LockPersonality: "yes",
+    LimitCORE: "0",
+    LimitCORESoft: "0",
     MainPID: "4242",
     MemoryDenyWriteExecute: "yes",
+    MemoryMax: "268435456",
+    MemorySwapCurrent: "0",
+    MemorySwapMax: "0",
     NoNewPrivileges: "yes",
     PrivateDevices: "yes",
     PrivateTmp: "yes",
@@ -162,9 +181,12 @@ function fixture() {
     RootDirectory: "",
     RootImage: "",
     SetCredential: "",
+    StandardError: "null",
+    StandardOutput: "null",
     SubState: "running",
     SupplementaryGroups: "bitcoinpir-shared",
     SystemCallArchitectures: "native",
+    TasksMax: "128",
     Type: "simple",
     UMask: "0077",
     User: "bitcoinpir-test",
@@ -219,6 +241,7 @@ function fixture() {
     evidence_kind: LIVE_EVIDENCE_KIND,
     host: {
       boot_id: boot,
+      core_pattern: "|/usr/bin/false",
       kernel_release: "6.8.0-test",
       machine_id_sha256: machine,
       systemd_version: "systemd 257",
@@ -230,10 +253,10 @@ function fixture() {
     nss: {
       groups: [
         { gid: 731, members: [], name: "bitcoinpir-test" },
-        { gid: 732, members: [], name: "bitcoinpir-shared" },
+        { gid: 732, members: ["bitcoinpir-test"], name: "bitcoinpir-shared" },
       ],
       users: [
-        { name: "bitcoinpir-test", primary_gid: 731, supplementary_gids: [731], uid: 730 },
+        { name: "bitcoinpir-test", primary_gid: 731, supplementary_gids: [731, 732], uid: 730 },
       ],
     },
     runtime_directories: [
@@ -256,6 +279,22 @@ function fixture() {
         xattr_sha256: hash("dir-xattr"),
       },
     ],
+    runtime_paths: [{
+      acl_sha256: hash("socket-acl"),
+      capability_sha256: hash(""),
+      dev: "1",
+      expected_type: "socket",
+      file_type: "socket",
+      gid: 731,
+      ino: "300",
+      mode: "0660",
+      nlink: 1,
+      size: 0,
+      stat_command_sha256: hash("socket-stat"),
+      target_path: "/run/bitcoinpir-test/service.sock",
+      uid: 730,
+      xattr_sha256: hash("socket-xattr"),
+    }],
     schema_version: 1,
     secret_access_checks: [],
     secret_parent_directories: [],
@@ -360,7 +399,8 @@ function secretIsolationFixture() {
     user_name: "bitcoinpir-z-peer",
   });
   value.evidence.nss.groups.push({ gid: 734, members: [], name: "bitcoinpir-z-peer" });
-  value.evidence.nss.users.push({ name: "bitcoinpir-z-peer", primary_gid: 734, supplementary_gids: [734], uid: 733 });
+  value.evidence.nss.groups.find((group) => group.gid === 731).members.push("bitcoinpir-z-peer");
+  value.evidence.nss.users.push({ name: "bitcoinpir-z-peer", primary_gid: 734, supplementary_gids: [731, 734], uid: 733 });
 
   const peerFragment = { file_type: "regular", gid: 0, mode: "0644", nlink: 1, sha256: hash("peer-fragment"), target_path: peerUnit.fragment_path, uid: 0 };
   value.request.installed_files.push(peerFragment);
@@ -508,10 +548,19 @@ for (const [label, mutate, expected] of [
   ["root image", (f) => { f.evidence.units[0].properties.RootImage = "/tmp/root.img"; }, /RootImage/],
   ["file hash", (f) => { f.evidence.installed_files[0].sha256 = hash("evil"); }, /sha256 drift/],
   ["tmpfiles mode", (f) => { f.evidence.runtime_directories[0].mode = "0777"; }, /tmpfiles directory drift/],
-  ["unexpected issuer group", (f) => { f.evidence.nss.users[0].supplementary_gids.push(999); }, /unexpected supplementary group/],
+  ["runtime socket mode", (f) => { f.evidence.runtime_paths[0].mode = "0666"; }, /runtime path mode drift/],
+  ["unexpected issuer group", (f) => { f.evidence.nss.users[0].supplementary_gids.push(999); }, /unexpected supplementary group|reverse group membership/],
   ["inactive unit", (f) => { f.evidence.units[0].properties.ActiveState = "inactive"; }, /not active/],
   ["zero MainPID", (f) => { f.evidence.units[0].properties.MainPID = "0"; }, /no active MainPID/],
   ["effective Restart drift", (f) => { f.evidence.units[0].properties.Restart = "on-failure"; }, /Restart drift/],
+  ["effective LimitCORE drift", (f) => { f.evidence.units[0].properties.LimitCORE = "infinity"; }, /LimitCORE drift/],
+  ["effective LimitCORESoft drift", (f) => { f.evidence.units[0].properties.LimitCORESoft = "infinity"; }, /LimitCORESoft drift/],
+  ["effective MemoryMax drift", (f) => { f.evidence.units[0].properties.MemoryMax = "infinity"; }, /MemoryMax drift/],
+  ["effective MemorySwapCurrent drift", (f) => { f.evidence.units[0].properties.MemorySwapCurrent = "1"; }, /MemorySwapCurrent drift/],
+  ["effective MemorySwapMax drift", (f) => { f.evidence.units[0].properties.MemorySwapMax = "infinity"; }, /MemorySwapMax drift/],
+  ["effective TasksMax drift", (f) => { f.evidence.units[0].properties.TasksMax = "infinity"; }, /TasksMax drift/],
+  ["effective StandardOutput drift", (f) => { f.evidence.units[0].properties.StandardOutput = "journal"; }, /StandardOutput drift/],
+  ["effective StandardError drift", (f) => { f.evidence.units[0].properties.StandardError = "journal"; }, /StandardError drift/],
   ["MainPID confirmation race", (f) => { f.evidence.units[0].generation_confirmations[1].main_pid = "4243"; }, /MainPID or InvocationID changed/],
   ["InvocationID generation race", (f) => { f.evidence.units[0].generation_confirmations[1].invocation_id = "b".repeat(32); }, /MainPID or InvocationID changed/],
   ["proc starttime race", (f) => { f.evidence.units[0].process_identity.start_time_ticks_after = "123457"; }, /restart race/],
@@ -529,6 +578,13 @@ for (const [label, mutate, expected] of [
     assert.throws(() => validate(value), expected);
   });
 }
+
+test("edge live evidence rejects a core pipe that can persist request-source memory", () => {
+  const value = fixture();
+  value.request.deployment_profile = "edge-hetzner-v1";
+  value.evidence.host.core_pattern = "|/usr/lib/systemd/systemd-coredump";
+  assert.throws(() => validate(value), /kernel\.core_pattern=\|\/usr\/bin\/false/);
+});
 
 test("live verifier rejects replay, foreign host, foreign boot, and forged challenge", () => {
   const stale = fixture();

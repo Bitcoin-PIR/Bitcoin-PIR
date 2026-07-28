@@ -30,6 +30,7 @@
 }
 
 @PROVIDER_WSS_HOST@ {
+	bind @PUBLIC_HTTPS_BIND@
 	@provider_ws {
 		method GET
 		path /v1/pir
@@ -45,7 +46,7 @@
 		request_body {
 			max_size 1KiB
 		}
-		reverse_proxy 127.0.0.1:8191 {
+		reverse_proxy unix//run/bitcoinpir-source-fair-edge/provider.sock {
 			header_up -*
 			header_up Host @PROVIDER_WSS_HOST@
 			header_up Connection Upgrade
@@ -56,6 +57,7 @@
 			flush_interval -1
 			transport http {
 				versions 1.1
+				proxy_protocol v2
 				dial_timeout 3s
 				response_header_timeout 10s
 				max_response_header 16KiB
@@ -72,6 +74,7 @@
 }
 
 @PAYMENT_ISSUER_HTTPS_HOST@ {
+	bind @PUBLIC_HTTPS_BIND@
 	@issuer_quote_keys {
 		method GET OPTIONS
 		header Host @PAYMENT_ISSUER_HTTPS_HOST@
@@ -90,51 +93,27 @@
 		path_regexp issuer_action ^/v1/quotes/[0-9a-f]{64}/(status|claim)$
 		expression {http.request.uri.query} == ""
 	}
-		@issuer_provider_call {
-			method POST
-			header Host @PAYMENT_ISSUER_HTTPS_HOST@
-			path /v1/redeems /v1/settlement/balance
-			expression {http.request.uri.query} == ""
-		}
+	@issuer_provider_call {
+		method POST
+		header Host @PAYMENT_ISSUER_HTTPS_HOST@
+		path /v1/redeems /v1/settlement/balance
+		expression {http.request.uri.query} == ""
+	}
 
 	handle @issuer_quote_keys {
 		request_body {
 			max_size 66445B
 		}
-		reverse_proxy 127.0.0.1:5610 {
+		reverse_proxy unix//run/bitcoinpir-source-fair-edge/issuer.sock {
+			header_up -*
 			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
 			header_up Connection close
-			header_up -Accept
-			header_up -Accept-Encoding
-			header_up -Accept-Language
-			header_up -Authorization
-			header_up -Baggage
-			header_up -Cookie
-			header_up -DNT
-			header_up -Forwarded
-			header_up -Priority
-			header_up -Proxy-Authorization
-			header_up -Referer
-			header_up -Sec-CH-UA
-			header_up -Sec-CH-UA-Mobile
-			header_up -Sec-CH-UA-Platform
-			header_up -Sec-Fetch-Dest
-			header_up -Sec-Fetch-Mode
-			header_up -Sec-Fetch-Site
-			header_up -Sec-Fetch-User
-			header_up -Traceparent
-			header_up -Tracestate
-			header_up -User-Agent
-			header_up -Via
-			header_up -X-Correlation-ID
-			header_up -X-Forwarded-For
-			header_up -X-Forwarded-Host
-			header_up -X-Forwarded-Proto
-			header_up -X-Real-IP
-			header_up -X-Request-ID
+			header_up Content-Type {http.request.header.Content-Type}
+			header_up Origin {http.request.header.Origin}
 			header_down -Via
 			transport http {
 				versions 1.1
+				proxy_protocol v2
 				dial_timeout 3s
 				response_header_timeout 15s
 				read_timeout 15s
@@ -151,40 +130,16 @@
 		request_body {
 			max_size 66445B
 		}
-		reverse_proxy 127.0.0.1:5610 {
+		reverse_proxy unix//run/bitcoinpir-source-fair-edge/issuer.sock {
+			header_up -*
 			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
 			header_up Connection close
-			header_up -Accept
-			header_up -Accept-Encoding
-			header_up -Accept-Language
-			header_up -Authorization
-			header_up -Baggage
-			header_up -Cookie
-			header_up -DNT
-			header_up -Forwarded
-			header_up -Priority
-			header_up -Proxy-Authorization
-			header_up -Referer
-			header_up -Sec-CH-UA
-			header_up -Sec-CH-UA-Mobile
-			header_up -Sec-CH-UA-Platform
-			header_up -Sec-Fetch-Dest
-			header_up -Sec-Fetch-Mode
-			header_up -Sec-Fetch-Site
-			header_up -Sec-Fetch-User
-			header_up -Traceparent
-			header_up -Tracestate
-			header_up -User-Agent
-			header_up -Via
-			header_up -X-Correlation-ID
-			header_up -X-Forwarded-For
-			header_up -X-Forwarded-Host
-			header_up -X-Forwarded-Proto
-			header_up -X-Real-IP
-			header_up -X-Request-ID
+			header_up Content-Type {http.request.header.Content-Type}
+			header_up Origin {http.request.header.Origin}
 			header_down -Via
 			transport http {
 				versions 1.1
+				proxy_protocol v2
 				dial_timeout 3s
 				response_header_timeout 15s
 				read_timeout 15s
@@ -201,40 +156,16 @@
 		request_body {
 			max_size 66445B
 		}
-		reverse_proxy 127.0.0.1:5610 {
+		reverse_proxy unix//run/bitcoinpir-source-fair-edge/issuer.sock {
+			header_up -*
 			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
 			header_up Connection close
-			header_up -Accept
-			header_up -Accept-Encoding
-			header_up -Accept-Language
-			header_up -Authorization
-			header_up -Baggage
-			header_up -Cookie
-			header_up -DNT
-			header_up -Forwarded
-			header_up -Priority
-			header_up -Proxy-Authorization
-			header_up -Referer
-			header_up -Sec-CH-UA
-			header_up -Sec-CH-UA-Mobile
-			header_up -Sec-CH-UA-Platform
-			header_up -Sec-Fetch-Dest
-			header_up -Sec-Fetch-Mode
-			header_up -Sec-Fetch-Site
-			header_up -Sec-Fetch-User
-			header_up -Traceparent
-			header_up -Tracestate
-			header_up -User-Agent
-			header_up -Via
-			header_up -X-Correlation-ID
-			header_up -X-Forwarded-For
-			header_up -X-Forwarded-Host
-			header_up -X-Forwarded-Proto
-			header_up -X-Real-IP
-			header_up -X-Request-ID
+			header_up Content-Type {http.request.header.Content-Type}
+			header_up Origin {http.request.header.Origin}
 			header_down -Via
 			transport http {
 				versions 1.1
+				proxy_protocol v2
 				dial_timeout 3s
 				response_header_timeout 15s
 				read_timeout 15s
@@ -251,40 +182,16 @@
 		request_body {
 			max_size 66445B
 		}
-		reverse_proxy 127.0.0.1:5610 {
+		reverse_proxy unix//run/bitcoinpir-source-fair-edge/issuer.sock {
+			header_up -*
 			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
 			header_up Connection close
-			header_up -Accept
-			header_up -Accept-Encoding
-			header_up -Accept-Language
-			header_up -Authorization
-			header_up -Baggage
-			header_up -Cookie
-			header_up -DNT
-			header_up -Forwarded
-			header_up -Priority
-			header_up -Proxy-Authorization
-			header_up -Referer
-			header_up -Sec-CH-UA
-			header_up -Sec-CH-UA-Mobile
-			header_up -Sec-CH-UA-Platform
-			header_up -Sec-Fetch-Dest
-			header_up -Sec-Fetch-Mode
-			header_up -Sec-Fetch-Site
-			header_up -Sec-Fetch-User
-			header_up -Traceparent
-			header_up -Tracestate
-			header_up -User-Agent
-			header_up -Via
-			header_up -X-Correlation-ID
-			header_up -X-Forwarded-For
-			header_up -X-Forwarded-Host
-			header_up -X-Forwarded-Proto
-			header_up -X-Real-IP
-			header_up -X-Request-ID
+			header_up Content-Type {http.request.header.Content-Type}
+			header_up Origin {http.request.header.Origin}
 			header_down -Via
 			transport http {
 				versions 1.1
+				proxy_protocol v2
 				dial_timeout 3s
 				response_header_timeout 15s
 				read_timeout 15s
@@ -302,6 +209,7 @@
 	}
 }
 @DIRECTORY_RELAY_WSS_HOST@ {
+	bind @PUBLIC_HTTPS_BIND@
 	@directory_ws {
 		method GET
 		path /v1/directory
@@ -317,7 +225,7 @@
 		request_body {
 			max_size 1KiB
 		}
-		reverse_proxy 127.0.0.1:8080 {
+		reverse_proxy unix//run/bitcoinpir-source-fair-edge/directory-public.sock {
 			header_up -*
 			header_up Host @DIRECTORY_RELAY_WSS_HOST@
 			header_up Connection Upgrade
@@ -328,10 +236,62 @@
 			flush_interval -1
 			transport http {
 				versions 1.1
+				proxy_protocol v2
 				dial_timeout 3s
 				response_header_timeout 10s
 				max_response_header 16KiB
 				max_conns_per_host 64
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle {
+		respond "" 404
+	}
+}
+
+# Publisher ingress is bound to a different private host interface and admits
+# only the publisher's exact WireGuard/private-route source address. The public
+# directory hostname never routes to this socket. Signed-event verification by
+# the relay remains the publication authority.
+@DIRECTORY_PUBLISHER_HTTPS_HOST@ {
+	bind @DIRECTORY_PUBLISHER_PRIVATE_BIND@
+	tls /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.crt /etc/bitcoinpir/payment-v1/edge/directory-publisher-server.key
+
+	@directory_publisher_ws {
+		remote_ip @DIRECTORY_PUBLISHER_CLIENT_IP@
+		method GET
+		path /v1/directory
+		header Host @DIRECTORY_PUBLISHER_HTTPS_HOST@
+		header Connection *Upgrade*
+		header Upgrade websocket
+		header Sec-WebSocket-Version 13
+		header_regexp Sec-WebSocket-Key ^[A-Za-z0-9+/]{22}==$
+		expression {http.request.uri} == "/v1/directory"
+	}
+
+	handle @directory_publisher_ws {
+		request_body {
+			max_size 1KiB
+		}
+		reverse_proxy unix//run/bitcoinpir-source-fair-edge/directory-publisher.sock {
+			header_up -*
+			header_up Host @DIRECTORY_PUBLISHER_HTTPS_HOST@
+			header_up Connection Upgrade
+			header_up Upgrade websocket
+			header_up Sec-WebSocket-Version 13
+			header_up Sec-WebSocket-Key {http.request.header.Sec-WebSocket-Key}
+			header_down -Via
+			flush_interval -1
+			transport http {
+				versions 1.1
+				proxy_protocol v2
+				dial_timeout 3s
+				response_header_timeout 10s
+				max_response_header 16KiB
+				max_conns_per_host 4
 				keepalive off
 				compression off
 			}
