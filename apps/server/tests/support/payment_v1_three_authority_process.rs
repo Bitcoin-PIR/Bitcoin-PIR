@@ -5,6 +5,8 @@
 //! endpoint, authority child-test-harness process, and TLS-edge child process.
 //! Each authority harness invokes production `rollback_authority::run`; the
 //! parent test calls the production provider/issuer Store adapters directly.
+//! Provider and issuer authority backends are stopped independently while the
+//! other two business domains remain usable, then recovered from original state.
 //! It does not launch `unified_server`, `payment-issuer`, or an installed
 //! binary. This proves only local process/file separation, not separate
 //! operators, hosts, networks, or backups.
@@ -321,7 +323,10 @@ fn three_authority_real_process_topology_e2e() {
     // while provider 1 fails closed even though its TLS edge still listens.
     let _ = authority1.stop();
     open_provider_store(&provider0, &provider0_store).expect("provider0 remains available");
-    open_issuer_store(&issuer, &issuer_store).expect("issuer remains available");
+    let issuer_identity_before_outage = open_issuer_store(&issuer, &issuer_store)
+        .expect("issuer remains available")
+        .identity()
+        .expect("read issuer identity before its authority outage");
     assert_remote_read_error(
         &provider1.remote_config,
         provider1.business_id,
@@ -338,6 +343,37 @@ fn three_authority_real_process_topology_e2e() {
     let authority1 = spawn_authority(&provider1, root.path(), 1);
     open_provider_store(&provider1, &provider1_store)
         .expect("provider1 recovers against its durable authority database");
+
+    // Stop only the issuer's authority backend while its TLS edge continues to
+    // listen. Both provider authority domains remain usable, while the issuer
+    // fails closed instead of trusting only its detailed SQLite database.
+    let _ = authority_issuer.stop();
+    open_provider_store(&provider0, &provider0_store)
+        .expect("provider0 remains available during issuer authority outage");
+    open_provider_store(&provider1, &provider1_store)
+        .expect("provider1 remains available during issuer authority outage");
+    assert_remote_read_error(
+        &issuer.remote_config,
+        issuer.business_id,
+        "offline issuer authority backend",
+        RemoteAuthorityCallErrorV1::OutcomeUnknown,
+    );
+    assert!(
+        matches!(
+            open_issuer_store(&issuer, &issuer_store),
+            Err(pir_issuer_store::StoreError::RollbackAuthorityUnavailable(_))
+        ),
+        "offline issuer authority must return RollbackAuthorityUnavailable, not fall back to local SQLite"
+    );
+    let authority_issuer = spawn_authority(&issuer, root.path(), 1);
+    let issuer_identity_after_recovery = open_issuer_store(&issuer, &issuer_store)
+        .expect("issuer recovers against its durable authority database")
+        .identity()
+        .expect("read issuer identity after authority recovery");
+    assert_eq!(
+        issuer_identity_after_recovery, issuer_identity_before_outage,
+        "issuer authority restart must recover the exact same store generation and commitment"
+    );
 
     // Restore provider 0's pre-initialization authority backup. The detailed
     // provider store requires a current remote floor and rejects Empty. Then

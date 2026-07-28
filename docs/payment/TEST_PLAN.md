@@ -125,14 +125,18 @@ deployment-set validator rejects repeated pins or namespaces; raw remote
 clients prove wrong-pin, unprovisioned-client and cross-domain configurations
 fail with their exact remote-call classifications. The parent test directly
 calls the production provider/issuer Store adapters to exercise correct-domain
-opens, a crossed provider authority, one offline authority and a stale authority
-backup; the raw client first proves that the restored stale authority returns
-an authenticated empty floor, and the provider adapter then requires the exact
-`RollbackFloorMissing` result. Restoring the current database is required for
-recovery. This test does **not** launch `unified_server`, `payment-issuer`, or an
-installed authority binary. It is a single-host process/file topology test and
-does not establish different operators, machines, administrative domains or
-backup custody.
+opens and a crossed provider authority. It independently stops one provider
+authority backend and then the issuer authority backend while each TLS edge
+continues listening: the affected Store returns
+`RollbackAuthorityUnavailable`, the other two business domains remain usable,
+and restart against the original authority database recovers the exact issuer
+store generation and commitment. A separate stale-provider-authority case first
+proves that the restored backup returns an authenticated empty floor, and the
+provider adapter then requires the exact `RollbackFloorMissing` result.
+Restoring the current database is required for recovery. This test does **not**
+launch `unified_server`, `payment-issuer`, or an installed authority binary. It
+is a single-host process/file topology test and does not establish different
+operators, machines, administrative domains or backup custody.
 
 The corresponding issuer-binary boundary is exercised separately:
 
@@ -271,15 +275,23 @@ BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
 
 It launches a real `payment-issuer`, a redeem-only private WebPKI TLS edge, one
 real shared-BAT `unified_server`, and an independently selected Free/Open peer.
-The paid provider must verify the signed issuer origin and leaf-SPKI pin,
-redeem exactly once, accrue one ledger credit, and durably claim one local
-grant. Restart/replay cannot create a second grant. Wrong CA, wrong signed pin
-and offline issuer fail before issuer HTTP application handling and create no
-local claim or ledger account. CI additionally denies warnings for the exact
-runtime/test targets and proves the test-only WebPKI feature cannot compile in
-a release profile. The current preparation branch has static source evidence
-only until that Linux CI cell passes; it is not public ingress, production
-rollback-authority, real Lightning or payout-executor evidence.
+After reading one complete canonical issuer HTTP 200 bound to the redeem request
+digest, the test edge persists a one-shot test marker and deliberately drops
+that downstream response. This proves the issuer commit escaped its application
+boundary while the provider must fail closed with no local delivery claim. The
+issuer and provider then restart against their original stores and rollback
+floors. Replaying the identical proof must reproduce the same canonical-body,
+request and idempotency-key SHA-256 digests, recover exactly one local grant and
+leave the issuer ledger at one credit/sequence; a later replay cannot create a
+second grant. The digest transcript is a fixed-size, test-local oracle and does
+not persist the raw envelope, credential, idempotency key, HTTP metadata, peer
+address or timing. Wrong CA, wrong signed pin and offline issuer fail before
+issuer HTTP application handling and create no local claim or ledger account.
+CI additionally denies warnings for the exact runtime/test targets and proves
+the test-only WebPKI feature cannot compile in a release profile. The current
+preparation branch has static source evidence only until that Linux CI cell
+passes; it is not public ingress, production rollback-authority, real Lightning
+or payout-executor evidence.
 
 ### First-version executable path ledger
 

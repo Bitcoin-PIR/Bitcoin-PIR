@@ -673,13 +673,18 @@ BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
 
 This is the executable provider-to-shared-clearing seam: a real issuer behind
 a private signed-pin TLS edge, a real paid provider and an independent Free
-peer. It proves one issuer redemption/ledger credit, one provider-local grant,
-restart/replay at-most-once behavior, and fail-closed wrong-CA/wrong-pin/offline
-dependencies without invoice creation or real funds. It does not prove public
-source-fair ingress, independent production rollback domains, real Lightning,
-automated payout, or target-host systemd state. The source is wired into CI,
-but this preparation branch must not record a pass until the Linux cell has run
-on the exact candidate commit.
+peer. The edge reads one complete canonical issuer success, then drops that
+response after the issuer commit while retaining only three test-local SHA-256
+digests. The provider fails closed without a local claim. Restarting both issuer
+and provider against their original stores/floors and replaying the exact proof
+must reproduce all three digests, recover exactly one provider-local grant and
+leave exactly one issuer ledger credit/sequence; a later replay cannot create a
+second grant. Wrong-CA, wrong-pin and offline dependencies fail closed without
+invoice creation or real funds. It does not prove public source-fair ingress,
+independent production rollback domains, real Lightning, automated payout, or
+target-host systemd state. The source is wired into CI, but this preparation
+branch must not record a pass until the Linux cell has run on the exact candidate
+commit.
 
 ## Standard Cashu custody boundary
 
@@ -900,10 +905,12 @@ spawns three authority child test harnesses which invoke production
 calls production ProviderStore/IssuerStore adapters directly. The
 deployment-set validator owns duplicate-pin/namespace rejection, raw clients
 own wrong-pin/client/cross-domain transport assertions, and the production
-adapters own crossed-provider, single-domain outage and stale-floor assertions.
-It does not launch `unified_server`, `payment-issuer`, or installed binaries.
-These new commands require their first Linux CI run on the candidate commit; no
-passing result is claimed here, and same-host processes do not prove
+adapters own crossed-provider, independently isolated provider- and
+issuer-authority outages, exact same-generation issuer recovery and stale-floor
+assertions. During each authority outage the other two business domains remain
+usable. It does not launch `unified_server`, `payment-issuer`, or installed
+binaries. These new commands require their first Linux CI run on the candidate
+commit; no passing result is claimed here, and same-host processes do not prove
 operational independence.
 
 The staging-only readback script resolves the lockfile-pinned `ws` dependency
