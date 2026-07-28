@@ -367,13 +367,57 @@ non-persistent evidence.
 The code does not by itself clear this P1 blocker. Before public activation,
 the exact rendered Linux host must prove both units active, the volatile
 directory `0750`, all four sockets `0660` with the source-fair UID/GID, exact
-NSS/supplementary-group membership, effective memory/task/file limits, and no
+local-files NSS/supplementary-group membership, effective memory/task/file limits, and no
 drop-ins. It must also prove zero current/max swap, zero hard/soft core limits,
 and the safe host core pattern. The exact pinned Caddy and HAProxy binaries must pass the real
 fairness/leak suite without skipped tests. HAProxy sees traffic only after
 Caddy accepts TCP/TLS and parses HTTP, so separate Caddy-front slowloris,
 header, handshake, firewall, and volumetric evidence is also mandatory. These
 are availability/privacy controls, not commercial pricing policy.
+
+The V1 NSS statement is deliberately narrow. The activation host must use
+`passwd: files` and `group: files` with no separate `initgroups:` entry. The
+collector binds stable snapshots of `/etc/nsswitch.conf`, `/etc/passwd`, and
+`/etc/group` around enumeration and confirms them again after the remaining
+live checks, requires ordinary `getent` identity-relevant account/group
+projections to agree, and checks every enumerated account with `id -G`.
+The live pass hash-binds but does not semantically compare password, GECOS,
+home, shell and group-password fields. The mandatory stopped-edge pass also
+reads stable `/etc/passwd` and `/etc/shadow` snapshots and requires every
+manifest-bound service account to have the pinned UID/GID, a
+`/usr/sbin/nologin` or `/bin/false` shell, and a locked password. It rejects
+UID/GID aliases and any
+extra primary, explicit, or effective member of a protected group. A host using
+SSSD, LDAP, winbind, NIS or systemd UserDB cannot pass V1 merely because its
+currently visible `getent` output looks complete; such a backend needs an
+authoritative backend-specific generation/completeness proof.
+
+Because removing a user from NSS does not revoke credentials already held by a
+Linux thread, the collector also executes two bounded full `/proc` PID/TID
+passes and rejects every non-root thread with CAP_SETUID or CAP_SETGID in an
+inheritable, permitted, effective or ambient set. Any protected UID/GID holder
+must have the exact service credentials in
+the exact current systemd unit cgroup; both holder snapshots must agree, every
+long-running MainPID must be present, and MainPID/InvocationID/ControlGroup are
+confirmed once more after the scan. A protected holder observed outside the
+unit blocks activation; the discrete scans are not a continuous-time process
+monitor.
+
+This does not discover a connected Unix socket FD already transferred with
+`SCM_RIGHTS` to a process that later dropped the protected credential. The
+mandatory activation ceremony is therefore cold: stop public Caddy and
+source-fair HAProxy so every old accepted connection is dead, then run
+`collect-stopped-edge` while both units are inactive/dead and every manifest
+socket is absent. The pass must show an empty protected-credential closure,
+locked/non-login service accounts and no non-root set-ID capability holder.
+Only after that evidence and its complete digest are approved may HAProxy
+start, followed by Caddy; `collect-live` then binds the new generation.
+Evidence from a warm reload is invalid. Run both collectors directly in the
+host's initial PID namespace. The collector binds itself to the visible
+systemd PID 1 namespace, but the operator must independently rule out a private
+PID namespace or systemd container. This closes ordinary reacquisition under
+the trusted-root/authentication-policy boundary, not a compromised root or new
+local-privilege exploit.
 
 1. Freeze exact BitcoinPIR commit, binaries, policies, directory artifacts,
    authority metadata and key-role inventory.
@@ -408,10 +452,19 @@ are availability/privacy controls, not commercial pricing policy.
    rollback port 8099 is absent from HAProxy. For every rollback edge, confirm
    the private bind, exact sole-client IP filter, static TLS/SPKI pin, and
    private-ingress sentinel; do not claim mTLS with the current client.
-8. Start private/unrouted canaries. Verify identity, binary/attestation,
+8. From the host initial PID namespace, stop public Caddy and then source-fair
+   HAProxy and reset failed unit state. With both units inactive/dead and every
+   manifest socket absent, run `collect-stopped-edge`; transfer and approve the
+   complete evidence SHA-256. It must prove exact locked/non-login service
+   accounts, an empty protected-UID/GID closure and no non-root set-ID
+   capability holder. Only then start HAProxy before Caddy, with no warm reload,
+   and start the remaining
+   private/unrouted canaries. Verify identity, binary/attestation,
    database proof/root, signed policy, remote rollback failure behavior and
    exact method/scope matching from a strict client.
-9. Collect root Linux evidence after both edge units are active; require the
+9. Collect `collect-live` root Linux evidence immediately after both fresh edge
+   units are active; require
+   PID-namespace/systemd-PID1 binding, identical all-thread holder passes, and the
    exact runtime directory/socket type, owner, group and mode records plus
    effective `MemoryMax`/`TasksMax`, zero current/max swap, zero hard/soft core
    limits, and `kernel.core_pattern=|/usr/bin/false`. Publish directory artifacts only after
@@ -442,6 +495,13 @@ the successful exited state of the reviewed one-shot preflight, installed
 bytes, NSS, ACLs, xattrs, capabilities and `systemd-analyze verify`. Until that
 live evidence passes, these inputs remain deployment preparation rather than
 an activatable bundle.
+
+The live file is trusted-root operational evidence, not hardware attestation.
+Before collection, independently verify the collector script from the frozen
+commit and its exact Node/helper environment. The out-of-band evidence digest
+detects later handoff changes but cannot establish that the target root or the
+collector was honest; the current manifest does not self-attest those script
+bytes.
 
 ## Failure and rollback
 
