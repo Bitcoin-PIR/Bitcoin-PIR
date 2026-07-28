@@ -4151,7 +4151,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .preflight_expected_uid,
-            992
+            995
         );
         assert_eq!(
             parsed.lightning.rpc_access_policy,
@@ -4166,7 +4166,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .client_expected_uid,
-            992
+            995
         );
         let mut legacy_template = String::new();
         let mut skipping_cross_uid_table = false;
@@ -4216,13 +4216,13 @@ mod tests {
         assert!(core_legacy.bitcoin.rpc_cookie.cross_uid_access.is_none());
 
         let with_unknown_cross_uid_field = template.replace(
-            "client_expected_uid = 992",
-            "client_expected_uid = 992\nunexpected_cross_uid_field = true",
+            "client_expected_uid = 995",
+            "client_expected_uid = 995\nunexpected_cross_uid_field = true",
         );
         assert!(toml::from_str::<LightningStagingConfigV1>(&with_unknown_cross_uid_field).is_err());
         let with_unknown_core_cross_uid_field = template.replace(
-            "preflight_expected_uid = 992",
-            "preflight_expected_uid = 992\nunexpected_cookie_cross_uid_field = true",
+            "preflight_expected_uid = 995",
+            "preflight_expected_uid = 995\nunexpected_cookie_cross_uid_field = true",
         );
         assert!(
             toml::from_str::<LightningStagingConfigV1>(&with_unknown_core_cross_uid_field).is_err()
