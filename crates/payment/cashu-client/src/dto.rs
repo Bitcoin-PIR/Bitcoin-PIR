@@ -8,19 +8,18 @@ use crate::{
     MAX_CASHU_SWAP_ITEMS_V1,
 };
 
-const MAX_NUT00_ERROR_JSON_BYTES_V1: usize = 4 * 1024;
-const MAX_NUT00_ERROR_DETAIL_BYTES_V1: usize = 2 * 1024;
 pub(crate) const MAX_NUT07_WITNESS_BYTES_V1: usize = 16 * 1024;
 
 /// Owns mint-controlled text while serde is still fallible.
 ///
 /// In particular, a later duplicate/unknown/type error must wipe an already
-/// decoded NUT-07 Y/witness or NUT-00 detail even though its outer DTO was
+/// decoded NUT-07 Y/witness even though its outer DTO was
 /// never constructed. Successful NUT-07 decoding transfers the allocation to
 /// the existing public `String` fields, whose DTO `Drop` performs the wipe.
 struct SensitiveCashuStringV1(String);
 
 impl SensitiveCashuStringV1 {
+    #[cfg(test)]
     fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -63,13 +62,6 @@ impl Drop for SensitiveCashuStringV1 {
 std::thread_local! {
     static SENSITIVE_CASHU_STRING_ZEROIZED_DROPS_V1: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CashuNut00ErrorResponseJsonV1 {
-    code: u16,
-    detail: SensitiveCashuStringV1,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize)]
@@ -381,22 +373,6 @@ pub(crate) fn decode_mint_response_json_v1<T: for<'de> Deserialize<'de>>(
     decode_json_v1(bytes)
 }
 
-/// Recognize only the bounded, exact NUT-00 JSON error object. This is used
-/// together with HTTP 400 to distinguish a protocol-level rejection from an
-/// ambiguous transport outcome. The detail is deliberately parsed and then
-/// discarded so mint responses cannot enter logs or durable state.
-pub(crate) fn is_strict_nut00_error_json_v1(bytes: &[u8]) -> bool {
-    if bytes.is_empty() || bytes.len() > MAX_NUT00_ERROR_JSON_BYTES_V1 || bytes.contains(&b'\\') {
-        return false;
-    }
-    let Ok(error) = serde_json::from_slice::<CashuNut00ErrorResponseJsonV1>(bytes) else {
-        return false;
-    };
-    error.code != 0
-        && !error.detail.as_str().is_empty()
-        && error.detail.as_str().len() <= MAX_NUT00_ERROR_DETAIL_BYTES_V1
-}
-
 pub(crate) fn validate_item_count_v1(len: usize) -> Result<(), CashuClientErrorV1> {
     if len == 0 || len > MAX_CASHU_SWAP_ITEMS_V1 {
         return Err(CashuClientErrorV1::InvalidItemCount);
@@ -516,13 +492,6 @@ mod dto_tests {
         }
 
         let before = zeroized_sensitive_drop_count();
-        assert!(serde_json::from_slice::<CashuNut00ErrorResponseJsonV1>(
-            br#"{"code":10001,"detail":"reflected-bearer","extra":true}"#,
-        )
-        .is_err());
-        assert_eq!(zeroized_sensitive_drop_count() - before, 1);
-
-        let before = zeroized_sensitive_drop_count();
         assert!(serde_json::from_slice::<CashuProofJsonV1>(
             br#"{"amount":1,"id":"keyset","secret":"bearer-secret","C":"bearer-signature","extra":true}"#,
         )
@@ -556,18 +525,7 @@ mod dto_tests {
     }
 
     #[test]
-    fn nut00_detail_is_strict_and_json_encoding_returns_the_preallocated_buffer() {
-        assert!(is_strict_nut00_error_json_v1(
-            br#"{"code":10001,"detail":"proof rejected"}"#,
-        ));
-        for invalid in [
-            br#"{"code":10001,"detail":null}"#.as_slice(),
-            br#"{"code":10001,"detail":7}"#.as_slice(),
-            br#"{"code":10001,"detail":"x","detail":"y"}"#.as_slice(),
-        ] {
-            assert!(!is_strict_nut00_error_json_v1(invalid));
-        }
-
+    fn json_encoding_returns_the_preallocated_buffer() {
         let request = CashuPostCheckStateRequestJsonV1 {
             ys: vec!["bearer-y".to_owned()],
         };

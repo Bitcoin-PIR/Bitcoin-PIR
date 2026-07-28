@@ -13,6 +13,7 @@ use pir_service_protocol::{
     verify_free_anonymous_ticket_for_offer, verify_paid_receipt_for_offer, AuthScheme,
     AuthorizationProofV1, BitcoinPirCashuBatProofV1, BoundAuthAttemptV1, DeploymentStatus,
     FreeAuthorizationProofV1, ServiceProtocolError, VerificationMode,
+    VerifiedSharedIssuerLocalGrantClaimV1,
 };
 use std::fmt;
 
@@ -79,12 +80,23 @@ impl<T> ArcProviderLocalAdapterV1 for T where
 
 /// Private-field marker proving outer request/operation binding and the
 /// selected provider-local bearer's method-specific verification completed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 #[must_use = "a verified provider-local spend must be atomically committed before granting"]
 pub struct VerifiedProviderLocalSpendV1 {
     pub(crate) namespace_id: [u8; 32],
     pub(crate) spend_key: [u8; 32],
     pub(crate) now_unix_seconds: u64,
+}
+
+impl fmt::Debug for VerifiedProviderLocalSpendV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedProviderLocalSpendV1")
+            .field("namespace_id", &"[REDACTED]")
+            .field("spend_key", &"[REDACTED]")
+            .field("now_unix_seconds", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Sealed provider-local ARC spend typestate. It is deliberately move-only,
@@ -100,9 +112,9 @@ impl fmt::Debug for VerifiedArcProviderLocalSpendV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("VerifiedArcProviderLocalSpendV1")
-            .field("namespace_id", &self.namespace_id)
+            .field("namespace_id", &"[REDACTED]")
             .field("spend_key", &"[REDACTED]")
-            .field("now_unix_seconds", &self.now_unix_seconds)
+            .field("now_unix_seconds", &"[REDACTED]")
             .finish()
     }
 }
@@ -366,6 +378,44 @@ impl From<VerifiedArcProviderLocalSpendV1> for SpendRequest {
             namespace_id: value.namespace_id,
             spend_key: value.spend_key,
             now_unix_seconds: value.now_unix_seconds,
+        }
+    }
+}
+
+impl From<VerifiedSharedIssuerLocalGrantClaimV1> for SpendRequest {
+    fn from(value: VerifiedSharedIssuerLocalGrantClaimV1) -> Self {
+        Self {
+            namespace_id: value.namespace_id(),
+            spend_key: value.local_claim_key(),
+            now_unix_seconds: value.now_unix_seconds(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod sensitive_debug_tests {
+    use super::*;
+
+    #[test]
+    fn verified_provider_local_markers_redact_every_coordinate_and_exact_time() {
+        let bearer = VerifiedProviderLocalSpendV1 {
+            namespace_id: [0x61; 32],
+            spend_key: [0x62; 32],
+            now_unix_seconds: 7,
+        };
+        let arc = VerifiedArcProviderLocalSpendV1 {
+            namespace_id: [0x63; 32],
+            spend_key: [0x64; 32],
+            now_unix_seconds: 8,
+        };
+        for rendered in [format!("{bearer:?}"), format!("{arc:?}")] {
+            assert!(rendered.contains("[REDACTED]"));
+            assert!(!rendered.contains("61616161"));
+            assert!(!rendered.contains("62626262"));
+            assert!(!rendered.contains("63636363"));
+            assert!(!rendered.contains("64646464"));
+            assert!(!rendered.contains(": 7"));
+            assert!(!rendered.contains(": 8"));
         }
     }
 }

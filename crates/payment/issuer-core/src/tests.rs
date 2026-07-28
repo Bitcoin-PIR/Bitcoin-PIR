@@ -456,6 +456,12 @@ impl Harness {
             .prefix("bitcoinpir-issuer-core-test-")
             .tempdir()
             .expect("create temporary directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict temporary directory permissions");
+        }
         let database = directory.path().join("issuer.sqlite3");
         let authority = Arc::new(MemoryRollbackAuthority::default());
         let backend = Arc::new(RecordingBackend::new(node_time));
@@ -811,15 +817,10 @@ fn same_second_settlement_retries_then_preserves_paid_and_transition_times() {
 
     let settled = harness
         .core
-        .reconcile_by_backend_label(
-            &record.backend_label,
-            &harness.fixture.quote_key,
-            NOW + 1,
-        )
+        .reconcile_by_backend_label(&record.backend_label, &harness.fixture.quote_key, NOW + 1)
         .expect("later observation commits same-second payment");
     assert_eq!(settled.durable_state(), QuoteState::PaymentSettled);
-    let quote =
-        Bolt11QuoteV1::decode(settled.exact_signed_quote_response()).expect("decode quote");
+    let quote = Bolt11QuoteV1::decode(settled.exact_signed_quote_response()).expect("decode quote");
     assert_eq!(quote.status_updated_at, NOW + 1);
 
     let persisted = harness.record();
@@ -850,8 +851,7 @@ fn on_time_settlement_first_observed_after_expiry_keeps_payment_time_on_wire() {
         )
         .expect("late observation preserves on-time settlement classification");
     assert_eq!(settled.durable_state(), QuoteState::PaymentSettled);
-    let quote =
-        Bolt11QuoteV1::decode(settled.exact_signed_quote_response()).expect("decode quote");
+    let quote = Bolt11QuoteV1::decode(settled.exact_signed_quote_response()).expect("decode quote");
     assert_eq!(quote.status, Bolt11QuoteStatusV1::PaymentSettled);
     assert_eq!(quote.status_updated_at, settled_at);
     assert!(quote.status_updated_at <= quote.invoice_expires_at);

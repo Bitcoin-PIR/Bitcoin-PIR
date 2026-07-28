@@ -8,39 +8,53 @@
 
 #![forbid(unsafe_code)]
 
+mod https_transport;
+mod remote_floor;
+mod sqlite_store;
+
+pub use https_transport::StrictHttpsProviderSettlementTransportV1;
+pub use remote_floor::RemoteProviderSettlementFloorAuthorityV1;
+pub use sqlite_store::{
+    AuthenticatedProviderSettlementFloorTransitionV1, LocalTestSqliteProviderSettlementFloorV1,
+    ProviderSettlementFloorAuthorityErrorV1, ProviderSettlementFloorAuthorityV1,
+    ProviderSettlementFloorPhaseV1, ProviderSettlementFloorV1,
+    ProviderSettlementRecoveryTransitionKindV2, ProviderSettlementRecoveryV1,
+    ProviderSettlementSqliteStoreErrorV1, SqliteProviderSettlementStateStoreV1,
+    UnverifiedProviderSettlementRecoveryV2, VerifiedProviderSettlementRecoveryV2,
+};
+
 use core::fmt;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use hmac::{Hmac, Mac};
 use pir_runtime_core::service_admission::{
     AdmissionCommitErrorV1, AdmissionMethodCommitterV1, AdmissionMethodRouteV1,
 };
 use pir_service_protocol::{
     credential_presentation_digest, verify_committed_clearing_request_auth_v1,
-    verify_ledger_redeem_response_for_exact_request_v1, verify_new_payout_request_for,
-    verify_new_payout_status_request_for, verify_new_payout_status_response_for,
-    verify_payout_initial_response_for_exact_request,
-    verify_persisted_payout_snapshot_for_store_v1, AuthScheme, AuthorizationProofV1,
-    BoundAuthAttemptV1, CommittedRedeemReplayExpectationV1, FreeAuthorizationProofV1,
-    IssuerBalanceResponseV1, IssuerClearingApprovalV1, IssuerPayoutIntentResponseV1,
-    IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1, IssuerSettlementKeyringExpectationV1,
-    PayoutExecutionContextV1, PayoutStateV1, PayoutStatusContextV1, PayoutTargetIdV1,
-    ProviderBalanceEnvelopeV1, ProviderBalanceRequestV1, ProviderClearingAuthorizationV1,
-    ProviderClearingExpectationV1, ProviderClearingRequestAuthV1, ProviderId,
-    ProviderPayoutEnvelopeV1, ProviderPayoutIntentEnvelopeV1, ProviderPayoutIntentRequestV1,
-    ProviderPayoutRequestV1, ProviderPayoutStatusEnvelopeV1, ProviderPayoutStatusRequestV1,
-    ProviderRedeemRequestV1, ProviderRedeemResponseV1, ProviderSettlementRegistrationExpectationV1,
-    ProviderSettlementRequestAuthV1, ServiceProtocolError, SettlementDestinationV1,
-    SettlementUnitV1, VerificationMode, VerifiedPayoutSnapshotV1,
-    MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
+    verify_new_payout_request_for, verify_new_payout_status_request_for,
+    verify_new_payout_status_response_for, verify_payout_initial_response_for_exact_request,
+    verify_persisted_payout_snapshot_for_store_v1, verify_shared_issuer_local_grant_claim_v1,
+    AuthScheme, AuthorizationProofV1, BoundAuthAttemptV1, CommittedRedeemReplayExpectationV1,
+    FreeAuthorizationProofV1, IssuerBalanceResponseV1, IssuerClearingApprovalV1,
+    IssuerPayoutIntentResponseV1, IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1,
+    IssuerSettlementKeyringExpectationV1, PayoutExecutionContextV1, PayoutStateV1,
+    PayoutStatusContextV1, PayoutTargetIdV1, ProviderBalanceEnvelopeV1, ProviderBalanceRequestV1,
+    ProviderClearingAuthorizationV1, ProviderClearingExpectationV1, ProviderClearingRequestAuthV1,
+    ProviderId, ProviderPayoutEnvelopeV1, ProviderPayoutIntentEnvelopeV1,
+    ProviderPayoutIntentRequestV1, ProviderPayoutRequestV1, ProviderPayoutStatusEnvelopeV1,
+    ProviderPayoutStatusRequestV1, ProviderRedeemRequestV1,
+    ProviderSettlementRegistrationExpectationV1, ProviderSettlementRequestAuthV1,
+    ServiceProtocolError, SettlementDestinationV1, SettlementUnitV1, SharedIssuerProviderSecretV1,
+    VerificationMode, VerifiedPayoutSnapshotV1, MAX_EXECUTABLE_SETTLEMENT_HTTP_ENVELOPE_LEN_V1,
 };
+use pir_service_store::{ProviderStore, StoreError};
 use sha2::{Digest, Sha256};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-const IDEMPOTENCY_DOMAIN_V1: &[u8] =
-    b"BitcoinPIR/provider-shared-redeem-idempotency/POST-/v1/redeems/v1";
 const PENDING_PAYOUT_FLOOR_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/provider-settlement/pending-payout-floor/v1";
+const DURABLE_PAYOUT_STATE_COMMITMENT_DOMAIN_V1: &[u8] =
+    b"BitcoinPIR/provider-settlement/durable-payout-state/v1";
 pub const MAX_SHARED_ISSUER_RESPONSE_BYTES_V1: usize = 64 * 1024;
 
 pub const PROVIDER_BALANCE_ENDPOINT_V1: &str = "/v1/settlement/balance";
@@ -239,7 +253,7 @@ impl ProviderPayoutPendingFloorV1 {
 /// Exact initial payout request durably recorded before any request byte is
 /// sent. Redundant canonical intent fields make store and restore binding
 /// explicit; they must exactly equal the nested objects in the envelope.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProviderPayoutPendingV1 {
     pub canonical_envelope: Vec<u8>,
     pub payout_request_digest: [u8; 32],
@@ -252,6 +266,28 @@ pub struct ProviderPayoutPendingV1 {
     /// advance from, forming a rollback-detecting payout chain.
     pub predecessor_floor: Option<ProviderPayoutRollbackFloorV1>,
     pub pending_floor: ProviderPayoutPendingFloorV1,
+}
+
+impl fmt::Debug for ProviderPayoutPendingV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderPayoutPendingV1")
+            .field("canonical_envelope_len", &self.canonical_envelope.len())
+            .field("payout_request", &"[REDACTED]")
+            .field("idempotency_key", &"[REDACTED]")
+            .field("has_predecessor", &self.predecessor_floor.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ProviderPayoutPendingV1 {
+    fn drop(&mut self) {
+        self.canonical_envelope.zeroize();
+        self.payout_request_digest.zeroize();
+        self.idempotency_key.zeroize();
+        self.intent_request.zeroize();
+        self.intent_response.zeroize();
+    }
 }
 
 /// Small anti-rollback floor value. The value itself is not an authority:
@@ -339,7 +375,7 @@ impl ProviderPayoutRollbackFloorV1 {
 /// the exact intent request/response, payout request/initial response, latest
 /// accepted status response, and the matching rollback floor. It contains no
 /// wallet destination or Lightning/PIR material.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProviderPayoutDurableStateV1 {
     pub intent_request: Vec<u8>,
     pub intent_response: Vec<u8>,
@@ -349,17 +385,166 @@ pub struct ProviderPayoutDurableStateV1 {
     pub rollback_floor: ProviderPayoutRollbackFloorV1,
 }
 
+impl fmt::Debug for ProviderPayoutDurableStateV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderPayoutDurableStateV1")
+            .field("state", &self.rollback_floor.state())
+            .field("state_version", &self.rollback_floor.state_version())
+            .field("updated_at", &self.rollback_floor.updated_at())
+            .field("exact_protocol_bytes", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ProviderPayoutDurableStateV1 {
+    fn drop(&mut self) {
+        self.intent_request.zeroize();
+        self.intent_response.zeroize();
+        self.payout_request.zeroize();
+        self.initial_payout_response.zeroize();
+        self.latest_status_response.zeroize();
+    }
+}
+
 /// Exact status request durably recorded before any request byte is sent.
 /// The historical registration is included so an exact response remains
 /// client-verifiable after trust rotation. End-to-end replay after ordinary
 /// expiry or registration replacement additionally requires the issuer's
 /// exact committed-request replay path and retained registration history.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProviderPayoutStatusPendingV1 {
     pub canonical_envelope: Vec<u8>,
     pub request_digest: [u8; 32],
     pub registration: ProviderSettlementRegistrationV1,
     pub previous_floor: ProviderPayoutRollbackFloorV1,
+    /// Exact content commitment of the authenticated durable payout state from
+    /// which this status request was prepared. This lets a crash-recovery
+    /// journal reconstruct the authority's pre-status commitment even after a
+    /// signed successor has replaced the detailed current-state bytes.
+    pub previous_state_commitment: [u8; 32],
+}
+
+impl fmt::Debug for ProviderPayoutStatusPendingV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderPayoutStatusPendingV1")
+            .field("canonical_envelope_len", &self.canonical_envelope.len())
+            .field("request", &"[REDACTED]")
+            .field("previous_state", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ProviderPayoutStatusPendingV1 {
+    fn drop(&mut self) {
+        self.canonical_envelope.zeroize();
+        self.request_digest.zeroize();
+        self.previous_state_commitment.zeroize();
+    }
+}
+
+/// Client-authenticated capability for installing one exact pending payout.
+/// Fields are private so callers cannot bypass canonical/trust verification and
+/// invoke a durable store directly with a hand-built record.
+#[derive(Clone)]
+pub struct VerifiedProviderPayoutPendingWriteV1 {
+    pub(crate) pending: ProviderPayoutPendingV1,
+}
+
+impl VerifiedProviderPayoutPendingWriteV1 {
+    pub fn pending(&self) -> &ProviderPayoutPendingV1 {
+        &self.pending
+    }
+}
+
+impl fmt::Debug for VerifiedProviderPayoutPendingWriteV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedProviderPayoutPendingWriteV1")
+            .field("payout_request_digest", &self.pending.payout_request_digest)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Client-authenticated capability for replacing an exact pending payout with
+/// its issuer-signed initial `Accepted/v1` state.
+#[derive(Clone)]
+pub struct VerifiedProviderPayoutInitialWriteV1 {
+    pub(crate) pending: ProviderPayoutPendingV1,
+    pub(crate) state: ProviderPayoutDurableStateV1,
+}
+
+impl VerifiedProviderPayoutInitialWriteV1 {
+    pub fn pending(&self) -> &ProviderPayoutPendingV1 {
+        &self.pending
+    }
+
+    pub fn state(&self) -> &ProviderPayoutDurableStateV1 {
+        &self.state
+    }
+}
+
+impl fmt::Debug for VerifiedProviderPayoutInitialWriteV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedProviderPayoutInitialWriteV1")
+            .field("payout_request_digest", &self.pending.payout_request_digest)
+            .field("state", &self.state.rollback_floor.state())
+            .field("state_version", &self.state.rollback_floor.state_version())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Client-authenticated capability for installing one exact read-only payout
+/// status request before any request byte leaves the provider.
+#[derive(Clone)]
+pub struct VerifiedProviderPayoutStatusPendingWriteV1 {
+    pub(crate) pending: ProviderPayoutStatusPendingV1,
+}
+
+impl VerifiedProviderPayoutStatusPendingWriteV1 {
+    pub fn pending(&self) -> &ProviderPayoutStatusPendingV1 {
+        &self.pending
+    }
+}
+
+impl fmt::Debug for VerifiedProviderPayoutStatusPendingWriteV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedProviderPayoutStatusPendingWriteV1")
+            .field("request_digest", &self.pending.request_digest)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Client-authenticated capability for committing one exact issuer-signed
+/// payout status successor from its exact pending status request.
+#[derive(Clone)]
+pub struct VerifiedProviderPayoutStatusWriteV1 {
+    pub(crate) pending: ProviderPayoutStatusPendingV1,
+    pub(crate) state: ProviderPayoutDurableStateV1,
+}
+
+impl VerifiedProviderPayoutStatusWriteV1 {
+    pub fn pending(&self) -> &ProviderPayoutStatusPendingV1 {
+        &self.pending
+    }
+
+    pub fn state(&self) -> &ProviderPayoutDurableStateV1 {
+        &self.state
+    }
+}
+
+impl fmt::Debug for VerifiedProviderPayoutStatusWriteV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedProviderPayoutStatusWriteV1")
+            .field("request_digest", &self.pending.request_digest)
+            .field("state", &self.state.rollback_floor.state())
+            .field("state_version", &self.state.rollback_floor.state_version())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Durable provider settlement state boundary. Implementations must update
@@ -380,7 +565,7 @@ pub trait ProviderSettlementStateStoreV1 {
     /// creating a replacement payout.
     fn persist_pending_payout(
         &mut self,
-        pending: &ProviderPayoutPendingV1,
+        write: &VerifiedProviderPayoutPendingWriteV1,
     ) -> Result<bool, Self::Error>;
 
     /// Atomically require the exact pending row/floor, replace it with the
@@ -393,23 +578,21 @@ pub trait ProviderSettlementStateStoreV1 {
     /// so history/audit and exact-concurrency checks do not lose the chain.
     fn commit_initial_payout_from_pending(
         &mut self,
-        pending: &ProviderPayoutPendingV1,
-        state: &ProviderPayoutDurableStateV1,
+        write: &VerifiedProviderPayoutInitialWriteV1,
     ) -> Result<bool, Self::Error>;
 
     /// Persist a pending exact status request before network submission. The
     /// store must compare `previous_floor` against its independent authority.
     fn persist_pending_status(
         &mut self,
-        pending: &ProviderPayoutStatusPendingV1,
+        write: &VerifiedProviderPayoutStatusPendingWriteV1,
     ) -> Result<bool, Self::Error>;
 
     /// Atomically CAS the previous floor, store the exact signed successor,
     /// advance the independent floor, and remove the matching pending request.
     fn commit_status_update(
         &mut self,
-        pending: &ProviderPayoutStatusPendingV1,
-        state: &ProviderPayoutDurableStateV1,
+        write: &VerifiedProviderPayoutStatusWriteV1,
     ) -> Result<bool, Self::Error>;
 }
 
@@ -451,7 +634,7 @@ impl<E> From<ProviderSettlementClientErrorV1> for ProviderSettlementStateErrorV1
 /// Marker whose private field proves the pending request was either committed
 /// through [`ProviderSettlementStateStoreV1`] or loaded and revalidated from a
 /// trusted provider store.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PersistedProviderPayoutStatusV1 {
     pending: ProviderPayoutStatusPendingV1,
 }
@@ -459,9 +642,27 @@ pub struct PersistedProviderPayoutStatusV1 {
 /// Marker whose private field proves an exact initial payout was persisted
 /// before network submission, or restored only after matching an independent
 /// pending floor and revalidating all canonical trust bindings.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PersistedProviderPayoutV1 {
     pending: ProviderPayoutPendingV1,
+}
+
+impl fmt::Debug for PersistedProviderPayoutV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistedProviderPayoutV1")
+            .field("pending", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for PersistedProviderPayoutStatusV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistedProviderPayoutStatusV1")
+            .field("pending", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl PersistedProviderPayoutV1 {
@@ -770,8 +971,11 @@ impl<'a> ProviderSettlementClientV1<'a> {
     ) -> Result<PersistedProviderPayoutV1, ProviderSettlementStateErrorV1<Store::Error>> {
         let pending =
             self.build_pending_payout(intent, idempotency_key, now_unix, predecessor_floor)?;
+        let write = VerifiedProviderPayoutPendingWriteV1 {
+            pending: pending.clone(),
+        };
         let committed = store
-            .persist_pending_payout(&pending)
+            .persist_pending_payout(&write)
             .map_err(ProviderSettlementStateErrorV1::Store)?;
         if !committed {
             return Err(ProviderSettlementStateErrorV1::Conflict {
@@ -808,8 +1012,12 @@ impl<'a> ProviderSettlementClientV1<'a> {
         store: &mut Store,
     ) -> Result<VerifiedProviderPayoutStateV1, ProviderSettlementStateErrorV1<Store::Error>> {
         let pending = &persisted.pending;
+        self.decode_and_verify_pending_payout(pending)?;
+        let pending_write = VerifiedProviderPayoutPendingWriteV1 {
+            pending: pending.clone(),
+        };
         let still_persisted = store
-            .persist_pending_payout(pending)
+            .persist_pending_payout(&pending_write)
             .map_err(ProviderSettlementStateErrorV1::Store)?;
         if !still_persisted {
             return Err(ProviderSettlementStateErrorV1::Conflict {
@@ -840,8 +1048,12 @@ impl<'a> ProviderSettlementClientV1<'a> {
             snapshot,
         };
         let durable = state.durable_state()?;
+        let write = VerifiedProviderPayoutInitialWriteV1 {
+            pending: pending.clone(),
+            state: durable,
+        };
         let committed = store
-            .commit_initial_payout_from_pending(pending, &durable)
+            .commit_initial_payout_from_pending(&write)
             .map_err(ProviderSettlementStateErrorV1::Store)?;
         if !committed {
             return Err(ProviderSettlementStateErrorV1::Conflict {
@@ -941,8 +1153,11 @@ impl<'a> ProviderSettlementClientV1<'a> {
         store: &mut Store,
     ) -> Result<PersistedProviderPayoutStatusV1, ProviderSettlementStateErrorV1<Store::Error>> {
         let pending = self.build_pending_status(payout, request_nonce, now_unix)?;
+        let write = VerifiedProviderPayoutStatusPendingWriteV1 {
+            pending: pending.clone(),
+        };
         let committed = store
-            .persist_pending_status(&pending)
+            .persist_pending_status(&write)
             .map_err(ProviderSettlementStateErrorV1::Store)?;
         if !committed {
             return Err(ProviderSettlementStateErrorV1::Conflict {
@@ -996,8 +1211,12 @@ impl<'a> ProviderSettlementClientV1<'a> {
         next.latest_status_response = Some(response);
         next.snapshot = snapshot;
         let durable = next.durable_state()?;
+        let write = VerifiedProviderPayoutStatusWriteV1 {
+            pending: pending.clone(),
+            state: durable,
+        };
         let committed = store
-            .commit_status_update(pending, &durable)
+            .commit_status_update(&write)
             .map_err(ProviderSettlementStateErrorV1::Store)?;
         if !committed {
             return Err(ProviderSettlementStateErrorV1::Conflict {
@@ -1034,14 +1253,200 @@ impl<'a> ProviderSettlementClientV1<'a> {
             initial_payout_response: payout.initial_response.clone(),
         }
         .encode()?;
+        let previous_state_commitment =
+            provider_payout_durable_state_commitment_v1(&payout.durable_state()?)?;
         let pending = ProviderPayoutStatusPendingV1 {
             canonical_envelope: body,
             request_digest: request.request_digest()?,
             registration: self.trust.registration.clone(),
             previous_floor: payout.rollback_floor(),
+            previous_state_commitment,
         };
         self.decode_and_verify_pending_status(payout, &pending, now_unix)?;
         Ok(pending)
+    }
+
+    /// Authenticates every protocol object needed to complete one interrupted
+    /// SQLite journal. Inspection itself is deliberately pure read and does not
+    /// grant the store authority to advance its independent floor.
+    pub fn authenticate_settlement_recovery_v2(
+        &self,
+        unverified: &UnverifiedProviderSettlementRecoveryV2,
+    ) -> Result<VerifiedProviderSettlementRecoveryV2, ProviderSettlementClientErrorV1> {
+        if unverified.desired_floor.provider_id() != &self.trust.registration.provider_id
+            || unverified
+                .expected_floor
+                .as_ref()
+                .is_some_and(|floor| floor.provider_id() != unverified.desired_floor.provider_id())
+            || (unverified.authority_at_inspection != unverified.expected_floor
+                && unverified.authority_at_inspection != Some(unverified.desired_floor))
+        {
+            return Err(ProviderSettlementClientErrorV1::Rollback);
+        }
+
+        let workflow = &unverified.workflow;
+        let verify_origin_for = |origin: &ProviderPayoutPendingV1,
+                                 state: &ProviderPayoutDurableStateV1|
+         -> Result<(), ProviderSettlementClientErrorV1> {
+            self.decode_and_verify_pending_payout(origin)?;
+            if state.rollback_floor.payout_request_digest() != &origin.payout_request_digest {
+                return Err(ProviderSettlementClientErrorV1::Rollback);
+            }
+            Ok(())
+        };
+
+        match unverified.transition_kind {
+            ProviderSettlementRecoveryTransitionKindV2::PendingPayout => {
+                let pending = workflow.active_pending_payout.as_ref().ok_or(
+                    ServiceProtocolError::InvalidValue {
+                        field: "UnverifiedProviderSettlementRecoveryV2.active_pending_payout",
+                        reason: "pending-payout recovery is missing its exact request",
+                    },
+                )?;
+                self.decode_and_verify_pending_payout(pending)?;
+                if unverified.transition_previous_state.is_some() {
+                    return Err(ProviderSettlementClientErrorV1::Rollback);
+                }
+                match pending.predecessor_floor {
+                    None => {
+                        if workflow.payout_state.is_some()
+                            || workflow.committed_payout_origin.is_some()
+                        {
+                            return Err(ProviderSettlementClientErrorV1::Rollback);
+                        }
+                    }
+                    Some(predecessor) => {
+                        let state = workflow
+                            .payout_state
+                            .as_ref()
+                            .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                        let origin = workflow
+                            .committed_payout_origin
+                            .as_ref()
+                            .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                        self.restore_payout(state, &predecessor)?;
+                        verify_origin_for(origin, state)?;
+                        if state.rollback_floor != predecessor
+                            || !matches!(
+                                predecessor.state(),
+                                PayoutStateV1::Succeeded | PayoutStateV1::Failed
+                            )
+                        {
+                            return Err(ProviderSettlementClientErrorV1::Rollback);
+                        }
+                    }
+                }
+            }
+            ProviderSettlementRecoveryTransitionKindV2::InitialPayout => {
+                let pending = workflow.active_pending_payout.as_ref().ok_or(
+                    ServiceProtocolError::InvalidValue {
+                        field: "UnverifiedProviderSettlementRecoveryV2.active_pending_payout",
+                        reason: "initial-payout recovery is missing its exact request",
+                    },
+                )?;
+                let origin = workflow
+                    .committed_payout_origin
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let state = workflow
+                    .payout_state
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                self.decode_and_verify_pending_payout(pending)?;
+                self.restore_payout(state, &state.rollback_floor)?;
+                verify_origin_for(origin, state)?;
+                if origin != pending
+                    || unverified.transition_previous_state.is_some()
+                    || state.rollback_floor.state() != PayoutStateV1::Accepted
+                    || state.rollback_floor.state_version() != 1
+                {
+                    return Err(ProviderSettlementClientErrorV1::Rollback);
+                }
+            }
+            ProviderSettlementRecoveryTransitionKindV2::StatusPending => {
+                let state = workflow
+                    .payout_state
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let origin = workflow
+                    .committed_payout_origin
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let pending = workflow
+                    .pending_status
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let verified_state = self.restore_payout(state, &pending.previous_floor)?;
+                verify_origin_for(origin, state)?;
+                self.decode_and_verify_pending_status(
+                    &verified_state,
+                    pending,
+                    pending.registration.not_before,
+                )?;
+                if workflow.active_pending_payout.is_some()
+                    || unverified.transition_previous_state.is_some()
+                {
+                    return Err(ProviderSettlementClientErrorV1::Rollback);
+                }
+            }
+            ProviderSettlementRecoveryTransitionKindV2::StatusCommit => {
+                let previous = unverified
+                    .transition_previous_state
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let successor = workflow
+                    .payout_state
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let origin = workflow
+                    .committed_payout_origin
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let pending = workflow
+                    .pending_status
+                    .as_ref()
+                    .ok_or(ProviderSettlementClientErrorV1::Rollback)?;
+                let verified_previous = self.restore_payout(previous, &pending.previous_floor)?;
+                self.restore_payout(successor, &pending.previous_floor)?;
+                verify_origin_for(origin, successor)?;
+                let envelope = self.decode_and_verify_pending_status(
+                    &verified_previous,
+                    pending,
+                    pending.registration.not_before,
+                )?;
+                let response_bytes = successor.latest_status_response.as_ref().ok_or(
+                    ServiceProtocolError::InvalidValue {
+                        field: "ProviderPayoutDurableStateV1.latest_status_response",
+                        reason: "status-commit recovery is missing its exact signed response",
+                    },
+                )?;
+                let response = decode_canonical_response(
+                    response_bytes,
+                    IssuerPayoutStatusResponseV1::decode,
+                    IssuerPayoutStatusResponseV1::encode,
+                )?;
+                let exact_snapshot = self.verify_historical_status_response(
+                    &verified_previous,
+                    pending,
+                    &envelope,
+                    &response,
+                )?;
+                if workflow.active_pending_payout.is_some()
+                    || !floor_is_satisfied(&pending.previous_floor, &successor.rollback_floor)
+                    || ProviderPayoutRollbackFloorV1::from_snapshot(&exact_snapshot)
+                        != successor.rollback_floor
+                {
+                    return Err(ProviderSettlementClientErrorV1::Rollback);
+                }
+            }
+        }
+
+        Ok(VerifiedProviderSettlementRecoveryV2 {
+            snapshot_digest: unverified.snapshot_digest,
+            transition_kind: unverified.transition_kind,
+            expected_floor: unverified.expected_floor,
+            desired_floor: unverified.desired_floor,
+        })
     }
 
     /// Restores a payout only from a rollback-protected provider store. The
@@ -1063,17 +1468,44 @@ impl<'a> ProviderSettlementClientV1<'a> {
             IssuerPayoutIntentResponseV1::decode,
             IssuerPayoutIntentResponseV1::encode,
         )?;
-        self.verify_intent_response(&intent_request, &intent_response)?;
-        let intent = VerifiedProviderPayoutIntentV1 {
-            request: intent_request,
-            response: intent_response,
-        };
         let payout_request = decode_canonical_response(
             &durable.payout_request,
             ProviderPayoutRequestV1::decode,
             ProviderPayoutRequestV1::encode,
         )?;
-        if payout_request != self.payout_request(&intent, payout_request.idempotency_key)? {
+        let trusted_registration = core::iter::once(&self.trust.registration)
+            .chain(self.trust.retained_registrations.iter())
+            .find(|registration| {
+                intent_request.issuer_id == registration.issuer_id
+                    && intent_request.provider_id == registration.provider_id
+                    && intent_request.account_id == registration.settlement_account_id
+                    && intent_request.payout_target_id == registration.payout_target_id
+                    && payout_request.issuer_id == registration.issuer_id
+                    && payout_request.provider_id == registration.provider_id
+                    && payout_request.account_id == registration.settlement_account_id
+                    && payout_request.payout_target_id == registration.payout_target_id
+            })
+            .ok_or(ServiceProtocolError::InvalidValue {
+                field: "ProviderPayoutDurableStateV1.registration",
+                reason:
+                    "persisted payout is not in the trusted current/retained registration lineage",
+            })?;
+        self.verify_intent_response_for_registration(
+            &intent_request,
+            &intent_response,
+            trusted_registration,
+        )?;
+        let intent = VerifiedProviderPayoutIntentV1 {
+            request: intent_request,
+            response: intent_response,
+        };
+        if payout_request
+            != self.payout_request_for_registration(
+                &intent,
+                payout_request.idempotency_key,
+                trusted_registration,
+            )?
+        {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "ProviderPayoutDurableStateV1.payout_request",
                 reason: "payout request is not derived from the verified intent",
@@ -1202,7 +1634,8 @@ impl<'a> ProviderSettlementClientV1<'a> {
             IssuerPayoutIntentResponseV1::decode,
             IssuerPayoutIntentResponseV1::encode,
         )?;
-        if envelope.encode()? != pending.canonical_envelope
+        let canonical_envelope = Zeroizing::new(envelope.encode()?);
+        if canonical_envelope.as_slice() != pending.canonical_envelope
             || envelope.intent_request != stored_intent_request
             || envelope.intent_response != stored_intent_response
             || envelope.request.request_digest()? != pending.payout_request_digest
@@ -1263,7 +1696,10 @@ impl<'a> ProviderSettlementClientV1<'a> {
         pending: &ProviderPayoutStatusPendingV1,
         verification_time: u64,
     ) -> Result<ProviderPayoutStatusEnvelopeV1, ProviderSettlementClientErrorV1> {
-        if pending.previous_floor != payout.rollback_floor() {
+        if pending.previous_floor != payout.rollback_floor()
+            || provider_payout_durable_state_commitment_v1(&payout.durable_state()?)?
+                != pending.previous_state_commitment
+        {
             return Err(ProviderSettlementClientErrorV1::Rollback);
         }
         let trusted_registration = if pending.registration == self.trust.registration {
@@ -1279,7 +1715,8 @@ impl<'a> ProviderSettlementClientV1<'a> {
             reason: "pending status registration is not in the trusted current/retained lineage",
         })?;
         let envelope = ProviderPayoutStatusEnvelopeV1::decode(&pending.canonical_envelope)?;
-        if envelope.encode()? != pending.canonical_envelope
+        let canonical_envelope = Zeroizing::new(envelope.encode()?);
+        if canonical_envelope.as_slice() != pending.canonical_envelope
             || envelope.request.request_digest()? != pending.request_digest
             || envelope.payout_request != payout.payout_request
             || envelope.initial_payout_response != payout.initial_response
@@ -1457,6 +1894,68 @@ impl<'a> ProviderSettlementClientV1<'a> {
     }
 }
 
+/// Domain-separated commitment to every exact byte of one durable provider
+/// payout state plus its rollback coordinates. This is content-only; a store
+/// authority additionally binds it to its random instance ID and revision.
+pub fn provider_payout_durable_state_commitment_v1(
+    state: &ProviderPayoutDurableStateV1,
+) -> Result<[u8; 32], ServiceProtocolError> {
+    fn hash_len_prefixed(
+        hasher: &mut Sha256,
+        bytes: &[u8],
+        field: &'static str,
+    ) -> Result<(), ServiceProtocolError> {
+        let len = u64::try_from(bytes.len()).map_err(|_| ServiceProtocolError::InvalidValue {
+            field,
+            reason: "durable payout canonical field length does not fit u64",
+        })?;
+        hasher.update(len.to_le_bytes());
+        hasher.update(bytes);
+        Ok(())
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(DURABLE_PAYOUT_STATE_COMMITMENT_DOMAIN_V1);
+    hash_len_prefixed(
+        &mut hasher,
+        &state.intent_request,
+        "ProviderPayoutDurableStateV1.intent_request",
+    )?;
+    hash_len_prefixed(
+        &mut hasher,
+        &state.intent_response,
+        "ProviderPayoutDurableStateV1.intent_response",
+    )?;
+    hash_len_prefixed(
+        &mut hasher,
+        &state.payout_request,
+        "ProviderPayoutDurableStateV1.payout_request",
+    )?;
+    hash_len_prefixed(
+        &mut hasher,
+        &state.initial_payout_response,
+        "ProviderPayoutDurableStateV1.initial_payout_response",
+    )?;
+    match state.latest_status_response.as_ref() {
+        None => hasher.update([0]),
+        Some(status) => {
+            hasher.update([1]);
+            hash_len_prefixed(
+                &mut hasher,
+                status,
+                "ProviderPayoutDurableStateV1.latest_status_response",
+            )?;
+        }
+    }
+    hasher.update(state.rollback_floor.payout_id);
+    hasher.update(state.rollback_floor.payout_request_digest);
+    hasher.update(state.rollback_floor.ledger_transaction_id);
+    hasher.update([state.rollback_floor.state as u8]);
+    hasher.update(state.rollback_floor.state_version.to_le_bytes());
+    hasher.update(state.rollback_floor.updated_at.to_le_bytes());
+    Ok(hasher.finalize().into())
+}
+
 fn pending_payout_floor_v1(
     canonical_envelope: &[u8],
     payout_request_digest: &[u8; 32],
@@ -1570,10 +2069,13 @@ fn floor_is_satisfied(
     }
 }
 
-/// Typed transport input. Concrete HTTP adapters encode these exact canonical
-/// objects and must disable redirects and request/response body logging.
+/// Typed transport input. The endpoint and pins come only from the verified,
+/// operator-authorized and issuer-approved clearing claims. Concrete HTTP
+/// adapters encode these exact canonical objects, require WebPKI plus a pin,
+/// and disable redirects and request/response body logging.
 pub struct SharedIssuerRedeemEnvelopeV1<'a> {
-    pub endpoint: &'a str,
+    pub redeem_endpoint: &'a str,
+    pub redeem_leaf_spki_sha256_pins: &'a [[u8; 32]],
     pub request: &'a ProviderRedeemRequestV1,
     pub request_auth: &'a ProviderClearingRequestAuthV1,
     pub credential_binding: &'a pir_service_protocol::CredentialKeyBindingV1,
@@ -1605,7 +2107,7 @@ pub trait SharedIssuerRedeemTransportV1: Send + Sync {
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct ProviderRedeemIdempotencyKeyV1([u8; 32]);
+pub struct ProviderRedeemIdempotencyKeyV1(SharedIssuerProviderSecretV1);
 
 impl fmt::Debug for ProviderRedeemIdempotencyKeyV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1617,15 +2119,8 @@ impl fmt::Debug for ProviderRedeemIdempotencyKeyV1 {
 }
 
 impl ProviderRedeemIdempotencyKeyV1 {
-    pub fn from_bytes(mut key: [u8; 32]) -> Result<Self, ServiceProtocolError> {
-        if key.iter().all(|byte| *byte == 0) {
-            key.zeroize();
-            return Err(ServiceProtocolError::InvalidValue {
-                field: "ProviderRedeemIdempotencyKeyV1",
-                reason: "must be non-zero",
-            });
-        }
-        Ok(Self(key))
+    pub fn from_bytes(key: [u8; 32]) -> Result<Self, ServiceProtocolError> {
+        SharedIssuerProviderSecretV1::from_bytes(key).map(Self)
     }
 
     fn derive(
@@ -1634,13 +2129,8 @@ impl ProviderRedeemIdempotencyKeyV1 {
         binding_digest: &[u8; 32],
         credential_digest: &[u8; 32],
     ) -> [u8; 32] {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC-SHA256 accepts every key length");
-        mac.update(IDEMPOTENCY_DOMAIN_V1);
-        mac.update(authorization_digest);
-        mac.update(binding_digest);
-        mac.update(credential_digest);
-        mac.finalize().into_bytes().into()
+        self.0
+            .derive_wire_idempotency_v1(authorization_digest, binding_digest, credential_digest)
     }
 }
 
@@ -1655,6 +2145,7 @@ pub struct SharedIssuerAdmissionCommitterV1<'a> {
     clearing_signing_key: SigningKey,
     minimum_authorization_epoch: u64,
     idempotency_key: ProviderRedeemIdempotencyKeyV1,
+    provider_store: ProviderStore,
     transport: &'a dyn SharedIssuerRedeemTransportV1,
 }
 
@@ -1686,6 +2177,7 @@ impl<'a> SharedIssuerAdmissionCommitterV1<'a> {
         clearing_signing_key: SigningKey,
         minimum_authorization_epoch: u64,
         idempotency_key: ProviderRedeemIdempotencyKeyV1,
+        provider_store: ProviderStore,
         transport: &'a dyn SharedIssuerRedeemTransportV1,
     ) -> Result<Self, ServiceProtocolError> {
         if authorization.claims.authorization_epoch < minimum_authorization_epoch
@@ -1697,6 +2189,19 @@ impl<'a> SharedIssuerAdmissionCommitterV1<'a> {
                 reason: "authorization epoch or provider clearing key mismatch",
             });
         }
+        let store_identity =
+            provider_store
+                .identity()
+                .map_err(|_| ServiceProtocolError::InvalidValue {
+                    field: "SharedIssuerAdmissionCommitterV1.provider_store",
+                    reason: "provider store is unavailable",
+                })?;
+        if store_identity.provider_id != authorization.claims.provider_id {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "SharedIssuerAdmissionCommitterV1.provider_store",
+                reason: "provider store belongs to another provider",
+            });
+        }
         Ok(Self {
             authorization,
             issuer_approval,
@@ -1705,6 +2210,7 @@ impl<'a> SharedIssuerAdmissionCommitterV1<'a> {
             clearing_signing_key,
             minimum_authorization_epoch,
             idempotency_key,
+            provider_store,
             transport,
         })
     }
@@ -1747,12 +2253,15 @@ impl<'a> SharedIssuerAdmissionCommitterV1<'a> {
         if offer.verification != VerificationMode::SharedIssuerOnline
             || offer.issuer_id != self.authorization.claims.issuer_id
             || attempt.scope().provider_id != self.authorization.claims.provider_id
+            || offer.endpoint != self.authorization.claims.redeem_endpoint
         {
             return Err(AdmissionCommitErrorV1::ScopeUnavailable);
         }
 
-        let canonical_credential = canonical_shared_credential_v1(attempt)
-            .map_err(|_| AdmissionCommitErrorV1::InvalidOrSpent)?;
+        let canonical_credential = Zeroizing::new(
+            canonical_shared_credential_v1(attempt)
+                .map_err(|_| AdmissionCommitErrorV1::InvalidOrSpent)?,
+        );
         let binding_digest = binding
             .binding_digest()
             .map_err(|_| AdmissionCommitErrorV1::ScopeUnavailable)?;
@@ -1796,38 +2305,40 @@ impl<'a> SharedIssuerAdmissionCommitterV1<'a> {
             &self.clearing_signing_key,
         );
 
-        let response_bytes = self
-            .transport
-            .redeem(
-                SharedIssuerRedeemEnvelopeV1 {
-                    endpoint: &offer.endpoint,
-                    request: &request,
-                    request_auth: &request_auth,
-                    credential_binding: binding,
-                    canonical_credential: &canonical_credential,
-                },
-                MAX_SHARED_ISSUER_RESPONSE_BYTES_V1,
-            )
-            .map_err(map_transport_error)?;
+        let response_bytes = Zeroizing::new(
+            self.transport
+                .redeem(
+                    SharedIssuerRedeemEnvelopeV1 {
+                        redeem_endpoint: &self.authorization.claims.redeem_endpoint,
+                        redeem_leaf_spki_sha256_pins: &self
+                            .authorization
+                            .claims
+                            .redeem_leaf_spki_sha256_pins,
+                        request: &request,
+                        request_auth: &request_auth,
+                        credential_binding: binding,
+                        canonical_credential: &canonical_credential,
+                    },
+                    MAX_SHARED_ISSUER_RESPONSE_BYTES_V1,
+                )
+                .map_err(map_transport_error)?,
+        );
         if response_bytes.len() > MAX_SHARED_ISSUER_RESPONSE_BYTES_V1 {
             return Err(AdmissionCommitErrorV1::InternalAfterSpend);
         }
-        let response = ProviderRedeemResponseV1::decode(&response_bytes)
-            .map_err(|_| AdmissionCommitErrorV1::InternalAfterSpend)?;
-        if response
-            .encode()
-            .map_err(|_| AdmissionCommitErrorV1::InternalAfterSpend)?
-            != response_bytes
-        {
-            return Err(AdmissionCommitErrorV1::InternalAfterSpend);
-        }
-        verify_ledger_redeem_response_for_exact_request_v1(
-            &response,
+        let local_claim = verify_shared_issuer_local_grant_claim_v1(
+            &response_bytes,
             &request,
             &self.authorization,
             &self.issuer_settlement_verifying_key,
+            attempt.verified_offer(),
+            &self.idempotency_key.0,
+            now_unix,
         )
         .map_err(|_| AdmissionCommitErrorV1::InternalAfterSpend)?;
+        self.provider_store
+            .claim_verified_shared_issuer_local_grant_v1(local_claim)
+            .map_err(map_post_issuer_local_claim_error)?;
         Ok(())
     }
 }
@@ -1863,7 +2374,7 @@ fn canonical_shared_credential_v1(
         AuthorizationProofV1::Free(FreeAuthorizationProofV1::AnonymousTicket(ticket)) => {
             ticket.encode()
         }
-        AuthorizationProofV1::BitcoinPirCashuBat(proof) => Ok(proof.encode()?.to_vec()),
+        AuthorizationProofV1::BitcoinPirCashuBat(proof) => Ok(proof.encode_zeroizing()?.to_vec()),
         AuthorizationProofV1::ArcExperimental(presentation) => presentation.encode(),
         _ => Err(ServiceProtocolError::InvalidValue {
             field: "AuthorizationProofV1",
@@ -1881,8 +2392,23 @@ fn map_transport_error(error: SharedIssuerTransportErrorV1) -> AdmissionCommitEr
         SharedIssuerTransportErrorV1::ScopeUnavailable => AdmissionCommitErrorV1::ScopeUnavailable,
         SharedIssuerTransportErrorV1::OutcomeUnknown
         | SharedIssuerTransportErrorV1::InvalidResponse => {
+            // Intentionally not retryable: the issuer may already have spent
+            // the proof. Only a caller that explicitly retained the identical
+            // proof can exercise the server-side exact-replay safety path; the
+            // Web flow deletes before send and does not auto-recover. Likewise,
+            // losing AUTH_GRANTED after a committed local claim burns the grant.
             AdmissionCommitErrorV1::InternalAfterSpend
         }
+    }
+}
+
+fn map_post_issuer_local_claim_error(error: StoreError) -> AdmissionCommitErrorV1 {
+    match error {
+        StoreError::AlreadySpent => AdmissionCommitErrorV1::InvalidOrSpent,
+        // The issuer may already have invalidated the credential and credited
+        // this provider. No other local failure is safe to expose as retryable
+        // or to turn into a connection grant.
+        _ => AdmissionCommitErrorV1::InternalAfterSpend,
     }
 }
 
@@ -1923,3 +2449,6 @@ mod tests {
 
 #[cfg(test)]
 mod settlement_client_tests;
+
+#[cfg(test)]
+mod shared_grant_tests;

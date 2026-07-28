@@ -39,6 +39,7 @@
 //! only after that binding succeeds. [`crate::RootPolicy::RequireVerified`]
 //! additionally refuses queries for databases without installed roots.
 
+use crate::protocol::decode_error_response_message;
 use crate::transport::PirTransport;
 use async_trait::async_trait;
 use libdpf::Dpf;
@@ -168,11 +169,20 @@ pub fn parse_tree_tops(data: &[u8]) -> PirResult<Vec<TreeTop>> {
         return Err(PirError::Decode("tree-tops blob too short".into()));
     }
     let num_trees = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+    let max_trees_from_headers = data.len().saturating_sub(4) / 8;
+    if num_trees > max_trees_from_headers {
+        return Err(PirError::Decode(format!(
+            "tree-tops declares {num_trees} trees but only {max_trees_from_headers} headers can fit"
+        )));
+    }
     let mut off = 4usize;
     let mut out = Vec::with_capacity(num_trees);
 
     for t in 0..num_trees {
-        if off + 8 > data.len() {
+        let header_end = off
+            .checked_add(8)
+            .ok_or_else(|| PirError::Decode("tree-tops header offset overflow".into()))?;
+        if header_end > data.len() {
             return Err(PirError::Decode(format!(
                 "tree-tops: truncated header for tree {}",
                 t
@@ -182,22 +192,36 @@ pub fn parse_tree_tops(data: &[u8]) -> PirResult<Vec<TreeTop>> {
         off += 1;
         let _total_nodes = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
         off += 4;
-        let _arity = u16::from_le_bytes(data[off..off + 2].try_into().unwrap());
+        let arity = u16::from_le_bytes(data[off..off + 2].try_into().unwrap());
         off += 2;
+        if usize::from(arity) != BUCKET_MERKLE_ARITY {
+            return Err(PirError::Decode(format!(
+                "tree-tops: tree {t} declares arity {arity}, expected {BUCKET_MERKLE_ARITY}"
+            )));
+        }
         let num_levels = data[off] as usize;
         off += 1;
 
         let mut levels = Vec::with_capacity(num_levels);
         for lvl in 0..num_levels {
-            if off + 4 > data.len() {
+            let count_end = off
+                .checked_add(4)
+                .ok_or_else(|| PirError::Decode("tree-tops level-count offset overflow".into()))?;
+            if count_end > data.len() {
                 return Err(PirError::Decode(format!(
                     "tree-tops: truncated level count for tree {} level {}",
                     t, lvl
                 )));
             }
-            let n = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
-            off += 4;
-            if off + n * 32 > data.len() {
+            let n = u32::from_le_bytes(data[off..count_end].try_into().unwrap()) as usize;
+            off = count_end;
+            let hash_bytes = n
+                .checked_mul(32)
+                .ok_or_else(|| PirError::Decode("tree-tops hash-byte count overflow".into()))?;
+            let hashes_end = off
+                .checked_add(hash_bytes)
+                .ok_or_else(|| PirError::Decode("tree-tops hash offset overflow".into()))?;
+            if hashes_end > data.len() {
                 return Err(PirError::Decode(format!(
                     "tree-tops: truncated hashes for tree {} level {}",
                     t, lvl
@@ -216,6 +240,13 @@ pub fn parse_tree_tops(data: &[u8]) -> PirResult<Vec<TreeTop>> {
             cache_from_level,
             levels,
         });
+    }
+
+    if off != data.len() {
+        return Err(PirError::Decode(format!(
+            "tree-tops: trailing bytes after declared trees: {}",
+            data.len() - off
+        )));
     }
 
     Ok(out)
@@ -283,38 +314,34 @@ type SiblingResults = Vec<Vec<Vec<u8>>>;
 /// Decode a `RESP_BUCKET_MERKLE_SIB_BATCH` (0x33) response.
 ///
 /// Input is the payload AFTER the 4-byte length prefix (raw message body).
+#[cfg(test)]
 pub fn decode_sibling_batch(data: &[u8]) -> PirResult<SiblingResults> {
+    decode_sibling_batch_body(data, None, None, "bucket Merkle sibling")
+}
+
+fn decode_sibling_batch_body(
+    data: &[u8],
+    expected_round_id: Option<u16>,
+    expected_groups: Option<usize>,
+    context: &str,
+) -> PirResult<SiblingResults> {
     if data.is_empty() {
-        return Err(PirError::Decode("empty sibling response".into()));
+        return Err(PirError::Decode(format!(
+            "{context}: empty sibling response"
+        )));
     }
-    match data[0] {
-        RESP_BUCKET_MERKLE_SIB_BATCH => {}
-        0xFF => {
-            // RESP_ERROR in the middle of a Merkle sibling round is a
-            // pipeline-level verification failure — by the time we're here
-            // we've already fetched tree-tops successfully, so a mid-round
-            // error means the server can't produce the sibling evidence
-            // needed to verify. Surface as `MerkleVerificationFailed` so
-            // callers can distinguish "untrusted data" from generic
-            // server errors.
-            if data.len() < 5 {
-                return Err(PirError::MerkleVerificationFailed(
-                    "bucket merkle: short error".into(),
-                ));
-            }
-            let len = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
-            let msg = String::from_utf8_lossy(&data[5..5 + len.min(data.len() - 5)]).to_string();
-            return Err(PirError::MerkleVerificationFailed(format!(
-                "bucket merkle: {}",
-                msg
-            )));
-        }
-        v => {
-            return Err(PirError::Decode(format!(
-                "unexpected sibling response variant: 0x{:02x}",
-                v
-            )))
-        }
+    if let Some(message) = decode_error_response_message(data, context)? {
+        // A canonical server error in the middle of the proof walk means the
+        // server did not provide the evidence required to verify the result.
+        return Err(PirError::MerkleVerificationFailed(format!(
+            "{context}: {message}"
+        )));
+    }
+    if data[0] != RESP_BUCKET_MERKLE_SIB_BATCH {
+        return Err(PirError::UnexpectedResponse {
+            expected: "RESP_BUCKET_MERKLE_SIB_BATCH",
+            actual: format!("{context}: 0x{:02x}", data[0]),
+        });
     }
     // Skip variant byte; body matches apps/server/src/protocol.rs::decode_batch_result.
     let body = &data[1..];
@@ -322,36 +349,96 @@ pub fn decode_sibling_batch(data: &[u8]) -> PirResult<SiblingResults> {
         return Err(PirError::Decode("sibling batch body too short".into()));
     }
     let mut pos = 0;
-    let _round_id = u16::from_le_bytes(body[pos..pos + 2].try_into().unwrap());
+    let round_id = u16::from_le_bytes(body[pos..pos + 2].try_into().unwrap());
     pos += 2;
+    if let Some(expected) = expected_round_id {
+        if round_id != expected {
+            return Err(PirError::Protocol(format!(
+                "{context}: sibling round_id mismatch: expected {expected}, got {round_id}"
+            )));
+        }
+    }
     let num_groups = body[pos] as usize;
     pos += 1;
+    if let Some(expected) = expected_groups {
+        if num_groups != expected {
+            return Err(PirError::Protocol(format!(
+                "{context}: sibling group count mismatch: expected {expected}, got {num_groups}"
+            )));
+        }
+    }
     let results_per_group = body[pos] as usize;
     pos += 1;
+    if results_per_group != 1 {
+        return Err(PirError::Protocol(format!(
+            "{context}: expected exactly one sibling result per group, got {results_per_group}"
+        )));
+    }
     let mut results = Vec::with_capacity(num_groups);
     for g in 0..num_groups {
         let mut group = Vec::with_capacity(results_per_group);
         for k in 0..results_per_group {
-            if pos + 2 > body.len() {
+            let length_end = pos.checked_add(2).ok_or_else(|| {
+                PirError::Decode(format!("{context}: sibling result length overflow"))
+            })?;
+            if length_end > body.len() {
                 return Err(PirError::Decode(format!(
-                    "sibling batch: truncated length for group {} key {}",
+                    "{context}: truncated length for group {} key {}",
                     g, k
                 )));
             }
-            let len = u16::from_le_bytes(body[pos..pos + 2].try_into().unwrap()) as usize;
-            pos += 2;
-            if pos + len > body.len() {
+            let len = u16::from_le_bytes(body[pos..length_end].try_into().unwrap()) as usize;
+            pos = length_end;
+            let result_end = pos.checked_add(len).ok_or_else(|| {
+                PirError::Decode(format!("{context}: sibling result data overflow"))
+            })?;
+            if result_end > body.len() {
                 return Err(PirError::Decode(format!(
-                    "sibling batch: truncated data for group {} key {}",
+                    "{context}: truncated data for group {} key {}",
                     g, k
                 )));
             }
-            group.push(body[pos..pos + len].to_vec());
-            pos += len;
+            group.push(body[pos..result_end].to_vec());
+            pos = result_end;
         }
         results.push(group);
     }
+    if pos != body.len() {
+        return Err(PirError::Decode(format!(
+            "{context}: trailing bytes after sibling response: {}",
+            body.len() - pos
+        )));
+    }
     Ok(results)
+}
+
+fn decode_sibling_batch_frame(
+    frame: &[u8],
+    expected_round_id: u16,
+    expected_groups: usize,
+    context: &str,
+) -> PirResult<SiblingResults> {
+    if frame.len() < 4 {
+        return Err(PirError::Decode(format!(
+            "{context}: sibling response missing length prefix"
+        )));
+    }
+    let body_len = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
+    let expected_frame_len = 4usize
+        .checked_add(body_len)
+        .ok_or_else(|| PirError::Decode(format!("{context}: response length overflow")))?;
+    if frame.len() != expected_frame_len {
+        return Err(PirError::Decode(format!(
+            "{context}: response length mismatch: prefix declares {body_len} body bytes, frame has {}",
+            frame.len().saturating_sub(4)
+        )));
+    }
+    decode_sibling_batch_body(
+        &frame[4..],
+        Some(expected_round_id),
+        Some(expected_groups),
+        context,
+    )
 }
 
 // ─── Fetch tree-tops ─────────────────────────────────────────────────────────
@@ -392,27 +479,50 @@ pub async fn fetch_tree_tops(
             },
         );
     }
-    // Response: [4B len][1B variant=0x34][blob...]
-    if raw.len() < 6 {
-        return Err(PirError::Protocol("tree-tops response too short".into()));
+    decode_tree_tops_response(&raw)
+}
+
+/// Decode one complete `[4B len][0x34][tree-top blob]` response record.
+fn decode_tree_tops_response(frame: &[u8]) -> PirResult<Vec<TreeTop>> {
+    // Independently validate the record even though the built-in transport
+    // normally frames it.
+    if frame.len() < 4 {
+        return Err(PirError::Decode(
+            "tree-tops response missing length prefix".into(),
+        ));
     }
-    let variant = raw[4];
-    if variant == 0xFF {
+    let body_len = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
+    let expected_len = 4usize
+        .checked_add(body_len)
+        .ok_or_else(|| PirError::Decode("tree-tops response length overflow".into()))?;
+    if frame.len() != expected_len {
+        return Err(PirError::Decode(format!(
+            "tree-tops response length mismatch: prefix declares {body_len} body bytes, frame has {}",
+            frame.len().saturating_sub(4)
+        )));
+    }
+    let body = &frame[4..];
+    if body.is_empty() {
+        return Err(PirError::Decode("empty tree-tops response body".into()));
+    }
+    if let Some(message) = decode_error_response_message(body, "bucket Merkle tree-tops response")?
+    {
         // Catalog advertised `has_bucket_merkle = true` but the server
         // rejects the tree-tops request — that's a skew between what
         // the catalog claims and what the server actually implements.
         return Err(PirError::ProtocolSkew {
             expected: "bucket_merkle support (per catalog has_bucket_merkle=true)".into(),
-            actual: "RESP_ERROR from REQ_BUCKET_MERKLE_TREE_TOPS".into(),
+            actual: format!("RESP_ERROR from REQ_BUCKET_MERKLE_TREE_TOPS: {message}"),
         });
     }
+    let variant = body[0];
     if variant != RESP_BUCKET_MERKLE_TREE_TOPS {
         return Err(PirError::UnexpectedResponse {
             expected: "RESP_BUCKET_MERKLE_TREE_TOPS",
             actual: format!("0x{:02x}", variant),
         });
     }
-    parse_tree_tops(&raw[5..])
+    parse_tree_tops(&body[1..])
 }
 
 // ─── Sibling querier trait ──────────────────────────────────────────────────
@@ -653,13 +763,20 @@ impl<'a> DpfSiblingQuerier<'a> {
                 );
             }
         }
-        if response0.len() < 4 || response1.len() < 4 {
-            return Err(PirError::Protocol(
-                "sibling response missing length prefix".into(),
-            ));
-        }
-        let rows0 = decode_sibling_batch(&response0[4..])?;
-        let rows1 = decode_sibling_batch(&response1[4..])?;
+        let expected_round_id = (round.table_type as u16) * 100 + round.level as u16;
+        let expected_groups = round.pass_targets.len();
+        let rows0 = decode_sibling_batch_frame(
+            response0,
+            expected_round_id,
+            expected_groups,
+            "DPF Merkle server0",
+        )?;
+        let rows1 = decode_sibling_batch_frame(
+            response1,
+            expected_round_id,
+            expected_groups,
+            "DPF Merkle server1",
+        )?;
         let mut out = vec![None; round.pass_targets.len()];
         for (group, target) in round.pass_targets.iter().enumerate() {
             if target.is_none()
@@ -753,13 +870,8 @@ impl BucketMerkleSiblingQuerier for DpfSiblingQuerier<'_> {
                 );
             }
         }
-        if resp0_raw.len() < 4 || resp1_raw.len() < 4 {
-            return Err(PirError::Protocol(
-                "sibling response missing length prefix".into(),
-            ));
-        }
-        let r0 = decode_sibling_batch(&resp0_raw[4..])?;
-        let r1 = decode_sibling_batch(&resp1_raw[4..])?;
+        let r0 = decode_sibling_batch_frame(&resp0_raw, round_id, table_k, "DPF Merkle server0")?;
+        let r1 = decode_sibling_batch_frame(&resp1_raw, round_id, table_k, "DPF Merkle server1")?;
 
         let mut out: Vec<Option<Vec<u8>>> = vec![None; table_k];
         for (g, target) in pass_targets.iter().enumerate() {
@@ -1685,6 +1797,66 @@ mod tests {
     }
 
     #[test]
+    fn tree_tops_reject_wrong_arity_and_trailing_bytes() {
+        let mut wrong_arity = 1u32.to_le_bytes().to_vec();
+        wrong_arity.push(0); // cache_from_level
+        wrong_arity.extend_from_slice(&1u32.to_le_bytes()); // total_nodes
+        wrong_arity.extend_from_slice(&2u16.to_le_bytes()); // arity
+        wrong_arity.push(0); // cached levels
+        assert!(matches!(
+            parse_tree_tops(&wrong_arity),
+            Err(PirError::Decode(ref text)) if text.contains("arity")
+        ));
+
+        let mut trailing = 0u32.to_le_bytes().to_vec();
+        trailing.push(0xaa);
+        assert!(matches!(
+            parse_tree_tops(&trailing),
+            Err(PirError::Decode(ref text)) if text.contains("trailing bytes")
+        ));
+    }
+
+    #[test]
+    fn tree_tops_response_binds_outer_length_opcode_and_canonical_error() {
+        let mut body = vec![RESP_BUCKET_MERKLE_TREE_TOPS];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&body);
+        assert!(decode_tree_tops_response(&frame).unwrap().is_empty());
+
+        let mut wrong_opcode = frame.clone();
+        wrong_opcode[4] = 0x91;
+        assert!(matches!(
+            decode_tree_tops_response(&wrong_opcode),
+            Err(PirError::UnexpectedResponse { .. })
+        ));
+
+        let mut trailing_frame = frame.clone();
+        trailing_frame.push(0xaa);
+        assert!(matches!(
+            decode_tree_tops_response(&trailing_frame),
+            Err(PirError::Decode(ref text)) if text.contains("length mismatch")
+        ));
+
+        let message = b"authorization required";
+        let mut error_body = vec![crate::protocol::RESP_ERROR];
+        error_body.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        error_body.extend_from_slice(message);
+        let mut error_frame = (error_body.len() as u32).to_le_bytes().to_vec();
+        error_frame.extend_from_slice(&error_body);
+        assert!(matches!(
+            decode_tree_tops_response(&error_frame),
+            Err(PirError::ProtocolSkew { .. })
+        ));
+
+        let malformed_error = vec![1, 0, 0, 0, crate::protocol::RESP_ERROR];
+        assert!(matches!(
+            decode_tree_tops_response(&malformed_error),
+            Err(PirError::Decode(_))
+        ));
+    }
+
+    #[test]
     fn tree_tops_super_root_requires_exact_ordered_roots() {
         let tops = vec![
             TreeTop {
@@ -1755,6 +1927,33 @@ mod tests {
         assert_eq!(out[0].len(), 1);
         assert_eq!(out[0][0], vec![1, 2, 3]);
         assert_eq!(out[1][0], vec![0xAA, 0xBB, 0xCC, 0xDD]);
+
+        let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&body);
+        assert!(decode_sibling_batch_frame(&frame, 0, 2, "test").is_ok());
+        assert!(matches!(
+            decode_sibling_batch_frame(&frame, 1, 2, "test"),
+            Err(PirError::Protocol(ref text)) if text.contains("round_id mismatch")
+        ));
+        assert!(matches!(
+            decode_sibling_batch_frame(&frame, 0, 1, "test"),
+            Err(PirError::Protocol(ref text)) if text.contains("group count mismatch")
+        ));
+
+        let mut trailing_body = frame.clone();
+        trailing_body[0..4].copy_from_slice(&((body.len() + 1) as u32).to_le_bytes());
+        trailing_body.push(0xaa);
+        assert!(matches!(
+            decode_sibling_batch_frame(&trailing_body, 0, 2, "test"),
+            Err(PirError::Decode(ref text)) if text.contains("trailing bytes")
+        ));
+
+        let mut trailing_frame = frame;
+        trailing_frame.push(0xaa);
+        assert!(matches!(
+            decode_sibling_batch_frame(&trailing_frame, 0, 2, "test"),
+            Err(PirError::Decode(ref text)) if text.contains("length mismatch")
+        ));
     }
 
     #[test]
@@ -1770,6 +1969,12 @@ mod tests {
         // errors via `PirError::kind()`.
         assert!(matches!(err, PirError::MerkleVerificationFailed(_)));
         assert_eq!(err.kind(), ErrorKind::MerkleVerificationFailed);
+
+        let malformed = [0xff, 1, 0, 0];
+        assert!(matches!(
+            decode_sibling_batch(&malformed),
+            Err(PirError::Decode(_))
+        ));
     }
 
     #[test]

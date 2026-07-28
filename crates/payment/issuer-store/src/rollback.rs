@@ -81,11 +81,14 @@ impl std::error::Error for IssuerRollbackFloorAuthorityErrorV1 {}
 
 /// Linearizable, independently durable compare-and-swap authority.
 ///
-/// `initialize` installs an absent generation-zero record and is idempotent
-/// only for the exact same floor. `compare_and_advance` atomically changes
-/// `expected` to `next`, or returns the already-current record. It must never
-/// lower a generation, rebind an identity, or accept two commitments at the
-/// same generation.
+/// Every returned record is the durable live authority value after the
+/// attempted operation. `Ok` alone does **not** mean the requested mutation
+/// applied: `initialize` and `compare_and_advance` may return a conflicting
+/// current record. Every caller must validate exact equality with the expected
+/// initial/next floor (or apply its explicit domain reconciliation rule) before
+/// treating the operation as successful. An implementation must never lower a
+/// generation, rebind an identity, or accept two commitments at one
+/// generation.
 pub trait IssuerRollbackFloorAuthorityV1: fmt::Debug + Send + Sync + 'static {
     fn load(
         &self,

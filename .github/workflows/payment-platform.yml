@@ -10,6 +10,7 @@ on:
       - '.cargo/**'
       - 'vendor/**'
       - 'apps/payment-issuer/**'
+      - 'apps/rollback-authority/**'
       - 'apps/admin/**'
       - 'apps/server/**'
       - 'crates/net/**'
@@ -20,8 +21,10 @@ on:
       - 'crates/protocol/runtime/**'
       - 'crates/protocol/service/**'
       - 'crates/protocol/service-store/**'
+      - 'crates/sdk/core/**'
       - 'crates/sdk/client/**'
       - 'crates/sdk/wasm/**'
+      - 'crates/security/**'
       - 'crates/trust/**'
       - 'docs/payment/**'
       - 'scripts/fixtures/**'
@@ -31,6 +34,7 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'web/**'
+      - '.github/workflows/deploy-web.yml'
       - '.github/workflows/payment-platform.yml'
   pull_request:
     branches: [main]
@@ -41,6 +45,7 @@ on:
       - '.cargo/**'
       - 'vendor/**'
       - 'apps/payment-issuer/**'
+      - 'apps/rollback-authority/**'
       - 'apps/admin/**'
       - 'apps/server/**'
       - 'crates/net/**'
@@ -51,8 +56,10 @@ on:
       - 'crates/protocol/runtime/**'
       - 'crates/protocol/service/**'
       - 'crates/protocol/service-store/**'
+      - 'crates/sdk/core/**'
       - 'crates/sdk/client/**'
       - 'crates/sdk/wasm/**'
+      - 'crates/security/**'
       - 'crates/trust/**'
       - 'docs/payment/**'
       - 'scripts/fixtures/**'
@@ -62,6 +69,7 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'web/**'
+      - '.github/workflows/deploy-web.yml'
       - '.github/workflows/payment-platform.yml'
   workflow_dispatch:
 
@@ -72,7 +80,7 @@ jobs:
   protocol-and-persistence:
     name: Protocol, stores, adapters, issuer and runtime
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
     steps:
@@ -84,9 +92,13 @@ jobs:
         run: rustup toolchain install --profile minimal
       - name: Test payment platform offline
         run: >-
-          cargo test --offline
+          cargo test --locked --offline
           -p pir-channel
           -p pir-strict-https
+          -p pir-private-files
+          -p pir-rollback-authority-protocol
+          -p pir-rollback-authority-client
+          -p pir-rollback-authority-store
           -p pir-service-protocol
           -p pir-service-store
           -p pir-payment-crypto
@@ -105,22 +117,27 @@ jobs:
           -p pir-sdk-client
           -p pir-sdk-wasm
           -p payment-issuer
+          -p rollback-authority
           -p bpir-admin
       - name: Test concrete provider-store Cashu BAT verifier boundary
         run: >-
-          cargo test --offline
+          cargo test --locked --offline
           -p pir-payment-crypto
           --features provider-store
           --test provider_store_bat_adapter
       - name: Test concrete provider-store experimental ARC boundary
         run: >-
-          cargo test --offline
+          cargo test --locked --offline
           -p pir-arc-adapter
           --features provider-store
       - name: Deny warnings across dedicated Payment V1 crates and issuer
         run: >-
-          cargo clippy --offline --all-targets --no-deps
+          cargo clippy --locked --offline --all-targets --no-deps
           -p pir-strict-https
+          -p pir-private-files
+          -p pir-rollback-authority-protocol
+          -p pir-rollback-authority-client
+          -p pir-rollback-authority-store
           -p pir-service-protocol
           -p pir-service-store
           -p pir-payment-crypto
@@ -136,19 +153,137 @@ jobs:
           -p pir-arc-adapter
           -p pir-directory-nostr
           -p payment-issuer
+          -p rollback-authority
           -p bpir-admin
           -- -D warnings
+      - name: Exercise the debug-only fake-Lightning issuer boundary
+        run: |
+          cargo test --locked --offline -p payment-issuer --features test-only-fake-lightning
+          cargo run --locked --offline -p payment-issuer --features test-only-fake-lightning -- serve-fake --help >/dev/null
+          cargo clippy --locked --offline -p payment-issuer --features test-only-fake-lightning --all-targets --no-deps -- -D warnings
       - name: Exercise bounded Payment V1 adversarial corpus
         run: |
-          cargo test --offline -p pir-service-protocol --test payment_v1_adversarial
-          cargo test --offline -p pir-runtime-core --test service_admission_adversarial
-          cargo test --offline -p pir-strict-https
-      - name: Check unified server admission wiring
-        run: cargo check --offline -p runtime --bin unified_server
+          cargo test --locked --offline -p pir-service-protocol --test payment_v1_adversarial
+          cargo test --locked --offline -p pir-runtime-core --test service_admission_adversarial
+          cargo test --locked --offline -p pir-strict-https
+          cargo test --locked --offline -p pir-rollback-authority-protocol
+          cargo test --locked --offline -p pir-rollback-authority-client
+          cargo test --locked --offline -p pir-rollback-authority-store
+          cargo test --locked --offline -p rollback-authority
+      - name: Test and lint unified server admission wiring
+        run: |
+          cargo check --locked --offline -p runtime --bin unified_server
+          cargo test --locked --offline -p runtime --lib hint_pool
+          cargo test --locked --offline -p runtime --bin unified_server
+          cargo test --locked --offline -p runtime \
+            --features test-only-unsafe-query-logging \
+            --bin unified_server \
+            service_admission_dispatch_tests::explicit_debug_feature_cli_parser_recognizes_unsafe_logging_flag \
+            -- --exact
+          cargo clippy --locked --offline -p runtime \
+            --bin unified_server \
+            --test payment_v1_process_e2e \
+            --test payment_v1_methods_process_e2e \
+            --test payment_v1_harmony_pool_process_e2e \
+            --no-deps \
+            -- -D warnings
+          cargo clippy --locked --offline -p runtime \
+            --features test-only-unsafe-query-logging \
+            --bin unified_server \
+            --no-deps \
+            -- -D warnings
       - name: Exercise loopback two-provider process admission
         run: |
-          cargo test --offline -p runtime --test payment_v1_process_e2e
-          cargo test --offline -p runtime --test payment_v1_methods_process_e2e
+          cargo test --locked --offline -p runtime --test payment_v1_process_e2e
+          cargo test --locked --offline -p runtime --test payment_v1_methods_process_e2e
+          cargo test --locked --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+      - name: Exercise provider and issuer remote rollback authorities over pinned WebPKI TLS
+        run: |
+          cargo test --locked --offline -p pir-rollback-authority-client --features test-only-webpki-root test_only_webpki_root_requires_owner_only_regular_file
+          cargo test --locked --offline -p runtime --features remote-authority-process-e2e --test payment_v1_process_e2e remote_authority_process::remote_authority_real_process_tls_provider_e2e -- --exact
+          cargo clippy --locked --offline -p runtime --features remote-authority-process-e2e --bin unified_server --test payment_v1_process_e2e --no-deps -- -D warnings
+          cargo test --locked --offline -p payment-issuer --features remote-authority-process-e2e --test remote_authority_process_e2e payment_issuer_remote_authority_real_process_tls_e2e -- --exact
+          cargo clippy --locked --offline -p payment-issuer --features remote-authority-process-e2e --all-targets --no-deps -- -D warnings
+      - name: Exercise Standard Cashu through signed-pin WebPKI TLS and real provider processes
+        run: |
+          cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_standard_cashu_process_e2e standard_cashu_real_process_tls_two_provider_e2e -- --exact
+          cargo clippy --locked --offline -p runtime --features standard-cashu-process-e2e --bin unified_server --test payment_v1_standard_cashu_process_e2e --no-deps -- -D warnings
+          log_file="$(mktemp "${RUNNER_TEMP}/bpir-cashu-test-root-cli.XXXXXX")"
+          trap 'rm -f -- "$log_file"' EXIT
+          if cargo run --locked --offline -p runtime --bin unified_server -- --test-only-service-https-root-pem /does/not/exist >"$log_file" 2>&1; then
+            echo "normal unified_server unexpectedly accepted the test-only HTTPS root flag" >&2
+            exit 1
+          fi
+          grep -F 'unknown argument: --test-only-service-https-root-pem' "$log_file" >/dev/null
+      - name: Prove test-only WebPKI roots cannot enter release artifacts
+        run: |
+          log_file="$(mktemp "${RUNNER_TEMP}/bpir-test-root-release.XXXXXX")"
+          trap 'rm -f -- "$log_file"' EXIT
+          if cargo check --locked --offline --release -p pir-strict-https --features test-only-webpki-root >"$log_file" 2>&1; then
+            echo "test-only WebPKI root feature unexpectedly compiled in release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
+          if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release -p pir-strict-https --features test-only-webpki-root >"$log_file" 2>&1; then
+            echo "test-only WebPKI root feature unexpectedly compiled in assertions-enabled release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
+          if cargo check --locked --offline --release -p payment-issuer --features remote-authority-process-e2e >"$log_file" 2>&1; then
+            echo "payment-issuer test-only remote-authority feature unexpectedly compiled in release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
+          if cargo check --locked --offline --release -p runtime --features remote-authority-process-e2e >"$log_file" 2>&1; then
+            echo "runtime test-only remote-authority feature unexpectedly compiled in release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
+          if cargo check --locked --offline --release -p runtime --features standard-cashu-process-e2e >"$log_file" 2>&1; then
+            echo "runtime Standard Cashu test-only WebPKI feature unexpectedly compiled in release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
+      - name: Prove fake Lightning cannot enter or activate in release artifacts
+        run: |
+          log_file="$(mktemp "${RUNNER_TEMP}/bpir-fake-lightning-release.XXXXXX")"
+          trap 'rm -f -- "$log_file"' EXIT
+          if cargo run --locked --offline --release -p payment-issuer -- serve-fake --help >"$log_file" 2>&1; then
+            echo "default release payment-issuer unexpectedly accepted serve-fake" >&2
+            exit 1
+          fi
+          grep -F "unrecognized subcommand 'serve-fake'" "$log_file" >/dev/null
+          if cargo check --locked --offline --release -p payment-issuer --features test-only-fake-lightning >"$log_file" 2>&1; then
+            echo "test-only fake Lightning unexpectedly compiled in release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-fake-lightning must never be compiled into a production release' "$log_file" >/dev/null
+          if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release -p payment-issuer --features test-only-fake-lightning >"$log_file" 2>&1; then
+            echo "test-only fake Lightning unexpectedly compiled in assertions-enabled release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-fake-lightning must never be compiled into a production release' "$log_file" >/dev/null
+      - name: Prove query-correlation logging cannot enter release artifacts
+        run: |
+          log_file="$(mktemp "${RUNNER_TEMP}/bpir-unsafe-query-log-release.XXXXXX")"
+          trap 'rm -f -- "$log_file"' EXIT
+          if cargo check --locked --offline --release -p runtime --features test-only-unsafe-query-logging >"$log_file" 2>&1; then
+            echo "test-only query logging unexpectedly compiled in release mode" >&2
+            exit 1
+          fi
+          grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' "$log_file" >/dev/null
+          if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release -p runtime --features test-only-unsafe-query-logging >"$log_file" 2>&1; then
+            echo "test-only query logging unexpectedly compiled in assertions-enabled release mode" >&2
+            exit 1
+          fi
+          grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' "$log_file" >/dev/null
+      - name: Compile opt-in real-CDK provider interoperability test
+        run: >-
+          cargo test --locked --offline
+          -p pir-cashu-client
+          --features insecure-dev-sqlite-store
+          --test cdk_nut03_interop
+          --no-run
       - name: Exercise deterministic no-funds operator fixture
         run: |
           fixture_root="$(mktemp -d "${RUNNER_TEMP}/bpir-payment-v1-fixture.XXXXXX")"
@@ -156,10 +291,15 @@ jobs:
           scripts/fixtures/generate-payment-v1-no-funds.sh "$fixture_root/generated"
           test -s "$fixture_root/generated/fixture.json"
       - name: Validate opt-in external interoperability runners
-        run: >-
-          bash -n
-          scripts/payment-v1-cdk-regtest-e2e.sh
-          scripts/payment-v1-cln-regtest-e2e.sh
+        run: |
+          bash -n scripts/payment-v1-cdk-regtest-e2e.sh
+          bash -n scripts/payment-v1-cln-regtest-e2e.sh
+          bash scripts/payment-v1-cln-regtest-e2e.sh --help | grep -F -- '--acknowledge-local-regtest-only' >/dev/null
+          test -s web/e2e/payment-two-provider-cln-joined.spec.ts
+          test -s web/playwright.payment-cln-joined.config.ts
+          grep -F 'playwright.payment-cln-joined.config.ts' web/package.json >/dev/null
+          grep -F "BITCOINPIR_PAYMENT_TWO_PROVIDER_BACKEND = 'fake'" web/playwright.payment-two-provider.config.ts >/dev/null
+          grep -F "BITCOINPIR_PAYMENT_TWO_PROVIDER_BACKEND = 'cln-regtest'" web/playwright.payment-cln-joined.config.ts >/dev/null
 
   wasm-boundary:
     name: Browser payment and directory boundary
@@ -177,12 +317,12 @@ jobs:
           rustup toolchain install --profile minimal
           rustup target add wasm32-unknown-unknown
       - name: Check WASM without native provider storage
-        run: cargo check --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
+        run: cargo check --locked --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
 
   browser-storage-boundary:
     name: Chromium vault and real no-funds issuer boundaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -213,6 +353,9 @@ jobs:
       - name: Install pinned web dependencies
         working-directory: web
         run: npm ci
+      - name: Typecheck the opt-in CDK browser interoperability harness
+        working-directory: web
+        run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false
       - name: Exercise bounded Nostr relay readback inputs
         run: |
           node --check scripts/payment-v1-nostr-readback.mjs
@@ -232,6 +375,9 @@ jobs:
       - name: Exercise real WASM against the loopback no-funds issuer
         working-directory: web
         run: npm run test:e2e:payment-real-issuer
+      - name: Exercise browser issuance and verified DPF query across two providers
+        working-directory: web
+        run: npm run test:e2e:payment-two-provider
       - name: Upload browser boundary failure evidence
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -240,5 +386,6 @@ jobs:
           path: |
             web/test-results/payment-vault/
             web/test-results/payment-real-issuer/
+            web/test-results/payment-two-provider/
           if-no-files-found: ignore
           retention-days: 14

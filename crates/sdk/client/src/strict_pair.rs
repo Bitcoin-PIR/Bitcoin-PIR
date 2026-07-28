@@ -5,6 +5,7 @@
 //! disclose a peer provider, pair identifier, offer, issuer, or key to either
 //! server.
 
+use pir_arc_adapter::{arc_public_key_fingerprint_v1, ARC_PUBLIC_KEY_LEN_V1};
 use pir_sdk::{PirError, PirResult};
 use pir_service_protocol::{
     bat_verification_key_fingerprint_v1, AcquisitionMethod, AuthScheme, AuthorizationProofV1,
@@ -41,7 +42,7 @@ where
 /// anonymous tickets and online verification, not only paid acquisition.
 /// Setting `allow_shared_issuer_correlation` acknowledges that the common
 /// issuer can observe both credential flows; it never relaxes provider,
-/// policy-key, operator-key, or raw-BAT-key independence.
+/// policy-key, operator-key, raw-BAT-key, or raw-ARC-key independence.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StrictProviderPairOptionsV1 {
     pub allow_shared_issuer_correlation: bool,
@@ -303,6 +304,13 @@ pub fn verify_strict_two_provider_offer_pair_v1<'first, 'second>(
             "the two providers reuse one raw Cashu BAT verification key",
         ));
     }
+    let first_arc = arc_fingerprint(first.offer())?;
+    let second_arc = arc_fingerprint(second.offer())?;
+    if first_arc.is_some() && first_arc == second_arc {
+        return Err(pair_error(
+            "the two providers reuse one raw ARC verification key",
+        ));
+    }
 
     let both_use_correlation_infrastructure = has_correlation_infrastructure(first.offer())
         && has_correlation_infrastructure(second.offer());
@@ -368,6 +376,29 @@ fn bat_fingerprint(offer: &ServiceOfferV1) -> PirResult<Option<[u8; 32]>> {
         .map_err(|error| pair_error(format!("Cashu BAT verification key is invalid: {error}")))
 }
 
+fn arc_fingerprint(offer: &ServiceOfferV1) -> PirResult<Option<[u8; 32]>> {
+    if offer.authorization != AuthScheme::ArcV1Experimental {
+        return Ok(None);
+    }
+    // CredentialKeyBindingClaimsV1 validation already requires exactly 99
+    // bytes for ARC. Keep the conversion fallible at this local trust boundary,
+    // then reuse the adapter's typed decode and byte-exact re-encode check. That
+    // rejects zero/identity, malformed, and non-canonical P-256 points before
+    // applying the protocol's domain-separated ARC key fingerprint.
+    let key: &[u8; ARC_PUBLIC_KEY_LEN_V1] = offer
+        .credential_binding
+        .as_ref()
+        .ok_or_else(|| pair_error("ARC offer is missing its credential binding"))?
+        .claims
+        .verification_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| pair_error("ARC offer has an invalid raw verification key length"))?;
+    arc_public_key_fingerprint_v1(key)
+        .map(Some)
+        .map_err(|error| pair_error(format!("ARC verification key is invalid: {error}")))
+}
+
 fn pair_error(message: impl Into<String>) -> PirError {
     PirError::VerificationFailed(format!("strict provider pair: {}", message.into()))
 }
@@ -377,6 +408,7 @@ mod tests {
     use super::*;
     use crate::service::{accept_service_policy_response_v1, ServicePolicyCheckpointV1};
     use ed25519_dalek::SigningKey;
+    use pir_arc_adapter::{ArcSecretKeyV1, ARC_SECRET_KEY_LEN_V1};
     use pir_service_protocol::{
         derive_bat_key_id_v1, derive_provider_id, free_anonymous_ticket_key_id,
         paid_receipt_key_id, AuthPaddingClassV1, BackendId, CredentialKeyBindingClaimsV1,
@@ -387,6 +419,7 @@ mod tests {
         ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId, RESP_SERVICE_POLICY_V1,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
+    use zeroize::Zeroizing;
 
     const NOW: u64 = 150;
     const OFFER_ID: u32 = 7;
@@ -434,6 +467,11 @@ mod tests {
             issuer_seed: u8,
             endpoint: &'a str,
             verification_key: [u8; 33],
+        },
+        Arc {
+            issuer_seed: u8,
+            endpoint: &'a str,
+            verification_key: Vec<u8>,
         },
     }
 
@@ -500,6 +538,17 @@ mod tests {
                 endpoint,
                 verification_key,
             } => bat_offer(
+                provider_id,
+                scope_id,
+                issuer_seed,
+                endpoint,
+                verification_key,
+            ),
+            OfferFixture::Arc {
+                issuer_seed,
+                endpoint,
+                verification_key,
+            } => arc_offer(
                 provider_id,
                 scope_id,
                 issuer_seed,
@@ -706,9 +755,103 @@ mod tests {
         }
     }
 
+    fn arc_offer(
+        provider_id: [u8; 32],
+        scope_id: [u8; 32],
+        issuer_seed: u8,
+        endpoint: &str,
+        verification_key: Vec<u8>,
+    ) -> ServiceOfferV1 {
+        let credential_key_id = vec![issuer_seed; 16];
+        let binding = CredentialKeyBindingV1::sign(
+            CredentialKeyBindingClaimsV1 {
+                provider_id,
+                scope_id,
+                offer_id: OFFER_ID,
+                scheme: AuthScheme::ArcV1Experimental,
+                keyset_epoch: 1,
+                entitlement_profile: 2,
+                unit: CredentialUnitV1::Auth,
+                amount: 1,
+                presentation_limit: 10,
+                not_before: 50,
+                not_after: 1_500,
+                credential_key_id: credential_key_id.clone(),
+                verification_key,
+            },
+            &SigningKey::from_bytes(&[issuer_seed; 32]),
+        )
+        .unwrap();
+        ServiceOfferV1 {
+            offer_id: OFFER_ID,
+            acquisition: AcquisitionMethod::Bolt11V1,
+            free_mode: FreeModeV1::NotFree,
+            free_quota: 0,
+            free_window_seconds: 0,
+            free_pow_difficulty_bits: 0,
+            priority_class: 1,
+            authorization: AuthScheme::ArcV1Experimental,
+            verification: VerificationMode::ProviderLocal,
+            deployment_status: DeploymentStatus::Experimental,
+            price: PriceV1::MilliSatoshi(1_000),
+            issuer_id: binding.issuer_id,
+            key_id: credential_key_id,
+            credential_binding: Some(binding),
+            cashu_mint_manifest: None,
+            endpoint: endpoint.into(),
+            invoice_expiry_seconds: 600,
+            claim_window_seconds: 600,
+            minimum_credential_validity_seconds: 100,
+            retired_policy_grace_seconds: 1_300,
+            credential_count: 1,
+            credential_presentation_limit: 10,
+            privacy_leakage: PrivacyLeakageV1::from_bits(
+                PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING
+                    | PrivacyLeakageV1::PROVIDER_LOCAL_BEARER
+                    | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn arc_public_key(seed: u8) -> [u8; ARC_PUBLIC_KEY_LEN_V1] {
+        let mut secret = [0u8; ARC_SECRET_KEY_LEN_V1];
+        for component in 0..4 {
+            secret[component * 32 + 31] = seed.wrapping_add(component as u8);
+        }
+        *ArcSecretKeyV1::from_zeroizing_bytes(vec![seed], Zeroizing::new(secret))
+            .unwrap()
+            .public_key_bytes()
+    }
+
     fn select(fixture: &Fixture) -> StrictProviderOfferSelectionV1<'_> {
         select_strict_provider_offer_v1(&fixture.accepted, &fixture.scope_id, OFFER_ID, NOW, None)
             .unwrap()
+    }
+
+    fn select_with_operator<'policy>(
+        fixture: &'policy Fixture,
+        operator: &SigningKey,
+        stable_server_id: &str,
+        endpoint: &str,
+    ) -> StrictProviderOfferSelectionV1<'policy> {
+        let assertion = directory_assertion(fixture, operator, stable_server_id, endpoint);
+        let verified = assertion
+            .verify_current_for(
+                &fixture.accepted.policy().provider_id,
+                &operator.verifying_key().to_bytes(),
+                NOW,
+                &DirectoryAssertionRollbackGuardV1::initial(),
+            )
+            .unwrap();
+        select_strict_provider_offer_v1(
+            &fixture.accepted,
+            &fixture.scope_id,
+            OFFER_ID,
+            NOW,
+            Some(verified),
+        )
+        .unwrap()
     }
 
     fn verify_error(
@@ -859,7 +1002,7 @@ mod tests {
             11,
             OfferFixture::AnonymousTicket {
                 issuer_seed: 31,
-                endpoint: "https://issuer-a.example/free-one",
+                endpoint: "https://issuer-a.example",
             },
         );
         let same_issuer = fixture(
@@ -867,7 +1010,7 @@ mod tests {
             12,
             OfferFixture::AnonymousTicket {
                 issuer_seed: 31,
-                endpoint: "https://issuer-b.example/free-two",
+                endpoint: "https://issuer-b.example",
             },
         );
         assert!(verify_error(
@@ -882,7 +1025,7 @@ mod tests {
             13,
             OfferFixture::AnonymousTicket {
                 issuer_seed: 33,
-                endpoint: "https://issuer-a.example/free-three",
+                endpoint: "https://issuer-a.example",
             },
         );
         assert!(verify_error(
@@ -908,7 +1051,7 @@ mod tests {
             12,
             OfferFixture::AnonymousTicket {
                 issuer_seed: 31,
-                endpoint: "https://issuer-b.example/free",
+                endpoint: "https://issuer-b.example",
             },
         );
         assert!(verify_error(
@@ -923,7 +1066,7 @@ mod tests {
             13,
             OfferFixture::AnonymousTicket {
                 issuer_seed: 32,
-                endpoint: "https://issuer-c.example/free",
+                endpoint: "https://issuer-c.example",
             },
         );
         assert!(verify_strict_two_provider_offer_pair_v1(
@@ -963,6 +1106,185 @@ mod tests {
             },
         )
         .contains("raw Cashu BAT verification key"));
+    }
+
+    #[test]
+    fn accepts_independent_arc_raw_keys_and_operator_keys() {
+        let first_operator = SigningKey::from_bytes(&[71; 32]);
+        let second_operator = SigningKey::from_bytes(&[72; 32]);
+        let first_provider =
+            derive_provider_id(&first_operator.verifying_key().to_bytes(), "arc-provider-a");
+        let second_provider = derive_provider_id(
+            &second_operator.verifying_key().to_bytes(),
+            "arc-provider-b",
+        );
+        let first = fixture(
+            first_provider,
+            11,
+            OfferFixture::Arc {
+                issuer_seed: 31,
+                endpoint: "https://issuer-a.example",
+                verification_key: arc_public_key(1).to_vec(),
+            },
+        );
+        let second = fixture(
+            second_provider,
+            12,
+            OfferFixture::Arc {
+                issuer_seed: 32,
+                endpoint: "https://issuer-b.example",
+                verification_key: arc_public_key(9).to_vec(),
+            },
+        );
+
+        let pair = verify_strict_two_provider_offer_pair_v1(
+            select_with_operator(
+                &first,
+                &first_operator,
+                "arc-provider-a",
+                "wss://provider-a.example",
+            ),
+            select_with_operator(
+                &second,
+                &second_operator,
+                "arc-provider-b",
+                "wss://provider-b.example",
+            ),
+            StrictProviderPairOptionsV1::default(),
+        )
+        .unwrap();
+        assert!(!pair.shared_issuer_correlation());
+    }
+
+    #[test]
+    fn copied_arc_raw_key_is_rejected_across_independent_operators_and_issuers() {
+        let first_operator = SigningKey::from_bytes(&[73; 32]);
+        let second_operator = SigningKey::from_bytes(&[74; 32]);
+        let first_provider =
+            derive_provider_id(&first_operator.verifying_key().to_bytes(), "arc-provider-a");
+        let second_provider = derive_provider_id(
+            &second_operator.verifying_key().to_bytes(),
+            "arc-provider-b",
+        );
+        let raw_key = arc_public_key(17);
+        let first = fixture(
+            first_provider,
+            11,
+            OfferFixture::Arc {
+                issuer_seed: 31,
+                endpoint: "https://issuer-a.example",
+                verification_key: raw_key.to_vec(),
+            },
+        );
+        let second = fixture(
+            second_provider,
+            12,
+            OfferFixture::Arc {
+                issuer_seed: 32,
+                endpoint: "https://issuer-b.example",
+                verification_key: raw_key.to_vec(),
+            },
+        );
+
+        assert!(verify_error(
+            select_with_operator(
+                &first,
+                &first_operator,
+                "arc-provider-a",
+                "wss://provider-a.example",
+            ),
+            select_with_operator(
+                &second,
+                &second_operator,
+                "arc-provider-b",
+                "wss://provider-b.example",
+            ),
+            StrictProviderPairOptionsV1 {
+                allow_shared_issuer_correlation: true,
+            },
+        )
+        .contains("raw ARC verification key"));
+    }
+
+    #[test]
+    fn copied_arc_raw_key_is_rejected_before_shared_issuer_override() {
+        let raw_key = arc_public_key(21);
+        let first = fixture(
+            [1; 32],
+            11,
+            OfferFixture::Arc {
+                issuer_seed: 31,
+                endpoint: "https://shared-issuer.example",
+                verification_key: raw_key.to_vec(),
+            },
+        );
+        let second = fixture(
+            [2; 32],
+            12,
+            OfferFixture::Arc {
+                issuer_seed: 31,
+                endpoint: "https://shared-issuer.example",
+                verification_key: raw_key.to_vec(),
+            },
+        );
+
+        assert!(verify_error(
+            select(&first),
+            select(&second),
+            StrictProviderPairOptionsV1 {
+                allow_shared_issuer_correlation: true,
+            },
+        )
+        .contains("raw ARC verification key"));
+    }
+
+    #[test]
+    fn arc_fingerprint_rejects_wrong_length_zero_and_noncanonical_keys() {
+        let canonical = arc_public_key(25);
+        let mut offer = arc_offer(
+            [1; 32],
+            [2; 32],
+            31,
+            "https://issuer-a.example",
+            canonical.to_vec(),
+        );
+        assert!(arc_fingerprint(&offer).unwrap().is_some());
+
+        offer
+            .credential_binding
+            .as_mut()
+            .unwrap()
+            .claims
+            .verification_key
+            .truncate(ARC_PUBLIC_KEY_LEN_V1 - 1);
+        assert!(arc_fingerprint(&offer)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid raw verification key length"));
+
+        offer
+            .credential_binding
+            .as_mut()
+            .unwrap()
+            .claims
+            .verification_key = vec![0; ARC_PUBLIC_KEY_LEN_V1];
+        assert!(arc_fingerprint(&offer)
+            .unwrap_err()
+            .to_string()
+            .contains("ARC verification key is invalid"));
+
+        let mut noncanonical = canonical;
+        noncanonical[0] = 0x04;
+        offer
+            .credential_binding
+            .as_mut()
+            .unwrap()
+            .claims
+            .verification_key = noncanonical.to_vec();
+        assert!(arc_fingerprint(&offer)
+            .unwrap_err()
+            .to_string()
+            .contains("ARC verification key is invalid"));
     }
 
     #[test]

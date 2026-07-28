@@ -29,10 +29,12 @@ pir-arc-adapter = { path = "../../crates/payment/arc-adapter" }
 pir-cashu-client = { path = "../../crates/payment/cashu-client" }
 pir-cashu-custody = { path = "../../crates/payment/cashu-custody" }
 pir-service-store = { path = "../../crates/protocol/service-store" }
+pir-rollback-authority-client = { path = "../../crates/security/rollback-authority-client" }
 pir-strict-https = { path = "../../crates/net/strict-https" }
+pir-private-files = { path = "../../crates/security/private-files" }
 
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "time"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
@@ -46,6 +48,7 @@ rustix = { version = "1", features = ["fs", "process"] }
 zeroize = "1"
 k256 = { version = "0.13", features = ["schnorr"] }
 sha2 = "0.10"
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

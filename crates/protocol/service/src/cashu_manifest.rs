@@ -2,8 +2,9 @@
 //!
 //! Cashu itself transports JSON maps whose ordering is not canonical. This
 //! structure gives BitcoinPIR providers and clients one deterministic binary
-//! commitment to the exact mint origin, accepted input keysets, active output
-//! keyset, denomination keys, NUT-02 fees, and recovery/security features.
+//! commitment to the exact mint endpoint, leaf-SPKI pin set, accepted input
+//! keysets, active output keyset, denomination keys, NUT-02 fees, and
+//! recovery/security features.
 
 use std::collections::HashSet;
 
@@ -25,10 +26,37 @@ pub const MAX_CASHU_INPUT_KEYSETS: usize = 16;
 pub const MAX_CASHU_DENOMINATION_KEYS: usize = 64;
 pub const MAX_CASHU_KEYSET_ENCODING_LEN: usize = 4 * 1024;
 pub const MAX_CASHU_MINT_MANIFEST_LEN: usize = 60 * 1024;
+pub const MAX_LEAF_SPKI_SHA256_PINS_V1: usize = 2;
 
 pub const CASHU_MINT_ID_DOMAIN: &[u8] = b"BitcoinPIR/standard-cashu-mint-id/v1";
 pub const CASHU_MINT_MANIFEST_DIGEST_DOMAIN: &[u8] =
     b"BitcoinPIR/standard-cashu-mint-manifest-digest/v1";
+
+/// Validate the canonical WebPKI-plus-leaf-SPKI trust set used by payment
+/// transports. One pin is the normal state; two sorted pins permit one bounded
+/// certificate-key rotation overlap. Empty, zero, duplicate, and non-canonical
+/// orderings fail closed so signatures commit to exactly one encoding.
+pub fn validate_leaf_spki_sha256_pins_v1(
+    pins: &[[u8; 32]],
+    field: &'static str,
+) -> Result<(), ServiceProtocolError> {
+    if pins.is_empty() || pins.len() > MAX_LEAF_SPKI_SHA256_PINS_V1 {
+        return Err(ServiceProtocolError::TooManyItems {
+            field,
+            len: pins.len(),
+            max: MAX_LEAF_SPKI_SHA256_PINS_V1,
+        });
+    }
+    if pins.iter().any(|pin| pin.iter().all(|byte| *byte == 0))
+        || pins.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(ServiceProtocolError::InvalidValue {
+            field,
+            reason: "pins must be non-zero, unique, and lexicographically sorted",
+        });
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CashuRequiredNutsV1(u8);
@@ -230,6 +258,9 @@ pub fn is_canonical_cashu_keyset_id_v2(keyset_id: &str) -> bool {
 pub struct StandardCashuMintManifestV1 {
     pub manifest_epoch: u64,
     pub mint_endpoint: String,
+    /// WebPKI remains mandatory; these one-or-two signed leaf-SPKI SHA-256
+    /// pins add the exact mint identity/rotation boundary.
+    pub leaf_spki_sha256_pins: Vec<[u8; 32]>,
     pub unit: String,
     pub required_nuts: CashuRequiredNutsV1,
     /// Sorted lexicographically by keyset ID; includes active and explicitly
@@ -256,6 +287,10 @@ impl StandardCashuMintManifestV1 {
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.manifest_epoch.to_le_bytes());
         put_bytes_u16(&mut out, self.mint_endpoint.as_bytes());
+        out.push(self.leaf_spki_sha256_pins.len() as u8);
+        for pin in &self.leaf_spki_sha256_pins {
+            out.extend_from_slice(pin);
+        }
         out.push(self.unit.len() as u8);
         out.extend_from_slice(self.unit.as_bytes());
         out.push(self.required_nuts.bits());
@@ -292,6 +327,20 @@ impl StandardCashuMintManifestV1 {
             "StandardCashuMintManifestV1.mint_endpoint",
             crate::MAX_ENDPOINT_LEN,
         )?;
+        let pin_count =
+            decoder.u8("StandardCashuMintManifestV1.leaf_spki_sha256_pin_count")? as usize;
+        if pin_count > MAX_LEAF_SPKI_SHA256_PINS_V1 {
+            return Err(ServiceProtocolError::TooManyItems {
+                field: "StandardCashuMintManifestV1.leaf_spki_sha256_pins",
+                len: pin_count,
+                max: MAX_LEAF_SPKI_SHA256_PINS_V1,
+            });
+        }
+        let mut leaf_spki_sha256_pins = Vec::with_capacity(pin_count);
+        for _ in 0..pin_count {
+            leaf_spki_sha256_pins
+                .push(decoder.fixed("StandardCashuMintManifestV1.leaf_spki_sha256_pin")?);
+        }
         let unit_bytes =
             decoder.bytes_u8("StandardCashuMintManifestV1.unit", MAX_PRICE_UNIT_LEN)?;
         let unit = String::from_utf8(unit_bytes)
@@ -322,6 +371,7 @@ impl StandardCashuMintManifestV1 {
         let value = Self {
             manifest_epoch,
             mint_endpoint,
+            leaf_spki_sha256_pins,
             unit,
             required_nuts,
             accepted_input_keysets,
@@ -396,6 +446,10 @@ impl StandardCashuMintManifestV1 {
                 reason: "must be a canonical HTTPS mint base URL",
             });
         }
+        validate_leaf_spki_sha256_pins_v1(
+            &self.leaf_spki_sha256_pins,
+            "StandardCashuMintManifestV1.leaf_spki_sha256_pins",
+        )?;
         validate_cashu_unit_v1(&self.unit)?;
         self.required_nuts.validate()?;
         if self.accepted_input_keysets.is_empty()
@@ -586,6 +640,7 @@ mod tests {
         StandardCashuMintManifestV1 {
             manifest_epoch: 7,
             mint_endpoint: "https://mint.example".into(),
+            leaf_spki_sha256_pins: vec![[0x31; 32]],
             unit: "sat".into(),
             required_nuts: CashuRequiredNutsV1::required_v1(),
             accepted_input_keysets,
@@ -648,6 +703,35 @@ mod tests {
                 7,
             )
             .is_err());
+    }
+
+    #[test]
+    fn manifest_requires_one_or_two_canonical_nonzero_leaf_spki_pins() {
+        let mut manifest = sample_manifest();
+        manifest.leaf_spki_sha256_pins.clear();
+        assert!(manifest.encode().is_err());
+
+        let mut manifest = sample_manifest();
+        manifest.leaf_spki_sha256_pins = vec![[0; 32]];
+        assert!(manifest.encode().is_err());
+
+        let mut manifest = sample_manifest();
+        manifest.leaf_spki_sha256_pins = vec![[1; 32], [1; 32]];
+        assert!(manifest.encode().is_err());
+
+        let mut manifest = sample_manifest();
+        manifest.leaf_spki_sha256_pins = vec![[2; 32], [1; 32]];
+        assert!(manifest.encode().is_err());
+
+        let one_pin_digest = sample_manifest().manifest_digest().unwrap();
+        let mut rotating = sample_manifest();
+        rotating.leaf_spki_sha256_pins = vec![[1; 32], [2; 32]];
+        let encoded = rotating.encode().unwrap();
+        assert_eq!(
+            StandardCashuMintManifestV1::decode(&encoded).unwrap(),
+            rotating
+        );
+        assert_ne!(rotating.manifest_digest().unwrap(), one_pin_digest);
     }
 
     #[test]

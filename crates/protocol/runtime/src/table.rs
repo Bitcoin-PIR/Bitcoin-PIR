@@ -7,13 +7,14 @@
 use crate::manifest::{hex_encode, DbManifest};
 use crate::protocol::DatabaseProofBundle;
 use memmap2::Mmap;
-use pir_core::merkle::Hash256;
+use pir_core::merkle::{sha256, Hash256};
 use pir_core::params::{
     TableParams, CHUNK_CUCKOO_FILE, CHUNK_PARAMS, CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, CUCKOO_FILE,
     INDEX_PARAMS, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE,
 };
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 
 // Wrappers kept local (moved from the ex-`build::common`) so table.rs's
 // call sites stay readable — `read_cuckoo_header(bytes)` vs the full
@@ -40,7 +41,7 @@ fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
 /// A single memory-mapped cuckoo sub-table with its parameters.
 pub struct MappedSubTable {
     /// Memory-mapped file contents.
-    pub mmap: Mmap,
+    pub mmap: Arc<Mmap>,
     /// Parameters that describe this table's layout.
     pub params: TableParams,
     /// Number of cuckoo bins per PBC group (read from header).
@@ -135,7 +136,7 @@ impl MappedSubTable {
         }
 
         MappedSubTable {
-            mmap,
+            mmap: Arc::new(mmap),
             params,
             bins_per_table,
             table_byte_size,
@@ -286,6 +287,214 @@ pub struct MappedDatabase {
     pub db_proof_v2: Option<DatabaseProofBundle>,
 }
 
+#[allow(clippy::too_many_arguments)]
+fn validate_bucket_merkle_layout(
+    index_bins: usize,
+    chunk_bins: usize,
+    index_k: usize,
+    chunk_k: usize,
+    index_siblings: &[MappedSubTable],
+    chunk_siblings: &[MappedSubTable],
+    tree_tops: Option<&[u8]>,
+    roots: Option<&[u8]>,
+    super_root: Option<&[u8]>,
+) -> Result<bool, String> {
+    let any_present = !index_siblings.is_empty()
+        || !chunk_siblings.is_empty()
+        || tree_tops.is_some()
+        || roots.is_some()
+        || super_root.is_some();
+    if !any_present {
+        return Ok(false);
+    }
+    let tree_tops = tree_tops.ok_or_else(|| {
+        "bucket Merkle artifact set is partial: missing merkle_bucket_tree_tops.bin".to_owned()
+    })?;
+    let roots = roots.ok_or_else(|| {
+        "bucket Merkle artifact set is partial: missing merkle_bucket_roots.bin".to_owned()
+    })?;
+    let super_root = super_root.ok_or_else(|| {
+        "bucket Merkle artifact set is partial: missing merkle_bucket_root.bin".to_owned()
+    })?;
+    let tree_count = index_k
+        .checked_add(chunk_k)
+        .ok_or_else(|| "bucket Merkle tree count overflow".to_owned())?;
+    let expected_roots_len = tree_count
+        .checked_mul(32)
+        .ok_or_else(|| "bucket Merkle root list length overflow".to_owned())?;
+    if roots.len() != expected_roots_len {
+        return Err(format!(
+            "bucket Merkle roots length mismatch: expected {expected_roots_len}, got {}",
+            roots.len()
+        ));
+    }
+    if super_root.len() != 32 {
+        return Err(format!(
+            "bucket Merkle super-root length mismatch: expected 32, got {}",
+            super_root.len()
+        ));
+    }
+    if sha256(roots).as_slice() != super_root {
+        return Err("bucket Merkle super-root does not bind the ordered root list".to_owned());
+    }
+    if tree_tops.len() < 4 {
+        return Err("bucket Merkle tree-tops blob is shorter than its count".to_owned());
+    }
+    let encoded_tree_count =
+        u32::from_le_bytes(tree_tops[..4].try_into().expect("four-byte slice is exact")) as usize;
+    if encoded_tree_count != tree_count {
+        return Err(format!(
+            "bucket Merkle tree count mismatch: expected {tree_count}, got {encoded_tree_count}"
+        ));
+    }
+
+    validate_bucket_merkle_sibling_shapes("INDEX", index_bins, index_k, index_siblings)?;
+    validate_bucket_merkle_sibling_shapes("CHUNK", chunk_bins, chunk_k, chunk_siblings)?;
+
+    let mut offset = 4usize;
+    for tree_index in 0..tree_count {
+        let header_end = offset
+            .checked_add(8)
+            .ok_or_else(|| "bucket Merkle tree-top offset overflow".to_owned())?;
+        if header_end > tree_tops.len() {
+            return Err(format!(
+                "bucket Merkle tree-top {tree_index} has a truncated header"
+            ));
+        }
+        let cache_from_level = tree_tops[offset] as usize;
+        let total_nodes = u32::from_le_bytes(
+            tree_tops[offset + 1..offset + 5]
+                .try_into()
+                .expect("four-byte slice is exact"),
+        ) as usize;
+        let arity = u16::from_le_bytes(
+            tree_tops[offset + 5..offset + 7]
+                .try_into()
+                .expect("two-byte slice is exact"),
+        ) as usize;
+        let level_count = tree_tops[offset + 7] as usize;
+        offset = header_end;
+        if arity != 8 {
+            return Err(format!(
+                "bucket Merkle tree-top {tree_index} has unsupported arity {arity}"
+            ));
+        }
+        if level_count == 0 {
+            return Err(format!(
+                "bucket Merkle tree-top {tree_index} has no cached levels"
+            ));
+        }
+        let (label, bins, expected_cache_levels) = if tree_index < index_k {
+            ("INDEX", index_bins, index_siblings.len())
+        } else {
+            ("CHUNK", chunk_bins, chunk_siblings.len())
+        };
+        if cache_from_level != expected_cache_levels {
+            return Err(format!(
+                "bucket Merkle {label} tree-top {tree_index} starts at level {cache_from_level}, but {expected_cache_levels} sibling tables are loaded"
+            ));
+        }
+        let mut expected_level_nodes = bins;
+        for _ in 0..cache_from_level {
+            expected_level_nodes = expected_level_nodes.div_ceil(arity);
+        }
+        let mut observed_total = 0usize;
+        let mut final_root = None;
+        for level in 0..level_count {
+            let count_end = offset
+                .checked_add(4)
+                .ok_or_else(|| "bucket Merkle level offset overflow".to_owned())?;
+            if count_end > tree_tops.len() {
+                return Err(format!(
+                    "bucket Merkle tree-top {tree_index} level {level} has a truncated count"
+                ));
+            }
+            let nodes = u32::from_le_bytes(
+                tree_tops[offset..count_end]
+                    .try_into()
+                    .expect("four-byte slice is exact"),
+            ) as usize;
+            offset = count_end;
+            if nodes == 0 || nodes != expected_level_nodes {
+                return Err(format!(
+                    "bucket Merkle tree-top {tree_index} level {level} node count mismatch: expected {expected_level_nodes}, got {nodes}"
+                ));
+            }
+            observed_total = observed_total
+                .checked_add(nodes)
+                .ok_or_else(|| "bucket Merkle total node count overflow".to_owned())?;
+            let hash_bytes = nodes
+                .checked_mul(32)
+                .ok_or_else(|| "bucket Merkle level byte length overflow".to_owned())?;
+            let level_end = offset
+                .checked_add(hash_bytes)
+                .ok_or_else(|| "bucket Merkle level end overflow".to_owned())?;
+            if level_end > tree_tops.len() {
+                return Err(format!(
+                    "bucket Merkle tree-top {tree_index} level {level} is truncated"
+                ));
+            }
+            if level + 1 == level_count {
+                if nodes != 1 {
+                    return Err(format!(
+                        "bucket Merkle tree-top {tree_index} does not end in one root"
+                    ));
+                }
+                final_root = Some(&tree_tops[offset..level_end]);
+            }
+            offset = level_end;
+            expected_level_nodes = expected_level_nodes.div_ceil(arity);
+        }
+        if observed_total != total_nodes {
+            return Err(format!(
+                "bucket Merkle tree-top {tree_index} total_nodes mismatch: header {total_nodes}, parsed {observed_total}"
+            ));
+        }
+        let expected_root = &roots[tree_index * 32..(tree_index + 1) * 32];
+        if final_root != Some(expected_root) {
+            return Err(format!(
+                "bucket Merkle tree-top {tree_index} root does not match the ordered root list"
+            ));
+        }
+    }
+    if offset != tree_tops.len() {
+        return Err(format!(
+            "bucket Merkle tree-tops blob has {} trailing bytes",
+            tree_tops.len() - offset
+        ));
+    }
+    Ok(true)
+}
+
+fn validate_bucket_merkle_sibling_shapes(
+    label: &str,
+    bins: usize,
+    k: usize,
+    siblings: &[MappedSubTable],
+) -> Result<(), String> {
+    let mut nodes = bins;
+    for (level, sibling) in siblings.iter().enumerate() {
+        nodes = nodes.div_ceil(8);
+        if sibling.params.k != k
+            || sibling.bins_per_table != nodes
+            || sibling.params.slot_size != 8 * 32
+        {
+            return Err(format!(
+                "bucket Merkle {label} sibling level {level} has an inconsistent table shape"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_optional_bucket_merkle_artifact(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read {}: {error}", path.display())),
+    }
+}
+
 impl MappedDatabase {
     /// Load a database from a directory containing cuckoo table files.
     ///
@@ -420,11 +629,49 @@ impl MappedDatabase {
         }
 
         let bucket_merkle_tree_tops =
-            std::fs::read(base_dir.join("merkle_bucket_tree_tops.bin")).ok();
-        let bucket_merkle_roots = std::fs::read(base_dir.join("merkle_bucket_roots.bin")).ok();
-        let bucket_merkle_root = std::fs::read(base_dir.join("merkle_bucket_root.bin")).ok();
+            read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_tree_tops.bin"))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "[DB:{}] bucket Merkle artifact read failed: {}. Refusing to serve.",
+                        descriptor.name, error
+                    )
+                });
+        let bucket_merkle_roots =
+            read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_roots.bin"))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "[DB:{}] bucket Merkle artifact read failed: {}. Refusing to serve.",
+                        descriptor.name, error
+                    )
+                });
+        let bucket_merkle_root =
+            read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_root.bin"))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "[DB:{}] bucket Merkle artifact read failed: {}. Refusing to serve.",
+                        descriptor.name, error
+                    )
+                });
 
-        if !bucket_merkle_index_siblings.is_empty() {
+        let bucket_merkle_complete = validate_bucket_merkle_layout(
+            index.bins_per_table,
+            chunk.bins_per_table,
+            descriptor.index_params.k,
+            descriptor.chunk_params.k,
+            &bucket_merkle_index_siblings,
+            &bucket_merkle_chunk_siblings,
+            bucket_merkle_tree_tops.as_deref(),
+            bucket_merkle_roots.as_deref(),
+            bucket_merkle_root.as_deref(),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "[DB:{}] incomplete or malformed bucket Merkle artifact set: {}. Refusing to serve.",
+                descriptor.name, error
+            )
+        });
+
+        if bucket_merkle_complete {
             println!("  Bucket Merkle: {} INDEX sib levels, {} CHUNK sib levels, tree-tops={}, super-root={}",
                 bucket_merkle_index_siblings.len(),
                 bucket_merkle_chunk_siblings.len(),
@@ -451,7 +698,9 @@ impl MappedDatabase {
 
     /// Whether this database has per-bucket bin Merkle verification data.
     pub fn has_bucket_merkle(&self) -> bool {
-        !self.bucket_merkle_index_siblings.is_empty()
+        self.bucket_merkle_tree_tops.is_some()
+            && self.bucket_merkle_roots.is_some()
+            && self.bucket_merkle_root.is_some()
     }
 }
 
@@ -608,6 +857,119 @@ mod tests {
     use pir_core::cuckoo::{write_header_with_anchor, HeaderAnchor};
     use pir_core::seeds::{ChainAnchor, CHAIN_ANCHOR_BYTES};
     use std::io::Write as _;
+
+    fn full_cached_bucket_merkle_fixture(
+        index_bins: usize,
+        chunk_bins: usize,
+        index_k: usize,
+        chunk_k: usize,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut tree_tops = Vec::new();
+        let tree_count = index_k + chunk_k;
+        tree_tops.extend_from_slice(&(tree_count as u32).to_le_bytes());
+        let mut roots = Vec::with_capacity(tree_count * 32);
+        for tree_index in 0..tree_count {
+            let mut nodes = if tree_index < index_k {
+                index_bins
+            } else {
+                chunk_bins
+            };
+            let mut level_sizes = vec![nodes];
+            while nodes > 1 {
+                nodes = nodes.div_ceil(8);
+                level_sizes.push(nodes);
+            }
+            let root = [(tree_index as u8).wrapping_add(1); 32];
+            roots.extend_from_slice(&root);
+            tree_tops.push(0); // complete tree is cached, no sibling tables
+            tree_tops.extend_from_slice(
+                &(level_sizes.iter().copied().sum::<usize>() as u32).to_le_bytes(),
+            );
+            tree_tops.extend_from_slice(&8u16.to_le_bytes());
+            tree_tops.push(level_sizes.len() as u8);
+            for (level, size) in level_sizes.into_iter().enumerate() {
+                tree_tops.extend_from_slice(&(size as u32).to_le_bytes());
+                for node in 0..size {
+                    let hash = if size == 1 {
+                        root
+                    } else {
+                        [((tree_index + level + node) as u8).wrapping_add(17); 32]
+                    };
+                    tree_tops.extend_from_slice(&hash);
+                }
+            }
+        }
+        let super_root = sha256(&roots).to_vec();
+        (tree_tops, roots, super_root)
+    }
+
+    #[test]
+    fn fully_cached_bucket_merkle_without_sibling_tables_is_complete() {
+        let (tree_tops, roots, super_root) = full_cached_bucket_merkle_fixture(128, 128, 2, 3);
+        assert!(validate_bucket_merkle_layout(
+            128,
+            128,
+            2,
+            3,
+            &[],
+            &[],
+            Some(&tree_tops),
+            Some(&roots),
+            Some(&super_root),
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn bucket_merkle_layout_rejects_partial_or_unbound_artifacts() {
+        assert!(
+            !validate_bucket_merkle_layout(128, 128, 2, 3, &[], &[], None, None, None).unwrap()
+        );
+        let (tree_tops, roots, mut super_root) = full_cached_bucket_merkle_fixture(128, 128, 2, 3);
+        assert!(validate_bucket_merkle_layout(
+            128,
+            128,
+            2,
+            3,
+            &[],
+            &[],
+            Some(&tree_tops),
+            Some(&roots),
+            None,
+        )
+        .unwrap_err()
+        .contains("partial"));
+        super_root[0] ^= 1;
+        assert!(validate_bucket_merkle_layout(
+            128,
+            128,
+            2,
+            3,
+            &[],
+            &[],
+            Some(&tree_tops),
+            Some(&roots),
+            Some(&super_root),
+        )
+        .unwrap_err()
+        .contains("does not bind"));
+    }
+
+    #[test]
+    fn optional_bucket_merkle_reader_distinguishes_absent_from_unreadable() {
+        let root = temp_path("bucket-merkle-reader");
+        std::fs::create_dir_all(&root).unwrap();
+        let absent = root.join("absent.bin");
+        assert!(read_optional_bucket_merkle_artifact(&absent)
+            .unwrap()
+            .is_none());
+
+        let directory = root.join("not-a-file.bin");
+        std::fs::create_dir(&directory).unwrap();
+        let error = read_optional_bucket_merkle_artifact(&directory).unwrap_err();
+        assert!(error.contains("not-a-file.bin"), "{error}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();

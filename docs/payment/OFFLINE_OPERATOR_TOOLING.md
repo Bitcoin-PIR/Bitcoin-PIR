@@ -3,19 +3,26 @@
 `bpir-admin` primarily provides offline builders for Payment V1 keys, signed
 protocol artifacts, provider persistence, and a deterministic integration
 fixture. No command starts a listener, creates a Lightning invoice, or moves
-funds. There are two explicit network exceptions: `cashu-custody spent-confirm`
-performs one bounded NUT-07 HTTPS check, and `directory-artifact publish` sends
-already-signed public artifacts to configured Nostr relays. Every other builder
-and inspection path remains offline.
+funds. Explicit network exceptions are: `cashu-custody spent-confirm` performs
+one bounded NUT-07 HTTPS check; `directory-artifact publish` sends already-signed
+public artifacts to configured Nostr relays; and provider store init/check or
+custody commands selected with `--remote-rollback-authority-config` perform the
+fresh signed Read/CAS operations required by the pinned-HTTPS floor. The local
+SQLite compatibility variants and every other builder/inspection path remain
+offline.
 
 Production deployment, remote-server operations, and real Lightning funds are
 separate ceremonies and are not authorized by running these commands.
 
 ## Secret keys
 
-Generate one role per file. The CLI never prints secret bytes. On Unix it
-creates or rewrites only regular files owned by the effective user and sets
-mode `0600`; symlinks fail closed.
+Generate one role per file. The CLI never prints secret bytes. On supported
+Linux and macOS it creates or rewrites only regular files owned by the
+effective user and sets mode `0600`; symlinks fail closed. Secret generation is
+production-supported
+only on Linux and macOS, where a pinned, non-group/world-writable parent directory and
+file/directory durability operations are available. Bare output names remain
+valid and refer to the current directory.
 
 ```sh
 bpir-admin service-keygen --role issuer-root-ed25519 --out issuer-root.key
@@ -56,6 +63,12 @@ not establish public-relay or WebPKI interoperability. Publisher artifact
 loading, like readback below, is supported only from a trusted local
 Unix/POSIX filesystem: metadata stability checks do not make a stalled
 NFS/FUSE read deadline-bounded or defend against a privileged filesystem.
+
+The same `directory-artifact publish` invocation may include `--validate-only`.
+That mode fully validates the artifact bytes, directory-key pin, verification
+time and relay set, emits only bounded host/count/digest metadata, and returns
+without DNS or network I/O. Remove only that flag at the separately approved
+publication boundary.
 
 After an explicitly approved staging publish, read the same frozen public
 artifact back without exposing a signing key:
@@ -150,13 +163,19 @@ below two.
 The builder accepts strict TOML with unknown fields rejected. It derives each
 NUT-02 V2 keyset ID from sorted denomination keys, requires exactly one active
 output keyset, requires NUT-03/NUT-07/NUT-09/NUT-12, sorts accepted input
-keysets, checks expiry horizons, and roundtrips the canonical binary output.
-The manifest itself is not a detached signature: its canonical digest and full
+keysets, requires one or two sorted, distinct, nonzero leaf-SPKI SHA-256 pins,
+checks expiry horizons, and roundtrips the canonical binary output. Ordinary
+WebPKI chain, hostname and validity checks remain mandatory; the pins are an
+additional signed identity/rotation restriction, not a CA replacement. The
+manifest itself is not a detached signature: its canonical digest and full
 bytes are embedded in the provider's signed service policy.
+Artifacts generated before the signed pin field are not accepted as a pinless
+compatibility mode; regenerate the manifest and re-sign the containing policy.
 
 ```toml
 manifest_epoch = 1
 mint_endpoint = "https://mint.example.org"
+leaf_spki_sha256_pins_hex = ["<64 lowercase hex>"]
 unit = "sat"
 accepted_inputs_valid_through = 1900000000
 active_output_valid_through = 1900604800
@@ -183,29 +202,49 @@ bpir-admin payment-artifact cashu-manifest \
 
 ## Provider store initialization
 
-`unified_server` opens existing state only. Create the provider-local store and
-its rollback-floor authority explicitly before first startup:
+`unified_server` opens existing state only. Production uses the shared
+owner-only remote-authority config from
+`REMOTE_ROLLBACK_AUTHORITY.toml.example`; generate and preserve a public,
+nonzero 16-byte store-instance ID before the first network attempt:
 
 ```sh
 install -d -m 0700 /srv/bitcoinpir/provider-state
-install -d -m 0700 /mnt/independent-floor/bitcoinpir
 
 bpir-admin service-store-init \
   --provider-id-hex "$PROVIDER_ID" \
   --store /srv/bitcoinpir/provider-state/admission.sqlite3 \
-  --rollback-authority /mnt/independent-floor/bitcoinpir/floor.sqlite3
+  --remote-rollback-authority-config /private/provider/remote-authority.toml \
+  --store-instance-id-hex "$STORE_INSTANCE_ID"
 ```
 
-Both paths must be absent, must differ after canonicalizing their parents, and
-their parent directories must be owned by the effective user with no
-group/world permissions. The command creates the rollback authority, creates
-the provider store with a random nonzero store-instance ID (or an explicit
-16-byte `--store-instance-id-hex`), sets both database files to `0600`, then
-reopens both through the same checked APIs used at startup.
+The remote config, its two distinct secret files, provider ID, WebPKI identity,
+leaf-SPKI pins, authority key, client key, derived authority client-key ID,
+namespace and timeouts are checked by the shared fail-closed loader. Every raw
+32-byte secret and public role binding must be distinct. Initialization creates
+the provider store only after
+the remote authority accepts the exact generation-zero floor, then reloads the
+config and reopens through a fresh authenticated Read. If the response or a
+later local step fails, the remote CAS may already be committed: retain the
+same config and store-instance ID and audit/resume that exact ceremony. Never
+reset/lower the authority or hide ambiguity by choosing another ID.
 
-The two files should be in different backup/restore and rollback domains;
-different filenames alone do not provide rollback protection. A same-directory
-configuration emits a warning but is useful for isolated local tests.
+The old local SQLite floor remains available only for isolated development,
+tests and restore drills. Local mode rejects `--store-instance-id-hex` and
+generates a fresh random ID:
+
+```sh
+install -d -m 0700 /mnt/local-test-floor/bitcoinpir
+
+bpir-admin service-store-init \
+  --provider-id-hex "$PROVIDER_ID" \
+  --store /srv/bitcoinpir/provider-state/admission.sqlite3 \
+  --rollback-authority /mnt/local-test-floor/bitcoinpir/floor.sqlite3
+```
+
+Different local filenames or directories do not establish an independent
+production failure/administrative domain. Every admin command emits a warning
+when this compatibility mode is selected. Public serving additionally requires
+`--allow-local-service-rollback-authority-dev`; remote mode rejects that flag.
 
 Initialization is intentionally not an overwrite or adoption operation. If
 authority creation succeeds but provider-store creation fails, treat both
@@ -220,13 +259,14 @@ starting a listener:
 bpir-admin service-store-check \
   --provider-id-hex "$PROVIDER_ID" \
   --store /srv/bitcoinpir/provider-state/admission.sqlite3 \
-  --rollback-authority /mnt/independent-floor/bitcoinpir/floor.sqlite3
+  --remote-rollback-authority-config /private/provider/remote-authority.toml
 ```
 
 The command uses the serving-equivalent `open_existing` path and prints only
 identity, generation, aggregate row counts and `startup_check_ms`. An exact
-store/authority match is read-only; exactly one legitimate unanchored SQLite
-successor may complete its idempotent authority CAS, as at real startup. See
+store/authority match is read-only; exactly one legitimate unanchored
+successor may complete its idempotent authority CAS, as at real startup. Every
+Cashu-custody subcommand accepts the same exact-one local/remote choice. See
 `STAGING_STORE_DRILL.md` for the no-funds backup/restore and SLO procedure.
 
 ## Standard Cashu custody and export
@@ -293,7 +333,7 @@ Release exposure later with one explicit, operator-initiated NUT-07 check:
 bpir-admin cashu-custody spent-confirm \
   --provider-id-hex "$PROVIDER_ID" \
   --store /srv/bitcoinpir/provider-state/admission.sqlite3 \
-  --rollback-authority /mnt/independent-floor/bitcoinpir/floor.sqlite3 \
+  --remote-rollback-authority-config /private/provider/remote-authority.toml \
   --export-id-hex "$EXPORT_ID_1" \
   --export-id-hex "$EXPORT_ID_2" \
   --custody-key "1=/private/provider-0/cashu-custody-1.key" \

@@ -10,14 +10,26 @@ repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
 
 [dependencies]
 ed25519-dalek = "2"
-hmac = "0.12"
+getrandom = "0.2"
 pir-runtime-core = { path = "../../protocol/runtime" }
+pir-private-files = { path = "../../security/private-files" }
+pir-rollback-authority-client = { path = "../../security/rollback-authority-client" }
+pir-rollback-authority-protocol = { path = "../../security/rollback-authority-protocol" }
 pir-service-protocol = { path = "../../protocol/service" }
+pir-service-store = { path = "../../protocol/service-store" }
+pir-strict-https = { path = "../../net/strict-https" }
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
 sha2 = "0.10"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
 [dev-dependencies]
 pir-issuer-clearing = { path = "../issuer-clearing" }
+pir-issuer-service = { path = "../issuer-service" }
+pir-issuer-store = { path = "../issuer-store" }
+tempfile = "3"
 
 [lints.rust]
 unsafe_code = "forbid"

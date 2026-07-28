@@ -12,6 +12,32 @@ linearizable infrastructure. There is deliberately no public SQLite-only
 open/create path: metadata in the database being protected is not an external
 rollback authority.
 
+Production callers can use `RemoteProviderRollbackFloorAuthorityV1`. It
+requires a pinned-HTTPS rollback-authority client plus a client-only,
+authority/namespace/client-key-bound value codec. The authority sees only a
+fixed-size opaque AEAD record and its revision; every operation performs a
+fresh signed read and an exact compare-and-swap, with no local fallback on a
+remote, signature, binding, authentication, decoding, or timeout failure.
+`SqliteRollbackFloorAuthorityV1` remains an explicit development/test adapter
+and must not share a backup boundary with the provider store.
+
+An outcome-unknown CAS is reconciled in-process with the same operation ID and
+exact expected/desired opaque records. After process loss, this V1 adapter
+converges from a fresh authenticated read by comparing the decoded logical
+floor with the expected and desired floors. It does not claim to replay the
+same remote operation-log entry across restart; deployments requiring that
+stronger guarantee must durably persist the operation ID and both opaque
+records before the first CAS attempt.
+
+Floor-only restart convergence is safe for this trait because the protected
+store exposes at most one unanchored SQLite generation, every successor must
+keep the same provider/store/schema identity, advance `store_generation` by
+exactly one, advance `spend_commit_seq` by at most one, and change the rolling
+commitment. Therefore a fresh remote floor equal to the SQLite successor means
+the lost CAS completed; equality with its predecessor permits exactly that one
+successor CAS; every other observation is returned as a conflict for the store
+to reject.
+
 The external record binds the provider ID, one immutable store-instance ID,
 schema version, store generation, spend-commit sequence, and a rolling commit
 lineage. Every namespace install/close, spend, signed-policy/floor advance,

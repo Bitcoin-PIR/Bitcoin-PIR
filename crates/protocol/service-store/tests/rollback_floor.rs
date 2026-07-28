@@ -6,8 +6,10 @@ use pir_service_protocol::{
     ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
 };
 use pir_service_store::{
-    NewSpendNamespace, ProviderStore, RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1,
-    RollbackFloorV1, SpendRequest, StoreError, StoreOptions,
+    CashuCustodyExposureLimitsV1, CashuCustodySealedBlobV1, CashuSwapIntentStateV1,
+    CashuSwapSealedRecoveryV1, FreeIpRateLimitRequestV1, NewCashuCustodyLotV1,
+    NewCashuSwapIntentV1, NewSpendNamespace, ProviderStore, RollbackFloorAuthorityErrorV1,
+    RollbackFloorAuthorityV1, RollbackFloorV1, SpendRequest, StoreError, StoreOptions,
 };
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -156,6 +158,12 @@ impl TestPath {
             .prefix("bitcoinpir-provider-rollback-floor-test-")
             .tempdir()
             .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict rollback-floor test directory permissions");
+        }
         Self {
             database: directory.path().join("provider.sqlite3"),
             backup: directory.path().join("provider-backup.sqlite3"),
@@ -266,6 +274,74 @@ fn spend_namespace() -> NewSpendNamespace {
         binding_digest: [0x77; 32],
         not_after: 1_000,
         exclusive_key_lineage: None,
+    }
+}
+
+fn free_ip_request() -> FreeIpRateLimitRequestV1 {
+    FreeIpRateLimitRequestV1 {
+        subject: [0x81; 32],
+        policy_digest: [0x82; 32],
+        scope_id: [0x83; 32],
+        offer_id: 7,
+        quota: 2,
+        window_seconds: 60,
+        max_buckets: 16,
+        now_unix_seconds: 150,
+    }
+}
+
+fn cashu_intent() -> NewCashuSwapIntentV1 {
+    NewCashuSwapIntentV1 {
+        intent_id: [0x91; 16],
+        mint_id: [0x92; 32],
+        manifest_digest: [0x93; 32],
+        unit: "sat".to_owned(),
+        input_set_digest: [0x94; 32],
+        request_digest: [0x95; 32],
+        output_set_digest: [0x96; 32],
+        offer_binding_digest: [0x97; 32],
+        settlement_value: 7,
+        expected_output_count: 2,
+        sealed_recovery: CashuSwapSealedRecoveryV1 {
+            key_epoch: 3,
+            nonce: vec![0x98; 24],
+            ciphertext: vec![0x99; 128],
+        },
+        created_bucket: 100,
+    }
+}
+
+fn cashu_replacement_recovery() -> CashuSwapSealedRecoveryV1 {
+    CashuSwapSealedRecoveryV1 {
+        key_epoch: 4,
+        nonce: vec![0xa1; 24],
+        ciphertext: vec![0xa2; 192],
+    }
+}
+
+fn cashu_custody_lot() -> NewCashuCustodyLotV1 {
+    let mut first_y = [0xa3; 33];
+    first_y[0] = 0x02;
+    let mut second_y = [0xa4; 33];
+    second_y[0] = 0x03;
+    NewCashuCustodyLotV1 {
+        lot_id: [0xa5; 16],
+        manifest_digest: [0x93; 32],
+        active_keyset_digest: [0xa6; 32],
+        note_set_digest: [0xa7; 32],
+        note_ys: vec![first_y, second_y],
+        sealed_notes: CashuCustodySealedBlobV1 {
+            key_epoch: 5,
+            nonce: vec![0xa8; 24],
+            ciphertext: vec![0xa9; 96],
+        },
+    }
+}
+
+fn cashu_limits() -> CashuCustodyExposureLimitsV1 {
+    CashuCustodyExposureLimitsV1 {
+        max_unsettled_value: 1_000,
+        max_unsettled_notes: 100,
     }
 }
 
@@ -651,4 +727,250 @@ fn superseding_anchor_from_cloned_fork_does_not_confirm_losing_commit() {
     ));
     assert_eq!(fork.identity().unwrap().store_generation, 2);
     assert_eq!(inner.floor().unwrap().store_generation, 2);
+}
+
+#[test]
+fn exact_spend_on_cloned_stores_has_only_one_anchored_winner() {
+    let path = TestPath::new();
+    let inner = Arc::new(MemoryRollbackAuthority::default());
+    let baseline = create_store(&path.database, Arc::clone(&inner));
+    baseline.install_namespace(&spend_namespace()).unwrap();
+    copy_database_without_wal(&path.database, &path.fork);
+    drop(baseline);
+
+    let first_compare_entered = Arc::new(Barrier::new(2));
+    let release_first_compare = Arc::new(Barrier::new(2));
+    let authority = Arc::new(BlockFirstCompareAuthority {
+        inner: Arc::clone(&inner),
+        compare_calls: AtomicUsize::new(0),
+        first_compare_entered: Arc::clone(&first_compare_entered),
+        release_first_compare: Arc::clone(&release_first_compare),
+    });
+    let original = ProviderStore::open_existing(
+        &path.database,
+        PROVIDER,
+        StoreOptions::default(),
+        authority.clone(),
+    )
+    .unwrap();
+    let fork =
+        ProviderStore::open_existing(&path.fork, PROVIDER, StoreOptions::default(), authority)
+            .unwrap();
+    let request = SpendRequest {
+        namespace_id: NAMESPACE,
+        spend_key: [0x9a; 32],
+        now_unix_seconds: 150,
+    };
+
+    let original_worker = original.clone();
+    let blocked = std::thread::spawn(move || original_worker.spend(request));
+    first_compare_entered.wait();
+    let winner = fork.spend(request);
+    release_first_compare.wait();
+    let loser = blocked.join().unwrap();
+
+    assert!(winner.is_ok(), "clone winner failed: {winner:?}");
+    assert!(matches!(
+        loser,
+        Err(StoreError::UnanchoredCommit {
+            store_generation: 2,
+            ..
+        })
+    ));
+    let floor = inner.floor().unwrap();
+    assert_eq!(floor.store_generation, 2);
+    assert_eq!(floor.spend_commit_seq, 1);
+    assert_eq!(
+        fork.identity().unwrap().rollback_commitment,
+        floor.rollback_commitment
+    );
+    assert!(matches!(original.identity(), Err(StoreError::RollbackFork)));
+}
+
+#[test]
+fn exact_free_ip_grant_on_cloned_stores_has_one_reopenable_winner() {
+    let path = TestPath::new();
+    let inner = Arc::new(MemoryRollbackAuthority::default());
+    let baseline = create_store(&path.database, Arc::clone(&inner));
+    copy_database_without_wal(&path.database, &path.fork);
+    drop(baseline);
+
+    let first_compare_entered = Arc::new(Barrier::new(2));
+    let release_first_compare = Arc::new(Barrier::new(2));
+    let authority = Arc::new(BlockFirstCompareAuthority {
+        inner: Arc::clone(&inner),
+        compare_calls: AtomicUsize::new(0),
+        first_compare_entered: Arc::clone(&first_compare_entered),
+        release_first_compare: Arc::clone(&release_first_compare),
+    });
+    let original = ProviderStore::open_existing(
+        &path.database,
+        PROVIDER,
+        StoreOptions::default(),
+        authority.clone(),
+    )
+    .unwrap();
+    let fork = ProviderStore::open_existing(
+        &path.fork,
+        PROVIDER,
+        StoreOptions::default(),
+        authority.clone(),
+    )
+    .unwrap();
+
+    let original_worker = original.clone();
+    let blocked = std::thread::spawn(move || {
+        original_worker.consume_free_ip_rate_limit_v1(free_ip_request())
+    });
+    first_compare_entered.wait();
+    let winner = fork.consume_free_ip_rate_limit_v1(free_ip_request());
+    release_first_compare.wait();
+    let loser = blocked.join().unwrap();
+
+    assert!(winner.is_ok(), "clone winner failed: {winner:?}");
+    assert!(matches!(
+        loser,
+        Err(StoreError::UnanchoredCommit {
+            store_generation: 1,
+            ..
+        })
+    ));
+    let floor = inner.floor().unwrap();
+    assert_eq!(floor.store_generation, 1);
+    assert_eq!(floor.spend_commit_seq, 1);
+    assert_eq!(
+        fork.identity().unwrap().rollback_commitment,
+        floor.rollback_commitment
+    );
+    assert!(matches!(original.identity(), Err(StoreError::RollbackFork)));
+
+    drop(original);
+    drop(fork);
+    let reopened = ProviderStore::open_existing(
+        &path.fork,
+        PROVIDER,
+        StoreOptions::default(),
+        authority,
+    )
+    .expect("anchored Free/IP winner must reopen");
+    assert_eq!(reopened.identity().unwrap().spend_commit_seq, 1);
+    assert!(matches!(
+        ProviderStore::open_existing(
+            &path.database,
+            PROVIDER,
+            StoreOptions::default(),
+            inner,
+        ),
+        Err(StoreError::RollbackFork)
+    ));
+}
+
+#[test]
+fn exact_cashu_final_grant_on_cloned_stores_has_one_reopenable_winner() {
+    let path = TestPath::new();
+    let inner = Arc::new(MemoryRollbackAuthority::default());
+    let baseline = create_store(&path.database, Arc::clone(&inner));
+    let proposed = cashu_intent();
+    baseline
+        .insert_cashu_swap_intent_v1(&proposed, cashu_limits())
+        .unwrap();
+    baseline
+        .begin_cashu_swap_submission_v1(&proposed.intent_id, 101)
+        .unwrap();
+    baseline
+        .commit_cashu_swap_wallet_v1(
+            &proposed.intent_id,
+            &cashu_replacement_recovery(),
+            102,
+        )
+        .unwrap();
+    assert_eq!(baseline.identity().unwrap().store_generation, 3);
+    copy_database_without_wal(&path.database, &path.fork);
+    drop(baseline);
+
+    let first_compare_entered = Arc::new(Barrier::new(2));
+    let release_first_compare = Arc::new(Barrier::new(2));
+    let authority = Arc::new(BlockFirstCompareAuthority {
+        inner: Arc::clone(&inner),
+        compare_calls: AtomicUsize::new(0),
+        first_compare_entered: Arc::clone(&first_compare_entered),
+        release_first_compare: Arc::clone(&release_first_compare),
+    });
+    let original = ProviderStore::open_existing(
+        &path.database,
+        PROVIDER,
+        StoreOptions::default(),
+        authority.clone(),
+    )
+    .unwrap();
+    let fork = ProviderStore::open_existing(
+        &path.fork,
+        PROVIDER,
+        StoreOptions::default(),
+        authority.clone(),
+    )
+    .unwrap();
+    let intent_id = proposed.intent_id;
+
+    let original_worker = original.clone();
+    let blocked = std::thread::spawn(move || {
+        original_worker.claim_cashu_swap_grant_once_v1(
+            &intent_id,
+            &cashu_custody_lot(),
+            103,
+        )
+    });
+    first_compare_entered.wait();
+    let winner = fork.claim_cashu_swap_grant_once_v1(
+        &intent_id,
+        &cashu_custody_lot(),
+        103,
+    );
+    release_first_compare.wait();
+    let loser = blocked.join().unwrap();
+
+    let winner = winner.expect("clone Cashu grant winner must anchor");
+    assert!(winner.issued);
+    assert!(matches!(
+        loser,
+        Err(StoreError::UnanchoredCommit {
+            store_generation: 4,
+            ..
+        })
+    ));
+    let floor = inner.floor().unwrap();
+    assert_eq!(floor.store_generation, 4);
+    assert_eq!(floor.spend_commit_seq, 1);
+    assert_eq!(
+        fork.identity().unwrap().rollback_commitment,
+        floor.rollback_commitment
+    );
+    assert_eq!(
+        fork.cashu_swap_intent_by_input_v1(&proposed.mint_id, &proposed.input_set_digest)
+            .unwrap()
+            .unwrap()
+            .state,
+        CashuSwapIntentStateV1::GrantIssued
+    );
+    assert!(matches!(original.identity(), Err(StoreError::RollbackFork)));
+
+    drop(original);
+    drop(fork);
+    let reopened = ProviderStore::open_existing(
+        &path.fork,
+        PROVIDER,
+        StoreOptions::default(),
+        authority,
+    )
+    .expect("anchored Cashu grant winner must reopen");
+    assert_eq!(reopened.identity().unwrap().spend_commit_seq, 1);
+    assert!(matches!(
+        ProviderStore::open_existing(
+            &path.database,
+            PROVIDER,
+            StoreOptions::default(),
+            inner,
+        ),
+        Err(StoreError::RollbackFork)
+    ));
 }

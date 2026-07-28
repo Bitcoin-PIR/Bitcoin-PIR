@@ -6,8 +6,6 @@ use rusqlite::{params, Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use std::convert::TryFrom;
 use std::fs::{self, File, OpenOptions};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 const MAX_BUSY_TIMEOUT_MILLIS: u128 = 60_000;
@@ -17,11 +15,8 @@ pub(crate) fn create_file(path: &Path) -> StoreResult<()> {
     if path.as_os_str().is_empty() {
         return Err(StoreError::InvalidInput("database path is empty"));
     }
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let file = options.open(path)?;
+    let file = pir_private_files::create_new_private_file_v1(path, "issuer database")
+        .map_err(private_file_io_error_v1)?;
     file.sync_all()?;
     drop(file);
     sync_parent_directory(path)
@@ -52,22 +47,41 @@ pub(crate) fn open_raw_existing(path: &Path) -> StoreResult<Connection> {
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err(StoreError::NotRegularDatabase(path.to_path_buf()));
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.nlink() != 1 {
+            return Err(StoreError::NotRegularDatabase(path.to_path_buf()));
+        }
+    }
 
-    // macOS temporary roots may themselves be symlinks. Resolve only the
-    // parent, preserve the checked final component, then ask SQLite to reject
-    // a final-component symlink again with SQLITE_OPEN_NOFOLLOW.
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .ok_or(StoreError::InvalidInput("database path has no filename"))?;
-    let open_path = parent.canonicalize()?.join(file_name);
+    let checked = pir_private_files::checked_existing_private_file_v1(
+        path,
+        pir_private_files::PrivateFileModeV1::ReadWrite,
+        "issuer database",
+    )
+    .map_err(private_file_io_error_v1)?;
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    Ok(Connection::open_with_flags(open_path, flags)?)
+    let connection = Connection::open_with_flags(checked.path(), flags)?;
+    let after = pir_private_files::checked_existing_private_file_v1(
+        checked.path(),
+        pir_private_files::PrivateFileModeV1::ReadWrite,
+        "issuer database",
+    )
+    .map_err(private_file_io_error_v1)?;
+    if after.identity() != checked.identity() {
+        return Err(StoreError::NotRegularDatabase(path.to_path_buf()));
+    }
+    Ok(connection)
+}
+
+fn private_file_io_error_v1(error: String) -> StoreError {
+    StoreError::Io(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        error,
+    ))
 }
 
 pub(crate) fn configure_connection(

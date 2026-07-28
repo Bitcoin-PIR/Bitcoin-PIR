@@ -46,6 +46,12 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().expect("test directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict test directory permissions");
+        }
         let issuer_root = SigningKey::from_bytes(&ISSUER_ROOT_SEED);
         let issuer_id = derive_issuer_id(&issuer_root.verifying_key().to_bytes());
         let rollback = Arc::new(
@@ -122,6 +128,8 @@ impl Fixture {
                 authorization_epoch: 1,
                 provider_id: PROVIDER_ID,
                 issuer_id,
+                redeem_endpoint: "https://issuer.example".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
                 settlement_account_id: ACCOUNT_ID,
                 clearing_verifying_key: clearing.verifying_key().to_bytes(),
                 not_before: 1_000,
@@ -259,9 +267,11 @@ fn shared_issuer_redeem_balance_payout_and_restart_status_are_executable() {
         request_auth: redeem_auth,
         credential_binding: fixture.binding.clone(),
         canonical_credential: credential,
-    }
-    .encode()
-    .expect("redeem envelope");
+    };
+    let redeem_debug = format!("{redeem_envelope:?}");
+    assert!(redeem_debug.contains("[REDACTED]"));
+    assert!(!redeem_debug.contains(&format!("{:?}", redeem_envelope.canonical_credential)));
+    let redeem_envelope = redeem_envelope.encode().expect("redeem envelope");
     let redeem_response = service.redeem(&redeem_envelope, NOW).expect("redeem BAT");
     assert_eq!(
         service

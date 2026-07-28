@@ -1,10 +1,10 @@
 use super::*;
 use pir_arc_adapter::{ArcSecretKeyV1, ArcSecretKeyringV1, ARC_SECRET_KEY_LEN_V1};
 use pir_issuer_store::{
-    verify_shared_issuer_redeem_v1, BatKeyLineageRegistration, IssuerRollbackFloorAuthorityErrorV1,
-    IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1, IssuerStore,
-    ProviderSettlementRegistrationWriteV1, SettlementKeyLineageRegistration, StoreError,
-    StoreOptions, VerifiedRedeemCommitV1, WriteDisposition,
+    issuer_payout_outbox_command_id_v1, verify_shared_issuer_redeem_v1, BatKeyLineageRegistration,
+    IssuerRollbackFloorAuthorityErrorV1, IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1,
+    IssuerStore, ProviderSettlementRegistrationWriteV1, SettlementKeyLineageRegistration,
+    StoreError, StoreOptions, VerifiedRedeemCommitV1, WriteDisposition,
 };
 use pir_payment_crypto::{
     blind_cashu_message_v1, cashu_hash_to_curve_v1, verify_and_unblind_cashu_promise_v1,
@@ -14,6 +14,7 @@ use pir_service_protocol::{
     credential_presentation_digest, derive_bat_key_id_v1, derive_cashu_keyset_id_v2,
     derive_issuer_id, verify_new_payout_request_for, verify_new_payout_response_for,
     verify_new_payout_status_response_for, verify_new_settlement_deposit_request_for,
+    verify_persisted_payout_snapshot_from_store_record_v1,
     verify_redeem_response_for_exact_request, ArcPresentationV1, CashuDenominationKeyV1,
     CashuKeysetBindingV1, CredentialKeyBindingClaimsV1, CredentialKeyBindingExpectationV1,
     CredentialKeyBindingV1, CredentialUnitV1, IssuerClearingApprovalV1,
@@ -28,10 +29,15 @@ use pir_service_protocol::{
     SettlementUnitV1, VerifiedPayoutSnapshotV1,
 };
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use tempfile::TempDir;
 use zeroize::Zeroizing;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 
 const NOW: u64 = 1_500;
 const PROVIDER_ID: [u8; 32] = [0x31; 32];
@@ -100,6 +106,9 @@ impl Fixture {
             .prefix("bitcoinpir-issuer-clearing-test-")
             .tempdir()
             .expect("create test directory");
+        #[cfg(unix)]
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restrict test directory permissions");
         let database = directory.path().join("issuer.sqlite3");
         let rollback = Arc::new(MemoryRollbackAuthorityV1::default());
         let issuer_root = SigningKey::from_bytes(&[0x21; 32]);
@@ -197,6 +206,8 @@ impl Fixture {
                 authorization_epoch: 1,
                 provider_id: PROVIDER_ID,
                 issuer_id,
+                redeem_endpoint: "https://issuer.example".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
                 settlement_account_id: ACCOUNT_ID,
                 clearing_verifying_key: clearing.verifying_key().to_bytes(),
                 not_before: 1_000,
@@ -1080,6 +1091,1327 @@ fn failed_payout_restores_balance_and_terminal_cas_has_one_winner() {
     assert_eq!(payout_record.state, PayoutStateV1::Failed);
 }
 
+#[derive(Debug)]
+struct ScriptedPayoutExecutorV1 {
+    readiness: ExternalPayoutReadinessV1,
+    submit_results: VecDeque<ExternalPayoutCallResultV1>,
+    reconcile_results: VecDeque<ExternalPayoutCallResultV1>,
+    submit_calls: usize,
+    reconcile_calls: usize,
+    command_ids: Vec<[u8; 32]>,
+    execution_contexts: Vec<ExternalPayoutExecutionContextV1>,
+}
+
+impl ScriptedPayoutExecutorV1 {
+    fn ready(
+        submit_outcomes: impl IntoIterator<Item = ExternalPayoutOutcomeV1>,
+        reconcile_outcomes: impl IntoIterator<Item = ExternalPayoutOutcomeV1>,
+    ) -> Self {
+        Self {
+            readiness: ExternalPayoutReadinessV1::Ready,
+            submit_results: submit_outcomes
+                .into_iter()
+                .map(ExternalPayoutCallResultV1::Completed)
+                .collect(),
+            reconcile_results: reconcile_outcomes
+                .into_iter()
+                .map(ExternalPayoutCallResultV1::Completed)
+                .collect(),
+            submit_calls: 0,
+            reconcile_calls: 0,
+            command_ids: Vec::new(),
+            execution_contexts: Vec::new(),
+        }
+    }
+
+    fn ready_call_results(
+        submit_results: impl IntoIterator<Item = ExternalPayoutCallResultV1>,
+        reconcile_results: impl IntoIterator<Item = ExternalPayoutCallResultV1>,
+    ) -> Self {
+        Self {
+            readiness: ExternalPayoutReadinessV1::Ready,
+            submit_results: submit_results.into_iter().collect(),
+            reconcile_results: reconcile_results.into_iter().collect(),
+            submit_calls: 0,
+            reconcile_calls: 0,
+            command_ids: Vec::new(),
+            execution_contexts: Vec::new(),
+        }
+    }
+}
+
+impl ExternalPayoutExecutorV1 for ScriptedPayoutExecutorV1 {
+    fn readiness(&self) -> ExternalPayoutReadinessV1 {
+        self.readiness
+    }
+
+    fn submit_once(
+        &mut self,
+        command: &ExternalPayoutCommandV1,
+        context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        self.submit_calls += 1;
+        self.command_ids.push(command.command_id);
+        self.execution_contexts.push(context);
+        self.submit_results
+            .pop_front()
+            .unwrap_or(ExternalPayoutCallResultV1::TimedOut)
+    }
+
+    fn reconcile(
+        &mut self,
+        command: &ExternalPayoutCommandV1,
+        context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        self.reconcile_calls += 1;
+        self.command_ids.push(command.command_id);
+        self.execution_contexts.push(context);
+        self.reconcile_results
+            .pop_front()
+            .unwrap_or(ExternalPayoutCallResultV1::TimedOut)
+    }
+}
+
+#[derive(Debug)]
+struct ScriptedPayoutClockV1(VecDeque<u64>);
+
+impl ScriptedPayoutClockV1 {
+    fn new(values: impl IntoIterator<Item = u64>) -> Self {
+        Self(values.into_iter().collect())
+    }
+}
+
+impl PayoutWorkerClockV1 for ScriptedPayoutClockV1 {
+    fn now_unix(&mut self) -> Option<u64> {
+        self.0.pop_front()
+    }
+}
+
+fn persisted_payout_snapshot(
+    fixture: &Fixture,
+    payout: &AcceptedPayout,
+) -> VerifiedPayoutSnapshotV1 {
+    let record = fixture
+        .store
+        .payout_by_id(&payout.response.payout_id)
+        .expect("read payout snapshot")
+        .expect("payout exists");
+    let initial = IssuerPayoutResponseV1::decode(&record.exact_initial_response)
+        .expect("decode initial payout snapshot");
+    let latest = record
+        .exact_latest_status_response
+        .as_deref()
+        .map(IssuerPayoutStatusResponseV1::decode)
+        .transpose()
+        .expect("decode latest payout snapshot");
+    let settlement_key = fixture.settlement_signing.verifying_key();
+    verify_persisted_payout_snapshot_from_store_record_v1(
+        &record.request_digest,
+        &initial,
+        latest.as_ref(),
+        &IssuerSettlementKeyringExpectationV1 {
+            issuer_id: &fixture.binding.issuer_id,
+            current_key: &settlement_key,
+            retained_keys: &[],
+        },
+    )
+    .expect("verify persisted payout snapshot")
+}
+
+struct TerminalCasRaceClockV1<'a> {
+    fixture: &'a Fixture,
+    payout: &'a AcceptedPayout,
+    previous: VerifiedPayoutSnapshotV1,
+    winner: PayoutStateV1,
+    tamper_winner_signature: bool,
+    calls: u8,
+}
+
+impl PayoutWorkerClockV1 for TerminalCasRaceClockV1<'_> {
+    fn now_unix(&mut self) -> Option<u64> {
+        self.calls = self.calls.saturating_add(1);
+        match self.calls {
+            1 => Some(NOW + 20),
+            2 => {
+                let (_, winner) = advance_payout_status(
+                    self.fixture,
+                    &self.fixture.store,
+                    self.payout,
+                    &self.previous,
+                    self.winner,
+                    0xd1,
+                    NOW + 21,
+                );
+                assert_eq!(winner.state(), self.winner);
+                if self.tamper_winner_signature {
+                    tamper_latest_payout_signature(self.fixture, self.payout);
+                }
+                Some(NOW + 22)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn tamper_initial_payout_signature(fixture: &Fixture, payout: &AcceptedPayout) {
+    let connection = rusqlite::Connection::open(&fixture.database).expect("open payout database");
+    let exact: Vec<u8> = connection
+        .query_row(
+            "SELECT exact_initial_response FROM payouts WHERE payout_id = ?1",
+            rusqlite::params![payout.response.payout_id.as_slice()],
+            |row| row.get(0),
+        )
+        .expect("read exact initial payout response");
+    let mut response =
+        IssuerPayoutResponseV1::decode(&exact).expect("decode exact initial payout response");
+    response.signature[0] ^= 1;
+    let tampered = response
+        .encode()
+        .expect("encode tampered initial payout response");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE payouts SET exact_initial_response = ?1 WHERE payout_id = ?2",
+                rusqlite::params![tampered, payout.response.payout_id.as_slice()],
+            )
+            .expect("tamper initial payout signature"),
+        1
+    );
+}
+
+fn tamper_latest_payout_signature(fixture: &Fixture, payout: &AcceptedPayout) {
+    let connection = rusqlite::Connection::open(&fixture.database).expect("open payout database");
+    let exact: Vec<u8> = connection
+        .query_row(
+            "SELECT exact_latest_status_response FROM payouts WHERE payout_id = ?1",
+            rusqlite::params![payout.response.payout_id.as_slice()],
+            |row| row.get(0),
+        )
+        .expect("read exact latest payout response");
+    let mut response =
+        IssuerPayoutStatusResponseV1::decode(&exact).expect("decode exact latest payout response");
+    response.signature[0] ^= 1;
+    let tampered = response
+        .encode()
+        .expect("encode tampered latest payout response");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE payouts SET exact_latest_status_response = ?1 WHERE payout_id = ?2",
+                rusqlite::params![tampered, payout.response.payout_id.as_slice()],
+            )
+            .expect("tamper latest payout signature"),
+        1
+    );
+}
+
+struct TamperingTerminalPayoutExecutorV1<'a> {
+    fixture: &'a Fixture,
+    payout: &'a AcceptedPayout,
+    previous: VerifiedPayoutSnapshotV1,
+    submit_calls: usize,
+    reconcile_calls: usize,
+}
+
+impl ExternalPayoutExecutorV1 for TamperingTerminalPayoutExecutorV1<'_> {
+    fn readiness(&self) -> ExternalPayoutReadinessV1 {
+        ExternalPayoutReadinessV1::Ready
+    }
+
+    fn submit_once(
+        &mut self,
+        _command: &ExternalPayoutCommandV1,
+        _context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        self.submit_calls += 1;
+        ExternalPayoutCallResultV1::Completed(ExternalPayoutOutcomeV1::Succeeded)
+    }
+
+    fn reconcile(
+        &mut self,
+        _command: &ExternalPayoutCommandV1,
+        _context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        self.reconcile_calls += 1;
+        let (_, terminal) = advance_payout_status(
+            self.fixture,
+            &self.fixture.store,
+            self.payout,
+            &self.previous,
+            PayoutStateV1::Succeeded,
+            0xce,
+            NOW + 21,
+        );
+        assert_eq!(terminal.state(), PayoutStateV1::Succeeded);
+        tamper_latest_payout_signature(self.fixture, self.payout);
+        ExternalPayoutCallResultV1::Completed(ExternalPayoutOutcomeV1::Succeeded)
+    }
+}
+
+fn submit_payout_with_unknown_outcome(
+    fixture: &Fixture,
+    payout: &AcceptedPayout,
+) -> VerifiedPayoutSnapshotV1 {
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::OutcomeUnknown],
+        std::iter::empty(),
+    );
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xd2; 32],
+        10,
+        8,
+    )
+    .expect("construct unknown-outcome worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3]);
+    assert_eq!(
+        worker.run_once(&mut clock).expect("submit payout once"),
+        PayoutOutboxWorkerProgressV1::OutcomeUnknown {
+            payout_id: payout.response.payout_id,
+        }
+    );
+    assert_eq!(worker.executor().submit_calls, 1);
+    persisted_payout_snapshot(fixture, payout)
+}
+
+#[test]
+fn no_funds_payout_executor_is_disabled_before_claim_or_clock_read() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xa0);
+    assert!(matches!(
+        IssuerPayoutOutboxWorkerV1::new(
+            &fixture.store,
+            &fixture.settlement_signing,
+            &[],
+            NoFundsPayoutExecutorV1,
+            [0xa1; 32],
+            MAX_PAYOUT_WORKER_LEASE_SECONDS_V1 + 1,
+            1,
+        ),
+        Err(PayoutOutboxWorkerErrorV1::InvalidConfiguration(_))
+    ));
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        NoFundsPayoutExecutorV1,
+        [0xa1; 32],
+        10,
+        8,
+    )
+    .expect("construct disabled payout worker");
+    let mut empty_clock = ScriptedPayoutClockV1::new([]);
+    assert_eq!(
+        worker.run_once(&mut empty_clock).expect("disabled worker"),
+        PayoutOutboxWorkerProgressV1::ExecutorDisabled
+    );
+    let record = fixture
+        .store
+        .payout_by_id(&payout.response.payout_id)
+        .expect("read untouched payout")
+        .expect("payout exists");
+    assert_eq!(record.state, PayoutStateV1::Accepted);
+    let first_claim = fixture
+        .store
+        .claim_next_payout_outbox(&[0xa2; 32], NOW + 2, 10)
+        .expect("claim after disabled worker")
+        .expect("disabled worker did not claim");
+    assert_eq!(first_claim.value.attempt_count, 1);
+}
+
+#[test]
+fn payout_worker_rejects_deadline_outside_durable_lease() {
+    let fixture = Fixture::new();
+    for (lease_seconds, external_call_timeout_seconds) in [(10, 0), (10, 10), (10, 11)] {
+        assert!(matches!(
+            IssuerPayoutOutboxWorkerV1::new(
+                &fixture.store,
+                &fixture.settlement_signing,
+                &[],
+                NoFundsPayoutExecutorV1,
+                [0xe1; 32],
+                lease_seconds,
+                external_call_timeout_seconds,
+            ),
+            Err(PayoutOutboxWorkerErrorV1::InvalidConfiguration(_))
+        ));
+    }
+    assert!(IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        NoFundsPayoutExecutorV1,
+        [0xe1; 32],
+        2,
+        1,
+    )
+    .is_ok());
+}
+
+#[test]
+fn payout_worker_commits_in_flight_before_one_successful_submission() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xa3);
+    let executor =
+        ScriptedPayoutExecutorV1::ready([ExternalPayoutOutcomeV1::Succeeded], std::iter::empty());
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xa4; 32],
+        10,
+        8,
+    )
+    .expect("construct payout worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3, NOW + 4]);
+    assert_eq!(
+        worker.run_once(&mut clock).expect("run successful payout"),
+        PayoutOutboxWorkerProgressV1::Succeeded {
+            payout_id: payout.response.payout_id
+        }
+    );
+    assert_eq!(worker.executor().submit_calls, 1);
+    assert_eq!(worker.executor().reconcile_calls, 0);
+    assert_eq!(worker.executor().command_ids.len(), 1);
+    assert_eq!(worker.executor().execution_contexts.len(), 1);
+    let absolute_deadline = worker.executor().execution_contexts[0].absolute_deadline_unix();
+    assert_eq!(absolute_deadline, NOW + 10);
+    assert!(
+        absolute_deadline < NOW + 12,
+        "deadline must precede lease expiry"
+    );
+    let record = fixture
+        .store
+        .payout_by_id(&payout.response.payout_id)
+        .expect("read completed payout")
+        .expect("payout exists");
+    assert_eq!(record.state, PayoutStateV1::Succeeded);
+    assert!(fixture
+        .store
+        .claim_next_payout_outbox(&[0xa5; 32], NOW + 30, 10)
+        .expect("check completed outbox")
+        .is_none());
+}
+
+#[test]
+fn timeout_and_cancellation_are_always_outcome_unknown() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xe2);
+    let executor = ScriptedPayoutExecutorV1::ready_call_results(
+        [ExternalPayoutCallResultV1::TimedOut],
+        [ExternalPayoutCallResultV1::Cancelled],
+    );
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xe3; 32],
+        10,
+        8,
+    )
+    .expect("construct timeout worker");
+
+    let mut submit_clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3]);
+    assert_eq!(
+        worker
+            .run_once(&mut submit_clock)
+            .expect("time out submission"),
+        PayoutOutboxWorkerProgressV1::OutcomeUnknown {
+            payout_id: payout.response.payout_id,
+        }
+    );
+    let mut reconcile_clock = ScriptedPayoutClockV1::new([NOW + 20]);
+    assert_eq!(
+        worker
+            .run_once(&mut reconcile_clock)
+            .expect("cancel reconciliation"),
+        PayoutOutboxWorkerProgressV1::OutcomeUnknown {
+            payout_id: payout.response.payout_id,
+        }
+    );
+    assert_eq!(worker.executor().submit_calls, 1);
+    assert_eq!(worker.executor().reconcile_calls, 1);
+    assert_eq!(
+        worker
+            .executor()
+            .execution_contexts
+            .iter()
+            .map(|context| context.absolute_deadline_unix())
+            .collect::<Vec<_>>(),
+        [NOW + 10, NOW + 28]
+    );
+    assert_eq!(
+        fixture
+            .store
+            .payout_by_id(&payout.response.payout_id)
+            .expect("read ambiguous payout")
+            .expect("payout exists")
+            .state,
+        PayoutStateV1::InFlight
+    );
+}
+
+#[test]
+fn payout_worker_progress_debug_redacts_payout_id() {
+    let payout_id = [0xe4; 32];
+    let cases = [
+        (
+            PayoutOutboxWorkerProgressV1::DeferredForClock {
+                payout_id,
+                state: PayoutStateV1::Accepted,
+            },
+            "DeferredForClock(Accepted)",
+        ),
+        (
+            PayoutOutboxWorkerProgressV1::OutcomeUnknown { payout_id },
+            "OutcomeUnknown",
+        ),
+        (
+            PayoutOutboxWorkerProgressV1::TerminalCommitDeferred {
+                payout_id,
+                outcome: ExternalPayoutOutcomeV1::Succeeded,
+            },
+            "TerminalCommitDeferred(Succeeded)",
+        ),
+        (
+            PayoutOutboxWorkerProgressV1::Succeeded { payout_id },
+            "Succeeded",
+        ),
+        (PayoutOutboxWorkerProgressV1::Failed { payout_id }, "Failed"),
+        (
+            PayoutOutboxWorkerProgressV1::ConcurrentAdvance { payout_id },
+            "ConcurrentAdvance",
+        ),
+        (
+            PayoutOutboxWorkerProgressV1::TerminalCommitRaced {
+                payout_id,
+                outcome: ExternalPayoutOutcomeV1::DefinitelyFailed,
+            },
+            "TerminalCommitRaced(DefinitelyFailed)",
+        ),
+    ];
+    for (progress, expected) in cases {
+        let rendered = format!("{progress:?}");
+        assert_eq!(rendered, expected);
+        assert!(!rendered.contains("payout_id"));
+        assert!(!rendered.contains("228"));
+    }
+}
+
+#[test]
+fn ambiguous_submission_is_only_reconciled_and_never_submitted_twice() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xa6);
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::OutcomeUnknown],
+        std::iter::empty(),
+    );
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xa7; 32],
+        10,
+        8,
+    )
+    .expect("construct payout worker");
+
+    let mut first_clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3]);
+    assert_eq!(
+        worker
+            .run_once(&mut first_clock)
+            .expect("run ambiguous submission"),
+        PayoutOutboxWorkerProgressV1::OutcomeUnknown {
+            payout_id: payout.response.payout_id
+        }
+    );
+    assert_eq!(
+        fixture
+            .store
+            .payout_by_id(&payout.response.payout_id)
+            .expect("read in-flight payout")
+            .expect("payout exists")
+            .state,
+        PayoutStateV1::InFlight
+    );
+    assert_eq!(worker.executor().submit_calls, 1);
+    let submitted_command_id = worker.executor().command_ids[0];
+    drop(worker);
+
+    let reopened = IssuerStore::open_existing(
+        &fixture.database,
+        fixture.binding.issuer_id,
+        LightningNetworkV1::Regtest,
+        StoreOptions::default(),
+        fixture.rollback.clone(),
+    )
+    .expect("reopen issuer after ambiguous submission");
+    let recovery_executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::DefinitelyFailed],
+        [
+            ExternalPayoutOutcomeV1::OutcomeUnknown,
+            ExternalPayoutOutcomeV1::Succeeded,
+        ],
+    );
+    let mut recovery_worker = IssuerPayoutOutboxWorkerV1::new(
+        &reopened,
+        &fixture.settlement_signing,
+        &[],
+        recovery_executor,
+        [0xac; 32],
+        10,
+        8,
+    )
+    .expect("construct restarted payout worker");
+
+    let mut unexpired_clock = ScriptedPayoutClockV1::new([NOW + 5]);
+    assert_eq!(
+        recovery_worker
+            .run_once(&mut unexpired_clock)
+            .expect("respect unexpired lease"),
+        PayoutOutboxWorkerProgressV1::Idle
+    );
+    assert_eq!(recovery_worker.executor().submit_calls, 0);
+    assert_eq!(recovery_worker.executor().reconcile_calls, 0);
+
+    let mut second_clock = ScriptedPayoutClockV1::new([NOW + 20]);
+    assert_eq!(
+        recovery_worker
+            .run_once(&mut second_clock)
+            .expect("run ambiguous reconciliation"),
+        PayoutOutboxWorkerProgressV1::OutcomeUnknown {
+            payout_id: payout.response.payout_id
+        }
+    );
+    let mut third_clock = ScriptedPayoutClockV1::new([NOW + 40, NOW + 41]);
+    assert_eq!(
+        recovery_worker
+            .run_once(&mut third_clock)
+            .expect("run successful reconciliation"),
+        PayoutOutboxWorkerProgressV1::Succeeded {
+            payout_id: payout.response.payout_id
+        }
+    );
+    assert_eq!(recovery_worker.executor().submit_calls, 0);
+    assert_eq!(recovery_worker.executor().reconcile_calls, 2);
+    assert!(recovery_worker
+        .executor()
+        .command_ids
+        .iter()
+        .all(|command_id| *command_id == submitted_command_id));
+}
+
+#[test]
+fn terminal_cas_race_reloads_a_matching_signed_winner() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xd3);
+    let previous = submit_payout_with_unknown_outcome(&fixture, &payout);
+    assert_eq!(previous.state(), PayoutStateV1::InFlight);
+
+    let executor =
+        ScriptedPayoutExecutorV1::ready(std::iter::empty(), [ExternalPayoutOutcomeV1::Succeeded]);
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xd4; 32],
+        10,
+        8,
+    )
+    .expect("construct matching-race worker");
+    let mut clock = TerminalCasRaceClockV1 {
+        fixture: &fixture,
+        payout: &payout,
+        previous,
+        winner: PayoutStateV1::Succeeded,
+        tamper_winner_signature: false,
+        calls: 0,
+    };
+    assert_eq!(
+        worker
+            .run_once(&mut clock)
+            .expect("reload matching terminal winner"),
+        PayoutOutboxWorkerProgressV1::ConcurrentAdvance {
+            payout_id: payout.response.payout_id,
+        }
+    );
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 1);
+    assert_eq!(
+        fixture
+            .store
+            .payout_by_id(&payout.response.payout_id)
+            .expect("read matching winner")
+            .expect("payout exists")
+            .state,
+        PayoutStateV1::Succeeded
+    );
+}
+
+#[test]
+fn terminal_cas_race_fails_closed_on_a_conflicting_signed_winner() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xd5);
+    let previous = submit_payout_with_unknown_outcome(&fixture, &payout);
+    assert_eq!(previous.state(), PayoutStateV1::InFlight);
+
+    let executor =
+        ScriptedPayoutExecutorV1::ready(std::iter::empty(), [ExternalPayoutOutcomeV1::Succeeded]);
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xd6; 32],
+        10,
+        8,
+    )
+    .expect("construct conflicting-race worker");
+    let mut clock = TerminalCasRaceClockV1 {
+        fixture: &fixture,
+        payout: &payout,
+        previous,
+        winner: PayoutStateV1::Failed,
+        tamper_winner_signature: false,
+        calls: 0,
+    };
+    assert!(matches!(
+        worker.run_once(&mut clock),
+        Err(PayoutOutboxWorkerErrorV1::StoreInvariant(
+            "terminal payout winner conflicts with external outcome"
+        ))
+    ));
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 1);
+    assert_eq!(
+        fixture
+            .store
+            .payout_by_id(&payout.response.payout_id)
+            .expect("read conflicting winner")
+            .expect("payout exists")
+            .state,
+        PayoutStateV1::Failed
+    );
+}
+
+#[test]
+fn terminal_cas_race_fails_closed_on_a_tampered_winner_signature() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xd7);
+    let previous = submit_payout_with_unknown_outcome(&fixture, &payout);
+    assert_eq!(previous.state(), PayoutStateV1::InFlight);
+
+    let executor =
+        ScriptedPayoutExecutorV1::ready(std::iter::empty(), [ExternalPayoutOutcomeV1::Succeeded]);
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xd8; 32],
+        10,
+        8,
+    )
+    .expect("construct tampered-race worker");
+    let mut clock = TerminalCasRaceClockV1 {
+        fixture: &fixture,
+        payout: &payout,
+        previous,
+        winner: PayoutStateV1::Succeeded,
+        tamper_winner_signature: true,
+        calls: 0,
+    };
+    assert!(matches!(
+        worker.run_once(&mut clock),
+        Err(PayoutOutboxWorkerErrorV1::Protocol(_))
+    ));
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 1);
+}
+
+#[test]
+fn terminal_fast_path_fails_closed_on_a_tampered_signed_snapshot() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xcf);
+    let previous = submit_payout_with_unknown_outcome(&fixture, &payout);
+    assert_eq!(previous.state(), PayoutStateV1::InFlight);
+
+    let executor = TamperingTerminalPayoutExecutorV1 {
+        fixture: &fixture,
+        payout: &payout,
+        previous,
+        submit_calls: 0,
+        reconcile_calls: 0,
+    };
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xd0; 32],
+        10,
+        8,
+    )
+    .expect("construct terminal-fast-path worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 20]);
+    assert!(matches!(
+        worker.run_once(&mut clock),
+        Err(PayoutOutboxWorkerErrorV1::Protocol(_))
+    ));
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 1);
+}
+
+#[test]
+fn definite_external_failure_restores_reserved_provider_balance() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xa8);
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::DefinitelyFailed],
+        std::iter::empty(),
+    );
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xa9; 32],
+        10,
+        8,
+    )
+    .expect("construct payout worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3, NOW + 4]);
+    assert_eq!(
+        worker.run_once(&mut clock).expect("run failed payout"),
+        PayoutOutboxWorkerProgressV1::Failed {
+            payout_id: payout.response.payout_id
+        }
+    );
+    let balance = fixture
+        .store
+        .provider_ledger_balance(&PROVIDER_ID)
+        .expect("read restored payout balance")
+        .expect("provider balance exists");
+    assert_eq!((balance.available_value, balance.reserved_value), (9, 0));
+    assert_eq!(worker.executor().submit_calls, 1);
+}
+
+#[test]
+fn terminal_clock_deferral_recovers_by_reconciliation_without_resubmit() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xba);
+    let executor =
+        ScriptedPayoutExecutorV1::ready([ExternalPayoutOutcomeV1::Succeeded], std::iter::empty());
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xbb; 32],
+        10,
+        8,
+    )
+    .expect("construct terminal-deferral worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3, NOW + 3]);
+    assert_eq!(
+        worker
+            .run_once(&mut clock)
+            .expect("defer non-monotonic terminal commit"),
+        PayoutOutboxWorkerProgressV1::TerminalCommitDeferred {
+            payout_id: payout.response.payout_id,
+            outcome: ExternalPayoutOutcomeV1::Succeeded,
+        }
+    );
+    assert_eq!(worker.executor().submit_calls, 1);
+    drop(worker);
+
+    let reopened = IssuerStore::open_existing(
+        &fixture.database,
+        fixture.binding.issuer_id,
+        LightningNetworkV1::Regtest,
+        StoreOptions::default(),
+        fixture.rollback.clone(),
+    )
+    .expect("reopen terminal-deferral store");
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::DefinitelyFailed],
+        [ExternalPayoutOutcomeV1::Succeeded],
+    );
+    let mut recovery_worker = IssuerPayoutOutboxWorkerV1::new(
+        &reopened,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xbc; 32],
+        10,
+        8,
+    )
+    .expect("construct terminal recovery worker");
+    let mut recovery_clock = ScriptedPayoutClockV1::new([NOW + 20, NOW + 21]);
+    assert_eq!(
+        recovery_worker
+            .run_once(&mut recovery_clock)
+            .expect("reconcile terminal outcome"),
+        PayoutOutboxWorkerProgressV1::Succeeded {
+            payout_id: payout.response.payout_id
+        }
+    );
+    assert_eq!(recovery_worker.executor().submit_calls, 0);
+    assert_eq!(recovery_worker.executor().reconcile_calls, 1);
+}
+
+#[test]
+fn non_monotonic_worker_clock_never_calls_external_executor() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xaa);
+    let executor =
+        ScriptedPayoutExecutorV1::ready([ExternalPayoutOutcomeV1::Succeeded], std::iter::empty());
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xab; 32],
+        10,
+        8,
+    )
+    .expect("construct payout worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 1]);
+    assert_eq!(
+        worker.run_once(&mut clock).expect("defer stale clock"),
+        PayoutOutboxWorkerProgressV1::DeferredForClock {
+            payout_id: payout.response.payout_id,
+            state: PayoutStateV1::Accepted,
+        }
+    );
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 0);
+}
+
+#[test]
+fn tampered_outbox_command_id_never_reaches_external_executor() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xb7);
+    let mut tampered_command_id =
+        issuer_payout_outbox_command_id_v1(&fixture.binding.issuer_id, &payout.response.payout_id);
+    tampered_command_id[0] ^= 1;
+    let connection = rusqlite::Connection::open(&fixture.database).expect("open payout database");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE payout_outbox SET command_id = ?1 WHERE payout_id = ?2",
+                rusqlite::params![
+                    tampered_command_id.as_slice(),
+                    payout.response.payout_id.as_slice()
+                ],
+            )
+            .expect("tamper outbox command id"),
+        1
+    );
+    drop(connection);
+
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::Succeeded],
+        [ExternalPayoutOutcomeV1::Succeeded],
+    );
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xb9; 32],
+        10,
+        8,
+    )
+    .expect("construct command-binding worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2]);
+    assert!(matches!(
+        worker.run_once(&mut clock),
+        Err(PayoutOutboxWorkerErrorV1::StoreInvariant(
+            "outbox command id is not derived from issuer and payout"
+        ))
+    ));
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 0);
+}
+
+#[test]
+fn tampered_accepted_initial_signature_never_reaches_external_executor() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xc1);
+    tamper_initial_payout_signature(&fixture, &payout);
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::Succeeded],
+        [ExternalPayoutOutcomeV1::Succeeded],
+    );
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xc2; 32],
+        10,
+        8,
+    )
+    .expect("construct initial-signature worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2]);
+    assert!(matches!(
+        worker.run_once(&mut clock),
+        Err(PayoutOutboxWorkerErrorV1::Protocol(_))
+    ));
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 0);
+}
+
+#[test]
+fn tampered_in_flight_latest_signature_never_reaches_external_executor() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xc3);
+    let previous = submit_payout_with_unknown_outcome(&fixture, &payout);
+    assert_eq!(previous.state(), PayoutStateV1::InFlight);
+    tamper_latest_payout_signature(&fixture, &payout);
+
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::Succeeded],
+        [ExternalPayoutOutcomeV1::Succeeded],
+    );
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &[],
+        executor,
+        [0xc4; 32],
+        10,
+        8,
+    )
+    .expect("construct latest-signature worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 20]);
+    assert!(matches!(
+        worker.run_once(&mut clock),
+        Err(PayoutOutboxWorkerErrorV1::Protocol(_))
+    ));
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 0);
+}
+
+#[test]
+fn invalid_retained_keyring_never_reaches_external_executor() {
+    let fixture = Fixture::new();
+    let _payout = accept_funded_payout(&fixture, 0xc5);
+    let executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::Succeeded],
+        [ExternalPayoutOutcomeV1::Succeeded],
+    );
+    let current_key = fixture.settlement_signing.verifying_key();
+    let retained_keys = [current_key];
+    let mut worker = IssuerPayoutOutboxWorkerV1::new(
+        &fixture.store,
+        &fixture.settlement_signing,
+        &retained_keys,
+        executor,
+        [0xc6; 32],
+        10,
+        8,
+    )
+    .expect("construct invalid-keyring worker");
+    let mut clock = ScriptedPayoutClockV1::new([NOW + 2]);
+    assert!(matches!(
+        worker.run_once(&mut clock),
+        Err(PayoutOutboxWorkerErrorV1::Protocol(_))
+    ));
+    assert_eq!(worker.executor().submit_calls, 0);
+    assert_eq!(worker.executor().reconcile_calls, 0);
+}
+
+#[derive(Debug)]
+struct CrashBeforeExternalSubmitV1;
+
+impl ExternalPayoutExecutorV1 for CrashBeforeExternalSubmitV1 {
+    fn readiness(&self) -> ExternalPayoutReadinessV1 {
+        ExternalPayoutReadinessV1::Ready
+    }
+
+    fn submit_once(
+        &mut self,
+        _command: &ExternalPayoutCommandV1,
+        _context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        panic!("simulated process crash before external adapter submission");
+    }
+
+    fn reconcile(
+        &mut self,
+        _command: &ExternalPayoutCommandV1,
+        _context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        panic!("crashing worker must not reconcile");
+    }
+}
+
+#[test]
+fn crash_after_in_flight_commit_restarts_in_reconcile_only_mode() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xad);
+    {
+        let mut crashing_worker = IssuerPayoutOutboxWorkerV1::new(
+            &fixture.store,
+            &fixture.settlement_signing,
+            &[],
+            CrashBeforeExternalSubmitV1,
+            [0xae; 32],
+            10,
+            8,
+        )
+        .expect("construct crashing worker");
+        let mut first_clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3]);
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = crashing_worker.run_once(&mut first_clock);
+        }));
+        assert!(crashed.is_err());
+    }
+    assert_eq!(
+        fixture
+            .store
+            .payout_by_id(&payout.response.payout_id)
+            .expect("read payout after simulated crash")
+            .expect("payout exists")
+            .state,
+        PayoutStateV1::InFlight
+    );
+
+    let reopened = IssuerStore::open_existing(
+        &fixture.database,
+        fixture.binding.issuer_id,
+        LightningNetworkV1::Regtest,
+        StoreOptions::default(),
+        fixture.rollback.clone(),
+    )
+    .expect("reopen after simulated worker crash");
+    // A submit outcome is deliberately configured, so the assertion proves
+    // the restarted worker never consumes it for an InFlight payout.
+    let recovery_executor = ScriptedPayoutExecutorV1::ready(
+        [ExternalPayoutOutcomeV1::Succeeded],
+        [ExternalPayoutOutcomeV1::OutcomeUnknown],
+    );
+    let mut recovery_worker = IssuerPayoutOutboxWorkerV1::new(
+        &reopened,
+        &fixture.settlement_signing,
+        &[],
+        recovery_executor,
+        [0xaf; 32],
+        10,
+        8,
+    )
+    .expect("construct recovery worker");
+    let mut recovery_clock = ScriptedPayoutClockV1::new([NOW + 20]);
+    assert_eq!(
+        recovery_worker
+            .run_once(&mut recovery_clock)
+            .expect("reconcile after crash"),
+        PayoutOutboxWorkerProgressV1::OutcomeUnknown {
+            payout_id: payout.response.payout_id
+        }
+    );
+    assert_eq!(recovery_worker.executor().submit_calls, 0);
+    assert_eq!(recovery_worker.executor().reconcile_calls, 1);
+}
+
+#[test]
+fn store_record_snapshot_verification_rejects_digest_and_signature_tampering() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xb0);
+    let record = fixture
+        .store
+        .payout_by_id(&payout.response.payout_id)
+        .expect("read payout for tamper test")
+        .expect("payout exists");
+    let initial = IssuerPayoutResponseV1::decode(&record.exact_initial_response)
+        .expect("decode durable initial response");
+    let settlement_key = fixture.settlement_signing.verifying_key();
+    let keyring = IssuerSettlementKeyringExpectationV1 {
+        issuer_id: &fixture.binding.issuer_id,
+        current_key: &settlement_key,
+        retained_keys: &[],
+    };
+    assert!(verify_persisted_payout_snapshot_from_store_record_v1(
+        &[0xb1; 32],
+        &initial,
+        None,
+        &keyring,
+    )
+    .is_err());
+    let mut forged = initial;
+    forged.signature[0] ^= 1;
+    assert!(verify_persisted_payout_snapshot_from_store_record_v1(
+        &record.request_digest,
+        &forged,
+        None,
+        &keyring,
+    )
+    .is_err());
+
+    let _claim = fixture
+        .store
+        .claim_next_payout_outbox(&[0xb5; 32], NOW + 2, 10)
+        .expect("claim payout for status tamper test")
+        .expect("payout command exists");
+    let _ = advance_payout_status(
+        &fixture,
+        &fixture.store,
+        &payout,
+        &payout.snapshot,
+        PayoutStateV1::InFlight,
+        0xb6,
+        NOW + 3,
+    );
+    let advanced = fixture
+        .store
+        .payout_by_id(&payout.response.payout_id)
+        .expect("read advanced payout")
+        .expect("advanced payout exists");
+    let advanced_initial = IssuerPayoutResponseV1::decode(&advanced.exact_initial_response)
+        .expect("decode advanced initial response");
+    let mut forged_latest = IssuerPayoutStatusResponseV1::decode(
+        advanced
+            .exact_latest_status_response
+            .as_deref()
+            .expect("advanced status exists"),
+    )
+    .expect("decode advanced status");
+    forged_latest.signature[0] ^= 1;
+    assert!(verify_persisted_payout_snapshot_from_store_record_v1(
+        &advanced.request_digest,
+        &advanced_initial,
+        Some(&forged_latest),
+        &keyring,
+    )
+    .is_err());
+}
+
+#[derive(Debug)]
+struct SharedCountingPayoutExecutorV1 {
+    submit_calls: Arc<AtomicUsize>,
+    reconcile_calls: Arc<AtomicUsize>,
+    deadlines: Arc<Mutex<Vec<u64>>>,
+}
+
+impl ExternalPayoutExecutorV1 for SharedCountingPayoutExecutorV1 {
+    fn readiness(&self) -> ExternalPayoutReadinessV1 {
+        ExternalPayoutReadinessV1::Ready
+    }
+
+    fn submit_once(
+        &mut self,
+        _command: &ExternalPayoutCommandV1,
+        context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        self.submit_calls.fetch_add(1, Ordering::SeqCst);
+        self.deadlines
+            .lock()
+            .expect("deadline mutex")
+            .push(context.absolute_deadline_unix());
+        ExternalPayoutCallResultV1::Completed(ExternalPayoutOutcomeV1::Succeeded)
+    }
+
+    fn reconcile(
+        &mut self,
+        _command: &ExternalPayoutCommandV1,
+        context: ExternalPayoutExecutionContextV1,
+    ) -> ExternalPayoutCallResultV1 {
+        self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+        self.deadlines
+            .lock()
+            .expect("deadline mutex")
+            .push(context.absolute_deadline_unix());
+        ExternalPayoutCallResultV1::Completed(ExternalPayoutOutcomeV1::Succeeded)
+    }
+}
+
+#[test]
+fn two_concurrent_workers_submit_at_most_once() {
+    let fixture = Fixture::new();
+    let payout = accept_funded_payout(&fixture, 0xb2);
+    let barrier = Arc::new(Barrier::new(2));
+    let submit_calls = Arc::new(AtomicUsize::new(0));
+    let reconcile_calls = Arc::new(AtomicUsize::new(0));
+    let deadlines = Arc::new(Mutex::new(Vec::new()));
+    let mut joins = Vec::new();
+    for worker_byte in [0xb3, 0xb4] {
+        let database = fixture.database.clone();
+        let rollback = fixture.rollback.clone();
+        let issuer_id = fixture.binding.issuer_id;
+        let barrier = barrier.clone();
+        let submit_calls = submit_calls.clone();
+        let reconcile_calls = reconcile_calls.clone();
+        let deadlines = deadlines.clone();
+        joins.push(std::thread::spawn(move || {
+            let store = IssuerStore::open_existing(
+                &database,
+                issuer_id,
+                LightningNetworkV1::Regtest,
+                StoreOptions::default(),
+                rollback,
+            )
+            .expect("open concurrent worker store");
+            let signing_key = SigningKey::from_bytes(&[0x25; 32]);
+            let executor = SharedCountingPayoutExecutorV1 {
+                submit_calls,
+                reconcile_calls,
+                deadlines,
+            };
+            let mut worker = IssuerPayoutOutboxWorkerV1::new(
+                &store,
+                &signing_key,
+                &[],
+                executor,
+                [worker_byte; 32],
+                10,
+                8,
+            )
+            .expect("construct concurrent worker");
+            let mut clock = ScriptedPayoutClockV1::new([NOW + 2, NOW + 3, NOW + 4]);
+            barrier.wait();
+            worker.run_once(&mut clock)
+        }));
+    }
+    let outcomes: Vec<_> = joins
+        .into_iter()
+        .map(|join| join.join().expect("concurrent worker thread"))
+        .collect();
+    // A loser may fail closed while observing the store's commit-then-floor-CAS
+    // window. The economic invariant is that exactly one submission occurs
+    // and the durable payout reaches one terminal state.
+    assert!(outcomes.iter().any(Result::is_ok));
+    assert_eq!(submit_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(reconcile_calls.load(Ordering::SeqCst), 0);
+    let observed_deadlines = deadlines.lock().expect("deadline mutex");
+    assert_eq!(
+        *observed_deadlines,
+        [NOW + 10],
+        "the sole concurrent submission uses claim time plus the configured timeout"
+    );
+    assert!(
+        observed_deadlines[0] < NOW + 12,
+        "deadline must precede lease expiry"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .payout_by_id(&payout.response.payout_id)
+            .expect("read concurrent payout")
+            .expect("payout exists")
+            .state,
+        PayoutStateV1::Succeeded
+    );
+}
+
 #[test]
 fn shared_issuer_arc_requires_registered_exclusive_lineage_experimental() {
     use arc::group::serialize_scalar;
@@ -1121,6 +2453,8 @@ fn shared_issuer_arc_requires_registered_exclusive_lineage_experimental() {
             authorization_epoch: 2,
             provider_id: PROVIDER_ID,
             issuer_id: fixture.binding.issuer_id,
+            redeem_endpoint: "https://issuer.example".to_owned(),
+            redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
             settlement_account_id: ACCOUNT_ID,
             clearing_verifying_key: fixture.clearing.verifying_key().to_bytes(),
             not_before: 1_000,

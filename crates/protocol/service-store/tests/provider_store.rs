@@ -1,12 +1,41 @@
 use pir_service_store::{
-    CashuManifestEpochFloor, CredentialEpochFloor, ExclusiveKeyLineage, NamespaceCloseOutcome,
-    NamespaceInstallOutcome, NamespaceStatus, NewSpendNamespace, PolicyHead, PolicyStateUpdate,
-    PolicyUpdateOutcome, ProviderStore, SpendRequest, StoreError, StoreOptions, SCHEMA_VERSION,
+    CashuManifestEpochFloor, CredentialEpochFloor, ExclusiveKeyLineage, FreeIpRateLimitRequestV1,
+    NamespaceCloseOutcome, NamespaceInstallOutcome, NamespaceStatus, NewSpendNamespace, PolicyHead,
+    PolicyStateUpdate, PolicyUpdateOutcome, ProviderStore, SpendRequest, StoreError, StoreOptions,
+    SCHEMA_VERSION,
 };
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use tempfile::{Builder, TempDir};
+
+#[test]
+fn sensitive_admission_request_debug_is_fully_redacted() {
+    let spend = SpendRequest {
+        namespace_id: [0x61; 32],
+        spend_key: [0x62; 32],
+        now_unix_seconds: 1_234_567,
+    };
+    assert_eq!(
+        format!("{spend:?}"),
+        "SpendRequest { request: \"[REDACTED]\" }"
+    );
+
+    let free = FreeIpRateLimitRequestV1 {
+        subject: [0x63; 32],
+        policy_digest: [0x64; 32],
+        scope_id: [0x65; 32],
+        offer_id: 67,
+        quota: 68,
+        window_seconds: 69,
+        max_buckets: 70,
+        now_unix_seconds: 7_654_321,
+    };
+    assert_eq!(
+        format!("{free:?}"),
+        "FreeIpRateLimitRequestV1 { request: \"[REDACTED]\" }"
+    );
+}
 
 const PROVIDER: [u8; 32] = [0x11; 32];
 const STORE_INSTANCE: [u8; 16] = [0x22; 16];
@@ -27,6 +56,12 @@ impl TestPath {
             .prefix("bitcoinpir-provider-store-test-")
             .tempdir()
             .expect("create task-specific temporary directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict provider-store test directory permissions");
+        }
         let database = directory.path().join("provider.sqlite3");
         Self {
             _directory: directory,
@@ -262,6 +297,25 @@ fn schema_extensions_and_symlink_paths_fail_closed() {
         assert!(matches!(
             ProviderStore::open_existing_unprotected_for_tests(
                 &link,
+                PROVIDER,
+                StoreOptions::default()
+            ),
+            Err(StoreError::NotRegularDatabase(_))
+        ));
+
+        let hardlink = target._directory.path().join("provider-hardlink.sqlite3");
+        std::fs::hard_link(&target.database, &hardlink).unwrap();
+        assert!(matches!(
+            ProviderStore::open_existing_unprotected_for_tests(
+                &hardlink,
+                PROVIDER,
+                StoreOptions::default()
+            ),
+            Err(StoreError::NotRegularDatabase(_))
+        ));
+        assert!(matches!(
+            ProviderStore::open_existing_unprotected_for_tests(
+                &target.database,
                 PROVIDER,
                 StoreOptions::default()
             ),
@@ -578,6 +632,25 @@ fn concurrent_duplicate_spends_have_exactly_one_commit() {
         .sum();
     assert_eq!(committed, 1);
     assert_eq!(store.identity().unwrap().spend_commit_seq, 1);
+}
+
+#[test]
+fn grant_nonce_failure_rolls_back_spend_before_authorization() {
+    let test_path = TestPath::new();
+    let store = create_store_with_namespace(&test_path.database, 1_000);
+    let before = store.identity().unwrap();
+    let request = spend_request([0xce; 32], 10);
+
+    crate::fail_next_grant_transition_nonce_for_current_thread_v1();
+    assert!(matches!(store.spend(request), Err(StoreError::Io(_))));
+    assert_eq!(store.identity().unwrap(), before);
+    assert!(!store.is_spent(&request.spend_key).unwrap());
+    assert_eq!(
+        store.operational_inventory().unwrap().spent_capability_rows,
+        0
+    );
+
+    assert_eq!(store.spend(request).unwrap().spend_commit_seq, 1);
 }
 
 #[test]

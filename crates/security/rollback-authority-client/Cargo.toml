@@ -1,0 +1,38 @@
+[package]
+name = "pir-rollback-authority-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Fail-closed pinned-HTTPS client for BitcoinPIR rollback authorities"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+keywords = ["bitcoin", "rollback", "https", "security"]
+categories = ["cryptography", "network-programming"]
+
+[features]
+default = []
+# Enables one explicitly configured private test CA while preserving WebPKI
+# and mandatory SPKI validation. Production consumers must not enable it.
+test-only-webpki-root = ["pir-strict-https/test-only-webpki-root"]
+
+[dependencies]
+ed25519-dalek = "2"
+hex = "0.4"
+pir-rollback-authority-protocol = { path = "../rollback-authority-protocol" }
+pir-private-files = { path = "../private-files" }
+pir-strict-https = { path = "../../net/strict-https" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process"] }
+
+[dev-dependencies]
+static_assertions = "1"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

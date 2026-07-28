@@ -16,6 +16,10 @@ members = [
     "crates/payment/provider-clearing-client",
     "crates/payment/issuer-core",
     "crates/payment/issuer-service",
+    "crates/security/rollback-authority-client",
+    "crates/security/rollback-authority-protocol",
+    "crates/security/rollback-authority-store",
+    "crates/security/private-files",
     "crates/net/strict-https",
     "crates/directory/nostr",
     "crates/trust/identity",
@@ -32,6 +36,7 @@ members = [
     "tools/block-reader",
     "apps/dev-issuer",
     "apps/payment-issuer",
+    "apps/rollback-authority",
 ]
 exclude = ["electrum_plugin/harmonypir-python", "vendor/bitcoinpir-oram"]
 

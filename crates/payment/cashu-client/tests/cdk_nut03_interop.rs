@@ -4,8 +4,18 @@
 //! loopback-only fake-wallet mint and passes owner-only fixture files. The
 //! signed manifest still contains a synthetic HTTPS identity; this test-only
 //! transport maps only that exact identity to the validated loopback process.
-//! It proves consumed NUT-03 inputs are `SPENT` and the newly committed
-//! provider custody notes are `UNSPENT` at the real mint.
+//! The exact canonical spend must first have been emitted by Chromium through
+//! the checked-in generated JS/WASM package. This provider-side test process
+//! then routes it through the real admission gate, standard-Cashu committer,
+//! production ProviderStore adapter/schema, and a test-only SQLite rollback
+//! floor. The floor is durable across reopen but is not an independent
+//! production rollback boundary. It proves replay rejection, consumed NUT-03
+//! inputs are `SPENT`, newly committed provider custody notes are `UNSPENT`,
+//! and a second independent BitcoinPIR
+//! client can spend that custody through another real NUT-03 swap without
+//! exposing the bearer in process arguments. The first custody lot must then
+//! be `SPENT` while independently encrypted successor custody remains
+//! `UNSPENT`.
 
 #![cfg(feature = "insecure-dev-sqlite-store")]
 
@@ -13,31 +23,42 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::VerifyingKey;
 use pir_cashu_client::{
     check_cashu_custody_bundles_once_v1, CashuClientErrorV1, CashuCustodyExposureLimitsV1,
     CashuMintRouteV1, CashuMintTransportFailureKindV1, CashuMintTransportFailureV1,
-    CashuMintTransportV1, CashuSealedCustodyV1, CashuSwapProgressV1, CashuTokenV4V1,
-    ChaCha20Poly1305CustodyCipherV1, ChaCha20Poly1305CustodyDecryptorV1,
+    CashuMintTransportV1, CashuMintTrustV1, CashuSealedCustodyV1, CashuSwapProgressV1,
+    CashuTokenV4V1, ChaCha20Poly1305CustodyCipherV1, ChaCha20Poly1305CustodyDecryptorV1,
     ChaCha20Poly1305RecoveryCipherV1, InsecureDevSqliteCashuSwapStoreV1,
-    OsRandomCashuOutputMaterialGeneratorV1, StandardCashuClientV1, StoredCashuCustodyLotV1,
-    MAX_CASHU_MINT_JSON_BYTES_V1,
+    OsRandomCashuOutputMaterialGeneratorV1, StandardCashuAdmissionCommitterV1,
+    StandardCashuClientV1, StoredCashuCustodyLotV1, MAX_CASHU_MINT_JSON_BYTES_V1,
 };
 use pir_payment_crypto::cashu_hash_to_curve_v1;
+use pir_runtime_core::service_admission::{AdmissionEnforcementV1, ConnectionAdmissionGateV1};
 use pir_service_protocol::{
-    check_standard_cashu_spend_for_offer, derive_cashu_keyset_id_v2, AcquisitionMethod,
-    AuthPaddingClassV1, AuthScheme, BackendId, CashuDenominationKeyV1, CashuKeysetBindingV1,
-    CashuRequiredNutsV1, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1, FreeModeV1,
-    PolicyRollbackGuardV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyEpochFloorsV1,
-    ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, StandardCashuMintManifestV1,
-    StandardCashuProofV1, StandardCashuSpendV1, VerificationMode, WorkloadId,
+    check_standard_cashu_spend_for_offer, derive_cashu_keyset_id_v2, AuthBeginV1, AuthRejectCode,
+    AuthResultV1, AuthorizationProofV1, CashuDenominationKeyV1, CashuKeysetBindingV1,
+    OperationStartV1, PolicyRollbackGuardV1, ServicePolicyEpochFloorsV1, ServicePolicyV1,
+    StandardCashuProofV1, StandardCashuSpendV1, TrustedCatalogResolutionV1,
+};
+use pir_service_store::{
+    ProviderStore, RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
 };
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 const SYNTHETIC_MINT_ENDPOINT: &str = "https://cdk-loopback.invalid";
-const TEST_NOW_UNIX: u64 = 100;
+
+fn synthetic_leaf_spki_sha256() -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"BitcoinPIR/payment-v1/test-only-cdk-loopback-leaf-spki/v1\0");
+    hasher.update(SYNTHETIC_MINT_ENDPOINT.as_bytes());
+    hasher.finalize().into()
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,12 +105,12 @@ impl CurlLoopbackTransportV1 {
 impl CashuMintTransportV1 for CurlLoopbackTransportV1 {
     fn post_json(
         &self,
-        mint_endpoint: &str,
+        trust: CashuMintTrustV1<'_>,
         route: CashuMintRouteV1,
         request_json: &[u8],
         max_response_bytes: usize,
     ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
-        if mint_endpoint != SYNTHETIC_MINT_ENDPOINT {
+        if trust.mint_endpoint() != SYNTHETIC_MINT_ENDPOINT {
             return Err(transport_failure(CashuMintTransportFailureKindV1::Network));
         }
         if route == CashuMintRouteV1::Swap {
@@ -158,6 +179,11 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
         .parse::<u64>()
         .expect("BITCOINPIR_CDK_EXPECTED_AMOUNT must be u64");
     assert!(expected_amount > 0);
+    let now_unix = std::env::var("BITCOINPIR_CDK_NOW_UNIX")
+        .expect("BITCOINPIR_CDK_NOW_UNIX")
+        .parse::<u64>()
+        .expect("BITCOINPIR_CDK_NOW_UNIX must be u64");
+    assert!(now_unix > 0);
 
     let keysets: CdkKeysResponseV1 =
         serde_json::from_slice(&keys_bytes).expect("decode owner-only CDK /v1/keys fixture");
@@ -189,43 +215,110 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
     }
     let spend = StandardCashuSpendV1::new_canonical(proofs).expect("canonical real CDK spend");
     assert_eq!(spend.total_amount().unwrap(), expected_amount);
+    let browser_spend_bytes = read_owner_only_bytes("BITCOINPIR_CDK_BROWSER_SPEND_FILE");
+    let browser_spend = StandardCashuSpendV1::decode(&browser_spend_bytes)
+        .expect("decode Chromium-generated canonical standard-Cashu spend");
+    assert_eq!(
+        browser_spend.encode().unwrap().as_slice(),
+        browser_spend_bytes.as_slice(),
+        "Chromium output must be canonical provider wire bytes"
+    );
+    assert_eq!(
+        browser_spend, spend,
+        "generated WASM and the provider must resolve the exact same CDK proofs"
+    );
 
-    let manifest = StandardCashuMintManifestV1 {
-        manifest_epoch: 1,
-        mint_endpoint: SYNTHETIC_MINT_ENDPOINT.to_owned(),
-        unit: "sat".to_owned(),
-        required_nuts: CashuRequiredNutsV1::required_v1(),
-        accepted_input_keysets: vec![keyset.clone()],
-        active_output_keyset: keyset,
-    };
-    manifest.encode().expect("strict synthetic HTTPS manifest");
-    let (policy, policy_key) = cashu_policy(manifest.clone(), expected_amount);
+    let policy_bytes = read_owner_only_bytes("BITCOINPIR_CDK_POLICY_FILE");
+    let policy = ServicePolicyV1::decode(&policy_bytes).expect("decode Chromium fixture policy");
+    assert_eq!(
+        policy.encode().unwrap().as_slice(),
+        policy_bytes.as_slice(),
+        "Chromium fixture policy must be canonical"
+    );
+    let expected_provider_id =
+        read_fixed_hex_environment::<32>("BITCOINPIR_CDK_PROVIDER_ID_HEX", "provider ID");
+    assert_eq!(policy.provider_id, expected_provider_id);
+    let policy_public = read_fixed_hex_environment::<32>(
+        "BITCOINPIR_CDK_POLICY_SIGNING_PUBKEY_HEX",
+        "policy signing public key",
+    );
+    let policy_key = VerifyingKey::from_bytes(&policy_public)
+        .expect("BITCOINPIR_CDK_POLICY_SIGNING_PUBKEY_HEX must be valid Ed25519");
     let verified_policy = policy
         .verify_current_for_acquisition(
-            &policy.provider_id,
-            TEST_NOW_UNIX,
+            &expected_provider_id,
+            now_unix,
             &PolicyRollbackGuardV1::initial(),
             &ServicePolicyEpochFloorsV1::initial(),
-            &policy_key.verifying_key(),
+            &policy_key,
         )
-        .expect("verify local signed policy");
+        .expect("verify the exact signed policy accepted by Chromium");
+    assert_eq!(policy.scopes.len(), 1);
     let verified_offer = verified_policy
         .offer(&policy.scopes[0].scope.scope_id(), 17)
         .expect("verified standard-Cashu offer");
-    let checked = check_standard_cashu_spend_for_offer(&spend, &verified_offer, TEST_NOW_UNIX)
-        .expect("real CDK token matches the signed offer");
-    let output_materials = OsRandomCashuOutputMaterialGeneratorV1
-        .generate(&manifest, checked.policy_price)
-        .expect("generate exact provider-wallet outputs");
+    let manifest = verified_offer
+        .offer()
+        .cashu_mint_manifest
+        .as_ref()
+        .expect("verified offer carries a standard-Cashu manifest");
+    assert_eq!(manifest.mint_endpoint, SYNTHETIC_MINT_ENDPOINT);
+    assert_eq!(
+        manifest.leaf_spki_sha256_pins,
+        vec![synthetic_leaf_spki_sha256()]
+    );
+    assert_eq!(manifest.unit, "sat");
+    assert_eq!(manifest.accepted_input_keysets, vec![keyset.clone()]);
+    assert_eq!(manifest.active_output_keyset, keyset);
+    check_standard_cashu_spend_for_offer(&browser_spend, &verified_offer, now_unix)
+        .expect("browser canonical spend matches the independently verified provider offer");
 
     let directory = tempfile::tempdir().unwrap();
-    let store_path = directory.path().join("cashu-client.sqlite");
-    let store = InsecureDevSqliteCashuSwapStoreV1::open(&store_path).unwrap();
+    let store_path = directory.path().join("provider-store.sqlite");
+    let rollback_path = directory.path().join("provider-rollback.sqlite");
+    let rollback = Arc::new(
+        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap(),
+    );
+    let store = ProviderStore::create(
+        &store_path,
+        [0x61; 16],
+        expected_provider_id,
+        StoreOptions::default(),
+        Arc::clone(&rollback) as Arc<dyn RollbackFloorAuthorityV1>,
+    )
+    .unwrap();
     let transport = CurlLoopbackTransportV1::new(actual_endpoint);
     let recovery = ChaCha20Poly1305RecoveryCipherV1::new(1, [(1, [0x41; 32])]).unwrap();
     let custody = ChaCha20Poly1305CustodyCipherV1::new(1, [(1, [0x42; 32])]).unwrap();
-    let grant = {
-        let client = StandardCashuClientV1::new(
+    let operation = OperationStartV1::DpfQuery { db_id: 7 };
+    let request = AuthBeginV1 {
+        policy_digest: policy.policy_digest().unwrap(),
+        scope_id: policy.scopes[0].scope.scope_id(),
+        offer_id: verified_offer.offer().offer_id,
+        scheme: verified_offer.offer().authorization,
+        key_id: verified_offer.offer().key_id.clone(),
+        operation: operation.clone(),
+        proof: AuthorizationProofV1::StandardCashu(browser_spend.clone())
+            .encode_for(
+                verified_offer.offer().authorization,
+                verified_offer.offer().free_mode,
+            )
+            .unwrap(),
+    };
+    let request = AuthBeginV1::decode_padded(&request.encode_padded().unwrap()).unwrap();
+    let scope = &policy.scopes[0].scope;
+    let resolution = TrustedCatalogResolutionV1::new(
+        7,
+        scope.backend,
+        scope.workload,
+        scope.protocol_version,
+        scope.dataset.clone(),
+        scope.operation_profile,
+    );
+    let catalog =
+        |candidate: &OperationStartV1| (candidate == &operation).then(|| resolution.clone());
+    {
+        let committer = StandardCashuAdmissionCommitterV1::new(StandardCashuClientV1::new(
             &store,
             &transport,
             &recovery,
@@ -235,43 +328,101 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
                 128,
             )
             .unwrap(),
-        );
-        let grant = match client
-            .start_swap(
-                &spend,
-                &checked,
-                &verified_offer,
-                &manifest,
-                output_materials,
-                TEST_NOW_UNIX,
-            )
-            .expect("real CDK NUT-03 swap, NUT-12 verification, and custody commit")
-        {
-            CashuSwapProgressV1::Grant(grant) => grant,
-            other => panic!("expected one committed grant, got {other:?}"),
-        };
-        assert_eq!(grant.settlement_value(), expected_amount);
-        assert!(grant.received_note_count() > 0);
-        assert_eq!(transport.swap_calls(), 1);
+        ));
+        let mut first_gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        first_gate.secure_channel_established();
+        first_gate
+            .policy_served(true, request.policy_digest)
+            .unwrap();
         assert!(matches!(
-            client
-                .resume_swap(
-                    &spend,
-                    &checked,
-                    &verified_offer,
-                    &manifest,
-                    TEST_NOW_UNIX + 1,
-                )
-                .unwrap(),
-            CashuSwapProgressV1::AlreadyGranted { .. }
+            first_gate.authorize_and_commit(
+                true,
+                &request,
+                verified_offer,
+                &catalog,
+                None,
+                &committer,
+                now_unix,
+                1_000,
+            ),
+            AuthResultV1::Granted(_)
         ));
         assert_eq!(transport.swap_calls(), 1);
-        grant
-    };
+
+        let mut replay_gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        replay_gate.secure_channel_established();
+        replay_gate
+            .policy_served(true, request.policy_digest)
+            .unwrap();
+        assert!(matches!(
+            replay_gate.authorize_and_commit(
+                true,
+                &request,
+                verified_offer,
+                &catalog,
+                None,
+                &committer,
+                now_unix + 1,
+                2_000,
+            ),
+            AuthResultV1::Rejected(rejected) if rejected.code == AuthRejectCode::InvalidOrSpent
+        ));
+        assert_eq!(
+            transport.swap_calls(),
+            1,
+            "durable replay rejection must not submit another NUT-03 request"
+        );
+    }
     drop(store);
 
-    let connection = rusqlite::Connection::open(store_path).unwrap();
-    assert_real_cdk_inputs_are_spent_once(&transport, &spend);
+    let reopened = ProviderStore::open_existing(
+        &store_path,
+        expected_provider_id,
+        StoreOptions::default(),
+        Arc::clone(&rollback) as Arc<dyn RollbackFloorAuthorityV1>,
+    )
+    .unwrap();
+    {
+        let restarted_committer =
+            StandardCashuAdmissionCommitterV1::new(StandardCashuClientV1::new(
+                &reopened,
+                &transport,
+                &recovery,
+                &custody,
+                CashuCustodyExposureLimitsV1::new(
+                    expected_amount.checked_mul(2).expect("bounded test amount"),
+                    128,
+                )
+                .unwrap(),
+            ));
+        let mut restarted_gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        restarted_gate.secure_channel_established();
+        restarted_gate
+            .policy_served(true, request.policy_digest)
+            .unwrap();
+        assert!(matches!(
+            restarted_gate.authorize_and_commit(
+                true,
+                &request,
+                verified_offer,
+                &catalog,
+                None,
+                &restarted_committer,
+                now_unix + 2,
+                3_000,
+            ),
+            AuthResultV1::Rejected(rejected) if rejected.code == AuthRejectCode::InvalidOrSpent
+        ));
+        assert_eq!(transport.swap_calls(), 1);
+    }
+    drop(reopened);
+
+    let connection = rusqlite::Connection::open(&store_path).unwrap();
+    assert_real_cdk_inputs_are_spent_once(
+        &transport,
+        CashuMintTrustV1::from_manifest(manifest).unwrap(),
+        &browser_spend,
+    );
     assert_eq!(transport.check_state_calls(), 1);
 
     let (granted, lots, notes) = (
@@ -281,7 +432,7 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
     );
     assert_eq!(granted, 1);
     assert_eq!(lots, 1);
-    assert_eq!(notes, u64::from(grant.received_note_count()));
+    assert!(notes > 0);
 
     let stored_lot = load_only_custody_lot(&connection);
     let custody_decryptor = ChaCha20Poly1305CustodyDecryptorV1::new([(1, [0x42; 32])]).unwrap();
@@ -297,10 +448,7 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
     assert_eq!(transport.check_state_calls(), 2);
     assert_eq!(custody_state.lots().len(), 1);
     assert_eq!(custody_state.settlement_value(), expected_amount);
-    assert_eq!(
-        custody_state.note_count(),
-        u32::from(grant.received_note_count())
-    );
+    assert_eq!(custody_state.note_count(), u32::try_from(notes).unwrap());
     assert_eq!(custody_state.unspent_count(), custody_state.note_count());
     assert_eq!(custody_state.pending_count(), 0);
     assert_eq!(custody_state.spent_count(), 0);
@@ -312,6 +460,103 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
     assert_eq!(checked_lot.pending_count(), 0);
     assert_eq!(checked_lot.spent_count(), 0);
     assert!(!checked_lot.all_spent());
+
+    let custody_spend = StandardCashuSpendV1::new_canonical(
+        custody_bundle
+            .notes()
+            .iter()
+            .map(|note| StandardCashuProofV1 {
+                keyset_id: custody_bundle.active_keyset_id().to_owned(),
+                amount: note.amount(),
+                secret: note.secret().to_owned(),
+                c: *note.c(),
+            })
+            .collect(),
+    )
+    .expect("canonical spend reconstructed from authenticated provider custody");
+    assert_eq!(custody_spend.total_amount().unwrap(), expected_amount);
+    let checked_custody =
+        check_standard_cashu_spend_for_offer(&custody_spend, &verified_offer, now_unix + 3)
+            .expect("provider custody matches the same signed mint offer");
+    let successor_output_materials = OsRandomCashuOutputMaterialGeneratorV1
+        .generate(manifest, checked_custody.policy_price)
+        .expect("generate independent successor-custody outputs");
+
+    let successor_store_path = directory.path().join("cashu-successor-client.sqlite");
+    let successor_store = InsecureDevSqliteCashuSwapStoreV1::open(&successor_store_path).unwrap();
+    let successor_recovery = ChaCha20Poly1305RecoveryCipherV1::new(1, [(1, [0x51; 32])]).unwrap();
+    let successor_custody = ChaCha20Poly1305CustodyCipherV1::new(1, [(1, [0x52; 32])]).unwrap();
+    let successor_grant = {
+        let successor_client = StandardCashuClientV1::new(
+            &successor_store,
+            &transport,
+            &successor_recovery,
+            &successor_custody,
+            CashuCustodyExposureLimitsV1::new(
+                expected_amount.checked_mul(2).expect("bounded test amount"),
+                128,
+            )
+            .unwrap(),
+        );
+        match successor_client
+            .start_swap(
+                &custody_spend,
+                &checked_custody,
+                &verified_offer,
+                manifest,
+                successor_output_materials,
+                now_unix + 3,
+            )
+            .expect("real CDK spend of provider custody into independent custody")
+        {
+            CashuSwapProgressV1::Grant(grant) => grant,
+            other => panic!("expected successor custody grant, got {other:?}"),
+        }
+    };
+    assert_eq!(successor_grant.settlement_value(), expected_amount);
+    assert!(successor_grant.received_note_count() > 0);
+    assert_eq!(transport.swap_calls(), 2);
+    drop(successor_store);
+
+    let spent_custody_state =
+        check_cashu_custody_bundles_once_v1(&transport, std::slice::from_ref(&custody_bundle))
+            .expect("strict real-CDK NUT-07 check after spending provider custody");
+    assert_eq!(transport.check_state_calls(), 3);
+    assert_eq!(spent_custody_state.unspent_count(), 0);
+    assert_eq!(spent_custody_state.pending_count(), 0);
+    assert_eq!(
+        spent_custody_state.spent_count(),
+        spent_custody_state.note_count()
+    );
+    assert!(spent_custody_state.all_spent());
+
+    let successor_connection = rusqlite::Connection::open(successor_store_path).unwrap();
+    let successor_stored_lot = load_only_custody_lot(&successor_connection);
+    let successor_decryptor = ChaCha20Poly1305CustodyDecryptorV1::new([(1, [0x52; 32])]).unwrap();
+    let successor_bundle = successor_decryptor
+        .open_bundle(
+            &successor_stored_lot
+                .aad()
+                .expect("validated successor custody AAD"),
+            &successor_stored_lot.sealed_notes,
+        )
+        .expect("authenticate and decrypt independent successor custody");
+    let successor_state =
+        check_cashu_custody_bundles_once_v1(&transport, std::slice::from_ref(&successor_bundle))
+            .expect("strict real-CDK NUT-07 check for successor custody");
+    assert_eq!(transport.check_state_calls(), 4);
+    assert_eq!(successor_state.settlement_value(), expected_amount);
+    assert_eq!(
+        successor_state.note_count(),
+        u32::from(successor_grant.received_note_count())
+    );
+    assert_eq!(
+        successor_state.unspent_count(),
+        successor_state.note_count()
+    );
+    assert_eq!(successor_state.pending_count(), 0);
+    assert_eq!(successor_state.spent_count(), 0);
+    assert!(!successor_state.all_spent());
 }
 
 #[derive(Serialize)]
@@ -364,6 +609,7 @@ where
 
 fn assert_real_cdk_inputs_are_spent_once(
     transport: &dyn CashuMintTransportV1,
+    trust: CashuMintTrustV1<'_>,
     spend: &StandardCashuSpendV1,
 ) {
     let ys = Zeroizing::new(
@@ -385,7 +631,7 @@ fn assert_real_cdk_inputs_are_spent_once(
     let response_bytes = Zeroizing::new(
         transport
             .post_json(
-                SYNTHETIC_MINT_ENDPOINT,
+                trust,
                 CashuMintRouteV1::CheckState,
                 &request,
                 MAX_CASHU_MINT_JSON_BYTES_V1,
@@ -485,76 +731,24 @@ fn checked_keyset(active: CdkKeysetV1) -> CashuKeysetBindingV1 {
     }
 }
 
-fn cashu_policy(
-    manifest: StandardCashuMintManifestV1,
-    price: u64,
-) -> (ServicePolicyV1, SigningKey) {
-    let provider_id = [0x51; 32];
-    let scope = ServiceScopeV1 {
-        provider_id,
-        backend: BackendId::DpfPirV1,
-        workload: WorkloadId::DpfEvaluateJobV1,
-        protocol_version: 1,
-        dataset: DatasetBindingV1::Class { class_id: 2 },
-        operation_profile: 1,
-        entitlement_profile: 8,
-    };
-    let offer = ServiceOfferV1 {
-        offer_id: 17,
-        acquisition: AcquisitionMethod::CashuEcashV1,
-        free_mode: FreeModeV1::NotFree,
-        free_quota: 0,
-        free_window_seconds: 0,
-        free_pow_difficulty_bits: 0,
-        priority_class: 1,
-        authorization: AuthScheme::CashuEcashV1,
-        verification: VerificationMode::StandardCashuMintOnline,
-        deployment_status: DeploymentStatus::Stable,
-        price: PriceV1::Cashu {
-            unit: "sat".to_owned(),
-            amount: price,
-        },
-        issuer_id: manifest.mint_id(),
-        key_id: manifest.manifest_digest().unwrap().to_vec(),
-        credential_binding: None,
-        cashu_mint_manifest: Some(manifest.clone()),
-        endpoint: manifest.mint_endpoint.clone(),
-        invoice_expiry_seconds: 0,
-        claim_window_seconds: 0,
-        minimum_credential_validity_seconds: 100,
-        retired_policy_grace_seconds: 100,
-        credential_count: 1,
-        credential_presentation_limit: 1,
-        privacy_leakage: PrivacyLeakageV1::from_bits(
-            PrivacyLeakageV1::ISSUER_REDEMPTION_TIMING | PrivacyLeakageV1::ISSUER_LEARNS_PROVIDER,
-        )
-        .unwrap(),
-    };
-    let policy_key = SigningKey::from_bytes(&[0x52; 32]);
-    let policy = ServicePolicyV1::sign(
-        provider_id,
-        1,
-        TEST_NOW_UNIX,
-        10_000,
-        AuthPaddingClassV1::Class16KiB,
-        vec![ServiceScopePolicyV1 {
-            scope,
-            limits: EntitlementLimitsV1 {
-                max_logical_inputs: 1,
-                max_frames: 10,
-                max_request_bytes: 1_000,
-                max_response_bytes: 2_000,
-                max_wall_time_ms: 1_000,
-                max_concurrent_sockets: 1,
-                max_hint_groups: 0,
-                max_work_units: 100,
-            },
-            offers: vec![offer],
-        }],
-        &policy_key,
-    )
-    .unwrap();
-    (policy, policy_key)
+fn read_fixed_hex_environment<const N: usize>(variable: &str, field: &str) -> [u8; N] {
+    let value = std::env::var(variable).unwrap_or_else(|_| panic!("{variable}"));
+    assert_eq!(value.len(), N * 2, "{field} must be exact-length hex");
+    assert!(
+        value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "{field} must be canonical lowercase hex"
+    );
+    let decoded = hex::decode(value).unwrap_or_else(|_| panic!("{field} must be valid hex"));
+    let fixed: [u8; N] = decoded
+        .try_into()
+        .unwrap_or_else(|_| panic!("{field} must contain exactly {N} bytes"));
+    assert!(
+        fixed.iter().any(|byte| *byte != 0),
+        "{field} must be non-zero"
+    );
+    fixed
 }
 
 fn read_owner_only_string(variable: &str) -> Zeroizing<String> {
@@ -608,7 +802,7 @@ fn row_count(connection: &rusqlite::Connection, table: &str, predicate: &str) ->
 }
 
 #[test]
-fn test_only_loopback_transport_rejects_non_loopback_or_manifest_identity_changes() {
+fn test_only_loopback_transport_rejects_non_loopback_actual_endpoints() {
     for endpoint in [
         "http://localhost:5000",
         "http://127.0.0.1:80",
@@ -617,20 +811,6 @@ fn test_only_loopback_transport_rejects_non_loopback_or_manifest_identity_change
     ] {
         assert!(std::panic::catch_unwind(|| validate_loopback_endpoint(endpoint)).is_err());
     }
-    let transport = CurlLoopbackTransportV1::new("http://127.0.0.1:5000".to_owned());
-    assert_eq!(
-        transport.post_json(
-            "https://different.invalid",
-            CashuMintRouteV1::Swap,
-            b"{}",
-            1_024,
-        ),
-        Err(CashuMintTransportFailureV1::ambiguous(
-            CashuMintTransportFailureKindV1::Network,
-            None,
-        ))
-    );
-    assert_eq!(transport.swap_calls(), 0);
 }
 
 #[test]

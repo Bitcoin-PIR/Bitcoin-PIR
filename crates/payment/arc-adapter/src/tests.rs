@@ -332,6 +332,17 @@ fn expectation_for(binding: &CredentialKeyBindingV1) -> CredentialKeyBindingExpe
     }
 }
 
+#[cfg(feature = "provider-store")]
+fn private_provider_tempdir(prefix: &str) -> tempfile::TempDir {
+    let directory = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    directory
+}
+
 fn raw_credential(fixture: &Fixture, request_context: &[u8], rng: &mut ChaCha20Rng) -> Credential {
     let (secrets, typed_request) = arc::create_credential_request(request_context, rng).unwrap();
     let request = ArcCredentialRequestV1::decode_canonical(
@@ -1092,10 +1103,7 @@ fn client_state_tampering_and_wrong_binding_are_rejected() {
 #[test]
 fn real_arc_adapter_installs_namespace_spends_once_and_survives_restart() {
     let fixture = ProviderArcFixtureV1::new(31);
-    let directory = tempfile::Builder::new()
-        .prefix("bitcoinpir-real-arc-provider-")
-        .tempdir()
-        .unwrap();
+    let directory = private_provider_tempdir("bitcoinpir-real-arc-provider-");
     let path = directory.path().join("provider.sqlite3");
     let authority = SyncArc::new(TestRollbackAuthorityV1::default());
     let store = ProviderStore::create(
@@ -1147,10 +1155,7 @@ fn real_arc_adapter_installs_namespace_spends_once_and_survives_restart() {
 fn real_arc_adapter_rejects_wrong_key_and_has_one_concurrent_spend_winner() {
     let fixture = ProviderArcFixtureV1::new(32);
     let wrong_key = ProviderArcFixtureV1::new(33);
-    let directory = tempfile::Builder::new()
-        .prefix("bitcoinpir-real-arc-concurrent-")
-        .tempdir()
-        .unwrap();
+    let directory = private_provider_tempdir("bitcoinpir-real-arc-concurrent-");
     let store = fixture.create_provider_store(&directory.path().join("provider.sqlite3"), 32);
     assert!(matches!(
         store

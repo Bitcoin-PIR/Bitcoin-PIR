@@ -305,6 +305,7 @@ dependencies = [
 name = "bpir-admin"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "ed25519-dalek",
  "futures-util",
@@ -320,6 +321,8 @@ dependencies = [
  "pir-directory-nostr",
  "pir-identity",
  "pir-payment-crypto",
+ "pir-private-files",
+ "pir-rollback-authority-client",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
@@ -1748,9 +1751,13 @@ dependencies = [
  "pir-issuer-store",
  "pir-lightning-backend",
  "pir-payment-crypto",
+ "pir-private-files",
+ "pir-rollback-authority-client",
  "pir-service-protocol",
  "pir-service-store",
+ "rollback-authority",
  "rustix",
+ "rustls",
  "tempfile",
  "zeroize",
 ]
@@ -1975,10 +1982,14 @@ dependencies = [
  "ed25519-dalek",
  "k256",
  "pir-arc-adapter",
+ "pir-private-files",
+ "pir-rollback-authority-client",
+ "pir-rollback-authority-protocol",
  "pir-service-protocol",
  "rusqlite",
  "sha2",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]
@@ -1987,6 +1998,7 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "lightning-invoice",
+ "pir-private-files",
  "pir-service-protocol",
  "serde",
  "serde_json",
@@ -2009,15 +2021,78 @@ dependencies = [
 ]
 
 [[package]]
+name = "pir-private-files"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "pir-provider-clearing-client"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
- "hmac",
+ "getrandom 0.2.17",
  "pir-issuer-clearing",
+ "pir-issuer-service",
+ "pir-issuer-store",
+ "pir-private-files",
+ "pir-rollback-authority-client",
+ "pir-rollback-authority-protocol",
  "pir-runtime-core",
  "pir-service-protocol",
+ "pir-service-store",
+ "pir-strict-https",
+ "rusqlite",
+ "rustix",
  "sha2",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
+name = "pir-rollback-authority-client"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "pir-private-files",
+ "pir-rollback-authority-protocol",
+ "pir-strict-https",
+ "rustix",
+ "serde",
+ "static_assertions",
+ "tempfile",
+ "toml",
+ "zeroize",
+]
+
+[[package]]
+name = "pir-rollback-authority-protocol"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "hkdf",
+ "hmac",
+ "sha2",
+ "static_assertions",
+ "zeroize",
+]
+
+[[package]]
+name = "pir-rollback-authority-store"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "pir-private-files",
+ "pir-rollback-authority-protocol",
+ "rusqlite",
+ "rustix",
+ "tempfile",
  "zeroize",
 ]
 
@@ -2083,6 +2158,7 @@ dependencies = [
  "libdpf",
  "log",
  "onionpir",
+ "pir-arc-adapter",
  "pir-channel",
  "pir-core",
  "pir-db-attest",
@@ -2169,6 +2245,7 @@ dependencies = [
  "bitcoin",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "hmac",
  "k256",
  "lightning-invoice",
  "sha2",
@@ -2180,6 +2257,10 @@ name = "pir-service-store"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "getrandom 0.2.17",
+ "pir-private-files",
+ "pir-rollback-authority-client",
+ "pir-rollback-authority-protocol",
  "pir-service-protocol",
  "rusqlite",
  "sha2",
@@ -2193,6 +2274,7 @@ version = "0.1.0"
 dependencies = [
  "httparse",
  "rustls",
+ "sha2",
  "webpki-roots 0.26.11",
  "zeroize",
 ]
@@ -2527,6 +2609,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rollback-authority"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "hex",
+ "httparse",
+ "pir-private-files",
+ "pir-rollback-authority-protocol",
+ "pir-rollback-authority-store",
+ "rustix",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "rootbundle"
 version = "0.1.0"
 source = "git+https://github.com/Bitcoin-PIR/attested-builder.git?rev=80ad9b185760d2e36fd24baef50dd3030af8e94f#80ad9b185760d2e36fd24baef50dd3030af8e94f"
@@ -2572,18 +2671,23 @@ dependencies = [
  "arc",
  "bitcoinpir-oram",
  "build",
+ "clap",
  "ed25519-dalek",
  "futures-util",
  "harmonypir",
  "hex",
+ "k256",
  "libdpf",
  "memmap2",
  "onionpir",
  "pir-arc-adapter",
  "pir-cashu-client",
  "pir-core",
+ "pir-db-attest",
  "pir-payment-crypto",
+ "pir-private-files",
  "pir-provider-clearing-client",
+ "pir-rollback-authority-client",
  "pir-runtime-core",
  "pir-sdk-client",
  "pir-service-protocol",
@@ -2592,8 +2696,12 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
+ "rollback-authority",
  "rustix",
+ "rustls",
  "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.24.0",

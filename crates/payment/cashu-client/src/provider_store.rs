@@ -92,14 +92,6 @@ impl CashuSwapStoreV1 for ProviderStore {
             .map_err(map_provider_store_error)
     }
 
-    fn release_definite_rejection(
-        &self,
-        intent_id: &[u8; 16],
-    ) -> Result<bool, CashuSwapStoreErrorV1> {
-        self.delete_cashu_swap_intent_after_definite_rejection_v1(intent_id)
-            .map_err(map_provider_store_error)
-    }
-
     fn claim_grant_once_with_custody(
         &self,
         intent_id: &[u8; 16],

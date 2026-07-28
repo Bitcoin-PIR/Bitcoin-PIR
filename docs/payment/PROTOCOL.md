@@ -57,6 +57,54 @@ signing preimage.
 No field represents client slot, peer provider, provider pair, or common query
 ID.
 
+For `DpfEvaluateJobV1`, `max_logical_inputs` counts admitted privacy-padded
+INDEX batch jobs, not the public K groups inside a batch. Each successful INDEX
+frame consumes one logical input. CHUNK and PIR-evaluated Merkle-sibling frames
+consume zero additional logical inputs and fail closed with an operation-
+sequence error until an INDEX frame has succeeded; their real group/key work,
+bytes, responses, frames, and wall time remain independently bounded. Multiple
+INDEX frames for a larger signed profile must be consecutive. The first CHUNK
+or Merkle frame moves the connection into its follow-up phase, after which an
+INDEX rollback terminally fails. A one-job entitlement therefore rejects a
+second INDEX even before that phase transition.
+
+For `HarmonyQueryJobV1`, the only V1-admissible query opcode is the K-padded
+batch opcode `0x43`. Legacy single-group `0x42` has no padding/pair semantics
+and is fail-closed under enforced admission. One logical input is one complete
+level-0 INDEX pair: even `round_id` starts and charges the job, and the
+immediately following odd `round_id` is its zero-logical-input companion.
+Level-1 CHUNK frames are also exact consecutive pairs but add no logical input.
+The connection-local DFA is monotonic:
+
+```text
+level 0 INDEX pair(s) -> level 1 CHUNK pair(s)
+  -> level 10+ INDEX Merkle level(s) -> level 20+ CHUNK Merkle level(s)
+```
+
+Wrong/duplicate rounds, a phase change with half a pair outstanding, skipped
+Merkle levels, and rollback terminalize the spent grant. Each Harmony frame's
+K groups and each group's `T-1` indices are work units and bytes, never logical
+inputs. Consequently a request whose PBC plan needs more than one padded INDEX
+pair (including sufficiently large `N > K` batches or collision-driven extra
+rounds) requires a separately signed entitlement profile with
+`max_logical_inputs > 1`; the client cannot enlarge that limit.
+
+For `OnionEvaluateJobV1`, each padded INDEX frame consumes one logical input;
+its K/2K ciphertext padding counts only toward work and byte limits. The
+register-once DFA is:
+
+```text
+REGISTER_KEYS -> INDEX round(s) -> CHUNK round(s)
+  -> INDEX Merkle sibling pass(es) -> DATA Merkle sibling pass(es)
+```
+
+INDEX and CHUNK `round_id` values start at zero and increase exactly by one.
+Per-group Onion Merkle has one PIR sibling level and may need multiple padded
+passes, so its currently vestigial `round_id` is exactly zero on every pass.
+A second registration, phase skip, rollback, or non-zero Merkle round
+terminalizes the grant. Key eviction fails the client query immediately; V1
+does not re-register or automatically replay a paid backend frame.
+
 ## Signed service policy
 
 ```rust
@@ -110,6 +158,15 @@ path would otherwise be interpreted differently by Rust and Web clients.
 Standard Cashu may use a canonical HTTPS base path because its NUT endpoints
 are relative to the mint URL. Credentials, query strings, fragments, IP
 literals, noncanonical ports and path traversal are rejected in both cases.
+Its embedded `StandardCashuMintManifestV1` additionally carries one or two
+sorted, distinct, nonzero leaf-SPKI SHA-256 pins. The manifest digest and full
+bytes, including endpoint and pins, are authenticated by the provider policy.
+The mint transport accepts only this verified tuple and requires ordinary
+WebPKI chain, hostname and time validation plus a matching pin; pins never
+replace CA validation and no global endpoint/pin override is part of the wire.
+Pre-pin manifest/policy bytes are not interpreted as an implicit unpinned
+variant; operators must regenerate and re-sign them through an explicit
+compatibility migration.
 
 The canonical policy encoding begins with `version:u8 = 1`. `free_mode` is
 `NotFree`, `OpenBestEffort`, `IpRateLimited`, `ProofOfWork`, or
@@ -343,8 +400,11 @@ AUTH_VERIFY
   3. reserve/check local scarce capacity without consuming proof
   4. verify proof or perform issuer redeem
   5. durable atomic spent commit
-  6. install connection-local grant
-  7. return Granted
+  6. recheck the absolute connection pre-authorization deadline
+  7. if expired, close without an authorization response or backend work
+  8. otherwise write+flush Granted within the remaining absolute budget
+  9. only after that flush, mark `auth_result_delivered` and expose the grant;
+     a complementary Harmony `Attached` result follows the same delivery rule
 
 GRANTED
   allow only the entitlement profile's backend opcode DFA and counters
@@ -367,6 +427,24 @@ connection terminal and cannot be reset by another opcode; `AUTH_BEGIN` itself
 is excluded so a successful credential commit is never stranded merely by
 charging its small result against the preflight budget.
 
+The enforced-mode absolute pre-authorization deadline is fixed once, immediately
+after the WebSocket handshake. It bounds reads plus every write and flush before
+a granted AUTH result or complementary Harmony `Attached` result is successfully
+delivered, including verification, DB-proof and Merkle/tree-top preflight
+(single or grouped/chunked sends). It is also checked after every potentially
+blocking authorization/remote-authority commit. A commit already in progress is
+allowed to finish under its own bounded operation timeout: cancelling it could
+turn a durable mutation into an unknowable partial outcome. The server then
+checks the fixed deadline and uses only its remainder to write and flush the
+result. Gate state `Granted` (including an installed complementary Harmony grant)
+alone does not disable the deadline; a separate `auth_result_delivered`
+transition does so after successful flush. Backend dispatch independently checks
+that marker before consulting the grant DFA. If equality/expiry or any result
+encoding/write/flush failure is observed, the connection closes before any PIR
+backend work. The capability may already be durably spent. V1 neither refunds
+nor resurrects it and the client treats the disconnect as ambiguous at-most-once
+consumption.
+
 Harmony V2 hint-half transport is one provider-local logical operation. The
 first authenticated connection durably consumes once and creates a short-lived
 operation bound to the existing random `session_token`; the second socket may
@@ -376,7 +454,11 @@ returns a random operation ID and attach secret; `REQ_HARMONY_ATTACH_V1` repeats
 the full provider/policy/scope/offer/operation/database/profile binding and is
 also an exact 16 KiB encrypted body. A pending slot makes one transition only:
 waiting to attached or waiting to expired. The attach secret is not a reusable
-credential and is never shared with another provider.
+credential and is never shared with another provider. Installing the second
+socket's attached grant is not enough to use it: only successful write and flush
+of its `Attached` response marks that socket delivered. A rejected attach leaves
+the fixed deadline armed for another valid attempt while time remains; an
+encoding or transport failure closes the socket and cannot expose backend work.
 
 For a proof-of-work Free offer, `REQ_POW_CHALLENGE_V1` and its response are
 exact 16 KiB encrypted bodies. The challenge binds provider, policy, scope,
@@ -385,6 +467,55 @@ offer, the canonical operation digest, and
 TTL is at most 300 seconds, and each connection has at most one outstanding
 challenge. A valid solution consumes that challenge once and cannot be moved
 to another secure channel.
+
+Harmony V2Full hint transport has a different, single-socket lifecycle. The
+first `REQ_HARMONY_HINTS_V2` response supplies the INDEX/CHUNK main hints. On a
+cold cache the same verified and authorized hint connection then issues
+canonical full-group legacy `REQ_HARMONY_HINTS` requests for the database's
+level-10+ INDEX and level-20+ CHUNK sibling hints. The grant stays `Granted`
+until disconnect, expiry or a signed resource limit; the main request is not a
+one-shot `Complete` transition. Main repetition, sibling-before-main, wrong DB,
+partial/duplicate group sets, skipped/duplicate levels and rollback all fail
+closed. V2Half keeps its independent two-socket attach semantics and never
+inherits this V2Full continuation rule.
+
+The V2Full request body has one canonical encoding: `[0xff, 0x00]` for
+`db_id=0`, or those two bytes followed by one non-zero `db_id`. A non-zero
+reserved byte, redundant zero database suffix, or any trailing byte is invalid.
+One hint-provider process owns exactly one immutable pool/database binding,
+selected with `--pool-db-id` (default `0`). Its service policy may authorize a
+V2Full hint scope only for that loaded binding. Serving several snapshot/delta
+databases in V1 therefore uses separate provider processes/ports and separate
+pool directories; it does not introduce a shared in-process multi-database
+pool or cross-provider state.
+
+For an exact, structurally bound V2Full authorization attempt, the provider
+atomically removes one entry from that database's pool before method-specific
+verification and durable credential consumption. The reservation lives only in
+the connection task and has no token, public ID, cross-connection lookup or
+peer-provider field. Empty capacity returns `ServerBusy` before spend. A
+rejected authorization, lost grant response, idle/closed connection before the
+main request, or expired pre-authorization deadline returns an unexposed entry
+to the in-memory queue (subject to the pool's fixed target cap). Once main
+dispatch takes the entry, it is never returned, even if transmission fails,
+because its PRP key may have become observable.
+
+DPF, Harmony query, Harmony V2Full hint, and Onion V1 have no explicit backend
+`END` frame: optional CHUNK/Merkle work means the server cannot infer successful
+client verification merely from the last request it has seen. Their grant
+therefore stays connection-local `Granted` until socket close, expiry, a signed
+limit, or a terminal protocol error. A clean socket close destroys only the
+volatile DFA state and is the transport-level end of the job; it does not undo
+the already durable capability spend and is not evidence that the client
+accepted a result. One-shot profiles such as Harmony V2Half and TEE-ORAM may
+enter `Complete` after their exact admitted frame.
+
+All backend success decoders bind the expected opcode and request round/level,
+validate the exact public padded group/result count, validate the exact outer
+record length when present, and reject trailing bytes.
+The canonical runtime error body is
+`[0xff][u32 message_len LE][UTF-8 message]`; malformed, non-UTF-8, truncated or
+trailing error envelopes are decode failures rather than best-effort errors.
 
 ## Proof payloads
 
@@ -531,12 +662,21 @@ atomically consumes a server challenge until its expiry. Anonymous free tickets
 are token-backed and use `spend_once`. No branch invents a stable spend key for
 an empty proof.
 
-For standard Cashu NUT-03 swap and shared-issuer online redeem, the external
-mint/issuer transaction is the authoritative durable spend boundary. Before
-calling it, the provider persists the exact request transcript and recovery
-data. An ambiguous response is recovered with NUT-09 or the issuer's
-idempotent lookup using that identical request. It MUST NOT add a second local
-commit whose crash boundary disagrees with the external spender.
+For standard Cashu NUT-03 swap, the mint's input invalidation is the sole
+authoritative spend boundary. Before calling it, the provider persists the
+exact request transcript and recovery data; an ambiguous response is recovered
+with NUT-09 using the identical outputs. It MUST NOT add a second local
+authoritative spend whose crash boundary disagrees with the mint.
+
+Shared-issuer online redeem has two deliberately different durable facts. The
+issuer's atomic redeem remains authoritative for credential invalidation and
+settlement. After receiving a success, however, the provider MUST first verify
+the canonical issuer signature and exact request/offer binding, then atomically
+claim delivery of that exact success in its rollback-protected ProviderStore
+before installing a connection grant. That provider-local delivery claim is
+not a second credential nullifier or settlement record. It prevents an exact
+issuer replay from installing a second grant at the same provider, while two
+independent PIR providers still do not share a spent set.
 
 Provider-local logs use a keyed, rotation-scoped hash of spend keys rather than
 raw token serials. The durable database may contain the minimum raw hash needed
@@ -702,9 +842,25 @@ Standard Cashu eCash uses the accepted mint's NUT-03 `/v1/swap` and NUT-09
 custom endpoint above is only for issuer-issued anonymous tickets, BitcoinPIR
 BAT, and ARC capabilities. The canonical request carries and signs the scheme.
 
-Each accepts exactly one service scope, proof/ticket, one random idempotency
-key, provider clearing authentication, and either an account-credit request or
-fixed-value blinded settlement outputs. The issuer atomically:
+For that custom endpoint, the operator-signed
+`ProviderClearingAuthorizationV1` binds one canonical issuer HTTPS origin and
+one or two sorted, distinct, nonzero leaf-SPKI SHA-256 pins. The provider
+appends only `/v1/redeems`; every request must pass normal WebPKI checks and one
+of the signed pins. Rotating either endpoint or certificate key requires a new
+authenticated authorization rather than an ambient process override. An older
+clearing authorization that omits the pin tuple fails canonical decoding or
+verification and cannot silently inherit process-wide trust.
+
+Each accepts exactly one service scope, proof/ticket, provider clearing
+authentication, and either an account-credit request or fixed-value blinded
+settlement outputs. Its wire idempotency key is **not random**: the provider
+derives it deterministically as a provider-secret HMAC over the clearing-
+authorization digest, credential-binding digest, and canonical credential
+digest under the `provider-shared-redeem-idempotency/POST-/v1/redeems/v1`
+domain. The same provider and exact credential coordinates therefore reproduce
+the same key after an HTTP response loss; a different provider secret produces
+an unrelated key. The provider clearing signature covers that key and the full
+request. The issuer atomically:
 
 1. validates key binding, scope and value;
 2. rejects a spent proof;
@@ -718,6 +874,36 @@ outputs. Otherwise the bearer-ticket holder can steal the provider's
 compensation by redeeming first. The same idempotency key and request digest
 returns the same response. A new idempotency key cannot redeem the same token
 twice.
+
+The browser quote-claim private key, shared-redeem wire idempotency key, and
+provider-local delivery claim are three separate domains:
+
+- the browser's per-quote BIP340 claim private key authenticates paid issuance,
+  remains in the recovery vault, and never enters ProviderStore;
+- the deterministic wire idempotency key is sent to the issuer, which stores
+  only its normal idempotency digest and exact response;
+- only after exact signed-success verification, the provider derives an
+  independent HMAC-domain local delivery key over the wire key, canonical
+  request digest, and synthetic provider-local namespace. The issuer does not
+  know the provider secret or this local key. ProviderStore may persist it in
+  `spent_capabilities`, which carries no invoice, payment hash, token/raw
+  credential, claim private key, or timestamp column.
+
+`CredentialKeyBindingV1.claims.amount` and a clearing rule's
+`accepted_value` are independent signed dimensions. The former describes the
+credential denomination/unit (for example one auth credential); the latter is
+the clearing ledger value split into `provider_credit + issuer_fee`. They are
+bound through the exact credential-binding digest and clearing rule, but MUST
+NOT be required to be numerically equal.
+
+If the issuer commits but its HTTP response is lost, a low-level caller that
+explicitly retained the identical canonical proof may submit it again; the
+provider reconstructs the same wire request and can verify the issuer's exact
+idempotent response before making the first local delivery claim. The official
+Web flow deliberately deletes/burns a single-use proof before send and does not
+automatically exercise this recovery path. Once the local delivery claim has
+committed, loss of `AUTH_GRANTED` burns the entitlement: any exact replay
+returns `InvalidOrSpent` at the provider rather than installing a second grant.
 
 ### Settlement
 
@@ -834,7 +1020,10 @@ Credentials live in IndexedDB, indexed by:
 
 One Web Lock plus an IndexedDB transaction changes a token from `available` to
 `burned` before constructing/sending `AUTH_BEGIN_V1`. ARC persists the next
-nonce/tag state before send. Multi-tab races therefore have one winner.
+nonce/tag state before send. For single-use proofs, the official Web path
+releases the canonical bytes only after its durable delete/burn transition and
+does not retain them for automatic shared-redeem retry. Multi-tab races
+therefore have one winner.
 
 Invoices and payment hashes are never stored in `localStorage`. The IndexedDB
 quote-recovery vault necessarily contains the exact signed quote (including

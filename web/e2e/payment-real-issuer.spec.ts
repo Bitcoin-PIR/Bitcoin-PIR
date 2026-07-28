@@ -283,6 +283,35 @@ function payClnRegtestInvoice(invoice: string): void {
   if (!response || typeof response !== 'object') {
     throw new Error('local CLN regtest payer returned an invalid response');
   }
+  const paid = response as Record<string, unknown>;
+  const amountMsat = parseClnMillisatoshi(paid.amount_msat);
+  const sentMsat = parseClnMillisatoshi(paid.amount_sent_msat);
+  if (typeof paid.payment_preimage !== 'string'
+      || !/^[0-9a-f]{64}$/.test(paid.payment_preimage)
+      || paid.failed_parts !== 0
+      || typeof paid.successful_parts !== 'number'
+      || !Number.isSafeInteger(paid.successful_parts)
+      || paid.successful_parts < 1
+      || amountMsat < 1n
+      || sentMsat < amountMsat) {
+    throw new Error('local CLN regtest payer returned an incomplete success result');
+  }
+}
+
+function parseClnMillisatoshi(value: unknown): bigint {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^\d+(?:msat)?$/.test(value)) {
+    return BigInt(value.replace(/msat$/, ''));
+  }
+  if (value && typeof value === 'object') {
+    const msat = (value as { msat?: unknown }).msat;
+    if (typeof msat === 'number' && Number.isSafeInteger(msat) && msat >= 0) {
+      return BigInt(msat);
+    }
+  }
+  throw new Error('local CLN regtest payer returned a malformed millisatoshi amount');
 }
 
 async function waitPastCurrentUnixSecond(): Promise<void> {

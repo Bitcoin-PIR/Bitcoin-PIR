@@ -14,8 +14,11 @@ durably stores the intent before submitting it.
 
 After `PREPARED -> SUBMITTED`, the adapter never sends NUT-03 again. A lost or
 invalid response is recovered only with the identical ordered `B_` values via
-NUT-09. NUT-07 is observational: even an `UNSPENT` response cannot authorize a
-new output set because the timed-out request may still commit. Service is
+NUT-09. This includes HTTP 400 carrying a well-formed NUT-00 error: the
+standard error envelope does not prove that NUT-03 did not commit, so it never
+deletes or releases the durable intent. NUT-07 is observational: even an
+`UNSPENT` response cannot authorize a new output set because the timed-out
+request may still commit. Service is
 granted only after exact amount/keyset/order checks, concrete NUT-12 and local
 `(secret, r) -> B_` verification, unblinding, encrypted note persistence, and
 an at-most-once durable grant claim. `WalletStored -> GrantIssued`, the

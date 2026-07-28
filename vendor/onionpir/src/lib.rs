@@ -27,7 +27,7 @@
 //! assert_eq!(decrypted, actual);
 //! ```
 
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 
 // ============================================================================
 // Raw FFI declarations (mirror cpp/includes/onion_ffi.h)
@@ -94,8 +94,8 @@ extern "C" {
         query_len: usize,
     ) -> COnionBuf;
 
-    fn onion_server_save_db(h: ServerHandle, path: *const i8) -> i32;
-    fn onion_server_load_db(h: ServerHandle, path: *const i8) -> i32;
+    fn onion_server_save_db(h: ServerHandle, path: *const c_char) -> i32;
+    fn onion_server_load_db(h: ServerHandle, path: *const c_char) -> i32;
     fn onion_server_load_db_from_borrowed(h: ServerHandle, data: *const u8, len: usize) -> i32;
 
     fn onion_key_store_new() -> KeyStoreHandle;

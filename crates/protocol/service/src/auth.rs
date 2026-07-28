@@ -264,7 +264,7 @@ impl AuthBeginV1 {
                 max: MAX_OPERATION_ENCODING_LEN,
             });
         }
-        let mut out = Vec::with_capacity(frame_class);
+        let mut out = Zeroizing::new(Vec::with_capacity(frame_class));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.policy_digest);
         out.extend_from_slice(&self.scope_id);
@@ -282,7 +282,7 @@ impl AuthBeginV1 {
             });
         }
         out.resize(frame_class, 0);
-        Ok(out)
+        Ok(mem::take(&mut *out))
     }
 
     pub fn decode_padded(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {

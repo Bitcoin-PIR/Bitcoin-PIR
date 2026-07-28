@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    advance_store_generation, db_u64, fixed_blob, is_zero, mutation_digest, read_identity,
-    sql_integer, validate_cashu_unit, verify_expected_provider,
+    advance_grant_generation, advance_store_generation, db_u64, fixed_blob, is_zero,
+    mutation_digest, read_identity, sql_integer, validate_cashu_unit, verify_expected_provider,
     CashuCustodyExportArtifactPersistV1, CashuCustodyExportArtifactV1, CashuCustodyExportBatchV1,
     CashuCustodyExportReservationV1, CashuCustodyExportStateV1, CashuCustodyExposureLimitsV1,
     CashuCustodyInventoryV1, CashuCustodyLotStateV1, CashuCustodyLotV1,
@@ -297,51 +297,6 @@ impl ProviderStore {
         )
     }
 
-    /// Delete an exact `SUBMITTED` intent after the mint returned HTTP 400
-    /// with a strict, bounded NUT-00 error response. The caller owns that
-    /// protocol classification; this store method enforces only the durable
-    /// state precondition. The deletion is externally rollback-anchored before
-    /// success and intentionally leaves no terminal row.
-    pub fn delete_cashu_swap_intent_after_definite_rejection_v1(
-        &self,
-        intent_id: &[u8; 16],
-    ) -> StoreResult<bool> {
-        if is_zero(intent_id) {
-            return Err(StoreError::InvalidInput("Cashu intent id is all zero"));
-        }
-        let mut connection = self.open_checked(false)?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
-        let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
-        let Some(existing) = read_intent_by_id(&transaction, intent_id)? else {
-            return Ok(false);
-        };
-        if existing.state != CashuSwapIntentStateV1::Submitted {
-            return Ok(false);
-        }
-
-        let changed = transaction.execute(
-            "DELETE FROM cashu_swap_intents WHERE intent_id = ?1 AND state = 1",
-            [intent_id.as_slice()],
-        )?;
-        if changed != 1 {
-            return Err(StoreError::CashuSwapStateConflict);
-        }
-        let digest = definite_rejection_delete_digest(&existing);
-        let committed_identity = advance_store_generation(
-            &transaction,
-            &self.handle.expected_provider_id,
-            &previous_identity,
-            b"cashu-swap-definite-rejection-delete-v1",
-            &digest,
-            false,
-        )?;
-        transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
-        Ok(true)
-    }
-
     /// Claim service delivery once while atomically placing the provider's
     /// verified output notes into custody inventory.
     ///
@@ -471,13 +426,12 @@ impl ProviderStore {
 
         let digest =
             custody_grant_digest(&intent, proposed_lot, &note_fingerprints, updated_bucket);
-        let committed_identity = advance_store_generation(
+        let committed_identity = advance_grant_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
             b"cashu-swap-grant-custody-v1",
             &digest,
-            true,
         )?;
         transaction.commit()?;
         self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
@@ -1505,30 +1459,6 @@ fn transition_digest(
             nonce,
             ciphertext,
             &updated_bucket.to_le_bytes(),
-        ],
-    )
-}
-
-fn definite_rejection_delete_digest(intent: &CashuSwapIntentV1) -> [u8; 32] {
-    mutation_digest(
-        b"cashu-swap-definite-rejection-delete-v1",
-        &[
-            &intent.intent_id,
-            &intent.mint_id,
-            &intent.manifest_digest,
-            intent.unit.as_bytes(),
-            &intent.input_set_digest,
-            &intent.request_digest,
-            &intent.output_set_digest,
-            &intent.offer_binding_digest,
-            &intent.settlement_value.to_le_bytes(),
-            &intent.expected_output_count.to_le_bytes(),
-            &(intent.state as i64).to_le_bytes(),
-            &intent.sealed_recovery.key_epoch.to_le_bytes(),
-            &intent.sealed_recovery.nonce,
-            &intent.sealed_recovery.ciphertext,
-            &intent.created_bucket.to_le_bytes(),
-            &intent.updated_bucket.to_le_bytes(),
         ],
     )
 }

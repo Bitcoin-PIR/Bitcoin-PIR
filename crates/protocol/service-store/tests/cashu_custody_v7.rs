@@ -86,6 +86,12 @@ impl TestPath {
             .prefix("bitcoinpir-cashu-custody-v7-test-")
             .tempdir()
             .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict Cashu custody test directory permissions");
+        }
         Self {
             database: directory.path().join("provider.sqlite3"),
             _directory: directory,

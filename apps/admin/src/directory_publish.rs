@@ -57,6 +57,9 @@ pub struct DirectoryPublishArgs {
     /// Total connect, send and acknowledgement deadline for each relay.
     #[arg(long, default_value_t = DEFAULT_RELAY_TIMEOUT_SECONDS_V1)]
     relay_timeout_seconds: u64,
+    /// Validate the frozen artifacts, key pin and relay set without network I/O.
+    #[arg(long)]
+    validate_only: bool,
 }
 
 #[derive(Clone)]
@@ -158,6 +161,14 @@ impl RelayPublisherV1 for NetworkRelayPublisherV1 {
 }
 
 pub async fn run(args: DirectoryPublishArgs) -> Result<(), String> {
+    let mut publisher = NetworkRelayPublisherV1;
+    run_with_publisher_v1(args, &mut publisher).await
+}
+
+async fn run_with_publisher_v1<P: RelayPublisherV1>(
+    args: DirectoryPublishArgs,
+    publisher: &mut P,
+) -> Result<(), String> {
     if args.now_unix == 0 {
         return Err("--now-unix must be non-zero".to_owned());
     }
@@ -171,10 +182,13 @@ pub async fn run(args: DirectoryPublishArgs) -> Result<(), String> {
     let events = load_publish_events_v1(&args.artifacts, &directory_pubkey, args.now_unix)?;
     let event_set_digest = event_set_digest_v1(&events)?;
     let targets = validate_relay_targets_v1(args.relays)?;
+    if args.validate_only {
+        emit_validation_outcomes_v1(&targets, events.len(), event_set_digest);
+        return Ok(());
+    }
     let timeout = Duration::from_secs(args.relay_timeout_seconds);
-    let mut publisher = NetworkRelayPublisherV1;
     let outcomes =
-        publish_all_relays_v1(&mut publisher, &targets, &events, event_set_digest, timeout).await;
+        publish_all_relays_v1(publisher, &targets, &events, event_set_digest, timeout).await;
     let failures = emit_publish_outcomes_v1(&outcomes);
     if failures == 0 {
         Ok(())
@@ -183,6 +197,21 @@ pub async fn run(args: DirectoryPublishArgs) -> Result<(), String> {
             "publishing failed for {failures} of {} relays; exact artifacts may be rerun manually",
             outcomes.len()
         ))
+    }
+}
+
+fn emit_validation_outcomes_v1(
+    targets: &[RelayTargetV1],
+    event_count: usize,
+    event_set_digest: [u8; 32],
+) {
+    for target in targets {
+        println!(
+            "relay_host={} event_count={} event_set_digest_hex={} result=validated",
+            target.host,
+            event_count,
+            hex::encode(event_set_digest)
+        );
     }
 }
 
@@ -885,7 +914,39 @@ mod tests {
             Err(RelayPublishFailureV1::RelayRejected)
         );
         assert_eq!(outcomes[2].result, Err(RelayPublishFailureV1::Timeout));
-        assert!(outcomes.iter().all(|outcome| outcome.event_set_digest == digest));
+        assert!(outcomes
+            .iter()
+            .all(|outcome| outcome.event_set_digest == digest));
         assert_eq!(emit_publish_outcomes_v1(&outcomes), 2);
+    }
+
+    #[tokio::test]
+    async fn validate_only_checks_the_exact_publish_inputs_without_calling_transport() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = DirectoryPublisherKeyV1::from_secret_bytes([28; 32]).unwrap();
+        let event = entry_event(&key, 1);
+        let artifact = directory.path().join("entry.json");
+        std::fs::write(&artifact, event.exact_message.as_bytes()).unwrap();
+        let mut publisher = FakePublisherV1 {
+            actions: VecDeque::new(),
+            attempted_hosts: Vec::new(),
+        };
+
+        run_with_publisher_v1(
+            DirectoryPublishArgs {
+                artifacts: vec![artifact],
+                relays: vec!["wss://one.example".into(), "wss://two.example".into()],
+                directory_pubkey_hex: hex::encode(key.public_key()),
+                now_unix: NOW,
+                relay_timeout_seconds: 1,
+                validate_only: true,
+            },
+            &mut publisher,
+        )
+        .await
+        .unwrap();
+
+        assert!(publisher.attempted_hosts.is_empty());
+        assert!(publisher.actions.is_empty());
     }
 }

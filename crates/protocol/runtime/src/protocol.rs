@@ -1671,11 +1671,17 @@ fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
 /// [1B level_sentinel=0xFF][1B reserved=0x00]
 /// [optional trailing 1B db_id]
 fn decode_harmony_hint_request_v2(data: &[u8]) -> io::Result<HarmonyHintRequestV2> {
-    // Minimum: level_sentinel (1) + reserved (1)
-    if data.len() < 2 {
+    // Exact legacy form: sentinel (1) + reserved (1).
+    // Exact multi-DB form: the same fields plus one non-zero db_id byte.
+    // Reject every other length and redundant zero suffix so one operation has
+    // only one wire encoding under the service-admission digest.
+    if data.len() != 2 && data.len() != 3 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "V2 hint request too short",
+            format!(
+                "V2 hint request must be exactly 2 or 3 bytes, got {}",
+                data.len()
+            ),
         ));
     }
     let level_sentinel = data[0];
@@ -1688,8 +1694,22 @@ fn decode_harmony_hint_request_v2(data: &[u8]) -> io::Result<HarmonyHintRequestV
             ),
         ));
     }
-    // data[1] is reserved, ignored.
-    let db_id = if data.len() > 2 { data[2] } else { 0 };
+    if data[1] != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "V2 hint request reserved byte must be zero, got {}",
+                data[1]
+            ),
+        ));
+    }
+    let db_id = if data.len() == 3 { data[2] } else { 0 };
+    if data.len() == 3 && db_id == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "V2 hint request must omit a zero db_id",
+        ));
+    }
     Ok(HarmonyHintRequestV2 { db_id })
 }
 
@@ -2627,6 +2647,32 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
 #[cfg(test)]
 mod attest_wire_tests {
     use super::*;
+
+    #[test]
+    fn harmony_v2_full_accepts_only_canonical_two_or_three_byte_bodies() {
+        for (db_id, expected_body_len) in [(0, 2usize), (7, 3usize)] {
+            let request = Request::HarmonyHintsV2(HarmonyHintRequestV2 { db_id });
+            let encoded = request.encode();
+            assert_eq!(encoded.len(), 4 + 1 + expected_body_len);
+            match Request::decode(&encoded[4..]).unwrap() {
+                Request::HarmonyHintsV2(decoded) => assert_eq!(decoded.db_id, db_id),
+                _ => panic!("wrong request variant"),
+            }
+        }
+
+        for invalid in [
+            vec![REQ_HARMONY_HINTS_V2],
+            vec![REQ_HARMONY_HINTS_V2, 0xff],
+            vec![REQ_HARMONY_HINTS_V2, 0xff, 1],
+            vec![REQ_HARMONY_HINTS_V2, 0xff, 0, 0],
+            vec![REQ_HARMONY_HINTS_V2, 0xff, 0, 7, 8],
+        ] {
+            assert_eq!(
+                Request::decode(&invalid).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
 
     #[test]
     fn harmony_v2_half_accepts_only_canonical_17_or_18_byte_bodies() {

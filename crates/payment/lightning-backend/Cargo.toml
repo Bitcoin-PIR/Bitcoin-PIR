@@ -18,6 +18,7 @@ sha2 = "0.10"
 zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
+pir-private-files = { path = "../../security/private-files" }
 socket2 = "0.6"
 
 [lints.rust]

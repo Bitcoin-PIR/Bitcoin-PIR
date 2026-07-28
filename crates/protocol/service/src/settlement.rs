@@ -8,12 +8,14 @@
 //! independent of the original clearing authorization. Each successful
 //! response is signed by the issuer settlement key and binds the exact request.
 
+use core::fmt;
 use std::collections::HashSet;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use k256::elliptic_curve::PrimeField;
 use k256::Scalar;
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::codec::{expect_v1, put_bytes_u16, Decoder};
 use crate::{
@@ -85,13 +87,25 @@ pub trait CashuDleqVerifierV1 {
 
 /// Exact public inputs which the issuer's Cashu implementation must verify
 /// before a settlement note may be treated as authentic or spent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CashuSettlementNoteVerificationInputV1<'a> {
     pub denomination: u64,
     pub denomination_public_key: &'a [u8; 33],
     pub secret: &'a str,
     pub signature: &'a [u8; 33],
     pub witness: Option<&'a str>,
+}
+
+impl fmt::Debug for CashuSettlementNoteVerificationInputV1<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CashuSettlementNoteVerificationInputV1")
+            .field("denomination", &self.denomination)
+            .field("secret", &"[REDACTED]")
+            .field("signature", &"[REDACTED]")
+            .field("witness", &self.witness.map(|_| "[REDACTED]"))
+            .finish_non_exhaustive()
+    }
 }
 
 /// Adapter boundary for authoritative Cashu-note verification.
@@ -240,11 +254,30 @@ impl IssuerSettlementKeyringExpectationV1<'_> {
 /// Provider authentication for recovery/read-only settlement endpoints.
 /// This is separate from [`ProviderClearingRequestAuthV1`], whose authority is
 /// intentionally tied to a debt-creating clearing authorization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderSettlementRequestAuthV1 {
     pub registration_digest: [u8; 32],
     pub request_digest: [u8; 32],
     pub signature: [u8; 64],
+}
+
+impl fmt::Debug for ProviderSettlementRequestAuthV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderSettlementRequestAuthV1")
+            .field("registration_digest", &"[REDACTED]")
+            .field("request_digest", &"[REDACTED]")
+            .field("signature", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for ProviderSettlementRequestAuthV1 {
+    fn drop(&mut self) {
+        self.registration_digest.zeroize();
+        self.request_digest.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 impl ProviderSettlementRequestAuthV1 {
@@ -995,13 +1028,35 @@ pub fn verify_new_redeem_response_for<'a>(
 /// does not assert that `signature` is a valid Cashu signature. Only
 /// [`verify_new_settlement_deposit_request_for`] returns an authenticated-note
 /// typestate after calling [`CashuSettlementNoteVerifierV1`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SettlementNoteV1 {
     pub presentation_digest: [u8; 32],
     pub denomination: u64,
     pub secret: String,
     pub signature: [u8; 33],
     pub witness: Option<String>,
+}
+
+impl fmt::Debug for SettlementNoteV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SettlementNoteV1")
+            .field("denomination", &self.denomination)
+            .field("secret", &"[REDACTED]")
+            .field("signature", &"[REDACTED]")
+            .field("witness", &self.witness.as_ref().map(|_| "[REDACTED]"))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for SettlementNoteV1 {
+    fn drop(&mut self) {
+        self.presentation_digest.zeroize();
+        self.denomination.zeroize();
+        self.secret.zeroize();
+        self.signature.zeroize();
+        self.witness.zeroize();
+    }
 }
 
 impl SettlementNoteV1 {
@@ -1098,7 +1153,9 @@ pub fn settlement_note_presentation_digest(
             max: MAX_SETTLEMENT_WITNESS_LEN_V1,
         });
     }
-    let mut bytes = Vec::with_capacity(128 + secret.len() + witness.map_or(0, str::len));
+    let mut bytes = Zeroizing::new(Vec::with_capacity(
+        128 + secret.len() + witness.map_or(0, str::len),
+    ));
     bytes.extend_from_slice(SETTLEMENT_NOTE_PRESENTATION_DIGEST_DOMAIN_V1);
     bytes.push(SERVICE_PROTOCOL_VERSION);
     put_keyset_id(&mut bytes, settlement_keyset_id);
@@ -1112,10 +1169,10 @@ pub fn settlement_note_presentation_digest(
             put_bytes_u16(&mut bytes, witness.as_bytes());
         }
     }
-    Ok(Sha256::digest(bytes).into())
+    Ok(Sha256::digest(bytes.as_slice()).into())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderSettlementDepositRequestV1 {
     pub registration_digest: [u8; 32],
     pub issuer_id: [u8; 32],
@@ -1128,10 +1185,42 @@ pub struct ProviderSettlementDepositRequestV1 {
     pub idempotency_key: [u8; 32],
 }
 
+impl fmt::Debug for ProviderSettlementDepositRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderSettlementDepositRequestV1")
+            .field("unit", &self.unit)
+            .field("settlement_keyset_id", &self.settlement_keyset_id)
+            .field("note_count", &self.notes.len())
+            .field("total_value", &self.total_value)
+            .field("notes", &"[REDACTED]")
+            .field("idempotency_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ProviderSettlementDepositRequestV1 {
+    fn drop(&mut self) {
+        self.registration_digest.zeroize();
+        self.issuer_id.zeroize();
+        self.provider_id.zeroize();
+        self.account_id.zeroize();
+        self.settlement_keyset_id.zeroize();
+        self.idempotency_key.zeroize();
+        // `SettlementNoteV1::drop` scrubs each bearer note before the vector
+        // allocation is released.
+    }
+}
+
 impl ProviderSettlementDepositRequestV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+        let mut out = self.encode_zeroizing()?;
+        Ok(std::mem::take(&mut *out))
+    }
+
+    pub(crate) fn encode_zeroizing(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate()?;
-        let mut out = Vec::with_capacity(512);
+        let mut out = Zeroizing::new(Vec::with_capacity(512));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.registration_digest);
         out.extend_from_slice(&self.issuer_id);
@@ -1187,19 +1276,19 @@ impl ProviderSettlementDepositRequestV1 {
         for _ in 0..count {
             let presentation_digest = decoder.fixed("SettlementNoteV1.presentation_digest")?;
             let denomination = decoder.u64("SettlementNoteV1.denomination")?;
-            let secret = decode_string_u16(
+            let mut secret = Zeroizing::new(decode_string_u16(
                 &mut decoder,
                 "SettlementNoteV1.secret",
                 MAX_SETTLEMENT_SECRET_LEN_V1,
-            )?;
-            let signature = decoder.fixed("SettlementNoteV1.signature")?;
-            let witness = match decoder.u8("SettlementNoteV1.has_witness")? {
+            )?);
+            let mut signature = Zeroizing::new(decoder.fixed("SettlementNoteV1.signature")?);
+            let mut witness = match decoder.u8("SettlementNoteV1.has_witness")? {
                 0 => None,
-                1 => Some(decode_string_u16(
+                1 => Some(Zeroizing::new(decode_string_u16(
                     &mut decoder,
                     "SettlementNoteV1.witness",
                     MAX_SETTLEMENT_WITNESS_LEN_V1,
-                )?),
+                )?)),
                 value => {
                     return Err(ServiceProtocolError::UnknownDiscriminant {
                         kind: "SettlementNoteV1.has_witness",
@@ -1210,9 +1299,9 @@ impl ProviderSettlementDepositRequestV1 {
             notes.push(SettlementNoteV1 {
                 presentation_digest,
                 denomination,
-                secret,
-                signature,
-                witness,
+                secret: std::mem::take(&mut *secret),
+                signature: std::mem::replace(&mut *signature, [0; 33]),
+                witness: witness.as_mut().map(|value| std::mem::take(&mut **value)),
             });
         }
         let value = Self {
@@ -1232,9 +1321,10 @@ impl ProviderSettlementDepositRequestV1 {
     }
 
     pub fn request_digest(&self) -> Result<[u8; 32], ServiceProtocolError> {
+        let encoded = self.encode_zeroizing()?;
         hash_canonical(
             PROVIDER_SETTLEMENT_DEPOSIT_REQUEST_DIGEST_DOMAIN_V1,
-            &self.encode()?,
+            encoded.as_slice(),
         )
     }
 
@@ -1312,13 +1402,35 @@ impl ProviderSettlementDepositRequestV1 {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VerifiedSettlementNoteV1 {
     denomination: u64,
     denomination_public_key: [u8; 33],
     authoritative_y: [u8; 33],
     spend_key: [u8; 32],
     presentation_digest: [u8; 32],
+}
+
+impl fmt::Debug for VerifiedSettlementNoteV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedSettlementNoteV1")
+            .field("denomination", &self.denomination)
+            .field("denomination_public_key", &"[REDACTED]")
+            .field("authoritative_y", &"[REDACTED]")
+            .field("spend_key", &"[REDACTED]")
+            .field("presentation_digest", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for VerifiedSettlementNoteV1 {
+    fn drop(&mut self) {
+        self.denomination_public_key.zeroize();
+        self.authoritative_y.zeroize();
+        self.spend_key.zeroize();
+        self.presentation_digest.zeroize();
+    }
 }
 
 impl VerifiedSettlementNoteV1 {
@@ -2699,6 +2811,58 @@ pub fn verify_persisted_payout_snapshot_for_store_v1(
         payout_request,
         issuer_keyring,
     )?;
+    verify_persisted_payout_status_successor_for_store_v1(
+        initial_response,
+        latest_status_response,
+        issuer_keyring,
+        initial,
+    )
+}
+
+/// Reconstructs a payout snapshot when the original raw idempotency key is no
+/// longer available, using the request digest and exact signed responses from
+/// a rollback-protected issuer-store row.
+///
+/// This is an issuer-worker boundary, not a client-verification shortcut. The
+/// caller MUST load every argument from one authenticated durable row and MUST
+/// compare every returned coordinate with that row before attempting a CAS.
+/// In particular, a network-supplied digest or response is not sufficient.
+pub fn verify_persisted_payout_snapshot_from_store_record_v1(
+    persisted_payout_request_digest: &[u8; 32],
+    initial_response: &IssuerPayoutResponseV1,
+    latest_status_response: Option<&IssuerPayoutStatusResponseV1>,
+    issuer_keyring: &IssuerSettlementKeyringExpectationV1<'_>,
+) -> Result<VerifiedPayoutSnapshotV1, ServiceProtocolError> {
+    initial_response.validate()?;
+    let signing_key = issuer_keyring.resolve_for_issuer(
+        &initial_response.issuer_id,
+        &initial_response.issuer_settlement_key_id,
+    )?;
+    verify_issuer_signature(
+        initial_response.issuer_settlement_key_id,
+        &initial_response.signature,
+        &initial_response.signing_preimage()?,
+        signing_key,
+    )?;
+    if &initial_response.request_digest != persisted_payout_request_digest {
+        return Err(binding_error(
+            "IssuerPayoutResponseV1.persisted_request_digest",
+        ));
+    }
+    verify_persisted_payout_status_successor_for_store_v1(
+        initial_response,
+        latest_status_response,
+        issuer_keyring,
+        VerifiedPayoutSnapshotV1::from_initial(initial_response),
+    )
+}
+
+fn verify_persisted_payout_status_successor_for_store_v1(
+    initial_response: &IssuerPayoutResponseV1,
+    latest_status_response: Option<&IssuerPayoutStatusResponseV1>,
+    issuer_keyring: &IssuerSettlementKeyringExpectationV1<'_>,
+    initial: VerifiedPayoutSnapshotV1,
+) -> Result<VerifiedPayoutSnapshotV1, ServiceProtocolError> {
     let Some(latest) = latest_status_response else {
         return Ok(initial);
     };
@@ -3649,6 +3813,8 @@ mod tests {
                 authorization_epoch: 2,
                 provider_id: [5; 32],
                 issuer_id: [6; 32],
+                redeem_endpoint: "https://issuer.example".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
                 settlement_account_id: [17; 32],
                 clearing_verifying_key: clearing.verifying_key().to_bytes(),
                 not_before: 100,
@@ -4070,6 +4236,48 @@ mod tests {
             ],
             total_value: 9,
             idempotency_key: [18; 32],
+        }
+    }
+
+    #[test]
+    fn cashu_settlement_bearers_are_redacted_from_debug() {
+        let fixture = fixture();
+        let request = deposit_request(&fixture);
+        let request_debug = format!("{request:?}");
+        assert!(request_debug.contains("note_count: 2"));
+        for forbidden in ["secret-a", "secret-b", "witness-b"] {
+            assert!(!request_debug.contains(forbidden));
+        }
+
+        let note_debug = format!("{:?}", request.notes[1]);
+        assert!(note_debug.contains("[REDACTED]"));
+        assert!(!note_debug.contains("secret-b"));
+        assert!(!note_debug.contains("witness-b"));
+
+        let signature = point(62);
+        let input = CashuSettlementNoteVerificationInputV1 {
+            denomination: 8,
+            denomination_public_key: &signature,
+            secret: "verification-secret-sentinel",
+            signature: &signature,
+            witness: Some("verification-witness-sentinel"),
+        };
+        let input_debug = format!("{input:?}");
+        assert!(!input_debug.contains("verification-secret-sentinel"));
+        assert!(!input_debug.contains("verification-witness-sentinel"));
+
+        let verified = VerifiedSettlementNoteV1 {
+            denomination: 8,
+            denomination_public_key: [0x71; 33],
+            authoritative_y: [0x72; 33],
+            spend_key: [0x73; 32],
+            presentation_digest: [0x74; 32],
+        };
+        let verified_debug = format!("{verified:?}");
+        assert!(verified_debug.contains("denomination: 8"));
+        assert!(verified_debug.contains("[REDACTED]"));
+        for forbidden in ["113, 113", "114, 114", "115, 115", "116, 116"] {
+            assert!(!verified_debug.contains(forbidden));
         }
     }
 

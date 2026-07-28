@@ -110,7 +110,7 @@ pub struct FreeAnonymousTicketExpectationV1 {
 }
 
 /// Provider-specific, single-use, Ed25519-signed free capability.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FreeAnonymousTicketV1 {
     pub provider_id: ProviderId,
     pub scope_id: ScopeId,
@@ -123,6 +123,27 @@ pub struct FreeAnonymousTicketV1 {
     pub not_before: u64,
     pub not_after: u64,
     pub signature: [u8; 64],
+}
+
+impl fmt::Debug for FreeAnonymousTicketV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FreeAnonymousTicketV1")
+            .field("provider_id", &"[REDACTED]")
+            .field("scope_id", &"[REDACTED]")
+            .field("offer_id", &self.offer_id)
+            .field("entitlement_profile", &self.entitlement_profile)
+            .field("serial", &"[REDACTED]")
+            .field("signature", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for FreeAnonymousTicketV1 {
+    fn drop(&mut self) {
+        self.serial.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 impl FreeAnonymousTicketV1 {
@@ -160,7 +181,7 @@ impl FreeAnonymousTicketV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         let mut out = self.encode_unsigned()?;
         out.extend_from_slice(&self.signature);
-        Ok(out)
+        Ok(mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -184,7 +205,8 @@ impl FreeAnonymousTicketV1 {
         };
         decoder.finish()?;
         ticket.validate_unsigned()?;
-        if ticket.encode()?.as_slice() != bytes {
+        let exact_reencoding = Zeroizing::new(ticket.encode()?);
+        if exact_reencoding.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "FreeAnonymousTicketV1",
                 reason: "non-canonical ticket encoding",
@@ -242,18 +264,19 @@ impl FreeAnonymousTicketV1 {
         hasher.finalize().into()
     }
 
-    fn signing_preimage(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn signing_preimage(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         let unsigned = self.encode_unsigned()?;
-        let mut preimage =
-            Vec::with_capacity(FREE_ANONYMOUS_TICKET_SIGNATURE_DOMAIN.len() + unsigned.len());
+        let mut preimage = Zeroizing::new(Vec::with_capacity(
+            FREE_ANONYMOUS_TICKET_SIGNATURE_DOMAIN.len() + unsigned.len(),
+        ));
         preimage.extend_from_slice(FREE_ANONYMOUS_TICKET_SIGNATURE_DOMAIN);
         preimage.extend_from_slice(&unsigned);
         Ok(preimage)
     }
 
-    fn encode_unsigned(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn encode_unsigned(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate_unsigned()?;
-        let mut out = Vec::with_capacity(200);
+        let mut out = Zeroizing::new(Vec::with_capacity(200));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.provider_id);
         out.extend_from_slice(&self.scope_id);
@@ -805,16 +828,40 @@ fn cashu_proof_order(left: &StandardCashuProofV1, right: &StandardCashuProofV1) 
 /// BitcoinPIR's compact Cashu BAT proof.  The selected `AuthBeginV1.key_id`
 /// is intentionally outside this fixed proof and must match the verified
 /// provider policy before signature verification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BitcoinPirCashuBatProofV1 {
     pub secret_raw: [u8; 32],
     pub c: [u8; 33],
 }
 
+impl fmt::Debug for BitcoinPirCashuBatProofV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BitcoinPirCashuBatProofV1")
+            .field("secret_raw", &"[REDACTED]")
+            .field("c", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for BitcoinPirCashuBatProofV1 {
+    fn drop(&mut self) {
+        self.secret_raw.zeroize();
+        self.c.zeroize();
+    }
+}
+
 impl BitcoinPirCashuBatProofV1 {
     pub fn encode(&self) -> Result<[u8; BAT_PROOF_LEN_V1], ServiceProtocolError> {
+        let mut encoded = self.encode_zeroizing()?;
+        Ok(mem::replace(&mut *encoded, [0u8; BAT_PROOF_LEN_V1]))
+    }
+
+    pub fn encode_zeroizing(
+        &self,
+    ) -> Result<Zeroizing<[u8; BAT_PROOF_LEN_V1]>, ServiceProtocolError> {
         self.validate()?;
-        let mut out = [0u8; BAT_PROOF_LEN_V1];
+        let mut out = Zeroizing::new([0u8; BAT_PROOF_LEN_V1]);
         out[0] = SERVICE_PROTOCOL_VERSION;
         out[1..33].copy_from_slice(&self.secret_raw);
         out[33..].copy_from_slice(&self.c);
@@ -913,9 +960,28 @@ where
 /// Experimental ARC presentation envelope.  It deliberately carries no
 /// client-selected serial or spent key.  The provider must obtain the durable
 /// nullifier from successful ARC verification.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ArcPresentationV1 {
     canonical_presentation: Vec<u8>,
+}
+
+impl fmt::Debug for ArcPresentationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ArcPresentationV1")
+            .field(
+                "canonical_presentation_len",
+                &self.canonical_presentation.len(),
+            )
+            .field("canonical_presentation", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for ArcPresentationV1 {
+    fn drop(&mut self) {
+        self.canonical_presentation.zeroize();
+    }
 }
 
 impl ArcPresentationV1 {
@@ -925,9 +991,10 @@ impl ArcPresentationV1 {
     pub fn from_canonical_bytes(
         canonical_presentation: Vec<u8>,
     ) -> Result<Self, ServiceProtocolError> {
+        let mut canonical_presentation = Zeroizing::new(canonical_presentation);
         validate_arc_presentation_len(&canonical_presentation)?;
         Ok(Self {
-            canonical_presentation,
+            canonical_presentation: mem::take(&mut *canonical_presentation),
         })
     }
 
@@ -937,10 +1004,10 @@ impl ArcPresentationV1 {
 
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         validate_arc_presentation_len(&self.canonical_presentation)?;
-        let mut out = Vec::with_capacity(5 + self.canonical_presentation.len());
+        let mut out = Zeroizing::new(Vec::with_capacity(5 + self.canonical_presentation.len()));
         out.push(SERVICE_PROTOCOL_VERSION);
         put_bytes_u32(&mut out, &self.canonical_presentation);
-        Ok(out)
+        Ok(mem::take(&mut *out))
     }
 
     pub fn decode_canonical(
@@ -948,8 +1015,9 @@ impl ArcPresentationV1 {
         canonicalizer: &dyn ArcPresentationCanonicalizerV1,
     ) -> Result<Self, ServiceProtocolError> {
         let value = Self::decode_structural(bytes)?;
-        let reencoded = canonicalizer.decode_and_reencode(&value.canonical_presentation)?;
-        if reencoded != value.canonical_presentation {
+        let reencoded =
+            Zeroizing::new(canonicalizer.decode_and_reencode(&value.canonical_presentation)?);
+        if reencoded.as_slice() != value.canonical_presentation.as_slice() {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "ArcPresentationV1.presentation",
                 reason: "ARC decode/re-encode is not byte-for-byte canonical",
@@ -971,14 +1039,14 @@ impl ArcPresentationV1 {
             decoder.u8("ArcPresentationV1.version")?,
             "ArcPresentationV1",
         )?;
-        let canonical_presentation = decoder.bytes_u32(
+        let mut canonical_presentation = Zeroizing::new(decoder.bytes_u32(
             "ArcPresentationV1.presentation",
             MAX_ARC_PRESENTATION_LEN_V1,
-        )?;
+        )?);
         decoder.finish()?;
         validate_arc_presentation_len(&canonical_presentation)?;
         Ok(Self {
-            canonical_presentation,
+            canonical_presentation: mem::take(&mut *canonical_presentation),
         })
     }
 }
@@ -1090,7 +1158,7 @@ impl AuthorizationProofV1 {
                 AuthScheme::BitcoinPirCashuBatV1,
                 FreeModeV1::NotFree,
                 Self::BitcoinPirCashuBat(proof),
-            ) => Ok(proof.encode()?.to_vec()),
+            ) => Ok(proof.encode_zeroizing()?.to_vec()),
             (
                 AuthScheme::ArcV1Experimental,
                 FreeModeV1::NotFree,
@@ -1147,7 +1215,8 @@ pub(crate) fn decode_authorization_proof_v1(
         }),
         (AuthScheme::Bolt11DirectReceiptV1, FreeModeV1::NotFree) => {
             let receipt = PaidReceiptV1::decode(bytes)?;
-            if receipt.encode()?.as_slice() != bytes {
+            let exact_reencoding = Zeroizing::new(receipt.encode()?);
+            if exact_reencoding.as_slice() != bytes {
                 return Err(ServiceProtocolError::InvalidValue {
                     field: "PaidReceiptV1",
                     reason: "direct BOLT proof must be exact canonical receipt bytes",
@@ -1259,6 +1328,7 @@ mod tests {
         let manifest = StandardCashuMintManifestV1 {
             manifest_epoch: 1,
             mint_endpoint: "https://mint.example".into(),
+            leaf_spki_sha256_pins: vec![[0x31; 32]],
             unit: "sat".into(),
             required_nuts: CashuRequiredNutsV1::required_v1(),
             accepted_input_keysets,
@@ -1443,6 +1513,9 @@ mod tests {
     #[test]
     fn authorization_debug_redacts_every_bearer_payload() {
         assert!(core::mem::needs_drop::<StandardCashuProofV1>());
+        assert!(core::mem::needs_drop::<FreeAnonymousTicketV1>());
+        assert!(core::mem::needs_drop::<BitcoinPirCashuBatProofV1>());
+        assert!(core::mem::needs_drop::<ArcPresentationV1>());
 
         let cashu_secret = "cashu-proof-debug-canary";
         let cashu_c = point(701);
@@ -1498,20 +1571,27 @@ mod tests {
 
         let bat_secret = [0x78; 32];
         let bat_c = point(702);
+        let direct_bat = BitcoinPirCashuBatProofV1 {
+            secret_raw: bat_secret,
+            c: bat_c,
+        };
+        let direct_bat_rendered = format!("{direct_bat:?}");
+        assert!(direct_bat_rendered.contains("[REDACTED]"));
+        assert!(!direct_bat_rendered.contains(&format!("{bat_secret:?}")));
+        assert!(!direct_bat_rendered.contains(&format!("{bat_c:?}")));
         assert_wrapped_redacted(
-            &AuthorizationProofV1::BitcoinPirCashuBat(BitcoinPirCashuBatProofV1 {
-                secret_raw: bat_secret,
-                c: bat_c,
-            }),
+            &AuthorizationProofV1::BitcoinPirCashuBat(direct_bat),
             &[format!("{bat_secret:?}"), format!("{bat_c:?}")],
         );
 
         let arc_payload = b"arc-presentation-debug-canary".to_vec();
         let arc_payload_rendered = format!("{arc_payload:?}");
+        let direct_arc = ArcPresentationV1::from_canonical_bytes(arc_payload).unwrap();
+        let direct_arc_rendered = format!("{direct_arc:?}");
+        assert!(direct_arc_rendered.contains("[REDACTED]"));
+        assert!(!direct_arc_rendered.contains(&arc_payload_rendered));
         assert_wrapped_redacted(
-            &AuthorizationProofV1::ArcExperimental(
-                ArcPresentationV1::from_canonical_bytes(arc_payload).unwrap(),
-            ),
+            &AuthorizationProofV1::ArcExperimental(direct_arc),
             &[arc_payload_rendered],
         );
 
@@ -1530,6 +1610,10 @@ mod tests {
             not_after: 14,
             signature: ticket_signature,
         };
+        let direct_ticket_rendered = format!("{ticket:?}");
+        assert!(direct_ticket_rendered.contains("[REDACTED]"));
+        assert!(!direct_ticket_rendered.contains(&format!("{ticket_serial:?}")));
+        assert!(!direct_ticket_rendered.contains(&format!("{ticket_signature:?}")));
         assert_wrapped_redacted(
             &AuthorizationProofV1::Free(FreeAuthorizationProofV1::AnonymousTicket(Box::new(
                 ticket,

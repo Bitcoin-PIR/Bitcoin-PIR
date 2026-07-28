@@ -5,6 +5,8 @@
 //! explicit and length bounded; they contain no wallet destination or
 //! Lightning payment material.
 
+use core::fmt;
+
 use crate::codec::{expect_v1, put_bytes_u32, Decoder};
 use crate::{
     IssuerPayoutIntentResponseV1, IssuerPayoutResponseV1, ProviderBalanceRequestV1,
@@ -12,6 +14,7 @@ use crate::{
     ProviderPayoutStatusRequestV1, ProviderSettlementDepositRequestV1,
     ProviderSettlementRequestAuthV1, ServiceProtocolError, SERVICE_PROTOCOL_VERSION,
 };
+use zeroize::Zeroizing;
 
 /// Accommodates the bounded 64-note settlement deposit plus framing while
 /// placing a hard ceiling on allocation before any signature or DLEQ work.
@@ -57,7 +60,7 @@ fn decode_parts<const N: usize>(
     bytes: &[u8],
     field: &'static str,
     max_len: usize,
-) -> Result<[Vec<u8>; N], ServiceProtocolError> {
+) -> Result<[Zeroizing<Vec<u8>>; N], ServiceProtocolError> {
     if bytes.len() > max_len {
         return Err(ServiceProtocolError::FieldTooLong {
             field,
@@ -69,7 +72,7 @@ fn decode_parts<const N: usize>(
     expect_v1(decoder.u8(field)?, field)?;
     let mut parts = Vec::with_capacity(N);
     for _ in 0..N {
-        parts.push(decoder.bytes_u32(field, max_len)?);
+        parts.push(Zeroizing::new(decoder.bytes_u32(field, max_len)?));
     }
     decoder.finish()?;
     parts
@@ -80,16 +83,26 @@ fn decode_parts<const N: usize>(
         })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderSettlementDepositEnvelopeV1 {
     pub request: ProviderSettlementDepositRequestV1,
     pub request_auth: ProviderSettlementRequestAuthV1,
 }
 
+impl fmt::Debug for ProviderSettlementDepositEnvelopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderSettlementDepositEnvelopeV1")
+            .field("request", &"[REDACTED]")
+            .field("request_auth", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProviderSettlementDepositEnvelopeV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
-        let request = self.request.encode()?;
-        let request_auth = self.request_auth.encode()?;
+        let request = self.request.encode_zeroizing()?;
+        let request_auth = Zeroizing::new(self.request_auth.encode()?);
         encode_parts(
             Self::FIELD,
             &[&request, &request_auth],
@@ -104,7 +117,8 @@ impl ProviderSettlementDepositEnvelopeV1 {
             request: ProviderSettlementDepositRequestV1::decode(&request)?,
             request_auth: ProviderSettlementRequestAuthV1::decode(&request_auth)?,
         };
-        if value.encode()?.as_slice() != bytes {
+        let canonical = Zeroizing::new(value.encode()?);
+        if canonical.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: Self::FIELD,
                 reason: "nested object is not canonical",
@@ -116,16 +130,26 @@ impl ProviderSettlementDepositEnvelopeV1 {
     const FIELD: &'static str = "ProviderSettlementDepositEnvelopeV1";
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderBalanceEnvelopeV1 {
     pub request: ProviderBalanceRequestV1,
     pub request_auth: ProviderClearingRequestAuthV1,
 }
 
+impl fmt::Debug for ProviderBalanceEnvelopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderBalanceEnvelopeV1")
+            .field("request", &"[REDACTED]")
+            .field("request_auth", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProviderBalanceEnvelopeV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
-        let request = self.request.encode()?;
-        let request_auth = self.request_auth.encode();
+        let request = Zeroizing::new(self.request.encode()?);
+        let request_auth = Zeroizing::new(self.request_auth.encode());
         encode_parts(
             Self::FIELD,
             &[&request, &request_auth],
@@ -143,7 +167,8 @@ impl ProviderBalanceEnvelopeV1 {
             request: ProviderBalanceRequestV1::decode(&request)?,
             request_auth: ProviderClearingRequestAuthV1::decode(&request_auth)?,
         };
-        if value.encode()?.as_slice() != bytes {
+        let canonical = Zeroizing::new(value.encode()?);
+        if canonical.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: Self::FIELD,
                 reason: "nested object is not canonical",
@@ -155,16 +180,26 @@ impl ProviderBalanceEnvelopeV1 {
     const FIELD: &'static str = "ProviderBalanceEnvelopeV1";
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderPayoutIntentEnvelopeV1 {
     pub request: ProviderPayoutIntentRequestV1,
     pub request_auth: ProviderClearingRequestAuthV1,
 }
 
+impl fmt::Debug for ProviderPayoutIntentEnvelopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderPayoutIntentEnvelopeV1")
+            .field("request", &"[REDACTED]")
+            .field("request_auth", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProviderPayoutIntentEnvelopeV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
-        let request = self.request.encode()?;
-        let request_auth = self.request_auth.encode();
+        let request = Zeroizing::new(self.request.encode()?);
+        let request_auth = Zeroizing::new(self.request_auth.encode());
         encode_parts(
             Self::FIELD,
             &[&request, &request_auth],
@@ -182,7 +217,8 @@ impl ProviderPayoutIntentEnvelopeV1 {
             request: ProviderPayoutIntentRequestV1::decode(&request)?,
             request_auth: ProviderClearingRequestAuthV1::decode(&request_auth)?,
         };
-        if value.encode()?.as_slice() != bytes {
+        let canonical = Zeroizing::new(value.encode()?);
+        if canonical.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: Self::FIELD,
                 reason: "nested object is not canonical",
@@ -194,7 +230,7 @@ impl ProviderPayoutIntentEnvelopeV1 {
     const FIELD: &'static str = "ProviderPayoutIntentEnvelopeV1";
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderPayoutEnvelopeV1 {
     pub request: ProviderPayoutRequestV1,
     pub request_auth: ProviderClearingRequestAuthV1,
@@ -202,12 +238,23 @@ pub struct ProviderPayoutEnvelopeV1 {
     pub intent_response: IssuerPayoutIntentResponseV1,
 }
 
+impl fmt::Debug for ProviderPayoutEnvelopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderPayoutEnvelopeV1")
+            .field("request", &"[REDACTED]")
+            .field("request_auth", &"[REDACTED]")
+            .field("intent", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProviderPayoutEnvelopeV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
-        let request = self.request.encode()?;
-        let request_auth = self.request_auth.encode();
-        let intent_request = self.intent_request.encode()?;
-        let intent_response = self.intent_response.encode()?;
+        let request = Zeroizing::new(self.request.encode()?);
+        let request_auth = Zeroizing::new(self.request_auth.encode());
+        let intent_request = Zeroizing::new(self.intent_request.encode()?);
+        let intent_response = Zeroizing::new(self.intent_response.encode()?);
         encode_parts(
             Self::FIELD,
             &[&request, &request_auth, &intent_request, &intent_response],
@@ -227,7 +274,8 @@ impl ProviderPayoutEnvelopeV1 {
             intent_request: ProviderPayoutIntentRequestV1::decode(&intent_request)?,
             intent_response: IssuerPayoutIntentResponseV1::decode(&intent_response)?,
         };
-        if value.encode()?.as_slice() != bytes {
+        let canonical = Zeroizing::new(value.encode()?);
+        if canonical.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: Self::FIELD,
                 reason: "nested object is not canonical",
@@ -239,7 +287,7 @@ impl ProviderPayoutEnvelopeV1 {
     const FIELD: &'static str = "ProviderPayoutEnvelopeV1";
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderPayoutStatusEnvelopeV1 {
     pub request: ProviderPayoutStatusRequestV1,
     pub request_auth: ProviderSettlementRequestAuthV1,
@@ -247,12 +295,23 @@ pub struct ProviderPayoutStatusEnvelopeV1 {
     pub initial_payout_response: IssuerPayoutResponseV1,
 }
 
+impl fmt::Debug for ProviderPayoutStatusEnvelopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderPayoutStatusEnvelopeV1")
+            .field("request", &"[REDACTED]")
+            .field("request_auth", &"[REDACTED]")
+            .field("payout", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProviderPayoutStatusEnvelopeV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
-        let request = self.request.encode()?;
-        let request_auth = self.request_auth.encode()?;
-        let payout_request = self.payout_request.encode()?;
-        let initial_payout_response = self.initial_payout_response.encode()?;
+        let request = Zeroizing::new(self.request.encode()?);
+        let request_auth = Zeroizing::new(self.request_auth.encode()?);
+        let payout_request = Zeroizing::new(self.payout_request.encode()?);
+        let initial_payout_response = Zeroizing::new(self.initial_payout_response.encode()?);
         encode_parts(
             Self::FIELD,
             &[
@@ -277,7 +336,8 @@ impl ProviderPayoutStatusEnvelopeV1 {
             payout_request: ProviderPayoutRequestV1::decode(&payout_request)?,
             initial_payout_response: IssuerPayoutResponseV1::decode(&initial_payout_response)?,
         };
-        if value.encode()?.as_slice() != bytes {
+        let canonical = Zeroizing::new(value.encode()?);
+        if canonical.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: Self::FIELD,
                 reason: "nested object is not canonical",

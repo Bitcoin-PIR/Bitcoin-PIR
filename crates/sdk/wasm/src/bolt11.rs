@@ -225,7 +225,7 @@ impl WasmBolt11AcquisitionV1 {
                         secret_raw: *secret.secret,
                         c: *verified.unblinded_signature(),
                     };
-                    capabilities.push(proof.encode().map_err(js_error)?.to_vec());
+                    capabilities.push(proof.encode_zeroizing().map_err(js_error)?.to_vec());
                 }
                 ("cashu-bat", capabilities)
             }

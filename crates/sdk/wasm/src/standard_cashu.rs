@@ -1062,6 +1062,7 @@ mod tests {
         let manifest = StandardCashuMintManifestV1 {
             manifest_epoch: 1,
             mint_endpoint: "https://mint.example".into(),
+            leaf_spki_sha256_pins: vec![[0x31; 32]],
             unit: "sat".into(),
             required_nuts: CashuRequiredNutsV1::required_v1(),
             accepted_input_keysets: vec![keyset.clone()],
@@ -1595,6 +1596,7 @@ mod tests {
         let manifest = StandardCashuMintManifestV1 {
             manifest_epoch: 1,
             mint_endpoint,
+            leaf_spki_sha256_pins: vec![[0x31; 32]],
             unit: "sat".to_owned(),
             required_nuts: CashuRequiredNutsV1::required_v1(),
             accepted_input_keysets: vec![keyset.clone()],

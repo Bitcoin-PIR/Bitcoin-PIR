@@ -3,8 +3,10 @@
 > Historical snapshot: the body of this review is bound to repository commit
 > `bc465c76` and records the evidence available on 2026-07-26. Later CLN, CDK,
 > Cashu-custody-v7 and public-Nostr work must not be inferred from statements in
-> the historical body. The additive 2026-07-27 delta at the end is the current
-> closeout record; where the two differ, the dated delta controls.
+> the historical body. The additive 2026-07-27 delta is also a dated snapshot.
+> The post-delta current-tree note at the end controls for later
+> settlement-v2, payout-worker, Signet-receipt, browser-topology and CDK changes;
+> none of the older aggregate counts is a result for the current tree.
 
 Status: independent agent review of the implementation tree on
 `codex/payment-platform`. This record is suitable for draft-PR and no-funds
@@ -106,6 +108,10 @@ access and real Lightning funds remain separate approval gates.
     exact rollback-protected restore can construct the private submit marker,
     and submit rechecks the pending state before POST. The pending floor binds
     the complete canonical envelope, intent, registration and predecessor.
+    Its authority value also carries the payout-request digest and optional
+    predecessor explicitly: initialization requires no predecessor,
+    pending-to-payout requires the matching digest and `Accepted` version 1,
+    and a later pending transition must name the exact current terminal payout.
     An outcome-unknown restart resends the exact bytes; fresh preparation uses
     real current time, the current registration and current issuer key, while
     retained material is exact-replay-only. A repeated payout can advance only
@@ -126,9 +132,13 @@ coordinated database-plus-floor restore can make a stale pair self-consistent.
 Production activation therefore requires a reviewed, linearizable floor
 adapter and deployment whose custody, backup, restore, monitoring and failover
 are independent of the payment database. No such production adapter or
-deployment has been accepted in this work. The transport-neutral provider
-client also has no production `ProviderSettlementStateStoreV1` adapter or payout
-worker; its library typestate is not authorization to activate settlement.
+deployment has been accepted in this work. The provider client now has a
+durable SQLite `ProviderSettlementStateStoreV1` adapter with an exact
+crash-recoverable transition journal, but its bundled floor implementation is
+explicitly local/test-only. A no-funds payout worker core now exists, but its
+default executor is permanently disabled and there is no real-funds executor or
+accepted production floor/deployment. Library typestate and the worker lease
+are not authorization to activate settlement.
 
 ### Operational P2: retained-history startup cost
 
@@ -141,6 +151,14 @@ and memory at explicit retained-row thresholds, define an SLO and refuse
 activation when it is exceeded. Before sustained high-volume production,
 design and review an authenticated archive/retention format; ad-hoc row
 deletion is forbidden.
+
+The provider settlement SQLite adapter likewise validates its complete
+terminal-payout history and rolling commitment on each checked open and state
+operation. Settlement frequency should be much lower than query frequency,
+but the cost is still O(provider payout history). Production review must set a
+measured history bound or introduce a reviewed checkpoint/archive design; rows
+must not be deleted merely to reduce latency because the external commitment
+intentionally makes that fail closed.
 
 ### ARC remains experimental
 
@@ -292,9 +310,10 @@ preparation. Production activation remains blocked on an actually independent
 rollback-floor deployment, production browser/edge/operations review, the ARC
 review, external CLN/Cashu/Nostr/staging canaries, the remaining process E2Es
 and user manual acceptance. The initial-payout implementation P1 is closed;
-the absence of a concrete production provider store/worker/independent-floor
-adapter remains an activation blocker. No remote operation or real-funds test
-was performed by this review.
+the absence of an independent production floor and reviewed real-funds executor
+remains an activation blocker. A strict-WebPKI provider-settlement transport
+exists but is not deployed. No remote operation or real-funds test was
+performed by this review.
 
 ## 2026-07-27 additive closeout delta
 
@@ -311,10 +330,11 @@ coverage into production approval.
 - production-activation P1: **1 architectural blocker** remains: the bundled
   rollback floor is another local SQLite file, not a reviewed linearizable
   authority in an independent failure and administrative domain;
-- a production provider settlement state adapter and worker are not deployed,
+- the durable local settlement-v2 state adapter and no-funds worker core are not
+  a production deployment; no independent floor or real-funds executor exists,
   so payout remains disabled. That gap, production edge, distributed abuse
-  control, backup/restore ceremony, monitoring, external canaries, browser/XSS
-  review, ARC review and user manual acceptance are explicit release gates,
+  control, backup/restore ceremony, monitoring, external canaries, deployed-
+  origin browser policy, ARC review and user manual acceptance are explicit release gates,
   not additional items in the counted production data-integrity P1 total.
 
 The final independent static deadline and sensitive-buffer reviews found no
@@ -380,6 +400,19 @@ independent cryptographic and implementation review is complete.
   vulnerabilities. `cargo audit` exited zero with no vulnerability finding and
   the same four allowed upstream/vendor warnings documented above:
   `bincode 1.3.3`, `memmap2 0.9.10`, `rand 0.8.5` and yanked `spin 0.9.8`.
+- The main production HTML now escapes server/proof strings at the remaining
+  reviewed raw-HTML sinks, renders provider-derived sync-plan text through DOM
+  `textContent`, and has no HTML event-handler attributes. Its meta CSP denies
+  by default, permits scripts only from self plus the exact SHA-256 of each
+  source inline block, and permits WebAssembly explicitly without permitting
+  arbitrary inline script. A unit test recomputes every hash and rejects an
+  inline-handler regression. Strict TypeScript, the complete **335 passing**
+  Web unit suite, a production Vite bundle, and an in-app Chromium load/click
+  smoke completed with no CSP or runtime warning/error. GitHub Pages cannot
+  express `frame-ancestors` through a meta policy, so the deployed edge must
+  still add and verify a header policy (including `frame-ancestors 'none'`)
+  that is at least as strict; this local result is not deployed-origin
+  acceptance.
 
 No public-network Lightning node, real funds, external WebPKI Cashu mint,
 production catalog, remote PIR server or production database participated in
@@ -420,3 +453,183 @@ The privacy verdict is unchanged: invoices, payment hashes, preimages and
 payer data remain outside PIR providers and the PIR query wire. The residual
 shared-issuer timing correlation described above remains, which is why the
 strict default selects provider and payment method independently for each leg.
+
+## Post-delta current-tree note — 2026-07-28
+
+This note records code facts and narrowly scoped local evidence added after the
+dated review above. It is not a new complete security-review verdict, aggregate
+current-tree pass record or substitute for pushed CI.
+
+- A later red-team P0 found that an exact issuer-signed shared-redeem replay
+  could deliver a second provider grant because issuer atomic redeem had no
+  separate provider-local delivery claim. It also found that exact grant
+  successors constructed from cloned ProviderStore state could be byte-identical
+  at the external CAS boundary. The fixes derive the wire idempotency key from a
+  deterministic per-provider-secret HMAC of the exact credential coordinates,
+  verify the canonical issuer-signed success, and only then claim a separately
+  domain-separated HMAC local-delivery key in ProviderStore synthetic namespace
+  `0x8001`. First claim alone grants; providers retain independent secrets and
+  stores and do not share a spent set. Every grant transition now includes a
+  fresh nonzero 256-bit OS-RNG nonce; provider-local spend, Free-IP and final
+  Standard-Cashu grant advance `spend_seq`, so a cloned exact race has one
+  anchored winner and one fail-closed loser. Independent detailed databases are
+  not supported active/active replicas.
+- The browser quote-claim private key, redeem wire idempotency key and local
+  delivery key are distinct. Only the HMAC-derived local key/digest and minimal
+  namespace bookkeeping may occupy the spent row; invoice, payment hash,
+  preimage, token/raw credential and exact token timestamp remain absent. The
+  credential binding's `amount` is also independent from clearing
+  `accepted_value`; only the latter equals provider credit plus issuer fee.
+- Outcome-unknown shared redeem permits exact replay only to a low-level caller
+  that explicitly retained the identical proof. Official Web burns/deletes
+  before send and does not auto-retry; loss of `AUTH_GRANTED` after the local
+  claim consumes the entitlement. Focused current-tree results are 88/88
+  `pir-service-store` tests and 5/5 provider-clearing shared-grant tests. The
+  complete local matrix and pushed CI remain **pending**.
+- This correction reuses ProviderStore schema v7; it is not a migration. First
+  activation is clean and forward-only. Recovery from any older local store or
+  issuer replay history requires stopping every old process and rotating either
+  the per-provider idempotency secret or clearing authorization digest/epoch.
+  Reusing an empty local-claim set with old exact issuer replay history is
+  forbidden.
+- Provider settlement now has a schema-v2 SQLite detailed-state adapter with a
+  random store-instance namespace, explicit `Pending`/`Payout`/`StatusPending`
+  floor phases, history commitments and explicit authenticated recovery. Its
+  bundled floor is local/test-only. Current-tree remote protocol/client/store
+  and domain adapters are implemented, and provider/issuer application wiring
+  accepts the shared pinned-HTTPS deployment config without local fallback;
+  they have not yet received a complete current-tree security closeout or a
+  production deployment. In the strict topology provider 0, provider 1 and
+  their independently selected issuers require separately authenticated and
+  operated authority instances whose observations are not pooled; one shared
+  service would add a common timing, administration and availability observer
+  even if its namespaces were access-controlled.
+- `StrictHttpsProviderSettlementTransportV1` supplies a concrete
+  WebPKI-plus-leaf-SPKI-pin provider-to-issuer adapter. Its constructor requires
+  one or two distinct pins and has no unpinned fallback. It accepts only HTTP
+  200 as success, preserves exact endpoint/media-type bindings and conservative
+  outcome-unknown semantics after possible request transmission. It has not
+  been deployed or accepted at a production edge.
+- `IssuerPayoutOutboxWorkerV1` now exists. It persists `InFlight` before first
+  submission and reconciles rather than resubmitting after restart or an
+  ambiguous result. The shipped `NoFundsPayoutExecutorV1` is permanently
+  disabled. No real-funds adapter exists, and a future adapter must supply a
+  linearizable durable command-ID submission/lookup primitive or equivalent
+  no-submit fence. A local worker lease is not external exactly-once authority.
+- The Signet backup receipt is a strict, atomically replaced **operator
+  assertion** bound to `getinfo` plus the current `staticbackup` digest. It does
+  not prove an offline copy exists or restores. SCB/`staticbackup` supports
+  channel recovery; it is not a live/dynamic `lightningd.sqlite3` backup and
+  does not replace datastore-specific replication/backup and restore drills.
+- A browser/two-issuer/two-provider no-funds harness now extends generated-WASM
+  direct-receipt/BAT admission through proof-bound Merkle preflight, one real
+  encrypted two-server DPF query and an explicit inclusion/absence verdict.
+  It still uses `NoSevHost`, synthetic report/database-proof material and an
+  all-zero database, so it is not production identity, hardware-attestation or
+  production-data evidence. The complete-query Free/ARC extension passed a
+  dedicated local branch run after its admission-only predecessor. Later server
+  edits mean the final coordinated browser matrix and pushed CI must still rerun
+  it; this is neither deployed-origin nor final-current-tree evidence.
+- The CDK ignored case now spends authenticated provider custody through a
+  second independent NUT-03 client and expects first-custody
+  `UNSPENT -> SPENT` plus successor-custody `UNSPENT` without argv bearer
+  exposure. After two earlier branch passes, the final 2026-07-28 current-tree
+  default-mode runner exited 0: its current admin/WASM build succeeded and its
+  Chromium, native-WASM and provider-custody cases each passed 1/1. The run
+  performed two real NUT-03 swaps and four exact NUT-07 observations against
+  the disposable loopback mint, then left no owned CDK child or private runtime
+  directory. The gate first caught and closed a required synthetic leaf-SPKI
+  field omission and an obsolete ignored-test import. The older CDK evidence
+  above proves only original-input `SPENT` and initial custody `UNSPENT`.
+- The final 2026-07-28 current-tree CLN regtest runner exited 0 after rebuilding
+  WASM offline. One disposable `bitcoind` and issuer/router/payer CLN topology
+  forced the payments over two announced channels. Acquisition/recovery passed
+  3/3 and the joined two-provider verified-query phase passed 1/1; cleanup left
+  no owned Core/CLN process or private runtime directory. This validates the
+  stated local adapter and synthetic provider/query composition only. It is not
+  Signet, public-Lightning, real-funds, production-attestation or deployed-edge
+  evidence, and ARC remains experimental.
+- Native strict-pair selection now matches the Web guard: after each signed
+  credential binding has supplied the protocol-required 99-byte ARC key shape,
+  the SDK reuses the pinned ARC adapter's typed P-256 decode, byte-exact
+  re-encode and domain-separated public-key fingerprint. It rejects malformed,
+  zero/identity, non-canonical or reused raw ARC keys before considering the
+  shared-issuer override, including when provider, policy, directory-operator,
+  issuer and endpoint identities are otherwise independent. Positive distinct-
+  key and negative copied-key tests passed in the coordinated non-server
+  package run; the complete final matrix and pushed CI remain required.
+- ARC remains experimental and production-disabled pending independent
+  cryptographic and implementation review.
+- Harmony V2Full now keeps the ready filename unchanged and holds only an
+  advisory inode lock across authorization. Rejection or disconnect before the
+  first main dispatch performs no attacker-driven rename/fsync/refill; first
+  dispatch verifies the inode and durably unlinks it before PRP exposure. The
+  pool also has an exact binding marker and conservative stable-snapshot
+  reconciliation. mmap ownership is now `Arc<Mmap>` through the worker lifetime and the
+  pool joins the worker on drop; the lifecycle/lock-order review found no
+  remaining UAF or ABBA blocker under the documented immutable-local-POSIX
+  filesystem contract.
+- This change intentionally leaves a bounded availability tradeoff: a
+  canonical but invalid proof, especially one requiring Standard Cashu or
+  shared-issuer online authorization, can hold a scarce ready inode until the
+  bounded check or pre-authorization deadline ends. It cannot consume/refill
+  that hint. A new online-V2Full sub-limit always leaves one global AUTH permit
+  and one ready entry for provider-local verification, but the online slice can
+  still be saturated. Source-aware edge admission or a reviewed puzzle, tight
+  concurrency/dependency deadlines, pool headroom and saturation testing are a
+  production activation gate; finite semaphores alone do not promise fair
+  online admission against a distributed attacker. Online V2Full now acquires
+  its narrower permit before the global AUTH permit and retains it through
+  pending dispatch/drop. Its 30-second-or-shorter dispatch deadline is armed
+  only after the complete encrypted `AUTH_GRANTED` frame is written and flushed,
+  so a slow successful flush cannot consume the dispatch window. The absolute
+  instant is then immutable and bounds each pending read plus any Ping/Pong
+  response. Apart from bounded WebSocket control handling, the only accepted
+  application frame is the exact encrypted canonical `HarmonyHintsV2` request
+  for the grant-bound database; malformed, cleartext, wrong-database and
+  unrelated application frames close and release the unexposed reservation.
+- Floor-aware reservation uses a non-blocking attempt on the cross-process
+  capacity lock and counts only currently lockable paths from the current
+  process's fully validated, ready `PoolState` snapshot. A corrupt or
+  not-yet-validated canonical-looking disk file cannot satisfy the floor. A
+  `SelectedLocked` queue head rotates behind the bounded snapshot so a peer-held
+  inode cannot hide a later usable candidate. Each successful online decision
+  leaves one validated, currently lockable entry at that instant, even while the
+  pool is partially filled or opened by more than one process. It does not
+  reserve that entry for a provider-local caller or promise fairness, priority or
+  immediate admission.
+- The 2026-07-28 focused closeout passed 54/54 hint-pool unit tests, including a
+  real child-process barrier test for the cross-process online floor, and 64/64
+  `unified_server` unit tests. The real Harmony pool provider-process lifecycle
+  E2E passed three consecutive runs, and the selected server clippy targets
+  passed with warnings denied. These are focused results, not the final complete
+  matrix.
+- A final independent read-only gate over this Harmony code found no new
+  implementation P0/P1. Its non-blocking residuals remain explicit: the child
+  floor test sequences a parent-held reservation before releasing the child's
+  already-loaded snapshot rather than randomizing simultaneous capacity-lock
+  acquisition; one test helper's final `wait_with_output` has no parent-side
+  watchdog; cross-process online and provider-local callers still contend on a
+  non-fair `try_lock`; and real WebSocket backpressure/Ping integration plus an
+  explicit global-AUTH-full permit-return regression would strengthen future
+  DoS testing. None changes the provider-local no-fairness/no-immediate-admission
+  boundary or removes the production saturation gate.
+- The extended CDK lifecycle and forced two-hop three-node CLN runner passed
+  final 2026-07-28 current-tree opt-in reruns. The feature-gated
+  Standard-Cashu/Free two-provider process cell and complete-query two-provider
+  browser harness still have only earlier dedicated local branch passes; later
+  source changes leave those two historical until the final coordinated reruns
+  and pushed CI. None is external-mint, public-Lightning, deployed-origin or
+  real-funds acceptance.
+- Pre-marker and current binaries are not live-compatible on one pool
+  directory. The runbook now requires a full drain, a fresh empty private
+  directory for the new binary, and a preserved separate directory for any old
+  binary rollback. Markerless recognized pool state, mismatched/corrupt markers
+  and exact legacy tmp/consumed residue fail startup without automatic deletion;
+  an older reserved artifact under a valid matching marker is instead recovered
+  conservatively under lock.
+
+No aggregate current-tree test count or complete security-closeout result is
+asserted here. The final coordinated matrix, full local command and pushed CI
+must supply that evidence; every dedicated result above stands only for its
+stated local/no-funds boundary.

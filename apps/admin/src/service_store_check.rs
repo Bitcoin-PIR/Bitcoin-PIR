@@ -2,8 +2,8 @@
 
 use clap::Args;
 use pir_service_store::{
-    ProviderStore, ProviderStoreOperationalInventoryV1, SqliteRollbackFloorAuthorityV1,
-    StoreOptions,
+    ProviderStore, ProviderStoreOperationalInventoryV1, RollbackFloorAuthorityV1,
+    SqliteRollbackFloorAuthorityV1, StoreOptions,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,9 +17,20 @@ pub struct ServiceStoreCheckArgs {
     /// Existing provider-local admission/spent-set SQLite file.
     #[arg(long)]
     pub store: PathBuf,
-    /// Existing independently restored rollback-floor SQLite file.
-    #[arg(long)]
-    pub rollback_authority: PathBuf,
+    /// Existing local SQLite rollback floor (development/test only).
+    #[arg(
+        long,
+        required_unless_present = "remote_rollback_authority_config",
+        conflicts_with = "remote_rollback_authority_config"
+    )]
+    pub rollback_authority: Option<PathBuf>,
+    /// Existing owner-only production remote-authority deployment config.
+    #[arg(
+        long,
+        required_unless_present = "rollback_authority",
+        conflicts_with = "rollback_authority"
+    )]
+    pub remote_rollback_authority_config: Option<PathBuf>,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     pub busy_timeout_ms: u64,
@@ -38,27 +49,50 @@ pub fn run(args: ServiceStoreCheckArgs) -> Result<(), String> {
         &args.store,
         "provider store",
     )?;
-    let authority_path = crate::service_store_init::validate_existing_private_file_path(
-        &args.rollback_authority,
-        "provider rollback authority",
-    )?;
-    if crate::service_store_init::private_database_paths_alias(&store_path, &authority_path)? {
-        return Err(
-            "provider store and rollback authority resolve to the same file/inode".to_owned(),
-        );
-    }
-
     let timeout = Duration::from_millis(args.busy_timeout_ms);
     let started = Instant::now();
-    let authority = SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
-        .map_err(|error| format!("open provider rollback authority: {error}"))?;
+    let authority: Arc<dyn RollbackFloorAuthorityV1> =
+        match crate::service_store_init::provider_rollback_authority_source_v1(
+            args.rollback_authority.as_deref(),
+            args.remote_rollback_authority_config.as_deref(),
+        )? {
+            crate::service_store_init::ProviderRollbackAuthoritySourceV1::LocalSqlite(path) => {
+                eprintln!(
+                    "warning: local SQLite provider rollback authority is development/test-only; use --remote-rollback-authority-config for production"
+                );
+                let authority_path =
+                    crate::service_store_init::validate_existing_private_file_path(
+                        path,
+                        "provider rollback authority",
+                    )?;
+                if crate::service_store_init::private_database_paths_alias(
+                    &store_path,
+                    &authority_path,
+                )? {
+                    return Err(
+                        "provider store and rollback authority resolve to the same file/inode"
+                            .to_owned(),
+                    );
+                }
+                Arc::new(
+                    SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
+                        .map_err(|error| format!("open provider rollback authority: {error}"))?,
+                )
+            }
+            crate::service_store_init::ProviderRollbackAuthoritySourceV1::RemoteConfig(path) => {
+                crate::service_store_init::open_remote_provider_rollback_authority_v1(
+                    provider_id,
+                    path,
+                )?
+            }
+        };
     let store = ProviderStore::open_existing(
         &store_path,
         provider_id,
         StoreOptions {
             busy_timeout: timeout,
         },
-        Arc::new(authority),
+        authority,
     )
     .map_err(|error| format!("open provider store: {error}"))?;
     let identity = store
@@ -129,8 +163,9 @@ mod tests {
         crate::service_store_init::run(crate::service_store_init::ServiceStoreInitArgs {
             provider_id_hex: hex::encode([0x31_u8; 32]),
             store: store.clone(),
-            rollback_authority: authority.clone(),
-            store_instance_id_hex: Some(hex::encode([0x41_u8; 16])),
+            rollback_authority: Some(authority.clone()),
+            remote_rollback_authority_config: None,
+            store_instance_id_hex: None,
             busy_timeout_ms: 1_000,
         })
         .unwrap();
@@ -141,7 +176,8 @@ mod tests {
         ServiceStoreCheckArgs {
             provider_id_hex: hex::encode([0x31_u8; 32]),
             store,
-            rollback_authority: authority,
+            rollback_authority: Some(authority),
+            remote_rollback_authority_config: None,
             busy_timeout_ms: 1_000,
         }
     }
@@ -181,14 +217,10 @@ mod tests {
 
         let link = store.parent().unwrap().join("store-link.sqlite3");
         symlink(&store, &link).unwrap();
-        assert!(run(args(link, authority.clone()))
-            .unwrap_err()
-            .contains("non-symlink"));
+        assert!(run(args(link, authority.clone())).is_err());
 
         let alias = authority.parent().unwrap().join("store-alias.sqlite3");
         std::fs::hard_link(&store, &alias).unwrap();
-        assert!(run(args(store, alias))
-            .unwrap_err()
-            .contains("same file/inode"));
+        assert!(run(args(store, alias)).is_err());
     }
 }

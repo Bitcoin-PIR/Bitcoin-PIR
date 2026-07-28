@@ -538,11 +538,12 @@ fn decode_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N],
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keygen::private_tempdir_v1 as private_tempdir;
     use ed25519_dalek::SigningKey;
 
     #[test]
     fn free_policy_toml_signs_and_verifies() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let key_path = directory.path().join("policy.key");
         let config_path = directory.path().join("policy.toml");
         let output = directory.path().join("policy.bin");

@@ -51,6 +51,7 @@ use pir_service_protocol::{
     ProviderSettlementRegistrationExpectationV1, RetainedSettlementKeysetExpectationV1,
     ServicePolicyEpochFloorsV1, ServicePolicyV1, SettlementDestinationV1, MAX_SERVICE_VALUE_V1,
 };
+use zeroize::Zeroizing;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuerServiceErrorV1 {
@@ -1313,12 +1314,12 @@ impl SharedIssuerClearingServiceV1 {
     ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
         let envelope = ProviderRedeemEnvelopeV1::decode(canonical_envelope)
             .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
-        if envelope
-            .encode()
-            .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?
-            .as_slice()
-            != canonical_envelope
-        {
+        let exact_reencoding = Zeroizing::new(
+            envelope
+                .encode()
+                .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?,
+        );
+        if exact_reencoding.as_slice() != canonical_envelope {
             return Err(IssuerServiceErrorV1::InvalidRequest);
         }
         let provider = self

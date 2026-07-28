@@ -424,7 +424,8 @@ bpir-admin directory-artifact checkpoints \
 All inputs are bounded and parsed fail closed. Secret keys use a single-file-
 descriptor `O_NOFOLLOW`, owner and mode check; outputs are self-verified before
 an atomic same-directory write and are mode `0600`. Existing outputs are not
-replaced unless `--force` is explicit. `--force` changes only the local
+replaced unless `--force` is explicit. No-clobber creation is one atomic
+filesystem operation, including under concurrent invocations. `--force` changes only the local
 artifact file: key rotation, relay publishing and deployment remain separate
 operator actions. Publishing must send the emitted EVENT messages unchanged
 to every configured relay and persist the last `created_at` for each `d`
@@ -446,6 +447,12 @@ bpir-admin directory-artifact publish \
   --now-unix "$NOW" \
   --relay-timeout-seconds 60
 ```
+
+Run that exact command with `--validate-only` first. It performs the complete
+artifact, key-pin, time and relay-set validation and prints the same bounded
+relay-host/event-count/event-set-digest fields with `result=validated`, but it
+does not resolve, connect to or write to a relay. Removing only that flag is the
+explicit network-publication boundary for the reviewed frozen inputs.
 
 Before dialing, every EVENT is verified through the production entry or
 checkpoint parser against that key and time. Duplicate IDs, noncanonical bytes,

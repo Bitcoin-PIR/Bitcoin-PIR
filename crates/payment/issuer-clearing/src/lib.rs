@@ -23,7 +23,17 @@ use pir_service_protocol::{
     VerifiedPayoutExecutionV1, VerifiedPayoutSnapshotV1, VerifiedSettlementDepositV1,
 };
 use sha2::{Digest, Sha256};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+mod payout_worker;
+
+pub use payout_worker::{
+    ExternalPayoutCallResultV1, ExternalPayoutCommandV1, ExternalPayoutExecutionContextV1,
+    ExternalPayoutExecutorV1, ExternalPayoutOutcomeV1, ExternalPayoutReadinessV1,
+    IssuerPayoutOutboxWorkerV1, NoFundsPayoutExecutorV1, PayoutOutboxWorkerErrorV1,
+    PayoutOutboxWorkerProgressV1, PayoutWorkerClockV1, SystemPayoutWorkerClockV1,
+    MAX_PAYOUT_WORKER_LEASE_SECONDS_V1,
+};
 
 const BLIND_SETTLEMENT_NONCE_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-clearing/blind-settlement-dleq-nonce/v1";
@@ -140,7 +150,8 @@ fn verify_free(
     sink: &mut dyn SharedCredentialSpendSinkV1,
 ) -> Result<(), ServiceProtocolError> {
     let ticket = FreeAnonymousTicketV1::decode(input.canonical_credential)?;
-    if ticket.encode()?.as_slice() != input.canonical_credential
+    let exact_ticket = Zeroizing::new(ticket.encode()?);
+    if exact_ticket.as_slice() != input.canonical_credential
         || ticket.not_before < input.credential_binding.claims.not_before
         || ticket.not_after > input.credential_binding.claims.not_after
     {
@@ -179,7 +190,7 @@ fn verify_bat(
     sink: &mut dyn SharedCredentialSpendSinkV1,
 ) -> Result<(), ServiceProtocolError> {
     let proof = BitcoinPirCashuBatProofV1::decode(input.canonical_credential)?;
-    if proof.encode()?.as_slice() != input.canonical_credential {
+    if proof.encode_zeroizing()?.as_slice() != input.canonical_credential {
         return Err(invalid_credential("Cashu BAT proof is not canonical"));
     }
     let public_key: [u8; 33] = input

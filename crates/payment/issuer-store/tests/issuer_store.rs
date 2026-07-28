@@ -171,6 +171,12 @@ impl TestPath {
             .prefix("bitcoinpir-issuer-store-test-")
             .tempdir()
             .expect("create task-specific temporary directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict task-specific temporary directory permissions");
+        }
         let database = directory.path().join("issuer.sqlite3");
         Self {
             backup: directory.path().join("issuer-backup.sqlite3"),
@@ -1699,6 +1705,29 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
         assert!(matches!(
             IssuerStore::open_existing(
                 &link,
+                issuer_id(),
+                LightningNetworkV1::Regtest,
+                StoreOptions::default(),
+                target.authority.clone(),
+            ),
+            Err(StoreError::NotRegularDatabase(_))
+        ));
+
+        let hardlink = target._directory.path().join("issuer-hardlink.sqlite3");
+        std::fs::hard_link(&target.database, &hardlink).unwrap();
+        assert!(matches!(
+            IssuerStore::open_existing(
+                &hardlink,
+                issuer_id(),
+                LightningNetworkV1::Regtest,
+                StoreOptions::default(),
+                target.authority.clone(),
+            ),
+            Err(StoreError::NotRegularDatabase(_))
+        ));
+        assert!(matches!(
+            IssuerStore::open_existing(
+                &target.database,
                 issuer_id(),
                 LightningNetworkV1::Regtest,
                 StoreOptions::default(),

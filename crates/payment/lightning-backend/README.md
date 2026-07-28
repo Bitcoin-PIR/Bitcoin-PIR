@@ -13,8 +13,10 @@ keys or real funds.
 `CoreLightningBackendV1<UnixClnRpcTransportV1>` is a native, local-host
 production adapter, but nothing enables or invokes it by default. It follows
 Core Lightning's documented `invoice`/`listinvoices` JSON-RPC contract over a
-Unix socket. It verifies the socket type, owner, optional exact group,
-permissions, and inode across connect; bounds every frame; and uses the CLN
+Unix socket. It component-walks and rechecks the protected socket parent,
+supports exact mode-0700 same-UID or explicit owner/group mode-0710 cross-UID
+deployment, and verifies the socket type, owner, optional exact group,
+permissions, and inode across connect. It bounds every frame and uses the CLN
 double-newline framing. Production activation, node custody, backups, channel
 liquidity, monitoring, and any real-funds test still require the user's
 separate approval.

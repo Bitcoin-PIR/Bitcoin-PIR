@@ -394,7 +394,6 @@ impl AdmissionMethodCommitterV1 for StandardCashuAdmissionCommitterV1<'_> {
                 | CashuClientErrorV1::InvalidMintScalar
                 | CashuClientErrorV1::MintResponseMismatch
                 | CashuClientErrorV1::MintDleqVerificationFailed
-                | CashuClientErrorV1::MintDefiniteRejection
                 | CashuClientErrorV1::InvalidCashuToken,
             ) => Err(AdmissionCommitErrorV1::InvalidOrSpent),
             Err(

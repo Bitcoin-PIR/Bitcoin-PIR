@@ -12,7 +12,9 @@ use crate::merkle_verify::{
     fetch_tree_tops, verify_bucket_merkle_batch_dpf, verify_tree_tops_super_root, BucketMerkleItem,
     TreeTop,
 };
-use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
+use crate::protocol::{
+    decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
+};
 use crate::service::{
     dangerous_unpaired_authorize_retained_service_redemption_v1,
     dangerous_unpaired_authorize_service_operation_v1, fetch_retained_service_redemption_v1,
@@ -74,6 +76,10 @@ const CHUNK_SLOTS_PER_BIN: usize = 3;
 
 /// Number of PBC hash functions.
 const NUM_HASHES: usize = 3;
+
+/// Successful DPF batch response variants (mirror `runtime::protocol`).
+const RESP_INDEX_BATCH: u8 = 0x11;
+const RESP_CHUNK_BATCH: u8 = 0x21;
 
 // ─── Pure request-shape helpers (extracted for Kani verification) ──────────
 
@@ -1736,8 +1742,20 @@ impl DpfClient {
         });
 
         // Parse responses
-        let results0 = decode_batch_response(&resp0[4..])?; // skip length prefix
-        let results1 = decode_batch_response(&resp1[4..])?;
+        let results0 = decode_batch_response(
+            &resp0,
+            RESP_INDEX_BATCH,
+            "RESP_INDEX_BATCH (0x11)",
+            0,
+            "INDEX server0",
+        )?;
+        let results1 = decode_batch_response(
+            &resp1,
+            RESP_INDEX_BATCH,
+            "RESP_INDEX_BATCH (0x11)",
+            0,
+            "INDEX server1",
+        )?;
         // Server-declared shape must cover the K × INDEX_CUCKOO_NUM_HASHES
         // request before the results[group][h] indexing below.
         check_batch_response_shape(&results0, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server0")?;
@@ -1954,8 +1972,21 @@ impl DpfClient {
                 items: items_s1,
             });
 
-            let results0 = decode_batch_response(&resp0[4..])?;
-            let results1 = decode_batch_response(&resp1[4..])?;
+            let expected_round_id = round_id as u16;
+            let results0 = decode_batch_response(
+                &resp0,
+                RESP_INDEX_BATCH,
+                "RESP_INDEX_BATCH (0x11)",
+                expected_round_id,
+                "INDEX server0",
+            )?;
+            let results1 = decode_batch_response(
+                &resp1,
+                RESP_INDEX_BATCH,
+                "RESP_INDEX_BATCH (0x11)",
+                expected_round_id,
+                "INDEX server1",
+            )?;
             // Server-declared shape must cover the K × INDEX_CUCKOO_NUM_HASHES
             // request before the results[group][h] indexing below.
             check_batch_response_shape(&results0, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server0")?;
@@ -2170,8 +2201,21 @@ impl DpfClient {
             });
 
             // Parse and XOR results
-            let results0 = decode_batch_response(&resp0[4..])?;
-            let results1 = decode_batch_response(&resp1[4..])?;
+            let expected_round_id = round_id as u16;
+            let results0 = decode_batch_response(
+                &resp0,
+                RESP_CHUNK_BATCH,
+                "RESP_CHUNK_BATCH (0x21)",
+                expected_round_id,
+                "CHUNK server0",
+            )?;
+            let results1 = decode_batch_response(
+                &resp1,
+                RESP_CHUNK_BATCH,
+                "RESP_CHUNK_BATCH (0x21)",
+                expected_round_id,
+                "CHUNK server1",
+            )?;
             // Server-declared shape must cover the K × CHUNK_CUCKOO_NUM_HASHES
             // request before the results[group][h] indexing below.
             check_batch_response_shape(&results0, k, CHUNK_CUCKOO_NUM_HASHES, "CHUNK server0")?;
@@ -3053,10 +3097,12 @@ fn encode_batch_query(
     buf
 }
 
-/// Decode a batch response into per-group, per-key results.
+/// Decode one complete length-prefixed batch response into per-group,
+/// per-key results.
 ///
 /// Wire format matches `apps/server/src/protocol.rs::encode_batch_result`:
 /// ```text
+/// [4B body_len LE]
 /// [1B variant]
 /// [2B round_id LE]
 /// [1B num_groups]
@@ -3066,45 +3112,124 @@ fn encode_batch_query(
 ///     [2B res_len LE][res_data]
 /// ```
 ///
-/// Note: no `level` byte on the wire.
-fn decode_batch_response(data: &[u8]) -> PirResult<Vec<Vec<Vec<u8>>>> {
+///
+/// Note: no `level` byte is present on the wire. The caller supplies the
+/// response variant and round ID bound to the request it just sent. Both are
+/// authenticated protocol state and therefore must be checked before any
+/// attacker-controlled result bytes are accepted.
+fn decode_batch_response(
+    frame: &[u8],
+    expected_variant: u8,
+    expected_variant_name: &'static str,
+    expected_round_id: u16,
+    context: &str,
+) -> PirResult<Vec<Vec<Vec<u8>>>> {
+    // `PirTransport::recv` normally returns exactly one complete record, but
+    // keep the decoder independently fail-closed for mock/custom transports.
+    if frame.len() < 4 {
+        return Err(PirError::Decode(format!(
+            "{context}: truncated batch response length prefix"
+        )));
+    }
+    let body_len = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
+    let expected_frame_len = 4usize
+        .checked_add(body_len)
+        .ok_or_else(|| PirError::Decode(format!("{context}: batch response length overflow")))?;
+    if frame.len() != expected_frame_len {
+        return Err(PirError::Decode(format!(
+            "{context}: batch response length mismatch: prefix declares {body_len} body bytes, frame has {}",
+            frame.len().saturating_sub(4)
+        )));
+    }
+
+    let data = &frame[4..];
     if data.is_empty() {
-        return Err(PirError::Decode("empty batch response".into()));
+        return Err(PirError::Decode(format!(
+            "{context}: empty batch response body"
+        )));
     }
 
-    // Skip variant byte
-    let _variant = data[0];
-    let mut pos = 1;
-
-    // [round_id][num_groups][results_per_group]
-    if pos + 4 > data.len() {
-        return Err(PirError::Decode("truncated batch response header".into()));
+    let variant = data[0];
+    if variant == RESP_ERROR {
+        // Canonical runtime envelope: [0xff][u32 msg_len LE][utf8 msg].
+        if data.len() < 5 {
+            return Err(PirError::Decode(format!(
+                "{context}: truncated RESP_ERROR envelope"
+            )));
+        }
+        let msg_len = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
+        let expected_error_len = 5usize
+            .checked_add(msg_len)
+            .ok_or_else(|| PirError::Decode(format!("{context}: RESP_ERROR length overflow")))?;
+        if data.len() != expected_error_len {
+            return Err(PirError::Decode(format!(
+                "{context}: RESP_ERROR length mismatch: envelope declares {msg_len} message bytes, body has {}",
+                data.len().saturating_sub(5)
+            )));
+        }
+        let message = std::str::from_utf8(&data[5..]).map_err(|_| {
+            PirError::Decode(format!("{context}: RESP_ERROR message is not valid UTF-8"))
+        })?;
+        return Err(PirError::ServerError(format!("{context}: {message}")));
     }
-    let _round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
-    pos += 2;
-    let num_groups = data[pos] as usize;
-    pos += 1;
-    let results_per_group = data[pos] as usize;
-    pos += 1;
+    if variant != expected_variant {
+        return Err(PirError::UnexpectedResponse {
+            expected: expected_variant_name,
+            actual: format!("0x{variant:02x}"),
+        });
+    }
+
+    // [variant][round_id][num_groups][results_per_group]
+    if data.len() < 5 {
+        return Err(PirError::Decode(format!(
+            "{context}: truncated batch response header"
+        )));
+    }
+    let round_id = u16::from_le_bytes(data[1..3].try_into().unwrap());
+    if round_id != expected_round_id {
+        return Err(PirError::Protocol(format!(
+            "{context}: batch response round_id mismatch: expected {expected_round_id}, got {round_id}"
+        )));
+    }
+    let num_groups = data[3] as usize;
+    let results_per_group = data[4] as usize;
+    let mut pos: usize = 5;
 
     let mut results = Vec::with_capacity(num_groups);
 
     for _ in 0..num_groups {
         let mut group_results = Vec::with_capacity(results_per_group);
         for _ in 0..results_per_group {
-            if pos + 2 > data.len() {
-                return Err(PirError::Decode("truncated result length".into()));
+            let length_end = pos.checked_add(2).ok_or_else(|| {
+                PirError::Decode(format!("{context}: result length offset overflow"))
+            })?;
+            if length_end > data.len() {
+                return Err(PirError::Decode(format!(
+                    "{context}: truncated result length"
+                )));
             }
-            let result_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-            pos += 2;
+            let result_len = u16::from_le_bytes(data[pos..length_end].try_into().unwrap()) as usize;
+            pos = length_end;
 
-            if pos + result_len > data.len() {
-                return Err(PirError::Decode("truncated result data".into()));
+            let result_end = pos.checked_add(result_len).ok_or_else(|| {
+                PirError::Decode(format!("{context}: result data offset overflow"))
+            })?;
+            if result_end > data.len() {
+                return Err(PirError::Decode(format!(
+                    "{context}: truncated result data"
+                )));
             }
-            group_results.push(data[pos..pos + result_len].to_vec());
-            pos += result_len;
+            group_results.push(data[pos..result_end].to_vec());
+            pos = result_end;
         }
         results.push(group_results);
+    }
+
+    if pos != data.len() {
+        return Err(PirError::Decode(format!(
+            "{context}: trailing bytes after batch response: {}",
+            data.len() - pos
+        )));
     }
 
     Ok(results)
@@ -3118,30 +3243,31 @@ fn decode_batch_response(data: &[u8]) -> PirResult<Vec<Vec<Vec<u8>>>> {
 /// attacker-controlled wire bytes with no tie to the K-padded request.
 /// Without this check, a malicious server answering with fewer groups
 /// (or fewer per-group results) panics the client on the out-of-bounds
-/// index (C3, docs/CODE_REVIEW_2026-06.md). Under-delivery is a decode
-/// error; extra trailing groups/results are tolerated and ignored.
+/// index (C3, docs/CODE_REVIEW_2026-06.md). Both under-delivery and
+/// over-delivery are decode errors: the response must be the exact public
+/// padded shape requested by the client.
 fn check_batch_response_shape(
     results: &[Vec<Vec<u8>>],
-    min_groups: usize,
-    min_results_per_group: usize,
+    expected_groups: usize,
+    expected_results_per_group: usize,
     context: &str,
 ) -> PirResult<()> {
-    if results.len() < min_groups {
+    if results.len() != expected_groups {
         return Err(PirError::Decode(format!(
-            "{}: batch response has {} groups, expected at least {}",
+            "{}: batch response has {} groups, expected exactly {}",
             context,
             results.len(),
-            min_groups
+            expected_groups
         )));
     }
-    for (g, group) in results.iter().enumerate().take(min_groups) {
-        if group.len() < min_results_per_group {
+    for (g, group) in results.iter().enumerate() {
+        if group.len() != expected_results_per_group {
             return Err(PirError::Decode(format!(
-                "{}: batch response group {} has {} results, expected at least {}",
+                "{}: batch response group {} has {} results, expected exactly {}",
                 context,
                 g,
                 group.len(),
-                min_results_per_group
+                expected_results_per_group
             )));
         }
     }
@@ -4637,24 +4763,40 @@ mod tests {
         assert!(decode_utxo_entries(&[]).unwrap().is_empty());
     }
 
-    /// Encode a server batch response of an arbitrary (possibly
-    /// malicious) shape, matching `decode_batch_response`'s wire format.
-    fn make_batch_response_body(
+    /// Encode a complete server batch-response frame of an arbitrary
+    /// (possibly malicious) shape, matching `decode_batch_response`'s wire
+    /// format.
+    fn make_batch_response_frame(
+        variant: u8,
+        round_id: u16,
         num_groups: usize,
         results_per_group: usize,
         result: &[u8],
     ) -> Vec<u8> {
-        let mut data = vec![0x91]; // variant byte (ignored by the decoder)
-        data.extend_from_slice(&0u16.to_le_bytes()); // round_id
-        data.push(num_groups as u8);
-        data.push(results_per_group as u8);
+        let mut body = vec![variant];
+        body.extend_from_slice(&round_id.to_le_bytes());
+        body.push(num_groups as u8);
+        body.push(results_per_group as u8);
         for _ in 0..num_groups {
             for _ in 0..results_per_group {
-                data.extend_from_slice(&(result.len() as u16).to_le_bytes());
-                data.extend_from_slice(result);
+                body.extend_from_slice(&(result.len() as u16).to_le_bytes());
+                body.extend_from_slice(result);
             }
         }
-        data
+        let mut frame = Vec::with_capacity(4 + body.len());
+        frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&body);
+        frame
+    }
+
+    fn decode_index_batch(frame: &[u8], round_id: u16) -> PirResult<Vec<Vec<Vec<u8>>>> {
+        decode_batch_response(
+            frame,
+            RESP_INDEX_BATCH,
+            "RESP_INDEX_BATCH (0x11)",
+            round_id,
+            "test INDEX",
+        )
     }
 
     /// A server declaring fewer groups (or fewer per-group results) than
@@ -4663,43 +4805,115 @@ mod tests {
     #[test]
     fn check_batch_response_shape_rejects_undersized_response() {
         // num_groups = 1 against a K=75 request.
-        let one_group = decode_batch_response(&make_batch_response_body(
-            1,
-            INDEX_CUCKOO_NUM_HASHES,
-            &[0; 4],
-        ))
+        let one_group = decode_index_batch(
+            &make_batch_response_frame(RESP_INDEX_BATCH, 0, 1, INDEX_CUCKOO_NUM_HASHES, &[0; 4]),
+            0,
+        )
         .unwrap();
         let err = check_batch_response_shape(&one_group, 75, INDEX_CUCKOO_NUM_HASHES, "test")
             .unwrap_err();
         assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
 
         // Full group count, but results_per_group = 1 instead of 2.
-        let short_groups =
-            decode_batch_response(&make_batch_response_body(75, 1, &[0; 4])).unwrap();
+        let short_groups = decode_index_batch(
+            &make_batch_response_frame(RESP_INDEX_BATCH, 0, 75, 1, &[0; 4]),
+            0,
+        )
+        .unwrap();
         let err = check_batch_response_shape(&short_groups, 75, INDEX_CUCKOO_NUM_HASHES, "test")
             .unwrap_err();
         assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
 
         // Empty response (num_groups = 0).
-        let empty = decode_batch_response(&make_batch_response_body(0, 0, &[])).unwrap();
+        let empty = decode_index_batch(
+            &make_batch_response_frame(RESP_INDEX_BATCH, 0, 0, 0, &[]),
+            0,
+        )
+        .unwrap();
         assert!(check_batch_response_shape(&empty, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_err());
     }
 
-    /// The exact shape an honest server sends passes; over-delivery is
-    /// tolerated (the callers index only the requested groups/results).
+    /// The exact shape an honest server sends passes; over-delivery is a
+    /// protocol violation rather than unbound data the caller silently ignores.
     #[test]
-    fn check_batch_response_shape_accepts_honest_and_oversized() {
-        let full = decode_batch_response(&make_batch_response_body(
-            75,
-            INDEX_CUCKOO_NUM_HASHES,
-            &[0; 4],
-        ))
+    fn check_batch_response_shape_accepts_honest_and_rejects_oversized() {
+        let full = decode_index_batch(
+            &make_batch_response_frame(RESP_INDEX_BATCH, 0, 75, INDEX_CUCKOO_NUM_HASHES, &[0; 4]),
+            0,
+        )
         .unwrap();
         assert!(check_batch_response_shape(&full, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_ok());
 
-        let oversized = decode_batch_response(&make_batch_response_body(80, 3, &[0; 4])).unwrap();
+        let oversized = decode_index_batch(
+            &make_batch_response_frame(RESP_INDEX_BATCH, 0, 80, 3, &[0; 4]),
+            0,
+        )
+        .unwrap();
         assert!(
-            check_batch_response_shape(&oversized, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_ok()
+            check_batch_response_shape(&oversized, 75, INDEX_CUCKOO_NUM_HASHES, "test").is_err()
+        );
+    }
+
+    #[test]
+    fn decode_batch_response_rejects_server_error_unknown_opcode_and_wrong_round() {
+        let message = b"service authorization missing";
+        let mut error_body = vec![RESP_ERROR];
+        error_body.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        error_body.extend_from_slice(message);
+        let mut error_frame = Vec::with_capacity(4 + error_body.len());
+        error_frame.extend_from_slice(&(error_body.len() as u32).to_le_bytes());
+        error_frame.extend_from_slice(&error_body);
+        let err = decode_index_batch(&error_frame, 0).unwrap_err();
+        assert!(
+            matches!(err, PirError::ServerError(ref message) if message.contains("service authorization missing")),
+            "got {err:?}"
+        );
+
+        let unknown = make_batch_response_frame(0x91, 0, 1, 1, &[0; 4]);
+        let err = decode_index_batch(&unknown, 0).unwrap_err();
+        assert!(
+            matches!(err, PirError::UnexpectedResponse { ref actual, .. } if actual == "0x91"),
+            "got {err:?}"
+        );
+
+        let wrong_round = make_batch_response_frame(RESP_INDEX_BATCH, 8, 1, 1, &[0; 4]);
+        let err = decode_index_batch(&wrong_round, 7).unwrap_err();
+        assert!(
+            matches!(err, PirError::Protocol(ref message) if message.contains("expected 7, got 8")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_batch_response_rejects_truncated_and_trailing_frames() {
+        let err = decode_index_batch(&[1, 2, 3], 0).unwrap_err();
+        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
+
+        let mut truncated_result = make_batch_response_frame(RESP_INDEX_BATCH, 0, 1, 1, &[0; 4]);
+        // First result length starts after 4B frame prefix + 5B batch header.
+        truncated_result[9..11].copy_from_slice(&5u16.to_le_bytes());
+        let err = decode_index_batch(&truncated_result, 0).unwrap_err();
+        assert!(
+            matches!(err, PirError::Decode(ref message) if message.contains("truncated result data")),
+            "got {err:?}"
+        );
+
+        let mut outer_trailing = make_batch_response_frame(RESP_INDEX_BATCH, 0, 1, 1, &[0; 4]);
+        outer_trailing.push(0xaa);
+        let err = decode_index_batch(&outer_trailing, 0).unwrap_err();
+        assert!(
+            matches!(err, PirError::Decode(ref message) if message.contains("length mismatch")),
+            "got {err:?}"
+        );
+
+        let mut body_trailing = make_batch_response_frame(RESP_INDEX_BATCH, 0, 1, 1, &[0; 4]);
+        body_trailing.push(0xbb);
+        let body_len = (body_trailing.len() - 4) as u32;
+        body_trailing[..4].copy_from_slice(&body_len.to_le_bytes());
+        let err = decode_index_batch(&body_trailing, 0).unwrap_err();
+        assert!(
+            matches!(err, PirError::Decode(ref message) if message.contains("trailing bytes")),
+            "got {err:?}"
         );
     }
 
@@ -4737,10 +4951,7 @@ mod tests {
     async fn query_index_level_short_batch_response_is_decode_error_not_panic() {
         let db_info = tiny_db_info();
 
-        // Full wire frame: 4-byte length prefix + undersized body.
-        let body = make_batch_response_body(1, 1, &[0u8; 4]);
-        let mut frame = (body.len() as u32).to_le_bytes().to_vec();
-        frame.extend_from_slice(&body);
+        let frame = make_batch_response_frame(RESP_INDEX_BATCH, 0, 1, 1, &[0u8; 4]);
 
         let mut mock0 = MockTransport::new("wss://mock-0");
         let mut mock1 = MockTransport::new("wss://mock-1");

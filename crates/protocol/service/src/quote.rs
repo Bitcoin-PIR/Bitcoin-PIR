@@ -7,10 +7,13 @@
 //! or credential issuer; only the resulting authorization credential is
 //! presented to a PIR server.
 
+use core::fmt;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 #[cfg(not(target_family = "wasm"))]
 use lightning_invoice::{Bolt11Invoice, Currency as Bolt11Currency};
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::cashu_manifest::is_valid_compressed_point;
 use crate::codec::{expect_v1, put_bytes_u16, Decoder};
@@ -493,7 +496,7 @@ pub fn bolt11_quote_key_id_v1(
 }
 
 /// Immutable client intent for a BOLT11 credential acquisition.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Bolt11QuoteIntentV1 {
     pub issuer_id: [u8; 32],
     pub provider_id: ProviderId,
@@ -518,6 +521,22 @@ pub struct Bolt11QuoteIntentV1 {
     /// SEC1 point: BIP340 selects the even-Y point for this x-coordinate.
     pub claim_pubkey_xonly: [u8; 32],
     pub idempotency_key: [u8; 32],
+}
+
+impl fmt::Debug for Bolt11QuoteIntentV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Bolt11QuoteIntentV1")
+            .field("authorization", &self.authorization)
+            .field("commercial_and_client_binding", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for Bolt11QuoteIntentV1 {
+    fn drop(&mut self) {
+        self.idempotency_key.zeroize();
+    }
 }
 
 impl Bolt11QuoteIntentV1 {
@@ -682,7 +701,7 @@ impl Bolt11QuoteIntentV1 {
 
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         self.validate()?;
-        let mut out = Vec::with_capacity(320);
+        let mut out = Zeroizing::new(Vec::with_capacity(320));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.issuer_id);
         out.extend_from_slice(&self.provider_id);
@@ -713,7 +732,7 @@ impl Bolt11QuoteIntentV1 {
                 max: MAX_BOLT11_QUOTE_INTENT_LEN,
             });
         }
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -765,7 +784,8 @@ impl Bolt11QuoteIntentV1 {
     pub fn request_digest(&self) -> Result<[u8; 32], ServiceProtocolError> {
         let mut hasher = Sha256::new();
         hasher.update(BOLT11_QUOTE_INTENT_DIGEST_DOMAIN);
-        hasher.update(self.encode()?);
+        let encoded = Zeroizing::new(self.encode()?);
+        hasher.update(&encoded);
         Ok(hasher.finalize().into())
     }
 
@@ -1110,7 +1130,7 @@ impl ParsedBolt11InvoiceV1 {
 }
 
 /// Signed quote/status snapshot returned by the issuer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Bolt11QuoteV1 {
     pub request_digest: [u8; 32],
     pub quote_id: [u8; 32],
@@ -1133,6 +1153,24 @@ pub struct Bolt11QuoteV1 {
     pub signature: [u8; 64],
 }
 
+impl fmt::Debug for Bolt11QuoteV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Bolt11QuoteV1")
+            .field("status", &self.status)
+            .field("state_version", &self.state_version)
+            .field("payment_artifacts", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for Bolt11QuoteV1 {
+    fn drop(&mut self) {
+        self.invoice.zeroize();
+        self.signature.zeroize();
+    }
+}
+
 impl Bolt11QuoteV1 {
     /// Initial issuer-side signing entry point. The BOLT11 facts can only come
     /// from [`ParsedBolt11InvoiceV1::parse`] in a native production build;
@@ -1147,6 +1185,7 @@ impl Bolt11QuoteV1 {
         status_updated_at: u64,
         quote_signing_key: &SigningKey,
     ) -> Result<Self, ServiceProtocolError> {
+        let mut invoice = Zeroizing::new(invoice);
         let intent = verified_intent.intent();
         parsed_invoice.validate()?;
         if parsed_invoice.invoice_text_digest != bolt11_invoice_text_digest_v1(&invoice)
@@ -1163,7 +1202,7 @@ impl Bolt11QuoteV1 {
         Self::sign_verified_fields(
             intent,
             quote_id,
-            invoice,
+            std::mem::take(&mut *invoice),
             parsed_invoice.created_at,
             status,
             status_updated_at,
@@ -1183,6 +1222,7 @@ impl Bolt11QuoteV1 {
         delegation: &Bolt11QuoteKeyDelegationV1,
         quote_signing_key: &SigningKey,
     ) -> Result<Self, ServiceProtocolError> {
+        let mut invoice = Zeroizing::new(invoice);
         intent.validate()?;
         validate_invoice_text(&invoice)?;
         if status != Bolt11QuoteStatusV1::InvoiceOpen {
@@ -1230,7 +1270,7 @@ impl Bolt11QuoteV1 {
             request_digest: intent.request_digest()?,
             quote_id,
             quote_key_id: delegation.quote_key_id,
-            invoice,
+            invoice: std::mem::take(&mut *invoice),
             network: intent.network,
             payee_pubkey: intent.expected_payee_pubkey,
             amount_msat: intent.exact_amount_msat,
@@ -1377,7 +1417,7 @@ impl Bolt11QuoteV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         let mut out = self.encode_unsigned()?;
         out.extend_from_slice(&self.signature);
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -1391,11 +1431,16 @@ impl Bolt11QuoteV1 {
         let mut decoder = Decoder::new(bytes);
         let version = decoder.u8("Bolt11QuoteV1.version")?;
         expect_v1(version, "Bolt11QuoteV1")?;
+        let request_digest = decoder.fixed("Bolt11QuoteV1.request_digest")?;
+        let quote_id = decoder.fixed("Bolt11QuoteV1.quote_id")?;
+        let quote_key_id = decoder.fixed("Bolt11QuoteV1.quote_key_id")?;
+        let mut invoice =
+            Zeroizing::new(decoder.string_u16("Bolt11QuoteV1.invoice", MAX_BOLT11_INVOICE_LEN)?);
         let value = Self {
-            request_digest: decoder.fixed("Bolt11QuoteV1.request_digest")?,
-            quote_id: decoder.fixed("Bolt11QuoteV1.quote_id")?,
-            quote_key_id: decoder.fixed("Bolt11QuoteV1.quote_key_id")?,
-            invoice: decoder.string_u16("Bolt11QuoteV1.invoice", MAX_BOLT11_INVOICE_LEN)?,
+            request_digest,
+            quote_id,
+            quote_key_id,
+            invoice: std::mem::take(&mut *invoice),
             network: LightningNetworkV1::decode(decoder.u8("Bolt11QuoteV1.network")?)?,
             payee_pubkey: decoder.fixed("Bolt11QuoteV1.payee_pubkey")?,
             amount_msat: decoder.u64("Bolt11QuoteV1.amount_msat")?,
@@ -1559,7 +1604,9 @@ impl Bolt11QuoteV1 {
             });
         }
         if self.state_version == prior.state_version {
-            if self.encode()? != prior.encode()? {
+            let current = Zeroizing::new(self.encode()?);
+            let previous = Zeroizing::new(prior.encode()?);
+            if current.as_slice() != previous.as_slice() {
                 return Err(ServiceProtocolError::InvalidValue {
                     field: "Bolt11QuoteV1.state_version",
                     reason: "different signed snapshots exist at the same state version",
@@ -1578,17 +1625,19 @@ impl Bolt11QuoteV1 {
         Ok(verified)
     }
 
-    fn signing_preimage(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn signing_preimage(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         let unsigned = self.encode_unsigned()?;
-        let mut out = Vec::with_capacity(BOLT11_QUOTE_SIGNATURE_DOMAIN.len() + unsigned.len());
+        let mut out = Zeroizing::new(Vec::with_capacity(
+            BOLT11_QUOTE_SIGNATURE_DOMAIN.len() + unsigned.len(),
+        ));
         out.extend_from_slice(BOLT11_QUOTE_SIGNATURE_DOMAIN);
         out.extend_from_slice(&unsigned);
         Ok(out)
     }
 
-    fn encode_unsigned(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn encode_unsigned(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate_structure()?;
-        let mut out = Vec::with_capacity(320 + self.invoice.len());
+        let mut out = Zeroizing::new(Vec::with_capacity(320 + self.invoice.len()));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.request_digest);
         out.extend_from_slice(&self.quote_id);
@@ -1699,7 +1748,7 @@ pub struct VerifiedBolt11QuoteV1<'a> {
 /// restart without retaining the client's raw idempotency key. The exact
 /// original request digest remains authoritative; the store's privacy-safe
 /// replay image is never substituted for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PersistedBolt11QuoteExpectationV1<'a> {
     pub issuer_id: &'a [u8; 32],
     pub network: LightningNetworkV1,
@@ -1714,6 +1763,16 @@ pub struct PersistedBolt11QuoteExpectationV1<'a> {
     pub invoice_expires_at: u64,
     pub claim_deadline: u64,
     pub credential_not_after: u64,
+}
+
+impl fmt::Debug for PersistedBolt11QuoteExpectationV1<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistedBolt11QuoteExpectationV1")
+            .field("network", &self.network)
+            .field("payment_artifacts", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Evidence that one exact persisted snapshot, root delegation and immutable
@@ -1973,7 +2032,7 @@ fn is_observable_quote_successor_v1(previous: &Bolt11QuoteV1, next: &Bolt11Quote
 /// TLS, verify the returned BIP340 tuple, and atomically consume
 /// `(quote_id, request_nonce)` until the freshness window has elapsed before
 /// returning an invoice or status.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Bolt11QuoteStatusRequestV1 {
     pub issuer_id: [u8; 32],
     pub quote_id: [u8; 32],
@@ -1982,6 +2041,22 @@ pub struct Bolt11QuoteStatusRequestV1 {
     pub requested_at: u64,
     pub request_nonce: [u8; 32],
     pub signature: [u8; 64],
+}
+
+impl fmt::Debug for Bolt11QuoteStatusRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Bolt11QuoteStatusRequestV1")
+            .field("private_status_request", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for Bolt11QuoteStatusRequestV1 {
+    fn drop(&mut self) {
+        self.request_nonce.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 impl Bolt11QuoteStatusRequestV1 {
@@ -1995,7 +2070,7 @@ impl Bolt11QuoteStatusRequestV1 {
                 max: MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN,
             });
         }
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -2028,7 +2103,8 @@ impl Bolt11QuoteStatusRequestV1 {
     pub fn bip340_signing_digest(&self) -> Result<[u8; 32], ServiceProtocolError> {
         let mut hasher = Sha256::new();
         hasher.update(BOLT11_QUOTE_STATUS_REQUEST_SIGNATURE_DOMAIN_V1);
-        hasher.update(self.encode_unsigned()?);
+        let unsigned = self.encode_unsigned()?;
+        hasher.update(&unsigned);
         Ok(hasher.finalize().into())
     }
 
@@ -2072,9 +2148,9 @@ impl Bolt11QuoteStatusRequestV1 {
         })
     }
 
-    fn encode_unsigned(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn encode_unsigned(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate_structure()?;
-        let mut out = Vec::with_capacity(MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN - 64);
+        let mut out = Zeroizing::new(Vec::with_capacity(MAX_BOLT11_QUOTE_STATUS_REQUEST_LEN - 64));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.issuer_id);
         out.extend_from_slice(&self.quote_id);
@@ -2104,7 +2180,7 @@ impl Bolt11QuoteStatusRequestV1 {
 
 /// Explicitly unverified BIP340 tuple plus the fields an issuer must use for
 /// freshness/replay bookkeeping before returning private quote data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UnverifiedBip340QuoteStatusRequestV1 {
     pub claim_pubkey_xonly: [u8; 32],
     pub message_digest: [u8; 32],
@@ -2114,9 +2190,26 @@ pub struct UnverifiedBip340QuoteStatusRequestV1 {
     pub request_nonce: [u8; 32],
 }
 
+impl fmt::Debug for UnverifiedBip340QuoteStatusRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnverifiedBip340QuoteStatusRequestV1")
+            .field("private_status_request", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for UnverifiedBip340QuoteStatusRequestV1 {
+    fn drop(&mut self) {
+        self.message_digest.zeroize();
+        self.signature.zeroize();
+        self.request_nonce.zeroize();
+    }
+}
+
 /// Canonical claim of a paid quote. The signature is BIP340 over
 /// `bip340_signing_digest`; no compressed 33-byte claim key is accepted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Bolt11QuoteClaimV1 {
     pub issuer_id: [u8; 32],
     pub quote_id: [u8; 32],
@@ -2127,6 +2220,22 @@ pub struct Bolt11QuoteClaimV1 {
     pub claim_pubkey_xonly: [u8; 32],
     pub idempotency_key: [u8; 32],
     pub signature: [u8; 64],
+}
+
+impl fmt::Debug for Bolt11QuoteClaimV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Bolt11QuoteClaimV1")
+            .field("claim", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for Bolt11QuoteClaimV1 {
+    fn drop(&mut self) {
+        self.idempotency_key.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 impl Bolt11QuoteClaimV1 {
@@ -2140,7 +2249,7 @@ impl Bolt11QuoteClaimV1 {
                 max: MAX_BOLT11_QUOTE_CLAIM_LEN,
             });
         }
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -2183,7 +2292,8 @@ impl Bolt11QuoteClaimV1 {
     pub fn claim_request_digest(&self) -> Result<[u8; 32], ServiceProtocolError> {
         let mut hasher = Sha256::new();
         hasher.update(BOLT11_QUOTE_CLAIM_REQUEST_DIGEST_DOMAIN);
-        hasher.update(self.encode()?);
+        let encoded = Zeroizing::new(self.encode()?);
+        hasher.update(&encoded);
         Ok(hasher.finalize().into())
     }
 
@@ -2218,9 +2328,9 @@ impl Bolt11QuoteClaimV1 {
         })
     }
 
-    fn encode_unsigned(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn encode_unsigned(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate_structure()?;
-        let mut out = Vec::with_capacity(256);
+        let mut out = Zeroizing::new(Vec::with_capacity(256));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.issuer_id);
         out.extend_from_slice(&self.quote_id);
@@ -2251,11 +2361,27 @@ impl Bolt11QuoteClaimV1 {
 
 /// Deliberately named to prevent callers mistaking transcript construction for
 /// signature verification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UnverifiedBip340ClaimV1 {
     pub claim_pubkey_xonly: [u8; 32],
     pub message_digest: [u8; 32],
     pub signature: [u8; 64],
+}
+
+impl fmt::Debug for UnverifiedBip340ClaimV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnverifiedBip340ClaimV1")
+            .field("claim", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for UnverifiedBip340ClaimV1 {
+    fn drop(&mut self) {
+        self.message_digest.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 pub fn bolt11_invoice_text_digest_v1(invoice: &str) -> [u8; 32] {
@@ -2463,6 +2589,52 @@ mod tests {
             invoice_expires_at: quote.invoice_expires_at,
             claim_deadline: quote.claim_deadline,
             credential_not_after: quote.credential_not_after,
+        }
+    }
+
+    #[test]
+    fn payment_artifact_debug_redacts_invoice_and_replay_authority() {
+        assert!(core::mem::needs_drop::<Bolt11QuoteIntentV1>());
+        assert!(core::mem::needs_drop::<Bolt11QuoteV1>());
+        assert!(core::mem::needs_drop::<Bolt11QuoteStatusRequestV1>());
+        assert!(core::mem::needs_drop::<Bolt11QuoteClaimV1>());
+        assert!(core::mem::needs_drop::<UnverifiedBip340ClaimV1>());
+        assert!(core::mem::needs_drop::<UnverifiedBip340QuoteStatusRequestV1>());
+
+        let (_, quote_key, delegation, intent, _) = fixture();
+        let quote = open_quote(&quote_key, &delegation, &intent);
+        let status = Bolt11QuoteStatusRequestV1 {
+            issuer_id: intent.issuer_id,
+            quote_id: quote.quote_id,
+            quote_request_digest: quote.request_digest,
+            claim_pubkey_xonly: intent.claim_pubkey_xonly,
+            requested_at: CREATED_AT,
+            request_nonce: [0x51; 32],
+            signature: [0x52; 64],
+        };
+        let claim = Bolt11QuoteClaimV1 {
+            issuer_id: intent.issuer_id,
+            quote_id: quote.quote_id,
+            quote_request_digest: quote.request_digest,
+            credential_request_digest: [0x53; 32],
+            claim_pubkey_xonly: intent.claim_pubkey_xonly,
+            idempotency_key: [0x54; 32],
+            signature: [0x55; 64],
+        };
+        let rendered = format!(
+            "{intent:?} {quote:?} {status:?} {claim:?} {:?}",
+            persisted_expectation(&quote, &intent)
+        );
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains(INVOICE));
+        for canary in [
+            format!("{:?}", intent.idempotency_key),
+            format!("{:?}", status.request_nonce),
+            format!("{:?}", status.signature),
+            format!("{:?}", claim.idempotency_key),
+            format!("{:?}", claim.signature),
+        ] {
+            assert!(!rendered.contains(&canary));
         }
     }
 

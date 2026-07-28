@@ -48,6 +48,8 @@ impl Fixture {
                 authorization_epoch: 1,
                 provider_id: PROVIDER_ID,
                 issuer_id: ISSUER_ID,
+                redeem_endpoint: "https://issuer.example".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
                 settlement_account_id: ACCOUNT_ID,
                 clearing_verifying_key: clearing.verifying_key().to_bytes(),
                 not_before: 1_000,
@@ -150,8 +152,9 @@ impl ProviderSettlementStateStoreV1 for MemoryProviderStore {
 
     fn persist_pending_payout(
         &mut self,
-        pending: &ProviderPayoutPendingV1,
+        write: &VerifiedProviderPayoutPendingWriteV1,
     ) -> Result<bool, Self::Error> {
+        let pending = &write.pending;
         match (&self.pending_payout, self.pending_floor) {
             (Some(existing), Some(floor)) => {
                 let predecessor_matches = match pending.predecessor_floor {
@@ -213,9 +216,10 @@ impl ProviderSettlementStateStoreV1 for MemoryProviderStore {
 
     fn commit_initial_payout_from_pending(
         &mut self,
-        pending: &ProviderPayoutPendingV1,
-        state: &ProviderPayoutDurableStateV1,
+        write: &VerifiedProviderPayoutInitialWriteV1,
     ) -> Result<bool, Self::Error> {
+        let pending = &write.pending;
+        let state = &write.state;
         if self.pending_payout.is_none() {
             let Some(existing) = &self.state else {
                 return Ok(false);
@@ -251,8 +255,9 @@ impl ProviderSettlementStateStoreV1 for MemoryProviderStore {
 
     fn persist_pending_status(
         &mut self,
-        pending: &ProviderPayoutStatusPendingV1,
+        write: &VerifiedProviderPayoutStatusPendingWriteV1,
     ) -> Result<bool, Self::Error> {
+        let pending = &write.pending;
         if self.floor != Some(pending.previous_floor) {
             return Ok(false);
         }
@@ -265,9 +270,10 @@ impl ProviderSettlementStateStoreV1 for MemoryProviderStore {
 
     fn commit_status_update(
         &mut self,
-        pending: &ProviderPayoutStatusPendingV1,
-        state: &ProviderPayoutDurableStateV1,
+        write: &VerifiedProviderPayoutStatusWriteV1,
     ) -> Result<bool, Self::Error> {
+        let pending = &write.pending;
+        let state = &write.state;
         if self.pending.as_ref() != Some(pending)
             || self.floor != Some(pending.previous_floor)
             || !floor_is_satisfied(&pending.previous_floor, &state.rollback_floor)
@@ -289,44 +295,42 @@ impl ProviderSettlementStateStoreV1 for SharedMemoryProviderStore {
 
     fn persist_pending_payout(
         &mut self,
-        pending: &ProviderPayoutPendingV1,
+        write: &VerifiedProviderPayoutPendingWriteV1,
     ) -> Result<bool, Self::Error> {
         self.0
             .lock()
             .map_err(|_| "shared provider store lock poisoned")?
-            .persist_pending_payout(pending)
+            .persist_pending_payout(write)
     }
 
     fn commit_initial_payout_from_pending(
         &mut self,
-        pending: &ProviderPayoutPendingV1,
-        state: &ProviderPayoutDurableStateV1,
+        write: &VerifiedProviderPayoutInitialWriteV1,
     ) -> Result<bool, Self::Error> {
         self.0
             .lock()
             .map_err(|_| "shared provider store lock poisoned")?
-            .commit_initial_payout_from_pending(pending, state)
+            .commit_initial_payout_from_pending(write)
     }
 
     fn persist_pending_status(
         &mut self,
-        pending: &ProviderPayoutStatusPendingV1,
+        write: &VerifiedProviderPayoutStatusPendingWriteV1,
     ) -> Result<bool, Self::Error> {
         self.0
             .lock()
             .map_err(|_| "shared provider store lock poisoned")?
-            .persist_pending_status(pending)
+            .persist_pending_status(write)
     }
 
     fn commit_status_update(
         &mut self,
-        pending: &ProviderPayoutStatusPendingV1,
-        state: &ProviderPayoutDurableStateV1,
+        write: &VerifiedProviderPayoutStatusWriteV1,
     ) -> Result<bool, Self::Error> {
         self.0
             .lock()
             .map_err(|_| "shared provider store lock poisoned")?
-            .commit_status_update(pending, state)
+            .commit_status_update(write)
     }
 }
 
@@ -949,6 +953,54 @@ fn request_and_response_digest_tampering_and_wrong_provider_key_are_rejected() {
 }
 
 #[test]
+fn payout_replay_authority_is_redacted_from_debug() {
+    const SENTINEL: &str = "signed-payout-replay-authority-sentinel";
+
+    let fixture = Fixture::new();
+    let issuer = FakeIssuer::new(&fixture);
+    let client = fixture.client(&issuer);
+    let mut store = MemoryProviderStore::default();
+    issuer.commit_verified_redeem_credit(10, 9, 1);
+    let intent = client
+        .payout_intent(SettlementUnitV1::AuthCredit, 7, [0x78; 32])
+        .expect("intent");
+    let persisted = client
+        .prepare_payout(&intent, [0x79; 32], NOW + 10, &mut store)
+        .expect("pending payout");
+    let payout = client
+        .submit_payout(&persisted, &mut store)
+        .expect("payout");
+    let persisted_status = client
+        .prepare_payout_status(&payout, [0x7a; 32], NOW + 11, &mut store)
+        .expect("pending status");
+
+    let mut raw_pending = persisted.pending().clone();
+    raw_pending.canonical_envelope = SENTINEL.as_bytes().to_vec();
+    raw_pending.intent_request = SENTINEL.as_bytes().to_vec();
+    let mut raw_state = payout.durable_state().expect("durable payout");
+    raw_state.payout_request = SENTINEL.as_bytes().to_vec();
+    let mut raw_status = persisted_status.pending().clone();
+    raw_status.canonical_envelope = SENTINEL.as_bytes().to_vec();
+    let recovery = ProviderSettlementRecoveryV1 {
+        active_pending_payout: Some(raw_pending.clone()),
+        committed_payout_origin: Some(raw_pending.clone()),
+        payout_state: Some(raw_state.clone()),
+        pending_status: Some(raw_status.clone()),
+    };
+
+    for debug in [
+        format!("{raw_pending:?}"),
+        format!("{raw_state:?}"),
+        format!("{raw_status:?}"),
+        format!("{recovery:?}"),
+        format!("{persisted:?}"),
+        format!("{persisted_status:?}"),
+    ] {
+        assert!(!debug.contains(SENTINEL));
+    }
+}
+
+#[test]
 fn initial_payout_is_persisted_before_send_and_exactly_recovers_after_response_loss() {
     let fixture = Fixture::new();
     let issuer = FakeIssuer::new(&fixture);
@@ -1273,4 +1325,91 @@ fn concurrent_exact_submit_creates_one_economic_payout() {
     assert!(final_store.state.is_some());
     assert!(final_store.pending_payout.is_none());
     assert!(final_store.pending_floor.is_none());
+}
+
+#[test]
+fn recovery_rejects_valid_status_response_for_another_nonce_without_authority_change() {
+    let fixture = Fixture::new();
+    let issuer = FakeIssuer::new(&fixture);
+    let client = fixture.client(&issuer);
+    let mut base_store = MemoryProviderStore::default();
+    issuer.commit_verified_redeem_credit(10, 9, 1);
+    let intent = client
+        .payout_intent(SettlementUnitV1::AuthCredit, 7, [0xb1; 32])
+        .expect("payout intent");
+    let payout = client
+        .prepare_payout(&intent, [0xb2; 32], NOW + 10, &mut base_store)
+        .and_then(|pending| client.submit_payout(&pending, &mut base_store))
+        .expect("accepted payout");
+    let previous_state = payout.durable_state().expect("previous durable payout");
+    let origin = base_store
+        .committed_pending
+        .clone()
+        .expect("committed payout origin");
+
+    let mut request_a_store = MemoryProviderStore {
+        state: Some(previous_state.clone()),
+        floor: Some(payout.rollback_floor()),
+        committed_pending: Some(origin.clone()),
+        ..MemoryProviderStore::default()
+    };
+    let request_a = client
+        .prepare_payout_status(&payout, [0xb3; 32], NOW + 11, &mut request_a_store)
+        .expect("first exact status request");
+
+    let mut request_b_store = MemoryProviderStore {
+        state: Some(previous_state.clone()),
+        floor: Some(payout.rollback_floor()),
+        committed_pending: Some(origin.clone()),
+        ..MemoryProviderStore::default()
+    };
+    let request_b = client
+        .prepare_payout_status(&payout, [0xb4; 32], NOW + 12, &mut request_b_store)
+        .expect("second exact status request");
+    issuer.set_next_status_state(PayoutStateV1::InFlight);
+    let successor_b = client
+        .submit_payout_status(&payout, &request_b, &mut request_b_store)
+        .expect("valid response for second nonce")
+        .durable_state()
+        .expect("durable second-nonce response");
+
+    let expected_floor = ProviderSettlementFloorV1 {
+        store_instance_id: [0xc1; 16],
+        provider_id: PROVIDER_ID,
+        revision: 3,
+        active_commitment: [0xc2; 32],
+        history_length: 0,
+        history_commitment: [0xc3; 32],
+        phase: ProviderSettlementFloorPhaseV1::StatusPending {
+            payout: payout.rollback_floor(),
+        },
+    };
+    let desired_floor = ProviderSettlementFloorV1 {
+        revision: 4,
+        active_commitment: [0xc4; 32],
+        phase: ProviderSettlementFloorPhaseV1::Payout {
+            payout: successor_b.rollback_floor,
+        },
+        ..expected_floor
+    };
+    let inspection = UnverifiedProviderSettlementRecoveryV2 {
+        snapshot_digest: [0xc5; 32],
+        transition_kind: ProviderSettlementRecoveryTransitionKindV2::StatusCommit,
+        workflow: ProviderSettlementRecoveryV1 {
+            active_pending_payout: None,
+            committed_payout_origin: Some(origin),
+            payout_state: Some(successor_b),
+            pending_status: Some(request_a.pending().clone()),
+        },
+        transition_previous_state: Some(previous_state),
+        expected_floor: Some(expected_floor),
+        desired_floor,
+        authority_at_inspection: Some(expected_floor),
+    };
+    let authority_before = inspection.authority_at_inspection;
+
+    assert!(client
+        .authenticate_settlement_recovery_v2(&inspection)
+        .is_err());
+    assert_eq!(inspection.authority_at_inspection, authority_before);
 }

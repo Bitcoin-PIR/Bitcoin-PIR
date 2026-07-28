@@ -13,12 +13,14 @@ mod payout_ops;
 mod policy_ops;
 mod quote_ops;
 mod registry_ops;
+mod remote_rollback;
 mod rollback;
 mod schema;
 mod sqlite_rollback;
 mod types;
 
 pub use error::{StoreError, StoreResult};
+pub use remote_rollback::RemoteIssuerRollbackFloorAuthorityV1;
 pub use rollback::{
     IssuerRollbackFloorAuthorityErrorV1, IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1,
     ISSUER_ROLLBACK_INITIAL_COMMITMENT_DOMAIN_V1, ISSUER_ROLLBACK_MUTATION_COMMITMENT_DOMAIN_V1,

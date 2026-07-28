@@ -720,15 +720,14 @@ mod tests {
 
     #[test]
     fn rejects_tampered_claim_and_malformed_signature() {
-        let input = signed_claim();
-        let mut changed_digest = input;
+        let mut changed_digest = signed_claim();
         changed_digest.message_digest[0] ^= 1;
         assert_eq!(
             verify_quote_claim_v1(&changed_digest),
             Err(PaymentCryptoError::BadBip340Signature)
         );
 
-        let mut malformed = input;
+        let mut malformed = signed_claim();
         malformed.signature[32..].fill(0);
         assert!(matches!(
             verify_quote_claim_v1(&malformed),

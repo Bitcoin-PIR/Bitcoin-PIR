@@ -1,8 +1,9 @@
 //! Safe derivation of provider-local durable spend namespaces.
 
 use pir_service_protocol::{
-    bat_verification_key_fingerprint_v1, AuthScheme, CredentialKeyBindingV1, FreeModeV1,
-    ServiceProtocolError, VerificationMode, VerifiedServiceOfferV1,
+    bat_verification_key_fingerprint_v1, derive_shared_issuer_local_grant_namespace_v1,
+    AuthScheme, CredentialKeyBindingV1, FreeModeV1, ServiceProtocolError, VerificationMode,
+    VerifiedServiceOfferV1, SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1,
 };
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -40,8 +41,6 @@ pub trait ArcExclusiveKeyLineageVerifierV1: Send + Sync {
 pub enum VerifiedOfferNamespaceNotApplicableV1 {
     /// Open, IP-bucketed, and proof-of-work Free grants have no durable bearer.
     NonBearerFree,
-    /// The shared issuer owns the authoritative redemption/nullifier state.
-    SharedIssuerOnline,
     /// The external mint's atomic NUT-03 invalidation is authoritative.
     StandardCashuMintOnline,
 }
@@ -181,9 +180,19 @@ where
     let offer = verified_offer.offer();
     match offer.verification {
         VerificationMode::SharedIssuerOnline => {
-            return Ok(DerivedOfferNamespaceV1::NotApplicable(
-                VerifiedOfferNamespaceNotApplicableV1::SharedIssuerOnline,
-            ))
+            let synthetic = derive_shared_issuer_local_grant_namespace_v1(verified_offer)?;
+            return Ok(DerivedOfferNamespaceV1::Namespace(NewSpendNamespace {
+                namespace_id: synthetic.namespace_id(),
+                scheme: SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1,
+                issuer_id: synthetic.issuer_id(),
+                key_id: synthetic.key_id().to_vec(),
+                binding_digest: synthetic.binding_digest(),
+                not_after: synthetic.not_after(),
+                // The issuer remains the credential/nullifier authority. This
+                // namespace guards only one provider-local grant delivery and
+                // therefore has no raw credential-key lineage.
+                exclusive_key_lineage: None,
+            }));
         }
         VerificationMode::StandardCashuMintOnline => {
             return Ok(DerivedOfferNamespaceV1::NotApplicable(

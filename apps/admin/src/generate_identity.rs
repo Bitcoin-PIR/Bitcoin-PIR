@@ -19,8 +19,8 @@
 
 use clap::{Args, ValueEnum};
 use ed25519_dalek::SigningKey;
-use std::fs;
 use std::path::PathBuf;
+use zeroize::Zeroize;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum IdentityPurpose {
@@ -52,28 +52,22 @@ pub struct GenerateIdentityArgs {
     pub purpose: IdentityPurpose,
 }
 
-pub fn run(args: GenerateIdentityArgs) -> Result<(), String> {
+pub fn run(args: GenerateIdentityArgs) -> Result<crate::keygen::SecretWriteCompletionV1, String> {
     let out = args.out.unwrap_or_else(|| default_path_for(args.purpose));
-
-    if out.exists() && !args.force {
-        return Err(format!(
-            "{} already exists; rerun with --force to overwrite (you'll lose the existing privkey)",
-            out.display()
-        ));
-    }
-
-    if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("create dir {}: {}", parent.display(), e))?;
-    }
+    crate::keygen::prepare_secret_key_parent(&out)?;
 
     let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed).map_err(|e| format!("getrandom: {}", e))?;
+    if let Err(error) = getrandom::getrandom(&mut seed) {
+        seed.zeroize();
+        return Err(format!("getrandom: {error}"));
+    }
     let sk = SigningKey::from_bytes(&seed);
     let pk = sk.verifying_key();
     let pk_hex = hex::encode(pk.to_bytes());
 
-    crate::keygen::write_secret_key_unix(&out, &seed)?;
+    let write_result = crate::keygen::write_secret_key_unix_with_force(&out, &seed, args.force);
+    seed.zeroize();
+    let completion = write_result?;
 
     eprintln!(
         "wrote secret key (32 bytes, mode 0600) to {}",
@@ -107,7 +101,7 @@ pub fn run(args: GenerateIdentityArgs) -> Result<(), String> {
             eprintln!("    --valid-until <unix-seconds> --out <cert path>");
         }
     }
-    Ok(())
+    Ok(completion)
 }
 
 fn default_path_for(purpose: IdentityPurpose) -> PathBuf {
@@ -124,10 +118,10 @@ fn default_path_for(purpose: IdentityPurpose) -> PathBuf {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use crate::keygen::private_tempdir_v1 as tempdir;
 
     #[test]
     fn generate_identity_writes_32_byte_seed() {
@@ -139,7 +133,7 @@ mod tests {
             purpose: IdentityPurpose::Server,
         })
         .unwrap();
-        let bytes = fs::read(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
         assert_eq!(bytes.len(), 32);
         // And the pubkey loads cleanly.
         let sk = SigningKey::from_bytes(&bytes.try_into().unwrap());
@@ -175,14 +169,14 @@ mod tests {
             purpose: IdentityPurpose::Operator,
         })
         .unwrap();
-        let bytes1 = fs::read(&path).unwrap();
+        let bytes1 = std::fs::read(&path).unwrap();
         run(GenerateIdentityArgs {
             out: Some(path.clone()),
             force: true,
             purpose: IdentityPurpose::Operator,
         })
         .unwrap();
-        let bytes2 = fs::read(&path).unwrap();
+        let bytes2 = std::fs::read(&path).unwrap();
         assert_ne!(bytes1, bytes2);
     }
 }

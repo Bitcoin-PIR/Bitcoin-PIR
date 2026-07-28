@@ -18,9 +18,13 @@ the issuer becomes common infrastructure and can observe both redemption
 streams; no database split can restore the two-server non-collusion assumption.
 
 SQLite WAL files MUST remain on a local filesystem. A WAL on NFS or multiple
-active issuer hosts is not a consensus system. Multi-host active/active service
-requires a database with linearizable unique constraints and an explicit
-failover protocol.
+active issuer hosts is not a consensus system. Two independent ProviderStore
+database files MUST NOT be used as active/active replicas, even when both point
+at the same external rollback-floor CAS. The fresh grant nonce makes an exact
+mutation from two clones produce different successor commitments, so one CAS
+wins and the other clone fails closed; that is clone fencing, not replication.
+Multi-host active/active requires one reviewed linearizable detailed-state
+store with linearizable unique constraints plus an explicit failover protocol.
 
 The rollback-floor authority MUST also live in a separate administrative and
 backup/restore domain, not merely a different SQLite filename. A VM,
@@ -130,10 +134,29 @@ identifier, or insertion-order column. Namespace expiry is a public cohort
 property and permits safe garbage collection only after the policy-retention
 horizon has closed.
 
+Shared-issuer offers reuse this existing schema through a purpose-tagged
+synthetic namespace (`scheme = 0x8001`). After exact canonical issuer-response,
+signature, request, authorization and offer verification, the provider derives
+a local delivery key with a provider-secret HMAC domain and inserts it into
+`spent_capabilities`. The row is not the issuer credential nullifier or a
+settlement record. It contains no wire idempotency key, invoice/payment hash,
+token/raw credential, browser quote-claim key, or time. The issuer sees the wire
+request but lacks the provider secret and cannot derive the stored local key.
+
 The implemented provider schema version is `7`. Startup rejects every older
 or unknown version, a missing required table, extra schema objects, or any
 column drift; migration is an explicit offline operator action rather than an
 automatic serve-mode side effect.
+
+The shared-issuer local-delivery fix requires **no schema bump**: schema v7
+already has the namespace and global spend tables needed for it. This is not
+permission to reuse a pre-fix empty local-claim state with retained issuer
+redeem history. The first production activation is a clean deployment. Any
+exceptional recovery that preserves pre-fix ProviderStore or issuer history
+must stop every old instance and rotate the provider shared-idempotency secret
+or the clearing-authorization digest/epoch before serving. Binary operation is
+forward-only after activation; a binary that can grant an issuer replay without
+the local delivery claim must never reopen or serve the state.
 
 Policy rollback state is persisted in the same provider transaction domain:
 
@@ -177,7 +200,8 @@ BEGIN IMMEDIATE
 verify store provider_id and active namespace
 verify the exact independent rollback-floor anchor
 INSERT spent_capabilities(namespace_id, spend_key)
-increment store_generation and extend the rolling commitment
+draw a fresh nonzero 256-bit grant-transition nonce from the OS RNG
+increment store_generation and extend the nonce-bound rolling commitment
 increment spend_commit_seq
 COMMIT
 atomically CAS the independently durable rollback-floor anchor
@@ -194,6 +218,15 @@ commits but the external CAS cannot be confirmed, the result is
 `UnanchoredCommit`, also without a grant. Checked reopen may reconcile exactly
 one successor whose recorded parent equals the current external anchor; it
 cannot skip generations or choose between forks.
+
+Every transition which directly authorizes service work uses a fresh OS-random
+256-bit nonce before the SQLite commit. Provider-local spends (including the
+shared-issuer delivery claim), Free-IP quota consumption, and the final
+standard-Cashu custody/grant transition all increment `spend_commit_seq`. RNG
+failure rolls back the transaction and produces no grant. Two cloned files
+starting from the same predecessor therefore propose different exact CAS
+successors: at most one can anchor, and the loser is fail-closed rather than
+accepted through a later transitive floor.
 
 Recommended checked pragmas are:
 
@@ -223,8 +256,8 @@ files. It never silently creates an empty spent database.
   coarse bucket expiry and one provider-global clock high-water are retained
   solely for expiry and rollback enforcement. Each increment is one
   `BEGIN IMMEDIATE` provider-store transaction followed by the external
-  rollback-floor CAS; restart never refreshes quota and a lower wall clock
-  fails closed.
+  rollback-floor CAS, with a fresh grant nonce and `spend_commit_seq` advance;
+  restart never refreshes quota and a lower wall clock fails closed.
 - `ProofOfWork`: one server-fresh, secure-channel-bound challenge is held in
   connection state and consumed once.
 - `AnonymousTicket`: uses `spent_capabilities`.
@@ -234,7 +267,10 @@ files. It never silently creates an empty spent database.
 The external mint's atomic NUT-03 invalidation is authoritative. A successful
 swap MUST NOT be followed by a second provider-local authoritative spend
 insert. The provider persists an encrypted recovery intent and, before issuing
-the grant, a separately encrypted note-only custody lot:
+the grant, a separately encrypted note-only custody lot. The final
+custody/grant transaction is nevertheless a provider-local grant transition:
+it draws a fresh 256-bit OS nonce, advances `spend_commit_seq`, and must anchor
+before `AUTH_GRANTED`:
 
 ```sql
 CREATE TABLE cashu_swap_intents (
@@ -317,12 +353,18 @@ CREATE TABLE cashu_custody_notes (
 
 The recovery ciphertext contains the exact canonical NUT-03 request, ordered
 blinded outputs, output secrets and blinding factors. The custody ciphertext
-contains only the normalized mint endpoint, unit, active keyset, provider-
-created amount/secret/signature notes and their authenticated set digest. It
-contains no user input proof, NUT request/response JSON, offer/intent/query ID
-or exact timestamp. Recovery and custody use distinct AEAD keyrings and AAD
-domains; neither key is stored in this database. Proof secrets, `dleq.r`, note
-secrets and wallet recovery material are never plaintext columns or logs.
+contains only the normalized mint endpoint, exact signed-manifest digest, its
+one-or-two leaf-SPKI SHA-256 pins, unit, active keyset, provider-created
+amount/secret/signature notes and their authenticated set digest. The endpoint
+and pins are needed so later NUT-07/export operations retain the same
+authenticated WebPKI-plus-pin trust boundary after policy rotation. It contains
+no user input proof, NUT request/response JSON, offer/intent/query ID or exact
+timestamp. Recovery and custody use distinct AEAD keyrings and AAD domains;
+neither key is stored in this database. Proof secrets, `dleq.r`, note secrets
+and wallet recovery material are never plaintext columns or logs. Custody
+decoding is canonical and deny-unknown; older bundles that omit the manifest
+digest or pins fail closed and require an explicit reviewed migration, never
+ambient endpoint or certificate trust.
 
 ```text
 PREPARED --externally anchored--> SUBMITTED -> WALLET_STORED -> GRANT_ISSUED
@@ -332,7 +374,11 @@ PREPARED --externally anchored--> SUBMITTED -> WALLET_STORED -> GRANT_ISSUED
 
 There is deliberately no `SUBMITTED -> PREPARED`, abandoned-unspent, or
 resubmit transition. NUT-07 `UNSPENT` is only a point-in-time observation and
-cannot prove that an ambiguous NUT-03 will not commit later. The first exact
+cannot prove that an ambiguous NUT-03 will not commit later. HTTP 400 plus a
+canonical NUT-00 `{code, detail}` body is also ambiguous: the current
+NUT-00/NUT-03 contract specifies the error envelope, not a non-commitment
+proof. It therefore follows the same NUT-09/NUT-07-only recovery path and
+cannot release exposure. The first exact
 prepared recovery envelope wins; a replay with a fresh AEAD nonce returns the
 existing envelope without a generation change. Changed request, output set,
 offer binding, amount, intent ID, or `(mint_id, input_set_digest)` ownership is
@@ -484,6 +530,12 @@ zero or one row may change. Backup/restore cannot synthesize a lower predecessor
 that the external rollback floor has already superseded.
 
 Idempotency keys are stored as domain-separated digests, never cleartext.
+Quote/claim endpoint keys follow their own browser-generated lifecycle. Shared-
+redeem wire idempotency is instead deterministically derived by each provider
+as a provider-secret HMAC over the clearing-authorization digest, credential-
+binding digest, and canonical credential digest. The issuer can replay the
+exact stored response under that wire key but cannot derive the independent
+provider-local delivery key.
 Before checking current policy/authorization validity, every handler first
 looks up an exact previously committed `(idempotency digest, request digest)`:
 
@@ -515,6 +567,11 @@ recovery horizon. The redeem request binds that keyset ID and canonically
 ordered blinded messages. A bearer client without the registered provider
 clearing key cannot redirect compensation.
 
+The credential binding's signed `amount` describes credential denomination;
+the clearing rule's `accepted_value` describes ledger settlement and must equal
+`provider_credit + issuer_fee`. They are separate dimensions and are not
+required to be numerically equal.
+
 ### Ledger and outbox
 
 Posted ledger transactions are immutable, contain at least two postings in one
@@ -526,6 +583,123 @@ creates one external side effect.
 
 Real payouts remain disabled until separately authorized. Enabling an API type
 or fake-backend test is not authorization to send funds.
+
+`IssuerPayoutOutboxWorkerV1` is implemented as a fail-closed, no-funds worker
+core. It durably signs and commits `Accepted -> InFlight` before calling an
+external executor, and every later claim of `InFlight` performs reconciliation
+only. The stable command ID is the required executor idempotency identity.
+The configured external-call timeout is nonzero and strictly shorter than the
+durable lease. Each executor invocation receives an absolute deadline derived
+from that committed lease and strictly earlier than `lease_until`; timeout or
+cancellation is always `OutcomeUnknown`. `payout_target_id` is not a raw
+provider identity, but it is a stable payout-routing pseudonym which lets the
+issuer/executor link payouts to the same target and therefore must not be
+logged. Worker progress `Debug` output omits payout IDs.
+`NoFundsPayoutExecutorV1` is the shipped default and is never ready, so it reads,
+claims and mutates no outbox state and cannot move value. No real-funds executor
+is implemented or enabled. A future adapter must provide a linearizable durable
+command-ID lookup/submission operation or equivalent authoritative no-submit
+fence; a process lease plus issuer SQLite cannot manufacture external
+exactly-once behavior across a crash.
+
+## Provider settlement payout workflow
+
+`pir-provider-clearing-client` includes a concrete
+`SqliteProviderSettlementStateStoreV1` for the provider's exact payout workflow.
+It persists the canonical intent request/response, payout request, initial and
+latest status responses, origin registration, idempotency key, pending status
+request and terminal predecessor history. Every loaded record remains
+untrusted until the provider client revalidates its canonical encoding,
+signatures, current/retained registration and issuer-key lineage. The store
+contains no invoice, payment hash/preimage, payer, Lightning route, PIR query,
+peer provider or query result.
+
+The detailed store takes a separately supplied
+`ProviderSettlementFloorAuthorityV1`. Its authority value is exactly one of:
+
+```text
+Pending(provider, pending_digest, payout_request_digest, predecessor_floor,
+        history_length, history_commitment)
+Payout(provider, payout state floor, origin_pending_digest,
+       history_length, history_commitment)
+```
+
+The initial pending value requires no predecessor and empty history. A later
+pending value must name the exact current terminal payout as its predecessor.
+Pending-to-payout advancement requires the same payout-request digest and an
+`Accepted` state at version 1; a status transition is the only route to later
+monotonic versions. These fields are explicit authority state rather than facts
+hidden only behind the opaque pending commitment.
+
+The history commitment starts from a provider-domain-separated empty anchor and
+extends over each archived terminal payout plus its exact origin-pending digest.
+The terminal-to-pending floor transition must advance that chain by exactly one;
+status transitions must preserve it. Selectively deleting history and rewriting
+the detailed current-origin record therefore no longer remains aligned with the
+external floor. This protects audit-chain completeness only while the floor is
+in a genuinely independent rollback domain; co-restoring the bundled local
+SQLite floor still defeats the boundary.
+
+SQLite cannot atomically commit against a genuinely independent authority. The
+detailed adapter therefore journals each exact transition before advancing the
+authority, then finalizes its local row only after the authority returns the
+expected successor. **Startup and ordinary load never reconcile a journal or
+advance the authority.** A checked open accepts an unresolved journal only when
+the authority is still its exact predecessor or already its exact successor;
+ordinary recovery load then returns `recovery required`. The operator must
+inspect the exact journal, have `ProviderSettlementClientV1` revalidate every
+current/retained registration and issuer key, canonical request/response,
+signature, binding and monotonic transition, and pass the resulting opaque
+recovery capability back to the store. The store rereads the exact snapshot
+digest before authority CAS and again before local finalization. A stale or
+hand-built token cannot mutate the authority. Any other floor, a missing exact
+record, invalid commitment, provider/store-instance mismatch, malformed record,
+schema drift or non-contiguous terminal history fails closed. The adapter never
+reconstructs or lowers the authority from detailed SQLite state.
+
+Provider-settlement schema v2 and record magics are a fail-closed boundary, not
+an implicit migration. The compact `BPF2` authority value binds a random
+nonzero 128-bit `store_instance_id`, provider, strictly increasing transition
+revision, exact active-workflow commitment, exact raw-history rolling
+commitment, and one of `Pending`, `Payout` or `StatusPending`. Pending status
+also records the exact predecessor-state commitment; a status-commit journal
+retains the exact predecessor durable bytes until finalization so recovery can
+prove that the signed successor answers that exact request and nonce. Old
+schema/magic data must be handled by an explicit reviewed migration or clean
+initialization ceremony; v2 does not reinterpret it.
+
+Both SQLite files require an effective-user-owned mode-`0600`, single-link
+regular final file inside an effective-user-owned, exact mode-`0700` parent.
+Every path component is opened relative to the previously pinned directory
+descriptor with `O_NOFOLLOW`; an intermediate or final symlink is rejected.
+Every ancestor must be root- or effective-user-owned and not group/world
+writable. The only writable ancestor exception is a root-owned sticky public
+directory such as the platform `/tmp`. On macOS, an ancestor ACL that grants an
+`allow` right is rejected, and the final private parent and database must have
+no extended ACL at all. Linux V1 enforces DAC owner/mode rules only and must not
+be represented as a POSIX/NFSv4/FUSE ACL audit.
+
+SQLite reopens a pathname internally, so each adapter validates the main-file
+device/inode immediately before and after `sqlite3_open_v2` (with
+`SQLITE_OPEN_NOFOLLOW`) and fails closed if the identity changed. The private
+parent is the confidentiality and namespace-integrity boundary for SQLite's
+`-wal` and `-shm` sidecars. Sidecars must remain in that directory, under the
+same OS account and backup access policy; never publish, relocate, hard-link or
+independently restore them. A live database backup must use SQLite's online
+backup API or a reviewed checkpoint-and-quiesce procedure. Copying only a live
+main file is not a valid backup, and copying main/WAL/SHM at different points in
+time is not an atomic backup set. The rollback authority remains outside this
+entire database/sidecar backup and restore domain.
+
+`LocalTestSqliteProviderSettlementFloorV1` is intentionally named and exported
+only as a local-development, test and recovery-drill implementation. A second
+SQLite file—even at a different path—is **not** a production independent
+rollback authority. Co-snapshotting or restoring the detailed and floor files
+can restore a stale, mutually consistent pair. Production payout activation
+still requires a reviewed linearizable implementation in an independent
+administrative, failure, backup and restore domain, plus a reviewed real-funds
+executor and an authorized payout backend deployment. The existing no-funds
+worker core is not that executor.
 
 ## Rollback and backup
 
@@ -550,11 +724,52 @@ file, WAL, filesystem snapshot, sidecar files and atomic backup set. A second
 database on the same restore job is not independent. Suitable deployments
 include a remote linearizable database with separately controlled backups, or
 a hardware/managed monotonic service whose durability and disaster-recovery
-contract has been tested. An in-process counter is not suitable.
+contract has been tested. The implemented authenticated remote-authority
+protocol and shared WebPKI-plus-leaf-SPKI-pinned loader provide that transport
+boundary. The authority sees a namespace/client binding, opaque fixed-format
+record revision and operation timing, not the provider floor plaintext.
+Provider/issuer processes never fall back to a local floor when remote
+configuration, TLS, signature, AEAD, freshness or CAS reconciliation fails. An
+in-process counter is not suitable, and a production deployment plus
+restore/failover acceptance drill remain separate release gates.
+
+### Production remote-authority topology (implemented, not deployed)
+
+The strict two-provider default requires separately operated authority
+instances for provider 0, provider 1 and their independently selected issuers,
+without one service pooling their observations.
+“Instance” here means an independently authenticated endpoint or hardware
+boundary with separate credentials, administration, security logs, monitoring,
+backup/restore policy and failure budget—not merely per-tenant namespace rows
+in one shared database. Provider admission state, issuer quote/ledger state and
+provider settlement-payout state each use their own typed floor value; one
+generic client must never let an operator cross-read or cross-CAS those
+namespaces.
+
+The remote protocol exposes only opaque bounded Read/initialize/CAS operations.
+Every request is client-signed, every response is authority-signed, and the
+transport requires ordinary WebPKI plus an out-of-band leaf-SPKI pin, absolute
+deadlines and no list/scan API. Namespace IDs and credentials are provisioned
+independently for each logical provider/issuer. The authority must not receive
+capabilities, invoices, payment hashes/preimages, payer/IP data, peer-provider
+identity, scopes, query addresses, PIR requests or results. Even this minimized
+API reveals its authenticated client-key/namespace tenant plus mutation timing
+and rate; the operator may know which service that tenant represents.
+
+One common authority service for both PIR legs would therefore add a cross-leg
+timing observer and shared availability/administrative boundary. It weakens the
+default non-collusion topology even if access control prevents one tenant from
+reading another's values. Such a deployment requires an explicit threat-model
+exception; it is not the strict default. The repository ships the server,
+client and typed adapters, but they are not yet a reviewed/accepted production
+deployment; local SQLite floors must not be relabelled as one.
 
 The floor protocol contains no capability, spend key, invoice, payment hash,
-client address, operation, peer-provider or PIR data. It nevertheless exposes
-the public provider identity and the timing/rate of durable store mutations.
+client address, operation, peer-provider or PIR data. The provider/issuer ID is
+inside the client-sealed opaque value rather than a wire field. It nevertheless
+exposes an authenticated namespace/client-key tenant and the timing/rate of
+durable store mutations; its network edge can also observe the connecting
+provider/issuer host address unless separately hidden.
 Two independent PIR providers therefore MUST NOT use one commonly observable
 remote floor service unless that new cross-provider timing observer is
 explicitly accepted in the threat model. Prefer provider-operated hardware or
@@ -565,11 +780,14 @@ rules as other provider security telemetry.
 
 `store_generation` advances on every security-relevant mutation: namespace
 install, irreversible namespace close, capability spend, and signed
-policy/epoch-floor advance. `spend_commit_seq` advances only on spends. The
-rolling commitment binds each legitimate successor to its parent and mutation
-digest, preventing two cloned stores from silently winning at the same
-generation. It is a fork/restore lineage check, not a substitute for host and
-database integrity controls against arbitrary privileged row editing.
+policy/epoch-floor advance. `spend_commit_seq` advances on provider-local
+spends, Free-IP admissions and the final standard-Cashu custody/grant
+transition. Every grant-producing transition additionally binds a fresh
+nonzero 256-bit OS nonce into its successor commitment. The rolling commitment
+binds each legitimate successor to its parent and mutation digest, preventing
+two cloned stores from silently winning at the same generation. It is a
+fork/restore lineage check, not a substitute for host and database integrity
+controls against arbitrary privileged row editing.
 
 Startup and mutation semantics are:
 
@@ -595,9 +813,13 @@ Startup and mutation semantics are:
   floor is never reconstructed by trusting SQLite metadata;
 - **identity mismatch:** one provider's authority record cannot be rebound to
   another `store_instance_id`, provider, or schema version;
-- **multi-process concurrency:** `BEGIN IMMEDIATE` serializes the shared SQLite
-  file, while the external CAS serializes cloned/forked copies. Replicas must
-  share both the same SQLite authority and the same external record.
+- **multi-process concurrency:** `BEGIN IMMEDIATE` serializes one shared local
+  SQLite file. If two cloned files race the same logical grant, the fresh nonces
+  make their successor commitments different; the external CAS accepts exactly
+  one and the loser fails closed. Independent database-file active/active is
+  prohibited and this fencing behavior must not be advertised as HA. A future
+  replica design must share one reviewed linearizable detailed-state store and
+  one external floor record.
 
 An old backup becomes intentionally unusable after the external floor advances.
 Disaster recovery therefore needs a database backup at the exact currently
@@ -619,13 +841,17 @@ interrupted migration, and the concrete production authority backend.
 ## Forbidden persistence and logs
 
 Provider spent storage never contains invoice, payment hash/preimage, quote
-ID, claim key, payer, route, raw capability, Cashu proof secret, DLEQ blinding
-scalar, ARC presentation/tag, client IP, user agent, connection/session ID,
-peer provider, Bitcoin address, PIR share, query result, or exact token time.
+ID, browser quote-claim private key, payer, route, raw capability, Cashu proof
+secret, DLEQ blinding scalar, ARC presentation/tag, client IP, user agent,
+connection/session ID, peer provider, Bitcoin address, PIR share, query result,
+or exact token time. It may contain only the independent provider-secret HMAC
+delivery key for an exact verified shared-issuer success, in the same minimal
+`spent_capabilities(namespace_id, spend_key)` shape as other local claims.
 
 Issuer application storage never contains Bitcoin address, PIR share/result,
-peer provider, claim private key, browser recovery secret, token unblinding
-secret, raw BAT/ARC presentation, cleartext idempotency key, Lightning route,
-or an explicit redeem-to-later-unblinded-note serial foreign key. Incoming
+peer provider, browser quote-claim private key, provider-local delivery key,
+browser recovery secret, token unblinding secret, raw BAT/ARC presentation,
+cleartext idempotency key, Lightning route, or an explicit redeem-to-later-
+unblinded-note serial foreign key. Incoming
 payment preimages stay in the Lightning node; the application ledger normally
 needs only the payment hash for reconciliation.

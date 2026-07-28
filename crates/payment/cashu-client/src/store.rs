@@ -487,15 +487,6 @@ pub trait CashuSwapStoreV1: Send + Sync {
         now_unix: u64,
     ) -> Result<(), CashuSwapStoreErrorV1>;
 
-    /// Delete only an exact `SUBMITTED` intent after a standards-conforming
-    /// NUT-03 rejection proved the mint did not commit the swap. Production
-    /// implementations must bind the delete into their rollback authority
-    /// before returning `Ok(true)`. No terminal tombstone is retained.
-    fn release_definite_rejection(
-        &self,
-        intent_id: &[u8; 16],
-    ) -> Result<bool, CashuSwapStoreErrorV1>;
-
     fn claim_grant_once_with_custody(
         &self,
         intent_id: &[u8; 16],

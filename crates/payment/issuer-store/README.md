@@ -91,6 +91,31 @@ process-local mutex, a copy stored beside SQLite, or a caller-managed integer
 floor is not sufficient. Deployments without such an authority must not expose
 paid issuance.
 
+`RemoteIssuerRollbackFloorAuthorityV1` is the production remote adapter. It
+requires a pinned-HTTPS rollback-authority client and a client-only value codec
+bound to the same authority instance, namespace, and Ed25519 client key. The
+authority receives only a fixed-size opaque AEAD record and its revision. Each
+operation performs a fresh signed read and an exact compare-and-swap; remote,
+signature, binding, authentication, decoding, timeout, and ambiguous-outcome
+failures have no local fallback. `SqliteIssuerRollbackFloorAuthorityV1`
+remains an explicit development/test adapter and is not an independent
+production authority.
+
+An outcome-unknown CAS is reconciled in-process with the same operation ID and
+exact expected/desired opaque records. Following process loss, V1 performs a
+fresh authenticated read and converges only when the decoded logical floor is
+the expected or desired floor; it does not claim to replay the same remote
+operation-log entry across restart. That stronger property requires durable
+storage of the operation ID and both opaque records before the first CAS.
+
+Floor-only restart convergence is safe for this trait because issuer SQLite
+commits before anchoring, permits at most one unanchored generation, and binds
+each exact one-step successor to the same issuer, network, store instance, and
+schema with a changed rolling commitment. A fresh authority read equal to the
+SQLite successor proves the lost CAS completed; equality with its predecessor
+permits exactly that successor CAS. Missing, advanced, or forked observations
+remain fatal to the issuer store.
+
 Every quote, authenticated status, retained-policy/key-lineage, clearing,
 ledger, settlement and payout mutation uses the same commit-then-CAS barrier.
 Exact idempotent replays do not create a generation, but still require the

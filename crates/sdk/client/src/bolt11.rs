@@ -5,6 +5,8 @@
 //! cryptographic checks and the monotonic quote/delegation state.  None of
 //! these values are valid PIR-server admission messages.
 
+use core::fmt;
+
 use pir_payment_crypto::{sign_bip340_prehash_v1, verify_quote_claim_v1};
 use pir_sdk::{PirError, PirResult};
 use pir_service_protocol::{
@@ -15,6 +17,7 @@ use pir_service_protocol::{
     CredentialIssuanceRequestV1, CredentialIssuanceResponseV1, CredentialKeyBindingV1,
     LightningNetworkV1, ParsedBolt11InvoiceV1, VerifiedServiceOfferV1,
 };
+use zeroize::{Zeroize, Zeroizing};
 
 const QUOTE_KEY_CHECKPOINT_VERSION_V1: u8 = 1;
 const QUOTE_KEY_CHECKPOINT_LEN_V1: usize = 1 + 32 + 1 + 33 + 8 + 32;
@@ -358,10 +361,10 @@ impl PreparedBolt11QuoteV1 {
             claim,
             credential_request: request.clone(),
         };
-        let envelope_bytes = envelope.encode().map_err(protocol_encode_error)?;
+        let mut envelope_bytes = Zeroizing::new(envelope.encode().map_err(protocol_encode_error)?);
         Ok(PreparedBolt11ClaimV1 {
             request,
-            envelope_bytes,
+            envelope_bytes: core::mem::take(&mut *envelope_bytes),
         })
     }
 
@@ -407,15 +410,15 @@ impl PreparedBolt11QuoteV1 {
                 "restored BOLT11 claim differs from the verified quote intent".into(),
             ));
         }
-        let canonical = envelope.encode().map_err(protocol_encode_error)?;
-        if canonical != envelope_bytes {
+        let mut canonical = Zeroizing::new(envelope.encode().map_err(protocol_encode_error)?);
+        if canonical.as_slice() != envelope_bytes {
             return Err(PirError::Decode(
                 "restored BOLT11 claim envelope is non-canonical".into(),
             ));
         }
         Ok(PreparedBolt11ClaimV1 {
             request: envelope.credential_request,
-            envelope_bytes: canonical,
+            envelope_bytes: core::mem::take(&mut *canonical),
         })
     }
 }
@@ -479,10 +482,25 @@ impl AcceptedBolt11QuoteV1 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedBolt11ClaimV1 {
     request: CredentialIssuanceRequestV1,
     envelope_bytes: Vec<u8>,
+}
+
+impl fmt::Debug for PreparedBolt11ClaimV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedBolt11ClaimV1")
+            .field("claim_envelope", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for PreparedBolt11ClaimV1 {
+    fn drop(&mut self) {
+        self.envelope_bytes.zeroize();
+    }
 }
 
 impl PreparedBolt11ClaimV1 {
@@ -536,6 +554,7 @@ fn payment_crypto_error(error: impl core::fmt::Display) -> PirError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pir_service_protocol::AuthScheme;
 
     const GENERATOR_COMPRESSED: [u8; 33] = [
         0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
@@ -561,5 +580,27 @@ mod tests {
         let mut trailing = encoded;
         trailing.push(0);
         assert!(Bolt11QuoteKeyCheckpointV1::decode(&trailing).is_err());
+    }
+
+    #[test]
+    fn prepared_claim_debug_redacts_replayable_envelope() {
+        assert!(core::mem::needs_drop::<PreparedBolt11ClaimV1>());
+        let envelope_bytes = b"bolt11-claim-envelope-debug-canary".to_vec();
+        let canary = format!("{envelope_bytes:?}");
+        let claim = PreparedBolt11ClaimV1 {
+            request: CredentialIssuanceRequestV1 {
+                issuer_id: [1; 32],
+                quote_id: [2; 32],
+                quote_request_digest: [3; 32],
+                authorization: AuthScheme::Bolt11DirectReceiptV1,
+                credential_binding_digest: [4; 32],
+                credential_key_id: vec![5; 16],
+                items: CredentialIssuanceRequestItemsV1::DirectPaidReceipt,
+            },
+            envelope_bytes,
+        };
+        let rendered = format!("{claim:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains(&canary));
     }
 }

@@ -7,11 +7,13 @@
 //! does not use these messages: it follows NUT-04 (and NUT-20 where enabled).
 
 use std::collections::HashSet;
+use std::fmt;
 
 use ed25519_dalek::VerifyingKey;
 use k256::elliptic_curve::PrimeField;
 use k256::Scalar;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::cashu_manifest::is_valid_compressed_point;
 use crate::codec::{expect_v1, put_bytes_u32, Decoder};
@@ -45,18 +47,27 @@ pub const CREDENTIAL_ISSUANCE_REQUEST_DIGEST_DOMAIN_V1: &[u8] =
 /// base64 aliases. The URL quote id is routing-only and MUST equal
 /// `claim.quote_id`; applications still verify that equality before touching
 /// durable state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Bolt11QuoteClaimEnvelopeV1 {
     pub quote_intent: Bolt11QuoteIntentV1,
     pub claim: Bolt11QuoteClaimV1,
     pub credential_request: CredentialIssuanceRequestV1,
 }
 
+impl fmt::Debug for Bolt11QuoteClaimEnvelopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Bolt11QuoteClaimEnvelopeV1")
+            .field("claim_envelope", &"[REDACTED]")
+            .finish()
+    }
+}
+
 impl Bolt11QuoteClaimEnvelopeV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
-        let quote_intent = self.quote_intent.encode()?;
-        let claim = self.claim.encode()?;
-        let credential_request = self.credential_request.encode()?;
+        let quote_intent = Zeroizing::new(self.quote_intent.encode()?);
+        let claim = Zeroizing::new(self.claim.encode()?);
+        let credential_request = Zeroizing::new(self.credential_request.encode()?);
         if self.claim.credential_request_digest != self.credential_request.request_digest()?
             || self.claim.issuer_id != self.credential_request.issuer_id
             || self.claim.quote_id != self.credential_request.quote_id
@@ -69,9 +80,9 @@ impl Bolt11QuoteClaimEnvelopeV1 {
                 reason: "claim and credential request differ",
             });
         }
-        let mut out = Vec::with_capacity(
+        let mut out = Zeroizing::new(Vec::with_capacity(
             1 + 4 + quote_intent.len() + 4 + claim.len() + 4 + credential_request.len(),
-        );
+        ));
         out.push(SERVICE_PROTOCOL_VERSION);
         put_bytes_u32(&mut out, &quote_intent);
         put_bytes_u32(&mut out, &claim);
@@ -83,7 +94,7 @@ impl Bolt11QuoteClaimEnvelopeV1 {
                 max: MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1,
             });
         }
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(
@@ -102,18 +113,18 @@ impl Bolt11QuoteClaimEnvelopeV1 {
             decoder.u8("Bolt11QuoteClaimEnvelopeV1.version")?,
             "Bolt11QuoteClaimEnvelopeV1",
         )?;
-        let intent_bytes = decoder.bytes_u32(
+        let intent_bytes = Zeroizing::new(decoder.bytes_u32(
             "Bolt11QuoteClaimEnvelopeV1.quote_intent",
             MAX_BOLT11_QUOTE_INTENT_LEN,
-        )?;
-        let claim_bytes = decoder.bytes_u32(
+        )?);
+        let claim_bytes = Zeroizing::new(decoder.bytes_u32(
             "Bolt11QuoteClaimEnvelopeV1.claim",
             MAX_BOLT11_QUOTE_CLAIM_LEN,
-        )?;
-        let request_bytes = decoder.bytes_u32(
+        )?);
+        let request_bytes = Zeroizing::new(decoder.bytes_u32(
             "Bolt11QuoteClaimEnvelopeV1.credential_request",
             MAX_CREDENTIAL_ISSUANCE_REQUEST_LEN_V1,
-        )?;
+        )?);
         decoder.finish()?;
         let value = Self {
             quote_intent: Bolt11QuoteIntentV1::decode(&intent_bytes)?,
@@ -123,10 +134,14 @@ impl Bolt11QuoteClaimEnvelopeV1 {
                 arc_canonicalizer,
             )?,
         };
-        if value.quote_intent.encode()? != intent_bytes
-            || value.claim.encode()? != claim_bytes
-            || value.credential_request.encode()? != request_bytes
-            || value.encode()?.as_slice() != bytes
+        let exact_intent = Zeroizing::new(value.quote_intent.encode()?);
+        let exact_claim = Zeroizing::new(value.claim.encode()?);
+        let exact_request = Zeroizing::new(value.credential_request.encode()?);
+        let exact_envelope = Zeroizing::new(value.encode()?);
+        if exact_intent.as_slice() != intent_bytes.as_slice()
+            || exact_claim.as_slice() != claim_bytes.as_slice()
+            || exact_request.as_slice() != request_bytes.as_slice()
+            || exact_envelope.as_slice() != bytes
         {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "Bolt11QuoteClaimEnvelopeV1",
@@ -274,7 +289,7 @@ pub struct CredentialIssuanceRequestV1 {
 impl CredentialIssuanceRequestV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         self.validate()?;
-        let mut out = Vec::new();
+        let mut out = Zeroizing::new(Vec::new());
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.issuer_id);
         out.extend_from_slice(&self.quote_id);
@@ -310,7 +325,7 @@ impl CredentialIssuanceRequestV1 {
             MAX_CREDENTIAL_ISSUANCE_REQUEST_LEN_V1,
             "CredentialIssuanceRequestV1",
         )?;
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(
@@ -573,7 +588,7 @@ pub struct CredentialIssuanceResponseV1 {
 impl CredentialIssuanceResponseV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         self.validate()?;
-        let mut out = Vec::new();
+        let mut out = Zeroizing::new(Vec::new());
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.issuer_id);
         out.extend_from_slice(&self.quote_id);
@@ -595,7 +610,7 @@ impl CredentialIssuanceResponseV1 {
         match &self.items {
             CredentialIssuanceResponseItemsV1::DirectPaidReceipts(receipts) => {
                 for receipt in receipts {
-                    let encoded = receipt.encode()?;
+                    let encoded = Zeroizing::new(receipt.encode()?);
                     if encoded.len() != PAID_RECEIPT_WIRE_LEN_V1 {
                         return Err(ServiceProtocolError::InvalidValue {
                             field: "CredentialIssuanceResponseV1.receipt",
@@ -629,7 +644,7 @@ impl CredentialIssuanceResponseV1 {
             MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1,
             "CredentialIssuanceResponseV1",
         )?;
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(
@@ -666,10 +681,10 @@ impl CredentialIssuanceResponseV1 {
             AuthScheme::Bolt11DirectReceiptV1 => {
                 let mut receipts = Vec::with_capacity(item_count);
                 for _ in 0..item_count {
-                    let receipt_bytes = decoder.bytes_u16(
+                    let receipt_bytes = Zeroizing::new(decoder.bytes_u16(
                         "CredentialIssuanceResponseV1.receipt",
                         PAID_RECEIPT_WIRE_LEN_V1,
-                    )?;
+                    )?);
                     if receipt_bytes.len() != PAID_RECEIPT_WIRE_LEN_V1 {
                         return Err(ServiceProtocolError::InvalidValue {
                             field: "CredentialIssuanceResponseV1.receipt",
@@ -677,7 +692,8 @@ impl CredentialIssuanceResponseV1 {
                         });
                     }
                     let receipt = PaidReceiptV1::decode(&receipt_bytes)?;
-                    if receipt.encode()? != receipt_bytes {
+                    let exact_reencoding = Zeroizing::new(receipt.encode()?);
+                    if exact_reencoding.as_slice() != receipt_bytes.as_slice() {
                         return Err(ServiceProtocolError::InvalidValue {
                             field: "CredentialIssuanceResponseV1.receipt",
                             reason: "non-canonical PaidReceiptV1 encoding",
@@ -737,7 +753,8 @@ impl CredentialIssuanceResponseV1 {
             items,
         };
         value.validate()?;
-        if value.encode()?.as_slice() != bytes {
+        let exact_reencoding = Zeroizing::new(value.encode()?);
+        if exact_reencoding.as_slice() != bytes {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "CredentialIssuanceResponseV1",
                 reason: "non-canonical issuance response encoding",
@@ -910,7 +927,7 @@ impl CredentialIssuanceResponseV1 {
                 )?;
                 let mut serials = HashSet::with_capacity(receipts.len());
                 for receipt in receipts {
-                    let encoded = receipt.encode()?;
+                    let encoded = Zeroizing::new(receipt.encode()?);
                     if encoded.len() != PAID_RECEIPT_WIRE_LEN_V1
                         || !serials.insert((receipt.issuer_id, receipt.key_id, receipt.serial))
                     {

@@ -50,25 +50,18 @@ pub struct ServiceKeygenArgs {
     pub force: bool,
 }
 
-pub fn run(args: ServiceKeygenArgs) -> Result<(), String> {
-    if args.out.exists() && !args.force {
-        return Err(format!(
-            "{} already exists; use --force only after confirming key rotation",
-            args.out.display()
-        ));
-    }
-    if let Some(parent) = args.out.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("create {} failed: {error}", parent.display()))?;
-    }
+pub fn run(args: ServiceKeygenArgs) -> Result<crate::keygen::SecretWriteCompletionV1, String> {
+    crate::keygen::prepare_secret_key_parent(&args.out)?;
     if matches!(args.role, ServiceKeyRole::ArcExperimental) {
         return generate_arc_key(args);
     }
 
     let mut secret = [0u8; 32];
     let public = loop {
-        getrandom::getrandom(&mut secret)
-            .map_err(|error| format!("operating-system randomness failed: {error}"))?;
+        if let Err(error) = getrandom::getrandom(&mut secret) {
+            secret.zeroize();
+            return Err(format!("operating-system randomness failed: {error}"));
+        }
         let parsed = match args.role {
             ServiceKeyRole::PolicyEd25519
             | ServiceKeyRole::IssuerRootEd25519
@@ -105,8 +98,10 @@ pub fn run(args: ServiceKeygenArgs) -> Result<(), String> {
         }
         secret.zeroize();
     };
-    crate::keygen::write_secret_key_unix(&args.out, &secret)?;
+    let write_result =
+        crate::keygen::write_secret_key_unix_with_force(&args.out, &secret, args.force);
     secret.zeroize();
+    let completion = write_result?;
     eprintln!(
         "wrote {:?} secret key (32 raw bytes, owner-only mode) to {}",
         args.role,
@@ -121,21 +116,27 @@ pub fn run(args: ServiceKeygenArgs) -> Result<(), String> {
     } else {
         println!("public_key={public}");
     }
-    Ok(())
+    Ok(completion)
 }
 
-fn generate_arc_key(args: ServiceKeygenArgs) -> Result<(), String> {
+fn generate_arc_key(
+    args: ServiceKeygenArgs,
+) -> Result<crate::keygen::SecretWriteCompletionV1, String> {
     let mut secret = [0u8; ARC_SECRET_KEY_LEN_V1];
     let parsed = loop {
-        getrandom::getrandom(&mut secret)
-            .map_err(|error| format!("operating-system randomness failed: {error}"))?;
+        if let Err(error) = getrandom::getrandom(&mut secret) {
+            secret.zeroize();
+            return Err(format!("operating-system randomness failed: {error}"));
+        }
         if let Ok(key) = ArcSecretKeyV1::from_zeroizing_bytes(vec![1], Zeroizing::new(secret)) {
             break key;
         }
         secret.zeroize();
     };
-    crate::keygen::write_secret_bytes_unix(&args.out, &secret)?;
+    let write_result =
+        crate::keygen::write_secret_bytes_unix_with_force(&args.out, &secret, args.force);
     secret.zeroize();
+    let completion = write_result?;
     eprintln!(
         "wrote {:?} secret key ({} raw bytes, owner-only mode) to {}",
         args.role,
@@ -148,12 +149,13 @@ fn generate_arc_key(args: ServiceKeygenArgs) -> Result<(), String> {
         "public_key_fingerprint={}",
         hex::encode(parsed.public_key_fingerprint())
     );
-    Ok(())
+    Ok(completion)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+    use crate::keygen::private_tempdir_v1 as private_tempdir;
 
     #[test]
     fn every_role_writes_a_parseable_owner_only_key() {
@@ -172,7 +174,7 @@ mod tests {
             ServiceKeyRole::RedeemDerivation,
             ServiceKeyRole::ArcExperimental,
         ] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = private_tempdir().unwrap();
             let path = directory.path().join("key");
             run(ServiceKeygenArgs {
                 role,
@@ -220,5 +222,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn directory_key_no_force_preserves_an_existing_secret() {
+        let directory = private_tempdir().unwrap();
+        let path = directory.path().join("directory-nostr.key");
+        crate::keygen::write_secret_bytes_unix_with_force(&path, &[0x5a_u8; 32], false).unwrap();
+
+        let error = run(ServiceKeygenArgs {
+            role: ServiceKeyRole::DirectoryNostr,
+            out: path.clone(),
+            force: false,
+        })
+        .expect_err("a second no-force directory keygen must fail");
+        assert!(
+            error.contains("already exists"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), vec![0x5a_u8; 32]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_service_keygen_rejects_a_writable_parent_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = private_tempdir().unwrap();
+        let parent = directory.path().join("public");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let path = parent.join("directory-nostr.key");
+
+        let error = run(ServiceKeygenArgs {
+            role: ServiceKeyRole::DirectoryNostr,
+            out: path.clone(),
+            force: false,
+        })
+        .expect_err("service keys require a private parent");
+        assert!(error.contains("mode 0700"), "{error}");
+        assert!(!path.exists());
     }
 }

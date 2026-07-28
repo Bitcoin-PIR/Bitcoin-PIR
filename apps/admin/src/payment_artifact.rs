@@ -165,6 +165,9 @@ struct CashuManifestArgs {
 struct CashuManifestConfig {
     manifest_epoch: u64,
     mint_endpoint: String,
+    /// One or two canonical lowercase leaf-SPKI SHA-256 pins. WebPKI remains
+    /// mandatory; two pins are only for a reviewed rotation overlap.
+    leaf_spki_sha256_pins_hex: Vec<String>,
     unit: String,
     /// Offer/policy horizon used by the builder's self-verification.
     accepted_inputs_valid_through: u64,
@@ -501,9 +504,15 @@ fn manifest_from_config(
         .ok_or_else(|| "Cashu manifest config has no active keyset".to_owned())?;
     let mut accepted_input_keysets: Vec<_> = built.into_iter().map(|(_, keyset)| keyset).collect();
     accepted_input_keysets.sort_by(|left, right| left.keyset_id.cmp(&right.keyset_id));
+    let leaf_spki_sha256_pins = config
+        .leaf_spki_sha256_pins_hex
+        .iter()
+        .map(|value| parse_hex_exact::<32>("Cashu leaf SPKI SHA-256 pin", value))
+        .collect::<Result<Vec<_>, _>>()?;
     let manifest = StandardCashuMintManifestV1 {
         manifest_epoch: config.manifest_epoch,
         mint_endpoint: config.mint_endpoint.clone(),
+        leaf_spki_sha256_pins,
         unit: config.unit.clone(),
         required_nuts: CashuRequiredNutsV1::required_v1(),
         accepted_input_keysets,
@@ -629,6 +638,7 @@ pub(crate) fn write_public_artifact(path: &Path, bytes: &[u8], force: bool) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keygen::private_tempdir_v1 as private_tempdir;
     use ed25519_dalek::SigningKey;
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     use k256::SecretKey;
@@ -646,7 +656,7 @@ mod tests {
 
     #[test]
     fn quote_delegation_command_writes_self_verified_roundtrip() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let issuer_path = directory.path().join("issuer.key");
         let quote_path = directory.path().join("quote.key");
         write_secret(&issuer_path, &[11; 32]);
@@ -679,7 +689,7 @@ mod tests {
 
     #[test]
     fn credential_binding_command_covers_every_binding_scheme() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let issuer_path = directory.path().join("issuer.key");
         write_secret(&issuer_path, &[21; 32]);
         let ed_public = SigningKey::from_bytes(&[22; 32])
@@ -745,10 +755,11 @@ mod tests {
 
     #[test]
     fn cashu_manifest_command_parses_toml_and_writes_canonical_bytes() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let config = directory.path().join("cashu.toml");
         let source = format!(
-            "manifest_epoch = 1\nmint_endpoint = \"https://mint.fixture.invalid\"\nunit = \"sat\"\naccepted_inputs_valid_through = 2000000000\nactive_output_valid_through = 2000000100\n\n[[keysets]]\nactive = true\ninput_fee_ppk = 0\nfinal_expiry = 2000001000\n\n[[keysets.keys]]\namount = 1\npublic_key_hex = \"{}\"\n",
+            "manifest_epoch = 1\nmint_endpoint = \"https://mint.fixture.invalid\"\nleaf_spki_sha256_pins_hex = [\"{}\"]\nunit = \"sat\"\naccepted_inputs_valid_through = 2000000000\nactive_output_valid_through = 2000000100\n\n[[keysets]]\nactive = true\ninput_fee_ppk = 0\nfinal_expiry = 2000001000\n\n[[keysets.keys]]\namount = 1\npublic_key_hex = \"{}\"\n",
+            hex::encode([0x31; 32]),
             point(41)
         );
         std::fs::write(&config, source).unwrap();
@@ -774,6 +785,7 @@ mod tests {
         let config = CashuManifestConfig {
             manifest_epoch: 3,
             mint_endpoint: "https://mint.fixture.invalid".to_owned(),
+            leaf_spki_sha256_pins_hex: vec![hex::encode([0x31; 32])],
             unit: "sat".to_owned(),
             accepted_inputs_valid_through: 2_000_000_000,
             active_output_valid_through: 2_000_000_100,
@@ -807,6 +819,7 @@ mod tests {
         let config = CashuManifestConfig {
             manifest_epoch: 1,
             mint_endpoint: "https://mint.fixture.invalid".to_owned(),
+            leaf_spki_sha256_pins_hex: vec![hex::encode([0x31; 32])],
             unit: "sat".to_owned(),
             accepted_inputs_valid_through: 1,
             active_output_valid_through: 1,
@@ -821,7 +834,7 @@ mod tests {
     #[test]
     fn public_artifact_writer_sets_mode_and_rejects_symlink_even_with_force() {
         use std::os::unix::fs::{symlink, PermissionsExt};
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let target = directory.path().join("artifact.bin");
         write_public_artifact(&target, b"artifact", false).unwrap();
         assert_eq!(

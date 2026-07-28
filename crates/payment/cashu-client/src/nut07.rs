@@ -16,7 +16,7 @@ use crate::dto::{
 };
 use crate::{
     CashuClientErrorV1, CashuCustodyBundleV1, CashuMintRouteV1, CashuMintTransportV1,
-    CUSTODY_NOTE_SET_DIGEST_DOMAIN_V1, CUSTODY_NOTE_Y_DIGEST_DOMAIN_V1,
+    CashuMintTrustV1, CUSTODY_NOTE_SET_DIGEST_DOMAIN_V1, CUSTODY_NOTE_Y_DIGEST_DOMAIN_V1,
     MAX_CASHU_MINT_JSON_BYTES_V1,
 };
 
@@ -276,7 +276,8 @@ impl Drop for PreparedYV1 {
     }
 }
 
-/// Perform one manually triggered, bounded NUT-07 batch.
+/// Perform one manually triggered, bounded NUT-07 batch for an exact
+/// endpoint/pin/manifest/unit cohort.
 ///
 /// This function never polls and never writes a store. Callers must keep this
 /// operation off the PIR query path and decide separately whether an
@@ -308,11 +309,13 @@ pub fn check_cashu_custody_bundles_once_v1(
     }
 
     let first = &bundles[0];
-    if !is_bounded_https_endpoint_v1(first.mint_endpoint()) {
-        return Err(CashuClientErrorV1::InvalidCustodyPlaintext);
-    }
+    let trust = CashuMintTrustV1::from_parts(first.mint_endpoint(), first.leaf_spki_sha256_pins())
+        .map_err(|_| CashuClientErrorV1::InvalidCustodyPlaintext)?;
     if bundles.iter().any(|bundle| {
-        bundle.mint_endpoint() != first.mint_endpoint() || bundle.unit() != first.unit()
+        bundle.mint_endpoint() != first.mint_endpoint()
+            || bundle.manifest_digest() != first.manifest_digest()
+            || bundle.leaf_spki_sha256_pins() != first.leaf_spki_sha256_pins()
+            || bundle.unit() != first.unit()
     }) {
         return Err(CashuClientErrorV1::InvalidCustodyPlaintext);
     }
@@ -397,7 +400,7 @@ pub fn check_cashu_custody_bundles_once_v1(
     let response_body = Zeroizing::new(
         transport
             .post_json(
-                first.mint_endpoint(),
+                trust,
                 CashuMintRouteV1::CheckState,
                 &request_body,
                 MAX_CASHU_MINT_JSON_BYTES_V1,
@@ -584,24 +587,6 @@ pub fn derive_cashu_nut07_export_observation_digest_v1(
     Ok(hasher.finalize().into())
 }
 
-fn is_bounded_https_endpoint_v1(endpoint: &str) -> bool {
-    if endpoint.is_empty()
-        || endpoint.len() > pir_service_protocol::MAX_ENDPOINT_LEN
-        || !endpoint.is_ascii()
-        || endpoint
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace() || byte == 0x7f)
-    {
-        return false;
-    }
-    endpoint.strip_prefix("https://").is_some_and(|rest| {
-        !rest.is_empty()
-            && !rest.ends_with('/')
-            && !rest.contains(['@', '\\', '?', '#'])
-            && !rest.starts_with('/')
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,10 +605,24 @@ mod tests {
 
     struct FakeTransport(Reply);
 
+    struct NeverTransport;
+
+    impl CashuMintTransportV1 for NeverTransport {
+        fn post_json(
+            &self,
+            _trust: CashuMintTrustV1<'_>,
+            _route: CashuMintRouteV1,
+            _request_json: &[u8],
+            _max_response_bytes: usize,
+        ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
+            panic!("cohort validation must fail before transport")
+        }
+    }
+
     impl CashuMintTransportV1 for FakeTransport {
         fn post_json(
             &self,
-            _mint_endpoint: &str,
+            _trust: CashuMintTrustV1<'_>,
             route: CashuMintRouteV1,
             request_json: &[u8],
             _max_response_bytes: usize,
@@ -673,7 +672,11 @@ mod tests {
         }
     }
 
-    fn custody_bundle(seeds: &[(u64, u64)]) -> CashuCustodyBundleV1 {
+    fn custody_bundle_with_trust(
+        seeds: &[(u64, u64)],
+        manifest_digest: [u8; 32],
+        leaf_spki_sha256_pins: Vec<[u8; 32]>,
+    ) -> CashuCustodyBundleV1 {
         let endpoint = "https://mint.example.test".to_owned();
         let mint_id = derive_cashu_mint_id(&endpoint);
         let mut notes = Vec::new();
@@ -699,12 +702,36 @@ mod tests {
         }
         CashuCustodyBundleV1::new(
             endpoint,
+            manifest_digest,
+            leaf_spki_sha256_pins,
             "sat".to_owned(),
             format!("01{}", "11".repeat(32)),
             hasher.finalize().into(),
             notes,
         )
         .unwrap()
+    }
+
+    fn custody_bundle(seeds: &[(u64, u64)]) -> CashuCustodyBundleV1 {
+        custody_bundle_with_trust(seeds, [0x52; 32], vec![[0x31; 32]])
+    }
+
+    #[test]
+    fn batch_rejects_manifest_or_pin_cohort_drift_before_transport() {
+        let first = custody_bundle_with_trust(&[(2, 2)], [0x52; 32], vec![[0x31; 32]]);
+        let different_manifest = custody_bundle_with_trust(&[(3, 3)], [0x53; 32], vec![[0x31; 32]]);
+        let transport = NeverTransport;
+        assert_eq!(
+            check_cashu_custody_bundles_once_v1(&transport, &[first, different_manifest]),
+            Err(CashuClientErrorV1::InvalidCustodyPlaintext)
+        );
+
+        let first = custody_bundle_with_trust(&[(2, 2)], [0x52; 32], vec![[0x31; 32]]);
+        let different_pin = custody_bundle_with_trust(&[(3, 3)], [0x52; 32], vec![[0x32; 32]]);
+        assert_eq!(
+            check_cashu_custody_bundles_once_v1(&transport, &[first, different_pin]),
+            Err(CashuClientErrorV1::InvalidCustodyPlaintext)
+        );
     }
 
     #[test]

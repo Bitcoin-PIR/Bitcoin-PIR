@@ -171,8 +171,8 @@ fn parse_pubkey_hex(hex: &str) -> Result<[u8; ED25519_PUBKEY_LEN], String> {
 mod tests {
     use super::*;
     use crate::keygen;
+    use crate::keygen::private_tempdir_v1 as tempdir;
     use ed25519_dalek::SigningKey;
-    use tempfile::tempdir;
 
     fn write_op_key(dir: &std::path::Path) -> (PathBuf, SigningKey) {
         let path = dir.join("op.key");

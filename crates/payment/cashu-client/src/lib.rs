@@ -30,8 +30,8 @@ use std::io::{self, Write};
 
 use dto::{
     decode_json_v1, decode_lower_hex, decode_mint_response_json_v1, encode_json_v1,
-    is_bounded_nut07_witness_v1, is_strict_nut00_error_json_v1, lower_hex, validate_item_count_v1,
-    CashuBlindedMessageJsonV1, CashuPostCheckStateRequestJsonV1, CashuPostCheckStateResponseJsonV1,
+    is_bounded_nut07_witness_v1, lower_hex, validate_item_count_v1, CashuBlindedMessageJsonV1,
+    CashuPostCheckStateRequestJsonV1, CashuPostCheckStateResponseJsonV1,
     CashuPostRestoreRequestJsonV1, CashuPostRestoreResponseJsonV1, CashuPostSwapRequestJsonV1,
     CashuPostSwapResponseJsonV1, CashuProofJsonV1, CashuProofStateJsonV1,
 };
@@ -39,7 +39,8 @@ use pir_payment_crypto::{
     blind_cashu_message_v1, cashu_hash_to_curve_v1, verify_and_unblind_cashu_promise_v1,
 };
 use pir_service_protocol::{
-    check_standard_cashu_spend_for_offer, StandardCashuMintManifestV1, StandardCashuSpendCheckV1,
+    check_standard_cashu_spend_for_offer, is_canonical_service_https_endpoint_v1,
+    validate_leaf_spki_sha256_pins_v1, StandardCashuMintManifestV1, StandardCashuSpendCheckV1,
     StandardCashuSpendV1, VerifiedServiceOfferV1, MAX_STANDARD_CASHU_PROOFS_V1,
 };
 use sha2::{Digest, Sha256};
@@ -174,7 +175,6 @@ pub enum CashuClientErrorV1 {
     InvalidMintScalar,
     MintResponseMismatch,
     MintDleqVerificationFailed,
-    MintDefiniteRejection,
     Nut07CheckUnavailable,
     Nut07ResponseInvalid,
     InvalidCiphertextEnvelope,
@@ -216,9 +216,6 @@ impl fmt::Display for CashuClientErrorV1 {
             Self::InvalidMintScalar => "Cashu mint returned an invalid DLEQ scalar",
             Self::MintResponseMismatch => "Cashu mint response does not echo the exact output list",
             Self::MintDleqVerificationFailed => "Cashu mint NUT-12 verification failed",
-            Self::MintDefiniteRejection => {
-                "Cashu mint definitively rejected the NUT-03 swap request"
-            }
             Self::Nut07CheckUnavailable => "Cashu mint NUT-07 state check is unavailable",
             Self::Nut07ResponseInvalid => "Cashu mint returned an invalid NUT-07 response",
             Self::InvalidCiphertextEnvelope => "Cashu recovery ciphertext envelope is invalid",
@@ -270,9 +267,6 @@ pub enum CashuMintTransportFailureKindV1 {
     HttpError,
     InvalidContentType,
     ResponseTooLarge,
-    /// HTTP 400 plus an exact, bounded NUT-00 JSON error response. Only the
-    /// checked constructor can produce this classification.
-    DefiniteRejection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,30 +276,20 @@ pub struct CashuMintTransportFailureV1 {
 }
 
 impl CashuMintTransportFailureV1 {
-    /// Construct an ambiguous failure. Passing `DefiniteRejection` is
-    /// intentionally downgraded because that result requires validated HTTP
-    /// evidence from `from_http_status`.
     pub const fn ambiguous(
         kind: CashuMintTransportFailureKindV1,
         http_status: Option<u16>,
     ) -> Self {
-        let kind = match kind {
-            CashuMintTransportFailureKindV1::DefiniteRejection => {
-                CashuMintTransportFailureKindV1::HttpError
-            }
-            other => other,
-        };
         Self { kind, http_status }
     }
 
     /// Classify one already-bounded, strict-content-type HTTP error response.
-    /// Per NUT-00, only HTTP 400 with the exact `{code, detail}` JSON shape is
-    /// a definite protocol rejection. 408, 425, 429, every 5xx, malformed
-    /// JSON, and arbitrary HTML remain ambiguous regardless of their body.
-    pub fn from_http_status(status: u16, response_body: &[u8]) -> Self {
-        let kind = if status == 400 && is_strict_nut00_error_json_v1(response_body) {
-            CashuMintTransportFailureKindV1::DefiniteRejection
-        } else if status == 404 {
+    /// NUT-00 defines the HTTP 400 error envelope, but neither NUT-00 nor
+    /// NUT-03 makes that status proof that a swap did not commit. Therefore
+    /// every HTTP response remains ambiguous for mutation recovery. The body
+    /// is intentionally ignored and never enters logs or durable state.
+    pub fn from_http_status(status: u16, _response_body: &[u8]) -> Self {
+        let kind = if status == 404 {
             CashuMintTransportFailureKindV1::NotFound
         } else {
             CashuMintTransportFailureKindV1::HttpError
@@ -323,23 +307,76 @@ impl CashuMintTransportFailureV1 {
     pub const fn http_status(&self) -> Option<u16> {
         self.http_status
     }
+}
 
-    const fn is_definite_rejection(&self) -> bool {
-        matches!(
-            self.kind,
-            CashuMintTransportFailureKindV1::DefiniteRejection
-        ) && matches!(self.http_status, Some(400))
+/// Borrowed, canonical transport trust derived from one already verified
+/// signed Cashu manifest or its authenticated custody continuation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct CashuMintTrustV1<'a> {
+    mint_endpoint: &'a str,
+    leaf_spki_sha256_pins: &'a [[u8; 32]],
+}
+
+impl fmt::Debug for CashuMintTrustV1<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CashuMintTrustV1")
+            .field("mint_endpoint", &"[REDACTED_ENDPOINT]")
+            .field(
+                "leaf_spki_sha256_pin_count",
+                &self.leaf_spki_sha256_pins.len(),
+            )
+            .finish()
     }
 }
 
-/// Fail-closed mint transport boundary. A production implementation must pin
-/// the manifest endpoint, append only `route.path()`, reject redirects and
-/// cross-origin authentication, enforce HTTPS, set JSON content type, and
-/// stop reading at `max_response_bytes`.
+impl<'a> CashuMintTrustV1<'a> {
+    pub fn from_manifest(
+        manifest: &'a StandardCashuMintManifestV1,
+    ) -> Result<Self, CashuClientErrorV1> {
+        if manifest.encode().is_err() {
+            return Err(CashuClientErrorV1::InvalidManifest);
+        }
+        Self::from_parts(&manifest.mint_endpoint, &manifest.leaf_spki_sha256_pins)
+    }
+
+    pub(crate) fn from_parts(
+        mint_endpoint: &'a str,
+        leaf_spki_sha256_pins: &'a [[u8; 32]],
+    ) -> Result<Self, CashuClientErrorV1> {
+        if !is_canonical_service_https_endpoint_v1(mint_endpoint)
+            || validate_leaf_spki_sha256_pins_v1(
+                leaf_spki_sha256_pins,
+                "CashuMintTrustV1.leaf_spki_sha256_pins",
+            )
+            .is_err()
+        {
+            return Err(CashuClientErrorV1::InvalidManifest);
+        }
+        Ok(Self {
+            mint_endpoint,
+            leaf_spki_sha256_pins,
+        })
+    }
+
+    pub const fn mint_endpoint(self) -> &'a str {
+        self.mint_endpoint
+    }
+
+    pub const fn leaf_spki_sha256_pins(self) -> &'a [[u8; 32]] {
+        self.leaf_spki_sha256_pins
+    }
+}
+
+/// Fail-closed mint transport boundary. A production implementation must use
+/// the exact signed trust tuple, require WebPKI plus every-request leaf-SPKI
+/// pin validation, append only `route.path()`, reject redirects and
+/// cross-origin authentication, enforce HTTPS, set JSON content type, and stop
+/// reading at `max_response_bytes`.
 pub trait CashuMintTransportV1: Send + Sync {
     fn post_json(
         &self,
-        mint_endpoint: &str,
+        trust: CashuMintTrustV1<'_>,
         route: CashuMintRouteV1,
         request_json: &[u8],
         max_response_bytes: usize,
@@ -639,7 +676,7 @@ impl<'a> StandardCashuClientV1<'a> {
         context: &CheckedContextV1<'_>,
     ) -> Result<CashuSwapProgressV1, CashuClientErrorV1> {
         let response = self.transport.post_json(
-            &context.checked.mint_endpoint,
+            CashuMintTrustV1::from_manifest(context.manifest)?,
             CashuMintRouteV1::Swap,
             recovery.request_json.as_bytes(),
             MAX_CASHU_MINT_JSON_BYTES_V1,
@@ -663,36 +700,8 @@ impl<'a> StandardCashuClientV1<'a> {
                     Err(error) => Err(error),
                 }
             }
-            Err(failure) if failure.is_definite_rejection() => {
-                self.finish_definite_rejection(record, context)
-            }
             Err(_) => self.restore_only(record, recovery, context),
         }
-    }
-
-    fn finish_definite_rejection(
-        &self,
-        record: &StoredCashuSwapIntentV1,
-        context: &CheckedContextV1<'_>,
-    ) -> Result<CashuSwapProgressV1, CashuClientErrorV1> {
-        if self
-            .store
-            .release_definite_rejection(&record.intent_id)
-            .map_err(map_store_error)?
-        {
-            return Err(CashuClientErrorV1::MintDefiniteRejection);
-        }
-
-        // A concurrent caller may have completed the same delete or advanced
-        // recovery before this caller acquired the store writer lock. Missing
-        // is idempotent success; any later durable state remains authoritative.
-        let Some(current) = self.load_for_context(context)? else {
-            return Err(CashuClientErrorV1::MintDefiniteRejection);
-        };
-        if current.state == CashuSwapStateV1::Submitted {
-            return Err(CashuClientErrorV1::StateConflict);
-        }
-        self.drive(current, context)
     }
 
     fn restore_only(
@@ -707,7 +716,7 @@ impl<'a> StandardCashuClientV1<'a> {
         };
         let body = Zeroizing::new(encode_json_v1(&restore_request)?);
         let response = self.transport.post_json(
-            &context.checked.mint_endpoint,
+            CashuMintTrustV1::from_manifest(context.manifest)?,
             CashuMintRouteV1::Restore,
             body.as_slice(),
             MAX_CASHU_MINT_JSON_BYTES_V1,
@@ -790,7 +799,7 @@ impl<'a> StandardCashuClientV1<'a> {
         };
         let body = Zeroizing::new(encode_json_v1(&request)?);
         let response = self.transport.post_json(
-            &context.checked.mint_endpoint,
+            CashuMintTrustV1::from_manifest(context.manifest)?,
             CashuMintRouteV1::CheckState,
             &body,
             MAX_CASHU_MINT_JSON_BYTES_V1,
@@ -1868,6 +1877,8 @@ fn build_custody_lot_v1(
         .to_owned();
     let bundle = CashuCustodyBundleV1::new(
         mint_endpoint,
+        record.manifest_digest,
+        context.manifest.leaf_spki_sha256_pins.clone(),
         record.unit.clone(),
         context.manifest.active_output_keyset.keyset_id.clone(),
         note_set_digest,

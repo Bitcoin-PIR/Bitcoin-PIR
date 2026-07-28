@@ -2,6 +2,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use pir_service_protocol::{
     arc_provider_global_spend_key_v1, bat_verification_key_fingerprint_v1, bind_auth_begin_v1,
     derive_bat_key_id_v1, derive_cashu_keyset_id_v2, derive_cashu_mint_id,
+    derive_shared_issuer_local_grant_namespace_v1,
     free_anonymous_ticket_key_id, paid_receipt_key_id, AcquisitionMethod, ArcPresentationV1,
     AuthBeginV1, AuthPaddingClassV1, AuthScheme, AuthorizationProofV1, BackendId,
     BoundAuthAttemptV1, CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1,
@@ -158,6 +159,12 @@ impl TestPath {
             .prefix("bitcoinpir-verified-offer-store-test-")
             .tempdir()
             .expect("create task-specific temporary directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict verified-offer test directory permissions");
+        }
         let database = directory.path().join("provider.sqlite3");
         Self {
             _directory: directory,
@@ -372,6 +379,7 @@ fn standard_cashu_offer(offer_id: u32) -> ServiceOfferV1 {
     let manifest = StandardCashuMintManifestV1 {
         manifest_epoch: 1,
         mint_endpoint: "https://mint.example".into(),
+        leaf_spki_sha256_pins: vec![[0x31; 32]],
         unit: "sat".into(),
         required_nuts: CashuRequiredNutsV1::required_v1(),
         accepted_input_keysets: vec![keyset.clone()],
@@ -880,7 +888,7 @@ fn all_authorization_schemes_route_to_their_authoritative_state() {
 
     let shared_free_path = TestPath::new();
     let shared_free_store = create_store(&shared_free_path.database, 10);
-    assert_eq!(
+    let (shared_free_namespace, shared_free_outcome) = expect_namespace(
         install_offer(
             &shared_free_store,
             scope(1),
@@ -894,11 +902,13 @@ fn all_authorization_schemes_route_to_their_authoritative_state() {
             1,
         )
         .unwrap(),
-        VerifiedOfferNamespaceInstallOutcomeV1::NotApplicable(
-            VerifiedOfferNamespaceNotApplicableV1::SharedIssuerOnline
-        )
     );
-    assert_no_namespace_rows(&shared_free_path.database);
+    assert_eq!(shared_free_outcome, NamespaceInstallOutcome::Installed);
+    assert_eq!(
+        shared_free_namespace.scheme,
+        pir_service_protocol::SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1
+    );
+    assert!(shared_free_namespace.exclusive_key_lineage.is_none());
 
     let receipt_path = TestPath::new();
     let receipt_store = create_store(&receipt_path.database, 5);
@@ -979,7 +989,7 @@ fn all_authorization_schemes_route_to_their_authoritative_state() {
 
     let shared_path = TestPath::new();
     let shared_store = create_store(&shared_path.database, 9);
-    assert_eq!(
+    let (shared_namespace, shared_outcome) = expect_namespace(
         install_offer(
             &shared_store,
             scope(1),
@@ -993,11 +1003,60 @@ fn all_authorization_schemes_route_to_their_authoritative_state() {
             1,
         )
         .unwrap(),
-        VerifiedOfferNamespaceInstallOutcomeV1::NotApplicable(
-            VerifiedOfferNamespaceNotApplicableV1::SharedIssuerOnline
-        )
     );
-    assert_no_namespace_rows(&shared_path.database);
+    assert_eq!(shared_outcome, NamespaceInstallOutcome::Installed);
+    assert_eq!(
+        shared_namespace.scheme,
+        pir_service_protocol::SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1
+    );
+    assert!(shared_namespace.exclusive_key_lineage.is_none());
+}
+
+#[test]
+fn shared_issuer_synthetic_namespace_is_unique_per_complete_offer_purpose() {
+    let base_scope = scope(1);
+    let mut other_provider_scope = base_scope.clone();
+    other_provider_scope.provider_id = [0x12; 32];
+    let other_scope = scope(2);
+    let mut other_entitlement_scope = base_scope.clone();
+    other_entitlement_scope.entitlement_profile += 1;
+
+    let purposes = [
+        (base_scope.clone(), 70),
+        (other_provider_scope, 70),
+        (other_scope, 70),
+        (base_scope.clone(), 71),
+        (other_entitlement_scope, 70),
+    ];
+    let namespaces = purposes
+        .into_iter()
+        .enumerate()
+        .map(|(index, (service_scope, offer_id))| {
+            let offer = bearer_offer(
+                &service_scope,
+                offer_id,
+                AuthScheme::FreeV1,
+                VerificationMode::SharedIssuerOnline,
+                1,
+            );
+            let (policy, key) = signed_policy(service_scope, offer, index as u64 + 1);
+            derive_shared_issuer_local_grant_namespace_v1(&verified_offer(&policy, &key))
+                .expect("derive shared-issuer synthetic namespace")
+        })
+        .collect::<Vec<_>>();
+
+    for (index, first) in namespaces.iter().enumerate() {
+        for second in &namespaces[index + 1..] {
+            assert_ne!(first.namespace_id(), second.namespace_id());
+            assert_ne!(first.key_id(), second.key_id());
+            assert_ne!(
+                (first.namespace_id(), first.key_id()),
+                (second.namespace_id(), second.key_id())
+            );
+            // All variants deliberately reuse the same issuer root/key.
+            assert_eq!(first.issuer_id(), second.issuer_id());
+        }
+    }
 }
 
 #[test]

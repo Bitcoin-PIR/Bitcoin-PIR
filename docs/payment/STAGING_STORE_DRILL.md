@@ -112,8 +112,11 @@ aggregate fields. Record at least:
   `cashu_custody_export_batch_rows`;
 - cold and warm `startup_check_ms` observations on the intended storage class.
 
-The actual issuer and provider processes emit the same aggregate inventory and
-open-check latency during enforced startup. Define an environment-specific
+The actual issuer and provider processes perform the same inventory integrity
+read during enforced startup, but their normal serving logs emit only a coarse
+successful-check marker and elapsed time. Exact aggregate inventory remains an
+explicit non-serving `check-store` output so centralized serving logs cannot become
+a cross-role timing/volume correlation source. Define an environment-specific
 maximum before activation and fail the deployment gate if it is exceeded.
 There is intentionally no universal millisecond default: storage class,
 retained-history threshold, and recovery objectives are operator decisions.

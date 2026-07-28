@@ -88,6 +88,12 @@ impl TestPath {
             .prefix("bitcoinpir-cashu-swap-v4-test-")
             .tempdir()
             .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict Cashu swap test directory permissions");
+        }
         Self {
             database: directory.path().join("provider.sqlite3"),
             backup: directory.path().join("provider-backup.sqlite3"),
@@ -497,10 +503,68 @@ fn concurrent_prepare_submit_and_grant_each_have_one_winner() {
 }
 
 #[test]
-fn definite_rejection_delete_has_one_winner_releases_exposure_and_survives_restart() {
+fn exact_cashu_grants_from_equal_predecessors_have_distinct_commitments() {
+    let first_path = TestPath::new();
+    let second_path = TestPath::new();
+    let first_authority = Arc::new(MemoryRollbackAuthority::default());
+    let second_authority = Arc::new(MemoryRollbackAuthority::default());
+    let first = create_store(&first_path.database, first_authority);
+    let second = create_store(&second_path.database, second_authority);
+    let proposed = intent();
+    let recovery = replacement_recovery();
+
+    for store in [&first, &second] {
+        store
+            .insert_cashu_swap_intent_v1(&proposed, limits())
+            .unwrap();
+        store
+            .begin_cashu_swap_submission_v1(&proposed.intent_id, 101)
+            .unwrap();
+        store
+            .commit_cashu_swap_wallet_v1(&proposed.intent_id, &recovery, 102)
+            .unwrap();
+    }
+    let first_predecessor = first.identity().unwrap();
+    let second_predecessor = second.identity().unwrap();
+    assert_eq!(first_predecessor, second_predecessor);
+
+    assert!(
+        first
+            .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 103)
+            .unwrap()
+            .issued
+    );
+    assert!(
+        second
+            .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 103)
+            .unwrap()
+            .issued
+    );
+    let first_grant = first.identity().unwrap();
+    let second_grant = second.identity().unwrap();
+    assert_eq!(first_grant.store_generation, 4);
+    assert_eq!(second_grant.store_generation, 4);
+    assert_eq!(first_grant.spend_commit_seq, 1);
+    assert_eq!(second_grant.spend_commit_seq, 1);
+    assert_eq!(
+        first_grant.rollback_parent_commitment,
+        first_predecessor.rollback_commitment
+    );
+    assert_eq!(
+        second_grant.rollback_parent_commitment,
+        second_predecessor.rollback_commitment
+    );
+    assert_ne!(
+        first_grant.rollback_commitment,
+        second_grant.rollback_commitment
+    );
+}
+
+#[test]
+fn grant_nonce_failure_rolls_back_cashu_custody_and_state() {
     let path = TestPath::new();
     let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = Arc::new(create_store(&path.database, Arc::clone(&authority)));
+    let store = create_store(&path.database, authority);
     let proposed = intent();
     store
         .insert_cashu_swap_intent_v1(&proposed, limits())
@@ -508,97 +572,35 @@ fn definite_rejection_delete_has_one_winner_releases_exposure_and_survives_resta
     store
         .begin_cashu_swap_submission_v1(&proposed.intent_id, 101)
         .unwrap();
+    store
+        .commit_cashu_swap_wallet_v1(&proposed.intent_id, &replacement_recovery(), 102)
+        .unwrap();
+    let before = store.identity().unwrap();
 
-    let barrier = Arc::new(Barrier::new(WORKERS));
-    let deletes = (0..WORKERS)
-        .map(|_| {
-            let store = Arc::clone(&store);
-            let barrier = Arc::clone(&barrier);
-            let intent_id = proposed.intent_id;
-            std::thread::spawn(move || {
-                barrier.wait();
-                store.delete_cashu_swap_intent_after_definite_rejection_v1(&intent_id)
-            })
-        })
-        .collect::<Vec<_>>();
-    let deleted = deletes
-        .into_iter()
-        .map(|worker| worker.join().unwrap().unwrap())
-        .filter(|value| *value)
-        .count();
-    assert_eq!(deleted, 1);
-    let identity = store.identity().unwrap();
-    assert_eq!(identity.store_generation, 3);
-    assert_eq!(identity.spend_commit_seq, 0);
+    crate::fail_next_grant_transition_nonce_for_current_thread_v1();
+    assert!(matches!(
+        store.claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 103),
+        Err(StoreError::Io(_))
+    ));
+    assert_eq!(store.identity().unwrap(), before);
     assert_eq!(
         store
-            .operational_inventory()
+            .cashu_swap_intent_by_input_v1(&proposed.mint_id, &proposed.input_set_digest)
             .unwrap()
-            .cashu_swap_intent_rows,
-        0
+            .unwrap()
+            .state,
+        CashuSwapIntentStateV1::WalletStored
     );
-    assert_eq!(authority.floor().store_generation, 3);
-    drop(store);
+    let inventory = store.operational_inventory().unwrap();
+    assert_eq!(inventory.cashu_custody_lot_rows, 0);
+    assert_eq!(inventory.cashu_custody_note_rows, 0);
 
-    let reopened = ProviderStore::open_existing(
-        &path.database,
-        PROVIDER,
-        StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
-    )
-    .unwrap();
-    assert!(reopened
-        .cashu_swap_intent_by_input_v1(&proposed.mint_id, &proposed.input_set_digest)
-        .unwrap()
-        .is_none());
     assert!(
-        reopened
-            .insert_cashu_swap_intent_v1(
-                &proposed,
-                CashuCustodyExposureLimitsV1 {
-                    max_unsettled_value: proposed.settlement_value,
-                    max_unsettled_notes: u64::from(proposed.expected_output_count),
-                },
-            )
+        store
+            .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 103)
             .unwrap()
-            .inserted
+            .issued
     );
-    assert!(reopened
-        .begin_cashu_swap_submission_v1(&proposed.intent_id, 102)
-        .unwrap());
-
-    // The delete is already durable if the independent rollback authority
-    // accepted generation 6 but its acknowledgement was lost.
-    authority.lose_response_at(6);
-    assert!(matches!(
-        reopened.delete_cashu_swap_intent_after_definite_rejection_v1(&proposed.intent_id),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 6,
-            ..
-        })
-    ));
-    assert_eq!(authority.floor().store_generation, 6);
-    drop(reopened);
-
-    let recovered = ProviderStore::open_existing(
-        &path.database,
-        PROVIDER,
-        StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
-    )
-    .unwrap();
-    assert!(recovered
-        .cashu_swap_intent_by_input_v1(&proposed.mint_id, &proposed.input_set_digest)
-        .unwrap()
-        .is_none());
-    assert_eq!(
-        recovered
-            .operational_inventory()
-            .unwrap()
-            .cashu_swap_intent_rows,
-        0
-    );
-    assert_eq!(recovered.identity().unwrap().spend_commit_seq, 0);
 }
 
 #[test]

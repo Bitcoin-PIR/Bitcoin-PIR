@@ -759,6 +759,7 @@ fn write_atomic_private(_path: &Path, _bytes: &[u8], _force: bool) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keygen::private_tempdir_v1 as private_tempdir;
     use ed25519_dalek::SigningKey;
     use pir_service_protocol::{
         AcquisitionMethod, AuthPaddingClassV1, AuthScheme, BackendId, DatasetBindingV1,
@@ -842,7 +843,7 @@ mod tests {
 
     #[test]
     fn assertion_entry_and_all_sixteen_checkpoints_roundtrip_offline() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let operator_key = SigningKey::from_bytes(&[3; 32]);
         let policy_key = SigningKey::from_bytes(&[4; 32]);
         let operator_path = directory.path().join("operator.key");
@@ -952,7 +953,7 @@ mod tests {
 
     #[test]
     fn key_reuse_existing_output_and_wrong_directory_key_fail_closed() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let same_key = SigningKey::from_bytes(&[7; 32]);
         let operator_path = directory.path().join("operator.key");
         let policy_path = directory.path().join("policy.bin");
@@ -1003,7 +1004,7 @@ mod tests {
     fn directory_secret_loader_rejects_symlink_and_group_readable_key() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let target = directory.path().join("directory.key");
         let link = directory.path().join("directory-link.key");
         write_key(&target, [11; 32]);
@@ -1023,7 +1024,7 @@ mod tests {
         use std::sync::mpsc;
         use std::time::Duration;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir().unwrap();
         let artifact = directory.path().join("artifact.json");
         let link = directory.path().join("artifact-link.json");
         fs::write(&artifact, b"{}").unwrap();

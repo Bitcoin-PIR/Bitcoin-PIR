@@ -122,10 +122,10 @@ sequenceDiagram
     end
 
     B->>P0: Encrypted AUTH_BEGIN with capability 0
-    P0->>P0: Validate exact scope and durably spend locally
+    P0->>P0: Validate exact scope; spend/redeem and claim one local grant delivery
     P0-->>B: AUTH_GRANTED
     B->>P1: Encrypted AUTH_BEGIN with capability 1
-    P1->>P1: Validate exact scope and durably spend locally
+    P1->>P1: Validate exact scope; spend/redeem and claim one local grant delivery
     P1-->>B: AUTH_GRANTED
 
     par Independent PIR work
@@ -155,6 +155,8 @@ be reused:
 - direct-receipt signing key;
 - settlement-credit mint key;
 - provider clearing authentication key or mTLS identity;
+- per-provider shared-redeem idempotency HMAC secret, never shared with another
+  provider or the issuer;
 - provider settlement-wallet keys.
 
 The stable provider audience is:
@@ -185,6 +187,89 @@ First-version workload identifiers are:
 | `harmony_query_job_v1` | one bounded logical Harmony query job | Assumes a locally cached compatible hint. |
 | `onion_evaluate_job_v1` | one bounded OnionPIR session | Includes key registration, query phases, and mandatory Merkle work. |
 | `tee_oram_query_v1` | one bounded encrypted ORAM job | Optional policy entry; never a fallback from PIR. |
+
+For `dpf_evaluate_job_v1`, one logical input means one admitted, privacy-padded
+INDEX batch job. The public K INDEX groups are padding/work units, not K user
+inputs. CHUNK and PIR-evaluated Merkle-sibling frames add no logical input, but
+are accepted only after an INDEX job and continue to consume the exact signed
+frame, byte, response, wall-time, and work-unit budgets. A later INDEX batch
+starts another logical job only while the DFA is still in its consecutive
+INDEX phase and is rejected terminally when `max_logical_inputs` is already
+exhausted. Once any CHUNK or Merkle follow-up is admitted, INDEX rollback is
+forbidden.
+
+Harmony pricing/accounting uses a padded INDEX pair as its logical unit, not an
+address and not the public `K*(T-1)` index count. The strict V1 query connection
+accepts only batch opcode `0x43` and walks level 0 pair(s), level 1 pair(s),
+then level 10+/20+ Merkle work without rollback. A PBC plan requiring multiple
+INDEX pairs (for example a large `N > K` batch) therefore needs a higher signed
+round profile; it cannot silently fit inside a one-job capability. The current
+strict secure-channel client closes optional secondary query sockets, so this
+profile is deliberately single-socket. Legacy unpadded `0x42` is not a paid V1
+fallback.
+
+An Onion logical input is one padded INDEX ciphertext frame. Registration,
+CHUNK, and both Merkle families add no logical input but remain bounded by
+their actual ciphertext/work/byte/frame budgets. The server admits exactly one
+registration followed by monotonic INDEX -> CHUNK -> Merkle INDEX -> Merkle
+DATA phases. LRU key eviction is a failed session, not authority to register or
+replay automatically on the already-spent grant.
+
+For a warm Harmony cache no hint capability is presented. For a cold cache,
+one V2Full hint capability authorizes the main INDEX+CHUNK bundle and the same
+connection's bounded, full-group legacy level-10+/20+ sibling-hint sequence.
+The main response does not complete the grant. V2Half remains a separate
+two-socket operation. Fixture capacity for these deterministic flows is an
+integration bound, not a quoted commercial price; production policies must be
+derived from the deployed database's sibling depths and response sizes.
+
+V2Full is not restricted by the wire protocol to the main database: its
+canonical request carries an optional non-zero `db_id`. The first release keeps
+the operational boundary smaller: each hint-provider process has one pool,
+bound by `--pool-db-id` (default `0`) to one loaded immutable database and one
+pool directory. A provider that sells cold hints for several deltas runs
+separate instances/ports and advertises a distinct exact dataset scope for each.
+The authorized client must use V2Full for the granted database and must not
+downgrade a committed grant to V1 if the pool becomes unavailable.
+
+V2Full capacity is connection-bound before spend. After the untrusted request
+is structurally bound to the current signed offer and local database, the
+provider atomically reserves one pool entry, then verifies/redeems and commits
+the credential. Empty capacity is a non-consuming `ServerBusy`. Rejection or a
+disconnect before main-hint dispatch returns the still-unexposed entry; main
+dispatch consumes it permanently. The in-memory reservation handle is local to
+one connection, not a wire identifier or an external reservation service; its
+advisory inode lock is nevertheless visible to every conforming process sharing
+the pool. Online-authority V2Full first acquires its narrower class permit and
+then the global AUTH permit. A grant transfers the class permit into the pending
+reservation until dispatch, disconnect or its post-grant deadline. That
+deadline is armed only after the complete encrypted `AUTH_GRANTED_V1` frame has
+been written and flushed, so a slow successful grant flush does not spend the
+client's dispatch window. Once armed, the 30-second-or-shorter absolute instant
+is immutable: every pending read and Ping/Pong write is bounded by the same
+instant and no control or application frame can reset it. Apart from bounded
+WebSocket control handling, the only accepted application frame while the
+reservation is pending is the exact encrypted canonical `HarmonyHintsV2`
+request for the database bound into the grant; a cleartext, malformed,
+wrong-database or unrelated application frame closes the connection and drops
+the unexposed reservation.
+
+Under the shared capacity lock, an online reservation counts only **currently
+lockable** ready paths that are already present in that process's fully
+validated, ready `PoolState` snapshot. A canonical-looking file discovered only
+on disk, including corrupt or not-yet-validated surplus, cannot satisfy the
+floor. The hot path uses a non-blocking capacity-lock attempt; contention is a
+non-consuming overload result rather than a Tokio worker blocked on `flock`.
+If the selected ready inode is already locked by a peer process, it is rotated
+to the back and the bounded current snapshot is examined for another validated
+candidate, preventing a locked queue head from hiding usable capacity.
+
+Each successful online reservation leaves at least one such validated,
+currently lockable entry at that atomic decision point for provider-local
+methods, even while the target pool is partially filled. This is only an
+online-consumption floor: it neither reserves that last entry for a particular
+provider-local caller nor guarantees fairness, priority or immediate admission.
+No reservation ID leaves the filesystem boundary.
 
 An entitlement profile fixes all resource limits used by the server state
 machine: maximum logical inputs, padded rounds, bytes, frames, hint groups,
@@ -283,6 +368,15 @@ offer. Underpayment is rejected; a backend-reported overpayment purchases only
 the exact fixed entitlement committed by the offer. A receiver prevents double
 spend by swapping/redeeming with the mint. A provider-local spent cache is not
 a substitute for mint redemption when the same eCash is accepted elsewhere.
+
+The provider-signed Cashu manifest binds the canonical mint endpoint and one or
+two sorted, distinct, nonzero leaf-SPKI SHA-256 pins as well as the accepted
+keysets and unit. Every NUT request derives its complete transport trust tuple
+from that already verified manifest: ordinary WebPKI chain, hostname and time
+validation must pass and the leaf must match a signed pin. There is no global
+endpoint/pin override, TOFU, pin-only mode or unpinned fallback. Two pins allow
+a bounded signed rotation; an old policy or custody artifact without this trust
+tuple fails closed rather than silently inheriting ambient transport settings.
 
 The provider must generate and durably save the blinding secrets and blinded
 outputs before it submits the user's proofs to the mint's NUT-03 swap. It grants
@@ -406,6 +500,51 @@ bearer ticket could redeem first and direct the provider compensation to its
 own blinded outputs. The issuer therefore learns the provider, scope, token,
 and redemption time in the first version.
 
+The operator-signed provider clearing authorization also binds the exact
+canonical issuer redeem origin and one or two sorted, distinct, nonzero
+leaf-SPKI SHA-256 pins. The provider appends only the fixed `/v1/redeems` path
+and requires both ordinary WebPKI and a signed pin on every request. Endpoint
+or certificate rotation therefore requires an authenticated authorization
+rotation; process-wide URL or pin configuration cannot retarget redemption.
+
+Shared redeem has two deliberately different at-most-once layers. The issuer's
+atomic redeem is authoritative for credential validity and settlement. The
+provider derives the wire `idempotency_key` deterministically with a
+provider-local secret HMAC over the exact clearing authorization digest,
+credential binding digest and credential digest. An exact retry therefore asks
+the issuer for the same signed success bytes; a changed credential or binding
+cannot alias it. The issuer does not receive that HMAC secret.
+
+Only after canonical response parsing, signature verification and an exact
+request/offer match does the provider derive a second, domain-separated HMAC
+key from the verified redeem coordinates and claim it in the provider's own
+rollback-protected `ProviderStore` synthetic namespace (`0x8001`). This is a
+local **grant-delivery claim**, not a credential nullifier or a second economic
+redeem. The first claim may issue `AUTH_GRANTED`; an exact issuer replay reaches
+`InvalidOrSpent` locally and cannot issue a second grant. Provider 0 and
+provider 1 use separate secrets and stores and never share this claim set.
+
+Three private/keyed objects must not be conflated:
+
+- the browser's quote-claim private key authenticates quote status/claim and is
+  never stored by a provider;
+- the provider-to-issuer wire idempotency key identifies the exact redeem
+  transcript; and
+- the provider-local delivery key/digest gates one local grant and may appear
+  only in the minimal `spent_capabilities` row for the synthetic namespace.
+
+The provider stores no invoice, payment hash, preimage, raw credential, browser
+claim key or exact token timestamp in that spent row. The issuer cannot derive
+the local delivery key and participating providers cannot compare it.
+
+If the provider loses the issuer HTTP response after possible commit, only a
+low-level caller that explicitly retained the identical proof may resend the
+same deterministic transcript and verify the issuer's exact signed replay. The
+official Web flow deletes/burns the presentation before sending it and performs
+no automatic shared-redeem retry. If local delivery has committed but the
+encrypted `AUTH_GRANTED` frame is lost, the entitlement remains consumed; V1
+does not reconstruct a query grant on a new connection.
+
 The settlement notes are still blindly signed. That prevents a direct database
 join from their later deposited serials back to the original ticket and allows
 safe delayed/batched deposit, but it does **not** hide the provider at online
@@ -421,6 +560,12 @@ transaction conserves value:
 ```text
 accepted ticket value = provider credit + issuer fee
 ```
+
+`accepted ticket value` is the clearing rule's economic value. It is independent
+of the credential binding's protocol `amount` field: for example a BAT may carry
+the fixed auth amount `1` while its clearing rule accepts value `10` and splits
+that into provider credit `9` plus issuer fee `1`. Code and policy must verify
+both facts independently; neither may be inferred from the other.
 
 Blind settlement rules are countersigned by the issuer and commit to one exact
 Cashu keyset: unit, zero input fee, expiry, denomination public keys, and
@@ -512,8 +657,11 @@ For each provider, the required order is:
    Merkle tree tops when that backend exposes them before authorization;
 7. prepare or acquire an anonymous capability;
 8. send an encrypted `AUTH_BEGIN_V1` for a concrete operation header;
-9. after `AUTH_GRANTED_V1`, complete any grant-bound preflight and issue only
-   the opcodes allowed by the grant's backend state machine;
+9. after `AUTH_GRANTED_V1`, issue only the opcodes allowed by the grant's
+   backend state machine. A pending Harmony V2Full hint reservation is stricter:
+   all independent preflight is already complete, and the next application
+   frame must be the exact encrypted bound-database `HarmonyHintsV2` main
+   dispatch before its immutable post-flush deadline;
 10. verify inclusion/Merkle results automatically;
 11. close the connection(s).
 

@@ -502,19 +502,40 @@ pub enum BackendFrameKindV1 {
     DpfChunkBatch,
     DpfMerkleSiblingBatch,
     /// Legacy on-demand Harmony hints have no V1 operation binding.
-    HarmonyHintLegacyV1,
+    HarmonyHintLegacyV1 {
+        level: u8,
+        index_sibling_levels: u8,
+        chunk_sibling_levels: u8,
+        expected_groups: u8,
+    },
     HarmonyHintV2Full,
     HarmonyHintV2Half {
         session_token: [u8; 16],
         side: pir_service_protocol::HarmonyHintSideV1,
     },
-    HarmonyQuery,
-    HarmonyBatchQuery,
+    /// Legacy unpadded single-group opcode (`0x42`). It is classified so an
+    /// enforced V1 grant rejects and terminalizes it explicitly; no signed V1
+    /// scope authorizes this shape because it has no pair/round padding DFA.
+    HarmonyLegacySingleQuery,
+    HarmonyBatchQuery {
+        level: u8,
+        round_id: u16,
+        index_sibling_levels: u8,
+        chunk_sibling_levels: u8,
+    },
     OnionRegisterKeys,
-    OnionIndexQuery,
-    OnionChunkQuery,
-    OnionMerkleIndexSibling,
-    OnionMerkleDataSibling,
+    OnionIndexQuery {
+        round_id: u16,
+    },
+    OnionChunkQuery {
+        round_id: u16,
+    },
+    OnionMerkleIndexSibling {
+        round_id: u16,
+    },
+    OnionMerkleDataSibling {
+        round_id: u16,
+    },
     TeeOramQuery,
 }
 
@@ -537,13 +558,62 @@ impl BackendFrameV1 {
         }
         if self.hint_groups != 0
             && !matches!(
-                self.kind,
-                BackendFrameKindV1::HarmonyHintLegacyV1
+                &self.kind,
+                BackendFrameKindV1::HarmonyHintLegacyV1 { .. }
                     | BackendFrameKindV1::HarmonyHintV2Full
                     | BackendFrameKindV1::HarmonyHintV2Half { .. }
             )
         {
             return Err(GateErrorV1::InvalidFrameMetadata);
+        }
+        if matches!(
+            &self.kind,
+            BackendFrameKindV1::HarmonyHintLegacyV1 { .. }
+                | BackendFrameKindV1::HarmonyHintV2Full
+                | BackendFrameKindV1::HarmonyHintV2Half { .. }
+        ) && (self.logical_inputs != 0 || self.hint_groups == 0)
+        {
+            return Err(GateErrorV1::InvalidFrameMetadata);
+        }
+        if let BackendFrameKindV1::HarmonyHintLegacyV1 {
+            level,
+            index_sibling_levels,
+            chunk_sibling_levels,
+            expected_groups,
+        } = &self.kind
+        {
+            let level_in_declared_range = match *level {
+                10..=19 => *level - 10 < *index_sibling_levels,
+                20..=29 => *level - 20 < *chunk_sibling_levels,
+                _ => false,
+            };
+            if !level_in_declared_range
+                || *expected_groups == 0
+                || self.hint_groups != u64::from(*expected_groups)
+                || self.logical_inputs != 0
+            {
+                return Err(GateErrorV1::InvalidFrameMetadata);
+            }
+        }
+        if let BackendFrameKindV1::HarmonyBatchQuery {
+            level,
+            index_sibling_levels,
+            chunk_sibling_levels,
+            ..
+        } = &self.kind
+        {
+            if *index_sibling_levels > 10 || *chunk_sibling_levels > 10 {
+                return Err(GateErrorV1::InvalidFrameMetadata);
+            }
+            let valid_level = match *level {
+                0 | 1 => true,
+                10..=19 => *level - 10 < *index_sibling_levels,
+                20..=29 => *level - 20 < *chunk_sibling_levels,
+                _ => false,
+            };
+            if !valid_level {
+                return Err(GateErrorV1::InvalidFrameMetadata);
+            }
         }
         Ok(())
     }
@@ -568,7 +638,70 @@ struct ActiveGrantV1 {
     limits: EntitlementLimitsV1,
     started_at_ms: u64,
     usage: GrantUsageTrackerV1,
-    onion_registered: bool,
+    dpf_phase: DpfPhaseV1,
+    onion_phase: OnionPhaseV1,
+    harmony_query_phase: HarmonyQueryPhaseV1,
+    harmony_hint_full_phase: HarmonyHintFullPhaseV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DpfPhaseV1 {
+    AwaitingFirstIndex,
+    Index,
+    Followup,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnionPhaseV1 {
+    AwaitingRegistration,
+    AwaitingFirstIndex,
+    Index { next_round_id: u16 },
+    Chunk { next_round_id: u16 },
+    MerkleIndex,
+    MerkleData,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HarmonyQueryPhaseV1 {
+    AwaitingFirstIndex,
+    Index { next_round_id: u16 },
+    Chunk { next_round_id: u16 },
+    Merkle(HarmonyMerkleProgressV1),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HarmonyMerkleProgressV1 {
+    family: HarmonyMerkleFamilyV1,
+    level: u8,
+    level_state: HarmonyMerkleLevelStateV1,
+    index_levels: u8,
+    chunk_levels: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HarmonyMerkleFamilyV1 {
+    Index,
+    Chunk,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HarmonyMerkleLevelStateV1 {
+    Complete,
+    AwaitingPairCompanion {
+        round_id: u16,
+        may_also_be_single: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HarmonyHintFullPhaseV1 {
+    AwaitingMain,
+    AwaitingSiblings,
+    Siblings {
+        index_levels: u8,
+        chunk_levels: u8,
+        next_level: Option<u8>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -960,7 +1093,10 @@ impl ConnectionAdmissionGateV1 {
                     limits,
                     started_at_ms,
                     usage,
-                    onion_registered: false,
+                    dpf_phase: DpfPhaseV1::AwaitingFirstIndex,
+                    onion_phase: OnionPhaseV1::AwaitingRegistration,
+                    harmony_query_phase: HarmonyQueryPhaseV1::AwaitingFirstIndex,
+                    harmony_hint_full_phase: HarmonyHintFullPhaseV1::AwaitingMain,
                 });
                 AuthResultV1::Granted(AuthGrantedV1 {
                     scope_id,
@@ -1030,7 +1166,10 @@ impl ConnectionAdmissionGateV1 {
             limits,
             started_at_ms,
             usage: GrantUsageTrackerV1::Shared(shared_usage),
-            onion_registered: false,
+            dpf_phase: DpfPhaseV1::AwaitingFirstIndex,
+            onion_phase: OnionPhaseV1::AwaitingRegistration,
+            harmony_query_phase: HarmonyQueryPhaseV1::AwaitingFirstIndex,
+            harmony_hint_full_phase: HarmonyHintFullPhaseV1::AwaitingMain,
         });
         Ok(())
     }
@@ -1106,24 +1245,44 @@ impl ConnectionAdmissionGateV1 {
             self.state = ConnectionStateV1::TerminalAfterSpend;
             return Err(GateErrorV1::GrantExpired);
         }
-        let completes =
-            match operation_accepts_frame(&grant.operation, frame, grant.onion_registered) {
-                Ok(completes) => completes,
-                Err(error) => {
-                    grant.usage.terminalize();
-                    self.state = ConnectionStateV1::TerminalAfterSpend;
-                    return Err(error);
-                }
-            };
+        let transition = match operation_accepts_frame(
+            &grant.operation,
+            frame,
+            grant.dpf_phase,
+            grant.onion_phase,
+            grant.harmony_query_phase,
+            grant.harmony_hint_full_phase,
+        ) {
+            Ok(transition) => transition,
+            Err(error) => {
+                grant.usage.terminalize();
+                self.state = ConnectionStateV1::TerminalAfterSpend;
+                return Err(error);
+            }
+        };
         if let Err(error) = grant.usage.consume_frame(frame, &grant.limits) {
             self.state = ConnectionStateV1::TerminalAfterSpend;
             return Err(error);
         }
-        if matches!(frame.kind, BackendFrameKindV1::OnionRegisterKeys) {
-            grant.onion_registered = true;
+        match transition {
+            OperationFrameTransitionV1::Stay { .. } => {}
+            OperationFrameTransitionV1::Dpf(next) => {
+                grant.dpf_phase = next;
+            }
+            OperationFrameTransitionV1::HarmonyQuery(next) => {
+                grant.harmony_query_phase = next;
+            }
+            OperationFrameTransitionV1::HarmonyHintFull(next) => {
+                grant.harmony_hint_full_phase = next;
+            }
+            OperationFrameTransitionV1::Onion(next) => {
+                grant.onion_phase = next;
+            }
         }
-
-        if completes {
+        if matches!(
+            transition,
+            OperationFrameTransitionV1::Stay { completes: true }
+        ) {
             let completed = grant.clone();
             self.state = ConnectionStateV1::Complete(completed);
         }
@@ -1197,7 +1356,10 @@ impl ConnectionAdmissionGateV1 {
             limits,
             started_at_ms,
             usage: GrantUsageTrackerV1::local(),
-            onion_registered: false,
+            dpf_phase: DpfPhaseV1::AwaitingFirstIndex,
+            onion_phase: OnionPhaseV1::AwaitingRegistration,
+            harmony_query_phase: HarmonyQueryPhaseV1::AwaitingFirstIndex,
+            harmony_hint_full_phase: HarmonyHintFullPhaseV1::AwaitingMain,
         });
     }
 }
@@ -1295,19 +1457,46 @@ fn admission_route_v1(
     Ok(route)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OperationFrameTransitionV1 {
+    Stay { completes: bool },
+    Dpf(DpfPhaseV1),
+    HarmonyQuery(HarmonyQueryPhaseV1),
+    HarmonyHintFull(HarmonyHintFullPhaseV1),
+    Onion(OnionPhaseV1),
+}
+
 fn operation_accepts_frame(
     operation: &OperationStartV1,
     frame: &BackendFrameV1,
-    onion_registered: bool,
-) -> Result<bool, GateErrorV1> {
+    dpf_phase: DpfPhaseV1,
+    onion_phase: OnionPhaseV1,
+    harmony_query_phase: HarmonyQueryPhaseV1,
+    harmony_hint_full_phase: HarmonyHintFullPhaseV1,
+) -> Result<OperationFrameTransitionV1, GateErrorV1> {
     let same_db = |expected: u8| expected == frame.db_id;
     match (operation, &frame.kind) {
+        (OperationStartV1::DpfQuery { db_id }, BackendFrameKindV1::DpfIndexBatch)
+            if same_db(*db_id) =>
+        {
+            match dpf_phase {
+                DpfPhaseV1::AwaitingFirstIndex | DpfPhaseV1::Index if frame.logical_inputs == 1 => {
+                    Ok(OperationFrameTransitionV1::Dpf(DpfPhaseV1::Index))
+                }
+                DpfPhaseV1::Followup => Err(GateErrorV1::OperationSequence),
+                _ => Err(GateErrorV1::InvalidFrameMetadata),
+            }
+        }
         (
             OperationStartV1::DpfQuery { db_id },
-            BackendFrameKindV1::DpfIndexBatch
-            | BackendFrameKindV1::DpfChunkBatch
-            | BackendFrameKindV1::DpfMerkleSiblingBatch,
-        ) if same_db(*db_id) => Ok(false),
+            BackendFrameKindV1::DpfChunkBatch | BackendFrameKindV1::DpfMerkleSiblingBatch,
+        ) if same_db(*db_id) => match dpf_phase {
+            DpfPhaseV1::Index | DpfPhaseV1::Followup if frame.logical_inputs == 0 => {
+                Ok(OperationFrameTransitionV1::Dpf(DpfPhaseV1::Followup))
+            }
+            DpfPhaseV1::AwaitingFirstIndex => Err(GateErrorV1::OperationSequence),
+            _ => Err(GateErrorV1::InvalidFrameMetadata),
+        },
         (
             OperationStartV1::HarmonyHint {
                 db_id,
@@ -1316,7 +1505,72 @@ fn operation_accepts_frame(
                 primary_side: None,
             },
             BackendFrameKindV1::HarmonyHintV2Full,
-        ) if same_db(*db_id) => Ok(true),
+        ) if same_db(*db_id)
+            && matches!(
+                harmony_hint_full_phase,
+                HarmonyHintFullPhaseV1::AwaitingMain
+            ) =>
+        {
+            Ok(OperationFrameTransitionV1::HarmonyHintFull(
+                HarmonyHintFullPhaseV1::AwaitingSiblings,
+            ))
+        }
+        (
+            OperationStartV1::HarmonyHint {
+                db_id,
+                transport: HintTransport::V2Full,
+                session_token: None,
+                primary_side: None,
+            },
+            BackendFrameKindV1::HarmonyHintV2Full,
+        ) if same_db(*db_id) => Err(GateErrorV1::OperationSequence),
+        (
+            OperationStartV1::HarmonyHint {
+                db_id,
+                transport: HintTransport::V2Full,
+                session_token: None,
+                primary_side: None,
+            },
+            BackendFrameKindV1::HarmonyHintLegacyV1 {
+                level,
+                index_sibling_levels,
+                chunk_sibling_levels,
+                ..
+            },
+        ) if same_db(*db_id) => {
+            let expected_level = match harmony_hint_full_phase {
+                HarmonyHintFullPhaseV1::AwaitingMain => return Err(GateErrorV1::OperationSequence),
+                HarmonyHintFullPhaseV1::AwaitingSiblings => {
+                    first_harmony_sibling_level(*index_sibling_levels, *chunk_sibling_levels)
+                }
+                HarmonyHintFullPhaseV1::Siblings {
+                    index_levels,
+                    chunk_levels,
+                    next_level,
+                } => {
+                    if index_levels != *index_sibling_levels
+                        || chunk_levels != *chunk_sibling_levels
+                    {
+                        return Err(GateErrorV1::InvalidFrameMetadata);
+                    }
+                    next_level
+                }
+            };
+            if expected_level != Some(*level) {
+                return Err(GateErrorV1::OperationSequence);
+            }
+            Ok(OperationFrameTransitionV1::HarmonyHintFull(
+                HarmonyHintFullPhaseV1::Siblings {
+                    index_levels: *index_sibling_levels,
+                    chunk_levels: *chunk_sibling_levels,
+                    next_level: next_harmony_sibling_level(
+                        *level,
+                        *index_sibling_levels,
+                        *chunk_sibling_levels,
+                    ),
+                },
+            ))
+        }
         (
             OperationStartV1::HarmonyHint {
                 db_id,
@@ -1329,38 +1583,306 @@ fn operation_accepts_frame(
                 side,
             },
         ) if same_db(*db_id) && expected_token == session_token && expected_side == side => {
-            Ok(true)
+            Ok(OperationFrameTransitionV1::Stay { completes: true })
         }
         (
             OperationStartV1::HarmonyQuery { db_id },
-            BackendFrameKindV1::HarmonyQuery | BackendFrameKindV1::HarmonyBatchQuery,
-        ) if same_db(*db_id) => Ok(true),
+            BackendFrameKindV1::HarmonyBatchQuery {
+                level,
+                round_id,
+                index_sibling_levels,
+                chunk_sibling_levels,
+            },
+        ) if same_db(*db_id) => Ok(OperationFrameTransitionV1::HarmonyQuery(
+            next_harmony_query_phase(
+                harmony_query_phase,
+                *level,
+                *round_id,
+                *index_sibling_levels,
+                *chunk_sibling_levels,
+                frame.logical_inputs,
+            )?,
+        )),
         (OperationStartV1::OnionSession { db_id }, BackendFrameKindV1::OnionRegisterKeys)
-            if same_db(*db_id) && !onion_registered =>
+            if same_db(*db_id) && onion_phase == OnionPhaseV1::AwaitingRegistration =>
         {
-            Ok(false)
+            if frame.logical_inputs != 0 {
+                return Err(GateErrorV1::InvalidFrameMetadata);
+            }
+            Ok(OperationFrameTransitionV1::Onion(
+                OnionPhaseV1::AwaitingFirstIndex,
+            ))
+        }
+        (OperationStartV1::OnionSession { db_id }, BackendFrameKindV1::OnionRegisterKeys)
+            if same_db(*db_id) =>
+        {
+            Err(GateErrorV1::OperationSequence)
         }
         (
             OperationStartV1::OnionSession { db_id },
-            BackendFrameKindV1::OnionIndexQuery
-            | BackendFrameKindV1::OnionChunkQuery
-            | BackendFrameKindV1::OnionMerkleIndexSibling
-            | BackendFrameKindV1::OnionMerkleDataSibling,
-        ) if same_db(*db_id) && onion_registered => Ok(false),
-        (
-            OperationStartV1::OnionSession { db_id },
-            BackendFrameKindV1::OnionIndexQuery
-            | BackendFrameKindV1::OnionChunkQuery
-            | BackendFrameKindV1::OnionMerkleIndexSibling
-            | BackendFrameKindV1::OnionMerkleDataSibling,
-        ) if same_db(*db_id) => Err(GateErrorV1::OperationSequence),
+            BackendFrameKindV1::OnionIndexQuery { .. }
+            | BackendFrameKindV1::OnionChunkQuery { .. }
+            | BackendFrameKindV1::OnionMerkleIndexSibling { .. }
+            | BackendFrameKindV1::OnionMerkleDataSibling { .. },
+        ) if same_db(*db_id) => Ok(OperationFrameTransitionV1::Onion(next_onion_phase(
+            onion_phase,
+            &frame.kind,
+            frame.logical_inputs,
+        )?)),
         (OperationStartV1::TeeOramQuery { db_id }, BackendFrameKindV1::TeeOramQuery)
             if same_db(*db_id) =>
         {
-            Ok(true)
+            Ok(OperationFrameTransitionV1::Stay { completes: true })
         }
         _ => Err(GateErrorV1::OperationMismatch),
     }
+}
+
+fn first_harmony_sibling_level(index_levels: u8, chunk_levels: u8) -> Option<u8> {
+    if index_levels != 0 {
+        Some(10)
+    } else if chunk_levels != 0 {
+        Some(20)
+    } else {
+        None
+    }
+}
+
+fn next_harmony_sibling_level(level: u8, index_levels: u8, chunk_levels: u8) -> Option<u8> {
+    match level {
+        10..=19 => {
+            let sibling_level = level - 10;
+            if sibling_level + 1 < index_levels {
+                Some(level + 1)
+            } else if chunk_levels != 0 {
+                Some(20)
+            } else {
+                None
+            }
+        }
+        20..=29 => {
+            let sibling_level = level - 20;
+            (sibling_level + 1 < chunk_levels).then_some(level + 1)
+        }
+        _ => None,
+    }
+}
+
+fn next_onion_phase(
+    phase: OnionPhaseV1,
+    kind: &BackendFrameKindV1,
+    logical_inputs: u64,
+) -> Result<OnionPhaseV1, GateErrorV1> {
+    match (phase, kind) {
+        (OnionPhaseV1::AwaitingFirstIndex, BackendFrameKindV1::OnionIndexQuery { round_id })
+            if *round_id == 0 && logical_inputs == 1 =>
+        {
+            Ok(OnionPhaseV1::Index { next_round_id: 1 })
+        }
+        (
+            OnionPhaseV1::Index { next_round_id },
+            BackendFrameKindV1::OnionIndexQuery { round_id },
+        ) if *round_id == next_round_id && logical_inputs == 1 => Ok(OnionPhaseV1::Index {
+            next_round_id: next_round_id
+                .checked_add(1)
+                .ok_or(GateErrorV1::OperationSequence)?,
+        }),
+        (OnionPhaseV1::Index { .. }, BackendFrameKindV1::OnionChunkQuery { round_id })
+            if *round_id == 0 && logical_inputs == 0 =>
+        {
+            Ok(OnionPhaseV1::Chunk { next_round_id: 1 })
+        }
+        (
+            OnionPhaseV1::Chunk { next_round_id },
+            BackendFrameKindV1::OnionChunkQuery { round_id },
+        ) if *round_id == next_round_id && logical_inputs == 0 => Ok(OnionPhaseV1::Chunk {
+            next_round_id: next_round_id
+                .checked_add(1)
+                .ok_or(GateErrorV1::OperationSequence)?,
+        }),
+        (OnionPhaseV1::Chunk { .. }, BackendFrameKindV1::OnionMerkleIndexSibling { round_id })
+            if *round_id == 0 && logical_inputs == 0 =>
+        {
+            Ok(OnionPhaseV1::MerkleIndex)
+        }
+        (OnionPhaseV1::MerkleIndex, BackendFrameKindV1::OnionMerkleIndexSibling { round_id })
+            if *round_id == 0 && logical_inputs == 0 =>
+        {
+            Ok(OnionPhaseV1::MerkleIndex)
+        }
+        (OnionPhaseV1::MerkleIndex, BackendFrameKindV1::OnionMerkleDataSibling { round_id })
+            if *round_id == 0 && logical_inputs == 0 =>
+        {
+            Ok(OnionPhaseV1::MerkleData)
+        }
+        (OnionPhaseV1::MerkleData, BackendFrameKindV1::OnionMerkleDataSibling { round_id })
+            if *round_id == 0 && logical_inputs == 0 =>
+        {
+            Ok(OnionPhaseV1::MerkleData)
+        }
+        _ => Err(GateErrorV1::OperationSequence),
+    }
+}
+
+fn next_harmony_query_phase(
+    phase: HarmonyQueryPhaseV1,
+    level: u8,
+    round_id: u16,
+    index_sibling_levels: u8,
+    chunk_sibling_levels: u8,
+    logical_inputs: u64,
+) -> Result<HarmonyQueryPhaseV1, GateErrorV1> {
+    if index_sibling_levels > 10 || chunk_sibling_levels > 10 {
+        return Err(GateErrorV1::InvalidFrameMetadata);
+    }
+    match phase {
+        HarmonyQueryPhaseV1::AwaitingFirstIndex => {
+            if level != 0 || round_id != 0 || logical_inputs != 1 {
+                return Err(GateErrorV1::OperationSequence);
+            }
+            Ok(HarmonyQueryPhaseV1::Index { next_round_id: 1 })
+        }
+        HarmonyQueryPhaseV1::Index { next_round_id } if level == 0 => {
+            let expected_logical = u64::from(next_round_id % 2 == 0);
+            if round_id != next_round_id || logical_inputs != expected_logical {
+                return Err(GateErrorV1::OperationSequence);
+            }
+            Ok(HarmonyQueryPhaseV1::Index {
+                next_round_id: next_round_id
+                    .checked_add(1)
+                    .ok_or(GateErrorV1::OperationSequence)?,
+            })
+        }
+        HarmonyQueryPhaseV1::Index { next_round_id } if level == 1 => {
+            if next_round_id == 0 || next_round_id % 2 != 0 || round_id != 0 || logical_inputs != 0
+            {
+                return Err(GateErrorV1::OperationSequence);
+            }
+            Ok(HarmonyQueryPhaseV1::Chunk { next_round_id: 1 })
+        }
+        HarmonyQueryPhaseV1::Chunk { next_round_id } if level == 1 => {
+            if round_id != next_round_id || logical_inputs != 0 {
+                return Err(GateErrorV1::OperationSequence);
+            }
+            Ok(HarmonyQueryPhaseV1::Chunk {
+                next_round_id: next_round_id
+                    .checked_add(1)
+                    .ok_or(GateErrorV1::OperationSequence)?,
+            })
+        }
+        HarmonyQueryPhaseV1::Chunk { next_round_id } if level >= 10 => {
+            if next_round_id == 0 || next_round_id % 2 != 0 || logical_inputs != 0 {
+                return Err(GateErrorV1::OperationSequence);
+            }
+            Ok(HarmonyQueryPhaseV1::Merkle(start_harmony_merkle_progress(
+                level,
+                round_id,
+                index_sibling_levels,
+                chunk_sibling_levels,
+            )?))
+        }
+        HarmonyQueryPhaseV1::Merkle(progress) if level >= 10 && logical_inputs == 0 => Ok(
+            HarmonyQueryPhaseV1::Merkle(advance_harmony_merkle_progress(
+                progress,
+                level,
+                round_id,
+                index_sibling_levels,
+                chunk_sibling_levels,
+            )?),
+        ),
+        _ => Err(GateErrorV1::OperationSequence),
+    }
+}
+
+fn start_harmony_merkle_progress(
+    level: u8,
+    round_id: u16,
+    index_levels: u8,
+    chunk_levels: u8,
+) -> Result<HarmonyMerkleProgressV1, GateErrorV1> {
+    if first_harmony_sibling_level(index_levels, chunk_levels) != Some(level) {
+        return Err(GateErrorV1::OperationSequence);
+    }
+    harmony_merkle_progress_for_first_frame(level, round_id, index_levels, chunk_levels)
+}
+
+fn harmony_merkle_progress_for_first_frame(
+    level: u8,
+    round_id: u16,
+    index_levels: u8,
+    chunk_levels: u8,
+) -> Result<HarmonyMerkleProgressV1, GateErrorV1> {
+    let (family, sibling_level, table_type) = match level {
+        10..=19 if level - 10 < index_levels => (HarmonyMerkleFamilyV1::Index, level - 10, 0u16),
+        20..=29 if level - 20 < chunk_levels => (HarmonyMerkleFamilyV1::Chunk, level - 20, 1u16),
+        _ => return Err(GateErrorV1::OperationSequence),
+    };
+    let single_round = table_type * 100 + u16::from(sibling_level);
+    let pair_start = table_type * 1000 + u16::from(sibling_level) * 10;
+    let level_state = if round_id == single_round && round_id == pair_start {
+        HarmonyMerkleLevelStateV1::AwaitingPairCompanion {
+            round_id: pair_start + 1,
+            may_also_be_single: true,
+        }
+    } else if round_id == single_round {
+        HarmonyMerkleLevelStateV1::Complete
+    } else if round_id == pair_start {
+        HarmonyMerkleLevelStateV1::AwaitingPairCompanion {
+            round_id: pair_start + 1,
+            may_also_be_single: false,
+        }
+    } else {
+        return Err(GateErrorV1::OperationSequence);
+    };
+    Ok(HarmonyMerkleProgressV1 {
+        family,
+        level,
+        level_state,
+        index_levels,
+        chunk_levels,
+    })
+}
+
+fn advance_harmony_merkle_progress(
+    progress: HarmonyMerkleProgressV1,
+    level: u8,
+    round_id: u16,
+    index_levels: u8,
+    chunk_levels: u8,
+) -> Result<HarmonyMerkleProgressV1, GateErrorV1> {
+    if progress.index_levels != index_levels || progress.chunk_levels != chunk_levels {
+        return Err(GateErrorV1::InvalidFrameMetadata);
+    }
+    if level == progress.level {
+        let HarmonyMerkleLevelStateV1::AwaitingPairCompanion {
+            round_id: expected, ..
+        } = progress.level_state
+        else {
+            return Err(GateErrorV1::OperationSequence);
+        };
+        if round_id != expected {
+            return Err(GateErrorV1::OperationSequence);
+        }
+        return Ok(HarmonyMerkleProgressV1 {
+            level_state: HarmonyMerkleLevelStateV1::Complete,
+            ..progress
+        });
+    }
+
+    let previous_complete = matches!(progress.level_state, HarmonyMerkleLevelStateV1::Complete)
+        || matches!(
+            progress.level_state,
+            HarmonyMerkleLevelStateV1::AwaitingPairCompanion {
+                may_also_be_single: true,
+                ..
+            }
+        );
+    if !previous_complete
+        || next_harmony_sibling_level(progress.level, index_levels, chunk_levels) != Some(level)
+    {
+        return Err(GateErrorV1::OperationSequence);
+    }
+    harmony_merkle_progress_for_first_frame(level, round_id, index_levels, chunk_levels)
 }
 
 fn checked_next_usage(
@@ -1437,6 +1959,35 @@ mod tests {
             hint_groups: 0,
             request_bytes: 100,
             work_units: 2,
+        }
+    }
+
+    fn harmony_batch_frame(
+        db_id: u8,
+        level: u8,
+        round_id: u16,
+        index_sibling_levels: u8,
+        chunk_sibling_levels: u8,
+    ) -> BackendFrameV1 {
+        BackendFrameV1 {
+            kind: BackendFrameKindV1::HarmonyBatchQuery {
+                level,
+                round_id,
+                index_sibling_levels,
+                chunk_sibling_levels,
+            },
+            db_id,
+            logical_inputs: u64::from(level == 0 && round_id % 2 == 0),
+            hint_groups: 0,
+            request_bytes: 100,
+            work_units: 2,
+        }
+    }
+
+    fn onion_frame(kind: BackendFrameKindV1, db_id: u8) -> BackendFrameV1 {
+        BackendFrameV1 {
+            logical_inputs: u64::from(matches!(&kind, BackendFrameKindV1::OnionIndexQuery { .. })),
+            ..frame(kind, db_id)
         }
     }
 
@@ -1994,14 +2545,12 @@ mod tests {
     fn harmony_primary_and_attach_share_every_request_counter() {
         enum Counter {
             Frames,
-            LogicalInputs,
             HintGroups,
             RequestBytes,
             WorkUnits,
         }
         for counter in [
             Counter::Frames,
-            Counter::LogicalInputs,
             Counter::HintGroups,
             Counter::RequestBytes,
             Counter::WorkUnits,
@@ -2015,7 +2564,6 @@ mod tests {
             shared_limits.max_work_units = 4;
             match counter {
                 Counter::Frames => shared_limits.max_frames = 1,
-                Counter::LogicalInputs => shared_limits.max_logical_inputs = 1,
                 Counter::HintGroups => shared_limits.max_hint_groups = 1,
                 Counter::RequestBytes => shared_limits.max_request_bytes = 1,
                 Counter::WorkUnits => shared_limits.max_work_units = 1,
@@ -2027,7 +2575,7 @@ mod tests {
                     side: HarmonyHintSideV1::Index,
                 },
                 db_id: 7,
-                logical_inputs: 1,
+                logical_inputs: 0,
                 hint_groups: 1,
                 request_bytes: 1,
                 work_units: 1,
@@ -2090,7 +2638,7 @@ mod tests {
                     side: HarmonyHintSideV1::Index,
                 },
                 db_id: 7,
-                logical_inputs: 1,
+                logical_inputs: 0,
                 hint_groups: 1,
                 request_bytes: 1,
                 work_units: 1,
@@ -2106,7 +2654,7 @@ mod tests {
                     side: HarmonyHintSideV1::Chunk,
                 },
                 db_id: 7,
-                logical_inputs: 1,
+                logical_inputs: 0,
                 hint_groups: 1,
                 request_bytes: 1,
                 work_units: 1,
@@ -2557,18 +3105,23 @@ mod tests {
         let frames = [
             BackendFrameKindV1::DpfIndexBatch,
             BackendFrameKindV1::HarmonyHintV2Full,
-            BackendFrameKindV1::HarmonyQuery,
+            BackendFrameKindV1::HarmonyLegacySingleQuery,
             BackendFrameKindV1::OnionRegisterKeys,
             BackendFrameKindV1::TeeOramQuery,
         ];
         for (operation, kind) in operations.into_iter().zip(frames) {
             let mut gate = granted(operation);
+            let mut valid_frame = frame(kind, 1);
+            if matches!(valid_frame.kind, BackendFrameKindV1::HarmonyHintV2Full) {
+                valid_frame.logical_inputs = 0;
+                valid_frame.hint_groups = 1;
+            }
             assert_eq!(
-                gate.permit_backend_frame(false, &frame(kind.clone(), 1), 1_001),
+                gate.permit_backend_frame(false, &valid_frame, 1_001),
                 Err(GateErrorV1::SecureChannelRequired)
             );
             assert_eq!(
-                gate.permit_backend_frame(true, &frame(kind, 1), 1_002),
+                gate.permit_backend_frame(true, &valid_frame, 1_002),
                 Err(GateErrorV1::TerminalAfterSpend),
                 "a cleartext attempt after commit permanently closes the grant"
             );
@@ -2577,16 +3130,27 @@ mod tests {
 
     #[test]
     fn dpf_grant_accepts_only_dpf_frames_for_exact_database() {
-        for kind in [
-            BackendFrameKindV1::DpfIndexBatch,
+        let mut gate = granted(OperationStartV1::DpfQuery { db_id: 3 });
+        assert!(gate
+            .permit_backend_frame(true, &frame(BackendFrameKindV1::DpfIndexBatch, 3), 1_001,)
+            .is_ok());
+        for (offset, kind) in [
             BackendFrameKindV1::DpfChunkBatch,
             BackendFrameKindV1::DpfMerkleSiblingBatch,
-        ] {
-            let mut gate = granted(OperationStartV1::DpfQuery { db_id: 3 });
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let followup = BackendFrameV1 {
+                logical_inputs: 0,
+                ..frame(kind, 3)
+            };
             assert!(gate
-                .permit_backend_frame(true, &frame(kind, 3), 1_001)
+                .permit_backend_frame(true, &followup, 1_002 + offset as u64)
                 .is_ok());
         }
+        assert_eq!(gate.usage().unwrap().logical_inputs, 1);
+
         let mut wrong_db = granted(OperationStartV1::DpfQuery { db_id: 3 });
         assert_eq!(
             wrong_db.permit_backend_frame(
@@ -2600,11 +3164,117 @@ mod tests {
         assert_eq!(
             wrong_backend.permit_backend_frame(
                 true,
-                &frame(BackendFrameKindV1::HarmonyQuery, 3),
+                &frame(BackendFrameKindV1::HarmonyLegacySingleQuery, 3),
                 1_001,
             ),
             Err(GateErrorV1::OperationMismatch)
         );
+    }
+
+    #[test]
+    fn dpf_followups_require_index_and_second_index_exhausts_one_job_grant() {
+        for kind in [
+            BackendFrameKindV1::DpfChunkBatch,
+            BackendFrameKindV1::DpfMerkleSiblingBatch,
+        ] {
+            let mut gate = granted(OperationStartV1::DpfQuery { db_id: 3 });
+            let followup = BackendFrameV1 {
+                logical_inputs: 0,
+                ..frame(kind, 3)
+            };
+            assert_eq!(
+                gate.permit_backend_frame(true, &followup, 1_001),
+                Err(GateErrorV1::OperationSequence),
+            );
+            assert_eq!(
+                gate.permit_backend_frame(
+                    true,
+                    &frame(BackendFrameKindV1::DpfIndexBatch, 3),
+                    1_002,
+                ),
+                Err(GateErrorV1::TerminalAfterSpend),
+            );
+        }
+
+        let mut one_job_limits = limits();
+        one_job_limits.max_logical_inputs = 1;
+        let mut gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        gate.install_committed_grant_for_test(
+            [7; 32],
+            OperationStartV1::DpfQuery { db_id: 3 },
+            one_job_limits,
+            1_000,
+        );
+        assert!(gate
+            .permit_backend_frame(true, &frame(BackendFrameKindV1::DpfIndexBatch, 3), 1_001,)
+            .is_ok());
+        assert_eq!(gate.usage().unwrap().logical_inputs, 1);
+        assert_eq!(
+            gate.permit_backend_frame(true, &frame(BackendFrameKindV1::DpfIndexBatch, 3), 1_002,),
+            Err(GateErrorV1::ResourceLimitExceeded),
+        );
+        assert_eq!(
+            gate.permit_backend_frame(
+                true,
+                &BackendFrameV1 {
+                    logical_inputs: 0,
+                    ..frame(BackendFrameKindV1::DpfChunkBatch, 3)
+                },
+                1_003,
+            ),
+            Err(GateErrorV1::TerminalAfterSpend),
+        );
+    }
+
+    #[test]
+    fn dpf_rejects_index_rollback_after_chunk_or_merkle_followup() {
+        for followup_kind in [
+            BackendFrameKindV1::DpfChunkBatch,
+            BackendFrameKindV1::DpfMerkleSiblingBatch,
+        ] {
+            let mut roomy = limits();
+            roomy.max_frames = 8;
+            roomy.max_work_units = 32;
+            let mut gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+            gate.install_committed_grant_for_test(
+                [7; 32],
+                OperationStartV1::DpfQuery { db_id: 3 },
+                roomy,
+                1_000,
+            );
+            assert!(gate
+                .permit_backend_frame(true, &frame(BackendFrameKindV1::DpfIndexBatch, 3), 1_001,)
+                .is_ok());
+            assert!(gate
+                .permit_backend_frame(
+                    true,
+                    &BackendFrameV1 {
+                        logical_inputs: 0,
+                        ..frame(followup_kind, 3)
+                    },
+                    1_002,
+                )
+                .is_ok());
+            assert_eq!(
+                gate.permit_backend_frame(
+                    true,
+                    &frame(BackendFrameKindV1::DpfIndexBatch, 3),
+                    1_003,
+                ),
+                Err(GateErrorV1::OperationSequence)
+            );
+            assert_eq!(
+                gate.permit_backend_frame(
+                    true,
+                    &BackendFrameV1 {
+                        logical_inputs: 0,
+                        ..frame(BackendFrameKindV1::DpfChunkBatch, 3)
+                    },
+                    1_004,
+                ),
+                Err(GateErrorV1::TerminalAfterSpend)
+            );
+        }
     }
 
     #[test]
@@ -2616,7 +3286,11 @@ mod tests {
             primary_side: None,
         });
         assert_eq!(
-            hint.permit_backend_frame(true, &frame(BackendFrameKindV1::HarmonyQuery, 2), 1_001,),
+            hint.permit_backend_frame(
+                true,
+                &frame(BackendFrameKindV1::HarmonyLegacySingleQuery, 2),
+                1_001,
+            ),
             Err(GateErrorV1::OperationMismatch)
         );
         let mut hint = granted(OperationStartV1::HarmonyHint {
@@ -2629,6 +3303,7 @@ mod tests {
             .permit_backend_frame(
                 true,
                 &BackendFrameV1 {
+                    logical_inputs: 0,
                     hint_groups: 8,
                     ..frame(BackendFrameKindV1::HarmonyHintV2Full, 2)
                 },
@@ -2641,6 +3316,7 @@ mod tests {
             query.permit_backend_frame(
                 true,
                 &BackendFrameV1 {
+                    logical_inputs: 0,
                     hint_groups: 8,
                     ..frame(BackendFrameKindV1::HarmonyHintV2Full, 2)
                 },
@@ -2651,7 +3327,64 @@ mod tests {
     }
 
     #[test]
-    fn legacy_harmony_hint_has_no_v1_grant_mapping() {
+    fn harmony_v2_full_main_then_cold_cache_siblings_stays_bounded_and_ordered() {
+        let mut roomy = limits();
+        roomy.max_frames = 8;
+        roomy.max_hint_groups = 32;
+        roomy.max_work_units = 32;
+        let mut hint = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        hint.install_committed_grant_for_test(
+            [7; 32],
+            OperationStartV1::HarmonyHint {
+                db_id: 2,
+                transport: HintTransport::V2Full,
+                session_token: None,
+                primary_side: None,
+            },
+            roomy,
+            1_000,
+        );
+        let main = BackendFrameV1 {
+            logical_inputs: 0,
+            hint_groups: 8,
+            ..frame(BackendFrameKindV1::HarmonyHintV2Full, 2)
+        };
+        assert!(hint.permit_backend_frame(true, &main, 1_001).is_ok());
+
+        let sibling = |level| BackendFrameV1 {
+            kind: BackendFrameKindV1::HarmonyHintLegacyV1 {
+                level,
+                index_sibling_levels: 2,
+                chunk_sibling_levels: 1,
+                expected_groups: 3,
+            },
+            db_id: 2,
+            logical_inputs: 0,
+            hint_groups: 3,
+            request_bytes: 100,
+            work_units: 3,
+        };
+        for (offset, level) in [10, 11, 20].into_iter().enumerate() {
+            assert!(hint
+                .permit_backend_frame(true, &sibling(level), 1_002 + offset as u64)
+                .is_ok());
+        }
+        assert_eq!(hint.usage().unwrap().hint_groups, 17);
+
+        let mut repeated_main = granted(OperationStartV1::HarmonyHint {
+            db_id: 2,
+            transport: HintTransport::V2Full,
+            session_token: None,
+            primary_side: None,
+        });
+        assert!(repeated_main
+            .permit_backend_frame(true, &main, 1_001)
+            .is_ok());
+        assert_eq!(
+            repeated_main.permit_backend_frame(true, &main, 1_002),
+            Err(GateErrorV1::OperationSequence)
+        );
+
         let mut hint = granted(OperationStartV1::HarmonyHint {
             db_id: 2,
             transport: HintTransport::V2Full,
@@ -2659,15 +3392,24 @@ mod tests {
             primary_side: None,
         });
         assert_eq!(
-            hint.permit_backend_frame(
-                true,
-                &BackendFrameV1 {
-                    hint_groups: 1,
-                    ..frame(BackendFrameKindV1::HarmonyHintLegacyV1, 2)
-                },
-                1_001,
-            ),
-            Err(GateErrorV1::OperationMismatch)
+            hint.permit_backend_frame(true, &sibling(10), 1_001),
+            Err(GateErrorV1::OperationSequence)
+        );
+        assert_eq!(
+            hint.permit_backend_frame(true, &main, 1_002),
+            Err(GateErrorV1::TerminalAfterSpend)
+        );
+
+        let mut skipped = granted(OperationStartV1::HarmonyHint {
+            db_id: 2,
+            transport: HintTransport::V2Full,
+            session_token: None,
+            primary_side: None,
+        });
+        assert!(skipped.permit_backend_frame(true, &main, 1_001).is_ok());
+        assert_eq!(
+            skipped.permit_backend_frame(true, &sibling(11), 1_002),
+            Err(GateErrorV1::OperationSequence)
         );
     }
 
@@ -2684,6 +3426,7 @@ mod tests {
             wrong_side.permit_backend_frame(
                 true,
                 &BackendFrameV1 {
+                    logical_inputs: 0,
                     hint_groups: 2,
                     ..frame(
                         BackendFrameKindV1::HarmonyHintV2Half {
@@ -2699,6 +3442,7 @@ mod tests {
         );
         let mut gate = granted(operation);
         let exact = BackendFrameV1 {
+            logical_inputs: 0,
             hint_groups: 2,
             ..frame(
                 BackendFrameKindV1::HarmonyHintV2Half {
@@ -2739,25 +3483,118 @@ mod tests {
     }
 
     #[test]
-    fn one_shot_query_and_oram_cannot_retry() {
-        for (operation, kind) in [
-            (
-                OperationStartV1::HarmonyQuery { db_id: 1 },
-                BackendFrameKindV1::HarmonyBatchQuery,
-            ),
-            (
-                OperationStartV1::TeeOramQuery { db_id: 1 },
-                BackendFrameKindV1::TeeOramQuery,
-            ),
+    fn harmony_query_enforces_pairs_phases_rounds_and_logical_jobs() {
+        let mut roomy = limits();
+        roomy.max_frames = 16;
+        roomy.max_logical_inputs = 4;
+        roomy.max_request_bytes = 10_000;
+        roomy.max_response_bytes = 10_000;
+        roomy.max_work_units = 100;
+        let mut gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        gate.install_committed_grant_for_test(
+            [7; 32],
+            OperationStartV1::HarmonyQuery { db_id: 1 },
+            roomy,
+            1_000,
+        );
+        for (offset, request) in [
+            harmony_batch_frame(1, 0, 0, 2, 1),
+            harmony_batch_frame(1, 0, 1, 2, 1),
+            harmony_batch_frame(1, 0, 2, 2, 1),
+            harmony_batch_frame(1, 0, 3, 2, 1),
+            harmony_batch_frame(1, 1, 0, 2, 1),
+            harmony_batch_frame(1, 1, 1, 2, 1),
+            harmony_batch_frame(1, 10, 0, 2, 1),
+            harmony_batch_frame(1, 11, 1, 2, 1),
+            harmony_batch_frame(1, 20, 100, 2, 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(gate
+                .permit_backend_frame(true, &request, 1_001 + offset as u64)
+                .is_ok());
+        }
+        assert_eq!(gate.usage().unwrap().logical_inputs, 2);
+
+        let mut one_pair_limits = limits();
+        one_pair_limits.max_logical_inputs = 1;
+        one_pair_limits.max_frames = 8;
+        one_pair_limits.max_work_units = 32;
+        let mut one_pair = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        one_pair.install_committed_grant_for_test(
+            [7; 32],
+            OperationStartV1::HarmonyQuery { db_id: 1 },
+            one_pair_limits,
+            1_000,
+        );
+        assert!(one_pair
+            .permit_backend_frame(true, &harmony_batch_frame(1, 0, 0, 1, 1), 1_001,)
+            .is_ok());
+        assert!(one_pair
+            .permit_backend_frame(true, &harmony_batch_frame(1, 0, 1, 1, 1), 1_002,)
+            .is_ok());
+        assert_eq!(
+            one_pair.permit_backend_frame(true, &harmony_batch_frame(1, 0, 2, 1, 1), 1_003,),
+            Err(GateErrorV1::ResourceLimitExceeded),
+            "N>K needs a signed profile with another logical INDEX-pair allowance",
+        );
+
+        for invalid in [
+            harmony_batch_frame(1, 0, 2, 1, 1),
+            harmony_batch_frame(1, 1, 0, 1, 1),
+            harmony_batch_frame(1, 10, 0, 1, 1),
         ] {
-            let mut gate = granted(operation);
-            let request = frame(kind, 1);
-            assert!(gate.permit_backend_frame(true, &request, 1_001).is_ok());
+            let mut failed = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+            let mut roomy = limits();
+            roomy.max_frames = 8;
+            roomy.max_work_units = 32;
+            failed.install_committed_grant_for_test(
+                [7; 32],
+                OperationStartV1::HarmonyQuery { db_id: 1 },
+                roomy,
+                1_000,
+            );
+            assert!(failed
+                .permit_backend_frame(true, &harmony_batch_frame(1, 0, 0, 1, 1), 1_001,)
+                .is_ok());
             assert_eq!(
-                gate.permit_backend_frame(true, &request, 1_002),
-                Err(GateErrorV1::AuthorizationAlreadyUsed)
+                failed.permit_backend_frame(true, &invalid, 1_002),
+                Err(GateErrorV1::OperationSequence)
+            );
+            assert_eq!(
+                failed.permit_backend_frame(true, &harmony_batch_frame(1, 0, 1, 1, 1), 1_003,),
+                Err(GateErrorV1::TerminalAfterSpend)
             );
         }
+    }
+
+    #[test]
+    fn harmony_query_v1_rejects_legacy_single_group_opcode_and_terminalizes() {
+        let mut gate = granted(OperationStartV1::HarmonyQuery { db_id: 1 });
+        assert_eq!(
+            gate.permit_backend_frame(
+                true,
+                &frame(BackendFrameKindV1::HarmonyLegacySingleQuery, 1),
+                1_001,
+            ),
+            Err(GateErrorV1::OperationMismatch)
+        );
+        assert_eq!(
+            gate.permit_backend_frame(true, &harmony_batch_frame(1, 0, 0, 1, 1), 1_002,),
+            Err(GateErrorV1::TerminalAfterSpend)
+        );
+    }
+
+    #[test]
+    fn oram_grant_is_one_shot() {
+        let mut gate = granted(OperationStartV1::TeeOramQuery { db_id: 1 });
+        let request = frame(BackendFrameKindV1::TeeOramQuery, 1);
+        assert!(gate.permit_backend_frame(true, &request, 1_001).is_ok());
+        assert_eq!(
+            gate.permit_backend_frame(true, &request, 1_002),
+            Err(GateErrorV1::AuthorizationAlreadyUsed)
+        );
     }
 
     #[test]
@@ -2791,51 +3628,153 @@ mod tests {
     }
 
     #[test]
-    fn onion_requires_one_registration_before_evaluation() {
+    fn onion_enforces_register_index_chunk_merkle_sequence_and_terminalizes() {
         let mut gate = granted(OperationStartV1::OnionSession { db_id: 5 });
-        assert_eq!(
-            gate.permit_backend_frame(true, &frame(BackendFrameKindV1::OnionIndexQuery, 5), 1_001,),
-            Err(GateErrorV1::OperationSequence)
-        );
-        let mut gate = granted(OperationStartV1::OnionSession { db_id: 5 });
-        assert!(gate
-            .permit_backend_frame(
-                true,
-                &frame(BackendFrameKindV1::OnionRegisterKeys, 5),
-                1_001,
-            )
-            .is_ok());
-        assert!(gate
-            .permit_backend_frame(true, &frame(BackendFrameKindV1::OnionIndexQuery, 5), 1_002,)
-            .is_ok());
         assert_eq!(
             gate.permit_backend_frame(
                 true,
-                &frame(BackendFrameKindV1::OnionRegisterKeys, 5),
-                1_003,
+                &onion_frame(BackendFrameKindV1::OnionIndexQuery { round_id: 0 }, 5),
+                1_001,
             ),
-            Err(GateErrorV1::OperationMismatch)
+            Err(GateErrorV1::OperationSequence)
+        );
+
+        let mut roomy = limits();
+        roomy.max_frames = 8;
+        roomy.max_work_units = 32;
+        let mut gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        gate.install_committed_grant_for_test(
+            [7; 32],
+            OperationStartV1::OnionSession { db_id: 5 },
+            roomy,
+            1_000,
+        );
+        let sequence = [
+            onion_frame(BackendFrameKindV1::OnionRegisterKeys, 5),
+            onion_frame(BackendFrameKindV1::OnionIndexQuery { round_id: 0 }, 5),
+            onion_frame(BackendFrameKindV1::OnionIndexQuery { round_id: 1 }, 5),
+            onion_frame(BackendFrameKindV1::OnionChunkQuery { round_id: 0 }, 5),
+            onion_frame(
+                BackendFrameKindV1::OnionMerkleIndexSibling { round_id: 0 },
+                5,
+            ),
+            onion_frame(
+                BackendFrameKindV1::OnionMerkleDataSibling { round_id: 0 },
+                5,
+            ),
+        ];
+        for (offset, request) in sequence.iter().enumerate() {
+            assert!(gate
+                .permit_backend_frame(true, request, 1_001 + offset as u64)
+                .is_ok());
+        }
+        assert_eq!(gate.usage().unwrap().logical_inputs, 2);
+
+        assert_eq!(
+            gate.permit_backend_frame(
+                true,
+                &onion_frame(BackendFrameKindV1::OnionRegisterKeys, 5),
+                1_010,
+            ),
+            Err(GateErrorV1::OperationSequence)
+        );
+        assert_eq!(
+            gate.permit_backend_frame(
+                true,
+                &onion_frame(
+                    BackendFrameKindV1::OnionMerkleDataSibling { round_id: 0 },
+                    5,
+                ),
+                1_011,
+            ),
+            Err(GateErrorV1::TerminalAfterSpend)
+        );
+
+        for skipped in [
+            BackendFrameKindV1::OnionIndexQuery { round_id: 1 },
+            BackendFrameKindV1::OnionChunkQuery { round_id: 0 },
+            BackendFrameKindV1::OnionMerkleIndexSibling { round_id: 0 },
+        ] {
+            let mut failed = granted(OperationStartV1::OnionSession { db_id: 5 });
+            assert!(failed
+                .permit_backend_frame(
+                    true,
+                    &onion_frame(BackendFrameKindV1::OnionRegisterKeys, 5),
+                    1_001,
+                )
+                .is_ok());
+            assert_eq!(
+                failed.permit_backend_frame(true, &onion_frame(skipped, 5), 1_002),
+                Err(GateErrorV1::OperationSequence)
+            );
+        }
+
+        let mut roomy = limits();
+        roomy.max_frames = 8;
+        roomy.max_work_units = 32;
+        let mut rollback = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+        rollback.install_committed_grant_for_test(
+            [7; 32],
+            OperationStartV1::OnionSession { db_id: 5 },
+            roomy,
+            1_000,
+        );
+        for (offset, request) in sequence.iter().enumerate() {
+            assert!(rollback
+                .permit_backend_frame(true, request, 1_001 + offset as u64)
+                .is_ok());
+        }
+        assert_eq!(
+            rollback.permit_backend_frame(
+                true,
+                &onion_frame(
+                    BackendFrameKindV1::OnionMerkleIndexSibling { round_id: 0 },
+                    5,
+                ),
+                1_010,
+            ),
+            Err(GateErrorV1::OperationSequence)
+        );
+        assert_eq!(
+            rollback.permit_backend_frame(
+                true,
+                &onion_frame(
+                    BackendFrameKindV1::OnionMerkleDataSibling { round_id: 0 },
+                    5,
+                ),
+                1_011,
+            ),
+            Err(GateErrorV1::TerminalAfterSpend)
         );
     }
 
     #[test]
     fn every_counter_is_checked_before_work() {
         let cases = [
-            BackendFrameV1 {
-                logical_inputs: 9,
-                ..frame(BackendFrameKindV1::DpfIndexBatch, 0)
-            },
-            BackendFrameV1 {
-                request_bytes: 1_001,
-                ..frame(BackendFrameKindV1::DpfIndexBatch, 0)
-            },
-            BackendFrameV1 {
-                work_units: 13,
-                ..frame(BackendFrameKindV1::DpfIndexBatch, 0)
-            },
+            (
+                OperationStartV1::TeeOramQuery { db_id: 0 },
+                BackendFrameV1 {
+                    logical_inputs: 9,
+                    ..frame(BackendFrameKindV1::TeeOramQuery, 0)
+                },
+            ),
+            (
+                OperationStartV1::DpfQuery { db_id: 0 },
+                BackendFrameV1 {
+                    request_bytes: 1_001,
+                    ..frame(BackendFrameKindV1::DpfIndexBatch, 0)
+                },
+            ),
+            (
+                OperationStartV1::DpfQuery { db_id: 0 },
+                BackendFrameV1 {
+                    work_units: 13,
+                    ..frame(BackendFrameKindV1::DpfIndexBatch, 0)
+                },
+            ),
         ];
-        for request in cases {
-            let mut gate = granted(OperationStartV1::DpfQuery { db_id: 0 });
+        for (operation, request) in cases {
+            let mut gate = granted(operation);
             assert_eq!(
                 gate.permit_backend_frame(true, &request, 1_001),
                 Err(GateErrorV1::ResourceLimitExceeded)
@@ -2862,6 +3801,7 @@ mod tests {
             hints.permit_backend_frame(
                 true,
                 &BackendFrameV1 {
+                    logical_inputs: 0,
                     hint_groups: 9,
                     ..frame(BackendFrameKindV1::HarmonyHintV2Full, 0)
                 },
@@ -2909,7 +3849,7 @@ mod tests {
 
         let mut response_overflow = granted(OperationStartV1::HarmonyQuery { db_id: 0 });
         assert!(response_overflow
-            .permit_backend_frame(true, &frame(BackendFrameKindV1::HarmonyQuery, 0), 1_001,)
+            .permit_backend_frame(true, &harmony_batch_frame(0, 0, 0, 1, 1), 1_001,)
             .is_ok());
         assert_eq!(
             response_overflow.reserve_response_bytes(2_001),

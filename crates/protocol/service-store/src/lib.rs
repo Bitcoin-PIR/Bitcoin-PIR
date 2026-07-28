@@ -12,6 +12,7 @@ mod admission;
 mod cashu_swap;
 mod error;
 mod offer_namespace;
+mod remote_rollback;
 mod rollback;
 mod schema;
 mod sqlite_rollback;
@@ -31,6 +32,7 @@ pub use offer_namespace::{
     OFFER_NAMESPACE_BINDING_DIGEST_DOMAIN_V1, OFFER_NAMESPACE_ID_DOMAIN_V1,
     OFFER_NAMESPACE_LINEAGE_DIGEST_DOMAIN_V1,
 };
+pub use remote_rollback::RemoteProviderRollbackFloorAuthorityV1;
 pub use rollback::{
     RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1,
     ROLLBACK_INITIAL_COMMITMENT_DOMAIN_V1, ROLLBACK_MUTATION_COMMITMENT_DOMAIN_V1,
@@ -65,11 +67,21 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryFrom;
 use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
 const MAX_BUSY_TIMEOUT_MILLIS: u128 = 60_000;
 const MAX_KEY_ID_BYTES: usize = 66;
+const GRANT_TRANSITION_NONCE_MUTATION_DOMAIN_V1: &[u8] =
+    b"BitcoinPIR/provider-store-grant-transition-nonce/v1";
+
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_NEXT_GRANT_TRANSITION_NONCE_V1: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
 
 /// Handle to exactly one provider's SQLite spend authority.
 ///
@@ -147,11 +159,8 @@ impl ProviderStore {
             validate_exact_floor(&initialized, &expected)?;
         }
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
+        let file = pir_private_files::create_new_private_file_v1(&path, "provider database")
+            .map_err(private_file_io_error_v1)?;
         file.sync_all()?;
         drop(file);
         sync_parent_directory(&path)?;
@@ -591,6 +600,20 @@ impl ProviderStore {
         self.spend(verified.into())
     }
 
+    /// Atomically claims delivery of one exact shared-issuer success at this
+    /// provider. The input can be created only by verifying the canonical,
+    /// issuer-signed response against its exact request and verified offer.
+    /// This row is a local grant-delivery claim, not an issuer credential
+    /// nullifier, settlement record, or browser quote-claim private key. The
+    /// stored key is a provider-secret HMAC derived only for local delivery
+    /// replay prevention.
+    pub fn claim_verified_shared_issuer_local_grant_v1(
+        &self,
+        verified: pir_service_protocol::VerifiedSharedIssuerLocalGrantClaimV1,
+    ) -> StoreResult<SpendCommit> {
+        self.spend(verified.into())
+    }
+
     /// Low-level primitive deliberately inaccessible to runtime crates. Public
     /// handlers must use [`Self::spend_verified_provider_local_v1`].
     ///
@@ -663,13 +686,12 @@ impl ProviderStore {
             b"spend-capability-v1",
             &[&request.namespace_id, &request.spend_key, &now_bytes],
         );
-        let committed_identity = advance_store_generation(
+        let committed_identity = advance_grant_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
             b"spend-capability-v1",
             &digest,
-            true,
         )?;
 
         if let Err(error) = transaction.commit() {
@@ -805,13 +827,12 @@ impl ProviderStore {
                 &next_count.to_le_bytes(),
             ],
         );
-        let committed_identity = advance_store_generation(
+        let committed_identity = advance_grant_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
             b"consume-free-ip-rate-limit-v1",
             &digest,
-            false,
         )?;
         transaction.commit()?;
         self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)
@@ -1327,23 +1348,40 @@ fn open_raw_existing(path: &Path) -> StoreResult<Connection> {
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err(StoreError::NotRegularDatabase(path.to_path_buf()));
     }
-    // macOS commonly spells its temporary directory through `/var`, which is
-    // itself a symlink. SQLite's NOFOLLOW rejects symlinks in any path
-    // component, so resolve only the operator-controlled parent and preserve
-    // the final filename. The final component is checked above and NOFOLLOW
-    // checks it again at sqlite3_open_v2 time.
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .ok_or(StoreError::InvalidInput("database path has no filename"))?;
-    let open_path = parent.canonicalize()?.join(file_name);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.nlink() != 1 {
+            return Err(StoreError::NotRegularDatabase(path.to_path_buf()));
+        }
+    }
+    let checked = pir_private_files::checked_existing_private_file_v1(
+        path,
+        pir_private_files::PrivateFileModeV1::ReadWrite,
+        "provider database",
+    )
+    .map_err(private_file_io_error_v1)?;
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    Ok(Connection::open_with_flags(open_path, flags)?)
+    let connection = Connection::open_with_flags(checked.path(), flags)?;
+    let after = pir_private_files::checked_existing_private_file_v1(
+        checked.path(),
+        pir_private_files::PrivateFileModeV1::ReadWrite,
+        "provider database",
+    )
+    .map_err(private_file_io_error_v1)?;
+    if after.identity() != checked.identity() {
+        return Err(StoreError::NotRegularDatabase(path.to_path_buf()));
+    }
+    Ok(connection)
+}
+
+fn private_file_io_error_v1(error: String) -> StoreError {
+    StoreError::Io(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        error,
+    ))
 }
 
 fn validate_options(options: StoreOptions) -> StoreResult<()> {
@@ -1781,6 +1819,59 @@ fn mutation_digest(kind: &[u8], parts: &[&[u8]]) -> [u8; 32] {
         hasher.update(part);
     }
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+fn fail_next_grant_transition_nonce_for_current_thread_v1() {
+    FAIL_NEXT_GRANT_TRANSITION_NONCE_V1.with(|fail| fail.set(true));
+}
+
+fn fresh_grant_transition_nonce_v1() -> StoreResult<[u8; 32]> {
+    #[cfg(test)]
+    if FAIL_NEXT_GRANT_TRANSITION_NONCE_V1.with(|fail| fail.replace(false)) {
+        return Err(grant_transition_nonce_unavailable());
+    }
+
+    let mut nonce = [0u8; 32];
+    for _ in 0..8 {
+        getrandom::getrandom(&mut nonce).map_err(|_| grant_transition_nonce_unavailable())?;
+        if !is_zero(&nonce) {
+            return Ok(nonce);
+        }
+    }
+    Err(grant_transition_nonce_unavailable())
+}
+
+fn grant_transition_nonce_unavailable() -> StoreError {
+    StoreError::Io(io::Error::other(
+        "secure random grant-transition nonce source is unavailable",
+    ))
+}
+
+/// Advances a transition which directly authorizes service work. The fresh
+/// nonce makes the logical next rollback floor distinct across cloned SQLite
+/// files, so an exact mutation on two forks cannot both be confirmed by one
+/// linearizable authority CAS.
+fn advance_grant_generation(
+    transaction: &rusqlite::Transaction<'_>,
+    expected_provider_id: &[u8; 32],
+    previous: &StoreIdentity,
+    mutation_kind: &[u8],
+    logical_mutation_digest: &[u8; 32],
+) -> StoreResult<StoreIdentity> {
+    let transition_nonce = fresh_grant_transition_nonce_v1()?;
+    let anchored_mutation_digest = mutation_digest(
+        GRANT_TRANSITION_NONCE_MUTATION_DOMAIN_V1,
+        &[mutation_kind, logical_mutation_digest, &transition_nonce],
+    );
+    advance_store_generation(
+        transaction,
+        expected_provider_id,
+        previous,
+        mutation_kind,
+        &anchored_mutation_digest,
+        true,
+    )
 }
 
 fn policy_update_mutation_digest(update: &PolicyStateUpdate) -> [u8; 32] {

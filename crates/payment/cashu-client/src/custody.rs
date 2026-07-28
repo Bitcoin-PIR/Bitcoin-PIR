@@ -14,9 +14,9 @@ use pir_payment_crypto::cashu_hash_to_curve_v1;
 use pir_service_protocol::{derive_cashu_mint_id, validate_cashu_unit_v1};
 
 use crate::{
-    BoundedZeroizingWriterV1, CashuClientErrorV1, CashuCustodyAadV1, CashuTokenV4GroupV1,
-    CashuTokenV4ProofV1, CashuTokenV4V1, CUSTODY_KEYSET_DIGEST_DOMAIN_V1, CUSTODY_LOT_ID_DOMAIN_V1,
-    CUSTODY_NOTE_SET_DIGEST_DOMAIN_V1, CUSTODY_NOTE_Y_DIGEST_DOMAIN_V1,
+    BoundedZeroizingWriterV1, CashuClientErrorV1, CashuCustodyAadV1, CashuMintTrustV1,
+    CashuTokenV4GroupV1, CashuTokenV4ProofV1, CashuTokenV4V1, CUSTODY_KEYSET_DIGEST_DOMAIN_V1,
+    CUSTODY_LOT_ID_DOMAIN_V1, CUSTODY_NOTE_SET_DIGEST_DOMAIN_V1, CUSTODY_NOTE_Y_DIGEST_DOMAIN_V1,
     CUSTODY_UNIT_DIGEST_DOMAIN_V1, MAX_CASHUB_PROOFS_V1, MAX_CASHU_SWAP_ITEMS_V1,
     MAX_CUSTODY_CIPHERTEXT_BYTES_V1,
 };
@@ -339,6 +339,8 @@ impl<'de> Visitor<'de> for SensitiveCustodyDigestVisitorV1 {
 pub struct CashuCustodyBundleV1 {
     version: u8,
     mint_endpoint: String,
+    manifest_digest: [u8; 32],
+    leaf_spki_sha256_pins: Vec<[u8; 32]>,
     unit: String,
     active_keyset_id: String,
     note_set_digest: [u8; 32],
@@ -351,6 +353,11 @@ impl fmt::Debug for CashuCustodyBundleV1 {
             .debug_struct("CashuCustodyBundleV1")
             .field("version", &self.version)
             .field("mint_endpoint", &"[REDACTED_ENDPOINT]")
+            .field("manifest_digest", &"[REDACTED_DIGEST]")
+            .field(
+                "leaf_spki_sha256_pin_count",
+                &self.leaf_spki_sha256_pins.len(),
+            )
             .field("unit", &"[REDACTED_UNIT]")
             .field("active_keyset_id", &"[REDACTED_KEYSET]")
             .field("note_set_digest", &"[REDACTED_DIGEST]")
@@ -362,6 +369,8 @@ impl fmt::Debug for CashuCustodyBundleV1 {
 impl Drop for CashuCustodyBundleV1 {
     fn drop(&mut self) {
         self.mint_endpoint.zeroize();
+        self.manifest_digest.zeroize();
+        self.leaf_spki_sha256_pins.zeroize();
         self.unit.zeroize();
         self.active_keyset_id.zeroize();
         self.note_set_digest.zeroize();
@@ -371,6 +380,8 @@ impl Drop for CashuCustodyBundleV1 {
 impl CashuCustodyBundleV1 {
     pub(crate) fn new(
         mint_endpoint: String,
+        manifest_digest: [u8; 32],
+        leaf_spki_sha256_pins: Vec<[u8; 32]>,
         unit: String,
         active_keyset_id: String,
         note_set_digest: [u8; 32],
@@ -379,6 +390,8 @@ impl CashuCustodyBundleV1 {
         let value = Self {
             version: 1,
             mint_endpoint,
+            manifest_digest,
+            leaf_spki_sha256_pins,
             unit,
             active_keyset_id,
             note_set_digest,
@@ -390,6 +403,14 @@ impl CashuCustodyBundleV1 {
 
     pub fn mint_endpoint(&self) -> &str {
         &self.mint_endpoint
+    }
+
+    pub const fn manifest_digest(&self) -> &[u8; 32] {
+        &self.manifest_digest
+    }
+
+    pub fn leaf_spki_sha256_pins(&self) -> &[[u8; 32]] {
+        &self.leaf_spki_sha256_pins
     }
 
     pub fn unit(&self) -> &str {
@@ -431,6 +452,7 @@ impl CashuCustodyBundleV1 {
     pub fn validate_for_aad(&self, aad: &CashuCustodyAadV1) -> Result<(), CashuClientErrorV1> {
         self.validate()?;
         if derive_cashu_mint_id(&self.mint_endpoint) != aad.mint_id
+            || self.manifest_digest != aad.manifest_digest
             || digest(CUSTODY_UNIT_DIGEST_DOMAIN_V1, self.unit.as_bytes()) != aad.unit_digest
             || digest(
                 CUSTODY_KEYSET_DIGEST_DOMAIN_V1,
@@ -483,8 +505,9 @@ impl CashuCustodyBundleV1 {
 
     pub(crate) fn validate(&self) -> Result<(), CashuClientErrorV1> {
         if self.version != 1
-            || self.mint_endpoint.is_empty()
-            || self.mint_endpoint.ends_with('/')
+            || self.manifest_digest.iter().all(|byte| *byte == 0)
+            || CashuMintTrustV1::from_parts(&self.mint_endpoint, &self.leaf_spki_sha256_pins)
+                .is_err()
             || validate_cashu_unit_v1(&self.unit).is_err()
             || self.active_keyset_id.len() != 66
             || !self

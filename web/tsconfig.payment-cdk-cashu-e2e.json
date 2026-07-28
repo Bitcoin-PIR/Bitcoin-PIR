@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node", "@playwright/test"]
+  },
+  "include": [
+    "e2e/payment-cdk-cashu*.ts",
+    "playwright.payment-cdk-cashu.config.ts",
+    "vite.payment-cdk-cashu.config.ts"
+  ],
+  "exclude": ["node_modules", "dist", "dist-web"]
+}

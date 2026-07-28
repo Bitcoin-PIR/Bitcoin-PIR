@@ -406,6 +406,15 @@ impl ServiceOfferV1 {
                 reason: "BOLT11 acquisition requires a canonical HTTPS origin without a path",
             });
         }
+        if self.verification == VerificationMode::SharedIssuerOnline
+            && !is_allowed_service_origin(&self.endpoint)
+        {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "ServiceOfferV1.endpoint",
+                reason:
+                    "shared-issuer verification requires a canonical HTTPS origin without a path",
+            });
+        }
         if self.minimum_credential_validity_seconds == 0
             || self.credential_count == 0
             || self.credential_count > MAX_CREDENTIALS_PER_ACQUISITION_V1
@@ -1112,11 +1121,23 @@ pub(crate) fn is_allowed_service_endpoint(endpoint: &str) -> bool {
     true
 }
 
-fn is_allowed_service_origin(endpoint: &str) -> bool {
+/// Public canonical HTTPS endpoint predicate for transports that consume a
+/// previously verified signed service artifact.
+pub fn is_canonical_service_https_endpoint_v1(endpoint: &str) -> bool {
+    is_allowed_service_endpoint(endpoint)
+}
+
+pub(crate) fn is_allowed_service_origin(endpoint: &str) -> bool {
     is_allowed_service_endpoint(endpoint)
         && endpoint
             .strip_prefix("https://")
             .is_some_and(|authority| !authority.contains('/'))
+}
+
+/// Public origin-only form used when a transport appends a fixed protocol
+/// route such as `/v1/redeems`.
+pub fn is_canonical_service_https_origin_v1(endpoint: &str) -> bool {
+    is_allowed_service_origin(endpoint)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2010,6 +2031,7 @@ mod tests {
         let manifest = StandardCashuMintManifestV1 {
             manifest_epoch: 1,
             mint_endpoint: "https://mint.example".into(),
+            leaf_spki_sha256_pins: vec![[0x31; 32]],
             unit: "sat".into(),
             required_nuts: CashuRequiredNutsV1::required_v1(),
             accepted_input_keysets: vec![keyset.clone()],
@@ -2413,10 +2435,14 @@ mod tests {
     }
 
     #[test]
-    fn bolt11_requires_origin_while_standard_cashu_may_use_a_base_path() {
+    fn bolt11_and_shared_issuer_require_origin_while_standard_cashu_may_use_a_base_path() {
         let mut bolt11 = offer();
         bolt11.endpoint = "https://issuer.example:8443/v1/quotes".into();
         assert!(bolt11.validate().is_err());
+
+        let mut shared = offer();
+        shared.endpoint = "https://issuer.example:8443/v1/redeems".into();
+        assert!(shared.validate().is_err());
 
         let mut cashu = cashu_offer();
         let manifest = cashu.cashu_mint_manifest.as_mut().unwrap();

@@ -4,6 +4,12 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      confirm_production_deploy:
+        description: 'Deploy the verified artifact to the production GitHub Pages environment'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -15,7 +21,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
     steps:
@@ -90,6 +96,10 @@ jobs:
         working-directory: web
         run: npm run test:e2e:payment-real-issuer
 
+      - name: Exercise browser issuance and verified DPF query across two providers before publishing
+        working-directory: web
+        run: npm run test:e2e:payment-two-provider
+
       - name: Build production bundle
         working-directory: web
         run: npm run build-web
@@ -100,6 +110,7 @@ jobs:
           path: web/dist-web
 
   deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_production_deploy }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

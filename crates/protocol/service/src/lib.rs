@@ -14,6 +14,7 @@ mod clearing;
 mod codec;
 mod directory;
 mod error;
+mod grant_claim;
 mod issuance;
 mod opcode;
 mod policy;
@@ -47,11 +48,12 @@ pub use binding::{
 };
 pub use cashu_manifest::{
     derive_cashu_keyset_id_v2, derive_cashu_mint_id, is_canonical_cashu_keyset_id_v2,
-    validate_cashu_unit_v1, CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1,
-    StandardCashuMintExpectationV1, StandardCashuMintManifestV1, CASHU_KEYSET_ID_V2_LEN,
-    CASHU_MINT_ID_DOMAIN, CASHU_MINT_MANIFEST_DIGEST_DOMAIN, MAX_CASHU_DENOMINATION_KEYS,
-    MAX_CASHU_INPUT_KEYSETS, MAX_CASHU_KEYSET_ENCODING_LEN, MAX_CASHU_KEYSET_ID_LEN,
-    MAX_CASHU_MINT_MANIFEST_LEN,
+    validate_cashu_unit_v1, validate_leaf_spki_sha256_pins_v1, CashuDenominationKeyV1,
+    CashuKeysetBindingV1, CashuRequiredNutsV1, StandardCashuMintExpectationV1,
+    StandardCashuMintManifestV1, CASHU_KEYSET_ID_V2_LEN, CASHU_MINT_ID_DOMAIN,
+    CASHU_MINT_MANIFEST_DIGEST_DOMAIN, MAX_CASHU_DENOMINATION_KEYS, MAX_CASHU_INPUT_KEYSETS,
+    MAX_CASHU_KEYSET_ENCODING_LEN, MAX_CASHU_KEYSET_ID_LEN, MAX_CASHU_MINT_MANIFEST_LEN,
+    MAX_LEAF_SPKI_SHA256_PINS_V1,
 };
 pub use challenge::{
     pow_solution_hash_v1, pow_solution_meets_difficulty_v1, PowChallengeRequestV1,
@@ -82,6 +84,17 @@ pub use directory::{
     MAX_DIRECTORY_ENDPOINT_LEN_V1, MAX_DIRECTORY_SERVER_ID_LEN_V1,
 };
 pub use error::ServiceProtocolError;
+pub use grant_claim::{
+    derive_shared_issuer_local_grant_namespace_v1,
+    verify_shared_issuer_local_grant_claim_v1, SharedIssuerLocalGrantNamespaceV1,
+    SharedIssuerProviderSecretV1, VerifiedSharedIssuerLocalGrantClaimV1,
+    SHARED_ISSUER_LOCAL_GRANT_BINDING_DOMAIN_V1,
+    SHARED_ISSUER_LOCAL_GRANT_CLAIM_KEY_DOMAIN_V1,
+    SHARED_ISSUER_LOCAL_GRANT_KEY_ID_DOMAIN_V1,
+    SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_DOMAIN_V1,
+    SHARED_ISSUER_LOCAL_GRANT_NAMESPACE_SCHEME_V1,
+    SHARED_ISSUER_WIRE_IDEMPOTENCY_DOMAIN_V1,
+};
 pub use issuance::{
     ArcCredentialRequestV1, ArcCredentialResponseV1, ArcIssuanceCanonicalizerV1,
     BitcoinPirCashuBatIssuanceRequestItemV1, BitcoinPirCashuBatIssuanceResponseItemV1,
@@ -98,6 +111,7 @@ pub use opcode::{
     RESP_AUTH_RESULT_V1, RESP_HARMONY_ATTACH_V1, RESP_POW_CHALLENGE_V1, RESP_SERVICE_POLICY_V1,
 };
 pub use policy::{
+    is_canonical_service_https_endpoint_v1, is_canonical_service_https_origin_v1,
     policy_signing_key_id, AcquisitionMethod, AuthPaddingClassV1, CashuManifestEpochFloorV1,
     CredentialKeysetEpochFloorV1, DeploymentStatus, EntitlementLimitsV1, FreeModeV1,
     PolicyRollbackGuardV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyEpochFloorsV1,
@@ -155,17 +169,19 @@ pub use settlement::{
     verify_new_payout_status_response_for, verify_new_redeem_response_for,
     verify_new_settlement_deposit_request_for, verify_new_settlement_deposit_response_for,
     verify_payout_initial_response_for_exact_request, verify_payout_status_successor_for_store_v1,
-    verify_persisted_payout_snapshot_for_store_v1, verify_redeem_response_for_exact_request,
-    BlindSettlementSignatureV1, CashuDleqVerificationInputV1, CashuDleqVerifierV1,
-    CashuSettlementNoteVerificationInputV1, CashuSettlementNoteVerifierV1, IssuerBalanceResponseV1,
-    IssuerPayoutIntentResponseV1, IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1,
-    IssuerSettlementKeyringExpectationV1, PayoutCommitErrorV1, PayoutExecutionCommitStoreV1,
-    PayoutExecutionContextV1, PayoutStateV1, PayoutStatusCasExpectationV1,
-    PayoutStatusCompareAndSwapStoreV1, PayoutStatusContextV1, PayoutTargetIdV1,
-    ProviderBalanceRequestV1, ProviderPayoutIntentRequestV1, ProviderPayoutRequestV1,
-    ProviderPayoutStatusRequestV1, ProviderRedeemResponseV1, ProviderSettlementDepositRequestV1,
-    ProviderSettlementDepositResponseV1, ProviderSettlementRegistrationExpectationV1,
-    ProviderSettlementRequestAuthV1, RedeemResponseCryptoExpectationV1, RedeemSettlementResultV1,
+    verify_persisted_payout_snapshot_for_store_v1,
+    verify_persisted_payout_snapshot_from_store_record_v1,
+    verify_redeem_response_for_exact_request, BlindSettlementSignatureV1,
+    CashuDleqVerificationInputV1, CashuDleqVerifierV1, CashuSettlementNoteVerificationInputV1,
+    CashuSettlementNoteVerifierV1, IssuerBalanceResponseV1, IssuerPayoutIntentResponseV1,
+    IssuerPayoutResponseV1, IssuerPayoutStatusResponseV1, IssuerSettlementKeyringExpectationV1,
+    PayoutCommitErrorV1, PayoutExecutionCommitStoreV1, PayoutExecutionContextV1, PayoutStateV1,
+    PayoutStatusCasExpectationV1, PayoutStatusCompareAndSwapStoreV1, PayoutStatusContextV1,
+    PayoutTargetIdV1, ProviderBalanceRequestV1, ProviderPayoutIntentRequestV1,
+    ProviderPayoutRequestV1, ProviderPayoutStatusRequestV1, ProviderRedeemResponseV1,
+    ProviderSettlementDepositRequestV1, ProviderSettlementDepositResponseV1,
+    ProviderSettlementRegistrationExpectationV1, ProviderSettlementRequestAuthV1,
+    RedeemResponseCryptoExpectationV1, RedeemSettlementResultV1,
     RetainedSettlementKeysetExpectationV1, RetainedSettlementKeysetV1, SettlementNoteV1,
     VerifiedBlindSettlementPromiseV1, VerifiedPayoutExecutionV1, VerifiedPayoutSnapshotV1,
     VerifiedProviderRedeemResponseV1, VerifiedRedeemSettlementResultV1,

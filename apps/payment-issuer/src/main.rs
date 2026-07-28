@@ -1,10 +1,14 @@
 //! BitcoinPIR payment issuer executable.
 //!
-//! Both serving modes bind only to loopback. `serve-fake` is a deterministic
-//! integration harness; `serve-cln` uses a locally owned Core Lightning Unix
-//! RPC socket and is intended to sit behind a separately managed TLS edge.
+//! The production `serve-cln` mode binds only to loopback, uses a locally owned
+//! Core Lightning Unix RPC socket, and is intended to sit behind a separately
+//! managed TLS edge. The deterministic `serve-fake` integration harness is
+//! absent unless a debug/test-only Cargo feature is explicitly enabled.
 
 #![forbid(unsafe_code)]
+
+#[cfg(all(feature = "test-only-fake-lightning", not(debug_assertions)))]
+compile_error!("test-only-fake-lightning must never be compiled into a production release");
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -30,20 +34,24 @@ use pir_issuer_service::{
     SharedIssuerClearingServiceV1, TrustedClearingProviderV1,
 };
 use pir_issuer_store::{
-    BatKeyLineageRegistration, IssuerStore, ProviderSettlementRegistrationWriteV1, QuoteCapacityV1,
+    BatKeyLineageRegistration, IssuerRollbackFloorAuthorityV1, IssuerStore,
+    ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, RemoteIssuerRollbackFloorAuthorityV1,
     SqliteIssuerRollbackFloorAuthorityV1, StoreOptions, MAX_EXACT_CLEARING_APPROVAL_BYTES,
     MAX_EXACT_CLEARING_AUTHORIZATION_BYTES, MAX_QUOTE_RECONCILIATION_BATCH_V1,
     SCHEMA_VERSION as ISSUER_STORE_SCHEMA_VERSION,
 };
+#[cfg(any(test, feature = "test-only-fake-lightning"))]
+use pir_lightning_backend::FakeLightningNodeV1;
 #[cfg(unix)]
 use pir_lightning_backend::{
     CoreLightningBackendV1, UnixClnRpcSocketPolicyV1, UnixClnRpcTransportV1,
 };
 use pir_lightning_backend::{
-    CreateInvoiceRequestV1, CreatedInvoiceV1, FakeLightningNodeV1, InvoiceObservationV1,
-    LightningBackendErrorV1, LightningInvoiceBackendV1,
+    CreateInvoiceRequestV1, CreatedInvoiceV1, InvoiceObservationV1, LightningBackendErrorV1,
+    LightningInvoiceBackendV1,
 };
 use pir_payment_crypto::K256CashuMintKeyringV1;
+use pir_rollback_authority_client::load_remote_rollback_authority_deployment_for_business_domain_v1;
 use pir_service_protocol::{
     AuthScheme, Bolt11QuoteClaimEnvelopeV1, Bolt11QuoteIntentV1, Bolt11QuoteKeyDelegationV1,
     IssuerClearingApprovalV1, LightningNetworkV1, ProviderClearingAuthorizationV1,
@@ -85,6 +93,7 @@ const CT_CLAIM_ENVELOPE: &str = "application/vnd.bitcoinpir.bolt11-quote-claim-e
 const CT_ISSUANCE_RESPONSE: &str = "application/vnd.bitcoinpir.credential-issuance-response-v1";
 const CT_REDEEM: &str = "application/vnd.bitcoinpir.redeem-v1";
 const CT_REDEEM_RESULT: &str = "application/vnd.bitcoinpir.redeem-result-v1";
+#[cfg(any(test, feature = "test-only-fake-lightning"))]
 const CT_FAKE_SETTLEMENT: &str = "application/vnd.bitcoinpir.fake-settlement-v1";
 const CT_BALANCE_ENVELOPE: &str = "application/vnd.bitcoinpir.provider-balance-envelope-v1";
 const CT_BALANCE_RESPONSE: &str = "application/vnd.bitcoinpir.issuer-balance-response-v1";
@@ -106,6 +115,11 @@ struct Cli {
     command: Command,
 }
 
+// This process parses exactly one CLI command at startup. Keeping the serving
+// arguments inline avoids adding indirection to the production CLN path merely
+// because the similarly-sized fake serving variant is absent from default
+// artifacts.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Create a fresh issuer store and its separate rollback authority.
@@ -113,7 +127,9 @@ enum Command {
     /// Run the production issuer-store open/integrity path without a listener.
     /// May reconcile one legitimate unanchored successor, like serving startup.
     CheckStore(StoreCheckArgs),
-    /// Run the local-only fake-Lightning HTTP integration service.
+    /// Run the local-only fake-Lightning HTTP integration service. This
+    /// subcommand is absent from default and production artifacts.
+    #[cfg(any(test, feature = "test-only-fake-lightning"))]
     ServeFake(ServeFakeArgs),
     /// Run the loopback HTTP service backed by a local Core Lightning node.
     #[cfg(unix)]
@@ -143,8 +159,24 @@ impl From<NetworkArg> for LightningNetworkV1 {
 struct InitStoreArgs {
     #[arg(long)]
     store: PathBuf,
+    /// Local SQLite floor for development/test only. Production must use the
+    /// independently hosted remote authority config instead.
+    #[arg(
+        long,
+        required_unless_present = "remote_rollback_authority_config",
+        conflicts_with = "remote_rollback_authority_config"
+    )]
+    rollback_authority: Option<PathBuf>,
+    #[arg(
+        long,
+        required_unless_present = "rollback_authority",
+        conflicts_with = "rollback_authority"
+    )]
+    remote_rollback_authority_config: Option<PathBuf>,
+    /// Required only with a remote authority so an interrupted ceremony can
+    /// be resumed/audited with the exact same durable identity.
     #[arg(long)]
-    rollback_authority: PathBuf,
+    store_instance_id_hex: Option<String>,
     #[arg(long)]
     issuer_id_hex: String,
     #[arg(long, value_enum)]
@@ -155,8 +187,18 @@ struct InitStoreArgs {
 struct StoreCheckArgs {
     #[arg(long)]
     store: PathBuf,
-    #[arg(long)]
-    rollback_authority: PathBuf,
+    #[arg(
+        long,
+        required_unless_present = "remote_rollback_authority_config",
+        conflicts_with = "remote_rollback_authority_config"
+    )]
+    rollback_authority: Option<PathBuf>,
+    #[arg(
+        long,
+        required_unless_present = "rollback_authority",
+        conflicts_with = "rollback_authority"
+    )]
+    remote_rollback_authority_config: Option<PathBuf>,
     #[arg(long)]
     issuer_id_hex: String,
     #[arg(long, value_enum)]
@@ -203,8 +245,25 @@ struct ServeCommonArgs {
     allow_origin: Option<String>,
     #[arg(long)]
     store: PathBuf,
+    #[arg(
+        long,
+        required_unless_present = "remote_rollback_authority_config",
+        conflicts_with = "remote_rollback_authority_config"
+    )]
+    rollback_authority: Option<PathBuf>,
+    /// Owner-only production config for a separately hosted authority using
+    /// mandatory WebPKI plus leaf-SPKI pins and independent client/value keys.
+    #[arg(
+        long,
+        required_unless_present = "rollback_authority",
+        conflicts_with = "rollback_authority"
+    )]
+    remote_rollback_authority_config: Option<PathBuf>,
+    /// Explicitly acknowledge that a local SQLite floor is not a production
+    /// rollback boundary. The feature-gated deterministic local test harness
+    /// does not require this extra acknowledgement.
     #[arg(long)]
-    rollback_authority: PathBuf,
+    allow_local_rollback_authority_dev: bool,
     #[arg(long)]
     quote_delegation: PathBuf,
     #[arg(long)]
@@ -261,6 +320,7 @@ struct ServeCommonArgs {
 }
 
 #[derive(Args, Debug)]
+#[cfg(any(test, feature = "test-only-fake-lightning"))]
 struct ServeFakeArgs {
     #[command(flatten)]
     common: ServeCommonArgs,
@@ -306,6 +366,7 @@ impl QuoteIdSourceV1 for OsQuoteIdSourceV1 {
 }
 
 enum RuntimeLightningBackendV1 {
+    #[cfg(any(test, feature = "test-only-fake-lightning"))]
     Fake(Arc<FakeLightningNodeV1>),
     #[cfg(unix)]
     CoreLightning(CoreLightningBackendV1<UnixClnRpcTransportV1>),
@@ -324,6 +385,7 @@ impl core::fmt::Debug for RuntimeLightningBackendV1 {
 impl RuntimeLightningBackendV1 {
     const fn mode_name(&self) -> &'static str {
         match self {
+            #[cfg(any(test, feature = "test-only-fake-lightning"))]
             Self::Fake(_) => "fake",
             #[cfg(unix)]
             Self::CoreLightning(_) => "cln",
@@ -337,6 +399,7 @@ impl LightningInvoiceBackendV1 for RuntimeLightningBackendV1 {
         request: &CreateInvoiceRequestV1,
     ) -> Result<CreatedInvoiceV1, LightningBackendErrorV1> {
         match self {
+            #[cfg(any(test, feature = "test-only-fake-lightning"))]
             Self::Fake(backend) => backend.create_or_get_invoice(request),
             #[cfg(unix)]
             Self::CoreLightning(backend) => backend.create_or_get_invoice(request),
@@ -349,6 +412,7 @@ impl LightningInvoiceBackendV1 for RuntimeLightningBackendV1 {
         observed_at: u64,
     ) -> Result<InvoiceObservationV1, LightningBackendErrorV1> {
         match self {
+            #[cfg(any(test, feature = "test-only-fake-lightning"))]
             Self::Fake(backend) => backend.lookup_invoice(backend_label, observed_at),
             #[cfg(unix)]
             Self::CoreLightning(backend) => backend.lookup_invoice(backend_label, observed_at),
@@ -360,6 +424,7 @@ impl LightningInvoiceBackendV1 for RuntimeLightningBackendV1 {
         backend_label: &str,
     ) -> Result<Option<CreatedInvoiceV1>, LightningBackendErrorV1> {
         match self {
+            #[cfg(any(test, feature = "test-only-fake-lightning"))]
             Self::Fake(backend) => backend.existing_invoice(backend_label),
             #[cfg(unix)]
             Self::CoreLightning(backend) => backend.existing_invoice(backend_label),
@@ -375,6 +440,7 @@ struct ServerState {
     quote_delegations: BTreeMap<[u8; 16], Vec<u8>>,
     clearing: Option<SharedIssuerClearingServiceV1>,
     store: IssuerStore,
+    #[cfg(any(test, feature = "test-only-fake-lightning"))]
     fake_lightning: Option<Arc<FakeLightningNodeV1>>,
     allow_origin: Option<String>,
     quote_rate: FixedWindowRateLimiterV1,
@@ -386,13 +452,15 @@ struct ServerState {
 
 impl core::fmt::Debug for ServerState {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("ServerState")
+        let mut debug = formatter.debug_struct("ServerState");
+        debug
             .field("acquisition", &"[redacted]")
             .field("quote_delegation_count", &self.quote_delegations.len())
             .field("clearing", &self.clearing.is_some())
-            .field("store", &"[redacted]")
-            .field("fake_settlement_route", &self.fake_lightning.is_some())
+            .field("store", &"[redacted]");
+        #[cfg(any(test, feature = "test-only-fake-lightning"))]
+        debug.field("fake_settlement_route", &self.fake_lightning.is_some());
+        debug
             .field("allow_origin", &self.allow_origin)
             .field("quote_rate", &self.quote_rate)
             .field("status_rate", &self.status_rate)
@@ -545,6 +613,7 @@ fn validate_loopback_bind(bind: SocketAddr) -> Result<(), String> {
     }
 }
 
+#[cfg(any(test, feature = "test-only-fake-lightning"))]
 fn require_fake_settlement_backend(
     fake_lightning: Option<&Arc<FakeLightningNodeV1>>,
 ) -> Result<&Arc<FakeLightningNodeV1>, IssuerServiceErrorV1> {
@@ -589,7 +658,11 @@ fn is_exact_redeem_replay(store: &IssuerStore, canonical_envelope: &[u8]) -> boo
     let Ok(envelope) = ProviderRedeemEnvelopeV1::decode(canonical_envelope) else {
         return false;
     };
-    if envelope.encode().ok().as_deref() != Some(canonical_envelope) {
+    let Ok(exact_reencoding) = envelope.encode() else {
+        return false;
+    };
+    let exact_reencoding = Zeroizing::new(exact_reencoding);
+    if exact_reencoding.as_slice() != canonical_envelope {
         return false;
     }
     store
@@ -636,6 +709,7 @@ fn main() {
     let result = match Cli::parse().command {
         Command::InitStore(args) => init_store(args),
         Command::CheckStore(args) => check_store(args),
+        #[cfg(any(test, feature = "test-only-fake-lightning"))]
         Command::ServeFake(args) => serve_fake(args),
         #[cfg(unix)]
         Command::ServeCln(args) => serve_cln(args),
@@ -646,31 +720,104 @@ fn main() {
     }
 }
 
+fn validate_rollback_authority_selection_v1<'a>(
+    local: Option<&'a Path>,
+    remote: Option<&'a Path>,
+) -> Result<IssuerRollbackAuthoritySelectionV1<'a>, String> {
+    match (local, remote) {
+        (Some(path), None) => Ok(IssuerRollbackAuthoritySelectionV1::Local(path)),
+        (None, Some(path)) => Ok(IssuerRollbackAuthoritySelectionV1::Remote(path)),
+        (Some(_), Some(_)) => Err(
+            "--rollback-authority and --remote-rollback-authority-config are mutually exclusive"
+                .to_owned(),
+        ),
+        (None, None) => Err(
+            "exactly one of --rollback-authority or --remote-rollback-authority-config is required"
+                .to_owned(),
+        ),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IssuerRollbackAuthoritySelectionV1<'a> {
+    Local(&'a Path),
+    Remote(&'a Path),
+}
+
+fn load_remote_issuer_rollback_authority_v1(
+    config_path: &Path,
+    issuer_id: [u8; 32],
+    network: LightningNetworkV1,
+) -> Result<Arc<dyn IssuerRollbackFloorAuthorityV1>, String> {
+    let configured =
+        load_remote_rollback_authority_deployment_for_business_domain_v1(config_path, issuer_id)
+            .map_err(|error| {
+                format!("load remote issuer rollback-authority configuration: {error}")
+            })?;
+    let (client, codec, operation_timeout) = configured.into_parts();
+    let authority = RemoteIssuerRollbackFloorAuthorityV1::new(
+        issuer_id,
+        network,
+        client,
+        codec,
+        operation_timeout,
+    )
+    .map_err(|error| format!("configure remote issuer rollback authority: {error}"))?;
+    Ok(Arc::new(authority))
+}
+
+fn open_existing_issuer_rollback_authority_v1(
+    store_path: &Path,
+    local: Option<&Path>,
+    remote: Option<&Path>,
+    issuer_id: [u8; 32],
+    network: LightningNetworkV1,
+    busy_timeout: Duration,
+) -> Result<Arc<dyn IssuerRollbackFloorAuthorityV1>, String> {
+    match validate_rollback_authority_selection_v1(local, remote)? {
+        IssuerRollbackAuthoritySelectionV1::Local(path) => {
+            let authority_path =
+                validate_existing_private_database_path(path, "issuer rollback authority")?;
+            if private_database_paths_alias_v1(store_path, &authority_path)? {
+                return Err(
+                    "store and rollback authority resolve to the same file/inode".to_owned(),
+                );
+            }
+            eprintln!(
+                "warning: local SQLite issuer rollback authority is development/test-only; production requires --remote-rollback-authority-config"
+            );
+            SqliteIssuerRollbackFloorAuthorityV1::open_existing(&authority_path, busy_timeout)
+                .map(|authority| Arc::new(authority) as Arc<dyn IssuerRollbackFloorAuthorityV1>)
+                .map_err(|error| format!("open issuer rollback authority: {error}"))
+        }
+        IssuerRollbackAuthoritySelectionV1::Remote(config_path) => {
+            load_remote_issuer_rollback_authority_v1(config_path, issuer_id, network)
+        }
+    }
+}
+
 fn check_store(args: StoreCheckArgs) -> Result<(), String> {
     let issuer_id = decode_fixed_hex::<32>(&args.issuer_id_hex, "issuer ID")?;
     if issuer_id.iter().all(|byte| *byte == 0) {
         return Err("issuer ID must not be all zero".to_owned());
     }
     let store_path = validate_existing_private_database_path(&args.store, "issuer store")?;
-    let authority_path = validate_existing_private_database_path(
-        &args.rollback_authority,
-        "issuer rollback authority",
-    )?;
-    if private_database_paths_alias_v1(&store_path, &authority_path)? {
-        return Err("store and rollback authority resolve to the same file/inode".to_owned());
-    }
-
     let options = StoreOptions::default();
     let started = Instant::now();
-    let authority =
-        SqliteIssuerRollbackFloorAuthorityV1::open_existing(&authority_path, options.busy_timeout)
-            .map_err(|error| format!("open issuer rollback authority: {error}"))?;
+    let authority = open_existing_issuer_rollback_authority_v1(
+        &store_path,
+        args.rollback_authority.as_deref(),
+        args.remote_rollback_authority_config.as_deref(),
+        issuer_id,
+        args.network.into(),
+        options.busy_timeout,
+    )?;
     let store = IssuerStore::open_existing(
         &store_path,
         issuer_id,
         args.network.into(),
         options,
-        Arc::new(authority),
+        authority,
     )
     .map_err(|error| format!("open issuer store: {error}"))?;
     let identity = store
@@ -701,121 +848,179 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
     if issuer_id.iter().all(|byte| *byte == 0) {
         return Err("issuer ID must not be all zero".to_owned());
     }
-    let mut store_instance_id = [0u8; 16];
-    getrandom::getrandom(&mut store_instance_id)
-        .map_err(|_| "operating-system randomness is unavailable".to_owned())?;
-    if store_instance_id.iter().all(|byte| *byte == 0) {
-        return Err("operating-system randomness returned an invalid store ID".to_owned());
-    }
+    let network: LightningNetworkV1 = args.network.into();
+    let selection = validate_rollback_authority_selection_v1(
+        args.rollback_authority.as_deref(),
+        args.remote_rollback_authority_config.as_deref(),
+    )?;
+    let store_instance_id = match (selection, args.store_instance_id_hex.as_deref()) {
+        (IssuerRollbackAuthoritySelectionV1::Remote(_), Some(encoded)) => {
+            let value = decode_fixed_hex::<16>(encoded, "store instance ID")?;
+            if value.iter().all(|byte| *byte == 0) {
+                return Err("--store-instance-id-hex must not be all zero".to_owned());
+            }
+            value
+        }
+        (IssuerRollbackAuthoritySelectionV1::Remote(_), None) => {
+            return Err(
+                "remote rollback-authority initialization requires --store-instance-id-hex so an interrupted ceremony can reuse the exact identity"
+                    .to_owned(),
+            );
+        }
+        (IssuerRollbackAuthoritySelectionV1::Local(_), Some(_)) => {
+            return Err(
+                "--store-instance-id-hex is reserved for remote rollback-authority initialization"
+                    .to_owned(),
+            );
+        }
+        (IssuerRollbackAuthoritySelectionV1::Local(_), None) => {
+            let mut value = [0u8; 16];
+            getrandom::getrandom(&mut value)
+                .map_err(|_| "operating-system randomness is unavailable".to_owned())?;
+            if value.iter().all(|byte| *byte == 0) {
+                return Err("operating-system randomness returned an invalid store ID".to_owned());
+            }
+            value
+        }
+    };
     let store_path = prepare_new_private_database_path(&args.store, "issuer store")?;
-    let authority_path =
-        prepare_new_private_database_path(&args.rollback_authority, "issuer rollback authority")?;
-    if store_path == authority_path {
-        return Err("store and rollback authority resolve to the same canonical target".to_owned());
-    }
-    if store_path.parent() == authority_path.parent() {
-        eprintln!(
-            "warning: issuer store and rollback authority share one private directory; use independent backup/restore domains in production"
-        );
-    }
     let options = StoreOptions::default();
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(&authority_path, options.busy_timeout)
-            .map_err(|error| {
-                incomplete_init_error_v1(
-                    "create rollback authority",
+    let (authority, authority_reference, remote_authority): (
+        Arc<dyn IssuerRollbackFloorAuthorityV1>,
+        PathBuf,
+        bool,
+    ) = match selection {
+        IssuerRollbackAuthoritySelectionV1::Local(configured_path) => {
+            let authority_path =
+                prepare_new_private_database_path(configured_path, "issuer rollback authority")?;
+            if store_path == authority_path {
+                return Err(
+                    "store and rollback authority resolve to the same canonical target".to_owned(),
+                );
+            }
+            if store_path.parent() == authority_path.parent() {
+                eprintln!(
+                    "warning: issuer store and rollback authority share one private directory; use independent backup/restore domains in production"
+                );
+            }
+            eprintln!(
+                "warning: local SQLite issuer rollback authority is development/test-only; production requires --remote-rollback-authority-config"
+            );
+            let authority =
+                SqliteIssuerRollbackFloorAuthorityV1::create(&authority_path, options.busy_timeout)
+                    .map_err(|error| {
+                        incomplete_init_error_for_authority_v1(
+                            "create rollback authority",
+                            &store_path,
+                            &authority_path,
+                            false,
+                            &error.to_string(),
+                        )
+                    })?;
+            set_owner_only_database_file_v1(&authority_path).map_err(|error| {
+                incomplete_init_error_for_authority_v1(
+                    "secure rollback authority permissions",
                     &store_path,
                     &authority_path,
-                    &error.to_string(),
+                    false,
+                    &error,
                 )
-            })?,
-    );
-    set_owner_only_database_file_v1(&authority_path).map_err(|error| {
-        incomplete_init_error_v1(
-            "secure rollback authority permissions",
-            &store_path,
-            &authority_path,
-            &error,
-        )
-    })?;
-    validate_existing_private_database_path(&authority_path, "issuer rollback authority").map_err(
-        |error| {
-            incomplete_init_error_v1(
-                "self-check rollback authority ownership/path",
-                &store_path,
-                &authority_path,
-                &error,
-            )
-        },
-    )?;
+            })?;
+            validate_existing_private_database_path(&authority_path, "issuer rollback authority")
+                .map_err(|error| {
+                incomplete_init_error_for_authority_v1(
+                    "self-check rollback authority ownership/path",
+                    &store_path,
+                    &authority_path,
+                    false,
+                    &error,
+                )
+            })?;
+            (Arc::new(authority), authority_path, false)
+        }
+        IssuerRollbackAuthoritySelectionV1::Remote(config_path) => (
+            load_remote_issuer_rollback_authority_v1(config_path, issuer_id, network)?,
+            config_path.to_path_buf(),
+            true,
+        ),
+    };
     let store = IssuerStore::create(
         &store_path,
         store_instance_id,
         issuer_id,
-        args.network.into(),
+        network,
         options,
         authority.clone(),
     )
     .map_err(|error| {
-        incomplete_init_error_v1(
+        incomplete_init_error_for_authority_v1(
             "create issuer store",
             &store_path,
-            &authority_path,
+            &authority_reference,
+            remote_authority,
             &error.to_string(),
         )
     })?;
     set_owner_only_database_file_v1(&store_path).map_err(|error| {
-        incomplete_init_error_v1(
+        incomplete_init_error_for_authority_v1(
             "secure issuer store permissions",
             &store_path,
-            &authority_path,
+            &authority_reference,
+            remote_authority,
             &error,
         )
     })?;
     validate_existing_private_database_path(&store_path, "issuer store").map_err(|error| {
-        incomplete_init_error_v1(
+        incomplete_init_error_for_authority_v1(
             "self-check issuer store ownership/path",
             &store_path,
-            &authority_path,
+            &authority_reference,
+            remote_authority,
             &error,
         )
     })?;
-    if private_database_paths_alias_v1(&store_path, &authority_path).map_err(|error| {
-        incomplete_init_error_v1(
+    if !remote_authority
+        && private_database_paths_alias_v1(&store_path, &authority_reference).map_err(|error| {
+            incomplete_init_error_for_authority_v1(
+                "self-check store/authority aliases",
+                &store_path,
+                &authority_reference,
+                false,
+                &error,
+            )
+        })?
+    {
+        return Err(incomplete_init_error_for_authority_v1(
             "self-check store/authority aliases",
             &store_path,
-            &authority_path,
-            &error,
-        )
-    })? {
-        return Err(incomplete_init_error_v1(
-            "self-check store/authority aliases",
-            &store_path,
-            &authority_path,
+            &authority_reference,
+            false,
             "store and rollback authority resolve to the same file/inode",
         ));
     }
 
     let identity = store.identity().map_err(|error| {
-        incomplete_init_error_v1(
+        incomplete_init_error_for_authority_v1(
             "read back issuer store identity",
             &store_path,
-            &authority_path,
+            &authority_reference,
+            remote_authority,
             &error.to_string(),
         )
     })?;
     if identity.store_instance_id != store_instance_id
         || identity.issuer_id != issuer_id
-        || identity.network != args.network.into()
+        || identity.network != network
         || identity.commit_seq != 0
         || identity.rollback_parent_commitment != [0; 32]
         || identity.status_time_floor != 0
         || identity.schema_version != ISSUER_STORE_SCHEMA_VERSION
     {
-        return Err(incomplete_init_error_v1(
+        return Err(incomplete_init_error_for_authority_v1(
             "exact new-store identity self-check",
             &store_path,
-            &authority_path,
+            &authority_reference,
+            remote_authority,
             "new issuer store identity is not the expected generation-zero state",
         ));
     }
@@ -824,45 +1029,49 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
 
     // Initialization succeeds only when the same production open-existing
     // path accepts both exact files after every creation handle is dropped.
-    let reopened_authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::open_existing(&authority_path, options.busy_timeout)
-            .map_err(|error| {
-                incomplete_init_error_v1(
-                    "reopen rollback authority",
-                    &store_path,
-                    &authority_path,
-                    &error.to_string(),
-                )
-            })?,
-    );
-    let reopened = IssuerStore::open_existing(
+    let reopened_authority = open_existing_issuer_rollback_authority_v1(
         &store_path,
+        (!remote_authority).then_some(authority_reference.as_path()),
+        remote_authority.then_some(authority_reference.as_path()),
         issuer_id,
-        args.network.into(),
-        options,
-        reopened_authority,
+        network,
+        options.busy_timeout,
     )
     .map_err(|error| {
-        incomplete_init_error_v1(
-            "reopen issuer store",
+        incomplete_init_error_for_authority_v1(
+            "reopen rollback authority",
             &store_path,
-            &authority_path,
-            &error.to_string(),
+            &authority_reference,
+            remote_authority,
+            &error,
         )
     })?;
+    let reopened =
+        IssuerStore::open_existing(&store_path, issuer_id, network, options, reopened_authority)
+            .map_err(|error| {
+                incomplete_init_error_for_authority_v1(
+                    "reopen issuer store",
+                    &store_path,
+                    &authority_reference,
+                    remote_authority,
+                    &error.to_string(),
+                )
+            })?;
     if reopened.identity().map_err(|error| {
-        incomplete_init_error_v1(
+        incomplete_init_error_for_authority_v1(
             "read reopened issuer store identity",
             &store_path,
-            &authority_path,
+            &authority_reference,
+            remote_authority,
             &error.to_string(),
         )
     })? != identity
     {
-        return Err(incomplete_init_error_v1(
+        return Err(incomplete_init_error_for_authority_v1(
             "reopened identity self-check",
             &store_path,
-            &authority_path,
+            &authority_reference,
+            remote_authority,
             "issuer store identity changed across reopen",
         ));
     }
@@ -871,11 +1080,27 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
     println!("store_instance_id={}", hex::encode(store_instance_id));
     println!("schema_version={ISSUER_STORE_SCHEMA_VERSION}");
     println!("store={}", store_path.display());
-    println!("rollback_authority={}", authority_path.display());
+    println!(
+        "rollback_authority_mode={}",
+        if remote_authority {
+            "remote"
+        } else {
+            "local-test"
+        }
+    );
+    if remote_authority {
+        println!("rollback_authority_reference=[remote-config-redacted]");
+    } else {
+        println!(
+            "rollback_authority_reference={}",
+            authority_reference.display()
+        );
+    }
     Ok(())
 }
 
 enum BackendConfigV1 {
+    #[cfg(any(test, feature = "test-only-fake-lightning"))]
     Fake {
         signing_key: PathBuf,
         derivation_seed: PathBuf,
@@ -891,6 +1116,7 @@ enum BackendConfigV1 {
 impl BackendConfigV1 {
     const fn mode_name(&self) -> &'static str {
         match self {
+            #[cfg(any(test, feature = "test-only-fake-lightning"))]
             Self::Fake { .. } => "fake",
             #[cfg(unix)]
             Self::CoreLightning { .. } => "cln",
@@ -898,6 +1124,7 @@ impl BackendConfigV1 {
     }
 }
 
+#[cfg(any(test, feature = "test-only-fake-lightning"))]
 fn serve_fake(args: ServeFakeArgs) -> Result<(), String> {
     serve_with_backend(
         args.common,
@@ -923,17 +1150,59 @@ fn serve_cln(args: ServeClnArgs) -> Result<(), String> {
     )
 }
 
+fn validate_serving_rollback_authority_mode_v1(
+    local: bool,
+    remote: bool,
+    allow_local_dev: bool,
+    fake_mode: bool,
+) -> Result<(), String> {
+    match (local, remote, allow_local_dev, fake_mode) {
+        (false, false, _, _) | (true, true, _, _) => {
+            return Err(
+                "exactly one local or remote rollback authority must be configured".to_owned(),
+            );
+        }
+        (true, false, false, false) => {
+            return Err(
+                "serve-cln with local SQLite rollback state requires --allow-local-rollback-authority-dev; production must use --remote-rollback-authority-config"
+                    .to_owned(),
+            );
+        }
+        (false, true, true, _) => {
+            return Err(
+                "--allow-local-rollback-authority-dev cannot accompany a remote rollback authority"
+                    .to_owned(),
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn serve_with_backend(
     args: ServeCommonArgs,
     backend_config: BackendConfigV1,
 ) -> Result<(), String> {
     validate_loopback_bind(args.bind)?;
+    let fake_mode = match &backend_config {
+        #[cfg(any(test, feature = "test-only-fake-lightning"))]
+        BackendConfigV1::Fake { .. } => true,
+        #[cfg(unix)]
+        BackendConfigV1::CoreLightning { .. } => false,
+    };
+    validate_serving_rollback_authority_mode_v1(
+        args.rollback_authority.is_some(),
+        args.remote_rollback_authority_config.is_some(),
+        args.allow_local_rollback_authority_dev,
+        fake_mode,
+    )?;
     if !args.allow_experimental_arc && !args.arc_keys.is_empty() {
         return Err(
             "experimental ARC key configuration requires explicit --allow-experimental-arc; ARC is unaudited and production-disabled"
                 .to_owned(),
         );
     }
+
     if args.max_connections == 0 || args.max_connections > 4_096 {
         return Err("--max-connections must be in 1..=4096".to_owned());
     }
@@ -1031,44 +1300,6 @@ fn serve_with_backend(
         }
         retained_quote_materials.push(material);
     }
-    let options = StoreOptions::default();
-    let canonical_store = validate_existing_private_database_path(&args.store, "issuer store")?;
-    let canonical_authority = validate_existing_private_database_path(
-        &args.rollback_authority,
-        "issuer rollback authority",
-    )?;
-    if private_database_paths_alias_v1(&canonical_store, &canonical_authority)? {
-        return Err("store and rollback authority resolve to the same file/inode".to_owned());
-    }
-    let store_startup_check_started = Instant::now();
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::open_existing(
-            &canonical_authority,
-            options.busy_timeout,
-        )
-        .map_err(|error| format!("open rollback authority failed: {error}"))?,
-    );
-    let store = IssuerStore::open_existing(
-        &canonical_store,
-        delegation.issuer_id,
-        delegation.network,
-        options,
-        authority,
-    )
-    .map_err(|error| format!("open issuer store failed: {error}"))?;
-    let store_inventory = store
-        .operational_inventory()
-        .map_err(|error| format!("read issuer store operational inventory failed: {error}"))?;
-    println!(
-        "issuer_store_startup_check_ms={} commit_seq={} quote_rows={} claim_rows={} retained_policy_rows={} redemption_rows={} payout_rows={}",
-        store_startup_check_started.elapsed().as_millis(),
-        store_inventory.observed_commit_seq,
-        store_inventory.quote_rows,
-        store_inventory.claim_rows,
-        store_inventory.retained_policy_rows,
-        store_inventory.redemption_rows,
-        store_inventory.payout_rows,
-    );
 
     let now_unix = system_time_unix()?;
     delegation
@@ -1080,6 +1311,83 @@ fn serve_with_backend(
             now_unix,
         )
         .map_err(|_| "current quote delegation is not authentic and live".to_owned())?;
+
+    // Validate the configured payment backend before opening or mutating the
+    // issuer store. In particular, a wrong CLN socket, node identity or network
+    // must not advance retained-policy or key-lineage state on a failed start.
+    let backend_mode = backend_config.mode_name();
+    let lightning = match backend_config {
+        #[cfg(any(test, feature = "test-only-fake-lightning"))]
+        BackendConfigV1::Fake {
+            signing_key,
+            derivation_seed,
+        } => {
+            let mut lightning_secret =
+                read_secret_exact::<32>(&signing_key, "fake Lightning signing key")?;
+            let mut lightning_seed =
+                read_secret_exact::<32>(&derivation_seed, "fake Lightning derivation seed")?;
+            let created = FakeLightningNodeV1::new(
+                delegation.network,
+                lightning_secret,
+                lightning_seed,
+                now_unix,
+            );
+            lightning_secret.zeroize();
+            lightning_seed.zeroize();
+            let fake =
+                Arc::new(created.map_err(|_| "fake Lightning key or seed is invalid".to_owned())?);
+            if fake.payee_pubkey() != delegation.expected_payee_pubkey {
+                return Err("fake Lightning payee does not match quote delegation".to_owned());
+            }
+            Arc::new(RuntimeLightningBackendV1::Fake(fake))
+        }
+        #[cfg(unix)]
+        BackendConfigV1::CoreLightning {
+            socket_path,
+            socket_policy,
+            timeout,
+        } => {
+            let transport = UnixClnRpcTransportV1::new(socket_path, socket_policy, timeout)
+                .map_err(|_| "Core Lightning RPC socket configuration is invalid".to_owned())?;
+            let backend = CoreLightningBackendV1::new(transport);
+            backend
+                .verify_node_identity(&delegation.expected_payee_pubkey, delegation.network)
+                .map_err(|error| {
+                    format!(
+                        "Core Lightning RPC node identity or network does not match quote delegation: {error}"
+                    )
+                })?;
+            Arc::new(RuntimeLightningBackendV1::CoreLightning(backend))
+        }
+    };
+
+    let options = StoreOptions::default();
+    let canonical_store = validate_existing_private_database_path(&args.store, "issuer store")?;
+    let store_startup_check_started = Instant::now();
+    let authority = open_existing_issuer_rollback_authority_v1(
+        &canonical_store,
+        args.rollback_authority.as_deref(),
+        args.remote_rollback_authority_config.as_deref(),
+        delegation.issuer_id,
+        delegation.network,
+        options.busy_timeout,
+    )?;
+    let store = IssuerStore::open_existing(
+        &canonical_store,
+        delegation.issuer_id,
+        delegation.network,
+        options,
+        authority,
+    )
+    .map_err(|error| format!("open issuer store failed: {error}"))?;
+    let _store_inventory = store
+        .operational_inventory()
+        .map_err(|error| format!("read issuer store operational inventory failed: {error}"))?;
+    println!(
+        "issuer_store_startup_check=ok elapsed_ms={}",
+        store_startup_check_started.elapsed().as_millis(),
+    );
+
     let mut policy_registrations = Vec::with_capacity(args.service_policies.len());
     let mut configured_arc_usage = ExperimentalArcIssuerPolicyUsageV1::default();
     for spec in &args.service_policies {
@@ -1149,57 +1457,6 @@ fn serve_with_backend(
         policies.push(policy);
     }
 
-    let backend_mode = backend_config.mode_name();
-    let (lightning, fake_lightning) = match backend_config {
-        BackendConfigV1::Fake {
-            signing_key,
-            derivation_seed,
-        } => {
-            let mut lightning_secret =
-                read_secret_exact::<32>(&signing_key, "fake Lightning signing key")?;
-            let mut lightning_seed =
-                read_secret_exact::<32>(&derivation_seed, "fake Lightning derivation seed")?;
-            let created = FakeLightningNodeV1::new(
-                delegation.network,
-                lightning_secret,
-                lightning_seed,
-                now_unix,
-            );
-            lightning_secret.zeroize();
-            lightning_seed.zeroize();
-            let fake =
-                Arc::new(created.map_err(|_| "fake Lightning key or seed is invalid".to_owned())?);
-            if fake.payee_pubkey() != delegation.expected_payee_pubkey {
-                return Err("fake Lightning payee does not match quote delegation".to_owned());
-            }
-            (
-                Arc::new(RuntimeLightningBackendV1::Fake(Arc::clone(&fake))),
-                Some(fake),
-            )
-        }
-        #[cfg(unix)]
-        BackendConfigV1::CoreLightning {
-            socket_path,
-            socket_policy,
-            timeout,
-        } => {
-            let transport = UnixClnRpcTransportV1::new(socket_path, socket_policy, timeout)
-                .map_err(|_| "Core Lightning RPC socket configuration is invalid".to_owned())?;
-            let backend = CoreLightningBackendV1::new(transport);
-            backend
-                .verify_node_identity(&delegation.expected_payee_pubkey, delegation.network)
-                .map_err(|error| {
-                    format!(
-                        "Core Lightning RPC node identity or network does not match quote delegation: {error}"
-                    )
-                })?;
-            (
-                Arc::new(RuntimeLightningBackendV1::CoreLightning(backend)),
-                None,
-            )
-        }
-    };
-
     let mut receipt_keys = Vec::with_capacity(args.receipt_signing_keys.len());
     for path in &args.receipt_signing_keys {
         let mut bytes = read_secret_exact::<32>(path, "receipt signing key")?;
@@ -1242,7 +1499,12 @@ fn serve_with_backend(
         quote_delegations,
         clearing,
         store,
-        fake_lightning,
+        #[cfg(any(test, feature = "test-only-fake-lightning"))]
+        fake_lightning: match lightning.as_ref() {
+            RuntimeLightningBackendV1::Fake(fake) => Some(Arc::clone(fake)),
+            #[cfg(unix)]
+            RuntimeLightningBackendV1::CoreLightning(_) => None,
+        },
         allow_origin: args.allow_origin,
         quote_rate,
         status_rate,
@@ -1731,7 +1993,13 @@ struct ParsedRequest {
     path: String,
     content_type: Option<String>,
     origin: Option<String>,
-    body: Vec<u8>,
+    body: Zeroizing<Vec<u8>>,
+}
+
+impl Drop for ParsedRequest {
+    fn drop(&mut self) {
+        self.path.zeroize();
+    }
 }
 
 fn handle_connection(mut stream: TcpStream, state: &ServerState) {
@@ -1777,11 +2045,12 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
         let response = route_get_request(state, &request);
         match response {
             Ok((content_type, body)) => {
+                let body = Zeroizing::new(body);
                 let _ = write_response(
                     &mut stream,
                     200,
                     content_type,
-                    &body,
+                    body.as_slice(),
                     state.allow_origin.as_deref(),
                 );
             }
@@ -1799,11 +2068,12 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
     let response = route_request(state, &request);
     match response {
         Ok((content_type, body)) => {
+            let body = Zeroizing::new(body);
             let _ = write_response(
                 &mut stream,
                 200,
                 content_type,
-                &body,
+                body.as_slice(),
                 state.allow_origin.as_deref(),
             );
         }
@@ -1948,6 +2218,7 @@ fn route_request(
                 .payout_status(&request.body, now_unix)
                 .map(|body| (CT_PAYOUT_STATUS_RESPONSE, body))
         }
+        #[cfg(any(test, feature = "test-only-fake-lightning"))]
         "/__test/fake/settle" => {
             // This route must be indistinguishable from an unknown path in
             // production mode, before validating any test-only payload.
@@ -2067,14 +2338,17 @@ fn parse_quote_key_path(path: &str) -> Option<[u8; 16]> {
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<ParsedRequest, IssuerServiceErrorV1> {
-    let mut bytes = Vec::with_capacity(2048);
+    // A single read may include the beginning of a credential-bearing body.
+    // Reserve the complete bounded header plus one read chunk up front so
+    // growth never frees an old allocation containing that body prefix.
+    let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_HEADER_BYTES + 2048));
     let header_end = loop {
         if bytes.len() >= MAX_HEADER_BYTES {
             return Err(IssuerServiceErrorV1::InvalidRequest);
         }
-        let mut chunk = [0u8; 2048];
+        let mut chunk = Zeroizing::new([0u8; 2048]);
         let read = stream
-            .read(&mut chunk)
+            .read(&mut chunk[..])
             .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
         if read == 0 {
             return Err(IssuerServiceErrorV1::InvalidRequest);
@@ -2105,11 +2379,13 @@ fn read_request(stream: &mut TcpStream) -> Result<ParsedRequest, IssuerServiceEr
         .filter(|value| matches!(*value, "GET" | "POST" | "OPTIONS"))
         .ok_or(IssuerServiceErrorV1::InvalidRequest)?
         .to_owned();
-    let path = parsed
-        .path
-        .filter(|value| value.starts_with('/') && !value.contains('?') && value.is_ascii())
-        .ok_or(IssuerServiceErrorV1::InvalidRequest)?
-        .to_owned();
+    let mut path = Zeroizing::new(
+        parsed
+            .path
+            .filter(|value| value.starts_with('/') && !value.contains('?') && value.is_ascii())
+            .ok_or(IssuerServiceErrorV1::InvalidRequest)?
+            .to_owned(),
+    );
     let mut content_length = None;
     let mut content_type = None;
     let mut origin = None;
@@ -2152,7 +2428,7 @@ fn read_request(stream: &mut TcpStream) -> Result<ParsedRequest, IssuerServiceEr
     if already > body_len {
         return Err(IssuerServiceErrorV1::InvalidRequest);
     }
-    let mut body = Vec::with_capacity(body_len);
+    let mut body = Zeroizing::new(Vec::with_capacity(body_len));
     body.extend_from_slice(&bytes[header_end..]);
     body.resize(body_len, 0);
     if already < body_len {
@@ -2162,7 +2438,7 @@ fn read_request(stream: &mut TcpStream) -> Result<ParsedRequest, IssuerServiceEr
     }
     Ok(ParsedRequest {
         method,
-        path,
+        path: std::mem::take(&mut *path),
         content_type,
         origin,
         body,
@@ -2374,144 +2650,39 @@ fn incomplete_init_error_v1(
     )
 }
 
-/// Resolve a not-yet-created SQLite path through its canonical parent. The
-/// private parent is the single-user mutation boundary protecting the main DB
-/// and SQLite's `-wal`/`-shm` sidecars from path replacement or disclosure.
+fn incomplete_init_error_for_authority_v1(
+    stage: &str,
+    store_path: &Path,
+    authority_reference: &Path,
+    remote: bool,
+    error: &str,
+) -> String {
+    if !remote {
+        return incomplete_init_error_v1(stage, store_path, authority_reference, error);
+    }
+    format!(
+        "{stage} failed: {error}; remote issuer-store initialization is incomplete and the configured authority namespace may already be bound to store {}; never reset/delete the authority or retry with a different --store-instance-id-hex; inspect the local store and remote namespace, then recover/check using the exact same config and store instance ID or retire the namespace through an explicit offline rotation ceremony",
+        store_path.display(),
+    )
+}
+
+/// Resolve a not-yet-created SQLite path through a pinned, symlink-free parent
+/// walk. The final private parent protects the main DB and SQLite's
+/// `-wal`/`-shm` sidecars from path replacement or disclosure.
 fn prepare_new_private_database_path(path: &Path, label: &str) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| format!("{label} path is not a file path: {}", path.display()))?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent_was_missing = match fs::symlink_metadata(parent) {
-        Ok(_) => false,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) => {
-            return Err(format!(
-                "inspect {label} parent {} failed: {error}",
-                parent.display()
-            ))
-        }
-    };
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("create {label} parent {} failed: {error}", parent.display()))?;
-    if parent_was_missing {
-        set_private_database_directory_v1(parent, label)?;
-    }
-    let canonical_parent = parent.canonicalize().map_err(|error| {
-        format!(
-            "resolve {label} parent {} failed: {error}",
-            parent.display()
-        )
-    })?;
-    ensure_private_database_directory_v1(&canonical_parent, label)?;
-    let canonical = canonical_parent.join(file_name);
-    match fs::symlink_metadata(&canonical) {
-        Ok(_) => Err(format!(
-            "{label} {} already exists; init-store never overwrites or adopts files",
-            canonical.display()
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(canonical),
-        Err(error) => Err(format!(
-            "inspect {label} {} failed: {error}",
-            canonical.display()
-        )),
-    }
+    pir_private_files::prepare_new_private_file_v1(path, true, label)
 }
 
-/// Validate an existing sensitive SQLite file and return a canonical-parent
-/// path. Requiring an owner-only parent makes the subsequent SQLite open and
-/// sidecar creation safe against other local users; the final component is
-/// independently required to be a real owner-only file.
+/// Validate an existing sensitive SQLite file and return its normalized path.
+/// The shared checker pins every ancestor, requires a private final parent and
+/// independently requires a single-link real owner-only final file.
 fn validate_existing_private_database_path(path: &Path, label: &str) -> Result<PathBuf, String> {
-    let configured = fs::symlink_metadata(path).map_err(|error| {
-        format!(
-            "inspect configured {label} {} failed: {error}",
-            path.display()
-        )
-    })?;
-    if configured.file_type().is_symlink() || !configured.file_type().is_file() {
-        return Err(format!(
-            "configured {label} must be a non-symlink regular file: {}",
-            path.display()
-        ));
-    }
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| format!("{label} path is not a file path: {}", path.display()))?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let canonical_parent = parent.canonicalize().map_err(|error| {
-        format!(
-            "resolve {label} parent {} failed: {error}",
-            parent.display()
-        )
-    })?;
-    ensure_private_database_directory_v1(&canonical_parent, label)?;
-    let canonical = canonical_parent.join(file_name);
-    let resolved = fs::symlink_metadata(&canonical).map_err(|error| {
-        format!(
-            "inspect resolved {label} {} failed: {error}",
-            canonical.display()
-        )
-    })?;
-    if resolved.file_type().is_symlink() || !resolved.file_type().is_file() {
-        return Err(format!(
-            "resolved {label} must be a non-symlink regular file: {}",
-            canonical.display()
-        ));
-    }
-    ensure_private_database_file_metadata_v1(&resolved, &canonical, label)?;
-    ensure_same_resolved_file_v1(&configured, &resolved, label)?;
-    Ok(canonical)
-}
-
-#[cfg(unix)]
-fn set_private_database_directory_v1(path: &Path, label: &str) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| {
-        format!(
-            "set private {label} parent permissions on {} failed: {error}",
-            path.display()
-        )
-    })
-}
-
-#[cfg(not(unix))]
-fn set_private_database_directory_v1(_path: &Path, label: &str) -> Result<(), String> {
-    Err(format!(
-        "{label} is unsupported on non-Unix platforms because owner-only SQLite directory permissions cannot be enforced"
-    ))
-}
-
-#[cfg(unix)]
-fn ensure_private_database_directory_v1(path: &Path, label: &str) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("inspect {label} parent {} failed: {error}", path.display()))?;
-    if metadata.file_type().is_symlink()
-        || !metadata.file_type().is_dir()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o777 != 0o700
-    {
-        return Err(format!(
-            "{label} parent must be a real directory owned by the effective user with mode 0700: {}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_private_database_directory_v1(path: &Path, label: &str) -> Result<(), String> {
-    Err(format!(
-        "{label} parent {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
-        path.display()
-    ))
+    pir_private_files::checked_existing_private_file_v1(
+        path,
+        pir_private_files::PrivateFileModeV1::ReadWrite,
+        label,
+    )
+    .map(|checked| checked.path().to_path_buf())
 }
 
 #[cfg(unix)]
@@ -2530,66 +2701,6 @@ fn set_owner_only_database_file_v1(path: &Path) -> Result<(), String> {
     Err(format!(
         "sensitive SQLite file {} is unsupported on non-Unix platforms because mode 0600 cannot be enforced",
         path.display()
-    ))
-}
-
-#[cfg(unix)]
-fn ensure_private_database_file_metadata_v1(
-    metadata: &fs::Metadata,
-    path: &Path,
-    label: &str,
-) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    if metadata.uid() != rustix::process::geteuid().as_raw() {
-        return Err(format!(
-            "{label} must be owned by the effective user: {}",
-            path.display()
-        ));
-    }
-    if metadata.mode() & 0o777 != 0o600 {
-        return Err(format!(
-            "{label} must have mode 0600 (invoice/payment and rollback state is sensitive): {}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_private_database_file_metadata_v1(
-    _metadata: &fs::Metadata,
-    path: &Path,
-    label: &str,
-) -> Result<(), String> {
-    Err(format!(
-        "{label} {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
-        path.display()
-    ))
-}
-
-#[cfg(unix)]
-fn ensure_same_resolved_file_v1(
-    configured: &fs::Metadata,
-    resolved: &fs::Metadata,
-    label: &str,
-) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    if configured.dev() != resolved.dev() || configured.ino() != resolved.ino() {
-        return Err(format!(
-            "configured {label} changed while its canonical parent was resolved"
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_same_resolved_file_v1(
-    _configured: &fs::Metadata,
-    _resolved: &fs::Metadata,
-    label: &str,
-) -> Result<(), String> {
-    Err(format!(
-        "{label} is unsupported on non-Unix platforms because file identity checks cannot be enforced"
     ))
 }
 
@@ -2644,79 +2755,7 @@ fn read_public_file(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, Str
 }
 
 fn read_secret_exact<const N: usize>(path: &Path, label: &str) -> Result<[u8; N], String> {
-    #[cfg(unix)]
-    {
-        read_secret_exact_unix(path, label)
-    }
-
-    #[cfg(not(unix))]
-    {
-        let metadata = fs::symlink_metadata(path)
-            .map_err(|error| format!("read {label} metadata failed: {error}"))?;
-        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-            return Err(format!("{label} must be a non-symlink regular file"));
-        }
-        if metadata.len() != N as u64 {
-            return Err(format!("{label} must contain exactly {N} raw bytes"));
-        }
-        let mut bytes = fs::read(path).map_err(|error| format!("read {label} failed: {error}"))?;
-        if bytes.len() != N {
-            bytes.zeroize();
-            return Err(format!("{label} changed while it was read"));
-        }
-        let result = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| format!("{label} is not exactly {N} bytes"));
-        bytes.zeroize();
-        result
-    }
-}
-
-#[cfg(unix)]
-fn read_secret_exact_unix<const N: usize>(path: &Path, label: &str) -> Result<[u8; N], String> {
-    use rustix::fs::{self, FileType, Mode, OFlags};
-
-    // O_NOFOLLOW makes the single open reject a symlink. fstat below and both
-    // reads operate on this exact descriptor, never on the path again.
-    let fd = fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| format!("read {label} failed: {error}"))?;
-    let stat = fs::fstat(&fd).map_err(|error| format!("inspect open {label} failed: {error}"))?;
-    if !FileType::from_raw_mode(stat.st_mode).is_file() {
-        return Err(format!("{label} must be a regular file"));
-    }
-    if stat.st_uid != rustix::process::geteuid().as_raw() {
-        return Err(format!("{label} must be owned by the effective user"));
-    }
-    if stat.st_mode & 0o077 != 0 {
-        return Err(format!("{label} must not be group/world accessible"));
-    }
-    if u64::try_from(stat.st_size).ok() != Some(N as u64) {
-        return Err(format!("{label} must contain exactly {N} raw bytes"));
-    }
-
-    let mut file = std::fs::File::from(fd);
-    let mut bytes = [0u8; N];
-    if let Err(error) = file.read_exact(&mut bytes) {
-        bytes.zeroize();
-        return Err(format!("read {label} failed: {error}"));
-    }
-    let mut extra = [0u8; 1];
-    match file.read(&mut extra) {
-        Ok(0) => Ok(bytes),
-        Ok(_) => {
-            bytes.zeroize();
-            Err(format!("{label} changed while it was read"))
-        }
-        Err(error) => {
-            bytes.zeroize();
-            Err(format!("read {label} failed: {error}"))
-        }
-    }
+    pir_private_files::read_exact_private_file_v1(path, label)
 }
 
 #[cfg(test)]
@@ -2854,7 +2893,7 @@ mod tests {
 
     impl SettlementHttpFixture {
         fn new() -> Self {
-            let directory = tempfile::tempdir().expect("settlement HTTP directory");
+            let directory = private_tempdir();
             let store_path = directory.path().join("issuer.sqlite3");
             let rollback_path = directory.path().join("issuer-floor.sqlite3");
             let now_unix = system_time_unix().expect("system clock");
@@ -2941,6 +2980,8 @@ mod tests {
                     authorization_epoch: 1,
                     provider_id: SETTLEMENT_HTTP_PROVIDER_ID,
                     issuer_id,
+                    redeem_endpoint: "https://issuer.test.invalid".to_owned(),
+                    redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
                     settlement_account_id: SETTLEMENT_HTTP_ACCOUNT_ID,
                     clearing_verifying_key: clearing.verifying_key().to_bytes(),
                     not_before,
@@ -3654,6 +3695,109 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cli.command, Command::CheckStore(_)));
+
+        let remote = Cli::try_parse_from([
+            "payment-issuer",
+            "check-store",
+            "--store",
+            "/private/issuer.sqlite3",
+            "--remote-rollback-authority-config",
+            "/private/remote-authority.toml",
+            "--issuer-id-hex",
+            &hex::encode([0x11_u8; 32]),
+            "--network",
+            "regtest",
+        ])
+        .unwrap();
+        assert!(matches!(remote.command, Command::CheckStore(_)));
+
+        for invalid in [
+            vec![
+                "payment-issuer",
+                "check-store",
+                "--store",
+                "/private/issuer.sqlite3",
+                "--issuer-id-hex",
+                "11",
+                "--network",
+                "regtest",
+            ],
+            vec![
+                "payment-issuer",
+                "check-store",
+                "--store",
+                "/private/issuer.sqlite3",
+                "--rollback-authority",
+                "/private/local.sqlite3",
+                "--remote-rollback-authority-config",
+                "/private/remote.toml",
+                "--issuer-id-hex",
+                "11",
+                "--network",
+                "regtest",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn serving_local_floor_requires_explicit_dev_boundary_except_fake_mode() {
+        assert!(validate_serving_rollback_authority_mode_v1(true, false, false, true).is_ok());
+        assert!(validate_serving_rollback_authority_mode_v1(true, false, true, false).is_ok());
+        assert!(validate_serving_rollback_authority_mode_v1(false, true, false, false).is_ok());
+        assert!(
+            validate_serving_rollback_authority_mode_v1(true, false, false, false)
+                .unwrap_err()
+                .contains("allow-local")
+        );
+        assert!(
+            validate_serving_rollback_authority_mode_v1(false, true, true, false)
+                .unwrap_err()
+                .contains("cannot accompany")
+        );
+        assert!(validate_serving_rollback_authority_mode_v1(false, false, false, true).is_err());
+        assert!(validate_serving_rollback_authority_mode_v1(true, true, false, true).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_store_init_requires_explicit_recoverable_instance_id() {
+        let root = tempfile::tempdir().unwrap();
+        let store_parent = root.path().join("issuer-domain");
+        private_directory(&store_parent);
+        let base = InitStoreArgs {
+            store: store_parent.join("issuer.sqlite3"),
+            rollback_authority: None,
+            remote_rollback_authority_config: Some(root.path().join("remote.toml")),
+            store_instance_id_hex: None,
+            issuer_id_hex: hex::encode([0x55; 32]),
+            network: NetworkArg::Regtest,
+        };
+        assert!(init_store(base)
+            .unwrap_err()
+            .contains("requires --store-instance-id-hex"));
+
+        let mut local = init_args(root.path());
+        local.store_instance_id_hex = Some(hex::encode([0x22; 16]));
+        assert!(init_store(local)
+            .unwrap_err()
+            .contains("reserved for remote"));
+    }
+
+    #[test]
+    fn remote_incomplete_init_error_redacts_authority_config_path() {
+        let config = Path::new("/private/issuer-remote-authority.toml");
+        let error = incomplete_init_error_for_authority_v1(
+            "reopen issuer store",
+            Path::new("/private/issuer.sqlite3"),
+            config,
+            true,
+            "outcome unknown",
+        );
+        assert!(!error.contains(config.to_str().unwrap()));
+        assert!(error.contains("configured authority namespace"));
+        assert!(error.contains("exact same config"));
     }
 
     #[cfg(unix)]
@@ -3666,6 +3810,7 @@ mod tests {
             "/tmp/issuer.sqlite",
             "--rollback-authority",
             "/tmp/rollback.sqlite",
+            "--allow-local-rollback-authority-dev",
             "--quote-delegation",
             "/tmp/delegation.bin",
             "--quote-signing-key",
@@ -3729,12 +3874,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_loader_rejects_group_or_world_access() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("wide.key");
         write_secret(&path, &[0x22; 32], 0o640);
 
-        let error = read_secret_exact::<32>(&path, "test key").unwrap_err();
-        assert!(error.contains("group/world"));
+        assert!(read_secret_exact::<32>(&path, "test key").is_err());
     }
 
     #[cfg(unix)]
@@ -3751,10 +3895,62 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn secret_loader_rejects_hardlink_and_fifo() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        let hard = dir.path().join("hard.key");
+        write_secret(&path, &[0x45; 32], 0o600);
+        fs::hard_link(&path, &hard).unwrap();
+        assert!(read_secret_exact::<32>(&path, "test key").is_err());
+        fs::remove_file(&hard).unwrap();
+
+        let fifo = dir.path().join("fifo.key");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        fs::set_permissions(&fifo, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(read_secret_exact::<32>(&fifo, "test key").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn secret_loader_rejects_extended_acl() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        write_secret(&path, &[0x46; 32], 0o600);
+        assert!(Command::new("chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        assert!(read_secret_exact::<32>(&path, "test key").is_err());
+    }
+
+    #[cfg(unix)]
     fn private_directory(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         fs::create_dir_all(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    fn private_tempdir() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().expect("private temporary directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+                .expect("secure private temporary directory");
+        }
+        directory
     }
 
     #[cfg(unix)]
@@ -3765,7 +3961,9 @@ mod tests {
         private_directory(&authority_parent);
         InitStoreArgs {
             store: store_parent.join("issuer.sqlite3"),
-            rollback_authority: authority_parent.join("floor.sqlite3"),
+            rollback_authority: Some(authority_parent.join("floor.sqlite3")),
+            remote_rollback_authority_config: None,
+            store_instance_id_hex: None,
             issuer_id_hex: hex::encode([0x55; 32]),
             network: NetworkArg::Regtest,
         }
@@ -3779,7 +3977,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let args = init_args(directory.path());
         let store = args.store.clone();
-        let authority = args.rollback_authority.clone();
+        let authority = args.rollback_authority.clone().unwrap();
         init_store(args).unwrap();
 
         for path in [&store, &authority] {
@@ -3811,14 +4009,16 @@ mod tests {
 
         check_store(StoreCheckArgs {
             store: store.clone(),
-            rollback_authority: authority.clone(),
+            rollback_authority: Some(authority.clone()),
+            remote_rollback_authority_config: None,
             issuer_id_hex: hex::encode([0x55; 32]),
             network: NetworkArg::Regtest,
         })
         .unwrap();
         assert!(check_store(StoreCheckArgs {
             store,
-            rollback_authority: authority,
+            rollback_authority: Some(authority),
+            remote_rollback_authority_config: None,
             issuer_id_hex: hex::encode([0x56; 32]),
             network: NetworkArg::Regtest,
         })
@@ -3828,36 +4028,36 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn init_store_rejects_overwrite_public_parent_and_canonical_alias() {
+    fn init_store_rejects_overwrite_public_parent_and_parent_symlink() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let args = init_args(directory.path());
         fs::write(&args.store, b"existing").unwrap();
-        assert!(init_store(args).unwrap_err().contains("never overwrites"));
+        assert!(init_store(args).unwrap_err().contains("already exists"));
 
-        let public_root = tempfile::tempdir().unwrap();
+        let public_root = private_tempdir();
         let mut public = init_args(public_root.path());
         let public_parent = public_root.path().join("public");
         fs::create_dir(&public_parent).unwrap();
         fs::set_permissions(&public_parent, fs::Permissions::from_mode(0o755)).unwrap();
         public.store = public_parent.join("issuer.sqlite3");
-        assert!(init_store(public).unwrap_err().contains("mode 0700"));
+        assert!(init_store(public).is_err());
 
-        let alias_root = tempfile::tempdir().unwrap();
+        let alias_root = private_tempdir();
         let real_parent = alias_root.path().join("real");
         private_directory(&real_parent);
         let alias_parent = alias_root.path().join("alias");
         symlink(&real_parent, &alias_parent).unwrap();
         let alias = InitStoreArgs {
             store: real_parent.join("same.sqlite3"),
-            rollback_authority: alias_parent.join("same.sqlite3"),
+            rollback_authority: Some(alias_parent.join("same.sqlite3")),
+            remote_rollback_authority_config: None,
+            store_instance_id_hex: None,
             issuer_id_hex: hex::encode([0x66; 32]),
             network: NetworkArg::Regtest,
         };
-        assert!(init_store(alias)
-            .unwrap_err()
-            .contains("same canonical target"));
+        assert!(init_store(alias).is_err());
     }
 
     #[cfg(unix)]
@@ -3865,26 +4065,18 @@ mod tests {
     fn serve_path_validation_rejects_symlink_public_mode_and_same_inode() {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let private = directory.path().join("private");
         private_directory(&private);
         let file = private.join("issuer.sqlite3");
         fs::write(&file, b"state").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
-        assert!(
-            validate_existing_private_database_path(&file, "issuer store")
-                .unwrap_err()
-                .contains("mode 0600")
-        );
+        assert!(validate_existing_private_database_path(&file, "issuer store").is_err());
 
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         let link = private.join("issuer-link.sqlite3");
         symlink(&file, &link).unwrap();
-        assert!(
-            validate_existing_private_database_path(&link, "issuer store")
-                .unwrap_err()
-                .contains("non-symlink")
-        );
+        assert!(validate_existing_private_database_path(&link, "issuer store").is_err());
 
         let public = directory.path().join("public");
         fs::create_dir(&public).unwrap();
@@ -3892,26 +4084,21 @@ mod tests {
         let public_file = public.join("issuer.sqlite3");
         fs::write(&public_file, b"state").unwrap();
         fs::set_permissions(&public_file, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(
-            validate_existing_private_database_path(&public_file, "issuer store")
-                .unwrap_err()
-                .contains("mode 0700")
-        );
+        assert!(validate_existing_private_database_path(&public_file, "issuer store").is_err());
 
         let hard_link = private.join("authority.sqlite3");
         fs::hard_link(&file, &hard_link).unwrap();
-        let canonical_file =
-            validate_existing_private_database_path(&file, "issuer store").unwrap();
-        let canonical_hard =
+        assert!(validate_existing_private_database_path(&file, "issuer store").is_err());
+        assert!(
             validate_existing_private_database_path(&hard_link, "issuer rollback authority")
-                .unwrap();
-        assert!(private_database_paths_alias_v1(&canonical_file, &canonical_hard).unwrap());
+                .is_err()
+        );
     }
 
     #[test]
     fn fake_http_quote_claim_issues_one_provider_spendable_receipt() {
         let now = system_time_unix().expect("system clock");
-        let directory = tempfile::tempdir().expect("temporary directory");
+        let directory = private_tempdir();
         let fake_lightning = Arc::new(
             FakeLightningNodeV1::new(
                 LightningNetworkV1::Regtest,

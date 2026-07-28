@@ -147,18 +147,27 @@ pub enum NamespaceCloseOutcome {
 }
 
 /// Input to the short `BEGIN IMMEDIATE` spend transaction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SpendRequest {
     pub namespace_id: [u8; 32],
     pub spend_key: [u8; 32],
     pub now_unix_seconds: u64,
 }
 
+impl std::fmt::Debug for SpendRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SpendRequest")
+            .field("request", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// One provider-local, privacy-preserving fixed-window free-admission attempt.
 ///
 /// `subject` is an HMAC-derived 32-byte cohort identifier. Callers must never
 /// pass raw network addresses or any reversible address representation here.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct FreeIpRateLimitRequestV1 {
     pub subject: [u8; 32],
     pub policy_digest: [u8; 32],
@@ -168,6 +177,15 @@ pub struct FreeIpRateLimitRequestV1 {
     pub window_seconds: u32,
     pub max_buckets: usize,
     pub now_unix_seconds: u64,
+}
+
+impl std::fmt::Debug for FreeIpRateLimitRequestV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FreeIpRateLimitRequestV1")
+            .field("request", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Returned only after SQLite reports a successful durable commit.

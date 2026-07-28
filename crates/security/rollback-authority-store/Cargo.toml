@@ -1,0 +1,26 @@
+[package]
+name = "pir-rollback-authority-store"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Durable SQLite processor for the BitcoinPIR remote rollback authority"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+
+[dependencies]
+ed25519-dalek = "2"
+pir-rollback-authority-protocol = { path = "../rollback-authority-protocol" }
+pir-private-files = { path = "../private-files" }
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

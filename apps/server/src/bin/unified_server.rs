@@ -47,11 +47,10 @@ use std::fs::File;
 use std::io::Read;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
@@ -61,22 +60,26 @@ use pir_arc_adapter::{
     ArcSecretKeyringV1,
 };
 use pir_payment_crypto::K256CashuMintKeyringV1;
+use pir_rollback_authority_client::load_remote_rollback_authority_deployment_for_business_domain_v1;
 use pir_service_protocol::{
-    BackendId as ServiceBackendIdV1, DatasetBindingV1, HarmonyAttachRejectCodeV1,
-    HarmonyAttachResultV1, HarmonyAttachTransitionErrorV1, IssuerClearingApprovalV1,
-    OperationStartV1, ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1,
-    ServicePolicyRequestV1, ServicePolicyResponseV1, ServicePolicyV1, ServiceProtocolError,
-    TrustedCatalogResolutionV1, VerifiedServiceOfferV1, WorkloadId as ServiceWorkloadIdV1,
+    bind_auth_begin_v1, BackendId as ServiceBackendIdV1, DatasetBindingV1,
+    HarmonyAttachRejectCodeV1, HarmonyAttachResultV1, HarmonyAttachTransitionErrorV1,
+    IssuerClearingApprovalV1, OperationStartV1, ProviderClearingAuthorizationV1,
+    ProviderRedeemEnvelopeV1, ServicePolicyRequestV1, ServicePolicyResponseV1, ServicePolicyV1,
+    ServiceProtocolError, TrustedCatalogResolutionV1, VerifiedServiceOfferV1,
+    WorkloadId as ServiceWorkloadIdV1,
 };
 use pir_service_store::{
-    CashuCustodyInventoryV1, ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions,
+    CashuCustodyInventoryV1, ProviderStore, RemoteProviderRollbackFloorAuthorityV1,
+    RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
 };
 use zeroize::{Zeroize, Zeroizing};
 
 use pir_cashu_client::{
     CashuCustodyExposureLimitsV1, CashuMintRouteV1, CashuMintTransportFailureKindV1,
-    CashuMintTransportFailureV1, CashuMintTransportV1, ChaCha20Poly1305CustodyCipherV1,
-    ChaCha20Poly1305RecoveryCipherV1, StandardCashuAdmissionCommitterV1, StandardCashuClientV1,
+    CashuMintTransportFailureV1, CashuMintTransportV1, CashuMintTrustV1,
+    ChaCha20Poly1305CustodyCipherV1, ChaCha20Poly1305RecoveryCipherV1,
+    StandardCashuAdmissionCommitterV1, StandardCashuClientV1,
 };
 use pir_provider_clearing_client::{
     ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1, SharedIssuerRedeemEnvelopeV1,
@@ -87,12 +90,56 @@ use pir_strict_https::{HttpsPostErrorV1, StrictHttpsClientV1};
 /// Detailed per-connection/per-query logging is a privacy-dangerous local
 /// diagnostic mode. Production/default logging must never depend on request
 /// identity, shape, selected database, byte count, or elapsed time.
+#[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
 static UNSAFE_DEBUG_QUERY_LOGGING: AtomicBool = AtomicBool::new(false);
 
+#[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
 macro_rules! unsafe_debug_log {
     ($($arg:tt)*) => {
         if UNSAFE_DEBUG_QUERY_LOGGING.load(Ordering::Relaxed) {
             eprintln!($($arg)*);
+        }
+    };
+}
+
+/// Build a query-derived ORAM diagnostic only in an explicitly unsafe local
+/// diagnostic build *and* only when its runtime switch is enabled. In normal
+/// artifacts the formatting expression (including bin/chunk identifiers and
+/// backend error text) is not compiled at all.
+#[cfg(all(
+    feature = "cuckoo-oram",
+    any(test, feature = "test-only-unsafe-query-logging")
+))]
+macro_rules! unsafe_oram_detail {
+    ($($arg:tt)*) => {{
+        if UNSAFE_DEBUG_QUERY_LOGGING.load(Ordering::Relaxed) {
+            Some(format!($($arg)*))
+        } else {
+            None
+        }
+    }};
+}
+
+#[cfg(all(
+    feature = "cuckoo-oram",
+    not(any(test, feature = "test-only-unsafe-query-logging"))
+))]
+macro_rules! unsafe_oram_detail {
+    ($($arg:tt)*) => {{
+        None::<String>
+    }};
+}
+
+// Keep call sites type-checked and their timing variables non-unused without
+// compiling an output path or runtime switch into normal binaries.
+#[cfg(not(any(test, feature = "test-only-unsafe-query-logging")))]
+macro_rules! unsafe_debug_log {
+    ($($arg:tt)*) => {
+        if false {
+            let _ = format_args!($($arg)*);
         }
     };
 }
@@ -196,6 +243,9 @@ struct CliArgs {
     vcek_dir: Option<PathBuf>,
     /// HarmonyPIR V2 hint pool size (0 = pool disabled, use V1 on-demand).
     pool_size: usize,
+    /// Database ID whose immutable tables back this process's single V2 hint
+    /// pool. One process deliberately owns one pool/database binding.
+    pool_db_id: u8,
     /// Directory for pool file persistence.
     pool_dir: Option<PathBuf>,
     /// Require ARC credential presentation before serving PIR queries.
@@ -222,10 +272,15 @@ struct CliArgs {
     /// live; V1 deliberately has no unauthenticated historical-key list.
     service_provider_id_hex: Option<String>,
     service_policy_key_hex: Option<String>,
-    /// Existing provider spend database and separately restored rollback-floor
-    /// authority database. Startup never creates either implicitly.
+    /// Existing provider spend database. The rollback authority must be exactly
+    /// one local development/test SQLite file or one production remote config;
+    /// startup never creates or silently substitutes either.
     service_store_path: Option<PathBuf>,
     service_rollback_authority_path: Option<PathBuf>,
+    service_remote_rollback_authority_config_path: Option<PathBuf>,
+    /// Explicit acknowledgement that the selected local SQLite rollback floor
+    /// is development/test-only and not an independent production authority.
+    allow_local_service_rollback_authority_dev: bool,
     /// Secret HMAC key for provider-local durable IP quota cohorts.
     service_free_ip_key_path: Option<PathBuf>,
     /// Assert that the TCP peer address is the real client address. This is
@@ -250,6 +305,10 @@ struct CliArgs {
     /// Finite exposure caps as
     /// `<mint-id-hex>:<unit>:<max-unsettled-value>:<max-unsettled-notes>`.
     service_cashu_exposure_limit_specs: Vec<String>,
+    /// Test-only private WebPKI root for deterministic Standard Cashu process
+    /// E2E. Leaf-SPKI pins are still authenticated signed-manifest data.
+    #[cfg(feature = "standard-cashu-process-e2e")]
+    test_only_service_https_root_pem: Option<PathBuf>,
     /// One shared issuer clearing relationship for this provider runtime.
     service_shared_authorization_path: Option<PathBuf>,
     service_shared_issuer_approval_path: Option<PathBuf>,
@@ -264,13 +323,20 @@ struct CliArgs {
     /// Hard cap on concurrent service AUTH commits, including blocking
     /// external Cashu/shared-issuer calls.
     service_max_concurrent_auth: usize,
+    /// Sub-cap for Harmony V2Full authorizations whose authoritative verifier
+    /// is online. It must leave at least one global AUTH permit and one ready
+    /// pool entry available to provider-local methods.
+    service_max_concurrent_online_v2full_auth: Option<usize>,
     websocket_handshake_timeout_ms: u64,
     connection_idle_timeout_ms: u64,
-    /// Absolute lifetime of an enforced-mode connection before it commits a
-    /// service grant. Unlike the idle timeout, WebSocket Ping/control traffic
-    /// cannot extend this deadline.
+    /// Absolute lifetime of an enforced-mode connection through successful
+    /// write+flush of its granted AUTH result. Unlike the idle timeout,
+    /// WebSocket Ping/control traffic cannot extend this deadline. A durable
+    /// commit already in progress is not cancelled, but the remaining fixed
+    /// budget covers its result delivery; expiry closes before any PIR work.
     service_pre_auth_timeout_ms: u64,
     /// Explicitly enables privacy-dangerous per-connection/per-query logs.
+    #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
     unsafe_debug_query_logging: bool,
     /// Whether this server accepts HarmonyPIR hint requests
     /// (`REQ_HARMONY_HINTS` / `REQ_HARMONY_HINTS_V2`). Default `false`;
@@ -402,7 +468,48 @@ fn fatal_cli(msg: impl AsRef<str>) -> ! {
 }
 
 fn parse_args() -> CliArgs {
-    let args: Vec<String> = std::env::args().collect();
+    parse_args_from(std::env::args().collect())
+}
+
+/// Bound online-authority V2Full authorization below both configured resources.
+/// The runtime additionally enforces a floor against the current cross-process
+/// set of lockable ready entries; the target-size calculation alone is not a
+/// sufficient availability boundary while a pool is refilling.
+fn online_v2full_auth_limit_v1(
+    pool_size: usize,
+    service_max_concurrent_auth: usize,
+    configured: Option<usize>,
+) -> Result<usize, String> {
+    let safe_max = pool_size
+        .saturating_sub(1)
+        .min(service_max_concurrent_auth.saturating_sub(1));
+    let limit = configured.unwrap_or_else(|| safe_max.min(8));
+    if limit > safe_max {
+        return Err(format!(
+            "--service-max-concurrent-online-v2full-auth={limit} must be less than both --pool-size={pool_size} and --service-max-concurrent-auth={service_max_concurrent_auth}"
+        ));
+    }
+    Ok(limit)
+}
+
+/// Acquire the narrower online-authority permit before the global AUTH permit.
+/// This ordering prevents rejected online overflow from repeatedly stealing the
+/// final global slot that provider-local verification is intended to retain.
+fn try_acquire_auth_capacity_v1<'a>(
+    global: &'a Semaphore,
+    online: &Arc<Semaphore>,
+    requires_online: bool,
+) -> Option<(Option<OwnedSemaphorePermit>, SemaphorePermit<'a>)> {
+    let online_permit = if requires_online {
+        Some(Arc::clone(online).try_acquire_owned().ok()?)
+    } else {
+        None
+    };
+    let global_permit = global.try_acquire().ok()?;
+    Some((online_permit, global_permit))
+}
+
+fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut bind_address = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
     let mut port = 8091u16;
     let mut data_dir = PathBuf::from("/Volumes/Bitcoin/data/checkpoints/940611");
@@ -414,6 +521,7 @@ fn parse_args() -> CliArgs {
     let mut disable_onion = false;
     let mut vcek_dir: Option<PathBuf> = None;
     let mut pool_size: usize = 0; // 0 = pool disabled
+    let mut pool_db_id: u8 = 0;
     let mut pool_dir: Option<PathBuf> = None;
     let mut require_arc = false;
     let mut arc_key_path: Option<PathBuf> = None;
@@ -426,6 +534,8 @@ fn parse_args() -> CliArgs {
     let mut service_policy_key_hex: Option<String> = None;
     let mut service_store_path: Option<PathBuf> = None;
     let mut service_rollback_authority_path: Option<PathBuf> = None;
+    let mut service_remote_rollback_authority_config_path: Option<PathBuf> = None;
+    let mut allow_local_service_rollback_authority_dev = false;
     let mut service_free_ip_key_path: Option<PathBuf> = None;
     let mut service_trust_direct_peer_ip = false;
     let mut service_bat_key_paths: Vec<PathBuf> = Vec::new();
@@ -436,6 +546,8 @@ fn parse_args() -> CliArgs {
     let mut service_cashu_custody_key_specs: Vec<String> = Vec::new();
     let mut service_cashu_custody_active_epoch: Option<u64> = None;
     let mut service_cashu_exposure_limit_specs: Vec<String> = Vec::new();
+    #[cfg(feature = "standard-cashu-process-e2e")]
+    let mut test_only_service_https_root_pem: Option<PathBuf> = None;
     let mut service_shared_authorization_path: Option<PathBuf> = None;
     let mut service_shared_issuer_approval_path: Option<PathBuf> = None;
     let mut service_shared_operator_key_hex: Option<String> = None;
@@ -445,9 +557,11 @@ fn parse_args() -> CliArgs {
     let mut service_shared_minimum_authorization_epoch: Option<u64> = None;
     let mut max_connections: usize = 128;
     let mut service_max_concurrent_auth: usize = 32;
+    let mut service_max_concurrent_online_v2full_auth: Option<usize> = None;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
     let mut connection_idle_timeout_ms: u64 = 30_000;
     let mut service_pre_auth_timeout_ms: u64 = 120_000;
+    #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
     let mut unsafe_debug_query_logging = false;
     let mut serve_hints = false;
     let mut serve_queries = false;
@@ -552,6 +666,17 @@ fn parse_args() -> CliArgs {
                 pool_size = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
                 i += 1;
             }
+            "--pool-db-id" => {
+                let value = args
+                    .get(i + 1)
+                    .unwrap_or_else(|| fatal_cli("--pool-db-id requires a u8 database ID"));
+                pool_db_id = value.parse::<u8>().unwrap_or_else(|_| {
+                    fatal_cli(format!(
+                        "--pool-db-id must be a u8 database ID, got {value}"
+                    ))
+                });
+                i += 1;
+            }
             "--pool-dir" => {
                 if let Some(dir) = args.get(i + 1) {
                     pool_dir = Some(PathBuf::from(dir));
@@ -606,8 +731,27 @@ fn parse_args() -> CliArgs {
                 i += 1;
             }
             "--service-rollback-authority" => {
-                service_rollback_authority_path = args.get(i + 1).map(PathBuf::from);
+                if service_rollback_authority_path.is_some() {
+                    fatal_cli("--service-rollback-authority must not be repeated");
+                }
+                let path = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--service-rollback-authority requires a path");
+                });
+                service_rollback_authority_path = Some(PathBuf::from(path));
                 i += 1;
+            }
+            "--service-remote-rollback-authority-config" => {
+                if service_remote_rollback_authority_config_path.is_some() {
+                    fatal_cli("--service-remote-rollback-authority-config must not be repeated");
+                }
+                let path = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--service-remote-rollback-authority-config requires a path");
+                });
+                service_remote_rollback_authority_config_path = Some(PathBuf::from(path));
+                i += 1;
+            }
+            "--allow-local-service-rollback-authority-dev" => {
+                allow_local_service_rollback_authority_dev = true;
             }
             "--service-free-ip-key" => {
                 service_free_ip_key_path = args.get(i + 1).map(PathBuf::from);
@@ -659,6 +803,17 @@ fn parse_args() -> CliArgs {
                 }
                 i += 1;
             }
+            #[cfg(feature = "standard-cashu-process-e2e")]
+            "--test-only-service-https-root-pem" => {
+                if test_only_service_https_root_pem.is_some() {
+                    fatal_cli("--test-only-service-https-root-pem must not be repeated");
+                }
+                let path = args.get(i + 1).unwrap_or_else(|| {
+                    fatal_cli("--test-only-service-https-root-pem requires a path");
+                });
+                test_only_service_https_root_pem = Some(PathBuf::from(path));
+                i += 1;
+            }
             "--service-shared-authorization" => {
                 service_shared_authorization_path = args.get(i + 1).map(PathBuf::from);
                 i += 1;
@@ -704,6 +859,18 @@ fn parse_args() -> CliArgs {
                     });
                 i += 1;
             }
+            "--service-max-concurrent-online-v2full-auth" => {
+                service_max_concurrent_online_v2full_auth = Some(
+                    args.get(i + 1)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or_else(|| {
+                            fatal_cli(
+                                "--service-max-concurrent-online-v2full-auth requires an integer",
+                            )
+                        }),
+                );
+                i += 1;
+            }
             "--websocket-handshake-timeout-ms" => {
                 websocket_handshake_timeout_ms = args
                     .get(i + 1)
@@ -731,6 +898,7 @@ fn parse_args() -> CliArgs {
                     });
                 i += 1;
             }
+            #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
             "--unsafe-debug-query-logging" => {
                 unsafe_debug_query_logging = true;
             }
@@ -866,7 +1034,7 @@ fn parse_args() -> CliArgs {
             "--direct-oram-no-save" => {
                 direct_oram_no_save = true;
             }
-            unknown => fatal_cli(format!("unknown argument: {unknown}")),
+            unknown => fatal_cli(unknown_cli_argument_v1(unknown)),
         }
         i += 1;
     }
@@ -876,6 +1044,9 @@ fn parse_args() -> CliArgs {
     }
     if !(1..=1_024).contains(&service_max_concurrent_auth) {
         fatal_cli("--service-max-concurrent-auth must be in 1..=1024");
+    }
+    if service_max_concurrent_online_v2full_auth.is_some_and(|limit| limit > 1_023) {
+        fatal_cli("--service-max-concurrent-online-v2full-auth must be in 0..=1023");
     }
     if !(1_000..=60_000).contains(&websocket_handshake_timeout_ms) {
         fatal_cli("--websocket-handshake-timeout-ms must be in 1000..=60000");
@@ -899,6 +1070,7 @@ fn parse_args() -> CliArgs {
         disable_onion,
         vcek_dir,
         pool_size,
+        pool_db_id,
         pool_dir,
         require_arc,
         arc_key_path,
@@ -911,6 +1083,8 @@ fn parse_args() -> CliArgs {
         service_policy_key_hex,
         service_store_path,
         service_rollback_authority_path,
+        service_remote_rollback_authority_config_path,
+        allow_local_service_rollback_authority_dev,
         service_free_ip_key_path,
         service_trust_direct_peer_ip,
         service_bat_key_paths,
@@ -921,6 +1095,8 @@ fn parse_args() -> CliArgs {
         service_cashu_custody_key_specs,
         service_cashu_custody_active_epoch,
         service_cashu_exposure_limit_specs,
+        #[cfg(feature = "standard-cashu-process-e2e")]
+        test_only_service_https_root_pem,
         service_shared_authorization_path,
         service_shared_issuer_approval_path,
         service_shared_operator_key_hex,
@@ -930,9 +1106,11 @@ fn parse_args() -> CliArgs {
         service_shared_minimum_authorization_epoch,
         max_connections,
         service_max_concurrent_auth,
+        service_max_concurrent_online_v2full_auth,
         websocket_handshake_timeout_ms,
         connection_idle_timeout_ms,
         service_pre_auth_timeout_ms,
+        #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
         unsafe_debug_query_logging,
         serve_hints,
         serve_queries,
@@ -961,6 +1139,10 @@ fn parse_args() -> CliArgs {
         direct_oram_auth_store,
         direct_oram_no_save,
     }
+}
+
+fn unknown_cli_argument_v1(argument: &str) -> String {
+    format!("unknown argument: {argument}")
 }
 
 // ─── OnionPIR worker thread ─────────────────────────────────────────────────
@@ -1497,20 +1679,26 @@ impl CuckooOramTable {
         }
     }
 
-    fn poison(&self, reason: impl Into<String>) {
-        let reason = reason.into();
-        eprintln!("Cuckoo ORAM {} table poisoned: {}", self.level, reason);
+    fn poison(&self, coarse_reason: &'static str, unsafe_detail: Option<String>) -> String {
+        eprintln!(
+            "Cuckoo ORAM {} table poisoned: {}",
+            self.level, coarse_reason
+        );
+        if let Some(detail) = unsafe_detail.as_ref() {
+            unsafe_debug_log!("Cuckoo ORAM {} poison detail: {}", self.level, detail);
+        }
+        let retained_reason = unsafe_detail.unwrap_or_else(|| coarse_reason.to_string());
         if let Ok(mut poisoned) = self.poisoned.lock() {
             if poisoned.is_none() {
-                *poisoned = Some(reason);
+                *poisoned = Some(retained_reason.clone());
             }
         }
+        retained_reason
     }
 
-    fn poison_after_dirty(&self, reason: impl Into<String>) {
-        let reason = reason.into();
+    fn poison_after_dirty(&self, coarse_reason: &'static str, unsafe_detail: Option<String>) {
         if self.dirty.load(std::sync::atomic::Ordering::SeqCst) {
-            self.poison(reason);
+            self.poison(coarse_reason, unsafe_detail);
         }
     }
 }
@@ -1568,20 +1756,28 @@ impl CuckooTableAccess for CuckooOramTable {
             self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
             let got = match reader.read_bin(bin_id, self.drain_per_access) {
                 Ok(got) => got,
-                Err(e) => {
-                    let msg = format!("ORAM bin {} read failed after mutation: {}", bin_id, e);
-                    self.poison(msg.clone());
+                Err(_error) => {
+                    let msg = self.poison(
+                        "Cuckoo ORAM read failed after mutation",
+                        unsafe_oram_detail!(
+                            "ORAM bin {} read failed after mutation: {}",
+                            bin_id,
+                            _error
+                        ),
+                    );
                     return Err(msg);
                 }
             };
             if got.payload.len() != self.entry_size {
-                let msg = format!(
-                    "ORAM bin {} returned {} bytes, expected {}",
-                    bin_id,
-                    got.payload.len(),
-                    self.entry_size
+                let msg = self.poison(
+                    "Cuckoo ORAM read returned an invalid payload length",
+                    unsafe_oram_detail!(
+                        "ORAM bin {} returned {} bytes, expected {}",
+                        bin_id,
+                        got.payload.len(),
+                        self.entry_size
+                    ),
                 );
-                self.poison(msg.clone());
                 return Err(msg);
             }
             dst.extend_from_slice(&got.payload);
@@ -1602,10 +1798,12 @@ impl CuckooTableAccess for CuckooOramTable {
             .reader
             .lock()
             .map_err(|_| "Cuckoo ORAM reader mutex poisoned".to_string())?;
-        if let Err(e) = reader.oram_mut().flush() {
-            let msg = format!("ORAM flush failed after mutation: {}", e);
+        if let Err(_error) = reader.oram_mut().flush() {
             drop(reader);
-            self.poison(msg.clone());
+            let msg = self.poison(
+                "Cuckoo ORAM flush failed after mutation",
+                unsafe_oram_detail!("ORAM flush failed after mutation: {}", _error),
+            );
             return Err(msg);
         }
         let snapshot = reader.oram().snapshot();
@@ -1613,9 +1811,11 @@ impl CuckooTableAccess for CuckooOramTable {
             Some(_) => match reader.oram().store_auth_state() {
                 Some(state) => Some(state),
                 None => {
-                    let msg = "ORAM auth-store state unavailable after mutation".to_string();
                     drop(reader);
-                    self.poison(msg.clone());
+                    let msg = self.poison(
+                        "Cuckoo ORAM auth-store state unavailable after mutation",
+                        None,
+                    );
                     return Err(msg);
                 }
             },
@@ -1630,17 +1830,21 @@ impl CuckooTableAccess for CuckooOramTable {
                 .save_atomic(&self.state_path)
                 .map_err(|e| e.to_string()),
         };
-        if let Err(e) = saved {
-            let msg = format!("ORAM state save failed after mutation: {}", e);
-            self.poison(msg.clone());
+        if let Err(_error) = saved {
+            let msg = self.poison(
+                "Cuckoo ORAM state save failed after mutation",
+                unsafe_oram_detail!("ORAM state save failed after mutation: {}", _error),
+            );
             return Err(msg);
         }
         if let (Some(path), Some(auth_snapshot)) =
             (self.auth_state_path.as_ref(), auth_snapshot.as_ref())
         {
-            if let Err(e) = save_circuit_store_auth(auth_snapshot, path, self.state_key) {
-                let msg = format!("ORAM auth state save failed after mutation: {}", e);
-                self.poison(msg.clone());
+            if let Err(_error) = save_circuit_store_auth(auth_snapshot, path, self.state_key) {
+                let msg = self.poison(
+                    "Cuckoo ORAM auth-state save failed after mutation",
+                    unsafe_oram_detail!("ORAM auth state save failed after mutation: {}", _error),
+                );
                 return Err(msg);
             }
         }
@@ -1648,8 +1852,11 @@ impl CuckooTableAccess for CuckooOramTable {
         Ok(())
     }
 
-    fn abort_request(&self, reason: &str) {
-        self.poison_after_dirty(format!("request aborted after ORAM mutation: {}", reason));
+    fn abort_request(&self, _reason: &str) {
+        self.poison_after_dirty(
+            "Cuckoo ORAM request aborted after mutation",
+            unsafe_oram_detail!("request aborted after ORAM mutation: {}", _reason),
+        );
     }
 }
 
@@ -1940,12 +2147,14 @@ impl DirectOramIndexTable {
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
         match reader.lookup_many_batched(script_hashes, self.drain_per_access) {
             Ok(got) => Ok(got.lookups),
-            Err(e) => {
-                let msg = format!(
-                    "Direct ORAM index batch lookup failed after mutation: {}",
-                    e
+            Err(_error) => {
+                let msg = self.poison(
+                    "Direct ORAM index lookup failed after mutation",
+                    unsafe_oram_detail!(
+                        "Direct ORAM index batch lookup failed after mutation: {}",
+                        _error
+                    ),
                 );
-                self.poison(msg.clone());
                 Err(msg)
             }
         }
@@ -1964,24 +2173,24 @@ impl DirectOramIndexTable {
         )
     }
 
-    fn abort_request(&self, reason: &str) {
-        self.poison_after_dirty(format!(
-            "request aborted after direct index mutation: {}",
-            reason
-        ));
+    fn abort_request(&self, _reason: &str) {
+        self.poison_after_dirty(
+            "Direct ORAM index request aborted after mutation",
+            unsafe_oram_detail!("request aborted after direct index mutation: {}", _reason),
+        );
     }
 
     fn check_not_poisoned(&self) -> Result<(), String> {
         check_direct_poisoned("index", &self.poisoned)
     }
 
-    fn poison(&self, reason: impl Into<String>) {
-        poison_direct("index", &self.poisoned, reason);
+    fn poison(&self, coarse_reason: &'static str, unsafe_detail: Option<String>) -> String {
+        poison_direct("index", &self.poisoned, coarse_reason, unsafe_detail)
     }
 
-    fn poison_after_dirty(&self, reason: impl Into<String>) {
+    fn poison_after_dirty(&self, coarse_reason: &'static str, unsafe_detail: Option<String>) {
         if self.dirty.load(std::sync::atomic::Ordering::SeqCst) {
-            self.poison(reason);
+            self.poison(coarse_reason, unsafe_detail);
         }
     }
 }
@@ -2070,9 +2279,14 @@ impl DirectOramChunkTable {
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
         let got = match reader.read_chunks(chunk_ids, self.drain_per_access) {
             Ok(got) => got,
-            Err(e) => {
-                let msg = format!("Direct ORAM chunk batch read failed after mutation: {}", e);
-                self.poison(msg.clone());
+            Err(_error) => {
+                let msg = self.poison(
+                    "Direct ORAM chunk read failed after mutation",
+                    unsafe_oram_detail!(
+                        "Direct ORAM chunk batch read failed after mutation: {}",
+                        _error
+                    ),
+                );
                 return Err(msg);
             }
         };
@@ -2080,13 +2294,15 @@ impl DirectOramChunkTable {
         let mut payloads = Vec::with_capacity(got.reads.len());
         for read in got.reads {
             if read.payload.len() != DIRECT_CHUNK_RECORD_SIZE {
-                let msg = format!(
-                    "Direct ORAM chunk {} returned {} bytes, expected {}",
-                    read.chunk_id,
-                    read.payload.len(),
-                    DIRECT_CHUNK_RECORD_SIZE
+                let msg = self.poison(
+                    "Direct ORAM chunk read returned an invalid payload length",
+                    unsafe_oram_detail!(
+                        "Direct ORAM chunk {} returned {} bytes, expected {}",
+                        read.chunk_id,
+                        read.payload.len(),
+                        DIRECT_CHUNK_RECORD_SIZE
+                    ),
                 );
-                self.poison(msg.clone());
                 return Err(msg);
             }
             payloads.push(read.payload);
@@ -2109,12 +2325,14 @@ impl DirectOramChunkTable {
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
         match reader.read_dummy_many(count, self.drain_per_access) {
             Ok(_) => Ok(()),
-            Err(e) => {
-                let msg = format!(
-                    "Direct ORAM chunk dummy batch read failed after mutation: {}",
-                    e
+            Err(_error) => {
+                let msg = self.poison(
+                    "Direct ORAM dummy chunk read failed after mutation",
+                    unsafe_oram_detail!(
+                        "Direct ORAM chunk dummy batch read failed after mutation: {}",
+                        _error
+                    ),
                 );
-                self.poison(msg.clone());
                 Err(msg)
             }
         }
@@ -2133,24 +2351,24 @@ impl DirectOramChunkTable {
         )
     }
 
-    fn abort_request(&self, reason: &str) {
-        self.poison_after_dirty(format!(
-            "request aborted after direct chunk mutation: {}",
-            reason
-        ));
+    fn abort_request(&self, _reason: &str) {
+        self.poison_after_dirty(
+            "Direct ORAM chunk request aborted after mutation",
+            unsafe_oram_detail!("request aborted after direct chunk mutation: {}", _reason),
+        );
     }
 
     fn check_not_poisoned(&self) -> Result<(), String> {
         check_direct_poisoned("chunk", &self.poisoned)
     }
 
-    fn poison(&self, reason: impl Into<String>) {
-        poison_direct("chunk", &self.poisoned, reason);
+    fn poison(&self, coarse_reason: &'static str, unsafe_detail: Option<String>) -> String {
+        poison_direct("chunk", &self.poisoned, coarse_reason, unsafe_detail)
     }
 
-    fn poison_after_dirty(&self, reason: impl Into<String>) {
+    fn poison_after_dirty(&self, coarse_reason: &'static str, unsafe_detail: Option<String>) {
         if self.dirty.load(std::sync::atomic::Ordering::SeqCst) {
-            self.poison(reason);
+            self.poison(coarse_reason, unsafe_detail);
         }
     }
 }
@@ -2216,10 +2434,14 @@ fn finish_direct_oram_request<R: DirectReaderState>(
     let mut reader = reader
         .lock()
         .map_err(|_| format!("Direct ORAM {label} reader mutex poisoned"))?;
-    if let Err(e) = reader.flush_oram() {
-        let msg = format!("Direct ORAM {label} flush failed after mutation: {e}");
+    if let Err(_error) = reader.flush_oram() {
         drop(reader);
-        poison_direct(label, poisoned, msg.clone());
+        let msg = poison_direct(
+            label,
+            poisoned,
+            "Direct ORAM flush failed after mutation",
+            unsafe_oram_detail!("Direct ORAM {label} flush failed after mutation: {_error}"),
+        );
         return Err(msg);
     }
     let snapshot = reader.snapshot_oram();
@@ -2227,10 +2449,15 @@ fn finish_direct_oram_request<R: DirectReaderState>(
         Some(_) => match reader.auth_state() {
             Some(state) => Some(state),
             None => {
-                let msg =
-                    format!("Direct ORAM {label} auth-store state unavailable after mutation");
                 drop(reader);
-                poison_direct(label, poisoned, msg.clone());
+                let msg = poison_direct(
+                    label,
+                    poisoned,
+                    "Direct ORAM auth-store state unavailable after mutation",
+                    unsafe_oram_detail!(
+                        "Direct ORAM {label} auth-store state unavailable after mutation"
+                    ),
+                );
                 return Err(msg);
             }
         },
@@ -2238,15 +2465,25 @@ fn finish_direct_oram_request<R: DirectReaderState>(
     };
     drop(reader);
 
-    if let Err(e) = save_circuit_oram_state(&snapshot, state_path, state_key) {
-        let msg = format!("Direct ORAM {label} state save failed after mutation: {e}");
-        poison_direct(label, poisoned, msg.clone());
+    if let Err(_error) = save_circuit_oram_state(&snapshot, state_path, state_key) {
+        let msg = poison_direct(
+            label,
+            poisoned,
+            "Direct ORAM state save failed after mutation",
+            unsafe_oram_detail!("Direct ORAM {label} state save failed after mutation: {_error}"),
+        );
         return Err(msg);
     }
     if let (Some(path), Some(auth_snapshot)) = (auth_state_path, auth_snapshot.as_ref()) {
-        if let Err(e) = save_circuit_store_auth(auth_snapshot, path, state_key) {
-            let msg = format!("Direct ORAM {label} auth state save failed after mutation: {e}");
-            poison_direct(label, poisoned, msg.clone());
+        if let Err(_error) = save_circuit_store_auth(auth_snapshot, path, state_key) {
+            let msg = poison_direct(
+                label,
+                poisoned,
+                "Direct ORAM auth-state save failed after mutation",
+                unsafe_oram_detail!(
+                    "Direct ORAM {label} auth state save failed after mutation: {_error}"
+                ),
+            );
             return Err(msg);
         }
     }
@@ -2273,15 +2510,20 @@ fn check_direct_poisoned(
 fn poison_direct(
     label: &str,
     poisoned: &std::sync::Mutex<Option<String>>,
-    reason: impl Into<String>,
-) {
-    let reason = reason.into();
-    eprintln!("Direct ORAM {label} table poisoned: {reason}");
+    coarse_reason: &'static str,
+    unsafe_detail: Option<String>,
+) -> String {
+    eprintln!("Direct ORAM {label} table poisoned: {coarse_reason}");
+    if let Some(detail) = unsafe_detail.as_ref() {
+        unsafe_debug_log!("Direct ORAM {label} poison detail: {detail}");
+    }
+    let retained_reason = unsafe_detail.unwrap_or_else(|| coarse_reason.to_string());
     if let Ok(mut poisoned) = poisoned.lock() {
         if poisoned.is_none() {
-            *poisoned = Some(reason);
+            *poisoned = Some(retained_reason.clone());
         }
     }
+    retained_reason
 }
 
 #[cfg(feature = "cuckoo-oram")]
@@ -2416,9 +2658,7 @@ fn direct_native_lookup_slots(
             tables.chunk.abort_request(&e);
             return Err(e);
         }
-        if let Err(e) = tables.chunk.finish_request() {
-            return Err(e);
-        }
+        tables.chunk.finish_request()?;
         return Err(msg);
     }
 
@@ -3347,6 +3587,45 @@ fn validate_harmony_v2_pool_database(bound_db_id: u8, requested_db_id: u8) -> Re
     Ok(())
 }
 
+/// Connection-local V2Full reservation. Its durable ready inode remains
+/// exclusively locked across credential verification and grant delivery.
+/// Rejection, lost grant, timeout, or disconnect before the first main dispatch
+/// simply drops the lock and returns the unexposed entry. The first authorized
+/// dispatch unlinks+fsyncs it before exposing the PRP key.
+struct PendingHarmonyV2FullEntryV1 {
+    db_id: u8,
+    reservation: hint_pool::PoolReservation,
+    /// Online authority concurrency remains charged until the reserved inode
+    /// is consumed or restored, not merely until AUTH_GRANTED is delivered.
+    _online_authority_permit: Option<OwnedSemaphorePermit>,
+    /// Absolute post-grant deadline; Ping and unrelated frames cannot extend
+    /// how long scarce capacity remains connection-bound.
+    dispatch_deadline: Option<Instant>,
+}
+
+fn harmony_v2_full_reservation_db_v1(operation: &OperationStartV1) -> Option<u8> {
+    match operation {
+        OperationStartV1::HarmonyHint {
+            db_id,
+            transport: pir_service_protocol::HintTransport::V2Full,
+            ..
+        } => Some(*db_id),
+        _ => None,
+    }
+}
+
+fn is_exact_pending_v2full_dispatch_v1(
+    pending_db_id: u8,
+    request_was_encrypted: bool,
+    payload: &[u8],
+) -> bool {
+    request_was_encrypted
+        && matches!(
+            Request::decode(payload),
+            Ok(Request::HarmonyHintsV2(request)) if request.db_id == pending_db_id
+        )
+}
+
 fn compute_hints_for_group(
     db: &MappedDatabase,
     prp_key: &[u8; 16],
@@ -3583,6 +3862,10 @@ struct V2HalfPending {
 /// 30 s × that rate ≈ 100 entries is a safe steady-state bound on
 /// the pending map.
 const V2_HALF_PENDING_TTL_SECS: u64 = 30;
+/// A granted V2Full connection must issue its first main request promptly.
+/// This absolute cap is independent of Ping/control traffic and is further
+/// reduced when the configured connection-idle timeout is shorter.
+const V2_FULL_POST_GRANT_RESERVATION_MAX: Duration = Duration::from_secs(30);
 
 struct UnifiedServerData {
     state: ServerState,
@@ -3712,6 +3995,7 @@ impl core::fmt::Debug for SharedIssuerRuntimeConfigV1 {
 impl SharedIssuerRuntimeConfigV1 {
     fn committer<'a>(
         &self,
+        provider_store: &ProviderStore,
         transport: &'a dyn SharedIssuerRedeemTransportV1,
     ) -> Result<SharedIssuerAdmissionCommitterV1<'a>, pir_service_protocol::ServiceProtocolError>
     {
@@ -3723,27 +4007,79 @@ impl SharedIssuerRuntimeConfigV1 {
             self.clearing_signing_key.clone(),
             self.minimum_authorization_epoch,
             ProviderRedeemIdempotencyKeyV1::from_bytes(*self.idempotency_key)?,
+            provider_store.clone(),
             transport,
         )
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct ProviderAdmissionHttpsTransportV1 {
-    client: StrictHttpsClientV1,
+    connect_timeout: Duration,
+    io_timeout: Duration,
+    #[cfg(feature = "standard-cashu-process-e2e")]
+    test_only_webpki_root_pem: Option<Arc<[u8]>>,
+}
+
+impl core::fmt::Debug for ProviderAdmissionHttpsTransportV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ProviderAdmissionHttpsTransportV1")
+            .field("connect_timeout", &self.connect_timeout)
+            .field("io_timeout", &self.io_timeout)
+            .field("test_only_webpki_root_pem", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl ProviderAdmissionHttpsTransportV1 {
+    fn client_for_pins(
+        &self,
+        leaf_spki_sha256_pins: &[[u8; 32]],
+    ) -> Result<StrictHttpsClientV1, String> {
+        #[cfg(feature = "standard-cashu-process-e2e")]
+        if let Some(root) = self.test_only_webpki_root_pem.as_deref() {
+            return StrictHttpsClientV1::new_with_leaf_spki_sha256_pins_and_test_only_webpki_root_pem(
+                self.connect_timeout,
+                self.io_timeout,
+                leaf_spki_sha256_pins,
+                root,
+            );
+        }
+        StrictHttpsClientV1::new_with_leaf_spki_sha256_pins(
+            self.connect_timeout,
+            self.io_timeout,
+            leaf_spki_sha256_pins,
+        )
+    }
+
+    fn validate_trust(
+        &self,
+        endpoint: &str,
+        leaf_spki_sha256_pins: &[[u8; 32]],
+    ) -> Result<(), String> {
+        StrictHttpsClientV1::validate_base_endpoint(endpoint)?;
+        self.client_for_pins(leaf_spki_sha256_pins).map(|_| ())
+    }
 }
 
 impl CashuMintTransportV1 for ProviderAdmissionHttpsTransportV1 {
     fn post_json(
         &self,
-        mint_endpoint: &str,
+        trust: CashuMintTrustV1<'_>,
         route: CashuMintRouteV1,
         request_json: &[u8],
         max_response_bytes: usize,
     ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
-        self.client
+        self.client_for_pins(trust.leaf_spki_sha256_pins())
+            .map_err(|_| {
+                CashuMintTransportFailureV1::ambiguous(
+                    CashuMintTransportFailureKindV1::Network,
+                    None,
+                )
+            })?
             .post(
-                mint_endpoint,
+                trust.mint_endpoint(),
                 route.path(),
                 "application/json",
                 "application/json",
@@ -3776,20 +4112,24 @@ impl SharedIssuerRedeemTransportV1 for ProviderAdmissionHttpsTransportV1 {
         envelope: SharedIssuerRedeemEnvelopeV1<'_>,
         max_response_bytes: usize,
     ) -> Result<Vec<u8>, SharedIssuerTransportErrorV1> {
-        let body = ProviderRedeemEnvelopeV1 {
+        let mut request = ProviderRedeemEnvelopeV1 {
             request: envelope.request.clone(),
             request_auth: envelope.request_auth.clone(),
             credential_binding: envelope.credential_binding.clone(),
             canonical_credential: envelope.canonical_credential.to_vec(),
-        }
-        .encode()
-        .map_err(|_| SharedIssuerTransportErrorV1::ScopeUnavailable)?;
-        self.client
-            .post(
-                envelope.endpoint,
+        };
+        let encoded = request.encode();
+        request.canonical_credential.zeroize();
+        let body =
+            Zeroizing::new(encoded.map_err(|_| SharedIssuerTransportErrorV1::ScopeUnavailable)?);
+        self.client_for_pins(envelope.redeem_leaf_spki_sha256_pins)
+            .map_err(|_| SharedIssuerTransportErrorV1::ScopeUnavailable)?
+            .post_with_error_content_type(
+                envelope.redeem_endpoint,
                 "/v1/redeems",
                 "application/vnd.bitcoinpir.redeem-v1",
                 "application/vnd.bitcoinpir.redeem-result-v1",
+                "application/problem+json",
                 &body,
                 max_response_bytes,
             )
@@ -4107,6 +4447,43 @@ impl UnifiedServerData {
     }
 }
 
+/// Derive admission accounting from one decoded DPF backend frame.
+///
+/// `query.keys` is the public K-padded server workload (normally 75 INDEX or
+/// 80 CHUNK groups), not the number of user-selected Bitcoin inputs. Charging
+/// it as `logical_inputs` made a signed one-job entitlement reject the first
+/// honest request and would couple commercial semantics to privacy padding.
+/// One INDEX batch therefore starts one logical padded job; its CHUNK and
+/// Merkle follow-ups add no new logical job. All three still charge their
+/// exact public work units, bytes, and frame count.
+fn dpf_backend_frame_for_service_gate(payload: &[u8]) -> Result<BackendFrameV1, String> {
+    let request_bytes = u64::try_from(payload.len())
+        .map_err(|_| "request length does not fit admission counter".to_owned())?;
+    let request = Request::decode(payload).map_err(|error| error.to_string())?;
+    let (kind, query) = match request {
+        Request::IndexBatch(query) => (BackendFrameKindV1::DpfIndexBatch, query),
+        Request::ChunkBatch(query) => (BackendFrameKindV1::DpfChunkBatch, query),
+        Request::BucketMerkleSibBatch(query) => (BackendFrameKindV1::DpfMerkleSiblingBatch, query),
+        _ => return Err("runtime decoder returned a mismatched DPF request".into()),
+    };
+    let logical_inputs = u64::from(matches!(&kind, BackendFrameKindV1::DpfIndexBatch));
+    let work_units = query
+        .keys
+        .iter()
+        .map(Vec::len)
+        .try_fold(0usize, usize::checked_add)
+        .ok_or_else(|| "DPF work-unit count overflow".to_owned())?;
+    Ok(BackendFrameV1 {
+        kind,
+        db_id: query.db_id,
+        logical_inputs,
+        hint_groups: 0,
+        request_bytes,
+        work_units: u64::try_from(work_units.max(1))
+            .map_err(|_| "work-unit count overflow".to_owned())?,
+    })
+}
+
 fn backend_frame_for_service_gate(
     server: &UnifiedServerData,
     payload: &[u8],
@@ -4132,22 +4509,7 @@ fn backend_frame_for_service_gate(
 
     match variant {
         REQ_INDEX_BATCH | REQ_CHUNK_BATCH | REQ_BUCKET_MERKLE_SIB_BATCH => {
-            let request = Request::decode(payload).map_err(|error| error.to_string())?;
-            let (kind, query) = match request {
-                Request::IndexBatch(query) => (BackendFrameKindV1::DpfIndexBatch, query),
-                Request::ChunkBatch(query) => (BackendFrameKindV1::DpfChunkBatch, query),
-                Request::BucketMerkleSibBatch(query) => {
-                    (BackendFrameKindV1::DpfMerkleSiblingBatch, query)
-                }
-                _ => return Err("runtime decoder returned a mismatched DPF request".into()),
-            };
-            let work_units = query
-                .keys
-                .iter()
-                .map(Vec::len)
-                .try_fold(0usize, usize::checked_add)
-                .ok_or_else(|| "DPF work-unit count overflow".to_owned())?;
-            counted(kind, query.db_id, query.keys.len(), 0, work_units)
+            Ok(Some(dpf_backend_frame_for_service_gate(payload)?))
         }
         REQ_HARMONY_HINTS => {
             let Request::HarmonyHints(request) =
@@ -4155,8 +4517,40 @@ fn backend_frame_for_service_gate(
             else {
                 return Err("runtime decoder returned a mismatched Harmony hint request".into());
             };
+            let database = server
+                .state
+                .get_db(request.db_id)
+                .ok_or_else(|| format!("unknown db_id {}", request.db_id))?;
+            let (sub_table, _, _) = harmony_level_table(database, request.level)
+                .ok_or_else(|| format!("invalid Harmony hint level {}", request.level))?;
+            let expected_groups = sub_table.params.k;
+            if request.group_ids.len() != expected_groups
+                || request
+                    .group_ids
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .any(|(expected, actual)| usize::from(actual) != expected)
+            {
+                return Err(format!(
+                    "service-gated Harmony sibling hint L{} must contain every group exactly once in canonical order (expected {}, got {})",
+                    request.level,
+                    expected_groups,
+                    request.group_ids.len(),
+                ));
+            }
+            let index_sibling_levels = u8::try_from(database.bucket_merkle_index_siblings.len())
+                .map_err(|_| "Harmony INDEX sibling level count overflow".to_owned())?;
+            let chunk_sibling_levels = u8::try_from(database.bucket_merkle_chunk_siblings.len())
+                .map_err(|_| "Harmony CHUNK sibling level count overflow".to_owned())?;
             counted(
-                BackendFrameKindV1::HarmonyHintLegacyV1,
+                BackendFrameKindV1::HarmonyHintLegacyV1 {
+                    level: request.level,
+                    index_sibling_levels,
+                    chunk_sibling_levels,
+                    expected_groups: u8::try_from(expected_groups)
+                        .map_err(|_| "Harmony hint group count overflow".to_owned())?,
+                },
                 request.db_id,
                 0,
                 request.group_ids.len(),
@@ -4226,7 +4620,7 @@ fn backend_frame_for_service_gate(
                 return Err("runtime decoder returned a mismatched Harmony query".into());
             };
             counted(
-                BackendFrameKindV1::HarmonyQuery,
+                BackendFrameKindV1::HarmonyLegacySingleQuery,
                 request.db_id,
                 request.indices.len(),
                 0,
@@ -4239,19 +4633,46 @@ fn backend_frame_for_service_gate(
             else {
                 return Err("runtime decoder returned a mismatched Harmony batch query".into());
             };
-            let logical_inputs = request
+            let database = server
+                .state
+                .get_db(request.db_id)
+                .ok_or_else(|| format!("unknown db_id {}", request.db_id))?;
+            let (sub_table, _, _) = harmony_level_table(database, request.level)
+                .ok_or_else(|| format!("invalid Harmony batch level {}", request.level))?;
+            if request.items.len() != sub_table.params.k
+                || request.sub_queries_per_group != 1
+                || request.items.iter().enumerate().any(|(expected, item)| {
+                    usize::from(item.group_id) != expected || item.sub_queries.len() != 1
+                })
+            {
+                return Err(format!(
+                    "service-gated Harmony batch L{} must be K-padded with one sub-query per canonical group",
+                    request.level
+                ));
+            }
+            let work_units = request
                 .items
                 .iter()
                 .flat_map(|item| item.sub_queries.iter())
                 .map(Vec::len)
                 .try_fold(0usize, usize::checked_add)
-                .ok_or_else(|| "Harmony logical input count overflow".to_owned())?;
+                .ok_or_else(|| "Harmony work-unit count overflow".to_owned())?;
+            let index_sibling_levels = u8::try_from(database.bucket_merkle_index_siblings.len())
+                .map_err(|_| "Harmony INDEX sibling level count overflow".to_owned())?;
+            let chunk_sibling_levels = u8::try_from(database.bucket_merkle_chunk_siblings.len())
+                .map_err(|_| "Harmony CHUNK sibling level count overflow".to_owned())?;
+            let logical_inputs = usize::from(request.level == 0 && request.round_id % 2 == 0);
             counted(
-                BackendFrameKindV1::HarmonyBatchQuery,
+                BackendFrameKindV1::HarmonyBatchQuery {
+                    level: request.level,
+                    round_id: request.round_id,
+                    index_sibling_levels,
+                    chunk_sibling_levels,
+                },
                 request.db_id,
                 logical_inputs,
                 0,
-                logical_inputs,
+                work_units,
             )
         }
         REQ_ORAM_LOOKUP => {
@@ -4283,23 +4704,100 @@ fn backend_frame_for_service_gate(
         | REQ_ONIONPIR_MERKLE_INDEX_SIBLING
         | REQ_ONIONPIR_MERKLE_DATA_SIBLING => {
             let request = OnionPirBatchQuery::decode(body).map_err(|error| error.to_string())?;
-            let kind = match variant {
-                REQ_ONIONPIR_INDEX_QUERY => BackendFrameKindV1::OnionIndexQuery,
-                REQ_ONIONPIR_CHUNK_QUERY => BackendFrameKindV1::OnionChunkQuery,
-                REQ_ONIONPIR_MERKLE_INDEX_SIBLING => BackendFrameKindV1::OnionMerkleIndexSibling,
-                REQ_ONIONPIR_MERKLE_DATA_SIBLING => BackendFrameKindV1::OnionMerkleDataSibling,
+            let (kind, expected_queries) = match variant {
+                REQ_ONIONPIR_INDEX_QUERY => {
+                    let info = server
+                        .onionpir_infos
+                        .get(request.db_id as usize)
+                        .and_then(Option::as_ref)
+                        .ok_or_else(|| {
+                            format!("OnionPIR not available for db_id={}", request.db_id)
+                        })?;
+                    (
+                        BackendFrameKindV1::OnionIndexQuery {
+                            round_id: request.round_id,
+                        },
+                        usize::from(info.index_k)
+                            .checked_mul(pir_core::params::INDEX_CUCKOO_NUM_HASHES)
+                            .ok_or_else(|| "OnionPIR INDEX query count overflow".to_owned())?,
+                    )
+                }
+                REQ_ONIONPIR_CHUNK_QUERY => {
+                    let info = server
+                        .onionpir_infos
+                        .get(request.db_id as usize)
+                        .and_then(Option::as_ref)
+                        .ok_or_else(|| {
+                            format!("OnionPIR not available for db_id={}", request.db_id)
+                        })?;
+                    (
+                        BackendFrameKindV1::OnionChunkQuery {
+                            round_id: request.round_id,
+                        },
+                        usize::from(info.chunk_k),
+                    )
+                }
+                REQ_ONIONPIR_MERKLE_INDEX_SIBLING => {
+                    let info = server.onionpir_merkle_for(request.db_id).ok_or_else(|| {
+                        format!("OnionPIR Merkle not available for db_id={}", request.db_id)
+                    })?;
+                    (
+                        BackendFrameKindV1::OnionMerkleIndexSibling {
+                            round_id: request.round_id,
+                        },
+                        info.index_k,
+                    )
+                }
+                REQ_ONIONPIR_MERKLE_DATA_SIBLING => {
+                    let info = server.onionpir_merkle_for(request.db_id).ok_or_else(|| {
+                        format!("OnionPIR Merkle not available for db_id={}", request.db_id)
+                    })?;
+                    (
+                        BackendFrameKindV1::OnionMerkleDataSibling {
+                            round_id: request.round_id,
+                        },
+                        info.data_k,
+                    )
+                }
                 _ => unreachable!("matched exact OnionPIR opcode set"),
             };
+            if request.queries.len() != expected_queries {
+                return Err(format!(
+                    "service-gated OnionPIR opcode 0x{variant:02x} requires {expected_queries} padded ciphertexts, got {}",
+                    request.queries.len()
+                ));
+            }
+            let logical_inputs = usize::from(variant == REQ_ONIONPIR_INDEX_QUERY);
             counted(
                 kind,
                 request.db_id,
-                request.queries.len(),
+                logical_inputs,
                 0,
                 request.queries.len(),
             )
         }
         _ => Ok(None),
     }
+}
+
+fn service_gate_is_backend_opcode_v1(variant: u8) -> bool {
+    matches!(
+        variant,
+        REQ_INDEX_BATCH
+            | REQ_CHUNK_BATCH
+            | REQ_BUCKET_MERKLE_SIB_BATCH
+            | REQ_HARMONY_HINTS
+            | REQ_HARMONY_HINTS_V2
+            | REQ_HARMONY_HINTS_V2_HALF
+            | REQ_HARMONY_QUERY
+            | REQ_HARMONY_BATCH_QUERY
+            | REQ_ORAM_LOOKUP
+            | REQ_REGISTER_KEYS
+            | REQ_ONIONPIR_INDEX_QUERY
+            | REQ_ONIONPIR_CHUNK_QUERY
+            | REQ_ONIONPIR_MERKLE_INDEX_SIBLING
+            | REQ_ONIONPIR_MERKLE_DATA_SIBLING
+    )
 }
 
 fn service_gate_allows_ungranted_opcode(variant: u8) -> bool {
@@ -5067,6 +5565,8 @@ trait ServiceResponseBudgetV1 {
 
 const MAX_PRE_AUTH_EGRESS_MESSAGES_V1: u32 = 32;
 const MAX_PRE_AUTH_EGRESS_BYTES_V1: u64 = 16 * 1024 * 1024;
+type PreAuthDeadlineFutureV1 =
+    std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 
 #[derive(Clone, Copy, Debug)]
 struct PreAuthEgressBudgetV1 {
@@ -5166,10 +5666,38 @@ struct ServiceAdmissionSink<S, B = ConnectionAdmissionGateV1> {
     pre_reserved_response_bytes: u64,
     pre_reserved_response_messages: u32,
     pre_auth_egress_budget: PreAuthEgressBudgetV1,
+    /// Fixed at connection setup. The future remains armed until a granted
+    /// AUTH result has been successfully written *and flushed* to the peer.
+    /// Keeping this separate from the admission gate is essential: a durable
+    /// commit may move the gate to `Granted` while its response is still
+    /// blocked behind WebSocket/TCP backpressure.
+    pre_auth_deadline_at: Option<Instant>,
+    pre_auth_deadline: Option<PreAuthDeadlineFutureV1>,
+    auth_result_delivered: bool,
+    pre_auth_deadline_expired: bool,
 }
 
 impl<S> ServiceAdmissionSink<S, ConnectionAdmissionGateV1> {
-    fn new(inner: S, enforcement: AdmissionEnforcementV1) -> Self {
+    fn new(
+        inner: S,
+        enforcement: AdmissionEnforcementV1,
+        pre_auth_started: Instant,
+        pre_auth_timeout: Duration,
+    ) -> Self {
+        let pre_auth_deadline_at = if enforcement == AdmissionEnforcementV1::Enforced {
+            Some(
+                pre_auth_started
+                    .checked_add(pre_auth_timeout)
+                    .expect("bounded service pre-auth timeout cannot overflow Instant"),
+            )
+        } else {
+            None
+        };
+        let pre_auth_deadline = pre_auth_deadline_at.map(|deadline| {
+            Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                deadline,
+            ))) as PreAuthDeadlineFutureV1
+        });
         Self {
             inner,
             response_budget: ConnectionAdmissionGateV1::new(enforcement),
@@ -5178,6 +5706,10 @@ impl<S> ServiceAdmissionSink<S, ConnectionAdmissionGateV1> {
             pre_reserved_response_bytes: 0,
             pre_reserved_response_messages: 0,
             pre_auth_egress_budget: PreAuthEgressBudgetV1::production(),
+            pre_auth_deadline_at,
+            pre_auth_deadline,
+            auth_result_delivered: false,
+            pre_auth_deadline_expired: false,
         }
     }
 
@@ -5195,10 +5727,6 @@ impl<S> ServiceAdmissionSink<S, ConnectionAdmissionGateV1> {
             .map(|limit| limit.saturating_add(64).min(MAX_REASSEMBLED))
     }
 
-    fn has_committed_service_grant(&self) -> bool {
-        self.response_budget.granted_scope_id().is_some()
-    }
-
     fn meter_backend_response(&mut self, _permit: BackendFramePermitV1) {
         self.meter_current_response = true;
     }
@@ -5206,17 +5734,18 @@ impl<S> ServiceAdmissionSink<S, ConnectionAdmissionGateV1> {
 
 /// Return the next socket-read budget and whether expiry means the absolute
 /// pre-authorization deadline fired. Only enforced admission uses that
-/// deadline; after an authorization has durably committed, the ordinary idle
-/// timeout applies. In particular, repeatedly receiving Ping frames cannot
-/// reset `pre_auth_elapsed`.
+/// deadline; the ordinary idle timeout applies only after a granted AUTH
+/// result has been successfully written and flushed. A durable authorization
+/// commit alone is deliberately insufficient. In particular, repeatedly
+/// receiving Ping frames cannot reset `pre_auth_elapsed`.
 fn connection_read_timeout_v1(
     enforcement: AdmissionEnforcementV1,
-    has_committed_grant: bool,
+    auth_result_delivered: bool,
     pre_auth_elapsed: Duration,
     pre_auth_timeout: Duration,
     idle_timeout: Duration,
 ) -> Option<(Duration, bool)> {
-    if enforcement != AdmissionEnforcementV1::Enforced || has_committed_grant {
+    if enforcement != AdmissionEnforcementV1::Enforced || auth_result_delivered {
         return Some((idle_timeout, false));
     }
     let remaining = pre_auth_timeout.checked_sub(pre_auth_elapsed)?;
@@ -5228,6 +5757,53 @@ fn connection_read_timeout_v1(
     } else {
         Some((idle_timeout, false))
     }
+}
+
+/// Apply an absolute post-grant V2Full dispatch deadline to the next socket
+/// read. The caller stores the original `deadline`; control frames can trigger
+/// another call but can never create a fresh interval.
+fn cap_read_timeout_by_dispatch_deadline_v1(
+    read_timeout: Duration,
+    dispatch_deadline: Option<Instant>,
+    now: Instant,
+) -> Option<(Duration, bool)> {
+    let Some(deadline) = dispatch_deadline else {
+        return Some((read_timeout, false));
+    };
+    let remaining = deadline.checked_duration_since(now)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    if remaining <= read_timeout {
+        Some((remaining, true))
+    } else {
+        Some((read_timeout, false))
+    }
+}
+
+/// Arm the post-grant window only after AUTH_GRANTED has been flushed. Repeated
+/// calls are idempotent so no later frame can extend an existing deadline.
+fn arm_v2full_dispatch_deadline_v1(
+    deadline: &mut Option<Instant>,
+    grant_flushed_at: Instant,
+    timeout: Duration,
+) {
+    if deadline.is_none() {
+        *deadline = Some(grant_flushed_at + timeout);
+    }
+}
+
+/// Recheck the absolute connection deadline after a potentially blocking,
+/// durable authorization commit. Equality is expired. The commit itself is not
+/// cancelled: doing so could strand an unknown outcome or corrupt its exact
+/// retry semantics. The caller must close without sending the auth result or
+/// permitting backend work when this returns true.
+fn post_authorization_deadline_expired_v1(
+    enforcement: AdmissionEnforcementV1,
+    pre_auth_elapsed: Duration,
+    pre_auth_timeout: Duration,
+) -> bool {
+    enforcement == AdmissionEnforcementV1::Enforced && pre_auth_elapsed >= pre_auth_timeout
 }
 
 #[cfg(test)]
@@ -5273,16 +5849,16 @@ mod connection_resource_deadline_tests {
     }
 
     #[test]
-    fn committed_or_explicit_legacy_connections_use_idle_timeout() {
+    fn delivered_grant_or_explicit_legacy_connections_use_idle_timeout() {
         let idle = Duration::from_secs(30);
-        for (enforcement, committed) in [
+        for (enforcement, delivered) in [
             (AdmissionEnforcementV1::Enforced, true),
             (AdmissionEnforcementV1::ExplicitLegacyMode, false),
         ] {
             assert_eq!(
                 connection_read_timeout_v1(
                     enforcement,
-                    committed,
+                    delivered,
                     Duration::from_secs(600),
                     Duration::from_secs(120),
                     idle,
@@ -5290,6 +5866,94 @@ mod connection_resource_deadline_tests {
                 Some((idle, false))
             );
         }
+    }
+
+    #[test]
+    fn durable_commit_without_result_delivery_remains_on_pre_auth_deadline() {
+        let pre_auth = Duration::from_secs(120);
+        let idle = Duration::from_secs(30);
+        assert_eq!(
+            connection_read_timeout_v1(
+                AdmissionEnforcementV1::Enforced,
+                false,
+                Duration::from_secs(119),
+                pre_auth,
+                idle,
+            ),
+            Some((Duration::from_secs(1), true))
+        );
+    }
+
+    #[test]
+    fn post_authorization_commit_rechecks_the_absolute_deadline() {
+        let timeout = Duration::from_secs(120);
+        assert!(!post_authorization_deadline_expired_v1(
+            AdmissionEnforcementV1::Enforced,
+            timeout - Duration::from_nanos(1),
+            timeout,
+        ));
+        assert!(post_authorization_deadline_expired_v1(
+            AdmissionEnforcementV1::Enforced,
+            timeout,
+            timeout,
+        ));
+        assert!(post_authorization_deadline_expired_v1(
+            AdmissionEnforcementV1::Enforced,
+            timeout + Duration::from_secs(1),
+            timeout,
+        ));
+        assert!(!post_authorization_deadline_expired_v1(
+            AdmissionEnforcementV1::ExplicitLegacyMode,
+            timeout + Duration::from_secs(1),
+            timeout,
+        ));
+    }
+
+    #[test]
+    fn post_grant_v2full_deadline_is_absolute_across_control_frames() {
+        let origin = Instant::now();
+        let deadline = origin + Duration::from_secs(30);
+        assert_eq!(
+            cap_read_timeout_by_dispatch_deadline_v1(
+                Duration::from_secs(120),
+                Some(deadline),
+                origin,
+            ),
+            Some((Duration::from_secs(30), true))
+        );
+        // Model a Ping ten seconds later: the unchanged deadline leaves twenty
+        // seconds, rather than resetting a new thirty-second window.
+        assert_eq!(
+            cap_read_timeout_by_dispatch_deadline_v1(
+                Duration::from_secs(120),
+                Some(deadline),
+                origin + Duration::from_secs(10),
+            ),
+            Some((Duration::from_secs(20), true))
+        );
+        assert_eq!(
+            cap_read_timeout_by_dispatch_deadline_v1(
+                Duration::from_secs(120),
+                Some(deadline),
+                deadline,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn v2full_dispatch_window_starts_after_grant_flush_and_never_resets() {
+        let authorization_finished = Instant::now();
+        let grant_flushed = authorization_finished + Duration::from_secs(20);
+        let mut deadline = None;
+        arm_v2full_dispatch_deadline_v1(&mut deadline, grant_flushed, Duration::from_secs(30));
+        assert_eq!(deadline, Some(grant_flushed + Duration::from_secs(30)));
+        arm_v2full_dispatch_deadline_v1(
+            &mut deadline,
+            grant_flushed + Duration::from_secs(10),
+            Duration::from_secs(30),
+        );
+        assert_eq!(deadline, Some(grant_flushed + Duration::from_secs(30)));
     }
 }
 
@@ -5312,6 +5976,92 @@ impl<S, B> ServiceAdmissionSink<S, B> {
         self.pre_auth_egress_budget.terminal
     }
 
+    fn auth_result_delivered(&self) -> bool {
+        self.auth_result_delivered
+    }
+
+    /// Backend work is never authorized by gate state alone. A grant may have
+    /// committed durably, or a complementary Harmony grant may have been
+    /// installed, while its result is still queued behind transport
+    /// backpressure. Only a completely flushed grant result crosses this
+    /// connection-local delivery boundary.
+    fn require_auth_result_delivered_for_backend(&self) -> Result<(), &'static str> {
+        if self.auth_result_delivered {
+            Ok(())
+        } else {
+            Err("authorization grant result has not been delivered")
+        }
+    }
+
+    /// Disable the pre-auth write deadline only after `SinkExt::send` has
+    /// completed, which includes the underlying sink's flush.
+    fn mark_auth_result_delivered(&mut self) {
+        self.auth_result_delivered = true;
+        self.pre_auth_deadline_at = None;
+        self.pre_auth_deadline = None;
+    }
+
+    fn pre_auth_deadline_has_expired(&self) -> bool {
+        self.pre_auth_deadline_expired
+    }
+
+    fn expire_pre_auth_deadline(&mut self) {
+        self.pre_auth_deadline_expired = true;
+        // Make every subsequent application send fail closed even if its
+        // caller historically ignored a transport error before returning to
+        // the connection-loop terminal check.
+        self.pre_auth_egress_budget.terminal = true;
+        self.pre_auth_deadline_at = None;
+        self.pre_auth_deadline = None;
+    }
+
+    fn pre_auth_timeout_error() -> tokio_tungstenite::tungstenite::Error {
+        tokio_tungstenite::tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "absolute pre-authorization write deadline expired",
+        ))
+    }
+
+    #[allow(clippy::result_large_err)] // Must return the underlying Sink::Error shape.
+    fn enforce_pre_auth_deadline_now(&mut self) -> tokio_tungstenite::tungstenite::Result<()> {
+        if self.pre_auth_deadline_expired {
+            return Err(Self::pre_auth_timeout_error());
+        }
+        if !self.auth_result_delivered {
+            if let Some(deadline) = self.pre_auth_deadline_at {
+                if Instant::now() >= deadline {
+                    self.expire_pre_auth_deadline();
+                    return Err(Self::pre_auth_timeout_error());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Poll the same fixed deadline alongside every write/flush operation.
+    /// Returning `Ok(())` while the timer is pending lets the underlying sink
+    /// make progress, while polling the timer registers a wakeup even for an
+    /// underlying sink that remains permanently `Pending`.
+    #[allow(clippy::result_large_err)] // Must return the underlying Sink::Error shape.
+    fn poll_pre_auth_deadline(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> tokio_tungstenite::tungstenite::Result<()> {
+        self.enforce_pre_auth_deadline_now()?;
+        if self.auth_result_delivered {
+            return Ok(());
+        }
+        let expired = self
+            .pre_auth_deadline
+            .as_mut()
+            .is_some_and(|deadline| std::future::Future::poll(deadline.as_mut(), cx).is_ready());
+        if expired {
+            self.expire_pre_auth_deadline();
+            return Err(Self::pre_auth_timeout_error());
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn with_test_budget(inner: S, response_budget: B) -> Self {
         Self {
@@ -5322,7 +6072,22 @@ impl<S, B> ServiceAdmissionSink<S, B> {
             pre_reserved_response_bytes: 0,
             pre_reserved_response_messages: 0,
             pre_auth_egress_budget: PreAuthEgressBudgetV1::production(),
+            pre_auth_deadline_at: None,
+            pre_auth_deadline: None,
+            auth_result_delivered: false,
+            pre_auth_deadline_expired: false,
         }
+    }
+
+    #[cfg(test)]
+    fn set_test_pre_auth_deadline<F>(&mut self, deadline: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.pre_auth_deadline_at = None;
+        self.pre_auth_deadline = Some(Box::pin(deadline));
+        self.auth_result_delivered = false;
+        self.pre_auth_deadline_expired = false;
     }
 
     #[cfg(test)]
@@ -5449,6 +6214,9 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
+        if let Err(error) = this.poll_pre_auth_deadline(cx) {
+            return std::task::Poll::Ready(Err(error));
+        }
         std::pin::Pin::new(&mut this.inner).poll_ready(cx)
     }
 
@@ -5457,6 +6225,7 @@ where
         item: tokio_tungstenite::tungstenite::Message,
     ) -> Result<(), Self::Error> {
         let this = self.get_mut();
+        this.enforce_pre_auth_deadline_now()?;
         if let tokio_tungstenite::tungstenite::Message::Binary(bytes) = &item {
             this.reserve_encoded_bytes(bytes.len())?;
         }
@@ -5468,7 +6237,16 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        std::pin::Pin::new(&mut this.inner).poll_flush(cx)
+        if let Err(error) = this.poll_pre_auth_deadline(cx) {
+            return std::task::Poll::Ready(Err(error));
+        }
+        match std::pin::Pin::new(&mut this.inner).poll_flush(cx) {
+            std::task::Poll::Ready(Ok(())) => match this.enforce_pre_auth_deadline_now() {
+                Ok(()) => std::task::Poll::Ready(Ok(())),
+                Err(error) => std::task::Poll::Ready(Err(error)),
+            },
+            other => other,
+        }
     }
 
     fn poll_close(
@@ -5532,6 +6310,66 @@ where
         None => payload,
     };
     sink.send(Message::Binary(to_send)).await
+}
+
+/// Deliver one AUTH result and record a grant as usable only after the
+/// WebSocket sink has accepted and flushed the complete response. The
+/// `ServiceAdmissionSink` keeps its fixed pre-auth deadline armed throughout
+/// this await, including when a durable admission commit has already moved the
+/// gate to `Granted`.
+async fn deliver_auth_result_response_v1<S, B>(
+    sink: &mut ServiceAdmissionSink<S, B>,
+    session: Option<&mut pir_runtime_core::channel::Session>,
+    result: &pir_service_protocol::AuthResultV1,
+) -> tokio_tungstenite::tungstenite::Result<()>
+where
+    S: futures_util::Sink<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
+    B: ServiceResponseBudgetV1 + Unpin,
+{
+    let granted = matches!(result, pir_service_protocol::AuthResultV1::Granted(_));
+    let response = encode_auth_result_response_v1(result).map_err(|error| {
+        tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(format!(
+            "failed to encode RESP_AUTH_RESULT_V1: {error}"
+        )))
+    })?;
+    send_resp(sink, session, response).await?;
+    if granted {
+        sink.mark_auth_result_delivered();
+    }
+    Ok(())
+}
+
+/// Deliver a complementary Harmony attach result under the same fixed
+/// pre-authorization write deadline as a primary AUTH result. Installing the
+/// attached gate is not enough: only a fully flushed `Attached` response makes
+/// backend work usable on this socket. Rejections leave the deadline armed so
+/// a client may attempt a fresh, independently valid attach while time remains.
+async fn deliver_harmony_attach_result_response_v1<S, B>(
+    sink: &mut ServiceAdmissionSink<S, B>,
+    session: Option<&mut pir_runtime_core::channel::Session>,
+    result: &HarmonyAttachResultV1,
+) -> tokio_tungstenite::tungstenite::Result<()>
+where
+    S: futures_util::Sink<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
+    B: ServiceResponseBudgetV1 + Unpin,
+{
+    let attached = matches!(result, HarmonyAttachResultV1::Attached { .. });
+    let response = encode_harmony_attach_result_response_v1(result).map_err(|error| {
+        tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(format!(
+            "failed to encode RESP_HARMONY_ATTACH_V1: {error}"
+        )))
+    })?;
+    send_resp(sink, session, response).await?;
+    if attached {
+        sink.mark_auth_result_delivered();
+    }
+    Ok(())
 }
 
 // `feed_resp` (a per-frame `sink.feed()` variant of `send_resp`) was
@@ -5609,6 +6447,7 @@ where
             }
         }
     }
+
     sink.send(Message::Binary(buf)).await
 }
 
@@ -5789,27 +6628,7 @@ fn read_exact_secret_v1<const N: usize>(
     path: &std::path::Path,
     label: &str,
 ) -> Result<[u8; N], String> {
-    #[cfg(unix)]
-    {
-        read_exact_secret_unix_v1(path, label)
-    }
-
-    #[cfg(not(unix))]
-    {
-        // Keep the portable path deliberately conservative. Unix builds use
-        // read_exact_secret_unix_v1 so inspection and reading share one FD.
-        let mut bytes = read_regular_file_bounded_v1(path, N, label)?;
-        if bytes.len() != N {
-            bytes.zeroize();
-            return Err(format!("{label} must contain exactly {N} raw bytes"));
-        }
-        let result = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| format!("{label} must contain exactly {N} raw bytes"));
-        bytes.zeroize();
-        result
-    }
+    pir_private_files::read_exact_private_file_v1(path, label)
 }
 
 type CashuEpochKeysV1 = (u64, Vec<(u64, [u8; 32])>);
@@ -5930,195 +6749,20 @@ fn parse_cashu_exposure_limits_v1(
     Ok(limits)
 }
 
-#[cfg(unix)]
-fn read_exact_secret_unix_v1<const N: usize>(
-    path: &std::path::Path,
-    label: &str,
-) -> Result<[u8; N], String> {
-    use rustix::fs::{self, FileType, Mode, OFlags};
-
-    // O_NOFOLLOW makes the single open reject a symlink. fstat below and both
-    // reads operate on this exact descriptor, never on the path again.
-    let fd = fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| format!("failed to open {label} {}: {error}", path.display()))?;
-    let stat = fs::fstat(&fd)
-        .map_err(|error| format!("failed to inspect open {label} {}: {error}", path.display()))?;
-    if !FileType::from_raw_mode(stat.st_mode).is_file() {
-        return Err(format!("{label} is not a regular file: {}", path.display()));
-    }
-    if stat.st_uid != rustix::process::geteuid().as_raw() {
-        return Err(format!("{label} must be owned by the effective user"));
-    }
-    if stat.st_mode & 0o077 != 0 {
-        return Err(format!("{label} must not be group/world accessible"));
-    }
-    if u64::try_from(stat.st_size).ok() != Some(N as u64) {
-        return Err(format!("{label} must contain exactly {N} raw bytes"));
-    }
-
-    let mut file = File::from(fd);
-    let mut bytes = [0u8; N];
-    if let Err(error) = file.read_exact(&mut bytes) {
-        bytes.zeroize();
-        return Err(format!(
-            "failed to read {label} {}: {error}",
-            path.display()
-        ));
-    }
-    let mut extra = [0u8; 1];
-    match file.read(&mut extra) {
-        Ok(0) => Ok(bytes),
-        Ok(_) => {
-            bytes.zeroize();
-            Err(format!("{label} changed while it was read"))
-        }
-        Err(error) => {
-            bytes.zeroize();
-            Err(format!(
-                "failed to finish reading {label} {}: {error}",
-                path.display()
-            ))
-        }
-    }
-}
-
-/// Resolve one sensitive SQLite database through an owner-only canonical
-/// parent. The 0700 directory is the local single-user boundary protecting
+/// Resolve one sensitive SQLite database through a pinned, symlink-free parent
+/// walk. The final 0700 directory is the local single-user boundary protecting
 /// both the main file and SQLite's runtime `-wal`/`-shm` sidecars; the final
-/// component must independently be a real euid-owned mode-0600 file.
+/// component must independently be a single-link euid-owned mode-0600 file.
 fn validate_existing_private_sqlite_path_v1(
     path: &std::path::Path,
     label: &str,
 ) -> Result<PathBuf, String> {
-    let configured = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("failed to inspect {label} {}: {error}", path.display()))?;
-    if configured.file_type().is_symlink() || !configured.file_type().is_file() {
-        return Err(format!(
-            "{label} must be a non-symlink regular file: {}",
-            path.display()
-        ));
-    }
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| format!("{label} path has no filename: {}", path.display()))?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let canonical_parent = parent.canonicalize().map_err(|error| {
-        format!(
-            "failed to resolve {label} parent {}: {error}",
-            parent.display()
-        )
-    })?;
-    ensure_private_sqlite_parent_v1(&canonical_parent, label)?;
-    let canonical = canonical_parent.join(file_name);
-    let resolved = std::fs::symlink_metadata(&canonical).map_err(|error| {
-        format!(
-            "failed to inspect resolved {label} {}: {error}",
-            canonical.display()
-        )
-    })?;
-    if resolved.file_type().is_symlink() || !resolved.file_type().is_file() {
-        return Err(format!(
-            "resolved {label} must be a non-symlink regular file: {}",
-            canonical.display()
-        ));
-    }
-    ensure_private_sqlite_file_v1(&resolved, &canonical, label)?;
-    ensure_same_sqlite_file_v1(&configured, &resolved, label)?;
-    Ok(canonical)
-}
-
-#[cfg(unix)]
-fn ensure_private_sqlite_parent_v1(path: &std::path::Path, label: &str) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-        format!(
-            "failed to inspect {label} parent {}: {error}",
-            path.display()
-        )
-    })?;
-    if metadata.file_type().is_symlink()
-        || !metadata.file_type().is_dir()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o777 != 0o700
-    {
-        return Err(format!(
-            "{label} parent must be a real directory owned by the effective user with mode 0700: {}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_private_sqlite_parent_v1(path: &std::path::Path, label: &str) -> Result<(), String> {
-    Err(format!(
-        "{label} parent {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
-        path.display()
-    ))
-}
-
-#[cfg(unix)]
-fn ensure_private_sqlite_file_v1(
-    metadata: &std::fs::Metadata,
-    path: &std::path::Path,
-    label: &str,
-) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    if metadata.uid() != rustix::process::geteuid().as_raw() {
-        return Err(format!(
-            "{label} must be owned by the effective user: {}",
-            path.display()
-        ));
-    }
-    if metadata.mode() & 0o777 != 0o600 {
-        return Err(format!("{label} must have mode 0600: {}", path.display()));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_private_sqlite_file_v1(
-    _metadata: &std::fs::Metadata,
-    path: &std::path::Path,
-    label: &str,
-) -> Result<(), String> {
-    Err(format!(
-        "{label} {} is unsupported on non-Unix platforms because owner and mode checks cannot be enforced",
-        path.display()
-    ))
-}
-
-#[cfg(unix)]
-fn ensure_same_sqlite_file_v1(
-    configured: &std::fs::Metadata,
-    resolved: &std::fs::Metadata,
-    label: &str,
-) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-    if configured.dev() != resolved.dev() || configured.ino() != resolved.ino() {
-        return Err(format!(
-            "configured {label} changed while its canonical parent was resolved"
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_same_sqlite_file_v1(
-    _configured: &std::fs::Metadata,
-    _resolved: &std::fs::Metadata,
-    label: &str,
-) -> Result<(), String> {
-    Err(format!(
-        "{label} is unsupported on non-Unix platforms because file identity checks cannot be enforced"
-    ))
+    pir_private_files::checked_existing_private_file_v1(
+        path,
+        pir_private_files::PrivateFileModeV1::ReadWrite,
+        label,
+    )
+    .map(|checked| checked.path().to_path_buf())
 }
 
 fn private_sqlite_paths_alias_v1(
@@ -6156,9 +6800,15 @@ mod secret_loader_tests_v1 {
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    fn private_tempdir() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     #[test]
     fn exact_secret_loader_rejects_symlink() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let target = dir.path().join("target.key");
         let link = dir.path().join("link.key");
         write_secret(&target, &[0x11; 32], 0o600);
@@ -6169,17 +6819,16 @@ mod secret_loader_tests_v1 {
 
     #[test]
     fn exact_secret_loader_rejects_group_or_world_access() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("wide.key");
         write_secret(&path, &[0x22; 32], 0o640);
 
-        let error = read_exact_secret_v1::<32>(&path, "test key").unwrap_err();
-        assert!(error.contains("group/world"));
+        assert!(read_exact_secret_v1::<32>(&path, "test key").is_err());
     }
 
     #[test]
     fn exact_secret_loader_rejects_wrong_length() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let short = dir.path().join("short.key");
         let long = dir.path().join("long.key");
         write_secret(&short, &[0x33; 31], 0o600);
@@ -6190,8 +6839,47 @@ mod secret_loader_tests_v1 {
     }
 
     #[test]
+    fn exact_secret_loader_rejects_hardlink_and_fifo() {
+        use std::process::Command;
+
+        let dir = private_tempdir();
+        let path = dir.path().join("secret.key");
+        let hard = dir.path().join("hard.key");
+        write_secret(&path, &[0x45; 32], 0o600);
+        fs::hard_link(&path, &hard).unwrap();
+        assert!(read_exact_secret_v1::<32>(&path, "test key").is_err());
+        fs::remove_file(&hard).unwrap();
+
+        let fifo = dir.path().join("fifo.key");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        fs::set_permissions(&fifo, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(read_exact_secret_v1::<32>(&fifo, "test key").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn exact_secret_loader_rejects_extended_acl() {
+        use std::process::Command;
+
+        let dir = private_tempdir();
+        let path = dir.path().join("secret.key");
+        write_secret(&path, &[0x46; 32], 0o600);
+        assert!(Command::new("chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        assert!(read_exact_secret_v1::<32>(&path, "test key").is_err());
+    }
+
+    #[test]
     fn cashu_epoch_key_loader_requires_exact_paired_unique_configuration() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let first = dir.path().join("first.key");
         let second = dir.path().join("second.key");
         write_secret(&first, &[0x31; 32], 0o600);
@@ -6310,7 +6998,7 @@ mod secret_loader_tests_v1 {
 
     #[test]
     fn sensitive_sqlite_path_requires_private_parent_owner_mode_and_no_symlink() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let private = dir.path().join("private");
         private_directory(&private);
         let database = private.join("provider.sqlite3");
@@ -6329,11 +7017,7 @@ mod secret_loader_tests_v1 {
         );
         let link = private.join("provider-link.sqlite3");
         symlink(&database, &link).unwrap();
-        assert!(
-            validate_existing_private_sqlite_path_v1(&link, "provider store")
-                .unwrap_err()
-                .contains("non-symlink")
-        );
+        assert!(validate_existing_private_sqlite_path_v1(&link, "provider store").is_err());
 
         let public = dir.path().join("public");
         fs::create_dir(&public).unwrap();
@@ -6342,15 +7026,13 @@ mod secret_loader_tests_v1 {
         fs::write(&public_database, b"state").unwrap();
         fs::set_permissions(&public_database, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(
-            validate_existing_private_sqlite_path_v1(&public_database, "provider store")
-                .unwrap_err()
-                .contains("mode 0700")
+            validate_existing_private_sqlite_path_v1(&public_database, "provider store").is_err()
         );
     }
 
     #[test]
-    fn sensitive_sqlite_path_detects_same_inode_alias() {
-        let dir = tempdir().unwrap();
+    fn sensitive_sqlite_path_rejects_same_inode_hardlinks() {
+        let dir = private_tempdir();
         let private = dir.path().join("private");
         private_directory(&private);
         let store = private.join("provider.sqlite3");
@@ -6358,11 +7040,12 @@ mod secret_loader_tests_v1 {
         fs::write(&store, b"state").unwrap();
         fs::set_permissions(&store, fs::Permissions::from_mode(0o600)).unwrap();
         fs::hard_link(&store, &authority).unwrap();
-        let store = validate_existing_private_sqlite_path_v1(&store, "provider store").unwrap();
-        let authority =
-            validate_existing_private_sqlite_path_v1(&authority, "provider rollback authority")
-                .unwrap();
-        assert!(private_sqlite_paths_alias_v1(&store, &authority).unwrap());
+        assert!(validate_existing_private_sqlite_path_v1(&store, "provider store").is_err());
+        assert!(validate_existing_private_sqlite_path_v1(
+            &authority,
+            "provider rollback authority"
+        )
+        .is_err());
     }
 }
 
@@ -6511,16 +7194,125 @@ mod experimental_arc_opt_in_tests_v1 {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ServiceRollbackAuthoritySourceV1<'a> {
+    LocalSqlite(&'a Path),
+    RemoteConfig(&'a Path),
+}
+
+fn service_rollback_authority_source_v1<'a>(
+    local_sqlite: Option<&'a Path>,
+    remote_config: Option<&'a Path>,
+    allow_local_dev: bool,
+) -> Result<ServiceRollbackAuthoritySourceV1<'a>, String> {
+    match (local_sqlite, remote_config, allow_local_dev) {
+        (Some(path), None, true) => Ok(ServiceRollbackAuthoritySourceV1::LocalSqlite(path)),
+        (Some(_), None, false) => Err(
+            "--service-rollback-authority is development/test-only and requires --allow-local-service-rollback-authority-dev"
+                .to_owned(),
+        ),
+        (None, Some(path), false) => Ok(ServiceRollbackAuthoritySourceV1::RemoteConfig(path)),
+        (None, Some(_), true) => Err(
+            "--allow-local-service-rollback-authority-dev is valid only with --service-rollback-authority"
+                .to_owned(),
+        ),
+        (None, None, true) => Err(
+            "--allow-local-service-rollback-authority-dev requires --service-rollback-authority"
+                .to_owned(),
+        ),
+        (None, None, false) => Err(
+            "exactly one of --service-rollback-authority or --service-remote-rollback-authority-config is required"
+                .to_owned(),
+        ),
+        (Some(_), Some(_), _) => Err(
+            "--service-rollback-authority and --service-remote-rollback-authority-config are mutually exclusive"
+                .to_owned(),
+        ),
+    }
+}
+
+fn open_remote_service_rollback_authority_v1(
+    provider_id: [u8; 32],
+    config_path: &Path,
+) -> Result<Arc<dyn RollbackFloorAuthorityV1>, String> {
+    let configured =
+        load_remote_rollback_authority_deployment_for_business_domain_v1(config_path, provider_id)
+            .map_err(|error| {
+                format!("failed to load remote rollback-authority configuration: {error}")
+            })?;
+    let (client, codec, operation_timeout) = configured.into_parts();
+    let authority =
+        RemoteProviderRollbackFloorAuthorityV1::new(provider_id, client, codec, operation_timeout)
+            .map_err(|error| format!("failed to construct remote rollback authority: {error}"))?;
+    Ok(Arc::new(authority))
+}
+
+fn provider_store_startup_log_line_v1(elapsed_ms: u128) -> String {
+    format!("  Provider store startup_check=ok elapsed_ms={elapsed_ms}")
+}
+
+#[cfg(test)]
+mod service_rollback_authority_source_tests_v1 {
+    use super::{
+        provider_store_startup_log_line_v1, service_rollback_authority_source_v1,
+        ServiceRollbackAuthoritySourceV1,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn local_and_remote_sources_are_strictly_exclusive() {
+        let local = Path::new("/local.sqlite3");
+        let remote = Path::new("/remote.toml");
+        assert!(matches!(
+            service_rollback_authority_source_v1(Some(local), None, true).unwrap(),
+            ServiceRollbackAuthoritySourceV1::LocalSqlite(path) if path == local
+        ));
+        assert!(matches!(
+            service_rollback_authority_source_v1(None, Some(remote), false).unwrap(),
+            ServiceRollbackAuthoritySourceV1::RemoteConfig(path) if path == remote
+        ));
+        assert!(service_rollback_authority_source_v1(Some(local), None, false).is_err());
+        assert!(service_rollback_authority_source_v1(None, Some(remote), true).is_err());
+        assert!(service_rollback_authority_source_v1(None, None, false).is_err());
+        assert!(service_rollback_authority_source_v1(None, None, true).is_err());
+        assert!(service_rollback_authority_source_v1(Some(local), Some(remote), false).is_err());
+        assert!(service_rollback_authority_source_v1(Some(local), Some(remote), true).is_err());
+    }
+
+    #[test]
+    fn serving_startup_log_omits_exact_business_inventory() {
+        let line = provider_store_startup_log_line_v1(17);
+        assert_eq!(line, "  Provider store startup_check=ok elapsed_ms=17");
+        for forbidden in [
+            "store_generation",
+            "spend_commit_seq",
+            "namespace_rows",
+            "spent_capability_rows",
+            "free_rate_limit_bucket_rows",
+            "cashu_swap_intent_rows",
+            "cashu_custody_lot_rows",
+            "cashu_custody_note_rows",
+            "cashu_custody_export_batch_rows",
+        ] {
+            assert!(!line.contains(forbidden), "leaked {forbidden}");
+        }
+    }
+}
+
 fn load_strict_service_admission_v1(
     args: &CliArgs,
     now_unix: u64,
 ) -> Result<Option<StrictServiceAdmissionRuntimeV1>, String> {
+    #[cfg(feature = "standard-cashu-process-e2e")]
+    let test_only_service_https_configured = args.test_only_service_https_root_pem.is_some();
     let has_partial_configuration = args.service_policy_path.is_some()
         || !args.service_retained_policy_paths.is_empty()
         || args.service_provider_id_hex.is_some()
         || args.service_policy_key_hex.is_some()
         || args.service_store_path.is_some()
         || args.service_rollback_authority_path.is_some()
+        || args.service_remote_rollback_authority_config_path.is_some()
+        || args.allow_local_service_rollback_authority_dev
         || args.service_free_ip_key_path.is_some()
         || args.service_trust_direct_peer_ip
         || !args.service_bat_key_paths.is_empty()
@@ -6536,7 +7328,17 @@ fn load_strict_service_admission_v1(
         || args.service_shared_issuer_settlement_key_hex.is_some()
         || args.service_shared_clearing_key_path.is_some()
         || args.service_shared_idempotency_key_path.is_some()
-        || args.service_shared_minimum_authorization_epoch.is_some();
+        || args.service_shared_minimum_authorization_epoch.is_some()
+        || {
+            #[cfg(feature = "standard-cashu-process-e2e")]
+            {
+                test_only_service_https_configured
+            }
+            #[cfg(not(feature = "standard-cashu-process-e2e"))]
+            {
+                false
+            }
+        };
     if !args.require_service_auth_v1 {
         if has_partial_configuration {
             return Err(
@@ -6608,45 +7410,51 @@ fn load_strict_service_admission_v1(
         .service_store_path
         .as_deref()
         .ok_or_else(|| "--service-store is required".to_owned())?;
-    let rollback_path = args
-        .service_rollback_authority_path
-        .as_deref()
-        .ok_or_else(|| "--service-rollback-authority is required".to_owned())?;
+    let rollback_source = service_rollback_authority_source_v1(
+        args.service_rollback_authority_path.as_deref(),
+        args.service_remote_rollback_authority_config_path
+            .as_deref(),
+        args.allow_local_service_rollback_authority_dev,
+    )?;
     let canonical_store =
         validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
-    let canonical_rollback =
-        validate_existing_private_sqlite_path_v1(rollback_path, "provider rollback authority")?;
-    if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
-        return Err(
-            "provider store and rollback authority must be different files/inodes".to_owned(),
-        );
-    }
 
     let options = StoreOptions::default();
     let store_startup_check_started = Instant::now();
-    let rollback_authority = Arc::new(
-        SqliteRollbackFloorAuthorityV1::open_existing(&canonical_rollback, options.busy_timeout)
-            .map_err(|error| format!("failed to open rollback authority: {error}"))?,
-    );
+    let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = match rollback_source {
+        ServiceRollbackAuthoritySourceV1::LocalSqlite(path) => {
+            let canonical_rollback =
+                validate_existing_private_sqlite_path_v1(path, "provider rollback authority")?;
+            if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
+                return Err(
+                    "provider store and rollback authority must be different files/inodes"
+                        .to_owned(),
+                );
+            }
+            eprintln!(
+                "!!! WARNING: LOCAL SQLITE SERVICE ROLLBACK AUTHORITY IS DEVELOPMENT/TEST ONLY; USE --service-remote-rollback-authority-config FOR PRODUCTION !!!"
+            );
+            Arc::new(
+                SqliteRollbackFloorAuthorityV1::open_existing(
+                    &canonical_rollback,
+                    options.busy_timeout,
+                )
+                .map_err(|error| format!("failed to open rollback authority: {error}"))?,
+            )
+        }
+        ServiceRollbackAuthoritySourceV1::RemoteConfig(path) => {
+            open_remote_service_rollback_authority_v1(provider_id, path)?
+        }
+    };
     let provider_store =
         ProviderStore::open_existing(&canonical_store, provider_id, options, rollback_authority)
             .map_err(|error| format!("failed to open provider spend store: {error}"))?;
-    let store_inventory = provider_store
+    let _store_inventory = provider_store
         .operational_inventory()
         .map_err(|error| format!("failed to read provider store operational inventory: {error}"))?;
-    println!(
-        "  Provider store startup check: elapsed_ms={} store_generation={} spend_commit_seq={} namespace_rows={} spent_capability_rows={} free_rate_limit_bucket_rows={} cashu_swap_intent_rows={} cashu_custody_lot_rows={} cashu_custody_note_rows={} cashu_custody_export_batch_rows={}",
-        store_startup_check_started.elapsed().as_millis(),
-        store_inventory.observed_store_generation,
-        store_inventory.observed_spend_commit_seq,
-        store_inventory.namespace_rows,
-        store_inventory.spent_capability_rows,
-        store_inventory.free_rate_limit_bucket_rows,
-        store_inventory.cashu_swap_intent_rows,
-        store_inventory.cashu_custody_lot_rows,
-        store_inventory.cashu_custody_note_rows,
-        store_inventory.cashu_custody_export_batch_rows,
-    );
+    let startup_line =
+        provider_store_startup_log_line_v1(store_startup_check_started.elapsed().as_millis());
+    println!("{startup_line}");
 
     let free_ip_subject_key = match args.service_free_ip_key_path.as_deref() {
         Some(path) => Some(
@@ -6876,12 +7684,35 @@ fn load_strict_service_admission_v1(
         })
     };
 
+    #[cfg(feature = "standard-cashu-process-e2e")]
+    let test_only_webpki_root_pem = args
+        .test_only_service_https_root_pem
+        .as_deref()
+        .map(|path| {
+            pir_private_files::read_private_file_bounded_v1(
+                path,
+                16 * 1024,
+                pir_private_files::PrivateFileModeV1::ReadOnlyOrReadWrite,
+                "test-only service WebPKI root",
+            )
+            .map(|bytes| Arc::<[u8]>::from(bytes.as_slice()))
+        })
+        .transpose()?;
     let http_transport = ProviderAdmissionHttpsTransportV1 {
-        client: StrictHttpsClientV1::new(Duration::from_secs(5), Duration::from_secs(15))?,
+        connect_timeout: Duration::from_secs(5),
+        io_timeout: Duration::from_secs(15),
+        #[cfg(feature = "standard-cashu-process-e2e")]
+        test_only_webpki_root_pem,
     };
     if let Some(shared) = shared_issuer.as_ref() {
+        http_transport
+            .validate_trust(
+                &shared.authorization.claims.redeem_endpoint,
+                &shared.authorization.claims.redeem_leaf_spki_sha256_pins,
+            )
+            .map_err(|error| format!("shared issuer HTTPS trust is invalid: {error}"))?;
         shared
-            .committer(&http_transport)
+            .committer(&provider_store, &http_transport)
             .map_err(|error| format!("shared issuer clearing configuration is invalid: {error}"))?;
         shared
             .authorization
@@ -7031,7 +7862,7 @@ fn load_strict_service_admission_v1(
                     let digest = binding
                         .binding_digest()
                         .map_err(|error| format!("invalid shared issuer binding: {error}"))?;
-                    let rule = shared
+                    shared
                         .authorization
                         .rule_for_binding(&digest)
                         .ok_or_else(|| {
@@ -7040,10 +7871,10 @@ fn load_strict_service_admission_v1(
                         })?;
                     if offer.issuer_id != shared.authorization.claims.issuer_id
                         || scope.scope.provider_id != shared.authorization.claims.provider_id
-                        || rule.accepted_value != binding.claims.amount
+                        || offer.endpoint != shared.authorization.claims.redeem_endpoint
                     {
                         return Err(
-                            "shared issuer offer audience or value does not match clearing authorization"
+                            "shared issuer offer audience or endpoint does not match clearing authorization"
                                 .to_owned(),
                         );
                     }
@@ -7097,6 +7928,12 @@ fn validate_cashu_runtime_configuration_v1(
         for scope in &policy.scopes {
             for offer in &scope.offers {
                 if let Some(manifest) = offer.cashu_mint_manifest.as_ref() {
+                    runtime
+                        .http_transport
+                        .validate_trust(&manifest.mint_endpoint, &manifest.leaf_spki_sha256_pins)
+                        .map_err(|error| {
+                            format!("standard Cashu mint HTTPS trust is invalid: {error}")
+                        })?;
                     required.insert((manifest.mint_id(), manifest.unit.clone()));
                 }
             }
@@ -7190,6 +8027,12 @@ fn cashu_inventory_within_limits_v1(
 #[tokio::main]
 async fn main() {
     let args = parse_args();
+    let online_v2full_auth_limit = online_v2full_auth_limit_v1(
+        args.pool_size,
+        args.service_max_concurrent_auth,
+        args.service_max_concurrent_online_v2full_auth,
+    )
+    .unwrap_or_else(|error| fatal_cli(error));
     validate_legacy_experimental_arc_cli_v1(
         args.allow_experimental_arc,
         args.require_arc,
@@ -7202,11 +8045,14 @@ async fn main() {
             "!!! WARNING: EXPERIMENTAL ARC ENABLED FOR THIS PIR SERVER; THE IMPLEMENTATION IS UNAUDITED AND MUST NOT BE USED IN PRODUCTION !!!"
         );
     }
-    UNSAFE_DEBUG_QUERY_LOGGING.store(args.unsafe_debug_query_logging, Ordering::Relaxed);
-    if args.unsafe_debug_query_logging {
-        eprintln!(
-            "!!! UNSAFE DEBUG QUERY LOGGING ENABLED: logs may expose peer IPs, client IDs, request timing, database/group selections and byte sizes; never enable in production !!!"
-        );
+    #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
+    {
+        UNSAFE_DEBUG_QUERY_LOGGING.store(args.unsafe_debug_query_logging, Ordering::Relaxed);
+        if args.unsafe_debug_query_logging {
+            eprintln!(
+                "!!! UNSAFE DEBUG QUERY LOGGING ENABLED: logs may expose peer IPs, client IDs, request timing, database/group selections and byte sizes; never enable in production !!!"
+            );
+        }
     }
     let role_name = match args.role {
         ServerRole::Primary => "primary",
@@ -7226,7 +8072,7 @@ async fn main() {
     if !args.serve_hints && !args.serve_queries {
         eprintln!(
             "ERROR: must enable at least one of --serve-hints / --serve-queries.\n  \
-             Hint-only deployment (HarmonyPIR V2 pool):  --serve-hints --pool-size N\n  \
+             Hint-only deployment (HarmonyPIR V2 pool):  --serve-hints --pool-size N [--pool-db-id ID]\n  \
              Query-only deployment (DPF / OnionPIR / HarmonyPIR query): --serve-queries\n  \
              Both (legacy single-host or pir1 Hetzner topology):       --serve-hints --serve-queries"
         );
@@ -7970,11 +8816,11 @@ async fn main() {
 
                 let mut chunk_index_tables: Vec<Vec<u32>> = Vec::with_capacity(k_chunk);
                 let mut chunk_servers: Vec<PirServer> = Vec::with_capacity(k_chunk);
-                for g in 0..k_chunk {
+                for (g, chunk_table) in chunk_tables.iter().enumerate().take(k_chunk) {
                     let mut server = PirServer::new(chunk_bins as u64);
                     let mut index_table = vec![0u32; padded_chunk];
                     for bin in 0..chunk_bins {
-                        let eid = chunk_tables[g][bin];
+                        let eid = chunk_table[bin];
                         if eid != u32::MAX {
                             index_table[bin] = eid;
                         }
@@ -8418,6 +9264,23 @@ async fn main() {
     )
     .unwrap_or_else(|error| fatal_cli(format!("service admission V1: {error}")));
     let service_admission_enforcement = if let Some(runtime) = service_admission.as_ref() {
+        if args.pool_size > 0
+            && online_v2full_auth_limit == 0
+            && runtime.all_policies().any(|policy| {
+                policy.scopes.iter().any(|scope| {
+                    scope.scope.backend == ServiceBackendIdV1::HarmonyPirV2
+                        && scope.scope.workload == ServiceWorkloadIdV1::HarmonyHintBundleV1
+                        && scope.offers.iter().any(|offer| {
+                            offer.verification
+                                != pir_service_protocol::VerificationMode::ProviderLocal
+                        })
+                })
+            })
+        {
+            fatal_cli(
+                "online-authority Harmony hint offers require --pool-size and --service-max-concurrent-auth to leave at least one provider-local slot",
+            );
+        }
         println!(
             "  Service admission V1: enforced (policy epoch={}, digest={})",
             runtime.policy.policy().policy_epoch,
@@ -8499,17 +9362,21 @@ async fn main() {
             prp_backend: hint_pool::default_prp_backend(),
             pool_dir: args.pool_dir.clone(),
         };
-        let pool_db_id = 0u8;
-        let main_db = state
-            .get_db(pool_db_id)
-            .expect("main database must be loaded");
+        let pool_db_id = args.pool_db_id;
+        let pool_db = state.get_db(pool_db_id).unwrap_or_else(|| {
+            panic!(
+                "HarmonyPIR hint pool database db_id {} must be loaded",
+                pool_db_id
+            )
+        });
         let backend_name = match pool_config.prp_backend {
             harmonypir::remote::PRP_HMR12 => "HMR12",
             harmonypir::remote::PRP_FASTPRP => "FastPRP",
             _ => "unknown",
         };
         println!(
-            "  HarmonyPIR V2 hint pool: size={}, backend={}, dir={}",
+            "  HarmonyPIR V2 hint pool: db_id={}, size={}, backend={}, dir={}",
+            pool_db_id,
             pool_config.pool_size,
             backend_name,
             pool_config
@@ -8518,8 +9385,12 @@ async fn main() {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "memory-only".into())
         );
+        println!(
+            "  HarmonyPIR V2 online-authority AUTH limit: {} (provider-local headroom reserved)",
+            online_v2full_auth_limit
+        );
         Some(
-            hint_pool::HintPool::new(pool_config, pool_db_id, main_db)
+            hint_pool::HintPool::new(pool_config, pool_db_id, pool_db)
                 .unwrap_or_else(|e| panic!("HarmonyPIR hint pool init failed: {}", e)),
         )
     } else {
@@ -8573,7 +9444,7 @@ async fn main() {
                 map.retain(|_token, pend| pend.created_at >= cutoff);
                 let evicted = before.saturating_sub(map.len());
                 if evicted > 0 {
-                    println!(
+                    unsafe_debug_log!(
                         "[v2-half-pending] evicted {} stale entr(ies), {} remaining",
                         evicted,
                         map.len()
@@ -8628,9 +9499,11 @@ async fn main() {
     let client_counter = std::sync::atomic::AtomicU64::new(1);
     let connection_limiter = Arc::new(Semaphore::new(args.max_connections));
     let service_auth_limiter = Arc::new(Semaphore::new(args.service_max_concurrent_auth));
+    let online_v2full_auth_limiter = Arc::new(Semaphore::new(online_v2full_auth_limit));
     let reassembly_limiter = Arc::new(Semaphore::new(MAX_GLOBAL_REASSEMBLY_BYTES));
     let websocket_handshake_timeout = Duration::from_millis(args.websocket_handshake_timeout_ms);
     let connection_idle_timeout = Duration::from_millis(args.connection_idle_timeout_ms);
+    let v2full_dispatch_timeout = connection_idle_timeout.min(V2_FULL_POST_GRANT_RESERVATION_MAX);
     let service_pre_auth_timeout = Duration::from_millis(args.service_pre_auth_timeout_ms);
 
     loop {
@@ -8654,6 +9527,7 @@ async fn main() {
         let client_id = client_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let server = Arc::clone(&server);
         let service_auth_limiter = Arc::clone(&service_auth_limiter);
+        let online_v2full_auth_limiter = Arc::clone(&online_v2full_auth_limiter);
         let reassembly_limiter = Arc::clone(&reassembly_limiter);
 
         tokio::spawn(async move {
@@ -8685,9 +9559,13 @@ async fn main() {
             };
             unsafe_debug_log!("[{}] Connected (id={})", peer, client_id);
             let (raw_sink, mut ws_stream) = ws.split();
-            let mut sink =
-                ServiceAdmissionSink::new(raw_sink, server.service_admission_enforcement);
             let pre_auth_started = Instant::now();
+            let mut sink = ServiceAdmissionSink::new(
+                raw_sink,
+                server.service_admission_enforcement,
+                pre_auth_started,
+                service_pre_auth_timeout,
+            );
 
             // Per-connection admin auth state. Lives until the connection
             // drops; disconnecting is logging out.
@@ -8707,6 +9585,11 @@ async fn main() {
             // application frame; legacy clients keep working.
             let mut channel_session: Option<pir_runtime_core::channel::Session> = None;
             let mut free_admission: Option<FreeAdmissionCommitterV1> = None;
+            // A Payment V1 V2Full authorization reserves one durable pool file
+            // before credential verification and keeps its inode lock here
+            // after credential commit. Only the first main dispatch durably
+            // consumes it; lost grants and pre-dispatch disconnects return it.
+            let mut reserved_harmony_v2_full: Option<PendingHarmonyV2FullEntryV1> = None;
 
             // Per-connection ARC state: set to true after the first valid
             // REQ_CREDENTIAL_PRESENT. The presentation_context for this
@@ -8729,6 +9612,18 @@ async fn main() {
             let mut client_supports_chunks = false;
 
             loop {
+                if reserved_harmony_v2_full
+                    .as_ref()
+                    .and_then(|pending| pending.dispatch_deadline)
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    unsafe_debug_log!("[{}] post-grant V2Full dispatch deadline expired", peer);
+                    break;
+                }
+                if sink.pre_auth_deadline_has_expired() {
+                    unsafe_debug_log!("[{}] pre-authorization write deadline expired", peer);
+                    break;
+                }
                 if sink.pre_auth_egress_is_terminal() {
                     unsafe_debug_log!("[{}] pre-authorization egress budget exhausted", peer);
                     break;
@@ -8736,7 +9631,7 @@ async fn main() {
                 let Some((read_timeout, pre_auth_deadline_is_limiting)) =
                     connection_read_timeout_v1(
                         server.service_admission_enforcement,
-                        sink.has_committed_service_grant(),
+                        sink.auth_result_delivered(),
                         pre_auth_started.elapsed(),
                         service_pre_auth_timeout,
                         connection_idle_timeout,
@@ -8745,10 +9640,27 @@ async fn main() {
                     unsafe_debug_log!("[{}] pre-authorization deadline expired", peer);
                     break;
                 };
+                let Some((read_timeout, v2full_dispatch_deadline_is_limiting)) =
+                    cap_read_timeout_by_dispatch_deadline_v1(
+                        read_timeout,
+                        reserved_harmony_v2_full
+                            .as_ref()
+                            .and_then(|pending| pending.dispatch_deadline),
+                        Instant::now(),
+                    )
+                else {
+                    unsafe_debug_log!("[{}] post-grant V2Full dispatch deadline expired", peer);
+                    break;
+                };
                 let Some(msg) = (match tokio::time::timeout(read_timeout, ws_stream.next()).await {
                     Ok(message) => message,
                     Err(_) => {
-                        if pre_auth_deadline_is_limiting {
+                        if v2full_dispatch_deadline_is_limiting {
+                            unsafe_debug_log!(
+                                "[{}] post-grant V2Full dispatch deadline expired",
+                                peer
+                            );
+                        } else if pre_auth_deadline_is_limiting {
                             unsafe_debug_log!("[{}] pre-authorization deadline expired", peer);
                         } else {
                             unsafe_debug_log!("[{}] idle timeout", peer);
@@ -8777,7 +9689,22 @@ async fn main() {
                         chunk_acc.clear();
                         chunk_permits.clear();
                         chunk_expected = 0;
-                        let _ = sink.send(Message::Pong(p)).await;
+                        if let Some(deadline) = reserved_harmony_v2_full
+                            .as_ref()
+                            .and_then(|pending| pending.dispatch_deadline)
+                        {
+                            match tokio::time::timeout_at(
+                                tokio::time::Instant::from_std(deadline),
+                                sink.send(Message::Pong(p)),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(_)) | Err(_) => break,
+                            }
+                        } else {
+                            let _ = sink.send(Message::Pong(p)).await;
+                        }
                         continue;
                     }
                     Message::Close(_) => break,
@@ -8909,6 +9836,9 @@ async fn main() {
                                 }
                                 Err(e) => {
                                     unsafe_debug_log!("[{}] channel open failed: {}", peer, e);
+                                    if reserved_harmony_v2_full.is_some() {
+                                        break;
+                                    }
                                     let err =
                                         Response::Error(format!("channel open failed: {}", e));
                                     let _ = send_resp(
@@ -8943,14 +9873,60 @@ async fn main() {
                 let body = &payload[1..];
                 sink.meter_pre_auth_response_for_opcode(variant);
 
+                // After a V2Full grant, the hint provider accepts exactly the
+                // bound, encrypted main-dispatch frame. Preflight belongs on
+                // the independent query-provider connection and
+                // should already be complete. This keeps arbitrary handler
+                // awaits out of the scarce reservation's absolute deadline.
+                if let Some(pending) = reserved_harmony_v2_full.as_ref() {
+                    if pending
+                        .dispatch_deadline
+                        .is_some_and(|deadline| Instant::now() >= deadline)
+                        || !is_exact_pending_v2full_dispatch_v1(
+                            pending.db_id,
+                            request_was_encrypted,
+                            payload,
+                        )
+                    {
+                        break;
+                    }
+                }
+
                 // Production V1 admission gate. This check runs before every
                 // legacy credential/mode gate and before any blocking PIR,
                 // hint, OnionPIR, or ORAM work. Therefore a successful legacy
                 // 0x08/0x09 presentation cannot unlock an enforced V1 server.
                 if server.service_admission_enforcement == AdmissionEnforcementV1::Enforced {
+                    // Reject a cleartext expensive opcode before parsing its
+                    // backend body. This preserves secure-channel-first error
+                    // ordering and avoids spending unauthenticated CPU on a
+                    // potentially large request. The gate call also
+                    // terminalizes any already-active paid grant.
+                    if !request_was_encrypted && service_gate_is_backend_opcode_v1(variant) {
+                        let gate_error = sink
+                            .admission_gate_mut()
+                            .reject_malformed_backend_frame(false);
+                        let response = Response::Error(format!(
+                            "service authorization required: {gate_error}"
+                        ));
+                        if let Err(send_error) =
+                            send_resp(&mut sink, channel_session.as_mut(), response.encode()).await
+                        {
+                            unsafe_debug_log!(
+                                "[{}] failed to deliver secure-channel rejection: {}",
+                                peer,
+                                send_error
+                            );
+                            break;
+                        }
+                        continue;
+                    }
                     let backend_frame = match backend_frame_for_service_gate(&server, payload) {
                         Ok(frame) => frame,
                         Err(error) => {
+                            if reserved_harmony_v2_full.is_some() {
+                                break;
+                            }
                             let gate_error = sink
                                 .admission_gate_mut()
                                 .reject_malformed_backend_frame(request_was_encrypted);
@@ -8974,13 +9950,63 @@ async fn main() {
                                 .as_millis(),
                         )
                         .unwrap_or(u64::MAX);
+                        // Preserve the gate's security-first error ordering.
+                        // In particular, an unencrypted expensive frame must
+                        // be rejected as a secure-channel violation even when
+                        // no AUTH result has yet been delivered. Calling the
+                        // gate also retains its terminal-after-spend behavior
+                        // if a granted client later attempts plaintext.
+                        if !request_was_encrypted {
+                            let rejection = match sink.admission_gate_mut().permit_backend_frame(
+                                false,
+                                &backend_frame,
+                                now_monotonic_ms,
+                            ) {
+                                Err(error) => error.to_string(),
+                                Ok(_) => "secure encrypted channel is required".to_owned(),
+                            };
+                            let response = Response::Error(format!(
+                                "service authorization required: {rejection}"
+                            ));
+                            if let Err(send_error) =
+                                send_resp(&mut sink, channel_session.as_mut(), response.encode())
+                                    .await
+                            {
+                                unsafe_debug_log!(
+                                    "[{}] failed to deliver secure-channel rejection: {}",
+                                    peer,
+                                    send_error
+                                );
+                                break;
+                            }
+                            continue;
+                        }
+                        if let Err(error) = sink.require_auth_result_delivered_for_backend() {
+                            let response =
+                                Response::Error(format!("service authorization required: {error}"));
+                            if let Err(send_error) =
+                                send_resp(&mut sink, channel_session.as_mut(), response.encode())
+                                    .await
+                            {
+                                unsafe_debug_log!(
+                                    "[{}] failed to deliver service authorization rejection: {}",
+                                    peer,
+                                    send_error
+                                );
+                                break;
+                            }
+                            continue;
+                        }
                         match sink.admission_gate_mut().permit_backend_frame(
-                            request_was_encrypted,
+                            true,
                             &backend_frame,
                             now_monotonic_ms,
                         ) {
                             Ok(permit) => sink.meter_backend_response(permit),
                             Err(error) => {
+                                if reserved_harmony_v2_full.is_some() {
+                                    break;
+                                }
                                 let response = Response::Error(format!(
                                     "service authorization required: {}",
                                     error
@@ -9278,7 +10304,7 @@ async fn main() {
                                     retry_after_ms: 0,
                                 },
                             )
-                        } else if let Ok(_service_auth_permit) = service_auth_limiter.try_acquire() {
+                        } else {
                             match ServiceWireRequestV1::decode_inner_payload(payload) {
                                 Ok(Some(ServiceWireRequestV1::Auth(request))) => {
                                     let Some(runtime) = server.service_admission.as_ref() else {
@@ -9328,19 +10354,6 @@ async fn main() {
                                         ),
                                     ) {
                                         (Some(selected_policy), Ok(Some(verified_offer))) => {
-                                            let mut provider_local = ProviderStoreBearerCommitterV1::new(
-                                                &runtime.provider_store,
-                                                runtime
-                                                    .bat_keyring
-                                                    .as_ref()
-                                                    .map(|keyring| keyring as &dyn pir_service_store::CashuBatProofVerifierV1),
-                                            );
-                                            if let Some(keyring) =
-                                                runtime.experimental_arc_keyring.as_ref()
-                                            {
-                                                provider_local = provider_local
-                                                    .with_arc_adapter_v1(keyring);
-                                            }
                                             let arc_canonicalizer = if verified_offer
                                                 .offer()
                                                 .authorization
@@ -9354,22 +10367,124 @@ async fn main() {
                                             } else {
                                                 None
                                             };
-                                            let mut composite =
-                                                CompositeAdmissionMethodCommitterV1::new()
-                                                    .with_provider_local(&provider_local);
-                                            if let Some(free) = free_admission.as_ref() {
-                                                composite = composite.with_free(free);
-                                            }
-                                            let standard_cashu = match (
-                                                runtime.cashu_recovery_cipher.as_ref(),
-                                                runtime.cashu_custody_cipher.as_ref(),
-                                                verified_offer
-                                                    .offer()
-                                                    .cashu_mint_manifest
-                                                    .as_ref(),
-                                            ) {
-                                                (Some(recovery), Some(custody), Some(manifest)) => {
+                                            let trusted_catalog = |operation: &OperationStartV1| {
+                                                server.resolve_service_operation_for_policy_v1(
+                                                    selected_policy,
+                                                    operation,
+                                                )
+                                            };
+                                            let arc_canonicalizer_ref = arc_canonicalizer.as_ref().map(
+                                                |canonicalizer| {
+                                                    canonicalizer
+                                                        as &dyn pir_service_protocol::ArcPresentationCanonicalizerV1
+                                                },
+                                            );
+                                            // This first bind is structural and
+                                            // non-consuming. It is intentionally
+                                            // repeated inside the admission gate:
+                                            // only an exact locally bound V2Full
+                                            // attempt may reserve scarce capacity,
+                                            // while the gate remains the sole path
+                                            // to proof verification and commit.
+                                            let v2_full_reservation_db_id =
+                                                bind_auth_begin_v1(
+                                                    &request,
+                                                    verified_offer,
+                                                    &trusted_catalog,
+                                                    arc_canonicalizer_ref,
+                                                )
+                                                .ok()
+                                                .and_then(|attempt| {
+                                                    harmony_v2_full_reservation_db_v1(
+                                                        attempt.operation(),
+                                                    )
+                                                });
+                                            let requires_v2_full_reservation =
+                                                v2_full_reservation_db_id.is_some();
+                                            let requires_online_v2full_authority =
+                                                requires_v2_full_reservation
+                                                    && verified_offer.offer().verification
+                                                        != pir_service_protocol::VerificationMode::ProviderLocal;
+                                            // Online V2Full first acquires its narrower class
+                                            // permit. Only then may it compete for the global
+                                            // AUTH permit, so rejected overflow cannot steal the
+                                            // slot reserved for provider-local verification.
+                                            let mut auth_capacity = try_acquire_auth_capacity_v1(
+                                                &service_auth_limiter,
+                                                &online_v2full_auth_limiter,
+                                                requires_online_v2full_authority,
+                                            );
+                                            let auth_capacity_saturated = auth_capacity.is_none();
+                                            let mut attempt_reservation = if auth_capacity_saturated {
+                                                None
+                                            } else {
+                                                v2_full_reservation_db_id.and_then(|db_id| {
+                                                    server
+                                                        .hint_pool
+                                                        .as_ref()
+                                                        .filter(|pool| {
+                                                            pool.database_id() == db_id
+                                                        })
+                                                        .and_then(|pool| {
+                                                            if requires_online_v2full_authority {
+                                                                pool.try_reserve_preserving_ready_floor(1)
+                                                            } else {
+                                                                pool.try_reserve()
+                                                            }
+                                                        })
+                                                        .map(|reservation| {
+                                                            PendingHarmonyV2FullEntryV1 {
+                                                                db_id,
+                                                                reservation,
+                                                                _online_authority_permit: None,
+                                                                dispatch_deadline: None,
+                                                            }
+                                                        })
+                                                })
+                                            };
+                                            if auth_capacity_saturated
+                                                || (requires_v2_full_reservation
+                                                    && attempt_reservation.is_none())
+                                            {
+                                                pir_service_protocol::AuthResultV1::Rejected(
+                                                    pir_service_protocol::AuthRejectedV1 {
+                                                        code: pir_service_protocol::AuthRejectCode::ServerBusy,
+                                                        retry_after_ms: 1_000,
+                                                    },
+                                                )
+                                            } else {
+                                                let mut provider_local = ProviderStoreBearerCommitterV1::new(
+                                                    &runtime.provider_store,
                                                     runtime
+                                                        .bat_keyring
+                                                        .as_ref()
+                                                        .map(|keyring| keyring as &dyn pir_service_store::CashuBatProofVerifierV1),
+                                                );
+                                                if let Some(keyring) =
+                                                    runtime.experimental_arc_keyring.as_ref()
+                                                {
+                                                    provider_local = provider_local
+                                                        .with_arc_adapter_v1(keyring);
+                                                }
+                                                let mut composite =
+                                                    CompositeAdmissionMethodCommitterV1::new()
+                                                        .with_provider_local(&provider_local);
+                                                if let Some(free) = free_admission.as_ref() {
+                                                    composite = composite.with_free(free);
+                                                }
+                                                let standard_cashu = match (
+                                                    runtime.cashu_recovery_cipher.as_ref(),
+                                                    runtime.cashu_custody_cipher.as_ref(),
+                                                    verified_offer
+                                                        .offer()
+                                                        .cashu_mint_manifest
+                                                        .as_ref(),
+                                                ) {
+                                                    (
+                                                        Some(recovery),
+                                                        Some(custody),
+                                                        Some(manifest),
+                                                    ) => runtime
                                                         .cashu_exposure_limits
                                                         .get(&(
                                                             manifest.mint_id(),
@@ -9386,56 +10501,116 @@ async fn main() {
                                                                     limits,
                                                                 ),
                                                             )
-                                                        })
+                                                        }),
+                                                    _ => None,
+                                                };
+                                                if let Some(committer) = standard_cashu.as_ref() {
+                                                    composite =
+                                                        composite.with_standard_cashu(committer);
                                                 }
-                                                _ => None,
-                                            };
-                                            if let Some(committer) = standard_cashu.as_ref() {
-                                                composite =
-                                                    composite.with_standard_cashu(committer);
-                                            }
-                                            let shared_issuer = runtime
-                                                .shared_issuer
-                                                .as_ref()
-                                                .and_then(|config| {
-                                                    config
-                                                        .committer(&runtime.http_transport)
-                                                        .ok()
+                                                let shared_issuer = runtime
+                                                    .shared_issuer
+                                                    .as_ref()
+                                                    .and_then(|config| {
+                                                        config
+                                                            .committer(
+                                                                &runtime.provider_store,
+                                                                &runtime.http_transport,
+                                                            )
+                                                            .ok()
+                                                    });
+                                                if let Some(committer) = shared_issuer.as_ref() {
+                                                    composite =
+                                                        composite.with_shared_issuer(committer);
+                                                }
+                                                let monotonic_now_ms = || {
+                                                    u64::try_from(
+                                                        runtime
+                                                            .monotonic_origin
+                                                            .elapsed()
+                                                            .as_millis(),
+                                                    )
+                                                    .unwrap_or(u64::MAX)
+                                                };
+                                                let result = tokio::task::block_in_place(|| {
+                                                    sink.admission_gate_mut().authorize_and_commit_with_harmony_registry(
+                                                        true,
+                                                        &request,
+                                                        verified_offer,
+                                                        &trusted_catalog,
+                                                        arc_canonicalizer_ref,
+                                                        &composite,
+                                                        Some(&runtime.harmony_attach_registry),
+                                                        now_unix,
+                                                        &monotonic_now_ms,
+                                                    )
                                                 });
-                                            if let Some(committer) = shared_issuer.as_ref() {
-                                                composite =
-                                                    composite.with_shared_issuer(committer);
-                                            }
-                                            let trusted_catalog = |operation: &OperationStartV1| {
-                                                server.resolve_service_operation_for_policy_v1(
-                                                    selected_policy,
-                                                    operation,
-                                                )
-                                            };
-                                            let monotonic_now_ms = || {
-                                                u64::try_from(
-                                                    runtime.monotonic_origin.elapsed().as_millis(),
-                                                )
-                                                .unwrap_or(u64::MAX)
-                                            };
-                                            tokio::task::block_in_place(|| {
-                                                sink.admission_gate_mut().authorize_and_commit_with_harmony_registry(
-                                                    true,
-                                                    &request,
-                                                    verified_offer,
-                                                    &trusted_catalog,
-                                                    arc_canonicalizer.as_ref().map(
-                                                        |canonicalizer| {
-                                                            canonicalizer
-                                                                as &dyn pir_service_protocol::ArcPresentationCanonicalizerV1
+                                                let granted = matches!(
+                                                    &result,
+                                                    pir_service_protocol::AuthResultV1::Granted(_)
+                                                );
+                                                let mut missing_reservation_after_grant = false;
+                                                if granted && requires_v2_full_reservation {
+                                                    match attempt_reservation.take() {
+                                                        Some(mut reservation)
+                                                            if reserved_harmony_v2_full.is_none() =>
+                                                        {
+                                                            // Keep the inode lock until the first
+                                                            // main dispatch. A lost/expired grant
+                                                            // response must not burn an unexposed,
+                                                            // expensive precomputed hint.
+                                                            reservation._online_authority_permit =
+                                                                auth_capacity
+                                                                    .as_mut()
+                                                                    .and_then(|(online, _global)| {
+                                                                        online.take()
+                                                                    });
+                                                            reserved_harmony_v2_full = Some(reservation);
+                                                        }
+                                                        Some(reservation) => {
+                                                            if let Err(error) =
+                                                                reservation.reservation.restore()
+                                                            {
+                                                                eprintln!(
+                                                                    "[hint-pool] Failed to restore a duplicate pre-credential reservation"
+                                                                );
+                                                                unsafe_debug_log!(
+                                                                    "[hint-pool] duplicate reservation restore detail: {}",
+                                                                    error
+                                                                );
+                                                            }
+                                                            missing_reservation_after_grant = true;
+                                                        }
+                                                        None => {
+                                                            missing_reservation_after_grant = true;
+                                                        }
+                                                    }
+                                                } else if let Some(reservation) =
+                                                    attempt_reservation.take()
+                                                {
+                                                    if let Err(error) =
+                                                        reservation.reservation.restore()
+                                                    {
+                                                        eprintln!(
+                                                            "[hint-pool] Failed to restore a rejected pre-credential reservation"
+                                                        );
+                                                        unsafe_debug_log!(
+                                                            "[hint-pool] rejected reservation restore detail: {}",
+                                                            error
+                                                        );
+                                                    }
+                                                }
+                                                if missing_reservation_after_grant {
+                                                    pir_service_protocol::AuthResultV1::Rejected(
+                                                        pir_service_protocol::AuthRejectedV1 {
+                                                            code: pir_service_protocol::AuthRejectCode::InternalAfterSpend,
+                                                            retry_after_ms: 0,
                                                         },
-                                                    ),
-                                                    &composite,
-                                                    Some(&runtime.harmony_attach_registry),
-                                                    now_unix,
-                                                    &monotonic_now_ms,
-                                                )
-                                            })
+                                                    )
+                                                } else {
+                                                    result
+                                                }
+                                            }
                                         }
                                         _ => pir_service_protocol::AuthResultV1::Rejected(
                                             pir_service_protocol::AuthRejectedV1 {
@@ -9460,28 +10635,59 @@ async fn main() {
                                     continue;
                                 }
                             }
-                        } else {
-                            pir_service_protocol::AuthResultV1::Rejected(
-                                pir_service_protocol::AuthRejectedV1 {
-                                    code: pir_service_protocol::AuthRejectCode::ServerBusy,
-                                    retry_after_ms: 1_000,
-                                },
-                            )
                         };
-                        let response = encode_auth_result_response_v1(&result)
-                            .unwrap_or_else(|error| {
-                                Response::Error(format!(
-                                    "failed to encode RESP_AUTH_RESULT_V1: {}",
-                                    error
-                                ))
-                                .encode()
-                            });
-                        let _ = send_resp(
+                        // A Cashu/shared-issuer/remote-authority commit may be
+                        // durable even when its bounded blocking call outlives
+                        // this connection's absolute pre-auth deadline. Never
+                        // cancel that call into an unknown outcome. Once it
+                        // returns, fail closed before revealing the result or
+                        // allowing any PIR work on the expired connection.
+                        if post_authorization_deadline_expired_v1(
+                            server.service_admission_enforcement,
+                            pre_auth_started.elapsed(),
+                            service_pre_auth_timeout,
+                        ) {
+                            unsafe_debug_log!(
+                                "[{}] pre-authorization deadline expired after authorization commit; closing without a grant response",
+                                peer
+                            );
+                            break;
+                        }
+                        // The sink's still-armed fixed deadline supplies the
+                        // remaining absolute budget to both write and flush.
+                        // Only a fully flushed Granted response changes the
+                        // connection to ordinary idle-timeout handling.
+                        let granted = matches!(
+                            &result,
+                            pir_service_protocol::AuthResultV1::Granted(_)
+                        );
+                        if let Err(error) = deliver_auth_result_response_v1(
                             &mut sink,
                             channel_session.as_mut(),
-                            response,
+                            &result,
                         )
-                        .await;
+                        .await
+                        {
+                            unsafe_debug_log!(
+                                "[{}] failed to deliver authorization result before deadline: {}",
+                                peer,
+                                error
+                            );
+                            break;
+                        }
+                        if granted {
+                            if let Some(pending) = reserved_harmony_v2_full.as_mut() {
+                                // Arm only after the complete AUTH_GRANTED frame
+                                // has been flushed. A slow but successful flush
+                                // cannot consume the client's dispatch window,
+                                // and a later frame can never reset this value.
+                                arm_v2full_dispatch_deadline_v1(
+                                    &mut pending.dispatch_deadline,
+                                    Instant::now(),
+                                    v2full_dispatch_timeout,
+                                );
+                            }
+                        }
                     }
                     REQ_POW_CHALLENGE_V1 => {
                         if !request_was_encrypted {
@@ -9664,12 +10870,20 @@ async fn main() {
                                     let response = Response::Error(format!(
                                         "malformed REQ_HARMONY_ATTACH_V1: {error}"
                                     ));
-                                    let _ = send_resp(
+                                    if let Err(send_error) = send_resp(
                                         &mut sink,
                                         channel_session.as_mut(),
                                         response.encode(),
                                     )
-                                    .await;
+                                    .await
+                                    {
+                                        unsafe_debug_log!(
+                                            "[{}] failed to deliver malformed Harmony attach rejection: {}",
+                                            peer,
+                                            send_error
+                                        );
+                                        break;
+                                    }
                                     continue;
                                 }
                             };
@@ -9677,14 +10891,20 @@ async fn main() {
                                 let result = HarmonyAttachResultV1::Rejected {
                                     code: HarmonyAttachRejectCodeV1::NoWaitingOperation,
                                 };
-                                let encoded = encode_harmony_attach_result_response_v1(&result)
-                                    .expect("bounded Harmony attach rejection");
-                                let _ = send_resp(
+                                if let Err(error) = deliver_harmony_attach_result_response_v1(
                                     &mut sink,
                                     channel_session.as_mut(),
-                                    encoded,
+                                    &result,
                                 )
-                                .await;
+                                .await
+                                {
+                                    unsafe_debug_log!(
+                                        "[{}] failed to deliver Harmony attach result before deadline: {}",
+                                        peer,
+                                        error
+                                    );
+                                    break;
+                                }
                                 continue;
                             };
                             if sink
@@ -9743,19 +10963,20 @@ async fn main() {
                                 }
                             }
                         };
-                        let response = encode_harmony_attach_result_response_v1(&result)
-                            .unwrap_or_else(|error| {
-                                Response::Error(format!(
-                                    "failed to encode RESP_HARMONY_ATTACH_V1: {error}"
-                                ))
-                                .encode()
-                            });
-                        let _ = send_resp(
+                        if let Err(error) = deliver_harmony_attach_result_response_v1(
                             &mut sink,
                             channel_session.as_mut(),
-                            response,
+                            &result,
                         )
-                        .await;
+                        .await
+                        {
+                            unsafe_debug_log!(
+                                "[{}] failed to deliver Harmony attach result before deadline: {}",
+                                peer,
+                                error
+                            );
+                            break;
+                        }
                     }
                     REQ_CREDENTIAL_PRESENT => {
                         // Wire format:
@@ -10340,14 +11561,74 @@ async fn main() {
                             continue;
                         }
 
-                        let entry = match pool.try_take() {
-                            Some(e) => e,
-                            None => {
+                        let entry = if server.service_admission_enforcement
+                            == AdmissionEnforcementV1::Enforced
+                        {
+                            let Some(reservation) = reserved_harmony_v2_full.take() else {
                                 let resp = Response::Error(
-                                    "V2 hint pool temporarily empty/unavailable".into(),
+                                    "authorized V2Full hint reservation is unavailable".into(),
                                 );
-                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
-                                continue;
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    resp.encode(),
+                                )
+                                .await;
+                                break;
+                            };
+                            if reservation.db_id != db_id {
+                                let reserved_db_id = reservation.db_id;
+                                drop(reservation);
+                                let resp = Response::Error(format!(
+                                    "authorized V2Full hint reservation is bound to db {}, not requested db {}",
+                                    reserved_db_id, db_id
+                                ));
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    resp.encode(),
+                                )
+                                .await;
+                                break;
+                            }
+                            match reservation.reservation.commit_consume() {
+                                Ok(entry) => entry,
+                                Err(error) => {
+                                    eprintln!(
+                                        "[hint-pool] Durable consume failed at authorized dispatch"
+                                    );
+                                    unsafe_debug_log!(
+                                        "[hint-pool] authorized dispatch consume detail: {}",
+                                        error
+                                    );
+                                    let resp = Response::Error(
+                                        "authorized V2Full hint became unavailable before dispatch"
+                                            .into(),
+                                    );
+                                    let _ = send_resp(
+                                        &mut sink,
+                                        channel_session.as_mut(),
+                                        resp.encode(),
+                                    )
+                                    .await;
+                                    break;
+                                }
+                            }
+                        } else {
+                            match pool.try_take() {
+                                Some(entry) => entry,
+                                None => {
+                                    let resp = Response::Error(
+                                        "V2 hint pool temporarily empty/unavailable".into(),
+                                    );
+                                    let _ = send_resp(
+                                        &mut sink,
+                                        channel_session.as_mut(),
+                                        resp.encode(),
+                                    )
+                                    .await;
+                                    continue;
+                                }
                             }
                         };
 
@@ -10710,28 +11991,41 @@ async fn main() {
 
                     // ── OnionPIR (primary only, if available) ────────────
                     REQ_REGISTER_KEYS if server.has_any_onionpir() => {
-                        if let Ok(keys_msg) = RegisterKeysMsg::decode(body) {
-                            let db_id = keys_msg.db_id;
-                            let tx = match server.onionpir_tx_for(db_id) {
-                                Some(t) => t.clone(),
-                                None => {
-                                    let resp = Response::Error(format!("OnionPIR not available for db_id={}", db_id));
-                                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
-                                    continue;
-                                }
-                            };
-                            let (reply_tx, reply_rx) = oneshot::channel();
-                            let _ = tx.send(PirCommand::RegisterKeys {
-                                client_id,
-                                galois_keys: keys_msg.galois_keys,
-                                gsw_keys: keys_msg.gsw_keys,
-                                reply: reply_tx,
-                            }).await;
-                            let _ = reply_rx.await;
-                            let mut resp = Vec::with_capacity(5);
-                            resp.extend_from_slice(&1u32.to_le_bytes());
-                            resp.push(RESP_KEYS_ACK);
-                            let _ = send_resp(&mut sink, channel_session.as_mut(), resp).await;
+                        match RegisterKeysMsg::decode(body) {
+                            Ok(keys_msg) => {
+                                let db_id = keys_msg.db_id;
+                                let tx = match server.onionpir_tx_for(db_id) {
+                                    Some(t) => t.clone(),
+                                    None => {
+                                        let resp = Response::Error(format!("OnionPIR not available for db_id={}", db_id));
+                                        let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                                        continue;
+                                    }
+                                };
+                                let (reply_tx, reply_rx) = oneshot::channel();
+                                let _ = tx.send(PirCommand::RegisterKeys {
+                                    client_id,
+                                    galois_keys: keys_msg.galois_keys,
+                                    gsw_keys: keys_msg.gsw_keys,
+                                    reply: reply_tx,
+                                }).await;
+                                let _ = reply_rx.await;
+                                let mut resp = Vec::with_capacity(5);
+                                resp.extend_from_slice(&1u32.to_le_bytes());
+                                resp.push(RESP_KEYS_ACK);
+                                let _ = send_resp(&mut sink, channel_session.as_mut(), resp).await;
+                            }
+                            Err(error) => {
+                                let response = Response::Error(format!(
+                                    "OnionPIR key registration decode error: {error}"
+                                ));
+                                let _ = send_resp(
+                                    &mut sink,
+                                    channel_session.as_mut(),
+                                    response.encode(),
+                                )
+                                .await;
+                            }
                         }
                     }
                     REQ_ONIONPIR_INDEX_QUERY if server.has_any_onionpir() => {
@@ -10886,6 +12180,11 @@ async fn main() {
                 }
             }
 
+            // A leftover post-credential V2Full reservation never reached its
+            // first main dispatch. Dropping it releases the inode lock and
+            // returns the unexposed durable entry without filesystem writes.
+            drop(reserved_harmony_v2_full.take());
+
             // ARC cleanup: remove the seen-tag set for this connection's
             // presentation context so memory doesn't grow unboundedly.
             if let (Some(ctx), Some(verifier)) = (arc_pres_ctx, &server.arc_verifier) {
@@ -10900,6 +12199,39 @@ async fn main() {
 #[cfg(test)]
 mod service_admission_dispatch_tests {
     use super::*;
+
+    #[test]
+    fn real_k_padded_dpf_frames_charge_one_index_job_not_padding_groups() {
+        use libdpf::Dpf;
+
+        let dpf = Dpf::with_default_key();
+        let (key0, key1) = dpf.gen(0, 7);
+        let pair = vec![key0.to_bytes(), key1.to_bytes()];
+
+        let index_wire = Request::IndexBatch(BatchQuery {
+            level: 0,
+            round_id: 0,
+            db_id: 0,
+            keys: vec![pair.clone(); INDEX_PARAMS.k],
+        })
+        .encode();
+        let index = dpf_backend_frame_for_service_gate(&index_wire[4..]).unwrap();
+        assert_eq!(index.kind, BackendFrameKindV1::DpfIndexBatch);
+        assert_eq!(index.logical_inputs, 1);
+        assert_eq!(index.work_units, (INDEX_PARAMS.k * 2) as u64);
+
+        let chunk_wire = Request::ChunkBatch(BatchQuery {
+            level: 1,
+            round_id: 0,
+            db_id: 0,
+            keys: vec![pair; CHUNK_PARAMS.k],
+        })
+        .encode();
+        let chunk = dpf_backend_frame_for_service_gate(&chunk_wire[4..]).unwrap();
+        assert_eq!(chunk.kind, BackendFrameKindV1::DpfChunkBatch);
+        assert_eq!(chunk.logical_inputs, 0);
+        assert_eq!(chunk.work_units, (CHUNK_PARAMS.k * 2) as u64);
+    }
 
     #[derive(Default)]
     struct RecordingSink {
@@ -10926,6 +12258,130 @@ mod service_admission_dispatch_tests {
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Adversarial transport: accepts a frame into its local queue, then
+    /// never completes or wakes the flush. The pre-auth timer must be the
+    /// future that wakes and terminates `SinkExt::send`.
+    #[derive(Default)]
+    struct PermanentlyPendingFlushSink {
+        messages: Vec<Message>,
+        flush_polls: usize,
+    }
+
+    impl futures_util::Sink<Message> for PermanentlyPendingFlushSink {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.get_mut().messages.push(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            self.get_mut().flush_polls += 1;
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// Adversarial transport: never becomes ready and never wakes by itself.
+    /// The wrapper's fixed deadline must provide the wakeup, and `start_send`
+    /// must remain unreachable.
+    #[derive(Default)]
+    struct PermanentlyPendingReadySink {
+        ready_polls: usize,
+        start_send_calls: usize,
+    }
+
+    impl futures_util::Sink<Message> for PermanentlyPendingReadySink {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            self.get_mut().ready_polls += 1;
+            std::task::Poll::Pending
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            self.get_mut().start_send_calls += 1;
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// Adversarial transport: accepts a queued frame but fails its first flush.
+    /// A grant must remain unusable after this non-timeout write failure.
+    #[derive(Default)]
+    struct FailingFlushSink {
+        messages: Vec<Message>,
+        flush_polls: usize,
+    }
+
+    impl futures_util::Sink<Message> for FailingFlushSink {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.get_mut().messages.push(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            self.get_mut().flush_polls += 1;
+            std::task::Poll::Ready(Err(tokio_tungstenite::tungstenite::Error::Io(
+                std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "injected flush failure",
+                ),
+            )))
         }
 
         fn poll_close(
@@ -10971,6 +12427,59 @@ mod service_admission_dispatch_tests {
         )
     }
 
+    fn permanently_pending_test_sink(
+        limit: u64,
+    ) -> ServiceAdmissionSink<PermanentlyPendingFlushSink, TestResponseBudget> {
+        ServiceAdmissionSink::with_test_budget(
+            PermanentlyPendingFlushSink::default(),
+            TestResponseBudget {
+                limit,
+                used: 0,
+                terminal: false,
+            },
+        )
+    }
+
+    fn permanently_pending_ready_test_sink(
+        limit: u64,
+    ) -> ServiceAdmissionSink<PermanentlyPendingReadySink, TestResponseBudget> {
+        ServiceAdmissionSink::with_test_budget(
+            PermanentlyPendingReadySink::default(),
+            TestResponseBudget {
+                limit,
+                used: 0,
+                terminal: false,
+            },
+        )
+    }
+
+    fn failing_flush_test_sink(
+        limit: u64,
+    ) -> ServiceAdmissionSink<FailingFlushSink, TestResponseBudget> {
+        ServiceAdmissionSink::with_test_budget(
+            FailingFlushSink::default(),
+            TestResponseBudget {
+                limit,
+                used: 0,
+                terminal: false,
+            },
+        )
+    }
+
+    async fn assert_future_is_pending_once<F>(future: std::pin::Pin<&mut F>)
+    where
+        F: std::future::Future + ?Sized,
+    {
+        let mut future = future;
+        std::future::poll_fn(|cx| match std::future::Future::poll(future.as_mut(), cx) {
+            std::task::Poll::Pending => std::task::Poll::Ready(()),
+            std::task::Poll::Ready(_) => {
+                panic!("permanently blocked sink unexpectedly completed before deadline")
+            }
+        })
+        .await;
+    }
+
     #[test]
     fn every_known_expensive_opcode_requires_a_typed_grant() {
         for opcode in [
@@ -10992,6 +12501,10 @@ mod service_admission_dispatch_tests {
             assert!(
                 !service_gate_allows_ungranted_opcode(opcode),
                 "expensive opcode 0x{opcode:02x} bypasses the V1 grant"
+            );
+            assert!(
+                service_gate_is_backend_opcode_v1(opcode),
+                "expensive opcode 0x{opcode:02x} is parsed before the plaintext transport gate"
             );
         }
     }
@@ -11098,6 +12611,299 @@ mod service_admission_dispatch_tests {
         assert!(sink.inner.messages.is_empty());
     }
 
+    #[tokio::test]
+    async fn absolute_deadline_interrupts_permanently_pending_preflight_group_flush() {
+        let mut sink = permanently_pending_test_sink(0);
+        sink.set_test_pre_auth_egress_limits(4, u64::MAX);
+        let (deadline_tx, deadline_rx) = tokio::sync::oneshot::channel();
+        sink.set_test_pre_auth_deadline(async move {
+            let _ = deadline_rx.await;
+        });
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_ONIONPIR_MERKLE_DATA_TREE_TOP);
+
+        let mut write = Box::pin(send_resp_chunked(
+            &mut sink,
+            None,
+            vec![0; CHUNK_SIZE + 1],
+            true,
+        ));
+        assert_future_is_pending_once(write.as_mut()).await;
+        deadline_tx.send(()).unwrap();
+        let error = write.await.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Io(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            }
+            other => panic!("unexpected pre-auth deadline error: {other}"),
+        }
+
+        assert!(sink.pre_auth_deadline_has_expired());
+        assert!(!sink.auth_result_delivered());
+        assert_eq!(sink.inner.messages.len(), 1);
+        assert!(sink.inner.flush_polls >= 1);
+    }
+
+    #[tokio::test]
+    async fn committed_grant_result_cannot_escape_deadline_via_pending_flush() {
+        let mut sink = permanently_pending_test_sink(u64::MAX);
+        let (deadline_tx, deadline_rx) = tokio::sync::oneshot::channel();
+        sink.set_test_pre_auth_deadline(async move {
+            let _ = deadline_rx.await;
+        });
+        sink.begin_request();
+        sink.meter_pre_auth_response_for_opcode(REQ_AUTH_BEGIN_V1);
+        // Model the value returned by a completed, non-cancellable durable
+        // commit. Delivery, rather than gate state, controls the transition.
+        let durably_committed_result =
+            pir_service_protocol::AuthResultV1::Granted(pir_service_protocol::AuthGrantedV1 {
+                scope_id: [7; 32],
+                enforced_profile: 1,
+                expires_in_ms: 10_000,
+                harmony_attach: None,
+            });
+
+        let mut delivery = Box::pin(deliver_auth_result_response_v1(
+            &mut sink,
+            None,
+            &durably_committed_result,
+        ));
+        assert_future_is_pending_once(delivery.as_mut()).await;
+        deadline_tx.send(()).unwrap();
+        let error = delivery.await.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Io(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            }
+            other => panic!("unexpected auth-result deadline error: {other}"),
+        }
+
+        assert!(sink.pre_auth_deadline_has_expired());
+        assert!(!sink.auth_result_delivered());
+        assert_eq!(sink.inner.messages.len(), 1);
+        assert!(sink.inner.flush_polls >= 1);
+    }
+
+    #[tokio::test]
+    async fn absolute_deadline_interrupts_permanently_pending_poll_ready() {
+        let mut sink = permanently_pending_ready_test_sink(u64::MAX);
+        let (deadline_tx, deadline_rx) = tokio::sync::oneshot::channel();
+        sink.set_test_pre_auth_deadline(async move {
+            let _ = deadline_rx.await;
+        });
+        let result =
+            pir_service_protocol::AuthResultV1::Granted(pir_service_protocol::AuthGrantedV1 {
+                scope_id: [9; 32],
+                enforced_profile: 1,
+                expires_in_ms: 10_000,
+                harmony_attach: None,
+            });
+
+        let mut delivery = Box::pin(deliver_auth_result_response_v1(&mut sink, None, &result));
+        assert_future_is_pending_once(delivery.as_mut()).await;
+        deadline_tx.send(()).unwrap();
+        let error = delivery.await.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Io(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            }
+            other => panic!("unexpected poll-ready deadline error: {other}"),
+        }
+
+        assert!(sink.pre_auth_deadline_has_expired());
+        assert!(!sink.auth_result_delivered());
+        assert!(sink.require_auth_result_delivered_for_backend().is_err());
+        assert!(sink.inner.ready_polls >= 1);
+        assert_eq!(sink.inner.start_send_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn harmony_attached_marks_delivery_only_after_successful_flush() {
+        let mut attached_sink = test_sink(u64::MAX);
+        let (attached_deadline_tx, attached_deadline_rx) = tokio::sync::oneshot::channel();
+        attached_sink.set_test_pre_auth_deadline(async move {
+            let _ = attached_deadline_rx.await;
+        });
+        let attached = HarmonyAttachResultV1::Attached {
+            operation_id: [10; 32],
+        };
+
+        deliver_harmony_attach_result_response_v1(&mut attached_sink, None, &attached)
+            .await
+            .unwrap();
+        assert!(attached_sink.auth_result_delivered());
+        assert!(attached_sink
+            .require_auth_result_delivered_for_backend()
+            .is_ok());
+        assert_eq!(attached_sink.inner.messages.len(), 1);
+        assert!(
+            attached_deadline_tx.send(()).is_err(),
+            "successful Attached flush did not disarm its deadline"
+        );
+
+        let mut rejected_sink = test_sink(u64::MAX);
+        let (rejected_deadline_tx, rejected_deadline_rx) = tokio::sync::oneshot::channel();
+        rejected_sink.set_test_pre_auth_deadline(async move {
+            let _ = rejected_deadline_rx.await;
+        });
+        let rejected = HarmonyAttachResultV1::Rejected {
+            code: HarmonyAttachRejectCodeV1::NoWaitingOperation,
+        };
+
+        deliver_harmony_attach_result_response_v1(&mut rejected_sink, None, &rejected)
+            .await
+            .unwrap();
+        assert!(!rejected_sink.auth_result_delivered());
+        assert!(rejected_sink
+            .require_auth_result_delivered_for_backend()
+            .is_err());
+        assert_eq!(rejected_sink.inner.messages.len(), 1);
+        assert!(
+            rejected_deadline_tx.send(()).is_ok(),
+            "a rejected attach must leave its deadline armed"
+        );
+    }
+
+    #[tokio::test]
+    async fn harmony_attached_cannot_escape_deadline_via_pending_flush() {
+        let mut sink = permanently_pending_test_sink(u64::MAX);
+        let (deadline_tx, deadline_rx) = tokio::sync::oneshot::channel();
+        sink.set_test_pre_auth_deadline(async move {
+            let _ = deadline_rx.await;
+        });
+        let attached = HarmonyAttachResultV1::Attached {
+            operation_id: [11; 32],
+        };
+
+        let mut delivery = Box::pin(deliver_harmony_attach_result_response_v1(
+            &mut sink, None, &attached,
+        ));
+        assert_future_is_pending_once(delivery.as_mut()).await;
+        deadline_tx.send(()).unwrap();
+        let error = delivery.await.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Io(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            }
+            other => panic!("unexpected Harmony attach deadline error: {other}"),
+        }
+
+        assert!(sink.pre_auth_deadline_has_expired());
+        assert!(!sink.auth_result_delivered());
+        assert!(sink.require_auth_result_delivered_for_backend().is_err());
+        assert_eq!(sink.inner.messages.len(), 1);
+        assert!(sink.inner.flush_polls >= 1);
+    }
+
+    #[tokio::test]
+    async fn harmony_attach_write_or_encoding_error_keeps_backend_guard_closed() {
+        let mut flush_sink = failing_flush_test_sink(u64::MAX);
+        let attached = HarmonyAttachResultV1::Attached {
+            operation_id: [12; 32],
+        };
+        let error = deliver_harmony_attach_result_response_v1(&mut flush_sink, None, &attached)
+            .await
+            .unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Io(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+            }
+            other => panic!("unexpected Harmony attach flush error: {other}"),
+        }
+        assert!(!flush_sink.auth_result_delivered());
+        assert!(flush_sink
+            .require_auth_result_delivered_for_backend()
+            .is_err());
+        assert_eq!(flush_sink.inner.messages.len(), 1);
+        assert_eq!(flush_sink.inner.flush_polls, 1);
+
+        let mut encode_sink = test_sink(u64::MAX);
+        let invalid = HarmonyAttachResultV1::Attached {
+            operation_id: [0; 32],
+        };
+        assert!(
+            deliver_harmony_attach_result_response_v1(&mut encode_sink, None, &invalid)
+                .await
+                .is_err()
+        );
+        assert!(!encode_sink.auth_result_delivered());
+        assert!(encode_sink
+            .require_auth_result_delivered_for_backend()
+            .is_err());
+        assert!(encode_sink.inner.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_granted_result_encoding_fails_closed_without_diagnostic_send() {
+        let mut sink = test_sink(u64::MAX);
+        let invalid =
+            pir_service_protocol::AuthResultV1::Granted(pir_service_protocol::AuthGrantedV1 {
+                scope_id: [13; 32],
+                enforced_profile: 1,
+                expires_in_ms: 0,
+                harmony_attach: None,
+            });
+
+        assert!(deliver_auth_result_response_v1(&mut sink, None, &invalid)
+            .await
+            .is_err());
+        assert!(!sink.auth_result_delivered());
+        assert!(sink.require_auth_result_delivered_for_backend().is_err());
+        assert!(sink.inner.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_send_rechecks_an_expired_absolute_deadline() {
+        let mut sink = ServiceAdmissionSink::new(
+            RecordingSink::default(),
+            AdmissionEnforcementV1::Enforced,
+            Instant::now(),
+            Duration::ZERO,
+        );
+
+        let error =
+            futures_util::Sink::start_send(std::pin::Pin::new(&mut sink), Message::Binary(vec![1]))
+                .unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Io(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            }
+            other => panic!("unexpected start-send deadline error: {other}"),
+        }
+        assert!(sink.pre_auth_deadline_has_expired());
+        assert!(!sink.auth_result_delivered());
+        assert!(sink.require_auth_result_delivered_for_backend().is_err());
+        assert!(sink.inner.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn granted_result_switches_to_idle_only_after_successful_flush() {
+        let mut sink = test_sink(u64::MAX);
+        let (deadline_tx, deadline_rx) = tokio::sync::oneshot::channel();
+        sink.set_test_pre_auth_deadline(async move {
+            let _ = deadline_rx.await;
+        });
+        let result =
+            pir_service_protocol::AuthResultV1::Granted(pir_service_protocol::AuthGrantedV1 {
+                scope_id: [8; 32],
+                enforced_profile: 1,
+                expires_in_ms: 10_000,
+                harmony_attach: None,
+            });
+
+        deliver_auth_result_response_v1(&mut sink, None, &result)
+            .await
+            .unwrap();
+        assert!(sink.auth_result_delivered());
+        assert_eq!(sink.inner.messages.len(), 1);
+        assert!(
+            deadline_tx.send(()).is_err(),
+            "deadline future was not disarmed"
+        );
+        send_resp(&mut sink, None, vec![0; 1]).await.unwrap();
+        assert_eq!(sink.inner.messages.len(), 2);
+    }
+
     #[test]
     fn exact_verification_and_tree_top_opcodes_are_bounded_but_auth_is_not() {
         for opcode in [
@@ -11191,8 +12997,178 @@ mod service_admission_dispatch_tests {
                 );
             }
         }
+
+        // Scan the complete non-test server source, not only the connection
+        // loop. ORAM poison paths live above `main` and retain their first
+        // reason across requests, so a detailed direct log there is also a
+        // cross-request correlation sink.
+        let non_test_source = source
+            .split_once("#[cfg(test)]\nmod service_admission_dispatch_tests")
+            .expect("non-test source boundary")
+            .0;
+        for call in direct_log_calls(non_test_source, "println!(")
+            .into_iter()
+            .chain(direct_log_calls(non_test_source, "eprintln!("))
+        {
+            for query_derived_field in [
+                "bin_id",
+                "chunk_id",
+                "group_id",
+                "round_id",
+                "script_hash",
+                "client_id",
+                "prp_key",
+                "hex_prefix",
+                "[v2-half-pending]",
+                "evicted",
+            ] {
+                assert!(
+                    !call.contains(query_derived_field),
+                    "default server log contains query-derived `{query_derived_field}`: {call}"
+                );
+            }
+            if call.contains("table poisoned") {
+                assert!(call.contains("coarse_reason"));
+                assert!(!call.contains("unsafe_detail"));
+            }
+        }
+        assert!(source.contains("macro_rules! unsafe_oram_detail"));
+        assert!(source.contains("not(any(test, feature = \"test-only-unsafe-query-logging\"))"));
         assert!(source.contains("--unsafe-debug-query-logging"));
         assert!(source.contains("UNSAFE DEBUG QUERY LOGGING ENABLED"));
+    }
+
+    #[cfg(feature = "cuckoo-oram")]
+    #[test]
+    fn default_oram_poison_reason_discards_query_derived_detail() {
+        UNSAFE_DEBUG_QUERY_LOGGING.store(false, Ordering::SeqCst);
+        let poisoned = std::sync::Mutex::new(None);
+        let returned = poison_direct(
+            "chunk",
+            &poisoned,
+            "Direct ORAM chunk read failed after mutation",
+            unsafe_oram_detail!(
+                "Direct ORAM chunk {} returned bytes for request {}",
+                424_242,
+                919_191
+            ),
+        );
+        assert_eq!(returned, "Direct ORAM chunk read failed after mutation");
+        assert_eq!(
+            poisoned.lock().unwrap().as_deref(),
+            Some("Direct ORAM chunk read failed after mutation")
+        );
+        assert!(!returned.contains("424242"));
+        assert!(!returned.contains("919191"));
+
+        let later = poison_direct(
+            "chunk",
+            &poisoned,
+            "Direct ORAM later request failed",
+            unsafe_oram_detail!("later request chunk {}", 777_777),
+        );
+        assert_eq!(later, "Direct ORAM later request failed");
+        assert_eq!(
+            poisoned.lock().unwrap().as_deref(),
+            Some("Direct ORAM chunk read failed after mutation"),
+            "cross-request poison state must retain only the first coarse reason"
+        );
+    }
+
+    #[cfg(not(feature = "test-only-unsafe-query-logging"))]
+    #[test]
+    fn default_non_feature_binary_gates_unsafe_logging_flag_to_unknown_cli_fallback() {
+        let source = include_str!("unified_server.rs");
+        let arm = source
+            .find("\"--unsafe-debug-query-logging\" =>")
+            .expect("unsafe logging CLI arm remains available to test builds");
+        let gate = &source[arm.saturating_sub(128)..arm];
+        assert!(gate.contains("#[cfg(any(test, feature = \"test-only-unsafe-query-logging\"))]"));
+        assert_eq!(
+            unknown_cli_argument_v1("--unsafe-debug-query-logging"),
+            "unknown argument: --unsafe-debug-query-logging"
+        );
+    }
+
+    #[test]
+    fn cfg_test_cli_parser_recognizes_unsafe_logging_flag() {
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--unsafe-debug-query-logging".to_owned(),
+        ]);
+        assert!(args.unsafe_debug_query_logging);
+    }
+
+    #[test]
+    fn online_v2full_limit_preserves_local_auth_and_pool_headroom() {
+        assert_eq!(online_v2full_auth_limit_v1(0, 32, None).unwrap(), 0);
+        assert_eq!(online_v2full_auth_limit_v1(1, 32, None).unwrap(), 0);
+        assert_eq!(online_v2full_auth_limit_v1(2, 32, None).unwrap(), 1);
+        assert_eq!(online_v2full_auth_limit_v1(20, 32, None).unwrap(), 8);
+        assert_eq!(online_v2full_auth_limit_v1(100, 4, None).unwrap(), 3);
+        assert_eq!(online_v2full_auth_limit_v1(4, 8, Some(2)).unwrap(), 2);
+        assert!(online_v2full_auth_limit_v1(4, 8, Some(4)).is_err());
+        assert!(online_v2full_auth_limit_v1(8, 4, Some(4)).is_err());
+    }
+
+    #[test]
+    fn online_v2full_capacity_is_acquired_before_global_and_retained_after_auth() {
+        let global = Semaphore::new(2);
+        let online = Arc::new(Semaphore::new(1));
+
+        let mut first = try_acquire_auth_capacity_v1(&global, &online, true)
+            .expect("first online authorization has both permits");
+        assert_eq!(global.available_permits(), 1);
+        assert_eq!(online.available_permits(), 0);
+
+        // Transfer the narrower permit into the post-grant reservation while
+        // allowing the AUTH-only global permit to return.
+        let retained_online = first.0.take().expect("online permit is owned");
+        drop(first);
+        assert_eq!(global.available_permits(), 2);
+        assert_eq!(online.available_permits(), 0);
+
+        // Overflow fails at the online class and therefore leaves every global
+        // permit untouched; provider-local work can still acquire one.
+        assert!(try_acquire_auth_capacity_v1(&global, &online, true).is_none());
+        assert_eq!(global.available_permits(), 2);
+        let local = try_acquire_auth_capacity_v1(&global, &online, false)
+            .expect("provider-local authorization keeps global headroom");
+        assert_eq!(global.available_permits(), 1);
+        drop(local);
+
+        drop(retained_online);
+        assert_eq!(online.available_permits(), 1);
+    }
+
+    #[test]
+    fn pending_v2full_accepts_only_its_bound_encrypted_main_dispatch() {
+        let exact = Request::HarmonyHintsV2(HarmonyHintRequestV2 { db_id: 7 }).encode();
+        let payload = &exact[4..];
+        assert!(is_exact_pending_v2full_dispatch_v1(7, true, payload));
+        assert!(!is_exact_pending_v2full_dispatch_v1(7, false, payload));
+        assert!(!is_exact_pending_v2full_dispatch_v1(8, true, payload));
+        assert!(!is_exact_pending_v2full_dispatch_v1(7, true, &[REQ_PING]));
+    }
+
+    #[test]
+    fn cli_parser_accepts_explicit_online_v2full_limit() {
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--service-max-concurrent-online-v2full-auth".to_owned(),
+            "3".to_owned(),
+        ]);
+        assert_eq!(args.service_max_concurrent_online_v2full_auth, Some(3));
+    }
+
+    #[cfg(feature = "test-only-unsafe-query-logging")]
+    #[test]
+    fn explicit_debug_feature_cli_parser_recognizes_unsafe_logging_flag() {
+        let args = parse_args_from(vec![
+            "unified_server".to_owned(),
+            "--unsafe-debug-query-logging".to_owned(),
+        ]);
+        assert!(args.unsafe_debug_query_logging);
     }
 }
 
@@ -12882,8 +14858,63 @@ mod harmony_dos_guard_tests {
     #[test]
     fn v2_hint_pool_rejects_a_different_database_id() {
         assert!(validate_harmony_v2_pool_database(0, 0).is_ok());
+        assert!(validate_harmony_v2_pool_database(7, 7).is_ok());
         let error = validate_harmony_v2_pool_database(0, 1).unwrap_err();
         assert!(error.contains("bound to db 0"));
         assert!(error.contains("requested db 1"));
+    }
+
+    #[test]
+    fn only_v2_full_hint_operations_reserve_their_exact_database_pool() {
+        let full = OperationStartV1::HarmonyHint {
+            db_id: 7,
+            transport: pir_service_protocol::HintTransport::V2Full,
+            session_token: None,
+            primary_side: None,
+        };
+        assert_eq!(harmony_v2_full_reservation_db_v1(&full), Some(7));
+
+        let half = OperationStartV1::HarmonyHint {
+            db_id: 7,
+            transport: pir_service_protocol::HintTransport::V2Half,
+            session_token: Some([3; 16]),
+            primary_side: Some(pir_service_protocol::HarmonyHintSideV1::Index),
+        };
+        assert_eq!(harmony_v2_full_reservation_db_v1(&half), None);
+        assert_eq!(
+            harmony_v2_full_reservation_db_v1(&OperationStartV1::HarmonyQuery { db_id: 7 }),
+            None
+        );
+    }
+
+    #[test]
+    fn v2_full_durable_consume_occurs_only_at_first_main_dispatch() {
+        let source = include_str!("unified_server.rs");
+        let auth = source
+            .split_once("REQ_AUTH_BEGIN_V1 =>")
+            .unwrap()
+            .1
+            .split_once("REQ_POW_CHALLENGE_V1 =>")
+            .unwrap()
+            .0;
+        assert!(auth.contains("reserved_harmony_v2_full ="));
+        assert!(
+            !auth.contains(".commit_consume()"),
+            "grant creation/delivery loss must return an unexposed hint"
+        );
+
+        let dispatch = source
+            .split_once("// V2: server generates PRP key, serves pre-computed frames from pool.")
+            .unwrap()
+            .1
+            .split_once("REQ_HARMONY_HINTS_V2_HALF =>")
+            .unwrap()
+            .0;
+        assert!(dispatch.contains(".commit_consume()"));
+        assert!(
+            dispatch.find("commit_consume()").unwrap()
+                < dispatch.find("entry.key_preamble.clone()").unwrap(),
+            "durable unlink+fsync must precede PRP key exposure"
+        );
     }
 }

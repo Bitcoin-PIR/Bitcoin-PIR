@@ -58,7 +58,12 @@ fn payment_v1_adversarial_http_boundary_is_total_and_bounded() {
     assert!(corpus.len() < 150, "the HTTP CI corpus must remain bounded");
     for (case_index, wire) in corpus.iter().enumerate() {
         catch_unwind(AssertUnwindSafe(|| {
-            let _ = parse_http_response_v1(wire, "application/octet-stream", 1_024);
+            let _ = parse_http_response_v1(
+                wire,
+                "application/octet-stream",
+                "application/problem+json",
+                1_024,
+            );
             let _ = decode_chunked_v1(wire, 1_024);
         }))
         .unwrap_or_else(|_| {
@@ -85,7 +90,12 @@ fn payment_v1_http_rejects_length_smuggling_and_unbounded_framing() {
     ];
     for (case_index, wire) in malformed.iter().enumerate() {
         assert_eq!(
-            parse_http_response_v1(wire, "application/octet-stream", 1_024),
+            parse_http_response_v1(
+                wire,
+                "application/octet-stream",
+                "application/problem+json",
+                1_024,
+            ),
             Err(HttpsPostErrorV1::InvalidResponse),
             "ambiguous HTTP framing case {case_index} was accepted"
         );
@@ -96,13 +106,23 @@ fn payment_v1_http_rejects_length_smuggling_and_unbounded_framing() {
     oversized_header.resize(MAX_HTTP_HEADER_BYTES_V1 + 1, b'a');
     oversized_header.extend_from_slice(b"\r\n\r\nx");
     assert_eq!(
-        parse_http_response_v1(&oversized_header, "application/octet-stream", 1_024),
+        parse_http_response_v1(
+            &oversized_header,
+            "application/octet-stream",
+            "application/problem+json",
+            1_024,
+        ),
         Err(HttpsPostErrorV1::InvalidResponse)
     );
 
     let oversized_wire = vec![0; 1_024 + MAX_HTTP_HEADER_BYTES_V1 + MAX_HTTP_WIRE_OVERHEAD_V1 + 1];
     assert_eq!(
-        parse_http_response_v1(&oversized_wire, "application/octet-stream", 1_024),
+        parse_http_response_v1(
+            &oversized_wire,
+            "application/octet-stream",
+            "application/problem+json",
+            1_024,
+        ),
         Err(HttpsPostErrorV1::InvalidResponse)
     );
 }
@@ -119,7 +139,21 @@ fn payment_v1_https_endpoint_and_media_type_reject_injection_corpus() {
         "https://issuer.example?query=1",
         "https://issuer.example#fragment",
         "https://issuer.example:0",
+        "https://issuer.example:443",
+        "https://issuer.example:0443",
         "https://issuer.example:65536",
+        "https://Issuer.example",
+        "https://issuer.example.",
+        "https://issuer..example",
+        "https://-issuer.example",
+        "https://issuer.example/../admin",
+        "https://issuer.example/v1/./redeems",
+        "https://issuer.example/v1\\redeems",
+        "https://issuer.example/v1 redeems",
+        "https://[0:0:0:0:0:0:0:1]",
+        "https://127.000.000.001",
+        "https://127.1",
+        "https://2130706433",
     ] {
         assert!(HttpsEndpointV1::parse_and_join(endpoint, "/v1/redeems").is_err());
     }
@@ -143,4 +177,26 @@ fn payment_v1_https_endpoint_and_media_type_reject_injection_corpus() {
     ] {
         assert!(!valid_media_type_v1(media_type));
     }
+}
+
+#[test]
+fn payment_v1_http_requires_the_exact_status_selected_media_type() {
+    let parameterized = b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream; charset=binary\r\nContent-Length: 1\r\n\r\nx";
+    assert_eq!(
+        parse_http_response_v1(
+            parameterized,
+            "application/octet-stream",
+            "application/problem+json",
+            1_024,
+        ),
+        Err(HttpsPostErrorV1::InvalidResponse)
+    );
+    assert_eq!(
+        accept_header_value_v1("application/a", "application/b"),
+        "application/a, application/b"
+    );
+    assert_eq!(
+        accept_header_value_v1("application/a", "application/a"),
+        "application/a"
+    );
 }

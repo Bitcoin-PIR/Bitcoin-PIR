@@ -496,6 +496,8 @@ fn policy_epoch_floors_for_candidate(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -509,7 +511,7 @@ mod tests {
     use pir_service_store::{
         RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1, StoreOptions,
     };
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
 
     use super::*;
 
@@ -553,6 +555,13 @@ mod tests {
             *guard = Some(*next);
             Ok(*next)
         }
+    }
+
+    fn private_tempdir() -> TempDir {
+        let directory = tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        directory
     }
 
     fn free_policy(signing: &SigningKey, provider_id: ProviderId, epoch: u64) -> ServicePolicyV1 {
@@ -705,7 +714,7 @@ mod tests {
 
     #[test]
     fn activation_persists_head_and_rejects_rollback_or_noncanonical_bytes() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let provider_id = [9; 32];
         let authority = Arc::new(MemoryFloor::default());
         let store = ProviderStore::create(
@@ -760,7 +769,7 @@ mod tests {
 
     #[test]
     fn retained_activation_is_exact_redemption_only_and_restart_safe() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let provider_id = [9; 32];
         let authority = Arc::new(MemoryFloor::default());
         let store_path = dir.path().join("provider.sqlite");
@@ -851,7 +860,7 @@ mod tests {
 
     #[test]
     fn retained_activation_rejects_free_only_and_wrong_identity_or_key() {
-        let dir = tempdir().unwrap();
+        let dir = private_tempdir();
         let provider_id = [9; 32];
         let store = ProviderStore::create(
             dir.path().join("provider.sqlite"),

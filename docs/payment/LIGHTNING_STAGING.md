@@ -8,9 +8,11 @@ mainnet funds or remote production changes.
 Payment V1 uses three complementary Lightning test boundaries:
 
 1. **Disposable local regtest** is the deterministic CI and fault-injection
-   baseline. It covers two real Core Lightning processes, a real local channel,
-   BOLT11 payment, issuer settlement observation and browser recovery without
-   accounts, remote infrastructure or valuable coins.
+   baseline. It covers three real Core Lightning processes, two announced local
+   channels, a payer -> router -> issuer BOLT11 payment, issuer settlement
+   observation and browser recovery without accounts, remote infrastructure or
+   valuable coins. There is no payer-to-issuer channel, so the payment path is
+   forced through the router and exercises actual gossip and multi-hop routing.
 2. **Mutinynet** is an optional external interoperability smoke. Its public
    faucet can fund, pay an invoice or open a channel. The separately documented
    Voltage-hosted path uses LND and can provide a deliberate CLN-to-LND check;
@@ -62,6 +64,18 @@ the default-signet challenge and the approved peer/bootstrap configuration.
 Those external default-challenge checks are a staging gate and are not
 currently performed by the issuer executable.
 
+The default-Signet deployment preflight must require Bitcoin Core v29 or newer
+and compare both observable constants exactly:
+
+```text
+signet_challenge = 512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae
+genesis_hash      = 00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
+```
+
+A missing `signet_challenge` field fails closed; V1 does not infer default
+Signet from the shared `lntbs` prefix, CLN's coarse `signet` value, DNS seeds or
+peer names.
+
 Every staging startup must fail closed unless all of the following agree:
 
 - the configured Bitcoin network;
@@ -77,13 +91,151 @@ that the node joined Mutinynet.
 The CLN adapter's timeout is one process-local monotonic budget covering
 socket metadata validation, connect, complete request write and complete
 response read. Filesystem metadata calls cannot be force-cancelled by that
-budget. Keep `lightning-rpc` and every checked parent on a protected local
-Unix/POSIX filesystem; NFS/FUSE stalls, a writable parent, another process
-under the same UID and root compromise are operator trust-boundary failures.
-UID/mode/device/inode checks harden local routing but are not cryptographic CLN
-peer authentication. After any application byte is written, timeout, EOF,
+budget. At construction and again before every RPC, the adapter opens every
+socket-parent component with `O_NOFOLLOW`, requires trusted non-writable
+ancestors and applies the platform ACL policy. A same-UID deployment requires
+an effective-user-owned exact mode-0700 final parent and mode-0600 socket (an
+explicit matching group metadata pin may also accompany that owner-only
+socket). A
+cross-UID deployment additionally requires an explicit trusted group, an exact
+daemon-owner/group mode-0710 final parent and mode-0660 socket; this permits
+traversal and connection but not directory listing or name replacement. It
+also checks the final `lightning-rpc` socket's type, UID/GID and device/inode
+before and after connect. Deployment preflight
+independently pins the broader protected executable/configuration boundary.
+Keep that tree on a protected local Unix/POSIX filesystem; NFS/FUSE stalls,
+another process under the same UID and root compromise are operator
+trust-boundary failures. These checks harden local routing but are not
+cryptographic CLN peer authentication. After any application byte is written, timeout, EOF,
 oversize, framing or JSON failure is outcome-unknown and recovery must use the
 same durable label/request rather than a new idempotency identity.
+
+## Read-only deployment preflight
+
+Run `bpir-admin lightning-staging preflight --config <absolute TOML path>
+--config-protected-parent <absolute directory> --config-expected-uid <uid>
+--config-expected-gid <gid>` on each payer, router and issuer host before an
+acceptance run. The config must be a mode-`0600` regular file below that
+owner-controlled, non-group/world-writable directory boundary. These trust
+arguments are deliberately outside the config, so an untrusted config cannot
+declare itself trusted. Start from
+`docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example`. The command is a
+fixed, read-only probe: it calls only Core `getnetworkinfo`,
+`getblockchaininfo`, `getblockhash 0` and CLN `getinfo`, `plugin list`,
+`listpeerchannels`, source-filtered `listchannels`, and `staticbackup`. It has
+no bootstrap, wallet, address, faucet, channel mutation, payment, SSH or remote
+execution path.
+
+The preflight fails closed on an unknown TOML field and checks all of the
+following before emitting one bounded `result=PASS` line:
+
+- pinned, absolute bitcoind/bitcoin-cli/lightningd/lightning-cli paths,
+  SHA-256 values, owners and non-writable executable modes, all below explicit
+  protected parent boundaries without writable or symlinked descendants;
+- an explicit loopback Core RPC address and non-zero port plus one exact
+  `rpccookiefile` path. The owner-only mode-`0600` cookie and all descendants
+  below its protected parent are owner/GID checked and symlink/write rejected;
+  `-conf`, inline credentials, implicit port/cookie selection and non-loopback
+  RPC targets are forbidden. Exact empty command-line `rpcuser`/`rpcpassword`
+  values must clear any credentials from the automatically read datadir config,
+  forcing use of the pinned cookie;
+- Core v29+, exact configured subversion, `chain=signet`, the exact default
+  challenge and genesis, `initialblockdownload=false`, and bounded header lag;
+- exact CLN role identity, version, `network=signet`, height lag and an exact
+  active plugin allowlist whose executable hashes are also pinned;
+- an owner-controlled, symlink-free `lightning-rpc` subtree and owner-only
+  socket;
+- exactly one connected, reestablished, `CHANNELD_NORMAL`, public announced
+  channel per role edge, plus bidirectional active gossip for the required
+  edges. In particular the payer must see `router <-> issuer`;
+- a bounded `minimum_route_liquidity_msat` between 100,000 and 100,000,000
+  msat. Payer requires that much spendable toward router; router requires it
+  receivable from payer and spendable toward issuer; issuer requires it
+  receivable from router. Missing CLN estimates fail closed;
+- a fresh owner-only backup receipt bound to the role node ID and current
+  `staticbackup` digest.
+
+The SCB digest is
+`SHA256("bitcoinpir-cln-staticbackup-v1\0" || u32be(len) || scb || ...)`
+over decoded SCB entries sorted bytewise. The receipt is strict TOML with only
+`schema_version=1`, `node_id_hex`, `recorded_at_unix`,
+`staticbackup_digest_hex`, `identity_secret_backup_confirmed=true`, and
+`channel_state_backup_confirmed=true`. It stores no SCB or wallet secret and
+must be mode `0600` below its configured protected parent. A receipt is an
+operator assertion backed by the rehearsed external backup domain; its
+presence on the live host does not cryptographically prove that an offline
+copy is recoverable. The preflight treats `staticbackup` output as recovery
+secret material. As a best-effort process-memory control, its owned command
+stdout allocation and decoded-entry allocations use zeroizing storage on
+success, parse failure, command failure and timeout paths; the JSON view
+borrows from that stdout allocation instead of owning another SCB string. No
+SCB value is included in `Debug`, preflight stdout or error text. This is not a
+forensic-erasure guarantee: the SHA-256 implementation's internal block
+buffer, compiler-generated copies, allocator behavior, and subprocess, kernel
+or OS buffers remain residual P2 exposure outside those owned allocations.
+
+After the external backup and restore drill, create or refresh that receipt
+with the narrowly scoped local ceremony (run as the configured receipt owner):
+
+```text
+bpir-admin lightning-staging record-backup-receipt \
+  --config /absolute/path/preflight.toml \
+  --config-protected-parent /absolute/trusted/config-parent \
+  --config-expected-uid 991 \
+  --config-expected-gid 991 \
+  --acknowledge-identity-secret-offline-backup-restore-checked \
+  --acknowledge-channel-state-recovery-backup-restore-checked
+```
+
+Both acknowledgement flags are mandatory. They are deliberately long because
+the tool is recording the operator's assertion, not performing the external
+backup or restore test. The command reuses the protected config boundary,
+validates the pinned `lightningd` and `lightning-cli` files and protected CLN
+socket, then calls exactly CLN `getinfo` followed by `staticbackup`. It requires
+the reported node ID to equal the configured ID for that host's exact role, as
+well as the configured CLN version and `network=signet`. It uses the local
+system clock; there is no operator-supplied timestamp option.
+
+The ceremony never prints or writes SCB bytes. It writes only the strict
+non-secret digest receipt to `backup.receipt`: a random same-directory temporary
+regular file is forced to mode `0600`, written and synced, then atomically
+renamed over the prior receipt. The command takes a nonblocking advisory lock on
+the opened parent directory, uses no-replace semantics for a previously absent
+target, and snapshots/rechecks an existing target before replacement. Every
+reported error occurs before this commit point,
+removes a temporary created by this invocation and leaves the prior valid
+receipt untouched. A power loss can leave either the old or new complete
+receipt depending on filesystem durability; it cannot justify accepting a
+partial receipt, and the next preflight still fails closed if the receipt is
+missing, stale or mismatched.
+
+Most importantly, a successful ceremony is still only an operator assertion.
+It cannot prove that an offline copy exists, that either backup can actually be
+restored, or that a supported live/dynamic CLN database backup or replication
+stream exists. `staticbackup`/`emergency.recover` is channel recovery material,
+not a dynamic `lightningd.sqlite3` backup. Keep the separate datastore-specific
+backup/replication and restore rehearsal required below. The command does not
+copy `hsm_secret`, signer seeds, SCBs or any CLN database.
+
+Binary hashing plus exact RPC version checks validate the configured Core/CLN
+artifacts and each node's self-report. They do not attest either running daemon
+process image. The service manager must therefore use the same canonical
+pinned daemon paths; process-executable evidence remains a deployment and
+manual-acceptance gate.
+
+This preflight deliberately does not call `getpeerinfo`. Its
+`spendable_msat`/`receivable_msat` checks are CLN estimates that can change with
+HTLCs and on-chain fees; they are not routing or payment proofs. Therefore
+`result=PASS` is not evidence that the approved Core peer/bootstrap policy is
+active or that 1--100 sat one/two-hop payments are routable. The immutable Core
+service configuration and peer/bootstrap set remain deployment-audit inputs,
+and acceptance must still execute actual one-hop and two-hop payments required
+by the test plan.
+
+As a local no-network field-shape observation on 2026-07-27, Bitcoin Core
+31.1's temporary default-Signet node returned the exact challenge and genesis
+above, `chain=signet`, and numeric RPC version `310100`. This confirms the
+fields used by the preflight but is not public-network or deployment evidence.
 
 ## Wallet and channel custody
 
@@ -118,16 +270,20 @@ invoice and timing. Use only disposable identities and synthetic Payment V1
 scopes.
 
 For default-signet staging, first create payer, router and issuer addresses on
-the approved staging hosts. A practical initial allocation is about 150,000
-signet sats each for payer and router. Each funds its roughly 100,000-sat
-outbound channel, the pinned CLN version's default 10,000-sat minimum effective
-capacity, emergency reserve and fees. An additional 50,000 issuer sats is
-optional on-chain closing/recovery-test margin; receiving the two-hop payment
-does not require it and it does not create reverse Lightning liquidity. Thus
-about 350,000 sats is practical and 500,000 sats is a comfortable upper budget,
-not a promise that a faucet will provide that amount. Test invoices should
-remain 1--100 sats. Faucet requests must target fresh staging node addresses;
-never import faucet-facing keys into a production-mainnet node.
+the approved staging hosts. A minimal routing smoke can start with roughly
+25,000 signet sats each for payer and router and two roughly 20,000-sat
+announced channels. This is above the pinned CLN version's 10,000-sat minimum
+effective capacity and leaves a small on-chain fee margin; keep invoices at
+1--100 sats and do not use this minimal topology for destructive recovery
+drills. The preferred fault/close/restart allocation remains about 150,000 sats
+each for payer and router, each funding a roughly 100,000-sat outbound channel.
+An additional 50,000 issuer sats is optional on-chain closing/recovery-test
+margin; receiving the two-hop payment does not require it and it does not
+create reverse Lightning liquidity. Thus about 50,000 sats can bootstrap the
+minimal smoke, while about 350,000 sats is practical and 500,000 sats is a
+comfortable upper fault-drill budget. These are budgets, not a promise that a
+faucet will provide them. Faucet requests must target fresh staging node
+addresses; never import faucet-facing keys into a production-mainnet node.
 
 No real query address, result, payer identity or production capability may be
 used in any public-test-network experiment.

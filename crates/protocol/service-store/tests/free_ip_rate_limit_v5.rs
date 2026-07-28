@@ -13,6 +13,17 @@ const STORE_INSTANCE: [u8; 16] = [0x22; 16];
 const SUBJECT: [u8; 32] = [0x33; 32];
 const SCOPE: [u8; 32] = [0x44; 32];
 
+fn private_tempdir_v1() -> tempfile::TempDir {
+    let directory = tempdir().expect("create free-IP test directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restrict free-IP test directory permissions");
+    }
+    directory
+}
+
 fn request(now_unix_seconds: u64) -> FreeIpRateLimitRequestV1 {
     FreeIpRateLimitRequestV1 {
         subject: SUBJECT,
@@ -39,7 +50,7 @@ fn create_store(path: &Path, authority: Arc<dyn RollbackFloorAuthorityV1>) -> Pr
 
 #[test]
 fn quota_survives_restart_and_clock_rollback_fails_closed() {
-    let dir = tempdir().unwrap();
+    let dir = private_tempdir_v1();
     let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
         SqliteRollbackFloorAuthorityV1::create(
             dir.path().join("authority.sqlite3"),
@@ -51,6 +62,7 @@ fn quota_survives_restart_and_clock_rollback_fails_closed() {
     let store = create_store(&path, Arc::clone(&authority));
     store.consume_free_ip_rate_limit_v1(request(180)).unwrap();
     store.consume_free_ip_rate_limit_v1(request(181)).unwrap();
+    assert_eq!(store.identity().unwrap().spend_commit_seq, 2);
     drop(store);
 
     let reopened = ProviderStore::open_existing(
@@ -72,7 +84,7 @@ fn quota_survives_restart_and_clock_rollback_fails_closed() {
 
 #[test]
 fn quota_is_exactly_bounded_under_concurrency() {
-    let dir = tempdir().unwrap();
+    let dir = private_tempdir_v1();
     let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
         SqliteRollbackFloorAuthorityV1::create(
             dir.path().join("authority.sqlite3"),
@@ -103,11 +115,45 @@ fn quota_is_exactly_bounded_under_concurrency() {
         .collect::<Vec<_>>();
     let successes = outcomes.iter().filter(|result| result.is_ok()).count();
     assert_eq!(successes, 3, "unexpected outcomes: {outcomes:?}");
+    assert_eq!(store.identity().unwrap().spend_commit_seq, 3);
+}
+
+#[test]
+fn grant_nonce_failure_rolls_back_free_ip_bucket_and_clock() {
+    let dir = private_tempdir_v1();
+    let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
+        SqliteRollbackFloorAuthorityV1::create(
+            dir.path().join("authority.sqlite3"),
+            StoreOptions::default().busy_timeout,
+        )
+        .unwrap(),
+    );
+    let store = create_store(&dir.path().join("provider.sqlite3"), authority);
+    let before = store.identity().unwrap();
+
+    crate::fail_next_grant_transition_nonce_for_current_thread_v1();
+    assert!(matches!(
+        store.consume_free_ip_rate_limit_v1(request(180)),
+        Err(StoreError::Io(_))
+    ));
+    assert_eq!(store.identity().unwrap(), before);
+    assert_eq!(
+        store
+            .operational_inventory()
+            .unwrap()
+            .free_rate_limit_bucket_rows,
+        0
+    );
+
+    // A lower timestamp remains admissible only if the failed transaction also
+    // rolled the provider-local clock update back.
+    store.consume_free_ip_rate_limit_v1(request(120)).unwrap();
+    assert_eq!(store.identity().unwrap().spend_commit_seq, 1);
 }
 
 #[test]
 fn schema_contains_only_hmac_subject_and_public_bucket_fields() {
-    let dir = tempdir().unwrap();
+    let dir = private_tempdir_v1();
     let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
         SqliteRollbackFloorAuthorityV1::create(
             dir.path().join("authority.sqlite3"),
@@ -144,7 +190,7 @@ fn schema_contains_only_hmac_subject_and_public_bucket_fields() {
 
 #[test]
 fn policy_digest_prevents_offer_id_reuse_from_sharing_quota() {
-    let dir = tempdir().unwrap();
+    let dir = private_tempdir_v1();
     let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
         SqliteRollbackFloorAuthorityV1::create(
             dir.path().join("authority.sqlite3"),
@@ -172,7 +218,7 @@ fn policy_digest_prevents_offer_id_reuse_from_sharing_quota() {
 
 #[test]
 fn expired_buckets_are_collected_before_capacity_and_clock_remains_high() {
-    let dir = tempdir().unwrap();
+    let dir = private_tempdir_v1();
     let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
         SqliteRollbackFloorAuthorityV1::create(
             dir.path().join("authority.sqlite3"),
@@ -205,7 +251,7 @@ fn expired_buckets_are_collected_before_capacity_and_clock_remains_high() {
 
 #[test]
 fn capacity_rejects_new_subject_without_eviction() {
-    let dir = tempdir().unwrap();
+    let dir = private_tempdir_v1();
     let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
         SqliteRollbackFloorAuthorityV1::create(
             dir.path().join("authority.sqlite3"),
@@ -230,7 +276,7 @@ fn capacity_rejects_new_subject_without_eviction() {
 
 #[test]
 fn prior_v4_schema_is_strictly_rejected_without_migration() {
-    let dir = tempdir().unwrap();
+    let dir = private_tempdir_v1();
     let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
         SqliteRollbackFloorAuthorityV1::create(
             dir.path().join("authority.sqlite3"),

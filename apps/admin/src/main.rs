@@ -27,6 +27,10 @@
 //!   decrypt, acknowledgement, and explicit one-shot NUT-07 retirement.
 //! - `payment-v1-no-funds-fixture` — emit deterministic public test vectors
 //!   for two providers, five payment methods, and five workloads.
+//! - `lightning-staging` — strict default-Signet/CLN preflight plus an explicit
+//!   local, digest-only backup-receipt ceremony.
+//! - `rollback-authority-deployment-lint` — offline bounded deployment-set
+//!   public-config independence validation without reading client secrets.
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -42,8 +46,10 @@ mod directory_artifact;
 mod directory_publish;
 mod generate_identity;
 mod keygen;
+mod lightning_staging;
 mod payment_artifact;
 mod payment_fixture;
+mod rollback_authority_deployment_lint;
 mod service_keygen;
 mod service_policy;
 mod service_store_check;
@@ -95,10 +101,10 @@ enum Command {
     /// Generate a role-labelled service/payment key without printing secrets.
     #[command(name = "service-keygen")]
     ServiceKeygen(service_keygen::ServiceKeygenArgs),
-    /// Explicitly create a provider store and separate rollback authority.
+    /// Create a provider store with exactly one local-dev or remote authority.
     #[command(name = "service-store-init")]
     ServiceStoreInit(service_store_init::ServiceStoreInitArgs),
-    /// Fail-closed provider store/rollback-floor startup and SLO check.
+    /// Fail-closed provider store/selected rollback-floor startup and SLO check.
     /// May reconcile one legitimate unanchored successor, like serving startup.
     #[command(name = "service-store-check")]
     ServiceStoreCheck(service_store_check::ServiceStoreCheckArgs),
@@ -116,6 +122,15 @@ enum Command {
     /// Build, self-verify, or publish signed Nostr directory artifacts.
     #[command(name = "directory-artifact")]
     DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
+    /// Strict default-Signet/CLN preflight and local backup-receipt ceremony.
+    #[command(name = "lightning-staging")]
+    LightningStaging(lightning_staging::LightningStagingArgs),
+    /// Validate 2..=16 authority configs pairwise offline without reading
+    /// referenced secrets or printing paths, roles, or identifiers.
+    #[command(name = "rollback-authority-deployment-lint")]
+    RollbackAuthorityDeploymentLint(
+        rollback_authority_deployment_lint::RollbackAuthorityDeploymentLintArgs,
+    ),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -123,14 +138,14 @@ async fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
         Command::Keygen(args) => match keygen::run(args) {
-            Ok(()) => 0,
+            Ok(completion) => completion.exit_code(),
             Err(e) => {
                 eprintln!("keygen: {}", e);
                 1
             }
         },
         Command::GenerateIdentity(args) => match generate_identity::run(args) {
-            Ok(()) => 0,
+            Ok(completion) => completion.exit_code(),
             Err(e) => {
                 eprintln!("generate-identity: {}", e);
                 1
@@ -177,7 +192,7 @@ async fn main() {
             }
         },
         Command::ServiceKeygen(args) => match service_keygen::run(args) {
-            Ok(()) => 0,
+            Ok(completion) => completion.exit_code(),
             Err(e) => {
                 eprintln!("service-keygen: {}", e);
                 1
@@ -225,6 +240,22 @@ async fn main() {
                 1
             }
         },
+        Command::LightningStaging(args) => match lightning_staging::run(args).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("lightning-staging: {}", e);
+                1
+            }
+        },
+        Command::RollbackAuthorityDeploymentLint(args) => {
+            match rollback_authority_deployment_lint::run(args) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("rollback-authority-deployment-lint: {e}");
+                    1
+                }
+            }
+        }
     };
     std::process::exit(exit_code);
 }
@@ -247,18 +278,46 @@ mod cli_tests {
             "payment-artifact",
             "payment-v1-no-funds-fixture",
             "directory-artifact",
+            "lightning-staging",
+            "rollback-authority-deployment-lint",
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");
         }
     }
 
     #[test]
+    fn rollback_authority_deployment_lint_accepts_repeated_anonymous_config_paths() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "rollback-authority-deployment-lint",
+            "--config",
+            "/private/deployment-a.toml",
+            "--config",
+            "/private/deployment-b.toml",
+        ])
+        .unwrap();
+        assert!(matches!(
+            &parsed.command,
+            Command::RollbackAuthorityDeploymentLint(_)
+        ));
+        let rendered = format!("{parsed:?}");
+        assert!(rendered.contains("REDACTED"));
+        assert!(!rendered.contains("deployment-a.toml"));
+        assert!(!rendered.contains("deployment-b.toml"));
+
+        assert!(
+            Cli::try_parse_from(["bpir-admin", "rollback-authority-deployment-lint",]).is_err()
+        );
+    }
+
+    #[test]
     fn service_store_init_cli_requires_explicit_paths_and_provider() {
+        let provider_id = hex::encode([1u8; 32]);
         let parsed = Cli::try_parse_from([
             "bpir-admin",
             "service-store-init",
             "--provider-id-hex",
-            &hex::encode([1u8; 32]),
+            &provider_id,
             "--store",
             "/private/provider.sqlite3",
             "--rollback-authority",
@@ -266,15 +325,53 @@ mod cli_tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::ServiceStoreInit(_)));
+
+        assert!(Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-init",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-init",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+            "--rollback-authority",
+            "/independent/floor.sqlite3",
+            "--remote-rollback-authority-config",
+            "/private/remote.toml",
+        ])
+        .is_err());
+        let remote = Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-init",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+            "--remote-rollback-authority-config",
+            "/private/remote.toml",
+            "--store-instance-id-hex",
+            &hex::encode([2u8; 16]),
+        ])
+        .unwrap();
+        assert!(matches!(remote.command, Command::ServiceStoreInit(_)));
     }
 
     #[test]
     fn service_store_check_cli_requires_explicit_paths_and_provider() {
+        let provider_id = hex::encode([1u8; 32]);
         let parsed = Cli::try_parse_from([
             "bpir-admin",
             "service-store-check",
             "--provider-id-hex",
-            &hex::encode([1u8; 32]),
+            &provider_id,
             "--store",
             "/private/provider.sqlite3",
             "--rollback-authority",
@@ -282,6 +379,41 @@ mod cli_tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::ServiceStoreCheck(_)));
+
+        assert!(Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-check",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-check",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+            "--rollback-authority",
+            "/independent/floor.sqlite3",
+            "--remote-rollback-authority-config",
+            "/private/remote.toml",
+        ])
+        .is_err());
+        let remote = Cli::try_parse_from([
+            "bpir-admin",
+            "service-store-check",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+            "--remote-rollback-authority-config",
+            "/private/remote.toml",
+        ])
+        .unwrap();
+        assert!(matches!(remote.command, Command::ServiceStoreCheck(_)));
     }
 
     #[test]
@@ -302,6 +434,7 @@ mod cli_tests {
             &hex::encode([1u8; 32]),
             "--now-unix",
             "1500",
+            "--validate-only",
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::DirectoryArtifact(_)));
@@ -320,5 +453,58 @@ mod cli_tests {
             panic!("wrong subcommand");
         };
         assert!(!args.acknowledge_deterministic_test_keys);
+    }
+
+    #[test]
+    fn lightning_staging_preflight_requires_out_of_band_config_trust_boundary() {
+        let parsed = Cli::try_parse_from([
+            "bpir-admin",
+            "lightning-staging",
+            "preflight",
+            "--config",
+            "/srv/bitcoinpir/preflight.toml",
+            "--config-protected-parent",
+            "/srv/bitcoinpir",
+            "--config-expected-uid",
+            "991",
+            "--config-expected-gid",
+            "991",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::LightningStaging(_)));
+    }
+
+    #[test]
+    fn lightning_staging_backup_receipt_requires_both_explicit_acknowledgements() {
+        let base = [
+            "bpir-admin",
+            "lightning-staging",
+            "record-backup-receipt",
+            "--config",
+            "/srv/bitcoinpir/preflight.toml",
+            "--config-protected-parent",
+            "/srv/bitcoinpir",
+            "--config-expected-uid",
+            "991",
+            "--config-expected-gid",
+            "991",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+
+        let mut only_identity = base.to_vec();
+        only_identity.push("--acknowledge-identity-secret-offline-backup-restore-checked");
+        assert!(Cli::try_parse_from(only_identity).is_err());
+
+        let mut only_channel = base.to_vec();
+        only_channel.push("--acknowledge-channel-state-recovery-backup-restore-checked");
+        assert!(Cli::try_parse_from(only_channel).is_err());
+
+        let mut both = base.to_vec();
+        both.extend([
+            "--acknowledge-identity-secret-offline-backup-restore-checked",
+            "--acknowledge-channel-state-recovery-backup-restore-checked",
+        ]);
+        let parsed = Cli::try_parse_from(both).unwrap();
+        assert!(matches!(parsed.command, Command::LightningStaging(_)));
     }
 }

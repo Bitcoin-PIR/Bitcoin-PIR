@@ -1,15 +1,18 @@
 //! Operator-authorized provider clearing identity and settlement rules.
 
 use std::collections::HashSet;
+use std::fmt;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::codec::{expect_v1, put_bytes_u16, put_bytes_u32, Decoder};
 use crate::{
-    is_canonical_cashu_keyset_id_v2, AuthScheme, CashuKeysetBindingV1, CredentialKeyBindingV1,
+    is_canonical_cashu_keyset_id_v2, is_canonical_service_https_origin_v1,
+    validate_leaf_spki_sha256_pins_v1, AuthScheme, CashuKeysetBindingV1, CredentialKeyBindingV1,
     CredentialUnitV1, ProviderId, ScopeId, ServiceProtocolError, MAX_CASHU_KEYSET_ENCODING_LEN,
-    MAX_SERVICE_VALUE_V1, SERVICE_PROTOCOL_VERSION,
+    MAX_ENDPOINT_LEN, MAX_LEAF_SPKI_SHA256_PINS_V1, MAX_SERVICE_VALUE_V1, SERVICE_PROTOCOL_VERSION,
 };
 
 pub const MAX_SETTLEMENT_RULES: usize = 64;
@@ -113,6 +116,11 @@ pub struct ProviderClearingAuthorizationClaimsV1 {
     pub authorization_epoch: u64,
     pub provider_id: ProviderId,
     pub issuer_id: [u8; 32],
+    /// Exact issuer HTTPS origin authorized for provider redemption. The
+    /// provider appends only the fixed `/v1/redeems` route.
+    pub redeem_endpoint: String,
+    /// Canonical one-or-two leaf-SPKI SHA-256 pins for the redeem origin.
+    pub redeem_leaf_spki_sha256_pins: Vec<[u8; 32]>,
     /// Issuer-registered destination for identified ledger credit. Requests
     /// cannot redirect funds to a different account.
     pub settlement_account_id: [u8; 32],
@@ -201,6 +209,26 @@ impl ProviderClearingAuthorizationV1 {
             decoder.u64("ProviderClearingAuthorizationV1.authorization_epoch")?;
         let provider_id = decoder.fixed("ProviderClearingAuthorizationV1.provider_id")?;
         let issuer_id = decoder.fixed("ProviderClearingAuthorizationV1.issuer_id")?;
+        let redeem_endpoint = decoder.string_u16(
+            "ProviderClearingAuthorizationV1.redeem_endpoint",
+            MAX_ENDPOINT_LEN,
+        )?;
+        let redeem_pin_count = decoder
+            .u8("ProviderClearingAuthorizationV1.redeem_leaf_spki_sha256_pin_count")?
+            as usize;
+        if redeem_pin_count > MAX_LEAF_SPKI_SHA256_PINS_V1 {
+            return Err(ServiceProtocolError::TooManyItems {
+                field: "ProviderClearingAuthorizationV1.redeem_leaf_spki_sha256_pins",
+                len: redeem_pin_count,
+                max: MAX_LEAF_SPKI_SHA256_PINS_V1,
+            });
+        }
+        let mut redeem_leaf_spki_sha256_pins = Vec::with_capacity(redeem_pin_count);
+        for _ in 0..redeem_pin_count {
+            redeem_leaf_spki_sha256_pins.push(
+                decoder.fixed("ProviderClearingAuthorizationV1.redeem_leaf_spki_sha256_pin")?,
+            );
+        }
         let settlement_account_id =
             decoder.fixed("ProviderClearingAuthorizationV1.settlement_account_id")?;
         let clearing_verifying_key =
@@ -260,6 +288,8 @@ impl ProviderClearingAuthorizationV1 {
                 authorization_epoch,
                 provider_id,
                 issuer_id,
+                redeem_endpoint,
+                redeem_leaf_spki_sha256_pins,
                 settlement_account_id,
                 clearing_verifying_key,
                 not_before,
@@ -305,6 +335,11 @@ impl ProviderClearingAuthorizationV1 {
         out.extend_from_slice(&claims.authorization_epoch.to_le_bytes());
         out.extend_from_slice(&claims.provider_id);
         out.extend_from_slice(&claims.issuer_id);
+        put_bytes_u16(&mut out, claims.redeem_endpoint.as_bytes());
+        out.push(claims.redeem_leaf_spki_sha256_pins.len() as u8);
+        for pin in &claims.redeem_leaf_spki_sha256_pins {
+            out.extend_from_slice(pin);
+        }
         out.extend_from_slice(&claims.settlement_account_id);
         out.extend_from_slice(&claims.clearing_verifying_key);
         out.extend_from_slice(&claims.not_before.to_le_bytes());
@@ -344,6 +379,16 @@ impl ProviderClearingAuthorizationV1 {
                 reason: "authorization, audience, epoch, and rules must be non-zero",
             });
         }
+        if !is_canonical_service_https_origin_v1(&claims.redeem_endpoint) {
+            return Err(ServiceProtocolError::InvalidValue {
+                field: "ProviderClearingAuthorizationV1.redeem_endpoint",
+                reason: "must be one canonical HTTPS origin",
+            });
+        }
+        validate_leaf_spki_sha256_pins_v1(
+            &claims.redeem_leaf_spki_sha256_pins,
+            "ProviderClearingAuthorizationV1.redeem_leaf_spki_sha256_pins",
+        )?;
         if claims.not_before > claims.not_after {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "ProviderClearingAuthorizationV1.validity",
@@ -573,7 +618,7 @@ pub enum SettlementDestinationV1 {
 /// Canonical provider-to-issuer redeem request covered by the provider's
 /// clearing-key signature. The digest domain fixes the HTTP operation to
 /// `POST /v1/redeems`; transports must disable redirects.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderRedeemRequestV1 {
     pub authorization_digest: [u8; 32],
     pub issuer_id: [u8; 32],
@@ -587,6 +632,15 @@ pub struct ProviderRedeemRequestV1 {
     pub denomination_profile: u32,
     pub idempotency_key: [u8; 32],
     pub destination: SettlementDestinationV1,
+}
+
+impl fmt::Debug for ProviderRedeemRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderRedeemRequestV1")
+            .field("request", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl ProviderRedeemRequestV1 {
@@ -928,12 +982,30 @@ impl ProviderRedeemRequestV1 {
 /// Canonical binary body for `POST /v1/redeems`. Keeping the HTTP envelope in
 /// the protocol crate prevents provider and issuer implementations from
 /// independently inventing JSON field aliases or base64 canonicalization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderRedeemEnvelopeV1 {
     pub request: ProviderRedeemRequestV1,
     pub request_auth: ProviderClearingRequestAuthV1,
     pub credential_binding: CredentialKeyBindingV1,
     pub canonical_credential: Vec<u8>,
+}
+
+impl fmt::Debug for ProviderRedeemEnvelopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderRedeemEnvelopeV1")
+            .field("request", &"[REDACTED]")
+            .field("request_auth", &"[REDACTED]")
+            .field("credential_binding", &"[REDACTED]")
+            .field("canonical_credential_len", &self.canonical_credential.len())
+            .finish()
+    }
+}
+
+impl Drop for ProviderRedeemEnvelopeV1 {
+    fn drop(&mut self) {
+        self.canonical_credential.zeroize();
+    }
 }
 
 impl ProviderRedeemEnvelopeV1 {
@@ -950,13 +1022,13 @@ impl ProviderRedeemEnvelopeV1 {
         let request = self.request.encode()?;
         let request_auth = self.request_auth.encode();
         let binding = self.credential_binding.encode()?;
-        let mut out = Vec::with_capacity(
+        let mut out = Zeroizing::new(Vec::with_capacity(
             1 + 16
                 + request.len()
                 + request_auth.len()
                 + binding.len()
                 + self.canonical_credential.len(),
-        );
+        ));
         out.push(SERVICE_PROTOCOL_VERSION);
         put_bytes_u32(&mut out, &request);
         put_bytes_u32(&mut out, &request_auth);
@@ -969,7 +1041,7 @@ impl ProviderRedeemEnvelopeV1 {
                 max: MAX_PROVIDER_REDEEM_ENVELOPE_LEN_V1,
             });
         }
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -997,10 +1069,10 @@ impl ProviderRedeemEnvelopeV1 {
             "ProviderRedeemEnvelopeV1.credential_binding",
             crate::MAX_CREDENTIAL_BINDING_LEN,
         )?;
-        let canonical_credential = decoder.bytes_u32(
+        let mut canonical_credential = Zeroizing::new(decoder.bytes_u32(
             "ProviderRedeemEnvelopeV1.canonical_credential",
             MAX_PROVIDER_REDEEM_CREDENTIAL_LEN_V1,
-        )?;
+        )?);
         decoder.finish()?;
         if canonical_credential.is_empty() {
             return Err(ServiceProtocolError::InvalidValue {
@@ -1024,7 +1096,7 @@ impl ProviderRedeemEnvelopeV1 {
             request,
             request_auth,
             credential_binding,
-            canonical_credential,
+            canonical_credential: std::mem::take(&mut *canonical_credential),
         })
     }
 }
@@ -1167,11 +1239,30 @@ pub fn verify_committed_clearing_request_auth_v1(
     )
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderClearingRequestAuthV1 {
     pub authorization_digest: [u8; 32],
     pub request_digest: [u8; 32],
     pub signature: [u8; 64],
+}
+
+impl fmt::Debug for ProviderClearingRequestAuthV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderClearingRequestAuthV1")
+            .field("authorization_digest", &"[REDACTED]")
+            .field("request_digest", &"[REDACTED]")
+            .field("signature", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for ProviderClearingRequestAuthV1 {
+    fn drop(&mut self) {
+        self.authorization_digest.zeroize();
+        self.request_digest.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 /// Trusted context required before a provider clearing request can be
@@ -1332,6 +1423,8 @@ mod tests {
                 authorization_epoch: 2,
                 provider_id: [5; 32],
                 issuer_id: [6; 32],
+                redeem_endpoint: "https://issuer.example".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
                 settlement_account_id: [17; 32],
                 clearing_verifying_key: clearing.verifying_key().to_bytes(),
                 not_before: 100,
@@ -1393,6 +1486,43 @@ mod tests {
             ProviderClearingRequestAuthV1::decode(&request.encode()).unwrap(),
             request
         );
+    }
+
+    #[test]
+    fn clearing_authorization_signs_one_canonical_redeem_origin_and_pin_set() {
+        let (authorization, operator, _) = authorization();
+
+        let mut tampered_endpoint = authorization.clone();
+        tampered_endpoint.claims.redeem_endpoint = "https://other.example".to_owned();
+        assert!(tampered_endpoint
+            .verify_for(&[5; 32], &[6; 32], &operator.verifying_key(), 150, 2)
+            .is_err());
+
+        let mut tampered_pin = authorization.clone();
+        tampered_pin.claims.redeem_leaf_spki_sha256_pins = vec![[0x42; 32]];
+        assert!(tampered_pin
+            .verify_for(&[5; 32], &[6; 32], &operator.verifying_key(), 150, 2)
+            .is_err());
+
+        let mut invalid = authorization.claims.clone();
+        invalid.redeem_endpoint = "https://issuer.example/path".to_owned();
+        assert!(ProviderClearingAuthorizationV1::sign(invalid, &operator).is_err());
+
+        let mut invalid = authorization.claims.clone();
+        invalid.redeem_leaf_spki_sha256_pins = vec![[0; 32]];
+        assert!(ProviderClearingAuthorizationV1::sign(invalid, &operator).is_err());
+
+        let mut invalid = authorization.claims.clone();
+        invalid.redeem_leaf_spki_sha256_pins = vec![[0x42; 32], [0x41; 32]];
+        assert!(ProviderClearingAuthorizationV1::sign(invalid, &operator).is_err());
+
+        let mut invalid = authorization.claims.clone();
+        invalid.redeem_leaf_spki_sha256_pins = vec![[0x41; 32], [0x41; 32]];
+        assert!(ProviderClearingAuthorizationV1::sign(invalid, &operator).is_err());
+
+        let mut rotating = authorization.claims.clone();
+        rotating.redeem_leaf_spki_sha256_pins = vec![[0x41; 32], [0x42; 32]];
+        ProviderClearingAuthorizationV1::sign(rotating, &operator).unwrap();
     }
 
     #[test]
@@ -1664,6 +1794,8 @@ mod tests {
                 authorization_epoch: 2,
                 provider_id: [5; 32],
                 issuer_id: binding.issuer_id,
+                redeem_endpoint: "https://issuer.example".to_owned(),
+                redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
                 settlement_account_id: [17; 32],
                 clearing_verifying_key: clearing.verifying_key().to_bytes(),
                 not_before: 100,

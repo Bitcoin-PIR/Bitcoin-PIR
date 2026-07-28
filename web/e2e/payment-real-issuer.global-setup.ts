@@ -57,14 +57,22 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   await chmod(runtimeRoot, 0o700);
   let issuer: ChildProcessWithoutNullStreams | null = null;
   try {
-    runChecked('cargo', [
+    const cargoBuildArgs = [
       'build',
+      '--locked',
       '--offline',
       '-p',
       'bpir-admin',
       '-p',
       'payment-issuer',
-    ]);
+    ];
+    if (backendMode === 'fake') {
+      cargoBuildArgs.push(
+        '--features',
+        'payment-issuer/test-only-fake-lightning',
+      );
+    }
+    runChecked('cargo', cargoBuildArgs);
 
     const fixtureRoot = join(runtimeRoot, 'fixture');
     runChecked(cargoDebugBinary('bpir-admin'), [
@@ -176,6 +184,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     } else {
       if (!clnSocket) throw new Error('checked CLN socket metadata is unavailable');
       args.push(
+        '--allow-local-rollback-authority-dev',
         '--cln-rpc-socket',
         clnSocket.path,
         '--cln-rpc-expected-uid',
@@ -313,6 +322,7 @@ async function waitForIssuer(
           Accept: 'application/vnd.bitcoinpir.bolt11-quote-key-delegation-v1',
         },
         cache: 'no-store',
+        signal: AbortSignal.timeout(1_000),
       });
       if (response.ok) {
         await response.arrayBuffer();

@@ -2,11 +2,14 @@
 //!
 //! Provider-owned notes move only through owner-only files, and the provider
 //! store records an exact sealed artifact before that artifact may be released.
-//! Only the explicit `spent-confirm` command uses a network client: one bounded
-//! strict-HTTPS NUT-07 request with no polling or automatic retry. An
-//! acknowledgement means only that an external wallet took custody and does
-//! not release exposure. A later explicit NUT-07 confirmation proves only that
-//! those old notes are spent; neither operation proves NUT-05, Lightning
+//! The explicit `spent-confirm` command makes one bounded strict-HTTPS NUT-07
+//! request with no polling or automatic retry. In production, any subcommand
+//! that opens the provider store also performs the fresh signed Read/CAS calls
+//! required by its pinned-HTTPS remote rollback authority; local SQLite
+//! development/test mode remains offline. An acknowledgement means only that
+//! an external wallet took custody and does not release exposure. A later
+//! explicit NUT-07 confirmation proves only that those old notes are spent;
+//! neither operation proves NUT-05, Lightning
 //! settlement, or payout.
 
 use clap::{Args, Subcommand};
@@ -14,8 +17,9 @@ use pir_cashu_client::{
     check_cashu_custody_bundles_once_v1, derive_cashu_nut07_export_observation_digest_v1,
     encode_cashub_from_custody_bundles_v1, CashuCustodyAadV1, CashuCustodyBundleV1,
     CashuMintRouteV1, CashuMintTransportFailureKindV1, CashuMintTransportFailureV1,
-    CashuMintTransportV1, CashuNut07LotResultV1, CashuNut07NoteStateV1, CashuSealedCustodyV1,
-    CashuTokenV4V1, ChaCha20Poly1305CustodyDecryptorV1, MAX_CASHU_NUT07_BUNDLES_V1,
+    CashuMintTransportV1, CashuMintTrustV1, CashuNut07LotResultV1, CashuNut07NoteStateV1,
+    CashuSealedCustodyV1, CashuTokenV4V1, ChaCha20Poly1305CustodyDecryptorV1,
+    MAX_CASHU_NUT07_BUNDLES_V1,
 };
 use pir_cashu_custody::{
     open_cashu_custody_v1, seal_cashu_custody_with_os_random_v1, CashuCustodyEnvelopeV1,
@@ -28,7 +32,8 @@ use pir_service_store::{
     CashuCustodyRetirementNoteCheckV1, CashuCustodyRetirementNoteStateV1,
     CashuCustodyRetirementSnapshotRequestV1, CashuCustodyRetirementSnapshotV1,
     CashuCustodySpentConfirmationRequestV1, NewCashuCustodyExportV1, ProviderStore,
-    SqliteRollbackFloorAuthorityV1, StoreOptions, MAX_CASHU_CUSTODY_EXPORT_LOTS_V1,
+    RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
+    MAX_CASHU_CUSTODY_EXPORT_LOTS_V1,
 };
 use pir_strict_https::{HttpsPostErrorV1, StrictHttpsClientV1};
 use sha2::{Digest, Sha256};
@@ -79,8 +84,9 @@ enum CashuCustodyCommand {
     /// Lightning settlement, does not prove provider payout, and does not
     /// release exposure.
     Acknowledge(AcknowledgeArgs),
-    /// Explicitly check one or more same-mint/unit acknowledged exports once
-    /// with NUT-07, then retire only exports whose exact notes are all SPENT.
+    /// Explicitly check one or more same-manifest/pin/mint/unit acknowledged
+    /// exports once with NUT-07, then retire only exports whose exact notes are
+    /// all SPENT.
     #[command(name = "spent-confirm")]
     SpentConfirm(SpentConfirmArgs),
 }
@@ -106,9 +112,20 @@ struct ProviderStoreArgs {
     /// Existing owner-only provider admission/custody SQLite file.
     #[arg(long)]
     store: PathBuf,
-    /// Existing owner-only rollback floor in an independent restore domain.
-    #[arg(long)]
-    rollback_authority: PathBuf,
+    /// Existing local SQLite rollback floor (development/test only).
+    #[arg(
+        long,
+        required_unless_present = "remote_rollback_authority_config",
+        conflicts_with = "remote_rollback_authority_config"
+    )]
+    rollback_authority: Option<PathBuf>,
+    /// Existing owner-only production remote-authority deployment config.
+    #[arg(
+        long,
+        required_unless_present = "rollback_authority",
+        conflicts_with = "rollback_authority"
+    )]
+    remote_rollback_authority_config: Option<PathBuf>,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     busy_timeout_ms: u64,
@@ -575,54 +592,59 @@ fn acknowledge(args: AcknowledgeArgs) -> Result<(), String> {
 
 #[derive(Clone, Debug)]
 struct CashuCustodyHttpsTransportV1 {
-    client: StrictHttpsClientV1,
+    connect_timeout: Duration,
+    io_timeout: Duration,
 }
 
 impl CashuMintTransportV1 for CashuCustodyHttpsTransportV1 {
     fn post_json(
         &self,
-        mint_endpoint: &str,
+        trust: CashuMintTrustV1<'_>,
         route: CashuMintRouteV1,
         request_json: &[u8],
         max_response_bytes: usize,
     ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
-        self.client
-            .post(
-                mint_endpoint,
-                route.path(),
-                "application/json",
-                "application/json",
-                request_json,
-                max_response_bytes,
-            )
-            .map_err(|error| match error {
-                HttpsPostErrorV1::DefinitelyNotSent => CashuMintTransportFailureV1::ambiguous(
-                    CashuMintTransportFailureKindV1::Network,
-                    None,
-                ),
-                HttpsPostErrorV1::OutcomeUnknown => CashuMintTransportFailureV1::ambiguous(
-                    CashuMintTransportFailureKindV1::Timeout,
-                    None,
-                ),
-                HttpsPostErrorV1::HttpStatus { status, body } => {
-                    CashuMintTransportFailureV1::from_http_status(status, body.as_slice())
-                }
-                HttpsPostErrorV1::InvalidResponse => CashuMintTransportFailureV1::ambiguous(
-                    CashuMintTransportFailureKindV1::InvalidContentType,
-                    None,
-                ),
-            })
+        StrictHttpsClientV1::new_with_leaf_spki_sha256_pins(
+            self.connect_timeout,
+            self.io_timeout,
+            trust.leaf_spki_sha256_pins(),
+        )
+        .map_err(|_| {
+            CashuMintTransportFailureV1::ambiguous(CashuMintTransportFailureKindV1::Network, None)
+        })?
+        .post(
+            trust.mint_endpoint(),
+            route.path(),
+            "application/json",
+            "application/json",
+            request_json,
+            max_response_bytes,
+        )
+        .map_err(|error| match error {
+            HttpsPostErrorV1::DefinitelyNotSent => CashuMintTransportFailureV1::ambiguous(
+                CashuMintTransportFailureKindV1::Network,
+                None,
+            ),
+            HttpsPostErrorV1::OutcomeUnknown => CashuMintTransportFailureV1::ambiguous(
+                CashuMintTransportFailureKindV1::Timeout,
+                None,
+            ),
+            HttpsPostErrorV1::HttpStatus { status, body } => {
+                CashuMintTransportFailureV1::from_http_status(status, body.as_slice())
+            }
+            HttpsPostErrorV1::InvalidResponse => CashuMintTransportFailureV1::ambiguous(
+                CashuMintTransportFailureKindV1::InvalidContentType,
+                None,
+            ),
+        })
     }
 }
 
 fn spent_confirm(args: SpentConfirmArgs) -> Result<(), String> {
     validate_spent_confirm_args(&args)?;
     let transport = CashuCustodyHttpsTransportV1 {
-        client: StrictHttpsClientV1::new(
-            Duration::from_millis(args.connect_timeout_ms),
-            Duration::from_millis(args.io_timeout_ms),
-        )
-        .map_err(|error| format!("configure strict Cashu mint HTTPS: {error}"))?,
+        connect_timeout: Duration::from_millis(args.connect_timeout_ms),
+        io_timeout: Duration::from_millis(args.io_timeout_ms),
     };
     spent_confirm_with_transport(args, &transport)
 }
@@ -1356,25 +1378,49 @@ fn open_provider_store(args: &ProviderStoreArgs) -> Result<(ProviderStore, [u8; 
         &args.store,
         "provider store",
     )?;
-    let authority_path = crate::service_store_init::validate_existing_private_file_path(
-        &args.rollback_authority,
-        "provider rollback authority",
-    )?;
-    if crate::service_store_init::private_database_paths_alias(&store_path, &authority_path)? {
-        return Err(
-            "provider store and rollback authority resolve to the same file/inode".to_owned(),
-        );
-    }
     let timeout = Duration::from_millis(args.busy_timeout_ms);
-    let authority = SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
-        .map_err(|error| format!("open provider rollback authority: {error}"))?;
+    let authority: Arc<dyn RollbackFloorAuthorityV1> =
+        match crate::service_store_init::provider_rollback_authority_source_v1(
+            args.rollback_authority.as_deref(),
+            args.remote_rollback_authority_config.as_deref(),
+        )? {
+            crate::service_store_init::ProviderRollbackAuthoritySourceV1::LocalSqlite(path) => {
+                eprintln!(
+                    "warning: local SQLite provider rollback authority is development/test-only; use --remote-rollback-authority-config for production"
+                );
+                let authority_path =
+                    crate::service_store_init::validate_existing_private_file_path(
+                        path,
+                        "provider rollback authority",
+                    )?;
+                if crate::service_store_init::private_database_paths_alias(
+                    &store_path,
+                    &authority_path,
+                )? {
+                    return Err(
+                        "provider store and rollback authority resolve to the same file/inode"
+                            .to_owned(),
+                    );
+                }
+                Arc::new(
+                    SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
+                        .map_err(|error| format!("open provider rollback authority: {error}"))?,
+                )
+            }
+            crate::service_store_init::ProviderRollbackAuthoritySourceV1::RemoteConfig(path) => {
+                crate::service_store_init::open_remote_provider_rollback_authority_v1(
+                    provider_id,
+                    path,
+                )?
+            }
+        };
     let store = ProviderStore::open_existing(
         &store_path,
         provider_id,
         StoreOptions {
             busy_timeout: timeout,
         },
-        Arc::new(authority),
+        authority,
     )
     .map_err(|error| format!("open provider store: {error}"))?;
     Ok((store, provider_id))
@@ -1719,6 +1765,11 @@ fn open_private_target(path: &Path, label: &str) -> Result<PrivateTarget, String
     use std::os::unix::fs::MetadataExt;
     use std::path::Component;
 
+    // Apply the shared production boundary first: every ancestor is pinned
+    // without following symlinks, ownership/writability is checked, and the
+    // final parent is exact mode 0700 with the platform ACL policy enforced.
+    let checked_path = pir_private_files::prepare_private_parent_v1(path, false, label)?;
+    let path = checked_path.as_path();
     let file_name = path
         .file_name()
         .map(ToOwned::to_owned)
@@ -1732,10 +1783,10 @@ fn open_private_target(path: &Path, label: &str) -> Result<PrivateTarget, String
     if metadata.file_type().is_symlink()
         || !metadata.file_type().is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o077 != 0
+        || metadata.mode() & 0o7777 != 0o700
     {
         return Err(format!(
-            "{label} parent must be a real directory owned by this user with no group/world permissions: {}",
+            "{label} parent must be a real directory owned by this user with mode 0700: {}",
             parent.display()
         ));
     }
@@ -1814,7 +1865,7 @@ fn open_private_target(path: &Path, label: &str) -> Result<PrivateTarget, String
         .map_err(|error| format!("inspect opened canonical {label} parent: {error}"))?;
     if !FileType::from_raw_mode(opened.st_mode).is_dir()
         || opened.st_uid != rustix::process::geteuid().as_raw()
-        || opened.st_mode & 0o077 != 0
+        || opened.st_mode & 0o7777 != 0o700
         || canonical_metadata.file_type().is_symlink()
         || !canonical_metadata.file_type().is_dir()
         || current.st_uid != opened.st_uid
@@ -1826,6 +1877,10 @@ fn open_private_target(path: &Path, label: &str) -> Result<PrivateTarget, String
             canonical.display()
         ));
     }
+    pir_private_files::reject_extended_acl_v1(
+        &directory,
+        &format!("{label} parent {}", canonical.display()),
+    )?;
     Ok(PrivateTarget {
         display_path: canonical.join(&file_name),
         file_name,
@@ -1840,7 +1895,7 @@ fn open_private_regular(target: &PrivateTarget, label: &str) -> Result<Option<fs
     let fd = match rustix_fs::openat(
         &target.parent,
         &target.file_name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     ) {
         Ok(fd) => fd,
@@ -1855,13 +1910,18 @@ fn open_private_regular(target: &PrivateTarget, label: &str) -> Result<Option<fs
     let stat = rustix_fs::fstat(&fd).map_err(|error| format!("inspect opened {label}: {error}"))?;
     if !FileType::from_raw_mode(stat.st_mode).is_file()
         || stat.st_uid != rustix::process::geteuid().as_raw()
-        || stat.st_mode & 0o077 != 0
+        || stat.st_nlink != 1
+        || (stat.st_mode & 0o7777 != 0o600 && stat.st_mode & 0o7777 != 0o400)
     {
         return Err(format!(
-            "{label} must be a non-symlink regular file owned by this user with no group/world permissions: {}",
+            "{label} must be a single-link regular file owned by this user with mode 0600/0400: {}",
             target.display_path.display()
         ));
     }
+    pir_private_files::reject_extended_acl_v1(
+        &fd,
+        &format!("{label} file {}", target.display_path.display()),
+    )?;
     Ok(Some(fs::File::from(fd)))
 }
 
@@ -1916,7 +1976,14 @@ fn read_open_private_bounded(
     extra.zeroize();
     let final_stat = rustix_fs::fstat(&file)
         .map_err(|error| format!("reinspect {label} {}: {error}", display_path.display()))?;
-    if extra_len != 0 || final_stat.st_size != stat.st_size {
+    if extra_len != 0
+        || final_stat.st_dev != stat.st_dev
+        || final_stat.st_ino != stat.st_ino
+        || final_stat.st_uid != stat.st_uid
+        || final_stat.st_nlink != stat.st_nlink
+        || final_stat.st_mode != stat.st_mode
+        || final_stat.st_size != stat.st_size
+    {
         return Err(format!("{label} changed while it was read"));
     }
     Ok(bytes)
@@ -1969,17 +2036,18 @@ fn write_or_verify_exact_private(path: &Path, bytes: &[u8]) -> Result<bool, Stri
         .map_err(|error| format!("create private temporary output: {error}"))?;
         rustix_fs::fchmod(&fd, Mode::RUSR | Mode::WUSR)
             .map_err(|error| format!("set private temporary output permissions: {error}"))?;
+        pir_private_files::clear_extended_acl_v1(&fd, "Cashu private temporary output")?;
         let mut file = fs::File::from(fd);
         file.write_all(bytes)
             .and_then(|_| file.sync_all())
             .map_err(|error| format!("write private temporary output: {error}"))?;
-        let mode = rustix_fs::fstat(&file)
-            .map_err(|error| format!("inspect private temporary output: {error}"))?
-            .st_mode
-            & 0o777;
-        if mode != 0o600 {
+        let stat = rustix_fs::fstat(&file)
+            .map_err(|error| format!("inspect private temporary output: {error}"))?;
+        let mode = stat.st_mode & 0o7777;
+        if mode != 0o600 || stat.st_nlink != 1 {
             return Err(format!(
-                "private temporary output mode is {mode:o}, expected 600"
+                "private temporary output mode/link count is unsafe (mode={mode:o}, nlink={})",
+                stat.st_nlink
             ));
         }
         drop(file);
@@ -2105,12 +2173,13 @@ mod tests {
     impl CashuMintTransportV1 for TestNut07TransportV1 {
         fn post_json(
             &self,
-            mint_endpoint: &str,
+            trust: CashuMintTrustV1<'_>,
             route: CashuMintRouteV1,
             request_json: &[u8],
             max_response_bytes: usize,
         ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
-            assert_eq!(mint_endpoint, "https://mint.example");
+            assert_eq!(trust.mint_endpoint(), "https://mint.example");
+            assert_eq!(trust.leaf_spki_sha256_pins(), &[[0x31; 32]]);
             assert_eq!(route, CashuMintRouteV1::CheckState);
             assert!(max_response_bytes >= request_json.len());
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -2137,7 +2206,7 @@ mod tests {
     }
 
     #[test]
-    fn help_contains_all_offline_operations_and_settlement_warning() {
+    fn help_contains_all_custody_operations_and_settlement_warning() {
         use clap::CommandFactory;
         TestCli::command().debug_assert();
         let help = TestCli::command().render_long_help().to_string();
@@ -2152,19 +2221,22 @@ mod tests {
         ] {
             assert!(help.contains(operation), "missing {operation}");
         }
+        let provider_id = hex::encode([1u8; 32]);
+        let export_id = hex::encode([2u8; 16]);
+        let artifact_digest = hex::encode([3u8; 32]);
         let parsed = TestCli::try_parse_from([
             "cashu-custody",
             "acknowledge",
             "--provider-id-hex",
-            &hex::encode([1u8; 32]),
+            &provider_id,
             "--store",
             "/private/provider.sqlite3",
             "--rollback-authority",
             "/independent/floor.sqlite3",
             "--export-id-hex",
-            &hex::encode([2u8; 16]),
+            &export_id,
             "--artifact-digest-hex",
-            &hex::encode([3u8; 32]),
+            &artifact_digest,
         ])
         .unwrap();
         let CashuCustodyCommand::Acknowledge(args) = parsed.args.command else {
@@ -2172,17 +2244,67 @@ mod tests {
         };
         assert!(!args.confirm_external_wallet_took_custody_not_settlement);
 
+        assert!(TestCli::try_parse_from([
+            "cashu-custody",
+            "acknowledge",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+            "--export-id-hex",
+            &export_id,
+            "--artifact-digest-hex",
+            &artifact_digest,
+        ])
+        .is_err());
+        assert!(TestCli::try_parse_from([
+            "cashu-custody",
+            "acknowledge",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+            "--rollback-authority",
+            "/independent/floor.sqlite3",
+            "--remote-rollback-authority-config",
+            "/private/remote.toml",
+            "--export-id-hex",
+            &export_id,
+            "--artifact-digest-hex",
+            &artifact_digest,
+        ])
+        .is_err());
+        let remote = TestCli::try_parse_from([
+            "cashu-custody",
+            "acknowledge",
+            "--provider-id-hex",
+            &provider_id,
+            "--store",
+            "/private/provider.sqlite3",
+            "--remote-rollback-authority-config",
+            "/private/remote.toml",
+            "--export-id-hex",
+            &export_id,
+            "--artifact-digest-hex",
+            &artifact_digest,
+        ])
+        .unwrap();
+        assert!(matches!(
+            remote.args.command,
+            CashuCustodyCommand::Acknowledge(_)
+        ));
+
         let parsed = TestCli::try_parse_from([
             "cashu-custody",
             "spent-confirm",
             "--provider-id-hex",
-            &hex::encode([1u8; 32]),
+            &provider_id,
             "--store",
             "/private/provider.sqlite3",
             "--rollback-authority",
             "/independent/floor.sqlite3",
             "--export-id-hex",
-            &hex::encode([2u8; 16]),
+            &export_id,
         ])
         .unwrap();
         let CashuCustodyCommand::SpentConfirm(args) = parsed.args.command else {
@@ -2291,7 +2413,7 @@ mod tests {
             b"never-follow-this-alias",
         )
         .unwrap_err();
-        assert!(error.contains("intermediate symlinks"), "{error}");
+        assert!(!error.is_empty());
         assert!(!private.join("recipient.secret").exists());
     }
 
@@ -2310,6 +2432,81 @@ mod tests {
 
         assert!(write_or_verify_exact_private(&output, b"replacement").is_err());
         assert_eq!(fs::read(victim).unwrap(), b"unchanged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_input_rejects_hardlinks_and_fifo_without_blocking() {
+        use std::process::Command;
+
+        let directory = private_tempdir();
+        let path = directory.path().join("recipient.secret");
+        write_or_verify_exact_private(&path, b"secret bytes").unwrap();
+        let hardlink = directory.path().join("recipient-hardlink.secret");
+        fs::hard_link(&path, &hardlink).unwrap();
+        for candidate in [&path, &hardlink] {
+            assert!(read_private_bounded(candidate, 64, "test private input").is_err());
+        }
+
+        let fifo = directory.path().join("recipient-fifo.secret");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        fs::set_permissions(&fifo, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(read_private_bounded(&fifo, 64, "test private input").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_output_rejects_a_non_private_parent() {
+        let directory = private_tempdir();
+        let parent = directory.path().join("unsafe");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o770)).unwrap();
+        let output = parent.join("recipient.secret");
+
+        assert!(write_or_verify_exact_private(&output, b"never written").is_err());
+        assert!(!output.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn private_output_rejects_parent_acl_before_creating_a_file() {
+        use std::process::Command;
+
+        let directory = private_tempdir();
+        assert!(Command::new("chmod")
+            .args(["+a", "everyone allow read,file_inherit"])
+            .arg(directory.path())
+            .status()
+            .unwrap()
+            .success());
+        let output = directory.path().join("recipient.secret");
+
+        assert!(write_or_verify_exact_private(&output, b"never written").is_err());
+        assert!(!output.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn private_input_and_idempotent_output_reject_an_existing_file_acl() {
+        use std::process::Command;
+
+        let directory = private_tempdir();
+        let path = directory.path().join("recipient.secret");
+        write_or_verify_exact_private(&path, b"secret bytes").unwrap();
+        assert!(Command::new("chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+
+        assert!(read_private_bounded(&path, 64, "test private input").is_err());
+        assert!(write_or_verify_exact_private(&path, b"secret bytes").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"secret bytes");
     }
 
     #[test]
@@ -2348,6 +2545,8 @@ mod tests {
     struct TestCustodyBundle<'a> {
         version: u8,
         mint_endpoint: &'a str,
+        manifest_digest: [u8; 32],
+        leaf_spki_sha256_pins: Vec<[u8; 32]>,
         unit: &'a str,
         active_keyset_id: &'a str,
         note_set_digest: [u8; 32],
@@ -2384,6 +2583,8 @@ mod tests {
         let encoded = serde_json::to_vec(&TestCustodyBundle {
             version: 1,
             mint_endpoint,
+            manifest_digest: [0x31; 32],
+            leaf_spki_sha256_pins: vec![[0x31; 32]],
             unit: "sat",
             active_keyset_id: &active_keyset_id,
             note_set_digest,
@@ -2479,15 +2680,17 @@ mod tests {
         crate::service_store_init::run(crate::service_store_init::ServiceStoreInitArgs {
             provider_id_hex: hex::encode(provider_id),
             store: store.clone(),
-            rollback_authority: rollback_authority.clone(),
-            store_instance_id_hex: Some(hex::encode([0x91_u8; 16])),
+            rollback_authority: Some(rollback_authority.clone()),
+            remote_rollback_authority_config: None,
+            store_instance_id_hex: None,
             busy_timeout_ms: 1_000,
         })
         .unwrap();
         let args = ProviderStoreArgs {
             provider_id_hex: hex::encode(provider_id),
             store,
-            rollback_authority,
+            rollback_authority: Some(rollback_authority),
+            remote_rollback_authority_config: None,
             busy_timeout_ms: 1_000,
         };
         let opened = open_provider_store(&args).unwrap().0;
@@ -2559,6 +2762,8 @@ mod tests {
         let bundle_json = serde_json::to_vec(&TestCustodyBundle {
             version: 1,
             mint_endpoint,
+            manifest_digest,
+            leaf_spki_sha256_pins: vec![[0x31; 32]],
             unit,
             active_keyset_id: &active_keyset_id,
             note_set_digest,

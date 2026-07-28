@@ -1,0 +1,28 @@
+[package]
+name = "pir-rollback-authority-protocol"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Authenticated opaque remote rollback-authority protocol for BitcoinPIR"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-rollback-authority-protocol"
+keywords = ["bitcoin", "rollback", "cryptography", "protocol"]
+categories = ["cryptography", "network-programming"]
+
+[dependencies]
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+ed25519-dalek = "2"
+getrandom = "0.2"
+hkdf = { version = "0.12", default-features = false }
+hmac = "0.12"
+sha2 = { version = "0.10", default-features = false }
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+static_assertions = "1"
+
+[lints.rust]
+unsafe_code = "forbid"

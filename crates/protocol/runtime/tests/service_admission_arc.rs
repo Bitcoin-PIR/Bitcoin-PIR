@@ -1,5 +1,8 @@
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use ed25519_dalek::SigningKey;
 use pir_runtime_core::service_admission::{
     AdmissionCommitErrorV1, AdmissionMethodCommitterV1, AdmissionMethodRouteV1,
@@ -259,6 +262,8 @@ fn provider_store_committer_routes_only_provider_local_experimental_arc() {
         .prefix("bitcoinpir-runtime-arc-route-")
         .tempdir()
         .unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let store = ProviderStore::create(
         directory.path().join("provider.sqlite3"),
         [0x44; 16],

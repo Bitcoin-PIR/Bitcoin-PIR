@@ -18,13 +18,13 @@ pir-issuer-store = { path = "../issuer-store" }
 pir-lightning-backend = { path = "../lightning-backend" }
 pir-payment-crypto = { path = "../crypto" }
 pir-service-protocol = { path = "../../protocol/service" }
+zeroize = "1"
 
 [dev-dependencies]
 getrandom = "0.2"
 k256 = "0.13"
 rand_chacha = "0.3"
 tempfile = "3"
-zeroize = "1"
 
 [lints.rust]
 unsafe_code = "forbid"

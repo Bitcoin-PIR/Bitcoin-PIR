@@ -133,6 +133,7 @@ impl ServerProcess {
                 fixture.store_path.to_str().expect("UTF-8 test path"),
                 "--service-rollback-authority",
                 fixture.rollback_path.to_str().expect("UTF-8 test path"),
+                "--allow-local-service-rollback-authority-dev",
                 "--max-connections",
                 "16",
                 "--service-max-concurrent-auth",
@@ -707,3 +708,7 @@ fn unix_now() -> u64 {
         .expect("system clock before epoch")
         .as_secs()
 }
+
+#[cfg(feature = "remote-authority-process-e2e")]
+#[path = "support/payment_v1_remote_authority_process.rs"]
+mod remote_authority_process;

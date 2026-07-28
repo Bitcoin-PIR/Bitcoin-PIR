@@ -4,8 +4,11 @@
 //! deliberately lower-privacy method. The credential itself never contains an
 //! invoice, payment hash, preimage, payer identifier, or routing data.
 
+use std::fmt;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::codec::{expect_v1, Decoder};
 use crate::{
@@ -24,7 +27,7 @@ pub struct PaidReceiptBindingV1 {
     pub entitlement_profile: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PaidReceiptV1 {
     pub issuer_id: [u8; 32],
     pub key_id: [u8; 16],
@@ -33,6 +36,27 @@ pub struct PaidReceiptV1 {
     pub not_before: u64,
     pub not_after: u64,
     pub signature: [u8; 64],
+}
+
+impl fmt::Debug for PaidReceiptV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PaidReceiptV1")
+            .field("issuer_id", &"[REDACTED]")
+            .field("key_id", &"[REDACTED]")
+            .field("serial", &"[REDACTED]")
+            .field("binding", &"[REDACTED]")
+            .field("validity", &"[REDACTED]")
+            .field("signature", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for PaidReceiptV1 {
+    fn drop(&mut self) {
+        self.serial.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 impl PaidReceiptV1 {
@@ -96,7 +120,7 @@ impl PaidReceiptV1 {
     pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
         let mut out = self.encode_unsigned()?;
         out.extend_from_slice(&self.signature);
-        Ok(out)
+        Ok(std::mem::take(&mut *out))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
@@ -132,17 +156,19 @@ impl PaidReceiptV1 {
         hasher.finalize().into()
     }
 
-    fn signing_preimage(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn signing_preimage(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         let unsigned = self.encode_unsigned()?;
-        let mut preimage = Vec::with_capacity(PAID_RECEIPT_SIGNATURE_DOMAIN.len() + unsigned.len());
+        let mut preimage = Zeroizing::new(Vec::with_capacity(
+            PAID_RECEIPT_SIGNATURE_DOMAIN.len() + unsigned.len(),
+        ));
         preimage.extend_from_slice(PAID_RECEIPT_SIGNATURE_DOMAIN);
         preimage.extend_from_slice(&unsigned);
         Ok(preimage)
     }
 
-    fn encode_unsigned(&self) -> Result<Vec<u8>, ServiceProtocolError> {
+    fn encode_unsigned(&self) -> Result<Zeroizing<Vec<u8>>, ServiceProtocolError> {
         self.validate()?;
-        let mut out = Vec::with_capacity(200);
+        let mut out = Zeroizing::new(Vec::with_capacity(200));
         out.push(SERVICE_PROTOCOL_VERSION);
         out.extend_from_slice(&self.issuer_id);
         out.extend_from_slice(&self.key_id);
@@ -362,6 +388,18 @@ mod tests {
         )
         .unwrap();
         (policy, receipt_key)
+    }
+
+    #[test]
+    fn paid_receipt_debug_redacts_bearer_and_type_zeroizes_on_drop() {
+        assert!(core::mem::needs_drop::<PaidReceiptV1>());
+        let (receipt, _, _) = receipt();
+        let serial = format!("{:?}", receipt.serial);
+        let signature = format!("{:?}", receipt.signature);
+        let rendered = format!("{receipt:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains(&serial));
+        assert!(!rendered.contains(&signature));
     }
 
     #[test]

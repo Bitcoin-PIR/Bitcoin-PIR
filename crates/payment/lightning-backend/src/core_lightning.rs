@@ -613,6 +613,17 @@ mod unix_transport {
             {
                 return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
             }
+            // Pin every ancestor without following symlinks. Same-UID mode
+            // requires an owner-only 0700 final directory; cross-UID mode
+            // requires the configured daemon owner/group and exact 0710 so
+            // the issuer may traverse but cannot list or replace names.
+            let socket_path = pir_private_files::prepare_private_unix_socket_parent_v1(
+                &socket_path,
+                policy.expected_uid,
+                policy.expected_gid,
+                "Core Lightning RPC socket",
+            )
+            .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
             Ok(Self {
                 socket_path,
                 policy,
@@ -621,6 +632,19 @@ mod unix_transport {
         }
 
         fn checked_metadata(&self) -> Result<(u64, u64), ClnRpcTransportErrorV1> {
+            // Recheck the complete parent boundary on every RPC. Startup-time
+            // validation alone must not survive a later permission, ACL, or
+            // namespace change.
+            let checked_path = pir_private_files::prepare_private_unix_socket_parent_v1(
+                &self.socket_path,
+                self.policy.expected_uid,
+                self.policy.expected_gid,
+                "Core Lightning RPC socket",
+            )
+            .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+            if checked_path != self.socket_path {
+                return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
+            }
             checked_socket_metadata(&self.socket_path, self.policy)
         }
     }
@@ -744,13 +768,10 @@ mod unix_transport {
         if !metadata.file_type().is_socket() || metadata.uid() != policy.expected_uid {
             return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
         }
-        let mode = metadata.mode();
-        if mode & 0o600 != 0o600 {
-            return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
-        }
+        let mode = metadata.mode() & 0o7777;
         match policy.expected_gid {
-            Some(expected_gid) if metadata.gid() == expected_gid && mode & 0o007 == 0 => {}
-            None if mode & 0o077 == 0 => {}
+            Some(expected_gid) if metadata.gid() == expected_gid && mode == 0o660 => {}
+            None if mode == 0o600 => {}
             _ => return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite),
         }
         Ok((metadata.dev(), metadata.ino()))
@@ -787,6 +808,27 @@ mod tests {
     struct ScriptedTransportV1 {
         steps: Mutex<VecDeque<ScriptStepV1>>,
         requests: Mutex<Vec<Value>>,
+    }
+
+    #[cfg(unix)]
+    fn private_unix_socket_test_path(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        // Keep this component short. On macOS the secure path walker expands
+        // `/var` to `/private/var` before connecting, while `sockaddr_un` has
+        // a small fixed path bound. A descriptive long test prefix can bind
+        // through the alias and then fail before writing through the canonical
+        // path, testing path length rather than transport semantics.
+        let directory =
+            std::env::temp_dir().join(format!("bpir-cln-{tag}-{}-{id}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("lightning-rpc");
+        (directory, path)
     }
 
     impl ScriptedTransportV1 {
@@ -1213,16 +1255,10 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         use std::os::unix::net::UnixListener;
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::thread;
         use std::time::Duration;
 
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "bitcoinpir-cln-rpc-test-{}-{id}.sock",
-            std::process::id()
-        ));
+        let (directory, path) = private_unix_socket_test_path("io");
         assert!(!path.exists());
         let listener = UnixListener::bind(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -1251,6 +1287,34 @@ mod tests {
         assert_eq!(response.as_bytes(), b"{\"pong\":1}");
         server.join().unwrap();
         fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_transport_rejects_an_untrusted_socket_parent() {
+        use std::fs;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::net::UnixListener;
+        use std::time::Duration;
+
+        let (directory, path) = private_unix_socket_test_path("parent");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let uid = fs::symlink_metadata(&path).unwrap().uid();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(UnixClnRpcTransportV1::new(
+            path.clone(),
+            UnixClnRpcSocketPolicyV1 {
+                expected_uid: uid,
+                expected_gid: None,
+            },
+            Duration::from_secs(1),
+        )
+        .is_err());
+        drop(listener);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     #[cfg(unix)]
@@ -1260,16 +1324,10 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         use std::os::unix::net::UnixListener;
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::thread;
         use std::time::{Duration, Instant};
 
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "bitcoinpir-cln-rpc-deadline-test-{}-{id}.sock",
-            std::process::id()
-        ));
+        let (directory, path) = private_unix_socket_test_path("slow");
         assert!(!path.exists());
         let listener = UnixListener::bind(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -1309,6 +1367,7 @@ mod tests {
         );
         server.join().unwrap();
         fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     #[cfg(unix)]
@@ -1318,16 +1377,10 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         use std::os::unix::net::UnixListener;
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::thread;
         use std::time::Duration;
 
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "bitcoinpir-cln-rpc-oversize-test-{}-{id}.sock",
-            std::process::id()
-        ));
+        let (directory, path) = private_unix_socket_test_path("large");
         assert!(!path.exists());
         let listener = UnixListener::bind(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -1342,7 +1395,18 @@ mod tests {
             }
             let mut oversized = vec![b'x'; MAX_CLN_RPC_RESPONSE_BYTES_V1 + 3];
             oversized[..20].copy_from_slice(b"payment_preimage=000");
-            let _ = stream.write_all(&oversized);
+            // Exercise the incremental reader instead of relying on one large
+            // Unix-socket write and an immediate peer close. macOS may report
+            // a reset before exposing any buffered prefix in that pattern,
+            // which tests close timing rather than the fixed-capacity guard.
+            for fragment in oversized.chunks(1_024) {
+                if stream.write_all(fragment).is_err() {
+                    break;
+                }
+            }
+            // Keep the write half alive long enough for the client to reject
+            // exactly at its bound without EOF/reset becoming the signal.
+            thread::sleep(Duration::from_millis(100));
         });
         let transport = UnixClnRpcTransportV1::new(
             path.clone(),
@@ -1359,5 +1423,6 @@ mod tests {
         );
         server.join().unwrap();
         fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }

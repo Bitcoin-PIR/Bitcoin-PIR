@@ -5,13 +5,15 @@ use ed25519_dalek::SigningKey;
 use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use k256::elliptic_curve::PrimeField;
 use k256::{AffinePoint, EncodedPoint, ProjectivePoint, Scalar};
+use pir_runtime_core::service_admission::{AdmissionEnforcementV1, ConnectionAdmissionGateV1};
 use pir_service_protocol::{
-    derive_cashu_keyset_id_v2, AcquisitionMethod, AuthPaddingClassV1, AuthScheme, BackendId,
-    CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1, DatasetBindingV1,
-    DeploymentStatus, EntitlementLimitsV1, FreeModeV1, PolicyRollbackGuardV1, PriceV1,
+    derive_cashu_keyset_id_v2, AcquisitionMethod, AuthBeginV1, AuthPaddingClassV1, AuthRejectCode,
+    AuthResultV1, AuthScheme, AuthorizationProofV1, BackendId, CashuDenominationKeyV1,
+    CashuKeysetBindingV1, CashuRequiredNutsV1, DatasetBindingV1, DeploymentStatus,
+    EntitlementLimitsV1, FreeModeV1, OperationStartV1, PolicyRollbackGuardV1, PriceV1,
     PrivacyLeakageV1, ServiceOfferV1, ServicePolicyEpochFloorsV1, ServicePolicyV1,
     ServiceScopePolicyV1, ServiceScopeV1, StandardCashuMintManifestV1, StandardCashuProofV1,
-    VerificationMode, VerifiedServiceOfferV1, WorkloadId,
+    TrustedCatalogResolutionV1, VerificationMode, VerifiedServiceOfferV1, WorkloadId,
 };
 use pir_service_store::{
     ProviderStore, RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1,
@@ -98,6 +100,17 @@ fn create_provider_store_for_fixture(
         authority,
     )
     .unwrap()
+}
+
+fn private_provider_store_tempdir_v1() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("create provider-store test directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restrict provider-store test directory permissions");
+    }
+    directory
 }
 
 #[derive(Debug)]
@@ -251,7 +264,7 @@ enum SwapReply {
     WrongOrderCommitted,
     WrongAmountCommitted,
     WrongKeysetCommitted,
-    DefiniteReject,
+    Nut00Http400Uncommitted,
     Malformed400,
     Http408Nut00,
     Http425Nut00,
@@ -339,12 +352,13 @@ impl FakeMintTransportV1 {
 impl CashuMintTransportV1 for FakeMintTransportV1 {
     fn post_json(
         &self,
-        mint_endpoint: &str,
+        trust: CashuMintTrustV1<'_>,
         route: CashuMintRouteV1,
         request_json: &[u8],
         max_response_bytes: usize,
     ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
-        assert_eq!(mint_endpoint, "https://mint.example");
+        assert_eq!(trust.mint_endpoint(), "https://mint.example");
+        assert_eq!(trust.leaf_spki_sha256_pins(), &[[0x31; 32]]);
         assert_eq!(max_response_bytes, MAX_CASHU_MINT_JSON_BYTES_V1);
         let mut state = self.state.lock().unwrap();
         match route {
@@ -377,7 +391,7 @@ impl CashuMintTransportV1 for FakeMintTransportV1 {
                     }
                     SwapReply::TimeoutUncommitted
                     | SwapReply::NotFoundUncommitted
-                    | SwapReply::DefiniteReject
+                    | SwapReply::Nut00Http400Uncommitted
                     | SwapReply::InvalidJsonUncommitted
                     | SwapReply::Malformed400
                     | SwapReply::Http408Nut00
@@ -400,7 +414,7 @@ impl CashuMintTransportV1 for FakeMintTransportV1 {
                         CashuMintTransportFailureKindV1::NotFound,
                         Some(404),
                     )),
-                    SwapReply::DefiniteReject => {
+                    SwapReply::Nut00Http400Uncommitted => {
                         Err(CashuMintTransportFailureV1::from_http_status(
                             400,
                             br#"{"code":10001,"detail":"proof verification failed"}"#,
@@ -560,6 +574,7 @@ fn fixture_with_unit(price: u64, unit: &str) -> Fixture {
     let manifest = StandardCashuMintManifestV1 {
         manifest_epoch: 1,
         mint_endpoint: "https://mint.example".to_owned(),
+        leaf_spki_sha256_pins: vec![[0x31; 32]],
         unit: unit.to_owned(),
         required_nuts: CashuRequiredNutsV1::required_v1(),
         accepted_input_keysets: vec![keyset.clone()],
@@ -789,6 +804,24 @@ fn compressed_point(point: &ProjectivePoint) -> [u8; 33] {
         .as_bytes()
         .try_into()
         .unwrap()
+}
+
+#[test]
+fn mint_transport_trust_is_manifest_derived_and_debug_redacted() {
+    let fixture = fixture(1);
+    let trust = CashuMintTrustV1::from_manifest(&fixture.manifest).unwrap();
+    assert_eq!(trust.mint_endpoint(), "https://mint.example");
+    assert_eq!(trust.leaf_spki_sha256_pins(), &[[0x31; 32]]);
+    let debug = format!("{trust:?}");
+    assert!(!debug.contains("mint.example"));
+    assert!(!debug.contains(&hex::encode([0x31; 32])));
+
+    let mut invalid = fixture.manifest;
+    invalid.leaf_spki_sha256_pins = vec![[0x32; 32], [0x31; 32]];
+    assert_eq!(
+        CashuMintTrustV1::from_manifest(&invalid),
+        Err(CashuClientErrorV1::InvalidManifest)
+    );
 }
 
 #[test]
@@ -1267,7 +1300,7 @@ fn sqlite_contains_no_plaintext_proof_or_output_secret() {
 #[test]
 fn production_provider_store_adapter_completes_once_and_survives_restart() {
     let fixture = fixture(3);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_provider_store_tempdir_v1();
     let path = directory.path().join("provider.sqlite3");
     let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
     let mint = FakeMintTransportV1::new(
@@ -1322,9 +1355,94 @@ fn production_provider_store_adapter_completes_once_and_survives_restart() {
 }
 
 #[test]
+fn runtime_admission_committer_consumes_a_bound_standard_cashu_attempt_once() {
+    let fixture = fixture(3);
+    let scope = &fixture.policy.scopes[0].scope;
+    let offer = &fixture.policy.scopes[0].offers[0];
+    let operation = OperationStartV1::DpfQuery { db_id: 7 };
+    let request = AuthBeginV1 {
+        policy_digest: fixture.policy.policy_digest().unwrap(),
+        scope_id: scope.scope_id(),
+        offer_id: offer.offer_id,
+        scheme: offer.authorization,
+        key_id: offer.key_id.clone(),
+        operation: operation.clone(),
+        proof: AuthorizationProofV1::StandardCashu(fixture.spend.clone())
+            .encode_for(offer.authorization, offer.free_mode)
+            .unwrap(),
+    };
+    let request = AuthBeginV1::decode_padded(&request.encode_padded().unwrap()).unwrap();
+    let resolution = TrustedCatalogResolutionV1::new(
+        7,
+        scope.backend,
+        scope.workload,
+        scope.protocol_version,
+        scope.dataset.clone(),
+        scope.operation_profile,
+    );
+    let catalog =
+        |candidate: &OperationStartV1| (candidate == &operation).then(|| resolution.clone());
+
+    let directory = private_provider_store_tempdir_v1();
+    let path = directory.path().join("provider.sqlite3");
+    let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
+    let store = create_provider_store_for_fixture(
+        &path,
+        fixture.policy.provider_id,
+        Arc::clone(&authority),
+    );
+    let mint = FakeMintTransportV1::new(
+        SwapReply::Normal,
+        RestoreReply::Stored,
+        CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
+    );
+    let cipher = TestRecoveryCipherV1::default();
+    let committer = StandardCashuAdmissionCommitterV1::new(client(&store, &mint, &cipher));
+
+    let mut first_gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+    first_gate.secure_channel_established();
+    first_gate
+        .policy_served(true, request.policy_digest)
+        .unwrap();
+    assert!(matches!(
+        first_gate.authorize_and_commit(
+            true,
+            &request,
+            fixture.verified_offer(),
+            &catalog,
+            None,
+            &committer,
+            100,
+            1_000,
+        ),
+        AuthResultV1::Granted(_)
+    ));
+
+    let mut replay_gate = ConnectionAdmissionGateV1::new(AdmissionEnforcementV1::Enforced);
+    replay_gate.secure_channel_established();
+    replay_gate
+        .policy_served(true, request.policy_digest)
+        .unwrap();
+    assert!(matches!(
+        replay_gate.authorize_and_commit(
+            true,
+            &request,
+            fixture.verified_offer(),
+            &catalog,
+            None,
+            &committer,
+            101,
+            2_000,
+        ),
+        AuthResultV1::Rejected(rejected) if rejected.code == AuthRejectCode::InvalidOrSpent
+    ));
+    assert_eq!(mint.calls(), (1, 0, 0));
+}
+
+#[test]
 fn lost_submit_anchor_response_never_causes_nut03_side_effect_or_retry() {
     let fixture = fixture(1);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_provider_store_tempdir_v1();
     let path = directory.path().join("provider.sqlite3");
     let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
     let mint = FakeMintTransportV1::new(
@@ -1390,7 +1508,7 @@ fn lost_submit_anchor_response_never_causes_nut03_side_effect_or_retry() {
 #[test]
 fn lost_wallet_commit_anchor_response_recovers_notes_without_second_nut03() {
     let fixture = fixture(1);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_provider_store_tempdir_v1();
     let path = directory.path().join("provider.sqlite3");
     let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
     let mint = FakeMintTransportV1::new(
@@ -1448,7 +1566,7 @@ fn lost_wallet_commit_anchor_response_recovers_notes_without_second_nut03() {
 #[test]
 fn lost_grant_claim_anchor_response_never_reissues_grant_or_nut03() {
     let fixture = fixture(1);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_provider_store_tempdir_v1();
     let path = directory.path().join("provider.sqlite3");
     let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
     let mint = FakeMintTransportV1::new(
@@ -1544,14 +1662,11 @@ fn finite_exposure_limits_are_mandatory_and_enforced_before_nut03() {
 }
 
 #[test]
-fn only_strict_http_400_nut00_is_a_definite_rejection() {
+fn every_http_error_remains_an_ambiguous_swap_outcome() {
     let valid = br#"{"code":10001,"detail":"proof verification failed"}"#;
-    let definite = CashuMintTransportFailureV1::from_http_status(400, valid);
-    assert_eq!(
-        definite.kind(),
-        CashuMintTransportFailureKindV1::DefiniteRejection
-    );
-    assert_eq!(definite.http_status(), Some(400));
+    let http_400 = CashuMintTransportFailureV1::from_http_status(400, valid);
+    assert_eq!(http_400.kind(), CashuMintTransportFailureKindV1::HttpError);
+    assert_eq!(http_400.http_status(), Some(400));
 
     for (status, body) in [
         (400, b"not-json".as_slice()),
@@ -1567,89 +1682,71 @@ fn only_strict_http_400_nut00_is_a_definite_rejection() {
         (500, valid.as_slice()),
         (503, valid.as_slice()),
     ] {
-        assert_ne!(
-            CashuMintTransportFailureV1::from_http_status(status, body).kind(),
-            CashuMintTransportFailureKindV1::DefiniteRejection,
-            "status {status} and body {body:?} must remain ambiguous",
+        assert!(
+            matches!(
+                CashuMintTransportFailureV1::from_http_status(status, body).kind(),
+                CashuMintTransportFailureKindV1::HttpError
+                    | CashuMintTransportFailureKindV1::NotFound
+            ),
+            "status {status} and body {body:?} must remain ambiguous"
         );
     }
     let oversized = format!(r#"{{"code":10001,"detail":"{}"}}"#, "x".repeat(4_096));
-    assert_ne!(
-        CashuMintTransportFailureV1::from_http_status(400, oversized.as_bytes()).kind(),
-        CashuMintTransportFailureKindV1::DefiniteRejection
-    );
     assert_eq!(
-        CashuMintTransportFailureV1::ambiguous(
-            CashuMintTransportFailureKindV1::DefiniteRejection,
-            Some(400),
-        )
-        .kind(),
+        CashuMintTransportFailureV1::from_http_status(400, oversized.as_bytes()).kind(),
         CashuMintTransportFailureKindV1::HttpError
     );
 }
 
 #[test]
-fn repeated_invalid_proofs_release_exposure_without_terminal_rows() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("definite-rejections.sqlite3");
+fn nut00_http_400_retains_recovery_and_never_resubmits() {
+    let fixture = fixture(1);
+    let store = InsecureDevSqliteCashuSwapStoreV1::open_in_memory().unwrap();
     let mint = FakeMintTransportV1::new(
-        SwapReply::DefiniteReject,
+        SwapReply::Nut00Http400Uncommitted,
         RestoreReply::Empty,
         CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
     );
     let cipher = TestRecoveryCipherV1::default();
-    let limits = CashuCustodyExposureLimitsV1::new(1, 1).unwrap();
-
-    for marker in 0..32u8 {
-        // Reopen between every rejection to prove the release is durable and
-        // does not accumulate terminal rows across process restarts.
-        let store = InsecureDevSqliteCashuSwapStoreV1::open(&path).unwrap();
-        let mut fixture = fixture(1);
-        fixture.spend.proofs[0].secret = format!("invalid-proof-{marker:02x}");
-        fixture.checked = {
-            let verified = fixture.verified_offer();
-            check_standard_cashu_spend_for_offer(&fixture.spend, &verified, 100).unwrap()
-        };
-        let context = CheckedContextV1::new(
-            &fixture.spend,
-            &fixture.checked,
-            &fixture.verified_offer(),
-            &fixture.manifest,
-            100,
-        )
-        .unwrap();
-        assert_eq!(
-            client_with_limits(&store, &mint, &cipher, limits).start_swap(
+    let context = CheckedContextV1::new(
+        &fixture.spend,
+        &fixture.checked,
+        &fixture.verified_offer(),
+        &fixture.manifest,
+        100,
+    )
+    .unwrap();
+    for now in [100, 101] {
+        assert!(matches!(
+            client(&store, &mint, &cipher).start_swap(
                 &fixture.spend,
                 &fixture.checked,
                 &fixture.verified_offer(),
                 &fixture.manifest,
-                output_materials(1, marker.wrapping_add(1)),
-                100,
+                output_materials(1, now as u8),
+                now,
             ),
-            Err(CashuClientErrorV1::MintDefiniteRejection)
-        );
-        assert!(store
+            Ok(CashuSwapProgressV1::RecoveryPending {
+                observation: CashuRecoveryObservationV1::InputsUnspentObserved,
+                ..
+            })
+        ));
+    }
+    assert_eq!(mint.calls(), (1, 2, 2));
+    assert_eq!(
+        store
             .load_by_input(&fixture.checked.mint_id, &context.input_set_digest)
             .unwrap()
-            .is_none());
-        drop(store);
-    }
-    assert_eq!(mint.calls(), (32, 0, 0));
-    let connection = rusqlite::Connection::open(path).unwrap();
-    assert_eq!(
-        connection
-            .query_row("SELECT COUNT(*) FROM cashu_swap_intents", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .unwrap(),
-        0
+            .unwrap()
+            .state,
+        CashuSwapStateV1::Submitted
     );
 }
 
 #[test]
 fn ambiguous_http_errors_never_release_or_resubmit() {
     for reply in [
+        SwapReply::Nut00Http400Uncommitted,
         SwapReply::Malformed400,
         SwapReply::NotFoundUncommitted,
         SwapReply::InvalidJsonUncommitted,
@@ -2067,6 +2164,11 @@ fn custody_cipher_is_domain_bound_and_offline_decryptor_validates_the_bundle() {
     let decryptor = ChaCha20Poly1305CustodyDecryptorV1::new([(7, [0x41; 32])]).unwrap();
     let opened = decryptor.open_bundle(&built.aad, &sealed).unwrap();
     assert_eq!(opened.note_set_digest(), built.bundle.note_set_digest());
+    assert_eq!(opened.manifest_digest(), &fixture.checked.manifest_digest);
+    assert_eq!(
+        opened.leaf_spki_sha256_pins(),
+        fixture.manifest.leaf_spki_sha256_pins.as_slice()
+    );
 
     let mut wrong_aad = built.aad;
     wrong_aad.settlement_value += 1;
@@ -2102,6 +2204,8 @@ fn custody_export_groups_keyset_rotations_and_uses_full_ids_on_short_collision()
     fn bundle(keyset_id: String, secret_byte: u8, digest_byte: u8) -> CashuCustodyBundleV1 {
         CashuCustodyBundleV1::new(
             "https://mint.example".into(),
+            [0x52; 32],
+            vec![[0x31; 32]],
             "sat".into(),
             keyset_id,
             [digest_byte.wrapping_add(30); 32],
@@ -2153,6 +2257,8 @@ fn custody_note_and_bundle_debug_redact_stable_linkage_markers() {
     let amount = 987_654_321_u64;
     let bundle = CashuCustodyBundleV1::new(
         endpoint.to_owned(),
+        [0x52; 32],
+        vec![[0x31; 32]],
         "sat".to_owned(),
         keyset_id.clone(),
         note_set_digest,
@@ -2185,6 +2291,8 @@ fn custody_export_limits_keyset_groups_not_custody_lots() {
     fn bundle(keyset_id: String, marker: u8) -> CashuCustodyBundleV1 {
         CashuCustodyBundleV1::new(
             "https://mint.example".into(),
+            [0x52; 32],
+            vec![[0x31; 32]],
             "sat".into(),
             keyset_id,
             [marker.wrapping_add(30); 32],

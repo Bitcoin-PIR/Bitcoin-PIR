@@ -54,6 +54,8 @@ use crate::db_proof::{
     fetch_database_proof, fetch_database_proof_v2, verify_database_proof, verify_database_proof_v2,
     DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
+#[cfg(feature = "onion")]
+use crate::protocol::reject_error_response;
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
 use crate::service::{
     dangerous_unpaired_authorize_service_operation_v1, fetch_verified_service_policy_v1,
@@ -377,9 +379,9 @@ struct FheState {
     client_id: u64,
     /// Exported secret key bytes; used to spawn per-level clients.
     secret_key: Vec<u8>,
-    /// Serialized Galois key bytes; re-sent on server LRU eviction.
+    /// Serialized Galois key bytes; sent in the connection's one registration.
     galois_keys: Vec<u8>,
-    /// Serialized GSW key bytes; re-sent on server LRU eviction.
+    /// Serialized GSW key bytes; sent in the connection's one registration.
     gsw_keys: Vec<u8>,
     /// Per-level clients, keyed by `(db_id, level)` where level 0=index, 1=chunk.
     ///
@@ -399,11 +401,11 @@ struct FheState {
 /// operate on encrypted queries. The client generates Galois + GSW
 /// relin keys once at connect time (the server caches them in a
 /// per-client `KeyStore`), and every subsequent query is a ciphertext
-/// the server can fold against the database without learning its
-/// contents. The SDK transparently handles the server's FIFO client
-/// eviction (100-slot cap): if a batch comes back as all-empty, the
-/// client re-uploads its keys and retries once before surfacing
-/// [`PirError::SessionEvicted`] to the caller.
+/// the server can fold against the database without learning its contents.
+/// If the server's FIFO key store evicts this connection, the SDK fails the
+/// query with [`PirError::SessionEvicted`]. It deliberately does not register
+/// again or replay a paid query: V1 admission permits exactly one registration
+/// and treats a second registration as a terminal sequence violation.
 ///
 /// # Feature gating
 ///
@@ -1433,8 +1435,8 @@ impl OnionClient {
         Ok(())
     }
 
-    /// Register keys for a given database if we haven't already. Server
-    /// LRU-evicts at 100 clients, so this is also called lazily to retry.
+    /// Register keys for a given database if we haven't already on this
+    /// connection. V1 admission permits this transition exactly once.
     #[cfg(feature = "onion")]
     async fn ensure_keys_registered(&mut self, db_info: &DatabaseInfo) -> PirResult<()> {
         let already = self
@@ -1471,9 +1473,7 @@ impl OnionClient {
             items: Vec::new(),
         });
 
-        if response.is_empty() || response[0] != RESP_KEYS_ACK {
-            return Err(PirError::Protocol("expected RESP_KEYS_ACK (0x50)".into()));
-        }
+        decode_register_keys_ack(&response)?;
 
         self.fhe
             .as_mut()
@@ -1495,39 +1495,22 @@ impl OnionClient {
         }
     }
 
-    /// Send an OnionPIR `[REQ_ONIONPIR_INDEX_QUERY | REQ_ONIONPIR_CHUNK_QUERY]`
-    /// batch, parse the response, and transparently handle server-side
-    /// LRU eviction of our registered keys.
-    ///
-    /// If the server returns an all-empty batch (see
-    /// [`batch_looks_evicted`]), we treat it as eviction: mark
-    /// `db_id` as un-registered, call `register_keys(db_id)`, and retry
-    /// the exact same query once. A second all-empty response is
-    /// surfaced as a [`PirError::SessionEvicted`] — classified as
-    /// [`ErrorKind::SessionEvicted`], distinct from a generic
-    /// [`ErrorKind::ServerError`], so a caller can reconnect and
-    /// retry specifically on this cause without retrying on every
-    /// server error. A second straight eviction after re-registering
-    /// keys usually means FHE param drift or DB misconfig; the
-    /// reconnect logic should cap retries at that point rather than
-    /// spin.
+    /// Send one OnionPIR batch and parse its response. An all-empty batch is
+    /// the server's key-eviction signal. It fails closed immediately: replaying
+    /// would consume a second backend frame, and re-registration is forbidden
+    /// by the V1 register-once admission DFA.
     ///
     /// [`ErrorKind::SessionEvicted`]: pir_sdk::ErrorKind::SessionEvicted
     /// [`ErrorKind::ServerError`]: pir_sdk::ErrorKind::ServerError
     ///
-    /// This is the single chokepoint for both `query_index_level` and
-    /// `query_chunk_level`; keeping it in one place means the Merkle
-    /// verification path (which uses its own sibling-query path in
-    /// `onion_merkle.rs`) is the only OnionPIR code path still
-    /// vulnerable to silent LRU eviction. That path's failure mode is
-    /// "Merkle proof fails → result coerced to `Some(merkle_failed())`"
-    /// which is already conservative, so it's acceptable to leave it
-    /// uncovered here.
+    /// This is the single chokepoint for INDEX and CHUNK. The Merkle path
+    /// independently fails verification on an empty ciphertext result.
     #[cfg(feature = "onion")]
     async fn onionpir_batch_rpc(
         &mut self,
         msg: &[u8],
         expected_variant: u8,
+        expected_round_id: u16,
         db_id: u8,
         variant_name: &'static str,
         round_kind: RoundKind,
@@ -1537,32 +1520,7 @@ impl OnionClient {
             .onionpir_batch_rpc_once(
                 msg,
                 expected_variant,
-                variant_name,
-                round_kind,
-                items_per_group,
-                db_id,
-            )
-            .await?;
-        if !batch_looks_evicted(&batch) {
-            return Ok(batch);
-        }
-        log::warn!(
-            "[PIR-AUDIT] OnionPIR: all-empty {} for db_id={} — assuming \
-             server LRU-evicted our keys. Re-registering and retrying once.",
-            variant_name,
-            db_id,
-        );
-        // Drop the "already registered" flag so `register_keys` will
-        // actually re-register (otherwise a caller that calls
-        // `ensure_keys_registered` before this would be a no-op).
-        if let Some(fhe) = self.fhe.as_mut() {
-            fhe.registered.remove(&db_id);
-        }
-        self.register_keys(db_id).await?;
-        let batch = self
-            .onionpir_batch_rpc_once(
-                msg,
-                expected_variant,
+                expected_round_id,
                 variant_name,
                 round_kind,
                 items_per_group,
@@ -1570,15 +1528,10 @@ impl OnionClient {
             )
             .await?;
         if batch_looks_evicted(&batch) {
-            // Two consecutive empty batches ⇒ eviction signal even
-            // after re-registering. Classified as
-            // `ErrorKind::SessionEvicted` so a calling retry loop can
-            // reconnect + re-register and try again, distinct from a
-            // generic `ServerError` that a retry loop should NOT spin on.
             return Err(PirError::SessionEvicted(format!(
                 "OnionPIR {} returned all-empty batch for db_id={} \
-                 even after re-registering keys — server may be \
-                 overloaded, or FHE params may have drifted",
+                 — server keys were evicted or FHE parameters drifted; \
+                 V1 did not re-register or replay the query",
                 variant_name, db_id,
             )));
         }
@@ -1586,20 +1539,23 @@ impl OnionClient {
     }
 
     /// One-shot sender for `onionpir_batch_rpc`: single roundtrip, no retry.
-    /// Emits one `RoundProfile` per actual roundtrip — so an LRU-eviction
-    /// retry loop in [`onionpir_batch_rpc`](Self::onionpir_batch_rpc)
-    /// records two `Index` (or `Chunk`) rounds plus one `OnionKeyRegister`
-    /// in between, matching what the server sees on the wire.
+    /// Emits exactly one `RoundProfile` for the one actual roundtrip.
     #[cfg(feature = "onion")]
     async fn onionpir_batch_rpc_once(
         &mut self,
         msg: &[u8],
         expected_variant: u8,
+        expected_round_id: u16,
         variant_name: &'static str,
         round_kind: RoundKind,
         items_per_group: &[u32],
         db_id: u8,
     ) -> PirResult<Vec<Vec<u8>>> {
+        let expected_results = items_per_group.iter().try_fold(0usize, |total, count| {
+            total.checked_add(*count as usize).ok_or_else(|| {
+                PirError::Protocol(format!("{variant_name}: expected result count overflow"))
+            })
+        })?;
         let request_bytes = msg.len() as u64;
         let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
         let response = conn.roundtrip(msg).await?;
@@ -1611,13 +1567,13 @@ impl OnionClient {
             response_bytes: (response.len() as u64).saturating_add(4),
             items: items_per_group.to_vec(),
         });
-        if response.is_empty() || response[0] != expected_variant {
-            return Err(PirError::Protocol(format!(
-                "expected {} (0x{:02x})",
-                variant_name, expected_variant,
-            )));
-        }
-        decode_onionpir_batch_result(&response[1..])
+        decode_onionpir_batch_response(
+            &response,
+            expected_variant,
+            expected_round_id,
+            expected_results,
+            variant_name,
+        )
     }
 
     /// Get or create a per-level `onionpir::Client` for (db_id, level).
@@ -1727,9 +1683,9 @@ impl OnionClient {
                 queries.push(index_client.generate_query(bin));
             }
 
-            // Send and receive. `onionpir_batch_rpc` transparently
-            // re-registers keys + retries once if the server LRU-evicted
-            // us mid-session (the 100-client cap in SEAL's KeyStore).
+            // Send and receive exactly once. An LRU eviction fails the V1
+            // session closed; register/replay would violate the paid grant's
+            // register-once monotonic DFA.
             let msg = encode_onionpir_batch_query(
                 REQ_ONIONPIR_INDEX_QUERY,
                 round_id as u16,
@@ -1745,6 +1701,7 @@ impl OnionClient {
                 .onionpir_batch_rpc(
                     &msg,
                     RESP_ONIONPIR_INDEX_RESULT,
+                    round_id as u16,
                     db_info.db_id,
                     "RESP_ONIONPIR_INDEX_RESULT",
                     RoundKind::Index,
@@ -1977,7 +1934,7 @@ impl OnionClient {
                 queries.push(chunk_client.generate_query(bin));
             }
 
-            // Same eviction-retry path as the INDEX round — see
+            // Same one-shot eviction behavior as the INDEX round — see
             // `onionpir_batch_rpc` for the reasoning.
             let msg = encode_onionpir_batch_query(
                 REQ_ONIONPIR_CHUNK_QUERY,
@@ -1993,6 +1950,7 @@ impl OnionClient {
                 .onionpir_batch_rpc(
                     &msg,
                     RESP_ONIONPIR_CHUNK_RESULT,
+                    round_id as u16,
                     db_info.db_id,
                     "RESP_ONIONPIR_CHUNK_RESULT",
                     RoundKind::Chunk,
@@ -2603,29 +2561,105 @@ pub(crate) fn batch_looks_evicted(batch: &[Vec<u8>]) -> bool {
     !batch.is_empty() && batch.iter().all(|r| r.is_empty())
 }
 
+#[cfg(feature = "onion")]
+fn decode_register_keys_ack(body: &[u8]) -> PirResult<()> {
+    const CONTEXT: &str = "OnionPIR key registration";
+    if body.is_empty() {
+        return Err(PirError::Decode(format!("{CONTEXT}: empty response body")));
+    }
+    reject_error_response(body, CONTEXT)?;
+    if body[0] != RESP_KEYS_ACK {
+        return Err(PirError::UnexpectedResponse {
+            expected: "RESP_KEYS_ACK",
+            actual: format!("0x{:02x}", body[0]),
+        });
+    }
+    if body.len() != 1 {
+        return Err(PirError::Decode(format!(
+            "{CONTEXT}: trailing bytes after ACK: {}",
+            body.len() - 1
+        )));
+    }
+    Ok(())
+}
+
 /// Decode an `OnionPirBatchResult` payload (after the variant byte).
 ///
 /// Wire format: `[2B round_id][1B num_groups]({ [4B len][bytes] })*`.
 #[cfg(feature = "onion")]
-fn decode_onionpir_batch_result(data: &[u8]) -> PirResult<Vec<Vec<u8>>> {
+fn decode_onionpir_batch_result(
+    data: &[u8],
+    expected_round_id: u16,
+    context: &str,
+) -> PirResult<Vec<Vec<u8>>> {
     if data.len() < 3 {
-        return Err(PirError::Decode("result batch too short".into()));
+        return Err(PirError::Decode(format!(
+            "{context}: result batch too short"
+        )));
     }
-    let mut pos = 2; // skip round_id
+    let round_id = u16::from_le_bytes(data[..2].try_into().unwrap());
+    if round_id != expected_round_id {
+        return Err(PirError::Protocol(format!(
+            "{context}: result round_id mismatch: expected {expected_round_id}, got {round_id}"
+        )));
+    }
+    let mut pos = 2;
     let num_groups = data[pos] as usize;
     pos += 1;
     let mut results = Vec::with_capacity(num_groups);
     for _ in 0..num_groups {
-        if pos + 4 > data.len() {
-            return Err(PirError::Decode("truncated result len".into()));
+        let length_end = pos
+            .checked_add(4)
+            .ok_or_else(|| PirError::Decode(format!("{context}: result length overflow")))?;
+        if length_end > data.len() {
+            return Err(PirError::Decode(format!("{context}: truncated result len")));
         }
-        let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        if pos + len > data.len() {
-            return Err(PirError::Decode("truncated result bytes".into()));
+        let len = u32::from_le_bytes(data[pos..length_end].try_into().unwrap()) as usize;
+        pos = length_end;
+        let result_end = pos
+            .checked_add(len)
+            .ok_or_else(|| PirError::Decode(format!("{context}: result data length overflow")))?;
+        if result_end > data.len() {
+            return Err(PirError::Decode(format!(
+                "{context}: truncated result bytes"
+            )));
         }
-        results.push(data[pos..pos + len].to_vec());
-        pos += len;
+        results.push(data[pos..result_end].to_vec());
+        pos = result_end;
+    }
+    if pos != data.len() {
+        return Err(PirError::Decode(format!(
+            "{context}: trailing bytes after result batch: {}",
+            data.len() - pos
+        )));
+    }
+    Ok(results)
+}
+
+#[cfg(feature = "onion")]
+fn decode_onionpir_batch_response(
+    body: &[u8],
+    expected_variant: u8,
+    expected_round_id: u16,
+    expected_results: usize,
+    context: &'static str,
+) -> PirResult<Vec<Vec<u8>>> {
+    if body.is_empty() {
+        return Err(PirError::Decode(format!("{context}: empty response body")));
+    }
+    reject_error_response(body, context)?;
+    if body[0] != expected_variant {
+        return Err(PirError::UnexpectedResponse {
+            expected: context,
+            actual: format!("0x{:02x}", body[0]),
+        });
+    }
+    let results = decode_onionpir_batch_result(&body[1..], expected_round_id, context)?;
+    if results.len() != expected_results {
+        return Err(PirError::Protocol(format!(
+            "{context}: result count mismatch: expected {expected_results}, got {}",
+            results.len()
+        )));
     }
     Ok(results)
 }
@@ -3577,6 +3611,29 @@ mod tests {
 
     #[cfg(feature = "onion")]
     #[test]
+    fn test_register_keys_ack_is_exact_and_errors_are_canonical() {
+        assert!(decode_register_keys_ack(&[RESP_KEYS_ACK]).is_ok());
+        assert!(matches!(
+            decode_register_keys_ack(&[RESP_KEYS_ACK, 0]),
+            Err(PirError::Decode(ref text)) if text.contains("trailing bytes")
+        ));
+        assert!(matches!(
+            decode_register_keys_ack(&[0x91]),
+            Err(PirError::UnexpectedResponse { .. })
+        ));
+
+        let message = b"authorization required";
+        let mut error = vec![crate::protocol::RESP_ERROR];
+        error.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        error.extend_from_slice(message);
+        assert!(matches!(
+            decode_register_keys_ack(&error),
+            Err(PirError::ServerError(ref text)) if text.contains("authorization required")
+        ));
+    }
+
+    #[cfg(feature = "onion")]
+    #[test]
     fn test_encode_onionpir_batch_query() {
         let qs = vec![vec![0xaau8, 0xbb], vec![0xcc]];
         let buf = encode_onionpir_batch_query(REQ_ONIONPIR_INDEX_QUERY, 7, &qs, 0);
@@ -3590,10 +3647,74 @@ mod tests {
     #[test]
     fn test_decode_onionpir_batch_result_roundtrip() {
         let qs = vec![vec![0x11, 0x22], vec![0x33]];
-        let buf = encode_onionpir_batch_query(RESP_ONIONPIR_INDEX_RESULT, 0, &qs, 0);
+        let buf = encode_onionpir_batch_query(RESP_ONIONPIR_INDEX_RESULT, 7, &qs, 0);
         // Skip length prefix + variant byte.
-        let decoded = decode_onionpir_batch_result(&buf[5..]).unwrap();
+        let decoded = decode_onionpir_batch_result(&buf[5..], 7, "test").unwrap();
         assert_eq!(decoded, qs);
+    }
+
+    #[cfg(feature = "onion")]
+    #[test]
+    fn test_decode_onionpir_batch_result_rejects_round_truncation_and_trailing() {
+        let qs = vec![vec![0x11, 0x22], vec![0x33]];
+        let buf = encode_onionpir_batch_query(RESP_ONIONPIR_INDEX_RESULT, 7, &qs, 0);
+        assert!(matches!(
+            decode_onionpir_batch_result(&buf[5..], 8, "test"),
+            Err(PirError::Protocol(ref text)) if text.contains("round_id mismatch")
+        ));
+
+        let mut truncated = buf[5..].to_vec();
+        truncated.pop();
+        assert!(matches!(
+            decode_onionpir_batch_result(&truncated, 7, "test"),
+            Err(PirError::Decode(_))
+        ));
+
+        let mut trailing = buf[5..].to_vec();
+        trailing.push(0xaa);
+        assert!(matches!(
+            decode_onionpir_batch_result(&trailing, 7, "test"),
+            Err(PirError::Decode(ref text)) if text.contains("trailing bytes")
+        ));
+
+        let mut wrong_opcode = buf[4..].to_vec();
+        wrong_opcode[0] = 0x91;
+        assert!(matches!(
+            decode_onionpir_batch_response(
+                &wrong_opcode,
+                RESP_ONIONPIR_INDEX_RESULT,
+                7,
+                2,
+                "RESP_ONIONPIR_INDEX_RESULT",
+            ),
+            Err(PirError::UnexpectedResponse { .. })
+        ));
+
+        let message = b"authorization required";
+        let mut error = vec![crate::protocol::RESP_ERROR];
+        error.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        error.extend_from_slice(message);
+        assert!(matches!(
+            decode_onionpir_batch_response(
+                &error,
+                RESP_ONIONPIR_INDEX_RESULT,
+                7,
+                2,
+                "RESP_ONIONPIR_INDEX_RESULT",
+            ),
+            Err(PirError::ServerError(ref text)) if text.contains("authorization required")
+        ));
+
+        assert!(matches!(
+            decode_onionpir_batch_response(
+                &buf[4..],
+                RESP_ONIONPIR_INDEX_RESULT,
+                7,
+                1,
+                "RESP_ONIONPIR_INDEX_RESULT",
+            ),
+            Err(PirError::Protocol(ref text)) if text.contains("result count mismatch")
+        ));
     }
 
     #[cfg(feature = "onion")]

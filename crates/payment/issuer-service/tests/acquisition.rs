@@ -29,9 +29,23 @@ use pir_service_protocol::{
     ServiceScopeV1, SettlementModesV1, SettlementRuleV1, SettlementUnitV1, VerificationMode,
     WorkloadId,
 };
-use tempfile::Builder;
+use tempfile::{Builder, TempDir};
 
 const NOW: u64 = 1_700_000_000;
+
+fn private_tempdir(prefix: &str) -> TempDir {
+    let directory = Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .expect("temporary directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restrict temporary directory permissions");
+    }
+    directory
+}
 
 #[derive(Debug)]
 struct SequentialIds(AtomicU8);
@@ -278,10 +292,7 @@ fn rotated_bat_policy(fixture: &Fixture, epoch: u64, bat_multiplier: u8) -> Serv
 
 #[test]
 fn startup_rejects_missing_wrong_and_retained_bat_private_material() {
-    let directory = Builder::new()
-        .prefix("bitcoinpir-issuer-key-coverage-test-")
-        .tempdir()
-        .expect("temporary directory");
+    let directory = private_tempdir("bitcoinpir-issuer-key-coverage-test-");
     let authority = Arc::new(
         SqliteIssuerRollbackFloorAuthorityV1::create(
             directory.path().join("floor.sqlite3"),
@@ -357,10 +368,7 @@ fn startup_rejects_missing_wrong_and_retained_bat_private_material() {
 
 #[test]
 fn startup_requires_quote_signer_only_through_recovery_horizon() {
-    let directory = Builder::new()
-        .prefix("bitcoinpir-issuer-quote-key-coverage-test-")
-        .tempdir()
-        .expect("temporary directory");
+    let directory = private_tempdir("bitcoinpir-issuer-quote-key-coverage-test-");
     let authority = Arc::new(
         SqliteIssuerRollbackFloorAuthorityV1::create(
             directory.path().join("floor.sqlite3"),
@@ -513,10 +521,7 @@ fn startup_requires_quote_signer_only_through_recovery_horizon() {
 
 #[test]
 fn clearing_readiness_requires_live_binding_key_and_immutable_lineage() {
-    let directory = Builder::new()
-        .prefix("bitcoinpir-issuer-clearing-key-readiness-test-")
-        .tempdir()
-        .expect("temporary directory");
+    let directory = private_tempdir("bitcoinpir-issuer-clearing-key-readiness-test-");
     let authority = Arc::new(
         SqliteIssuerRollbackFloorAuthorityV1::create(
             directory.path().join("floor.sqlite3"),
@@ -552,6 +557,8 @@ fn clearing_readiness_requires_live_binding_key_and_immutable_lineage() {
             authorization_epoch: 1,
             provider_id: fixture.provider_id,
             issuer_id: fixture.issuer_id,
+            redeem_endpoint: "https://issuer.example".to_owned(),
+            redeem_leaf_spki_sha256_pins: vec![[0x41; 32]],
             settlement_account_id: [0x64; 32],
             clearing_verifying_key: clearing_key.verifying_key().to_bytes(),
             not_before: NOW - 100,
@@ -637,10 +644,7 @@ fn clearing_readiness_requires_live_binding_key_and_immutable_lineage() {
 
 #[test]
 fn exact_quote_create_recovers_after_policy_rotation_and_conflicts_on_changed_body() {
-    let directory = Builder::new()
-        .prefix("bitcoinpir-issuer-service-test-")
-        .tempdir()
-        .expect("temporary directory");
+    let directory = private_tempdir("bitcoinpir-issuer-service-test-");
     let authority = Arc::new(
         SqliteIssuerRollbackFloorAuthorityV1::create(
             directory.path().join("floor.sqlite3"),
@@ -716,10 +720,7 @@ fn exact_quote_create_recovers_after_policy_rotation_and_conflicts_on_changed_bo
 
 #[test]
 fn same_second_settlement_claim_retries_without_write_then_replays_exactly() {
-    let directory = Builder::new()
-        .prefix("bitcoinpir-issuer-same-second-claim-test-")
-        .tempdir()
-        .expect("temporary directory");
+    let directory = private_tempdir("bitcoinpir-issuer-same-second-claim-test-");
     let authority = Arc::new(
         SqliteIssuerRollbackFloorAuthorityV1::create(
             directory.path().join("floor.sqlite3"),
@@ -890,10 +891,7 @@ fn same_second_settlement_claim_retries_without_write_then_replays_exactly() {
 
 #[test]
 fn background_batch_expires_open_invoice_without_status_nonce() {
-    let directory = Builder::new()
-        .prefix("bitcoinpir-issuer-reconcile-test-")
-        .tempdir()
-        .expect("temporary directory");
+    let directory = private_tempdir("bitcoinpir-issuer-reconcile-test-");
     let authority = Arc::new(
         SqliteIssuerRollbackFloorAuthorityV1::create(
             directory.path().join("floor.sqlite3"),

@@ -136,6 +136,7 @@ impl ServerProcess {
                 fixture.store_path.to_str().expect("UTF-8 test path"),
                 "--service-rollback-authority",
                 fixture.rollback_path.to_str().expect("UTF-8 test path"),
+                "--allow-local-service-rollback-authority-dev",
                 "--service-free-ip-key",
                 fixture.free_ip_key_path.to_str().expect("UTF-8 test path"),
                 "--service-trust-direct-peer-ip",

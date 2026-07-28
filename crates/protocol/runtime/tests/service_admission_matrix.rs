@@ -9,6 +9,8 @@
 //! not a socket-level or external-mint E2E test.
 
 use std::collections::HashSet;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -273,6 +275,7 @@ fn cashu_manifest() -> StandardCashuMintManifestV1 {
     StandardCashuMintManifestV1 {
         manifest_epoch: 1,
         mint_endpoint: "https://mint.example".into(),
+        leaf_spki_sha256_pins: vec![[0x31; 32]],
         unit: "sat".into(),
         required_nuts: CashuRequiredNutsV1::required_v1(),
         accepted_input_keysets: vec![keyset.clone()],
@@ -582,6 +585,8 @@ fn direct_receipt_production_committer_spend_survives_store_restart() {
     let verified_offer = verified.offer(&request.scope_id, request.offer_id).unwrap();
 
     let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let store_path = directory.path().join("provider.sqlite3");
     let floor_path = directory.path().join("provider-floor.sqlite3");
     let authority = Arc::new(
@@ -660,20 +665,27 @@ fn exercise_backend(gate: &mut ConnectionAdmissionGateV1, backend: BackendCase) 
             let _permit = gate
                 .permit_backend_frame(
                     true,
-                    &frame(BackendFrameKindV1::DpfChunkBatch),
+                    &BackendFrameV1 {
+                        logical_inputs: 0,
+                        ..frame(BackendFrameKindV1::DpfChunkBatch)
+                    },
                     NOW_MONOTONIC_MS + 2,
                 )
                 .unwrap();
             let _permit = gate
                 .permit_backend_frame(
                     true,
-                    &frame(BackendFrameKindV1::DpfMerkleSiblingBatch),
+                    &BackendFrameV1 {
+                        logical_inputs: 0,
+                        ..frame(BackendFrameKindV1::DpfMerkleSiblingBatch)
+                    },
                     NOW_MONOTONIC_MS + 3,
                 )
                 .unwrap();
         }
         BackendCase::HarmonyHint => {
             let mut hint = frame(BackendFrameKindV1::HarmonyHintV2Full);
+            hint.logical_inputs = 0;
             hint.hint_groups = 1;
             let _permit = gate
                 .permit_backend_frame(true, &hint, NOW_MONOTONIC_MS + 1)
@@ -683,32 +695,38 @@ fn exercise_backend(gate: &mut ConnectionAdmissionGateV1, backend: BackendCase) 
             let _permit = gate
                 .permit_backend_frame(
                     true,
-                    &frame(BackendFrameKindV1::HarmonyQuery),
+                    &frame(BackendFrameKindV1::HarmonyBatchQuery {
+                        level: 0,
+                        round_id: 0,
+                        index_sibling_levels: 1,
+                        chunk_sibling_levels: 1,
+                    }),
                     NOW_MONOTONIC_MS + 1,
                 )
                 .unwrap();
         }
         BackendCase::Onion => {
+            let mut register = frame(BackendFrameKindV1::OnionRegisterKeys);
+            register.logical_inputs = 0;
             let _permit = gate
-                .permit_backend_frame(
-                    true,
-                    &frame(BackendFrameKindV1::OnionRegisterKeys),
-                    NOW_MONOTONIC_MS + 1,
-                )
+                .permit_backend_frame(true, &register, NOW_MONOTONIC_MS + 1)
                 .unwrap();
             let _permit = gate
                 .permit_backend_frame(
                     true,
-                    &frame(BackendFrameKindV1::OnionIndexQuery),
+                    &frame(BackendFrameKindV1::OnionIndexQuery { round_id: 0 }),
                     NOW_MONOTONIC_MS + 2,
                 )
                 .unwrap();
+            let mut chunk = frame(BackendFrameKindV1::OnionChunkQuery { round_id: 0 });
+            chunk.logical_inputs = 0;
             let _permit = gate
-                .permit_backend_frame(
-                    true,
-                    &frame(BackendFrameKindV1::OnionMerkleIndexSibling),
-                    NOW_MONOTONIC_MS + 3,
-                )
+                .permit_backend_frame(true, &chunk, NOW_MONOTONIC_MS + 3)
+                .unwrap();
+            let mut merkle = frame(BackendFrameKindV1::OnionMerkleIndexSibling { round_id: 0 });
+            merkle.logical_inputs = 0;
+            let _permit = gate
+                .permit_backend_frame(true, &merkle, NOW_MONOTONIC_MS + 4)
                 .unwrap();
         }
         BackendCase::Oram => {

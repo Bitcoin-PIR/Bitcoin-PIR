@@ -277,27 +277,6 @@ impl CashuSwapStoreV1 for InsecureDevSqliteCashuSwapStoreV1 {
         Ok(())
     }
 
-    fn release_definite_rejection(
-        &self,
-        intent_id: &[u8; 16],
-    ) -> Result<bool, CashuSwapStoreErrorV1> {
-        if intent_id.iter().all(|byte| *byte == 0) {
-            return Err(CashuSwapStoreErrorV1::Conflict);
-        }
-        let mut connection = self.lock()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(map_sqlite_error)?;
-        let changed = transaction
-            .execute(
-                "DELETE FROM cashu_swap_intents WHERE intent_id = ?1 AND state = 1",
-                [intent_id.as_slice()],
-            )
-            .map_err(map_sqlite_error)?;
-        transaction.commit().map_err(map_sqlite_error)?;
-        Ok(changed == 1)
-    }
-
     fn claim_grant_once_with_custody(
         &self,
         intent_id: &[u8; 16],

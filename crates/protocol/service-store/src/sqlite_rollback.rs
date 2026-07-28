@@ -1,10 +1,10 @@
-//! A separately configured SQLite implementation of the rollback-floor
-//! authority contract.
+//! Development/test SQLite implementation of the rollback-floor authority
+//! contract.
 //!
-//! The authority database must live outside the provider-store backup and
-//! restore domain (ideally a separate host or volume). Co-locating and backing
-//! up both files together defeats malicious/stale-snapshot rollback detection,
-//! even though ordinary crash consistency remains correct.
+//! This adapter is useful for local tests and recovery drills. A second local
+//! SQLite file is not accepted as an independently administered production
+//! authority. Even in development it must stay outside the provider-store
+//! backup/restore set; co-snapshotting both files defeats rollback detection.
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -29,6 +29,7 @@ CREATE TABLE rollback_floors (
 ) STRICT;
 "#;
 
+/// Local development/test authority; not a production rollback boundary.
 #[derive(Clone)]
 pub struct SqliteRollbackFloorAuthorityV1 {
     path: PathBuf,
@@ -57,12 +58,11 @@ impl SqliteRollbackFloorAuthorityV1 {
         if path.as_os_str().is_empty() {
             return Err(error("rollback authority path is empty"));
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(io_error)?;
+        let file = pir_private_files::create_new_private_file_v1(
+            &path,
+            "provider local rollback database",
+        )
+        .map_err(error)?;
         file.sync_all().map_err(io_error)?;
         drop(file);
         sync_parent(&path)?;
@@ -111,13 +111,31 @@ impl SqliteRollbackFloorAuthorityV1 {
     }
 
     fn open_raw(&self) -> Result<Connection, RollbackFloorAuthorityErrorV1> {
-        Connection::open_with_flags(
+        let checked = pir_private_files::checked_existing_private_file_v1(
             &self.path,
+            pir_private_files::PrivateFileModeV1::ReadWrite,
+            "provider local rollback database",
+        )
+        .map_err(error)?;
+        let connection = Connection::open_with_flags(
+            checked.path(),
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_URI,
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
-        .map_err(sql_error)
+        .map_err(sql_error)?;
+        let after = pir_private_files::checked_existing_private_file_v1(
+            checked.path(),
+            pir_private_files::PrivateFileModeV1::ReadWrite,
+            "provider local rollback database",
+        )
+        .map_err(error)?;
+        if after.identity() != checked.identity() {
+            return Err(error(
+                "provider local rollback database changed while opening",
+            ));
+        }
+        Ok(connection)
     }
 
     fn open_checked(&self) -> Result<Connection, RollbackFloorAuthorityErrorV1> {
@@ -377,6 +395,12 @@ mod tests {
     #[test]
     fn authority_is_durable_idempotent_and_linearizable() {
         let dir = tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restrict rollback-authority test directory permissions");
+        }
         let path = dir.path().join("floor.sqlite");
         let authority =
             SqliteRollbackFloorAuthorityV1::create(&path, Duration::from_secs(1)).unwrap();
