@@ -1,0 +1,67 @@
+# BitcoinPIR Payment V1 public TLS edge; never install this .in file directly.
+[Unit]
+Description=BitcoinPIR Payment V1 pinned public TLS edge (template only)
+After=network-online.target bitcoinpir-payment-v1-source-fair-edge.service
+Wants=network-online.target
+Requires=bitcoinpir-payment-v1-source-fair-edge.service
+BindsTo=bitcoinpir-payment-v1-source-fair-edge.service
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/EDGE-PREFLIGHT-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED
+
+[Service]
+Type=notify
+User=bitcoinpir-payment-edge
+Group=bitcoinpir-payment-edge
+SupplementaryGroups=bitcoinpir-source-fair-edge
+UMask=0077
+StateDirectory=bitcoinpir-payment-edge
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bitcoinpir-payment-edge
+Environment=XDG_DATA_HOME=/var/lib/bitcoinpir-payment-edge/data XDG_CONFIG_HOME=/var/lib/bitcoinpir-payment-edge/config
+StandardOutput=null
+StandardError=null
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/caddy.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/edge/edge-config.sha256
+ExecStartPre=/usr/bin/test -S /run/bitcoinpir-source-fair-edge/provider.sock
+ExecStartPre=/usr/bin/test -S /run/bitcoinpir-source-fair-edge/issuer.sock
+ExecStartPre=/usr/bin/test -S /run/bitcoinpir-source-fair-edge/directory-public.sock
+ExecStartPre=/usr/bin/test -S /run/bitcoinpir-source-fair-edge/directory-publisher.sock
+ExecStartPre=/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy validate --config /etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile --adapter caddyfile
+ExecStart=/opt/bitcoinpir/caddy/@CADDY_SHA256@/caddy run --config /etc/bitcoinpir/payment-v1/edge/hetzner-public.Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+LimitNOFILE=4096
+LimitCORE=0
+MemoryMax=536870912
+MemorySwapMax=0
+TasksMax=512
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/edge /run/bitcoinpir-source-fair-edge
+ReadWritePaths=/var/lib/bitcoinpir-payment-edge
+
+# Caddy's bounded TLS/HTTP front door and HAProxy's source-fair admission are
+# separate fail-closed layers. There is intentionally no [Install] section.

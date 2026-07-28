@@ -78,6 +78,7 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/bitcoinpir/payment-v1/provider
 ReadWritePaths=/var/lib/bitcoinpir-provider-payment-v1
+InaccessiblePaths=/run/bitcoinpir-source-fair-edge
 
 # The signed policy may use direct receipts, provider-local BAT, Standard Cashu
 # and the approved shared issuer. Runtime method-coverage validation rejects

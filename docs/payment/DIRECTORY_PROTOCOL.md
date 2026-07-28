@@ -363,9 +363,11 @@ method/provider-pair lookup API.
 `apps/directory-relay` implements the server-side subset needed by this
 protocol. It is not a general-purpose Nostr relay. The sole process interface
 is `bitcoinpir-directory-relay --config /absolute/owner-only.toml`; the
-configuration fixes one loopback listener, one absolute SQLite database, one
-pinned non-zero directory publisher key and explicit concurrency, ingress,
-egress, archive and timeout bounds. No publisher private key is present.
+configuration fixes distinct public and publisher loopback listeners, one
+absolute SQLite database, one pinned non-zero directory publisher key and
+explicit global plus per-lane concurrency, ingress, egress, archive and
+timeout bounds. Every pair of lane reservations must add exactly to its global
+cap. No publisher private key is present.
 
 The accepted client messages are only the exact canonical NIP-01 `EVENT`,
 `REQ`, and `CLOSE` shapes used here. EVENT requires the pinned key, kind 30078,
@@ -373,6 +375,12 @@ valid signature, canonical JSON, and the exact `d`/`s` namespaces. There is no
 generic subscription language, live push, NIP-42 AUTH, NOTICE, or application
 heartbeat path. A reverse proxy may handle WebSocket control frames, but it
 must not log frames or silently transform application messages.
+The public listener accepts only `REQ`/`CLOSE`; the publisher listener accepts
+only `EVENT`. Each connection or operation acquires its lane reservation before
+the shared global reservation, and rate/egress gates apply at both levels.
+These reservations preserve publisher admission capacity under public load,
+but both lanes share the process and mutex-protected SQLite store, so they are
+not a storage-level availability boundary.
 
 SQLite keeps an immutable event archive and a separate addressable-event head.
 An unseen current event, its archive counters, and any head replacement commit

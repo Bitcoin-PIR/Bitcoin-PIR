@@ -33,12 +33,22 @@ pub const MAX_LEGAL_READBACK_EGRESS_BYTES: u64 =
 struct ServerState {
     store: Arc<Mutex<DirectoryStore>>,
     directory_pubkey: [u8; 32],
+    lane: RelayLane,
     operation_slots: Arc<Semaphore>,
+    global_operation_slots: Arc<Semaphore>,
     operation_timeout: Duration,
     egress_timeout: Duration,
     max_egress_bytes_per_connection: u64,
     rate_gate: RateGate,
+    global_rate_gate: Arc<RateGate>,
     egress_rate_gate: ByteRateGate,
+    global_egress_rate_gate: Arc<ByteRateGate>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RelayLane {
+    Public,
+    Publisher,
 }
 
 struct RateGate {
@@ -187,16 +197,27 @@ fn request_work_units(filter: &RequestFilter) -> u32 {
     }
 }
 
+fn admit_rate(state: &ServerState, cost: u32) -> bool {
+    // Lane admission is deliberately first. A public reader cannot consume a
+    // global unit until it has stayed within the public reservation.
+    state.rate_gate.admit(cost) && state.global_rate_gate.admit(cost)
+}
+
 pub struct RelayHandle {
-    local_addr: SocketAddr,
+    public_addr: SocketAddr,
+    publisher_addr: SocketAddr,
     shutdown: watch::Sender<bool>,
     store_interrupt: Arc<InterruptHandle>,
     task: JoinHandle<Result<(), String>>,
 }
 
 impl RelayHandle {
-    pub fn local_addr(&self) -> SocketAddr {
-        self.local_addr
+    pub fn public_addr(&self) -> SocketAddr {
+        self.public_addr
+    }
+
+    pub fn publisher_addr(&self) -> SocketAddr {
+        self.publisher_addr
     }
 
     pub async fn shutdown(self) -> Result<(), String> {
@@ -220,8 +241,11 @@ pub async fn run(config: RelayConfig) -> Result<(), String> {
 }
 
 pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
-    if !config.listen.ip().is_loopback() {
-        return Err("directory relay refused a non-loopback bind".to_owned());
+    if !config.public_listen.ip().is_loopback()
+        || !config.publisher_listen.ip().is_loopback()
+        || config.public_listen == config.publisher_listen
+    {
+        return Err("directory relay refused invalid public/publisher binds".to_owned());
     }
     let now = now_unix()?;
     let path = config.database.clone();
@@ -236,38 +260,106 @@ pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
     .await
     .map_err(|error| format!("directory relay startup worker failed: {error}"))??;
     let store_interrupt = Arc::new(store.interrupt_handle());
-    let listener = TcpListener::bind(config.listen)
+    let public_listener = TcpListener::bind(config.public_listen)
         .await
-        .map_err(|error| format!("bind directory relay loopback socket failed: {error}"))?;
-    let local_addr = listener
+        .map_err(|error| format!("bind directory public loopback socket failed: {error}"))?;
+    let public_addr = public_listener
         .local_addr()
-        .map_err(|error| format!("read directory relay socket address failed: {error}"))?;
-    if !local_addr.ip().is_loopback() {
-        return Err("bound directory relay socket is not loopback".to_owned());
+        .map_err(|error| format!("read directory public socket address failed: {error}"))?;
+    let publisher_listener = TcpListener::bind(config.publisher_listen)
+        .await
+        .map_err(|error| format!("bind directory publisher loopback socket failed: {error}"))?;
+    let publisher_addr = publisher_listener
+        .local_addr()
+        .map_err(|error| format!("read directory publisher socket address failed: {error}"))?;
+    if !public_addr.ip().is_loopback()
+        || !publisher_addr.ip().is_loopback()
+        || public_addr == publisher_addr
+    {
+        return Err("bound directory relay sockets are not distinct loopback addresses".to_owned());
     }
-    let state = Arc::new(ServerState {
-        store: Arc::new(Mutex::new(store)),
+    let store = Arc::new(Mutex::new(store));
+    let global_operation_slots = Arc::new(Semaphore::new(config.max_in_flight_operations));
+    let global_rate_gate = Arc::new(RateGate::new(config.max_operations_per_second));
+    let global_egress_rate_gate = Arc::new(ByteRateGate::new(config.max_egress_bytes_per_second));
+    let public_state = Arc::new(ServerState {
+        store: store.clone(),
         directory_pubkey: config.directory_pubkey,
-        operation_slots: Arc::new(Semaphore::new(config.max_in_flight_operations)),
+        lane: RelayLane::Public,
+        operation_slots: Arc::new(Semaphore::new(config.max_public_in_flight_operations)),
+        global_operation_slots: global_operation_slots.clone(),
         operation_timeout: config.operation_timeout,
         egress_timeout: config.egress_timeout,
         max_egress_bytes_per_connection: config.max_egress_bytes_per_connection,
-        rate_gate: RateGate::new(config.max_operations_per_second),
-        egress_rate_gate: ByteRateGate::new(config.max_egress_bytes_per_second),
+        rate_gate: RateGate::new(config.max_public_operations_per_second),
+        global_rate_gate: global_rate_gate.clone(),
+        egress_rate_gate: ByteRateGate::new(config.max_public_egress_bytes_per_second),
+        global_egress_rate_gate: global_egress_rate_gate.clone(),
     });
-    let connection_slots = Arc::new(Semaphore::new(config.max_connections));
+    let publisher_state = Arc::new(ServerState {
+        store,
+        directory_pubkey: config.directory_pubkey,
+        lane: RelayLane::Publisher,
+        operation_slots: Arc::new(Semaphore::new(config.max_publisher_in_flight_operations)),
+        global_operation_slots,
+        operation_timeout: config.operation_timeout,
+        egress_timeout: config.egress_timeout,
+        max_egress_bytes_per_connection: config.max_egress_bytes_per_connection,
+        rate_gate: RateGate::new(config.max_publisher_operations_per_second),
+        global_rate_gate,
+        egress_rate_gate: ByteRateGate::new(config.max_publisher_egress_bytes_per_second),
+        global_egress_rate_gate,
+    });
+    let global_connection_slots = Arc::new(Semaphore::new(config.max_connections));
+    let public_connection_slots = Arc::new(Semaphore::new(config.max_public_connections));
+    let publisher_connection_slots = Arc::new(Semaphore::new(config.max_publisher_connections));
     let (shutdown, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(serve(
-        listener,
-        state,
-        connection_slots,
-        config.handshake_timeout,
-        config.idle_timeout,
-        config.connection_timeout,
-        shutdown_rx,
-    ));
+    let task_shutdown = shutdown.clone();
+    let task = tokio::spawn(async move {
+        let mut listeners = JoinSet::new();
+        listeners.spawn(serve(
+            public_listener,
+            public_state,
+            public_connection_slots,
+            global_connection_slots.clone(),
+            config.handshake_timeout,
+            config.idle_timeout,
+            config.connection_timeout,
+            shutdown_rx.clone(),
+        ));
+        listeners.spawn(serve(
+            publisher_listener,
+            publisher_state,
+            publisher_connection_slots,
+            global_connection_slots,
+            config.handshake_timeout,
+            config.idle_timeout,
+            config.connection_timeout,
+            shutdown_rx,
+        ));
+        let mut first_error = None;
+        while let Some(result) = listeners.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    let _ = task_shutdown.send(true);
+                }
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(format!("directory listener task failed: {error}"));
+                    }
+                    let _ = task_shutdown.send(true);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    });
     Ok(RelayHandle {
-        local_addr,
+        public_addr,
+        publisher_addr,
         shutdown,
         store_interrupt,
         task,
@@ -277,7 +369,8 @@ pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
 async fn serve(
     listener: TcpListener,
     state: Arc<ServerState>,
-    connection_slots: Arc<Semaphore>,
+    lane_connection_slots: Arc<Semaphore>,
+    global_connection_slots: Arc<Semaphore>,
     handshake_timeout: Duration,
     idle_timeout: Duration,
     connection_timeout: Duration,
@@ -304,8 +397,16 @@ async fn serve(
                     drop(stream);
                     continue;
                 }
-                let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
+                // Acquire the lane reservation before the global slot. Since
+                // configured lane maxima exactly partition the global maximum,
+                // one lane can never wait on the other while holding global work.
+                let Ok(lane_permit) = lane_connection_slots.clone().try_acquire_owned() else {
                     log::warn!("directory_relay_connection_capacity_rejected");
+                    drop(stream);
+                    continue;
+                };
+                let Ok(global_permit) = global_connection_slots.clone().try_acquire_owned() else {
+                    log::warn!("directory_relay_global_connection_capacity_rejected");
                     drop(stream);
                     continue;
                 };
@@ -315,7 +416,8 @@ async fn serve(
                     if handle_connection(
                         stream,
                         state,
-                        permit,
+                        lane_permit,
+                        global_permit,
                         handshake_timeout,
                         idle_timeout,
                         connection_timeout,
@@ -343,7 +445,8 @@ async fn serve(
 async fn handle_connection(
     stream: TcpStream,
     state: Arc<ServerState>,
-    _connection_permit: OwnedSemaphorePermit,
+    _lane_connection_permit: OwnedSemaphorePermit,
+    _global_connection_permit: OwnedSemaphorePermit,
     handshake_timeout: Duration,
     idle_timeout: Duration,
     connection_timeout: Duration,
@@ -398,8 +501,20 @@ async fn handle_connection(
             return Err("connection message bound exceeded".to_owned());
         }
         let bytes = text.as_str().as_bytes();
+        match state.lane {
+            RelayLane::Public if best_effort_event_id(bytes).is_some() => {
+                // This signed event may already be durable from a private
+                // publish whose ACK was lost. Do not contradict it with a
+                // negative acknowledgement from the public lane.
+                return Err("EVENT rejected on public directory lane".to_owned());
+            }
+            RelayLane::Publisher if best_effort_event_id(bytes).is_none() => {
+                return Err("non-EVENT rejected on directory publisher lane".to_owned());
+            }
+            RelayLane::Public | RelayLane::Publisher => {}
+        }
         work_budget.reserve(1)?;
-        if !state.rate_gate.admit(1) {
+        if !admit_rate(&state, 1) {
             // A syntactically recognizable EVENT may be a retry whose durable
             // positive OK was lost. Without consulting the archive, a negative
             // ACK would contradict that committed state. Close without any ACK
@@ -438,6 +553,14 @@ async fn handle_connection(
                 continue;
             }
         };
+        if !matches!(
+            (state.lane, &message),
+            (RelayLane::Public, ClientMessage::Req { .. })
+                | (RelayLane::Public, ClientMessage::Close { .. })
+                | (RelayLane::Publisher, ClientMessage::Event(_))
+        ) {
+            return Err("message rejected on wrong directory lane".to_owned());
+        }
         match message {
             ClientMessage::Event(event) => {
                 let event_id = *event.event.id();
@@ -488,7 +611,7 @@ async fn handle_connection(
             } => {
                 let additional_work = request_work_units(&filter).saturating_sub(1);
                 if work_budget.reserve(additional_work).is_err()
-                    || !state.rate_gate.admit(additional_work)
+                    || !admit_rate(&state, additional_work)
                 {
                     let closed = closed_message(&subscription_id, "rate-limited: bounded REQ work");
                     send_text(&mut websocket, closed, &state, &mut egress_budget).await?;
@@ -531,12 +654,12 @@ async fn ingest_operation(
     event: ValidatedEvent,
     received_at: u64,
 ) -> Result<IngestDisposition, IngestOperationError> {
-    let permit = acquire_operation_permit(&state)
+    let permits = acquire_operation_permits(&state)
         .await
         .map_err(|_| IngestOperationError::NotStarted)?;
     let store = state.store.clone();
     let task = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
+        let _permits = permits;
         let mut store = store
             .lock()
             .map_err(|_| "directory store lock poisoned".to_owned())?;
@@ -554,10 +677,10 @@ async fn freeze_snapshot_operation(
     state: Arc<ServerState>,
     filter: RequestFilter,
 ) -> Result<SnapshotPlan, String> {
-    let permit = acquire_operation_permit(&state).await?;
+    let permits = acquire_operation_permits(&state).await?;
     let store = state.store.clone();
     let task = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
+        let _permits = permits;
         let store = store
             .lock()
             .map_err(|_| "directory store lock poisoned".to_owned())?;
@@ -574,10 +697,10 @@ async fn load_snapshot_page_operation(
     state: Arc<ServerState>,
     ids: Vec<[u8; 32]>,
 ) -> Result<Vec<Vec<u8>>, String> {
-    let permit = acquire_operation_permit(&state).await?;
+    let permits = acquire_operation_permits(&state).await?;
     let store = state.store.clone();
     let task = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
+        let _permits = permits;
         let store = store
             .lock()
             .map_err(|_| "directory store lock poisoned".to_owned())?;
@@ -587,14 +710,24 @@ async fn load_snapshot_page_operation(
         .map_err(|_| "directory snapshot page worker failed".to_owned())?
 }
 
-async fn acquire_operation_permit(state: &ServerState) -> Result<OwnedSemaphorePermit, String> {
-    tokio::time::timeout(
+async fn acquire_operation_permits(
+    state: &ServerState,
+) -> Result<(OwnedSemaphorePermit, OwnedSemaphorePermit), String> {
+    let lane = tokio::time::timeout(
         state.operation_timeout,
         state.operation_slots.clone().acquire_owned(),
     )
     .await
-    .map_err(|_| "directory operation queue timeout".to_owned())?
-    .map_err(|_| "directory operation limiter closed".to_owned())
+    .map_err(|_| "directory lane operation queue timeout".to_owned())?
+    .map_err(|_| "directory lane operation limiter closed".to_owned())?;
+    let global = tokio::time::timeout(
+        state.operation_timeout,
+        state.global_operation_slots.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| "directory global operation queue timeout".to_owned())?
+    .map_err(|_| "directory global operation limiter closed".to_owned())?;
+    Ok((lane, global))
 }
 
 async fn send_snapshot<S>(
@@ -666,6 +799,10 @@ where
     let bytes = u64::try_from(text.len()).map_err(|_| "egress byte count overflow".to_owned())?;
     tokio::time::timeout(state.egress_timeout, async {
         state.egress_rate_gate.wait_for_capacity(bytes).await?;
+        state
+            .global_egress_rate_gate
+            .wait_for_capacity(bytes)
+            .await?;
         websocket
             .send(Message::Text(text.into()))
             .await
@@ -750,13 +887,22 @@ mod tests {
 
     fn test_config(database: std::path::PathBuf, key: [u8; 32]) -> RelayConfig {
         RelayConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
+            public_listen: "127.0.0.1:0".parse().unwrap(),
+            publisher_listen: "127.0.0.2:0".parse().unwrap(),
             database,
             directory_pubkey: key,
             max_connections: 32,
+            max_public_connections: 24,
+            max_publisher_connections: 8,
             max_in_flight_operations: 4,
+            max_public_in_flight_operations: 3,
+            max_publisher_in_flight_operations: 1,
             max_operations_per_second: 1_000_000,
+            max_public_operations_per_second: 750_000,
+            max_publisher_operations_per_second: 250_000,
             max_egress_bytes_per_second: 1024 * 1024 * 1024,
+            max_public_egress_bytes_per_second: 768 * 1024 * 1024,
+            max_publisher_egress_bytes_per_second: 256 * 1024 * 1024,
             max_egress_bytes_per_connection: 64 * 1024 * 1024,
             max_archive_events: 20_000,
             max_archive_bytes: 64 * 1024 * 1024,
@@ -792,8 +938,15 @@ mod tests {
             .unwrap()
     }
 
-    async fn connect(handle: &RelayHandle) -> TestClient {
-        connect_async(format!("ws://{}", handle.local_addr()))
+    async fn connect_public(handle: &RelayHandle) -> TestClient {
+        connect_async(format!("ws://{}", handle.public_addr()))
+            .await
+            .unwrap()
+            .0
+    }
+
+    async fn connect_publisher(handle: &RelayHandle) -> TestClient {
+        connect_async(format!("ws://{}", handle.publisher_addr()))
             .await
             .unwrap()
             .0
@@ -860,6 +1013,54 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn public_and_publisher_lanes_are_not_interchangeable() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let publisher = DirectoryPublisherKeyV1::from_secret_bytes([60; 32]).unwrap();
+        let handle = start(test_config(
+            directory.path().join("lanes.sqlite"),
+            *publisher.public_key(),
+        ))
+        .await
+        .unwrap();
+        let now = now_unix().unwrap();
+        let event = signed_entry(&publisher, [0x20; 32], 1, now - 1, now, 1);
+
+        let mut public_writer = connect_public(&handle).await;
+        public_writer
+            .send(Message::Text(
+                String::from_utf8(event.to_event_message_json_bytes().unwrap())
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        expect_connection_failure(&mut public_writer).await;
+
+        let mut publisher_reader = connect_publisher(&handle).await;
+        publisher_reader
+            .send(Message::Text(
+                String::from_utf8(catalog_req_json_v1(publisher.public_key(), 0).unwrap())
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        expect_connection_failure(&mut publisher_reader).await;
+
+        let mut writer = connect_publisher(&handle).await;
+        assert!(publish(&mut writer, &event).await.0);
+        let mut reader = connect_public(&handle).await;
+        let request =
+            String::from_utf8(catalog_req_json_v1(publisher.public_key(), 0).unwrap()).unwrap();
+        assert_eq!(
+            receive_catalog(&mut reader, &request, "bitcoinpir-directory-v1-shard-0").await,
+            vec![hex::encode(event.id())]
+        );
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn websocket_profile_is_durable_paged_and_fail_closed() {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -873,13 +1074,13 @@ mod tests {
         let second = signed_entry(&publisher, provider, 2, now - 2, now, 2);
         let older = signed_entry(&publisher, provider, 1, now - 4, now, 3);
 
-        let mut client = connect(&handle).await;
-        assert!(publish(&mut client, &first).await.0);
-        assert!(publish(&mut client, &second).await.0);
-        let (accepted, reason) = publish(&mut client, &older).await;
+        let mut publisher_client = connect_publisher(&handle).await;
+        assert!(publish(&mut publisher_client, &first).await.0);
+        assert!(publish(&mut publisher_client, &second).await.0);
+        let (accepted, reason) = publish(&mut publisher_client, &older).await;
         assert!(!accepted);
         assert!(reason.starts_with("replaced:"));
-        let (accepted, reason) = publish(&mut client, &first).await;
+        let (accepted, reason) = publish(&mut publisher_client, &first).await;
         assert!(accepted);
         assert!(reason.starts_with("duplicate:"));
 
@@ -890,13 +1091,14 @@ mod tests {
             extra_provider[0] = 0x22 + offset;
             extra_provider[31] = offset;
             let event = signed_entry(&publisher, extra_provider, 1, now - 1, now, 10 + offset);
-            assert!(publish(&mut client, &event).await.0);
+            assert!(publish(&mut publisher_client, &event).await.0);
             stored.push(*event.id());
             expected_catalog.push(hex::encode(event.id()));
         }
 
         let catalog_request =
             String::from_utf8(catalog_req_json_v1(publisher.public_key(), 2).unwrap()).unwrap();
+        let mut client = connect_public(&handle).await;
         let catalog = receive_catalog(
             &mut client,
             &catalog_request,
@@ -951,7 +1153,7 @@ mod tests {
 
         // Simulate a committed EVENT whose positive OK is lost with the socket.
         let lost_ack_event = signed_entry(&publisher, [0x2f; 32], 1, now - 1, now, 31);
-        let mut lost_ack_client = connect(&handle).await;
+        let mut lost_ack_client = connect_publisher(&handle).await;
         lost_ack_client
             .send(Message::Text(
                 String::from_utf8(lost_ack_event.to_event_message_json_bytes().unwrap())
@@ -961,7 +1163,7 @@ mod tests {
             .await
             .unwrap();
         drop(lost_ack_client);
-        let mut commit_probe = connect(&handle).await;
+        let mut commit_probe = connect_public(&handle).await;
         tokio::time::timeout(Duration::from_secs(5), async {
             for attempt in 0u64.. {
                 let subscription_id = format!("commit-barrier-{attempt}");
@@ -983,7 +1185,7 @@ mod tests {
         .await
         .expect("lost-ACK event never crossed the durable readback barrier");
         commit_probe.send(Message::Close(None)).await.unwrap();
-        let mut retry_client = connect(&handle).await;
+        let mut retry_client = connect_publisher(&handle).await;
         let (accepted, reason) = publish(&mut retry_client, &lost_ack_event).await;
         assert!(accepted);
         assert!(reason.starts_with("duplicate:"));
@@ -991,11 +1193,13 @@ mod tests {
 
         client.send(Message::Close(None)).await.unwrap();
         drop(client);
+        publisher_client.send(Message::Close(None)).await.unwrap();
+        drop(publisher_client);
         handle.shutdown().await.unwrap();
 
         // A positive OK survived restart and all address heads are still deterministic.
         let restarted = start(config.clone()).await.unwrap();
-        let mut after_restart = connect(&restarted).await;
+        let mut after_restart = connect_public(&restarted).await;
         let catalog = receive_catalog(
             &mut after_restart,
             &catalog_request,
@@ -1010,7 +1214,7 @@ mod tests {
         assert_eq!(actual_sorted, expected_after_restart);
         after_restart.send(Message::Close(None)).await.unwrap();
 
-        let mut malformed = connect(&restarted).await;
+        let mut malformed = connect_public(&restarted).await;
         malformed
             .send(Message::Text(
                 r#"["REQ","bad",{"ids":[]}]"#.to_owned().into(),
@@ -1021,21 +1225,21 @@ mod tests {
         assert_eq!(response[0], "CLOSED");
         malformed.send(Message::Close(None)).await.unwrap();
 
-        let mut unknown = connect(&restarted).await;
+        let mut unknown = connect_public(&restarted).await;
         unknown
             .send(Message::Text(r#"["AUTH",{}]"#.to_owned().into()))
             .await
             .unwrap();
         expect_connection_failure(&mut unknown).await;
 
-        let mut binary = connect(&restarted).await;
+        let mut binary = connect_public(&restarted).await;
         binary
             .send(Message::Binary(vec![1, 2, 3].into()))
             .await
             .unwrap();
         expect_connection_failure(&mut binary).await;
 
-        let mut oversized = connect(&restarted).await;
+        let mut oversized = connect_public(&restarted).await;
         let oversized_message = format!(
             "[\"REQ\",\"oversized\",{{\"padding\":\"{}\"}}]",
             "x".repeat(MAX_WIRE_MESSAGE_BYTES)
@@ -1049,7 +1253,7 @@ mod tests {
             expect_connection_failure(&mut oversized).await;
         }
 
-        let mut fragmented = connect(&restarted).await;
+        let mut fragmented = connect_public(&restarted).await;
         fragmented
             .send(Message::Frame(Frame::message(
                 vec![b'x'; MAX_WIRE_MESSAGE_BYTES / 2 + 1],
@@ -1077,7 +1281,7 @@ mod tests {
         let mut low_budget_config = config;
         low_budget_config.max_egress_bytes_per_connection = 256;
         let low_budget = start(low_budget_config).await.unwrap();
-        let mut capped = connect(&low_budget).await;
+        let mut capped = connect_public(&low_budget).await;
         capped
             .send(Message::Text(catalog_request.into()))
             .await
@@ -1133,12 +1337,12 @@ mod tests {
         let now = now_unix().unwrap();
         let event = signed_entry(&publisher, [0x31; 32], 1, now - 1, now, 1);
 
-        let mut first = connect(&handle).await;
+        let mut first = connect_publisher(&handle).await;
         assert!(publish(&mut first, &event).await.0);
         first.send(Message::Close(None)).await.unwrap();
 
         let wire = String::from_utf8(event.to_event_message_json_bytes().unwrap()).unwrap();
-        let mut limited = connect(&handle).await;
+        let mut limited = connect_publisher(&handle).await;
         limited
             .send(Message::Text(wire.clone().into()))
             .await
@@ -1147,7 +1351,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let mut retry = connect(&handle).await;
+                let mut retry = connect_publisher(&handle).await;
                 retry
                     .send(Message::Text(wire.clone().into()))
                     .await
@@ -1194,7 +1398,7 @@ mod tests {
         );
         config.max_operations_per_second = 1;
         let handle = start(config).await.unwrap();
-        let mut client = connect(&handle).await;
+        let mut client = connect_public(&handle).await;
         let request =
             serde_json::to_string(&("REQ", "weighted-readback", IdFilter { ids: ids.clone() }))
                 .unwrap();
@@ -1211,7 +1415,7 @@ mod tests {
         );
         config.max_operations_per_second = 1;
         let handle = start(config).await.unwrap();
-        let mut client = connect(&handle).await;
+        let mut client = connect_public(&handle).await;
         let request = serde_json::to_string(&(
             "REQ",
             "one-unit-readback",
@@ -1257,7 +1461,7 @@ mod tests {
 
         let mut clients = Vec::new();
         for _ in &events {
-            clients.push(connect(&handle).await);
+            clients.push(connect_publisher(&handle).await);
         }
         let tasks = clients
             .into_iter()
@@ -1276,7 +1480,7 @@ mod tests {
 
         let request =
             String::from_utf8(catalog_req_json_v1(publisher.public_key(), 7).unwrap()).unwrap();
-        let mut reader = connect(&handle).await;
+        let mut reader = connect_public(&handle).await;
         assert_eq!(
             receive_catalog(&mut reader, &request, "bitcoinpir-directory-v1-shard-7").await,
             vec![hex::encode(expected)]
@@ -1300,7 +1504,7 @@ mod tests {
         );
         config.connection_timeout = Duration::from_millis(50);
         let handle = start(config).await.unwrap();
-        let mut client = connect(&handle).await;
+        let mut client = connect_public(&handle).await;
         expect_connection_failure(&mut client).await;
         handle.shutdown().await.unwrap();
     }
