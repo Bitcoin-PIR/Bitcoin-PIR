@@ -483,8 +483,8 @@ current-tree pass record or substitute for pushed CI.
 - Outcome-unknown shared redeem permits exact replay only to a low-level caller
   that explicitly retained the identical proof. Official Web burns/deletes
   before send and does not auto-retry; loss of `AUTH_GRANTED` after the local
-  claim consumes the entitlement. Focused current-tree results are 88/88
-  `pir-service-store` tests and 5/5 provider-clearing shared-grant tests. The
+  claim consumes the entitlement. Focused current-tree results are 93/93
+  `pir-service-store` tests and 6/6 provider-clearing shared-grant tests. The
   complete local matrix and pushed CI remain **pending**.
 - This correction reuses ProviderStore schema v7; it is not a migration. First
   activation is clean and forward-only. Recovery from any older local store or

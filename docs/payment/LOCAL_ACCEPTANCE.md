@@ -175,8 +175,10 @@ manifest, and only the separate deploy job receives Pages write/OIDC
 permissions; third-party build steps run with contents read-only. A push to
 `main` runs the complete build/test job and produces the candidate artifact,
 but the deploy job is skipped. Production publication requires a separate
-manual `workflow_dispatch` with `confirm_production_deploy=true`, after the
-operator approval required by this runbook. Newly used
+manual `workflow_dispatch` selected on `main` with
+`confirm_production_deploy=true`, after the operator approval required by this
+runbook. That manual run rebuilds and retests the exact selected `main` ref; it
+does not promote the artifact from an earlier push run. Newly used
 workflow actions are exact-SHA pinned, Node is fixed to supported LTS
 `24.18.0`, and the Payment/Web path filters include the toolchain, vendor and
 trust inputs needed by the generated WASM. A Payment/security UI change cannot
@@ -409,17 +411,19 @@ cargo test --locked --offline -p pir-service-store
 cargo test --locked --offline -p pir-provider-clearing-client shared_grant_tests
 ```
 
-The service-store result was 88/88. It includes the exact cloned-state race in
+The service-store result was 93/93. It includes the exact cloned-state races in
 which two callers construct the same external floor CAS but fresh nonzero
 256-bit grant nonces make only one successor anchor; the other caller fails
-closed. It also covers `spend_seq` advancement for provider-local spend,
-Free-IP admission and final Standard-Cashu grant.
+closed for generic spend, Free-IP admission and final Standard-Cashu grant. It
+also covers `spend_seq` advancement, shared-issuer namespace separation and
+sensitive request Debug redaction.
 
-The shared-grant provider-clearing result was 5/5. It covers exact signed issuer
+The shared-grant provider-clearing result was 6/6. It covers exact signed issuer
 response replay for Free/BAT/experimental-ARC without a second grant, eight
 concurrent exact responders with one winner, explicit identical-proof recovery
 after an outcome-unknown transport result, invalid issuer response without a
-local claim, and wrong-provider store rejection before transport. The fixture
+local claim, wrong-provider store rejection before transport, and the real
+issuer-service ExactReplay-to-provider-local-claim boundary. The fixture
 uses credential-binding `amount = 1`, while the clearing rule has
 `accepted_value = 10`, `provider_credit = 9` and `issuer_fee = 1`, proving that
 protocol amount and clearing value are independent.

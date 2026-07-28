@@ -383,9 +383,11 @@ operator has activated the path with real money or public infrastructure.
       toolchain/vendor/trust inputs, and the Pages build reruns TypeScript,
       unit tests and all three local Chromium Payment boundaries
       before publishing. Main-branch pushes build/test and upload only; the
-      production deploy job requires a separate manual dispatch with
-      `confirm_production_deploy=true`. This is build hardening only; no
-      deployment was triggered or authorized here.
+      production deploy job requires a separate manual dispatch selected on
+      `main` with `confirm_production_deploy=true`. That run rebuilds/retests
+      the selected main ref rather than promoting an earlier push artifact.
+      This is build hardening only; no deployment was triggered or authorized
+      here.
 
 ## What the tests currently prove
 
@@ -403,11 +405,13 @@ operator has activated the path with real money or public infrastructure.
       deterministic same-lineage and cloned-fork tests, 500 repeated Free
       contention runs and the then-current 79-test store suite passed. That
       count is historical. The 2026-07-28 focused P0 closeout passes the current
-      88/88 `pir-service-store` tests, including exact cloned-state one-winner
-      fencing, and 5/5 shared-grant provider-clearing tests. Those five cover
+      93/93 `pir-service-store` tests, including exact cloned-state one-winner
+      fencing for generic, Free-IP and final Standard-Cashu grants, and 6/6
+      shared-grant provider-clearing tests. Those six cover
       Free/BAT/experimental-ARC exact replay, eight-way concurrent replay, an
       explicit identical-proof outcome-unknown recovery, invalid response/no
-      local claim and wrong-provider rejection before transport. They also use
+      local claim, wrong-provider rejection before transport, and the real
+      issuer-service ExactReplay-to-provider-local-claim boundary. They also use
       binding `amount = 1` with clearing `accepted_value = 10` to prove the
       fields are independent. These are focused results, not the pending full
       local matrix or pushed CI.

@@ -15,7 +15,7 @@ runner. The complete-query Free/ARC extension and feature-gated
 Standard-Cashu/Free provider-process cell each have an earlier dedicated local
 branch pass; later source changes mean those two remain historical boundary
 records pending the final coordinated matrix and pushed CI. The current focused
-shared-redeem/clone-fencing P0 suites pass 88/88 service-store tests and 5/5
+shared-redeem/clone-fencing P0 suites pass 93/93 service-store tests and 6/6
 provider-clearing shared-grant tests; these are not an aggregate full-suite
 claim. Remaining
 unexecuted boundaries include non-DPF
@@ -1071,7 +1071,9 @@ cargo test --locked --offline -p pir-cashu-client \
    gates, and Pages reruns TypeScript/unit and all three no-funds Chromium
    Payment boundaries before publishing. A main-branch push builds and uploads
    the candidate only; production deploy requires a separate manual dispatch
-   with `confirm_production_deploy=true`;
+   selected on `main` with `confirm_production_deploy=true`, and that run
+   rebuilds/retests the selected main ref rather than promoting an earlier push
+   artifact;
 8. fuzz, dependency, forbidden-field, formal-contract, and offline-build jobs;
 9. compile-only coverage for the feature-gated ignored CDK provider interop
    target; actual execution remains an opt-in disposable loopback fake-wallet

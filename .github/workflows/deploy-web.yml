@@ -110,7 +110,7 @@ jobs:
           path: web/dist-web
 
   deploy:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_production_deploy }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_production_deploy }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
