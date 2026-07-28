@@ -948,7 +948,7 @@ struct ListenerGuardV1 {
 impl ListenerGuardV1 {
     fn validate(&self) -> Result<(), ()> {
         let parent = rustix::fs::fstat(&self.target.parent).map_err(|_| ())?;
-        if parent.st_dev as u64 != self.target.parent_device
+        if parent.st_dev != self.target.parent_device
             || parent.st_ino != self.target.parent_inode
             || !FileType::from_raw_mode(parent.st_mode).is_dir()
             || parent.st_uid != self.guard_uid
@@ -991,7 +991,7 @@ impl Drop for ListenerGuardV1 {
             return;
         };
         if FileType::from_raw_mode(stat.st_mode).is_socket()
-            && stat.st_dev as u64 == self.identity.device
+            && stat.st_dev == self.identity.device
             && stat.st_ino == self.identity.inode
             && stat.st_uid == self.guard_uid
             && stat.st_nlink == 1
@@ -1030,7 +1030,7 @@ fn create_listener(config: &GuardConfig) -> Result<(UnixListener, ListenerGuardV
         return Err("new downstream socket has an unexpected identity".to_owned());
     }
     let identity = SocketIdentityV1 {
-        device: provisional.st_dev as u64,
+        device: provisional.st_dev,
         inode: provisional.st_ino,
     };
     let guard = ListenerGuardV1 {
@@ -1084,7 +1084,7 @@ fn socket_stat_matches(
     gid: u32,
 ) -> bool {
     FileType::from_raw_mode(stat.st_mode).is_socket()
-        && stat.st_dev as u64 == identity.device
+        && stat.st_dev == identity.device
         && stat.st_ino == identity.inode
         && stat.st_uid == uid
         && stat.st_gid == gid
@@ -1151,7 +1151,7 @@ fn open_listener_target(
         parent: current,
         file_name: file_name.clone(),
         path: opened_path.join(file_name),
-        parent_device: stat.st_dev as u64,
+        parent_device: stat.st_dev,
         parent_inode: stat.st_ino,
     })
 }
