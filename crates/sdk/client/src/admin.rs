@@ -64,9 +64,7 @@ pub async fn authenticate<T: PirTransport + ?Sized>(
     let request = encode_request(REQ_ADMIN_AUTH_CHALLENGE, &[]);
     let response = transport.roundtrip(&request).await?;
     if response.is_empty() {
-        return Err(PirError::Protocol(
-            "empty challenge response".into(),
-        ));
+        return Err(PirError::Protocol("empty challenge response".into()));
     }
     match response[0] {
         RESP_ADMIN_AUTH_CHALLENGE => { /* fall through */ }
@@ -207,13 +205,20 @@ pub async fn upload_finalize<T: PirTransport + ?Sized>(
             let msg = String::from_utf8_lossy(&resp[4..4 + msg_len]).to_string();
             let mut manifest_root = [0u8; 32];
             manifest_root.copy_from_slice(&resp[4 + msg_len..4 + msg_len + 32]);
-            Ok(FinalizeResult { ok, msg, manifest_root })
+            Ok(FinalizeResult {
+                ok,
+                msg,
+                manifest_root,
+            })
         }
         RESP_ERROR => {
             let msg = String::from_utf8_lossy(&resp[1..]).to_string();
             Err(PirError::ServerError(msg))
         }
-        v => Err(PirError::Protocol(format!("unexpected FINALIZE variant 0x{:02x}", v))),
+        v => Err(PirError::Protocol(format!(
+            "unexpected FINALIZE variant 0x{:02x}",
+            v
+        ))),
     }
 }
 
@@ -425,7 +430,11 @@ mod tests {
             *self.last_request.lock().unwrap() = request.to_vec();
             // request format: [4B len LE][1B variant][...]
             let variant = request[4];
-            Ok(self.replies.get(&variant).cloned().unwrap_or_else(|| vec![RESP_ERROR]))
+            Ok(self
+                .replies
+                .get(&variant)
+                .cloned()
+                .unwrap_or_else(|| vec![RESP_ERROR]))
         }
         async fn close(&mut self) -> PirResult<()> {
             Ok(())
@@ -455,7 +464,10 @@ mod tests {
     #[tokio::test]
     async fn upload_begin_encodes_correctly_and_parses_ok() {
         let mut replies = std::collections::HashMap::new();
-        replies.insert(RESP_ADMIN_DB_UPLOAD_BEGIN, ack_reply(RESP_ADMIN_DB_UPLOAD_BEGIN, true, "ok"));
+        replies.insert(
+            RESP_ADMIN_DB_UPLOAD_BEGIN,
+            ack_reply(RESP_ADMIN_DB_UPLOAD_BEGIN, true, "ok"),
+        );
         let mut t = CannedTransport {
             replies,
             last_request: std::sync::Mutex::new(Vec::new()),
@@ -481,13 +493,18 @@ mod tests {
     #[tokio::test]
     async fn upload_chunk_encodes_offset_and_data() {
         let mut replies = std::collections::HashMap::new();
-        replies.insert(RESP_ADMIN_DB_UPLOAD_CHUNK, ack_reply(RESP_ADMIN_DB_UPLOAD_CHUNK, true, ""));
+        replies.insert(
+            RESP_ADMIN_DB_UPLOAD_CHUNK,
+            ack_reply(RESP_ADMIN_DB_UPLOAD_CHUNK, true, ""),
+        );
         let mut t = CannedTransport {
             replies,
             last_request: std::sync::Mutex::new(Vec::new()),
         };
         let data = vec![0xAAu8; 1234];
-        upload_chunk(&mut t, "snap1", "a.bin", 0xDEAD_BEEF_DEAD_BEEFu64, &data).await.unwrap();
+        upload_chunk(&mut t, "snap1", "a.bin", 0xDEAD_BEEF_DEAD_BEEFu64, &data)
+            .await
+            .unwrap();
         let req = t.last_request.lock().unwrap().clone();
         assert_eq!(req[4], REQ_ADMIN_DB_UPLOAD_CHUNK);
         // Find the offset field (after two LP strings) and check it's intact.
@@ -509,7 +526,10 @@ mod tests {
     async fn finalize_returns_root() {
         let root = [0xCDu8; 32];
         let mut replies = std::collections::HashMap::new();
-        replies.insert(RESP_ADMIN_DB_UPLOAD_FINALIZE, finalize_reply(true, "verified", root));
+        replies.insert(
+            RESP_ADMIN_DB_UPLOAD_FINALIZE,
+            finalize_reply(true, "verified", root),
+        );
         let mut t = CannedTransport {
             replies,
             last_request: std::sync::Mutex::new(Vec::new()),
@@ -541,12 +561,17 @@ mod tests {
     #[tokio::test]
     async fn activate_encodes_target_path() {
         let mut replies = std::collections::HashMap::new();
-        replies.insert(RESP_ADMIN_DB_ACTIVATE, ack_reply(RESP_ADMIN_DB_ACTIVATE, true, "activated"));
+        replies.insert(
+            RESP_ADMIN_DB_ACTIVATE,
+            ack_reply(RESP_ADMIN_DB_ACTIVATE, true, "activated"),
+        );
         let mut t = CannedTransport {
             replies,
             last_request: std::sync::Mutex::new(Vec::new()),
         };
-        let ack = activate(&mut t, "snap1", "checkpoints/940611").await.unwrap();
+        let ack = activate(&mut t, "snap1", "checkpoints/940611")
+            .await
+            .unwrap();
         assert!(ack.ok);
         assert_eq!(ack.msg, "activated");
         let req = t.last_request.lock().unwrap().clone();

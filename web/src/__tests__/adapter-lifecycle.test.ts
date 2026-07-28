@@ -29,7 +29,10 @@ function fakeAttestation(free: () => void): WasmAttestVerification {
   } as unknown as WasmAttestVerification;
 }
 
-function fakeAnnouncement(free: () => void): WasmAnnounceVerification {
+function fakeAnnouncement(
+  free: () => void,
+  checkPinnedOperator: (pin: Uint8Array) => void = () => {},
+): WasmAnnounceVerification {
   return {
     serverId: 'pir1',
     operatorPubkeyHex: '03'.repeat(32),
@@ -43,7 +46,7 @@ function fakeAnnouncement(free: () => void): WasmAnnounceVerification {
     issuedAt: 0n,
     chainVerified: true,
     chainError: '',
-    checkPinnedOperator() {},
+    checkPinnedOperator,
     checkChannelBinding() {},
     checkFreshness() {},
     free,
@@ -126,6 +129,30 @@ describe('adapter WASM lifecycle', () => {
     expect(policyFree).toHaveBeenCalledOnce();
   });
 
+  it('passes independent DPF operator pins to their matching legs', async () => {
+    const firstPin = new Uint8Array(32).fill(0x11);
+    const secondPin = new Uint8Array(32).fill(0x22);
+    const seen: Uint8Array[] = [];
+    const handles = [fakeAttestation(vi.fn()), fakeAttestation(vi.fn())];
+    const adapter = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      expectedArkFingerprint: null,
+      strictVerification: true,
+      verifyOperatorIdentity: true,
+      pinnedOperatorPubkey0: firstPin,
+      pinnedOperatorPubkey1: secondPin,
+    });
+    (adapter as any).wasmClient = {
+      attest: vi.fn(async (idx: number) => handles[idx]),
+      upgradeToSecureChannel: vi.fn(async () => {}),
+      announce: vi.fn(async () => fakeAnnouncement(vi.fn(), (pin) => seen.push(pin.slice()))),
+    };
+
+    await expect((adapter as any).attestAndUpgrade()).resolves.toBeUndefined();
+    expect(seen).toEqual([firstPin, secondPin]);
+  });
+
   it('frees both Harmony attestation handles when a UI callback throws', async () => {
     const free0 = vi.fn();
     const free1 = vi.fn();
@@ -174,5 +201,29 @@ describe('adapter WASM lifecycle', () => {
     expect(adapter.hintsLoaded).toBe(false);
     expect((adapter as any).wasmClient).toBeNull();
     expect(adapter.isQueryServerConnected()).toBe(false);
+  });
+
+  it('passes independent Harmony hint/query operator pins to their matching legs', async () => {
+    const hintPin = new Uint8Array(32).fill(0x31);
+    const queryPin = new Uint8Array(32).fill(0x32);
+    const seen: Uint8Array[] = [];
+    const handles = [fakeAttestation(vi.fn()), fakeAttestation(vi.fn())];
+    const adapter = new HarmonyPirClientAdapter({
+      hintServerUrl: 'wss://pir1.invalid',
+      queryServerUrl: 'wss://pir2.invalid',
+      expectedArkFingerprint: null,
+      strictVerification: true,
+      verifyOperatorIdentity: true,
+      pinnedHintOperatorPubkey: hintPin,
+      pinnedQueryOperatorPubkey: queryPin,
+    });
+    (adapter as any).wasmClient = {
+      attest: vi.fn(async (idx: number) => handles[idx]),
+      upgradeToSecureChannel: vi.fn(async () => {}),
+      announce: vi.fn(async () => fakeAnnouncement(vi.fn(), (pin) => seen.push(pin.slice()))),
+    };
+
+    await expect((adapter as any).attestAndUpgrade()).resolves.toBeUndefined();
+    expect(seen).toEqual([hintPin, queryPin]);
   });
 });

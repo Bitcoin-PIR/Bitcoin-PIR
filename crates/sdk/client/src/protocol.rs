@@ -25,9 +25,52 @@ pub(crate) const REQ_GET_DB_CATALOG: u8 = 0x02;
 /// Successful catalog response variant.
 pub(crate) const RESP_DB_CATALOG: u8 = 0x02;
 
-/// Generic server-side error envelope: `[0xff][utf8 reason...]`. Clients must
-/// short-circuit to a protocol error before attempting to decode the body.
+/// Generic server-side error envelope:
+/// `[0xff][4B reason_len LE][UTF-8 reason]`. Clients must short-circuit to a
+/// server error before attempting to decode the success body.
 pub(crate) const RESP_ERROR: u8 = 0xff;
+
+/// Decode the runtime's canonical `RESP_ERROR` envelope.
+///
+/// `body` is the complete response body after the transport's outer 4-byte
+/// record length has been removed. A malformed error is a decode failure, not
+/// a best-effort string: accepting a short or trailing envelope would make it
+/// possible for a custom transport to smuggle bytes into the next decoder.
+pub(crate) fn decode_error_response_message<'a>(
+    body: &'a [u8],
+    context: &str,
+) -> PirResult<Option<&'a str>> {
+    if body.first().copied() != Some(RESP_ERROR) {
+        return Ok(None);
+    }
+    if body.len() < 5 {
+        return Err(PirError::Decode(format!(
+            "{context}: truncated RESP_ERROR envelope"
+        )));
+    }
+    let message_len = u32::from_le_bytes(body[1..5].try_into().unwrap()) as usize;
+    let expected_len = 5usize
+        .checked_add(message_len)
+        .ok_or_else(|| PirError::Decode(format!("{context}: RESP_ERROR length overflow")))?;
+    if body.len() != expected_len {
+        return Err(PirError::Decode(format!(
+            "{context}: RESP_ERROR length mismatch: envelope declares {message_len} message bytes, body has {}",
+            body.len().saturating_sub(5)
+        )));
+    }
+    let message = std::str::from_utf8(&body[5..]).map_err(|_| {
+        PirError::Decode(format!("{context}: RESP_ERROR message is not valid UTF-8"))
+    })?;
+    Ok(Some(message))
+}
+
+/// Fail closed when `body` is a canonical `RESP_ERROR` response.
+pub(crate) fn reject_error_response(body: &[u8], context: &str) -> PirResult<()> {
+    match decode_error_response_message(body, context)? {
+        Some(message) => Err(PirError::ServerError(format!("{context}: {message}"))),
+        None => Ok(()),
+    }
+}
 
 // ─── Request framing ────────────────────────────────────────────────────────
 
@@ -293,7 +336,12 @@ mod tests {
 
     /// Build the same well-formed single-entry catalog as
     /// `decode_catalog_single_entry`, with caller-chosen geometry.
-    fn catalog_with_geometry(index_bins: u32, chunk_bins: u32, index_k: u8, chunk_k: u8) -> Vec<u8> {
+    fn catalog_with_geometry(
+        index_bins: u32,
+        chunk_bins: u32,
+        index_k: u8,
+        chunk_k: u8,
+    ) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.push(1u8); // num_dbs
         buf.push(0u8); // db_id
@@ -320,8 +368,8 @@ mod tests {
     #[test]
     fn decode_catalog_rejects_k_below_pbc_minimum() {
         for (ik, ck) in [(2u8, 80u8), (75, 2), (0, 0), (1, 1)] {
-            let err = decode_catalog(&catalog_with_geometry(750_000, 1_500_000, ik, ck))
-                .unwrap_err();
+            let err =
+                decode_catalog(&catalog_with_geometry(750_000, 1_500_000, ik, ck)).unwrap_err();
             match err {
                 PirError::Decode(msg) => assert!(
                     msg.contains("k out of range"),
@@ -364,5 +412,28 @@ mod tests {
         assert_eq!(&r[..4], &3u32.to_le_bytes());
         assert_eq!(r[4], 0x02);
         assert_eq!(&r[5..], b"hi");
+    }
+
+    #[test]
+    fn reject_error_response_requires_canonical_exact_envelope() {
+        let message = b"authorization required";
+        let mut body = vec![RESP_ERROR];
+        body.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        body.extend_from_slice(message);
+        let error = reject_error_response(&body, "query").unwrap_err();
+        assert!(
+            matches!(error, PirError::ServerError(ref text) if text == "query: authorization required")
+        );
+
+        assert!(matches!(
+            reject_error_response(&[RESP_ERROR, 1, 0, 0], "query"),
+            Err(PirError::Decode(_))
+        ));
+        body.push(0);
+        assert!(matches!(
+            reject_error_response(&body, "query"),
+            Err(PirError::Decode(_))
+        ));
+        assert!(reject_error_response(&[RESP_DB_CATALOG], "query").is_ok());
     }
 }

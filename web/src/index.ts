@@ -113,6 +113,7 @@ export {
   createOramPirClientAdapter,
   oramJsonResultToQueryResult,
   planOramScriptHashBatches,
+  requireAtomicOramRequest,
   resolveOramBatchPlan,
   splitOramScriptHashBatches,
   type OramBatchPlan,
@@ -169,6 +170,17 @@ export type {
   QueryInspectorData,
   RoundTimingData,
 } from './harmony-types.js';
+
+export {
+  prepareQueryInspectorRenderDataV1,
+  type QueryInspectorRenderDataV1,
+} from './query-inspector-sanitize.js';
+
+export {
+  fetchProofArtifactBytesV1,
+  resolveProofArtifactUrlV1,
+  type ProofArtifactFetchOptionsV1,
+} from './proof-artifact-fetch.js';
 
 // Backwards-compat shims for the old `pir-core-wasm` bridge. The crate has
 // been retired and all primitives it exposed are now served by `pir-sdk-wasm`,
@@ -247,6 +259,122 @@ export { sendArcPresentation } from './arc-present.js';
 // Cashu Blind Auth (NUT-22) rate limiting
 export { CashuBatPool, mintBatPool } from './cashu-bat.js';
 export type { Bat } from './cashu-bat.js';
+
+// Provider-independent V1 service admission. Offer selection remains a
+// product-policy decision outside the protocol orchestrator.
+export {
+  AmbiguousCapabilitySpendErrorV1,
+  ProviderAdmissionSessionV1,
+  VerifiedIndependentProviderPairV1,
+  VerifiedSingleProviderOfferV1,
+} from './service-admission.js';
+export { assertIndependentProviderOfferPairV1 } from './provider-payment-selection.js';
+export type {
+  IndependentProviderSelectionOptionsV1,
+  SelectedProviderOfferV1,
+} from './provider-payment-selection.js';
+export type {
+  ProviderTrustAnchorV1,
+  ProviderAdmissionSelectionV1,
+  ProviderPairBolt11AcquisitionOptionsV1,
+  ProviderPairSideV1,
+  ServiceAdmissionPortV1,
+  ServiceAdmissionTargetV1,
+  ServiceAdmissionVaultV1,
+  ServiceAuthorizationOptionsV1,
+} from './service-admission.js';
+export {
+  AdmissionCredentialVaultV1,
+  validateBindingV1,
+  validateCapabilityV1,
+} from './admission-vault.js';
+export type {
+  AdmissionCapabilityBindingV1,
+  AdmissionCapabilityV1,
+  AdmissionSchemeV1,
+  ArcAdvanceV1,
+  Bolt11RecoveryRecordV1,
+  LockedBolt11RecoveryV1,
+  LightningNetworkNameV1,
+  PolicyCheckpointAdvanceV1,
+} from './admission-vault.js';
+export {
+  Bolt11RecoveryRequiredErrorV1,
+  fetchQuoteKeyDelegationV1,
+  resumeBolt11AcquisitionV1,
+} from './service-acquisition.js';
+export type {
+  Bolt11AcquisitionHandleV1,
+  Bolt11QuoteStatusNameV1,
+  ResumeBolt11AcquisitionV1,
+} from './service-acquisition.js';
+
+// Complete multi-relay Nostr directory refresh and durable rollback storage.
+export { DirectoryRollbackVaultV1 } from './directory-vault.js';
+export type {
+  DirectoryDiscoveryEntryJsonV1,
+  SelectableDirectoryCatalogV1,
+  SelectableDirectoryEntryV1,
+  SelectableDirectoryShardV1,
+} from './directory-vault.js';
+export {
+  directoryProviderTrustAnchorV1,
+  directoryProviderTrustMaterialV1,
+  refreshNostrDirectoryV1,
+} from './nostr-directory.js';
+
+// Product application admission lifecycle. These controllers contain no
+// address/query payloads and never persist payment material in localStorage.
+export {
+  ProductAdmissionControllerV1,
+  ProductAdmissionErrorV1,
+  ProductResourceFailedAfterAuthorizationErrorV1,
+} from './product-admission-controller.js';
+export type {
+  ProductAdmissionControllerOptionsV1,
+  ProductAdmissionErrorCodeV1,
+  ProductAdmissionLegSnapshotV1,
+  ProductAdmissionLegStatusV1,
+  ProductAdmissionLegV1,
+  ProductAdmissionResourceBindingV1,
+  ProductAdmissionResourceV1,
+  ProductAdmissionSnapshotV1,
+  ProductAdmissionTopologyV1,
+  ProductOfferChoiceV1,
+  ProductOfferOptionV1,
+  ProductStrictBootstrapV1,
+  ProductStrictLegBootstrapV1,
+} from './product-admission-controller.js';
+export {
+  ProductAdmissionPanelV1,
+  privacyLabelForOfferV1,
+  publicAdmissionError,
+} from './product-admission-ui.js';
+export type {
+  ProductAdmissionPanelOptionsV1,
+  ProductAdmissionPanelRoleV1,
+  ProductProviderChoiceV1,
+} from './product-admission-ui.js';
+export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
+export type { SecurityBadgeTextRowV1 } from './security-badge.js';
+export {
+  directoryBoundProviderTrustAnchorV1,
+  manualProviderAdmissionTrustAnchorV1,
+  parseProductTrustedBootstrapV1,
+  providerArkFingerprintV1,
+  providerExpectedPayeeV1,
+  providerOperatorKeyV1,
+} from './product-provider-bootstrap.js';
+export type {
+  ProductTrustedBootstrapV1,
+  ProductTrustedProviderV1,
+} from './product-provider-bootstrap.js';
+export type { HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
+export type {
+  DirectoryProviderTrustMaterialV1,
+  DirectoryWebSocketV1,
+  NostrDirectoryRefreshOptionsV1,
+} from './nostr-directory.js';
 
 // Credential issuer HTTP client (the "obtain" leg)
 export {

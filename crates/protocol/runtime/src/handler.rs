@@ -81,7 +81,12 @@ impl RequestHandler {
     /// Pass empty Vecs to disable — the verifier falls back to V2-
     /// binding-only mode (still proves internal consistency, but no
     /// hardware anchor on the report itself).
-    pub fn with_vcek_chain(mut self, ark_pem: Vec<u8>, ask_pem: Vec<u8>, vcek_pem: Vec<u8>) -> Self {
+    pub fn with_vcek_chain(
+        mut self,
+        ark_pem: Vec<u8>,
+        ask_pem: Vec<u8>,
+        vcek_pem: Vec<u8>,
+    ) -> Self {
         self.state.ark_pem = ark_pem;
         self.state.ask_pem = ask_pem;
         self.state.vcek_pem = vcek_pem;
@@ -324,20 +329,14 @@ impl RequestHandler {
             // INDEX sibling, compute L from round_id
             let sib_level = (query.round_id as usize) / 100;
             if sib_level >= db.bucket_merkle_index_siblings.len() {
-                return Response::Error(format!(
-                    "invalid index sibling level {}",
-                    sib_level
-                ));
+                return Response::Error(format!("invalid index sibling level {}", sib_level));
             }
             &db.bucket_merkle_index_siblings[sib_level]
         } else {
             // CHUNK sibling
             let sib_level = (query.round_id as usize) / 100;
             if sib_level >= db.bucket_merkle_chunk_siblings.len() {
-                return Response::Error(format!(
-                    "invalid chunk sibling level {}",
-                    sib_level
-                ));
+                return Response::Error(format!("invalid chunk sibling level {}", sib_level));
             }
             &db.bucket_merkle_chunk_siblings[sib_level]
         };
@@ -418,9 +417,9 @@ impl RequestHandler {
                 // S4: group_id comes straight off the wire — bounds-check
                 // it before slicing the mmap.
                 let group_id = item.group_id as usize;
-                let table_bytes = sub_table.try_group_bytes(group_id).ok_or_else(|| {
-                    format!("group_id {} out of range", item.group_id)
-                })?;
+                let table_bytes = sub_table
+                    .try_group_bytes(group_id)
+                    .ok_or_else(|| format!("group_id {} out of range", item.group_id))?;
 
                 let sub_results: Result<Vec<Vec<u8>>, String> = item
                     .sub_queries
@@ -672,7 +671,10 @@ mod dos_guard_tests {
             }
         }
         let path = temp_path(tag);
-        std::fs::File::create(&path).unwrap().write_all(&bytes).unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
         let st = MappedSubTable::load(&path, params);
         // mmap keeps the inode alive; unlink immediately so failing
         // tests don't leak temp files.
@@ -837,7 +839,12 @@ mod dos_guard_tests {
         let keys: Vec<Vec<u8>> = (0..(eval::MAX_KEYS_PER_GROUP as u64 + 1))
             .map(|i| dpf.gen(i, 8).0.to_bytes())
             .collect();
-        let q = BatchQuery { level: 1, round_id: 0, db_id: 0, keys: vec![keys] };
+        let q = BatchQuery {
+            level: 1,
+            round_id: 0,
+            db_id: 0,
+            keys: vec![keys],
+        };
         expect_error(h.handle_request(&Request::ChunkBatch(q)), "max");
     }
 
@@ -879,7 +886,13 @@ mod dos_guard_tests {
     #[test]
     fn harmony_query_group_id_out_of_range_returns_error_not_panic() {
         let h = make_handler();
-        let q = HarmonyQuery { level: 0, group_id: 250, round_id: 0, indices: vec![0], db_id: 0 };
+        let q = HarmonyQuery {
+            level: 0,
+            group_id: 250,
+            round_id: 0,
+            indices: vec![0],
+            db_id: 0,
+        };
         expect_error(h.handle_request(&Request::HarmonyQuery(q)), "group_id");
     }
 
@@ -890,7 +903,10 @@ mod dos_guard_tests {
             level: 1,
             round_id: 0,
             sub_queries_per_group: 1,
-            items: vec![HarmonyBatchItem { group_id: 200, sub_queries: vec![vec![0]] }],
+            items: vec![HarmonyBatchItem {
+                group_id: 200,
+                sub_queries: vec![vec![0]],
+            }],
             db_id: 0,
         };
         expect_error(h.handle_request(&Request::HarmonyBatchQuery(q)), "group_id");
@@ -908,7 +924,10 @@ mod dos_guard_tests {
             indices: vec![0u32; TEST_BINS + 1],
             db_id: 0,
         };
-        expect_error(h.handle_request(&Request::HarmonyQuery(q)), "too many indices");
+        expect_error(
+            h.handle_request(&Request::HarmonyQuery(q)),
+            "too many indices",
+        );
     }
 
     #[test]
@@ -924,7 +943,10 @@ mod dos_guard_tests {
             }],
             db_id: 0,
         };
-        expect_error(h.handle_request(&Request::HarmonyBatchQuery(q)), "too many indices");
+        expect_error(
+            h.handle_request(&Request::HarmonyBatchQuery(q)),
+            "too many indices",
+        );
     }
 
     // ─── Harmony happy paths stay intact ────────────────────────────────

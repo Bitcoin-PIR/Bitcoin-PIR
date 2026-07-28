@@ -89,6 +89,12 @@ pub const ENCRYPTED_FRAME_MAGIC: u8 = 0xfe;
 /// other use of the same handshake primitives.
 pub const HKDF_INFO: &[u8] = b"BPIR-CHANNEL-V1";
 
+/// HKDF `info` used to derive the non-secret channel binding consumed by the
+/// service-authorization protocol. Keeping a fixed label here prevents callers
+/// from inventing incompatible or cross-protocol exporters.
+pub const SERVICE_AUTH_EXPORTER_INFO_V1: &[u8] =
+    b"BitcoinPIR/service-authorization-channel-exporter/v1";
+
 /// Direction byte mixed into the per-frame AEAD nonce. The two sides
 /// of the connection each derive their own nonce stream from the same
 /// session key + their direction byte; that prevents reflection (a
@@ -304,6 +310,18 @@ impl Session {
         }
     }
 
+    /// Derive the stable binding used by payment authorization and free-PoW
+    /// challenges on this encrypted session. The exporter reveals neither the
+    /// session key nor either handshake secret and is identical at both ends of
+    /// the same channel. It MUST NOT be reused as an encryption key.
+    pub fn service_authorization_exporter_v1(&self) -> [u8; SESSION_KEY_LEN] {
+        let hkdf = Hkdf::<Sha256>::new(None, &self.key);
+        let mut exporter = [0u8; SESSION_KEY_LEN];
+        hkdf.expand(SERVICE_AUTH_EXPORTER_INFO_V1, &mut exporter)
+            .expect("HKDF-SHA256 32-byte exporter cannot fail");
+        exporter
+    }
+
     /// Seal `plaintext` for delivery in direction `dir`. Returns the
     /// wire bytes: `[magic][seq:u64 LE][ciphertext+tag]`.
     pub fn seal(&mut self, dir: Direction, plaintext: &[u8]) -> Result<Vec<u8>, ChannelError> {
@@ -429,6 +447,14 @@ mod tests {
 
         // Both sides agree on the session key.
         assert_eq!(client_session.key_bytes(), server_session.key_bytes());
+        assert_eq!(
+            client_session.service_authorization_exporter_v1(),
+            server_session.service_authorization_exporter_v1()
+        );
+        assert_ne!(
+            client_session.service_authorization_exporter_v1(),
+            *client_session.key_bytes()
+        );
     }
 
     #[test]
@@ -454,6 +480,10 @@ mod tests {
             client.complete_handshake(&server_static_pub, &server_eph_pub)
         };
         assert_ne!(session_a.key_bytes(), session_b.key_bytes());
+        assert_ne!(
+            session_a.service_authorization_exporter_v1(),
+            session_b.service_authorization_exporter_v1()
+        );
     }
 
     #[test]
@@ -465,7 +495,7 @@ mod tests {
         // real server holds. The client, having verified the real
         // server's static_pub via SEV-SNP attestation, will derive a
         // different session key than the MITM derives. No data flows.
-        let (real_server_secret, real_server_pub) = server_static();
+        let (_real_server_secret, real_server_pub) = server_static();
         let (mitm_server_secret, mitm_server_pub) = server_static();
         assert_ne!(real_server_pub, mitm_server_pub);
 
@@ -566,7 +596,9 @@ mod tests {
         // Receiver tries to open as if it were a server-to-client
         // frame: nonce mismatch → AEAD failure (after the seq check
         // passes with seq=0).
-        let err = receiver.open(Direction::ServerToClient, &frame).unwrap_err();
+        let err = receiver
+            .open(Direction::ServerToClient, &frame)
+            .unwrap_err();
         assert!(matches!(err, ChannelError::AeadFailure));
     }
 
@@ -580,7 +612,9 @@ mod tests {
             .unwrap();
         let last = frame.len() - 1;
         frame[last] ^= 0x01;
-        let err = receiver.open(Direction::ClientToServer, &frame).unwrap_err();
+        let err = receiver
+            .open(Direction::ClientToServer, &frame)
+            .unwrap_err();
         assert!(matches!(err, ChannelError::AeadFailure));
     }
 
@@ -591,7 +625,9 @@ mod tests {
         let mut receiver = Session::new(key);
         let mut frame = sender.seal(Direction::ClientToServer, b"x").unwrap();
         frame[0] = 0x00;
-        let err = receiver.open(Direction::ClientToServer, &frame).unwrap_err();
+        let err = receiver
+            .open(Direction::ClientToServer, &frame)
+            .unwrap_err();
         assert!(matches!(err, ChannelError::BadFrameMagic));
     }
 
@@ -600,7 +636,9 @@ mod tests {
         let mut receiver = Session::new([0u8; 32]);
         // Only 8 bytes total; less than magic(1) + seq(8) + tag(16) = 25.
         let frame = vec![ENCRYPTED_FRAME_MAGIC, 0, 0, 0, 0, 0, 0, 0];
-        let err = receiver.open(Direction::ClientToServer, &frame).unwrap_err();
+        let err = receiver
+            .open(Direction::ClientToServer, &frame)
+            .unwrap_err();
         assert!(matches!(err, ChannelError::FrameTooShort));
     }
 
@@ -639,19 +677,29 @@ mod tests {
         // Bi-directional ping/pong: client → server → client.
         let req = b"REQ_PING";
         let req_frame = client_session.seal(Direction::ClientToServer, req).unwrap();
-        let req_recovered = server_session.open(Direction::ClientToServer, &req_frame).unwrap();
+        let req_recovered = server_session
+            .open(Direction::ClientToServer, &req_frame)
+            .unwrap();
         assert_eq!(req_recovered, req);
 
         let resp = b"PONG";
-        let resp_frame = server_session.seal(Direction::ServerToClient, resp).unwrap();
-        let resp_recovered = client_session.open(Direction::ServerToClient, &resp_frame).unwrap();
+        let resp_frame = server_session
+            .seal(Direction::ServerToClient, resp)
+            .unwrap();
+        let resp_recovered = client_session
+            .open(Direction::ServerToClient, &resp_frame)
+            .unwrap();
         assert_eq!(resp_recovered, resp);
 
         // Second roundtrip: sequence numbers should advance independently.
         let req2 = b"REQ_GET_INFO";
-        let req2_frame = client_session.seal(Direction::ClientToServer, req2).unwrap();
+        let req2_frame = client_session
+            .seal(Direction::ClientToServer, req2)
+            .unwrap();
         // The seq should be 1 now (independent counter on this side).
         assert_eq!(&req2_frame[1..9], &1u64.to_le_bytes());
-        server_session.open(Direction::ClientToServer, &req2_frame).unwrap();
+        server_session
+            .open(Direction::ClientToServer, &req2_frame)
+            .unwrap();
     }
 }

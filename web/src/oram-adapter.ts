@@ -41,6 +41,10 @@ import {
 } from './sdk-bridge.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
+import {
+  assertLiveOperatorIdentityV1,
+  type ServiceAdmissionPortV1,
+} from './service-admission.js';
 
 export interface OramLayoutInfo {
   backend: 'oram-direct';
@@ -111,6 +115,8 @@ export interface OramPirClientConfig {
   expectedArkFingerprint?: Uint8Array | null;
   expectedServerPin?: ServerAttestPin;
   verifyOperatorIdentity?: boolean;
+  /** Expected operator-endorsed runtime identity. Required for V1 admission. */
+  expectedServerId?: string;
   pinnedOperatorPubkey?: Uint8Array;
   maxAnnounceAgeSeconds?: number;
   onOperatorIdentity?: (info: OperatorIdentity) => void;
@@ -138,6 +144,7 @@ export class OramPirClientAdapter {
   private catalog: DatabaseCatalog | null = null;
   private serverInfo: ServerInfoJson | null = null;
   private connected = false;
+  private secureChannelEstablished = false;
   private readonly databaseProofs = new Map<number, DatabaseProofStatus>();
 
   attestation: ServerAttestation = { state: 'unattested' };
@@ -168,6 +175,7 @@ export class OramPirClientAdapter {
   async connect(): Promise<void> {
     this.setState('connecting');
     try {
+      this.secureChannelEstablished = false;
       await this.ws.connect();
       this.serverInfo = await fetchServerInfoJson(this.ws);
       this.catalog = await fetchDatabaseCatalog(this.ws);
@@ -214,6 +222,53 @@ export class OramPirClientAdapter {
 
   getDatabaseProofStatus(dbId: number): DatabaseProofStatus | undefined {
     return this.databaseProofs.get(dbId);
+  }
+
+  /** Strict provider-local admission for the single ORAM provider. */
+  serviceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
+    const client = (): WasmOramClient => {
+      if (!this.wasmClient) throw new Error('Not connected');
+      if (!this.secureChannelEstablished) {
+        throw new Error('V1 service admission requires a verified secure channel');
+      }
+      if (!this.config.expectedServerPin?.binarySha256Hex || this.attestation.pinStatus !== 'match') {
+        throw new Error('V1 service admission requires a matching binary pin');
+      }
+      if (
+        this.config.verifyOperatorIdentity !== true
+        || !this.config.expectedServerId
+        || this.operatorIdentity.state !== 'verified'
+        || this.operatorIdentity.serverId !== this.config.expectedServerId
+      ) {
+        throw new Error('V1 service admission requires the expected verified operator identity');
+      }
+      if (this.databaseProofs.get(dbId)?.state !== 'verified') {
+        throw new Error(`V1 service admission requires a verified database proof for db ${dbId}`);
+      }
+      return this.wasmClient;
+    };
+    return {
+      assertTrustAnchor: (trust) => {
+        client();
+        assertLiveOperatorIdentityV1(trust, this.operatorIdentity);
+      },
+      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
+        client().fetchServicePolicy(dbId, providerId, policyKey, nowUnix, checkpoint),
+      fetchRetainedRedemption: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedServiceRedemption(
+        dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ),
+      assertSessionBinding: (policy) => client().verifyServicePolicySession(policy),
+      assertRetainedSessionBinding: (policy, nowUnix) =>
+        client().verifyRetainedServiceSession(policy, nowUnix),
+      authorize: (policy, scopeId, offerId, proof) =>
+        client().authorizeService(dbId, policy, scopeId, offerId, proof),
+      authorizeRetained: (policy, proof, nowUnix) =>
+        client().authorizeRetainedService(dbId, policy, proof, nowUnix),
+      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
+        client().requestServicePowChallenge(dbId, policy, scopeId, offerId, nowUnix),
+    };
   }
 
   /**
@@ -288,40 +343,43 @@ export class OramPirClientAdapter {
         }
       : null;
     const plan = plannerConfig ? resolveOramBatchPlan(plannerConfig) : null;
-    const batches = plan
-      ? splitOramScriptHashBatches(scriptHashes, plan.maxScriptHashesPerRequest)
-      : splitOramScriptHashBatches(scriptHashes, this.config.maxScriptHashesPerRequest);
-    const results: (QueryResult | null)[] = [];
+    const maxRealInputs = plan
+      ? plan.maxScriptHashesPerRequest
+      : resolveMaxScriptHashesPerRequest(this.config.maxScriptHashesPerRequest);
+    const batch = requireAtomicOramRequest(scriptHashes, maxRealInputs);
+    if (batch.length === 0) return [];
 
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const batch = batches[batchIdx];
-      onProgress?.(
-        'ORAM',
-        plan
-          ? `fixed-budget lookup ${batchIdx + 1}/${batches.length} (${batch.length}/${plan.paddedSlotCount} real slot${batch.length === 1 ? '' : 's'})`
-          : `fixed-budget lookup ${batchIdx + 1}/${batches.length} (${batch.length} script hash${batch.length === 1 ? '' : 'es'})`,
+    // One service authorization grants exactly one REQ_ORAM_LOOKUP frame. Do
+    // not silently split a product query: the first frame would complete the
+    // grant and a second frame would either fail or tempt cross-query reuse.
+    onProgress?.(
+      'ORAM',
+      plan
+        ? `one atomic fixed-budget lookup (${batch.length}/${plan.paddedSlotCount} real slot${batch.length === 1 ? '' : 's'})`
+        : `one atomic fixed-budget lookup (${batch.length} script hash${batch.length === 1 ? '' : 'es'})`,
+    );
+    const packed = packScriptHashes(batch);
+    const raw = plan
+      ? await this.wasmClient.queryBatchPadded(packed, dbId, plan.paddedSlotCount)
+      : await this.wasmClient.queryBatch(packed, dbId);
+    if (raw.length !== batch.length) {
+      throw new Error(
+        `ORAM response length ${raw.length} does not match request length ${batch.length}`,
       );
-      const packed = packScriptHashes(batch);
-      const raw = plan
-        ? await this.wasmClient.queryBatchPadded(packed, dbId, plan.paddedSlotCount)
-        : await this.wasmClient.queryBatch(packed, dbId);
-      if (raw.length !== batch.length) {
-        throw new Error(
-          `ORAM response length ${raw.length} does not match request length ${batch.length}`,
-        );
-      }
-      onProgress?.('Decode', `translating ${raw.length} direct result(s)`);
-      for (let i = 0; i < raw.length; i++) {
-        const qr = oramJsonResultToQueryResult(raw[i]);
-        if (qr) qr.scriptHash = batch[i];
-        results.push(qr);
-      }
+    }
+    onProgress?.('Decode', `translating ${raw.length} direct result(s)`);
+    const results: (QueryResult | null)[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const qr = oramJsonResultToQueryResult(raw[i]);
+      if (qr) qr.scriptHash = batch[i];
+      results.push(qr);
     }
 
     return results;
   }
 
   private async teardown(): Promise<void> {
+    this.secureChannelEstablished = false;
     this.ws.disconnect();
     const client = this.wasmClient;
     if (client) {
@@ -341,21 +399,25 @@ export class OramPirClientAdapter {
     const pins = this.config.databaseProofPins ?? [];
     for (const pin of pins) {
       let status: DatabaseProofStatus;
+      let proofHandle: Awaited<ReturnType<WasmOramClient['verifyDatabaseProof']>> | null = null;
       try {
-        const proofHandle = await this.wasmClient.verifyDatabaseProof(
+        proofHandle = await this.wasmClient.verifyDatabaseProof(
           pin.dbId,
           pin.paramsHashHex,
           pin.builderBinarySha256Hex,
           pin.builderGitCommit,
         );
-        try {
-          const proof = verifiedDatabaseProofFromWasm(proofHandle);
-          status = verifyDatabaseProofAgainstPin(proof, pin);
-        } finally {
-          proofHandle.free();
+        const proof = verifiedDatabaseProofFromWasm(proofHandle);
+        status = verifyDatabaseProofAgainstPin(proof, pin);
+        if (status.state === 'verified') {
+          const moved = proofHandle;
+          proofHandle = null;
+          this.wasmClient.installVerifiedDatabaseProof(moved);
         }
       } catch (e) {
         status = databaseProofUnavailable(pin, e);
+      } finally {
+        proofHandle?.free();
       }
       this.databaseProofs.set(pin.dbId, status);
       this.config.onDatabaseProof?.(pin.dbId, status);
@@ -413,6 +475,7 @@ export class OramPirClientAdapter {
       if (channelReady && att) {
         try {
           await this.wasmClient.upgradeToSecureChannel(att.serverStaticPub);
+          this.secureChannelEstablished = true;
           this.log('ORAM upgraded to encrypted channel', 'success');
         } catch (e) {
           this.log(`ORAM upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`, 'error');
@@ -571,6 +634,25 @@ export function splitOramScriptHashBatches<T>(
     out.push(items.slice(i, i + max));
   }
   return out;
+}
+
+/**
+ * Admission-safe product boundary: one user query must fit one ORAM wire
+ * frame. This is checked before the SDK sends anything; callers should acquire
+ * a separate capability/connection for another atomic query, never split one
+ * authorized attempt behind the user's back.
+ */
+export function requireAtomicOramRequest<T>(
+  items: readonly T[],
+  maxPerRequest: number = DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST,
+): T[] {
+  const max = resolveMaxScriptHashesPerRequest(maxPerRequest);
+  if (items.length > max) {
+    throw new Error(
+      `atomic ORAM query has ${items.length} real inputs but this signed/deployment profile permits at most ${max} in one authorization; reduce the query or acquire a separate capability`,
+    );
+  }
+  return items.slice();
 }
 
 export function planOramScriptHashBatches<T>(

@@ -90,7 +90,10 @@ pub async fn run(args: AttestArgs) -> Result<(), i32> {
     println!("Nonce sent:        {}", hex::encode(nonce));
     println!();
     println!("== Self-reported (server-side) ==");
-    println!("binary_sha256:     {}", hex::encode(v.response.binary_sha256));
+    println!(
+        "binary_sha256:     {}",
+        hex::encode(v.response.binary_sha256)
+    );
     println!("git_rev:           {}", v.response.git_rev);
     // server_static_pub is the X25519 long-lived channel pubkey. All-zero
     // means the server hasn't enabled the encrypted-channel feature yet
@@ -99,12 +102,20 @@ pub async fn run(args: AttestArgs) -> Result<(), i32> {
     if v.response.server_static_pub == [0u8; 32] {
         println!("channel pubkey:    <none>  (server has no X25519 channel key — encrypted-channel feature off)");
     } else {
-        println!("channel pubkey:    {}  (X25519, V2-bound to REPORT_DATA)",
-                 hex::encode(v.response.server_static_pub));
+        println!(
+            "channel pubkey:    {}  (X25519, V2-bound to REPORT_DATA)",
+            hex::encode(v.response.server_static_pub)
+        );
     }
-    println!("manifest roots ({} DB{}):",
-             v.response.manifest_roots.len(),
-             if v.response.manifest_roots.len() == 1 { "" } else { "s" });
+    println!(
+        "manifest roots ({} DB{}):",
+        v.response.manifest_roots.len(),
+        if v.response.manifest_roots.len() == 1 {
+            ""
+        } else {
+            "s"
+        }
+    );
     for (i, root) in v.response.manifest_roots.iter().enumerate() {
         println!("  db_id={}: {}", i, hex::encode(root));
     }
@@ -132,7 +143,10 @@ pub async fn run(args: AttestArgs) -> Result<(), i32> {
     println!("== SEV-SNP attestation ==");
     println!("Report bytes:      {}", v.response.sev_snp_report.len());
     println!("Status:            {:?}", v.sev_status);
-    println!("Expected REPORT_DATA[..32]: {}", hex::encode(v.expected_report_data_hash));
+    println!(
+        "Expected REPORT_DATA[..32]: {}",
+        hex::encode(v.expected_report_data_hash)
+    );
     if !v.response.sev_snp_report.is_empty() {
         // Pull the launch MEASUREMENT (offset 0x90, 48 bytes) for display.
         // (See AMD SEV-SNP ABI doc: report v2/v5 layout.)

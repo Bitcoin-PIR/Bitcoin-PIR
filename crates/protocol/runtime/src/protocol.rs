@@ -7,6 +7,14 @@
 
 use std::io;
 
+// Service authorization has its own canonical body codec. Re-export the
+// collision-checked opcodes here so existing runtime/server dispatch code has
+// one registry; body decoding lives in `crate::service_admission`.
+pub use pir_service_protocol::{
+    REQ_AUTH_BEGIN_V1, REQ_HARMONY_ATTACH_V1, REQ_POW_CHALLENGE_V1, REQ_SERVICE_POLICY_V1,
+    RESP_AUTH_RESULT_V1, RESP_HARMONY_ATTACH_V1, RESP_POW_CHALLENGE_V1, RESP_SERVICE_POLICY_V1,
+};
+
 // ─── Request variants ───────────────────────────────────────────────────────
 
 pub const REQ_PING: u8 = 0x00;
@@ -1663,11 +1671,17 @@ fn decode_harmony_hint_request(data: &[u8]) -> io::Result<HarmonyHintRequest> {
 /// [1B level_sentinel=0xFF][1B reserved=0x00]
 /// [optional trailing 1B db_id]
 fn decode_harmony_hint_request_v2(data: &[u8]) -> io::Result<HarmonyHintRequestV2> {
-    // Minimum: level_sentinel (1) + reserved (1)
-    if data.len() < 2 {
+    // Exact legacy form: sentinel (1) + reserved (1).
+    // Exact multi-DB form: the same fields plus one non-zero db_id byte.
+    // Reject every other length and redundant zero suffix so one operation has
+    // only one wire encoding under the service-admission digest.
+    if data.len() != 2 && data.len() != 3 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "V2 hint request too short",
+            format!(
+                "V2 hint request must be exactly 2 or 3 bytes, got {}",
+                data.len()
+            ),
         ));
     }
     let level_sentinel = data[0];
@@ -1680,8 +1694,22 @@ fn decode_harmony_hint_request_v2(data: &[u8]) -> io::Result<HarmonyHintRequestV
             ),
         ));
     }
-    // data[1] is reserved, ignored.
-    let db_id = if data.len() > 2 { data[2] } else { 0 };
+    if data[1] != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "V2 hint request reserved byte must be zero, got {}",
+                data[1]
+            ),
+        ));
+    }
+    let db_id = if data.len() == 3 { data[2] } else { 0 };
+    if data.len() == 3 && db_id == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "V2 hint request must omit a zero db_id",
+        ));
+    }
     Ok(HarmonyHintRequestV2 { db_id })
 }
 
@@ -1689,15 +1717,27 @@ fn decode_harmony_hint_request_v2(data: &[u8]) -> io::Result<HarmonyHintRequestV
 /// [16B session_token][1B side: 0=INDEX, 1=CHUNK]
 /// [optional trailing 1B db_id]
 fn decode_harmony_hint_request_v2_half(data: &[u8]) -> io::Result<HarmonyHintRequestV2Half> {
-    // Minimum: session_token (16) + side (1)
-    if data.len() < 17 {
+    // Exact legacy form: session_token (16) + side (1).
+    // Exact multi-DB form: the same fields plus one non-zero db_id byte.
+    // Reject every other length so attacker-controlled trailing bytes cannot
+    // produce multiple wire encodings of one pending-pool key.
+    if data.len() != 17 && data.len() != 18 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "V2 half hint request too short",
+            format!(
+                "V2 half hint request must be exactly 17 or 18 bytes, got {}",
+                data.len()
+            ),
         ));
     }
     let mut session_token = [0u8; 16];
     session_token.copy_from_slice(&data[..16]);
+    if session_token.iter().all(|byte| *byte == 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "V2 half hint request session token must be non-zero",
+        ));
+    }
     let side = data[16];
     if side != 0 && side != 1 {
         return Err(io::Error::new(
@@ -1705,7 +1745,13 @@ fn decode_harmony_hint_request_v2_half(data: &[u8]) -> io::Result<HarmonyHintReq
             format!("V2 half hint request side must be 0 or 1, got {}", side),
         ));
     }
-    let db_id = if data.len() > 17 { data[17] } else { 0 };
+    let db_id = if data.len() == 18 { data[17] } else { 0 };
+    if data.len() == 18 && db_id == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "V2 half hint request must omit a zero db_id",
+        ));
+    }
     Ok(HarmonyHintRequestV2Half {
         session_token,
         side,
@@ -2601,6 +2647,82 @@ fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
 #[cfg(test)]
 mod attest_wire_tests {
     use super::*;
+
+    #[test]
+    fn harmony_v2_full_accepts_only_canonical_two_or_three_byte_bodies() {
+        for (db_id, expected_body_len) in [(0, 2usize), (7, 3usize)] {
+            let request = Request::HarmonyHintsV2(HarmonyHintRequestV2 { db_id });
+            let encoded = request.encode();
+            assert_eq!(encoded.len(), 4 + 1 + expected_body_len);
+            match Request::decode(&encoded[4..]).unwrap() {
+                Request::HarmonyHintsV2(decoded) => assert_eq!(decoded.db_id, db_id),
+                _ => panic!("wrong request variant"),
+            }
+        }
+
+        for invalid in [
+            vec![REQ_HARMONY_HINTS_V2],
+            vec![REQ_HARMONY_HINTS_V2, 0xff],
+            vec![REQ_HARMONY_HINTS_V2, 0xff, 1],
+            vec![REQ_HARMONY_HINTS_V2, 0xff, 0, 0],
+            vec![REQ_HARMONY_HINTS_V2, 0xff, 0, 7, 8],
+        ] {
+            assert_eq!(
+                Request::decode(&invalid).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn harmony_v2_half_accepts_only_canonical_17_or_18_byte_bodies() {
+        for (db_id, expected_body_len) in [(0, 17usize), (7, 18usize)] {
+            let request = Request::HarmonyHintsV2Half(HarmonyHintRequestV2Half {
+                session_token: [0xA5; 16],
+                side: 1,
+                db_id,
+            });
+            let encoded = request.encode();
+            assert_eq!(encoded.len(), 4 + 1 + expected_body_len);
+            match Request::decode(&encoded[4..]).unwrap() {
+                Request::HarmonyHintsV2Half(decoded) => {
+                    assert_eq!(decoded.session_token, [0xA5; 16]);
+                    assert_eq!(decoded.side, 1);
+                    assert_eq!(decoded.db_id, db_id);
+                }
+                _ => panic!("wrong request variant"),
+            }
+        }
+
+        for body_len in [0usize, 16, 19, 20] {
+            let mut encoded = vec![REQ_HARMONY_HINTS_V2_HALF];
+            encoded.resize(1 + body_len, 1);
+            assert_eq!(
+                Request::decode(&encoded).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn harmony_v2_half_rejects_zero_token_and_redundant_zero_db_id() {
+        let mut zero_token = vec![REQ_HARMONY_HINTS_V2_HALF];
+        zero_token.extend_from_slice(&[0; 16]);
+        zero_token.push(0);
+        assert_eq!(
+            Request::decode(&zero_token).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let mut redundant_zero_db = vec![REQ_HARMONY_HINTS_V2_HALF];
+        redundant_zero_db.extend_from_slice(&[1; 16]);
+        redundant_zero_db.push(0);
+        redundant_zero_db.push(0);
+        assert_eq!(
+            Request::decode(&redundant_zero_db).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 
     #[test]
     fn retired_residency_opcode_is_rejected() {

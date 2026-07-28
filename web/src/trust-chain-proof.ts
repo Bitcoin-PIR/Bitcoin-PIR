@@ -12,6 +12,7 @@ import {
 import type { DatabaseProofPin, VerifiedDatabaseProof } from './db-proof.js';
 import { verifyDatabaseProofAgainstPin } from './db-proof.js';
 import { bytesToHex, hexToBytes, sha256 } from './hash.js';
+import { fetchProofArtifactBytesV1 } from './proof-artifact-fetch.js';
 import { requireSdkWasm } from './sdk-bridge.js';
 
 export const DEFAULT_TRUST_CHAIN_MANIFEST_PATH = '/proofs/trust-chain/delta_940611_948454.json';
@@ -101,7 +102,7 @@ export async function verifyProductionTrustChain(
 ): Promise<DatabaseTrustChainStatus> {
   const checks: TrustChainCheck[] = [];
   const mismatches: string[] = [];
-  const loader = options.artifactLoader ?? fetchArtifactBytes;
+  const loader = options.artifactLoader ?? fetchProofArtifactBytesV1;
   const manifestPath = options.manifestPath ?? DEFAULT_TRUST_CHAIN_MANIFEST_PATH;
 
   try {
@@ -276,14 +277,6 @@ async function verifyArtifactGroup(
     out.set(name, bytes);
   }
   return out;
-}
-
-async function fetchArtifactBytes(path: string): Promise<Uint8Array> {
-  const response = await fetch(path, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`failed to load ${path}: HTTP ${response.status}`);
-  }
-  return new Uint8Array(await response.arrayBuffer());
 }
 
 async function loadJson<T>(path: string, loader: (path: string) => Promise<Uint8Array>): Promise<T> {

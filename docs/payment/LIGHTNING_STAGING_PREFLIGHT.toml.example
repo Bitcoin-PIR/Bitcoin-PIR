@@ -1,0 +1,95 @@
+# Payment V1 default-Signet preflight configuration, schema V1.
+#
+# Copy this public, non-secret template separately onto each payer/router/issuer
+# host. Replace every placeholder and set `role` for that host. The preflight
+# is intentionally read-only and will fail on these zero hash placeholders.
+
+schema_version = 1
+role = "payer" # payer | router | issuer
+
+# Three independent, staging-only compressed secp256k1 node public keys.
+payer_node_id_hex = "020000000000000000000000000000000000000000000000000000000000000001"
+router_node_id_hex = "030000000000000000000000000000000000000000000000000000000000000002"
+issuer_node_id_hex = "020000000000000000000000000000000000000000000000000000000000000003"
+
+command_timeout_seconds = 5
+max_block_height_lag = 2
+# 250,000 msat leaves margin above the documented 100-sat maximum test invoice.
+minimum_route_liquidity_msat = 250000
+
+[bitcoin]
+# Inline RPC usernames/passwords are rejected. Use Core's owner-controlled
+# cookie through an explicit absolute datadir/conf/cookie path.
+cli_args = [
+  "-signet",
+  "-datadir=/srv/bitcoin",
+  "-rpcconnect=127.0.0.1",
+  "-rpcport=38332",
+  "-rpccookiefile=/srv/bitcoin/signet/.cookie",
+  # Explicit empty command-line values override any rpcuser/rpcpassword in
+  # the automatically read datadir config, forcing cookie authentication.
+  "-rpcuser=",
+  "-rpcpassword=",
+]
+expected_subversion = "/Satoshi:29.0.0/"
+
+[bitcoin.rpc_cookie]
+path = "/srv/bitcoin/signet/.cookie"
+protected_parent = "/srv/bitcoin"
+expected_uid = 990
+expected_gid = 990
+
+[bitcoin.daemon]
+path = "/usr/local/libexec/bitcoinpir/bitcoind"
+protected_parent = "/usr/local/libexec/bitcoinpir"
+sha256_hex = "0000000000000000000000000000000000000000000000000000000000000000"
+expected_uid = 0
+expected_gid = 0
+
+[bitcoin.cli]
+path = "/usr/local/libexec/bitcoinpir/bitcoin-cli"
+protected_parent = "/usr/local/libexec/bitcoinpir"
+sha256_hex = "0000000000000000000000000000000000000000000000000000000000000000"
+expected_uid = 0
+expected_gid = 0
+
+[lightning]
+rpc_socket = "/srv/lightning/signet/lightning-rpc"
+protected_parent = "/srv/lightning"
+expected_uid = 991
+expected_gid = 991
+expected_version = "v26.06.6"
+
+[lightning.daemon]
+path = "/usr/local/libexec/bitcoinpir/lightningd"
+protected_parent = "/usr/local/libexec/bitcoinpir"
+sha256_hex = "0000000000000000000000000000000000000000000000000000000000000000"
+expected_uid = 0
+expected_gid = 0
+
+[lightning.cli]
+path = "/usr/local/libexec/bitcoinpir/lightning-cli"
+protected_parent = "/usr/local/libexec/bitcoinpir"
+sha256_hex = "0000000000000000000000000000000000000000000000000000000000000000"
+expected_uid = 0
+expected_gid = 0
+
+# This is an exact allowlist of every entry returned by `plugin list`, not a
+# prefix allowlist. Add one table per expected plugin and pin each executable.
+[[lightning.allowed_plugins]]
+name = "/usr/local/libexec/bitcoinpir/cln-plugins/bookkeeper"
+protected_parent = "/usr/local/libexec/bitcoinpir"
+sha256_hex = "0000000000000000000000000000000000000000000000000000000000000000"
+expected_uid = 0
+expected_gid = 0
+
+[backup]
+# The receipt records only a digest and operator confirmations. It must not
+# contain hsm_secret, emergency.recover/SCB bytes, wallet data or passwords.
+# Create or refresh it only with `lightning-staging record-backup-receipt`
+# after both separately controlled backups were restore-checked.
+receipt = "/srv/bitcoinpir-backup/default-signet-payer.toml"
+protected_parent = "/srv/bitcoinpir-backup"
+expected_uid = 991
+expected_gid = 991
+max_age_seconds = 86400

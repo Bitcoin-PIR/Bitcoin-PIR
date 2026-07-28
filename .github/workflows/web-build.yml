@@ -6,8 +6,8 @@ name: Web client build + tests
 # against the live Hetzner deployment, and `deploy-web.yml` builds the
 # web bundle on push-to-main for GitHub Pages. Neither covers:
 #
-#   1. **wasm32 target compilation on PRs.** Today wasm-pack only runs
-#      via `deploy-web.yml` on push-to-main; a PR that breaks the
+#   1. **wasm32 target compilation on PRs.** Before this gate, wasm-pack ran
+#      only via `deploy-web.yml` on push-to-main; a PR that broke the
 #      wasm32 build (e.g., refactor that pulls a native-only API into
 #      shared code) merges silently and surfaces only at deploy time.
 #
@@ -18,11 +18,10 @@ name: Web client build + tests
 #      interface drift between `sdk-bridge.ts` and WASM-generated
 #      stubs, etc.) are never gated.
 #
-#   3. **vitest unit tests.** `web/src/__tests__/` includes the
-#      pure-helper TS-side analog of the Kani harnesses
-#      (`onion_pad_chunk_ids.test.ts`, `onion_chunk_slot_classifier.test.ts`,
-#      `leakage.test.ts`, `onion_leakage_corpus.test.ts`, etc.) — 138
-#      tests at last count. Currently never run in CI.
+#   3. **vitest unit tests.** `web/src/__tests__/` includes pure-helper
+#      TS-side analogs of the Kani harnesses plus the Payment V1 admission,
+#      recovery, and provider-selection tests. This suite is never inferred
+#      from a stale hard-coded test count.
 #
 # This workflow plugs all three gaps with a single PR-time job. The
 # wasm-pack output is reused by the tsc step (the regenerated
@@ -34,23 +33,41 @@ on:
   push:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
       - 'crates/protocol/**'
+      - 'crates/payment/**'
+      - 'crates/directory/nostr/**'
       - 'crates/sdk/core/**'
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
+      - 'crates/trust/**'
       - 'web/**'
       - 'verification/locks/generated-proofs.json'
       - '.github/workflows/web-build.yml'
+      - '.github/workflows/deploy-web.yml'
   pull_request:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
       - 'crates/protocol/**'
+      - 'crates/payment/**'
+      - 'crates/directory/nostr/**'
       - 'crates/sdk/core/**'
       - 'crates/sdk/wasm/**'
       - 'crates/sdk/client/**'
+      - 'crates/trust/**'
       - 'web/**'
       - 'verification/locks/generated-proofs.json'
       - '.github/workflows/web-build.yml'
+      - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
 
 permissions:
@@ -59,60 +76,68 @@ permissions:
 jobs:
   web-build:
     name: wasm-pack + tsc + vitest
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install pinned Rust toolchain (with wasm32 target)
-        run: rustup toolchain install --profile minimal --target wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add wasm32-unknown-unknown
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: '20'
+          node-version: '24.18.0'
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
       - name: Cache Cargo registry + target
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # Separate cache key from `pir-sdk-integration.yml` and
-          # `deploy-web.yml` — this workflow uses a trimmed workspace
-          # (no `pir-sdk-client`, no native-only deps), so the target
-          # dir layout differs from those jobs and sharing the cache
-          # would cause collisions.
+          # Keep a workflow-specific cache key so PR validation cannot reuse
+          # incompatible artifacts from release or live-integration jobs.
           key: ${{ runner.os }}-cargo-web-build-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-web-build-
+
+      - name: Install pinned WASM tools without executing a remote installer
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo +1.94.1 install wasm-pack \
+            --version 0.14.0 \
+            --locked \
+            --root "$RUNNER_TEMP/wasm-pack"
+          cargo +1.94.1 install wasm-bindgen-cli \
+            --version 0.2.114 \
+            --locked \
+            --root "$RUNNER_TEMP/wasm-pack"
+          echo "$RUNNER_TEMP/wasm-pack/bin" >> "$GITHUB_PATH"
 
       - name: Install web dependencies
         working-directory: web
         run: npm ci
 
-      # Build pir-sdk-wasm with a trimmed workspace. The full workspace
-      # contains crates that don't compile to wasm32 (the `onion`
-      # feature pulls SEAL via a C++ toolchain). Same pattern as
-      # `deploy-web.yml` —
-      # mirror the `[workspace]` munging exactly so this job catches
-      # any drift in what's-wasm-buildable.
+      # Build from the real workspace graph. Rewriting the root manifest to a
+      # three-member synthetic workspace hid pir-sdk-wasm's actual path
+      # dependencies (including pir-sdk-client, pir-channel, service policy,
+      # directory, and payment adapters) and could silently drift from Cargo.
       - name: Build pir-sdk-wasm (wasm32 target validation)
-        run: |
-          cp Cargo.toml Cargo.toml.bak
-          printf '[workspace]\nresolver = "2"\nmembers = ["crates/protocol/core", "crates/sdk/core", "crates/sdk/wasm"]\n' > Cargo.toml
-          wasm-pack build crates/sdk/wasm --target web --out-dir pkg
-          mv Cargo.toml.bak Cargo.toml
+        run: >-
+          CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm
+          --target web --out-dir pkg --mode no-install --no-opt
+          -- --locked --offline
 
       # `npm run build` = `tsc`. Strict typecheck of every .ts file
       # under web/src/, including the test files. Catches drift in
@@ -122,10 +147,8 @@ jobs:
         working-directory: web
         run: npm run build
 
-      # `npm test` = `vitest run`. 138 tests across 11 files at last
-      # count, including the chunk_max / index_max closure helper
-      # tests (`onion_pad_chunk_ids.test.ts`,
-      # `onion_chunk_slot_classifier.test.ts`).
+      # `npm test` = `vitest run`, including chunk_max/index_max closure
+      # helpers and Payment V1 admission/recovery tests.
       #
       # Excludes the live cross-language diff (`onion_leakage_diff.test.ts`)
       # — that test is gated on `RUN_LIVE_DIFF=1` because it requires
@@ -134,6 +157,10 @@ jobs:
       - name: Run vitest unit tests
         working-directory: web
         run: npm test
+
+      - name: Build production web bundle
+        working-directory: web
+        run: npm run build-web
 
       # Parse and discover the browser canary without issuing live production
       # queries on every PR. The scheduled workflow owns those queries.

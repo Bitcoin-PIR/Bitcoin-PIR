@@ -19,13 +19,23 @@ use crate::db_proof::{
 use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
+use crate::service::{
+    dangerous_unpaired_authorize_retained_service_redemption_v1,
+    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_service_redemption_v1,
+    fetch_verified_service_policy_v1, request_pow_challenge_v1,
+    verify_service_policy_session_v1 as verify_policy_transport_session_v1,
+    AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1, ServicePolicyCheckpointV1,
+};
 use crate::transport::PirTransport;
+use crate::verified_roots::{RootPolicy, VerifiedRootState};
 #[cfg(target_arch = "wasm32")]
 use crate::wasm_transport::WasmWebSocketTransport;
+use ed25519_dalek::VerifyingKey;
 use pir_core::params::SCRIPT_HASH_SIZE;
 use pir_sdk::{
     DatabaseCatalog, PirError, PirMetrics, PirResult, QueryResult, ScriptHash, UtxoEntry,
 };
+use pir_service_protocol::{AuthorizationProofV1, OperationStartV1, ProviderId};
 use std::sync::Arc;
 
 const REQ_ORAM_LOOKUP: u8 = 0x60;
@@ -81,6 +91,7 @@ pub struct OramClient {
     conn: Option<Box<dyn PirTransport>>,
     catalog: Option<DatabaseCatalog>,
     metrics_recorder: Option<Arc<dyn PirMetrics>>,
+    verified_roots: VerifiedRootState,
 }
 
 impl OramClient {
@@ -91,6 +102,7 @@ impl OramClient {
             conn: None,
             catalog: None,
             metrics_recorder: None,
+            verified_roots: VerifiedRootState::default(),
         }
     }
 
@@ -139,6 +151,7 @@ impl OramClient {
         }
         self.conn = None;
         self.catalog = None;
+        self.verified_roots.clear();
         self.fire_disconnect();
         Ok(())
     }
@@ -198,6 +211,182 @@ impl OramClient {
             .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
         let bundle = fetch_database_proof(self.conn_mut()?.as_mut(), db_id).await?;
         verify_database_proof(&db_info, &bundle, policy)
+    }
+
+    pub fn root_policy(&self) -> RootPolicy {
+        self.verified_roots.policy()
+    }
+
+    pub fn set_root_policy(&mut self, policy: RootPolicy) {
+        self.verified_roots.set_policy(policy);
+    }
+
+    pub fn install_verified_database_roots(
+        &mut self,
+        roots: VerifiedDatabaseRoots,
+    ) -> PirResult<()> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
+        self.verified_roots.install(catalog, roots)
+    }
+
+    pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
+        self.verified_roots.get(db_id)
+    }
+
+    pub async fn fetch_service_policy_v1(
+        &mut self,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        now_unix: u64,
+        checkpoint: &ServicePolicyCheckpointV1,
+    ) -> PirResult<AcceptedServicePolicyV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "service policy requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn_mut()?;
+        fetch_verified_service_policy_v1(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            now_unix,
+            checkpoint,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fetch_retained_service_redemption_v1(
+        &mut self,
+        db_id: u8,
+        expected_provider_id: ProviderId,
+        policy_signing_key: &VerifyingKey,
+        expected_policy_digest: [u8; 32],
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<AcceptedRetiredServiceRedemptionV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained service redemption requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn_mut()?;
+        fetch_retained_service_redemption_v1(
+            transport.as_mut(),
+            expected_provider_id,
+            policy_signing_key,
+            expected_policy_digest,
+            scope_id,
+            offer_id,
+            now_unix,
+        )
+        .await
+    }
+
+    pub fn verify_retained_service_session_v1(
+        &self,
+        accepted: &AcceptedRetiredServiceRedemptionV1,
+    ) -> PirResult<()> {
+        let transport = self.conn.as_ref().ok_or(PirError::NotConnected)?;
+        let exporter = transport
+            .service_authorization_exporter_v1()
+            .ok_or_else(|| {
+                PirError::VerificationFailed(
+                    "retained redemption requires an authenticated secure channel".into(),
+                )
+            })?;
+        accepted.verify_service_authorization_exporter_v1(&exporter)
+    }
+
+    pub async fn authorize_retained_service_redemption_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedRetiredServiceRedemptionV1,
+        proof: AuthorizationProofV1,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_retained_service_session_v1(accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "retained authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn_mut()?;
+        dangerous_unpaired_authorize_retained_service_redemption_v1(
+            transport.as_mut(),
+            accepted,
+            OperationStartV1::TeeOramQuery { db_id },
+            proof,
+            now_unix,
+        )
+        .await
+    }
+
+    /// Verify that `accepted` belongs to this exact ORAM connection. Call
+    /// immediately before retiring a one-shot capability.
+    pub fn verify_service_policy_session_v1(
+        &self,
+        accepted: &AcceptedServicePolicyV1,
+    ) -> PirResult<()> {
+        let transport = self.conn.as_ref().ok_or(PirError::NotConnected)?;
+        verify_policy_transport_session_v1(transport.as_ref(), accepted)
+    }
+
+    pub async fn authorize_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        proof: AuthorizationProofV1,
+    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
+        self.verify_service_policy_session_v1(accepted)?;
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "service authorization requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn_mut()?;
+        dangerous_unpaired_authorize_service_operation_v1(
+            transport.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::TeeOramQuery { db_id },
+            proof,
+        )
+        .await
+    }
+
+    pub async fn request_service_pow_challenge_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &AcceptedServicePolicyV1,
+        scope_id: [u8; 32],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> PirResult<pir_service_protocol::PowChallengeResponseV1> {
+        if self.verified_database_roots(db_id).is_none() {
+            return Err(PirError::VerificationFailed(format!(
+                "proof-of-work challenge requires installed database proof for db_id {db_id}"
+            )));
+        }
+        let transport = self.conn_mut()?;
+        request_pow_challenge_v1(
+            transport.as_mut(),
+            accepted,
+            scope_id,
+            offer_id,
+            OperationStartV1::TeeOramQuery { db_id },
+            now_unix,
+        )
+        .await
     }
 
     pub fn cached_catalog(&self) -> Option<&DatabaseCatalog> {
@@ -333,8 +522,10 @@ impl OramClient {
     }
 
     /// Query a database with a fixed padded slot count and decode only the
-    /// real input script hashes. If more script hashes are needed, callers
-    /// should split into another padded request.
+    /// real input script hashes. One service entitlement authorizes exactly
+    /// one such wire request: product callers must reject an oversized atomic
+    /// query or acquire a fresh capability on a fresh connection, never split
+    /// one authorized query into multiple frames.
     pub async fn query_batch_padded(
         &mut self,
         script_hashes: &[ScriptHash],
@@ -592,6 +783,8 @@ fn decode_error_response(response: &[u8]) -> PirError {
 mod tests {
     use super::*;
     use crate::transport::mock::MockTransport;
+    use pir_sdk::AtomicMetrics;
+    use std::sync::Arc;
 
     fn framed(payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(4 + payload.len());
@@ -790,11 +983,15 @@ mod tests {
 
         let mut client = OramClient::new("mock://oram");
         client.connect_with_transport(Box::new(mock));
+        let metrics = Arc::new(AtomicMetrics::new());
+        client.set_metrics_recorder(Some(metrics.clone()));
         let results = client.query_batch_padded(&[a, b], 3, 0).await.unwrap();
 
         assert_eq!(results.len(), 2);
         assert!(results[0].is_some());
         assert!(results[1].is_none());
+        assert_eq!(metrics.snapshot().frames_sent, 1);
+        assert_eq!(metrics.snapshot().roundtrips_observed, 1);
     }
 
     #[test]

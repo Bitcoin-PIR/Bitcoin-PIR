@@ -339,3 +339,91 @@ export function assertStrictTransportReady(options: StrictTransportOptions): voi
     throw new Error(`strict transport verification failed: ${failures.join('; ')}`);
   }
 }
+
+export interface StrictSingleTransportOptions {
+  secureChannelEstablished: boolean;
+  attestation: StrictAttestationSummary;
+  expectedPin?: StrictServerPin;
+  expectedServerId?: string;
+  operatorIdentity?: StrictOperatorIdentitySummary;
+}
+
+/** Single-provider equivalent used by OnionPIR and TEE-style transports.
+ * Unlike the legacy optional two-server identity display, strict standalone
+ * mode always requires an operator-signed endpoint identity. */
+export function collectStrictSingleTransportFailures(
+  options: StrictSingleTransportOptions,
+): string[] {
+  const failures: string[] = [];
+  if (!options.secureChannelEstablished) {
+    failures.push('secure-channel upgrade did not complete');
+  }
+  if (!configured(options.expectedServerId)) {
+    failures.push('no expected server id is configured');
+  }
+  const hasMeasurementPin = configured(options.expectedPin?.measurementHex);
+  const hasBinaryPin = configured(options.expectedPin?.binarySha256Hex);
+  if (!options.expectedPin || (!hasMeasurementPin && !hasBinaryPin)) {
+    failures.push('no attestation pin is configured');
+  }
+  if (options.attestation.pinStatus !== 'match') {
+    failures.push(
+      `attestation pin status is ${options.attestation.pinStatus ?? 'missing'}, expected match`,
+    );
+  }
+  if (
+    options.attestation.state !== 'verified'
+    && options.attestation.state !== 'verified-vcek'
+  ) {
+    failures.push(
+      `attestation state is ${options.attestation.state}, expected verified or verified-vcek`,
+    );
+  }
+  if (hasMeasurementPin) {
+    if (options.attestation.state !== 'verified-vcek') {
+      failures.push('a measurement pin requires verified-vcek attestation');
+    }
+    if (options.attestation.sevStatus !== 'reportDataMatch') {
+      failures.push('a measurement pin requires SEV-SNP reportDataMatch');
+    }
+  } else if (
+    options.attestation.sevStatus !== 'reportDataMatch'
+    && options.attestation.sevStatus !== 'noSevHost'
+  ) {
+    failures.push(
+      `SEV status is ${options.attestation.sevStatus ?? 'missing'}, expected reportDataMatch or noSevHost`,
+    );
+  }
+
+  const identity = options.operatorIdentity;
+  if (identity?.state !== 'verified') {
+    failures.push(`operator identity is ${identity?.state ?? 'missing'}, expected verified`);
+  } else {
+    if (identity.serverId !== options.expectedServerId) {
+      failures.push(
+        `operator server id is ${identity.serverId ?? 'missing'}, expected ${options.expectedServerId}`,
+      );
+    }
+    if (options.attestation.sevStatus === 'noSevHost') {
+      const expectedBinary = options.expectedPin?.binarySha256Hex;
+      if (!configured(identity.binarySha256Hex)) {
+        failures.push('verified operator identity has no binary sha256');
+      } else if (
+        configured(expectedBinary)
+        && identity.binarySha256Hex!.toLowerCase() !== expectedBinary!.toLowerCase()
+      ) {
+        failures.push('operator binary sha256 does not match the configured binary pin');
+      }
+    }
+  }
+  return failures;
+}
+
+export function assertStrictSingleTransportReady(
+  options: StrictSingleTransportOptions,
+): void {
+  const failures = collectStrictSingleTransportFailures(options);
+  if (failures.length > 0) {
+    throw new Error(`strict transport verification failed: ${failures.join('; ')}`);
+  }
+}

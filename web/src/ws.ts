@@ -18,6 +18,13 @@ export interface ManagedWsConfig {
   requestTimeoutMs?: number;
 }
 
+/** Synchronous record codec installed only after a same-socket handshake.
+ * Both functions receive and return one complete `[u32 len][payload]` frame. */
+export interface ManagedWsFrameCodec {
+  encode(frame: Uint8Array): Uint8Array;
+  decode(frame: Uint8Array): Uint8Array;
+}
+
 type PendingCallback = {
   resolve: (data: Uint8Array) => void;
   reject: (err: Error) => void;
@@ -44,6 +51,7 @@ export class ManagedWebSocket {
   private ws: WebSocket | null = null;
   private pending: PendingCallback[] = [];
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private frameCodec: ManagedWsFrameCodec | null = null;
 
   // Transport-level chunk reassembly state (see CHUNK_MAGIC above).
   private chunkAcc: Uint8Array[] = [];
@@ -75,6 +83,7 @@ export class ManagedWebSocket {
       ws.onopen = () => {
         this.ws = ws;
         this.pending = [];
+        this.frameCodec = null;
         this.chunkAcc = [];
         this.chunkExpected = 0;
         this.chunkTotal = 0;
@@ -102,6 +111,12 @@ export class ManagedWebSocket {
       ws.onclose = () => {
         this.ws = null;
         this.stopHeartbeat();
+        for (const callback of this.pending) {
+          clearTimeout(callback.timeout);
+          callback.reject(new Error(`Connection closed (${label})`));
+        }
+        this.pending = [];
+        this.frameCodec = null;
         this.config.onClose?.();
       };
     });
@@ -113,6 +128,13 @@ export class ManagedWebSocket {
       throw new Error(`Not connected (${this.config.label ?? this.config.url})`);
     }
 
+    let wireMessage: Uint8Array;
+    try {
+      wireMessage = this.frameCodec ? this.frameCodec.encode(msg) : msg;
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+
     return new Promise<Uint8Array>((resolve, reject) => {
       const timeout = setTimeout(() => {
         const idx = this.pending.findIndex(p => p.resolve === resolve);
@@ -122,7 +144,7 @@ export class ManagedWebSocket {
 
       this.pending.push({ resolve, reject, timeout });
       try {
-        this.sendChunked(msg);
+        this.sendChunked(wireMessage);
       } catch (err) {
         clearTimeout(timeout);
         const idx = this.pending.findIndex(p => p.resolve === resolve);
@@ -137,6 +159,16 @@ export class ManagedWebSocket {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
 
+  /** Atomically switch all subsequent requests, replies and heartbeats to a
+   * same-socket secure record codec. No request may be in flight. */
+  setFrameCodec(codec: ManagedWsFrameCodec): void {
+    if (!this.isOpen()) throw new Error('cannot install frame codec on a closed socket');
+    if (this.pending.length !== 0) {
+      throw new Error('cannot install frame codec while requests are pending');
+    }
+    this.frameCodec = codec;
+  }
+
   /** Gracefully close the connection. */
   disconnect(): void {
     this.stopHeartbeat();
@@ -146,6 +178,7 @@ export class ManagedWebSocket {
       cb.reject(new Error('Disconnected'));
     }
     this.pending = [];
+    this.frameCodec = null;
     this.ws?.close();
     this.ws = null;
   }
@@ -182,11 +215,33 @@ export class ManagedWebSocket {
         );
         return;
       }
-      const record = data.subarray(off, recordEnd);
+      let record = data.subarray(off, recordEnd);
       off = recordEnd;
+      let recordPayloadLength = len;
+
+      if (this.frameCodec) {
+        try {
+          record = this.frameCodec.decode(record);
+          if (record.length < 5) throw new Error('decoded record is too short');
+          const decodedLength = new DataView(
+            record.buffer,
+            record.byteOffset,
+            4,
+          ).getUint32(0, true);
+          if (decodedLength !== record.length - 4) {
+            throw new Error('decoded record has a non-canonical length prefix');
+          }
+          recordPayloadLength = decodedLength;
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          this.log(`Secure record rejected: ${failure.message}`, 'error');
+          this.disconnect();
+          return;
+        }
+      }
 
       // Filter pong responses: [4B len=1 LE][1B variant=0x00].
-      if (len === 1 && record[4] === 0x00) {
+      if (recordPayloadLength === 1 && record[4] === 0x00) {
         continue; // Silently discard pong
       }
 
@@ -303,7 +358,16 @@ export class ManagedWebSocket {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(PING_MSG);
+        try {
+          const ping = this.frameCodec ? this.frameCodec.encode(PING_MSG) : PING_MSG;
+          this.ws.send(ping);
+        } catch (error) {
+          this.log(
+            `Heartbeat framing failed: ${(error as Error)?.message ?? String(error)}`,
+            'error',
+          );
+          this.disconnect();
+        }
       }
     }, this.heartbeatMs);
   }

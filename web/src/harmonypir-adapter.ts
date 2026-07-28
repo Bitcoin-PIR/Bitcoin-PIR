@@ -76,8 +76,13 @@ import {
   type DatabaseProofPin,
   type DatabaseProofStatus,
 } from './db-proof.js';
-import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
-import { gateOperatorIdentity, type OperatorIdentity, type ServerAttestation } from './dpf-adapter.js';
+import { getAmdTurinArkFingerprint } from './attest-pin.js';
+import {
+  gateOperatorIdentity,
+  resolveIndependentOperatorPinsV1,
+  type OperatorIdentity,
+  type ServerAttestation,
+} from './dpf-adapter.js';
 import {
   assertStrictDatabasePinCoverage,
   assertStrictTransportReady,
@@ -90,12 +95,17 @@ import type {
 } from './harmony-types.js';
 import { ManagedWebSocket } from './ws.js';
 import {
+  assertLiveOperatorIdentityV1,
+  type ServiceAdmissionPortV1,
+} from './service-admission.js';
+import {
   buildCacheKey,
   deleteHints as idbDeleteHints,
   fingerprintToHex,
   getHints as idbGetHints,
   putHints as idbPutHints,
   HINT_SCHEMA_VERSION,
+  type HarmonyHintCacheBindingV1,
   type StoredHints,
 } from './harmonypir_hint_db.js';
 
@@ -152,13 +162,18 @@ export interface HarmonyPirClientConfig {
    * Opt-in operator-signed identity (REQ_ANNOUNCE) verification, mirroring
    * `BatchPirClientConfig`. When `true`, after attesting both servers the
    * adapter fetches each server's announce bundle and verifies it against
-   * `pinnedOperatorPubkey` + the attested channel key, populating
+   * its per-leg operator pin + the attested channel key, populating
    * `operatorIdentity`. Default `false`.
    */
   verifyOperatorIdentity?: boolean;
-  /** Operator (Tier-1) pubkey to pin announce bundles against. Defaults to
-   *  `PIR_OPERATOR_PUBKEY` from `./attest-pin.ts`. */
+  /** Legacy shared operator pin for advisory compatibility only.
+   * @deprecated Strict mode requires the two per-leg fields below. */
   pinnedOperatorPubkey?: Uint8Array;
+  /** Exact Tier-1 key for the hint provider. */
+  pinnedHintOperatorPubkey?: Uint8Array;
+  /** Exact Tier-1 key for the query provider. Strict mode requires it to
+   * differ from `pinnedHintOperatorPubkey`. */
+  pinnedQueryOperatorPubkey?: Uint8Array;
   /** Replay/staleness cap (seconds) on the bundle's `issued_at`. Default
    *  `0` = no cap (issued_at is the server's boot time, so a staleness cap
    *  would wrongly reject long-uptime servers). */
@@ -256,6 +271,14 @@ export class HarmonyPirClientAdapter {
   private async attestAndUpgrade(): Promise<void> {
     if (!this.wasmClient) return;
     this.secureChannelEstablished = false;
+    const operatorPins = this.config.verifyOperatorIdentity
+      ? resolveIndependentOperatorPinsV1({
+        strictVerification: this.isStrictVerification(),
+        first: this.config.pinnedHintOperatorPubkey,
+        second: this.config.pinnedQueryOperatorPubkey,
+        legacyShared: this.config.pinnedOperatorPubkey,
+      })
+      : null;
 
     const attestOne = async (idx: 0 | 1): Promise<WasmAttestVerification | null> => {
       try {
@@ -427,9 +450,16 @@ export class HarmonyPirClientAdapter {
         // binds against the attested serverStaticPub from hintAtt/queryAtt
         // (still alive here — freed just below). Mirrors the DPF adapter.
         if (this.config.verifyOperatorIdentity) {
-          const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
-          this.operatorIdentity.hint = await this.verifyOperatorIdentityOne(0, hintAtt, pin);
-          this.operatorIdentity.query = await this.verifyOperatorIdentityOne(1, queryAtt, pin);
+          this.operatorIdentity.hint = await this.verifyOperatorIdentityOne(
+            0,
+            hintAtt,
+            operatorPins![0],
+          );
+          this.operatorIdentity.query = await this.verifyOperatorIdentityOne(
+            1,
+            queryAtt,
+            operatorPins![1],
+          );
           this.config.onOperatorIdentity?.(0, this.operatorIdentity.hint);
           this.config.onOperatorIdentity?.(1, this.operatorIdentity.query);
         }
@@ -639,6 +669,68 @@ export class HarmonyPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
+  /** Independent, separately priced admission for the expensive hint phase. */
+  hintServiceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
+    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient();
+    return {
+      assertTrustAnchor: (trust) => {
+        client();
+        assertLiveOperatorIdentityV1(trust, this.operatorIdentity.hint);
+      },
+      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
+        client().fetchServicePolicy(0, dbId, providerId, policyKey, nowUnix, checkpoint),
+      fetchRetainedRedemption: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedServiceRedemption(
+        0, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ),
+      assertSessionBinding: (policy) => client().verifyServicePolicySession(0, policy),
+      assertRetainedSessionBinding: (policy, nowUnix) =>
+        client().verifyRetainedServiceSession(0, policy, nowUnix),
+      authorize: (policy, scopeId, offerId, proof) =>
+        client().authorizeHintService(dbId, policy, scopeId, offerId, proof),
+      authorizeRetained: (policy, proof, nowUnix) =>
+        client().authorizeRetainedHintService(dbId, policy, proof, nowUnix),
+      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
+        client().requestHintPowChallenge(dbId, policy, scopeId, offerId, nowUnix),
+    };
+  }
+
+  /** Independent admission for the lower-cost Harmony query phase. */
+  queryServiceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
+    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient();
+    return {
+      assertTrustAnchor: (trust) => {
+        client();
+        assertLiveOperatorIdentityV1(trust, this.operatorIdentity.query);
+      },
+      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
+        client().fetchServicePolicy(1, dbId, providerId, policyKey, nowUnix, checkpoint),
+      fetchRetainedRedemption: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => client().fetchRetainedServiceRedemption(
+        1, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ),
+      assertSessionBinding: (policy) => client().verifyServicePolicySession(1, policy),
+      assertRetainedSessionBinding: (policy, nowUnix) =>
+        client().verifyRetainedServiceSession(1, policy, nowUnix),
+      authorize: (policy, scopeId, offerId, proof) =>
+        client().authorizeQueryService(dbId, policy, scopeId, offerId, proof),
+      authorizeRetained: (policy, proof, nowUnix) =>
+        client().authorizeRetainedQueryService(dbId, policy, proof, nowUnix),
+      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
+        client().requestQueryPowChallenge(dbId, policy, scopeId, offerId, nowUnix),
+    };
+  }
+
+  private requireStrictAdmissionClient(): WasmHarmonyClient {
+    if (!this.wasmClient) throw new Error('Not connected');
+    if (!this.isStrictVerification() || !this.strictReady) {
+      throw new Error('V1 service admission requires completed strict verification');
+    }
+    return this.wasmClient;
+  }
+
   private async verifyConfiguredDatabaseProofs(): Promise<void> {
     if (!this.wasmClient) return;
     const pins = this.config.databaseProofPins ?? [];
@@ -812,8 +904,8 @@ export class HarmonyPirClientAdapter {
   // ══ IndexedDB hint persistence ═════════════════════════════════════════
 
   /**
-   * Serialise current hint state to the IndexedDB cache, keyed by
-   * `(queryServerUrl, dbId, prpBackend)`. The blob embeds a
+   * Serialise current hint state to the IndexedDB cache, keyed by the exact
+   * provider/policy/scope/offer/dataset/PRP admission binding. The blob embeds a
    * fingerprint; the stored record also carries the random master PRP
    * key so a restore across page reloads can re-derive the
    * fingerprint correctly.
@@ -822,8 +914,9 @@ export class HarmonyPirClientAdapter {
    * parities, but the fingerprint check in `loadHints` is defence in
    * depth against stale server-side data — both must match.
    */
-  async saveHintsToCache(): Promise<void> {
+  async saveHintsToCache(binding: HarmonyHintCacheBindingV1): Promise<void> {
     if (!this.wasmClient || !this.catalog) return;
+    this.assertHintCacheBinding(binding);
     const bytes = this.wasmClient.saveHints();
     if (!bytes) {
       this.log('No hints loaded to persist');
@@ -843,16 +936,17 @@ export class HarmonyPirClientAdapter {
     // value installed by loadWasm(), or the next restore fails fingerprint
     // validation even though the blob and database are otherwise identical.
     const masterKey = this.wasmClient.cacheMasterKey();
-    const requestedBackend = this.config.prpBackend ?? 0;
     const effectiveBackend = this.wasmClient.cachePrpBackend();
+    const cacheKey = buildCacheKey(binding, this.dbId);
     const record: StoredHints = {
-      cacheKey: buildCacheKey(
-        this.config.queryServerUrl,
-        this.dbId,
-        requestedBackend,
-      ),
-      serverUrl: this.config.queryServerUrl,
+      cacheKey,
       dbId: this.dbId,
+      providerIdHex: binding.providerIdHex,
+      policyDigestHex: binding.policyDigestHex,
+      scopeIdHex: binding.scopeIdHex,
+      offerId: binding.offerId,
+      datasetIdHex: binding.datasetIdHex,
+      prpBackend: binding.prpBackend,
       // V2 servers may select a different compatible backend in the hint
       // preamble. The blob header is authoritative for later restoration.
       backend: effectiveBackend,
@@ -879,9 +973,10 @@ export class HarmonyPirClientAdapter {
    * `(masterKey, prpBackend, catalog.get(dbId))` triple, `loadHints`
    * throws and we delete the stale cache entry.
    */
-  async restoreHintsFromCache(backend: number): Promise<boolean> {
+  async restoreHintsFromCache(binding: HarmonyHintCacheBindingV1): Promise<boolean> {
     if (!this.wasmClient || !this.catalog) return false;
-    const key = buildCacheKey(this.config.queryServerUrl, this.dbId, backend);
+    this.assertHintCacheBinding(binding);
+    const key = buildCacheKey(binding, this.dbId);
     const record = await idbGetHints(key);
     if (!record || record.schemaVersion !== HINT_SCHEMA_VERSION) return false;
 
@@ -908,10 +1003,24 @@ export class HarmonyPirClientAdapter {
   }
 
   /** Whether the given backend has a cached entry for the active `dbId`. */
-  async hasPersistedHints(backend: number): Promise<boolean> {
-    const key = buildCacheKey(this.config.queryServerUrl, this.dbId, backend);
+  async hasPersistedHints(binding: HarmonyHintCacheBindingV1): Promise<boolean> {
+    this.assertHintCacheBinding(binding);
+    const key = buildCacheKey(binding, this.dbId);
     const record = await idbGetHints(key);
     return !!record && record.schemaVersion === HINT_SCHEMA_VERSION;
+  }
+
+  private assertHintCacheBinding(binding: HarmonyHintCacheBindingV1): void {
+    const proof = this.databaseProofs.get(this.dbId)?.proof;
+    if (!proof || this.databaseProofs.get(this.dbId)?.state !== 'verified') {
+      throw new Error('Harmony hint cache requires a verified dataset proof');
+    }
+    if (binding.datasetIdHex !== proof.bucketSuperRootHex.toLowerCase()) {
+      throw new Error('Harmony hint cache dataset binding does not match the verified root');
+    }
+    if (binding.prpBackend !== (this.config.prpBackend ?? 0)) {
+      throw new Error('Harmony hint cache PRP binding does not match the active backend');
+    }
   }
 
   // ══ Hint stats ═════════════════════════════════════════════════════════

@@ -6,6 +6,7 @@
 //!
 //! Reference: NUT-00 (Cryptography and Models), NUT-22 (Blind Authentication).
 
+use k256::elliptic_curve::ff::PrimeField;
 use k256::{
     elliptic_curve::{
         group::prime::PrimeCurveAffine,
@@ -13,7 +14,6 @@ use k256::{
     },
     AffinePoint, ProjectivePoint, Scalar,
 };
-use k256::elliptic_curve::ff::PrimeField;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
@@ -61,8 +61,8 @@ impl CashuVerifier {
     pub fn from_keys(keys: &[(String, String)]) -> Result<Self, String> {
         let mut keysets = Vec::new();
         for (id, sk_hex) in keys {
-            let sk_bytes = hex::decode(sk_hex)
-                .map_err(|_| format!("invalid hex for keyset {}", id))?;
+            let sk_bytes =
+                hex::decode(sk_hex).map_err(|_| format!("invalid hex for keyset {}", id))?;
             if sk_bytes.len() != 32 {
                 return Err(format!("keyset {}: secret key must be 32 bytes", id));
             }

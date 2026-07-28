@@ -24,11 +24,19 @@ fn number(value: &Value, pointer: &str) -> usize {
         .unwrap_or_else(|| panic!("missing numeric contract field {pointer}")) as usize
 }
 
+fn boolean(value: &Value, pointer: &str) -> bool {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| panic!("missing boolean contract field {pointer}"))
+}
+
 #[test]
 fn public_parameters_match_the_implementation() {
     let contract = contract();
 
     assert_eq!(contract["schema"], "BitcoinPIR/wire-shape-contract/v1");
+    assert_eq!(number(&contract, "/contractVersion"), 2);
     assert_eq!(number(&contract, "/parameters/indexGroups"), K);
     assert_eq!(number(&contract, "/parameters/chunkGroups"), K_CHUNK);
     assert_eq!(
@@ -78,7 +86,7 @@ fn round_kind_names_match_the_serde_wire_shape() {
         RoundKind::MerkleTreeTops,
     ];
 
-    let actual_names: Vec<String> = actual
+    let mut actual_names: Vec<String> = actual
         .into_iter()
         .map(|kind| {
             serde_json::to_value(kind)
@@ -89,6 +97,7 @@ fn round_kind_names_match_the_serde_wire_shape() {
                 .to_owned()
         })
         .collect();
+    actual_names.insert(7, "service_authorization".to_owned());
     let expected_names: Vec<&str> = expected
         .iter()
         .map(|value| value.as_str().expect("round kind must be a string"))
@@ -110,7 +119,12 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
         "index_max_items_per_group_per_level",
         "chunk_max_items_per_group_per_level",
         "session_query_index",
-        "query_db_id"
+        "query_db_id",
+        "authorization_scheme_by_server",
+        "authorization_scope_id_by_server",
+        "authorization_operation_by_server",
+        "authorization_timing_by_server",
+        "authorization_result_shape_by_server"
     ]);
 
     assert_eq!(
@@ -132,6 +146,9 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
         contract["implementationSurfaceIds"],
         serde_json::json!([
             "pir_core::params",
+            "pir_channel::Session",
+            "pir_service_protocol::AuthBeginV1",
+            "pir_runtime_core::service_admission",
             "pir_sdk::leakage",
             "pir_sdk_client::dpf",
             "pir_sdk_client::harmony",
@@ -142,5 +159,80 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
             "web::leakage",
             "web::onionpir_client"
         ])
+    );
+}
+
+#[test]
+fn payment_v1_observer_boundary_is_explicit_and_fail_closed() {
+    let contract = contract();
+
+    assert_eq!(
+        contract.pointer("/serviceAuthorization/roundKind"),
+        Some(&Value::String("service_authorization".to_owned()))
+    );
+    assert!(boolean(
+        &contract,
+        "/serviceAuthorization/independentPerServer"
+    ));
+    assert!(boolean(
+        &contract,
+        "/serviceAuthorization/transport/secureChannelRequired"
+    ));
+    assert!(!boolean(
+        &contract,
+        "/serviceAuthorization/transport/response/fixedLength"
+    ));
+    assert!(boolean(
+        &contract,
+        "/serviceAuthorization/transport/response/resultShapeObservableFromCiphertextLength"
+    ));
+
+    assert_eq!(
+        contract.pointer(
+            "/serviceAuthorization/observerModel/networkObserverWithoutChannelKeys/requestShapeHides"
+        ),
+        Some(&serde_json::json!([
+            "authorization_scheme",
+            "service_scope_id",
+            "authorization_operation",
+            "credential_proof_length"
+        ]))
+    );
+    assert_eq!(
+        contract.pointer(
+            "/serviceAuthorization/observerModel/networkObserverWithoutChannelKeys/admittedLeakage"
+        ),
+        Some(&serde_json::json!([
+            "authorization_occurrence_and_timing",
+            "authorization_result_shape"
+        ]))
+    );
+    assert_eq!(
+        contract.pointer(
+            "/serviceAuthorization/observerModel/providerAfterChannelDecryption/observableFields"
+        ),
+        Some(&serde_json::json!([
+            "authorization_scheme",
+            "service_scope_id",
+            "authorization_operation",
+            "credential_presentation",
+            "authorization_timing",
+            "authorization_result"
+        ]))
+    );
+    assert_eq!(
+        contract.pointer(
+            "/serviceAuthorization/observerModel/providerAfterChannelDecryption/forbiddenFields"
+        ),
+        Some(&serde_json::json!([
+            "bolt11_invoice",
+            "payment_hash",
+            "payment_preimage",
+            "payer_identity",
+            "peer_provider_id",
+            "provider_pair_id",
+            "pir_query_payload",
+            "pir_result"
+        ]))
     );
 }

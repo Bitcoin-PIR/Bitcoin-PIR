@@ -9,8 +9,8 @@ use std::io::Read;
 use std::path::Path;
 
 pub use rootbundle::{
-    BuildKind, BundleError, BundleSignature, ChainAnchor, NamedRoot, RootBundlePayload,
-    SignedRootBundle,
+    BuildKind, BuildParamsV1, BundleError, BundleSignature, ChainAnchor, NamedRoot,
+    RootBundlePayload, SignedRootBundle,
 };
 
 pub const EVIDENCE_V1_DOMAIN: &[u8] = b"BitcoinPIR/attested-builder/build-evidence/v1\0";

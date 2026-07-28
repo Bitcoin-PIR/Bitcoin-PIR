@@ -1,0 +1,21 @@
+# Public/operator metadata plus absolute references to two local secrets.
+# The actual file must be effective-user-owned mode 0600 inside an
+# effective-user-owned mode-0700 directory. Do not reuse this instance,
+# namespace, client key, value-root key, TLS endpoint, or backup domain across
+# PIR Server 0, PIR Server 1, or the payment issuer.
+schema = "bitcoinpir_remote_rollback_authority_v1"
+endpoint = "https://rollback-authority.example"
+authority_instance_id_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+authority_verifying_key_hex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+namespace_hex = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+client_verifying_key_hex = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+client_signing_seed_path = "/absolute/private/client.seed"
+value_root_key_path = "/absolute/private/value-root.key"
+leaf_spki_sha256_pins_hex = [
+  "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+]
+connect_timeout_ms = 5000
+io_timeout_ms = 5000
+attempt_timeout_ms = 10000
+# Must be at least three attempt budgets: initial CAS, fresh Read, reconcile CAS.
+operation_timeout_ms = 30000

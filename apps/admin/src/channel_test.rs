@@ -90,10 +90,7 @@ pub async fn run(args: ChannelTestArgs) -> Result<(), i32> {
         );
         return Err(4);
     }
-    println!(
-        "server channel pubkey: {}",
-        hex::encode(server_static_pub)
-    );
+    println!("server channel pubkey: {}", hex::encode(server_static_pub));
 
     // ── Optional Slice D chain validation ──────────────────────────
     let chain_present = !v.response.ark_pem.is_empty()

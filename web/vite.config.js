@@ -1,8 +1,18 @@
 import { defineConfig } from 'vite';
 import wasm from 'vite-plugin-wasm';
 
+const stripProductionLoopbackCsp = {
+  name: 'strip-production-loopback-csp',
+  apply: 'build',
+  transformIndexHtml(html) {
+    return html
+      .replaceAll(' ws://127.0.0.1:*', '')
+      .replaceAll(' ws://localhost:*', '');
+  },
+};
+
 export default defineConfig({
-  plugins: [wasm()],
+  plugins: [wasm(), stripProductionLoopbackCsp],
   server: {
     port: 3001,
     cors: true,
@@ -25,9 +35,9 @@ export default defineConfig({
         // to verify the SEV-SNP MEASUREMENT pin against the chip-signed
         // value via sev-snp-measure + bpir-admin attest.
         reproduce: 'reproduce.html',
-        // Anonymous rate-limiting demo (ARC + Cashu) — self-contained,
-        // talks only to the dev-issuer (free issuance + co-located gate).
-        'ratelimit-demo': 'ratelimit-demo.html',
+        // ratelimit-demo.html remains available from the development server,
+        // but is intentionally excluded from production: it targets only the
+        // free loopback dev-issuer and is not a production payment surface.
       },
     },
   },

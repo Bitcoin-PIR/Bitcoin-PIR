@@ -1,0 +1,34 @@
+[package]
+name = "pir-cashu-custody"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Recipient-sealed Cashu custody export envelopes for BitcoinPIR"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-cashu-custody"
+keywords = ["bitcoin", "cashu", "ecash", "cryptography"]
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+
+[features]
+default = []
+# Exposes deterministic seal material solely for protocol vectors and tests.
+# Production callers must use the OS-random sealing entry point.
+test-vectors = []
+
+[dependencies]
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+getrandom = "0.2"
+hkdf = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+hex = "0.4"
+static_assertions = "1"
+
+[lints.rust]
+unsafe_code = "forbid"

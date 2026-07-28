@@ -1,0 +1,1 @@
+{"token":[{"mint":"https://mint.example","proofs":[{"amount":1,"id":"0106b3f35573b8d261be5295471cb08a8013c8448894e48905a00c13d968f54c31","secret":"fixture-secret","C":"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"}]}],"unit":"sat","memo":"locked BitcoinPIR V1 fixture"}

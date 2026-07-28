@@ -61,8 +61,7 @@ pub const FORMAT_VERSION: u16 = 1;
 /// embedding per-group `derived_key` fingerprints, bump the "v1" here
 /// to "v2" so old caches fail the [`decode_hints`] schema-hash check
 /// and get refetched transparently.
-const SCHEMA_STRING: &[u8] =
-    b"pir-sdk hint cache v2 (PSH1): \
+const SCHEMA_STRING: &[u8] = b"pir-sdk hint cache v2 (PSH1): \
       [magic 4][fmt_ver u16][schema_hash 32][fp 16][backend u8][db_id u8][height u32]\
       [index_bins u32][chunk_bins u32][tag_seed u64][index_k u8][chunk_k u8]\
       [index_master_seed u64][chunk_master_seed u64]\
@@ -109,11 +108,7 @@ impl CacheKey {
     /// fields by hand, since the field set doubles as the fingerprint
     /// domain and any oversight leads to cache collisions across
     /// incompatible snapshots.
-    pub fn from_db_info(
-        master_prp_key: [u8; 16],
-        prp_backend: u8,
-        db_info: &DatabaseInfo,
-    ) -> Self {
+    pub fn from_db_info(master_prp_key: [u8; 16], prp_backend: u8, db_info: &DatabaseInfo) -> Self {
         Self {
             master_prp_key,
             prp_backend,
@@ -719,10 +714,7 @@ mod tests {
         assert_eq!(decoded.bundle.index_sib, bundle.index_sib);
         assert_eq!(decoded.bundle.chunk_sib, bundle.chunk_sib);
         assert!(decoded.bundle.has_siblings());
-        assert_eq!(
-            decoded.bundle.total_hint_bytes(),
-            bundle.total_hint_bytes()
-        );
+        assert_eq!(decoded.bundle.total_hint_bytes(), bundle.total_hint_bytes());
     }
 
     #[test]
@@ -822,19 +814,14 @@ mod tests {
 
     #[test]
     fn resolve_cache_dir_from_prefers_override() {
-        let p = resolve_cache_dir_from(
-            Some("/tmp/override"),
-            Some("/xdg"),
-            Some("/home/u"),
-        )
-        .unwrap();
+        let p =
+            resolve_cache_dir_from(Some("/tmp/override"), Some("/xdg"), Some("/home/u")).unwrap();
         assert_eq!(p, PathBuf::from("/tmp/override"));
     }
 
     #[test]
     fn resolve_cache_dir_from_falls_back_to_xdg() {
-        let p =
-            resolve_cache_dir_from(None, Some("/xdg"), Some("/home/u")).unwrap();
+        let p = resolve_cache_dir_from(None, Some("/xdg"), Some("/home/u")).unwrap();
         assert_eq!(p, PathBuf::from("/xdg/pir-sdk/hints"));
     }
 

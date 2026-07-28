@@ -1,0 +1,28 @@
+[package]
+name = "pir-issuer-store"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Fail-closed durable issuer quote and credential registry state for BitcoinPIR"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+documentation = "https://docs.rs/pir-issuer-store"
+keywords = ["bitcoin", "lightning", "payments", "privacy"]
+categories = ["database", "cryptography"]
+
+[dependencies]
+pir-private-files = { path = "../../security/private-files" }
+ed25519-dalek = "2"
+pir-arc-adapter = { path = "../arc-adapter" }
+pir-rollback-authority-client = { path = "../../security/rollback-authority-client" }
+pir-rollback-authority-protocol = { path = "../../security/rollback-authority-protocol" }
+pir-service-protocol = { path = "../../protocol/service" }
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled", "backup"] }
+sha2 = { version = "0.10", default-features = false }
+zeroize = "1"
+
+[dev-dependencies]
+k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+tempfile = "3"

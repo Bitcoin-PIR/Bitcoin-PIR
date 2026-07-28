@@ -1,0 +1,29 @@
+{
+  "command": "make check",
+  "commit": "c519f1960aa9567ac324856f30c71071b04a4a17",
+  "exit_code": 0,
+  "generated_at": "2026-07-26T13:09:35.375718Z",
+  "manifest_sha256": "5763b9a4e5e40f7eed1f1f1eadeb44950c6b4172ea55c995ca24f062e0ee860d",
+  "proof_sources_sha256": "2e07725b7af1768eb051d7f24b73cc0c82ccd1ca33676896011ea5f3a5c02493",
+  "repository": "Bitcoin-PIR/protocol-proofs",
+  "result": "passed",
+  "result_derivation": "The record writer runs only after the manifest command exits with status 0; therefore exit_code 0 maps to result passed.",
+  "run_id": "30202980581",
+  "run_url": "https://github.com/Bitcoin-PIR/protocol-proofs/actions/runs/30202980581",
+  "schema_version": 1,
+  "toolchain": {
+    "base_image": "ghcr.io/easycrypt/ec-build-box@sha256:5a46a4d816e763ad5de9ee9502d52158c742b9b98cc1f60c443d135a270fdb6a",
+    "dockerfile": "toolchain/Dockerfile",
+    "easycrypt_commit": "dd9bd930d45e81980e546fc835ed2022418644be",
+    "easycrypt_repository": "https://github.com/EasyCrypt/easycrypt",
+    "ocaml_version": "4.14.1",
+    "platform": "linux/amd64",
+    "solvers": [
+      {
+        "name": "alt-ergo",
+        "version": "2.6.3"
+      }
+    ],
+    "why3_version": "1.8.2"
+  }
+}

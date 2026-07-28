@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { gateOperatorIdentity } from '../dpf-adapter.js';
+import {
+  gateOperatorIdentity,
+  resolveIndependentOperatorPinsV1,
+} from '../dpf-adapter.js';
 import type { WasmAnnounceVerification } from '../sdk-bridge.js';
 
 /**
@@ -77,5 +80,41 @@ describe('gateOperatorIdentity', () => {
     const r = gateOperatorIdentity(fakeBundle('freshness'), PIN, CHANNEL, 1_700_000_000n, 1n);
     expect(r.state).toBe('unverified');
     expect(r.error).toMatch(/exceeds max age/);
+  });
+
+  it('requires two distinct explicit pins in strict mode and ignores the legacy shared pin', () => {
+    const first = new Uint8Array(32).fill(1);
+    const second = new Uint8Array(32).fill(2);
+    const legacy = new Uint8Array(32).fill(3);
+    expect(resolveIndependentOperatorPinsV1({
+      strictVerification: true,
+      first,
+      second,
+      legacyShared: legacy,
+    })).toEqual([first, second]);
+    expect(() => resolveIndependentOperatorPinsV1({
+      strictVerification: true,
+      legacyShared: legacy,
+    })).toThrow(/first operator pin/);
+    expect(() => resolveIndependentOperatorPinsV1({
+      strictVerification: true,
+      first,
+      second: first.slice(),
+      legacyShared: legacy,
+    })).toThrow(/distinct operator pins/);
+  });
+
+  it('marks a swapped per-leg pin unverified', () => {
+    const expected = new Uint8Array(32).fill(1);
+    const swapped = new Uint8Array(32).fill(2);
+    const bundle = fakeBundle();
+    bundle.checkPinnedOperator = (pin: Uint8Array) => {
+      if (!pin.every((byte) => byte === 1)) throw new Error('wrong per-leg operator pin');
+    };
+    expect(gateOperatorIdentity(bundle, expected, CHANNEL, 0n).state).toBe('verified');
+    expect(gateOperatorIdentity(bundle, swapped, CHANNEL, 0n)).toMatchObject({
+      state: 'unverified',
+      error: 'wrong per-leg operator pin',
+    });
   });
 });

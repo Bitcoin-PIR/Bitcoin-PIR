@@ -2,6 +2,7 @@
 name = "runtime"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 # Workspace-internal binary crate (reference PIR servers + CLI clients).
 # Not a library — not published to crates.io.
@@ -55,6 +56,17 @@ path = "src/bin/harmonypir_hint_bench.rs"
 [features]
 default = ["fastprp"]
 fastprp = ["harmonypir/fastprp-prp"]
+# Non-default local process E2E only. This forwards the test-only private CA
+# trust hook; production binaries and workflows must never enable it.
+remote-authority-process-e2e = ["pir-rollback-authority-client/test-only-webpki-root"]
+# Non-default local process E2E only. This forwards a private test CA hook;
+# the mandatory leaf-SPKI pin remains signed Cashu-manifest data.
+# `pir-strict-https` independently compile-errors if this reaches a release build.
+standard-cashu-process-e2e = ["pir-strict-https/test-only-webpki-root"]
+# Privacy-dangerous query-detail logging for local tests only. The build script
+# rejects this feature outside Cargo's debug profile; normal dev/release
+# binaries do not compile or recognize its CLI switch.
+test-only-unsafe-query-logging = []
 cuckoo-oram = ["dep:bitcoinpir-oram"]
 harmony-oram = ["cuckoo-oram"]
 # `alf` feature dropped 2026-05-12: ALF panics on domain<65536 (sibling
@@ -64,6 +76,19 @@ harmony-oram = ["cuckoo-oram"]
 [dependencies]
 pir-core = { path = "../../crates/protocol/core" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
+pir-service-protocol = { path = "../../crates/protocol/service" }
+pir-service-store = { path = "../../crates/protocol/service-store" }
+pir-payment-crypto = { path = "../../crates/payment/crypto", features = ["provider-store"] }
+pir-arc-adapter = { path = "../../crates/payment/arc-adapter", features = ["provider-store"] }
+pir-cashu-client = { path = "../../crates/payment/cashu-client" }
+pir-provider-clearing-client = { path = "../../crates/payment/provider-clearing-client" }
+pir-private-files = { path = "../../crates/security/private-files" }
+pir-rollback-authority-client = { path = "../../crates/security/rollback-authority-client" }
+pir-strict-https = { path = "../../crates/net/strict-https" }
+ed25519-dalek = "2"
+hex = "0.4"
+zeroize = "1"
+rustix = { version = "1", features = ["fs", "process"] }
 build = { path = "../../tools/db-builder" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b" }
@@ -77,3 +102,16 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+pir-sdk-client = { path = "../../crates/sdk/client" }
+pir-db-attest = { path = "../../crates/trust/db-attest" }
+arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
+rand_chacha = "0.3"
+rollback-authority = { path = "../rollback-authority" }
+clap = { version = "4", features = ["derive"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+k256 = { version = "0.13", features = ["arithmetic"] }
+serde_json = "1"
+sha2 = "0.10"

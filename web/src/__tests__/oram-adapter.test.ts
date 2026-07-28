@@ -7,6 +7,7 @@ import {
   OramPirClientAdapter,
   oramJsonResultToQueryResult,
   planOramScriptHashBatches,
+  requireAtomicOramRequest,
   resolveOramBatchPlan,
   splitOramScriptHashBatches,
 } from '../oram-adapter.js';
@@ -101,6 +102,61 @@ describe('ORAM adapter', () => {
         { expectedChunkReadsPerScriptHash: 1 },
       ).map((b) => b.length),
     ).toEqual([16, 16, 9]);
+  });
+
+  it('requires a product query to fit one authorized ORAM wire request', () => {
+    expect(requireAtomicOramRequest([1, 2, 3], 3)).toEqual([1, 2, 3]);
+    expect(() => requireAtomicOramRequest([1, 2, 3, 4], 3))
+      .toThrow(/one authorization.*reduce the query.*separate capability/i);
+  });
+
+  it('sends a multi-input product query as exactly one padded SDK call', async () => {
+    const adapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      batchPlanner: {
+        accessBudget: 12,
+        indexReadsPerScriptHash: 2,
+        expectedChunkReadsPerScriptHash: 1,
+        paddedSlotCount: 4,
+        maxScriptHashesPerRequest: 4,
+      },
+    });
+    const calls: Uint8Array[] = [];
+    (adapter as any).wasmClient = {
+      queryBatchPadded: async (packed: Uint8Array, _dbId: number, paddedSlots: number) => {
+        calls.push(packed.slice());
+        expect(paddedSlots).toBe(4);
+        return [null, null, null];
+      },
+    };
+    const inputs = [
+      new Uint8Array(20).fill(1),
+      new Uint8Array(20).fill(2),
+      new Uint8Array(20).fill(3),
+    ];
+    await adapter.queryBatch(inputs);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toHaveLength(60);
+  });
+
+  it('rejects an oversized atomic product query before SDK wire I/O', async () => {
+    const adapter = new OramPirClientAdapter({
+      serverUrl: 'wss://oram.example',
+      maxScriptHashesPerRequest: 2,
+    });
+    let calls = 0;
+    (adapter as any).wasmClient = {
+      queryBatch: async () => {
+        calls += 1;
+        return [];
+      },
+    };
+    await expect(adapter.queryBatch([
+      new Uint8Array(20),
+      new Uint8Array(20),
+      new Uint8Array(20),
+    ])).rejects.toThrow(/atomic ORAM query.*at most 2/i);
+    expect(calls).toBe(0);
   });
 
   it('rejects invalid direct ORAM per-request batch sizes', () => {

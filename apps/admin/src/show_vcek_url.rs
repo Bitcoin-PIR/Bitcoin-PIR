@@ -111,7 +111,10 @@ pub async fn run(args: ShowVcekUrlArgs) -> Result<(), i32> {
         1 => "VLEK (cloud-loaded, fetch from kdsintf.amd.com/vlek/v1/)",
         _ => "RESERVED/NONE",
     };
-    println!("Signing key:    {} (key_info.signing_key={})", signing_key_name, signing_key);
+    println!(
+        "Signing key:    {} (key_info.signing_key={})",
+        signing_key_name, signing_key
+    );
     if signing_key == 1 {
         println!();
         println!(

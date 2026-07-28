@@ -19,7 +19,6 @@
 //! upper bound if you actually want that.
 
 use clap::Args;
-use ed25519_dalek::SigningKey;
 use pir_identity::{sign_identity_cert, IdentityCert, ED25519_PUBKEY_LEN};
 use std::fs;
 use std::path::PathBuf;
@@ -131,7 +130,11 @@ pub fn run(args: SignIdentityArgs) -> Result<(), String> {
     fs::write(&out, &encoded).map_err(|e| format!("write {}: {}", out.display(), e))?;
 
     let op_pk = operator_sk.verifying_key().to_bytes();
-    eprintln!("wrote IdentityCert ({} bytes) to {}", encoded.len(), out.display());
+    eprintln!(
+        "wrote IdentityCert ({} bytes) to {}",
+        encoded.len(),
+        out.display()
+    );
     eprintln!("  server_id:        {}", args.server_id);
     eprintln!("  identity_pubkey:  {}", hex::encode(identity_pubkey));
     eprintln!("  operator_pubkey:  {}", hex::encode(op_pk));
@@ -168,8 +171,8 @@ fn parse_pubkey_hex(hex: &str) -> Result<[u8; ED25519_PUBKEY_LEN], String> {
 mod tests {
     use super::*;
     use crate::keygen;
+    use crate::keygen::private_tempdir_v1 as tempdir;
     use ed25519_dalek::SigningKey;
-    use tempfile::tempdir;
 
     fn write_op_key(dir: &std::path::Path) -> (PathBuf, SigningKey) {
         let path = dir.join("op.key");
@@ -209,10 +212,7 @@ mod tests {
         let bytes = fs::read(&cert_path).unwrap();
         let cert = IdentityCert::decode(&bytes).unwrap();
         cert.verify().unwrap();
-        assert_eq!(
-            cert.operator_pubkey,
-            op_sk.verifying_key().to_bytes()
-        );
+        assert_eq!(cert.operator_pubkey, op_sk.verifying_key().to_bytes());
         assert_eq!(cert.server_id, "pir1");
         assert_eq!(cert.valid_until, 1_900_000_000);
     }

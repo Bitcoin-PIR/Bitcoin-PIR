@@ -2,16 +2,16 @@
   "schema": "BitcoinPIR/formal-proof-lock/v1",
   "protocolProofs": {
     "repository": "Bitcoin-PIR/protocol-proofs",
-    "commit": "64bf4cf826f629a216b59ffd02b344f303fbc819",
+    "commit": "c519f1960aa9567ac324856f30c71071b04a4a17",
     "manifestPath": "proof-manifest.json",
-    "manifestSha256": "970947efee3edfe5207df136be8268a17177b4f646fe6d946fa39475f967e6c9",
-    "verificationRecordPath": "verification/records/formal/6cdaaa5262462fae6784c096fbd77cd6b25179b13657c14705b3fd206d283549.json",
-    "verificationRecordSha256": "6cdaaa5262462fae6784c096fbd77cd6b25179b13657c14705b3fd206d283549"
+    "manifestSha256": "5763b9a4e5e40f7eed1f1f1eadeb44950c6b4172ea55c995ca24f062e0ee860d",
+    "verificationRecordPath": "verification/records/formal/c97d8fff7b072154e78fb0388a076cb849a2d99e9968be7a9cd0d838268b54d8.json",
+    "verificationRecordSha256": "c97d8fff7b072154e78fb0388a076cb849a2d99e9968be7a9cd0d838268b54d8"
   },
   "implementationContract": {
     "schema": "BitcoinPIR/wire-shape-contract/v1",
     "path": "verification/contracts/wire-shape-v1.json",
-    "sha256": "1b0df1150e885abe0446afe5b960a471c67e458905ab54f9aa8799c42bc2c673"
+    "sha256": "648227ffba4946b5adc55291bdb77eb452d93a5c03c553a17dc6f5d053b97bf7"
   },
   "trustedVerifier": {
     "dockerfilePath": "verification/toolchains/easycrypt.Dockerfile",

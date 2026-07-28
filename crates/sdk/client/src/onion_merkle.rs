@@ -56,6 +56,7 @@
 #![cfg(feature = "onion")]
 
 use crate::merkle_verify::SimpleRng;
+use crate::protocol::reject_error_response;
 use crate::transport::PirTransport;
 use pir_core::merkle::{compute_parent_n, sha256, Hash256, ZERO_HASH};
 use pir_sdk::{LeakageRecorder, PirError, PirResult, RoundKind, RoundProfile};
@@ -399,7 +400,13 @@ pub fn parse_onion_tree_top_cache(data: &[u8]) -> PirResult<Vec<OnionTreeTopCach
     let mut out = Vec::with_capacity(num_trees);
 
     for t in 0..num_trees {
-        if off + 8 > data.len() {
+        let header_end = off.checked_add(8).ok_or_else(|| {
+            PirError::Decode(format!(
+                "onionpir tree-tops: header offset overflow for tree {}",
+                t
+            ))
+        })?;
+        if header_end > data.len() {
             return Err(PirError::Decode(format!(
                 "onionpir tree-tops: truncated header for tree {}",
                 t
@@ -422,15 +429,33 @@ pub fn parse_onion_tree_top_cache(data: &[u8]) -> PirResult<Vec<OnionTreeTopCach
 
         let mut levels = Vec::with_capacity(num_levels);
         for l in 0..num_levels {
-            if off + 4 > data.len() {
+            let count_end = off.checked_add(4).ok_or_else(|| {
+                PirError::Decode(format!(
+                    "onionpir tree-tops: level count offset overflow for tree {}",
+                    t
+                ))
+            })?;
+            if count_end > data.len() {
                 return Err(PirError::Decode(format!(
                     "onionpir tree-tops: truncated level-{} count for tree {}",
                     l, t
                 )));
             }
-            let n = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
-            off += 4;
-            if off + n * 32 > data.len() {
+            let n = u32::from_le_bytes(data[off..count_end].try_into().unwrap()) as usize;
+            off = count_end;
+            let hash_bytes = n.checked_mul(32).ok_or_else(|| {
+                PirError::Decode(format!(
+                    "onionpir tree-tops: hash byte count overflow for tree {} level {}",
+                    t, l
+                ))
+            })?;
+            let hashes_end = off.checked_add(hash_bytes).ok_or_else(|| {
+                PirError::Decode(format!(
+                    "onionpir tree-tops: hash offset overflow for tree {} level {}",
+                    t, l
+                ))
+            })?;
+            if hashes_end > data.len() {
                 return Err(PirError::Decode(format!(
                     "onionpir tree-tops: truncated hashes for tree {} level {}",
                     t, l
@@ -450,6 +475,12 @@ pub fn parse_onion_tree_top_cache(data: &[u8]) -> PirResult<Vec<OnionTreeTopCach
             arity,
             levels,
         });
+    }
+    if off != data.len() {
+        return Err(PirError::Decode(format!(
+            "onionpir tree-tops: {} trailing bytes",
+            data.len() - off
+        )));
     }
     Ok(out)
 }
@@ -500,27 +531,79 @@ pub fn encode_sibling_batch_query(
 /// Decode an FHE batch response payload (after the length prefix and variant byte).
 ///
 /// Wire: `[2B round_id][1B num_groups]({ [4B len][bytes] })*`.
-pub fn decode_sibling_batch_result(data: &[u8]) -> PirResult<Vec<Vec<u8>>> {
+pub fn decode_sibling_batch_result(
+    data: &[u8],
+    expected_round_id: u16,
+    expected_results: usize,
+    context: &str,
+) -> PirResult<Vec<Vec<u8>>> {
     if data.len() < 3 {
-        return Err(PirError::Decode("sibling result batch too short".into()));
+        return Err(PirError::Decode(format!(
+            "{context}: sibling result batch too short"
+        )));
     }
-    let mut pos = 2; // skip round_id
+    let round_id = u16::from_le_bytes(data[..2].try_into().unwrap());
+    if round_id != expected_round_id {
+        return Err(PirError::Protocol(format!(
+            "{context}: sibling round_id mismatch: expected {expected_round_id}, got {round_id}"
+        )));
+    }
+    let mut pos = 2;
     let num_groups = data[pos] as usize;
     pos += 1;
+    if num_groups != expected_results {
+        return Err(PirError::Protocol(format!(
+            "{context}: sibling result count mismatch: expected {expected_results}, got {num_groups}"
+        )));
+    }
     let mut results = Vec::with_capacity(num_groups);
     for _ in 0..num_groups {
-        if pos + 4 > data.len() {
-            return Err(PirError::Decode("truncated sibling result len".into()));
+        let length_end = pos.checked_add(4).ok_or_else(|| {
+            PirError::Decode(format!("{context}: sibling result length overflow"))
+        })?;
+        if length_end > data.len() {
+            return Err(PirError::Decode(format!(
+                "{context}: truncated sibling result len"
+            )));
         }
-        let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        if pos + len > data.len() {
-            return Err(PirError::Decode("truncated sibling result bytes".into()));
+        let len = u32::from_le_bytes(data[pos..length_end].try_into().unwrap()) as usize;
+        pos = length_end;
+        let result_end = pos.checked_add(len).ok_or_else(|| {
+            PirError::Decode(format!("{context}: sibling result data length overflow"))
+        })?;
+        if result_end > data.len() {
+            return Err(PirError::Decode(format!(
+                "{context}: truncated sibling result bytes"
+            )));
         }
-        results.push(data[pos..pos + len].to_vec());
-        pos += len;
+        results.push(data[pos..result_end].to_vec());
+        pos = result_end;
+    }
+    if pos != data.len() {
+        return Err(PirError::Decode(format!(
+            "{context}: trailing bytes after sibling result batch: {}",
+            data.len() - pos
+        )));
     }
     Ok(results)
+}
+
+fn response_payload<'a>(
+    body: &'a [u8],
+    expected_variant: u8,
+    context: &str,
+) -> PirResult<&'a [u8]> {
+    if body.is_empty() {
+        return Err(PirError::Decode(format!("{context}: empty response body")));
+    }
+    reject_error_response(body, context)?;
+    if body[0] != expected_variant {
+        return Err(PirError::UnexpectedResponse {
+            expected: "OnionPIR response opcode",
+            actual: format!("{context}: 0x{:02x}", body[0]),
+        });
+    }
+    Ok(&body[1..])
 }
 
 // ─── Anchor-consistency check (advisory or proof-verified super_root) ──────
@@ -639,12 +722,11 @@ pub(crate) async fn preflight_onion_tree_tops(
 ) -> PirResult<()> {
     let req = encode_tree_top_request(OnionTreeKind::Index.req_tree_top(), db_id);
     let resp = conn.roundtrip(&req).await?;
-    if resp.is_empty() || resp[0] != OnionTreeKind::Index.resp_tree_top() {
-        return Err(PirError::Protocol(
-            "invalid OnionPIR tree-top preflight response".into(),
-        ));
-    }
-    let blob = &resp[1..];
+    let blob = response_payload(
+        &resp,
+        OnionTreeKind::Index.resp_tree_top(),
+        "OnionPIR tree-top preflight response",
+    )?;
     let tops = parse_onion_tree_top_cache(blob)?;
     if !check_tree_top_anchor(info, blob, &tops) {
         return Err(PirError::VerificationFailed(
@@ -868,15 +950,8 @@ async fn verify_sub_tree(
             },
         );
     }
-    if resp.is_empty() || resp[0] != tree.resp_tree_top() {
-        return Err(PirError::Protocol(format!(
-            "expected {} tree-top response (0x{:02x}), got variant 0x{:02x}",
-            tree.name(),
-            tree.resp_tree_top(),
-            resp.first().copied().unwrap_or(0),
-        )));
-    }
-    let blob = &resp[1..];
+    let response_context = format!("OnionPIR {} tree-top response", tree.name());
+    let blob = response_payload(&resp, tree.resp_tree_top(), &response_context)?;
     let all_tops = parse_onion_tree_top_cache(blob)?;
     log::info!(
         "[PIR-AUDIT] OnionPIR Merkle {} tree-top: {} trees parsed (arity={})",
@@ -1016,15 +1091,9 @@ async fn verify_sub_tree(
                 },
             );
         }
-        if resp.is_empty() || resp[0] != tree.resp_sibling() {
-            return Err(PirError::Protocol(format!(
-                "expected {} sibling response (0x{:02x}), got variant 0x{:02x}",
-                tree.name(),
-                tree.resp_sibling(),
-                resp.first().copied().unwrap_or(0),
-            )));
-        }
-        let batch = decode_sibling_batch_result(&resp[1..])?;
+        let response_context = format!("OnionPIR {} sibling response", tree.name());
+        let payload = response_payload(&resp, tree.resp_sibling(), &response_context)?;
+        let batch = decode_sibling_batch_result(payload, 0, k, &response_context)?;
 
         // Fold each real group's decrypted sibling row into its leaf.
         for (&g, &item) in &pass_group_to_item {
@@ -1291,6 +1360,17 @@ mod tests {
         blob.extend_from_slice(&2u32.to_le_bytes());
         encode_one_tree_top(&mut blob, 8, 1, &levels);
         assert!(parse_onion_tree_top_cache(&blob).is_err());
+    }
+
+    #[test]
+    fn test_parse_onion_tree_top_cache_rejects_trailing_bytes() {
+        let leaves: Vec<Hash256> = (0..16u8).map(h).collect();
+        let (mut blob, _) = build_blob(8, &leaves, 1, 0);
+        blob.push(0xaa);
+        assert!(matches!(
+            parse_onion_tree_top_cache(&blob),
+            Err(PirError::Decode(ref text)) if text.contains("trailing bytes")
+        ));
     }
 
     #[test]
@@ -1570,8 +1650,54 @@ mod tests {
         let qs = vec![vec![0x11, 0x22], vec![0x33]];
         let buf = encode_sibling_batch_query(REQ_ONIONPIR_MERKLE_INDEX_SIBLING, 0, &qs, 0);
         // buf[0..4] = length, buf[4] = variant; skip length prefix + variant.
-        let decoded = decode_sibling_batch_result(&buf[5..]).unwrap();
+        let decoded = decode_sibling_batch_result(&buf[5..], 0, 2, "test").unwrap();
         assert_eq!(decoded, qs);
+    }
+
+    #[test]
+    fn test_sibling_batch_rejects_wrong_round_truncation_and_trailing() {
+        let qs = vec![vec![0x11, 0x22], vec![0x33]];
+        let buf = encode_sibling_batch_query(REQ_ONIONPIR_MERKLE_INDEX_SIBLING, 7, &qs, 0);
+        assert!(matches!(
+            decode_sibling_batch_result(&buf[5..], 8, 2, "test"),
+            Err(PirError::Protocol(ref text)) if text.contains("round_id mismatch")
+        ));
+
+        let mut truncated = buf[5..].to_vec();
+        truncated.pop();
+        assert!(matches!(
+            decode_sibling_batch_result(&truncated, 7, 2, "test"),
+            Err(PirError::Decode(_))
+        ));
+
+        let mut trailing = buf[5..].to_vec();
+        trailing.push(0xaa);
+        assert!(matches!(
+            decode_sibling_batch_result(&trailing, 7, 2, "test"),
+            Err(PirError::Decode(ref text)) if text.contains("trailing bytes")
+        ));
+
+        assert!(matches!(
+            decode_sibling_batch_result(&buf[5..], 7, 1, "test"),
+            Err(PirError::Protocol(ref text)) if text.contains("result count mismatch")
+        ));
+    }
+
+    #[test]
+    fn response_payload_rejects_wrong_opcode_and_canonical_error() {
+        assert!(matches!(
+            response_payload(&[0x91], RESP_ONIONPIR_MERKLE_INDEX_SIBLING, "test"),
+            Err(PirError::UnexpectedResponse { .. })
+        ));
+
+        let message = b"authorization required";
+        let mut error = vec![crate::protocol::RESP_ERROR];
+        error.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        error.extend_from_slice(message);
+        assert!(matches!(
+            response_payload(&error, RESP_ONIONPIR_MERKLE_INDEX_SIBLING, "test"),
+            Err(PirError::ServerError(ref text)) if text.contains("authorization required")
+        ));
     }
 
     #[test]

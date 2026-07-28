@@ -8,7 +8,7 @@ use pir_sdk_client::db_proof::{
     fetch_database_catalog, fetch_database_proof, verify_database_proof, DatabaseProofPolicy,
 };
 use pir_sdk_client::WsConnection;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Args, Debug)]
@@ -257,7 +257,7 @@ fn apply_expectations(args: &ExpectedProofArgs, proof: &ProofDirectory) -> Resul
     Ok(())
 }
 
-fn print_local_summary(proof_dir: &PathBuf, proof: &ProofDirectory) -> Result<(), String> {
+fn print_local_summary(proof_dir: &Path, proof: &ProofDirectory) -> Result<(), String> {
     print_summary_header(
         "local",
         Some(("proof_dir", &proof_dir.display().to_string())),

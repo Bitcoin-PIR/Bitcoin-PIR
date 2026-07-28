@@ -106,7 +106,9 @@ impl AnnounceVerification {
             self.bundle
                 .cert
                 .check_validity(now_unix_seconds)
-                .map_err(|e| PirError::Protocol(format!("announce: cert outside validity: {}", e)))?;
+                .map_err(|e| {
+                    PirError::Protocol(format!("announce: cert outside validity: {}", e))
+                })?;
         }
         if !self.chain_verified {
             return Err(PirError::Protocol(format!(
@@ -398,13 +400,7 @@ mod tests {
     fn build_bundle() -> AnnouncementBundle {
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 0, 0);
         let manifest = sign_channel_manifest(
             &id_sk,
             "pir1",
@@ -442,25 +438,12 @@ mod tests {
         let op_sk = fake_sk(0x11);
         let id_sk_a = fake_sk(0x22);
         let id_sk_b = fake_sk(0x33);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk_a.verifying_key().to_bytes(),
-            0,
-            0,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk_a.verifying_key().to_bytes(), 0, 0);
         // Manifest signed by a different identity key than the cert
         // endorses → chain check fails. (Each signature in isolation
         // still verifies, but the cross-check catches it.)
-        let manifest = sign_channel_manifest(
-            &id_sk_b,
-            "pir1",
-            [0u8; 32],
-            [0u8; 32],
-            "v",
-            vec![],
-            0,
-        );
+        let manifest =
+            sign_channel_manifest(&id_sk_b, "pir1", [0u8; 32], [0u8; 32], "v", vec![], 0);
         let bundle = AnnouncementBundle { cert, manifest };
 
         let mut mock = MockTransport {
@@ -537,22 +520,9 @@ mod tests {
         // the window must fail.
         let op_sk = fake_sk(0x11);
         let id_sk = fake_sk(0x22);
-        let cert = sign_identity_cert(
-            &op_sk,
-            "pir1",
-            id_sk.verifying_key().to_bytes(),
-            100,
-            200,
-        );
-        let manifest = sign_channel_manifest(
-            &id_sk,
-            "pir1",
-            [0u8; 32],
-            [0u8; 32],
-            "v",
-            vec![],
-            150,
-        );
+        let cert = sign_identity_cert(&op_sk, "pir1", id_sk.verifying_key().to_bytes(), 100, 200);
+        let manifest =
+            sign_channel_manifest(&id_sk, "pir1", [0u8; 32], [0u8; 32], "v", vec![], 150);
         let bundle = AnnouncementBundle { cert, manifest };
         let pinned = bundle.cert.operator_pubkey;
         let mut mock = MockTransport {
@@ -722,7 +692,8 @@ mod tests {
         let v = verification_with_issued_at_1_7b();
         v.check_freshness(1_700_000_100, 3600).expect("recent → ok");
         v.check_freshness(0, 1).expect("now=0 skips entirely");
-        v.check_freshness(1_900_000_000, 0).expect("max_age=0 skips staleness");
+        v.check_freshness(1_900_000_000, 0)
+            .expect("max_age=0 skips staleness");
     }
 
     #[test]

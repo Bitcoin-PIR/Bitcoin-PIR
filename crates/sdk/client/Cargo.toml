@@ -51,6 +51,16 @@ pir-core = { version = "0.1.0", path = "../../protocol/core" }
 # (pir-runtime-core::channel). Compiles to wasm32 (verified — uses
 # RustCrypto's pure-Rust x25519-dalek + chacha20poly1305 + hkdf).
 pir-channel = { version = "0.1.0", path = "../../protocol/channel" }
+# Signed, provider-specific service policy and authorization wire codecs.
+# Pure Rust and shared by native + wasm32 clients.
+pir-service-protocol = { version = "0.1.0", path = "../../protocol/service" }
+# Reviewed BIP340 prehash signing/verification and Cashu BAT wallet helpers
+# used by the restart-safe BOLT11 acquisition state machine.
+pir-payment-crypto = { version = "0.1.0", path = "../../payment/crypto" }
+# Canonical ARC public-key validation/fingerprinting for strict two-provider
+# selection. Reuse the pinned draft-01 adapter instead of duplicating its typed
+# P-256 decode and byte-exact re-encode boundary in the SDK.
+pir-arc-adapter = { version = "0.1.0", path = "../../payment/arc-adapter" }
 # Attested-builder DB proof verifier. Pure parsing/hash logic; the runtime
 # server only transports proof bytes, clients decide policy.
 pir-db-attest = { path = "../../trust/db-attest" }
@@ -114,6 +124,7 @@ hex = "0.4"
 # not-found-heavy wallet syncs. Pure-Rust, no C deps; already a
 # transitive dep via pir-channel.
 sha2 = { version = "0.10", default-features = false }
+zeroize = "1"
 
 # ─── Native (tokio + tungstenite) target deps ───────────────────────────────
 # The tokio reactor does not run on `wasm32-unknown-unknown`. Everything that

@@ -29,10 +29,9 @@
 //!   as fatal — never fall back to cleartext.
 
 use async_trait::async_trait;
-use pir_channel::{
-    ClientHandshake, Direction, Session, ENCRYPTED_FRAME_MAGIC, SESSION_KEY_LEN,
-};
+use pir_channel::{ClientHandshake, Direction, Session, ENCRYPTED_FRAME_MAGIC, SESSION_KEY_LEN};
 use pir_sdk::{PirError, PirResult};
+use zeroize::Zeroizing;
 
 use crate::transport::PirTransport;
 
@@ -206,7 +205,7 @@ impl<T: PirTransport> PirTransport for SecureChannelTransport<T> {
                 "secure channel: inner recv returned <4 bytes".into(),
             ));
         }
-        let opened = self.open_incoming(&raw[4..])?;
+        let opened = Zeroizing::new(self.open_incoming(&raw[4..])?);
         let mut out = Vec::with_capacity(4 + opened.len());
         out.extend_from_slice(&(opened.len() as u32).to_le_bytes());
         out.extend_from_slice(&opened);
@@ -231,6 +230,10 @@ impl<T: PirTransport> PirTransport for SecureChannelTransport<T> {
 
     fn url(&self) -> &str {
         self.inner.url()
+    }
+
+    fn service_authorization_exporter_v1(&self) -> Option<[u8; 32]> {
+        Some(self.session.service_authorization_exporter_v1())
     }
 }
 
@@ -314,10 +317,8 @@ mod tests {
                     let mut nonce = [0u8; 32];
                     nonce.copy_from_slice(&payload[33..65]);
 
-                    let server_hs = ServerHandshake::new(
-                        &self.server_static_secret,
-                        self.server_eph_seed,
-                    );
+                    let server_hs =
+                        ServerHandshake::new(&self.server_static_secret, self.server_eph_seed);
                     let server_eph_pub = server_hs.server_eph_pub();
                     let session = server_hs.complete_handshake(&client_eph_pub, &nonce);
                     *self.server_session.lock().unwrap() = Some(session);
@@ -377,7 +378,10 @@ mod tests {
         let mut req = Vec::new();
         req.extend_from_slice(&1u32.to_le_bytes());
         req.push(0x00);
-        let resp = secure.roundtrip(&req).await.expect("roundtrip should succeed");
+        let resp = secure
+            .roundtrip(&req)
+            .await
+            .expect("roundtrip should succeed");
         // Fake server echoed [0xAB, 0x00] back. The wrapper opens it →
         // we get those bytes verbatim (no length prefix per roundtrip
         // contract).

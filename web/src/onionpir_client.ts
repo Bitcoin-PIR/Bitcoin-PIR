@@ -31,13 +31,26 @@ import { fetchServerInfoJson } from './server-info.js';
 import {
   requireSdkWasm,
   type WasmAnnounceVerification,
+  type WasmAttestVerification,
   type WasmDatabaseProof,
+  type WasmStandaloneSecureChannelV1,
 } from './sdk-bridge.js';
 import { computeParentN, ZERO_HASH } from './merkle.js';
 import {
+  assertStrictSingleTransportReady,
   assertStrictDatabasePinCoverage,
   verifyInstallAndPreflightDatabaseProofs,
 } from './strict-verification.js';
+import {
+  gateOperatorIdentity,
+  type OperatorIdentity,
+  type ServerAttestation,
+} from './dpf-adapter.js';
+import {
+  getAmdTurinArkFingerprint,
+  PIR_OPERATOR_PUBKEY,
+  type ServerAttestPin,
+} from './attest-pin.js';
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './types.js';
 import type { DatabaseProofPin, DatabaseProofStatus } from './db-proof.js';
@@ -49,6 +62,10 @@ import type {
 import { fetchDatabaseCatalog } from './server-info.js';
 
 import type { LeakageRecorder, RoundProfile } from './leakage.js';
+import {
+  assertLiveOperatorIdentityV1,
+  type ServiceAdmissionPortV1,
+} from './service-admission.js';
 
 // ─── Constants for OnionPIR v2 layout ─────────────────────────────────────
 
@@ -705,8 +722,17 @@ function walkTreeTopToRoot(
 
 export interface OnionPirClientConfig {
   serverUrl: string;
+  /** Default true. Strict mode rejects an explicit false. */
+  useSecureChannel?: boolean;
   /** Production enables this fail-closed proof/root gate. */
   strictVerification?: boolean;
+  expectedArkFingerprint?: Uint8Array | null;
+  expectedServerPin?: ServerAttestPin;
+  expectedServerId?: string;
+  pinnedOperatorPubkey?: Uint8Array;
+  maxAnnounceAgeSeconds?: number;
+  onAttestation?: (status: ServerAttestation) => void;
+  onOperatorIdentity?: (status: OperatorIdentity) => void;
   databaseProofPins?: readonly DatabaseProofPin[];
   onDatabaseProof?: (dbId: number, status: DatabaseProofStatus) => void;
   onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
@@ -874,6 +900,8 @@ export function selectChunkUniqueFetches(
 
 export class OnionPirWebClient {
   private ws: ManagedWebSocket | null = null;
+  private secureChannel: WasmStandaloneSecureChannelV1 | null = null;
+  private secureChannelEstablished = false;
   private config: OnionPirClientConfig;
   private connectionState: ConnectionState = 'disconnected';
   private rng = new DummyRng();
@@ -921,6 +949,8 @@ export class OnionPirWebClient {
   private installedOnionRoots = new Map<number, InstalledOnionRoot>();
   private verifiedTreeTops = new Map<number, VerifiedTreeTopBinding>();
   private databaseProofStatuses = new Map<number, DatabaseProofStatus>();
+  readonly attestation: ServerAttestation = { state: 'unattested' };
+  readonly operatorIdentity: OperatorIdentity = { state: 'not-checked' };
 
   // Test hook: one-shot override of the computed scripthashes for the next
   // queryBatch() call. Consumed on use and then cleared. Used by harnesses
@@ -960,6 +990,17 @@ export class OnionPirWebClient {
     this.registeredDbs.clear();
     this.fheClientId = 0;
     this.fheSecretKey = null;
+    this.secureChannelEstablished = false;
+    this.secureChannel?.free();
+    this.secureChannel = null;
+    Object.assign(this.attestation, { state: 'unattested' });
+    for (const key of Object.keys(this.attestation)) {
+      if (key !== 'state') delete (this.attestation as unknown as Record<string, unknown>)[key];
+    }
+    Object.assign(this.operatorIdentity, { state: 'not-checked' });
+    for (const key of Object.keys(this.operatorIdentity)) {
+      if (key !== 'state') delete (this.operatorIdentity as unknown as Record<string, unknown>)[key];
+    }
   }
 
   private catalogToSdkHandle(): any {
@@ -990,6 +1031,122 @@ export class OnionPirWebClient {
 
   getDatabaseProofStatus(dbId: number): DatabaseProofStatus | undefined {
     return this.databaseProofStatuses.get(dbId);
+  }
+
+  /** Strict provider-local admission over the exact OnionPIR socket. The
+   * returned port has no second-provider field and performs no retries. */
+  serviceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
+    const admission = () => {
+      if (!this.ws?.isOpen() || !this.secureChannelEstablished || !this.secureChannel) {
+        throw new Error('V1 OnionPIR admission requires the verified secure channel');
+      }
+      if (!this.isStrictVerification() || !this.strictReady) {
+        throw new Error('V1 OnionPIR admission requires completed strict verification');
+      }
+      if (this.databaseProofStatuses.get(dbId)?.state !== 'verified') {
+        throw new Error(`V1 OnionPIR admission requires a verified database proof for db ${dbId}`);
+      }
+      return new (requireSdkWasm().WasmStandaloneOnionServiceAdmissionV1)(
+        dbId,
+        this.secureChannel.serviceAuthorizationExporterV1(),
+      );
+    };
+    const roundtrip = async <T>(
+      operation: (state: ReturnType<typeof admission>) => Promise<T>,
+    ): Promise<T> => {
+      const generation = this.sessionGeneration;
+      const state = admission();
+      try {
+        const result = await operation(state);
+        if (generation !== this.sessionGeneration || !this.ws?.isOpen()) {
+          throw new Error('stale OnionPIR admission response');
+        }
+        return result;
+      } finally {
+        state.free();
+      }
+    };
+    return {
+      assertTrustAnchor: (trust) => {
+        admission().free();
+        assertLiveOperatorIdentityV1(trust, this.operatorIdentity);
+      },
+      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
+        roundtrip(async (state) => {
+          const response = await this.sendRaw(state.policyRequest());
+          return state.acceptPolicyResponse(
+            response,
+            providerId,
+            policyKey,
+            nowUnix,
+            checkpoint,
+          );
+        }),
+      fetchRetainedRedemption: (
+        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
+      ) => roundtrip(async (state) => {
+        const response = await this.sendRaw(state.retainedPolicyRequest(policyDigest));
+        return state.acceptRetainedPolicyResponse(
+          response,
+          providerId,
+          policyKey,
+          policyDigest,
+          scopeId,
+          offerId,
+          nowUnix,
+        );
+      }),
+      assertSessionBinding: (policy) => {
+        const state = admission();
+        try {
+          state.verifyPolicySession(policy);
+        } finally {
+          state.free();
+        }
+      },
+      assertRetainedSessionBinding: (policy, nowUnix) => {
+        const state = admission();
+        try {
+          state.verifyRetainedPolicySession(policy, nowUnix);
+        } finally {
+          state.free();
+        }
+      },
+      authorize: (policy, scopeId, offerId, proof) =>
+        roundtrip(async (state) => {
+          // The ProviderAdmissionSession has already retired/advanced proof
+          // bytes before this method is entered.
+          const request = state.authorizationRequest(policy, scopeId, offerId, proof);
+          try {
+            const response = await this.sendRaw(request);
+            return state.acceptAuthorizationResponse(response, policy, scopeId);
+          } finally {
+            request.fill(0);
+          }
+        }),
+      authorizeRetained: (policy, proof, nowUnix) =>
+        roundtrip(async (state) => {
+          const request = state.retainedAuthorizationRequest(policy, proof, nowUnix);
+          try {
+            const response = await this.sendRaw(request);
+            return state.acceptRetainedAuthorizationResponse(response, policy, nowUnix);
+          } finally {
+            request.fill(0);
+          }
+        }),
+      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
+        roundtrip(async (state) => {
+          const request = state.powChallengeRequest(policy, scopeId, offerId);
+          const response = await this.sendRaw(request);
+          return state.acceptPowChallengeResponse(
+            response,
+            policy,
+            scopeId,
+            offerId,
+            nowUnix,
+          );
+        }),
+    };
   }
 
   /**
@@ -1146,6 +1303,10 @@ export class OnionPirWebClient {
     this.serverInfo = null;
     this.setState('connecting', 'Loading WASM + connecting...');
 
+    if (this.isStrictVerification() && this.config.useSecureChannel === false) {
+      throw new Error('strict OnionPIR requires the secure channel');
+    }
+
     // Load WASM module (cached after first load)
     this.wasmModule = await loadWasmModule();
     this.log('WASM module loaded');
@@ -1175,6 +1336,29 @@ export class OnionPirWebClient {
         throw new Error('stale OnionPIR connection bootstrap');
       }
 
+      if (this.config.useSecureChannel !== false) {
+        try {
+          await this.attestAndUpgradeSocket(socket);
+        } catch (error) {
+          if (this.isStrictVerification()) throw error;
+          this.log(
+            `secure-channel upgrade unavailable: ${(error as Error)?.message ?? String(error)}`,
+            'error',
+          );
+        }
+      }
+      if (this.isStrictVerification()) {
+        assertStrictSingleTransportReady({
+          secureChannelEstablished: this.secureChannelEstablished,
+          attestation: this.attestation,
+          expectedPin: this.config.expectedServerPin,
+          expectedServerId: this.config.expectedServerId,
+          operatorIdentity: this.operatorIdentity,
+        });
+      }
+
+      // The authenticated catalog and every database proof are fetched only
+      // after the same socket has entered encrypted mode.
       await this.fetchServerInfo();
       if (this.ws !== socket || this.sessionGeneration !== generation) {
         throw new Error('stale OnionPIR catalog bootstrap');
@@ -1241,6 +1425,152 @@ export class OnionPirWebClient {
     return this.ws.sendRaw(msg);
   }
 
+  private replaceAttestation(status: ServerAttestation): void {
+    for (const key of Object.keys(this.attestation)) {
+      delete (this.attestation as unknown as Record<string, unknown>)[key];
+    }
+    Object.assign(this.attestation, status);
+    this.config.onAttestation?.(status);
+  }
+
+  private replaceOperatorIdentity(status: OperatorIdentity): void {
+    for (const key of Object.keys(this.operatorIdentity)) {
+      delete (this.operatorIdentity as unknown as Record<string, unknown>)[key];
+    }
+    Object.assign(this.operatorIdentity, status);
+    this.config.onOperatorIdentity?.(status);
+  }
+
+  private classifyAttestation(attestation: WasmAttestVerification): ServerAttestation {
+    const allZero = attestation.serverStaticPub.every((byte) => byte === 0);
+    const reportMatched = attestation.sevStatus === 'reportDataMatch';
+    const noSevHost = attestation.sevStatus === 'noSevHost';
+    let status: ServerAttestation = {
+      state: allZero
+        ? 'plaintext'
+        : reportMatched || noSevHost
+          ? 'verified'
+          : 'mismatch',
+      sevStatus: attestation.sevStatus,
+      serverStaticPubHex: attestation.serverStaticPubHex,
+      binarySha256Hex: attestation.binarySha256Hex,
+      gitRev: attestation.gitRev,
+      launchMeasurementHex: attestation.launchMeasurementHex,
+    };
+
+    if (status.state === 'verified' && reportMatched && attestation.hasVcekChain) {
+      let arkFingerprint = this.config.expectedArkFingerprint;
+      if (arkFingerprint === undefined) arkFingerprint = getAmdTurinArkFingerprint();
+      if (arkFingerprint) {
+        const requirements = new (requireSdkWasm().WasmPolicyRequirements)();
+        try {
+          attestation.verifyFull(arkFingerprint, requirements);
+          status = { ...status, state: 'verified-vcek', vcekChain: 'pass' };
+        } catch (error) {
+          status = {
+            ...status,
+            state: 'mismatch',
+            vcekChain: 'fail',
+            vcekChainError: (error as Error)?.message ?? String(error),
+          };
+        } finally {
+          requirements.free();
+        }
+      } else {
+        status.vcekChain = 'skipped';
+      }
+    } else if (status.state === 'verified' && reportMatched) {
+      status.vcekChain = 'skipped';
+    }
+
+    const pin = this.config.expectedServerPin;
+    if (!pin) {
+      status.pinStatus = 'no-pin';
+      return status;
+    }
+    if (status.state !== 'verified' && status.state !== 'verified-vcek') {
+      return status;
+    }
+    if (
+      pin.measurementHex
+      && pin.measurementHex.toLowerCase() !== attestation.launchMeasurementHex.toLowerCase()
+    ) {
+      return {
+        ...status,
+        state: 'mismatch',
+        pinStatus: 'measurement-mismatch',
+        pinError: 'attested launch measurement does not match the configured pin',
+      };
+    }
+    if (
+      pin.binarySha256Hex
+      && pin.binarySha256Hex.toLowerCase() !== attestation.binarySha256Hex.toLowerCase()
+    ) {
+      return {
+        ...status,
+        state: 'mismatch',
+        pinStatus: 'binary-mismatch',
+        pinError: 'attested binary sha256 does not match the configured pin',
+      };
+    }
+    status.pinStatus = 'match';
+    return status;
+  }
+
+  private async attestAndUpgradeSocket(socket: ManagedWebSocket): Promise<void> {
+    if (this.isStrictVerification() && !this.config.pinnedOperatorPubkey) {
+      throw new Error('strict OnionPIR requires an explicitly pinned operator public key');
+    }
+    const channel = new (requireSdkWasm().WasmStandaloneSecureChannelV1)();
+    let attestation: WasmAttestVerification | null = null;
+    try {
+      const response = await socket.sendRaw(channel.attestRequest());
+      attestation = channel.verifyAttestation(response);
+      const classified = this.classifyAttestation(attestation);
+      this.replaceAttestation(classified);
+      if (classified.state !== 'verified' && classified.state !== 'verified-vcek') {
+        throw new Error(`runtime attestation rejected (${classified.state})`);
+      }
+
+      const handshakeResponse = await socket.sendRaw(channel.handshakeRequest());
+      channel.completeHandshake(handshakeResponse, attestation.serverStaticPub);
+      socket.setFrameCodec({
+        encode: (frame) => channel.sealFrame(frame),
+        decode: (frame) => channel.openFrame(frame),
+      });
+      this.secureChannel = channel;
+      this.secureChannelEstablished = true;
+
+      let identity: OperatorIdentity;
+      try {
+        const announcement = await this.announce();
+        try {
+          identity = gateOperatorIdentity(
+            announcement,
+            this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY,
+            attestation.serverStaticPub,
+            BigInt(Math.floor(Date.now() / 1000)),
+            BigInt(this.config.maxAnnounceAgeSeconds ?? 0),
+          );
+        } finally {
+          announcement.free();
+        }
+      } catch (error) {
+        const message = (error as Error)?.message ?? String(error);
+        identity = /not configured/i.test(message)
+          ? { state: 'unconfigured', error: message }
+          : { state: 'error', error: message };
+      }
+      this.replaceOperatorIdentity(identity);
+      this.log('OnionPIR same-socket secure channel established', 'success');
+    } catch (error) {
+      if (this.secureChannel !== channel) channel.free();
+      throw error;
+    } finally {
+      attestation?.free();
+    }
+  }
+
   // ─── Operator-signed identity (REQ_ANNOUNCE) ──────────────────────────
 
   /**
@@ -1250,11 +1580,9 @@ export class OnionPirWebClient {
    * Ed25519 verification does). Layer operator-pubkey pinning on the
    * result with `v.checkPinnedOperator(pinnedOperatorPubkey, nowSecs)`.
    *
-   * NOTE: this standalone client has no attest / encrypted-channel flow,
-   * so there is no attested `serverStaticPub` to bind against —
-   * `checkChannelBinding` is N/A here. The operator endorsement + chain
-   * check still apply (the connection itself is cleartext, so treat the
-   * result as operator provenance, not session binding).
+   * In strict mode this request runs only after same-socket attestation and
+   * secure-channel upgrade. The caller binds its channel key through
+   * `gateOperatorIdentity` before any catalog, payment or query frame.
    *
    * Throws on a server `RESP_ERROR` (e.g. "announce not configured" when
    * the server lacks `--identity-*`) or a wire-format error.

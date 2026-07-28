@@ -44,6 +44,12 @@ use pir_sdk_client::{
 };
 use wasm_bindgen::prelude::*;
 
+use crate::service::{
+    build_proof_v1, build_retained_proof_v1, grant_json_v1, parse_digest_v1,
+    parse_provider_and_key_v1, parse_scope_id_v1, parse_service_trust_v1,
+    WasmAcceptedRetainedServiceRedemptionV1, WasmAcceptedServicePolicyV1,
+    WasmServicePowChallengeV1,
+};
 use crate::{
     parse_query_result_json, to_js_object, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult,
 };
@@ -492,6 +498,12 @@ impl WasmSyncResult {
 #[wasm_bindgen]
 pub struct WasmAttestVerification {
     inner: AttestVerification,
+}
+
+impl WasmAttestVerification {
+    pub(crate) fn from_inner(inner: AttestVerification) -> Self {
+        Self { inner }
+    }
 }
 
 #[wasm_bindgen]
@@ -1444,6 +1456,179 @@ impl WasmDpfClient {
             .map_err(err_to_js)
     }
 
+    /// Fetch and verify one provider's service policy on its authenticated
+    /// secure connection. `checkpointBytes` must be the opaque checkpoint for
+    /// this exact provider (empty only on first use).
+    #[wasm_bindgen(js_name = fetchServicePolicy)]
+    pub async fn fetch_service_policy_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        now_unix: u64,
+        checkpoint_bytes: &[u8],
+    ) -> Result<WasmAcceptedServicePolicyV1, JsError> {
+        let (provider_id, signing_key, checkpoint) =
+            parse_service_trust_v1(expected_provider_id, policy_signing_key, checkpoint_bytes)?;
+        let accepted = self
+            .inner
+            .fetch_service_policy_v1(
+                server_index,
+                db_id,
+                provider_id,
+                &signing_key,
+                now_unix,
+                &checkpoint,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedServicePolicyV1::from_native(accepted))
+    }
+
+    /// Fetch one exact historical policy for already-issued credential
+    /// redemption only. This handle exposes no acquisition or PoW API.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = fetchRetainedServiceRedemption)]
+    pub async fn fetch_retained_service_redemption_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        expected_policy_digest: &[u8],
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmAcceptedRetainedServiceRedemptionV1, JsError> {
+        let (provider_id, signing_key) =
+            parse_provider_and_key_v1(expected_provider_id, policy_signing_key)?;
+        let accepted = self
+            .inner
+            .fetch_retained_service_redemption_v1(
+                server_index,
+                db_id,
+                provider_id,
+                &signing_key,
+                parse_digest_v1("expectedPolicyDigest", expected_policy_digest)?,
+                parse_scope_id_v1(scope_id)?,
+                offer_id,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedRetainedServiceRedemptionV1 { inner: accepted })
+    }
+
+    /// Fail before capability retirement unless the accepted policy belongs to
+    /// the currently connected DPF side.
+    #[wasm_bindgen(js_name = verifyServicePolicySession)]
+    pub fn verify_service_policy_session_v1(
+        &self,
+        server_index: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+    ) -> Result<(), JsError> {
+        self.inner
+            .verify_service_policy_session_v1(server_index, &accepted.inner)
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = verifyRetainedServiceSession)]
+    pub fn verify_retained_service_session_v1(
+        &self,
+        server_index: u8,
+        accepted: &WasmAcceptedRetainedServiceRedemptionV1,
+        now_unix: u64,
+    ) -> Result<(), JsError> {
+        self.inner
+            .verify_retained_service_session_v1(server_index, &accepted.inner)
+            .and_then(|_| accepted.inner.verify_redemption_ready_v1(now_unix))
+            .map_err(err_to_js)
+    }
+
+    /// Consume one provider-specific capability for this DPF connection.
+    /// The method/key are derived from the verified offer; JavaScript cannot
+    /// override them. This call is deliberately one-shot and never retries.
+    #[wasm_bindgen(js_name = authorizeService)]
+    pub async fn authorize_service_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        proof_bytes: &[u8],
+    ) -> Result<JsValue, JsError> {
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let proof = build_proof_v1(accepted, &scope_id, offer_id, proof_bytes)?;
+        let grant = self
+            .inner
+            .dangerous_unpaired_authorize_service_v1(
+                server_index,
+                db_id,
+                &accepted.inner,
+                scope_id,
+                offer_id,
+                proof,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    #[wasm_bindgen(js_name = authorizeRetainedService)]
+    pub async fn authorize_retained_service_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        accepted: &WasmAcceptedRetainedServiceRedemptionV1,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
+        let grant = self
+            .inner
+            .authorize_retained_service_redemption_v1(
+                server_index,
+                db_id,
+                &accepted.inner,
+                proof,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    /// Request a verified secure-channel-bound PoW challenge. The browser
+    /// solves it in bounded chunks through `WasmServicePowChallengeV1`.
+    #[wasm_bindgen(js_name = requestServicePowChallenge)]
+    pub async fn request_service_pow_challenge_v1(
+        &mut self,
+        server_index: u8,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmServicePowChallengeV1, JsError> {
+        accepted.require_checkpoint_persisted()?;
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let challenge = self
+            .inner
+            .request_service_pow_challenge_v1(
+                server_index,
+                db_id,
+                &accepted.inner,
+                scope_id,
+                offer_id,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmServicePowChallengeV1::from_native(challenge))
+    }
+
     /// End-to-end sync: fetch catalog, plan, execute all steps, merge
     /// deltas. Returns a [`WasmSyncResult`] whose `results[i]`
     /// corresponds to the i-th script hash in the packed input.
@@ -2030,6 +2215,222 @@ impl WasmHarmonyClient {
             .map_err(err_to_js)
     }
 
+    /// Fetch an independently pinned Harmony provider policy (`0 = hint`,
+    /// `1 = query`). Provider checkpoints and capabilities are never shared.
+    #[wasm_bindgen(js_name = fetchServicePolicy)]
+    pub async fn fetch_service_policy_v1(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        now_unix: u64,
+        checkpoint_bytes: &[u8],
+    ) -> Result<WasmAcceptedServicePolicyV1, JsError> {
+        let (provider_id, signing_key, checkpoint) =
+            parse_service_trust_v1(expected_provider_id, policy_signing_key, checkpoint_bytes)?;
+        let accepted = self
+            .inner
+            .fetch_service_policy_v1(
+                provider_index,
+                db_id,
+                provider_id,
+                &signing_key,
+                now_unix,
+                &checkpoint,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedServicePolicyV1::from_native(accepted))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = fetchRetainedServiceRedemption)]
+    pub async fn fetch_retained_service_redemption_v1(
+        &mut self,
+        provider_index: u8,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        expected_policy_digest: &[u8],
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmAcceptedRetainedServiceRedemptionV1, JsError> {
+        let (provider_id, signing_key) =
+            parse_provider_and_key_v1(expected_provider_id, policy_signing_key)?;
+        let accepted = self
+            .inner
+            .fetch_retained_service_redemption_v1(
+                provider_index,
+                db_id,
+                provider_id,
+                &signing_key,
+                parse_digest_v1("expectedPolicyDigest", expected_policy_digest)?,
+                parse_scope_id_v1(scope_id)?,
+                offer_id,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedRetainedServiceRedemptionV1 { inner: accepted })
+    }
+
+    /// Fail before capability retirement unless the accepted policy belongs to
+    /// the currently connected Harmony provider side.
+    #[wasm_bindgen(js_name = verifyServicePolicySession)]
+    pub fn verify_service_policy_session_v1(
+        &self,
+        provider_index: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+    ) -> Result<(), JsError> {
+        self.inner
+            .verify_service_policy_session_v1(provider_index, &accepted.inner)
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = verifyRetainedServiceSession)]
+    pub fn verify_retained_service_session_v1(
+        &self,
+        provider_index: u8,
+        accepted: &WasmAcceptedRetainedServiceRedemptionV1,
+        now_unix: u64,
+    ) -> Result<(), JsError> {
+        self.inner
+            .verify_retained_service_session_v1(provider_index, &accepted.inner)
+            .and_then(|_| accepted.inner.verify_redemption_ready_v1(now_unix))
+            .map_err(err_to_js)
+    }
+
+    /// Consume the hint provider's capability for the full V2 hint bundle.
+    /// Hint and query offers/prices are separate signed scopes.
+    #[wasm_bindgen(js_name = authorizeHintService)]
+    pub async fn authorize_hint_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        proof_bytes: &[u8],
+    ) -> Result<JsValue, JsError> {
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let proof = build_proof_v1(accepted, &scope_id, offer_id, proof_bytes)?;
+        let grant = self
+            .inner
+            .dangerous_unpaired_authorize_hint_service_v1(
+                db_id,
+                &accepted.inner,
+                scope_id,
+                offer_id,
+                proof,
+                pir_service_protocol::HintTransport::V2Full,
+                None,
+                None,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    #[wasm_bindgen(js_name = authorizeRetainedHintService)]
+    pub async fn authorize_retained_hint_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedRetainedServiceRedemptionV1,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
+        let grant = self
+            .inner
+            .authorize_retained_hint_service_v1(db_id, &accepted.inner, proof, now_unix)
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    /// Consume a different capability for the independently selected query
+    /// provider. No hint-provider field is sent on this connection.
+    #[wasm_bindgen(js_name = authorizeQueryService)]
+    pub async fn authorize_query_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        proof_bytes: &[u8],
+    ) -> Result<JsValue, JsError> {
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let proof = build_proof_v1(accepted, &scope_id, offer_id, proof_bytes)?;
+        let grant = self
+            .inner
+            .dangerous_unpaired_authorize_query_service_v1(
+                db_id,
+                &accepted.inner,
+                scope_id,
+                offer_id,
+                proof,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    #[wasm_bindgen(js_name = authorizeRetainedQueryService)]
+    pub async fn authorize_retained_query_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedRetainedServiceRedemptionV1,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
+        let grant = self
+            .inner
+            .authorize_retained_query_service_v1(db_id, &accepted.inner, proof, now_unix)
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    #[wasm_bindgen(js_name = requestHintPowChallenge)]
+    pub async fn request_hint_pow_challenge_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmServicePowChallengeV1, JsError> {
+        accepted.require_checkpoint_persisted()?;
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let challenge = self
+            .inner
+            .request_hint_pow_challenge_v1(db_id, &accepted.inner, scope_id, offer_id, now_unix)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmServicePowChallengeV1::from_native(challenge))
+    }
+
+    #[wasm_bindgen(js_name = requestQueryPowChallenge)]
+    pub async fn request_query_pow_challenge_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmServicePowChallengeV1, JsError> {
+        accepted.require_checkpoint_persisted()?;
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let challenge = self
+            .inner
+            .request_query_pow_challenge_v1(db_id, &accepted.inner, scope_id, offer_id, now_unix)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmServicePowChallengeV1::from_native(challenge))
+    }
+
     /// End-to-end sync. See [`WasmDpfClient::sync`] for argument
     /// semantics — the wire path differs but the JS-facing shape is
     /// identical.
@@ -2579,6 +2980,158 @@ impl WasmOramClient {
         Ok(WasmDatabaseProof { inner: roots })
     }
 
+    /// Require proof-root installation before ORAM query/admission.
+    #[wasm_bindgen(js_name = setRequireVerifiedDatabaseRoots)]
+    pub fn set_require_verified_database_roots(&mut self, require_verified: bool) {
+        self.inner.set_root_policy(if require_verified {
+            RootPolicy::RequireVerified
+        } else {
+            RootPolicy::Advisory
+        });
+    }
+
+    /// Install a proof only after JavaScript has checked production pins.
+    #[wasm_bindgen(js_name = installVerifiedDatabaseProof)]
+    pub fn install_verified_database_proof(
+        &mut self,
+        proof: WasmDatabaseProof,
+    ) -> Result<(), JsError> {
+        self.inner
+            .install_verified_database_roots(proof.inner)
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = fetchServicePolicy)]
+    pub async fn fetch_service_policy_v1(
+        &mut self,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        now_unix: u64,
+        checkpoint_bytes: &[u8],
+    ) -> Result<WasmAcceptedServicePolicyV1, JsError> {
+        let (provider_id, signing_key, checkpoint) =
+            parse_service_trust_v1(expected_provider_id, policy_signing_key, checkpoint_bytes)?;
+        let accepted = self
+            .inner
+            .fetch_service_policy_v1(db_id, provider_id, &signing_key, now_unix, &checkpoint)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedServicePolicyV1::from_native(accepted))
+    }
+
+    /// Fetch one exact historical ORAM policy for redemption only. The
+    /// returned handle cannot create quotes, solve PoW, or select another
+    /// offer.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = fetchRetainedServiceRedemption)]
+    pub async fn fetch_retained_service_redemption_v1(
+        &mut self,
+        db_id: u8,
+        expected_provider_id: &[u8],
+        policy_signing_key: &[u8],
+        expected_policy_digest: &[u8],
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmAcceptedRetainedServiceRedemptionV1, JsError> {
+        let (provider_id, signing_key) =
+            parse_provider_and_key_v1(expected_provider_id, policy_signing_key)?;
+        let accepted = self
+            .inner
+            .fetch_retained_service_redemption_v1(
+                db_id,
+                provider_id,
+                &signing_key,
+                parse_digest_v1("expectedPolicyDigest", expected_policy_digest)?,
+                parse_scope_id_v1(scope_id)?,
+                offer_id,
+                now_unix,
+            )
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmAcceptedRetainedServiceRedemptionV1 { inner: accepted })
+    }
+
+    /// Fail before capability retirement unless the accepted policy belongs to
+    /// the currently connected ORAM session.
+    #[wasm_bindgen(js_name = verifyServicePolicySession)]
+    pub fn verify_service_policy_session_v1(
+        &self,
+        accepted: &WasmAcceptedServicePolicyV1,
+    ) -> Result<(), JsError> {
+        self.inner
+            .verify_service_policy_session_v1(&accepted.inner)
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = verifyRetainedServiceSession)]
+    pub fn verify_retained_service_session_v1(
+        &self,
+        accepted: &WasmAcceptedRetainedServiceRedemptionV1,
+        now_unix: u64,
+    ) -> Result<(), JsError> {
+        self.inner
+            .verify_retained_service_session_v1(&accepted.inner)
+            .and_then(|_| accepted.inner.verify_redemption_ready_v1(now_unix))
+            .map_err(err_to_js)
+    }
+
+    #[wasm_bindgen(js_name = authorizeService)]
+    pub async fn authorize_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        proof_bytes: &[u8],
+    ) -> Result<JsValue, JsError> {
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let proof = build_proof_v1(accepted, &scope_id, offer_id, proof_bytes)?;
+        let grant = self
+            .inner
+            .authorize_service_v1(db_id, &accepted.inner, scope_id, offer_id, proof)
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    #[wasm_bindgen(js_name = authorizeRetainedService)]
+    pub async fn authorize_retained_service_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedRetainedServiceRedemptionV1,
+        proof_bytes: &[u8],
+        now_unix: u64,
+    ) -> Result<JsValue, JsError> {
+        let proof = build_retained_proof_v1(accepted, proof_bytes, now_unix)?;
+        let grant = self
+            .inner
+            .authorize_retained_service_redemption_v1(db_id, &accepted.inner, proof, now_unix)
+            .await
+            .map_err(err_to_js)?;
+        Ok(grant_json_v1(&grant))
+    }
+
+    #[wasm_bindgen(js_name = requestServicePowChallenge)]
+    pub async fn request_service_pow_challenge_v1(
+        &mut self,
+        db_id: u8,
+        accepted: &WasmAcceptedServicePolicyV1,
+        scope_id: &[u8],
+        offer_id: u32,
+        now_unix: u64,
+    ) -> Result<WasmServicePowChallengeV1, JsError> {
+        accepted.require_checkpoint_persisted()?;
+        let scope_id = parse_scope_id_v1(scope_id)?;
+        let challenge = self
+            .inner
+            .request_service_pow_challenge_v1(db_id, &accepted.inner, scope_id, offer_id, now_unix)
+            .await
+            .map_err(err_to_js)?;
+        Ok(WasmServicePowChallengeV1::from_native(challenge))
+    }
+
     /// Low-level ORAM batch query against one database.
     ///
     /// Returns a JSON array of length `N`, each element either `null`
@@ -2777,9 +3330,7 @@ mod tests {
 
     #[test]
     fn database_proof_v2_exposes_typed_onion_layout() {
-        let layout = pir_db_attest::OnionQueryLayoutV2::current(
-            948_640, 10_273, 37_954, 3_328,
-        );
+        let layout = pir_db_attest::OnionQueryLayoutV2::current(948_640, 10_273, 37_954, 3_328);
         let roots = VerifiedDatabaseRoots {
             db_id: 0,
             build_kind: pir_db_attest::BuildKind::Snapshot,

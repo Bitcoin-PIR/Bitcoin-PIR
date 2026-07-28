@@ -71,13 +71,20 @@ pub async fn run(args: UploadArgs) -> Result<(), String> {
     // Walk + hash the dir locally.
     let manifest_files = walk_and_hash(&args.local_dir)?;
     if manifest_files.is_empty() {
-        return Err(format!("no files to upload in {}", args.local_dir.display()));
+        return Err(format!(
+            "no files to upload in {}",
+            args.local_dir.display()
+        ));
     }
     let manifest_toml = render_manifest_toml(&manifest_files);
     let local_root = sha256(&manifest_toml);
     let total_bytes: u64 = manifest_files
         .iter()
-        .map(|(rel, _)| fs::metadata(args.local_dir.join(rel)).map(|m| m.len()).unwrap_or(0))
+        .map(|(rel, _)| {
+            fs::metadata(args.local_dir.join(rel))
+                .map(|m| m.len())
+                .unwrap_or(0)
+        })
         .sum();
     eprintln!(
         "manifest: {} files, {} bytes total, root={}",
@@ -92,7 +99,10 @@ pub async fn run(args: UploadArgs) -> Result<(), String> {
         .map_err(|e| format!("connect to {}: {}", args.server, e))?;
     eprintln!("connected to {}", args.server);
 
-    match authenticate(&mut conn, &sk).await.map_err(|e| e.to_string())? {
+    match authenticate(&mut conn, &sk)
+        .await
+        .map_err(|e| e.to_string())?
+    {
         AuthOutcome::Ok => eprintln!("authenticated"),
         AuthOutcome::Rejected { msg } => {
             return Err(format!("server rejected admin auth: {}", msg));
@@ -118,20 +128,27 @@ pub async fn run(args: UploadArgs) -> Result<(), String> {
                 .await
                 .map_err(|e| e.to_string())?;
             if !ack.ok {
-                return Err(format!("CHUNK rejected for {} @ {}: {}", rel, offset, ack.msg));
+                return Err(format!(
+                    "CHUNK rejected for {} @ {}: {}",
+                    rel, offset, ack.msg
+                ));
             }
             offset += chunk.len() as u64;
             bytes_sent += chunk.len() as u64;
         }
-        eprintln!("  uploaded {} ({:.1} MB) — total {:.1}/{:.1} MB",
-                  rel,
-                  bytes.len() as f64 / 1_048_576.0,
-                  bytes_sent as f64 / 1_048_576.0,
-                  total_bytes as f64 / 1_048_576.0);
+        eprintln!(
+            "  uploaded {} ({:.1} MB) — total {:.1}/{:.1} MB",
+            rel,
+            bytes.len() as f64 / 1_048_576.0,
+            bytes_sent as f64 / 1_048_576.0,
+            total_bytes as f64 / 1_048_576.0
+        );
     }
 
     // FINALIZE
-    let fin = upload_finalize(&mut conn, &args.name).await.map_err(|e| e.to_string())?;
+    let fin = upload_finalize(&mut conn, &args.name)
+        .await
+        .map_err(|e| e.to_string())?;
     if !fin.ok {
         return Err(format!("FINALIZE failed: {}", fin.msg));
     }
@@ -151,7 +168,10 @@ pub async fn run(args: UploadArgs) -> Result<(), String> {
     eprintln!("✓ local + server manifest roots agree");
 
     if args.no_activate {
-        eprintln!("(skipping ACTIVATE per --no-activate; staged at .staging/{})", args.name);
+        eprintln!(
+            "(skipping ACTIVATE per --no-activate; staged at .staging/{})",
+            args.name
+        );
         return Ok(());
     }
 
@@ -170,6 +190,7 @@ pub async fn run(args: UploadArgs) -> Result<(), String> {
 
 /// Walk `dir` recursively, collect every regular file's relative path
 /// + SHA-256 hex. `MANIFEST.toml` (top-level or nested) is excluded
+///
 /// so a stale one doesn't end up in the manifest of itself. Returns
 /// entries sorted by path so the resulting TOML is deterministic.
 pub(crate) fn walk_and_hash(dir: &Path) -> Result<Vec<(String, String)>, String> {
@@ -183,8 +204,7 @@ fn walk_recursive(
     cur: &Path,
     out: &mut BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let entries =
-        fs::read_dir(cur).map_err(|e| format!("read_dir {}: {}", cur.display(), e))?;
+    let entries = fs::read_dir(cur).map_err(|e| format!("read_dir {}: {}", cur.display(), e))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("entry: {}", e))?;
         let path = entry.path();
@@ -284,8 +304,7 @@ mod tests {
         let m2 = render_manifest_toml(&files);
         assert_eq!(m1, m2);
         // Roundtrip parseable
-        let parsed: toml::Value =
-            toml::from_str(std::str::from_utf8(&m1).unwrap()).unwrap();
+        let parsed: toml::Value = toml::from_str(std::str::from_utf8(&m1).unwrap()).unwrap();
         assert_eq!(parsed["manifest"]["version"].as_integer(), Some(1));
     }
 
@@ -306,8 +325,7 @@ mod tests {
 
         // Write to dir + run the server-side verifier.
         fs::write(dir.path().join("MANIFEST.toml"), &manifest_bytes).unwrap();
-        let result =
-            pir_runtime_core::manifest::DbManifest::load_and_verify(dir.path()).unwrap();
+        let result = pir_runtime_core::manifest::DbManifest::load_and_verify(dir.path()).unwrap();
         let (_m, root) = result.expect("Some");
         assert_eq!(root, sha256(&manifest_bytes));
     }

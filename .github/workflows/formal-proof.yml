@@ -25,12 +25,14 @@ jobs:
 
     steps:
       - name: Check out BitcoinPIR
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check implementation contract against Rust
-        run: cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract
+        run: |
+          cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract
+          cargo test --locked --offline -p pir-runtime-core --test payment_authorization_wire_contract
 
       - name: Validate lock and expose exact proof revision
         id: lock
@@ -39,7 +41,7 @@ jobs:
           --github-output "$GITHUB_OUTPUT"
 
       - name: Check out locked protocol proof
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ steps.lock.outputs.repository }}
           ref: ${{ steps.lock.outputs.commit }}

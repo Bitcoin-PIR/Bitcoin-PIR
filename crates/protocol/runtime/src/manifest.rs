@@ -64,13 +64,32 @@ pub struct ManifestMeta {
 #[derive(Debug)]
 pub enum ManifestError {
     UnsupportedVersion(u32),
-    Io { path: String, err: std::io::Error },
-    InvalidUtf8 { path: String },
-    InvalidToml { path: String, err: toml::de::Error },
-    InvalidHashHex { path: String, value: String },
-    HashMismatch { path: String, expected: String, actual: String },
-    MissingFile { path: String },
-    UnexpectedFile { path: String },
+    Io {
+        path: String,
+        err: std::io::Error,
+    },
+    InvalidUtf8 {
+        path: String,
+    },
+    InvalidToml {
+        path: String,
+        err: toml::de::Error,
+    },
+    InvalidHashHex {
+        path: String,
+        value: String,
+    },
+    HashMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
+    MissingFile {
+        path: String,
+    },
+    UnexpectedFile {
+        path: String,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -89,7 +108,11 @@ impl fmt::Display for ManifestError {
                 "manifest entry for {} is not 64 hex chars: {:?}",
                 path, value
             ),
-            Self::HashMismatch { path, expected, actual } => write!(
+            Self::HashMismatch {
+                path,
+                expected,
+                actual,
+            } => write!(
                 f,
                 "hash mismatch for {}: expected {}, got {}",
                 path, expected, actual
@@ -139,10 +162,11 @@ impl DbManifest {
         let text = std::str::from_utf8(&raw).map_err(|_| ManifestError::InvalidUtf8 {
             path: manifest_path.display().to_string(),
         })?;
-        let manifest: DbManifest = toml::from_str(text).map_err(|err| ManifestError::InvalidToml {
-            path: manifest_path.display().to_string(),
-            err,
-        })?;
+        let manifest: DbManifest =
+            toml::from_str(text).map_err(|err| ManifestError::InvalidToml {
+                path: manifest_path.display().to_string(),
+                err,
+            })?;
         if manifest.manifest.version != SUPPORTED_VERSION {
             return Err(ManifestError::UnsupportedVersion(manifest.manifest.version));
         }
@@ -244,8 +268,16 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     for b in bytes {
         let hi = b >> 4;
         let lo = b & 0x0f;
-        s.push(if hi < 10 { (b'0' + hi) as char } else { (b'a' + (hi - 10)) as char });
-        s.push(if lo < 10 { (b'0' + lo) as char } else { (b'a' + (lo - 10)) as char });
+        s.push(if hi < 10 {
+            (b'0' + hi) as char
+        } else {
+            (b'a' + (hi - 10)) as char
+        });
+        s.push(if lo < 10 {
+            (b'0' + lo) as char
+        } else {
+            (b'a' + (lo - 10)) as char
+        });
     }
     s
 }
@@ -295,7 +327,9 @@ mod tests {
         write_files(dir.path(), files);
         write_manifest_for(dir.path(), files);
 
-        let (m, root) = DbManifest::load_and_verify(dir.path()).unwrap().expect("Some");
+        let (m, root) = DbManifest::load_and_verify(dir.path())
+            .unwrap()
+            .expect("Some");
         assert_eq!(m.files.len(), 2);
         let raw = fs::read(dir.path().join(MANIFEST_FILENAME)).unwrap();
         assert_eq!(root, sha256(&raw));
@@ -321,7 +355,11 @@ mod tests {
         // Manifest claims a different content.
         write_manifest_for(dir.path(), &[("a.bin", b"BOGUS")]);
         let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(matches!(err, ManifestError::HashMismatch { .. }), "got {:?}", err);
+        assert!(
+            matches!(err, ManifestError::HashMismatch { .. }),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -333,7 +371,11 @@ mod tests {
             &[("a.bin", b"hello"), ("missing.bin", b"absent")],
         );
         let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(matches!(err, ManifestError::MissingFile { .. }), "got {:?}", err);
+        assert!(
+            matches!(err, ManifestError::MissingFile { .. }),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -342,7 +384,11 @@ mod tests {
         write_files(dir.path(), &[("a.bin", b"hello"), ("strays.bin", b"oops")]);
         write_manifest_for(dir.path(), &[("a.bin", b"hello")]);
         let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(matches!(err, ManifestError::UnexpectedFile { .. }), "got {:?}", err);
+        assert!(
+            matches!(err, ManifestError::UnexpectedFile { .. }),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -354,7 +400,11 @@ mod tests {
         )
         .unwrap();
         let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(matches!(err, ManifestError::UnsupportedVersion(99)), "got {:?}", err);
+        assert!(
+            matches!(err, ManifestError::UnsupportedVersion(99)),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -368,7 +418,11 @@ mod tests {
         )
         .unwrap();
         let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(matches!(err, ManifestError::InvalidHashHex { .. }), "got {:?}", err);
+        assert!(
+            matches!(err, ManifestError::InvalidHashHex { .. }),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -411,12 +465,18 @@ mod tests {
     #[test]
     fn cuckoo_table_files_skip_hash_verification() {
         let dir = tempfile::tempdir().unwrap();
-        write_files(dir.path(), &[
-            ("batch_pir_cuckoo.bin", b"actual data"),
-            ("index.bin", b"small index"),
-        ]);
+        write_files(
+            dir.path(),
+            &[
+                ("batch_pir_cuckoo.bin", b"actual data"),
+                ("index.bin", b"small index"),
+            ],
+        );
         // Write manifest with a WRONG hash for the cuckoo table.
-        let index_line = format!("\"index.bin\" = \"{}\"", hex_encode(&sha256(b"small index")));
+        let index_line = format!(
+            "\"index.bin\" = \"{}\"",
+            hex_encode(&sha256(b"small index"))
+        );
         let lines = vec![
             "[manifest]",
             "version = 1",
@@ -433,11 +493,18 @@ mod tests {
     #[test]
     fn cuckoo_table_still_must_be_listed_in_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        write_files(dir.path(), &[("batch_pir_cuckoo.bin", b"data"), ("index.bin", b"small")]);
+        write_files(
+            dir.path(),
+            &[("batch_pir_cuckoo.bin", b"data"), ("index.bin", b"small")],
+        );
         // Only list index.bin — stray cuckoo file should be caught.
         write_manifest_for(dir.path(), &[("index.bin", b"small")]);
         let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(matches!(err, ManifestError::UnexpectedFile { .. }), "got {:?}", err);
+        assert!(
+            matches!(err, ManifestError::UnexpectedFile { .. }),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]

@@ -114,11 +114,20 @@ fn process_group_generic(
     // (panic = 'abort' workspace-wide would kill the whole server).
     if num_keys == 0 || num_keys > MAX_KEYS_PER_GROUP {
         let accs = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
-        return (accs, GroupTiming { dpf_eval: Duration::ZERO, fetch_xor: Duration::ZERO });
+        return (
+            accs,
+            GroupTiming {
+                dpf_eval: Duration::ZERO,
+                fetch_xor: Duration::ZERO,
+            },
+        );
     }
 
     let t_dpf = Instant::now();
-    let evals: Vec<Vec<Block>> = keys.iter().map(|k| dpf.eval_partial(k, bins_per_table as u64)).collect();
+    let evals: Vec<Vec<Block>> = keys
+        .iter()
+        .map(|k| dpf.eval_partial(k, bins_per_table as u64))
+        .collect();
     let dpf_eval = t_dpf.elapsed();
 
     // Use the shortest eval vector: a key declaring a smaller DPF domain
@@ -157,14 +166,18 @@ fn process_group_generic(
             let mut bits = [false; MAX_KEYS_PER_GROUP];
             for i in 0..num_keys {
                 bits[i] = get_dpf_bit(&evals[i][block_idx], bit_within);
-                if bits[i] { any_set = true; }
+                if bits[i] {
+                    any_set = true;
+                }
             }
 
             if !any_set {
                 continue;
             }
 
-            for v in bin_buf.iter_mut() { *v = 0; }
+            for v in bin_buf.iter_mut() {
+                *v = 0;
+            }
             fetch_bin(table_bytes, bin, &mut bin_buf);
 
             for i in 0..num_keys {
@@ -176,7 +189,13 @@ fn process_group_generic(
     }
     let fetch_xor = t_fetch.elapsed();
 
-    (accs, GroupTiming { dpf_eval, fetch_xor })
+    (
+        accs,
+        GroupTiming {
+            dpf_eval,
+            fetch_xor,
+        },
+    )
 }
 
 // ─── Index-level evaluation (inlined cuckoo tables) ─────────────────────────
@@ -281,7 +300,9 @@ pub fn find_group_in_sibling_result(
     let target = group_id.to_le_bytes();
     for slot in 0..slots_per_bin {
         let base = slot * slot_size;
-        if base + 4 > result.len() { break; }
+        if base + 4 > result.len() {
+            break;
+        }
         if result[base..base + 4] == target {
             let mut children = Vec::with_capacity(arity);
             for c in 0..arity {
@@ -307,7 +328,9 @@ pub fn find_entry_in_index_result(result: &[u8], expected_tag: u64) -> Option<(u
         let slot_tag = u64::from_le_bytes(result[base..base + TAG_SIZE].try_into().unwrap());
         if slot_tag == expected_tag {
             let start_chunk_id = u32::from_le_bytes(
-                result[base + TAG_SIZE..base + TAG_SIZE + 4].try_into().unwrap(),
+                result[base + TAG_SIZE..base + TAG_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
             );
             let num_chunks = result[base + TAG_SIZE + 4] as u32;
             return Some((start_chunk_id, num_chunks));

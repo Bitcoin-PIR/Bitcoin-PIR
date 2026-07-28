@@ -233,8 +233,7 @@ async fn raw_connect(
         max_frame_size: Some(MAX_WS_FRAME_SIZE),
         ..Default::default()
     };
-    let handshake =
-        tokio_tungstenite::connect_async_with_config(url, Some(config), false);
+    let handshake = tokio_tungstenite::connect_async_with_config(url, Some(config), false);
     let (ws, _) = match tokio::time::timeout(connect_timeout, handshake).await {
         Ok(Ok(ok)) => ok,
         Ok(Err(e)) => {
@@ -286,10 +285,7 @@ impl WsConnection {
     /// the server bubbles up immediately, since those indicate a
     /// configuration bug rather than a transient outage.
     #[tracing::instrument(level = "debug", skip_all, fields(url = %url, max_attempts = policy.max_attempts))]
-    pub async fn connect_with_backoff(
-        url: &str,
-        policy: RetryPolicy,
-    ) -> PirResult<Self> {
+    pub async fn connect_with_backoff(url: &str, policy: RetryPolicy) -> PirResult<Self> {
         let max_attempts = policy.max_attempts.max(1);
         let mut last_err: Option<PirError> = None;
         for attempt in 0..max_attempts {
@@ -325,10 +321,7 @@ impl WsConnection {
             }
         }
         Err(last_err.unwrap_or_else(|| {
-            PirError::ConnectionFailed(format!(
-                "{}: exhausted {} attempts",
-                url, max_attempts,
-            ))
+            PirError::ConnectionFailed(format!("{}: exhausted {} attempts", url, max_attempts,))
         }))
     }
 
@@ -517,15 +510,9 @@ impl WsConnection {
             frame.extend_from_slice(&(seq as u16).to_le_bytes());
             frame.extend_from_slice(&(total as u16).to_le_bytes());
             frame.extend_from_slice(piece);
-            self.sink
-                .send(Message::Binary(frame))
-                .await
-                .map_err(|e| {
-                    PirError::ConnectionClosed(format!(
-                        "send chunk {}/{}: {}",
-                        seq, total, e
-                    ))
-                })?;
+            self.sink.send(Message::Binary(frame)).await.map_err(|e| {
+                PirError::ConnectionClosed(format!("send chunk {}/{}: {}", seq, total, e))
+            })?;
         }
         Ok(())
     }

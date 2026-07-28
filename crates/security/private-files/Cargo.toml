@@ -1,0 +1,16 @@
+[package]
+name = "pir-private-files"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+authors = ["Bitcoin PIR contributors"]
+description = "Fail-closed local private-file boundary for BitcoinPIR production secrets and stores"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+
+[dependencies]
+rustix = { version = "1", features = ["fs", "process"] }
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -9,9 +9,11 @@ the user* — can be seen working, not just asserted. Every byte boundary is
 also covered by automated tests (see "What's tested" below); the demo is the
 human-visible capstone.
 
-> **This is a demo, not production rate limiting** (free issuance, dev gate,
-> servers ungated). For the gap to real rate limiting and a sequenced
-> integration plan, see [`RATELIMIT_INTEGRATION.md`](RATELIMIT_INTEGRATION.md).
+> **This is a legacy mechanism demo, not Payment V1 or production rate
+> limiting** (free issuance, process-local state, co-located dev gate). Its
+> `0x08`/`0x09` frames cannot unlock the enforced Payment V1 server gate. For
+> the maintained architecture and integration index, see
+> [`RATELIMIT_INTEGRATION.md`](RATELIMIT_INTEGRATION.md).
 
 ## Run it
 
@@ -28,8 +30,10 @@ tells you to start the dev-issuer).
 
 ## What you'll see
 
-**ARC column (multi-show):** one credential authorises *N* unlinkable
-presentations.
+**ARC column (multi-show, experimental):** one credential is designed to
+authorise *N* presentations without a stable presentation identifier under the
+draft ARC assumptions. This privacy claim remains subject to independent
+cryptographic review.
 - **Mint credential** → blinds a request in WASM (226 B), sends it to the
   issuer, finalises the 454 B response into a 131 B credential.
 - **Present once** → each presentation is accepted by the gate; the quota
@@ -54,7 +58,7 @@ presentations.
 | Shape | One credential, *N* presentations | Pool of *N* one-time tokens |
 | Crypto | Algebraic MAC (P-256) + range proof | BDHKE (secp256k1) |
 | Rate limit | Range proof bounds the nonce to `[0, limit)`; tags dedup per context | One token = one query; spent-set dedup |
-| Unlinkability | Presentations are mutually unlinkable | Tokens are unlinkable to issuance |
+| Unlinkability goal | Experimental: presentations should be mutually unlinkable under the draft assumptions | Blind issuance aims to unlink tokens from issuance |
 | Wire (present) | `REQ_CREDENTIAL_PRESENT` (0x08) | `REQ_CASHU_BAT_PRESENT` (0x09), `authA…` |
 | Issued blob | 131-byte credential | `{id, secret, C}` per BAT |
 | Best when | Many queries per credential, fixed budget | Simple pay-per-query metering |
@@ -79,17 +83,19 @@ mint ── dev-issuer ── obtain ── browser (WASM) ── present ──
   `CashuBatPool`) to the dev-issuer's `/dev/arc/verify` /
   `/dev/cashu/verify`.
 
-> **Demo vs production.** The dev-issuer co-locates the verify gate so the demo
+> **Demo vs Payment V1.** The dev-issuer co-locates the verify gate so the demo
 > needs no PIR database. The gate runs the *identical* crypto to
 > `pir_runtime_core::{arc_verifier, cashu_verifier}` (the same
 > `arc::verify_presentation`; the same Cashu `C == k·hash_to_curve(secret)` +
-> spent-set). In production the same present frames go over **WebSocket** to
-> the PIR server's gate (`unified_server --require-arc --arc-key … --require-cashu
-> --cashu-keyset …`, which the dev-issuer prints a launch line for); only the
-> transport differs.
+> spent-set). Those legacy verifier primitives remain useful test baselines,
+> but production-shaped admission uses the signed, provider/scope/offer-bound
+> Payment V1 messages and durable store. The old present frames are not
+> translated into a Payment V1 grant.
 
-The credential issuer here is **free** (no payment). In production the same
-endpoints would be served by a Lightning-backed mint after a paid invoice.
+The credential issuer here is **free** (no payment). Production Payment V1
+does not reuse these endpoints or legacy frames. Its issuer acquisition APIs
+and signed, provider-bound credential protocol are documented separately in
+[`payment/PROTOCOL.md`](payment/PROTOCOL.md).
 
 ## What's tested (no browser required)
 
@@ -110,4 +116,4 @@ endpoints would be served by a Lightning-backed mint after a paid invoice.
 | HTTP client | [`web/src/payment-client.ts`](../web/src/payment-client.ts) |
 | BAT pool | [`web/src/cashu-bat.ts`](../web/src/cashu-bat.ts), [`web/src/credential-manager.ts`](../web/src/credential-manager.ts) |
 | Demo page | [`web/ratelimit-demo.html`](../web/ratelimit-demo.html), [`web/src/ratelimit-demo.ts`](../web/src/ratelimit-demo.ts) |
-| Server gate (prod) | [`apps/server/src/bin/unified_server.rs`](../apps/server/src/bin/unified_server.rs) (`--require-arc` / `--require-cashu`) |
+| Legacy/demo server gate | [`apps/server/src/bin/unified_server.rs`](../apps/server/src/bin/unified_server.rs) (`--allow-experimental-arc --require-arc` / `--require-cashu`) |

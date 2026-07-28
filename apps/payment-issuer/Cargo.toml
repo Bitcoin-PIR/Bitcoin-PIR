@@ -1,0 +1,52 @@
+[package]
+name = "payment-issuer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+publish = false
+description = "BitcoinPIR payment and anonymous credential issuer"
+
+[[bin]]
+name = "payment-issuer"
+path = "src/main.rs"
+
+[features]
+default = []
+# Non-default local integration harness only. The package build script rejects
+# this feature outside Cargo's debug/test artifact class, even if a release
+# profile manually enables Rust debug assertions.
+test-only-fake-lightning = []
+# Non-default real-process E2E only. This forwards the private test-CA hook;
+# release builds remain rejected by pir-strict-https at compile time.
+remote-authority-process-e2e = ["pir-rollback-authority-client/test-only-webpki-root"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = "2"
+getrandom = "0.2"
+hex = "0.4"
+httparse = "1"
+pir-arc-adapter = { path = "../../crates/payment/arc-adapter" }
+pir-issuer-credentials = { path = "../../crates/payment/issuer-credentials" }
+pir-issuer-clearing = { path = "../../crates/payment/issuer-clearing" }
+pir-issuer-core = { path = "../../crates/payment/issuer-core" }
+pir-issuer-service = { path = "../../crates/payment/issuer-service" }
+pir-issuer-store = { path = "../../crates/payment/issuer-store" }
+pir-lightning-backend = { path = "../../crates/payment/lightning-backend" }
+pir-payment-crypto = { path = "../../crates/payment/crypto" }
+pir-private-files = { path = "../../crates/security/private-files" }
+pir-rollback-authority-client = { path = "../../crates/security/rollback-authority-client" }
+pir-service-protocol = { path = "../../crates/protocol/service" }
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process"] }
+
+[dev-dependencies]
+pir-service-store = { path = "../../crates/protocol/service-store" }
+rollback-authority = { path = "../rollback-authority" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

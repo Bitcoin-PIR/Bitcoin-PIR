@@ -7,8 +7,13 @@
   "scripts": {
     "build": "tsc",
     "dev": "vite",
-    "build-web": "vite build",
+    "build-web": "vite build && node scripts/verify-csp.mjs",
     "test": "vitest run",
+    "test:e2e:payment-cdk-cashu": "tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false && playwright test --config playwright.payment-cdk-cashu.config.ts",
+    "test:e2e:payment-real-issuer": "tsc -p tsconfig.payment-real-e2e.json && playwright test --config playwright.payment-real-issuer.config.ts",
+    "test:e2e:payment-two-provider": "tsc -p tsconfig.payment-real-e2e.json && playwright test --config playwright.payment-two-provider.config.ts",
+    "test:e2e:payment-cln-regtest": "tsc -p tsconfig.payment-real-e2e.json && playwright test --config playwright.payment-cln-regtest.config.ts && playwright test --config playwright.payment-cln-joined.config.ts",
+    "test:e2e:payment-vault": "tsc -p tsconfig.payment-e2e.json && playwright test --config playwright.payment.config.ts",
     "test:e2e:strict-production": "playwright test --config playwright.production.config.ts"
   },
   "keywords": [
@@ -29,10 +34,12 @@
     "@playwright/test": "1.61.1",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
+    "fake-indexeddb": "^6.2.4",
     "typescript": "^5.0.0",
-    "vite": "^8.0.0",
+    "vite": "^8.1.5",
     "vite-plugin-wasm": "^3.6.0",
-    "vitest": "^3.2.4",
-    "ws": "^8.20.0"
+    "vitest": "^3.2.7",
+    "ws": "^8.21.1",
+    "yaml": "2.9.0"
   }
 }
