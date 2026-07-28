@@ -313,6 +313,21 @@ pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
     let global_connection_slots = Arc::new(Semaphore::new(config.max_connections));
     let public_connection_slots = Arc::new(Semaphore::new(config.max_public_connections));
     let publisher_connection_slots = Arc::new(Semaphore::new(config.max_publisher_connections));
+    let connection_timeouts = ConnectionTimeouts {
+        handshake: config.handshake_timeout,
+        idle: config.idle_timeout,
+        lifetime: config.connection_timeout,
+    };
+    let public_admission = ListenerAdmission {
+        lane_slots: public_connection_slots,
+        global_slots: global_connection_slots.clone(),
+        timeouts: connection_timeouts,
+    };
+    let publisher_admission = ListenerAdmission {
+        lane_slots: publisher_connection_slots,
+        global_slots: global_connection_slots,
+        timeouts: connection_timeouts,
+    };
     let (shutdown, shutdown_rx) = watch::channel(false);
     let task_shutdown = shutdown.clone();
     let task = tokio::spawn(async move {
@@ -320,21 +335,13 @@ pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
         listeners.spawn(serve(
             public_listener,
             public_state,
-            public_connection_slots,
-            global_connection_slots.clone(),
-            config.handshake_timeout,
-            config.idle_timeout,
-            config.connection_timeout,
+            public_admission,
             shutdown_rx.clone(),
         ));
         listeners.spawn(serve(
             publisher_listener,
             publisher_state,
-            publisher_connection_slots,
-            global_connection_slots,
-            config.handshake_timeout,
-            config.idle_timeout,
-            config.connection_timeout,
+            publisher_admission,
             shutdown_rx,
         ));
         let mut first_error = None;
@@ -366,14 +373,23 @@ pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
     })
 }
 
+#[derive(Clone, Copy)]
+struct ConnectionTimeouts {
+    handshake: Duration,
+    idle: Duration,
+    lifetime: Duration,
+}
+
+struct ListenerAdmission {
+    lane_slots: Arc<Semaphore>,
+    global_slots: Arc<Semaphore>,
+    timeouts: ConnectionTimeouts,
+}
+
 async fn serve(
     listener: TcpListener,
     state: Arc<ServerState>,
-    lane_connection_slots: Arc<Semaphore>,
-    global_connection_slots: Arc<Semaphore>,
-    handshake_timeout: Duration,
-    idle_timeout: Duration,
-    connection_timeout: Duration,
+    admission: ListenerAdmission,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let mut connections = JoinSet::new();
@@ -400,27 +416,26 @@ async fn serve(
                 // Acquire the lane reservation before the global slot. Since
                 // configured lane maxima exactly partition the global maximum,
                 // one lane can never wait on the other while holding global work.
-                let Ok(lane_permit) = lane_connection_slots.clone().try_acquire_owned() else {
+                let Ok(lane_permit) = admission.lane_slots.clone().try_acquire_owned() else {
                     log::warn!("directory_relay_connection_capacity_rejected");
                     drop(stream);
                     continue;
                 };
-                let Ok(global_permit) = global_connection_slots.clone().try_acquire_owned() else {
+                let Ok(global_permit) = admission.global_slots.clone().try_acquire_owned() else {
                     log::warn!("directory_relay_global_connection_capacity_rejected");
                     drop(stream);
                     continue;
                 };
                 let state = state.clone();
                 let connection_shutdown = shutdown.clone();
+                let timeouts = admission.timeouts;
                 connections.spawn(async move {
                     if handle_connection(
                         stream,
                         state,
                         lane_permit,
                         global_permit,
-                        handshake_timeout,
-                        idle_timeout,
-                        connection_timeout,
+                        timeouts,
                         connection_shutdown,
                     )
                     .await
@@ -447,18 +462,16 @@ async fn handle_connection(
     state: Arc<ServerState>,
     _lane_connection_permit: OwnedSemaphorePermit,
     _global_connection_permit: OwnedSemaphorePermit,
-    handshake_timeout: Duration,
-    idle_timeout: Duration,
-    connection_timeout: Duration,
+    timeouts: ConnectionTimeouts,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let connection_deadline = Instant::now() + connection_timeout;
+    let connection_deadline = Instant::now() + timeouts.lifetime;
     let websocket_config = WebSocketConfig::default()
         .max_message_size(Some(MAX_WIRE_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_WIRE_MESSAGE_BYTES))
         .max_write_buffer_size(MAX_WIRE_MESSAGE_BYTES * 2);
     let mut websocket = tokio::time::timeout(
-        handshake_timeout,
+        timeouts.handshake,
         tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config)),
     )
     .await
@@ -473,7 +486,7 @@ async fn handle_connection(
         let remaining = connection_deadline
             .checked_duration_since(Instant::now())
             .ok_or_else(|| "WebSocket connection lifetime exceeded".to_owned())?;
-        let receive_timeout = idle_timeout.min(remaining);
+        let receive_timeout = timeouts.idle.min(remaining);
         let next = tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -1024,18 +1037,36 @@ mod tests {
         .await
         .unwrap();
         let now = now_unix().unwrap();
-        let event = signed_entry(&publisher, [0x20; 32], 1, now - 1, now, 1);
+        let wrong_lane_sentinel = signed_entry(&publisher, [0x20; 32], 99, now - 2, now, 1);
+        let event = signed_entry(&publisher, [0x21; 32], 1, now - 1, now, 2);
 
         let mut public_writer = connect_public(&handle).await;
         public_writer
             .send(Message::Text(
-                String::from_utf8(event.to_event_message_json_bytes().unwrap())
+                String::from_utf8(wrong_lane_sentinel.to_event_message_json_bytes().unwrap())
                     .unwrap()
                     .into(),
             ))
             .await
             .unwrap();
         expect_connection_failure(&mut public_writer).await;
+
+        let absence_subscription = "wrong-lane-absence";
+        let absence_request = serde_json::to_string(&(
+            "REQ",
+            absence_subscription,
+            IdFilter {
+                ids: vec![hex::encode(wrong_lane_sentinel.id())],
+            },
+        ))
+        .unwrap();
+        let mut absence_reader = connect_public(&handle).await;
+        assert!(
+            receive_catalog(&mut absence_reader, &absence_request, absence_subscription,)
+                .await
+                .is_empty(),
+            "public-lane EVENT must not be archived before its connection closes"
+        );
 
         let mut publisher_reader = connect_publisher(&handle).await;
         publisher_reader
@@ -1052,9 +1083,9 @@ mod tests {
         assert!(publish(&mut writer, &event).await.0);
         let mut reader = connect_public(&handle).await;
         let request =
-            String::from_utf8(catalog_req_json_v1(publisher.public_key(), 0).unwrap()).unwrap();
+            String::from_utf8(catalog_req_json_v1(publisher.public_key(), 2).unwrap()).unwrap();
         assert_eq!(
-            receive_catalog(&mut reader, &request, "bitcoinpir-directory-v1-shard-0").await,
+            receive_catalog(&mut reader, &request, "bitcoinpir-directory-v1-shard-2").await,
             vec![hex::encode(event.id())]
         );
         handle.shutdown().await.unwrap();

@@ -217,17 +217,22 @@ async fn two_relay_real_process_catalog_e2e() {
     );
 
     let initial = signed_catalog(&publisher, now, now.saturating_sub(2), 1, 1);
+    let wrong_lane_sentinel =
+        signed_shard(&publisher, now, now.saturating_sub(3), 0, 99, 99, 0xe0)[0].clone();
 
     // The two sockets are protocol lanes, not interchangeable aliases. Wrong-
     // lane messages close without an acknowledgement so a public EVENT cannot
-    // contradict a durable private-lane commit and a publisher connection
-    // cannot be repurposed as a read channel.
+    // create either an acknowledgement or an archived record, and a publisher
+    // connection cannot be repurposed as a read channel. The sentinel is not
+    // reused by a later valid publish, so exact-ID absence proves rejection did
+    // not silently commit before closing the connection.
     assert_wrong_lane_rejected(
         relay0.public_port,
-        event_message_text(&initial[0]),
+        event_message_text(&wrong_lane_sentinel),
         "EVENT on public relay lane",
     )
     .await;
+    assert_event_id_absent(relay0.public_port, wrong_lane_sentinel.id()).await;
     assert_wrong_lane_rejected(
         relay0.publisher_port,
         serde_json::json!([
@@ -608,6 +613,40 @@ async fn wait_for_event_id(port: u16, event_id: &[u8; 32]) {
         committed,
         "lost-ACK event was not readable after 40 bounded probes"
     );
+}
+
+async fn assert_event_id_absent(port: u16, event_id: &[u8; 32]) {
+    let mut client = relay_client(port)
+        .await
+        .expect("connect wrong-lane absence probe");
+    let subscription = "wrong-lane-absence";
+    let request = serde_json::json!([
+        "REQ",
+        subscription,
+        {"ids": [hex::encode(event_id)]}
+    ]);
+    client
+        .send(Message::Text(request.to_string().into()))
+        .await
+        .expect("send wrong-lane absence probe");
+    let response: Value = serde_json::from_str(
+        &receive_text(&mut client)
+            .await
+            .expect("receive wrong-lane absence probe"),
+    )
+    .expect("parse wrong-lane absence response");
+    match response[0]
+        .as_str()
+        .expect("wrong-lane absence response kind")
+    {
+        "EVENT" => panic!(
+            "public-lane EVENT was silently persisted: {}",
+            hex::encode(event_id)
+        ),
+        "EOSE" => assert_eq!(response[1], subscription, "absence EOSE subscription"),
+        other => panic!("unexpected wrong-lane absence response: {other}"),
+    }
+    let _ = client.send(Message::Close(None)).await;
 }
 
 async fn read_consistent_catalog(

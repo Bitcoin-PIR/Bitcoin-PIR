@@ -27,6 +27,69 @@ the current directory/socket type, UID, GID, and mode twice around live unit
 collection. A world-writable socket, extra group member, symlink, stale socket,
 wrong owner, or changed path fails closed.
 
+Payment V1 does not claim that arbitrary NSS backends can be completely
+enumerated. Activation requires this local authority profile, with no explicit
+`initgroups:` database:
+
+```text
+passwd: files
+group: files
+```
+
+The v2 live collector takes stable, root-owned, one-link, non-writable snapshots
+without special mode bits of `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group`
+before and after NSS enumeration, then confirms the same snapshot again after
+the remaining live checks. It requires the identity-relevant
+name/UID/primary-GID and name/GID/member projections from `getent passwd/group`
+to equal those exact local files, then runs `id -G` for every enumerated account
+on a monotonic bounded deadline.
+Duplicate UID/GID aliases, extra primary-GID holders, extra explicit or effective
+members, inconsistent reverse membership, change during collection, timeout, or
+record/byte overflow fails closed. `systemd`, SSSD, LDAP, winbind, NIS and other
+lookup-only or remotely cached identity sources are not accepted by this V1
+profile; supporting them requires their own authoritative complete-enumeration
+and generation proof.
+
+Static NSS membership is not enough because a process can retain an old UID or
+supplementary GID after the files change. The collector therefore performs two
+bounded full `/proc/<pid>/task/<tid>` credential passes. Every non-root thread
+must also lack CAP_SETUID and CAP_SETGID in its inheritable, permitted,
+effective and ambient sets. Every thread
+holding a protected UID or GID must have the exact reviewed UID/GID/group set
+and belong to the current exact `/system.slice/<unit>.service` cgroup. This
+admits HAProxy master/worker processes in the same unit while rejecting stale
+processes outside it. Every long-running MainPID must appear in both passes,
+whose holder records must be byte-identical; a final systemd generation check
+then rebinds MainPID, InvocationID and ControlGroup.
+
+This is a credential-holder closure, not proof that no process inherited an
+already-connected Unix socket file descriptor through `SCM_RIGHTS`. Activation
+must therefore start from a dead connection graph. With both units fully
+stopped, run `collect-stopped-edge`: it requires every unit to be
+inactive/dead with MainPID 0, an empty ControlGroup, no drop-ins, and no
+runtime socket path; requires every manifest-bound service account to use
+`/usr/sbin/nologin` or `/bin/false` and a locked `/etc/shadow` password; and
+requires two host-wide procfs passes with no protected UID/GID holder and no
+non-root CAP_SETUID/CAP_SETGID holder. Only after that exact evidence is
+reviewed may HAProxy start, followed by Caddy. A stopped HAProxy closes the
+server side of every old connection; its recreated RuntimeDirectory gives the
+next generation new listener inodes. The final `collect-live` pass binds the
+new listener/process generation. Do not approve evidence collected across an
+in-place reload or a warm edge handoff.
+
+The stopped pass closes ordinary credential reacquisition under the declared
+trusted-root boundary; it is not a proof against a compromised root, a new
+kernel/local-privilege exploit, or a service-account policy changed by root
+after collection. Root, systemd, the local authentication policy, the exact
+collector/Node/helper binaries, and the pinned Caddy/HAProxy processes remain
+in the activation TCB.
+
+The collector records that it shares the visible PID namespace of a systemd
+PID 1. That does not by itself distinguish a systemd container from the initial
+host PID namespace. The operator must run the ceremony directly in the target
+host's initial PID namespace and independently record/check the namespace link;
+a container or private PID namespace is not production evidence.
+
 There is no header fallback. Caddy clears all incoming headers before adding
 the small fixed application set and sends the real network source only in a
 PROXY-v2 preamble to a protected Unix socket. HAProxy consumes that preamble,
@@ -197,13 +260,40 @@ The production HAProxy must be a currently maintained 2.8.x release, show
 one-entry hash manifest; the CI distribution package is only compatibility
 evidence.
 
-Finally render the closed profile, run `systemd-analyze verify`, start only an
-unrouted canary, and collect root Linux evidence with
-`payment-v1-linux-runtime-evidence.mjs`. The evidence must show both units
+Finally render the closed profile and run `systemd-analyze verify`. For the
+unrouted canary, stop Caddy, stop HAProxy, reset failed unit state, and keep
+both listeners absent. Do this from the host's initial PID namespace, never by
+warm reload. First collect and externally pin stopped-edge evidence:
+
+```sh
+sudo /usr/bin/node scripts/payment-v1-linux-runtime-evidence.mjs collect-stopped-edge \
+  --bundle /absolute/rendered-bundle \
+  --approved-manifest-sha256 APPROVED_MANIFEST_SHA256 \
+  --approved-plan-sha256 APPROVED_PLAN_SHA256 \
+  --expected-machine-id-sha256 APPROVED_MACHINE_ID_SHA256 \
+  --output /absolute/evidence/stopped-edge.json
+```
+
+Verify its complete SHA-256 out of band. Only after that pass may the operator
+start `bitcoinpir-payment-v1-source-fair-edge.service`, wait for readiness,
+and then start `bitcoinpir-payment-v1-public-edge.service`. Immediately collect
+root Linux live evidence with the same exact script and pins using
+`collect-live`. The live evidence must show both units
 active with exact effective resource/hardening values, no drop-ins, exact
 process/group identities, zero current/max swap, zero hard/soft core limits,
-the safe host core pattern, and the five runtime path records. Public routing
-is a later, separately approved action.
+the safe host core pattern, the recorded systemd PID namespace, and the five
+runtime path records before and after the all-thread scan. Validate each file
+offline only with its independently transferred complete digest and the
+matching `verify-stopped-edge-offline` or `verify-offline` command. Public
+routing is a later, separately approved action.
+
+This is trusted-root operational evidence, not remote or hardware attestation.
+Its conclusion depends on the target root, the exact collector/Node/helper
+bytes, libc/NSS behavior, and the local policy files being honest. Run the
+collector only from the frozen commit after independently checking its script
+hash. The transferred evidence digest protects handoff integrity; it does not
+prove that the collecting root was honest, and the current manifest does not
+self-attest the collector script bytes.
 
 The separate `edge-rollback-authority-v1` rendered profile additionally closes
 over its static server certificate and owner-only private key. Its unit has no
