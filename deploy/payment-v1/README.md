@@ -31,7 +31,8 @@ The templates divide responsibilities as follows:
   exact CLN unit, RPC guard, and successful live preflight, and it never runs a
   fake settlement backend. The issuer has no native CLN or Bitcoin-cookie
   group and `/srv/lightning` plus `/srv/bitcoin` are inaccessible in its mount
-  namespace. The public edge exposes only credential redemption and
+  namespace; the source-fair socket namespace is inaccessible as well. The
+  public edge exposes only credential redemption and
   authenticated provider-balance lookup; payout-intent, payout and
   payout-status routes are not part of the V1 production product. Its command
   has no payout target, fee, or intent-TTL argument; the source gate rejects
@@ -39,12 +40,34 @@ The templates divide responsibilities as follows:
 - `systemd/rollback-authority.service.in` is instantiated only on a separately
   administered authority host. Provider 0, Provider 1, and the issuer each need
   their own host, keys, database, TLS edge, administrator, logs, and backup
-  domain.
+  domain. Its `edge-rollback-authority-v1` profile binds Caddy only to one
+  RFC1918/ULA address, admits only the sole client's exact private IP at the
+  systemd network boundary, uses a static TLS certificate compatible with the
+  existing strict SPKI-pinned client, and requires a separate private-ingress
+  sentinel. It does not pretend that server-only mTLS is deployable before the
+  client also has reviewed certificate/key support.
 - `systemd/hetzner-directory-relay.service.in` is deliberately blocked while
   `relay-selection.toml.example` is `UNRESOLVED`. It is a deployment contract
   for the repository's directory-only relay, not a generic Nostr relay unit.
   A future resolved service may pass only one absolute owner-only TOML path via
   `--config`; direct command-line overrides remain forbidden.
+- `systemd/payment-v1-source-fair-edge.service.in` runs pinned HAProxy 2.8
+  without a StateDirectory, logs, peers, stats, or persisted source state. It
+  owns a volatile `0750` runtime directory and four `0660` PROXY-v2 Unix
+  sockets. Provider, issuer, public directory, and private publisher lanes have
+  independent short-lived source tables and budgets.
+- `systemd/payment-v1-public-edge.service.in` runs pinned stock Caddy and binds
+  its lifecycle to the source-fair unit. It clears client headers, carries the
+  source only in PROXY v2 over those Unix sockets, and has no source-header
+  fallback. Both edge units send stdout/stderr to `null`, disable core limits
+  and swap for the service cgroups, and rendered/live evidence rejects
+  journal/core/swap drift. The publisher hostname binds a
+  distinct private address; Caddy and HAProxy both require the publisher's
+  exact WireGuard/private-route source IP, while a WebPKI server certificate
+  keeps the existing credential-free `bpir-admin` WSS client compatible. The
+  Nostr signature and pinned directory key remain the publication authority.
+  Both units require a separate publisher-private-ingress sentinel. Rollback
+  authorities do not use this public HAProxy.
 - `vpsbg/vpsbg-free-pow-service-auth.args.in` is the only VPSBG change described
   by this directory. It lists the enforced Payment V1 arguments that a reviewed
   UKI rebuild would append to the existing query-only provider's final exec. It
@@ -74,6 +97,9 @@ Run the repository gate before reviewing a rendered deployment:
 ```sh
 node scripts/payment-v1-deployment-template-gate.mjs
 node --test scripts/payment-v1-deployment-template-gate.test.mjs
+BPIR_HAPROXY_BIN=/absolute/pinned/haproxy \
+BPIR_CADDY_BIN=/absolute/pinned/caddy \
+  node --test scripts/payment-v1-source-fair-edge.test.mjs
 ```
 
 The gate also pins hashes of the pre-existing active systemd units and the
@@ -87,8 +113,24 @@ artifact/hash manifest, and reject placeholders, extra files, symlinks and
 cross-profile dependencies. Then use
 `scripts/payment-v1-linux-runtime-evidence.mjs` as root on the exact Linux host
 to bind effective systemd state, running process identities, NSS, ACLs, xattrs,
-capabilities, boot and host identity to that manifest. Offline review without
-the externally transferred full evidence digest is not activation evidence.
+capabilities, boot and host identity to that manifest. The Hetzner edge request
+also binds the live runtime directory and all four socket types, owners, groups,
+and modes. Edge live evidence additionally requires hard/soft core limits of
+zero, zero current/max cgroup swap, and the host-wide
+`kernel.core_pattern=|/usr/bin/false`; the collector also hashes and validates
+that exact root-owned, canonical, one-link, non-writable handler.
+`LimitCORE=0` alone is not sufficient when a
+kernel pipe handler ignores the resource limit. Offline review without the externally transferred full evidence
+digest is not activation evidence. HAProxy admission begins only after Caddy
+has accepted TCP/TLS and parsed HTTP; it does not replace independent
+Caddy-front slowloris, header, file-descriptor, memory, task, firewall, or
+volumetric limits.
+
+The exact production HAProxy must be a currently maintained 2.8.x build whose
+`haproxy -vv` feature list contains `+SYSTEMD`; the unit uses `Type=notify` and
+`-Ws`. CI's distribution package is only a compatibility baseline, not the
+production binary pin. The exact pinned bytes must pass the suite without any
+binary-dependent skip.
 
 See `docs/payment/HETZNER_VPSBG_DEPLOYMENT.md` for topology, rendering,
 activation, rollback, and remote-approval boundaries.

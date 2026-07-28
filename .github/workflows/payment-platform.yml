@@ -37,6 +37,7 @@ on:
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
+      - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
@@ -81,6 +82,7 @@ on:
       - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.mjs'
       - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
+      - 'scripts/payment-v1-source-fair-edge.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
@@ -416,6 +418,19 @@ jobs:
         run: npm ci
       - name: Enforce manual main-only production Pages deployment
         run: node scripts/payment-v1-pages-deploy-gate.mjs
+      - name: Install source-fair edge compatibility test binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends haproxy
+          /usr/sbin/haproxy -vv | grep -E '^HAProxy version 2\.8\.'
+          /usr/sbin/haproxy -vv | grep -E '(\+SYSTEMD)([[:space:]]|$)'
+          caddy_container="$(docker create caddy@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794)"
+          docker cp "$caddy_container:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
+          docker rm "$caddy_container"
+          chmod 0555 "$RUNNER_TEMP/caddy"
+          test "$("$RUNNER_TEMP/caddy" version | awk '{print $1}')" = 'v2.11.3'
+          echo 'BPIR_HAPROXY_BIN=/usr/sbin/haproxy' >> "$GITHUB_ENV"
+          echo "BPIR_CADDY_BIN=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
       - name: Validate non-activating Payment V1 deployment templates
         run: |
           node --check scripts/payment-v1-deployment-template-gate.mjs
@@ -425,9 +440,11 @@ jobs:
           node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.mjs
           node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+          node --check scripts/payment-v1-source-fair-edge.test.mjs
           node --test \
             scripts/payment-v1-rendered-artifact-gate.test.mjs \
-            scripts/payment-v1-linux-runtime-evidence.test.mjs
+            scripts/payment-v1-linux-runtime-evidence.test.mjs \
+            scripts/payment-v1-source-fair-edge.test.mjs
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

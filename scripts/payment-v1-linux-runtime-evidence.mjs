@@ -40,6 +40,7 @@ const MAX_PROC_STATUS_BYTES = 256 * 1024;
 const REVIEWED_ONESHOT_UNIT = "bitcoinpir-lightning-preflight.service";
 const REVIEWED_ONESHOT_FRAGMENT = "/etc/systemd/system/bitcoinpir-lightning-preflight.service";
 const REQUIRED_COMMANDS = Object.freeze([
+  "/usr/bin/false",
   "/usr/bin/getent",
   "/usr/bin/getfacl",
   "/usr/bin/getfattr",
@@ -210,9 +211,15 @@ function collectExtendedMetadata(path, expectedType) {
   const statRecord = runAbsolute("/usr/bin/stat", ["-c", "%d:%i:%u:%g:%a:%h:%s:%F", "--", path]);
   if (statRecord.exit_status !== 0 || statRecord.stderr !== "") fail(`stat failed for ${path}`);
   const nodeStat = lstatSync(path);
+  const statType = {
+    directory: "directory",
+    regular: "regular file",
+    socket: "socket",
+  }[expectedType];
+  if (statType === undefined) fail(`unreviewed extended metadata type: ${expectedType}`);
   const expectedStatLine = `${nodeStat.dev}:${nodeStat.ino}:${nodeStat.uid}:${nodeStat.gid}:${(
     nodeStat.mode & 0o7777
-  ).toString(8)}:${nodeStat.nlink}:${nodeStat.size}:${expectedType === "regular" ? "regular file" : "directory"}\n`;
+  ).toString(8)}:${nodeStat.nlink}:${nodeStat.size}:${statType}\n`;
   if (statRecord.stdout !== expectedStatLine) fail(`independent stat mismatch for ${path}`);
 
   const acl = runAbsolute("/usr/bin/getfacl", ["-c", "-p", "-n", "--", path]);
@@ -343,6 +350,28 @@ function collectTmpfilesDirectory(expected, nss) {
   };
   if (observed.uid !== user.uid || observed.gid !== group.gid || observed.mode !== expected.mode) {
     fail(`tmpfiles directory owner or mode mismatch: ${expected.target_path}`);
+  }
+  return observed;
+}
+
+function collectRuntimePath(expected) {
+  const stat = lstatSync(expected.target_path);
+  const typeMatches =
+    (expected.file_type === "directory" && stat.isDirectory()) ||
+    (expected.file_type === "socket" && stat.isSocket());
+  if (!typeMatches || stat.isSymbolicLink() || realpathSync(expected.target_path) !== expected.target_path) {
+    fail(`runtime path is not the expected canonical ${expected.file_type}: ${expected.target_path}`);
+  }
+  const observed = {
+    ...stableStat(stat),
+    file_type: expected.file_type,
+    target_path: expected.target_path,
+    ...collectExtendedMetadata(expected.target_path, expected.file_type),
+  };
+  for (const key of ["file_type", "gid", "mode", "target_path", "uid"]) {
+    if (observed[key] !== expected[key]) {
+      fail(`runtime path ${key} mismatch: ${expected.target_path}`);
+    }
   }
   return observed;
 }
@@ -631,8 +660,13 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "IPAddressAllow",
   "IPAddressDeny",
   "InaccessiblePaths",
+  "LimitCORE",
+  "LimitCORESoft",
   "LockPersonality",
   "MemoryDenyWriteExecute",
+  "MemoryMax",
+  "MemorySwapCurrent",
+  "MemorySwapMax",
   "NoNewPrivileges",
   "PrivateDevices",
   "PrivateTmp",
@@ -652,8 +686,11 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "RestrictNamespaces",
   "RestrictRealtime",
   "RestrictSUIDSGID",
+  "StandardError",
+  "StandardOutput",
   "SupplementaryGroups",
   "SystemCallArchitectures",
+  "TasksMax",
   "Type",
   "UMask",
   "User",
@@ -831,6 +868,15 @@ function validateEffectiveUnitProperties(unit, properties, uptimeFinishedMillise
       fail(`effective ${key} drift: ${unit.unit_name}`);
     }
   }
+  if (unit.hardening.LimitCORE !== undefined && properties.LimitCORESoft !== "0") {
+    fail(`effective LimitCORESoft drift: ${unit.unit_name}`);
+  }
+  if (
+    unit.hardening.MemorySwapMax !== undefined &&
+    properties.MemorySwapCurrent !== "0"
+  ) {
+    fail(`effective MemorySwapCurrent drift: ${unit.unit_name}`);
+  }
   return validateUnitLifecycle(unit, properties, uptimeFinishedMilliseconds);
 }
 
@@ -942,6 +988,10 @@ function collectUnit(unit, nss, serviceIdentities, uptimeFinishedMilliseconds) {
 function readHostBinding() {
   const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   validateUuid(bootId, "Linux boot id");
+  const corePattern = readFileSync("/proc/sys/kernel/core_pattern", "utf8").trim();
+  if (corePattern === "" || /[\r\n\0]/u.test(corePattern)) {
+    fail("Linux core_pattern is malformed");
+  }
   const machineId = readFileSync("/etc/machine-id");
   const uptimeText = readFileSync("/proc/uptime", "utf8").trim().split(/\s+/u)[0];
   const uptimeMilliseconds = Math.floor(Number(uptimeText) * 1000);
@@ -953,6 +1003,7 @@ function readHostBinding() {
   }
   return {
     boot_id: bootId,
+    core_pattern: corePattern,
     kernel_release: kernel.stdout.trim(),
     machine_id_sha256: hashBytes(machineId),
     systemd_version: systemd.stdout.split("\n", 1)[0],
@@ -1091,6 +1142,7 @@ export function validateLiveRuntimeEvidence({
       "manifest_sha256",
       "nss",
       "runtime_directories",
+      "runtime_paths",
       "schema_version",
       "secret_access_checks",
       "secret_parent_directories",
@@ -1130,12 +1182,20 @@ export function validateLiveRuntimeEvidence({
   }
   exactKeys(
     evidence.host,
-    ["boot_id", "kernel_release", "machine_id_sha256", "systemd_version", "uptime_finished_milliseconds", "uptime_started_milliseconds"],
+    ["boot_id", "core_pattern", "kernel_release", "machine_id_sha256", "systemd_version", "uptime_finished_milliseconds", "uptime_started_milliseconds"],
     "live evidence host",
   );
   validateUuid(evidence.host.boot_id, "live evidence boot id");
   if (evidence.host.machine_id_sha256 !== expectedMachineIdSha256) fail("live evidence came from another host");
   if (expectedBootId !== undefined && evidence.host.boot_id !== expectedBootId) fail("live evidence came from another boot");
+  if (
+    new Set(["edge-hetzner-v1", "edge-rollback-authority-v1"]).has(
+      request.deployment_profile,
+    ) &&
+    evidence.host.core_pattern !== "|/usr/bin/false"
+  ) {
+    fail("edge live evidence requires kernel.core_pattern=|/usr/bin/false");
+  }
   if (
     !Number.isSafeInteger(evidence.host.uptime_started_milliseconds) ||
     !Number.isSafeInteger(evidence.host.uptime_finished_milliseconds) ||
@@ -1266,6 +1326,47 @@ export function validateLiveRuntimeEvidence({
       actual.file_type !== "directory"
     ) fail(`live tmpfiles directory drift: ${expected.target_path}`);
   }
+  if (!Array.isArray(request.runtime_paths) || !Array.isArray(evidence.runtime_paths)) {
+    fail("live runtime path schema is incomplete");
+  }
+  if (evidence.runtime_paths.length !== request.runtime_paths.length) {
+    fail("live runtime path evidence is incomplete");
+  }
+  for (let index = 0; index < request.runtime_paths.length; index += 1) {
+    const expected = request.runtime_paths[index];
+    const actual = evidence.runtime_paths[index];
+    exactKeys(
+      actual,
+      [
+        "acl_sha256",
+        "capability_sha256",
+        "dev",
+        "expected_type",
+        "file_type",
+        "gid",
+        "ino",
+        "mode",
+        "nlink",
+        "size",
+        "stat_command_sha256",
+        "target_path",
+        "uid",
+        "xattr_sha256",
+      ],
+      `live runtime_paths[${index}]`,
+    );
+    for (const key of ["file_type", "gid", "mode", "target_path", "uid"]) {
+      if (actual[key] !== expected[key]) {
+        fail(`live runtime path ${key} drift: ${expected.target_path}`);
+      }
+    }
+    if (actual.expected_type !== expected.file_type) {
+      fail(`live runtime path type drift: ${expected.target_path}`);
+    }
+    for (const key of ["acl_sha256", "capability_sha256", "stat_command_sha256", "xattr_sha256"]) {
+      validateDigest(actual[key], `live runtime path ${key}`);
+    }
+  }
   if (!Array.isArray(evidence.units) || evidence.units.length !== request.units.length) {
     fail("live systemd unit evidence is incomplete");
   }
@@ -1340,6 +1441,15 @@ export function validateLiveRuntimeEvidence({
       }
     }
   }
+  for (const user of evidence.nss.users) {
+    for (const gid of user.supplementary_gids) {
+      if (gid === user.primary_gid) continue;
+      const group = evidence.nss.groups.find((entry) => entry.gid === gid);
+      if (!group || !group.members.includes(user.name)) {
+        fail(`live NSS reverse group membership is inconsistent: ${user.name}`);
+      }
+    }
+  }
   for (const unit of request.units) {
     const userName = unit.hardening.User?.[0];
     const groupName = unit.hardening.Group?.[0];
@@ -1365,6 +1475,7 @@ export function validateLiveRuntimeEvidence({
       for (const supplementaryName of directive.split(/\s+/u)) {
         const supplementary = groupsByName.get(supplementaryName);
         if (!supplementary) fail(`live NSS supplementary group missing: ${supplementaryName}`);
+        expectedGroups.add(supplementary.gid);
       }
     }
     if (
@@ -1444,6 +1555,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   const nss = collectNss(request);
   const installedFiles = request.installed_files.map(collectInstalledFile);
   const runtimeDirectories = request.tmpfiles_directories.map((entry) => collectTmpfilesDirectory(entry, nss));
+  const runtimePaths = request.runtime_paths.map(collectRuntimePath);
   const secretParentDirectories = secretParentPaths(request.secret_files).map(collectSecretParentDirectory);
   const secretAccessChecks = collectSecretAccessChecks(request, nss);
   for (const secret of request.secret_files) {
@@ -1462,11 +1574,19 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
   const units = request.units.map((unit) =>
     collectUnit(unit, nss, request.service_identities, hostStarted.uptime_milliseconds),
   );
+  const runtimePathConfirmation = request.runtime_paths.map(collectRuntimePath);
+  if (canonicalJson(runtimePaths) !== canonicalJson(runtimePathConfirmation)) {
+    fail("runtime path metadata changed while live unit evidence was collected");
+  }
   const analyze = runAbsolute(request.systemd_analyze_argv[0], request.systemd_analyze_argv.slice(1), { allowOutput: false, timeout: 30_000 });
   if (analyze.exit_status !== 0) fail("systemd-analyze verify failed");
   const hostFinished = readHostBinding();
   const finished = Math.floor(Date.now() / 1000);
-  if (hostFinished.boot_id !== hostStarted.boot_id || hostFinished.machine_id_sha256 !== hostStarted.machine_id_sha256) {
+  if (
+    hostFinished.boot_id !== hostStarted.boot_id ||
+    hostFinished.core_pattern !== hostStarted.core_pattern ||
+    hostFinished.machine_id_sha256 !== hostStarted.machine_id_sha256
+  ) {
     fail("host or boot identity changed during live collection");
   }
   const evidence = {
@@ -1479,6 +1599,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     evidence_kind: LIVE_EVIDENCE_KIND,
     host: {
       boot_id: hostStarted.boot_id,
+      core_pattern: hostStarted.core_pattern,
       kernel_release: hostStarted.kernel_release,
       machine_id_sha256: hostStarted.machine_id_sha256,
       systemd_version: hostStarted.systemd_version,
@@ -1489,6 +1610,7 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
     manifest_sha256: approvedManifestSha256,
     nss,
     runtime_directories: runtimeDirectories,
+    runtime_paths: runtimePaths,
     schema_version: LIVE_SCHEMA_VERSION,
     secret_access_checks: secretAccessChecks,
     secret_parent_directories: secretParentDirectories,

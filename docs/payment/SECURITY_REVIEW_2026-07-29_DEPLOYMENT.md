@@ -86,24 +86,48 @@ mandatory.
 
 ### Source-fair public admission
 
-The stock-Caddy templates and the application processes currently use global
-connection and operation budgets. A single low-bandwidth source can occupy the
-provider or directory WebSocket pool, consume the anonymous quote budget, or
-hold the rollback-authority queue without a payment or publisher key. This is
-not volumetric DDoS and cannot be dismissed as upstream capacity planning.
+The source-fair follow-up supplies separate stock-Caddy and HAProxy layers for
+the public Hetzner edge. Four protected PROXY-v2 Unix sockets feed independent,
+short-lived provider, issuer, directory-reader and directory-publisher source
+buckets. Every successful `track-sc` is checked explicitly, so full-table
+allocation failure rejects rather than admitting an unaccounted request. The
+business services receive only new source-free loopback connections.
 
-Before public activation:
+The source templates now enforce the following design requirements:
 
-1. add an ephemeral source-fair connection/request boundary in front of the
+1. an ephemeral source-fair connection/request boundary in front of the
    public provider, issuer and directory surfaces;
 2. do not persist IP/request records or forward source identity into the PIR,
    payment, directory or rollback business processes;
-3. give the signed directory publisher a separate private ingress and reserved
-   connection/operation/egress budget;
-4. place each rollback authority behind its sole client's WireGuard, mTLS or
-   equivalent narrow firewall allowlist; and
-5. collect negative live evidence that one source cannot exhaust every global
-   slot or quote token.
+3. the signed directory publisher has a separate private ingress, an exact
+   WireGuard/private-route client-IP check in both Caddy and HAProxy, a WebPKI
+   server certificate compatible with the current credential-free publisher,
+   a dedicated activation sentinel, and reserved connection/operation/egress
+   budget;
+4. each rollback authority binds one private address and its systemd unit
+   allows only the sole client's exact private IP; the current strict client
+   uses WebPKI/SPKI plus signed requests rather than an unsupported one-sided
+   mTLS configuration; and
+5. both edge processes have null output, zero core limits and zero cgroup swap.
+
+The public-reader and private-publisher sites currently share the pinned Caddy
+process and its process-level resource budget; all lanes also share one HAProxy
+process and cgroup despite separate frontend/table/connection/egress limits.
+Public pre-routing TCP/TLS or HAProxy process-level pressure can still affect
+publisher availability. This is an explicit residual V1 availability boundary,
+not evidence of complete ingress isolation; a deployment needing a hard
+publisher boundary must split both edge layers into separately evidenced units.
+The two relay listeners also share one mutex-protected SQLite store. Reserved
+admission slots prevent public work from consuming publisher lane capacity,
+but an active public database operation can still delay a publisher write;
+V1 does not claim storage-level availability isolation.
+
+This remains a P1 **activation** blocker until the exact pinned Linux binaries
+pass the no-skip behavior suite and target-host evidence proves the effective
+units, source-fair sockets, negative starvation cases, zero current/max swap,
+zero hard/soft core limits, and `kernel.core_pattern=|/usr/bin/false`, including
+the handler's canonical root-owned bytes and metadata. Linux pipe core handlers
+may ignore `RLIMIT_CORE`; the unit directive alone is not proof.
 
 The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
@@ -194,6 +218,7 @@ Hetzner host; arbitrary unmeasured limits are not safe defaults.
 - no-funds local regtest and persistent default-Signet Lightning drills,
   including backup/restore and lost-response reconciliation;
 - source-fair starvation and cgroup pressure tests;
+- target-host no-core/no-swap evidence, including the host core pattern;
 - private provider/issuer/directory canaries with strict client verification;
   and
 - final manual browser acceptance by the user before public routing changes.
