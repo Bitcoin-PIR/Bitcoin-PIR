@@ -195,8 +195,10 @@ cargo test --locked --offline -p bitcoinpir-directory-relay \
 Two copies of the repository's production `bitcoinpir-directory-relay` binary
 use different owner-only configs, SQLite files and runtimes, plus four distinct
 loopback listeners: one public read lane and one private publisher lane per
-relay. A real WebSocket client sends every signed `EVENT` through a publisher
-lane and every `REQ`/`EOSE` readback through the corresponding public lane. It
+relay. Every accepted signed `EVENT` uses a publisher lane, and every accepted
+ID/catalog `REQ` plus returned `EVENT`/`EOSE` uses the corresponding public
+lane. Deliberate wrong-lane probes must close; an exact-ID public readback
+proves the rejected EVENT sentinel was not persisted. The client
 cryptographically verifies the same complete 16-shard catalog from both,
 proves both stale-head views remain independently valid before requiring the
 exact split-view rejection, rejects one-relay-offline, resolves a lost positive
@@ -745,6 +747,38 @@ refunds or unspends the already committed capability.
 - routing fee is not treated as underpayment;
 - late settlement issues once if backend says settled;
 - no automatic refund/query-credit restore.
+
+## Deployment evidence tests
+
+- runtime-evidence accepts only the exact local-files NSS profile and checks
+  stable root-owned policy snapshots, identity-relevant `getent` projections,
+  every user's `id -G`, UID/GID uniqueness and protected-group closure;
+- a final policy snapshot detects `/etc/nsswitch.conf`, `/etc/passwd` or
+  `/etc/group` drift during later live checks;
+- two bounded full `/proc/<pid>/task/<tid>` scans must produce identical
+  protected UID/GID holder records and reject any non-root inheritable,
+  permitted, effective or ambient CAP_SETUID/CAP_SETGID; an unmanaged stale
+  holder, wrong cgroup, changed credential, omitted MainPID, pass race, set-ID
+  capability or legacy evidence fails;
+- an exact managed-unit cgroup may contain master/worker processes only with the
+  unit's complete reviewed UID/GID/group set, and a post-scan generation check
+  rebinds MainPID, InvocationID and ControlGroup;
+- post-scan directory/socket snapshots must still equal the pre-scan inode,
+  type, owner, group, mode, ACL/xattr/capability and stat-command evidence;
+- real Ubuntu procfs enumeration and an Alpine repeated-`Groups:` regression run
+  without skips; evidence count/byte/time bounds fail closed;
+- stopped-edge evidence requires every manifest unit inactive/dead with
+  MainPID 0 and empty ControlGroup, every runtime socket absent, every service
+  account UID/GID-pinned with a nologin/false shell and locked shadow password,
+  and an empty protected-holder closure across both passes; active units,
+  present sockets, login-capable/unlocked accounts, namespace drift and legacy
+  evidence fail closed;
+- target activation invalidates all old connected FDs, approves the exact
+  stopped-edge evidence digest before any listener, recreates the volatile
+  listeners in HAProxy-before-Caddy order, collects a fresh live digest, and
+  independently proves execution in the host initial PID namespace;
+- public and publisher relay listeners reject deliberate wrong-lane EVENTs and
+  prove their exact event IDs absent before a correct-lane publication.
 
 ## Directory tests
 
