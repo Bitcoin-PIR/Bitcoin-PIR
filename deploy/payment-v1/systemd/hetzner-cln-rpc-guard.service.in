@@ -1,0 +1,65 @@
+# BitcoinPIR CLN RPC method guard; never install this .in file directly.
+[Unit]
+Description=BitcoinPIR Core Lightning RPC allowlist guard (template only)
+After=bitcoinpir-core-lightning.service
+Requires=bitcoinpir-core-lightning.service
+BindsTo=bitcoinpir-core-lightning.service
+Before=bitcoinpir-payment-issuer.service
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+
+[Service]
+Type=simple
+User=bitcoinpir-cln-rpc-guard
+Group=bitcoinpir-cln-guard
+SupplementaryGroups=bitcoinpir-issuer
+UMask=0077
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/cln-rpc-guard/@CLN_RPC_GUARD_SHA256@/bitcoinpir-cln-rpc-guard
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-rpc-guard.sha256
+ExecStart=/opt/bitcoinpir/cln-rpc-guard/@CLN_RPC_GUARD_SHA256@/bitcoinpir-cln-rpc-guard \
+    --listen-socket /run/bitcoinpir-cln-rpc-guard/issuer/issuer-rpc \
+    --upstream-socket /srv/lightning/@LIGHTNING_NETWORK@/lightning-rpc \
+    --guard-uid @CLN_GUARD_UID@ \
+    --guard-gid @LIGHTNING_GID@ \
+    --issuer-uid @ISSUER_UID@ \
+    --issuer-gid @ISSUER_GID@ \
+    --upstream-expected-uid @LIGHTNING_UID@ \
+    --upstream-expected-gid @LIGHTNING_GID@ \
+    --timeout-seconds 10 \
+    --max-in-flight 32 \
+    --max-invoice-msat @CLN_GUARD_MAX_INVOICE_MSAT@ \
+    --max-invoices-per-minute @CLN_GUARD_MAX_INVOICES_PER_MINUTE@ \
+    --max-invoice-burst @CLN_GUARD_MAX_INVOICE_BURST@ \
+    --max-invoices-per-runtime @CLN_GUARD_MAX_INVOICES_PER_RUNTIME@
+# The per-runtime invoice deadman is a custody containment boundary. Automatic
+# restart would silently reset it, so only an explicit operator ceremony may
+# start a new guard generation.
+Restart=no
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/cln-rpc-guard/@CLN_RPC_GUARD_SHA256@
+ReadWritePaths=/run/bitcoinpir-cln-rpc-guard
+
+# The guard deliberately has no network address and no [Install] section. Its
+# primary group reaches only the native CLN socket. Its sole supplementary
+# group lets it assign the issuer group to the separately guarded socket.

@@ -1,0 +1,667 @@
+import assert from "node:assert/strict";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+import {
+  ACTIVE_BASELINES,
+  REQUIRED_PREPARATION_FILES,
+  validateDeploymentTree,
+  validateRelaySelection,
+} from "./payment-v1-deployment-template-gate.mjs";
+
+const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "bitcoinpir-deployment-gate-"));
+  const paths = new Set([
+    ...Object.keys(ACTIVE_BASELINES),
+    ...REQUIRED_PREPARATION_FILES,
+  ]);
+  for (const relativePath of paths) {
+    const destination = join(root, relativePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(REPOSITORY, relativePath), destination);
+    chmodSync(destination, 0o644);
+  }
+  return root;
+}
+
+function withFixture(run) {
+  const root = fixture();
+  try {
+    run(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function mutate(root, relativePath, transform) {
+  const path = join(root, relativePath);
+  const before = readFileSync(path, "utf8");
+  const after = transform(before);
+  assert.notEqual(after, before, `test mutation must change ${relativePath}`);
+  writeFileSync(path, after, "utf8");
+}
+
+function replaceRelayField(text, field, value) {
+  const expression = new RegExp(`^${field}\\s*=.*$`, "m");
+  assert.match(text, expression);
+  return text.replace(expression, `${field} = ${JSON.stringify(value)}`);
+}
+
+function resolvedRelaySelection(text, overrides = {}) {
+  const values = {
+    status: "RESOLVED",
+    implementation: "bitcoinpir-directory-only",
+    source_repository: "https://github.com/Bitcoin-PIR/Bitcoin-PIR.git",
+    source_commit: "1".repeat(40),
+    source_archive_sha256: "2".repeat(64),
+    cargo_lock_sha256: "3".repeat(64),
+    binary_sha256: "4".repeat(64),
+    binary_version_output: "bitcoinpir-directory-relay 0.1.0",
+    config_sha256: "5".repeat(64),
+    publisher_pubkey_hex: "6".repeat(64),
+    ...overrides,
+  };
+  let output = text;
+  for (const [field, value] of Object.entries(values)) {
+    output = replaceRelayField(output, field, value);
+  }
+  return output;
+}
+
+test("repository deployment preparation passes its fail-closed gate", () => {
+  assert.equal(validateDeploymentTree(REPOSITORY), true);
+});
+
+test("a copied positive fixture passes", () => {
+  withFixture((root) => assert.equal(validateDeploymentTree(root), true));
+});
+
+test("provider enforcement, ledger-only issuer and remote rollback are mandatory", () => {
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      (text) => text.replace("    --require-service-auth-v1 \\\n", ""),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /--require-service-auth-v1/,
+    );
+  });
+
+  for (const [flag, expected] of [
+    ["--clearing-payout-target 11=22", /production clearing payout target/],
+    ["--clearing-payout-fee 1", /production clearing payout fee/],
+    ["--clearing-payout-intent-ttl-seconds 60", /production payout intent TTL/],
+  ]) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+        (text) => text.replace(
+          "    --issuer-settlement-signing-key",
+          `    ${flag} \\\n    --issuer-settlement-signing-key`,
+        ),
+      );
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      (text) =>
+        text.replace(
+          "--service-remote-rollback-authority-config",
+          "--service-rollback-authority",
+        ),
+    );
+    assert.throws(() => validateDeploymentTree(root), /local provider rollback authority/);
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      (text) => text.replace(/^.*--service-shared-idempotency-key.*\n/m, ""),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /--service-shared-idempotency-key/,
+    );
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      (text) =>
+        text.replace(
+          "cashu-custody-epoch-1.key",
+          "cashu-recovery-epoch-1.key",
+        ),
+    );
+    assert.throws(() => validateDeploymentTree(root), /--service-cashu-custody-key/);
+  });
+});
+
+test("production templates reject ARC, fake, local and proxied Free-IP flags", () => {
+  const mutations = [
+    ["--allow-experimental-arc", /experimental ARC/],
+    ["--service-arc-key /private/arc.key", /provider ARC key/],
+    ["--allow-local-service-rollback-authority-dev", /local provider rollback/],
+    ["--service-free-ip-key /private/free-ip.key", /Free IP key behind a proxy/],
+    ["--service-trust-direct-peer-ip", /direct peer-IP trust/],
+    ["--test-only-service-https-root-pem /private/test.pem", /test-only trust root/],
+  ];
+  for (const [flag, expected] of mutations) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/systemd/hetzner-provider.service.in",
+        (text) => text.replace("    --max-connections 128", `    ${flag} \\\n    --max-connections 128`),
+      );
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace("payment-issuer serve-cln", "payment-issuer serve-fake"),
+    );
+    assert.throws(() => validateDeploymentTree(root), /fake Lightning serving mode/);
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace(/^.*--receipt-signing-key.*\n/m, ""),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /--receipt-signing-key/,
+    );
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace(/^.*--clearing-approval.*\n/m, ""),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /--clearing-approval/,
+    );
+  });
+});
+
+test("issuer and authority origins must remain loopback", () => {
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace("--bind 127.0.0.1:5610", "--bind 0.0.0.0:5610"),
+    );
+    assert.throws(() => validateDeploymentTree(root), /--bind must equal/);
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/rollback-authority.service.in",
+      (text) => text.replace("--bind 127.0.0.1:8099", "--bind 0.0.0.0:8099"),
+    );
+    assert.throws(() => validateDeploymentTree(root), /--bind must equal/);
+  });
+});
+
+test("VPSBG fragment remains service-auth-only, Free-PoW-only and remote-authority-only", () => {
+  for (const flag of [
+    "--serve-hints",
+    "--service-bat-key /home/pir/data/bat.key",
+    "--service-cashu-recovery-key 1=/home/pir/data/recovery.key",
+    "--service-shared-authorization /home/pir/data/shared.bin",
+  ]) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
+        (text) => `${text}\n${flag}\n`,
+      );
+      assert.throws(() => validateDeploymentTree(root), /unreviewed|canonical order/);
+    });
+  }
+
+  for (const [line, expected] of [
+    ["#!/bin/sh", /shebang/],
+    ["exec /usr/local/bin/unified_server", /exec command/],
+    ["--direct-oram-db 0=/wrong/path", /canonical order|unreviewed/],
+  ]) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
+        (text) => `${line}\n${text}`,
+      );
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "docs/payment/HETZNER_VPSBG_DEPLOYMENT.md",
+      (text) => text.replaceAll("P1 activation blocker", "deployment note"),
+    );
+    assert.throws(() => validateDeploymentTree(root), /P1 activation blocker/);
+  });
+});
+
+test("systemd resets, duplicate CLI overrides, and secret argv fail closed", () => {
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      (text) => text.replace("[Service]", "ConditionPathExists=\n\n[Service]"),
+    );
+    assert.throws(() => validateDeploymentTree(root), /empty ConditionPathExists= reset/);
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      (text) => `${text}\nExecStart=\nExecStart=/usr/bin/true\n`,
+    );
+    assert.throws(() => validateDeploymentTree(root), /empty ExecStart= reset/);
+  });
+
+  for (const injected of [
+    "--bind-address 0.0.0.0",
+    "--direct-oram-key-hex deadbeef",
+  ]) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/systemd/hetzner-provider.service.in",
+        (text) =>
+          text.replace(
+            "    --service-pre-auth-timeout-ms 60000",
+            `    --service-pre-auth-timeout-ms 60000 \\\n    ${injected}`,
+          ),
+      );
+      assert.throws(
+        () => validateDeploymentTree(root),
+        /unreviewed, duplicate, or positional argv value/,
+      );
+    });
+  }
+});
+
+test("systemd hardening values and relay environment are exact", () => {
+  const providerMutations = [
+    ["User=bitcoinpir-provider", "User=root", /Service\.User must equal/],
+    ["UMask=0077", "UMask=0000", /Service\.UMask must equal/],
+    ["PrivateTmp=true", "PrivateTmp=false", /Service\.PrivateTmp must equal/],
+    [
+      "ProtectKernelLogs=true",
+      "ProtectKernelLogs=false",
+      /Service\.ProtectKernelLogs must equal/,
+    ],
+    [
+      "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+      "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET",
+      /Service\.RestrictAddressFamilies must equal/,
+    ],
+    [
+      "ReadWritePaths=/var/lib/bitcoinpir-provider-payment-v1",
+      "ReadWritePaths=/",
+      /Service\.ReadWritePaths must equal/,
+    ],
+  ];
+  for (const [before, after, expected] of providerMutations) {
+    withFixture((root) => {
+      mutate(
+        root,
+        "deploy/payment-v1/systemd/hetzner-provider.service.in",
+        (text) => text.replace(before, after),
+      );
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+      (text) => text.replace("Environment=RUST_LOG=error", "Environment=LD_PRELOAD=/tmp/evil.so"),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /Service\.Environment must equal/,
+    );
+  });
+});
+
+test("edge and Lightning templates reject reviewed P1 bypass mutations", () => {
+  const mutations = [
+    [
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace("reverse_proxy 127.0.0.1:8191", "reverse_proxy attacker.example:443"),
+      /reviewed loopback upstream|non-reviewed or non-loopback upstream/,
+    ],
+    [
+      "deploy/payment-v1/lightning/lightningd.conf.in",
+      (text) => text.replace("clear-plugins", "plugin=/tmp/evil-plugin"),
+      /closed-world configuration|dynamic plugin/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace(
+        "/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin lightning-staging preflight",
+        "/usr/bin/true",
+      ),
+      /command prefix/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+      (text) => text.replace("User=bitcoinpir-lightning", "User=root"),
+      /Service\.User must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/payment-v1-edge.service.in",
+      (text) => text.replace(
+        "CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+        "CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SYS_ADMIN",
+      ),
+      /Service\.CapabilityBoundingSet must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-provider.service.in",
+      (text) => text.replace("PrivateDevices=true", "PrivateDevices=false"),
+      /Service\.PrivateDevices must equal/,
+    ],
+  ];
+  for (const [relativePath, transform, expected] of mutations) {
+    withFixture((root) => {
+      mutate(root, relativePath, transform);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/lightning/activation-prerequisites.toml.example",
+      (text) => text.replace("real_funds_authorized = false", "real_funds_authorized = true"),
+    );
+    assert.throws(() => validateDeploymentTree(root), /real_funds_authorized must equal false/);
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace(
+        "Requires=bitcoinpir-core-lightning.service bitcoinpir-cln-rpc-guard.service bitcoinpir-lightning-preflight.service\n",
+        "",
+      ),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /Unit directive keys|Unit\.Requires must equal/,
+    );
+  });
+});
+
+test("public issuer edge exposes ledger accrual only", () => {
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+      (text) => text.replace(
+        "path /v1/redeems /v1/settlement/balance",
+        "path /v1/redeems /v1/settlement/balance /v1/settlement/payouts",
+      ),
+    );
+    assert.throws(
+      () => validateDeploymentTree(root),
+      /production payout route/,
+    );
+  });
+});
+
+test("CLN guard and cross-UID isolation reject topology regressions", () => {
+  const mutations = [
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      (text) => text.replace("--max-invoice-msat", "--unsafe-max-invoice-msat"),
+      /--max-invoice-msat|argument set/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      (text) => text.replace("--max-invoices-per-minute", "--unsafe-max-invoices-per-minute"),
+      /--max-invoices-per-minute|argument set/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      (text) => text.replace("--max-invoice-burst", "--unsafe-max-invoice-burst"),
+      /--max-invoice-burst|argument set/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      (text) => text.replace("--max-invoices-per-runtime", "--unsafe-max-invoices-per-runtime"),
+      /--max-invoices-per-runtime|argument set/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      (text) => text.replace("Restart=no", "Restart=on-failure"),
+      /Service\.Restart must equal/,
+    ],
+    [
+      "deploy/payment-v1/lightning/cln-rpc-guard-tmpfiles.conf.in",
+      (text) => text.replace("0710 bitcoinpir-cln-rpc-guard", "0700 bitcoinpir-cln-rpc-guard"),
+      /closed-world layout/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace(
+        "Group=bitcoinpir-issuer\n",
+        "Group=bitcoinpir-issuer\nSupplementaryGroups=bitcoinpir-cln-guard\n",
+      ),
+      /Service directive keys/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
+      (text) => text.replace("InaccessiblePaths=/srv/lightning /srv/bitcoin\n", ""),
+      /InaccessiblePaths/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-lightning-preflight.service.in",
+      (text) => text.replace("User=bitcoinpir-lightning-preflight", "User=bitcoinpir-issuer"),
+      /Service\.User must equal/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+      (text) => text.replace("SupplementaryGroups=bitcoinpir-bitcoin-rpc\n", ""),
+      /SupplementaryGroups/,
+    ],
+    [
+      "deploy/payment-v1/systemd/hetzner-cln-rpc-guard.service.in",
+      (text) => text.replace("User=bitcoinpir-cln-rpc-guard", "User=root"),
+      /Service\.User must equal/,
+    ],
+  ];
+
+  for (const [relativePath, transform, expected] of mutations) {
+    withFixture((root) => {
+      mutate(root, relativePath, transform);
+      assert.throws(() => validateDeploymentTree(root), expected);
+    });
+  }
+});
+
+test("reviewed edge and Lightning source bytes are frozen", () => {
+  for (const relativePath of [
+    "deploy/payment-v1/edge/hetzner-public.Caddyfile.in",
+    "deploy/payment-v1/lightning/verify-layout.sh.in",
+    "deploy/payment-v1/systemd/hetzner-core-lightning.service.in",
+  ]) {
+    withFixture((root) => {
+      mutate(root, relativePath, (text) => `${text}\n# unreviewed but semantic no-op\n`);
+      assert.throws(
+        () => validateDeploymentTree(root),
+        /reviewed deployment source SHA-256 changed/,
+      );
+    });
+  }
+});
+
+test("relay selection defaults to unresolved and rejects unsafe implementations", () => {
+  const unresolved = readFileSync(
+    join(REPOSITORY, "deploy/payment-v1/relay-selection.toml.example"),
+    "utf8",
+  );
+  assert.deepEqual(validateRelaySelection(unresolved), { status: "UNRESOLVED" });
+
+  const thirdParty = replaceRelayField(
+    unresolved,
+    "implementation",
+    "nostr-rs-relay",
+  );
+  assert.throws(() => validateRelaySelection(thirdParty), /refuses nostr-rs-relay/);
+
+  const unsafePin = resolvedRelaySelection(unresolved, {
+    source_commit: "ff65ec2acd781150a585a78e1c60b0cdb104698e",
+  });
+  assert.throws(() => validateRelaySelection(unsafePin), /refuses audited unsafe commit/);
+
+  const mutable = resolvedRelaySelection(unresolved, { source_commit: "master" });
+  assert.throws(() => validateRelaySelection(mutable), /full lowercase 40-hex commit/);
+
+  const zeroPublisher = resolvedRelaySelection(unresolved, {
+    publisher_pubkey_hex: "0".repeat(64),
+  });
+  assert.throws(() => validateRelaySelection(zeroPublisher), /must be non-zero/);
+});
+
+test("a future directory-only exact-hash relay selection is accepted", () => {
+  const unresolved = readFileSync(
+    join(REPOSITORY, "deploy/payment-v1/relay-selection.toml.example"),
+    "utf8",
+  );
+  assert.deepEqual(validateRelaySelection(resolvedRelaySelection(unresolved)), {
+    status: "RESOLVED",
+    binarySha256: "4".repeat(64),
+    publisherPubkey: "6".repeat(64),
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/relay-selection.toml.example",
+      (text) => resolvedRelaySelection(text),
+    );
+    mutate(
+      root,
+      "deploy/payment-v1/directory-relay.toml.example",
+      (text) =>
+        text.replace(
+          "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
+          "6".repeat(64),
+        ),
+    );
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+      (text) =>
+        text
+          .replace(
+            "ExecStart=/usr/bin/false",
+            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/relay.toml`,
+          )
+          .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
+    );
+    assert.equal(validateDeploymentTree(root), true);
+  });
+
+  withFixture((root) => {
+    mutate(
+      root,
+      "deploy/payment-v1/relay-selection.toml.example",
+      (text) => resolvedRelaySelection(text),
+    );
+    mutate(
+      root,
+      "deploy/payment-v1/directory-relay.toml.example",
+      (text) =>
+        text.replace(
+          "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
+          "6".repeat(64),
+        ),
+    );
+    mutate(
+      root,
+      "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+      (text) =>
+        text
+          .replace(
+            "ExecStart=/usr/bin/false",
+            `ExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/binary.sha256\nExecStartPre=/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/directory-relay/config.sha256\nExecStart=/opt/bitcoinpir/directory-relay/${"4".repeat(64)}/bitcoinpir-directory-relay --config /etc/bitcoinpir/payment-v1/directory-relay/relay.toml --listen 0.0.0.0:8080`,
+          )
+          .replace("Restart=no", "Restart=on-failure\nRestartSec=5"),
+    );
+    assert.throws(() => validateDeploymentTree(root), /only the pinned binary and one absolute --config path/);
+  });
+});
+
+test("any active unit or measured runit mutation fails the frozen baseline", () => {
+  for (const relativePath of Object.keys(ACTIVE_BASELINES)) {
+    withFixture((root) => {
+      mutate(root, relativePath, (text) => `${text}\n# unauthorized mutation\n`);
+      assert.throws(
+        () => validateDeploymentTree(root),
+        new RegExp(`active deployment file changed.*${relativePath.replaceAll("/", "\\/")}`),
+      );
+    });
+  }
+});
+
+test("activatable or executable files are forbidden in the template tree", () => {
+  withFixture((root) => {
+    const path = join(root, "deploy/payment-v1/systemd/accidental.service");
+    writeFileSync(path, "[Service]\nExecStart=/usr/bin/true\n", "utf8");
+    assert.throws(() => validateDeploymentTree(root), /activatable unit\/script/);
+  });
+
+  withFixture((root) => {
+    const path = join(root, "deploy/payment-v1/runit/replacement.run.in");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "exec /usr/local/bin/unified_server\n", "utf8");
+    assert.throws(() => validateDeploymentTree(root), /unreviewed file type/);
+  });
+
+  withFixture((root) => {
+    const path = join(root, "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in");
+    chmodSync(path, 0o755);
+    assert.throws(() => validateDeploymentTree(root), /must not be executable/);
+  });
+});

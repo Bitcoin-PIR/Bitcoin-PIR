@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-07-28. This document describes repository code and local
+Status snapshot: 2026-07-29. This document describes repository code and local
 tests, not a production deployment. “Implemented” means that a code path exists;
 “tested” names the boundary actually exercised. It does not mean that an
 operator has activated the path with real money or public infrastructure.
@@ -210,15 +210,31 @@ operator has activated the path with real money or public infrastructure.
       the same deterministic transcript. The official Web path deletes/burns
       the proof before transmission and does not automatically retry; loss of
       `AUTH_GRANTED` after the local claim consumes the entitlement.
-- [x] `payment-issuer` serves ledger-only `/v1/redeems`, balance,
-      payout-intent, payout and payout-status routes. A raw loopback HTTP test
-      covers BAT redeem through payout/status, store reopen, exact response
-      replay after authorization/registration expiry and provider request-key
+- [x] The production/default `payment-issuer` HTTP surface is ledger-accrual
+      only: `/v1/redeems` credits the authenticated provider account and
+      `/v1/settlement/balance` returns a signed balance. Payout-intent, payout
+      and payout-status paths return the exact unknown-path response before
+      clock access, content-type/body parsing, authentication, rate limiting or
+      store access; their match arms and decoders are absent from non-test
+      builds and there is no production enable flag. Production uses the
+      explicit ledger-only service constructor and has no payout-target, fee or
+      intent-TTL CLI/configuration. Each required store registration receives a
+      fixed, domain-separated, non-zero disabled-target sentinel which cannot be
+      selected by a request; all three transport-neutral payout methods also
+      return `NotFound` before input decoding or store access in this mode. The
+      settlement signing key remains necessary for redeem/balance signatures,
+      and retained verifying keys remain available for exact committed redeem
+      and approval recovery after rotation. A private Rust unit-fixture
+      switch retains the raw loopback payout/status roundtrip solely to test the
+      transport-neutral state machines, store reopen, exact response replay
+      after authorization/registration expiry and provider request-key
       rotation. Provider registration epochs are append-only issuer history;
       old keys authenticate only the durable latest exact replay, while old
-      fresh, signature-tampered and wrong-provider requests fail closed. The
-      final history-integrity implementation is covered by focused issuer-store
-      and issuer-service payout/restart tests.
+      fresh, signature-tampered and wrong-provider requests fail closed.
+      Focused Rust cases now assert removed production CLI flags and
+      side-effect-free ledger-only method rejection; this no-Cargo deployment
+      hardening pass formatted and parsed those files but leaves execution of
+      the Rust cases to the exact-commit CI run.
 - [x] The transport-neutral provider settlement client covers authenticated
       balance, payout-intent, payout and status requests; canonical bounded
       response verification; retained issuer signing keys and provider
@@ -253,7 +269,9 @@ operator has activated the path with real money or public infrastructure.
       first external submission, uses the stable command ID as the executor
       idempotency key, and performs reconcile-only handling after restart or an
       ambiguous result. Its bundled `NoFundsPayoutExecutorV1` is deliberately
-      never ready and cannot move value.
+      never ready and cannot move value. No application binary instantiates the
+      worker in V1, and the production issuer cannot create its payout/outbox
+      records through HTTP.
 - [x] `StrictHttpsProviderSettlementTransportV1` is the concrete provider-to-
       issuer HTTPS adapter. Its production constructor requires normal WebPKI
       verification plus one or two distinct out-of-band leaf-SPKI SHA-256 pins;
@@ -262,12 +280,15 @@ operator has activated the path with real money or public infrastructure.
       redirect/cookie/proxy/decompression path, bounded responses, and
       conservative outcome-unknown classification after any request byte may
       have been sent. It has not been deployed.
-- [ ] A truly independent production floor adapter, real-funds payout executor
-      and deployment remain unselected. A real executor must
+- [ ] The remote production floor adapters exist for provider, issuer and
+      provider-settlement state, but truly independent authority deployments,
+      a real-funds payout executor and payout product remain unselected. A real
+      executor must
       provide a linearizable durable command-ID lookup/submission primitive or
       equivalent no-submit fence; neither the worker lease nor local SQLite
-      creates external exactly-once semantics. The local implementations do not
-      enable production settlement payout.
+      creates external exactly-once semantics. Ledger accrual and authenticated
+      balance are the complete V1 settlement product; they do not promise or
+      enable automatic value transfer.
 - [ ] Settlement Cashu `/v1/settlement/keysets` and
       `/v1/settlement/deposits` remain transport-neutral protocol/store code;
       `payment-issuer` does not route them and no production ceremony enables
@@ -285,6 +306,14 @@ operator has activated the path with real money or public infrastructure.
       one absolute wall-clock deadline across Unix-socket connect, complete
       request write and complete response read; trickled bytes cannot refresh
       that budget, and write-before/after failure classification is preserved.
+      The prepared deployment adds a separately pinned, separate-UID method
+      guard: it alone reaches the native CLN group socket, accepts only exact
+      bounded `getinfo`, private-label `listinvoices` and invoice-creation
+      shapes, reconstructs minimal responses, strips preimage/error payloads,
+      enforces invoice amount/rate/burst/runtime ceilings and exposes a second
+      issuer-group socket. The long-running issuer receives neither the native
+      CLN group nor the Bitcoin-cookie group. Latest Linux ACL/hardlink and
+      complete guard test evidence remains an exact-commit CI requirement.
 - [x] Pure-Rust/WASM BOLT11 parser with signature recovery, canonical lowercase
       round-trip, fixed non-zero amount, network and payee verification. The
       browser controller persists encrypted recovery state before displaying
@@ -299,7 +328,8 @@ operator has activated the path with real money or public infrastructure.
       settlement route are absent from default artifacts and require the
       explicit `test-only-fake-lightning` debug/test feature; build-script and
       source guards reject that feature in release profiles, even with forced
-      debug assertions. `serve-cln` uses a checked local Core Lightning Unix RPC socket.
+      debug assertions. `serve-cln` reaches only the checked guard Unix socket
+      in the prepared production topology; no application flag bypasses it.
       Neither substitutes for a separately operated production TLS/abuse edge.
 - [x] The shared strict HTTPS client gives DNS plus all candidate addresses one
       bounded connect deadline and gives TLS handshake plus the full request and
@@ -339,6 +369,16 @@ operator has activated the path with real money or public infrastructure.
 
 - [x] Canonical NIP-01 event verification, provider assertion, 16-shard catalog
       checkpoints, tombstones, relay split-view checks and rollback state.
+- [x] A repository-owned directory-only Nostr relay now implements the exact
+      bounded `EVENT`/`REQ`/`CLOSE` subset for one pinned kind-30078 publisher.
+      It binds loopback, stores an immutable canonical-event archive plus
+      addressable heads in owner-only SQLite WAL/FULL state, makes duplicate
+      publish acknowledgement idempotent, freezes paged snapshots, bounds
+      connections/operations/work/egress/archive/time and exposes no publisher
+      private key, generic subscription language, live push, NIP-42 or event
+      logging. Its current macOS library and binary unit suites passed 23/23;
+      Linux clippy, installed shutdown/backup drills and public WSS behavior
+      remain exact-commit/deployment evidence rather than source claims.
 - [x] Browser relay fetching and encrypted IndexedDB directory state.
 - [x] A no-account, process-local NIP-01 fake-relay integration test closes the
       signed publisher-artifact to two-relay read path through all 16 shards,
@@ -477,6 +517,22 @@ operator has activated the path with real money or public infrastructure.
       It remains `NoSevHost` deterministic local evidence, not production
       identity, proof-chain, independent rollback-floor or external
       public-WebPKI mint evidence.
+- [x] A separate non-default shared-issuer process E2E is implemented and wired
+      into Payment CI. It builds a real test-only-fake-Lightning
+      `payment-issuer`, places a private WebPKI TLS edge with a signed leaf-SPKI
+      pin in front of its redeem-only route, and launches a real paid
+      `unified_server` plus an independently selected Free/Open peer. A BAT
+      redemption credits the authenticated provider's shared ledger exactly
+      once and creates exactly one provider-local delivery claim; provider
+      restart/replay cannot create a second grant. Wrong CA, wrong signed pin
+      and offline issuer all fail closed before issuer application handling and
+      create neither a local claim nor a provider account. The test also checks
+      that payout rows remain zero and server logs contain no invoice, payment
+      hash, preimage or raw BAT secret. The fake-Lightning issuer binary is
+      supplied only by an absolute, non-symlink path and the shared test feature
+      inherits the release-rejected WebPKI hook. This branch's first executable
+      proof is intentionally pending the Linux Payment CI run; implementation
+      and static formatting alone are not recorded as a pass.
 - [x] Web unit tests cover acquisition recovery, directory storage, vault
       locking and local pair-selection boundaries.
 - [x] A dedicated Playwright job runs the production browser vault and
@@ -596,10 +652,9 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       and binds a fresh backup receipt to the current SCB digest. Atomic receipt
       writes explicitly unlock the pinned output-parent descriptor on every
       ordinary success/error path; the primary operation error wins, while a
-      successful write followed by unlock failure fails closed. The current
-      default-parallel admin suite passed 106/106 five times, then 106/106
-      single-threaded with warnings denied. Its command runner is mock-tested
-      against a fixed
+      successful write followed by unlock failure fails closed. The latest
+      focused admin suite passed 126/126 with warnings denied. Its command
+      runner is mock-tested against a fixed
       read-only RPC allowlist. It has not yet been run on the final persistent
       Signet hosts and does not replace actual liquidity, payment, restore or
       peer/bootstrap acceptance. The receipt is an operator assertion:
@@ -609,13 +664,27 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 - [ ] The `payment-issuer serve-cln` executable path is implemented and has
       crossed the current disposable three-node local-regtest boundary below,
       but has not been connected to a persistent, external or public-network node.
-      It deliberately binds loopback and expects an exact-owner local Unix RPC
-      socket. Production TLS ingress, source-aware abuse controls, process
-      supervision and operational key custody remain deployment work.
+      It deliberately binds loopback and, in the prepared production topology,
+      expects the guard-UID/issuer-GID method-scoped Unix socket. A separate
+      one-shot preflight UID checks the native cross-UID CLN socket and Bitcoin
+      cookie after the CLN daemon itself runs the recursive layout verifier.
+      Production TLS ingress, source-aware abuse controls, Linux installed-
+      artifact/runtime evidence, process supervision and operational key
+      custody remain deployment work.
 - [x] Issuer startup authenticates the current quote delegation and validates
       the configured Lightning backend before opening or mutating the issuer
       store. A wrong CLN socket, payee identity or network therefore cannot
       advance retained-policy or key-lineage state during a failed start.
+- [x] `bitcoinpir-cln-rpc-guard` implements the production method-scoped Unix
+      boundary between the issuer and Core Lightning. It validates kernel peer
+      credentials plus parent/socket identity, mode, single-link and Linux ACL
+      state; reconstructs only bounded `getinfo`, private-label `listinvoices`
+      and anonymous `invoice` RPCs; enforces absolute deadlines, inflight and
+      per-generation invoice limits; and never forwards raw CLN errors or logs
+      invoice, hash or preimage material. Its production unit deliberately uses
+      `Restart=no` so a crash cannot silently reset the custody deadman. The
+      source and deterministic tests are present, but Linux CI and a target-host
+      cross-UID access drill remain required before activation.
 - [x] The current opt-in local-regtest runner wires the production CLN adapter
       to three disposable Core Lightning nodes and two 1,000,000-sat announced
       localhost channels. There is no payer-to-issuer channel: payer gossip must
@@ -646,6 +715,25 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       failure behavior. Its `--validate-only` preflight applies the exact
       artifact/key/time/relay checks without invoking transport. Distinct
       hostnames do not prove independent operators.
+- [x] `bitcoinpir-directory-relay` implements the intentionally narrow
+      directory-only Nostr surface: canonical signed EVENT validation for one
+      pinned publisher/kind, bounded ID-filtered REQ/EOSE readback, immutable
+      SQLite event archive plus current heads, durable duplicate handling,
+      bounded connection/work/egress/archive/time dimensions and graceful
+      drain. It is not a general-purpose relay. The production selection and
+      unit remain `UNRESOLVED`/`ExecStart=/usr/bin/false`; final merged source,
+      binary/config/public-key hashes, source-fair ingress and a second
+      independently operated relay are activation gates.
+- [x] Source-template, rendered-profile and live-Linux evidence tools are
+      checked in. The source gate freezes inactive templates and the unchanged
+      VPSBG baseline. The rendered gate binds one externally approved plan to
+      exact staged bytes, path/file classes and consuming service identities;
+      the live collector binds installed bytes, systemd state and real process
+      credentials to one machine/boot/invocation. The current source gate passed
+      16/16 and the combined rendered/live-evidence Node suite passed 63/63 on
+      this preparation tree. The first root-only target Linux collection still
+      remains candidate-commit/host evidence and cannot be inferred from those
+      deterministic tests.
 - [x] One authorized public-relay smoke published a 30-minute, empty 16-shard
       checkpoint signed by a disposable test key. nos.lol and
       `relay.primal.net` each returned 16 positive matching OKs, then returned

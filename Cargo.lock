@@ -237,6 +237,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitcoinpir-cln-rpc-guard"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "pir-lightning-backend",
+ "pir-private-files",
+ "pir-service-protocol",
+ "rustix",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "bitcoinpir-directory-relay"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "futures-util",
+ "hex",
+ "log",
+ "pir-directory-nostr",
+ "pir-private-files",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "toml",
+]
+
+[[package]]
 name = "bitcoinpir-oram"
 version = "0.1.0"
 source = "git+https://github.com/Bitcoin-PIR/oram.git?rev=cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b#cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b"
@@ -2000,6 +2037,7 @@ dependencies = [
  "lightning-invoice",
  "pir-private-files",
  "pir-service-protocol",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -2684,6 +2722,8 @@ dependencies = [
  "pir-cashu-client",
  "pir-core",
  "pir-db-attest",
+ "pir-issuer-store",
+ "pir-lightning-backend",
  "pir-payment-crypto",
  "pir-private-files",
  "pir-provider-clearing-client",

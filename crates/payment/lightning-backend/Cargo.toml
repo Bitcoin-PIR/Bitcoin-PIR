@@ -8,6 +8,9 @@ description = "Fail-closed Lightning invoice backend boundary and fake node for 
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
 
+[features]
+cln-rpc-guard = []
+
 [dependencies]
 bitcoin = { version = "0.32", default-features = false, features = ["secp-recovery"] }
 lightning-invoice = { version = "=0.34.0", default-features = false }
@@ -19,6 +22,7 @@ zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 pir-private-files = { path = "../../security/private-files" }
+rustix = { version = "1", features = ["fs"] }
 socket2 = "0.6"
 
 [lints.rust]

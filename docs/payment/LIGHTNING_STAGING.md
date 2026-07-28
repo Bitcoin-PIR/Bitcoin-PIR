@@ -88,6 +88,53 @@ Mutinynet additionally requires its exact signet challenge, Bitcoin peer set
 and Lightning peers to be pinned. A generic `--network=signet` is not proof
 that the node joined Mutinynet.
 
+The Core RPC cookie has an access policy independent of the CLN socket
+policy. Omitting `bitcoin.rpc_cookie.access_policy` preserves schema V1's
+`same-uid-owner-only` layout: the preflight EUID must equal the bitcoind UID,
+the final cookie directory is exact mode 0700, and the single-link cookie is
+exact mode 0600. `cross-uid-shared-group` requires the separate
+`bitcoin.rpc_cookie.cross_uid_access` table, a root:root mode-0755 broad
+parent (normally `/srv/bitcoin`), exactly one directly nested
+bitcoind-UID/cookie-GID mode-0710 network directory, and a
+bitcoind-UID/cookie-GID mode-0640 cookie with link count one. The preflight
+must run under its separately pinned EUID and have that cookie GID as its
+effective or supplementary group. Configure bitcoind with
+`rpccookieperms=group` and the cookie-only group so it creates the required
+0640 file; the preflight never changes ownership or permissions. Bitcoin
+Core documents that cookie read access is a powerful RPC trust boundary and
+supports `owner`, `group`, or `all` via
+[`rpccookieperms`](https://github.com/bitcoin/bitcoin/blob/master/src/init.cpp).
+
+The cookie group must be different from the native CLN RPC group. CLN requires
+the cookie group for its bcli plugin; only CLN and the short-lived, read-only
+preflight unit receive it. The long-lived payment issuer and CLN RPC guard must
+never list the cookie group in `Group=`, `SupplementaryGroups=`, container
+membership, `/etc/group` membership, ACLs, or an interactive login. Grant it
+to CLN and with unit-scoped `SupplementaryGroups=bitcoinpir-bitcoin-rpc` on the
+one-shot preflight service; do not add the preflight or issuer account
+persistently to that group. Activation evidence must inspect rendered units
+and the live issuer, guard, preflight and CLN processes' `Groups:` sets.
+Otherwise issuer or guard compromise could gain the much larger Bitcoin Core
+RPC authority. Whenever Core uses
+cross-UID mode, the config validates Core and CLN daemon owners/groups as
+distinct and requires both policies to name the same preflight EUID without
+reusing either subsystem's identity fields.
+
+Cookie validation canonicalizes the broad parent, final directory and cookie;
+walks every parent component using `O_NOFOLLOW`; applies the platform ACL
+policy; and opens the cookie itself with `O_NOFOLLOW`. It checks type,
+UID/GID, exact mode, link count and bounded size on the same open file
+descriptor before and after reading, rereads that descriptor from offset zero,
+requires both bounded reads to match byte-for-byte and equal the pinned size,
+validates the cookie format without logging it, then
+rechecks the named path and parent namespace. A symlink, hardlink, replacement,
+permission/ACL change, truncation or other metadata drift fails closed.
+The omitted-policy default is compatible only with a genuinely same-UID Core
+layout. If CLN is already split-UID while Core names a different bitcoind UID,
+the two required preflight EUIDs conflict and static validation fails; the
+operator must add the explicit Core cross-UID table rather than obtaining an
+implicit policy downgrade.
+
 The CLN adapter's timeout is one process-local monotonic budget covering
 socket metadata validation, connect, complete request write and complete
 response read. Filesystem metadata calls cannot be force-cancelled by that
@@ -102,7 +149,29 @@ daemon-owner/group mode-0710 final parent and mode-0660 socket; this permits
 traversal and connection but not directory listing or name replacement. It
 also checks the final `lightning-rpc` socket's type, UID/GID and device/inode
 before and after connect. Deployment preflight
-independently pins the broader protected executable/configuration boundary.
+uses the same two socket layouts explicitly: an omitted
+`lightning.rpc_access_policy` retains the schema-V1
+`same-uid-owner-only` staging policy, while
+`cross-uid-shared-group` additionally requires the strict
+`lightning.cross_uid_access` table. Cross-UID preflight must run as the exact
+configured dedicated preflight EUID with the socket GID present as its effective or
+supplementary group. It pins a canonical root-owned mode-0755 broad parent
+(normally `/srv/lightning`), one directly nested CLN-owned/group-owned
+mode-0710 network directory, and the CLN-owned/group-owned mode-0660 socket.
+The same-UID policy instead requires the preflight EUID/socket UID to agree,
+an exact mode-0700 final parent, and an exact mode-0600 socket. Both modes
+require socket link count one and reject namespace or metadata drift across
+the component-by-component validation.
+
+The Core-cookie and CLN-socket parent walks reject symlinks,
+writable/untrusted ancestors and extended ACL grants wherever the shared
+private-files policy can inspect them. On
+macOS this includes the extended ACL checks; the current Linux implementation
+is deliberately DAC-only until a reviewed POSIX/NFS ACL parser exists. The
+preflight therefore does not claim to detect Linux POSIX/NFS ACL grants and
+operators must keep this tree on a local filesystem whose ACL policy is
+disabled or separately enforced. Deployment preflight also independently pins
+the broader protected executable/configuration boundary.
 Keep that tree on a protected local Unix/POSIX filesystem; NFS/FUSE stalls,
 another process under the same UID and root compromise are operator
 trust-boundary failures. These checks harden local routing but are not
@@ -126,6 +195,17 @@ fixed, read-only probe: it calls only Core `getnetworkinfo`,
 no bootstrap, wallet, address, faucet, channel mutation, payment, SSH or remote
 execution path.
 
+The `--config-expected-uid` and `--config-expected-gid` arguments always pin
+the protected TOML file and are neither the Core-cookie nor CLN-socket
+owner/group. For the published cross-UID example, run the command as the
+dedicated preflight UID with both unit-scoped `bitcoinpir-bitcoin-rpc` and
+`bitcoinpir-cln-guard` groups, while using the config owner's UID/GID for those CLI
+arguments. `bitcoin.rpc_cookie.expected_uid/gid` remain the bitcoind UID and
+cookie-only GID; `lightning.expected_uid/gid` remain the CLN UID and its
+different shared group GID. The short-lived preflight EUID is configured
+independently in both cross-UID tables and must agree. None of these identity
+sets may be substituted for another.
+
 The preflight fails closed on an unknown TOML field and checks all of the
 following before emitting one bounded `result=PASS` line:
 
@@ -133,8 +213,15 @@ following before emitting one bounded `result=PASS` line:
   SHA-256 values, owners and non-writable executable modes, all below explicit
   protected parent boundaries without writable or symlinked descendants;
 - an explicit loopback Core RPC address and non-zero port plus one exact
-  `rpccookiefile` path. The owner-only mode-`0600` cookie and all descendants
-  below its protected parent are owner/GID checked and symlink/write rejected;
+  `rpccookiefile` path. Same-UID mode requires the exact preflight/bitcoind
+  EUID, a mode-0700 final directory and a mode-0600 single-link cookie.
+  Cross-UID mode requires the exact preflight EUID plus effective or
+  supplementary cookie-only GID, root:root 0755 on the broad parent, exactly
+  one bitcoind-UID/cookie-GID 0710 network directory below it, and a
+  bitcoind-UID/cookie-GID 0640 single-link cookie. The cookie path is canonical
+  and `O_NOFOLLOW`-opened, its parents and ACL policy are checked, and the same
+  descriptor's identity/size plus two matching bounded content reads and the
+  named namespace are checked before and after access. The cookie is never logged;
   `-conf`, inline credentials, implicit port/cookie selection and non-loopback
   RPC targets are forbidden. Exact empty command-line `rpcuser`/`rpcpassword`
   values must clear any credentials from the automatically read datadir config,
@@ -143,8 +230,13 @@ following before emitting one bounded `result=PASS` line:
   challenge and genesis, `initialblockdownload=false`, and bounded header lag;
 - exact CLN role identity, version, `network=signet`, height lag and an exact
   active plugin allowlist whose executable hashes are also pinned;
-- an owner-controlled, symlink-free `lightning-rpc` subtree and owner-only
-  socket;
+- a canonical `lightning-rpc` path with no symlinked component, exact runtime
+  EUID and (for cross-UID) effective/supplementary shared-group membership.
+  Same-UID staging requires an owner/GID-pinned non-writable tree, exact 0700
+  final parent and exact 0600 socket. Cross-UID requires root:root 0755 on the
+  broad parent, exactly one CLN-UID/shared-GID 0710 network directory below it,
+  and a CLN-UID/shared-GID 0660 socket. Socket link count must be one, and
+  owner/mode/inode/link metadata must not drift during validation;
 - exactly one connected, reestablished, `CHANNELD_NORMAL`, public announced
   channel per role edge, plus bidirectional active gossip for the required
   edges. In particular the payer must see `router <-> issuer`;
@@ -181,8 +273,8 @@ with the narrowly scoped local ceremony (run as the configured receipt owner):
 bpir-admin lightning-staging record-backup-receipt \
   --config /absolute/path/preflight.toml \
   --config-protected-parent /absolute/trusted/config-parent \
-  --config-expected-uid 991 \
-  --config-expected-gid 991 \
+  --config-expected-uid 995 \
+  --config-expected-gid 995 \
   --acknowledge-identity-secret-offline-backup-restore-checked \
   --acknowledge-channel-state-recovery-backup-restore-checked
 ```

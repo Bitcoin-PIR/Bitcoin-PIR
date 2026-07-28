@@ -1,0 +1,53 @@
+# BitcoinPIR Payment V1 deployment template; relay selection is initially UNRESOLVED.
+[Unit]
+Description=BitcoinPIR Hetzner directory-only relay (blocked template)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/RELAY-SELECTION-RESOLVED
+
+[Service]
+Type=simple
+User=bitcoinpir-directory-relay
+Group=bitcoinpir-directory-relay
+UMask=0077
+StateDirectory=bitcoinpir-directory-relay
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bitcoinpir-directory-relay
+Environment=RUST_LOG=error
+# The reviewed directory-only relay exposes only --config with an absolute,
+# owner-only TOML path. Keeping ExecStart as an unconditional failure prevents
+# use before the final implementation audit and exact artifact selection. The
+# pinned binary path, binary/config hash checks and sole --config argument must
+# replace this line in the same PR that changes relay-selection.toml from
+# UNRESOLVED to RESOLVED.
+ExecStart=/usr/bin/false
+Restart=no
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/directory-relay
+ReadWritePaths=/var/lib/bitcoinpir-directory-relay
+
+# A resolved relay config must bind the application to loopback; a same-host
+# WebSocket TLS edge provides public reads/writes. The directory publisher
+# private key is never installed on this host. There is intentionally no
+# [Install] section.

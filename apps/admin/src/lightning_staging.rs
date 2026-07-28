@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -140,11 +140,50 @@ struct LightningStagingConfigV1 {
 struct BitcoinConfigV1 {
     daemon: PinnedBinaryV1,
     cli: PinnedBinaryV1,
-    rpc_cookie: ProtectedFileV1,
+    rpc_cookie: CoreRpcCookieConfigV1,
     /// `bitcoin-cli` options only. At least one exact default-Signet selector
     /// is required; positional RPC method names and inline credentials fail.
     cli_args: Vec<String>,
     expected_subversion: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CoreRpcCookieConfigV1 {
+    path: PathBuf,
+    protected_parent: PathBuf,
+    #[serde(default)]
+    access_policy: CoreRpcCookieAccessPolicyV1,
+    #[serde(default)]
+    cross_uid_access: Option<CoreRpcCookieCrossUidAccessV1>,
+    /// Exact bitcoind owner of the final network directory and cookie.
+    expected_uid: u32,
+    /// Exact cookie-only group. In cross-UID mode only CLN and the short-lived
+    /// preflight may receive it; payment issuer and CLN RPC guard must not.
+    expected_gid: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum CoreRpcCookieAccessPolicyV1 {
+    /// Backwards-compatible V1 staging layout: preflight and bitcoind share
+    /// one UID, the final directory is exact mode 0700 and the cookie is 0600.
+    #[default]
+    SameUidOwnerOnly,
+    /// Split-UID layout: a short-lived preflight unit traverses an exact
+    /// bitcoind-owner/cookie-group mode-0710 directory and reads a 0640 cookie.
+    CrossUidSharedGroup,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CoreRpcCookieCrossUidAccessV1 {
+    /// Exact EUID under which the read-only preflight must execute.
+    preflight_expected_uid: u32,
+    /// The broad `protected_parent` is a root-owned deployment boundary, not
+    /// the bitcoind-owned final network directory.
+    protected_parent_expected_uid: u32,
+    protected_parent_expected_gid: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -154,10 +193,42 @@ struct LightningConfigV1 {
     cli: PinnedBinaryV1,
     rpc_socket: PathBuf,
     protected_parent: PathBuf,
+    #[serde(default)]
+    rpc_access_policy: LightningRpcAccessPolicyV1,
+    #[serde(default)]
+    cross_uid_access: Option<LightningCrossUidAccessV1>,
+    /// Exact CLN owner of the final network directory and RPC socket.
     expected_uid: u32,
+    /// Exact metadata GID; in cross-UID mode this is the native CLN RPC group
+    /// the dedicated preflight and method guard hold, never the issuer.
     expected_gid: u32,
     expected_version: String,
     allowed_plugins: Vec<PinnedPluginV1>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum LightningRpcAccessPolicyV1 {
+    /// Backwards-compatible V1 staging layout: the preflight process, socket
+    /// parent and socket share one UID; the final parent is exact mode 0700
+    /// and the socket is exact mode 0600.
+    #[default]
+    SameUidOwnerOnly,
+    /// Production split-UID layout: the dedicated preflight traverses a
+    /// CLN-owned mode-0710 network directory through an explicit shared group
+    /// and connects to an exact mode-0660 socket.
+    CrossUidSharedGroup,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct LightningCrossUidAccessV1 {
+    /// Exact EUID under which this preflight must execute.
+    client_expected_uid: u32,
+    /// The broad `protected_parent` is a root-owned deployment boundary, not
+    /// the CLN-owned final network directory.
+    protected_parent_expected_uid: u32,
+    protected_parent_expected_gid: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -187,15 +258,6 @@ struct PinnedPluginV1 {
     name: String,
     protected_parent: PathBuf,
     sha256_hex: String,
-    expected_uid: u32,
-    expected_gid: u32,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProtectedFileV1 {
-    path: PathBuf,
-    protected_parent: PathBuf,
     expected_uid: u32,
     expected_gid: u32,
 }
@@ -683,6 +745,7 @@ fn validate_static_config_v1(
         &config.bitcoin.rpc_cookie.protected_parent,
         "config.core-rpc-cookie-parent",
     )?;
+    validate_core_rpc_cookie_access_policy_v1(&config.bitcoin.rpc_cookie)?;
     validate_bitcoin_cli_args_v1(&config.bitcoin.cli_args, &config.bitcoin.rpc_cookie.path)?;
     validate_bounded_label_v1(
         &config.bitcoin.expected_subversion,
@@ -715,9 +778,121 @@ fn validate_static_config_v1(
         &config.lightning.protected_parent,
         "config.lightning-parent",
     )?;
+    validate_lightning_rpc_access_policy_v1(&config.lightning)?;
+    validate_preflight_identity_separation_v1(config)?;
     validate_absolute_utf8_path_v1(&config.backup.receipt, "config.backup-receipt")?;
     validate_absolute_utf8_path_v1(&config.backup.protected_parent, "config.backup-parent")?;
     Ok(ids)
+}
+
+fn validate_core_rpc_cookie_access_policy_v1(
+    config: &CoreRpcCookieConfigV1,
+) -> Result<(), PreflightFailureV1> {
+    let check = "config.core-rpc-cookie-access";
+    match (config.access_policy, &config.cross_uid_access) {
+        (CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly, None) => Ok(()),
+        (CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly, Some(_)) => Err(PreflightFailureV1::new(
+            check,
+            "cross-uid-fields-with-same-uid-policy",
+        )),
+        (CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup, None) => {
+            Err(PreflightFailureV1::new(check, "missing-cross-uid-fields"))
+        }
+        (CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup, Some(cross_uid)) => {
+            if cross_uid.protected_parent_expected_uid != 0
+                || cross_uid.protected_parent_expected_gid != 0
+                || cross_uid.preflight_expected_uid == 0
+                || config.expected_uid == 0
+                || config.expected_gid == 0
+                || cross_uid.preflight_expected_uid == config.expected_uid
+            {
+                return Err(PreflightFailureV1::new(
+                    check,
+                    "invalid-cross-uid-identities",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_preflight_identity_separation_v1(
+    config: &LightningStagingConfigV1,
+) -> Result<(), PreflightFailureV1> {
+    let check = "config.preflight-identities";
+    let core_preflight_uid = match config.bitcoin.rpc_cookie.access_policy {
+        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => config.bitcoin.rpc_cookie.expected_uid,
+        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => {
+            config
+                .bitcoin
+                .rpc_cookie
+                .cross_uid_access
+                .as_ref()
+                .ok_or_else(|| PreflightFailureV1::new(check, "missing-core-cross-uid-fields"))?
+                .preflight_expected_uid
+        }
+    };
+    let lightning_preflight_uid = match config.lightning.rpc_access_policy {
+        LightningRpcAccessPolicyV1::SameUidOwnerOnly => config.lightning.expected_uid,
+        LightningRpcAccessPolicyV1::CrossUidSharedGroup => {
+            config
+                .lightning
+                .cross_uid_access
+                .as_ref()
+                .ok_or_else(|| {
+                    PreflightFailureV1::new(check, "missing-lightning-cross-uid-fields")
+                })?
+                .client_expected_uid
+        }
+    };
+    if core_preflight_uid != lightning_preflight_uid {
+        return Err(PreflightFailureV1::new(check, "preflight-uid-conflict"));
+    }
+    if config.bitcoin.rpc_cookie.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+        && (config.bitcoin.rpc_cookie.expected_uid == config.lightning.expected_uid
+            || config.bitcoin.rpc_cookie.expected_gid == config.lightning.expected_gid)
+    {
+        return Err(PreflightFailureV1::new(
+            check,
+            "core-and-lightning-identities-not-separated",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lightning_rpc_access_policy_v1(
+    config: &LightningConfigV1,
+) -> Result<(), PreflightFailureV1> {
+    let check = "config.lightning-rpc-access";
+    match (config.rpc_access_policy, &config.cross_uid_access) {
+        (LightningRpcAccessPolicyV1::SameUidOwnerOnly, None) => Ok(()),
+        (LightningRpcAccessPolicyV1::SameUidOwnerOnly, Some(_)) => Err(PreflightFailureV1::new(
+            check,
+            "cross-uid-fields-with-same-uid-policy",
+        )),
+        (LightningRpcAccessPolicyV1::CrossUidSharedGroup, None) => {
+            Err(PreflightFailureV1::new(check, "missing-cross-uid-fields"))
+        }
+        (LightningRpcAccessPolicyV1::CrossUidSharedGroup, Some(cross_uid)) => {
+            // V1 intentionally supports one unambiguous production shape.
+            // Root owns the broad boundary, a non-root CLN daemon owns the
+            // final directory/socket, and a distinct non-root preflight EUID
+            // reaches it only through the non-root shared group.
+            if cross_uid.protected_parent_expected_uid != 0
+                || cross_uid.protected_parent_expected_gid != 0
+                || cross_uid.client_expected_uid == 0
+                || config.expected_uid == 0
+                || config.expected_gid == 0
+                || cross_uid.client_expected_uid == config.expected_uid
+            {
+                return Err(PreflightFailureV1::new(
+                    check,
+                    "invalid-cross-uid-identities",
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 fn normalize_node_id_v1(value: &str) -> Result<String, PreflightFailureV1> {
@@ -917,9 +1092,8 @@ fn read_bounded_regular_file_v1(
         .ok_or_else(|| PreflightFailureV1::new(check, "oversize"))?;
     let capacity =
         usize::try_from(read_limit).map_err(|_| PreflightFailureV1::new(check, "oversize"))?;
-    // This helper also reads the Core RPC cookie. Preallocate the bound once
-    // and scrub it on read, oversize and post-read metadata failure paths so
-    // neither a partial secret nor an old reallocated prefix is abandoned.
+    // Preallocate the bound once and scrub it on read, oversize and post-read
+    // metadata failure paths so no abandoned partial buffer survives an error.
     let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
     file.by_ref()
         .take(read_limit)
@@ -990,35 +1164,11 @@ fn read_protected_config_at_v1(
     }
 }
 
-fn validate_core_rpc_cookie_v1(config: &ProtectedFileV1) -> Result<(), PreflightFailureV1> {
+fn validate_core_rpc_cookie_v1(config: &CoreRpcCookieConfigV1) -> Result<(), PreflightFailureV1> {
     let check = "core.rpc-cookie";
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        validate_protected_tree_v1(
-            &config.protected_parent,
-            &config.path,
-            config.expected_uid,
-            config.expected_gid,
-            true,
-            check,
-        )?;
-        let metadata = std::fs::symlink_metadata(&config.path)
-            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
-        let mode = metadata.permissions().mode() & 0o777;
-        if metadata.uid() != config.expected_uid
-            || metadata.gid() != config.expected_gid
-            || mode != 0o600
-            || metadata.len() == 0
-            || metadata.len() > MAX_CORE_COOKIE_BYTES_V1
-        {
-            return Err(PreflightFailureV1::new(check, "unsafe-metadata"));
-        }
-        let bytes = Zeroizing::new(read_bounded_regular_file_v1(
-            &config.path,
-            MAX_CORE_COOKIE_BYTES_V1,
-            check,
-        )?);
+        let bytes = read_validated_core_rpc_cookie_with_hook_v1(config, || Ok(()))?;
         let value = bytes.strip_suffix(b"\n").unwrap_or(bytes.as_slice());
         let valid = value
             .iter()
@@ -1040,6 +1190,380 @@ fn validate_core_rpc_cookie_v1(config: &ProtectedFileV1) -> Result<(), Preflight
         let _ = config;
         Err(PreflightFailureV1::new(check, "unsupported-platform"))
     }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CoreRpcCookieRuntimeIdentityV1 {
+    effective_uid: u32,
+    effective_gid: u32,
+    supplementary_gids: BTreeSet<u32>,
+}
+
+#[cfg(unix)]
+fn current_core_rpc_cookie_runtime_identity_v1(
+    check: &'static str,
+) -> Result<CoreRpcCookieRuntimeIdentityV1, PreflightFailureV1> {
+    let supplementary_gids = rustix::process::getgroups()
+        .map_err(|_| PreflightFailureV1::new(check, "group-list-unavailable"))?
+        .into_iter()
+        .map(|gid| gid.as_raw())
+        .collect();
+    Ok(CoreRpcCookieRuntimeIdentityV1 {
+        effective_uid: rustix::process::geteuid().as_raw(),
+        effective_gid: rustix::process::getegid().as_raw(),
+        supplementary_gids,
+    })
+}
+
+#[cfg(unix)]
+fn validate_core_rpc_cookie_runtime_identity_v1(
+    config: &CoreRpcCookieConfigV1,
+    runtime: &CoreRpcCookieRuntimeIdentityV1,
+) -> Result<(), PreflightFailureV1> {
+    let check = "core.rpc-cookie";
+    match config.access_policy {
+        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => {
+            if runtime.effective_uid != config.expected_uid {
+                return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
+            }
+        }
+        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => {
+            let cross_uid = config
+                .cross_uid_access
+                .as_ref()
+                .ok_or_else(|| PreflightFailureV1::new(check, "missing-cross-uid-fields"))?;
+            if runtime.effective_uid != cross_uid.preflight_expected_uid {
+                return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
+            }
+            if runtime.effective_gid != config.expected_gid
+                && !runtime.supplementary_gids.contains(&config.expected_gid)
+            {
+                return Err(PreflightFailureV1::new(check, "shared-group-missing"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CoreRpcCookieBoundaryKindV1 {
+    Directory,
+    RegularFile,
+    Other,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CoreRpcCookieBoundaryMetadataV1 {
+    kind: CoreRpcCookieBoundaryKindV1,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    nlink: u64,
+    size: u64,
+}
+
+#[cfg(unix)]
+fn core_rpc_cookie_boundary_metadata_v1(
+    metadata: &std::fs::Metadata,
+) -> CoreRpcCookieBoundaryMetadataV1 {
+    use std::os::unix::fs::MetadataExt;
+    let kind = if metadata.file_type().is_dir() {
+        CoreRpcCookieBoundaryKindV1::Directory
+    } else if metadata.is_file() {
+        CoreRpcCookieBoundaryKindV1::RegularFile
+    } else {
+        CoreRpcCookieBoundaryKindV1::Other
+    };
+    CoreRpcCookieBoundaryMetadataV1 {
+        kind,
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        mode: metadata.mode() & 0o7777,
+        nlink: metadata.nlink(),
+        size: metadata.len(),
+    }
+}
+
+#[cfg(unix)]
+fn validate_core_rpc_cookie_file_metadata_v1(
+    config: &CoreRpcCookieConfigV1,
+    metadata: CoreRpcCookieBoundaryMetadataV1,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    let expected_mode = match config.access_policy {
+        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => 0o600,
+        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => 0o640,
+    };
+    if metadata.kind != CoreRpcCookieBoundaryKindV1::RegularFile
+        || metadata.uid != config.expected_uid
+        || metadata.gid != config.expected_gid
+        || metadata.mode != expected_mode
+        || metadata.nlink != 1
+        || metadata.size == 0
+        || metadata.size > MAX_CORE_COOKIE_BYTES_V1
+    {
+        return Err(PreflightFailureV1::new(check, "unsafe-metadata"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_core_rpc_cookie_boundary_metadata_v1(
+    config: &CoreRpcCookieConfigV1,
+    protected_parent: CoreRpcCookieBoundaryMetadataV1,
+    final_parent: CoreRpcCookieBoundaryMetadataV1,
+    cookie: CoreRpcCookieBoundaryMetadataV1,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    if config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup {
+        let cross_uid = config
+            .cross_uid_access
+            .as_ref()
+            .ok_or_else(|| PreflightFailureV1::new(check, "missing-cross-uid-fields"))?;
+        if protected_parent.kind != CoreRpcCookieBoundaryKindV1::Directory
+            || protected_parent.uid != cross_uid.protected_parent_expected_uid
+            || protected_parent.gid != cross_uid.protected_parent_expected_gid
+            || protected_parent.mode != 0o755
+        {
+            return Err(PreflightFailureV1::new(check, "unsafe-protected-parent"));
+        }
+    }
+    let expected_final_mode = match config.access_policy {
+        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => 0o700,
+        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => 0o710,
+    };
+    if final_parent.kind != CoreRpcCookieBoundaryKindV1::Directory
+        || final_parent.uid != config.expected_uid
+        || final_parent.gid != config.expected_gid
+        || final_parent.mode != expected_final_mode
+    {
+        return Err(PreflightFailureV1::new(check, "unsafe-directory"));
+    }
+    validate_core_rpc_cookie_file_metadata_v1(config, cookie, check)
+}
+
+#[cfg(unix)]
+fn validate_canonical_core_rpc_cookie_layout_v1(
+    config: &CoreRpcCookieConfigV1,
+    check: &'static str,
+) -> Result<PathBuf, PreflightFailureV1> {
+    let final_parent = config
+        .path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| PreflightFailureV1::new(check, "invalid-cookie-layout"))?
+        .to_path_buf();
+    let relative = config
+        .path
+        .strip_prefix(&config.protected_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "outside-protected-parent"))?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || !components
+            .iter()
+            .all(|component| matches!(component, Component::Normal(_)))
+        || (config.access_policy == CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+            && components.len() != 2)
+    {
+        return Err(PreflightFailureV1::new(check, "invalid-cookie-layout"));
+    }
+    for path in [
+        config.protected_parent.as_path(),
+        final_parent.as_path(),
+        config.path.as_path(),
+    ] {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|_| PreflightFailureV1::new(check, "canonicalize-failed"))?;
+        if canonical != path {
+            return Err(PreflightFailureV1::new(check, "non-canonical-path"));
+        }
+    }
+    Ok(final_parent)
+}
+
+#[cfg(unix)]
+fn validate_same_core_rpc_cookie_entry_v1(
+    before: &std::fs::Metadata,
+    after: &std::fs::Metadata,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    use std::os::unix::fs::MetadataExt;
+    validate_same_file_v1(before, after, check)?;
+    if before.nlink() != after.nlink() {
+        return Err(PreflightFailureV1::new(check, "file-changed"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_core_rpc_cookie_namespace_v1(
+    config: &CoreRpcCookieConfigV1,
+    final_parent: &Path,
+    protected_parent: &std::fs::Metadata,
+    final_parent_metadata: &std::fs::Metadata,
+    cookie: &std::fs::Metadata,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    if config.access_policy == CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly {
+        validate_protected_tree_v1(
+            &config.protected_parent,
+            &config.path,
+            config.expected_uid,
+            config.expected_gid,
+            true,
+            check,
+        )?;
+    }
+    validate_core_rpc_cookie_boundary_metadata_v1(
+        config,
+        core_rpc_cookie_boundary_metadata_v1(protected_parent),
+        core_rpc_cookie_boundary_metadata_v1(final_parent_metadata),
+        core_rpc_cookie_boundary_metadata_v1(cookie),
+        check,
+    )?;
+    let shared_gid = match config.access_policy {
+        CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly => None,
+        CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup => Some(config.expected_gid),
+    };
+    let checked_path = pir_private_files::prepare_private_unix_socket_parent_v1(
+        &config.path,
+        config.expected_uid,
+        shared_gid,
+        "Core RPC cookie",
+    )
+    .map_err(|_| PreflightFailureV1::new(check, "unsafe-parent-boundary"))?;
+    if checked_path != config.path || config.path.parent() != Some(final_parent) {
+        return Err(PreflightFailureV1::new(check, "path-changed"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_validated_core_rpc_cookie_with_hook_v1<F>(
+    config: &CoreRpcCookieConfigV1,
+    after_read: F,
+) -> Result<Zeroizing<Vec<u8>>, PreflightFailureV1>
+where
+    F: FnOnce() -> Result<(), PreflightFailureV1>,
+{
+    use rustix::fs::{self as rustix_fs, Mode, OFlags};
+
+    let check = "core.rpc-cookie";
+    validate_core_rpc_cookie_access_policy_v1(config)?;
+    let runtime = current_core_rpc_cookie_runtime_identity_v1(check)?;
+    validate_core_rpc_cookie_runtime_identity_v1(config, &runtime)?;
+    let final_parent = validate_canonical_core_rpc_cookie_layout_v1(config, check)?;
+    let protected_parent_before = std::fs::symlink_metadata(&config.protected_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    let final_parent_before = std::fs::symlink_metadata(&final_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    let cookie_named_before = std::fs::symlink_metadata(&config.path)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    validate_core_rpc_cookie_namespace_v1(
+        config,
+        &final_parent,
+        &protected_parent_before,
+        &final_parent_before,
+        &cookie_named_before,
+        check,
+    )?;
+
+    let fd = rustix_fs::open(
+        &config.path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|_| PreflightFailureV1::new(check, "open-failed"))?;
+    let mut file = File::from(fd);
+    let opened_before = file
+        .metadata()
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    validate_same_core_rpc_cookie_entry_v1(&cookie_named_before, &opened_before, check)?;
+    validate_core_rpc_cookie_file_metadata_v1(
+        config,
+        core_rpc_cookie_boundary_metadata_v1(&opened_before),
+        check,
+    )?;
+    pir_private_files::reject_extended_acl_v1(&file, "Core RPC cookie")
+        .map_err(|_| PreflightFailureV1::new(check, "unsafe-cookie-acl"))?;
+
+    let read_limit = MAX_CORE_COOKIE_BYTES_V1 + 1;
+    let mut bytes = Zeroizing::new(Vec::with_capacity(read_limit as usize));
+    file.by_ref()
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|_| PreflightFailureV1::new(check, "read-failed"))?;
+    if bytes.len() as u64 > MAX_CORE_COOKIE_BYTES_V1 {
+        return Err(PreflightFailureV1::new(check, "oversize"));
+    }
+    if bytes.len() as u64 != opened_before.len() {
+        return Err(PreflightFailureV1::new(check, "size-changed"));
+    }
+
+    after_read()?;
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| PreflightFailureV1::new(check, "seek-failed"))?;
+    let mut confirmed_bytes = Zeroizing::new(Vec::with_capacity(read_limit as usize));
+    file.by_ref()
+        .take(read_limit)
+        .read_to_end(&mut confirmed_bytes)
+        .map_err(|_| PreflightFailureV1::new(check, "read-failed"))?;
+    if confirmed_bytes.len() as u64 > MAX_CORE_COOKIE_BYTES_V1 {
+        return Err(PreflightFailureV1::new(check, "oversize"));
+    }
+    if confirmed_bytes.len() != bytes.len() {
+        return Err(PreflightFailureV1::new(check, "size-changed"));
+    }
+    if confirmed_bytes.as_slice() != bytes.as_slice() {
+        return Err(PreflightFailureV1::new(check, "content-changed"));
+    }
+
+    let opened_after = file
+        .metadata()
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    validate_same_core_rpc_cookie_entry_v1(&opened_before, &opened_after, check)?;
+    validate_core_rpc_cookie_file_metadata_v1(
+        config,
+        core_rpc_cookie_boundary_metadata_v1(&opened_after),
+        check,
+    )?;
+    if bytes.len() as u64 != opened_after.len() {
+        return Err(PreflightFailureV1::new(check, "size-changed"));
+    }
+    pir_private_files::reject_extended_acl_v1(&file, "Core RPC cookie")
+        .map_err(|_| PreflightFailureV1::new(check, "unsafe-cookie-acl"))?;
+
+    let protected_parent_after = std::fs::symlink_metadata(&config.protected_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    let final_parent_after = std::fs::symlink_metadata(&final_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    let cookie_named_after = std::fs::symlink_metadata(&config.path)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    validate_same_core_rpc_cookie_entry_v1(
+        &protected_parent_before,
+        &protected_parent_after,
+        check,
+    )?;
+    validate_same_core_rpc_cookie_entry_v1(&final_parent_before, &final_parent_after, check)?;
+    validate_same_core_rpc_cookie_entry_v1(&cookie_named_before, &cookie_named_after, check)?;
+    validate_same_core_rpc_cookie_entry_v1(&cookie_named_after, &opened_after, check)?;
+    let final_parent_after_path = validate_canonical_core_rpc_cookie_layout_v1(config, check)?;
+    if final_parent_after_path != final_parent {
+        return Err(PreflightFailureV1::new(check, "path-changed"));
+    }
+    validate_core_rpc_cookie_namespace_v1(
+        config,
+        &final_parent,
+        &protected_parent_after,
+        &final_parent_after,
+        &cookie_named_after,
+        check,
+    )?;
+    Ok(bytes)
 }
 
 fn validate_pinned_plugin_v1(plugin: &PinnedPluginV1) -> Result<(), PreflightFailureV1> {
@@ -1163,26 +1687,291 @@ fn validate_same_file_v1(
 
 #[cfg(unix)]
 fn validate_protected_socket_v1(config: &LightningConfigV1) -> Result<(), PreflightFailureV1> {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
     let check = "filesystem.lightning-rpc";
-    validate_protected_tree_v1(
-        &config.protected_parent,
-        &config.rpc_socket,
-        config.expected_uid,
-        config.expected_gid,
-        false,
+    validate_lightning_rpc_access_policy_v1(config)?;
+    let runtime = current_lightning_runtime_identity_v1(check)?;
+    validate_lightning_runtime_identity_v1(config, &runtime)?;
+
+    let final_parent = validate_canonical_lightning_socket_layout_v1(config, check)?;
+    let protected_parent_before = std::fs::symlink_metadata(&config.protected_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    let final_parent_before = std::fs::symlink_metadata(&final_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    let socket_before = std::fs::symlink_metadata(&config.rpc_socket)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+
+    match config.rpc_access_policy {
+        LightningRpcAccessPolicyV1::SameUidOwnerOnly => {
+            // Preserve the V1 same-owner protected-tree pin while adding the
+            // fd-walked final-parent/ACL and exact-mode checks below.
+            validate_protected_tree_v1(
+                &config.protected_parent,
+                &config.rpc_socket,
+                config.expected_uid,
+                config.expected_gid,
+                false,
+                check,
+            )?;
+        }
+        LightningRpcAccessPolicyV1::CrossUidSharedGroup => {
+            validate_cross_uid_boundary_metadata_v1(
+                config,
+                lightning_boundary_metadata_v1(&protected_parent_before),
+                lightning_boundary_metadata_v1(&final_parent_before),
+                lightning_boundary_metadata_v1(&socket_before),
+                check,
+            )?;
+        }
+    }
+
+    validate_lightning_socket_metadata_v1(
+        config,
+        lightning_boundary_metadata_v1(&socket_before),
         check,
     )?;
-    let metadata = std::fs::symlink_metadata(&config.rpc_socket)
+
+    // This component-by-component O_NOFOLLOW walk checks every ancestor and
+    // the final socket parent, including the platform ACL policy. Same-UID
+    // requires exact 0700; cross-UID requires exact CLN:GID 0710.
+    let shared_gid = match config.rpc_access_policy {
+        LightningRpcAccessPolicyV1::SameUidOwnerOnly => None,
+        LightningRpcAccessPolicyV1::CrossUidSharedGroup => Some(config.expected_gid),
+    };
+    let checked_path = pir_private_files::prepare_private_unix_socket_parent_v1(
+        &config.rpc_socket,
+        config.expected_uid,
+        shared_gid,
+        "Lightning staging RPC socket",
+    )
+    .map_err(|_| PreflightFailureV1::new(check, "unsafe-parent-boundary"))?;
+    if checked_path != config.rpc_socket {
+        return Err(PreflightFailureV1::new(check, "path-changed"));
+    }
+
+    let protected_parent_after = std::fs::symlink_metadata(&config.protected_parent)
         .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
-    let mode = metadata.permissions().mode() & 0o777;
-    if !metadata.file_type().is_socket()
-        || metadata.uid() != config.expected_uid
-        || metadata.gid() != config.expected_gid
-        || mode & 0o077 != 0
-        || mode & 0o600 != 0o600
+    let final_parent_after = std::fs::symlink_metadata(&final_parent)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    let socket_after = std::fs::symlink_metadata(&config.rpc_socket)
+        .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+    validate_same_lightning_boundary_entry_v1(
+        &protected_parent_before,
+        &protected_parent_after,
+        check,
+    )?;
+    validate_same_lightning_boundary_entry_v1(&final_parent_before, &final_parent_after, check)?;
+    validate_same_lightning_boundary_entry_v1(&socket_before, &socket_after, check)?;
+
+    match config.rpc_access_policy {
+        LightningRpcAccessPolicyV1::SameUidOwnerOnly => {}
+        LightningRpcAccessPolicyV1::CrossUidSharedGroup => {
+            validate_cross_uid_boundary_metadata_v1(
+                config,
+                lightning_boundary_metadata_v1(&protected_parent_after),
+                lightning_boundary_metadata_v1(&final_parent_after),
+                lightning_boundary_metadata_v1(&socket_after),
+                check,
+            )?;
+        }
+    }
+    validate_lightning_socket_metadata_v1(
+        config,
+        lightning_boundary_metadata_v1(&socket_after),
+        check,
+    )?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LightningRuntimeIdentityV1 {
+    effective_uid: u32,
+    effective_gid: u32,
+    supplementary_gids: BTreeSet<u32>,
+}
+
+#[cfg(unix)]
+fn current_lightning_runtime_identity_v1(
+    check: &'static str,
+) -> Result<LightningRuntimeIdentityV1, PreflightFailureV1> {
+    let supplementary_gids = rustix::process::getgroups()
+        .map_err(|_| PreflightFailureV1::new(check, "group-list-unavailable"))?
+        .into_iter()
+        .map(|gid| gid.as_raw())
+        .collect();
+    Ok(LightningRuntimeIdentityV1 {
+        effective_uid: rustix::process::geteuid().as_raw(),
+        effective_gid: rustix::process::getegid().as_raw(),
+        supplementary_gids,
+    })
+}
+
+#[cfg(unix)]
+fn validate_lightning_runtime_identity_v1(
+    config: &LightningConfigV1,
+    runtime: &LightningRuntimeIdentityV1,
+) -> Result<(), PreflightFailureV1> {
+    let check = "filesystem.lightning-rpc";
+    match config.rpc_access_policy {
+        LightningRpcAccessPolicyV1::SameUidOwnerOnly => {
+            if runtime.effective_uid != config.expected_uid {
+                return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
+            }
+        }
+        LightningRpcAccessPolicyV1::CrossUidSharedGroup => {
+            let cross_uid = config
+                .cross_uid_access
+                .as_ref()
+                .ok_or_else(|| PreflightFailureV1::new(check, "missing-cross-uid-fields"))?;
+            if runtime.effective_uid != cross_uid.client_expected_uid {
+                return Err(PreflightFailureV1::new(check, "runtime-uid-mismatch"));
+            }
+            if runtime.effective_gid != config.expected_gid
+                && !runtime.supplementary_gids.contains(&config.expected_gid)
+            {
+                return Err(PreflightFailureV1::new(check, "shared-group-missing"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LightningBoundaryKindV1 {
+    Directory,
+    Socket,
+    Other,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LightningBoundaryMetadataV1 {
+    kind: LightningBoundaryKindV1,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    nlink: u64,
+}
+
+#[cfg(unix)]
+fn lightning_boundary_metadata_v1(metadata: &std::fs::Metadata) -> LightningBoundaryMetadataV1 {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let kind = if metadata.file_type().is_dir() {
+        LightningBoundaryKindV1::Directory
+    } else if metadata.file_type().is_socket() {
+        LightningBoundaryKindV1::Socket
+    } else {
+        LightningBoundaryKindV1::Other
+    };
+    LightningBoundaryMetadataV1 {
+        kind,
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        mode: metadata.mode() & 0o7777,
+        nlink: metadata.nlink(),
+    }
+}
+
+#[cfg(unix)]
+fn validate_cross_uid_boundary_metadata_v1(
+    config: &LightningConfigV1,
+    protected_parent: LightningBoundaryMetadataV1,
+    final_parent: LightningBoundaryMetadataV1,
+    socket: LightningBoundaryMetadataV1,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    let cross_uid = config
+        .cross_uid_access
+        .as_ref()
+        .ok_or_else(|| PreflightFailureV1::new(check, "missing-cross-uid-fields"))?;
+    if protected_parent.kind != LightningBoundaryKindV1::Directory
+        || protected_parent.uid != cross_uid.protected_parent_expected_uid
+        || protected_parent.gid != cross_uid.protected_parent_expected_gid
+        || protected_parent.mode != 0o755
+    {
+        return Err(PreflightFailureV1::new(check, "unsafe-protected-parent"));
+    }
+    if final_parent.kind != LightningBoundaryKindV1::Directory
+        || final_parent.uid != config.expected_uid
+        || final_parent.gid != config.expected_gid
+        || final_parent.mode != 0o710
+    {
+        return Err(PreflightFailureV1::new(check, "unsafe-directory"));
+    }
+    validate_lightning_socket_metadata_v1(config, socket, check)
+}
+
+#[cfg(unix)]
+fn validate_lightning_socket_metadata_v1(
+    config: &LightningConfigV1,
+    socket: LightningBoundaryMetadataV1,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    let expected_mode = match config.rpc_access_policy {
+        LightningRpcAccessPolicyV1::SameUidOwnerOnly => 0o600,
+        LightningRpcAccessPolicyV1::CrossUidSharedGroup => 0o660,
+    };
+    if socket.kind != LightningBoundaryKindV1::Socket
+        || socket.uid != config.expected_uid
+        || socket.gid != config.expected_gid
+        || socket.mode != expected_mode
+        || socket.nlink != 1
     {
         return Err(PreflightFailureV1::new(check, "unsafe-socket"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_canonical_lightning_socket_layout_v1(
+    config: &LightningConfigV1,
+    check: &'static str,
+) -> Result<PathBuf, PreflightFailureV1> {
+    let final_parent = config
+        .rpc_socket
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| PreflightFailureV1::new(check, "invalid-socket-layout"))?
+        .to_path_buf();
+    if config.rpc_access_policy == LightningRpcAccessPolicyV1::CrossUidSharedGroup {
+        let relative = config
+            .rpc_socket
+            .strip_prefix(&config.protected_parent)
+            .map_err(|_| PreflightFailureV1::new(check, "outside-protected-parent"))?;
+        let components = relative.components().collect::<Vec<_>>();
+        if components.len() != 2
+            || !components
+                .iter()
+                .all(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err(PreflightFailureV1::new(check, "invalid-cross-uid-layout"));
+        }
+    }
+    for path in [
+        config.protected_parent.as_path(),
+        final_parent.as_path(),
+        config.rpc_socket.as_path(),
+    ] {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|_| PreflightFailureV1::new(check, "canonicalize-failed"))?;
+        if canonical != path {
+            return Err(PreflightFailureV1::new(check, "non-canonical-path"));
+        }
+    }
+    Ok(final_parent)
+}
+
+#[cfg(unix)]
+fn validate_same_lightning_boundary_entry_v1(
+    before: &std::fs::Metadata,
+    after: &std::fs::Metadata,
+    check: &'static str,
+) -> Result<(), PreflightFailureV1> {
+    use std::os::unix::fs::MetadataExt;
+    validate_same_file_v1(before, after, check)?;
+    if before.nlink() != after.nlink() {
+        return Err(PreflightFailureV1::new(check, "file-changed"));
     }
     Ok(())
 }
@@ -2201,9 +2990,11 @@ mod tests {
             bitcoin: BitcoinConfigV1 {
                 daemon: pinned("/opt/bitcoinpir/bin/bitcoind"),
                 cli: pinned("/opt/bitcoinpir/bin/bitcoin-cli"),
-                rpc_cookie: ProtectedFileV1 {
+                rpc_cookie: CoreRpcCookieConfigV1 {
                     path: PathBuf::from("/srv/bitcoin/signet/.cookie"),
                     protected_parent: PathBuf::from("/srv/bitcoin"),
+                    access_policy: CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly,
+                    cross_uid_access: None,
                     expected_uid: 1000,
                     expected_gid: 1000,
                 },
@@ -2223,6 +3014,8 @@ mod tests {
                 cli: pinned("/opt/bitcoinpir/bin/lightning-cli"),
                 rpc_socket: PathBuf::from("/srv/lightning/signet/lightning-rpc"),
                 protected_parent: PathBuf::from("/srv/lightning"),
+                rpc_access_policy: LightningRpcAccessPolicyV1::SameUidOwnerOnly,
+                cross_uid_access: None,
                 expected_uid: 1000,
                 expected_gid: 1000,
                 expected_version: "v26.06.6".to_owned(),
@@ -2242,6 +3035,88 @@ mod tests {
                 max_age_seconds: 3600,
             },
         }
+    }
+
+    fn cross_uid_config(role: StagingRoleV1) -> LightningStagingConfigV1 {
+        let mut value = config(role);
+        value.lightning.rpc_access_policy = LightningRpcAccessPolicyV1::CrossUidSharedGroup;
+        value.lightning.cross_uid_access = Some(LightningCrossUidAccessV1 {
+            client_expected_uid: 1001,
+            protected_parent_expected_uid: 0,
+            protected_parent_expected_gid: 0,
+        });
+        value.lightning.expected_uid = 1000;
+        value.lightning.expected_gid = 1002;
+        value.bitcoin.rpc_cookie.expected_uid = 1001;
+        value.bitcoin.rpc_cookie.expected_gid = 1001;
+        value
+    }
+
+    fn fully_cross_uid_config(role: StagingRoleV1) -> LightningStagingConfigV1 {
+        let mut value = cross_uid_config(role);
+        value.bitcoin.rpc_cookie.access_policy = CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup;
+        value.bitcoin.rpc_cookie.cross_uid_access = Some(CoreRpcCookieCrossUidAccessV1 {
+            preflight_expected_uid: 1001,
+            protected_parent_expected_uid: 0,
+            protected_parent_expected_gid: 0,
+        });
+        value.bitcoin.rpc_cookie.expected_uid = 1003;
+        value.bitcoin.rpc_cookie.expected_gid = 1004;
+        value
+    }
+
+    #[cfg(unix)]
+    fn same_uid_cookie_fixture() -> (tempfile::TempDir, CoreRpcCookieConfigV1, PathBuf) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let protected_parent = std::fs::canonicalize(directory.path()).unwrap();
+        let metadata = std::fs::metadata(&protected_parent).unwrap();
+        let cookie_path = protected_parent.join(".cookie");
+        let cookie = format!("__cookie__:{}\n", "a".repeat(64));
+        std::fs::write(&cookie_path, cookie.as_bytes()).unwrap();
+        std::fs::set_permissions(&cookie_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let config = CoreRpcCookieConfigV1 {
+            path: cookie_path.clone(),
+            protected_parent,
+            access_policy: CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly,
+            cross_uid_access: None,
+            expected_uid: metadata.uid(),
+            expected_gid: metadata.gid(),
+        };
+        (directory, config, cookie_path)
+    }
+
+    #[cfg(unix)]
+    fn same_uid_socket_fixture() -> (
+        tempfile::TempDir,
+        std::os::unix::net::UnixListener,
+        LightningConfigV1,
+        PathBuf,
+    ) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        // macOS TMPDIR normally begins with `/var`, which is an alias for
+        // `/private/var`. Feed the validator the required canonical path.
+        let protected_parent = std::fs::canonicalize(directory.path()).unwrap();
+        let final_parent = protected_parent.join("signet");
+        std::fs::create_dir(&final_parent).unwrap();
+        std::fs::set_permissions(&final_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let rpc_socket = final_parent.join("lightning-rpc");
+        let listener = std::os::unix::net::UnixListener::bind(&rpc_socket).unwrap();
+        std::fs::set_permissions(&rpc_socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let metadata = std::fs::metadata(&protected_parent).unwrap();
+        let mut lightning = config(StagingRoleV1::Issuer).lightning;
+        lightning.rpc_socket = rpc_socket;
+        lightning.protected_parent = protected_parent;
+        lightning.rpc_access_policy = LightningRpcAccessPolicyV1::SameUidOwnerOnly;
+        lightning.cross_uid_access = None;
+        lightning.expected_uid = metadata.uid();
+        lightning.expected_gid = metadata.gid();
+        (directory, listener, lightning, final_parent)
     }
 
     fn peer(peer_id: &str) -> ClnPeerChannelV1 {
@@ -2581,10 +3456,777 @@ mod tests {
     }
 
     #[test]
+    fn core_rpc_cookie_access_policy_is_explicit_and_fail_closed() {
+        let legacy = config(StagingRoleV1::Issuer);
+        assert_eq!(
+            legacy.bitcoin.rpc_cookie.access_policy,
+            CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly
+        );
+        assert!(validate_static_config_v1(&legacy).is_ok());
+
+        let mut same_with_cross_fields = legacy.clone();
+        same_with_cross_fields.bitcoin.rpc_cookie.cross_uid_access =
+            Some(CoreRpcCookieCrossUidAccessV1 {
+                preflight_expected_uid: 1001,
+                protected_parent_expected_uid: 0,
+                protected_parent_expected_gid: 0,
+            });
+        assert_eq!(
+            validate_static_config_v1(&same_with_cross_fields)
+                .unwrap_err()
+                .reason,
+            "cross-uid-fields-with-same-uid-policy"
+        );
+
+        let mut missing_fields = legacy.clone();
+        missing_fields.bitcoin.rpc_cookie.access_policy =
+            CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup;
+        assert_eq!(
+            validate_static_config_v1(&missing_fields)
+                .unwrap_err()
+                .reason,
+            "missing-cross-uid-fields"
+        );
+
+        let valid_cross_uid = fully_cross_uid_config(StagingRoleV1::Issuer);
+        assert!(validate_static_config_v1(&valid_cross_uid).is_ok());
+        for mutation in 0..5 {
+            let mut invalid = valid_cross_uid.clone();
+            let daemon_uid = invalid.bitcoin.rpc_cookie.expected_uid;
+            match mutation {
+                0 => {
+                    invalid
+                        .bitcoin
+                        .rpc_cookie
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .preflight_expected_uid = 0
+                }
+                1 => {
+                    invalid
+                        .bitcoin
+                        .rpc_cookie
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .preflight_expected_uid = daemon_uid
+                }
+                2 => {
+                    invalid
+                        .bitcoin
+                        .rpc_cookie
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .protected_parent_expected_uid = 1
+                }
+                3 => {
+                    invalid
+                        .bitcoin
+                        .rpc_cookie
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .protected_parent_expected_gid = 1
+                }
+                4 => invalid.bitcoin.rpc_cookie.expected_gid = 0,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_static_config_v1(&invalid).unwrap_err().reason,
+                "invalid-cross-uid-identities"
+            );
+        }
+    }
+
+    #[test]
+    fn core_cookie_and_lightning_identities_are_separate_but_share_preflight_euid() {
+        let valid = fully_cross_uid_config(StagingRoleV1::Issuer);
+        assert!(validate_preflight_identity_separation_v1(&valid).is_ok());
+
+        let mut mismatched_preflight = valid.clone();
+        mismatched_preflight
+            .bitcoin
+            .rpc_cookie
+            .cross_uid_access
+            .as_mut()
+            .unwrap()
+            .preflight_expected_uid += 1;
+        assert_eq!(
+            validate_preflight_identity_separation_v1(&mismatched_preflight)
+                .unwrap_err()
+                .reason,
+            "preflight-uid-conflict"
+        );
+
+        let mut shared_daemon_uid = valid.clone();
+        shared_daemon_uid.bitcoin.rpc_cookie.expected_uid =
+            shared_daemon_uid.lightning.expected_uid;
+        assert_eq!(
+            validate_preflight_identity_separation_v1(&shared_daemon_uid)
+                .unwrap_err()
+                .reason,
+            "core-and-lightning-identities-not-separated"
+        );
+
+        let mut shared_long_lived_group = valid;
+        shared_long_lived_group.bitcoin.rpc_cookie.expected_gid =
+            shared_long_lived_group.lightning.expected_gid;
+        assert_eq!(
+            validate_preflight_identity_separation_v1(&shared_long_lived_group)
+                .unwrap_err()
+                .reason,
+            "core-and-lightning-identities-not-separated"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn core_rpc_cookie_runtime_identity_requires_exact_euid_and_cookie_group() {
+        let same_uid = config(StagingRoleV1::Issuer);
+        let mut runtime = CoreRpcCookieRuntimeIdentityV1 {
+            effective_uid: same_uid.bitcoin.rpc_cookie.expected_uid,
+            effective_gid: same_uid.bitcoin.rpc_cookie.expected_gid,
+            supplementary_gids: BTreeSet::new(),
+        };
+        validate_core_rpc_cookie_runtime_identity_v1(&same_uid.bitcoin.rpc_cookie, &runtime)
+            .unwrap();
+        runtime.effective_uid += 1;
+        assert_eq!(
+            validate_core_rpc_cookie_runtime_identity_v1(&same_uid.bitcoin.rpc_cookie, &runtime)
+                .unwrap_err()
+                .reason,
+            "runtime-uid-mismatch"
+        );
+
+        let cross_uid = fully_cross_uid_config(StagingRoleV1::Issuer);
+        let cookie = &cross_uid.bitcoin.rpc_cookie;
+        let preflight_uid = cookie
+            .cross_uid_access
+            .as_ref()
+            .unwrap()
+            .preflight_expected_uid;
+        runtime = CoreRpcCookieRuntimeIdentityV1 {
+            effective_uid: preflight_uid,
+            effective_gid: preflight_uid,
+            supplementary_gids: BTreeSet::from([cookie.expected_gid]),
+        };
+        validate_core_rpc_cookie_runtime_identity_v1(cookie, &runtime).unwrap();
+        runtime.supplementary_gids.clear();
+        assert_eq!(
+            validate_core_rpc_cookie_runtime_identity_v1(cookie, &runtime)
+                .unwrap_err()
+                .reason,
+            "shared-group-missing"
+        );
+        runtime.effective_gid = cookie.expected_gid;
+        validate_core_rpc_cookie_runtime_identity_v1(cookie, &runtime).unwrap();
+        runtime.effective_uid = cookie.expected_uid;
+        assert_eq!(
+            validate_core_rpc_cookie_runtime_identity_v1(cookie, &runtime)
+                .unwrap_err()
+                .reason,
+            "runtime-uid-mismatch"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn core_rpc_cookie_boundary_metadata_requires_exact_split_uid_layout() {
+        let config = fully_cross_uid_config(StagingRoleV1::Issuer);
+        let cookie_config = &config.bitcoin.rpc_cookie;
+        let protected_parent = CoreRpcCookieBoundaryMetadataV1 {
+            kind: CoreRpcCookieBoundaryKindV1::Directory,
+            uid: 0,
+            gid: 0,
+            mode: 0o755,
+            nlink: 2,
+            size: 0,
+        };
+        let final_parent = CoreRpcCookieBoundaryMetadataV1 {
+            kind: CoreRpcCookieBoundaryKindV1::Directory,
+            uid: cookie_config.expected_uid,
+            gid: cookie_config.expected_gid,
+            mode: 0o710,
+            nlink: 2,
+            size: 0,
+        };
+        let cookie = CoreRpcCookieBoundaryMetadataV1 {
+            kind: CoreRpcCookieBoundaryKindV1::RegularFile,
+            uid: cookie_config.expected_uid,
+            gid: cookie_config.expected_gid,
+            mode: 0o640,
+            nlink: 1,
+            size: 76,
+        };
+        validate_core_rpc_cookie_boundary_metadata_v1(
+            cookie_config,
+            protected_parent,
+            final_parent,
+            cookie,
+            "test.core-cookie",
+        )
+        .unwrap();
+
+        let mutations = [
+            (
+                CoreRpcCookieBoundaryMetadataV1 {
+                    uid: 1,
+                    ..protected_parent
+                },
+                final_parent,
+                cookie,
+                "unsafe-protected-parent",
+            ),
+            (
+                CoreRpcCookieBoundaryMetadataV1 {
+                    mode: 0o750,
+                    ..protected_parent
+                },
+                final_parent,
+                cookie,
+                "unsafe-protected-parent",
+            ),
+            (
+                CoreRpcCookieBoundaryMetadataV1 {
+                    gid: 1,
+                    ..protected_parent
+                },
+                final_parent,
+                cookie,
+                "unsafe-protected-parent",
+            ),
+            (
+                protected_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    uid: cookie_config.expected_uid + 1,
+                    ..final_parent
+                },
+                cookie,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    gid: cookie_config.expected_gid + 1,
+                    ..final_parent
+                },
+                cookie,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    mode: 0o711,
+                    ..final_parent
+                },
+                cookie,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    mode: 0o600,
+                    ..cookie
+                },
+                "unsafe-metadata",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    uid: cookie_config.expected_uid + 1,
+                    ..cookie
+                },
+                "unsafe-metadata",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    gid: cookie_config.expected_gid + 1,
+                    ..cookie
+                },
+                "unsafe-metadata",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                CoreRpcCookieBoundaryMetadataV1 { nlink: 2, ..cookie },
+                "unsafe-metadata",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                CoreRpcCookieBoundaryMetadataV1 { size: 0, ..cookie },
+                "unsafe-metadata",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    size: MAX_CORE_COOKIE_BYTES_V1 + 1,
+                    ..cookie
+                },
+                "unsafe-metadata",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                CoreRpcCookieBoundaryMetadataV1 {
+                    kind: CoreRpcCookieBoundaryKindV1::Other,
+                    ..cookie
+                },
+                "unsafe-metadata",
+            ),
+        ];
+        for (protected_parent, final_parent, cookie, expected_reason) in mutations {
+            assert_eq!(
+                validate_core_rpc_cookie_boundary_metadata_v1(
+                    cookie_config,
+                    protected_parent,
+                    final_parent,
+                    cookie,
+                    "test.core-cookie",
+                )
+                .unwrap_err()
+                .reason,
+                expected_reason
+            );
+        }
+    }
+
+    #[test]
+    fn lightning_rpc_access_policy_is_explicit_and_unambiguous() {
+        let legacy = config(StagingRoleV1::Issuer);
+        assert_eq!(
+            legacy.lightning.rpc_access_policy,
+            LightningRpcAccessPolicyV1::SameUidOwnerOnly
+        );
+        assert!(validate_static_config_v1(&legacy).is_ok());
+
+        let mut same_with_cross_fields = legacy.clone();
+        same_with_cross_fields.lightning.cross_uid_access = Some(LightningCrossUidAccessV1 {
+            client_expected_uid: 1001,
+            protected_parent_expected_uid: 0,
+            protected_parent_expected_gid: 0,
+        });
+        assert_eq!(
+            validate_static_config_v1(&same_with_cross_fields)
+                .unwrap_err()
+                .reason,
+            "cross-uid-fields-with-same-uid-policy"
+        );
+
+        let mut missing_fields = legacy.clone();
+        missing_fields.lightning.rpc_access_policy =
+            LightningRpcAccessPolicyV1::CrossUidSharedGroup;
+        assert_eq!(
+            validate_static_config_v1(&missing_fields)
+                .unwrap_err()
+                .reason,
+            "missing-cross-uid-fields"
+        );
+
+        let valid_cross_uid = cross_uid_config(StagingRoleV1::Issuer);
+        assert!(validate_static_config_v1(&valid_cross_uid).is_ok());
+
+        for mutation in 0..5 {
+            let mut invalid = valid_cross_uid.clone();
+            let daemon_uid = invalid.lightning.expected_uid;
+            match mutation {
+                0 => {
+                    invalid
+                        .lightning
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .client_expected_uid = 0
+                }
+                1 => {
+                    invalid
+                        .lightning
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .client_expected_uid = daemon_uid
+                }
+                2 => {
+                    invalid
+                        .lightning
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .protected_parent_expected_uid = 1
+                }
+                3 => {
+                    invalid
+                        .lightning
+                        .cross_uid_access
+                        .as_mut()
+                        .unwrap()
+                        .protected_parent_expected_gid = 1
+                }
+                4 => invalid.lightning.expected_gid = 0,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_static_config_v1(&invalid).unwrap_err().reason,
+                "invalid-cross-uid-identities"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lightning_rpc_runtime_identity_requires_exact_client_and_shared_group() {
+        let same_uid = config(StagingRoleV1::Issuer);
+        let mut runtime = LightningRuntimeIdentityV1 {
+            effective_uid: same_uid.lightning.expected_uid,
+            effective_gid: same_uid.lightning.expected_gid,
+            supplementary_gids: BTreeSet::new(),
+        };
+        validate_lightning_runtime_identity_v1(&same_uid.lightning, &runtime).unwrap();
+        runtime.effective_uid += 1;
+        assert_eq!(
+            validate_lightning_runtime_identity_v1(&same_uid.lightning, &runtime)
+                .unwrap_err()
+                .reason,
+            "runtime-uid-mismatch"
+        );
+
+        let cross_uid = cross_uid_config(StagingRoleV1::Issuer);
+        let cross_fields = cross_uid.lightning.cross_uid_access.as_ref().unwrap();
+        runtime = LightningRuntimeIdentityV1 {
+            effective_uid: cross_fields.client_expected_uid,
+            effective_gid: cross_fields.client_expected_uid,
+            supplementary_gids: BTreeSet::from([cross_uid.lightning.expected_gid]),
+        };
+        validate_lightning_runtime_identity_v1(&cross_uid.lightning, &runtime).unwrap();
+
+        runtime.supplementary_gids.clear();
+        assert_eq!(
+            validate_lightning_runtime_identity_v1(&cross_uid.lightning, &runtime)
+                .unwrap_err()
+                .reason,
+            "shared-group-missing"
+        );
+        runtime.effective_gid = cross_uid.lightning.expected_gid;
+        validate_lightning_runtime_identity_v1(&cross_uid.lightning, &runtime).unwrap();
+        runtime.effective_uid = cross_uid.lightning.expected_uid;
+        assert_eq!(
+            validate_lightning_runtime_identity_v1(&cross_uid.lightning, &runtime)
+                .unwrap_err()
+                .reason,
+            "runtime-uid-mismatch"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_uid_boundary_metadata_requires_exact_production_layout() {
+        let config = cross_uid_config(StagingRoleV1::Issuer);
+        let protected_parent = LightningBoundaryMetadataV1 {
+            kind: LightningBoundaryKindV1::Directory,
+            uid: 0,
+            gid: 0,
+            mode: 0o755,
+            nlink: 2,
+        };
+        let final_parent = LightningBoundaryMetadataV1 {
+            kind: LightningBoundaryKindV1::Directory,
+            uid: config.lightning.expected_uid,
+            gid: config.lightning.expected_gid,
+            mode: 0o710,
+            nlink: 2,
+        };
+        let socket = LightningBoundaryMetadataV1 {
+            kind: LightningBoundaryKindV1::Socket,
+            uid: config.lightning.expected_uid,
+            gid: config.lightning.expected_gid,
+            mode: 0o660,
+            nlink: 1,
+        };
+        validate_cross_uid_boundary_metadata_v1(
+            &config.lightning,
+            protected_parent,
+            final_parent,
+            socket,
+            "test.lightning-rpc",
+        )
+        .unwrap();
+
+        let mutations = [
+            (
+                LightningBoundaryMetadataV1 {
+                    uid: 1,
+                    ..protected_parent
+                },
+                final_parent,
+                socket,
+                "unsafe-protected-parent",
+            ),
+            (
+                LightningBoundaryMetadataV1 {
+                    mode: 0o750,
+                    ..protected_parent
+                },
+                final_parent,
+                socket,
+                "unsafe-protected-parent",
+            ),
+            (
+                protected_parent,
+                LightningBoundaryMetadataV1 {
+                    gid: config.lightning.expected_gid + 1,
+                    ..final_parent
+                },
+                socket,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                LightningBoundaryMetadataV1 {
+                    mode: 0o711,
+                    ..final_parent
+                },
+                socket,
+                "unsafe-directory",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                LightningBoundaryMetadataV1 {
+                    uid: config.lightning.expected_uid + 1,
+                    ..socket
+                },
+                "unsafe-socket",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                LightningBoundaryMetadataV1 {
+                    gid: config.lightning.expected_gid + 1,
+                    ..socket
+                },
+                "unsafe-socket",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                LightningBoundaryMetadataV1 {
+                    mode: 0o600,
+                    ..socket
+                },
+                "unsafe-socket",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                LightningBoundaryMetadataV1 { nlink: 2, ..socket },
+                "unsafe-socket",
+            ),
+            (
+                protected_parent,
+                final_parent,
+                LightningBoundaryMetadataV1 {
+                    kind: LightningBoundaryKindV1::Other,
+                    ..socket
+                },
+                "unsafe-socket",
+            ),
+        ];
+        for (protected_parent, final_parent, socket, expected_reason) in mutations {
+            assert_eq!(
+                validate_cross_uid_boundary_metadata_v1(
+                    &config.lightning,
+                    protected_parent,
+                    final_parent,
+                    socket,
+                    "test.lightning-rpc",
+                )
+                .unwrap_err()
+                .reason,
+                expected_reason
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_uid_socket_validation_accepts_legacy_layout_but_requires_exact_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_directory, _listener, lightning, final_parent) = same_uid_socket_fixture();
+        validate_protected_socket_v1(&lightning).unwrap();
+
+        std::fs::set_permissions(
+            &lightning.rpc_socket,
+            std::fs::Permissions::from_mode(0o660),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_protected_socket_v1(&lightning).unwrap_err().reason,
+            "unsafe-socket"
+        );
+        std::fs::set_permissions(
+            &lightning.rpc_socket,
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        std::fs::set_permissions(&final_parent, std::fs::Permissions::from_mode(0o710)).unwrap();
+        assert_eq!(
+            validate_protected_socket_v1(&lightning).unwrap_err().reason,
+            "unsafe-parent-boundary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lightning_socket_validation_rejects_symlink_and_parent_metadata_drift() {
+        use std::os::unix::fs::symlink;
+
+        let (_directory, listener, lightning, final_parent) = same_uid_socket_fixture();
+        let parent_before = std::fs::symlink_metadata(&final_parent).unwrap();
+        let nested = final_parent.join("unexpected-child");
+        std::fs::create_dir(&nested).unwrap();
+        let parent_after = std::fs::symlink_metadata(&final_parent).unwrap();
+        assert_eq!(
+            validate_same_lightning_boundary_entry_v1(
+                &parent_before,
+                &parent_after,
+                "test.lightning-rpc",
+            )
+            .unwrap_err()
+            .reason,
+            "file-changed"
+        );
+        std::fs::remove_dir(&nested).unwrap();
+
+        drop(listener);
+        let real_socket = final_parent.join("lightning-rpc.real");
+        std::fs::rename(&lightning.rpc_socket, &real_socket).unwrap();
+        symlink("lightning-rpc.real", &lightning.rpc_socket).unwrap();
+        assert_eq!(
+            validate_protected_socket_v1(&lightning).unwrap_err().reason,
+            "non-canonical-path"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lightning_socket_validation_rejects_extended_acl_on_final_parent() {
+        let (_directory, _listener, lightning, final_parent) = same_uid_socket_fixture();
+        assert!(std::process::Command::new("chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&final_parent)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            validate_protected_socket_v1(&lightning).unwrap_err().reason,
+            "unsafe-parent-boundary"
+        );
+    }
+
+    #[test]
     fn published_config_template_parses_and_denies_unknown_fields() {
         let template =
             include_str!("../../../docs/payment/LIGHTNING_STAGING_PREFLIGHT.toml.example");
-        assert!(toml::from_str::<LightningStagingConfigV1>(template).is_ok());
+        let parsed = toml::from_str::<LightningStagingConfigV1>(template).unwrap();
+        assert_eq!(
+            parsed.bitcoin.rpc_cookie.access_policy,
+            CoreRpcCookieAccessPolicyV1::CrossUidSharedGroup
+        );
+        assert_eq!(parsed.bitcoin.rpc_cookie.expected_uid, 990);
+        assert_eq!(parsed.bitcoin.rpc_cookie.expected_gid, 994);
+        assert_eq!(
+            parsed
+                .bitcoin
+                .rpc_cookie
+                .cross_uid_access
+                .as_ref()
+                .unwrap()
+                .preflight_expected_uid,
+            992
+        );
+        assert_eq!(
+            parsed.lightning.rpc_access_policy,
+            LightningRpcAccessPolicyV1::CrossUidSharedGroup
+        );
+        assert_eq!(parsed.lightning.expected_uid, 991);
+        assert_eq!(parsed.lightning.expected_gid, 993);
+        assert_eq!(
+            parsed
+                .lightning
+                .cross_uid_access
+                .as_ref()
+                .unwrap()
+                .client_expected_uid,
+            992
+        );
+        let mut legacy_template = String::new();
+        let mut skipping_cross_uid_table = false;
+        for line in template.lines() {
+            if line.trim() == "[lightning.cross_uid_access]" {
+                skipping_cross_uid_table = true;
+                continue;
+            }
+            if skipping_cross_uid_table && line.trim() == "[lightning.daemon]" {
+                skipping_cross_uid_table = false;
+            }
+            if skipping_cross_uid_table || line.trim_start().starts_with("rpc_access_policy =") {
+                continue;
+            }
+            legacy_template.push_str(line);
+            legacy_template.push('\n');
+        }
+        let legacy = toml::from_str::<LightningStagingConfigV1>(&legacy_template).unwrap();
+        assert_eq!(
+            legacy.lightning.rpc_access_policy,
+            LightningRpcAccessPolicyV1::SameUidOwnerOnly
+        );
+        assert!(legacy.lightning.cross_uid_access.is_none());
+
+        let mut core_legacy_template = String::new();
+        let mut skipping_core_cross_uid_table = false;
+        for line in template.lines() {
+            if line.trim() == "[bitcoin.rpc_cookie.cross_uid_access]" {
+                skipping_core_cross_uid_table = true;
+                continue;
+            }
+            if skipping_core_cross_uid_table && line.trim() == "[bitcoin.daemon]" {
+                skipping_core_cross_uid_table = false;
+            }
+            if skipping_core_cross_uid_table || line.trim_start().starts_with("access_policy =") {
+                continue;
+            }
+            core_legacy_template.push_str(line);
+            core_legacy_template.push('\n');
+        }
+        let core_legacy =
+            toml::from_str::<LightningStagingConfigV1>(&core_legacy_template).unwrap();
+        assert_eq!(
+            core_legacy.bitcoin.rpc_cookie.access_policy,
+            CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly
+        );
+        assert!(core_legacy.bitcoin.rpc_cookie.cross_uid_access.is_none());
+
+        let with_unknown_cross_uid_field = template.replace(
+            "client_expected_uid = 992",
+            "client_expected_uid = 992\nunexpected_cross_uid_field = true",
+        );
+        assert!(toml::from_str::<LightningStagingConfigV1>(&with_unknown_cross_uid_field).is_err());
+        let with_unknown_core_cross_uid_field = template.replace(
+            "preflight_expected_uid = 992",
+            "preflight_expected_uid = 992\nunexpected_cookie_cross_uid_field = true",
+        );
+        assert!(
+            toml::from_str::<LightningStagingConfigV1>(&with_unknown_core_cross_uid_field).is_err()
+        );
         let with_unknown_backup_field = format!("{template}\nunexpected = true\n");
         assert!(toml::from_str::<LightningStagingConfigV1>(&with_unknown_backup_field).is_err());
     }
@@ -2624,13 +4266,16 @@ mod tests {
             b"schema_version=1\n"
         );
 
-        let cookie_path = directory.path().join(".cookie");
+        let cookie_parent = std::fs::canonicalize(directory.path()).unwrap();
+        let cookie_path = cookie_parent.join(".cookie");
         let cookie = format!("__cookie__:{}\n", "a".repeat(64));
         std::fs::write(&cookie_path, cookie.as_bytes()).unwrap();
         std::fs::set_permissions(&cookie_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let cookie_config = ProtectedFileV1 {
+        let cookie_config = CoreRpcCookieConfigV1 {
             path: cookie_path.clone(),
-            protected_parent: directory.path().to_path_buf(),
+            protected_parent: cookie_parent,
+            access_policy: CoreRpcCookieAccessPolicyV1::SameUidOwnerOnly,
+            cross_uid_access: None,
             expected_uid: metadata.uid(),
             expected_gid: metadata.gid(),
         };
@@ -2666,6 +4311,141 @@ mod tests {
                 .unwrap_err()
                 .reason,
             "unsafe-protected-parent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn core_rpc_cookie_rejects_hardlinks_symlinks_and_metadata_drift() {
+        use std::io::{Seek, SeekFrom, Write};
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let (_directory, cookie_config, cookie_path) = same_uid_cookie_fixture();
+        validate_core_rpc_cookie_v1(&cookie_config).unwrap();
+
+        std::fs::set_permissions(
+            &cookie_config.protected_parent,
+            std::fs::Permissions::from_mode(0o710),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_core_rpc_cookie_v1(&cookie_config)
+                .unwrap_err()
+                .reason,
+            "unsafe-directory"
+        );
+        std::fs::set_permissions(
+            &cookie_config.protected_parent,
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        validate_core_rpc_cookie_v1(&cookie_config).unwrap();
+
+        let hardlink = cookie_config.protected_parent.join("cookie-hardlink");
+        std::fs::hard_link(&cookie_path, &hardlink).unwrap();
+        assert_eq!(
+            validate_core_rpc_cookie_v1(&cookie_config)
+                .unwrap_err()
+                .reason,
+            "unsafe-metadata"
+        );
+        std::fs::remove_file(&hardlink).unwrap();
+        validate_core_rpc_cookie_v1(&cookie_config).unwrap();
+
+        let real_cookie = cookie_config.protected_parent.join("cookie-real");
+        std::fs::rename(&cookie_path, &real_cookie).unwrap();
+        symlink("cookie-real", &cookie_path).unwrap();
+        assert_eq!(
+            validate_core_rpc_cookie_v1(&cookie_config)
+                .unwrap_err()
+                .reason,
+            "non-canonical-path"
+        );
+        std::fs::remove_file(&cookie_path).unwrap();
+        std::fs::rename(&real_cookie, &cookie_path).unwrap();
+        validate_core_rpc_cookie_v1(&cookie_config).unwrap();
+
+        let error = read_validated_core_rpc_cookie_with_hook_v1(&cookie_config, || {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&cookie_path)
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "open-failed"))?;
+            file.write_all(b"x")
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "write-failed"))?;
+            file.sync_all()
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "sync-failed"))
+        })
+        .unwrap_err();
+        assert_eq!(error.reason, "size-changed");
+
+        let valid_cookie = format!("__cookie__:{}\n", "b".repeat(64));
+        std::fs::write(&cookie_path, valid_cookie.as_bytes()).unwrap();
+        std::fs::set_permissions(&cookie_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let changed_cookie = format!("__cookie__:{}\n", "c".repeat(64));
+        let error = read_validated_core_rpc_cookie_with_hook_v1(&cookie_config, || {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&cookie_path)
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "open-failed"))?;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "seek-failed"))?;
+            file.write_all(changed_cookie.as_bytes())
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "write-failed"))?;
+            file.sync_all()
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "sync-failed"))
+        })
+        .unwrap_err();
+        assert_eq!(error.reason, "content-changed");
+
+        std::fs::write(&cookie_path, valid_cookie.as_bytes()).unwrap();
+        std::fs::set_permissions(&cookie_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let replaced = cookie_config.protected_parent.join("cookie-replaced");
+        let error = read_validated_core_rpc_cookie_with_hook_v1(&cookie_config, || {
+            std::fs::rename(&cookie_path, &replaced)
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "rename-failed"))?;
+            std::fs::write(&cookie_path, valid_cookie.as_bytes())
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "write-failed"))?;
+            std::fs::set_permissions(&cookie_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| PreflightFailureV1::new("test.core-cookie", "chmod-failed"))
+        })
+        .unwrap_err();
+        assert_eq!(error.reason, "file-changed");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn core_rpc_cookie_rejects_extended_acl_on_cookie_and_parent() {
+        let (_directory, cookie_config, cookie_path) = same_uid_cookie_fixture();
+        assert!(std::process::Command::new("chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&cookie_path)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            validate_core_rpc_cookie_v1(&cookie_config)
+                .unwrap_err()
+                .reason,
+            "unsafe-cookie-acl"
+        );
+
+        assert!(std::process::Command::new("chmod")
+            .args(["-N"])
+            .arg(&cookie_path)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&cookie_config.protected_parent)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            validate_core_rpc_cookie_v1(&cookie_config)
+                .unwrap_err()
+                .reason,
+            "unsafe-parent-boundary"
         );
     }
 

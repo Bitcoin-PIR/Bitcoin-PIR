@@ -36,7 +36,9 @@ members = [
     "tools/block-reader",
     "apps/dev-issuer",
     "apps/payment-issuer",
+    "apps/cln-rpc-guard",
     "apps/rollback-authority",
+    "apps/directory-relay",
 ]
 exclude = ["electrum_plugin/harmonypir-python", "vendor/bitcoinpir-oram"]
 

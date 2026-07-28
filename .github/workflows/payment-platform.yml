@@ -10,7 +10,9 @@ on:
       - '.cargo/**'
       - 'vendor/**'
       - 'apps/payment-issuer/**'
+      - 'apps/cln-rpc-guard/**'
       - 'apps/rollback-authority/**'
+      - 'apps/directory-relay/**'
       - 'apps/admin/**'
       - 'apps/server/**'
       - 'crates/net/**'
@@ -27,7 +29,14 @@ on:
       - 'crates/security/**'
       - 'crates/trust/**'
       - 'docs/payment/**'
+      - 'deploy/payment-v1/**'
       - 'scripts/fixtures/**'
+      - 'scripts/payment-v1-deployment-template-gate.mjs'
+      - 'scripts/payment-v1-deployment-template-gate.test.mjs'
+      - 'scripts/payment-v1-rendered-artifact-gate.mjs'
+      - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-linux-runtime-evidence.mjs'
+      - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
@@ -45,7 +54,9 @@ on:
       - '.cargo/**'
       - 'vendor/**'
       - 'apps/payment-issuer/**'
+      - 'apps/cln-rpc-guard/**'
       - 'apps/rollback-authority/**'
+      - 'apps/directory-relay/**'
       - 'apps/admin/**'
       - 'apps/server/**'
       - 'crates/net/**'
@@ -62,7 +73,14 @@ on:
       - 'crates/security/**'
       - 'crates/trust/**'
       - 'docs/payment/**'
+      - 'deploy/payment-v1/**'
       - 'scripts/fixtures/**'
+      - 'scripts/payment-v1-deployment-template-gate.mjs'
+      - 'scripts/payment-v1-deployment-template-gate.test.mjs'
+      - 'scripts/payment-v1-rendered-artifact-gate.mjs'
+      - 'scripts/payment-v1-rendered-artifact-gate.test.mjs'
+      - 'scripts/payment-v1-linux-runtime-evidence.mjs'
+      - 'scripts/payment-v1-linux-runtime-evidence.test.mjs'
       - 'scripts/payment-v1-local-check.sh'
       - 'scripts/payment-v1-cdk-regtest-e2e.sh'
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
@@ -113,6 +131,8 @@ jobs:
           -p pir-cashu-custody
           -p pir-arc-adapter
           -p pir-directory-nostr
+          -p bitcoinpir-directory-relay
+          -p bitcoinpir-cln-rpc-guard
           -p pir-runtime-core
           -p pir-sdk-client
           -p pir-sdk-wasm
@@ -152,6 +172,8 @@ jobs:
           -p pir-cashu-custody
           -p pir-arc-adapter
           -p pir-directory-nostr
+          -p bitcoinpir-directory-relay
+          -p bitcoinpir-cln-rpc-guard
           -p payment-issuer
           -p rollback-authority
           -p bpir-admin
@@ -215,6 +237,26 @@ jobs:
             exit 1
           fi
           grep -F 'unknown argument: --test-only-service-https-root-pem' "$log_file" >/dev/null
+      - name: Exercise real provider to shared issuer clearing over pinned WebPKI TLS
+        run: |
+          issuer_e2e_target_dir="$PWD/target/payment-issuer-shared-e2e"
+          cargo build --locked --offline \
+            -p payment-issuer \
+            --features test-only-fake-lightning \
+            --bin payment-issuer \
+            --target-dir "$issuer_e2e_target_dir"
+          BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+            cargo test --locked --offline \
+              -p runtime \
+              --features shared-issuer-process-e2e \
+              --test payment_v1_shared_issuer_process_e2e \
+              shared_issuer_real_process_tls_e2e -- --exact
+          cargo clippy --locked --offline \
+            -p runtime \
+            --features shared-issuer-process-e2e \
+            --bin unified_server \
+            --test payment_v1_shared_issuer_process_e2e \
+            --no-deps -- -D warnings
       - name: Prove test-only WebPKI roots cannot enter release artifacts
         run: |
           log_file="$(mktemp "${RUNNER_TEMP}/bpir-test-root-release.XXXXXX")"
@@ -241,6 +283,11 @@ jobs:
           grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
           if cargo check --locked --offline --release -p runtime --features standard-cashu-process-e2e >"$log_file" 2>&1; then
             echo "runtime Standard Cashu test-only WebPKI feature unexpectedly compiled in release mode" >&2
+            exit 1
+          fi
+          grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
+          if cargo check --locked --offline --release -p runtime --features shared-issuer-process-e2e >"$log_file" 2>&1; then
+            echo "runtime shared-issuer test-only WebPKI feature unexpectedly compiled in release mode" >&2
             exit 1
           fi
           grep -F 'test-only-webpki-root must never be compiled into a production release' "$log_file" >/dev/null
@@ -355,6 +402,18 @@ jobs:
         run: npm ci
       - name: Enforce manual main-only production Pages deployment
         run: node scripts/payment-v1-pages-deploy-gate.mjs
+      - name: Validate non-activating Payment V1 deployment templates
+        run: |
+          node --check scripts/payment-v1-deployment-template-gate.mjs
+          node --test scripts/payment-v1-deployment-template-gate.test.mjs
+          node scripts/payment-v1-deployment-template-gate.mjs
+          node --check scripts/payment-v1-rendered-artifact-gate.mjs
+          node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
+          node --check scripts/payment-v1-linux-runtime-evidence.mjs
+          node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+          node --test \
+            scripts/payment-v1-rendered-artifact-gate.test.mjs \
+            scripts/payment-v1-linux-runtime-evidence.test.mjs
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

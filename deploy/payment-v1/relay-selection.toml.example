@@ -1,0 +1,27 @@
+version = 1
+status = "UNRESOLVED"
+implementation = "UNRESOLVED"
+source_repository = "UNRESOLVED"
+source_commit = "UNRESOLVED"
+source_archive_sha256 = "UNRESOLVED"
+cargo_lock_sha256 = "UNRESOLVED"
+binary_sha256 = "UNRESOLVED"
+binary_version_output = "UNRESOLVED"
+config_sha256 = "UNRESOLVED"
+publisher_pubkey_hex = "UNRESOLVED"
+
+# Fixed BitcoinPIR directory-relay profile. These are not commercial policy.
+listen_host = "127.0.0.1"
+allowed_kind = 30078
+max_event_message_bytes = 262176
+max_content_bytes = 196608
+config_max_bytes = 16384
+config_profile = "bitcoinpir-directory-relay-v1"
+publisher_private_key_installed = false
+nip42_auth = false
+access_logging = false
+mutable_source_ref = false
+
+# Production resolution is allowed only for the repository's reviewed
+# directory-only relay with a full commit and exact artifact hashes. The gate
+# explicitly rejects nostr-rs-relay 0.9.0/0.10.0 and mutable refs.

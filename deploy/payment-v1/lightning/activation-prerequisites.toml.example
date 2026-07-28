@@ -1,0 +1,32 @@
+schema_version = 1
+status = "UNRESOLVED"
+network = "UNRESOLVED"
+cln_bundle_sha256 = "UNRESOLVED"
+bitcoin_core_bundle_sha256 = "UNRESOLVED"
+cln_rpc_guard_binary_sha256 = "UNRESOLVED"
+cln_rpc_guard_unit_sha256 = "UNRESOLVED"
+cln_rpc_guard_tmpfiles_sha256 = "UNRESOLVED"
+lightningd_config_sha256 = "UNRESOLVED"
+preflight_config_sha256 = "UNRESOLVED"
+backup_receipt_sha256 = "UNRESOLVED"
+expected_cln_version = "UNRESOLVED"
+expected_node_id_hex = "UNRESOLVED"
+
+# These booleans are operator-review inputs, not an activation mechanism.
+identity_secret_offline_restore_rehearsed = false
+channel_recovery_restore_rehearsed = false
+dynamic_datastore_restore_rehearsed = false
+stale_channel_state_rollback_rejected = false
+default_signet_chain_pins_verified = false
+exact_plugin_allowlist_verified = false
+strict_rpc_socket_layout_verified = false
+cross_uid_preflight_policy_verified = false
+bitcoin_rpc_cookie_boundary_verified = false
+cln_rpc_method_allowlist_guard_verified = false
+live_read_only_preflight_passed = false
+real_funds_authorized = false
+
+# Before mainnet/real value, a method-allowlisting RPC guard must be deployed
+# and hash-pinned, and the issuer must have no direct path to the native CLN
+# administrative socket. Risk acceptance does not replace this control. This
+# example authorizes no funds and is not an activation sentinel.

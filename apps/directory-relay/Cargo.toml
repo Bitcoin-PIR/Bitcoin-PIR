@@ -1,0 +1,34 @@
+[package]
+name = "bitcoinpir-directory-relay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+publish = false
+description = "Minimal BitcoinPIR directory-profile NIP-01 relay"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+
+[[bin]]
+name = "bitcoinpir-directory-relay"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+hex = "0.4"
+log = "0.4"
+env_logger = "0.11"
+pir-directory-nostr = { path = "../../crates/directory/nostr" }
+pir-private-files = { path = "../../crates/security/private-files" }
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "signal", "time"] }
+tokio-tungstenite = "0.26"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -30,6 +30,10 @@ bpir-admin service-keygen --role quote-ed25519 --out quote-online.key
 bpir-admin service-keygen --role bip340-claim --out claim-test.key
 bpir-admin service-keygen --role credential-derivation --out credential-derivation.key
 bpir-admin service-keygen --role redeem-derivation --out redeem-derivation.key
+bpir-admin service-keygen --role free-ip-hmac --out free-ip-hmac.key
+bpir-admin service-keygen --role cashu-recovery-aead --out cashu-recovery-1.key
+bpir-admin service-keygen --role cashu-custody-aead --out cashu-custody-1.key
+bpir-admin service-keygen --role provider-shared-idempotency-hmac --out shared-idempotency.key
 bpir-admin service-keygen --role receipt-ed25519 --out receipt.key
 bpir-admin service-keygen --role cashu-bat --out bat.key
 bpir-admin service-keygen --role cashu-ecash --out cashu-denomination.key
@@ -37,10 +41,14 @@ bpir-admin service-keygen --role arc-experimental --out arc.key
 ```
 
 Other supported roles are `policy-ed25519`, `anonymous-ticket-ed25519`,
-`clearing-ed25519`, and `directory-nostr`. Do not reuse one raw key across
-roles, providers, BAT offers, or ARC lineages. `bip340-claim` is normally
-browser-generated; the operator command exists for isolated tests and recovery
-fixtures, not as a recommendation to centralize browser claim keys.
+`clearing-ed25519`, and `directory-nostr`. The six symmetric or derivation
+roles (`credential-derivation`, `redeem-derivation`, and the four roles added
+above) print only a domain-separated operator fingerprint, never a public key
+or secret. Do not
+reuse one raw key across roles, providers, BAT offers, ARC lineages, recovery
+epochs, custody epochs, or shared-issuer relationships. `bip340-claim` is
+normally browser-generated; the operator command exists for isolated tests and
+recovery fixtures, not as a recommendation to centralize browser claim keys.
 
 ARC uses a 128-byte four-scalar key and remains experimental pending an
 independent cryptographic review.

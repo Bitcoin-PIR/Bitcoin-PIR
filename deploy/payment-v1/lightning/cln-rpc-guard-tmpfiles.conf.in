@@ -1,0 +1,3 @@
+# Created at boot before activation; the guard validates every component again.
+d /run/bitcoinpir-cln-rpc-guard        0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer    - -
+d /run/bitcoinpir-cln-rpc-guard/issuer 0710 bitcoinpir-cln-rpc-guard bitcoinpir-issuer    - -

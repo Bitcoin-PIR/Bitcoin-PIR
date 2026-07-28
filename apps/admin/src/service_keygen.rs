@@ -18,7 +18,7 @@ pub enum ServiceKeyRole {
     IssuerRootEd25519,
     /// Short-lived online BOLT11 quote Ed25519 signing key.
     QuoteEd25519,
-    /// Provider-local direct-receipt Ed25519 key.
+    /// Issuer-held direct-receipt Ed25519 signing key; providers pin its public key.
     ReceiptEd25519,
     /// Free anonymous-ticket Ed25519 key.
     AnonymousTicketEd25519,
@@ -36,6 +36,14 @@ pub enum ServiceKeyRole {
     CredentialDerivation,
     /// Issuer deterministic redeem-response derivation key.
     RedeemDerivation,
+    /// Provider-local HMAC key for durable Free/IP quota cohorts.
+    FreeIpHmac,
+    /// Provider-local Standard Cashu swap-recovery AEAD key.
+    CashuRecoveryAead,
+    /// Provider-local Standard Cashu note-custody AEAD key.
+    CashuCustodyAead,
+    /// Provider-local HMAC key for shared-issuer wire idempotency.
+    ProviderSharedIdempotencyHmac,
     /// Experimental ARC draft-01 four-scalar key (128 bytes).
     ArcExperimental,
 }
@@ -83,7 +91,12 @@ pub fn run(args: ServiceKeygenArgs) -> Result<crate::keygen::SecretWriteCompleti
                     .ok()
                     .map(|key| hex::encode(key.public_key().to_encoded_point(true).as_bytes()))
             }
-            ServiceKeyRole::CredentialDerivation | ServiceKeyRole::RedeemDerivation => {
+            ServiceKeyRole::CredentialDerivation
+            | ServiceKeyRole::RedeemDerivation
+            | ServiceKeyRole::FreeIpHmac
+            | ServiceKeyRole::CashuRecoveryAead
+            | ServiceKeyRole::CashuCustodyAead
+            | ServiceKeyRole::ProviderSharedIdempotencyHmac => {
                 (!secret.iter().all(|byte| *byte == 0)).then(|| {
                     let mut hasher = Sha256::new();
                     hasher.update(b"BitcoinPIR/operator-secret-fingerprint/v1");
@@ -110,7 +123,12 @@ pub fn run(args: ServiceKeygenArgs) -> Result<crate::keygen::SecretWriteCompleti
     println!("role={:?}", args.role);
     if matches!(
         args.role,
-        ServiceKeyRole::CredentialDerivation | ServiceKeyRole::RedeemDerivation
+        ServiceKeyRole::CredentialDerivation
+            | ServiceKeyRole::RedeemDerivation
+            | ServiceKeyRole::FreeIpHmac
+            | ServiceKeyRole::CashuRecoveryAead
+            | ServiceKeyRole::CashuCustodyAead
+            | ServiceKeyRole::ProviderSharedIdempotencyHmac
     ) {
         println!("secret_fingerprint={public}");
     } else {
@@ -172,6 +190,10 @@ mod tests {
             ServiceKeyRole::CashuEcash,
             ServiceKeyRole::CredentialDerivation,
             ServiceKeyRole::RedeemDerivation,
+            ServiceKeyRole::FreeIpHmac,
+            ServiceKeyRole::CashuRecoveryAead,
+            ServiceKeyRole::CashuCustodyAead,
+            ServiceKeyRole::ProviderSharedIdempotencyHmac,
             ServiceKeyRole::ArcExperimental,
         ] {
             let directory = private_tempdir().unwrap();
@@ -196,7 +218,12 @@ mod tests {
                 ServiceKeyRole::CashuBat | ServiceKeyRole::CashuEcash => {
                     Secp256k1SecretKey::from_slice(&bytes).unwrap();
                 }
-                ServiceKeyRole::CredentialDerivation | ServiceKeyRole::RedeemDerivation => {
+                ServiceKeyRole::CredentialDerivation
+                | ServiceKeyRole::RedeemDerivation
+                | ServiceKeyRole::FreeIpHmac
+                | ServiceKeyRole::CashuRecoveryAead
+                | ServiceKeyRole::CashuCustodyAead
+                | ServiceKeyRole::ProviderSharedIdempotencyHmac => {
                     assert!(bytes.iter().any(|byte| *byte != 0));
                 }
                 ServiceKeyRole::ArcExperimental => {

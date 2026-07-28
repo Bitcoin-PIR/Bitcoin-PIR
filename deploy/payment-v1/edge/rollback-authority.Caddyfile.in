@@ -1,0 +1,68 @@
+# BitcoinPIR Payment V1 independent rollback-authority edge.
+{
+	admin off
+	persist_config off
+	auto_https disable_redirects
+
+	servers :443 {
+		protocols h1 h2
+		timeouts {
+			read_header 5s
+			read_body 10s
+			write 15s
+			idle 30s
+		}
+		max_header_size 8KiB
+		0rtt off
+		strict_sni_host on
+	}
+
+	log default {
+		level ERROR
+		exclude http.log.access http.log.error http.handlers.reverse_proxy
+	}
+}
+
+@ROLLBACK_AUTHORITY_HTTPS_HOST@ {
+	@authority_call {
+		method POST
+		path /v1/rollback-authority/calls
+		header Host @ROLLBACK_AUTHORITY_HTTPS_HOST@
+		header Content-Type application/vnd.bitcoinpir.rollback-authority-request-v1
+		header Accept "application/vnd.bitcoinpir.rollback-authority-response-v1, application/problem+json"
+		header Connection close
+		header User-Agent BitcoinPIR-service-admission/1
+		header Content-Length *
+		expression {http.request.uri} == "/v1/rollback-authority/calls"
+	}
+
+	handle @authority_call {
+		request_body {
+			max_size 1404B
+		}
+		reverse_proxy 127.0.0.1:8099 {
+			header_up -*
+			header_up Host @ROLLBACK_AUTHORITY_HTTPS_HOST@
+			header_up Content-Type application/vnd.bitcoinpir.rollback-authority-request-v1
+			header_up Accept "application/vnd.bitcoinpir.rollback-authority-response-v1, application/problem+json"
+			header_up Connection close
+			header_up User-Agent BitcoinPIR-service-admission/1
+			header_down -Via
+			transport http {
+				versions 1.1
+				dial_timeout 3s
+				response_header_timeout 10s
+				read_timeout 10s
+				write_timeout 10s
+				max_response_header 8KiB
+				max_conns_per_host 32
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle {
+		respond "" 404
+	}
+}
