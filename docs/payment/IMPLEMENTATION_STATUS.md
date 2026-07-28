@@ -408,11 +408,13 @@ operator has activated the path with real money or public infrastructure.
 - [x] A CI-wired, explicitly selected process test starts two copies of the
       repository's production `bitcoinpir-directory-relay` binary with
       independent config/SQLite/runtime state and four distinct loopback
-      listeners. It sends signed `EVENT` messages only through each publisher
-      lane, sends ID/catalog `REQ` and receives `EOSE` only through each public
-      lane, fails closed on offline/exact split-view errors, recovers lost ACK by
-      a public-lane durable ID probe plus publisher-lane idempotent retry, and
-      verifies both listeners plus stored heads across independent restarts. A
+      listeners. Every accepted signed `EVENT` uses a publisher lane; every
+      accepted ID/catalog `REQ` and returned `EVENT`/`EOSE` uses a public lane.
+      Deliberate wrong-lane probes must close, and an exact-ID public readback
+      proves the rejected EVENT sentinel was not persisted. It fails closed on
+      offline/exact split-view errors, recovers lost ACK by a public-lane durable
+      ID probe plus publisher-lane idempotent retry, and verifies both listeners
+      plus stored heads across independent restarts. A
       companion three-authority test separates provider
       0, provider 1 and issuer DB/key/namespace/TLS material. It starts authority
       and TLS-edge child test harnesses; each authority harness invokes
@@ -798,9 +800,25 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
       VPSBG baseline. The rendered gate binds one externally approved plan to
       exact staged bytes, path/file classes and consuming service identities;
       the live collector binds installed bytes, systemd state and real process
-      credentials to one machine/boot/invocation. The current source gate passed
-      16/16 and the combined rendered/live-evidence Node suite passed 63/63 on
-      this preparation tree. The first root-only target Linux collection still
+      credentials to one machine/boot/invocation. Runtime-evidence v2 accepts
+      only stable local `files` NSS, binds `/etc/nsswitch.conf`, `/etc/passwd`
+      and `/etc/group`, and rejects UID/GID aliases or extra protected-group
+      primary/explicit/effective members; a final snapshot confirmation closes
+      drift during the remainder of live collection. Two bounded
+      all-process/all-thread passes additionally reject stale protected UID/GID
+      holders outside the exact current unit cgroups, reject every non-root
+      CAP_SETUID/CAP_SETGID holder, and re-confirm every
+      MainPID/unit generation; runtime paths are rechecked after the scan. This
+      is not an already-connected-FD proof. The stopped-edge evidence type
+      therefore requires inactive/dead units, absent socket paths, locked
+      non-login service accounts and an empty protected-credential closure
+      before HAProxy may start, followed by Caddy and a fresh live proof in the
+      host initial PID namespace. The current pinned Ubuntu 24.04,
+      HAProxy 2.8.16 and Caddy 2.11.3 container run passed the complete four-suite
+      deployment/rendered/live/source-fair Node gate 138/138 with no skip,
+      including real `getent`, per-user `id -G`, and full procfs thread scans.
+      An Alpine procfs regression also passes for legal repeated `Groups:`
+      entries. The first root-only target Linux collection still
       remains candidate-commit/host evidence and cannot be inferred from those
       deterministic tests.
 - [x] One authorized public-relay smoke published a 30-minute, empty 16-shard
@@ -830,10 +848,14 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 
 ## Production release blockers and gates
 
-The implementation-code P1 findings, including initial payout
-persist-before-send, are closed. One production data-integrity P1 remains: an
-actually independent linearizable rollback authority is not deployed. The
-other numbered items below are mandatory production release, operations,
+The previously reviewed gate/store implementation P1 findings, including
+initial payout persist-before-send, are closed. Two distinct P1 classes remain:
+an actually independent linearizable rollback authority is not deployed, and
+the shared-issuer production path still lacks operator-facing builders for its
+clearing authorization/approval plus a production balance client whose key
+model matches the registration. Tests currently construct those artifacts or
+envelopes directly; that is not a deployable operator workflow. The other
+numbered items below are mandatory production release, operations,
 external-review or manual-acceptance gates; they are not all implementation P1
 findings and must not be collapsed into that count.
 

@@ -126,6 +126,40 @@ has accepted TCP/TLS and parsed HTTP; it does not replace independent
 Caddy-front slowloris, header, file-descriptor, memory, task, firewall, or
 volumetric limits.
 
+The public edge has a mandatory two-evidence cold-start ceremony. While Caddy
+and HAProxy are inactive/dead and every Unix listener is absent, run
+`collect-stopped-edge`. It proves the manifest-bound service accounts are
+password-locked and login-disabled, no process/thread retains a protected
+UID/GID, no non-root thread retains CAP_SETUID/CAP_SETGID, and the stopped unit
+and socket-absence snapshots remain stable around both procfs passes. Only then
+start HAProxy followed by Caddy and run `collect-live` against the new
+generation. Neither command permits caller-authored evidence or challenge
+material; offline verification requires the complete independently transferred
+evidence digest. A warm reload is not an accepted replacement.
+
+Runtime-evidence v2 accepts only a local-files NSS authority (`passwd: files`,
+`group: files`, and no explicit `initgroups:` line). It snapshots the canonical
+root-owned `/etc/nsswitch.conf`, `/etc/passwd`, and `/etc/group` around NSS
+enumeration and confirms the same files again at the end of live collection,
+requires `getent` identity and membership projections to match those files, and
+checks `id -G` for every enumerated user. In live evidence, password, GECOS,
+home, shell and group-password fields are snapshot-bound but are not semantic
+identity comparisons; stopped-edge evidence additionally requires each service
+account's shell and locked shadow-password state described above.
+SSSD, LDAP, winbind, NIS and `systemd` UserDB are outside this
+V1 proof profile. The collector is trusted-root operational evidence rather
+than attestation: independently pin the exact collector script from the frozen
+commit before running it; the evidence-file digest alone does not prove an
+honest collector.
+
+The same evidence performs two bounded scans of every numeric Linux process
+and thread and rejects a non-root CAP_SETUID/CAP_SETGID holder. A retained
+protected service UID or GID is accepted only
+inside that service's exact current systemd cgroup with the full expected
+credential set; every long-running MainPID and the final unit generation are
+reconfirmed. This closes stale kernel credentials that a later `/etc/group`
+edit would not revoke.
+
 The exact production HAProxy must be a currently maintained 2.8.x build whose
 `haproxy -vv` feature list contains `+SYSTEMD`; the unit uses `Type=notify` and
 `-Ws`. CI's distribution package is only a compatibility baseline, not the
