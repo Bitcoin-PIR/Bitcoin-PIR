@@ -11,7 +11,8 @@ using real funds. Cargo is forced offline; full mode requires a preinstalled
 `wasm-pack`/`wasm-bindgen` toolchain and refuses to bootstrap it from the
 network.
 
-  --quick  Five-method × five-workload matrix plus focused persistence and fake-Lightning checks.
+  --quick  Five-method × five-workload matrix plus focused persistence,
+           directory-relay, deployment-template and fake-Lightning checks.
            It starts no service process; unit tests may briefly bind loopback
            TCP or Unix-domain listeners.
   --full   The default offline payment-platform Rust suite, operator tooling,
@@ -71,6 +72,8 @@ cargo test --locked --offline -p pir-cashu-custody
 cargo test --locked --offline -p pir-arc-adapter --features provider-store
 
 echo "[4/5] fake-Lightning, quote/claim lifecycle, and native/WASM client boundaries"
+cargo test --locked --offline -p bitcoinpir-directory-relay
+cargo test --locked --offline -p bitcoinpir-cln-rpc-guard
 cargo test --locked --offline -p pir-lightning-backend
 cargo test --locked --offline -p pir-issuer-core
 cargo test --locked --offline -p pir-issuer-service
@@ -80,6 +83,16 @@ cargo run --locked --offline -p payment-issuer \
   --features test-only-fake-lightning -- serve-fake --help >/dev/null
 cargo test --locked --offline -p pir-sdk-client --all-targets
 cargo test --locked --offline -p pir-sdk-wasm --lib
+node --check scripts/payment-v1-deployment-template-gate.mjs
+node --test scripts/payment-v1-deployment-template-gate.test.mjs
+node scripts/payment-v1-deployment-template-gate.mjs
+node --check scripts/payment-v1-rendered-artifact-gate.mjs
+node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --check scripts/payment-v1-linux-runtime-evidence.mjs
+node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --test \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs \
+  scripts/payment-v1-linux-runtime-evidence.test.mjs
 
 if [[ "$mode" == "quick" ]]; then
   echo "[5/5] quick mode complete (no external network, no funds)"
@@ -108,6 +121,8 @@ cargo test --locked --offline \
   -p pir-cashu-custody \
   -p pir-arc-adapter \
   -p pir-directory-nostr \
+  -p bitcoinpir-directory-relay \
+  -p bitcoinpir-cln-rpc-guard \
   -p pir-runtime-core \
   -p pir-sdk-client \
   -p pir-sdk-wasm \
@@ -227,7 +242,7 @@ cargo clippy --locked --offline -p payment-issuer \
   -- -D warnings
 cargo check --locked --offline -p runtime --bin unified_server
 
-echo "[6/9] Standard Cashu signed-pin TLS and real-provider process boundary"
+echo "[6/9] Standard Cashu and shared-issuer signed-pin TLS process boundaries"
 cargo test --locked --offline -p runtime \
   --features standard-cashu-process-e2e \
   --test payment_v1_standard_cashu_process_e2e \
@@ -258,8 +273,35 @@ if cargo check --locked --offline --release -p runtime \
 fi
 grep -F 'test-only-webpki-root must never be compiled into a production release' \
   "$cashu_boundary_log" >/dev/null
+if cargo check --locked --offline --release -p runtime \
+  --features shared-issuer-process-e2e >"$cashu_boundary_log" 2>&1; then
+  echo "payment-v1-local-check: shared-issuer test-only root feature compiled in release mode" >&2
+  rm -f -- "$cashu_boundary_log"
+  exit 1
+fi
+grep -F 'test-only-webpki-root must never be compiled into a production release' \
+  "$cashu_boundary_log" >/dev/null
 rm -f -- "$cashu_boundary_log"
 trap - EXIT HUP INT TERM
+
+issuer_e2e_target_dir="$repo_root/target/payment-issuer-shared-e2e"
+cargo build --locked --offline \
+  -p payment-issuer \
+  --features test-only-fake-lightning \
+  --bin payment-issuer \
+  --target-dir "$issuer_e2e_target_dir"
+BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+  cargo test --locked --offline \
+    -p runtime \
+    --features shared-issuer-process-e2e \
+    --test payment_v1_shared_issuer_process_e2e \
+    shared_issuer_real_process_tls_e2e -- --exact
+cargo clippy --locked --offline \
+  -p runtime \
+  --features shared-issuer-process-e2e \
+  --bin unified_server \
+  --test payment_v1_shared_issuer_process_e2e \
+  --no-deps -- -D warnings
 
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/bpir-payment-v1-fixture.XXXXXX")"
 trap 'rm -rf -- "$fixture_root"' EXIT HUP INT TERM
@@ -275,6 +317,16 @@ node --test scripts/payment-v1-nostr-readback.test.mjs
 node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
 node --check scripts/payment-v1-pages-deploy-gate.mjs
 node scripts/payment-v1-pages-deploy-gate.mjs
+node --check scripts/payment-v1-deployment-template-gate.mjs
+node --test scripts/payment-v1-deployment-template-gate.test.mjs
+node scripts/payment-v1-deployment-template-gate.mjs
+node --check scripts/payment-v1-rendered-artifact-gate.mjs
+node --check scripts/payment-v1-rendered-artifact-gate.test.mjs
+node --check scripts/payment-v1-linux-runtime-evidence.mjs
+node --check scripts/payment-v1-linux-runtime-evidence.test.mjs
+node --test \
+  scripts/payment-v1-rendered-artifact-gate.test.mjs \
+  scripts/payment-v1-linux-runtime-evidence.test.mjs
 
 echo "[7/9] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \
@@ -297,6 +349,8 @@ cargo clippy --locked --offline --all-targets --no-deps \
   -p pir-cashu-custody \
   -p pir-arc-adapter \
   -p pir-directory-nostr \
+  -p bitcoinpir-directory-relay \
+  -p bitcoinpir-cln-rpc-guard \
   -p payment-issuer \
   -p rollback-authority \
   -p bpir-admin \

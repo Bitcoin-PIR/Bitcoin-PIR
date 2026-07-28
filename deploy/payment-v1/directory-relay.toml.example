@@ -1,0 +1,31 @@
+# BitcoinPIR directory-only relay v1 production-shape example.
+# This file contains no signing key. Render DIRECTORY_PUBLISHER_PUBKEY_HEX as
+# the dedicated non-zero x-only public key, then keep the rendered config 0400
+# or 0600 below /etc/bitcoinpir/payment-v1/directory-relay.
+
+profile = "bitcoinpir-directory-relay-v1"
+listen = "127.0.0.1:8080"
+database = "/var/lib/bitcoinpir-directory-relay/relay.sqlite3"
+directory_pubkey_hex = "@DIRECTORY_PUBLISHER_PUBKEY_HEX@"
+
+# These are relay abuse/capacity limits, not commercial policy. The cumulative
+# connection budget intentionally does not permit count and event-size maxima
+# to be saturated simultaneously. The supplied stock-Caddy edge is not
+# source-aware; a reviewed non-persistent source-fair boundary remains an
+# activation prerequisite.
+max_connections = 64
+max_in_flight_operations = 8
+max_operations_per_second = 64
+max_egress_bytes_per_second = 16777216
+max_egress_bytes_per_connection = 67108864
+
+# max_archive_bytes counts immutable event_json BLOB bytes, not SQLite/WAL/index
+# disk usage. Filesystem quota and free-space alerts remain mandatory.
+max_archive_events = 100000
+max_archive_bytes = 268435456
+
+handshake_timeout_seconds = 10
+idle_timeout_seconds = 60
+connection_timeout_seconds = 300
+operation_timeout_seconds = 10
+egress_timeout_seconds = 5

@@ -3,6 +3,14 @@
 # Copy this public, non-secret template separately onto each payer/router/issuer
 # host. Replace every placeholder and set `role` for that host. The preflight
 # is intentionally read-only and will fail on these zero hash placeholders.
+# In this numeric example the protected config and backup receipt are owned by
+# the dedicated preflight service (UID/GID 995), so invoke both commands with:
+#   --config-expected-uid 995 --config-expected-gid 995
+# UID 990 is bitcoind, UID 991 is CLN, UID/GID 992 is the long-lived issuer,
+# GID 993 is the native CLN RPC guard group, GID 994 is the Bitcoin-cookie
+# group, and UID/GID 995 is the one-shot preflight. CLN and preflight receive
+# GID 994; the RPC guard and preflight receive GID 993. The issuer receives
+# neither group and reaches only the guard's downstream issuer-group socket.
 
 schema_version = 1
 role = "payer" # payer | router | issuer
@@ -36,8 +44,22 @@ expected_subversion = "/Satoshi:29.0.0/"
 [bitcoin.rpc_cookie]
 path = "/srv/bitcoin/signet/.cookie"
 protected_parent = "/srv/bitcoin"
+access_policy = "cross-uid-shared-group"
+# Cookie/final-network-directory owner (bitcoind UID) and the distinct,
+# CLN/preflight-only cookie group. Cross-UID mode requires 0710 on
+# `/srv/bitcoin/signet` and 0640 with link count one on `.cookie`.
 expected_uid = 990
-expected_gid = 990
+expected_gid = 994
+
+[bitcoin.rpc_cookie.cross_uid_access]
+# The read-only preflight must run with this exact EUID and must have cookie
+# GID 994 as its effective or supplementary group. CLN also needs GID 994 for
+# bcli; the issuer and CLN RPC guard must not receive it.
+preflight_expected_uid = 995
+# V1 cross-UID policy deliberately requires a root:root mode-0755 broad
+# boundary at `/srv/bitcoin`.
+protected_parent_expected_uid = 0
+protected_parent_expected_gid = 0
 
 [bitcoin.daemon]
 path = "/usr/local/libexec/bitcoinpir/bitcoind"
@@ -56,9 +78,22 @@ expected_gid = 0
 [lightning]
 rpc_socket = "/srv/lightning/signet/lightning-rpc"
 protected_parent = "/srv/lightning"
+rpc_access_policy = "cross-uid-shared-group"
+# Socket and final network-directory owner (CLN UID) plus the exact shared
+# group. Cross-UID mode requires 0710 on `/srv/lightning/signet` and 0660 on
+# the socket; these are not the config-file ownership CLI arguments above.
 expected_uid = 991
-expected_gid = 991
+expected_gid = 993
 expected_version = "v26.06.6"
+
+[lightning.cross_uid_access]
+# The preflight must run with this exact dedicated EUID and must have
+# `expected_gid = 993` as its effective or supplementary group.
+client_expected_uid = 995
+# V1 cross-UID policy deliberately requires a root:root mode-0755 broad
+# boundary at `/srv/lightning`.
+protected_parent_expected_uid = 0
+protected_parent_expected_gid = 0
 
 [lightning.daemon]
 path = "/usr/local/libexec/bitcoinpir/lightningd"
@@ -90,6 +125,6 @@ expected_gid = 0
 # after both separately controlled backups were restore-checked.
 receipt = "/srv/bitcoinpir-backup/default-signet-payer.toml"
 protected_parent = "/srv/bitcoinpir-backup"
-expected_uid = 991
-expected_gid = 991
+expected_uid = 995
+expected_gid = 995
 max_age_seconds = 86400

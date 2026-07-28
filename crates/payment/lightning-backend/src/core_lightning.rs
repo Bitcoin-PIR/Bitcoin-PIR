@@ -59,6 +59,14 @@ impl ClnRpcResponseV1 {
     fn as_bytes(&self) -> &[u8] {
         self.bytes.as_slice()
     }
+
+    /// Copy a bounded secret-bearing response into another zeroizing buffer
+    /// for the dedicated local RPC guard. This deliberate feature-gated API
+    /// keeps raw CLN responses unavailable to ordinary backend consumers.
+    #[cfg(feature = "cln-rpc-guard")]
+    pub fn copy_for_local_guard(&self) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(self.bytes.to_vec())
+    }
 }
 
 impl fmt::Debug for ClnRpcResponseV1 {
@@ -624,6 +632,12 @@ mod unix_transport {
                 "Core Lightning RPC socket",
             )
             .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+            // Construction is the process-startup preflight used by both the
+            // issuer and the dedicated RPC guard. Validate the named socket
+            // itself here as well as before and after every connect, so a
+            // hard-linked or otherwise untrusted endpoint cannot survive
+            // startup merely because the first RPC has not run yet.
+            checked_socket_metadata(&socket_path, policy)?;
             Ok(Self {
                 socket_path,
                 policy,
@@ -763,9 +777,13 @@ mod unix_transport {
         path: &Path,
         policy: UnixClnRpcSocketPolicyV1,
     ) -> Result<(u64, u64), ClnRpcTransportErrorV1> {
+        reject_linux_socket_acl(path)?;
         let metadata = fs::symlink_metadata(path)
             .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
-        if !metadata.file_type().is_socket() || metadata.uid() != policy.expected_uid {
+        if !metadata.file_type().is_socket()
+            || metadata.uid() != policy.expected_uid
+            || metadata.nlink() != 1
+        {
             return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
         }
         let mode = metadata.mode() & 0o7777;
@@ -775,6 +793,25 @@ mod unix_transport {
             _ => return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite),
         }
         Ok((metadata.dev(), metadata.ino()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn reject_linux_socket_acl(path: &Path) -> Result<(), ClnRpcTransportErrorV1> {
+        let mut attributes = Vec::<u8>::with_capacity(4096);
+        rustix::fs::llistxattr(path, rustix::buffer::spare_capacity(&mut attributes))
+            .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+        if attributes
+            .split(|byte| *byte == 0)
+            .any(|name| name == b"system.posix_acl_access" || name == b"system.posix_acl_default")
+        {
+            return Err(ClnRpcTransportErrorV1::UnavailableBeforeWrite);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn reject_linux_socket_acl(_path: &Path) -> Result<(), ClnRpcTransportErrorV1> {
+        Ok(())
     }
 
     pub use UnixClnRpcSocketPolicyV1 as ExportedUnixClnRpcSocketPolicyV1;
@@ -1313,6 +1350,36 @@ mod tests {
         )
         .is_err());
         drop(listener);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_transport_rejects_a_hard_linked_socket() {
+        use std::fs;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::net::UnixListener;
+        use std::time::Duration;
+
+        let (directory, path) = private_unix_socket_test_path("hardlink");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let uid = fs::symlink_metadata(&path).unwrap().uid();
+        let alias = directory.join("lightning-rpc-alias");
+        fs::hard_link(&path, &alias).unwrap();
+        assert_eq!(fs::symlink_metadata(&path).unwrap().nlink(), 2);
+        assert!(UnixClnRpcTransportV1::new(
+            path.clone(),
+            UnixClnRpcSocketPolicyV1 {
+                expected_uid: uid,
+                expected_gid: None,
+            },
+            Duration::from_secs(1),
+        )
+        .is_err());
+        drop(listener);
+        fs::remove_file(alias).unwrap();
         fs::remove_file(path).unwrap();
         fs::remove_dir(directory).unwrap();
     }

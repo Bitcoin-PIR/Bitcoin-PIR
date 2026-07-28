@@ -1,0 +1,344 @@
+# BitcoinPIR Payment V1 Hetzner public edge; rendered file is hash-pinned.
+{
+	admin off
+	persist_config off
+	auto_https disable_redirects
+
+	servers :443 {
+		protocols h1 h2
+		timeouts {
+			read_header 5s
+			read_body 15s
+			# An absolute HTTP-server write deadline is unsafe for upgraded
+			# WebSockets. Application egress/idle/lifetime deadlines remain
+			# mandatory and are enforced by each loopback upstream.
+			write 0s
+			idle 60s
+		}
+		max_header_size 16KiB
+		0rtt off
+		strict_sni_host on
+	}
+
+	# Site blocks below do not enable Caddy's access logger. Excluding both
+	# request logger namespaces prevents a later global logger from recording
+	# IP, Host, path, headers or credential-bearing error context.
+	log default {
+		level ERROR
+		exclude http.log.access http.log.error http.handlers.reverse_proxy
+	}
+}
+
+@PROVIDER_WSS_HOST@ {
+	@provider_ws {
+		method GET
+		path /v1/pir
+		header Host @PROVIDER_WSS_HOST@
+		header Connection *Upgrade*
+		header Upgrade websocket
+		header Sec-WebSocket-Version 13
+		header_regexp Sec-WebSocket-Key ^[A-Za-z0-9+/]{22}==$
+		expression {http.request.uri} == "/v1/pir"
+	}
+
+	handle @provider_ws {
+		request_body {
+			max_size 1KiB
+		}
+		reverse_proxy 127.0.0.1:8191 {
+			header_up -*
+			header_up Host @PROVIDER_WSS_HOST@
+			header_up Connection Upgrade
+			header_up Upgrade websocket
+			header_up Sec-WebSocket-Version 13
+			header_up Sec-WebSocket-Key {http.request.header.Sec-WebSocket-Key}
+			header_down -Via
+			flush_interval -1
+			transport http {
+				versions 1.1
+				dial_timeout 3s
+				response_header_timeout 10s
+				max_response_header 16KiB
+				max_conns_per_host 128
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle {
+		respond "" 404
+	}
+}
+
+@PAYMENT_ISSUER_HTTPS_HOST@ {
+	@issuer_quote_keys {
+		method GET OPTIONS
+		header Host @PAYMENT_ISSUER_HTTPS_HOST@
+		path_regexp issuer_key ^/v1/quote-keys/(current|[0-9a-f]{32})$
+		expression {http.request.uri.query} == ""
+	}
+	@issuer_quote_create {
+		method POST OPTIONS
+		header Host @PAYMENT_ISSUER_HTTPS_HOST@
+		path /v1/quotes/bolt11
+		expression {http.request.uri} == "/v1/quotes/bolt11"
+	}
+	@issuer_quote_action {
+		method POST OPTIONS
+		header Host @PAYMENT_ISSUER_HTTPS_HOST@
+		path_regexp issuer_action ^/v1/quotes/[0-9a-f]{64}/(status|claim)$
+		expression {http.request.uri.query} == ""
+	}
+		@issuer_provider_call {
+			method POST
+			header Host @PAYMENT_ISSUER_HTTPS_HOST@
+			path /v1/redeems /v1/settlement/balance
+			expression {http.request.uri.query} == ""
+		}
+
+	handle @issuer_quote_keys {
+		request_body {
+			max_size 66445B
+		}
+		reverse_proxy 127.0.0.1:5610 {
+			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
+			header_up Connection close
+			header_up -Accept
+			header_up -Accept-Encoding
+			header_up -Accept-Language
+			header_up -Authorization
+			header_up -Baggage
+			header_up -Cookie
+			header_up -DNT
+			header_up -Forwarded
+			header_up -Priority
+			header_up -Proxy-Authorization
+			header_up -Referer
+			header_up -Sec-CH-UA
+			header_up -Sec-CH-UA-Mobile
+			header_up -Sec-CH-UA-Platform
+			header_up -Sec-Fetch-Dest
+			header_up -Sec-Fetch-Mode
+			header_up -Sec-Fetch-Site
+			header_up -Sec-Fetch-User
+			header_up -Traceparent
+			header_up -Tracestate
+			header_up -User-Agent
+			header_up -Via
+			header_up -X-Correlation-ID
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Request-ID
+			header_down -Via
+			transport http {
+				versions 1.1
+				dial_timeout 3s
+				response_header_timeout 15s
+				read_timeout 15s
+				write_timeout 15s
+				max_response_header 32KiB
+				max_conns_per_host 128
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle @issuer_quote_create {
+		request_body {
+			max_size 66445B
+		}
+		reverse_proxy 127.0.0.1:5610 {
+			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
+			header_up Connection close
+			header_up -Accept
+			header_up -Accept-Encoding
+			header_up -Accept-Language
+			header_up -Authorization
+			header_up -Baggage
+			header_up -Cookie
+			header_up -DNT
+			header_up -Forwarded
+			header_up -Priority
+			header_up -Proxy-Authorization
+			header_up -Referer
+			header_up -Sec-CH-UA
+			header_up -Sec-CH-UA-Mobile
+			header_up -Sec-CH-UA-Platform
+			header_up -Sec-Fetch-Dest
+			header_up -Sec-Fetch-Mode
+			header_up -Sec-Fetch-Site
+			header_up -Sec-Fetch-User
+			header_up -Traceparent
+			header_up -Tracestate
+			header_up -User-Agent
+			header_up -Via
+			header_up -X-Correlation-ID
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Request-ID
+			header_down -Via
+			transport http {
+				versions 1.1
+				dial_timeout 3s
+				response_header_timeout 15s
+				read_timeout 15s
+				write_timeout 15s
+				max_response_header 32KiB
+				max_conns_per_host 128
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle @issuer_quote_action {
+		request_body {
+			max_size 66445B
+		}
+		reverse_proxy 127.0.0.1:5610 {
+			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
+			header_up Connection close
+			header_up -Accept
+			header_up -Accept-Encoding
+			header_up -Accept-Language
+			header_up -Authorization
+			header_up -Baggage
+			header_up -Cookie
+			header_up -DNT
+			header_up -Forwarded
+			header_up -Priority
+			header_up -Proxy-Authorization
+			header_up -Referer
+			header_up -Sec-CH-UA
+			header_up -Sec-CH-UA-Mobile
+			header_up -Sec-CH-UA-Platform
+			header_up -Sec-Fetch-Dest
+			header_up -Sec-Fetch-Mode
+			header_up -Sec-Fetch-Site
+			header_up -Sec-Fetch-User
+			header_up -Traceparent
+			header_up -Tracestate
+			header_up -User-Agent
+			header_up -Via
+			header_up -X-Correlation-ID
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Request-ID
+			header_down -Via
+			transport http {
+				versions 1.1
+				dial_timeout 3s
+				response_header_timeout 15s
+				read_timeout 15s
+				write_timeout 15s
+				max_response_header 32KiB
+				max_conns_per_host 128
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle @issuer_provider_call {
+		request_body {
+			max_size 66445B
+		}
+		reverse_proxy 127.0.0.1:5610 {
+			header_up Host @PAYMENT_ISSUER_HTTPS_HOST@
+			header_up Connection close
+			header_up -Accept
+			header_up -Accept-Encoding
+			header_up -Accept-Language
+			header_up -Authorization
+			header_up -Baggage
+			header_up -Cookie
+			header_up -DNT
+			header_up -Forwarded
+			header_up -Priority
+			header_up -Proxy-Authorization
+			header_up -Referer
+			header_up -Sec-CH-UA
+			header_up -Sec-CH-UA-Mobile
+			header_up -Sec-CH-UA-Platform
+			header_up -Sec-Fetch-Dest
+			header_up -Sec-Fetch-Mode
+			header_up -Sec-Fetch-Site
+			header_up -Sec-Fetch-User
+			header_up -Traceparent
+			header_up -Tracestate
+			header_up -User-Agent
+			header_up -Via
+			header_up -X-Correlation-ID
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
+			header_up -X-Request-ID
+			header_down -Via
+			transport http {
+				versions 1.1
+				dial_timeout 3s
+				response_header_timeout 15s
+				read_timeout 15s
+				write_timeout 15s
+				max_response_header 32KiB
+				max_conns_per_host 128
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle {
+		respond "" 404
+	}
+}
+@DIRECTORY_RELAY_WSS_HOST@ {
+	@directory_ws {
+		method GET
+		path /v1/directory
+		header Host @DIRECTORY_RELAY_WSS_HOST@
+		header Connection *Upgrade*
+		header Upgrade websocket
+		header Sec-WebSocket-Version 13
+		header_regexp Sec-WebSocket-Key ^[A-Za-z0-9+/]{22}==$
+		expression {http.request.uri} == "/v1/directory"
+	}
+
+	handle @directory_ws {
+		request_body {
+			max_size 1KiB
+		}
+		reverse_proxy 127.0.0.1:8080 {
+			header_up -*
+			header_up Host @DIRECTORY_RELAY_WSS_HOST@
+			header_up Connection Upgrade
+			header_up Upgrade websocket
+			header_up Sec-WebSocket-Version 13
+			header_up Sec-WebSocket-Key {http.request.header.Sec-WebSocket-Key}
+			header_down -Via
+			flush_interval -1
+			transport http {
+				versions 1.1
+				dial_timeout 3s
+				response_header_timeout 10s
+				max_response_header 16KiB
+				max_conns_per_host 64
+				keepalive off
+				compression off
+			}
+		}
+	}
+
+	handle {
+		respond "" 404
+	}
+}

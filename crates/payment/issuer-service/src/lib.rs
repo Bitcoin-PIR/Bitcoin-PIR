@@ -1188,6 +1188,19 @@ pub struct SettlementPayoutPolicyV1 {
     pub intent_ttl_seconds: u64,
 }
 
+/// Schema filler used when a provider registration belongs to a ledger-only
+/// issuer. This is SHA-256 of the ASCII domain
+/// `BitcoinPIR/issuer-service/v1/ledger-only-disabled-payout-target`.
+///
+/// The first byte is deliberately non-zero because the V1 store schema rejects
+/// an all-zero payout target. Production code installs this value directly; it
+/// is not accepted from an HTTP request or command-line option. It is not a
+/// payout destination and must never be interpreted as one.
+pub const LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1: [u8; 32] = [
+    0x85, 0x28, 0x4b, 0xc7, 0xed, 0xff, 0x9a, 0x30, 0x2f, 0xfb, 0x2c, 0xf6, 0x2c, 0xdb, 0x82, 0xe8,
+    0x7d, 0x14, 0x6b, 0xe3, 0x77, 0xa0, 0x7e, 0x2b, 0x60, 0xd7, 0xb3, 0x90, 0xfc, 0xa2, 0x53, 0x73,
+];
+
 impl SettlementPayoutPolicyV1 {
     pub fn new(issuer_fee: u64, intent_ttl_seconds: u64) -> Result<Self, IssuerServiceErrorV1> {
         if issuer_fee > MAX_SERVICE_VALUE_V1 || !(1..=86_400).contains(&intent_ttl_seconds) {
@@ -1225,7 +1238,7 @@ pub struct SharedIssuerClearingServiceV1 {
     settlement_keyring: Option<Arc<K256CashuMintKeyringV1>>,
     retained_settlement_keysets: Vec<CashuKeysetBindingV1>,
     response_derivation_key: RedeemResponseDerivationKeyV1,
-    payout_policy: SettlementPayoutPolicyV1,
+    payout_policy: Option<SettlementPayoutPolicyV1>,
 }
 
 struct LoadedClearingContextV1 {
@@ -1252,7 +1265,7 @@ impl fmt::Debug for SharedIssuerClearingServiceV1 {
                 "retained_settlement_signing_key_count",
                 &self.retained_issuer_settlement_keys.len(),
             )
-            .field("payout_policy", &self.payout_policy)
+            .field("ledger_only", &self.payout_policy.is_none())
             .finish_non_exhaustive()
     }
 }
@@ -1260,6 +1273,62 @@ impl fmt::Debug for SharedIssuerClearingServiceV1 {
 impl SharedIssuerClearingServiceV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        store: IssuerStore,
+        providers: Vec<TrustedClearingProviderV1>,
+        bat_keyring: Option<Arc<K256CashuMintKeyringV1>>,
+        arc_keyring_experimental: Option<Arc<ArcSecretKeyringV1>>,
+        issuer_settlement_signing_key: SigningKey,
+        retained_issuer_settlement_keys: Vec<VerifyingKey>,
+        settlement_keyring: Option<Arc<K256CashuMintKeyringV1>>,
+        retained_settlement_keysets: Vec<CashuKeysetBindingV1>,
+        response_derivation_key: RedeemResponseDerivationKeyV1,
+        payout_policy: SettlementPayoutPolicyV1,
+    ) -> Result<Self, IssuerServiceErrorV1> {
+        Self::new_with_payout_mode(
+            store,
+            providers,
+            bat_keyring,
+            arc_keyring_experimental,
+            issuer_settlement_signing_key,
+            retained_issuer_settlement_keys,
+            settlement_keyring,
+            retained_settlement_keysets,
+            response_derivation_key,
+            Some(payout_policy),
+        )
+    }
+
+    /// Builds the production V1 ledger-accrual service. Payout intent,
+    /// execution and status methods are disabled and return `NotFound` before
+    /// decoding input or reading/mutating the store.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_ledger_only(
+        store: IssuerStore,
+        providers: Vec<TrustedClearingProviderV1>,
+        bat_keyring: Option<Arc<K256CashuMintKeyringV1>>,
+        arc_keyring_experimental: Option<Arc<ArcSecretKeyringV1>>,
+        issuer_settlement_signing_key: SigningKey,
+        retained_issuer_settlement_keys: Vec<VerifyingKey>,
+        settlement_keyring: Option<Arc<K256CashuMintKeyringV1>>,
+        retained_settlement_keysets: Vec<CashuKeysetBindingV1>,
+        response_derivation_key: RedeemResponseDerivationKeyV1,
+    ) -> Result<Self, IssuerServiceErrorV1> {
+        Self::new_with_payout_mode(
+            store,
+            providers,
+            bat_keyring,
+            arc_keyring_experimental,
+            issuer_settlement_signing_key,
+            retained_issuer_settlement_keys,
+            settlement_keyring,
+            retained_settlement_keysets,
+            response_derivation_key,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_payout_mode(
         store: IssuerStore,
         mut providers: Vec<TrustedClearingProviderV1>,
         bat_keyring: Option<Arc<K256CashuMintKeyringV1>>,
@@ -1269,7 +1338,7 @@ impl SharedIssuerClearingServiceV1 {
         settlement_keyring: Option<Arc<K256CashuMintKeyringV1>>,
         retained_settlement_keysets: Vec<CashuKeysetBindingV1>,
         response_derivation_key: RedeemResponseDerivationKeyV1,
-        payout_policy: SettlementPayoutPolicyV1,
+        payout_policy: Option<SettlementPayoutPolicyV1>,
     ) -> Result<Self, IssuerServiceErrorV1> {
         providers.sort_by_key(|provider| provider.provider_id);
         if providers.is_empty()
@@ -1303,6 +1372,10 @@ impl SharedIssuerClearingServiceV1 {
             response_derivation_key,
             payout_policy,
         })
+    }
+
+    pub const fn is_ledger_only(&self) -> bool {
+        self.payout_policy.is_none()
     }
 
     /// `POST /v1/redeems` body handler. A committed exact replay authenticates
@@ -1507,6 +1580,7 @@ impl SharedIssuerClearingServiceV1 {
         canonical_envelope: &[u8],
         now_unix: u64,
     ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        let payout_policy = self.payout_policy.ok_or(IssuerServiceErrorV1::NotFound)?;
         let envelope = ProviderPayoutIntentEnvelopeV1::decode(canonical_envelope)
             .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
         let context = self.load_clearing_context(
@@ -1556,11 +1630,11 @@ impl SharedIssuerClearingServiceV1 {
         )
         .map_err(|_| IssuerServiceErrorV1::Unauthorized)?;
         let expires_at = now_unix
-            .checked_add(self.payout_policy.intent_ttl_seconds)
+            .checked_add(payout_policy.intent_ttl_seconds)
             .ok_or(IssuerServiceErrorV1::InvalidRequest)?;
         let response = prepare_payout_intent_response_v1(
             &envelope.request,
-            self.payout_policy.issuer_fee,
+            payout_policy.issuer_fee,
             expires_at,
             &self.issuer_settlement_signing_key,
         )
@@ -1592,6 +1666,9 @@ impl SharedIssuerClearingServiceV1 {
         canonical_envelope: &[u8],
         now_unix: u64,
     ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        if self.payout_policy.is_none() {
+            return Err(IssuerServiceErrorV1::NotFound);
+        }
         let envelope = ProviderPayoutEnvelopeV1::decode(canonical_envelope)
             .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
         let context = self.load_clearing_context(
@@ -1684,6 +1761,9 @@ impl SharedIssuerClearingServiceV1 {
         canonical_envelope: &[u8],
         now_unix: u64,
     ) -> Result<Vec<u8>, IssuerServiceErrorV1> {
+        if self.payout_policy.is_none() {
+            return Err(IssuerServiceErrorV1::NotFound);
+        }
         let envelope = ProviderPayoutStatusEnvelopeV1::decode(canonical_envelope)
             .map_err(|_| IssuerServiceErrorV1::InvalidRequest)?;
         let identity = self.store.identity().map_err(map_store_error)?;

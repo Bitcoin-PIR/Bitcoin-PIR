@@ -149,7 +149,7 @@ string copies. This is evidence hygiene, not a production secret-memory claim.
 The full command mirrors the default Rust/WASM portions of
 `.github/workflows/payment-platform.yml`, including the Harmony hint-pool
 library tests, the selected `unified_server` binary/process targets and the
-feature-enabled remote-authority and Standard Cashu targets. It regenerates the
+feature-enabled remote-authority, Standard Cashu and shared-issuer targets. It regenerates the
 WASM JS/TypeScript bindings and adds the Web unit suite plus the local Chromium
 multi-tab vault, real-WASM/no-funds-issuer and browser/two-provider full local
 DPF-query boundaries. It
@@ -653,6 +653,34 @@ and `NoSevHost`; it does not prove an
 external public-WebPKI mint, production server identity/attestation or an
 independent production rollback floor.
 
+An additional non-default shared-issuer process cell is also part of full mode
+and Payment Platform CI:
+
+```sh
+issuer_e2e_target_dir="$PWD/target/payment-issuer-shared-e2e"
+cargo build --locked --offline \
+  -p payment-issuer \
+  --features test-only-fake-lightning \
+  --bin payment-issuer \
+  --target-dir "$issuer_e2e_target_dir"
+BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+  cargo test --locked --offline \
+    -p runtime \
+    --features shared-issuer-process-e2e \
+    --test payment_v1_shared_issuer_process_e2e \
+    shared_issuer_real_process_tls_e2e -- --exact
+```
+
+This is the executable provider-to-shared-clearing seam: a real issuer behind
+a private signed-pin TLS edge, a real paid provider and an independent Free
+peer. It proves one issuer redemption/ledger credit, one provider-local grant,
+restart/replay at-most-once behavior, and fail-closed wrong-CA/wrong-pin/offline
+dependencies without invoice creation or real funds. It does not prove public
+source-fair ingress, independent production rollback domains, real Lightning,
+automated payout, or target-host systemd state. The source is wired into CI,
+but this preparation branch must not record a pass until the Linux cell has run
+on the exact candidate commit.
+
 ## Standard Cashu custody boundary
 
 Full mode and Payment Platform CI include:
@@ -777,9 +805,13 @@ cargo test --offline -p pir-issuer-clearing payout_worker
 cargo test --offline -p payment-issuer settlement_http
 ```
 
-These suites cover canonical bounded settlement HTTP envelopes, authenticated
-balance/payout-intent/payout/status calls, payout state verification, response
-loss and exact latest-status replay. For a **status successor**, the provider
+These suites cover canonical bounded settlement envelopes, the production
+authenticated balance route, and a private Rust unit-fixture switch for the
+otherwise non-routed payout-intent/payout/status HTTP roundtrip. They exercise
+payout state verification, response loss and exact latest-status replay without
+making payout part of the production/default binary's HTTP product. Production
+returns unknown-path before parsing or store access for all three payout paths.
+For a **status successor**, the provider
 client persists the exact pending envelope before send, then commits its
 successor state and mandatory external rollback floor together through its
 state-store boundary.

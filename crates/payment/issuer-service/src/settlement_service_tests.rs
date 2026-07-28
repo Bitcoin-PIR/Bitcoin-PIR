@@ -182,6 +182,25 @@ impl Fixture {
         self.service_with_settlement_lineage(SETTLEMENT_SIGNING_SEED, Vec::new())
     }
 
+    fn ledger_only_service(&self) -> SharedIssuerClearingServiceV1 {
+        SharedIssuerClearingServiceV1::new_ledger_only(
+            self.store.clone(),
+            vec![TrustedClearingProviderV1 {
+                provider_id: PROVIDER_ID,
+                operator_key: self.operator.verifying_key(),
+                minimum_authorization_epoch: 1,
+            }],
+            Some(Arc::clone(&self.bat_keyring)),
+            None,
+            SigningKey::from_bytes(&SETTLEMENT_SIGNING_SEED),
+            Vec::new(),
+            None,
+            Vec::new(),
+            RedeemResponseDerivationKeyV1::from_bytes([0x46; 32]).expect("redeem derivation key"),
+        )
+        .expect("ledger-only clearing service")
+    }
+
     fn service_with_settlement_lineage(
         &self,
         current_seed: [u8; 32],
@@ -225,6 +244,37 @@ impl Fixture {
         .expect("BAT proof encoding")
         .to_vec()
     }
+}
+
+#[test]
+fn ledger_only_service_rejects_every_payout_method_before_decode_or_store_access() {
+    let fixture = Fixture::new();
+    let service = fixture.ledger_only_service();
+    assert!(service.is_ledger_only());
+    assert_ne!(LEDGER_ONLY_DISABLED_PAYOUT_TARGET_ID_V1, [0; 32]);
+
+    let before = fixture
+        .store
+        .operational_inventory()
+        .expect("inventory before disabled payout calls");
+    let invalid = b"not-a-canonical-payout-envelope";
+    assert_eq!(
+        service.payout_intent(invalid, u64::MAX),
+        Err(IssuerServiceErrorV1::NotFound)
+    );
+    assert_eq!(
+        service.payout(invalid, u64::MAX),
+        Err(IssuerServiceErrorV1::NotFound)
+    );
+    assert_eq!(
+        service.payout_status(invalid, u64::MAX),
+        Err(IssuerServiceErrorV1::NotFound)
+    );
+    let after = fixture
+        .store
+        .operational_inventory()
+        .expect("inventory after disabled payout calls");
+    assert_eq!(after, before);
 }
 
 #[test]

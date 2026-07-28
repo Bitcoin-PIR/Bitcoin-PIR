@@ -1,0 +1,42 @@
+# BitcoinPIR Hetzner issuer Core Lightning config; render and hash-pin exactly.
+# No includes, passwords, passphrases, seeds or mutable plugin directories.
+network=@LIGHTNING_NETWORK@
+lightning-dir=/srv/lightning
+pid-file=/run/bitcoinpir-core-lightning/lightningd.pid
+rpc-file=lightning-rpc
+rpc-file-mode=0660
+allow-deprecated-apis=false
+database-upgrade=false
+
+# The issuer node has one reviewed P2P listener/announcement. These are
+# Lightning peer transport, never a remote RPC surface.
+bind-addr=@CLN_P2P_BIND_ADDR@
+announce-addr=@CLN_P2P_ANNOUNCE_ADDR@
+announce-addr-discovered=false
+autoconnect-seeker-peers=0
+disable-dns
+
+# Avoid adding an on-chain fallback identity to anonymous Payment V1 invoices.
+invoices-onchain-fallback=false
+
+# Minimize payment metadata in the journal. Debug/IO logging is forbidden.
+log-level=unusual
+log-timestamps=true
+
+# Core RPC is loopback and cookie-only. No rpcuser/rpcpassword option is
+# present in the complete explicit config, so neither a rendered file nor the
+# process argv can carry that plaintext secret. The protected cookie boundary
+# is an activation decision and must be exercised by preflight.
+bitcoin-cli=/opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@/bin/bitcoin-cli
+bitcoin-datadir=/srv/bitcoin
+bitcoin-rpcconnect=127.0.0.1
+bitcoin-rpcport=@BITCOIN_RPC_PORT@
+bitcoin-rpcclienttimeout=30
+bitcoin-retry-timeout=30
+
+# Remove every default/plugin-directory surface, including grpc, REST,
+# Commando, recklessrpc and wss-proxy. These two exact executables are the full
+# allowlist and their hashes are included in the CLN bundle manifest/preflight.
+clear-plugins
+important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/bcli
+important-plugin=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/plugins/chanbackup

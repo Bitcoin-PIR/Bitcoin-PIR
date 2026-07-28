@@ -63,6 +63,11 @@ remote-authority-process-e2e = ["pir-rollback-authority-client/test-only-webpki-
 # the mandatory leaf-SPKI pin remains signed Cashu-manifest data.
 # `pir-strict-https` independently compile-errors if this reaches a release build.
 standard-cashu-process-e2e = ["pir-strict-https/test-only-webpki-root"]
+# Non-default local process E2E for provider-to-shared-issuer clearing. Reuse
+# the exact Standard-Cashu private-root injection surface so `unified_server`
+# has only one test-only WebPKI escape hatch; `pir-strict-https` rejects that
+# hook in release builds.
+shared-issuer-process-e2e = ["standard-cashu-process-e2e"]
 # Privacy-dangerous query-detail logging for local tests only. The build script
 # rejects this feature outside Cargo's debug profile; normal dev/release
 # binaries do not compile or recognize its CLI switch.
@@ -107,6 +112,8 @@ bitcoinpir-oram = { git = "https://github.com/Bitcoin-PIR/oram.git", rev = "cd2c
 tempfile = "3"
 pir-sdk-client = { path = "../../crates/sdk/client" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
+pir-issuer-store = { path = "../../crates/payment/issuer-store" }
+pir-lightning-backend = { path = "../../crates/payment/lightning-backend" }
 arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
 rand_chacha = "0.3"
 rollback-authority = { path = "../rollback-authority" }

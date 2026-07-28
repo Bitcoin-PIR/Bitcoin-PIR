@@ -10,7 +10,22 @@ that force debug assertions on. A feature-enabled artifact must never be
 deployed or used with real funds.
 
 Core Lightning support is exposed as the loopback-only `serve-cln` mode behind
-the checked `pir-lightning-backend` Unix-socket boundary. Production TLS, node
+the checked `pir-lightning-backend` Unix-socket boundary. The V1 shared-issuer
+HTTP settlement surface is ledger-accrual only: providers may use
+`POST /v1/redeems` and `POST /v1/settlement/balance`. Payout protocol, store and
+state-machine support remains transport-neutral; the default and production
+binaries return the same `not_found` response for payout-intent, payout and
+payout-status paths as for an unknown path, before parsing their payloads. Only
+the Rust unit suite has a private fixture switch for exercising the historical
+payout HTTP roundtrip. Production constructs the shared service with
+`new_ledger_only`; the transport-neutral payout methods themselves also return
+`NotFound` before decoding input or accessing the store. There is no production
+payout mode or target, fee, or intent-TTL flag. The store's legacy non-zero
+payout-target column receives one fixed domain-separated disabled sentinel,
+never operator or request input. The issuer settlement signing key remains
+required for redeem and balance signatures. Retained settlement verifying keys
+remain optional because exact committed redeem/approval replay after signing-key
+rotation also needs them; they are not payout-only keys. Production TLS, node
 custody, payout execution, real-funds activation and remote deployment remain
 separate approval gates.
 

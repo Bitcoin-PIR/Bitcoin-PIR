@@ -907,37 +907,51 @@ returns `InvalidOrSpent` at the provider rather than installing a second grant.
 
 ### Settlement
 
-Executable ledger-only `payment-issuer` routes:
+Executable ledger-accrual `payment-issuer` settlement route:
 
 ```text
 POST /v1/settlement/balance
+```
+
+`POST /v1/redeems` performs the authenticated credential-to-ledger-credit
+mutation described above. The following are transport-neutral model/store
+surfaces only and are **not routed by the production/default
+`payment-issuer`** in V1:
+
+```text
+GET  /v1/settlement/keysets
+POST /v1/settlement/deposits
 POST /v1/settlement/payout-intents
 POST /v1/settlement/payouts
 POST /v1/settlement/payout-status
 ```
 
-The following are transport-neutral model/store surfaces only and are **not
-routed by `payment-issuer`** in V1:
-
-```text
-GET  /v1/settlement/keysets
-POST /v1/settlement/deposits
-```
-
 The modeled deposit is authenticated, batched, idempotent, and double-spend
 safe, but serving it requires a separate retained-keyset operations ceremony
-that is not enabled. This distinction also keeps the executable HTTP listener
-at the smaller ledger-envelope bound rather than the deposit-only 64-note
-bound. Actual Lightning payout is an operator action outside the query path
-and requires separate production/funds approval in this project.
+that is not enabled. The payout state machine similarly has no shipped
+real-funds executor or application worker. The three payout paths return the
+same response as an unknown path before parsing or store access; only a private
+Rust unit fixture exercises their historical HTTP roundtrip. Production uses an
+explicit ledger-only service mode, whose payout methods also return `NotFound`
+before decoding or store access, and its CLI accepts no payout target, fee or
+intent TTL. The registration schema's mandatory target column is filled only by
+one fixed domain-separated non-zero disabled sentinel; neither an operator nor
+a request can select it, and it is never interpreted as a destination. This
+distinction keeps the executable listener at the smaller ledger-envelope bound,
+prevents an accepted-but-never-executed payout from reserving provider credit,
+and makes V1's product promise exactly ledger accrual plus authenticated
+balance. Any actual payout is an operator/product action outside the query path
+and requires a separately reviewed executor or manual reconciliation design
+plus explicit production/funds approval.
 
 Every retained settlement Cashu keyset registry is local trusted context bound
 to one `issuer_id`; a matching keyset ID from a different issuer lineage is
 rejected before note verification or ledger credit. Settlement-signature keys
 use a separate trusted keyring containing one current key and retained
-historical keys for the same `issuer_id`. Historical payout responses are
-resolved by their signed `issuer_settlement_key_id`, so rotating the current
-key does not strand an in-flight payout.
+historical keys for the same `issuer_id`. Production ledger-only operation still
+needs retained keys to authenticate exact committed redeem responses and their
+historical approvals after rotation. The transport-neutral payout model also
+resolves historical responses by their signed `issuer_settlement_key_id`.
 
 Payout is intentionally two-step. The provider first requests an issuer-signed
 intent that fixes account, opaque payout target ID, unit, value, fee, total

@@ -1,0 +1,56 @@
+# BitcoinPIR Core Lightning template; never install this .in file directly.
+[Unit]
+Description=BitcoinPIR Hetzner issuer Core Lightning (template only)
+After=network-online.target @BITCOIND_SYSTEMD_UNIT@
+Wants=network-online.target
+Requires=@BITCOIND_SYSTEMD_UNIT@
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+
+[Service]
+Type=simple
+User=bitcoinpir-lightning
+Group=bitcoinpir-cln-guard
+SupplementaryGroups=bitcoinpir-bitcoin-rpc
+UMask=0077
+RuntimeDirectory=bitcoinpir-core-lightning
+RuntimeDirectoryMode=0700
+WorkingDirectory=/srv/lightning/@LIGHTNING_NETWORK@
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/cln-bundle.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bitcoin-core-bundle.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/lightningd-config.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/layout-verifier.sha256
+ExecStartPre=/usr/local/libexec/bitcoinpir/verify-lightning-layout
+ExecStart=/opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@/bin/lightningd --conf=/etc/bitcoinpir/payment-v1/lightning/lightningd.conf
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=120
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+ReadWritePaths=/srv/lightning/@LIGHTNING_NETWORK@ /run/bitcoinpir-core-lightning
+
+# There is intentionally no [Install] section. Identity creation, backup,
+# preflight, funding and service start are separately approved actions.

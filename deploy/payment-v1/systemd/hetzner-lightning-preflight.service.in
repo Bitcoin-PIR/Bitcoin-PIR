@@ -1,0 +1,54 @@
+# Live read-only Signet preflight; never install this .in file directly.
+[Unit]
+Description=BitcoinPIR Hetzner live Core Lightning preflight (template only)
+Requires=bitcoinpir-core-lightning.service
+BindsTo=bitcoinpir-core-lightning.service
+After=bitcoinpir-core-lightning.service
+Before=bitcoinpir-payment-issuer.service
+ConditionPathExists=/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-CUSTODY-APPROVED
+ConditionPathExists=/etc/bitcoinpir/payment-v1/LIGHTNING-BACKUP-RESTORE-APPROVED
+
+[Service]
+Type=oneshot
+User=bitcoinpir-lightning-preflight
+Group=bitcoinpir-lightning-preflight
+SupplementaryGroups=bitcoinpir-cln-guard bitcoinpir-bitcoin-rpc
+UMask=0077
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/bpir-admin.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/preflight-config.sha256
+ExecStartPre=/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/lightning/backup-receipt.sha256
+ExecStart=/opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@/bpir-admin lightning-staging preflight \
+    --config /etc/bitcoinpir/payment-v1/lightning/preflight.toml \
+    --config-protected-parent /etc/bitcoinpir/payment-v1/lightning \
+    --config-expected-uid @PREFLIGHT_UID@ \
+    --config-expected-gid @PREFLIGHT_GID@
+RemainAfterExit=yes
+TimeoutStartSec=60
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/etc/bitcoinpir/payment-v1/lightning /srv/lightning/@LIGHTNING_NETWORK@ /opt/bitcoinpir/bpir-admin/@BPIR_ADMIN_SHA256@ /opt/bitcoinpir/core-lightning/@CLN_BUNDLE_SHA256@ /opt/bitcoinpir/bitcoin-core/@BITCOIN_CORE_BUNDLE_SHA256@
+
+# There is intentionally no [Install] section. A successful oneshot is a
+# prerequisite of the issuer service, not authorization for funds or deploy.

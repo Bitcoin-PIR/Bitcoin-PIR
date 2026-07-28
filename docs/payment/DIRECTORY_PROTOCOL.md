@@ -358,6 +358,63 @@ address or payment event.
 Low-bandwidth single-shard fetch remains an explicit privacy tradeoff, never a
 method/provider-pair lookup API.
 
+## Repository directory-only relay profile
+
+`apps/directory-relay` implements the server-side subset needed by this
+protocol. It is not a general-purpose Nostr relay. The sole process interface
+is `bitcoinpir-directory-relay --config /absolute/owner-only.toml`; the
+configuration fixes one loopback listener, one absolute SQLite database, one
+pinned non-zero directory publisher key and explicit concurrency, ingress,
+egress, archive and timeout bounds. No publisher private key is present.
+
+The accepted client messages are only the exact canonical NIP-01 `EVENT`,
+`REQ`, and `CLOSE` shapes used here. EVENT requires the pinned key, kind 30078,
+valid signature, canonical JSON, and the exact `d`/`s` namespaces. There is no
+generic subscription language, live push, NIP-42 AUTH, NOTICE, or application
+heartbeat path. A reverse proxy may handle WebSocket control frames, but it
+must not log frames or silently transform application messages.
+
+SQLite keeps an immutable event archive and a separate addressable-event head.
+An unseen current event, its archive counters, and any head replacement commit
+in one `BEGIN IMMEDIATE` transaction. Positive `OK` is possible only after that
+commit returns. An exact archived duplicate is positively idempotent even if it
+has since expired or lost the replacement race; an unseen expired event is
+rejected. If a started write's durable result cannot be recovered, the relay
+closes without sending a false negative acknowledgement.
+
+REQ first freezes the ordered event-ID set and exact logical response bytes.
+Pages are then loaded from the non-deleting archive, so concurrent replacements
+cannot create a mixed snapshot. The relay reserves the complete EVENT-plus-EOSE
+response against the connection's cumulative egress budget before sending a
+prefix, streams bounded pages under a process-wide byte rate and emits EOSE
+only after the frozen set is complete. A configured budget may deliberately
+prevent the count and maximum-event-size limits from being saturated together;
+clients treat a closed/over-budget view as unusable, never as a partial catalog.
+
+ID-filter readback is limited to 64 unique IDs and is intended only for
+commit probes and bounded recovery, not archive enumeration. It is executed as
+one bounded SQL `IN` query and reordered to the canonical request order before
+the snapshot is frozen. Global admission charges one work unit per eight IDs,
+and every connection has a cumulative 256-unit work budget in addition to the
+message, concurrency, byte, idle and absolute-lifetime limits. Catalog filters
+remain one work unit because each shard is one indexed SQL query; clients still
+fetch all 16 shards independently of query state.
+
+Shutdown first stops acceptance, signals every tracked connection, calls the
+SQLite interrupt handle and then drains all connection tasks; blocking workers
+are not detached. SQLite interruption makes a current statement return, but a
+filesystem that stalls inside an uninterruptible kernel write can still exceed
+the service stop timeout. Activation therefore still requires a Linux shutdown
+fault drill rather than treating this source property as timing proof.
+
+The archive event/byte caps are permanent capacity decisions, not an eviction
+policy. `max_archive_bytes` counts canonical event JSON BLOB bytes rather than
+SQLite/WAL/index disk usage. Operators must add filesystem quota and free-space
+monitoring, back up the database and WAL as one consistent state domain, and
+restore only a fully checked copy with the same publisher key and configured
+capacity. Two relay origins remain required; two names reaching the same relay
+do not create an independent view.
+
 ## Publisher artifacts and relay transport
 
 The `assertion`, `entry`, and `checkpoints` commands build signed artifacts

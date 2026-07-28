@@ -205,6 +205,36 @@ inputs `SPENT`, first custody `UNSPENT -> SPENT`, and independently encrypted
 successor custody `UNSPENT`. This is not an admin-retirement, unified-server or
 public-WebPKI process cell.
 
+A separate non-default shared-issuer process cell joins the provider and
+clearing boundary without creating an invoice or contacting Lightning:
+
+```sh
+issuer_e2e_target_dir="$PWD/target/payment-issuer-shared-e2e"
+cargo build --locked --offline \
+  -p payment-issuer \
+  --features test-only-fake-lightning \
+  --bin payment-issuer \
+  --target-dir "$issuer_e2e_target_dir"
+BITCOINPIR_PAYMENT_ISSUER_BIN="$issuer_e2e_target_dir/debug/payment-issuer" \
+  cargo test --locked --offline \
+    -p runtime \
+    --features shared-issuer-process-e2e \
+    --test payment_v1_shared_issuer_process_e2e \
+    shared_issuer_real_process_tls_e2e -- --exact
+```
+
+It launches a real `payment-issuer`, a redeem-only private WebPKI TLS edge, one
+real shared-BAT `unified_server`, and an independently selected Free/Open peer.
+The paid provider must verify the signed issuer origin and leaf-SPKI pin,
+redeem exactly once, accrue one ledger credit, and durably claim one local
+grant. Restart/replay cannot create a second grant. Wrong CA, wrong signed pin
+and offline issuer fail before issuer HTTP application handling and create no
+local claim or ledger account. CI additionally denies warnings for the exact
+runtime/test targets and proves the test-only WebPKI feature cannot compile in
+a release profile. The current preparation branch has static source evidence
+only until that Linux CI cell passes; it is not public ingress, production
+rollback-authority, real Lightning or payout-executor evidence.
+
 ### First-version executable path ledger
 
 This ledger is a source-level audit of the executable seams, not a claim that a

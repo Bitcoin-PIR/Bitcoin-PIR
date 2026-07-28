@@ -95,7 +95,11 @@ pub(crate) fn write_secret_bytes_unix_with_force(
     let outcome = write_secret_bytes_atomically_unix(path, secret, force)?;
     match outcome {
         SecretWriteOutcomeV1::Durable => return Ok(SecretWriteCompletionV1::Durable),
-        SecretWriteOutcomeV1::CommittedDurabilityUnknown { parent, error } => {
+        SecretWriteOutcomeV1::CommittedDurabilityUnknown {
+            parent,
+            error,
+            lock_release_error,
+        } => {
             eprintln!("secret_write_status=committed_durability_unknown");
             eprintln!(
                 "WARNING: the new secret was atomically committed at {} but directory durability is unknown because syncing {} failed: {}",
@@ -103,6 +107,14 @@ pub(crate) fn write_secret_bytes_unix_with_force(
                 parent.display(),
                 error
             );
+            if let Some(error) = lock_release_error {
+                eprintln!("secret_write_lock_release_status=unknown");
+                eprintln!(
+                    "WARNING: explicit secret-parent lock release also failed for {}: {}",
+                    parent.display(),
+                    error
+                );
+            }
             eprintln!(
                 "WARNING: DO NOT retry --force. Inspect the exact target and preserve the public key/fingerprint this command prints."
             );
@@ -111,6 +123,7 @@ pub(crate) fn write_secret_bytes_unix_with_force(
             parent,
             error,
             durability_error,
+            lock_release_error,
         } => {
             eprintln!("secret_write_status=committed_path_unknown");
             eprintln!(
@@ -121,16 +134,36 @@ pub(crate) fn write_secret_bytes_unix_with_force(
             if let Some(error) = durability_error {
                 eprintln!("WARNING: committed directory durability is also unknown: {error}");
             }
+            if let Some(error) = lock_release_error {
+                eprintln!("secret_write_lock_release_status=unknown");
+                eprintln!(
+                    "WARNING: explicit secret-parent lock release also failed for {}: {}",
+                    parent.display(),
+                    error
+                );
+            }
             eprintln!(
                 "WARNING: DO NOT retry --force. Reconcile the pinned directory inode, exact target, and public identity this command prints."
+            );
+        }
+        SecretWriteOutcomeV1::CommittedLockReleaseUnknown { parent, error } => {
+            eprintln!("secret_write_status=committed_lock_release_unknown");
+            eprintln!("secret_write_lock_release_status=unknown");
+            eprintln!(
+                "WARNING: the new secret was atomically committed and verified, but the explicit lock on {} could not be released: {}",
+                parent.display(),
+                error
+            );
+            eprintln!(
+                "WARNING: DO NOT retry --force. Preserve the public key/fingerprint this command prints; later writers will fail closed while the inherited lock remains."
             );
         }
     }
     Ok(SecretWriteCompletionV1::CommittedAmbiguous)
 }
 
-/// Command-facing completion state. A committed-but-ambiguous write must still
-/// print its public identity, but it must not be reported as ordinary success.
+/// Command-facing completion state. A committed-but-nonordinary write must
+/// still print its public identity, but it must not be reported as success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SecretWriteCompletionV1 {
     Durable,
@@ -152,7 +185,7 @@ fn require_durable_secret_write(completion: SecretWriteCompletionV1) -> Result<(
     match completion {
         SecretWriteCompletionV1::Durable => Ok(()),
         SecretWriteCompletionV1::CommittedAmbiguous => Err(
-            "secret write committed ambiguously; reconcile the installed path and do not retry"
+            "secret write committed but did not complete ordinarily; reconcile the installed path and do not retry"
                 .to_owned(),
         ),
     }
@@ -165,11 +198,17 @@ enum SecretWriteOutcomeV1 {
     CommittedDurabilityUnknown {
         parent: PathBuf,
         error: String,
+        lock_release_error: Option<String>,
     },
     CommittedPathUnknown {
         parent: PathBuf,
         error: String,
         durability_error: Option<String>,
+        lock_release_error: Option<String>,
+    },
+    CommittedLockReleaseUnknown {
+        parent: PathBuf,
+        error: String,
     },
 }
 
@@ -670,19 +709,117 @@ fn write_secret_bytes_atomically_unix(
     secret: &[u8],
     force: bool,
 ) -> Result<SecretWriteOutcomeV1, String> {
-    use rustix::fs::{
-        self as rustix_fs, AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags,
-    };
+    write_secret_bytes_atomically_unix_with_after_lock_hook(path, secret, force, |_| Ok(()))
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+struct SecretParentLockGuardV1<'a> {
+    parent: &'a std::fs::File,
+    locked: bool,
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+impl<'a> SecretParentLockGuardV1<'a> {
+    fn new(parent: &'a std::fs::File) -> Self {
+        Self {
+            parent,
+            locked: true,
+        }
+    }
+
+    fn release(&mut self) -> Result<(), String> {
+        if !self.locked {
+            return Ok(());
+        }
+        rustix::fs::flock(self.parent, rustix::fs::FlockOperation::Unlock)
+            .map_err(|error| error.to_string())?;
+        self.locked = false;
+        Ok(())
+    }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+impl Drop for SecretParentLockGuardV1<'_> {
+    fn drop(&mut self) {
+        // Explicit unlock is also the unwind/backstop path. Failure retains an
+        // availability denial through an inherited descriptor but never
+        // admits an unsafe concurrent writer.
+        let _ = self.release();
+    }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+fn finish_secret_parent_lock_v1(
+    operation_result: Result<SecretWriteOutcomeV1, String>,
+    unlock_result: Result<(), String>,
+    parent_path: &std::path::Path,
+) -> Result<SecretWriteOutcomeV1, String> {
+    match operation_result {
+        Err(error) => match unlock_result {
+            Ok(()) => Err(error),
+            Err(unlock_error) => Err(format!(
+                "{error}; additionally failed to release secret parent lock: {unlock_error}"
+            )),
+        },
+        Ok(outcome) => match unlock_result {
+            Ok(()) => Ok(outcome),
+            Err(error) => match outcome {
+                SecretWriteOutcomeV1::Durable => {
+                    Ok(SecretWriteOutcomeV1::CommittedLockReleaseUnknown {
+                        parent: parent_path.to_path_buf(),
+                        error,
+                    })
+                }
+                SecretWriteOutcomeV1::CommittedDurabilityUnknown {
+                    parent,
+                    error: durability_error,
+                    ..
+                } => Ok(SecretWriteOutcomeV1::CommittedDurabilityUnknown {
+                    parent,
+                    error: durability_error,
+                    lock_release_error: Some(error),
+                }),
+                SecretWriteOutcomeV1::CommittedPathUnknown {
+                    parent,
+                    error: path_error,
+                    durability_error,
+                    ..
+                } => Ok(SecretWriteOutcomeV1::CommittedPathUnknown {
+                    parent,
+                    error: path_error,
+                    durability_error,
+                    lock_release_error: Some(error),
+                }),
+                already_unknown @ SecretWriteOutcomeV1::CommittedLockReleaseUnknown { .. } => {
+                    Ok(already_unknown)
+                }
+            },
+        },
+    }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+fn perform_secret_write_atomically_unix_locked<F>(
+    parent: &std::fs::File,
+    file_name: &std::ffi::OsStr,
+    parent_path: &std::path::Path,
+    path: &std::path::Path,
+    secret: &[u8],
+    force: bool,
+    after_lock: F,
+) -> Result<SecretWriteOutcomeV1, String>
+where
+    F: FnOnce(&std::fs::File) -> Result<(), String>,
+{
+    use rustix::fs::{self as rustix_fs, AtFlags, FileType, Mode, OFlags, RenameFlags};
     use std::io::Write as _;
 
     let owner_only = Mode::from_bits_truncate(0o600);
-    let (parent, file_name, parent_path) = open_secret_parent_v1(path)?;
-    rustix_fs::flock(&parent, FlockOperation::NonBlockingLockExclusive)
-        .map_err(|error| format!("secret parent {} is busy: {error}", parent_path.display()))?;
+    after_lock(parent)?;
     parent
         .sync_all()
         .map_err(|error| format!("preflight secret parent {}: {error}", parent_path.display()))?;
-    let before = inspect_secret_target_v1(&parent, &file_name, path)?;
+    let before = inspect_secret_target_v1(parent, file_name, path)?;
     if before.is_some() && !force {
         return Err(format!(
             "{} already exists; use --force only after confirming key rotation",
@@ -694,7 +831,7 @@ fn write_secret_bytes_atomically_unix(
     let mut temporary_created = false;
     let result = (|| {
         let fd = rustix_fs::openat(
-            &parent,
+            parent,
             &temporary_name,
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             owner_only,
@@ -728,8 +865,8 @@ fn write_secret_bytes_atomically_unix(
         parent
             .sync_all()
             .map_err(|error| format!("sync private rotation temporary: {error}"))?;
-        validate_open_secret_parent_still_named_v1(&parent, &parent_path)?;
-        let current = inspect_secret_target_v1(&parent, &file_name, path)?;
+        validate_open_secret_parent_still_named_v1(parent, parent_path)?;
+        let current = inspect_secret_target_v1(parent, file_name, path)?;
         if current != before {
             return Err(format!(
                 "{} changed before atomic key commit; refusing replacement",
@@ -738,23 +875,23 @@ fn write_secret_bytes_atomically_unix(
         }
         if before.is_none() {
             rustix_fs::renameat_with(
-                &parent,
+                parent,
                 &temporary_name,
-                &parent,
-                &file_name,
+                parent,
+                file_name,
                 RenameFlags::NOREPLACE,
             )
         } else {
-            rustix_fs::renameat(&parent, &temporary_name, &parent, &file_name)
+            rustix_fs::renameat(parent, &temporary_name, parent, file_name)
         }
         .map_err(|error| format!("atomically commit {}: {error}", path.display()))?;
         temporary_created = false;
         let durability_error = parent.sync_all().err().map(|error| error.to_string());
         let mut path_errors = Vec::new();
-        if let Err(error) = validate_open_secret_parent_still_named_v1(&parent, &parent_path) {
+        if let Err(error) = validate_open_secret_parent_still_named_v1(parent, parent_path) {
             path_errors.push(error);
         }
-        match inspect_secret_target_v1(&parent, &file_name, path) {
+        match inspect_secret_target_v1(parent, file_name, path) {
             Ok(Some(installed))
                 if installed.device == committed_snapshot.device
                     && installed.inode == committed_snapshot.inode
@@ -772,14 +909,16 @@ fn write_secret_bytes_atomically_unix(
         }
         if !path_errors.is_empty() {
             Ok(SecretWriteOutcomeV1::CommittedPathUnknown {
-                parent: parent_path.clone(),
+                parent: parent_path.to_path_buf(),
                 error: path_errors.join("; "),
                 durability_error,
+                lock_release_error: None,
             })
         } else if let Some(error) = durability_error {
             Ok(SecretWriteOutcomeV1::CommittedDurabilityUnknown {
-                parent: parent_path.clone(),
+                parent: parent_path.to_path_buf(),
                 error,
+                lock_release_error: None,
             })
         } else {
             Ok(SecretWriteOutcomeV1::Durable)
@@ -791,8 +930,7 @@ fn write_secret_bytes_atomically_unix(
             .err()
             .cloned()
             .unwrap_or_else(|| "private temporary cleanup reached an invalid state".to_owned());
-        let cleanup = rustix_fs::unlinkat(&parent, &temporary_name, AtFlags::empty());
-        if let Err(cleanup_error) = cleanup {
+        if let Err(cleanup_error) = rustix_fs::unlinkat(parent, &temporary_name, AtFlags::empty()) {
             return Err(format!(
                 "{original}; cleanup failed for owner-only temporary {}: {cleanup_error}",
                 parent_path.join(&temporary_name).display()
@@ -805,6 +943,39 @@ fn write_secret_bytes_atomically_unix(
         }
     }
     result
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+fn write_secret_bytes_atomically_unix_with_after_lock_hook<F>(
+    path: &std::path::Path,
+    secret: &[u8],
+    force: bool,
+    after_lock: F,
+) -> Result<SecretWriteOutcomeV1, String>
+where
+    F: FnOnce(&std::fs::File) -> Result<(), String>,
+{
+    use rustix::fs::{self as rustix_fs, FlockOperation};
+
+    let (parent, file_name, parent_path) = open_secret_parent_v1(path)?;
+    rustix_fs::flock(&parent, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|error| format!("secret parent {} is busy: {error}", parent_path.display()))?;
+    let mut parent_lock = SecretParentLockGuardV1::new(&parent);
+    let operation_result = perform_secret_write_atomically_unix_locked(
+        &parent,
+        &file_name,
+        &parent_path,
+        path,
+        secret,
+        force,
+        after_lock,
+    );
+    // A concurrently running test or service thread may fork while this
+    // descriptor is open. Explicit unlock releases the shared open-file-
+    // description lock even if a child inherited a duplicate descriptor;
+    // CLOEXEC alone does not close that duplicate until exec succeeds.
+    let unlock_result = parent_lock.release();
+    finish_secret_parent_lock_v1(operation_result, unlock_result, &parent_path)
 }
 
 #[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
@@ -1323,6 +1494,102 @@ mod tests {
         write_secret_bytes_unix_with_force(&path, &[0x18_u8; 32], false).unwrap();
         write_secret_bytes_unix_with_force(&path, &[0x81_u8; 32], true).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), vec![0x81_u8; 32]);
+    }
+
+    #[test]
+    fn explicit_unlock_releases_an_inherited_open_file_description() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("inherited-lock.key");
+        let mut inherited_parent = None;
+
+        let first = write_secret_bytes_atomically_unix_with_after_lock_hook(
+            &path,
+            &[0x34_u8; 32],
+            false,
+            |parent| {
+                inherited_parent = Some(
+                    parent
+                        .try_clone()
+                        .map_err(|error| format!("duplicate locked parent: {error}"))?,
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(first, SecretWriteOutcomeV1::Durable);
+
+        // `try_clone` retains the same open-file-description lock just like a
+        // descriptor inherited across fork. The next independent open would
+        // receive EAGAIN here unless the first writer explicitly used LOCK_UN.
+        assert!(inherited_parent.is_some());
+        write_secret_bytes_unix_with_force(&path, &[0x43_u8; 32], true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0x43_u8; 32]);
+        drop(inherited_parent);
+    }
+
+    #[test]
+    fn unlock_failure_preserves_primary_and_post_commit_outcomes() {
+        let parent = std::path::Path::new("/private/secret-parent");
+        assert_eq!(
+            finish_secret_parent_lock_v1(
+                Err("primary operation failure".to_owned()),
+                Err("unlock failure".to_owned()),
+                parent,
+            ),
+            Err("primary operation failure; additionally failed to release secret parent lock: unlock failure".to_owned())
+        );
+        assert_eq!(
+            finish_secret_parent_lock_v1(
+                Ok(SecretWriteOutcomeV1::Durable),
+                Err("unlock failure".to_owned()),
+                parent,
+            )
+            .unwrap(),
+            SecretWriteOutcomeV1::CommittedLockReleaseUnknown {
+                parent: parent.to_path_buf(),
+                error: "unlock failure".to_owned(),
+            }
+        );
+
+        let durability_unknown = SecretWriteOutcomeV1::CommittedDurabilityUnknown {
+            parent: parent.to_path_buf(),
+            error: "fsync failure".to_owned(),
+            lock_release_error: None,
+        };
+        assert_eq!(
+            finish_secret_parent_lock_v1(
+                Ok(durability_unknown),
+                Err("unlock failure".to_owned()),
+                parent,
+            )
+            .unwrap(),
+            SecretWriteOutcomeV1::CommittedDurabilityUnknown {
+                parent: parent.to_path_buf(),
+                error: "fsync failure".to_owned(),
+                lock_release_error: Some("unlock failure".to_owned()),
+            }
+        );
+
+        let path_unknown = SecretWriteOutcomeV1::CommittedPathUnknown {
+            parent: parent.to_path_buf(),
+            error: "path failure".to_owned(),
+            durability_error: Some("fsync failure".to_owned()),
+            lock_release_error: None,
+        };
+        assert_eq!(
+            finish_secret_parent_lock_v1(
+                Ok(path_unknown),
+                Err("unlock failure".to_owned()),
+                parent,
+            )
+            .unwrap(),
+            SecretWriteOutcomeV1::CommittedPathUnknown {
+                parent: parent.to_path_buf(),
+                error: "path failure".to_owned(),
+                durability_error: Some("fsync failure".to_owned()),
+                lock_release_error: Some("unlock failure".to_owned()),
+            }
+        );
     }
 
     #[cfg(target_os = "macos")]
