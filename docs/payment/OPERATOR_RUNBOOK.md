@@ -184,6 +184,19 @@ The stronger `secret_write_status=committed_path_unknown` marker means a
 post-commit check could no longer prove that the requested pathname names the
 new inode; stop and reconcile the pinned directory inode, target and printed
 public identity without retrying rotation.
+Keygen explicitly unlocks its pinned parent descriptor before returning, so a
+descriptor inherited by a concurrently forked process cannot retain the
+advisory lock until that process execs or exits. If a committed write cannot
+confirm that unlock, the command still prints the new public identity and exits
+`2`; a lock-only incident uses
+`secret_write_status=committed_lock_release_unknown`. When path or durability
+is already unknown, that primary marker remains authoritative. In every
+committed case with an unlock failure, the additional stable marker
+`secret_write_lock_release_status=unknown` is emitted. Do not retry; preserve
+the printed identity, inspect the exact target, determine whether any duplicated
+or inherited descriptor still holds the parent directory open, and diagnose the
+unlock error. A pre-commit operation failure remains the primary error and
+appends the lock-release failure as secondary diagnostic text.
 
 On macOS, the CLI rejects any extended ACL on a secret parent or an existing
 secret. It also clears and re-reads the temporary file's extended ACL before
