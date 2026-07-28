@@ -878,6 +878,34 @@ duplicate/unexpected/missing, non-text and oversized replies. They deliberately
 do not prove WebPKI, public relay policy, operator independence, or compatibility
 with relays that inject Ping/Pong control frames during the publish exchange.
 
+The full local script and Payment CI additionally select the real two-relay
+process topology explicitly (the test is ignored by ordinary package runs so
+`--quick` still starts no service process):
+
+```sh
+cargo test --locked --offline -p bitcoinpir-directory-relay \
+  --test payment_v1_two_relay_process_e2e \
+  two_relay_real_process_catalog_e2e -- --exact --ignored
+```
+
+It launches two copies of the repository's production
+`bitcoinpir-directory-relay` binary and covers separate
+config/SQLite/ports/runtimes, complete 16-shard signed readback, one relay
+offline, two independently valid but conflicting stale-head views with an exact
+split-view error, bounded-backoff lost-ACK readback plus idempotent retry, and
+independent restart recovery. The remote-authority full-mode cell also selects
+`three_authority_process::three_authority_real_process_topology_e2e`. That test
+spawns three authority child test harnesses which invoke production
+`rollback_authority::run` and three TLS-edge child harnesses; the parent process
+calls production ProviderStore/IssuerStore adapters directly. The
+deployment-set validator owns duplicate-pin/namespace rejection, raw clients
+own wrong-pin/client/cross-domain transport assertions, and the production
+adapters own crossed-provider, single-domain outage and stale-floor assertions.
+It does not launch `unified_server`, `payment-issuer`, or installed binaries.
+These new commands require their first Linux CI run on the candidate commit; no
+passing result is claimed here, and same-host processes do not prove
+operational independence.
+
 The staging-only readback script resolves the lockfile-pinned `ws` dependency
 from `web/node_modules`, disables compression and redirects, and applies a
 transport-level `maxPayload` before parsing relay data. It never reads a key or

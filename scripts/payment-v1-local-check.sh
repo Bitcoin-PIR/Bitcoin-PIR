@@ -22,14 +22,14 @@ network.
            acquisition test, and a browser -> two independent issuers -> two
            real provider-gate test. This is the default.
 
-Full mode starts only temporary unified-server, rollback-authority,
-deterministic test-only TLS/NUT-03 mint, Vite and fake issuer listeners
+Full mode starts only temporary directory-relay, unified-server,
+rollback-authority, test-only TLS/NUT-03 mint, Vite and fake issuer listeners
 explicitly bound to 127.0.0.1; the tests kill and wait for every child. Neither
-mode contacts an external Lightning node or Cashu mint, publishes to a Nostr
-relay, deploys a server, uses real funds, or modifies source files. Quick mode
-starts no persistent service process. Cargo, the JavaScript package manager,
-and tests may update their normal local build caches (for example target/ and
-web/node_modules cache metadata).
+mode contacts an external Lightning node or Cashu mint, publishes to a public
+Nostr relay, deploys a server, uses real funds, or modifies source files. Quick
+mode starts no persistent service process. Cargo, the JavaScript package
+manager, and tests may update their normal local build caches (for example
+target/ and web/node_modules cache metadata).
 EOF
 }
 
@@ -139,6 +139,10 @@ cargo test --locked --offline -p runtime \
 cargo test --locked --offline -p runtime --test payment_v1_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_methods_process_e2e
 cargo test --locked --offline -p runtime --test payment_v1_harmony_pool_process_e2e
+cargo test --locked --offline -p bitcoinpir-directory-relay \
+  --test payment_v1_two_relay_process_e2e \
+  two_relay_real_process_catalog_e2e \
+  -- --exact --ignored
 cargo test --locked --offline -p pir-rollback-authority-client \
   --features test-only-webpki-root \
   test_only_webpki_root_requires_owner_only_regular_file
@@ -218,6 +222,11 @@ cargo test --locked --offline -p runtime \
   --features remote-authority-process-e2e \
   --test payment_v1_process_e2e \
   remote_authority_process::remote_authority_real_process_tls_provider_e2e \
+  -- --exact
+cargo test --locked --offline -p runtime \
+  --features remote-authority-process-e2e \
+  --test payment_v1_process_e2e \
+  three_authority_process::three_authority_real_process_topology_e2e \
   -- --exact
 cargo clippy --locked --offline -p runtime \
   --features remote-authority-process-e2e \

@@ -379,6 +379,22 @@ operator has activated the path with real money or public infrastructure.
       logging. Its current macOS library and binary unit suites passed 23/23;
       Linux clippy, installed shutdown/backup drills and public WSS behavior
       remain exact-commit/deployment evidence rather than source claims.
+- [x] A CI-wired, explicitly selected process test starts two copies of the
+      repository's production `bitcoinpir-directory-relay` binary with
+      independent config/SQLite/port/runtime state, publishes one signed
+      16-shard catalog to both and uses real WebSocket readback to fail closed
+      on offline/exact split-view errors, recover lost ACK by bounded-backoff
+      durable ID probe plus idempotent retry, and preserve heads across
+      independent restarts. A companion three-authority test separates provider
+      0, provider 1 and issuer DB/key/namespace/TLS material. It starts authority
+      and TLS-edge child test harnesses; each authority harness invokes
+      production `rollback_authority::run`, while the parent directly calls the
+      production ProviderStore/IssuerStore adapters. Deployment-set validation,
+      raw-client rejection and Store-adapter rejection are asserted at their
+      respective boundaries. It does not launch `unified_server`,
+      `payment-issuer`, or installed binaries. These are local topology tests,
+      not claims of operational independence; their first Linux CI execution
+      remains candidate-commit evidence.
 - [x] Browser relay fetching and encrypted IndexedDB directory state.
 - [x] A no-account, process-local NIP-01 fake-relay integration test closes the
       signed publisher-artifact to two-relay read path through all 16 shards,
