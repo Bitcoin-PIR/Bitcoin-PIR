@@ -33,9 +33,9 @@ on:
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
+      - 'scripts/payment-v1-pages-deploy-gate.mjs'
       - 'web/**'
-      - '.github/workflows/deploy-web.yml'
-      - '.github/workflows/payment-platform.yml'
+      - '.github/workflows/**'
   pull_request:
     branches: [main]
     paths:
@@ -68,9 +68,9 @@ on:
       - 'scripts/payment-v1-cln-regtest-e2e.sh'
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
+      - 'scripts/payment-v1-pages-deploy-gate.mjs'
       - 'web/**'
-      - '.github/workflows/deploy-web.yml'
-      - '.github/workflows/payment-platform.yml'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
@@ -353,6 +353,8 @@ jobs:
       - name: Install pinned web dependencies
         working-directory: web
         run: npm ci
+      - name: Enforce manual main-only production Pages deployment
+        run: node scripts/payment-v1-pages-deploy-gate.mjs
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false

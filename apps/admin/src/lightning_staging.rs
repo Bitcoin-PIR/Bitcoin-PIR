@@ -1459,6 +1459,19 @@ fn write_atomic_backup_receipt_v1(
 }
 
 #[cfg(unix)]
+fn finish_backup_receipt_write_v1<E>(
+    operation_result: Result<(), PreflightFailureV1>,
+    unlock_result: Result<(), E>,
+) -> Result<(), PreflightFailureV1> {
+    match operation_result {
+        Err(error) => Err(error),
+        Ok(()) => unlock_result.map_err(|_| {
+            PreflightFailureV1::new("backup.receipt-file", "unlock-output-parent-failed")
+        }),
+    }
+}
+
+#[cfg(unix)]
 fn write_atomic_backup_receipt_with_hook_v1<F>(
     config: &BackupConfigV1,
     bytes: &[u8],
@@ -1479,77 +1492,84 @@ where
     let (parent, file_name, target_parent) = open_backup_receipt_parent_v1(config)?;
     rustix_fs::flock(&parent, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| PreflightFailureV1::new(check, "output-parent-busy"))?;
-    let before = inspect_backup_receipt_target_v1(&parent, &file_name, config)?;
-    let target_name = file_name
-        .to_str()
-        .ok_or_else(|| PreflightFailureV1::new(check, "invalid-target"))?;
-    let mut nonce = [0u8; 16];
-    getrandom::getrandom(&mut nonce)
-        .map_err(|_| PreflightFailureV1::new(check, "randomness-unavailable"))?;
-    let temporary = format!(".{target_name}.{}.tmp", hex::encode(nonce));
-    let mut temporary_created = false;
-    let result = (|| {
-        let fd = rustix_fs::openat(
-            &parent,
-            temporary.as_str(),
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .map_err(|_| PreflightFailureV1::new(check, "create-temporary-failed"))?;
-        temporary_created = true;
-        rustix_fs::fchmod(&fd, Mode::RUSR | Mode::WUSR)
-            .map_err(|_| PreflightFailureV1::new(check, "secure-temporary-failed"))?;
-        let mut file = File::from(fd);
-        file.write_all(bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|_| PreflightFailureV1::new(check, "write-temporary-failed"))?;
-        let stat = rustix_fs::fstat(&file)
-            .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
-        if !FileType::from_raw_mode(stat.st_mode).is_file()
-            || stat.st_uid != config.expected_uid
-            || stat.st_gid != config.expected_gid
-            || stat.st_mode & 0o777 != 0o600
-            || stat.st_size as i128 != bytes.len() as i128
-        {
-            return Err(PreflightFailureV1::new(check, "unsafe-temporary"));
-        }
-        drop(file);
-        parent
-            .sync_all()
-            .map_err(|_| PreflightFailureV1::new(check, "sync-output-parent-failed"))?;
-        validate_opened_backup_parent_still_named_v1(&parent, &target_parent, config)?;
-        let current = inspect_backup_receipt_target_v1(&parent, &file_name, config)?;
-        if current != before {
-            return Err(PreflightFailureV1::new(check, "target-changed"));
-        }
-        before_commit()?;
-        // Atomic namespace commit point. Before this call every error removes
-        // the temporary and preserves the prior receipt. A following parent
-        // fsync can still report an outcome-unknown durability failure; the
-        // operator must inspect the exact target rather than invent a second
-        // receipt.
-        if before.is_none() {
-            rustix_fs::renameat_with(
+    let operation_result = (|| {
+        let before = inspect_backup_receipt_target_v1(&parent, &file_name, config)?;
+        let target_name = file_name
+            .to_str()
+            .ok_or_else(|| PreflightFailureV1::new(check, "invalid-target"))?;
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut nonce)
+            .map_err(|_| PreflightFailureV1::new(check, "randomness-unavailable"))?;
+        let temporary = format!(".{target_name}.{}.tmp", hex::encode(nonce));
+        let mut temporary_created = false;
+        let result = (|| {
+            let fd = rustix_fs::openat(
                 &parent,
                 temporary.as_str(),
-                &parent,
-                &file_name,
-                RenameFlags::NOREPLACE,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
             )
-        } else {
-            rustix_fs::renameat(&parent, temporary.as_str(), &parent, &file_name)
+            .map_err(|_| PreflightFailureV1::new(check, "create-temporary-failed"))?;
+            temporary_created = true;
+            rustix_fs::fchmod(&fd, Mode::RUSR | Mode::WUSR)
+                .map_err(|_| PreflightFailureV1::new(check, "secure-temporary-failed"))?;
+            let mut file = File::from(fd);
+            file.write_all(bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|_| PreflightFailureV1::new(check, "write-temporary-failed"))?;
+            let stat = rustix_fs::fstat(&file)
+                .map_err(|_| PreflightFailureV1::new(check, "metadata-unavailable"))?;
+            if !FileType::from_raw_mode(stat.st_mode).is_file()
+                || stat.st_uid != config.expected_uid
+                || stat.st_gid != config.expected_gid
+                || stat.st_mode & 0o777 != 0o600
+                || stat.st_size as i128 != bytes.len() as i128
+            {
+                return Err(PreflightFailureV1::new(check, "unsafe-temporary"));
+            }
+            drop(file);
+            parent
+                .sync_all()
+                .map_err(|_| PreflightFailureV1::new(check, "sync-output-parent-failed"))?;
+            validate_opened_backup_parent_still_named_v1(&parent, &target_parent, config)?;
+            let current = inspect_backup_receipt_target_v1(&parent, &file_name, config)?;
+            if current != before {
+                return Err(PreflightFailureV1::new(check, "target-changed"));
+            }
+            before_commit()?;
+            // Atomic namespace commit point. Before this call every error removes
+            // the temporary and preserves the prior receipt. A following parent
+            // fsync can still report an outcome-unknown durability failure; the
+            // operator must inspect the exact target rather than invent a second
+            // receipt.
+            if before.is_none() {
+                rustix_fs::renameat_with(
+                    &parent,
+                    temporary.as_str(),
+                    &parent,
+                    &file_name,
+                    RenameFlags::NOREPLACE,
+                )
+            } else {
+                rustix_fs::renameat(&parent, temporary.as_str(), &parent, &file_name)
+            }
+            .map_err(|_| PreflightFailureV1::new(check, "atomic-replace-failed"))?;
+            temporary_created = false;
+            parent
+                .sync_all()
+                .map_err(|_| PreflightFailureV1::new(check, "sync-committed-parent-failed"))?;
+            Ok(())
+        })();
+        if temporary_created {
+            let _ = rustix_fs::unlinkat(&parent, temporary.as_str(), AtFlags::empty());
         }
-        .map_err(|_| PreflightFailureV1::new(check, "atomic-replace-failed"))?;
-        temporary_created = false;
-        parent
-            .sync_all()
-            .map_err(|_| PreflightFailureV1::new(check, "sync-committed-parent-failed"))?;
-        Ok(())
+        result
     })();
-    if temporary_created {
-        let _ = rustix_fs::unlinkat(&parent, temporary.as_str(), AtFlags::empty());
-    }
-    result
+    // A concurrently running test or hook may fork while this descriptor is
+    // open. Explicit unlock releases the shared open-file-description lock
+    // even if a child inherited a duplicate descriptor.
+    let unlock_result = rustix_fs::flock(&parent, FlockOperation::Unlock);
+    finish_backup_receipt_write_v1(operation_result, unlock_result)
 }
 
 #[cfg(not(unix))]
@@ -2839,6 +2859,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn backup_receipt_unlock_failure_preserves_the_primary_error_and_fails_closed_after_success() {
+        let primary = PreflightFailureV1::new("backup.test", "injected-failure");
+        let error = finish_backup_receipt_write_v1(Err(primary), Err::<(), _>(())).unwrap_err();
+        assert_eq!(error.check, "backup.test");
+        assert_eq!(error.reason, "injected-failure");
+
+        let error = finish_backup_receipt_write_v1(Ok(()), Err::<(), _>(())).unwrap_err();
+        assert_eq!(error.check, "backup.receipt-file");
+        assert_eq!(error.reason, "unlock-output-parent-failed");
+        assert!(finish_backup_receipt_write_v1(Ok(()), Ok::<(), ()>(())).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn backup_receipt_atomic_commit_preserves_old_file_and_removes_temporary_on_failure() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -2893,6 +2927,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![OsString::from("backup-receipt.toml")]
         );
+
+        let newest = toml::to_string(&BackupReceiptV1 {
+            recorded_at_unix: NOW + 1,
+            ..receipt(StagingRoleV1::Payer)
+        })
+        .unwrap();
+        write_atomic_backup_receipt_v1(&backup, newest.as_bytes()).unwrap();
+        assert_eq!(std::fs::read_to_string(&receipt_path).unwrap(), newest);
     }
 
     #[tokio::test]

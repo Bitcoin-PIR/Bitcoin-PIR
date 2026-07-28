@@ -267,9 +267,10 @@ remains mandatory.
   separate deploy job. Newly used workflow actions are pinned to exact commit
   SHAs; Node is fixed to supported LTS 24.18.0 on Ubuntu 24.04; the
   Payment/Web filters watch toolchain, Cargo configuration, vendor, trust and
-  Web inputs. The Pages build also reruns strict TypeScript, unit tests and both
-  local no-funds Chromium Payment boundaries, so it cannot publish while those
-  gates fail in a parallel workflow. The scheduled strict-production canary
+  Web inputs. The Pages build also reruns strict TypeScript, unit tests and all
+  three local no-funds Chromium Payment boundaries. Failure of those reruns in
+  this build prevents publication; it does not rely on a parallel workflow.
+  The scheduled strict-production canary
   uses the same fixed Node/runner/action boundary and refuses implicit `npx`
   package installation, but was not triggered here. A cold local smoke of the
   exact pinned installation commands passed; the exact build command also
@@ -281,6 +282,16 @@ remains mandatory.
   real-WASM Chromium case loaded it successfully; deployed-origin load
   performance remains a staging/manual gate. No Pages deployment was run
   during this review.
+- A lockfile-pinned YAML 1.2 semantic guard now fixes the Pages workflow to the
+  exact push/manual triggers and default-false confirmation input, confines
+  Pages/OIDC write capability and exact-SHA deploy actions to the build-gated
+  environment job, and rejects aliases, merge keys, `write-all`, Actions-write
+  permissions, reusable-workflow delegation and sibling workflows outside an
+  exact contents-read boundary. This is a repository-static/default-
+  `GITHUB_TOKEN` control, not proof against external PAT/GitHub-App dispatch or
+  mutable repository/environment settings. Those credentials, default
+  permissions, Pages build mode, rulesets and a required environment reviewer
+  remain production checks.
 - The 2026-07-26 production-dependency check
   `npm audit --omit=dev --audit-level=moderate` reported zero vulnerabilities.
   `cargo audit` exited successfully with no vulnerability finding and four
@@ -457,8 +468,9 @@ strict default selects provider and payment method independently for each leg.
 ## Post-delta current-tree note — 2026-07-28
 
 This note records code facts and narrowly scoped local evidence added after the
-dated review above. It is not a new complete security-review verdict, aggregate
-current-tree pass record or substitute for pushed CI.
+dated review above. It is not a new complete independent security-review verdict,
+production acceptance or substitute for pushed CI. The final aggregate local
+execution record is stated explicitly at the end of this note.
 
 - A later red-team P0 found that an exact issuer-signed shared-redeem replay
   could deliver a second provider grant because issuer atomic redeem had no
@@ -485,7 +497,8 @@ current-tree pass record or substitute for pushed CI.
   before send and does not auto-retry; loss of `AUTH_GRANTED` after the local
   claim consumes the entitlement. Focused current-tree results are 93/93
   `pir-service-store` tests and 6/6 provider-clearing shared-grant tests. The
-  complete local matrix and pushed CI remain **pending**.
+  subsequent final pinned-Linux aggregate and process matrix passed; pushed CI
+  remains a separate per-commit merge gate.
 - This correction reuses ProviderStore schema v7; it is not a migration. First
   activation is clean and forward-only. Recovery from any older local store or
   issuer replay history requires stopping every old process and rotating either
@@ -521,15 +534,19 @@ current-tree pass record or substitute for pushed CI.
   not prove an offline copy exists or restores. SCB/`staticbackup` supports
   channel recovery; it is not a live/dynamic `lightningd.sqlite3` backup and
   does not replace datastore-specific replication/backup and restore drills.
+  Its output-parent advisory lock is explicitly released on every ordinary
+  path: operation errors remain primary and success plus unlock failure fails
+  closed. The current admin suite passed 106/106 five times under default
+  parallelism and once single-threaded, with warnings denied.
 - A browser/two-issuer/two-provider no-funds harness now extends generated-WASM
   direct-receipt/BAT admission through proof-bound Merkle preflight, one real
   encrypted two-server DPF query and an explicit inclusion/absence verdict.
   It still uses `NoSevHost`, synthetic report/database-proof material and an
   all-zero database, so it is not production identity, hardware-attestation or
   production-data evidence. The complete-query Free/ARC extension passed a
-  dedicated local branch run after its admission-only predecessor. Later server
-  edits mean the final coordinated browser matrix and pushed CI must still rerun
-  it; this is neither deployed-origin nor final-current-tree evidence.
+  dedicated local branch run after its admission-only predecessor. The final
+  isolated-target current-tree rerun passed all three complete-query cases;
+  exact-head CI remains separate. This is not deployed-origin evidence.
 - The CDK ignored case now spends authenticated provider custody through a
   second independent NUT-03 client and expects first-custody
   `UNSPENT -> SPENT` plus successor-custody `UNSPENT` without argv bearer
@@ -557,7 +574,8 @@ current-tree pass record or substitute for pushed CI.
   shared-issuer override, including when provider, policy, directory-operator,
   issuer and endpoint identities are otherwise independent. Positive distinct-
   key and negative copied-key tests passed in the coordinated non-server
-  package run; the complete final matrix and pushed CI remain required.
+  package run and final 27-package aggregate; pushed CI remains required per
+  candidate commit.
 - ARC remains experimental and production-disabled pending independent
   cryptographic and implementation review.
 - Harmony V2Full now keeps the ready filename unchanged and holds only an
@@ -598,14 +616,20 @@ current-tree pass record or substitute for pushed CI.
   pool is partially filled or opened by more than one process. It does not
   reserve that entry for a provider-local caller or promise fairness, priority or
   immediate admission.
-- The 2026-07-28 focused closeout passed 54/54 hint-pool unit tests, including a
-  real child-process barrier test for the cross-process online floor, and 64/64
-  `unified_server` unit tests. The real Harmony pool provider-process lifecycle
-  E2E passed three consecutive runs, and the selected server clippy targets
-  passed with warnings denied. These are focused results, not the final complete
-  matrix.
-- A final independent read-only gate over this Harmony code found no new
-  implementation P0/P1. Its non-blocking residuals remain explicit: the child
+- Capacity, durable/legacy reservation, generation, staged and reconciliation
+  inode locks now use explicit-unlock guards with primary-error precedence and
+  success-plus-unlock-error fail-closed behavior. This closes the fork/exec
+  window in which child ownership of a duplicated open-file description could
+  transiently retain a lock after the parent dropped its `File`.
+- The 2026-07-28 current focused closeout passed 56/56 hint-pool unit tests five
+  times under default parallelism and once single-threaded, plus warnings-denied
+  runtime-lib clippy. The final pinned-Linux matrix then passed the current
+  56/56 hint-pool suite, 64/64 `unified_server` suite and real Harmony lifecycle
+  E2E 1/1. The repeated focused results remain separately identified rather
+  than being folded into a false unique aggregate count.
+- A final independent read-only gate found no implementation P0/P1 after its
+  generation-marker cleanup P2 was corrected. Its non-blocking residuals remain
+  explicit: the child
   floor test sequences a parent-held reservation before releasing the child's
   already-loaded snapshot rather than randomizing simultaneous capacity-lock
   acquisition; one test helper's final `wait_with_output` has no parent-side
@@ -614,12 +638,18 @@ current-tree pass record or substitute for pushed CI.
   explicit global-AUTH-full permit-return regression would strengthen future
   DoS testing. None changes the provider-local no-fairness/no-immediate-admission
   boundary or removes the production saturation gate.
+- The new unlock tests cover same-process success/error/drop reuse and the
+  default-parallel stress above, but do not deterministically hold an inherited
+  duplicate descriptor across a fork barrier. That stronger regression remains
+  a P2 test improvement, not evidence that the production guard still relies on
+  descriptor close for release.
 - The extended CDK lifecycle and forced two-hop three-node CLN runner passed
   final 2026-07-28 current-tree opt-in reruns. The feature-gated
-  Standard-Cashu/Free two-provider process cell and complete-query two-provider
-  browser harness still have only earlier dedicated local branch passes; later
-  source changes leave those two historical until the final coordinated reruns
-  and pushed CI. None is external-mint, public-Lightning, deployed-origin or
+  Standard-Cashu/Free two-provider process cell subsequently passed the final
+  current-tree pinned-Linux matrix 1/1 with its clippy and release guards. The
+  final isolated-target current-tree browser rerun passed the real-issuer case
+  1/1 and complete-query harness 3/3. Exact-head CI remains separate. None is
+  external-mint, public-Lightning, deployed-origin or
   real-funds acceptance.
 - Pre-marker and current binaries are not live-compatible on one pool
   directory. The runbook now requires a full drain, a fresh empty private
@@ -629,7 +659,10 @@ current-tree pass record or substitute for pushed CI.
   an older reserved artifact under a valid matching marker is instead recovered
   conservatively under lock.
 
-No aggregate current-tree test count or complete security-closeout result is
-asserted here. The final coordinated matrix, full local command and pushed CI
-must supply that evidence; every dedicated result above stands only for its
-stated local/no-funds boundary.
+The subsequent final pinned-Linux current-tree matrix reported 1294 aggregate
+passes and 41 explicit opt-in/documentation ignores, with all dedicated Rust,
+process, clippy, release-guard, fixture and runner-validation stages passing.
+This supplies an aggregate local execution record, not a new independent
+security-review verdict or production acceptance. Every dedicated result above
+retains its stated local/no-funds boundary, and exact-head pushed CI remains a
+separate merge gate.

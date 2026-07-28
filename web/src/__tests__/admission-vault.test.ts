@@ -12,6 +12,7 @@ const policyDigest = '33'.repeat(32);
 const scope = '22'.repeat(32);
 const databaseName = 'bitcoinpir-admission-v1';
 let opened: AdmissionCredentialVaultV1[] = [];
+let observeLockRequest: ((name: string) => void) | undefined;
 
 beforeEach(async () => {
   Object.defineProperty(globalThis, 'indexedDB', {
@@ -23,11 +24,13 @@ beforeEach(async () => {
     value: webcrypto,
   });
   const tails = new Map<string, Promise<unknown>>();
+  observeLockRequest = undefined;
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
     value: {
       locks: {
         request: <T>(name: string, _options: unknown, callback: () => Promise<T>) => {
+          observeLockRequest?.(name);
           const previous = tails.get(name) ?? Promise.resolve();
           const result = previous.then(callback, callback);
           tails.set(name, result.then(() => undefined, () => undefined));
@@ -41,6 +44,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  observeLockRequest = undefined;
   for (const vault of opened) vault.close();
   opened = [];
   await deleteDatabase();
@@ -247,6 +251,17 @@ describe('provider-scoped admission vault validation', () => {
         return { nextCheckpoint: new Uint8Array([2]), value: 'first' };
       },
     );
+    // The vault hashes the provider ID before requesting the Web Lock, so two
+    // same-tick callers have no specified queue order. Establish that the
+    // first callback owns the lock before launching the contending tab.
+    await firstEntered;
+    let markSecondLockRequested!: () => void;
+    const secondLockRequested = new Promise<void>((resolve) => {
+      markSecondLockRequested = resolve;
+    });
+    observeLockRequest = (name) => {
+      if (name.startsWith('bitcoinpir:policy:')) markSecondLockRequested();
+    };
     const second = secondVault.advancePolicyCheckpoint(
       provider,
       new Uint8Array([1]),
@@ -255,7 +270,7 @@ describe('provider-scoped admission vault validation', () => {
         return { nextCheckpoint: new Uint8Array([3]), value: 'second' };
       },
     );
-    await firstEntered;
+    await secondLockRequested;
     expect(seen).toEqual([[1]]);
     releaseFirst();
     await expect(Promise.all([first, second])).resolves.toEqual(['first', 'second']);

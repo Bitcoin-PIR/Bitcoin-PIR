@@ -11,10 +11,12 @@ real loopback no-funds issuer. A third harness launches two issuers and two
 providers through browser admission, proof-bound Merkle preflight and one real
 encrypted two-server DPF query. The extended CDK lifecycle has passed its final
 2026-07-28 current-tree opt-in run, as has the forced two-hop three-node CLN
-runner. The complete-query Free/ARC extension and feature-gated
-Standard-Cashu/Free provider-process cell each have an earlier dedicated local
-branch pass; later source changes mean those two remain historical boundary
-records pending the final coordinated matrix and pushed CI. The current focused
+runner. The final pinned-Linux matrix reran the feature-gated Standard-Cashu/
+Free provider-process cell, Harmony lifecycle and the remaining Rust/process
+boundaries successfully. The complete-query Free/ARC browser extension is
+also covered by a final isolated-target current-tree 3/3 pass; its companion
+real-WASM/real-loopback-issuer case passed 1/1 with the two explicit CLN cases
+skipped by default. Pushed CI remains a per-commit merge gate. The current focused
 shared-redeem/clone-fencing P0 suites pass 93/93 service-store tests and 6/6
 provider-clearing shared-grant tests; these are not an aggregate full-suite
 claim. Remaining
@@ -77,8 +79,9 @@ It launches one real `unified_server` with a private on-disk pool and verifies
 secure-channel/policy binding, invalid-proof non-consumption, pre-dispatch
 disconnect restoration, first-dispatch durable consumption, restart with the
 matching marker and fail-closed inode replacement. A 2026-07-28 focused
-closeout repeated its one test three times successfully; final complete-matrix
-and pushed-CI evidence remain separate.
+closeout repeated its one test three times successfully; the final pinned-
+Linux matrix subsequently passed the current case 1/1, hint pool 56/56 and
+`unified_server` 64/64. Pushed CI remains separate per candidate commit.
 
 A separate non-default process test exercises the production provider remote
 rollback-authority selection and client path:
@@ -172,8 +175,9 @@ time, chain and signed leaf-SPKI checks remain mandatory, the CLI flag is absent
 from default builds, and release builds with the feature are compile-rejected.
 
 The process cell passed a dedicated local branch run before later Harmony-only
-server-gate refinements. Treat that as historical execution evidence and rerun
-the command in the final coordinated matrix; pushed CI remains authoritative.
+server-gate refinements, then passed the final current-tree pinned-Linux matrix
+1/1 with warnings denied and the ordinary CLI/release-feature rejection guards.
+Pushed CI remains authoritative per candidate commit.
 It is not public-mint evidence: an approved external public-WebPKI Cashu mint
 remains a production-only acceptance gate. Those remaining boundaries are
 listed in `LOCAL_ACCEPTANCE.md`. Separately,
@@ -213,34 +217,26 @@ not a live method adapter.
 |---|---|---|---|---|
 | Direct BOLT11 receipt | yes: `payment-real-issuer` and `payment-two-provider` | yes: `payment_v1_process_e2e` and the browser process harness | provider-local receipt spend survives restart | yes: `payment-two-provider` joins real Chromium, generated WASM, fake-settlement issuer, encrypted provider wire, `unified_server`, ProviderStore and a verified DPF query |
 | Cashu BAT | yes: generated-WASM issuer acquisition in the opt-in CLN case and in the no-funds two-provider browser case | yes: `payment_v1_methods_process_e2e` | real blind/DLEQ/unblind proof and durable provider-local spend/restart rejection | yes: the no-funds `payment-two-provider` BAT leg joins issuer, browser, provider and store |
-| Free | yes: the no-funds `payment-two-provider` Chromium variant selects the exact signed one-request/one-hour `ip-rate-limited` offer, including the IP-rate-bucket leakage flag, and creates no invoice | yes: open and IP-limited Free reach a real encrypted DPF provider | IP quota is durable and restart-tested; the browser topology also requires a second secure connection to receive `server-busy`; open best effort intentionally has no spent row | yes: browser, generated WASM, exact signed Free/IP mode, real provider/store gate, durable same-provider rejection and verified DPF/Merkle query share one process topology; its dedicated branch run is historical pending the final coordinated rerun |
-| ARC experimental | yes: generated-WASM acquisition/presentation exists in the opt-in CLN case and the no-funds two-provider browser variant | yes: `payment_v1_methods_process_e2e` and the browser topology use the real ARC adapter | provider-local tag/nullifier persistence and restart rejection | yes: local issuer, browser persist-before-release, real provider/store replay rejection and verified DPF/Merkle query share one topology; its dedicated branch run is historical pending the final coordinated rerun, and ARC remains experimental/review-blocked |
-| Standard Cashu eCash | yes: CDK default mode imports a real `cashuB` through freshly rebuilt current JS/WASM; browser-only accepts only explicitly acknowledged, SHA-256-pinned prebuilt runtime artifacts | yes: the feature-gated process cell launches a real Standard-Cashu `unified_server`, strict TLS NUT-03 mint, an independent Free peer, two secure channels, DPF/Merkle and restart/failure cases; a dedicated branch run passed before later server edits | real ProviderStore swap/custody and real-CDK NUT-03/NUT-12 exist; the process cell uses durable provider stores and proves local replay rejection, but not an independent production floor | not one same-run browser topology: the browser/CDK boundary has a final current-tree opt-in pass, while the real-provider process boundary remains historical pending the final coordinated rerun |
+| Free | yes: the no-funds `payment-two-provider` Chromium variant selects the exact signed one-request/one-hour `ip-rate-limited` offer, including the IP-rate-bucket leakage flag, and creates no invoice | yes: open and IP-limited Free reach a real encrypted DPF provider | IP quota is durable and restart-tested; the browser topology also requires a second secure connection to receive `server-busy`; open best effort intentionally has no spent row | yes: browser, generated WASM, exact signed Free/IP mode, real provider/store gate, durable same-provider rejection and verified DPF/Merkle query share one process topology; the final isolated-target current-tree run passed 3/3 |
+| ARC experimental | yes: generated-WASM acquisition/presentation exists in the opt-in CLN case and the no-funds two-provider browser variant | yes: `payment_v1_methods_process_e2e` and the browser topology use the real ARC adapter | provider-local tag/nullifier persistence and restart rejection | yes: local issuer, browser persist-before-release, real provider/store replay rejection and verified DPF/Merkle query share one topology; the final isolated-target current-tree run passed 3/3, and ARC remains experimental/review-blocked |
+| Standard Cashu eCash | yes: CDK default mode imports a real `cashuB` through freshly rebuilt current JS/WASM; browser-only accepts only explicitly acknowledged, SHA-256-pinned prebuilt runtime artifacts | yes: the feature-gated process cell launches a real Standard-Cashu `unified_server`, strict TLS NUT-03 mint, an independent Free peer, two secure channels, DPF/Merkle and restart/failure cases; the final current-tree matrix passed it 1/1 with warnings denied and release guards | real ProviderStore swap/custody and real-CDK NUT-03/NUT-12 exist; the process cell uses durable provider stores and proves local replay rejection, but not an independent production floor | not one same-run browser topology: the browser/CDK boundary and real-provider process boundary each have a final current-tree pass, but are separate executions |
 
 The updated CDK default-mode closure item completed on 2026-07-28: the exact
 Chromium-emitted spend reached the Standard-Cashu runtime committer and
 ProviderStore, with the focused deterministic committer test retained as a
-default gate. Remaining minimum closure work, without changing Payment V1 wire
-semantics:
-
-1. rerun the implemented Standard-Cashu real-provider process cell, then add a
-   generated-WASM Chromium join against an approved public-WebPKI endpoint. The existing
-   private root remains compile-time test-only and cannot enter a release;
-2. rerun the implemented no-funds Free variant in
-   the existing two-provider Chromium topology. It asserts that no invoice or
-   issuer request is created, that the exact signed `ip-rate-limited` mode
-   carries quota `1`, window `3600` and the IP-rate-bucket leakage disclosure,
-   and that its real provider/store gate rejects a second secure connection;
-3. rerun the implemented experimental-ARC variant.
-   The issuer/provider key is dedicated to this browser fixture, both processes
-   require explicit experimental opt-in, and the test joins generated-WASM
-   issuance, persist-before-release, provider replay rejection and verified DPF
-   execution without funds.
+default gate. The final current-tree matrix completed the Standard-Cashu
+provider-process rerun 1/1, and the isolated-target Chromium rerun completed the
+Free/experimental-ARC topology 3/3. Remaining minimum production closure,
+without changing Payment V1 wire semantics, is a same-run generated-WASM
+Chromium-to-Standard-Cashu-provider join against an approved public-WebPKI
+endpoint and independently operated production rollback floor. The existing
+private root remains compile-time test-only and cannot enter a release.
 
 Direct receipt, BAT, Free, experimental ARC and the Standard Cashu process cell
-need final coordinated rerun evidence, not another protocol adapter. The Free
-and ARC additions are browser/process composition work and are now wired into
-the same default local/CI command. Standard Cashu still lacks a single joined
+now have final coordinated current-tree rerun evidence; they do not need
+another protocol adapter. The Free and ARC additions are browser/process
+composition work and are wired into the same default local/CI command. Standard
+Cashu still lacks a single joined
 browser-to-provider run and an external public-WebPKI mint observation; the
 feature-gated private-CA process cell is deliberately not either production
 claim.
@@ -473,6 +469,9 @@ Cashu-specific:
   selected inode rotates behind the bounded current snapshot so it cannot hide
   a later usable candidate, while pool-wide lock/floor ambiguity fails
   non-consumingly;
+- capacity, durable/legacy reservation, generation, staged and reconciliation
+  inode guards explicitly unlock on normal/error/drop paths; the main operation
+  error wins, while success followed by unlock failure fails closed;
 - a real child-process barrier test locks one of two validated inodes from a
   separate OS process and proves online admission cannot take the remaining
   floor entry while provider-local reservation can use it;
@@ -717,12 +716,19 @@ The default-Signet staging preflight focused suite additionally requires:
   methods and never wallet, address, channel-open, payment or shutdown methods.
 
 The backup-receipt tests prove only strict parsing, protected-file handling,
-exact `getinfo -> staticbackup` command order, SCB-digest binding and atomic
-receipt replacement. Both long acknowledgement flags record an **operator
+exact `getinfo -> staticbackup` command order, SCB-digest binding, atomic
+receipt replacement, explicit parent-lock release, primary-error precedence
+and fail-closed unlock failure after success. Both long acknowledgement flags record an **operator
 assertion**; they do not prove an offline copy exists or can be restored.
 `staticbackup`/SCB is static channel-recovery material, not a live/dynamic CLN
 database backup. A datastore-specific backup/replication and restore rehearsal
 remains a separate Signet acceptance requirement.
+
+The admin and hint-pool suites exercise success/error/drop reuse and repeated
+default-parallel contention. A future deterministic regression should keep an
+inherited duplicate descriptor alive in a child while proving explicit unlock
+releases the shared open-file-description lock; the current five-round stress
+evidence does not by itself create that exact fork barrier.
 
 The Rust publisher reader has a deterministic every-field snapshot-stability
 test plus FIFO/symlink/oversize cases. The Node readback suite covers the same
@@ -909,9 +915,10 @@ design. ARC remains experimental pending independent review. The synthetic
 report is report-data binding rather than an AMD signature, and the all-zero
 fixture is not a production database. Its admission-only predecessor passed
 both cases on 2026-07-27; the complete-query plus Free/experimental-ARC
-extension later passed a dedicated local branch run. Subsequent server edits
-require a final coordinated rerun and pushed CI; neither dated run is
-production-attestation or deployed-origin evidence.
+extension later passed a dedicated local branch run. The final isolated-target
+current-tree rerun passed all three cases. It remains local synthetic evidence,
+not production-attestation or deployed-origin acceptance; exact-head CI is a
+separate merge gate.
 
 ### Opt-in CLN-to-provider joined boundary
 
@@ -1073,7 +1080,17 @@ cargo test --locked --offline -p pir-cashu-client \
    the candidate only; production deploy requires a separate manual dispatch
    selected on `main` with `confirm_production_deploy=true`, and that run
    rebuilds/retests the selected main ref rather than promoting an earlier push
-   artifact;
+   artifact. After lockfile-pinned `npm ci`, the YAML 1.2 semantic Pages gate
+   checker locks the exact condition, boolean-default-false input,
+   `needs: build`, no-`always()` rule, protected environment, unique
+   job-confined Pages/OIDC write permissions and deployment actions, rejection
+   of anchors/aliases/merge keys, `write-all`, Actions-write permissions,
+   reusable-workflow delegation, extra jobs and sibling workflows outside the
+   exact contents-read permission boundary, decoded-Unicode positive controls,
+   and the trigger truth table. Payment CI and the Pages build both execute it,
+   and every workflow change is included in the Payment-CI path filter. This
+   repository-static/default-`GITHUB_TOKEN` test does not exclude dispatch via
+   an external PAT or GitHub App token;
 8. fuzz, dependency, forbidden-field, formal-contract, and offline-build jobs;
 9. compile-only coverage for the feature-gated ignored CDK provider interop
    target; actual execution remains an opt-in disposable loopback fake-wallet
@@ -1097,6 +1114,11 @@ approval and an isolated experimental/staging environment are required for:
   drills;
 - production TLS/edge limits, source-aware abuse controls, telemetry, overload
   tests, supervision, backup and key-custody review;
+- a repository ruleset that prevents unreviewed direct `main` pushes and makes
+  the Payment/security gates required, plus a fresh check of default workflow
+  permissions, Pages build mode, PAT/GitHub-App credential governance, and that
+  the mutable `github-pages` environment remains main-only with a required
+  reviewer;
 - deployed-origin enforcement of the locally tested hash-pinned browser CSP,
   including an edge `frame-ancestors 'none'` response header, runtime-
   dependency review, resolution of documented upstream/vendor audit warnings,

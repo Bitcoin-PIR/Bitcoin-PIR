@@ -123,9 +123,15 @@ operator has activated the path with real money or public infrastructure.
       rotates behind the bounded snapshot so it cannot hide a later usable
       candidate. A real child-process barrier test holds one inode in another OS
       process and confirms that online admission preserves the remaining entry
-      for provider-local reservation. The 2026-07-28 focused Linux Rust 1.94.1
-      closeout passed 54/54 hint-pool tests; full-matrix and pushed-CI evidence
-      remain separate below.
+      for provider-local reservation. Capacity, durable reservation, legacy,
+      generation, staged and reconciliation inode locks now use explicit-unlock
+      guards, so a forked child cannot retain a released open-file-description
+      lock merely by inheriting a descriptor. Operation errors remain primary;
+      success followed by unlock failure fails closed. The 2026-07-28 focused
+      Linux Rust 1.94.1 closeout passed the resulting 56/56 hint-pool tests five
+      times under default parallelism and once single-threaded, plus warnings-
+      denied runtime-lib clippy. Full-matrix and pushed-CI evidence remain
+      separate below.
 - [x] Unified-server process-wide connection and authorization semaphores,
       WebSocket handshake and connection-idle timeouts, a 512 KiB frame/message
       limit, a 16 MiB per-request chunk-reassembly limit and a 64 MiB
@@ -144,10 +150,10 @@ operator has activated the path with real money or public infrastructure.
       only accepted pending application frame is the exact encrypted canonical
       `HarmonyHintsV2` request for the grant-bound database. The 2026-07-28
       focused closeout passed 64/64 `unified_server` unit tests and repeated the
-      real Harmony pool process E2E three times successfully; this focused
-      evidence is not the still-pending final complete matrix. Configurable
-      limits have bounded CLI ranges and saturation fails before additional
-      work.
+      real Harmony pool process E2E three times successfully. The subsequent
+      final pinned-Linux matrix passed the current 64/64 server suite, 56/56
+      hint-pool suite and Harmony process E2E 1/1. Configurable limits have
+      bounded CLI ranges and saturation fails before additional work.
 - [x] Verification/tree-top preflight uses a separate fixed per-connection
       budget of 32 actual encoded WebSocket messages and 16 MiB. Chunked
       responses reserve the whole group before first egress; exhaustion is
@@ -386,8 +392,20 @@ operator has activated the path with real money or public infrastructure.
       production deploy job requires a separate manual dispatch selected on
       `main` with `confirm_production_deploy=true`. That run rebuilds/retests
       the selected main ref rather than promoting an earlier push artifact.
-      This is build hardening only; no deployment was triggered or authorized
-      here.
+      A lockfile-pinned YAML 1.2 semantic regression guard runs after `npm ci`
+      and enforces that exact condition, the boolean-default-false input,
+      `needs: build`, absence of `always()`, the protected `github-pages`
+      environment, and exactly one Pages-write, OIDC-write, configure and deploy
+      action, all confined to that job. Its strict schema rejects
+      anchors/aliases/merge keys, `write-all`, Actions-write permissions,
+      reusable-workflow delegation, extra jobs and sibling workflows outside
+      the exact contents-read permission boundary; every workflow change
+      triggers Payment CI. The Pages build runs the same guard. Its fail-closed
+      truth table and Unicode-escape controls run there. This static/default-
+      `GITHUB_TOKEN` guard cannot exclude dispatch by an external PAT or GitHub
+      App token; credential governance and mutable repository/environment
+      policy remain deployment gates. No deployment was triggered or
+      authorized here.
 
 ## What the tests currently prove
 
@@ -413,8 +431,9 @@ operator has activated the path with real money or public infrastructure.
       local claim, wrong-provider rejection before transport, and the real
       issuer-service ExactReplay-to-provider-local-claim boundary. They also use
       binding `amount = 1` with clearing `accepted_value = 10` to prove the
-      fields are independent. These are focused results, not the pending full
-      local matrix or pushed CI.
+      fields are independent. The focused results were subsequently included
+      in the passing final pinned-Linux package matrix; pushed CI remains a
+      separate per-commit merge gate.
 - [x] Fake-Lightning backend, quote/claim state machines, issuer stores,
       clearing/settlement models and Core Lightning RPC mapping have
       deterministic no-funds tests.
@@ -426,8 +445,9 @@ operator has activated the path with real money or public infrastructure.
       outcome-unknown/restart exact replay, independent pending-floor rollback,
       terminal predecessor chaining and concurrent one-economic-effect submit.
       These statements describe the pre-settlement-v2 focused evidence. The
-      current payout-store/worker tree still needs its fresh complete local run;
-      pushed GitHub CI remains authoritative before merge.
+      current payout-store/worker tree is included in the final passing 27-
+      package aggregate and warnings-denied Payment clippy run; pushed GitHub
+      CI remains authoritative before merge.
 - [x] Two no-funds loopback tests launch independent `unified_server` provider
       processes with distinct method keys and durable stores, then exercise
       real WebSocket, ephemeral-bound secure-channel, exact signed
@@ -450,11 +470,10 @@ operator has activated the path with real money or public infrastructure.
       owner-only test file, while ordinary WebPKI plus the signed endpoint/pin
       tuple remain mandatory. Default builds reject its CLI flag; release
       profiles reject the feature at build-script and source-cfg boundaries,
-      including when debug assertions are forced on. A coordinated local branch
-      run of this exact process cell passed before the final Harmony-only gate
-      refinements. It is therefore real historical execution evidence, not a
-      final-current-tree claim; rerun it in the final coordinated matrix and
-      require pushed CI before merge.
+      including when debug assertions are forced on. The final coordinated
+      current-tree Linux matrix passed this exact process cell 1/1 plus its
+      warnings-denied clippy and default-CLI/release-feature guards. Pushed CI
+      remains required before merge.
       It remains `NoSevHost` deterministic local evidence, not production
       identity, proof-chain, independent rollback-floor or external
       public-WebPKI mint evidence.
@@ -498,10 +517,11 @@ operator has activated the path with real money or public infrastructure.
       exact ARC presentation for durable rejection.
       `NoSevHost`, the synthetic report and the all-zero database remain a
       deliberate test boundary, not AMD attestation or production-data
-      evidence. The complete-query Free/ARC extension has passed its dedicated
-      local branch run. Because later server changes postdate that run, it
-      remains historical evidence pending the final coordinated browser matrix
-      and pushed CI, not deployed-origin acceptance.
+      evidence. A final isolated-target current-tree rerun passed all three
+      complete-query cases, including Free/experimental-ARC. The companion
+      generated-WASM/real-loopback-issuer case passed 1/1 while its two explicit
+      CLN cases remained skipped by default. Pushed CI remains a separate
+      exact-commit gate; this is not deployed-origin acceptance.
 - [x] Offline CI runs a deterministic, bounded malformed-length/adversarial
       corpus across all public Payment V1 canonical decoders, known provider
       admission opcodes and the strict issuer/mint HTTP response boundary. The
@@ -559,12 +579,11 @@ A historical 2026-07-27 closeout before the later settlement-v2 payout store,
 payout worker, Signet backup ceremony, browser two-provider harness and extended
 CDK custody-lifecycle case completed the then-current full local command. Its
 exact historical counts remain in `LOCAL_ACCEPTANCE.md`; they are **not** a
-current-tree result and must not be copied into release evidence. The current
-tree requires a fresh full run and pushed GitHub CI before merge. The extended
-CDK case has since passed a final current-tree opt-in run; the dedicated
-two-provider Playwright harness has a separate earlier branch pass. Both are
-recorded in `LOCAL_ACCEPTANCE.md` without being folded into an aggregate
-full-suite count.
+current-tree result and must not be copied into release evidence. The final
+current-tree pinned-Linux Rust/process matrix, extended CDK case and isolated-
+target Web/browser closeout have since passed. They are recorded separately in
+`LOCAL_ACCEPTANCE.md` so repeated focused stages are not folded into a false
+unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 
 ## Implemented but not production-activated
 
@@ -574,8 +593,13 @@ full-suite count.
       authenticates an explicit loopback Core RPC endpoint with an owner-only
       pinned cookie, checks the exact default challenge/genesis, verifies CLN
       role/channel/gossip topology and directional minimum-liquidity estimates,
-      and binds a fresh backup receipt to the current SCB digest. Its command
-      runner is mock-tested against a fixed
+      and binds a fresh backup receipt to the current SCB digest. Atomic receipt
+      writes explicitly unlock the pinned output-parent descriptor on every
+      ordinary success/error path; the primary operation error wins, while a
+      successful write followed by unlock failure fails closed. The current
+      default-parallel admin suite passed 106/106 five times, then 106/106
+      single-threaded with warnings denied. Its command runner is mock-tested
+      against a fixed
       read-only RPC allowlist. It has not yet been run on the final persistent
       Signet hosts and does not replace actual liquidity, payment, restore or
       peer/bootstrap acceptance. The receipt is an operator assertion:
@@ -736,9 +760,11 @@ findings and must not be collapsed into that count.
    dedicated local branch run with proof-bound Merkle preflight, one real
    encrypted DPF query and explicit inclusion/absence verification. The
    feature-gated Standard-Cashu/Free process cell and the real Harmony V2Full
-   lifecycle process test have also passed dedicated local branch runs. Later
-   edits mean all three still require the final coordinated matrix and pushed
-   CI. Production trust-chain, a browser-to-Standard-Cashu-provider join,
+   lifecycle process test also passed the final coordinated current-tree Linux
+   matrix. The isolated current-tree browser rerun passed the real-issuer case
+   1/1 and complete-query topology 3/3. Pushed CI remains a per-commit merge
+   gate. Production trust-chain, a
+   browser-to-Standard-Cashu-provider join,
    Harmony query, Onion and TEE-ORAM process boundaries remain open.
 6. **External dependency canaries.** Recorded runs exist for the earlier
    two-node local CLN runner, the disposable CDK runner, and one short-lived
@@ -764,8 +790,16 @@ findings and must not be collapsed into that count.
    regression test and local production-bundle browser smoke are complete.
    The local dependency audit found no vulnerability and four documented
    allowed upstream/vendor warnings; their ownership and upgrade plan remain
-   explicit residual work. The completed formal lock is not a substitute for
-   these implementation and deployment reviews.
+   explicit residual work. A read-only 2026-07-28 GitHub check found no classic
+   branch protection or repository ruleset on `main`; the `github-pages`
+   environment separately allowed only `main`. This merge is manually gated on
+   its final head, but production readiness requires a reviewed required-check/
+   no-direct-push ruleset, a Pages required reviewer, revalidation of the Pages
+   build mode/default workflow permissions, and review of PAT/GitHub-App
+   credentials able to dispatch Actions. No repository setting was changed
+   without separate operator approval. The
+   completed formal lock is not a substitute for these implementation and
+   deployment reviews.
 
 The current formal Payment V1 lock is not a blocker. Any future change to the
 wire-shape contract, however, invalidates the pinned EasyCrypt manifest and

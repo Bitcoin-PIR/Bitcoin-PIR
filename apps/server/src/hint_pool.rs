@@ -152,7 +152,13 @@ struct DurablePoolReservation {
     /// reserve the artifact only after this handle is dropped or the owner
     /// process crashes. Keeping the ready name in place makes an AUTH reject a
     /// zero-write operation: no rename or directory fsync is attacker-driven.
-    _lock: File,
+    lock: PoolInodeLockGuard,
+}
+
+impl DurablePoolReservation {
+    fn finish<T>(self, operation_result: io::Result<T>) -> io::Result<T> {
+        self.lock.finish(operation_result)
+    }
 }
 
 /// Compatibility representation for a reservation artifact created by an
@@ -161,7 +167,13 @@ struct DurablePoolReservation {
 struct LegacyReservedPoolArtifact {
     ready_path: PathBuf,
     reserved_path: PathBuf,
-    _lock: File,
+    lock: PoolInodeLockGuard,
+}
+
+impl LegacyReservedPoolArtifact {
+    fn finish<T>(self, operation_result: io::Result<T>) -> io::Result<T> {
+        self.lock.finish(operation_result)
+    }
 }
 
 /// An entry reserved before credential verification. Dropping an unfinished
@@ -192,15 +204,16 @@ impl PoolReservation {
                 .ready_path
                 .parent()
                 .ok_or_else(|| invalid_data("ready pool artifact has no parent"))?;
-            let _capacity_lock = lock_pool_capacity(parent)?;
-            let current = open_private_pool_file(&durable.ready_path, false)?;
-            if !open_files_have_same_identity(&durable._lock, &current)? {
-                return Err(invalid_data(
-                    "ready pool artifact identity changed during authorization",
-                ));
-            }
-            std::fs::remove_file(&durable.ready_path)?;
-            sync_after_unlink(parent)
+            with_pool_capacity_lock(parent, || {
+                let current = open_private_pool_file(&durable.ready_path, false)?;
+                if !open_files_have_same_identity(durable.lock.file(), &current)? {
+                    return Err(invalid_data(
+                        "ready pool artifact identity changed during authorization",
+                    ));
+                }
+                std::fs::remove_file(&durable.ready_path)?;
+                sync_after_unlink(parent)
+            })
         } else {
             Ok(())
         };
@@ -208,7 +221,10 @@ impl PoolReservation {
         // Once unlink succeeded, never let Drop recreate an ambiguously
         // consumed artifact. A directory-fsync failure is fail-closed and the
         // still-unexposed in-memory entry is discarded.
-        self.durable.take();
+        let sync_result = match self.durable.take() {
+            Some(durable) => durable.finish(sync_result),
+            None => sync_result,
+        };
         let mut entry = self.entry.take().expect("unfinished reservation has entry");
         entry.persisted_path = None;
         self.finish_local_reservation(None);
@@ -233,7 +249,15 @@ impl PoolReservation {
         }
         // Releasing the inode lock is the complete durable rollback. The
         // ready name was never changed before credential verification.
-        self.durable.take();
+        let unlock_result = match self.durable.take() {
+            Some(durable) => durable.finish(Ok(())),
+            None => Ok(()),
+        };
+        if let Err(error) = unlock_result {
+            self.finish_local_reservation(None);
+            self.finalized = true;
+            return Err(error);
+        }
         let restored = self.finish_local_reservation(Some(entry));
         self.finalized = true;
         Ok(restored)
@@ -262,8 +286,8 @@ impl Drop for PoolReservation {
         if self.finalized {
             return;
         }
-        // Lock release plus local requeue cannot perform filesystem I/O and is
-        // therefore safe on malformed-auth and disconnect paths.
+        // Explicit inode unlock plus local requeue do not mutate filesystem
+        // namespace or durable state on malformed-auth and disconnect paths.
         let _ = self.restore_inner();
     }
 }
@@ -642,7 +666,7 @@ impl Drop for LocalGenerationClaim {
 
 struct DiskGenerationClaim {
     path: PathBuf,
-    _lock: File,
+    lock: PoolInodeLockGuard,
     active: bool,
 }
 
@@ -651,12 +675,27 @@ impl DiskGenerationClaim {
         if !self.active {
             return Ok(());
         }
-        std::fs::remove_file(&self.path)?;
-        if let Some(parent) = self.path.parent() {
-            sync_directory(parent)?;
+        let mut path_removed = false;
+        let operation_result = match std::fs::remove_file(&self.path) {
+            Ok(()) => {
+                path_removed = true;
+                if let Some(parent) = self.path.parent() {
+                    sync_directory(parent)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                path_removed = true;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        };
+        if path_removed {
+            self.active = false;
         }
-        self.active = false;
-        Ok(())
+        let unlock_result = self.lock.release();
+        finish_pool_lock_operation(operation_result, unlock_result, |error| error)
     }
 }
 
@@ -669,6 +708,8 @@ impl Drop for DiskGenerationClaim {
         if let Some(parent) = self.path.parent() {
             let _ = sync_directory(parent);
         }
+        self.active = false;
+        let _ = self.lock.release();
     }
 }
 
@@ -734,22 +775,23 @@ fn finalize_generated_entry(
             // and create+lock the private staging inode. The potentially very
             // large write and file fsync happen outside this lock so a hot-path
             // reservation is never queued behind hint serialization.
-            let mut staged = {
-                let _capacity_lock = lock_pool_capacity(pool_dir)?;
+            let staged = with_pool_capacity_lock(pool_dir, || {
                 let occupied = disk_capacity_count_locked(pool_dir, Some(&claim.path), None)?;
                 if occupied >= config.pool_size {
                     claim.finish()?;
-                    return Ok(false);
+                    return Ok(None);
                 }
-                StagedPoolPersistence::create(&prepared)?
+                StagedPoolPersistence::create(&prepared).map(Some)
+            })?;
+            let Some(mut staged) = staged else {
+                return Ok(false);
             };
             staged.write_and_sync(&prepared, &entry)?;
 
             // Publication is a second short critical section. A final capacity
             // recheck covers another process publishing while our write was in
             // flight; the generation claim remains live and counted throughout.
-            let persisted_path = {
-                let _capacity_lock = lock_pool_capacity(pool_dir)?;
+            let persisted_path = with_pool_capacity_lock(pool_dir, || {
                 let occupied = disk_capacity_count_locked(
                     pool_dir,
                     Some(&claim.path),
@@ -758,11 +800,14 @@ fn finalize_generated_entry(
                 if occupied >= config.pool_size {
                     staged.discard()?;
                     claim.finish()?;
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let path = staged.publish()?;
                 claim.finish()?;
-                path
+                Ok(Some(path))
+            })?;
+            let Some(persisted_path) = persisted_path else {
+                return Ok(false);
             };
             entry.persisted_path = Some(persisted_path);
             let mut state = state.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -1115,7 +1160,114 @@ fn open_private_pool_file(path: &Path, read_write: bool) -> io::Result<File> {
     Ok(file)
 }
 
-fn lock_pool_capacity(pool_dir: &Path) -> io::Result<File> {
+struct PoolCapacityLockGuard {
+    file: File,
+    locked: bool,
+}
+
+fn finish_pool_lock_operation<T, E>(
+    operation_result: Result<T, E>,
+    unlock_result: io::Result<()>,
+    map_unlock_error: impl FnOnce(io::Error) -> E,
+) -> Result<T, E> {
+    match operation_result {
+        Err(error) => Err(error),
+        Ok(value) => unlock_result.map(|()| value).map_err(map_unlock_error),
+    }
+}
+
+impl PoolCapacityLockGuard {
+    fn new(file: File) -> Self {
+        Self { file, locked: true }
+    }
+
+    fn release(&mut self) -> io::Result<()> {
+        if !self.locked {
+            return Ok(());
+        }
+        self.file
+            .unlock()
+            .map_err(|_| io::Error::other("HarmonyPIR capacity lock release failed"))?;
+        self.locked = false;
+        Ok(())
+    }
+
+    fn finish<T>(self, operation_result: io::Result<T>) -> io::Result<T> {
+        self.finish_with(operation_result, |error| error)
+    }
+
+    fn finish_with<T, E>(
+        mut self,
+        operation_result: Result<T, E>,
+        map_unlock_error: impl FnOnce(io::Error) -> E,
+    ) -> Result<T, E> {
+        let unlock_result = self.release();
+        finish_pool_lock_operation(operation_result, unlock_result, map_unlock_error)
+    }
+}
+
+struct PoolInodeLockGuard {
+    file: File,
+    locked: bool,
+}
+
+impl PoolInodeLockGuard {
+    fn lock(file: File) -> io::Result<Self> {
+        file.lock()?;
+        Ok(Self { file, locked: true })
+    }
+
+    fn try_lock(file: File) -> Result<Self, std::fs::TryLockError> {
+        file.try_lock()?;
+        Ok(Self { file, locked: true })
+    }
+
+    fn file(&self) -> &File {
+        &self.file
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+
+    fn release(&mut self) -> io::Result<()> {
+        if !self.locked {
+            return Ok(());
+        }
+        self.file
+            .unlock()
+            .map_err(|_| io::Error::other("HarmonyPIR pool inode lock release failed"))?;
+        self.locked = false;
+        Ok(())
+    }
+
+    fn finish<T>(mut self, operation_result: io::Result<T>) -> io::Result<T> {
+        let unlock_result = self.release();
+        finish_pool_lock_operation(operation_result, unlock_result, |error| error)
+    }
+}
+
+impl Drop for PoolInodeLockGuard {
+    fn drop(&mut self) {
+        // Long-lived reservation/generation/staging guards reach this path on
+        // cancellation and panic. An unlock failure can retain availability
+        // denial through an inherited descriptor, but never admits an unsafe
+        // second owner.
+        let _ = self.release();
+    }
+}
+
+impl Drop for PoolCapacityLockGuard {
+    fn drop(&mut self) {
+        // This explicit unlock is the panic/forgotten-finish backstop. If it
+        // fails, closing this process's descriptor still cannot make an
+        // unsafe capacity decision; an inherited descriptor can only retain
+        // the lock and fail availability closed.
+        let _ = self.release();
+    }
+}
+
+fn lock_pool_capacity(pool_dir: &Path) -> io::Result<PoolCapacityLockGuard> {
     validate_private_pool_directory(pool_dir, false)?;
     let path = pool_dir.join(CAPACITY_LOCK_FILE);
     let file = match create_private_pool_file(&path) {
@@ -1123,12 +1275,12 @@ fn lock_pool_capacity(pool_dir: &Path) -> io::Result<File> {
         Err(_) => open_private_pool_file(&path, true)?,
     };
     file.lock()?;
-    Ok(file)
+    Ok(PoolCapacityLockGuard::new(file))
 }
 
 /// Hot-path variant: cross-process contention is ordinary overload, so never
 /// block a Tokio worker waiting for the advisory capacity lock.
-fn try_lock_pool_capacity(pool_dir: &Path) -> io::Result<File> {
+fn try_lock_pool_capacity(pool_dir: &Path) -> io::Result<PoolCapacityLockGuard> {
     validate_private_pool_directory(pool_dir, false)?;
     let path = pool_dir.join(CAPACITY_LOCK_FILE);
     let file = match create_private_pool_file(&path) {
@@ -1136,13 +1288,22 @@ fn try_lock_pool_capacity(pool_dir: &Path) -> io::Result<File> {
         Err(_) => open_private_pool_file(&path, true)?,
     };
     match file.try_lock() {
-        Ok(()) => Ok(file),
+        Ok(()) => Ok(PoolCapacityLockGuard::new(file)),
         Err(std::fs::TryLockError::WouldBlock) => Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "HarmonyPIR capacity lock is busy",
         )),
         Err(std::fs::TryLockError::Error(error)) => Err(error),
     }
+}
+
+fn with_pool_capacity_lock<T>(
+    pool_dir: &Path,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let capacity_lock = lock_pool_capacity(pool_dir)?;
+    let operation_result = operation();
+    capacity_lock.finish(operation_result)
 }
 
 fn unique_artifact_suffix() -> String {
@@ -1185,39 +1346,42 @@ fn reserve_pool_file_preserving_ready_floor(
     let parent = ready_path.parent().ok_or_else(|| {
         PoolFileReservationError::Fatal(invalid_data("ready pool artifact has no parent"))
     })?;
-    let _capacity_lock =
+    let capacity_lock =
         try_lock_pool_capacity(parent).map_err(PoolFileReservationError::FloorUnavailable)?;
-    disk_capacity_count_locked(parent, None, None)
-        .map_err(PoolFileReservationError::FloorUnavailable)?;
-    let file = match open_private_pool_file(ready_path, true) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(PoolFileReservationError::SelectedStale)
+    let operation_result = (|| {
+        disk_capacity_count_locked(parent, None, None)
+            .map_err(PoolFileReservationError::FloorUnavailable)?;
+        let file = match open_private_pool_file(ready_path, true) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(PoolFileReservationError::SelectedStale)
+            }
+            Err(error) => return Err(PoolFileReservationError::Fatal(error)),
+        };
+        let reservation = match finish_pool_file_reservation(ready_path, file) {
+            Ok(reservation) => reservation,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return Err(PoolFileReservationError::SelectedLocked)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(PoolFileReservationError::SelectedStale)
+            }
+            Err(error) => return Err(PoolFileReservationError::Fatal(error)),
+        };
+        if minimum_ready_after > 0 {
+            let lockable =
+                lockable_ready_pool_files_locked(parent, Some(ready_path), validated_ready_paths)
+                    .map_err(PoolFileReservationError::FloorUnavailable)?;
+            if lockable < minimum_ready_after {
+                return Err(PoolFileReservationError::FloorUnavailable(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "HarmonyPIR ready-entry floor would be exhausted",
+                )));
+            }
         }
-        Err(error) => return Err(PoolFileReservationError::Fatal(error)),
-    };
-    let reservation = match finish_pool_file_reservation(ready_path, file) {
-        Ok(reservation) => reservation,
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            return Err(PoolFileReservationError::SelectedLocked)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(PoolFileReservationError::SelectedStale)
-        }
-        Err(error) => return Err(PoolFileReservationError::Fatal(error)),
-    };
-    if minimum_ready_after > 0 {
-        let lockable =
-            lockable_ready_pool_files_locked(parent, Some(ready_path), validated_ready_paths)
-                .map_err(PoolFileReservationError::FloorUnavailable)?;
-        if lockable < minimum_ready_after {
-            return Err(PoolFileReservationError::FloorUnavailable(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "HarmonyPIR ready-entry floor would be exhausted",
-            )));
-        }
-    }
-    Ok(reservation)
+        Ok(reservation)
+    })();
+    capacity_lock.finish_with(operation_result, PoolFileReservationError::FloorUnavailable)
 }
 
 /// Count canonical ready names that can be locked now. The caller holds the
@@ -1254,17 +1418,19 @@ fn lockable_ready_pool_files_locked(
                 }
                 Err(error) => return Err(error),
             };
-            match file.try_lock() {
-                Ok(()) => {
-                    let current = match open_private_pool_file(path, false) {
-                        Ok(current) => current,
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                            changed = true;
-                            break;
-                        }
-                        Err(error) => return Err(error),
-                    };
-                    if !open_files_have_same_identity(&file, &current)? {
+            match PoolInodeLockGuard::try_lock(file) {
+                Ok(lock) => {
+                    let identity_result = (|| {
+                        let current = match open_private_pool_file(path, false) {
+                            Ok(current) => current,
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                                return Ok(false)
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        open_files_have_same_identity(lock.file(), &current)
+                    })();
+                    if !lock.finish(identity_result)? {
                         changed = true;
                         break;
                     }
@@ -1288,19 +1454,30 @@ fn finish_pool_file_reservation(
     ready_path: &Path,
     file: File,
 ) -> io::Result<DurablePoolReservation> {
-    file.try_lock()?;
+    let lock = PoolInodeLockGuard::try_lock(file).map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => {
+            io::Error::new(io::ErrorKind::WouldBlock, "ready pool artifact is locked")
+        }
+        std::fs::TryLockError::Error(error) => error,
+    })?;
     // Re-open after taking the inode lock. This rejects a stale descriptor if
     // an older/non-cooperating process removed and replaced the ready name
     // between our first open and lock acquisition.
-    let current = open_private_pool_file(ready_path, false)?;
-    if !open_files_have_same_identity(&file, &current)? {
-        return Err(invalid_data(
-            "ready pool artifact changed before reservation completed",
-        ));
+    let operation_result = (|| {
+        let current = open_private_pool_file(ready_path, false)?;
+        if !open_files_have_same_identity(lock.file(), &current)? {
+            return Err(invalid_data(
+                "ready pool artifact changed before reservation completed",
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = operation_result {
+        return lock.finish(Err(error));
     }
     Ok(DurablePoolReservation {
         ready_path: ready_path.to_path_buf(),
-        _lock: file,
+        lock,
     })
 }
 
@@ -1440,7 +1617,7 @@ fn reconcile_temporary_publishes_locked(
                 Some(ready_path) => is_recoverable_publish_pair(tmp_path, ready_path)?,
                 None => false,
             };
-            if !recoverable {
+            let inode_lock = if !recoverable {
                 let file = match open_private_pool_file(tmp_path, true) {
                     Ok(file) => file,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -1452,22 +1629,31 @@ fn reconcile_temporary_publishes_locked(
                     // name and fail closed instead of bypassing its inode lock.
                     Err(error) => return Err(error),
                 };
-                match file.try_lock() {
-                    Ok(()) => {}
+                match PoolInodeLockGuard::try_lock(file) {
+                    Ok(lock) => Some(lock),
                     Err(std::fs::TryLockError::WouldBlock) => continue,
                     Err(std::fs::TryLockError::Error(error)) => return Err(error),
                 }
-            }
+            } else {
+                None
+            };
             // A recoverable nlink=2 pair becomes a canonical nlink=1 ready
             // artifact. An unlocked private nlink=1 temp is crash residue.
-            match std::fs::remove_file(tmp_path) {
-                Ok(()) => sync_directory(pool_dir)?,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            if recoverable {
-                let ready_path = ready_path.expect("recoverable pair has ready path");
-                let _ = open_private_pool_file(&ready_path, false)?;
+            let operation_result = (|| {
+                match std::fs::remove_file(tmp_path) {
+                    Ok(()) => sync_directory(pool_dir)?,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+                if recoverable {
+                    let ready_path = ready_path.expect("recoverable pair has ready path");
+                    let _ = open_private_pool_file(&ready_path, false)?;
+                }
+                Ok(())
+            })();
+            match inode_lock {
+                Some(lock) => lock.finish(operation_result)?,
+                None => operation_result?,
             }
             mutated = true;
             break;
@@ -1537,14 +1723,15 @@ fn disk_capacity_count_locked(
                     Ok(file) => file,
                     Err(_) => continue,
                 };
-                match file.try_lock() {
-                    Ok(()) => {
+                match PoolInodeLockGuard::try_lock(file) {
+                    Ok(lock) => {
                         let stale = LegacyReservedPoolArtifact {
                             ready_path,
                             reserved_path: path.clone(),
-                            _lock: file,
+                            lock,
                         };
-                        restore_legacy_reserved_pool_file_locked(&stale)?;
+                        let restore_result = restore_legacy_reserved_pool_file_locked(&stale);
+                        stale.finish(restore_result)?;
                         mutated = true;
                         break;
                     }
@@ -1569,13 +1756,14 @@ fn disk_capacity_count_locked(
                         continue;
                     }
                 };
-                match file.try_lock() {
-                    Ok(()) => {
-                        match std::fs::remove_file(path) {
-                            Ok(()) => sync_directory(pool_dir)?,
-                            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                            Err(error) => return Err(error),
-                        }
+                match PoolInodeLockGuard::try_lock(file) {
+                    Ok(lock) => {
+                        let remove_result = match std::fs::remove_file(path) {
+                            Ok(()) => sync_directory(pool_dir),
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                            Err(error) => Err(error),
+                        };
+                        lock.finish(remove_result)?;
                         mutated = true;
                         break;
                     }
@@ -1606,30 +1794,33 @@ fn try_claim_disk_generation(
     pool_dir: &Path,
     target_size: usize,
 ) -> io::Result<Option<DiskGenerationClaim>> {
-    let _capacity_lock = lock_pool_capacity(pool_dir)?;
-    if disk_capacity_count_locked(pool_dir, None, None)? >= target_size {
-        return Ok(None);
-    }
-    for _ in 0..16 {
-        let path = pool_dir.join(format!("{GENERATION_PREFIX}{}", unique_artifact_suffix()));
-        match create_private_pool_file(&path) {
-            Ok(file) => {
-                file.lock()?;
-                sync_directory(pool_dir)?;
-                return Ok(Some(DiskGenerationClaim {
-                    path,
-                    _lock: file,
-                    active: true,
-                }));
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+    with_pool_capacity_lock(pool_dir, || {
+        if disk_capacity_count_locked(pool_dir, None, None)? >= target_size {
+            return Ok(None);
         }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "failed to allocate a unique hint-generation claim",
-    ))
+        for _ in 0..16 {
+            let path = pool_dir.join(format!("{GENERATION_PREFIX}{}", unique_artifact_suffix()));
+            match create_private_pool_file(&path) {
+                Ok(file) => {
+                    let lock = PoolInodeLockGuard::lock(file)?;
+                    if let Err(error) = sync_directory(pool_dir) {
+                        return lock.finish(Err(error));
+                    }
+                    return Ok(Some(DiskGenerationClaim {
+                        path,
+                        lock,
+                        active: true,
+                    }));
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "failed to allocate a unique hint-generation claim",
+        ))
+    })
 }
 
 /// Everything a persisted hint must be bound to before it can be reused.
@@ -1752,94 +1943,96 @@ fn is_pool_state_artifact_name(name: &str) -> bool {
 /// expensive hints.
 fn ensure_pool_directory_binding(pool_dir: &Path, binding: &PoolFileBinding) -> io::Result<()> {
     let expected = binding.marker_bytes()?;
-    let _capacity_lock = lock_pool_capacity(pool_dir)?;
-
-    // Complete/abort only marker publications made by this protocol. Holding
-    // the capacity lock proves no conforming writer can still own these names.
-    let mut removed_marker_tmp = false;
-    for dir_entry in std::fs::read_dir(pool_dir)? {
-        let dir_entry = dir_entry?;
-        let name = dir_entry.file_name();
-        if name
-            .to_string_lossy()
-            .starts_with(BINDING_MARKER_TMP_PREFIX)
-        {
-            match std::fs::remove_file(dir_entry.path()) {
-                Ok(()) => removed_marker_tmp = true,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
+    let capacity_lock = lock_pool_capacity(pool_dir)?;
+    let operation_result = (|| {
+        // Complete/abort only marker publications made by this protocol. Holding
+        // the capacity lock proves no conforming writer can still own these names.
+        let mut removed_marker_tmp = false;
+        for dir_entry in std::fs::read_dir(pool_dir)? {
+            let dir_entry = dir_entry?;
+            let name = dir_entry.file_name();
+            if name
+                .to_string_lossy()
+                .starts_with(BINDING_MARKER_TMP_PREFIX)
+            {
+                match std::fs::remove_file(dir_entry.path()) {
+                    Ok(()) => removed_marker_tmp = true,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
             }
         }
-    }
-    if removed_marker_tmp {
-        sync_directory(pool_dir)?;
-    }
+        if removed_marker_tmp {
+            sync_directory(pool_dir)?;
+        }
 
-    let marker_path = pool_dir.join(BINDING_MARKER_FILE);
-    match open_private_pool_file(&marker_path, false) {
-        Ok(mut marker_file) => {
-            if marker_file.metadata()?.len() != BINDING_MARKER_LEN as u64 {
+        let marker_path = pool_dir.join(BINDING_MARKER_FILE);
+        match open_private_pool_file(&marker_path, false) {
+            Ok(mut marker_file) => {
+                if marker_file.metadata()?.len() != BINDING_MARKER_LEN as u64 {
+                    return Err(invalid_data(
+                        "HarmonyPIR pool binding marker length mismatch",
+                    ));
+                }
+                let mut actual = [0u8; BINDING_MARKER_LEN];
+                marker_file.read_exact(&mut actual)?;
+                if actual != expected {
+                    return Err(invalid_data(
+                        "HarmonyPIR pool binding marker does not match this database/backend",
+                    ));
+                }
+                for dir_entry in std::fs::read_dir(pool_dir)? {
+                    let name = dir_entry?.file_name();
+                    if is_legacy_pool_residue_name(&name.to_string_lossy()) {
+                        return Err(invalid_data(
+                            "legacy HarmonyPIR pool residue requires offline migration",
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+
+        for dir_entry in std::fs::read_dir(pool_dir)? {
+            let name = dir_entry?.file_name();
+            if is_pool_state_artifact_name(&name.to_string_lossy()) {
                 return Err(invalid_data(
-                    "HarmonyPIR pool binding marker length mismatch",
+                    "markerless HarmonyPIR pool state requires offline migration or a new directory",
                 ));
             }
+        }
+
+        let tmp_path = pool_dir.join(format!(
+            "{BINDING_MARKER_TMP_PREFIX}{}",
+            unique_artifact_suffix()
+        ));
+        let result = (|| -> io::Result<()> {
+            let mut tmp_file = create_private_pool_file(&tmp_path)?;
+            tmp_file.write_all(&expected)?;
+            tmp_file.sync_all()?;
+            std::fs::hard_link(&tmp_path, &marker_path)?;
+            sync_directory(pool_dir)?;
+            std::fs::remove_file(&tmp_path)?;
+            sync_directory(pool_dir)?;
+            let mut marker_file = open_private_pool_file(&marker_path, false)?;
             let mut actual = [0u8; BINDING_MARKER_LEN];
             marker_file.read_exact(&mut actual)?;
             if actual != expected {
                 return Err(invalid_data(
-                    "HarmonyPIR pool binding marker does not match this database/backend",
+                    "new HarmonyPIR pool binding marker failed readback",
                 ));
             }
-            for dir_entry in std::fs::read_dir(pool_dir)? {
-                let name = dir_entry?.file_name();
-                if is_legacy_pool_residue_name(&name.to_string_lossy()) {
-                    return Err(invalid_data(
-                        "legacy HarmonyPIR pool residue requires offline migration",
-                    ));
-                }
-            }
-            return Ok(());
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+            let _ = sync_directory(pool_dir);
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    for dir_entry in std::fs::read_dir(pool_dir)? {
-        let name = dir_entry?.file_name();
-        if is_pool_state_artifact_name(&name.to_string_lossy()) {
-            return Err(invalid_data(
-                "markerless HarmonyPIR pool state requires offline migration or a new directory",
-            ));
-        }
-    }
-
-    let tmp_path = pool_dir.join(format!(
-        "{BINDING_MARKER_TMP_PREFIX}{}",
-        unique_artifact_suffix()
-    ));
-    let result = (|| -> io::Result<()> {
-        let mut tmp_file = create_private_pool_file(&tmp_path)?;
-        tmp_file.write_all(&expected)?;
-        tmp_file.sync_all()?;
-        std::fs::hard_link(&tmp_path, &marker_path)?;
-        sync_directory(pool_dir)?;
-        std::fs::remove_file(&tmp_path)?;
-        sync_directory(pool_dir)?;
-        let mut marker_file = open_private_pool_file(&marker_path, false)?;
-        let mut actual = [0u8; BINDING_MARKER_LEN];
-        marker_file.read_exact(&mut actual)?;
-        if actual != expected {
-            return Err(invalid_data(
-                "new HarmonyPIR pool binding marker failed readback",
-            ));
-        }
-        Ok(())
+        result
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
-        let _ = sync_directory(pool_dir);
-    }
-    result
+    capacity_lock.finish(operation_result)
 }
 
 fn append_anchor(out: &mut Vec<u8>, anchor: Option<pir_core::cuckoo::HeaderAnchor>) {
@@ -2037,7 +2230,7 @@ struct PreparedPoolPersistence {
 struct StagedPoolPersistence {
     tmp_path: PathBuf,
     path: PathBuf,
-    file: Option<File>,
+    lock: Option<PoolInodeLockGuard>,
     tmp_exists: bool,
 }
 
@@ -2047,14 +2240,13 @@ impl StagedPoolPersistence {
     /// a live out-of-lock write from crash residue.
     fn create(prepared: &PreparedPoolPersistence) -> io::Result<Self> {
         let file = create_private_pool_file(&prepared.tmp_path)?;
-        if let Err(error) = file.lock() {
+        let lock = PoolInodeLockGuard::lock(file).inspect_err(|_| {
             let _ = std::fs::remove_file(&prepared.tmp_path);
-            return Err(error);
-        }
+        })?;
         Ok(Self {
             tmp_path: prepared.tmp_path.clone(),
             path: prepared.path.clone(),
-            file: Some(file),
+            lock: Some(lock),
             tmp_exists: true,
         })
     }
@@ -2067,9 +2259,10 @@ impl StagedPoolPersistence {
         entry: &PoolEntry,
     ) -> io::Result<()> {
         let file = self
-            .file
+            .lock
             .as_mut()
-            .ok_or_else(|| invalid_data("staged pool artifact has no open file"))?;
+            .ok_or_else(|| invalid_data("staged pool artifact has no inode lock"))?
+            .file_mut();
         file.write_all(&prepared.header)?;
         for frame in &entry.index_frames {
             write_lp(file, frame)?;
@@ -2086,38 +2279,60 @@ impl StagedPoolPersistence {
     /// without replacement; the temporary link is then durably removed and
     /// the final inode is revalidated as private and single-link.
     fn publish(mut self) -> io::Result<PathBuf> {
-        let pool_dir = self
-            .path
-            .parent()
-            .ok_or_else(|| invalid_data("pool artifact has no parent"))?;
-        std::fs::hard_link(&self.tmp_path, &self.path)?;
-        sync_directory(pool_dir)?;
-        std::fs::remove_file(&self.tmp_path)?;
-        self.tmp_exists = false;
-        sync_directory(pool_dir)?;
-        let _ = open_private_pool_file(&self.path, false)?;
-        Ok(self.path.clone())
+        let operation_result = (|| {
+            let pool_dir = self
+                .path
+                .parent()
+                .ok_or_else(|| invalid_data("pool artifact has no parent"))?;
+            std::fs::hard_link(&self.tmp_path, &self.path)?;
+            sync_directory(pool_dir)?;
+            std::fs::remove_file(&self.tmp_path)?;
+            self.tmp_exists = false;
+            sync_directory(pool_dir)?;
+            let _ = open_private_pool_file(&self.path, false)?;
+            Ok(self.path.clone())
+        })();
+        if operation_result.is_err()
+            && self.tmp_exists
+            && std::fs::remove_file(&self.tmp_path).is_ok()
+        {
+            self.tmp_exists = false;
+            if let Some(parent) = self.tmp_path.parent() {
+                let _ = sync_directory(parent);
+            }
+        }
+        let lock = self
+            .lock
+            .take()
+            .ok_or_else(|| invalid_data("staged pool artifact has no inode lock"))?;
+        lock.finish(operation_result)
     }
 
     fn discard(mut self) -> io::Result<()> {
-        if !self.tmp_exists {
-            return Ok(());
-        }
-        match std::fs::remove_file(&self.tmp_path) {
-            Ok(()) => {
-                self.tmp_exists = false;
-                let parent = self
-                    .tmp_path
-                    .parent()
-                    .ok_or_else(|| invalid_data("temporary pool artifact has no parent"))?;
-                sync_directory(parent)
+        let operation_result = if !self.tmp_exists {
+            Ok(())
+        } else {
+            match std::fs::remove_file(&self.tmp_path) {
+                Ok(()) => {
+                    self.tmp_exists = false;
+                    let parent = self
+                        .tmp_path
+                        .parent()
+                        .ok_or_else(|| invalid_data("temporary pool artifact has no parent"))?;
+                    sync_directory(parent)
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.tmp_exists = false;
+                    Ok(())
+                }
+                Err(error) => Err(error),
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.tmp_exists = false;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
+        };
+        let lock = self
+            .lock
+            .take()
+            .ok_or_else(|| invalid_data("staged pool artifact has no inode lock"))?;
+        lock.finish(operation_result)
     }
 }
 
@@ -2129,6 +2344,10 @@ impl Drop for StagedPoolPersistence {
         let _ = std::fs::remove_file(&self.tmp_path);
         if let Some(parent) = self.tmp_path.parent() {
             let _ = sync_directory(parent);
+        }
+        self.tmp_exists = false;
+        if let Some(lock) = self.lock.as_mut() {
+            let _ = lock.release();
         }
     }
 }
@@ -2193,15 +2412,10 @@ fn persist_pool_entry(
 ) -> io::Result<PathBuf> {
     ensure_pool_directory_binding(pool_dir, binding)?;
     let prepared = prepare_pool_persistence(pool_dir, binding, entry)?;
-    let mut staged = {
-        let _capacity_lock = lock_pool_capacity(pool_dir)?;
-        StagedPoolPersistence::create(&prepared)?
-    };
+    let mut staged =
+        with_pool_capacity_lock(pool_dir, || StagedPoolPersistence::create(&prepared))?;
     staged.write_and_sync(&prepared, entry)?;
-    {
-        let _capacity_lock = lock_pool_capacity(pool_dir)?;
-        staged.publish()
-    }
+    with_pool_capacity_lock(pool_dir, || staged.publish())
 }
 
 fn read_lp(
@@ -2389,24 +2603,25 @@ struct ReadyPoolSnapshot {
 }
 
 fn open_ready_pool_snapshot(pool_dir: &Path, path: &Path) -> io::Result<Option<ReadyPoolSnapshot>> {
-    let _capacity_lock = lock_pool_capacity(pool_dir)?;
-    disk_capacity_count_locked(pool_dir, None, None)?;
-    match open_private_pool_file(path, false) {
-        Ok(file) => match file.try_lock() {
-            Ok(()) => {
-                file.unlock()?;
-                Ok(Some(ReadyPoolSnapshot { file }))
-            }
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(error)) => Err(error),
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        // Never unlink a ready namespace entry that we could not safely open
-        // and lock. A concurrent AUTH reservation may own the inode even if a
-        // permissions/ACL/link-count fault makes validation fail. Leaving the
-        // name in place fails availability closed and requires operator repair.
-        Err(error) => Err(error),
-    }
+    with_pool_capacity_lock(pool_dir, || {
+        disk_capacity_count_locked(pool_dir, None, None)?;
+        match open_private_pool_file(path, false) {
+            Ok(file) => match file.try_lock() {
+                Ok(()) => {
+                    file.unlock()?;
+                    Ok(Some(ReadyPoolSnapshot { file }))
+                }
+                Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+                Err(std::fs::TryLockError::Error(error)) => Err(error),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            // Never unlink a ready namespace entry that we could not safely open
+            // and lock. A concurrent AUTH reservation may own the inode even if a
+            // permissions/ACL/link-count fault makes validation fail. Leaving the
+            // name in place fails availability closed and requires operator repair.
+            Err(error) => Err(error),
+        }
+    })
 }
 
 fn ready_pool_snapshot_is_current(
@@ -2414,21 +2629,22 @@ fn ready_pool_snapshot_is_current(
     path: &Path,
     snapshot: &ReadyPoolSnapshot,
 ) -> io::Result<bool> {
-    let _capacity_lock = lock_pool_capacity(pool_dir)?;
-    disk_capacity_count_locked(pool_dir, None, None)?;
-    let current = match open_private_pool_file(path, false) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    if !open_files_have_same_identity(&snapshot.file, &current)? {
-        return Ok(false);
-    }
-    match current.try_lock() {
-        Ok(()) => Ok(true),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
-        Err(std::fs::TryLockError::Error(error)) => Err(error),
-    }
+    with_pool_capacity_lock(pool_dir, || {
+        disk_capacity_count_locked(pool_dir, None, None)?;
+        let current = match open_private_pool_file(path, false) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if !open_files_have_same_identity(&snapshot.file, &current)? {
+            return Ok(false);
+        }
+        match PoolInodeLockGuard::try_lock(current) {
+            Ok(lock) => lock.finish(Ok(true)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    })
 }
 
 fn remove_ready_pool_snapshot_if_current(
@@ -2436,26 +2652,30 @@ fn remove_ready_pool_snapshot_if_current(
     path: &Path,
     snapshot: &ReadyPoolSnapshot,
 ) -> io::Result<bool> {
-    let _capacity_lock = lock_pool_capacity(pool_dir)?;
-    disk_capacity_count_locked(pool_dir, None, None)?;
-    let current = match open_private_pool_file(path, false) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(_) => return Ok(false),
-    };
-    if !open_files_have_same_identity(&snapshot.file, &current)? {
-        return Ok(false);
-    }
-    // Cleanup takes only this short final lock; disk reads never hold it. A
-    // concurrent AUTH reservation wins and forces cleanup to leave the name.
-    match current.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
-        Err(std::fs::TryLockError::Error(error)) => return Err(error),
-    }
-    std::fs::remove_file(path)?;
-    sync_directory(pool_dir)?;
-    Ok(true)
+    with_pool_capacity_lock(pool_dir, || {
+        disk_capacity_count_locked(pool_dir, None, None)?;
+        let current = match open_private_pool_file(path, false) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Ok(false),
+        };
+        if !open_files_have_same_identity(&snapshot.file, &current)? {
+            return Ok(false);
+        }
+        // Cleanup takes only this short final lock; disk reads never hold it. A
+        // concurrent AUTH reservation wins and forces cleanup to leave the name.
+        let lock = match PoolInodeLockGuard::try_lock(current) {
+            Ok(lock) => lock,
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        };
+        let remove_result = (|| {
+            std::fs::remove_file(path)?;
+            sync_directory(pool_dir)?;
+            Ok(true)
+        })();
+        lock.finish(remove_result)
+    })
 }
 
 fn load_pool_files_excluding(
@@ -2464,14 +2684,12 @@ fn load_pool_files_excluding(
     pool_size: usize,
     excluded_keys: &std::collections::HashSet<[u8; 16]>,
 ) -> Vec<PoolEntry> {
+    if with_pool_capacity_lock(pool_dir, || {
+        disk_capacity_count_locked(pool_dir, None, None).map(|_| ())
+    })
+    .is_err()
     {
-        let _capacity_lock = match lock_pool_capacity(pool_dir) {
-            Ok(lock) => lock,
-            Err(_) => return Vec::new(),
-        };
-        if disk_capacity_count_locked(pool_dir, None, None).is_err() {
-            return Vec::new();
-        }
+        return Vec::new();
     }
     let read_dir = match std::fs::read_dir(pool_dir) {
         Ok(read_dir) => read_dir,
@@ -2769,19 +2987,70 @@ mod tests {
 
     fn make_legacy_reserved_artifact(ready_path: &Path) -> LegacyReservedPoolArtifact {
         let parent = ready_path.parent().unwrap();
-        let _capacity_lock = lock_pool_capacity(parent).unwrap();
-        let file = open_private_pool_file(ready_path, true).unwrap();
-        file.lock().unwrap();
-        let file_name = ready_path.file_name().unwrap().to_string_lossy();
-        let reserved_path =
-            parent.join(format!("{file_name}.reserved.{}", unique_artifact_suffix()));
-        std::fs::rename(ready_path, &reserved_path).unwrap();
-        sync_directory(parent).unwrap();
-        LegacyReservedPoolArtifact {
-            ready_path: ready_path.to_path_buf(),
-            reserved_path,
-            _lock: file,
-        }
+        with_pool_capacity_lock(parent, || {
+            let file = open_private_pool_file(ready_path, true)?;
+            let lock = PoolInodeLockGuard::lock(file)?;
+            let operation_result = (|| {
+                let file_name = ready_path.file_name().unwrap().to_string_lossy();
+                let reserved_path =
+                    parent.join(format!("{file_name}.reserved.{}", unique_artifact_suffix()));
+                std::fs::rename(ready_path, &reserved_path)?;
+                sync_directory(parent)?;
+                Ok(reserved_path)
+            })();
+            match operation_result {
+                Ok(reserved_path) => Ok(LegacyReservedPoolArtifact {
+                    ready_path: ready_path.to_path_buf(),
+                    reserved_path,
+                    lock,
+                }),
+                Err(error) => lock.finish(Err(error)),
+            }
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn pool_lock_finish_preserves_primary_error_and_fails_closed_on_unlock_error() {
+        let primary = io::Error::new(io::ErrorKind::InvalidData, "primary-operation-failed");
+        let unlock = io::Error::other("HarmonyPIR capacity lock release failed");
+        let error = finish_pool_lock_operation(Err::<(), _>(primary), Err(unlock), |error| error)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "primary-operation-failed");
+
+        let unlock = io::Error::other("HarmonyPIR capacity lock release failed");
+        let error = finish_pool_lock_operation(Ok(()), Err(unlock), |error| error).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "HarmonyPIR capacity lock release failed");
+    }
+
+    #[test]
+    fn capacity_and_inode_guards_release_on_success_error_and_drop_paths() {
+        let dir = TestDir::new();
+
+        lock_pool_capacity(&dir.0).unwrap().finish(Ok(())).unwrap();
+        let primary = io::Error::new(io::ErrorKind::InvalidData, "primary-operation-failed");
+        let error = lock_pool_capacity(&dir.0)
+            .unwrap()
+            .finish(Err::<(), _>(primary))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        drop(lock_pool_capacity(&dir.0).unwrap());
+        lock_pool_capacity(&dir.0).unwrap().finish(Ok(())).unwrap();
+
+        let inode_path = dir.0.join("guard-test-inode");
+        drop(create_private_pool_file(&inode_path).unwrap());
+        let lock_inode = || {
+            let file = open_private_pool_file(&inode_path, true).unwrap();
+            PoolInodeLockGuard::lock(file).unwrap()
+        };
+        lock_inode().finish(Ok(())).unwrap();
+        let primary = io::Error::new(io::ErrorKind::InvalidData, "primary-operation-failed");
+        let error = lock_inode().finish(Err::<(), _>(primary)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        drop(lock_inode());
+        lock_inode().finish(Ok(())).unwrap();
     }
 
     #[test]
@@ -3652,7 +3921,10 @@ mod tests {
             std::env::var_os("BITCOINPIR_HINT_POOL_LOCK_PROBE_EXPECT_BLOCKED").is_some();
         let file = open_private_pool_file(Path::new(&path), true).unwrap();
         let blocked = match file.try_lock() {
-            Ok(()) => false,
+            Ok(()) => {
+                file.unlock().unwrap();
+                false
+            }
             Err(std::fs::TryLockError::WouldBlock) => true,
             Err(std::fs::TryLockError::Error(error)) => panic!("lock probe failed: {error}"),
         };

@@ -184,6 +184,8 @@ if cargo check --locked --offline --release -p runtime \
   echo "payment-v1-local-check: unsafe query logging compiled in release mode" >&2
   exit 1
 fi
+# The backticks are literal compiler-diagnostic bytes, not shell syntax.
+# shellcheck disable=SC2016
 grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' \
   "$test_root_release_log" >/dev/null
 if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release \
@@ -192,6 +194,8 @@ if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release 
   echo "payment-v1-local-check: unsafe query logging compiled in assertions-enabled release mode" >&2
   exit 1
 fi
+# The backticks are literal compiler-diagnostic bytes, not shell syntax.
+# shellcheck disable=SC2016
 grep -F 'feature `test-only-unsafe-query-logging` is restricted to Cargo' \
   "$test_root_release_log" >/dev/null
 rm -f -- "$test_root_release_log"
@@ -269,6 +273,8 @@ fi
 node --check scripts/payment-v1-nostr-readback.mjs
 node --test scripts/payment-v1-nostr-readback.test.mjs
 node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
+node --check scripts/payment-v1-pages-deploy-gate.mjs
+node scripts/payment-v1-pages-deploy-gate.mjs
 
 echo "[7/9] warnings denied in dedicated Payment V1 crates and tools"
 cargo clippy --locked --offline --all-targets --no-deps \

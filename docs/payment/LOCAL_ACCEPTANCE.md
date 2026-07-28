@@ -14,13 +14,12 @@ settlement-v2 SQLite adapter, no-funds payout worker, Signet backup-receipt
 ceremony, browser/two-issuer/two-provider harness and the extended CDK custody
 spend case. They remain historical evidence for the exact older tree only. Do
 not report their aggregate counts as current. The extended CDK lifecycle has
-since passed a final current-tree opt-in run recorded below, as has the forced
-two-hop three-node CLN runner. The complete-query browser harness and
-feature-gated Standard-Cashu process cell have dedicated earlier local branch
-runs. The latest Harmony-focused closeout and focused shared-redeem/
-clone-fencing P0 closeout are recorded separately below. A fresh final full
-local run and pushed CI are still required; none of the CDK, CLN, focused
-Harmony or focused P0 results is an aggregate current-tree claim.
+since passed a final current-tree opt-in run, as has the forced two-hop three-
+node CLN runner. The final pinned-Linux Rust/process matrix and isolated-target
+Web/browser closeout are recorded separately below, as are the focused Harmony
+and shared-redeem/clone-fencing results. Exact-head pushed CI remains a distinct
+merge gate; no local result is production-network, deployed-origin or real-
+funds acceptance.
 
 ## Prerequisites
 
@@ -32,7 +31,11 @@ Harmony or focused P0 results is an aggregate current-tree claim.
   package with Cargo locked and offline before TypeScript. The local script
   checks `wasm-pack` directly and fails closed if `wasm-bindgen` is absent or
   incompatible; it does not install or silently replace either tool;
-- have `web/node_modules` populated from the pinned lockfile before full mode;
+- have `web/node_modules` populated by `npm ci` from the pinned lockfile before
+  full mode; the static Pages guard loads its exact YAML parser from that
+  dependency boundary, while the same install supplies the remaining Web and
+  Playwright dependencies. Quick mode exits before this guard and does not need
+  `node_modules`;
 - have the Playwright-pinned Chromium runtime installed before full mode
   (`cd web && npx playwright install chromium` installs it separately; the
   acceptance script never downloads a browser);
@@ -178,7 +181,22 @@ but the deploy job is skipped. Production publication requires a separate
 manual `workflow_dispatch` selected on `main` with
 `confirm_production_deploy=true`, after the operator approval required by this
 runbook. That manual run rebuilds and retests the exact selected `main` ref; it
-does not promote the artifact from an earlier push run. Newly used
+does not promote the artifact from an earlier push run. After lockfile-pinned
+`npm ci`, Payment CI and the Pages build execute the YAML 1.2 semantic
+`payment-v1-pages-deploy-gate.mjs` guard. It requires the exact
+manual/main/boolean condition, `needs: build`, no `always()` override, the
+protected `github-pages` environment, and unique Pages/OIDC write permissions
+plus configure/deploy actions confined to that job. It rejects
+anchors/aliases/merge keys, `write-all`, Actions-write permissions, reusable-
+workflow delegation, extra jobs and any sibling workflow outside the exact
+contents-read permission boundary, while all workflow changes trigger Payment
+CI; decoded Unicode-escape controls and the fail-closed trigger truth table run
+internally. This is a repository-static/default-`GITHUB_TOKEN` boundary. It
+cannot exclude an external PAT or GitHub App token invoking the Actions API, so
+repository default workflow permissions, rulesets, credential governance,
+Pages build mode and the mutable environment policy (including required
+reviewers and main-only deployment) must all be rechecked before publication.
+Newly used
 workflow actions are exact-SHA pinned, Node is fixed to supported LTS
 `24.18.0`, and the Payment/Web path filters include the toolchain, vendor and
 trust inputs needed by the generated WASM. A Payment/security UI change cannot
@@ -378,16 +396,22 @@ cargo test --locked --offline -p runtime \
   --test payment_v1_harmony_pool_process_e2e
 ```
 
-The first two commands passed 54/54 hint-pool tests and 64/64
-`unified_server` tests. The one-case real provider-process lifecycle E2E passed
-three consecutive invocations, and the corresponding selected server clippy
-targets passed with `-D warnings`. This focused record does not replace the
-pending final complete local matrix or pushed GitHub CI.
+The original closeout passed 54/54 hint-pool tests and 64/64 `unified_server`
+tests. A later full-matrix run exposed fork/exec descriptor-inheritance
+contention, after which capacity and inode locks gained explicit-unlock guards.
+The resulting current suite passed 56/56 five times under default parallelism
+and 56/56 single-threaded, plus warnings-denied runtime-lib clippy. The one-case
+real provider-process lifecycle E2E passed three consecutive focused
+invocations and then 1/1 in the final pinned-Linux matrix. The repeated results
+remain separately identified rather than being folded into a false unique
+aggregate count.
 
 The focused coverage includes: mmap ownership through worker shutdown; exact
 pool binding and conservative reconciliation; non-blocking capacity-lock
 contention; rejection of corrupt/unvalidated floor surplus; rotation of a
 peer-locked queue head; a real child-process barrier proving the online floor;
+explicit capacity/durable/generation/staged/reconciliation inode unlock with
+primary-error precedence and success-plus-unlock-error fail-closed behavior;
 grant/disconnect/first-dispatch/restart and replaced-inode fail-closed behavior;
 and the immutable post-grant dispatch window. That window starts only after the
 complete encrypted `AUTH_GRANTED` frame is written and flushed, bounds pending
@@ -401,6 +425,18 @@ The online floor counts only fully validated, ready paths in the current local
 a successful online reservation from taking the final such entry at that
 instant; it does not reserve that entry for a particular provider-local caller
 or prove fairness, priority or immediate admission.
+
+### 2026-07-28 focused operator-receipt lock closeout
+
+The full `bpir-admin` suite passed 106/106 five times under default parallelism,
+then 106/106 single-threaded; the package's warnings-denied clippy gate also
+passed. Atomic backup-receipt writes now explicitly release the pinned parent
+directory lock after every ordinary success/error path. A primary operation
+error is never hidden by an unlock error; a successful operation followed by an
+unlock failure fails closed. Immediate third-write reuse is covered. The suite
+does not yet contain a deterministic child that holds an inherited duplicate
+descriptor across a fork barrier, so that stronger regression remains a P2
+test improvement rather than a production activation claim.
 
 ### 2026-07-28 focused shared-redeem and clone-fencing P0 closeout
 
@@ -432,8 +468,59 @@ These tests exercise the low-level retained-identical-proof recovery API. They
 do not authorize the official browser to retain or automatically retry a shared
 redeem presentation: Web deletes/burns it before send. If local delivery has
 committed and `AUTH_GRANTED` is lost, the entitlement stays consumed. This is
-focused local evidence only; the aggregate full command and pushed CI remain
-pending.
+focused local evidence only. The same code was subsequently covered by the
+passing final pinned-Linux aggregate; pushed CI remains a separate per-commit
+merge gate.
+
+### 2026-07-28 final pinned-Linux Rust/process matrix
+
+A clean Rust 1.94.1 Docker target ran the final current tree offline with no
+external payment network, funds or remote service. Its 27-package aggregate
+reported 1294 passed and 41 explicit opt-in/documentation ignored cases. The
+dedicated stages additionally passed BAT 1/1, ARC 14/14 plus two doc tests,
+warnings-denied Payment clippy, 22 fake-Lightning/debug tests, 84 bounded
+adversarial/rollback tests, hint pool 56/56, `unified_server` 64/64 and the
+debug parser 1/1.
+
+Real loopback process stages passed direct receipt 2/2, five-method 1/1,
+Harmony 1/1, remote rollback-root/provider/issuer 1/1 each and strict-TLS
+Standard Cashu 1/1. Release guards rejected test WebPKI roots in five
+configurations, fake Lightning in three and unsafe query logging in two. CDK
+compile-only coverage, the two-provider x five-workload x five-method
+`funds_capable=false` fixture, and CDK/CLN runner validation also passed. The
+repeated dedicated stages bring the non-unique summary total to 1546 passed;
+that number must not be presented as a unique test count. All 16 original logs
+were scanned for failure and payment/key-secret markers, SHA-256 inventoried
+and retained outside Git.
+
+This matrix proves the stated local Rust/process and build-guard boundaries.
+It is not a public Lightning/Cashu/Nostr, production attestation/database,
+deployed-origin browser or real-funds result, and it does not replace pushed CI
+for the exact candidate commit.
+
+### 2026-07-28 final Web/browser closeout
+
+Strict TypeScript, the production bundle plus CSP verifier, and the full unit
+suite passed with 348 tests and two intentional skips. The corrected cross-tab
+policy-checkpoint test passed 100 consecutive focused runs; 25 complete
+parallel Vitest runs each passed the same 348/2 boundary. The real Chromium
+vault suite passed 4/4.
+
+The current generated-WASM/real-loopback-issuer boundary passed its one default
+no-funds case; the two CLN-only cases were intentionally skipped. The browser/
+two-issuer/two-provider boundary passed 3/3, covering direct/BAT consumption,
+cross-provider rejection and Free/experimental-ARC through one verified DPF/
+Merkle query. The first real-issuer attempt timed out before any browser
+assertion or service start because macOS indexing stalled a workspace-target
+compile. An offline, non-incremental, single-job prebuild in an owner-private
+isolated target completed, both suites then passed, their children exited, and
+the exact temporary target was removed. This was a local build-cache incident,
+not a protocol failure.
+
+The semantic Pages gate, exact `yaml@2.9.0` dependency check, diff check and
+production-dependency npm audit also passed; the audit reported zero
+vulnerabilities. These local results do not replace exact-head CI or deployed-
+origin/manual acceptance.
 
 The exact `--no-opt` package generated locally on 2026-07-26 contained a
 `pir_sdk_wasm_bg.wasm` of 3,600,060 bytes raw and 1,195,176 bytes with gzip.
@@ -465,11 +552,11 @@ the complete vendor tree as an incidental Payment change.
 
 | Method | Focused command/boundary | What it proves | What it does not prove |
 |---|---|---|---|
-| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through the real provider process plus canonical Free authorization at every backend gate; the Chromium variant additionally joins an exact signed quota-1/window-3600 IP-rate-limited offer and leakage disclosure, zero invoice/issuer requests, durable same-provider rejection, independent provider-1 ARC admission and verified DPF/Merkle execution; its dedicated local branch run is historical pending the final coordinated rerun | public-IP attribution behind a real proxy, a generated-browser PoW case, or production DDoS resistance |
+| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through the real provider process plus canonical Free authorization at every backend gate; the Chromium variant additionally joins an exact signed quota-1/window-3600 IP-rate-limited offer and leakage disclosure, zero invoice/issuer requests, durable same-provider rejection, independent provider-1 ARC admission and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | public-IP attribution behind a real proxy, a generated-browser PoW case, or production DDoS resistance |
 | Direct BOLT11 receipt | `cargo test --offline -p pir-lightning-backend`, issuer lifecycle tests, `direct_receipt_production_committer_spend_survives_store_restart`, and optional `scripts/payment-v1-cln-regtest-e2e.sh --acknowledge-local-regtest-only` | fake lifecycle/state tests, signed receipt admission and replay rejection across ProviderStore restart, plus a real local CLN socket and generated-WASM acquisition path; the final current-tree opt-in run passed the forced payer -> router -> issuer route and joined verified provider queries | a public-network or real-value wallet payment, production ingress, or production Lightning operations |
-| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated `payment_v1_standard_cashu_process_e2e` command below | exact swap/recovery/grant-to-custody state machine, finite exposure/export/NUT-07 boundaries, generated-JS/WASM import plus real-CDK NUT-03/NUT-12, and a strict-TLS mint with signed endpoint/pin through a real Cashu provider, independent Free peer, two secure channels, DPF/Merkle, restart/replay and wrong-CA/pin/offline failures; the joined CDK boundary passed a final current-tree run, while the provider-process cell remains historical pending the final coordinated matrix | one same-run browser-to-provider topology, an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
+| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated `payment_v1_standard_cashu_process_e2e` command below | exact swap/recovery/grant-to-custody state machine, finite exposure/export/NUT-07 boundaries, generated-JS/WASM import plus real-CDK NUT-03/NUT-12, and a strict-TLS mint with signed endpoint/pin through a real Cashu provider, independent Free peer, two secure channels, DPF/Merkle, restart/replay and wrong-CA/pin/offline failures; both the joined CDK boundary and provider-process cell passed final current-tree runs | one same-run browser-to-provider topology, an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
 | Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, and `payment_v1_methods_process_e2e` | real blind/DLEQ/unblind proof through a real provider process and provider-local durable BAT spend/restart rejection | a public/shared Cashu service or production key custody |
-| ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | real draft-01 issuance/presentation through a real provider process plus nonce/tag persistence and restart rejection; the Chromium variant additionally joins generated-WASM local issuance, persist-before-release, real ProviderStore replay rejection and verified DPF/Merkle execution; its dedicated local branch run is historical pending the final coordinated rerun | independent cryptographic review, complete IETF protocol interoperability, browser-driven provider restart, or permission to advertise ARC as stable |
+| ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | real draft-01 issuance/presentation through a real provider process plus nonce/tag persistence and restart rejection; the Chromium variant additionally joins generated-WASM local issuance, persist-before-release, real ProviderStore replay rejection and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | independent cryptographic review, complete IETF protocol interoperability, browser-driven provider restart, or permission to advertise ARC as stable |
 
 The cross-product test is:
 
@@ -559,10 +646,10 @@ The private CA hook exists only under the named debug-only feature. Its root
 must be an owner-only bounded file; normal WebPKI chain, hostname, time and the
 signed SPKI pin remain mandatory. Default `unified_server` builds reject the
 test-root CLI flag, and release compilation with the feature is forbidden. The
-test source and CI commands are present. A dedicated local branch run passed
-before the final Harmony-only server-gate edits; rerun it in the final
-coordinated matrix and require pushed CI. The test uses deterministic public
-material and `NoSevHost`; it does not prove an
+test source and CI commands are present. The final pinned-Linux current-tree
+matrix passed the process case 1/1, warnings-denied clippy and ordinary-CLI/
+release-feature rejection guards. The test uses deterministic public material
+and `NoSevHost`; it does not prove an
 external public-WebPKI mint, production server identity/attestation or an
 independent production rollback floor.
 
@@ -932,9 +1019,9 @@ Raw outgoing WebSocket ciphertext absence is only a plaintext-regression check;
 the protocol structure and minimized provider logs carry the stronger boundary.
 On 2026-07-27 the preceding admission-only revision passed both Chromium cases
 (`2 passed`). The complete-query plus Free/experimental-ARC extension later
-passed its dedicated local branch run. Because subsequent server edits postdate
-that run, repeat it in the final coordinated browser matrix and require pushed
-CI; the dated result is not a final-current-tree or deployed-origin claim.
+passed its dedicated local branch run. The final 2026-07-28 isolated-target
+current-tree rerun passed all three complete-query cases. Exact-head pushed CI
+and deployed-origin/manual acceptance remain separate gates.
 
 ## Opt-in real-CLN joined provider/query boundary
 
@@ -1017,6 +1104,11 @@ At minimum, a release candidate needs evidence for:
 - independent ARC review;
 - deployed-origin CSP/header enforcement, dependency closeout and manual
   testing;
+- a repository ruleset that requires the Payment/security checks and prevents
+  unreviewed direct `main` pushes (the 2026-07-28 read-only check found no branch
+  protection/ruleset, while the mutable Pages environment was main-only), plus
+  a Pages required-reviewer policy and review of PAT/GitHub-App credentials able
+  to dispatch Actions;
 - user manual acceptance.
 
 All of the above remain explicit gates. Production deployment, remote server
