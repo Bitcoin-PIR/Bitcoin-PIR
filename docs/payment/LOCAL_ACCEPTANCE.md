@@ -978,11 +978,14 @@ cargo test --locked --offline -p bitcoinpir-directory-relay \
 ```
 
 It launches two copies of the repository's production
-`bitcoinpir-directory-relay` binary and covers separate
-config/SQLite/ports/runtimes, complete 16-shard signed readback, one relay
-offline, two independently valid but conflicting stale-head views with an exact
-split-view error, bounded-backoff lost-ACK readback plus idempotent retry, and
-independent restart recovery. The remote-authority full-mode cell also selects
+`bitcoinpir-directory-relay` binary and covers separate config/SQLite/runtime
+state plus four distinct loopback listeners. Signed `EVENT` publication uses
+each relay's publisher lane; ID/catalog `REQ` and `EOSE` use its public lane.
+The test covers complete 16-shard signed readback, one relay offline, two
+independently valid but conflicting stale-head views with an exact split-view
+error, a public-lane lost-ACK durability barrier followed by an idempotent
+publisher-lane retry, and readiness of both listeners after independent restart.
+The remote-authority full-mode cell also selects
 `three_authority_process::three_authority_real_process_topology_e2e`. That test
 spawns three authority child test harnesses which invoke production
 `rollback_authority::run` and three TLS-edge child harnesses; the parent process
@@ -991,8 +994,9 @@ deployment-set validator owns duplicate-pin/namespace rejection, raw clients
 own wrong-pin/client/cross-domain transport assertions, and the production
 adapters own crossed-provider, independently isolated provider- and
 issuer-authority outages, exact same-generation issuer recovery and stale-floor
-assertions. During each authority outage the other two business domains remain
-usable. It does not launch `unified_server`, `payment-issuer`, or installed
+assertions. During each authority outage the other two Stores remain
+independently openable and authenticated through their own authorities. It does
+not launch `unified_server`, `payment-issuer`, or installed
 binaries. These new commands require their first Linux CI run on the candidate
 commit; no passing result is claimed here, and same-host processes do not prove
 operational independence.

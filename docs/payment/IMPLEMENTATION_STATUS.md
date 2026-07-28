@@ -407,11 +407,13 @@ operator has activated the path with real money or public infrastructure.
       remain exact-commit/deployment evidence rather than source claims.
 - [x] A CI-wired, explicitly selected process test starts two copies of the
       repository's production `bitcoinpir-directory-relay` binary with
-      independent config/SQLite/port/runtime state, publishes one signed
-      16-shard catalog to both and uses real WebSocket readback to fail closed
-      on offline/exact split-view errors, recover lost ACK by bounded-backoff
-      durable ID probe plus idempotent retry, and preserve heads across
-      independent restarts. A companion three-authority test separates provider
+      independent config/SQLite/runtime state and four distinct loopback
+      listeners. It sends signed `EVENT` messages only through each publisher
+      lane, sends ID/catalog `REQ` and receives `EOSE` only through each public
+      lane, fails closed on offline/exact split-view errors, recovers lost ACK by
+      a public-lane durable ID probe plus publisher-lane idempotent retry, and
+      verifies both listeners plus stored heads across independent restarts. A
+      companion three-authority test separates provider
       0, provider 1 and issuer DB/key/namespace/TLS material. It starts authority
       and TLS-edge child test harnesses; each authority harness invokes
       production `rollback_authority::run`, while the parent directly calls the
@@ -419,9 +421,10 @@ operator has activated the path with real money or public infrastructure.
       raw-client rejection and Store-adapter rejection are asserted at their
       respective boundaries. Provider- and issuer-authority backends are stopped
       independently while their TLS edges remain online; only the affected Store
-      fails closed, the other two domains remain usable, and the issuer recovers
-      the exact same generation and commitment from its original authority
-      database. It does not launch `unified_server`, `payment-issuer`, or
+      fails closed, while the other two Stores remain independently openable and
+      authenticated through their own authorities. The issuer recovers the exact
+      same generation and commitment from its original authority database. It
+      does not launch `unified_server`, `payment-issuer`, or
       installed binaries. These are local topology tests, not claims of
       operational independence; their first Linux CI execution remains
       candidate-commit evidence.
