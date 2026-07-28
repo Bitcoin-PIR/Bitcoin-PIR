@@ -441,7 +441,7 @@ async fn handle_connection(
         match message {
             ClientMessage::Event(event) => {
                 let event_id = *event.event.id();
-                let response = match ingest_operation(state.clone(), event, now).await {
+                let response = match ingest_operation(state.clone(), *event, now).await {
                     Ok(IngestDisposition::Saved) => {
                         ok_message(&event_id, true, "saved: durable commit complete")
                     }

@@ -45,7 +45,7 @@ pub enum RequestFilter {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientMessage {
-    Event(ValidatedEvent),
+    Event(Box<ValidatedEvent>),
     Req {
         subscription_id: String,
         filter: RequestFilter,
@@ -104,7 +104,7 @@ pub fn parse_client_message(
             {
                 return Err("EVENT envelope is not the exact canonical encoding".to_owned());
             }
-            Ok(ClientMessage::Event(event))
+            Ok(ClientMessage::Event(Box::new(event)))
         }
         "REQ" => {
             if values.len() != 3 {
@@ -292,7 +292,7 @@ fn parse_request_filter(
 
 fn parse_shard_tag(value: &str) -> Result<u8, String> {
     (0..DIRECTORY_SHARD_COUNT_V1)
-        .find(|shard| value == &shard_tag_value_v1(*shard))
+        .find(|shard| value == shard_tag_value_v1(*shard))
         .ok_or_else(|| "directory shard tag is not canonical".to_owned())
 }
 
