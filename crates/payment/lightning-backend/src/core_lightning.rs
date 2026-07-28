@@ -632,6 +632,12 @@ mod unix_transport {
                 "Core Lightning RPC socket",
             )
             .map_err(|_| ClnRpcTransportErrorV1::UnavailableBeforeWrite)?;
+            // Construction is the process-startup preflight used by both the
+            // issuer and the dedicated RPC guard. Validate the named socket
+            // itself here as well as before and after every connect, so a
+            // hard-linked or otherwise untrusted endpoint cannot survive
+            // startup merely because the first RPC has not run yet.
+            checked_socket_metadata(&socket_path, policy)?;
             Ok(Self {
                 socket_path,
                 policy,
