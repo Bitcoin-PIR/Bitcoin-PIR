@@ -603,7 +603,7 @@ async fn read_catalog(
         let (checkpoint_event_id, checkpoint_epoch, checkpoint_entries) =
             checkpoint.ok_or_else(|| format!("shard {shard} has no checkpoint head"))?;
         if checkpoint_entries.as_slice()
-            != &[DirectoryCheckpointEntryV1 {
+            != [DirectoryCheckpointEntryV1 {
                 provider_id,
                 directory_sequence,
                 event_id: entry_event_id,
