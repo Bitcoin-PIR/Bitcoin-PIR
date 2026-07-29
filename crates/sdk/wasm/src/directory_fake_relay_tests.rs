@@ -313,6 +313,7 @@ fn read_complete_catalog(
 fn relay_batch(first: Vec<String>, second: Vec<String>) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "version": 1,
+        "directoryMode": "strict-multi-relay",
         "relays": [
             { "relayId": 0, "eventMessages": first },
             { "relayId": 1, "eventMessages": second }
@@ -371,10 +372,16 @@ fn signed_publish_to_fake_relays_reads_two_independent_providers_and_fails_close
     assert_eq!(relay_a_messages, relay_b_messages);
     let current_batch = relay_batch(relay_a_messages.clone(), relay_b_messages.clone());
 
-    let shards = verify_relay_batch_v1(&current_batch, publisher.public_key(), CURRENT_NOW)
-        .expect("signed two-relay catalog must verify");
+    let shards = verify_relay_batch_v1(
+        &current_batch,
+        publisher.public_key(),
+        CURRENT_NOW,
+        DirectoryRelayModeV1::StrictMultiRelay,
+    )
+    .expect("signed two-relay catalog must verify");
     let mut candidate = WasmDirectoryCatalogCandidateV1 {
         directory_pubkey: *publisher.public_key(),
+        directory_mode: DirectoryRelayModeV1::StrictMultiRelay,
         shards,
         prepared: None,
         selectable_catalog_json: None,
@@ -457,17 +464,27 @@ fn signed_publish_to_fake_relays_reads_two_independent_providers_and_fails_close
         &relay_batch(tampered, relay_b_messages.clone()),
         publisher.public_key(),
         CURRENT_NOW,
+        DirectoryRelayModeV1::StrictMultiRelay,
     )
     .unwrap_err();
     assert!(tamper_error.contains("event id"), "{tamper_error}");
 
     let wrong_directory = DirectoryPublisherKeyV1::from_secret_bytes([71; 32]).unwrap();
-    let wrong_key_error =
-        verify_relay_batch_v1(&current_batch, wrong_directory.public_key(), CURRENT_NOW)
-            .unwrap_err();
+    let wrong_key_error = verify_relay_batch_v1(
+        &current_batch,
+        wrong_directory.public_key(),
+        CURRENT_NOW,
+        DirectoryRelayModeV1::StrictMultiRelay,
+    )
+    .unwrap_err();
     assert!(wrong_key_error.contains("pinned directory key"));
-    let expiry_error =
-        verify_relay_batch_v1(&current_batch, publisher.public_key(), VALID_UNTIL + 1).unwrap_err();
+    let expiry_error = verify_relay_batch_v1(
+        &current_batch,
+        publisher.public_key(),
+        VALID_UNTIL + 1,
+        DirectoryRelayModeV1::StrictMultiRelay,
+    )
+    .unwrap_err();
     assert!(expiry_error.contains("not currently valid"));
 
     // A fresh pair of relays can replay an older but still cryptographically
@@ -481,8 +498,13 @@ fn signed_publish_to_fake_relays_reads_two_independent_providers_and_fails_close
         read_complete_catalog(&rollback_relay_a, publisher.public_key()),
         read_complete_catalog(&rollback_relay_b, publisher.public_key()),
     );
-    let old_shards = verify_relay_batch_v1(&old_batch, publisher.public_key(), CURRENT_NOW)
-        .expect("older catalog remains signed and within its validity window");
+    let old_shards = verify_relay_batch_v1(
+        &old_batch,
+        publisher.public_key(),
+        CURRENT_NOW,
+        DirectoryRelayModeV1::StrictMultiRelay,
+    )
+    .expect("older catalog remains signed and within its validity window");
     for shard in old_shards {
         for entry in shard.entries {
             let provider_hex = hex::encode(entry.discovery_entry().provider_id());

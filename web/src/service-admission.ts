@@ -37,6 +37,7 @@ import {
   type Bolt11AcquisitionHandleV1,
 } from './service-acquisition.js';
 import { canonicalServiceEntitlementLimitsV1 } from './service-entitlement.js';
+import { trustedNowUnixV1 } from './trusted-time.js';
 
 // Unexported symbols make a verified single-provider or pair typestate the only
 // public route to authorization/acquisition transitions. No symbol, peer
@@ -300,7 +301,7 @@ export class ProviderAdmissionSessionV1 {
    * identity/channel/database-root verification. Persisting its checkpoint is
    * mandatory before the handle can authorize anything.
    */
-  async refreshPolicy(nowUnix = trustedNowUnix()): Promise<ServicePolicyViewV1> {
+  async refreshPolicy(nowUnix = trustedNowUnixV1()): Promise<ServicePolicyViewV1> {
     this.beginTransition('refresh');
     try {
     const providerIdHex = bytesToLowerHex(this.trust.providerId);
@@ -449,7 +450,7 @@ export class ProviderAdmissionSessionV1 {
     const accepted = this.accepted;
     if (!accepted || !this.view) throw new Error('fetch and persist service policy first');
     this.port.assertSessionBinding(accepted);
-    const nowUnix = trustedNowUnix();
+    const nowUnix = trustedNowUnixV1();
     if (BigInt(this.view.expiresAtUnix) < nowUnix) {
       throw new Error('service policy expired; fetch a fresh verified policy');
     }
@@ -578,7 +579,7 @@ export class ProviderAdmissionSessionV1 {
     let retained: WasmAcceptedRetainedServiceRedemptionV1 | null = null;
     try {
       const canonical = exactRetainedBinding(binding, this.trust);
-      const nowUnix = trustedNowUnix();
+      const nowUnix = trustedNowUnixV1();
       const retainedPort = requireRetainedServicePort(this.port);
       this.port.assertTrustAnchor(this.trust);
       retained = await retainedPort.fetchRetainedRedemption(
@@ -648,7 +649,7 @@ export class ProviderAdmissionSessionV1 {
     let retained: WasmAcceptedRetainedServiceRedemptionV1 | null = null;
     try {
       const canonical = exactRetainedBinding(binding, this.trust);
-      const nowUnix = trustedNowUnix();
+      const nowUnix = trustedNowUnixV1();
       const retainedPort = requireRetainedServicePort(this.port);
       this.port.assertTrustAnchor(this.trust);
       retained = await retainedPort.fetchRetainedRedemption(
@@ -698,7 +699,7 @@ export class ProviderAdmissionSessionV1 {
         this.assertCurrentPairSelection(selection, scopeIdHex, offerId);
         assertStrictReady();
         this.port.assertSessionBinding(accepted);
-        if (!this.view || BigInt(this.view.expiresAtUnix) < trustedNowUnix()) {
+        if (!this.view || BigInt(this.view.expiresAtUnix) < trustedNowUnixV1()) {
           throw new Error('service policy expired; fetch a fresh verified policy');
         }
       };
@@ -732,7 +733,7 @@ export class ProviderAdmissionSessionV1 {
       const accepted = this.accepted;
       if (!accepted || !this.view) throw new Error('fetch and persist service policy first');
       this.port.assertSessionBinding(accepted);
-      const nowUnix = trustedNowUnix();
+      const nowUnix = trustedNowUnixV1();
       if (BigInt(this.view.expiresAtUnix) < nowUnix) {
         throw new Error('service policy expired; fetch a fresh verified policy');
       }
@@ -929,14 +930,14 @@ export class ProviderAdmissionSessionV1 {
       accepted,
       scopeId,
       offer.offerId,
-      trustedNowUnix(),
+      trustedNowUnixV1(),
     );
     try {
       let nonce = 0n;
       const maxNonce = 0xffff_ffff_ffff_ffffn;
       for (;;) {
         if (options.signal?.aborted) throw new DOMException('PoW cancelled', 'AbortError');
-        if (trustedNowUnix() > BigInt(challenge.expiresAtUnix)) {
+        if (trustedNowUnixV1() > BigInt(challenge.expiresAtUnix)) {
           throw new Error('proof-of-work challenge expired before a solution was found');
         }
         const proof = challenge.solveChunk(nonce, attempts);
@@ -1651,12 +1652,6 @@ function retainedRedemptionFingerprintV1(
     limits.maxWorkUnits,
     offerFingerprintV1(view.offer),
   ]);
-}
-
-function trustedNowUnix(): bigint {
-  const millis = Date.now();
-  if (!Number.isFinite(millis) || millis <= 0) throw new Error('trusted wall clock is unavailable');
-  return BigInt(Math.floor(millis / 1000));
 }
 
 function requireFixedNonzero(field: string, value: Uint8Array, length: number): void {

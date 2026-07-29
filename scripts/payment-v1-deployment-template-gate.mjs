@@ -102,6 +102,7 @@ const HASH_FIELDS = Object.freeze([
   "config_sha256",
 ]);
 const UNRESOLVED_FIELDS = Object.freeze([
+  "directory_mode",
   "implementation",
   "source_repository",
   "source_commit",
@@ -112,6 +113,7 @@ const UNRESOLVED_FIELDS = Object.freeze([
 const RELAY_SELECTION_FIELDS = Object.freeze([
   "version",
   "status",
+  "directory_mode",
   "implementation",
   "source_repository",
   "source_commit",
@@ -1923,6 +1925,16 @@ export function validateRelaySelection(text) {
     fail("relay selection status must be UNRESOLVED or RESOLVED");
   }
 
+  const directoryMode = stringField(selection, "directory_mode");
+  if (
+    directoryMode !== "strict-multi-relay" &&
+    directoryMode !== "centralized-single-relay"
+  ) {
+    fail(
+      "resolved relay directory_mode must be strict-multi-relay or centralized-single-relay",
+    );
+  }
+
   exactField(selection, "implementation", "bitcoinpir-directory-only");
   exactField(
     selection,
@@ -1962,6 +1974,7 @@ export function validateRelaySelection(text) {
   }
   return {
     status,
+    directoryMode,
     sourceCommit,
     sourceArchiveSha256: stringField(selection, "source_archive_sha256"),
     cargoLockSha256: stringField(selection, "cargo_lock_sha256"),
