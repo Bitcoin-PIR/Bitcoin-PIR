@@ -197,6 +197,7 @@ fn database_proof_json(roots: &VerifiedDatabaseRoots) -> serde_json::Value {
     let onion = roots.onion_layout_v2;
     serde_json::json!({
         "dbId": roots.db_id,
+        "manifestRootHex": roots.manifest_root_hex(),
         "buildKind": pir_db_attest::build_kind_label(roots.build_kind),
         "fromHeight": roots.from_height,
         "fromBlockHashHex": roots.from_block_hash_hex(),
@@ -955,6 +956,11 @@ impl WasmDatabaseProof {
     #[wasm_bindgen(getter, js_name = dbId)]
     pub fn db_id(&self) -> u8 {
         self.inner.db_id
+    }
+
+    #[wasm_bindgen(getter, js_name = manifestRootHex)]
+    pub fn manifest_root_hex(&self) -> String {
+        self.inner.manifest_root_hex()
     }
 
     #[wasm_bindgen(getter, js_name = buildKind)]
@@ -3612,6 +3618,7 @@ mod tests {
     fn database_proof_exposes_onion_entry_size() {
         let roots = VerifiedDatabaseRoots {
             db_id: 1,
+            manifest_root: [9; 32],
             build_kind: pir_db_attest::BuildKind::Snapshot,
             from_height: 0,
             from_block_hash: [0; 32],
@@ -3629,8 +3636,10 @@ mod tests {
         };
 
         let json = database_proof_json(&roots);
+        assert_eq!(json["manifestRootHex"], "09".repeat(32));
         assert_eq!(json["onionEntrySize"], 3328);
         let proof = WasmDatabaseProof { inner: roots };
+        assert_eq!(proof.manifest_root_hex(), "09".repeat(32));
         assert_eq!(proof.onion_entry_size(), 3328);
     }
 
@@ -3639,6 +3648,7 @@ mod tests {
         let layout = pir_db_attest::OnionQueryLayoutV2::current(948_640, 10_273, 37_954, 3_328);
         let roots = VerifiedDatabaseRoots {
             db_id: 0,
+            manifest_root: [9; 32],
             build_kind: pir_db_attest::BuildKind::Snapshot,
             from_height: 0,
             from_block_hash: [0; 32],

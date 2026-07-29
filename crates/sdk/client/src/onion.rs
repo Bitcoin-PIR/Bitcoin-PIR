@@ -3249,6 +3249,7 @@ mod tests {
     fn proof_test_roots(height: u32) -> VerifiedDatabaseRoots {
         VerifiedDatabaseRoots {
             db_id: 0,
+            manifest_root: [0; 32],
             build_kind: pir_db_attest::BuildKind::Snapshot,
             from_height: 0,
             from_block_hash: [0; 32],

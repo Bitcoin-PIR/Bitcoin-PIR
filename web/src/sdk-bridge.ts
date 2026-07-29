@@ -512,6 +512,8 @@ export interface WasmAnnounceVerification {
 export interface WasmDatabaseProof {
   free(): void;
   readonly dbId: number;
+  /** SHA-256 of the verified server database MANIFEST.toml bytes. */
+  readonly manifestRootHex?: string;
   readonly buildKind: 'snapshot' | 'delta' | string;
   readonly fromHeight: number;
   readonly fromBlockHashHex: string;

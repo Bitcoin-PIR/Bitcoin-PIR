@@ -4174,6 +4174,7 @@ mod tests {
     fn session_roots(db: &DatabaseInfo) -> VerifiedDatabaseRoots {
         VerifiedDatabaseRoots {
             db_id: db.db_id,
+            manifest_root: [0; 32],
             build_kind: BuildKind::Snapshot,
             from_height: db.base_height(),
             from_block_hash: [0; 32],
