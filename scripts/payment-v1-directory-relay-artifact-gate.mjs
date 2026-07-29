@@ -50,17 +50,18 @@ export const DIRECTORY_RELAY_PINNED_GIT_GLOBAL_OPTIONS = Object.freeze([
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 const MAX_BINARY_BYTES = 64 * 1024 * 1024;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
-const ARTIFACT_FILES = Object.freeze([
-  "Cargo.lock",
-  "binary-version.txt",
-  "bitcoinpir-directory-relay",
-  "bitcoinpir-directory-relay.build-1",
-  "bitcoinpir-directory-relay.build-2",
-  "build-manifest.json",
-  "git-version.txt",
-  "source.tar",
-  "tar-version.txt",
-]);
+const ARTIFACT_FILE_RULES = Object.freeze({
+  "Cargo.lock": Object.freeze({ maximumBytes: MAX_TEXT_BYTES, mode: "0444" }),
+  "binary-version.txt": Object.freeze({ maximumBytes: 4096, mode: "0444" }),
+  "bitcoinpir-directory-relay": Object.freeze({ maximumBytes: MAX_BINARY_BYTES, mode: "0555" }),
+  "bitcoinpir-directory-relay.build-1": Object.freeze({ maximumBytes: MAX_BINARY_BYTES, mode: "0555" }),
+  "bitcoinpir-directory-relay.build-2": Object.freeze({ maximumBytes: MAX_BINARY_BYTES, mode: "0555" }),
+  "build-manifest.json": Object.freeze({ maximumBytes: MAX_TEXT_BYTES, mode: "0444" }),
+  "git-version.txt": Object.freeze({ maximumBytes: 4096, mode: "0444" }),
+  "source.tar": Object.freeze({ maximumBytes: MAX_ARCHIVE_BYTES, mode: "0444" }),
+  "tar-version.txt": Object.freeze({ maximumBytes: 4096, mode: "0444" }),
+});
+const ARTIFACT_FILES = Object.freeze(Object.keys(ARTIFACT_FILE_RULES).sort());
 
 function fail(message) {
   throw new Error(message);
@@ -163,6 +164,115 @@ function stableDirectoryIdentity(snapshot) {
     mode: snapshot.mode,
     uid: snapshot.uid,
   };
+}
+
+function preciseRegularFileFingerprint(stat) {
+  return {
+    ctime_ns: stat.ctimeNs.toString(),
+    dev: stat.dev.toString(),
+    gid: stat.gid.toString(),
+    ino: stat.ino.toString(),
+    mode: (stat.mode & 0o7777n).toString(8).padStart(4, "0"),
+    mtime_ns: stat.mtimeNs.toString(),
+    nlink: stat.nlink.toString(),
+    size: stat.size.toString(),
+    uid: stat.uid.toString(),
+  };
+}
+
+function assertArtifactFileStat(stat, name, label, { requireFinalModes }) {
+  const rule = ARTIFACT_FILE_RULES[name];
+  if (rule === undefined) fail(`${label} has no allowlisted artifact rule: ${name}`);
+  const mode = (stat.mode & 0o7777n).toString(8).padStart(4, "0");
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1n ||
+    stat.uid !== BigInt(currentEuid()) ||
+    stat.size < 1n ||
+    stat.size > BigInt(rule.maximumBytes) ||
+    (stat.mode & 0o022n) !== 0n ||
+    (stat.mode & 0o400n) === 0n ||
+    (requireFinalModes && mode !== rule.mode)
+  ) {
+    const suffix = requireFinalModes ? ` with exact final mode ${rule.mode}` : "";
+    fail(`${label} must be a bounded current-euid-owned one-link regular file${suffix}: ${name}`);
+  }
+}
+
+function readDescriptorBoundArtifactFile(
+  artifactRoot,
+  name,
+  label,
+  { requireFinalModes },
+) {
+  const absolute = join(artifactRoot, name);
+  let fd;
+  let resealFd;
+  try {
+    const pathnameBefore = lstatSync(absolute, { bigint: true });
+    assertArtifactFileStat(pathnameBefore, name, label, { requireFinalModes });
+    fd = openSync(
+      absolute,
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        (constants.O_CLOEXEC ?? 0),
+    );
+    const descriptorBefore = fstatSync(fd, { bigint: true });
+    assertArtifactFileStat(descriptorBefore, name, label, { requireFinalModes });
+    const initialFingerprint = preciseRegularFileFingerprint(pathnameBefore);
+    if (
+      canonicalJson(initialFingerprint) !==
+      canonicalJson(preciseRegularFileFingerprint(descriptorBefore))
+    ) {
+      fail(`${label} pathname/opened-descriptor fingerprint mismatch: ${name}`);
+    }
+
+    const bytes = readFileSync(fd);
+    const descriptorAfterRead = fstatSync(fd, { bigint: true });
+    assertArtifactFileStat(descriptorAfterRead, name, label, { requireFinalModes });
+    if (
+      BigInt(bytes.length) !== descriptorAfterRead.size ||
+      canonicalJson(initialFingerprint) !==
+        canonicalJson(preciseRegularFileFingerprint(descriptorAfterRead))
+    ) {
+      fail(`${label} descriptor changed while bytes were read: ${name}`);
+    }
+
+    resealFd = openSync(
+      absolute,
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        (constants.O_CLOEXEC ?? 0),
+    );
+    const resealedDescriptor = fstatSync(resealFd, { bigint: true });
+    const pathnameAfter = lstatSync(absolute, { bigint: true });
+    assertArtifactFileStat(resealedDescriptor, name, label, { requireFinalModes });
+    assertArtifactFileStat(pathnameAfter, name, label, { requireFinalModes });
+    if (
+      realpathSync(absolute) !== absolute ||
+      canonicalJson(initialFingerprint) !==
+        canonicalJson(preciseRegularFileFingerprint(resealedDescriptor)) ||
+      canonicalJson(initialFingerprint) !==
+        canonicalJson(preciseRegularFileFingerprint(pathnameAfter))
+    ) {
+      fail(`${label} path did not reseal to the descriptor-bound precise fingerprint: ${name}`);
+    }
+    return {
+      bytes,
+      record: {
+        file: name,
+        fingerprint: initialFingerprint,
+        sha256: sha256(bytes),
+      },
+    };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(label)) throw error;
+    fail(`${label} could not descriptor-bind and reseal artifact file: ${name}`);
+  } finally {
+    if (resealFd !== undefined) closeSync(resealFd);
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 export function snapshotCanonicalDirectoryChainV1(
@@ -275,6 +385,131 @@ export function assertCanonicalDirectoryChainUnchangedV1(
     }
   }
   return true;
+}
+
+function expectedArtifactFiles({ allowMissingManifest }) {
+  return ARTIFACT_FILES.filter(
+    (name) => !(allowMissingManifest && name === "build-manifest.json"),
+  );
+}
+
+function assertClosedArtifactNames(actual, expected, label) {
+  const observed = [...actual].sort();
+  const wanted = [...expected].sort();
+  if (
+    observed.length !== wanted.length ||
+    observed.some((name, index) => name !== wanted[index])
+  ) {
+    fail(`${label} files must equal ${JSON.stringify(wanted)}, got ${JSON.stringify(observed)}`);
+  }
+}
+
+function collectBuildArtifactFastSealWithBytesV1(
+  artifactRootInput,
+  {
+    allowMissingManifest = false,
+    label = "artifact fast seal",
+    requireFinalModes = true,
+  } = {},
+) {
+  const chain = snapshotCanonicalDirectoryChainV1(
+    artifactRootInput,
+    `${label} parent chain`,
+    { ownerOnlyLeaf: true },
+  );
+  const artifactRoot = chain.absolute;
+  const expectedNames = expectedArtifactFiles({ allowMissingManifest });
+  let rootFd;
+  try {
+    rootFd = openSync(
+      artifactRoot,
+      constants.O_RDONLY |
+        constants.O_DIRECTORY |
+        constants.O_NOFOLLOW |
+        (constants.O_CLOEXEC ?? 0),
+    );
+    const rootBefore = preciseDirectorySnapshot(
+      artifactRoot,
+      rootFd,
+      `${label} root before closed-world read`,
+    );
+    assertClosedArtifactNames(readdirSync(artifactRoot), expectedNames, label);
+    const bytesByName = new Map();
+    const files = expectedNames.map((name) => {
+      const observed = readDescriptorBoundArtifactFile(
+        artifactRoot,
+        name,
+        label,
+        { requireFinalModes },
+      );
+      bytesByName.set(name, observed.bytes);
+      return observed.record;
+    });
+    assertClosedArtifactNames(readdirSync(artifactRoot), expectedNames, `${label} final readdir`);
+    const rootAfter = preciseDirectorySnapshot(
+      artifactRoot,
+      rootFd,
+      `${label} root after closed-world read`,
+    );
+    if (canonicalJson(rootBefore) !== canonicalJson(rootAfter)) {
+      fail(`${label} root precise fingerprint changed during closed-world read`);
+    }
+    assertCanonicalDirectoryChainUnchangedV1(
+      chain,
+      artifactRoot,
+      `${label} parent chain`,
+      { ownerOnlyLeaf: true },
+    );
+    return {
+      bytesByName,
+      seal: {
+        files,
+        root_identity: stableDirectoryIdentity(rootAfter),
+        schema_version: 1,
+      },
+    };
+  } finally {
+    if (rootFd !== undefined) closeSync(rootFd);
+  }
+}
+
+function assertBuildArtifactFastSealsEqual(expected, actual, label) {
+  if (canonicalJson(expected) !== canonicalJson(actual)) {
+    fail(`${label} changed across descriptor-bound fast seals`);
+  }
+  return true;
+}
+
+function assertManifestExtendsArtifactFastSeal(before, after) {
+  const withoutManifest = {
+    ...after,
+    files: after.files.filter((entry) => entry.file !== "build-manifest.json"),
+  };
+  assertBuildArtifactFastSealsEqual(
+    before,
+    withoutManifest,
+    "pre-manifest artifact set during manifest creation",
+  );
+  if (after.files.filter((entry) => entry.file === "build-manifest.json").length !== 1) {
+    fail("generated manifest fast seal is incomplete");
+  }
+}
+
+export function snapshotBuildArtifactFastSealV1(artifactRoot, options = {}) {
+  return collectBuildArtifactFastSealWithBytesV1(artifactRoot, options).seal;
+}
+
+export function assertBuildArtifactFastSealUnchangedV1(
+  expected,
+  artifactRoot,
+  label = "artifact fast seal",
+  options = {},
+) {
+  const current = snapshotBuildArtifactFastSealV1(artifactRoot, {
+    ...options,
+    label,
+  });
+  return assertBuildArtifactFastSealsEqual(expected, current, label);
 }
 
 function requireCanonicalDirectory(path, label, { ownerOnly = false } = {}) {
@@ -800,7 +1035,64 @@ export function validateBuildManifest(manifest, facts) {
   return true;
 }
 
-export function collectBuildArtifactFacts({
+function requiredArtifactBytes(bytesByName, name, label = "artifact fast seal") {
+  const bytes = bytesByName.get(name);
+  if (!Buffer.isBuffer(bytes)) fail(`${label} is missing descriptor-bound bytes: ${name}`);
+  return bytes;
+}
+
+function factsFromArtifactBytesV1(bytesByName, sourceCommitInput) {
+  const sourceCommit = requireCommit(sourceCommitInput);
+  const sourceArchive = requiredArtifactBytes(bytesByName, "source.tar");
+  const cargoLock = requiredArtifactBytes(bytesByName, "Cargo.lock");
+  const gitVersionBytes = requiredArtifactBytes(bytesByName, "git-version.txt");
+  const tarVersionBytes = requiredArtifactBytes(bytesByName, "tar-version.txt");
+  const recordedVersion = requiredArtifactBytes(bytesByName, "binary-version.txt");
+  const binaryNames = [
+    "bitcoinpir-directory-relay.build-1",
+    "bitcoinpir-directory-relay.build-2",
+    "bitcoinpir-directory-relay",
+  ];
+  const binaries = binaryNames.map((name) => requiredArtifactBytes(bytesByName, name));
+  for (const [index, bytes] of binaries.entries()) validateElfAmd64(bytes, binaryNames[index]);
+  if (!binaries[0].equals(binaries[1]) || !binaries[0].equals(binaries[2])) {
+    fail("two clean-build binaries and selected binary are not byte-identical");
+  }
+  const binaryVersionText = new TextDecoder("utf-8", { fatal: true }).decode(recordedVersion);
+  const gitVersionText = new TextDecoder("utf-8", { fatal: true }).decode(gitVersionBytes);
+  const tarVersionText = new TextDecoder("utf-8", { fatal: true }).decode(tarVersionBytes);
+  return {
+    binaries,
+    cargoLock,
+    facts: {
+      binaryVersionOutput: validateVersionOutput(binaryVersionText),
+      digests: {
+        build1: sha256(binaries[0]),
+        build2: sha256(binaries[1]),
+        cargoLock: sha256(cargoLock),
+        gitVersion: sha256(gitVersionBytes),
+        selected: sha256(binaries[2]),
+        sourceArchive: sha256(sourceArchive),
+        tarVersion: sha256(tarVersionBytes),
+      },
+      gitVersionOutput: validateGitVersion(gitVersionText),
+      sourceCommit,
+      tarVersionOutput: validateTarVersion(tarVersionText),
+    },
+    gitVersionText,
+    recordedVersion,
+    sourceArchive,
+    tarVersionText,
+  };
+}
+
+function runArtifactTestHook(testHooks, phase) {
+  if (testHooks === undefined) return;
+  const hook = testHooks[phase];
+  if (hook !== undefined) hook();
+}
+
+function collectBuildArtifactDetails({
   artifactRoot: artifactRootInput,
   repositoryRoot: repositoryRootInput,
   sourceCommit: sourceCommitInput,
@@ -809,18 +1101,18 @@ export function collectBuildArtifactFacts({
   rebuildRunner = defaultRebuildRunner,
   versionRunner = defaultVersionRunner,
   allowMissingManifest = false,
+  requireFinalModes = !allowMissingManifest,
+  testHooks = undefined,
 }) {
-  const artifactRootChainSnapshot = snapshotCanonicalDirectoryChainV1(
+  const initialArtifact = collectBuildArtifactFastSealWithBytesV1(
     artifactRootInput,
-    "artifact root parent chain",
-    { ownerOnlyLeaf: true },
+    {
+      allowMissingManifest,
+      label: "artifact initial fast seal",
+      requireFinalModes,
+    },
   );
-  const artifactRootSnapshot = snapshotCanonicalDirectory(
-    artifactRootInput,
-    "artifact root",
-    { ownerOnly: true },
-  );
-  const artifactRoot = artifactRootSnapshot.absolute;
+  const artifactRoot = resolve(artifactRootInput);
   const repositoryRootSnapshot = snapshotCanonicalDirectory(repositoryRootInput, "repository root");
   const repositoryRoot = repositoryRootSnapshot.absolute;
   const gitRootSnapshot = snapshotCanonicalDirectory(
@@ -832,20 +1124,8 @@ export function collectBuildArtifactFacts({
     "repository object database storage",
   );
   const sourceCommit = requireCommit(sourceCommitInput);
-
-  const observedNames = readdirSync(artifactRoot).sort();
-  const expectedNames = ARTIFACT_FILES.filter(
-    (name) => !(allowMissingManifest && name === "build-manifest.json"),
-  ).sort();
-  if (
-    observedNames.length !== expectedNames.length ||
-    observedNames.some((name, index) => name !== expectedNames[index])
-  ) {
-    fail(`artifact root files must equal ${JSON.stringify(expectedNames)}, got ${JSON.stringify(observedNames)}`);
-  }
-
-  const sourceArchivePath = join(artifactRoot, "source.tar");
-  const sourceArchive = readOneLinkFile(sourceArchivePath, "source archive", MAX_ARCHIVE_BYTES);
+  const observed = factsFromArtifactBytesV1(initialArtifact.bytesByName, sourceCommit);
+  const { binaries, cargoLock, facts, sourceArchive } = observed;
   const canonical = canonicalSourceRunner({
     artifactRoot,
     dockerPath,
@@ -861,8 +1141,6 @@ export function collectBuildArtifactFacts({
   if (!Buffer.isBuffer(canonical.sourceArchive) || !sourceArchive.equals(canonical.sourceArchive)) {
     fail("source archive bytes do not equal canonical git archive of source_commit");
   }
-
-  const cargoLock = readOneLinkFile(join(artifactRoot, "Cargo.lock"), "Cargo.lock", MAX_TEXT_BYTES);
   if (
     !Buffer.isBuffer(canonical.commitCargoLock) ||
     !Buffer.isBuffer(canonical.archivedCargoLock) ||
@@ -871,39 +1149,13 @@ export function collectBuildArtifactFacts({
   ) {
     fail("Cargo.lock bytes do not agree across source_commit, source archive, and artifact copy");
   }
-
-  const gitVersionBytes = readOneLinkFile(
-    join(artifactRoot, "git-version.txt"),
-    "recorded git version",
-    4096,
-  );
-  const tarVersionBytes = readOneLinkFile(
-    join(artifactRoot, "tar-version.txt"),
-    "recorded tar version",
-    4096,
-  );
   if (
     typeof canonical.gitVersion !== "string" ||
     typeof canonical.tarVersion !== "string" ||
-    !gitVersionBytes.equals(Buffer.from(canonical.gitVersion, "utf8")) ||
-    !tarVersionBytes.equals(Buffer.from(canonical.tarVersion, "utf8"))
+    canonical.gitVersion !== observed.gitVersionText ||
+    canonical.tarVersion !== observed.tarVersionText
   ) {
     fail("recorded Git/Tar version bytes do not equal the pinned source toolchain outputs");
-  }
-  const gitVersionOutput = validateGitVersion(canonical.gitVersion);
-  const tarVersionOutput = validateTarVersion(canonical.tarVersion);
-
-  const binaryNames = [
-    "bitcoinpir-directory-relay.build-1",
-    "bitcoinpir-directory-relay.build-2",
-    "bitcoinpir-directory-relay",
-  ];
-  const binaries = binaryNames.map((name) =>
-    readOneLinkFile(join(artifactRoot, name), name, MAX_BINARY_BYTES),
-  );
-  for (const [index, bytes] of binaries.entries()) validateElfAmd64(bytes, binaryNames[index]);
-  if (!binaries[0].equals(binaries[1]) || !binaries[0].equals(binaries[2])) {
-    fail("two clean-build binaries and selected binary are not byte-identical");
   }
   const rebuiltBinaries = rebuildRunner({
     artifactRoot,
@@ -931,48 +1183,45 @@ export function collectBuildArtifactFacts({
     selectedBinary: binaries[2],
   });
   const binaryVersionOutput = validateVersionOutput(versionText);
-  const recordedVersion = readOneLinkFile(
-    join(artifactRoot, "binary-version.txt"),
-    "recorded binary version",
-    4096,
-  );
-  if (!recordedVersion.equals(Buffer.from(versionText, "utf8"))) {
+  if (!observed.recordedVersion.equals(Buffer.from(versionText, "utf8"))) {
     fail("recorded version bytes do not equal --version output from selected binary");
   }
-
-  if (!readOneLinkFile(sourceArchivePath, "source archive final confirmation", MAX_ARCHIVE_BYTES).equals(sourceArchive)) {
-    fail("source archive path or bytes changed during the long rebuild verification");
+  if (binaryVersionOutput !== facts.binaryVersionOutput) {
+    fail("recorded version bytes do not equal --version output from selected binary");
   }
-  assertCanonicalDirectoryChainUnchangedV1(
-    artifactRootChainSnapshot,
+  runArtifactTestHook(testHooks, "afterLongRunnersBeforeFinalSeal");
+  const finalArtifact = collectBuildArtifactFastSealWithBytesV1(
     artifactRoot,
-    "artifact root parent chain",
-    { ownerOnlyLeaf: true },
+    {
+      allowMissingManifest,
+      label: "artifact post-runner final fast seal",
+      requireFinalModes,
+    },
   );
-  assertDirectorySnapshot(artifactRootSnapshot, "artifact root", { ownerOnly: true });
+  assertBuildArtifactFastSealsEqual(
+    initialArtifact.seal,
+    finalArtifact.seal,
+    "artifact set during long runner verification",
+  );
   assertDirectorySnapshot(repositoryRootSnapshot, "repository root");
   assertDirectorySnapshot(gitRootSnapshot, "repository object database");
   assertDirectorySnapshot(objectRootSnapshot, "repository object database storage");
 
   return {
-    binaryVersionOutput,
-    digests: {
-      build1: sha256(binaries[0]),
-      build2: sha256(binaries[1]),
-      cargoLock: sha256(cargoLock),
-      gitVersion: sha256(gitVersionBytes),
-      selected: sha256(binaries[2]),
-      sourceArchive: sha256(sourceArchive),
-      tarVersion: sha256(tarVersionBytes),
-    },
-    gitVersionOutput,
-    sourceCommit,
-    tarVersionOutput,
+    artifactSeal: finalArtifact.seal,
+    bytesByName: initialArtifact.bytesByName,
+    facts,
   };
 }
 
-function readCanonicalManifest(path) {
-  const bytes = readOneLinkFile(path, "build manifest", MAX_TEXT_BYTES);
+export function collectBuildArtifactFacts(options) {
+  return collectBuildArtifactDetails(options).facts;
+}
+
+function parseCanonicalManifestBytes(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > MAX_TEXT_BYTES) {
+    fail("build manifest bytes are missing or unbounded");
+  }
   let text;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -1011,10 +1260,59 @@ export function validateSelectionBindings({
 }
 
 export function verifyBuildArtifactSet(options) {
-  const facts = collectBuildArtifactFacts(options);
-  const { bytes, manifest } = readCanonicalManifest(join(resolve(options.artifactRoot), "build-manifest.json"));
-  validateBuildManifest(manifest, facts);
-  return { buildManifestBytes: bytes, facts, manifest };
+  const details = collectBuildArtifactDetails(options);
+  const { bytes, manifest } = parseCanonicalManifestBytes(
+    requiredArtifactBytes(details.bytesByName, "build-manifest.json"),
+  );
+  validateBuildManifest(manifest, details.facts);
+  runArtifactTestHook(options.testHooks, "afterManifestValidationBeforeFinalSeal");
+  const finalSeal = snapshotBuildArtifactFastSealV1(options.artifactRoot, {
+    label: "artifact post-manifest final fast seal",
+    requireFinalModes: true,
+  });
+  assertBuildArtifactFastSealsEqual(
+    details.artifactSeal,
+    finalSeal,
+    "artifact set across manifest validation",
+  );
+  return {
+    artifactSeal: finalSeal,
+    buildManifestBytes: bytes,
+    facts: details.facts,
+    manifest,
+  };
+}
+
+export function fastSealBuildArtifactSet({
+  artifactRoot,
+  sourceCommit,
+  testHooks = undefined,
+}) {
+  const initial = collectBuildArtifactFastSealWithBytesV1(artifactRoot, {
+    label: "complete build artifact fast seal",
+    requireFinalModes: true,
+  });
+  const observed = factsFromArtifactBytesV1(initial.bytesByName, sourceCommit);
+  const { bytes, manifest } = parseCanonicalManifestBytes(
+    requiredArtifactBytes(initial.bytesByName, "build-manifest.json"),
+  );
+  validateBuildManifest(manifest, observed.facts);
+  runArtifactTestHook(testHooks, "afterFastManifestValidationBeforeReseal");
+  const resealed = snapshotBuildArtifactFastSealV1(artifactRoot, {
+    label: "complete build artifact fast reseal",
+    requireFinalModes: true,
+  });
+  assertBuildArtifactFastSealsEqual(
+    initial.seal,
+    resealed,
+    "complete build artifact fast seal",
+  );
+  return {
+    artifactSeal: resealed,
+    buildManifestBytes: bytes,
+    facts: observed.facts,
+    manifest,
+  };
 }
 
 export function verifyResolvedSelection({ configPath, selectionPath, ...buildOptions }) {
@@ -1029,6 +1327,12 @@ export function verifyResolvedSelection({ configPath, selectionPath, ...buildOpt
     configBytes,
     selection,
   });
+  assertBuildArtifactFastSealUnchangedV1(
+    verified.artifactSeal,
+    buildOptions.artifactRoot,
+    "artifact set across selection validation",
+    { requireFinalModes: true },
+  );
   return true;
 }
 
@@ -1042,12 +1346,13 @@ function parseCli(argv) {
   if (
     ![
       "create-manifest",
+      "fast-seal-build",
       "verify-build",
       "verify-selection",
       ...chainCommands,
     ].includes(command)
   ) {
-    fail("usage: payment-v1-directory-relay-artifact-gate.mjs <create-manifest|verify-build|verify-selection|snapshot-directory-chain|verify-directory-chain|verify-directory-chain-identity> OPTIONS");
+    fail("usage: payment-v1-directory-relay-artifact-gate.mjs <create-manifest|fast-seal-build|verify-build|verify-selection|snapshot-directory-chain|verify-directory-chain|verify-directory-chain-identity> OPTIONS");
   }
   const values = Object.create(null);
   if (chainCommands.has(command)) {
@@ -1101,7 +1406,10 @@ function parseCli(argv) {
     }
     values[flag] = value;
   }
-  for (const required of ["--repository", "--artifacts", "--source-commit", "--docker"]) {
+  const requiredFlags = command === "fast-seal-build"
+    ? ["--artifacts", "--source-commit"]
+    : ["--repository", "--artifacts", "--source-commit", "--docker"];
+  for (const required of requiredFlags) {
     if (values[required] === undefined) fail(`missing required CLI option ${required}`);
   }
   for (const pathFlag of ["--repository", "--artifacts", "--docker", "--output", "--selection", "--config"]) {
@@ -1110,7 +1418,11 @@ function parseCli(argv) {
     }
   }
   requireCommit(values["--source-commit"]);
-  if (command === "create-manifest") {
+  if (command === "fast-seal-build") {
+    for (const forbidden of ["--repository", "--docker", "--output", "--selection", "--config"]) {
+      if (values[forbidden] !== undefined) fail(`fast-seal-build forbids ${forbidden}`);
+    }
+  } else if (command === "create-manifest") {
     if (values["--output"] === undefined) fail("create-manifest requires --output");
     if (values["--selection"] !== undefined || values["--config"] !== undefined) {
       fail("create-manifest forbids selection/config inputs");
@@ -1157,6 +1469,14 @@ function runCli(argv) {
     process.stdout.write("directory-relay-output-parent-chain=PASS\n");
     return;
   }
+  if (command === "fast-seal-build") {
+    const sealed = fastSealBuildArtifactSet({
+      artifactRoot: values["--artifacts"],
+      sourceCommit: values["--source-commit"],
+    });
+    process.stdout.write(canonicalJson(sealed.artifactSeal));
+    return;
+  }
   const common = {
     artifactRoot: values["--artifacts"],
     dockerPath: values["--docker"],
@@ -1167,9 +1487,38 @@ function runCli(argv) {
     if (resolve(values["--output"]) !== join(resolve(common.artifactRoot), "build-manifest.json")) {
       fail("build manifest output must be ARTIFACTS/build-manifest.json");
     }
-    const facts = collectBuildArtifactFacts({ ...common, allowMissingManifest: true });
-    const bytes = Buffer.from(canonicalJson(buildManifestFromFacts(facts)), "utf8");
+    const details = collectBuildArtifactDetails({
+      ...common,
+      allowMissingManifest: true,
+      requireFinalModes: false,
+    });
+    const bytes = Buffer.from(canonicalJson(buildManifestFromFacts(details.facts)), "utf8");
     writeFileSync(values["--output"], bytes, { flag: "wx", mode: 0o444 });
+    const complete = collectBuildArtifactFastSealWithBytesV1(common.artifactRoot, {
+      label: "generated manifest complete fast seal",
+      requireFinalModes: false,
+    });
+    assertManifestExtendsArtifactFastSeal(details.artifactSeal, complete.seal);
+    const observed = factsFromArtifactBytesV1(
+      complete.bytesByName,
+      common.sourceCommit,
+    );
+    const parsed = parseCanonicalManifestBytes(
+      requiredArtifactBytes(complete.bytesByName, "build-manifest.json"),
+    );
+    validateBuildManifest(parsed.manifest, observed.facts);
+    if (canonicalJson(observed.facts) !== canonicalJson(details.facts)) {
+      fail("generated manifest artifact facts changed after the long runner seal");
+    }
+    const finalSeal = snapshotBuildArtifactFastSealV1(common.artifactRoot, {
+      label: "generated manifest final complete fast reseal",
+      requireFinalModes: false,
+    });
+    assertBuildArtifactFastSealsEqual(
+      complete.seal,
+      finalSeal,
+      "generated manifest complete artifact set",
+    );
     process.stdout.write(`directory-relay-build-manifest-sha256=${sha256(bytes)}\n`);
     return;
   }

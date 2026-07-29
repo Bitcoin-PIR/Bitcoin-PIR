@@ -459,9 +459,11 @@ steps authorizes installing the binary, changing `/usr/bin/false`, using the
 publisher key, opening a listener, routing traffic or publishing an event.
 The verifier seals the artifact-root parent chain across long rebuilds. The
 recipe applies host-side `SIGKILL` timeouts to every Docker operation, reseals
-the output-parent chain immediately before publication, and publishes with
-`renameat2(RENAME_NOREPLACE)`; unsupported kernels and every destination type
-fail closed.
+the complete closed-world allowlist after long runners and after manifest
+creation, compiles the publisher helper before the final seal, and immediately
+publishes with `renameat2(RENAME_NOREPLACE)`; unsupported kernels and every
+destination type fail closed. Each allowlisted file is bound through precise
+descriptor stat/read/hash/reopen seals including nlink and nanosecond ctime.
 The source-proof and recipe build phases use writable bind mounts and therefore
 reject a root host UID or GID instead of silently running their containers as
 root. Verifier-only rebuilds and binary-version execution have no writable bind
@@ -470,10 +472,21 @@ private tmpfs workspaces, regardless of the invoking operator.
 The verifier additionally requires an effective-UID-owned mode-0700 artifact
 root, rejects Docker mount-source commas/control bytes, bounds Docker and
 binary-version execution time/resources, and rechecks repository/object-store
-inodes plus source-archive bytes after the long builds. The recipe atomically
-publishes the completed directory with `RENAME_NOREPLACE`, so a concurrently
-created output file, directory or symlink blocks publication instead of
-receiving or replacing any artifact path.
+inodes plus every allowlisted artifact after the long builds. The recipe
+atomically publishes the completed directory with `RENAME_NOREPLACE`, so a
+concurrently created output file, directory or symlink blocks publication
+instead of receiving or replacing any artifact path. It then reseals the
+published inode set, repeats the full canonical-source/two-rebuild/version gate
+against the published path, and performs one final fast seal before reporting
+PASS.
+
+The build and published preparation directory remain writable in principle by
+the invoking EUID, and root remains outside this race model. Descriptor seals
+detect mutations during each bounded verification window; they do not make a
+same-EUID or root process untrusted after PASS. Consequently this output is not
+a production installation boundary. Independent digest verification and a
+separately reviewed copy into a root-owned, build-EUID-unwritable target remain
+mandatory before any later installation gate can advance.
 
 The recipe and verifier's clean builds on one Docker daemon establish local
 determinism only; the daemon and its host remain a trusted execution boundary.

@@ -342,18 +342,32 @@ a future resolved selection. The selection also pins the canonical
 build-manifest SHA-256.
 The artifact root must remain owned by the verifier's effective UID with exact
 mode `0700`; its descriptor-bound parent chain and nanosecond leaf fingerprint
-are sealed across the long verification. Docker bind-source paths reject
+are sealed across the long verification. After every long runner, the verifier
+re-reads the closed nine-file allowlist and descriptor-binds each regular file's
+device, inode, owner, mode, link count, size, nanosecond ctime/mtime and SHA-256
+through read and reopen/reseal passes. Manifest creation performs the same full
+seal after `build-manifest.json` exists. Docker bind-source paths reject
 commas and control bytes; every container and binary-version execution has
 CPU, file-descriptor, core-dump, in-container timeout and uncatchable host-side
 timeout bounds. Repository/object-store paths and inodes plus the source
-archive are rechecked after the long rebuilds. Final output publication first
-reseals the output-parent chain and then calls Linux/amd64
-`renameat2(RENAME_NOREPLACE)` through a reviewed helper. `EEXIST`, `ENOSYS` and
-every other refusal fail closed; there is no check-then-rename fallback.
+archive are rechecked after the long rebuilds. Final output publication compiles
+the helper before the last complete artifact seal, then immediately calls
+Linux/amd64 `renameat2(RENAME_NOREPLACE)` without an intervening compiler or
+shell. `EEXIST`, `ENOSYS` and every other refusal fail closed; there is no
+check-then-rename fallback. The published inode set is immediately resealed,
+then the published path repeats the full canonical-source, two-clean-rebuild
+and version verification and ends with another complete fast seal before PASS.
 Writable-bind source/build phases reject root host UID or GID. The verifier's
 read-only rebuild and version phases always use fixed unprivileged UID/GID
 65532 with owner-matched private tmpfs workspaces, so a root operator cannot
 silently turn those container checks into root execution.
+The build directory and published preparation artifact remain owned by the
+invoking EUID. These seals detect races but cannot make that EUID, or root,
+untrusted: either can mutate bytes after PASS. Therefore this publication is
+not an installation or authenticity boundary. A separate verifier must pin the
+reported digests, and production installation must copy verified bytes into its
+separately reviewed root-owned target without granting the build EUID write
+authority.
 Two clean builds on one Docker daemon prove local determinism, not independent
 supply-chain consensus: that daemon and host remain trusted execution
 boundaries. Before `RESOLVED`, a second operator on an independently prepared

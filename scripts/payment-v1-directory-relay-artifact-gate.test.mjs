@@ -30,7 +30,10 @@ import {
   DIRECTORY_RELAY_UNPRIVILEGED_UID,
   requireWritableBindHostIdentity,
   pinnedDockerRun,
+  assertBuildArtifactFastSealUnchangedV1,
   assertCanonicalDirectoryChainUnchangedV1,
+  fastSealBuildArtifactSet,
+  snapshotBuildArtifactFastSealV1,
   snapshotCanonicalDirectoryChainV1,
   validateBuildManifest,
   validateDockerMountHostPath,
@@ -40,6 +43,10 @@ import {
 import { canonicalJson } from "./payment-v1-rendered-artifact-gate.mjs";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const ARTIFACT_GATE = join(
+  SCRIPT_DIRECTORY,
+  "payment-v1-directory-relay-artifact-gate.mjs",
+);
 const HAS_NATIVE_RUSTC =
   spawnSync("rustc", ["--version"], { encoding: "utf8" }).status === 0;
 
@@ -227,8 +234,8 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
   assert.equal(recipe.match(/--memory 268435456/gmu)?.length, 1);
   assert.equal(recipe.match(/--memory-swap 268435456/gmu)?.length, 1);
   assert.equal(recipe.match(/--pids-limit 64/gmu)?.length, 1);
-  assert.equal(recipe.match(/--ulimit core=0:0/gmu)?.length, 4);
-  assert.equal(recipe.match(/--ulimit nofile=/gmu)?.length, 4);
+  assert.equal(recipe.match(/--ulimit core=0:0/gmu)?.length, 5);
+  assert.equal(recipe.match(/--ulimit nofile=/gmu)?.length, 5);
   for (const seconds of ["30", "60", "330", "1830"]) {
     assert.match(
       recipe,
@@ -238,7 +245,7 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
   assert.match(recipe, /payment-v1-renameat2-noreplace\.rs/gu);
   assert.match(recipe, /verify-directory-chain \\/gu);
   assert.match(recipe, /verify-directory-chain-identity \\/gu);
-  assert.match(recipe, /\/work\/payment-v1-renameat2-noreplace "\$1" "\$2"/gu);
+  assert.match(recipe, /\/publisher\/payment-v1-renameat2-noreplace \\\n+  "\/publish\/\$staging_name" "\/publish\/\$output_name"/gu);
   assert.match(recipe, /readonly staging_identity[\s\S]{0,160}staging_identity=/gu);
   assert.match(recipe, /"\$output_identity" != "\$staging_identity"/gu);
   assert.match(recipe, /if \[\[ -e "\$staging" \|\| ! -d "\$output" \|\| -L "\$output" \|\| \\/gu);
@@ -247,6 +254,9 @@ test("build recipe is pinned, offline, canonical, and invokes exactly two clean 
   assert.match(recipe, /\/usr\/bin\/git --version > \/output\/git-version\.txt/gu);
   assert.match(recipe, /\/usr\/bin\/tar --version \| \/usr\/bin\/sed -n "1p" > \/output\/tar-version\.txt/gu);
   assert.doesNotMatch(recipe, /\/usr\/bin\/git -C "\$repository"/gu);
+  assert.match(recipe, /fast-seal-build/gu);
+  assert.match(recipe, /published_artifact_seal/gu);
+  assert.match(recipe, /post_verification_artifact_seal/gu);
   assert.match(recipe, /node "\$script_root\/scripts\/payment-v1-directory-relay-artifact-gate\.mjs"/gu);
   assert.match(recipe, /cargo build --release --locked --offline -p bitcoinpir-directory-relay --bin bitcoinpir-directory-relay/gu);
   assert.equal(recipe.match(/^build_once [12]$/gmu)?.length, 2);
@@ -277,7 +287,10 @@ test("default verifier isolates Git metadata and rebuilds only private byte snap
     /timeout: timeoutMs/gu,
     /nofile=4096:4096/gu,
     /core=0:0/gu,
-    /source archive final confirmation/gu,
+    /artifact post-runner final fast seal/gu,
+    /readdirSync\(artifactRoot\)/gu,
+    /ctime_ns: stat\.ctimeNs\.toString\(\)/gu,
+    /path did not reseal to the descriptor-bound precise fingerprint/gu,
   ]) {
     assert.match(gate, pattern);
   }
@@ -289,6 +302,72 @@ test("default verifier isolates Git metadata and rebuilds only private byte snap
   assert.match(gate, /"--user",\s*`\$\{DIRECTORY_RELAY_UNPRIVILEGED_UID\}:\$\{DIRECTORY_RELAY_UNPRIVILEGED_GID\}`/gu);
   assert.match(gate, /size=4g,uid=\$\{DIRECTORY_RELAY_UNPRIVILEGED_UID\},gid=\$\{DIRECTORY_RELAY_UNPRIVILEGED_GID\},mode=0700/gu);
   assert.match(gate, /size=64m,uid=\$\{DIRECTORY_RELAY_UNPRIVILEGED_UID\},gid=\$\{DIRECTORY_RELAY_UNPRIVILEGED_GID\},mode=0700/gu);
+});
+
+test("final publication compiles its helper before sealing and fully verifies the published path", () => {
+  const recipe = readFileSync(
+    join(SCRIPT_DIRECTORY, "build-payment-v1-directory-relay.sh"),
+    "utf8",
+  );
+  const compileMarker = recipe.indexOf(
+    "publisher_helper_directory=\"$(mktemp -d",
+  );
+  const sealMarker = recipe.indexOf(
+    "artifact_publication_seal=\"$(node",
+    compileMarker,
+  );
+  const publishMarker = recipe.indexOf(
+    "\"$host_timeout_path\" --signal=KILL 30s \"$docker_path\" run",
+    sealMarker,
+  );
+  const publishedSealMarker = recipe.indexOf(
+    "published_artifact_seal=\"$(node",
+    publishMarker,
+  );
+  const fullVerifyMarker = recipe.indexOf(
+    "  verify-build \\",
+    publishedSealMarker,
+  );
+  const postVerifySealMarker = recipe.indexOf(
+    "post_verification_artifact_seal=\"$(node",
+    fullVerifyMarker,
+  );
+
+  assert.ok(compileMarker >= 0, "missing pre-seal helper compilation");
+  assert.ok(sealMarker > compileMarker, "artifact seal must follow helper compilation");
+  assert.ok(publishMarker > sealMarker, "atomic publication must follow the final seal");
+  assert.ok(publishedSealMarker > publishMarker, "published path must be immediately resealed");
+  assert.ok(fullVerifyMarker > publishedSealMarker, "published path must receive full verification");
+  assert.ok(postVerifySealMarker > fullVerifyMarker, "full verification must end in another fast seal");
+  assert.doesNotMatch(
+    recipe.slice(sealMarker, publishMarker),
+    /rustc|cargo|\/bin\/bash/u,
+    "no compiler, build or shell may run between final seal and publisher invocation",
+  );
+  assert.equal(recipe.match(/fast-seal-build/gmu)?.length, 3);
+});
+
+test("manifest creation performs a complete descriptor fast seal after the manifest exists", () => {
+  const gate = readFileSync(ARTIFACT_GATE, "utf8");
+  const createMarker = gate.indexOf('if (command === "create-manifest")');
+  const writeMarker = gate.indexOf("writeFileSync(values[\"--output\"]", createMarker);
+  const completeSealMarker = gate.indexOf(
+    'label: "generated manifest complete fast seal"',
+    writeMarker,
+  );
+  const manifestValidationMarker = gate.indexOf(
+    "validateBuildManifest(parsed.manifest, observed.facts);",
+    completeSealMarker,
+  );
+  const finalResealMarker = gate.indexOf(
+    'label: "generated manifest final complete fast reseal"',
+    manifestValidationMarker,
+  );
+  assert.ok(createMarker >= 0);
+  assert.ok(writeMarker > createMarker);
+  assert.ok(completeSealMarker > writeMarker);
+  assert.ok(manifestValidationMarker > completeSealMarker);
+  assert.ok(finalResealMarker > manifestValidationMarker);
 });
 
 test("Docker mount paths reject commas and control bytes", () => {
@@ -499,6 +578,17 @@ function elfAmd64(marker = 0x41) {
   return bytes;
 }
 
+function finalArtifactMode(name) {
+  return name.startsWith("bitcoinpir-directory-relay") ? 0o555 : 0o444;
+}
+
+function replaceArtifactBytes(artifactRoot, name, bytes) {
+  const path = join(artifactRoot, name);
+  chmodSync(path, 0o600);
+  writeFileSync(path, bytes);
+  chmodSync(path, finalArtifactMode(name));
+}
+
 function filesystemFixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "bitcoinpir-relay-artifacts-")));
   t.after(() => rmSync(root, { force: true, recursive: true }));
@@ -529,6 +619,7 @@ function filesystemFixture(t) {
   };
   for (const [name, bytes] of Object.entries(fileBytes)) {
     writeFileSync(join(artifactRoot, name), bytes);
+    chmodSync(join(artifactRoot, name), finalArtifactMode(name));
   }
   const fixtureFacts = {
     binaryVersionOutput: binaryVersion.slice(0, -1),
@@ -549,6 +640,7 @@ function filesystemFixture(t) {
     join(artifactRoot, "build-manifest.json"),
     canonicalJson(buildManifestFromFacts(fixtureFacts)),
   );
+  chmodSync(join(artifactRoot, "build-manifest.json"), 0o444);
 
   return {
     artifactRoot,
@@ -572,6 +664,150 @@ function filesystemFixture(t) {
 test("real artifact directory verifies with injected pinned-tool outputs", (t) => {
   const fixture = filesystemFixture(t);
   assert.equal(verifyBuildArtifactSet(fixture).facts.sourceCommit, fixture.sourceCommit);
+});
+
+test("complete fast seal is closed-world and binds every file's precise descriptor fingerprint", (t) => {
+  const fixture = filesystemFixture(t);
+  const sealed = fastSealBuildArtifactSet(fixture);
+  assert.equal(sealed.artifactSeal.schema_version, 1);
+  assert.equal(sealed.artifactSeal.files.length, 9);
+  assert.deepEqual(
+    sealed.artifactSeal.files.map((entry) => entry.file),
+    [
+      "Cargo.lock",
+      "binary-version.txt",
+      "bitcoinpir-directory-relay",
+      "bitcoinpir-directory-relay.build-1",
+      "bitcoinpir-directory-relay.build-2",
+      "build-manifest.json",
+      "git-version.txt",
+      "source.tar",
+      "tar-version.txt",
+    ],
+  );
+  for (const entry of sealed.artifactSeal.files) {
+    assert.deepEqual(
+      Object.keys(entry.fingerprint).sort(),
+      ["ctime_ns", "dev", "gid", "ino", "mode", "mtime_ns", "nlink", "size", "uid"],
+    );
+    assert.match(entry.sha256, /^[0-9a-f]{64}$/u);
+    assert.equal(entry.fingerprint.nlink, "1");
+  }
+  assert.equal(
+    assertBuildArtifactFastSealUnchangedV1(
+      sealed.artifactSeal,
+      fixture.artifactRoot,
+      "positive complete artifact seal",
+    ),
+    true,
+  );
+  const cli = spawnSync(process.execPath, [
+    ARTIFACT_GATE,
+    "fast-seal-build",
+    "--artifacts",
+    fixture.artifactRoot,
+    "--source-commit",
+    fixture.sourceCommit,
+  ], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(canonicalJson(JSON.parse(cli.stdout)), canonicalJson(sealed.artifactSeal));
+});
+
+for (const [label, name, replacement] of [
+  ["selected binary", "bitcoinpir-directory-relay", elfAmd64(0x51)],
+  ["Cargo.lock", "Cargo.lock", Buffer.from("# changed lockfile in runner window\n")],
+  ["recorded binary version", "binary-version.txt", Buffer.from("bitcoinpir-directory-relay 9.9.9\n")],
+  ["recorded Git version", "git-version.txt", Buffer.from("git version 9.9.9\n")],
+]) {
+  test(`post-runner complete fast seal rejects ${label} window`, (t) => {
+    const fixture = filesystemFixture(t);
+    fixture.testHooks = {
+      afterLongRunnersBeforeFinalSeal: () => {
+        replaceArtifactBytes(fixture.artifactRoot, name, replacement);
+      },
+    };
+    assert.throws(
+      () => verifyBuildArtifactSet(fixture),
+      /artifact set during long runner verification changed across descriptor-bound fast seals/u,
+    );
+  });
+}
+
+test("post-manifest-validation fast seal rejects manifest ABA window", (t) => {
+  const fixture = filesystemFixture(t);
+  const manifestPath = join(fixture.artifactRoot, "build-manifest.json");
+  const original = readFileSync(manifestPath);
+  fixture.testHooks = {
+    afterManifestValidationBeforeFinalSeal: () => {
+      replaceArtifactBytes(fixture.artifactRoot, "build-manifest.json", original);
+    },
+  };
+  assert.throws(
+    () => verifyBuildArtifactSet(fixture),
+    /artifact set across manifest validation changed across descriptor-bound fast seals/u,
+  );
+});
+
+test("Linux fast seal detects hardlink nlink ABA through ctime after link count is restored", {
+  skip: process.platform !== "linux",
+}, (t) => {
+  const fixture = filesystemFixture(t);
+  const selected = join(fixture.artifactRoot, "bitcoinpir-directory-relay");
+  const outsideLink = join(dirname(fixture.artifactRoot), "temporary-hardlink");
+  const beforeCtime = lstatSync(selected, { bigint: true }).ctimeNs;
+  const sealed = snapshotBuildArtifactFastSealV1(fixture.artifactRoot);
+  assert.equal(spawnSync("/bin/sleep", ["0.01"]).status, 0);
+  linkSync(selected, outsideLink);
+  assert.equal(lstatSync(selected).nlink, 2);
+  unlinkSync(outsideLink);
+  const after = lstatSync(selected, { bigint: true });
+  assert.equal(after.nlink, 1n);
+  assert.notEqual(after.ctimeNs, beforeCtime);
+  assert.throws(
+    () => assertBuildArtifactFastSealUnchangedV1(
+      sealed,
+      fixture.artifactRoot,
+      "hardlink ABA artifact seal",
+    ),
+    /changed across descriptor-bound fast seals/u,
+  );
+});
+
+test("Linux publication preserves the sealed inode set and completes full post-publish verification", {
+  skip: process.platform !== "linux" || !HAS_NATIVE_RUSTC,
+}, (t) => {
+  const fixture = filesystemFixture(t);
+  const fixtureRoot = dirname(fixture.artifactRoot);
+  const helper = join(fixtureRoot, "renameat2-noreplace-post-publish");
+  const compile = spawnSync("rustc", [
+    "--edition=2024",
+    "--check-cfg",
+    "cfg(payment_v1_test_force_enosys)",
+    "-Dwarnings",
+    join(SCRIPT_DIRECTORY, "payment-v1-renameat2-noreplace.rs"),
+    "-o",
+    helper,
+  ], { encoding: "utf8" });
+  assert.equal(compile.status, 0, compile.stderr);
+
+  const prePublication = fastSealBuildArtifactSet(fixture).artifactSeal;
+  const published = join(fixtureRoot, "published-artifacts");
+  const publication = spawnSync(
+    helper,
+    [fixture.artifactRoot, published],
+    { encoding: "utf8" },
+  );
+  assert.equal(publication.status, 0, publication.stderr);
+  assert.equal(existsSync(fixture.artifactRoot), false);
+  assert.equal(existsSync(published), true);
+
+  const publishedOptions = { ...fixture, artifactRoot: published };
+  const immediatePublishedSeal = fastSealBuildArtifactSet(publishedOptions).artifactSeal;
+  assert.equal(canonicalJson(immediatePublishedSeal), canonicalJson(prePublication));
+  const fullyVerified = verifyBuildArtifactSet(publishedOptions);
+  assert.equal(fullyVerified.facts.sourceCommit, fixture.sourceCommit);
+  const postVerification = fastSealBuildArtifactSet(publishedOptions).artifactSeal;
+  assert.equal(canonicalJson(postVerification), canonicalJson(prePublication));
 });
 
 test("real artifact directory requires current-euid ownership and exact mode 0700", (t) => {
@@ -600,16 +836,16 @@ test("repository source path and inode are rechecked after long verification", (
 test("source archive is reread after long verification", (t) => {
   const fixture = filesystemFixture(t);
   fixture.rebuildRunner = () => {
-    writeFileSync(join(fixture.artifactRoot, "source.tar"), "replaced while rebuilding\n");
+    replaceArtifactBytes(fixture.artifactRoot, "source.tar", "replaced while rebuilding\n");
     return [fixture.binary, fixture.binary];
   };
-  assert.throws(() => verifyBuildArtifactSet(fixture), /source archive path or bytes changed/u);
+  assert.throws(() => verifyBuildArtifactSet(fixture), /fast seals/u);
 });
 
 test("real artifact directory rejects an extra unknown file", (t) => {
   const fixture = filesystemFixture(t);
   writeFileSync(join(fixture.artifactRoot, "unreviewed"), "unexpected\n");
-  assert.throws(() => verifyBuildArtifactSet(fixture), /artifact root files must equal/u);
+  assert.throws(() => verifyBuildArtifactSet(fixture), /fast seal files must equal/u);
 });
 
 test("real artifact directory rejects a symlinked repository object store", (t) => {
@@ -622,7 +858,7 @@ test("real artifact directory rejects a symlinked repository object store", (t) 
 
 test("real artifact directory rejects source archive byte tampering", (t) => {
   const fixture = filesystemFixture(t);
-  writeFileSync(join(fixture.artifactRoot, "source.tar"), "tampered archive\n");
+  replaceArtifactBytes(fixture.artifactRoot, "source.tar", "tampered archive\n");
   assert.throws(() => verifyBuildArtifactSet(fixture), /canonical git archive/u);
 });
 
@@ -650,15 +886,16 @@ test("real artifact directory rejects non-ELF selected and clean-build files", (
     "bitcoinpir-directory-relay.build-2",
     "bitcoinpir-directory-relay",
   ]) {
-    writeFileSync(join(fixture.artifactRoot, name), Buffer.alloc(128, 0x42));
+    replaceArtifactBytes(fixture.artifactRoot, name, Buffer.alloc(128, 0x42));
   }
   assert.throws(() => verifyBuildArtifactSet(fixture), /ELF64 little-endian x86-64/u);
 });
 
 test("real artifact directory rejects non-identical clean builds", (t) => {
   const fixture = filesystemFixture(t);
-  writeFileSync(
-    join(fixture.artifactRoot, "bitcoinpir-directory-relay.build-2"),
+  replaceArtifactBytes(
+    fixture.artifactRoot,
+    "bitcoinpir-directory-relay.build-2",
     elfAmd64(0x43),
   );
   assert.throws(() => verifyBuildArtifactSet(fixture), /not byte-identical/u);

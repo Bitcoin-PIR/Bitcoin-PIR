@@ -18,7 +18,9 @@ Creates owner-only, non-production build evidence for the BitcoinPIR directory
 relay. It archives exactly SOURCE_COMMIT, then performs two independent clean
 Linux/amd64 builds in a registry-digest-pinned Rust container with networking
 disabled. It does not read a relay selection, config, publisher key, remote
-host, wallet, or deployment credential.
+host, wallet, or deployment credential. Its output remains owned by the
+invoking EUID and is preparation evidence, not a root-owned installation or a
+security boundary against that EUID or root after PASS.
 
 The pinned image must already exist locally. Pulling or approving that image is
 a separate supply-chain action; this script uses docker run --pull=never.
@@ -105,11 +107,15 @@ fi
 
 umask 077
 staging="$(mktemp -d "$output_parent/.directory-relay-build.XXXXXX")"
+publisher_helper_directory=''
 output_parent_initial_snapshot="$(node \
   "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
   snapshot-directory-chain \
   --directory "$output_parent")"
 cleanup() {
+  if [[ -n "${publisher_helper_directory:-}" && -d "$publisher_helper_directory" ]]; then
+    rm -rf -- "$publisher_helper_directory"
+  fi
   if [[ -n "${staging:-}" && -d "$staging" ]]; then
     rm -rf -- "$staging"
   fi
@@ -272,33 +278,12 @@ chmod 0444 "$staging/source.tar" "$staging/Cargo.lock" \
   "$staging/binary-version.txt" "$staging/git-version.txt" \
   "$staging/tar-version.txt" "$staging/build-manifest.json"
 
-# Verify stable output-parent identities across the long builds. Temporary
-# verifier siblings legitimately change the parent's timestamps, so a fresh
-# precise fingerprint is taken only after they are gone and immediately before
-# publication. Linux/amd64 renameat2(RENAME_NOREPLACE) then provides the atomic
-# no-clobber operation; ENOSYS, EEXIST and every other refusal fail closed.
-node "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
-  verify-directory-chain-identity \
-  --directory "$output_parent" \
-  --snapshot "$output_parent_initial_snapshot" >/dev/null
-output_parent_publication_snapshot="$(node \
-  "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
-  snapshot-directory-chain \
-  --directory "$output_parent")"
-node "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
-  verify-directory-chain \
-  --directory "$output_parent" \
-  --snapshot "$output_parent_publication_snapshot" >/dev/null
-staging_name="$(basename "$staging")"
-output_name="$(basename "$output")"
-readonly staging_identity
-# The template literal is evaluated by Node, not the host shell.
-# shellcheck disable=SC2016
-staging_identity="$(node -e '
-  const stat = require("node:fs").lstatSync(process.argv[1], { bigint: true });
-  if (!stat.isDirectory() || stat.isSymbolicLink()) process.exit(1);
-  process.stdout.write(`${stat.dev}:${stat.ino}`);
-' "$staging")"
+# Compile the reviewed publisher before the final artifact seal. The compiled
+# helper is not part of the artifact set and performs only the final Linux/amd64
+# renameat2(RENAME_NOREPLACE); no compiler or shell runs between the final seal
+# and that syscall wrapper.
+publisher_helper_directory="$(mktemp -d "$output_parent/.directory-relay-publisher.XXXXXX")"
+reject_docker_mount_path "$publisher_helper_directory" 'publisher helper directory path'
 "$host_timeout_path" --signal=KILL 60s "$docker_path" run \
   --rm \
   --pull=never \
@@ -316,7 +301,7 @@ staging_identity="$(node -e '
   --user "$host_uid:$host_gid" \
   --tmpfs "/work:rw,exec,nosuid,nodev,size=64m,uid=$host_uid,gid=$host_gid,mode=0700" \
   --mount "type=bind,src=$rename_helper_source,dst=/input/payment-v1-renameat2-noreplace.rs,readonly" \
-  --mount "type=bind,src=$output_parent,dst=/publish" \
+  --mount "type=bind,src=$publisher_helper_directory,dst=/output" \
   "$build_image" \
   /usr/bin/timeout --signal=KILL 45s /bin/bash -ceu '
     cd /work
@@ -328,9 +313,73 @@ staging_identity="$(node -e '
       -C strip=symbols \
       -D warnings \
       /input/payment-v1-renameat2-noreplace.rs \
-      -o /work/payment-v1-renameat2-noreplace
-    /work/payment-v1-renameat2-noreplace "$1" "$2"
-  ' -- "/publish/$staging_name" "/publish/$output_name"
+      -o /output/payment-v1-renameat2-noreplace
+  '
+publisher_helper="$publisher_helper_directory/payment-v1-renameat2-noreplace"
+chmod 0555 "$publisher_helper"
+reject_docker_mount_path "$publisher_helper" 'compiled publisher helper path'
+node -e '
+  const stat = require("node:fs").lstatSync(process.argv[1], { bigint: true });
+  const euid = BigInt(process.geteuid());
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n ||
+      stat.uid !== euid || (stat.mode & 0o7777n) !== 0o555n) process.exit(1);
+' "$publisher_helper"
+
+staging_name="$(basename "$staging")"
+output_name="$(basename "$output")"
+readonly staging_identity
+# The template literal is evaluated by Node, not the host shell.
+# shellcheck disable=SC2016
+staging_identity="$(node -e '
+  const stat = require("node:fs").lstatSync(process.argv[1], { bigint: true });
+  if (!stat.isDirectory() || stat.isSymbolicLink()) process.exit(1);
+  process.stdout.write(`${stat.dev}:${stat.ino}`);
+' "$staging")"
+
+# Verify stable output-parent identities across the long builds. Temporary
+# verifier siblings legitimately change the parent's timestamps, so a fresh
+# precise fingerprint is taken only after helper compilation. Then perform the
+# complete closed-world artifact seal and immediately invoke the precompiled
+# no-clobber publisher. ENOSYS, EEXIST and every other refusal fail closed.
+node "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
+  verify-directory-chain-identity \
+  --directory "$output_parent" \
+  --snapshot "$output_parent_initial_snapshot" >/dev/null
+output_parent_publication_snapshot="$(node \
+  "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
+  snapshot-directory-chain \
+  --directory "$output_parent")"
+node "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
+  verify-directory-chain \
+  --directory "$output_parent" \
+  --snapshot "$output_parent_publication_snapshot" >/dev/null
+artifact_publication_seal="$(node \
+  "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
+  fast-seal-build \
+  --artifacts "$staging" \
+  --source-commit "$source_commit")"
+"$host_timeout_path" --signal=KILL 30s "$docker_path" run \
+  --rm \
+  --pull=never \
+  --platform linux/amd64 \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --memory 67108864 \
+  --memory-swap 67108864 \
+  --pids-limit 16 \
+  --cpus 1 \
+  --ulimit nofile=64:64 \
+  --ulimit core=0:0 \
+  --user "$host_uid:$host_gid" \
+  --tmpfs "/work:rw,exec,nosuid,nodev,size=64m,uid=$host_uid,gid=$host_gid,mode=0700" \
+  --mount "type=bind,src=$publisher_helper,dst=/publisher/payment-v1-renameat2-noreplace,readonly" \
+  --mount "type=bind,src=$output_parent,dst=/publish" \
+  "$build_image" \
+  /usr/bin/timeout --signal=KILL 15s \
+  /publisher/payment-v1-renameat2-noreplace \
+  "/publish/$staging_name" "/publish/$output_name"
 output_identity=''
 if [[ ! -e "$staging" && -d "$output" && ! -L "$output" ]]; then
   # The template literal is evaluated by Node, not the host shell.
@@ -344,6 +393,34 @@ fi
 if [[ -e "$staging" || ! -d "$output" || -L "$output" || \
       "$output_identity" != "$staging_identity" ]]; then
   echo 'directory-relay-build: atomic no-clobber output publication failed closed' >&2
+  exit 1
+fi
+published_artifact_seal="$(node \
+  "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
+  fast-seal-build \
+  --artifacts "$output" \
+  --source-commit "$source_commit")"
+if [[ "$published_artifact_seal" != "$artifact_publication_seal" ]]; then
+  echo 'directory-relay-build: published artifact bytes or precise fingerprints changed' >&2
+  exit 1
+fi
+
+# Publication is preparation-only, but PASS is withheld until the published
+# path itself completes the full canonical-source, two-rebuild and version
+# verification. A final fast seal closes the post-verification window.
+node "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
+  verify-build \
+  --repository "$repository" \
+  --artifacts "$output" \
+  --source-commit "$source_commit" \
+  --docker "$docker_path" >/dev/null
+post_verification_artifact_seal="$(node \
+  "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
+  fast-seal-build \
+  --artifacts "$output" \
+  --source-commit "$source_commit")"
+if [[ "$post_verification_artifact_seal" != "$artifact_publication_seal" ]]; then
+  echo 'directory-relay-build: published artifact changed during full verification' >&2
   exit 1
 fi
 node "$script_root/scripts/payment-v1-directory-relay-artifact-gate.mjs" \
