@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import {
   lstatSync,
   readFileSync,
@@ -1954,6 +1954,12 @@ export function validateRelaySelection(text) {
   }
   if (/^0{64}$/.test(publisherPubkey)) {
     fail("resolved relay publisher_pubkey_hex must be non-zero");
+  }
+  try {
+    const key = createECDH("secp256k1");
+    key.setPublicKey(Buffer.from(`02${publisherPubkey}`, "hex"));
+  } catch {
+    fail("resolved relay publisher_pubkey_hex must be a valid secp256k1 x-only key");
   }
   return {
     status,

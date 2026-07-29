@@ -72,7 +72,7 @@ function resolvedRelaySelection(text, overrides = {}) {
     binary_sha256: "4".repeat(64),
     binary_version_output: "bitcoinpir-directory-relay 0.1.0",
     config_sha256: "5".repeat(64),
-    publisher_pubkey_hex: "6".repeat(64),
+    publisher_pubkey_hex: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
     ...overrides,
   };
   let output = text;
@@ -981,6 +981,15 @@ test("relay selection defaults to unresolved and rejects unsafe implementations"
   });
   assert.throws(() => validateRelaySelection(zeroPublisher), /must be non-zero/);
 
+  for (const invalidPublisher of ["06".repeat(32), "ff".repeat(32)]) {
+    assert.throws(
+      () => validateRelaySelection(resolvedRelaySelection(unresolved, {
+        publisher_pubkey_hex: invalidPublisher,
+      })),
+      /must be a valid secp256k1 x-only key/,
+    );
+  }
+
   const zeroArtifactHash = resolvedRelaySelection(unresolved, {
     build_manifest_sha256: "0".repeat(64),
   });
@@ -1001,7 +1010,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
     binarySha256: "4".repeat(64),
     binaryVersionOutput: "bitcoinpir-directory-relay 0.1.0",
     configSha256: "5".repeat(64),
-    publisherPubkey: "6".repeat(64),
+    publisherPubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   });
 
   withFixture((root) => {
@@ -1016,7 +1025,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
       (text) =>
         text.replace(
           "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "6".repeat(64),
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         ),
     );
     mutate(
@@ -1045,7 +1054,7 @@ test("a future directory-only exact-hash relay selection is accepted", () => {
       (text) =>
         text.replace(
           "@DIRECTORY_PUBLISHER_PUBKEY_HEX@",
-          "6".repeat(64),
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         ),
     );
     mutate(

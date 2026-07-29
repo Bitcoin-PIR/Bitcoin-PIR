@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use pir_directory_nostr::validate_directory_xonly_public_key_v1;
 use pir_private_files::{read_private_file_bounded_v1, PrivateFileModeV1};
 use serde::Deserialize;
 
@@ -232,6 +233,8 @@ fn decode_public_key(value: &str) -> Result<[u8; 32], String> {
     if key.iter().all(|byte| *byte == 0) {
         return Err("directory public key cannot be all zero".to_owned());
     }
+    validate_directory_xonly_public_key_v1(&key)
+        .map_err(|_| "directory public key must be a valid secp256k1 x-only key".to_owned())?;
     Ok(key)
 }
 
@@ -287,6 +290,23 @@ egress_timeout_seconds = 1
             config: path.clone()
         })
         .is_ok());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        for invalid_key in [&"00".repeat(32), &"06".repeat(32), &"ff".repeat(32)] {
+            fs::write(
+                &path,
+                render("127.0.0.1:8080", "127.0.0.1:8081", invalid_key),
+            )
+            .unwrap();
+            assert!(RelayConfig::try_from(Cli {
+                config: path.clone()
+            })
+            .is_err());
+        }
+        fs::write(
+            &path,
+            render("127.0.0.1:8080", "127.0.0.1:8081", &"01".repeat(32)),
+        )
+        .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o440)).unwrap();
         assert!(RelayConfig::try_from(Cli {
             config: path.clone()
