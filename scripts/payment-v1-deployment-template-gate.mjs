@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { validatePublisherNetnsTree } from "./payment-v1-publisher-netns-gate.mjs";
 
 export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/pir-primary.service":
@@ -86,8 +87,17 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
   "deploy/payment-v1/systemd/rollback-authority.service.in",
   "deploy/payment-v1/systemd/hetzner-directory-relay.service.in",
+  "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+  "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+  "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+  "deploy/payment-v1/network/README.md",
+  "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+  "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+  "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+  "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
   "deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in",
   "docs/payment/HETZNER_VPSBG_DEPLOYMENT.md",
+  "scripts/payment-v1-publisher-netns.c",
 ]);
 
 const TEMPLATE_ROOT = "deploy/payment-v1";
@@ -2326,6 +2336,7 @@ function validateTemplateTreeShape(root) {
       !rel.endsWith(".Caddyfile.in") &&
       !rel.endsWith(".cfg.in") &&
       !rel.endsWith(".conf.in") &&
+      !rel.endsWith(".json.in") &&
       !rel.endsWith(".sh.in") &&
       !rel.endsWith(".toml.example") &&
       !rel.endsWith(".md")
@@ -2371,6 +2382,7 @@ export function validateDeploymentTree(rootInput) {
   for (const required of REQUIRED_PREPARATION_FILES) readRequired(root, required);
   validateTemplateTreeShape(root);
   validateActiveBaselines(root);
+  validatePublisherNetnsTree(root);
 
   const provider = readRequired(
     root,

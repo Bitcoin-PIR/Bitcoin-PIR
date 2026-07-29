@@ -59,6 +59,7 @@ import {
   readOneLinkRegular,
   readOneLinkRegularForTestV1,
   validateNonRootEdgeCapabilitiesV1,
+  validatePublisherNetworkRuntimeEvidenceV1,
   validateLiveRuntimeEvidence,
   validateStoppedEdgeActivationEvidence,
   validateStoppedRelayPreparationEvidence,
@@ -72,6 +73,7 @@ import {
   RUNTIME_COLLECTOR,
   RUNTIME_SYSTEMCTL_SHOW_PROPERTIES,
 } from "./payment-v1-rendered-artifact-gate.mjs";
+import { PUBLISHER_FIREWALL_OUTPUT_KEYS } from "./payment-v1-publisher-netns-gate.mjs";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const COLLECTOR = join(SCRIPT_DIRECTORY, "payment-v1-linux-runtime-evidence.mjs");
@@ -900,8 +902,12 @@ test("live collector seals expensive secrets before its final Conditions and gen
     "// Complete expensive secret revalidation only after every earlier long host,",
   );
   const finalStateMarker = source.indexOf(
-    "// The final external-state pass is deliberately lightweight and comes after",
+    "// The bounded publisher namespace/firewall transaction contains the last",
     secretSealMarker,
+  );
+  const finalUnitMarker = source.indexOf(
+    "// Per-unit checks inside collectUnit are not enough:",
+    finalStateMarker,
   );
   const finishedMarker = source.indexOf(
     "  const finished = Math.floor(Date.now() / 1000);",
@@ -910,7 +916,8 @@ test("live collector seals expensive secrets before its final Conditions and gen
   const evidenceMarker = source.indexOf("  const evidence = {", finishedMarker);
 
   assert.ok(secretSealMarker >= 0, "missing final secret-seal ordering marker");
-  assert.ok(finalStateMarker > secretSealMarker, "final unit-state pass must follow secret sealing");
+  assert.ok(finalStateMarker > secretSealMarker, "publisher network sealing must follow secret sealing");
+  assert.ok(finalUnitMarker > finalStateMarker, "publisher network probes must precede final unit sealing");
   assert.ok(finishedMarker > finalStateMarker, "collection finish timestamp must follow final unit-state pass");
   assert.ok(evidenceMarker > finishedMarker, "evidence construction must immediately follow final state sealing");
 
@@ -920,15 +927,33 @@ test("live collector seals expensive secrets before its final Conditions and gen
 
   const finalStatePass = source.slice(finalStateMarker, finishedMarker);
   assert.match(finalStatePass, /collectEffectiveCredentialProperties\(/);
+  assert.match(finalStatePass, /collectPublisherNetworkRuntimeEvidence\(request\)/);
+  assert.ok(
+    finalStatePass.indexOf("collectPublisherNetworkRuntimeEvidence(request)") <
+      finalStatePass.indexOf("collectEffectiveConditions(request.units[index].unit_name)"),
+    "publisher network probes must finish before final Conditions/generation sealing",
+  );
   assert.match(finalStatePass, /collectEffectiveConditions\(/);
   assert.match(finalStatePass, /collectEffectiveUnitDependenciesV1\(/);
   assert.match(finalStatePass, /collectEffectiveServicePropertiesV1\(/);
   assert.match(finalStatePass, /assertEffectiveSystemdPolicySnapshotUnchangedV1\(/);
   assert.match(finalStatePass, /confirmUnitGeneration\(/);
+  assert.match(finalStatePass, /sealPublisherNamespaceOwnerRuntimeEvidence\(publisherNetwork\)/);
+  assert.ok(
+    finalStatePass.indexOf("confirmUnitGeneration(request.units[index]") <
+      finalStatePass.indexOf("sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork)"),
+    "auxiliary namespace owner must be sealed after the final requested-unit pass",
+  );
+  const afterFinalUnitSeal = source.slice(finalUnitMarker, finishedMarker);
   assert.doesNotMatch(
-    finalStatePass,
+    afterFinalUnitSeal,
     /confirmSecretFilesUnchanged|confirmSecretParentDirectoriesUnchanged|collectExtendedMetadata|collectInstalledFile/,
     "expensive secret or metadata probes must not run after final Conditions/generation sealing",
+  );
+  assert.doesNotMatch(
+    afterFinalUnitSeal,
+    /collectPublisherNetworkRuntimeEvidence/,
+    "publisher network probes must not run after final Conditions/generation sealing",
   );
 });
 
@@ -1177,9 +1202,11 @@ function fixture() {
     MemoryMax: "268435456",
     MemorySwapCurrent: "0",
     MemorySwapMax: "0",
+    NetworkNamespacePath: "",
     NoNewPrivileges: "yes",
     NotifyAccess: "none",
     PrivateDevices: "yes",
+    PrivateMounts: "no",
     PrivateTmp: "yes",
     ProcSubset: "all",
     ProtectClock: "",
@@ -1208,8 +1235,10 @@ function fixture() {
     SupplementaryGroups: "bitcoinpir-shared",
     SystemCallArchitectures: "native",
     TasksMax: "128",
+    TemporaryFileSystem: "",
     Type: "simple",
     UMask: "0077",
+    UnsetEnvironment: "",
     User: "bitcoinpir-test",
     WatchdogUSec: "0",
     WorkingDirectory: "/var/lib/bitcoinpir-test",
@@ -2149,6 +2178,467 @@ function preflightLeaseFixture() {
   }
   return value;
 }
+
+function publisherNetworkFixture() {
+  const helperSha256 = hash("publisher-namespace-helper");
+  const helperPath =
+    `/opt/bitcoinpir/publisher-netns/${helperSha256}/payment-v1-publisher-netns`;
+  const fragmentSha256 = hash("publisher-namespace-owner-fragment");
+  const request = {
+    caddy_drop_in_path:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    caddy_service_unit: "bhtm-caddy.service",
+    firewall: {
+      forwarding_sysctls: {
+        "net.ipv4.ip_forward": 0,
+        "net.ipv6.conf.all.forwarding": 0,
+      },
+      interface: "bpir-pub-h",
+      semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+      ufw_rules_in_install_order: [
+        "prepend deny in on bpir-pub-h from any to any",
+        "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+        "route prepend deny in on bpir-pub-h from any to any",
+        "route prepend deny out on bpir-pub-h from any to any",
+      ],
+    },
+    forbidden_caddy_reverse_stop_edges: ["BindsTo", "PartOf", "Requires"],
+    namespace: {
+      client: "10.203.0.2/30",
+      host: "10.203.0.1/30",
+      name: "bpir-directory-publisher",
+      path: "/run/netns/bpir-directory-publisher",
+    },
+    namespace_owner_unit: "bitcoinpir-payment-v1-publisher-netns.service",
+    network_policy_sha256: hash("publisher-network-policy"),
+    publication_mode: {
+      centralized: true,
+      degraded: true,
+      name: "centralized-single-relay",
+    },
+    publication_time_firewall_binding: {
+      activation_blocked: true,
+      implemented: false,
+      point_in_time_evidence_only: true,
+    },
+    publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+  };
+  const installedFiles = [
+    {
+      file_type: "regular",
+      gid: 0,
+      mode: "0644",
+      nlink: 1,
+      sha256: fragmentSha256,
+      target_path:
+        "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+      uid: 0,
+    },
+    {
+      file_type: "regular",
+      gid: 0,
+      mode: "0555",
+      nlink: 1,
+      sha256: helperSha256,
+      target_path: helperPath,
+      uid: 0,
+    },
+  ];
+  const ownerConditions = [
+    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/EDGE-ACTIVATION-APPROVED",
+    "/etc/bitcoinpir/payment-v1/SOURCE-FAIR-PREFLIGHT-APPROVED",
+    "/etc/bitcoinpir/payment-v1/DIRECTORY-PUBLISHER-PRIVATE-INGRESS-APPROVED",
+    "/etc/bitcoinpir/payment-v1/PUBLISHER-NETNS-ACTIVATION-APPROVED",
+  ].map((parameter) => ({
+    negate: false,
+    parameter,
+    path_exists: true,
+    result: 1,
+    trigger: false,
+    type: "ConditionPathExists",
+  })).sort((left, right) => left.parameter < right.parameter ? -1 : left.parameter > right.parameter ? 1 : 0);
+  const ownerControlGroup =
+    "/system.slice/bitcoinpir-payment-v1-publisher-netns.service";
+  const ownerProperties = {
+    ActiveEnterTimestampMonotonic: "7000000",
+    ActiveState: "active",
+    AmbientCapabilities: "",
+    CapabilityBoundingSet: "CAP_NET_ADMIN CAP_SYS_ADMIN",
+    ConditionResult: "yes",
+    ControlGroup: ownerControlGroup,
+    DropInPaths: "",
+    ExecStart: execValue(`${helperPath} run`),
+    ExecStartPre: [
+      `/usr/bin/test -x ${helperPath}`,
+      "/usr/bin/sha256sum --check --strict /etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+      `${helperPath} self-test`,
+    ].map(execValue).join(" ; "),
+    ExecStopPost: execValue(`${helperPath} cleanup`),
+    FragmentPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+    Group: "root",
+    InvocationID: "b".repeat(32),
+    KillMode: "control-group",
+    LimitCORE: "0",
+    LimitCORESoft: "0",
+    LoadState: "loaded",
+    LockPersonality: "yes",
+    MainPID: "4402",
+    MemoryDenyWriteExecute: "yes",
+    MemoryMax: "67108864",
+    MemorySwapCurrent: "0",
+    MemorySwapMax: "0",
+    NeedDaemonReload: "no",
+    NoNewPrivileges: "yes",
+    NotifyAccess: "main",
+    PartOf: "bhtm-caddy.service",
+    Restart: "no",
+    RestrictAddressFamilies: "AF_UNIX AF_NETLINK",
+    RestrictNamespaces: "net",
+    RestrictRealtime: "yes",
+    RestrictSUIDSGID: "yes",
+    Result: "success",
+    StateDirectory: "bitcoinpir-publisher-netns",
+    StateDirectoryMode: "0700",
+    StandardError: "null",
+    StandardOutput: "null",
+    SubState: "running",
+    SystemCallArchitectures: "native",
+    TasksMax: "8",
+    TimeoutStartUSec: "30s",
+    TimeoutStopUSec: "30s",
+    Type: "notify",
+    UMask: "0077",
+    User: "root",
+    WorkingDirectory: "/var/lib/bitcoinpir-publisher-netns",
+  };
+  const ownerGeneration = {
+    active_enter_timestamp_monotonic: ownerProperties.ActiveEnterTimestampMonotonic,
+    active_state: "active",
+    control_group: ownerControlGroup,
+    invocation_id: ownerProperties.InvocationID,
+    main_pid: ownerProperties.MainPID,
+    need_daemon_reload: "no",
+  };
+  const monitorCapabilities = capabilityRecord({
+    bounding: "0000000000201000",
+  });
+  const monitorProcess = ({
+    exeIno,
+    netNamespace,
+    parentPid,
+    pid,
+    procIno,
+    startTime,
+  }) => ({
+    capabilities: clone(monitorCapabilities),
+    control_group: ownerControlGroup,
+    executable: {
+      dev: "21",
+      ino: exeIno,
+      path: helperPath,
+      sha256: helperSha256,
+    },
+    gid: [0, 0, 0, 0],
+    groups: [0],
+    net_namespace: netNamespace,
+    no_new_privs: 1,
+    parent_pid: parentPid,
+    pid,
+    proc_directory_dev: "9",
+    proc_directory_ino: procIno,
+    seccomp: 2,
+    start_time_ticks: startTime,
+    uid: [0, 0, 0, 0],
+  });
+  const ownerProcessPass = {
+    child: monitorProcess({
+      exeIno: "700",
+      netNamespace: "net:[4026532999]",
+      parentPid: 4402,
+      pid: 4403,
+      procIno: "741",
+      startTime: "500001",
+    }),
+    collector_net_namespace: "net:[4026531840]",
+    direct_children: [4403],
+    main: monitorProcess({
+      exeIno: "700",
+      netNamespace: "net:[4026531840]",
+      parentPid: 1,
+      pid: 4402,
+      procIno: "740",
+      startTime: "500000",
+    }),
+  };
+  const boundary = {
+    caddy_dependency: {
+      active_state: "active",
+      after_namespace_owner: true,
+      binds_to_namespace_owner: false,
+      drop_in_paths_sha256: hash("publisher-caddy-drop-ins"),
+      load_state: "loaded",
+      part_of_namespace_owner: false,
+      requires_namespace_owner: false,
+      wants_namespace_owner: true,
+    },
+    forwarding_sysctls: {
+      "net.ipv4.ip_forward": 0,
+      "net.ipv6.conf.all.forwarding": 0,
+    },
+    namespace_mount: {
+      dev: "13",
+      filesystem_type: "nsfs",
+      ino: "4026532999",
+      major_minor: "0:4",
+      mount_id: "812",
+      mount_source: "nsfs",
+      parent_mount_id: "29",
+      root: "/",
+      statfs_type: 0x6e736673,
+    },
+    namespace_owner: {
+      condition_confirmations: [
+        clone(ownerConditions), clone(ownerConditions), clone(ownerConditions),
+      ],
+      effective_properties: ownerProperties,
+      fragment_sha256: fragmentSha256,
+      generation_confirmations: [
+        clone(ownerGeneration), clone(ownerGeneration), clone(ownerGeneration),
+      ],
+      helper_path: helperPath,
+      helper_sha256: helperSha256,
+      process_passes: [clone(ownerProcessPass), clone(ownerProcessPass)],
+    },
+  };
+  const semantic = {
+    closed_prelude_profile: "ufw-base-before-user-and-user-prefix-v1",
+    nft_ip6_forward: [
+      'oifname "bpir-pub-h" drop',
+      'iifname "bpir-pub-h" drop',
+    ],
+    nft_ip6_input: ['iifname "bpir-pub-h" drop'],
+    nft_ip_forward: [
+      'oifname "bpir-pub-h" drop',
+      'iifname "bpir-pub-h" drop',
+    ],
+    nft_ip_input: [
+      'ip saddr 10.203.0.2 ip daddr 10.203.0.1 iifname "bpir-pub-h" tcp dport 443 accept',
+      'iifname "bpir-pub-h" drop',
+    ],
+    ufw_raw: [
+      "COUNTERS ACCEPT 6 -- bpir-pub-h * 10.203.0.2 10.203.0.1 tcp dpt:443",
+      "COUNTERS DROP 0 -- bpir-pub-h * 0.0.0.0/0 0.0.0.0/0",
+      "COUNTERS DROP 0 -- bpir-pub-h * 0.0.0.0/0 0.0.0.0/0",
+      "COUNTERS DROP 0 -- * bpir-pub-h 0.0.0.0/0 0.0.0.0/0",
+      "COUNTERS DROP 0 -- bpir-pub-h * ::/0 ::/0",
+      "COUNTERS DROP 0 -- bpir-pub-h * ::/0 ::/0",
+      "COUNTERS DROP 0 -- * bpir-pub-h ::/0 ::/0",
+    ],
+    ufw_status: [
+      "10.203.0.1 443/tcp on bpir-pub-h ALLOW IN 10.203.0.2",
+      "Anywhere on bpir-pub-h DENY IN Anywhere",
+      "Anywhere DENY FWD Anywhere on bpir-pub-h",
+      "Anywhere on bpir-pub-h DENY FWD Anywhere (out)",
+      "Anywhere (v6) on bpir-pub-h DENY IN Anywhere (v6)",
+      "Anywhere (v6) DENY FWD Anywhere (v6) on bpir-pub-h",
+      "Anywhere (v6) on bpir-pub-h DENY FWD Anywhere (v6) (out)",
+    ],
+    validated_output_keys: [...PUBLISHER_FIREWALL_OUTPUT_KEYS],
+  };
+  const firewallPass = {
+    output_sha256: Object.fromEntries(PUBLISHER_FIREWALL_OUTPUT_KEYS.map(
+      (name) => [name, hash(`publisher-${name}`)],
+    )),
+    semantic_outputs: semantic,
+    semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+  };
+  const evidence = {
+    boundary_confirmations: [clone(boundary), clone(boundary)],
+    firewall_passes: [clone(firewallPass), clone(firewallPass)],
+    ufw_dry_run_reload: {
+      argv: ["/usr/sbin/ufw", "--dry-run", "reload"],
+      exit_status: 0,
+      stderr_sha256: hash(""),
+      stdout_sha256: hash("publisher-ufw-dry-run"),
+    },
+  };
+  return {
+    evidence,
+    request: {
+      installed_files: installedFiles,
+      publisher_network: request,
+    },
+  };
+}
+
+function mutatePublisherOwners(value, mutate) {
+  for (const boundary of value.evidence.boundary_confirmations) {
+    mutate(boundary.namespace_owner, boundary);
+  }
+  return value;
+}
+
+function mutatePublisherProcessPasses(value, mutate) {
+  return mutatePublisherOwners(value, (owner, boundary) => {
+    for (const pass of owner.process_passes) mutate(pass, boundary);
+  });
+}
+
+test("publisher network evidence binds nsfs, UFW raw/nft, sysctls, and one-way Caddy lifecycle", () => {
+  const value = publisherNetworkFixture();
+  assert.equal(validatePublisherNetworkRuntimeEvidenceV1(value.evidence, value.request), true);
+
+  const source = readFileSync(COLLECTOR, "utf8");
+  for (const key of PUBLISHER_FIREWALL_OUTPUT_KEYS) {
+    assert.match(source, new RegExp(`\\b${key}:`, "u"), `collector must bind ${key}`);
+  }
+
+  const reverse = publisherNetworkFixture();
+  reverse.evidence.boundary_confirmations[0].caddy_dependency.binds_to_namespace_owner = true;
+  reverse.evidence.boundary_confirmations[1].caddy_dependency.binds_to_namespace_owner = true;
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(reverse.evidence, reverse.request),
+    /reverse stop edge/u,
+  );
+
+  const firewall = publisherNetworkFixture();
+  firewall.evidence.firewall_passes[1].semantic_outputs.nft_ip_input.push(
+    'iifname "bpir-pub-h" udp dport 53 accept',
+  );
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(firewall.evidence, firewall.request),
+    /closed UFW|changed around/u,
+  );
+
+  const mode = publisherNetworkFixture();
+  mode.request.publisher_network.publication_mode.degraded = false;
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(mode.evidence, mode.request),
+    /centralized closed profile/u,
+  );
+
+  const namespace = publisherNetworkFixture();
+  namespace.request.publisher_network.namespace.client = "10.203.0.6/30";
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(namespace.evidence, namespace.request),
+    /centralized closed profile/u,
+  );
+
+  const firewallRequest = publisherNetworkFixture();
+  firewallRequest.request.publisher_network.firewall.ufw_rules_in_install_order.push(
+    "allow out on bpir-pub-h to any proto udp port 53",
+  );
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(
+      firewallRequest.evidence,
+      firewallRequest.request,
+    ),
+    /centralized closed profile/u,
+  );
+
+  const publisherUnit = publisherNetworkFixture();
+  publisherUnit.request.publisher_network.publisher_unit = "bitcoinpir-unreviewed.service";
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(
+      publisherUnit.evidence,
+      publisherUnit.request,
+    ),
+    /centralized closed profile/u,
+  );
+
+  const publicationBinding = publisherNetworkFixture();
+  publicationBinding.request.publisher_network.publication_time_firewall_binding.activation_blocked = false;
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(
+      publicationBinding.evidence,
+      publicationBinding.request,
+    ),
+    /centralized closed profile/u,
+  );
+
+  const missingFirewallOutput = publisherNetworkFixture();
+  for (const pass of missingFirewallOutput.evidence.firewall_passes) {
+    delete pass.output_sha256.nft_ip_base_input;
+  }
+  assert.throws(
+    () => validatePublisherNetworkRuntimeEvidenceV1(
+      missingFirewallOutput.evidence,
+      missingFirewallOutput.request,
+    ),
+    /firewall output digests/u,
+  );
+
+  for (const [label, mutate, expression] of [
+    ["zero namespace device", (candidate) => {
+      for (const boundary of candidate.evidence.boundary_confirmations) {
+        boundary.namespace_mount.dev = "0";
+      }
+    }, /nsfs mount/u],
+    ["zero namespace inode", (candidate) => {
+      for (const boundary of candidate.evidence.boundary_confirmations) {
+        boundary.namespace_mount.ino = "0";
+      }
+    }, /nsfs mount/u],
+    ["effective hardening mutation", (candidate) => mutatePublisherOwners(candidate, (owner) => {
+      owner.effective_properties.NoNewPrivileges = "no";
+    }), /NoNewPrivileges drifted/u],
+    ["effective drop-in", (candidate) => mutatePublisherOwners(candidate, (owner) => {
+      owner.effective_properties.DropInPaths = "/etc/systemd/system/unsafe.conf";
+    }), /DropInPaths drifted/u],
+    ["daemon reload pending", (candidate) => mutatePublisherOwners(candidate, (owner) => {
+      owner.effective_properties.NeedDaemonReload = "yes";
+      for (const confirmation of owner.generation_confirmations) {
+        confirmation.need_daemon_reload = "yes";
+      }
+    }), /NeedDaemonReload drifted/u],
+    ["condition mutation", (candidate) => mutatePublisherOwners(candidate, (owner) => {
+      for (const conditions of owner.condition_confirmations) conditions.pop();
+    }), /effective Conditions drifted/u],
+    ["rogue effective argv", (candidate) => mutatePublisherOwners(candidate, (owner) => {
+      owner.effective_properties.ExecStart = execValue("/usr/bin/false run");
+    }), /executable argv drifted/u],
+    ["main active capability", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.main.capabilities.effective = "0000000000200000";
+    }), /host monitor is not/u],
+    ["child seccomp disabled", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.child.seccomp = 0;
+    }), /client monitor is not/u],
+    ["no direct child", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.direct_children = [];
+    }), /exactly one canonical direct child/u],
+    ["multiple direct children", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.direct_children = [4403, 4404];
+    }), /exactly one canonical direct child/u],
+    ["wrong child namespace", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.child.net_namespace = pass.collector_net_namespace;
+    }), /client monitor is not/u],
+    ["wrong child executable", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.child.executable.path = "/usr/bin/false";
+    }), /executable is not/u],
+    ["wrong helper digest", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.child.executable.sha256 = hash("rogue-helper");
+    }), /executable is not/u],
+    ["main UID mutation", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.main.uid = [1, 1, 1, 1];
+    }), /host monitor is not/u],
+    ["child cgroup mutation", (candidate) => mutatePublisherProcessPasses(candidate, (pass) => {
+      pass.child.control_group = "/system.slice/rogue.service";
+    }), /client monitor is not/u],
+    ["requested fragment digest mutation", (candidate) => {
+      candidate.request.installed_files[0].sha256 = hash("rogue-fragment");
+    }, /not bound to requested installed artifacts/u],
+  ]) {
+    const candidate = publisherNetworkFixture();
+    mutate(candidate);
+    assert.throws(
+      () => validatePublisherNetworkRuntimeEvidenceV1(candidate.evidence, candidate.request),
+      expression,
+      label,
+    );
+  }
+});
 
 function testProbeArgv({ gid, groups, uid }, targetPath) {
   return [
@@ -4051,6 +4541,7 @@ for (const [label, mutate, expected] of [
   ["effective MemorySwapCurrent drift", (f) => { f.evidence.units[0].properties.MemorySwapCurrent = "1"; }, /MemorySwapCurrent drift/],
   ["effective MemorySwapMax drift", (f) => { f.evidence.units[0].properties.MemorySwapMax = "infinity"; }, /MemorySwapMax drift/],
   ["effective TasksMax drift", (f) => { f.evidence.units[0].properties.TasksMax = "infinity"; }, /TasksMax drift/],
+  ["missing TemporaryFileSystem evidence", (f) => { delete f.evidence.units[0].properties.TemporaryFileSystem; }, /keys/u],
   ["effective StandardOutput drift", (f) => { f.evidence.units[0].properties.StandardOutput = "journal"; }, /StandardOutput drift/],
   ["effective StandardError drift", (f) => { f.evidence.units[0].properties.StandardError = "journal"; }, /StandardError drift/],
   ["MainPID confirmation race", (f) => { f.evidence.units[0].generation_confirmations[1].main_pid = "4243"; }, /unit generation changed/],

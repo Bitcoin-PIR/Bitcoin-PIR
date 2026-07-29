@@ -51,6 +51,7 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
+      - 'scripts/payment-v1-publisher-netns-*'
       - 'web/**'
       - '.github/workflows/**'
   pull_request:
@@ -103,6 +104,7 @@ on:
       - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-nostr-readback.test.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
+      - 'scripts/payment-v1-publisher-netns-*'
       - 'web/**'
       - '.github/workflows/**'
   workflow_dispatch:

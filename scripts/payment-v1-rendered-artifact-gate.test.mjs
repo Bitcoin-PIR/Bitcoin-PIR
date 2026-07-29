@@ -466,6 +466,122 @@ function makeIntegratedCaddySourceFairFixture(t) {
   return { ...fixture, plan, targets };
 }
 
+function makePublisherNetnsFixture(t) {
+  const fixture = temporaryRoots(t);
+  for (const template of PUBLISHER_NETNS_TEMPLATES) copySource(fixture.sourceRoot, template);
+  const helperBytes = Buffer.from("reviewed-publisher-netns-helper-v1\n");
+  const helperSha = hashBytes(helperBytes);
+  const adminBytes = Buffer.from("reviewed-bpir-admin-v1\n");
+  const adminSha = hashBytes(adminBytes);
+  const placeholders = {
+    BPIR_ADMIN_SHA256: adminSha,
+    CHECKPOINT_ARTIFACT: "checkpoints.json",
+    DIRECTORY_PUBLISHER_HTTPS_HOST: "publisher.internal.example",
+    DIRECTORY_PUBLISHER_PUBKEY_HEX: "2c".repeat(32),
+    DIRECTORY_PUBLISH_NOW_UNIX: "2000",
+    PROVIDER_0_ENTRY_ARTIFACT: "provider-0.event.json",
+    PROVIDER_1_ENTRY_ARTIFACT: "provider-1.event.json",
+    PUBLISHER_NETNS_HELPER_SHA256: helperSha,
+  };
+  const targets = {
+    admin: `/opt/bitcoinpir/bpir-admin/${adminSha}/bpir-admin`,
+    adminManifest: "/etc/bitcoinpir/payment-v1/directory-publisher/bpir-admin.sha256",
+    artifactManifest: "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256",
+    checkpoint: "/var/lib/bitcoinpir-directory-publisher/artifacts/checkpoints.json",
+    helper: `/opt/bitcoinpir/publisher-netns/${helperSha}/payment-v1-publisher-netns`,
+    helperManifest: "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256",
+    networkManifest: "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256",
+    provider0: "/var/lib/bitcoinpir-directory-publisher/artifacts/provider-0.event.json",
+    provider1: "/var/lib/bitcoinpir-directory-publisher/artifacts/provider-1.event.json",
+  };
+  const signedArtifacts = new Map([
+    [targets.checkpoint, Buffer.from('["signed-checkpoint-fixture"]\n')],
+    [targets.provider0, Buffer.from('["EVENT",{"fixture":0}]\n')],
+    [targets.provider1, Buffer.from('["EVENT",{"fixture":1}]\n')],
+  ]);
+  const renderedNetworkTargets = new Map([
+    [
+      "/etc/bitcoinpir/payment-v1/directory-publisher/hosts",
+      "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+    ],
+    [
+      "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+      "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+    ],
+    [
+      "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf",
+      "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+    ],
+    [
+      "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf",
+      "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+    ],
+  ]);
+  const manifestBytes = (entries) => Buffer.from(
+    [...entries]
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([target, bytes]) => `${hashBytes(bytes)}  ${target}\n`)
+      .join(""),
+  );
+  const renderedNetworkBytes = new Map([...renderedNetworkTargets].map(([target, source]) => [
+    target,
+    Buffer.from(renderText(fixture.sourceRoot, source, placeholders)),
+  ]));
+  const payloads = [
+    [targets.helper, helperBytes, undefined],
+    [targets.helperManifest, Buffer.from(`${helperSha}  ${targets.helper}\n`), undefined],
+    [targets.admin, adminBytes, undefined],
+    [targets.adminManifest, Buffer.from(`${adminSha}  ${targets.admin}\n`), undefined],
+    [targets.artifactManifest, manifestBytes(signedArtifacts), undefined],
+    [targets.networkManifest, manifestBytes(renderedNetworkBytes), undefined],
+    ...[...signedArtifacts].map(([target, bytes]) => [
+      target,
+      bytes,
+      { class: "config", gid: 0, mode: "0444", uid: 0 },
+    ]),
+  ];
+  const targetForSource = new Map([
+    ["deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/hosts"],
+    ["deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json"],
+    ["deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf"],
+    ["deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf"],
+    ["deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf"],
+    ["deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service"],
+    ["deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+      "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service"],
+  ]);
+  const plan = {
+    deployment_id: "directory-publisher-netns-v1-test",
+    deployment_profile: "directory-publisher-netns-v1",
+    payload_artifacts: payloads.map(([target, bytes, metadata], index) =>
+      addPayload(fixture, target, bytes, index, metadata)),
+    placeholders,
+    rendered_artifacts: PUBLISHER_NETNS_TEMPLATES.map((sourcePath) => ({
+      gid: 0,
+      mode: sourcePath.includes("/network/") ? "0444" : "0644",
+      source_path: sourcePath,
+      source_sha256: hashFile(join(fixture.sourceRoot, sourcePath)),
+      target_path: targetForSource.get(sourcePath),
+      uid: 0,
+    })),
+    schema_version: 1,
+    service_identities: [{
+      gid: 742,
+      group_name: "bitcoinpir-directory-publisher",
+      uid: 741,
+      unit_name: "bitcoinpir-payment-v1-directory-publisher.service",
+      user_name: "bitcoinpir-directory-publisher",
+    }],
+  };
+  return { ...fixture, plan, targets };
+}
+
 function issuerPlaceholders(binaryDigests) {
   return {
     BITCOIND_SYSTEMD_UNIT: "bitcoind.service",

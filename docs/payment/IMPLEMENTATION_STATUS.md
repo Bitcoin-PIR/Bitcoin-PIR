@@ -481,10 +481,14 @@ operator has activated the path with real money or public infrastructure.
 - [x] Offline `bpir-admin service-keygen`, `service-policy`, directory assertion,
       entry and checkpoint builders, plus an explicit native
       `directory-artifact publish` transport. Publishing accepts no signing key,
-      requires a pinned directory public key, two through eight credential-free
-      public `wss://` relay hostnames, exact per-event positive OK and bounded
-      per-relay time/bytes. It attempts every relay and fails the command on any
-      partial result; exact immutable artifacts can be rerun manually.
+      requires a pinned directory public key, and defaults to two through eight
+      credential-free public `wss://` relay hostnames. Exactly one relay requires
+      `--centralized-single-relay`; its receipts are explicitly
+      `centralized=true degraded=true`, while zero relays and mismatched
+      flag/count combinations fail before network I/O. Publishing requires exact
+      per-event positive OK and bounded per-relay time/bytes. It attempts every
+      relay and fails the command on any partial result; exact immutable artifacts
+      can be rerun manually.
 - [x] The staging-only Nostr readback tool accepts no key or publish operation,
       mirrors the Rust canonical public-`wss://` grammar on the raw input, and
       requires the Rust publisher's domain-separated event-set digest, valid

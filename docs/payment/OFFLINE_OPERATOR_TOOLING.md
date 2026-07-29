@@ -61,7 +61,11 @@ Directory assertion, entry, and checkpoint construction remains offline and is
 documented in `DIRECTORY_PROTOCOL.md`. The separate publish transport accepts
 no secret or signing-key argument. It verifies exact canonical artifacts
 against an explicit BIP340 directory-public-key pin, then sends them unchanged
-to two through eight credential-free public `wss://` relay hostnames.
+to credential-free public `wss://` relay hostnames. The strict default requires
+two through eight distinct hostnames. Exactly one relay is accepted only with
+the explicit `--centralized-single-relay` flag; that mode is intentionally
+centralized and degraded, provides no relay redundancy or independence, and is
+the reviewed topology for the current centrally operated directory.
 
 It requires one positive NIP-01 OK for each event on each relay, applies one
 bounded total timeout per relay, does not use proxies, redirects, relay AUTH or
@@ -77,8 +81,10 @@ NFS/FUSE read deadline-bounded or defend against a privileged filesystem.
 The same `directory-artifact publish` invocation may include `--validate-only`.
 That mode fully validates the artifact bytes, directory-key pin, verification
 time and relay set, emits only bounded host/count/digest metadata, and returns
-without DNS or network I/O. Remove only that flag at the separately approved
-publication boundary.
+without DNS or network I/O. It enforces the same strict-multi-relay or explicit
+centralized-single-relay choice as a real publish. Every outcome line also
+marks the publication mode and its `centralized`/`degraded` booleans. Remove
+only `--validate-only` at the separately approved publication boundary.
 
 After an explicitly approved staging publish, read the same frozen public
 artifact back without exposing a signing key:

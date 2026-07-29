@@ -40,6 +40,10 @@ import {
   runtimeRequestFromManifest,
   validateServiceIdentityId,
 } from "./payment-v1-rendered-artifact-gate.mjs";
+import {
+  PUBLISHER_FIREWALL_OUTPUT_KEYS,
+  validatePublisherFirewallOutputs,
+} from "./payment-v1-publisher-netns-gate.mjs";
 
 export const LIVE_EVIDENCE_KIND = "bitcoinpir-payment-v1-linux-root-live-v8";
 export const STOPPED_EDGE_EVIDENCE_KIND =
@@ -155,6 +159,19 @@ const REQUIRED_COMMANDS = Object.freeze([
   "/usr/bin/uname",
   "/usr/sbin/getcap",
 ]);
+const PUBLISHER_NETWORK_COMMANDS = Object.freeze([
+  "/usr/sbin/nft",
+  "/usr/sbin/ufw",
+]);
+const ALLOWED_COMMANDS = Object.freeze([
+  ...new Set([...REQUIRED_COMMANDS, ...PUBLISHER_NETWORK_COMMANDS]),
+]);
+
+function requiredCommandsForRequest(request) {
+  return request?.publisher_network === undefined
+    ? [...REQUIRED_COMMANDS]
+    : [...REQUIRED_COMMANDS, ...PUBLISHER_NETWORK_COMMANDS];
+}
 
 function fail(message) {
   throw new Error(message);
@@ -257,7 +274,7 @@ function readPinnedBundle(bundleRoot, manifestPin, planPin) {
 
 function runAbsolute(command, args, { allowOutput = true, timeout = 10_000 } = {}) {
   validateAbsolutePath(command, "subprocess executable");
-  if (!REQUIRED_COMMANDS.includes(command)) fail(`subprocess executable is not reviewed: ${command}`);
+  if (!ALLOWED_COMMANDS.includes(command)) fail(`subprocess executable is not reviewed: ${command}`);
   if (!Array.isArray(args) || args.some((entry) => typeof entry !== "string" || /[\0\r\n]/u.test(entry))) {
     fail(`subprocess argv is malformed for ${command}`);
   }
@@ -2273,9 +2290,11 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "MemoryMax",
   "MemorySwapCurrent",
   "MemorySwapMax",
+  "NetworkNamespacePath",
   "NoNewPrivileges",
   "NotifyAccess",
   "PrivateDevices",
+  "PrivateMounts",
   "PrivateTmp",
   "ProcSubset",
   "ProtectClock",
@@ -2300,8 +2319,10 @@ const EFFECTIVE_CRITICAL_KEYS = Object.freeze([
   "SupplementaryGroups",
   "SystemCallArchitectures",
   "TasksMax",
+  "TemporaryFileSystem",
   "Type",
   "UMask",
+  "UnsetEnvironment",
   "User",
   "WorkingDirectory",
 ]);
@@ -3499,9 +3520,28 @@ function validateEffectiveUnitStaticProperties(
     "RootDirectory",
     "RootImage",
     "BindPaths",
-    "BindReadOnlyPaths",
   ]) {
     if (properties[forbidden] !== "") fail(`effective ${forbidden} is forbidden: ${unit.unit_name}`);
+  }
+  const isPublisher =
+    unit.unit_name === "bitcoinpir-payment-v1-directory-publisher.service" &&
+    unit.fragment_path ===
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service";
+  if (!isPublisher) {
+    if (properties.BindReadOnlyPaths !== "") {
+      fail(`effective BindReadOnlyPaths is forbidden: ${unit.unit_name}`);
+    }
+  } else {
+    const expected = [
+      "/etc/bitcoinpir/payment-v1/directory-publisher/hosts:/etc/hosts",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf:/etc/nsswitch.conf",
+      "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf:/etc/resolv.conf",
+    ];
+    const actual = splitLiteralWords(properties.BindReadOnlyPaths).map((value) =>
+      value.endsWith(":rbind") ? value.slice(0, -6) : value);
+    if (canonicalJson(actual) !== canonicalJson(expected)) {
+      fail(`effective BindReadOnlyPaths drift: ${unit.unit_name}`);
+    }
   }
   const parsedStart = parseSystemctlExecArgvV1(
     properties.ExecStart,
@@ -4875,8 +4915,9 @@ function validateStoppedHost(
   }
 }
 
-function validateTrustedCommandClosure(commands, label) {
-  if (!Array.isArray(commands) || commands.length !== REQUIRED_COMMANDS.length + 1) {
+function validateTrustedCommandClosure(commands, label, request) {
+  const required = requiredCommandsForRequest(request);
+  if (!Array.isArray(commands) || commands.length !== required.length + 1) {
     fail(`${label} does not bind the complete command TCB`);
   }
   for (const command of commands) {
@@ -4884,12 +4925,12 @@ function validateTrustedCommandClosure(commands, label) {
     validateAbsolutePath(command.path, `${label} command path`);
     validateDigest(command.sha256, `${label} command digest`);
     if (command.uid !== 0 || command.nlink !== 1 || (Number.parseInt(command.mode, 8) & 0o022) !== 0) {
-      fail(`${label} has untrusted command metadata: ${command.path}`);
+      fail(`${label} has untrusted runtime command metadata: ${command.path}`);
     }
   }
   if (
     canonicalJson(commands.map((entry) => entry.path).sort()) !==
-    canonicalJson([...REQUIRED_COMMANDS, "/usr/bin/node"].sort())
+    canonicalJson([...required, "/usr/bin/node"].sort())
   ) {
     fail(`${label} command TCB paths are not closed`);
   }
@@ -4976,7 +5017,7 @@ export function validateStoppedEdgeActivationEvidence({
     fail("stopped-edge collector was not root");
   }
   validateStoppedHost(evidence.host, request, expectedMachineIdSha256, expectedBootId);
-  validateTrustedCommandClosure(evidence.trusted_commands, "stopped-edge evidence");
+  validateTrustedCommandClosure(evidence.trusted_commands, "stopped-edge evidence", request);
   const expectedProtected = validateStoppedNssEvidence(evidence.nss, request);
   validateStoppedAccountPolicy(evidence.account_policy, request, evidence.nss);
   validateSystemdManagerPassesV1(
@@ -5306,6 +5347,7 @@ export function validateLiveRuntimeEvidence({
       "manifest_sha256",
       "nss",
       "protected_process_closure",
+      ...(hasPublisherNetwork ? ["publisher_network"] : []),
       "runtime_directories",
       "runtime_paths",
       "schema_version",
@@ -5326,6 +5368,7 @@ export function validateLiveRuntimeEvidence({
   }
   if (evidence.collector !== RUNTIME_COLLECTOR) fail("live runtime collector identity mismatch");
   validateRuntimePropertyRequestSchema(request, "runtime request");
+  validatePublisherNetworkRuntimeEvidenceV1(evidence.publisher_network, request);
   if (!Array.isArray(request.service_identities) || request.service_identities.length !== request.units.length) {
     fail("runtime request service identity bindings are incomplete");
   }
@@ -5398,22 +5441,7 @@ export function validateLiveRuntimeEvidence({
     "live systemd manager",
   );
 
-  if (!Array.isArray(evidence.trusted_commands) || evidence.trusted_commands.length !== REQUIRED_COMMANDS.length + 1) {
-    fail("live evidence does not bind the complete command TCB");
-  }
-  for (const command of evidence.trusted_commands) {
-    exactKeys(command, ["gid", "mode", "nlink", "path", "sha256", "uid"], "trusted command");
-    validateAbsolutePath(command.path, "trusted command path");
-    validateDigest(command.sha256, "trusted command digest");
-    if (command.uid !== 0 || command.nlink !== 1 || (Number.parseInt(command.mode, 8) & 0o022) !== 0) {
-      fail(`untrusted runtime command metadata: ${command.path}`);
-    }
-  }
-  const commandPaths = evidence.trusted_commands.map((entry) => entry.path).sort();
-  const expectedCommandPaths = [...REQUIRED_COMMANDS, "/usr/bin/node"].sort();
-  if (canonicalJson(commandPaths) !== canonicalJson(expectedCommandPaths)) {
-    fail("live evidence command TCB paths are not closed");
-  }
+  validateTrustedCommandClosure(evidence.trusted_commands, "live evidence", request);
 
   if (!Array.isArray(evidence.installed_files) || evidence.installed_files.length !== request.installed_files.length) {
     fail("live installed-file evidence is incomplete");
@@ -5602,7 +5630,7 @@ export function validateLiveRuntimeEvidence({
       fail(`live systemd unit identity drift: ${expected.unit_name}`);
     }
     if (actual.properties.DropInPaths !== "") fail(`live systemd drop-in detected: ${expected.unit_name}`);
-    for (const key of ["ExecStartPost", "ExecCondition", "EnvironmentFiles", "RootDirectory", "RootImage", "BindPaths", "BindReadOnlyPaths"]) {
+    for (const key of ["ExecStartPost", "ExecCondition", "EnvironmentFiles", "RootDirectory", "RootImage", "BindPaths"]) {
       if (actual.properties[key] !== "") fail(`live systemd ${key} is forbidden: ${expected.unit_name}`);
     }
     validateEffectiveCredentialProperties(
@@ -6006,7 +6034,9 @@ function collectStoppedPreparationEvidence({
   if (request.deployment_profile !== profile) {
     fail(`${command} only accepts the reviewed ${profile} profile`);
   }
-  const trustedCommands = [...REQUIRED_COMMANDS, process.execPath].sort().map(inspectTrustedCommand);
+  const trustedCommands = [...requiredCommandsForRequest(request), process.execPath]
+    .sort()
+    .map(inspectTrustedCommand);
   const started = Math.floor(Date.now() / 1000);
   const hostStarted = readHostBinding();
   if (hostStarted.machine_id_sha256 !== expectedMachineIdSha256) {
@@ -6345,6 +6375,15 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
       properties: finalSystemdSnapshots[index].serviceProperties,
     });
   }
+  // The namespace owner is an auxiliary unit rather than a request.units entry.
+  // Seal its effective Conditions and systemd generation after the same final
+  // loop so owner-only activation sentinels and MainPID/InvocationID cannot
+  // drift in the tail between network collection and evidence construction.
+  sealPublisherNamespaceOwnerRuntimeEvidence(publisherNetwork);
+  const hostSealed = readHostBinding();
+  if (!sameHostGeneration(hostStarted, hostSealed)) {
+    fail("host or boot identity changed during publisher network sealing");
+  }
   const finished = Math.floor(Date.now() / 1000);
   const evidence = {
     approved_plan_sha256: approvedPlanSha256,
@@ -6364,13 +6403,14 @@ export function collectLiveRuntimeEvidence({ bundleRoot, approvedManifestSha256,
       pid1_nspid: hostStarted.pid1_nspid,
       pid1_pid_namespace: hostStarted.pid1_pid_namespace,
       systemd_version: hostStarted.systemd_version,
-      uptime_finished_milliseconds: hostFinished.uptime_milliseconds,
+      uptime_finished_milliseconds: hostSealed.uptime_milliseconds,
       uptime_started_milliseconds: hostStarted.uptime_milliseconds,
     },
     installed_files: installedFiles,
     manifest_sha256: approvedManifestSha256,
     nss,
     protected_process_closure: protectedProcessClosure,
+    ...(publisherNetwork === undefined ? {} : { publisher_network: publisherNetwork }),
     runtime_directories: runtimeDirectories,
     runtime_paths: runtimePaths,
     schema_version: LIVE_SCHEMA_VERSION,

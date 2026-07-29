@@ -1,0 +1,3 @@
+# Deliberately unreachable from the route-less publisher namespace.
+nameserver 127.0.0.1
+options attempts:1 timeout:1

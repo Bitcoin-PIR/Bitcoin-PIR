@@ -25,6 +25,8 @@ import {
   sep,
 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { validatePublisherNamespaceOwnerUnitV1 } from
+  "./payment-v1-publisher-netns-gate.mjs";
 
 import { validateRelaySelection } from "./payment-v1-deployment-template-gate.mjs";
 
@@ -54,6 +56,7 @@ export const NOBODY_ID = 65_534;
 
 const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "AmbientCapabilities",
+  "BindReadOnlyPaths",
   "CapabilityBoundingSet",
   "Group",
   "IPAddressAllow",
@@ -65,9 +68,11 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "MemoryMax",
   "MemorySwapMax",
   "MemoryDenyWriteExecute",
+  "NetworkNamespacePath",
   "NoNewPrivileges",
   "NotifyAccess",
   "PrivateDevices",
+  "PrivateMounts",
   "PrivateTmp",
   "ProcSubset",
   "ProtectClock",
@@ -97,10 +102,12 @@ const SYSTEMD_HARDENING_KEYS = Object.freeze([
   "SupplementaryGroups",
   "SystemCallArchitectures",
   "TasksMax",
+  "TemporaryFileSystem",
   "TimeoutStartSec",
   "TimeoutStopSec",
   "Type",
   "UMask",
+  "UnsetEnvironment",
   "User",
   "WatchdogSec",
   "WorkingDirectory",
@@ -112,6 +119,7 @@ const SYSTEMD_UNIT_KEYS = Object.freeze([
   "BindsTo",
   "ConditionPathExists",
   "Description",
+  "PartOf",
   "Requires",
   "Wants",
 ]);
@@ -179,6 +187,17 @@ const PROFILE_CATALOG = Object.freeze({
       "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
     ]),
   }),
+  "directory-publisher-netns-v1": Object.freeze({
+    templates: Object.freeze([
+      "deploy/payment-v1/network/directory-publisher-hosts.conf.in",
+      "deploy/payment-v1/network/directory-publisher-network-policy.json.in",
+      "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in",
+      "deploy/payment-v1/network/directory-publisher-resolv.conf.in",
+      "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in",
+      "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in",
+      "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in",
+    ]),
+  }),
   "provider-v1": Object.freeze({
     templates: Object.freeze([
       "deploy/payment-v1/systemd/hetzner-provider.service.in",
@@ -205,6 +224,7 @@ const MANAGED_FILE_PREFIXES = Object.freeze([
   "/etc/bitcoinpir/payment-v1/",
   "/opt/bitcoinpir/",
   "/usr/local/libexec/bitcoinpir/",
+  "/var/lib/bitcoinpir-directory-publisher/artifacts/",
 ]);
 
 const CLN_ACTIVE_PLUGIN_NAMES_V26066 = Object.freeze(["bcli", "chanbackup"]);
@@ -313,9 +333,11 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "MemoryMax",
   "MemorySwapCurrent",
   "MemorySwapMax",
+  "NetworkNamespacePath",
   "NoNewPrivileges",
   "NotifyAccess",
   "PrivateDevices",
+  "PrivateMounts",
   "PrivateTmp",
   "ProcSubset",
   "ProtectClock",
@@ -344,8 +366,10 @@ export const RUNTIME_SYSTEMCTL_SHOW_PROPERTIES = Object.freeze([
   "SupplementaryGroups",
   "SystemCallArchitectures",
   "TasksMax",
+  "TemporaryFileSystem",
   "Type",
   "UMask",
+  "UnsetEnvironment",
   "User",
   "WatchdogUSec",
   "WorkingDirectory",
@@ -379,6 +403,51 @@ export const RUNTIME_BUSCTL_MANAGER_PROPERTIES = Object.freeze([
 ]);
 
 const TEMPLATE_CATALOG = Object.freeze({
+  "deploy/payment-v1/network/directory-publisher-hosts.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/hosts",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-network-policy.json.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-nsswitch.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/network/directory-publisher-resolv.conf.in": {
+    artifactClass: "config",
+    targetPath: "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf",
+    modes: ["0444"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in": {
+    artifactClass: "systemd-dropin",
+    targetPath:
+      "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in": {
+    artifactClass: "systemd-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
+  "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in": {
+    artifactClass: "systemd-auxiliary-unit",
+    targetPath:
+      "/etc/systemd/system/bitcoinpir-payment-v1-publisher-netns.service",
+    modes: ["0644"],
+    rootOwned: true,
+  },
   "deploy/payment-v1/edge/integrated-existing-bhtm-caddy.managed.Caddyfile.in": {
     artifactClass: "config",
     targetPath:
@@ -561,6 +630,7 @@ const HEX64_PLACEHOLDERS = new Set([
   "HETZNER_PROVIDER_ID_HEX",
   "ISSUER_SETTLEMENT_PUBKEY_HEX",
   "PAYMENT_ISSUER_SHA256",
+  "PUBLISHER_NETNS_HELPER_SHA256",
   "ROLLBACK_AUTHORITY_SHA256",
   "UNIFIED_SERVER_SHA256",
 ]);
@@ -614,6 +684,10 @@ const ALL_PLACEHOLDER_NAMES = new Set([
   "CLN_P2P_BIND_ADDR",
   "HETZNER_PROVIDER_SERVER_ID",
   "LIGHTNING_NETWORK",
+  "CHECKPOINT_ARTIFACT",
+  "DIRECTORY_PUBLISH_NOW_UNIX",
+  "PROVIDER_0_ENTRY_ARTIFACT",
+  "PROVIDER_1_ENTRY_ARTIFACT",
 ]);
 
 function fail(message) {
@@ -1137,6 +1211,16 @@ function validatePlaceholderValue(name, value) {
       return;
     case "LIGHTNING_NETWORK":
       if (value !== "signet") fail(`${label} must equal signet for Payment V1 staging`);
+      return;
+    case "DIRECTORY_PUBLISH_NOW_UNIX":
+      parseUnsignedDecimal(value, label, 1n, 9_007_199_254_740_991n);
+      return;
+    case "CHECKPOINT_ARTIFACT":
+    case "PROVIDER_0_ENTRY_ARTIFACT":
+    case "PROVIDER_1_ENTRY_ARTIFACT":
+      if (!/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u.test(value)) {
+        fail(`${label} must be one bounded lowercase artifact basename`);
+      }
       return;
     default:
       fail(`${label} has no validator`);
@@ -1682,7 +1766,13 @@ function validatePlan(plan) {
         ? ["/opt/bitcoinpir/", "/usr/local/libexec/bitcoinpir/"]
         : artifact.class === "policy"
           ? ["/etc/bitcoinpir/payment-v1/", "/home/pir/data/payment-v1/"]
-          : ["/etc/bitcoinpir/payment-v1/"];
+          : [
+              "/etc/bitcoinpir/payment-v1/",
+              ...(plan.deployment_profile === "directory-publisher-netns-v1" &&
+              artifact.class === "config"
+                ? ["/var/lib/bitcoinpir-directory-publisher/artifacts/"]
+                : []),
+            ];
     if (!prefixes.some((prefix) => artifact.target_path.startsWith(prefix))) {
       fail(`${label}.target_path is outside the reviewed ${artifact.class} prefixes`);
     }
@@ -1764,7 +1854,7 @@ function managedReferencesFromCommand(command, label) {
   return references;
 }
 
-function parseSystemdUnit(text, label) {
+function parseSystemdUnit(text, label, deploymentProfile) {
   if (/^\s*\[Install\]\s*$/imu.test(text)) fail(`${label} contains forbidden [Install]`);
   if (/%/u.test(text)) fail(`${label} contains a forbidden systemd percent specifier`);
   if (/\$/u.test(text)) fail(`${label} contains forbidden systemd variable expansion`);
@@ -1804,6 +1894,13 @@ function parseSystemdUnit(text, label) {
     if (!allowedKeys.includes(key)) {
       fail(`${label} contains closed-world forbidden directive ${section}.${key}=`);
     }
+    if (
+      section === "Service" &&
+      ["BindReadOnlyPaths", "NetworkNamespacePath", "PrivateMounts", "UnsetEnvironment"].includes(key) &&
+      deploymentProfile !== "directory-publisher-netns-v1"
+    ) {
+      fail(`${label} contains closed-world forbidden directive ${section}.${key}= for this profile`);
+    }
     if (value === "" && !["AmbientCapabilities", "CapabilityBoundingSet"].includes(key)) {
       fail(`${label} contains a forbidden empty ${key}= reset`);
     }
@@ -1812,7 +1909,7 @@ function parseSystemdUnit(text, label) {
       values.length > 0 &&
       !(
         (section === "Unit" && key === "ConditionPathExists") ||
-        (section === "Service" && key === "ExecStartPre")
+        (section === "Service" && ["BindReadOnlyPaths", "ExecStartPre"].includes(key))
       )
     ) {
       fail(`${label} repeats single-valued directive ${section}.${key}=`);
@@ -2217,6 +2314,50 @@ function validateProfileUnitPolicy(
       if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
         fail(`${label} must keep ${key}=${expected} so request-source state cannot persist`);
       }
+    }
+  }
+  if (
+    deploymentProfile === "directory-publisher-netns-v1" &&
+    fragmentPath ===
+      "/etc/systemd/system/bitcoinpir-payment-v1-directory-publisher.service"
+  ) {
+    for (const [key, expected] of [
+      ["Type", "oneshot"],
+      ["RemainAfterExit", "true"],
+      ["Restart", "no"],
+      ["StandardError", "null"],
+      ["StandardOutput", "null"],
+      ["NetworkNamespacePath", "/run/netns/bpir-directory-publisher"],
+      ["IPAddressDeny", "any"],
+      ["IPAddressAllow", "10.203.0.1"],
+      ["RestrictAddressFamilies", "AF_INET"],
+    ]) {
+      if (canonicalize(hardening[key] ?? []) !== canonicalize([expected])) {
+        fail(`${label} must keep ${key}=${expected}`);
+      }
+    }
+    if (
+      canonicalize(hardening.CapabilityBoundingSet ?? []) !== canonicalize([""]) ||
+      canonicalize(hardening.AmbientCapabilities ?? []) !== canonicalize([""])
+    ) {
+      fail(`${label} must keep an empty capability set`);
+    }
+    if (
+      canonicalize(hardening.TemporaryFileSystem ?? []) !== canonicalize(["/run:ro"]) ||
+      !(hardening.ReadOnlyPaths?.[0] ?? "").split(/\s+/u).some((path) =>
+        /^\/opt\/bitcoinpir\/publisher-netns\/[0-9a-f]{64}\/?$/u.test(path))
+    ) {
+      fail(`${label} must replace /run with a private read-only tmpfs and bind the sandbox probe helper read-only`);
+    }
+    const command = execStart.join("\n");
+    if (
+      /(?:signing|private|secret)[-_]key|--force|--validate-only/iu.test(command) ||
+      !command.includes(" directory-artifact publish ") ||
+      (command.match(/ --relay /gu) ?? []).length !== 1 ||
+      (command.match(/ --centralized-single-relay(?: |$)/gu) ?? []).length !== 1 ||
+      (command.match(/ --artifact /gu) ?? []).length !== 3
+    ) {
+      fail(`${label} must remain one no-key, three-artifact, explicitly centralized publication`);
     }
   }
   if (
@@ -2652,6 +2793,20 @@ function configManagedReferences(sourcePath, text, plan) {
   }
   if (
     sourcePath ===
+    "deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in"
+  ) {
+    const binary = text.match(
+      /\/opt\/bitcoinpir\/publisher-netns\/[0-9a-f]{64}\/payment-v1-publisher-netns/u,
+    )?.[0];
+    const manifest =
+      "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256";
+    if (binary === undefined || !text.includes(manifest)) {
+      fail("rendered publisher namespace owner does not close its helper dependencies");
+    }
+    return [binary, manifest].sort(asciiCompare);
+  }
+  if (
+    sourcePath ===
     "scripts/payment-v1-integrated-caddy-overlay-transaction.mjs"
   ) {
     requireClosedJavaScriptImportHeader(
@@ -2864,6 +3019,37 @@ function validateHashManifestScope(manifestPath, entries, plan) {
     }
   };
   switch (manifestPath) {
+    case "/etc/bitcoinpir/payment-v1/publisher-netns/helper.sha256":
+      oneExact(
+        `/opt/bitcoinpir/publisher-netns/${plan.placeholders.PUBLISHER_NETNS_HELPER_SHA256}/payment-v1-publisher-netns`,
+      );
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/bpir-admin.sha256":
+      oneExact(`/opt/bitcoinpir/bpir-admin/${plan.placeholders.BPIR_ADMIN_SHA256}/bpir-admin`);
+      return;
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/artifacts.sha256": {
+      const expected = [
+        plan.placeholders.PROVIDER_0_ENTRY_ARTIFACT,
+        plan.placeholders.PROVIDER_1_ENTRY_ARTIFACT,
+        plan.placeholders.CHECKPOINT_ARTIFACT,
+      ].map((name) => `/var/lib/bitcoinpir-directory-publisher/artifacts/${name}`).sort(asciiCompare);
+      if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
+        fail(`hash manifest ${manifestPath} must bind exactly the three frozen signed artifacts`);
+      }
+      return;
+    }
+    case "/etc/bitcoinpir/payment-v1/directory-publisher/network-inputs.sha256": {
+      const expected = [
+        "/etc/bitcoinpir/payment-v1/directory-publisher/hosts",
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+        "/etc/bitcoinpir/payment-v1/directory-publisher/nsswitch.conf",
+        "/etc/bitcoinpir/payment-v1/directory-publisher/resolv.conf",
+      ];
+      if (canonicalize(entries.map((entry) => entry.target_path)) !== canonicalize(expected)) {
+        fail(`hash manifest ${manifestPath} must bind the four exact network inputs`);
+      }
+      return;
+    }
     case "/etc/bitcoinpir/payment-v1/edge/caddy.sha256":
       oneExact(`/opt/bitcoinpir/caddy/${plan.placeholders.CADDY_SHA256}/caddy`);
       return;
@@ -3012,6 +3198,12 @@ function enforceDependencyClosure({ artifacts, fileBytes, initialReferences, pla
     ["CLN_RPC_GUARD_SHA256", "/opt/bitcoinpir/cln-rpc-guard/", "/bitcoinpir-cln-rpc-guard", true],
     ["CLN_LIBPQ_SHA256", "/opt/bitcoinpir/core-lightning-libpq/", "/libpq.so.5", true],
     ["BPIR_ADMIN_SHA256", "/opt/bitcoinpir/bpir-admin/", "/bpir-admin", true],
+    [
+      "PUBLISHER_NETNS_HELPER_SHA256",
+      "/opt/bitcoinpir/publisher-netns/",
+      "/payment-v1-publisher-netns",
+      true,
+    ],
     ["PAYMENT_ISSUER_SHA256", "/opt/bitcoinpir/payment-issuer/", "/payment-issuer", true],
     ["UNIFIED_SERVER_SHA256", "/opt/bitcoinpir/unified-server/", "/unified_server", true],
     ["ROLLBACK_AUTHORITY_SHA256", "/opt/bitcoinpir/rollback-authority/", "/rollback-authority", true],
@@ -3158,7 +3350,11 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
       uid: specification.uid,
     });
     if (catalog.artifactClass === "systemd-unit") {
-      const parsed = parseSystemdUnit(renderedText, `rendered unit ${specification.target_path}`);
+      const parsed = parseSystemdUnit(
+        renderedText,
+        `rendered unit ${specification.target_path}`,
+        plan.deployment_profile,
+      );
       validateProfileUnitPolicy(
         plan.deployment_profile,
         specification.target_path,
@@ -3177,6 +3373,8 @@ function buildBundleModel({ sourceRoot, inputRoot, plan, approvedPlanSha256 }) {
         fragment_path: specification.target_path,
         unit_name: basename(specification.target_path),
       });
+    } else if (catalog.artifactClass === "systemd-auxiliary-unit") {
+      validatePublisherNamespaceOwnerUnitV1(renderedText);
     }
     for (const reference of configManagedReferences(specification.source_path, renderedText, plan)) {
       initialReferences.add(reference);
@@ -3373,6 +3571,8 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       "hash-manifest",
       "policy",
       "secret",
+      "systemd-auxiliary-unit",
+      "systemd-dropin",
       "systemd-unit",
     ].includes(artifact.artifact_class)) {
       fail(`${label}.artifact_class is not reviewed`);
@@ -3600,10 +3800,14 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       fail("issuer Lightning tmpfiles directories must equal the exact protected host layout");
     }
   }
+  const auxiliaryUnitPaths = manifest.artifacts
+    .filter((artifact) => artifact.artifact_class === "systemd-auxiliary-unit")
+    .map((artifact) => artifact.target_path);
   const systemdAnalyzeArgv = [
     "/usr/bin/systemd-analyze",
     "verify",
-    ...manifest.runtime_units.map((unit) => unit.fragment_path),
+    ...[...manifest.runtime_units.map((unit) => unit.fragment_path), ...auxiliaryUnitPaths]
+      .sort(asciiCompare),
   ];
   const secretFiles = manifest.artifacts
     .map((artifact) => ({
@@ -3671,6 +3875,53 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
       uid: edgeIdentity.uid,
     });
   }
+  let publisherNetwork;
+  if (manifest.deployment_profile === "directory-publisher-netns-v1") {
+    const networkPolicy = installedFiles.find(
+      (file) => file.target_path ===
+        "/etc/bitcoinpir/payment-v1/directory-publisher/network-policy.json",
+    );
+    if (!networkPolicy) fail("publisher runtime request is missing its rendered network policy");
+    publisherNetwork = {
+      caddy_drop_in_path:
+        "/etc/systemd/system/bhtm-caddy.service.d/bitcoinpir-publisher-netns.conf",
+      caddy_service_unit: "bhtm-caddy.service",
+      firewall: {
+        forwarding_sysctls: {
+          "net.ipv4.ip_forward": 0,
+          "net.ipv6.conf.all.forwarding": 0,
+        },
+        interface: "bpir-pub-h",
+        semantic_profile: "bitcoinpir-publisher-ufw-closed-v1",
+        ufw_rules_in_install_order: [
+          "prepend deny in on bpir-pub-h from any to any",
+          "prepend allow in on bpir-pub-h from 10.203.0.2 to 10.203.0.1 proto tcp port 443",
+          "route prepend deny in on bpir-pub-h from any to any",
+          "route prepend deny out on bpir-pub-h from any to any",
+        ],
+      },
+      forbidden_caddy_reverse_stop_edges: ["BindsTo", "PartOf", "Requires"],
+      namespace: {
+        client: "10.203.0.2/30",
+        host: "10.203.0.1/30",
+        name: "bpir-directory-publisher",
+        path: "/run/netns/bpir-directory-publisher",
+      },
+      namespace_owner_unit: "bitcoinpir-payment-v1-publisher-netns.service",
+      network_policy_sha256: networkPolicy.sha256,
+      publication_mode: {
+        centralized: true,
+        degraded: true,
+        name: "centralized-single-relay",
+      },
+      publication_time_firewall_binding: {
+        activation_blocked: true,
+        implemented: false,
+        point_in_time_evidence_only: true,
+      },
+      publisher_unit: "bitcoinpir-payment-v1-directory-publisher.service",
+    };
+  }
   return {
     approved_plan_sha256: manifest.approved_plan_sha256,
     collector: RUNTIME_COLLECTOR,
@@ -3689,6 +3940,7 @@ export function runtimeRequestFromManifest(manifest, manifestSha256) {
     systemd_analyze_argv: systemdAnalyzeArgv,
     tmpfiles_directories: manifest.tmpfiles_directories,
     units: manifest.runtime_units,
+    ...(publisherNetwork === undefined ? {} : { publisher_network: publisherNetwork }),
   };
 }
 
