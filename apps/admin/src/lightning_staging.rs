@@ -2244,7 +2244,7 @@ fn write_atomic_backup_receipt_v1(
     config: &BackupConfigV1,
     bytes: &[u8],
 ) -> Result<(), PreflightFailureV1> {
-    write_atomic_backup_receipt_with_hook_v1(config, bytes, || Ok(()))
+    write_atomic_backup_receipt_with_hook_v1(config, bytes, |_| Ok(()))
 }
 
 #[cfg(unix)]
@@ -2267,7 +2267,7 @@ fn write_atomic_backup_receipt_with_hook_v1<F>(
     before_commit: F,
 ) -> Result<(), PreflightFailureV1>
 where
-    F: FnOnce() -> Result<(), PreflightFailureV1>,
+    F: FnOnce(&File) -> Result<(), PreflightFailureV1>,
 {
     use rustix::fs::{
         self as rustix_fs, AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags,
@@ -2325,7 +2325,7 @@ where
             if current != before {
                 return Err(PreflightFailureV1::new(check, "target-changed"));
             }
-            before_commit()?;
+            before_commit(&parent)?;
             // Atomic namespace commit point. Before this call every error removes
             // the temporary and preserves the prior receipt. A following parent
             // fsync can still report an outcome-unknown durability failure; the
@@ -4653,6 +4653,62 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn backup_receipt_unlock_releases_a_flock_while_duplicate_fd_remains_open() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let parent_metadata = std::fs::metadata(directory.path()).unwrap();
+        let receipt_path = directory.path().join("backup-receipt.toml");
+        let backup = BackupConfigV1 {
+            receipt: receipt_path.clone(),
+            protected_parent: directory.path().to_path_buf(),
+            expected_uid: parent_metadata.uid(),
+            expected_gid: parent_metadata.gid(),
+            max_age_seconds: 3600,
+        };
+        let first = toml::to_string(&receipt(StagingRoleV1::Payer)).unwrap();
+        let second = toml::to_string(&BackupReceiptV1 {
+            recorded_at_unix: NOW + 1,
+            ..receipt(StagingRoleV1::Payer)
+        })
+        .unwrap();
+        let mut duplicate_parent = None;
+
+        let first_result =
+            write_atomic_backup_receipt_with_hook_v1(&backup, first.as_bytes(), |parent| {
+                duplicate_parent = Some(
+                    rustix::io::dup(parent)
+                        .map_err(|_| PreflightFailureV1::new("backup.test", "dup-failed"))?,
+                );
+                Ok(())
+            });
+
+        // The duplicate still references the locked directory's original open
+        // file description. Dropping only the writer's descriptor would leave
+        // that flock held; its explicit LOCK_UN must make this second write pass.
+        let second_result = if first_result.is_ok() && duplicate_parent.is_some() {
+            Some(write_atomic_backup_receipt_v1(&backup, second.as_bytes()))
+        } else {
+            None
+        };
+
+        assert!(
+            first_result.is_ok(),
+            "first receipt write failed: {first_result:?}"
+        );
+        let duplicate_parent = duplicate_parent.expect("duplicate parent descriptor must exist");
+        let second_result = second_result.expect("duplicate parent descriptor must exist");
+        assert!(
+            second_result.is_ok(),
+            "explicit unlock did not release the shared flock: {second_result:?}",
+        );
+        drop(duplicate_parent);
+        assert_eq!(std::fs::read_to_string(receipt_path).unwrap(), second);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn backup_receipt_atomic_commit_preserves_old_file_and_removes_temporary_on_failure() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -4676,7 +4732,7 @@ mod tests {
         })
         .unwrap();
 
-        let error = write_atomic_backup_receipt_with_hook_v1(&backup, new.as_bytes(), || {
+        let error = write_atomic_backup_receipt_with_hook_v1(&backup, new.as_bytes(), |_| {
             Err(PreflightFailureV1::new("backup.test", "injected-failure"))
         })
         .unwrap_err();
