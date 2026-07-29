@@ -212,6 +212,16 @@ The directory unit remains `UNRESOLVED` with `ExecStart=/usr/bin/false`, so the
 repository cannot accidentally activate it before this boundary and the final
 source/binary/config pins are reviewed.
 
+After source merge, an independent read-only audit of merge
+`49dc56bb735a6df6a1665c91f0636188d65a66b5` and exact Payment V1 source parent
+`4beeea7543c5e8fdb8e571210ce0d4ad1a4affd4` found no P0/P1/P2 in the repository
+directory relay's lane separation, publisher/kind/namespace validation,
+replacement/idempotency, SQLite durability/snapshot, resource bounds,
+correlation logging or shutdown paths. The source gate/readback suite passed
+80/80; the relay library/binary suite passed 24/24 in Linux Docker; exact-head
+CI covered the real two-relay process topology. This is source-review evidence,
+not a resolved binary/config/key selection or target-host activation claim.
+
 This is not a documentation-only placeholder: public directory deployment and
 catalog publication remain blocked until relay selection is resolved in
 reviewed source and its exact source/archive/lockfile/binary/config/publisher-

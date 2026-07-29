@@ -306,8 +306,16 @@ capacity, and rehearse consistent database-plus-WAL backup/restore. Immutable
 events are never automatically deleted because frozen ID readback and duplicate
 idempotency depend on them.
 
-This preparation remains unresolved until the final implementation audit and
-exact binary/config pins are recorded.
+An independent read-only relay audit of merge `49dc56bb735a6df6a1665c91f0636188d65a66b5`
+and its exact Payment V1 source parent
+`4beeea7543c5e8fdb8e571210ce0d4ad1a4affd4` found no P0/P1/P2 source issue.
+The source gate/readback suite passed 80/80, the relay library/binary suite
+passed 24/24 in Linux Docker, and the exact-head CI exercised the real
+two-relay process topology. This closes only the implementation-audit item.
+Relay selection remains unresolved until the exact source archive, Cargo.lock,
+Linux binary, bounded config and publisher public-key pins are recorded, two
+genuinely independent relay failure domains are approved, and target-host
+runtime/fault evidence passes.
 
 Accordingly, no public relay service or catalog publication belongs in a
 rendered plan today. The locally held publisher key, if any, is not relay
