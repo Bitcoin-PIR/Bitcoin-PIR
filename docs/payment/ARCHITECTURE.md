@@ -589,6 +589,13 @@ indexed by the key ID inside each signed response. A historical initial payout
 response may therefore remain verifiable while all new responses use the
 current registration key.
 
+Those retained registries are issuer/ledger recovery mechanisms, not a
+provider-runtime retained-authorization mechanism. V1
+`SharedIssuerAdmissionCommitterV1` loads one clearing authorization, approval
+key and issuer settlement key. A provider-side redeem that is still pending
+when one of those bindings rotates has no automatic retained-key recovery path;
+operators must drain or explicitly reconcile it before rotation.
+
 Payouts remain outside the query path. A signed payout intent is consumed once
 under a database uniqueness constraint in the same transaction as account
 reserve/debit, payout creation and durable outbox insertion. Status recovery

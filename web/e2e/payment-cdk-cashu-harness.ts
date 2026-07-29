@@ -179,8 +179,11 @@ function validateFixture(fixture: CdkCashuBrowserFixtureV1): void {
       || !/^cashuB[A-Za-z0-9_-]+={0,2}$/.test(fixture.browserToken)) {
     throw new Error('CDK fixtures must be canonical cashuB token strings');
   }
+  const signedLocalhost = /^https:\/\/localhost:([0-9]+)$/.exec(fixture.signedMintEndpoint);
+  const signedPort = signedLocalhost ? Number(signedLocalhost[1]) : 0;
   if (!/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(fixture.actualMintEndpoint)
-      || fixture.signedMintEndpoint !== 'https://cdk-loopback.invalid'
+      || (fixture.signedMintEndpoint !== 'https://cdk-loopback.invalid'
+          && (!Number.isSafeInteger(signedPort) || signedPort < 1024 || signedPort > 65535))
       || !Number.isSafeInteger(fixture.expectedAmount)
       || fixture.expectedAmount <= 0) {
     throw new Error('CDK browser fixture crossed its loopback/synthetic-identity boundary');

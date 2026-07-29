@@ -335,6 +335,14 @@ multi-origin migration mechanism. The old origin must remain the signed offer
 origin and stay available until every retained-policy redemption grace window
 has ended; otherwise those older capabilities intentionally fail closed.
 
+The provider runtime likewise has no retained shared-authorization keyring:
+`SharedIssuerAdmissionCommitterV1` receives one authorization, approval key and
+issuer settlement key. Retained settlement keys at the issuer or in
+`ProviderLedgerBalanceClientV1` do not recover an in-flight provider redeem
+after one of those bindings rotates. Operators must drain/reconcile pending
+redeems before rotation or explicitly accept fail-closed manual recovery risk;
+V1 makes no cross-authorization/key-rotation recovery claim.
+
 Standard-Cashu custody likewise retains the exact manifest digest and pins
 that authorized the swap. Before a planned mint leaf-key change, operators
 must publish a signed two-pin overlap and export, spend, and NUT-07-retire

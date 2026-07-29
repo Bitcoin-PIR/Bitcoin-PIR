@@ -191,19 +191,18 @@ owner-only canonical provider wire bytes. Current browser-only mode does not
 build and therefore requires an explicit prebuilt-artifact acknowledgement plus
 SHA-256 pins for `bpir-admin`, package metadata, JavaScript and WASM. The
 untouched HTTP token must fail; because Cashu proofs do not bind the wallet
-mint-URL metadata, the private test fixture relabels only that CBOR text field
-to the signed synthetic HTTPS identity. The default mode then feeds the exact
-browser bytes to the provider-side ignored test through the real admission
-gate, standard-Cashu committer and ProviderStore. That joined
-browser-to-store/replay extension passed the final 2026-07-28 current-tree
-default-mode run: the current admin/WASM build succeeded, and Chromium,
-native-WASM interop and provider custody each passed 1/1 before owned runtime
-cleanup completed. The gate first caught and closed a required synthetic
-leaf-SPKI field omission and one obsolete ignored-test import. Its predecessor
-real-CDK test passed two consecutive runs covering NUT-03/NUT-12, original
-inputs `SPENT`, first custody `UNSPENT -> SPENT`, and independently encrypted
-successor custody `UNSPENT`. This is not an admin-retirement, unified-server or
-public-WebPKI process cell.
+mint-URL metadata, the private test fixture relabels only that CBOR text field.
+Default mode signs `https://localhost:<port>` plus the fixed test leaf-SPKI pin
+and feeds the exact browser bytes to a real Standard Cashu `unified_server`.
+The feature-gated test-only TLS proxy maps only that exact identity to the
+loopback CDK HTTP listener; there is no production plaintext fallback. An
+independent Free `unified_server` completes the pair. The joined ignored test
+requires two secure channels, exact manifest-root policy, proof-bound preflight,
+DPF and Merkle verification, restarts both providers, and proves provider-local
+replay rejection leaves the CDK proxy attempt count at one. A second independent
+8-sat note then runs the native custody NUT-03/NUT-07 lifecycle. This is not an
+admin-retirement, public-WebPKI, production attestation or independent
+production rollback-floor cell.
 
 A separate non-default shared-issuer process cell joins the provider and
 clearing boundary without creating an invoice or contacting Lightning:
@@ -794,6 +793,13 @@ accept a changing artifact.
 - a previously issued, unexpired provider-local receipt, BAT, anonymous ticket,
   or experimental ARC credential remains verifiable during an issuer outage;
 - privacy documentation states that issuer learns provider at redeem;
+
+The retained-key cases above exercise issuer-side settlement deposit and
+historical response verification only. They do not exercise, and must not be
+read as, provider-runtime recovery of an in-flight shared redeem across a
+clearing-authorization, approval-key or issuer-settlement-key rotation. V1 has
+one such active binding in `SharedIssuerAdmissionCommitterV1`; pending provider
+redeems must be drained/reconciled before rotation.
 - an anonymizing ingress claim is tested separately from clearing-key
   authentication and never presented as hiding provider from the issuer.
 - one signed payout intent cannot create two payouts under different HTTP
@@ -893,8 +899,11 @@ scripts/payment-v1-cdk-regtest-e2e.sh
 
 It requires separately pinned CDK 0.17.3 binaries, `wasm-pack 0.14.0`, and the
 offline Cargo cache. It starts only a disposable loopback fake-wallet mint and
-uses no Lightning or real funds. It continues from the Chromium output into the
-ignored provider-side Rust test.
+uses no Lightning or real funds. It continues from the Chromium output into
+`standard_cashu_real_cdk_browser_provider_two_server_e2e`, then uses a second
+independent note for `real_cdk_nut03_swap_verifies_dleq_and_commits_custody`.
+The former is the real `unified_server`/Free-peer/DPF/Merkle/restart boundary;
+the latter is the separate native custody lifecycle.
 
 No-Cargo `--browser-only` is prebuilt-artifact evidence, not current-tree build
 evidence. It requires
@@ -1136,9 +1145,11 @@ cargo test --locked --offline -p pir-cashu-client \
    repository-static/default-`GITHUB_TOKEN` test does not exclude dispatch via
    an external PAT or GitHub App token;
 8. fuzz, dependency, forbidden-field, formal-contract, and offline-build jobs;
-9. compile-only coverage for the feature-gated ignored CDK provider interop
-   target; actual execution remains an opt-in disposable loopback fake-wallet
-   import, alongside approved regtest/signet canaries; no mainnet funds in CI.
+9. compile-only coverage for the feature-gated ignored CDK custody target and,
+   through the executed Standard Cashu process-test crate, the ignored
+   browser/real-CDK/two-provider target; actual CDK execution remains an opt-in
+   disposable loopback fake-wallet run alongside approved regtest/signet
+   canaries; no mainnet funds in CI.
 
 ## Production-only acceptance gates
 

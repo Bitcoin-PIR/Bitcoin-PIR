@@ -953,6 +953,13 @@ needs retained keys to authenticate exact committed redeem responses and their
 historical approvals after rotation. The transport-neutral payout model also
 resolves historical responses by their signed `issuer_settlement_key_id`.
 
+This issuer/ledger keyring does not change the provider wire/runtime boundary.
+V1 `SharedIssuerAdmissionCommitterV1` loads one current clearing authorization,
+approval key and issuer settlement key and cannot resume an in-flight provider
+redeem across their rotation. Rotation requires draining or explicit manual
+reconciliation of pending provider redeems; retained issuer keys alone are not
+a server recovery protocol.
+
 Payout is intentionally two-step. The provider first requests an issuer-signed
 intent that fixes account, opaque payout target ID, unit, value, fee, total
 debit, expiry, and intent ID. It then signs an execution request for that exact

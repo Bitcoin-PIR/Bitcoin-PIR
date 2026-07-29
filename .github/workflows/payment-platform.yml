@@ -226,7 +226,7 @@ jobs:
           cargo clippy --locked --offline -p runtime --features remote-authority-process-e2e --bin unified_server --test payment_v1_process_e2e --no-deps -- -D warnings
           cargo test --locked --offline -p payment-issuer --features remote-authority-process-e2e --test remote_authority_process_e2e payment_issuer_remote_authority_real_process_tls_e2e -- --exact
           cargo clippy --locked --offline -p payment-issuer --features remote-authority-process-e2e --all-targets --no-deps -- -D warnings
-      - name: Exercise Standard Cashu through signed-pin WebPKI TLS and real provider processes
+      - name: Exercise Standard Cashu TLS providers and compile the real-CDK joined topology
         run: |
           cargo test --locked --offline -p runtime --features standard-cashu-process-e2e --test payment_v1_standard_cashu_process_e2e standard_cashu_real_process_tls_two_provider_e2e -- --exact
           cargo clippy --locked --offline -p runtime --features standard-cashu-process-e2e --bin unified_server --test payment_v1_standard_cashu_process_e2e --no-deps -- -D warnings
@@ -340,6 +340,9 @@ jobs:
       - name: Validate opt-in external interoperability runners
         run: |
           bash -n scripts/payment-v1-cdk-regtest-e2e.sh
+          grep -F 'standard_cashu_real_cdk_browser_provider_two_server_e2e' scripts/payment-v1-cdk-regtest-e2e.sh >/dev/null
+          grep -F 'standard_cashu_cdk_tls_proxy_subprocess' apps/server/tests/payment_v1_standard_cashu_process_e2e.rs >/dev/null
+          grep -F 'total_mint_amount=$((expected_amount * 2))' scripts/payment-v1-cdk-regtest-e2e.sh >/dev/null
           bash -n scripts/payment-v1-cln-regtest-e2e.sh
           bash scripts/payment-v1-cln-regtest-e2e.sh --help | grep -F -- '--acknowledge-local-regtest-only' >/dev/null
           test -s web/e2e/payment-two-provider-cln-joined.spec.ts

@@ -353,6 +353,18 @@ the exact endpoint check will make those capabilities fail closed. Keep the old
 origin serving through the longest redemption-grace horizon, or wait for a
 future multi-authorization migration protocol.
 
+This single-authorization boundary also covers the approval key and issuer
+settlement verification key loaded by `SharedIssuerAdmissionCommitterV1`.
+Retained settlement-key lookup exists at the issuer and in the independent
+`ProviderLedgerBalanceClientV1`; it is **not** a retained shared-authorization
+recovery path inside the provider runtime. V1 therefore cannot resume a
+provider-side pending redeem across a clearing-authorization, approval-key or
+issuer-settlement-key rotation. Before any such rotation, stop new redeems and
+drain/reconcile every pending provider redeem under the old authorization. If
+that cannot be done, record and explicitly accept the fail-closed/manual-
+reconciliation risk; do not describe keyring retention elsewhere as server
+recovery support.
+
 Standard-Cashu custody records retain the exact manifest digest and pin set
 that authorized each swap. Before a planned mint leaf-key rotation, publish a
 signed two-pin manifest while the old key is still served, then export, spend

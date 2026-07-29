@@ -16,7 +16,7 @@
 
 #![cfg(all(unix, feature = "standard-cashu-process-e2e"))]
 
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use k256::elliptic_curve::ff::PrimeField;
 use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use k256::{AffinePoint, EncodedPoint, ProjectivePoint, Scalar};
@@ -30,10 +30,11 @@ use pir_sdk_client::{
     VerifiedDatabaseRoots,
 };
 use pir_service_protocol::{
-    derive_cashu_keyset_id_v2, derive_provider_id, AcquisitionMethod, AuthPaddingClassV1,
-    AuthScheme, AuthorizationProofV1, BackendId, CashuDenominationKeyV1, CashuKeysetBindingV1,
-    CashuRequiredNutsV1, DatasetBindingV1, DeploymentStatus, EntitlementLimitsV1,
-    FreeAuthorizationProofV1, FreeModeV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1,
+    check_standard_cashu_spend_for_offer, derive_cashu_keyset_id_v2, derive_provider_id,
+    AcquisitionMethod, AuthPaddingClassV1, AuthScheme, AuthorizationProofV1, BackendId,
+    CashuDenominationKeyV1, CashuKeysetBindingV1, CashuRequiredNutsV1, DatasetBindingV1,
+    DeploymentStatus, EntitlementLimitsV1, FreeAuthorizationProofV1, FreeModeV1,
+    PolicyRollbackGuardV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyEpochFloorsV1,
     ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, StandardCashuMintManifestV1,
     StandardCashuProofV1, StandardCashuSpendV1, VerificationMode, WorkloadId,
 };
@@ -67,9 +68,18 @@ const MINT_SCALAR_OFFSET: u64 = 20;
 const TEST_LEAF_SPKI_SHA256_HEX: &str =
     "e91550521f8e17b21d99f7e00b99c08be1b1f31fe57772ac8f904ea50c6a609b";
 const MINT_HELPER_MARKER: &str = "BITCOINPIR_TEST_ONLY_CASHU_MINT_HELPER_V1";
+const CDK_PROXY_HELPER_MARKER: &str = "BITCOINPIR_TEST_ONLY_CDK_TLS_PROXY_HELPER_V1";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HTTP_REQUEST_BYTES: usize = 64 * 1024;
+const PREPARED_DATABASE_FILES: [&str; 6] = [
+    "MANIFEST.toml",
+    "batch_pir_cuckoo.bin",
+    "chunk_pir_cuckoo.bin",
+    "merkle_bucket_root.bin",
+    "merkle_bucket_roots.bin",
+    "merkle_bucket_tree_tops.bin",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProviderMethod {
@@ -82,7 +92,7 @@ struct ProviderFixture {
     index: u8,
     method: ProviderMethod,
     provider_id: [u8; 32],
-    policy_signing_key: SigningKey,
+    policy_verifying_key: VerifyingKey,
     policy_path: PathBuf,
     store_path: PathBuf,
     rollback_path: PathBuf,
@@ -92,6 +102,24 @@ struct ProviderFixture {
     offer_id: u32,
     spend: Option<StandardCashuSpendV1>,
     mint_id: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PreparedDatabaseFixtureV1 {
+    database_path: PathBuf,
+    manifest_root_hex: String,
+    bucket_super_root_hex: String,
+}
+
+impl PreparedDatabaseFixtureV1 {
+    fn manifest_root(&self) -> [u8; 32] {
+        decode_exact_hex32("prepared manifest root", &self.manifest_root_hex)
+    }
+
+    fn bucket_super_root(&self) -> [u8; 32] {
+        decode_exact_hex32("prepared bucket super-root", &self.bucket_super_root_hex)
+    }
 }
 
 struct ChildProcess {
@@ -172,6 +200,56 @@ fn standard_cashu_tls_mint_subprocess() {
         .expect("serve deterministic TLS Cashu mint");
 }
 
+#[test]
+#[ignore = "spawned only by the pinned CDK runner"]
+fn standard_cashu_cdk_tls_proxy_subprocess() {
+    if env::var_os(CDK_PROXY_HELPER_MARKER).is_none() {
+        return;
+    }
+    let bind = required_env("BITCOINPIR_TEST_CDK_PROXY_BIND")
+        .parse()
+        .expect("CDK TLS proxy bind address");
+    let upstream = required_env("BITCOINPIR_TEST_CDK_PROXY_UPSTREAM")
+        .parse()
+        .expect("CDK TLS proxy upstream address");
+    let certificate = fs::read(required_env("BITCOINPIR_TEST_CDK_PROXY_CERT"))
+        .expect("read CDK TLS proxy certificate");
+    let private_key = fs::read(required_env("BITCOINPIR_TEST_CDK_PROXY_KEY"))
+        .expect("read CDK TLS proxy private key");
+    let state_path = PathBuf::from(required_env("BITCOINPIR_TEST_CDK_PROXY_STATE"));
+    serve_cdk_tls_proxy(bind, upstream, &certificate, &private_key, &state_path)
+        .expect("serve test-only CDK TLS proxy");
+}
+
+#[test]
+#[ignore = "spawned only by the pinned CDK runner"]
+fn standard_cashu_prepare_real_cdk_database_fixture() {
+    let fixture_root = PathBuf::from(required_env("BITCOINPIR_CDK_DATABASE_FIXTURE_ROOT"));
+    let metadata_path = PathBuf::from(required_env("BITCOINPIR_CDK_DATABASE_FIXTURE_METADATA"));
+    assert!(fixture_root.is_absolute());
+    assert_eq!(metadata_path.parent(), Some(fixture_root.as_path()));
+    let root_metadata = fs::symlink_metadata(&fixture_root).expect("inspect fixture root");
+    assert!(root_metadata.file_type().is_dir());
+    assert_eq!(root_metadata.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(root_metadata.mode() & 0o7777, 0o700);
+
+    let (database_path, manifest_root, bucket_super_root) = write_merkle_database(&fixture_root);
+    chmod(&database_path, 0o700);
+    for name in PREPARED_DATABASE_FILES {
+        chmod(&database_path.join(name), 0o600);
+    }
+    let metadata = PreparedDatabaseFixtureV1 {
+        database_path,
+        manifest_root_hex: hex::encode(manifest_root),
+        bucket_super_root_hex: hex::encode(bucket_super_root),
+    };
+    write_private_file(
+        &metadata_path,
+        &serde_json::to_vec(&metadata).expect("encode prepared database metadata"),
+    );
+    assert_private_regular_file(&metadata_path);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn standard_cashu_real_process_tls_two_provider_e2e() {
     let root = tempfile::tempdir().expect("test root");
@@ -204,7 +282,10 @@ async fn standard_cashu_real_process_tls_two_provider_e2e() {
     );
     assert_ne!(provider0.provider_id, provider1.provider_id);
     assert_ne!(provider0.store_path, provider1.store_path);
-    assert_ne!(provider0.policy_signing_key, provider1.policy_signing_key);
+    assert_ne!(
+        provider0.policy_verifying_key,
+        provider1.policy_verifying_key
+    );
 
     let port0 = distinct_unused_port(&[mint_port]);
     let port1 = distinct_unused_port(&[mint_port, port0]);
@@ -233,7 +314,7 @@ async fn standard_cashu_real_process_tls_two_provider_e2e() {
             0,
             0,
             provider0.provider_id,
-            &provider0.policy_signing_key.verifying_key(),
+            &provider0.policy_verifying_key,
             now,
             &ServicePolicyCheckpointV1::initial(),
         )
@@ -244,7 +325,7 @@ async fn standard_cashu_real_process_tls_two_provider_e2e() {
             1,
             0,
             provider1.provider_id,
-            &provider1.policy_signing_key.verifying_key(),
+            &provider1.policy_verifying_key,
             now,
             &ServicePolicyCheckpointV1::initial(),
         )
@@ -316,7 +397,7 @@ async fn standard_cashu_real_process_tls_two_provider_e2e() {
             0,
             0,
             provider0.provider_id,
-            &provider0.policy_signing_key.verifying_key(),
+            &provider0.policy_verifying_key,
             now + 1,
             &ServicePolicyCheckpointV1::initial(),
         )
@@ -352,6 +433,200 @@ async fn standard_cashu_real_process_tls_two_provider_e2e() {
         assert!(!mint_stdout.contains(forbidden));
         assert!(!mint_stderr.contains(forbidden));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires scripts/payment-v1-cdk-regtest-e2e.sh and disposable CDK 0.17.3"]
+async fn standard_cashu_real_cdk_browser_provider_two_server_e2e() {
+    let root = tempfile::tempdir().expect("real CDK provider test root");
+    chmod(root.path(), 0o700);
+    let database = load_prepared_database_fixture();
+    let signed_mint_endpoint = required_env("BITCOINPIR_CDK_SIGNED_MINT_ENDPOINT");
+    let proxy_port = parse_signed_localhost_endpoint(&signed_mint_endpoint);
+    let actual_mint_endpoint = required_env("BITCOINPIR_CDK_MINT_ENDPOINT");
+    let upstream = parse_actual_loopback_endpoint(&actual_mint_endpoint);
+    let material = install_tls_material(root.path());
+    let proxy_state = root.path().join("cdk-proxy-forwarded.log");
+    let proxy = spawn_cdk_tls_proxy(root.path(), proxy_port, upstream, &material, &proxy_state);
+
+    let now = unix_now();
+    let provider0 = build_real_cdk_provider(root.path(), 0, database.manifest_root(), now);
+    let provider1 = build_provider(
+        root.path(),
+        1,
+        ProviderMethod::FreeOpen,
+        database.manifest_root(),
+        "",
+        Vec::new(),
+        now,
+    );
+    assert_ne!(provider0.provider_id, provider1.provider_id);
+    assert_ne!(provider0.store_path, provider1.store_path);
+    assert_ne!(
+        provider0.policy_verifying_key,
+        provider1.policy_verifying_key
+    );
+
+    let port0 = distinct_unused_port(&[proxy_port]);
+    let port1 = distinct_unused_port(&[proxy_port, port0]);
+    let server0 = spawn_server(
+        root.path(),
+        &database.database_path,
+        &provider0,
+        port0,
+        0,
+        Some(&material.root),
+    );
+    let server1 = spawn_server(
+        root.path(),
+        &database.database_path,
+        &provider1,
+        port1,
+        0,
+        None,
+    );
+
+    let mut client = open_strict_dpf_pair(
+        port0,
+        port1,
+        database.manifest_root(),
+        database.bucket_super_root(),
+        &provider0,
+        &provider1,
+        now,
+    )
+    .await;
+    let accepted0 = client
+        .fetch_service_policy_v1(
+            0,
+            0,
+            provider0.provider_id,
+            &provider0.policy_verifying_key,
+            now,
+            &ServicePolicyCheckpointV1::initial(),
+        )
+        .await
+        .expect("fetch browser-selected real-CDK provider policy");
+    let accepted1 = client
+        .fetch_service_policy_v1(
+            1,
+            0,
+            provider1.provider_id,
+            &provider1.policy_verifying_key,
+            now,
+            &ServicePolicyCheckpointV1::initial(),
+        )
+        .await
+        .expect("fetch independent Free provider policy");
+    authorize_cashu(&mut client, 0, &provider0, &accepted0)
+        .await
+        .expect("Chromium canonical spend must authorize at the real provider through CDK");
+    client
+        .dangerous_unpaired_authorize_service_v1(
+            1,
+            0,
+            &accepted1,
+            provider1.scope_id,
+            provider1.offer_id,
+            AuthorizationProofV1::Free(FreeAuthorizationProofV1::OpenBestEffort),
+        )
+        .await
+        .expect("peer provider independently accepts Free/OpenBestEffort");
+    assert_eq!(mint_swap_attempt_count(&proxy_state), 1);
+    assert_private_regular_file(&proxy_state);
+
+    client
+        .preflight_verified_database(0)
+        .await
+        .expect("proof-bound bucket-Merkle tree-top preflight");
+    let results = client
+        .query_batch_with_inspector(&[[0x39; 20]], 0)
+        .await
+        .expect("real two-server DPF query after browser Cashu admission");
+    let verdicts = client
+        .verify_merkle_batch_for_results(&results, 0)
+        .await
+        .expect("real bucket-Merkle absence verification");
+    assert_eq!(verdicts, vec![true]);
+    assert!(results[0]
+        .as_ref()
+        .is_some_and(|result| result.entries.is_empty() && result.matched_index_idx.is_none()));
+    client.disconnect().await.unwrap();
+
+    let (stdout0_first, stderr0_first) = server0.stop();
+    let (stdout1_first, stderr1_first) = server1.stop();
+    assert_server_log(&stdout0_first, &stderr0_first, port0);
+    assert_server_log(&stdout1_first, &stderr1_first, port1);
+
+    let server0 = spawn_server(
+        root.path(),
+        &database.database_path,
+        &provider0,
+        port0,
+        1,
+        Some(&material.root),
+    );
+    let server1 = spawn_server(
+        root.path(),
+        &database.database_path,
+        &provider1,
+        port1,
+        1,
+        None,
+    );
+    let mut restarted = open_strict_dpf_pair(
+        port0,
+        port1,
+        database.manifest_root(),
+        database.bucket_super_root(),
+        &provider0,
+        &provider1,
+        now + 1,
+    )
+    .await;
+    let accepted0 = restarted
+        .fetch_service_policy_v1(
+            0,
+            0,
+            provider0.provider_id,
+            &provider0.policy_verifying_key,
+            now + 1,
+            &ServicePolicyCheckpointV1::initial(),
+        )
+        .await
+        .expect("fetch policy after provider restart");
+    let replay = authorize_cashu(&mut restarted, 0, &provider0, &accepted0)
+        .await
+        .expect_err("provider-local replay must fail before a second CDK request");
+    assert!(replay.to_string().contains("invalid-or-spent"), "{replay}");
+    assert_eq!(
+        mint_swap_attempt_count(&proxy_state),
+        1,
+        "provider-local replay rejection must not touch the CDK proxy"
+    );
+    restarted.disconnect().await.unwrap();
+    let (stdout0_restart, stderr0_restart) = server0.stop();
+    let (stdout1_restart, stderr1_restart) = server1.stop();
+    assert_server_log(&stdout0_restart, &stderr0_restart, port0);
+    assert_server_log(&stdout1_restart, &stderr1_restart, port1);
+
+    let (proxy_stdout, proxy_stderr) = proxy.stop();
+    let spend = provider0.spend.as_ref().expect("browser Cashu spend");
+    assert_no_cashu_bearer_or_proof_log(
+        spend,
+        [
+            stdout0_first.as_str(),
+            stderr0_first.as_str(),
+            stdout1_first.as_str(),
+            stderr1_first.as_str(),
+            stdout0_restart.as_str(),
+            stderr0_restart.as_str(),
+            stdout1_restart.as_str(),
+            stderr1_restart.as_str(),
+            proxy_stdout.as_str(),
+            proxy_stderr.as_str(),
+        ],
+    );
 }
 
 async fn authorize_cashu(
@@ -454,6 +729,203 @@ async fn open_strict_dpf_pair(
         })
         .expect("install explicit proof-verified fixture roots");
     client
+}
+
+fn load_prepared_database_fixture() -> PreparedDatabaseFixtureV1 {
+    let fixture_root = PathBuf::from(required_env("BITCOINPIR_CDK_DATABASE_FIXTURE_ROOT"));
+    let metadata_path = PathBuf::from(required_env("BITCOINPIR_CDK_DATABASE_FIXTURE_METADATA"));
+    assert!(fixture_root.is_absolute());
+    assert_eq!(metadata_path.parent(), Some(fixture_root.as_path()));
+    let root_metadata = fs::symlink_metadata(&fixture_root).expect("inspect prepared fixture root");
+    assert!(root_metadata.file_type().is_dir());
+    assert_eq!(root_metadata.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(root_metadata.mode() & 0o7777, 0o700);
+    assert_private_regular_file(&metadata_path);
+    let fixture: PreparedDatabaseFixtureV1 =
+        serde_json::from_slice(&fs::read(&metadata_path).expect("read prepared database metadata"))
+            .expect("decode prepared database metadata");
+    assert!(fixture.database_path.is_absolute());
+    assert_eq!(fixture.database_path.parent(), Some(fixture_root.as_path()));
+    assert_eq!(
+        fixture
+            .database_path
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("tiny-merkle-db")
+    );
+    let database_metadata =
+        fs::symlink_metadata(&fixture.database_path).expect("inspect prepared database directory");
+    assert!(database_metadata.file_type().is_dir());
+    assert_eq!(database_metadata.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(database_metadata.mode() & 0o7777, 0o700);
+
+    let mut actual_files = fs::read_dir(&fixture.database_path)
+        .expect("read prepared database directory")
+        .map(|entry| {
+            entry
+                .expect("read prepared database entry")
+                .file_name()
+                .into_string()
+                .expect("prepared database file names must be UTF-8")
+        })
+        .collect::<Vec<_>>();
+    actual_files.sort();
+    let mut expected_files = PREPARED_DATABASE_FILES.map(str::to_owned).to_vec();
+    expected_files.sort();
+    assert_eq!(actual_files, expected_files);
+    for name in PREPARED_DATABASE_FILES {
+        assert_private_regular_file(&fixture.database_path.join(name));
+    }
+
+    let manifest_path = fixture.database_path.join("MANIFEST.toml");
+    let bucket_root_path = fixture.database_path.join("merkle_bucket_root.bin");
+    assert_eq!(
+        sha256(&fs::read(&manifest_path).expect("read prepared manifest")),
+        fixture.manifest_root()
+    );
+    let bucket_root: [u8; 32] = fs::read(&bucket_root_path)
+        .expect("read prepared bucket super-root")
+        .try_into()
+        .expect("prepared bucket super-root length");
+    assert_eq!(bucket_root, fixture.bucket_super_root());
+    fixture
+}
+
+fn build_real_cdk_provider(
+    root: &Path,
+    index: u8,
+    manifest_root: [u8; 32],
+    now: u64,
+) -> ProviderFixture {
+    let policy_path = PathBuf::from(required_env("BITCOINPIR_CDK_POLICY_FILE"));
+    let spend_path = PathBuf::from(required_env("BITCOINPIR_CDK_BROWSER_SPEND_FILE"));
+    assert_private_regular_file(&policy_path);
+    assert_private_regular_file(&spend_path);
+    let policy_bytes = fs::read(&policy_path).expect("read browser-selected provider policy");
+    let policy = ServicePolicyV1::decode(&policy_bytes).expect("decode browser provider policy");
+    assert_eq!(
+        policy.encode().expect("re-encode browser provider policy"),
+        policy_bytes,
+        "browser provider policy must be canonical"
+    );
+    let provider_id = required_hex32_env("BITCOINPIR_CDK_PROVIDER_ID_HEX");
+    let policy_key_bytes = required_hex32_env("BITCOINPIR_CDK_POLICY_SIGNING_PUBKEY_HEX");
+    let policy_verifying_key =
+        VerifyingKey::from_bytes(&policy_key_bytes).expect("valid provider policy Ed25519 key");
+    assert_eq!(policy.provider_id, provider_id);
+    let verified = policy
+        .verify_current_for_acquisition(
+            &provider_id,
+            now,
+            &PolicyRollbackGuardV1::initial(),
+            &ServicePolicyEpochFloorsV1::initial(),
+            &policy_verifying_key,
+        )
+        .expect("verify browser-selected provider policy");
+    assert_eq!(policy.scopes.len(), 1);
+    let scope_policy = &policy.scopes[0];
+    assert_eq!(scope_policy.scope.provider_id, provider_id);
+    assert_eq!(scope_policy.scope.backend, BackendId::DpfPirV1);
+    assert_eq!(scope_policy.scope.workload, WorkloadId::DpfEvaluateJobV1);
+    assert_eq!(scope_policy.scope.protocol_version, 1);
+    assert_eq!(
+        scope_policy.scope.dataset,
+        DatasetBindingV1::ManifestRoot {
+            root: manifest_root
+        },
+        "provider policy must bind the exact prepared database manifest root"
+    );
+    assert_eq!(scope_policy.offers.len(), 1);
+    let offer_id = scope_policy.offers[0].offer_id;
+    let scope_id = scope_policy.scope.scope_id();
+    let verified_offer = verified
+        .offer(&scope_id, offer_id)
+        .expect("verified real-CDK offer");
+    let offer = verified_offer.offer();
+    assert_eq!(offer.acquisition, AcquisitionMethod::CashuEcashV1);
+    assert_eq!(offer.authorization, AuthScheme::CashuEcashV1);
+    assert_eq!(
+        offer.verification,
+        VerificationMode::StandardCashuMintOnline
+    );
+    let expected_amount = required_env("BITCOINPIR_CDK_EXPECTED_AMOUNT")
+        .parse::<u64>()
+        .expect("BITCOINPIR_CDK_EXPECTED_AMOUNT must be u64");
+    assert_eq!(
+        offer.price,
+        PriceV1::Cashu {
+            unit: CASHU_UNIT.to_owned(),
+            amount: expected_amount,
+        }
+    );
+    let signed_endpoint = required_env("BITCOINPIR_CDK_SIGNED_MINT_ENDPOINT");
+    assert_eq!(offer.endpoint, signed_endpoint);
+    let manifest = offer
+        .cashu_mint_manifest
+        .as_ref()
+        .expect("real-CDK offer carries signed manifest");
+    assert_eq!(manifest.mint_endpoint, signed_endpoint);
+    assert_eq!(
+        manifest.leaf_spki_sha256_pins,
+        vec![test_leaf_spki_sha256()]
+    );
+    let spend_bytes = fs::read(&spend_path).expect("read Chromium canonical Cashu spend");
+    let spend =
+        StandardCashuSpendV1::decode(&spend_bytes).expect("decode Chromium canonical Cashu spend");
+    assert_eq!(
+        spend.encode().expect("re-encode Chromium Cashu spend"),
+        spend_bytes,
+        "Chromium spend must be exact canonical provider wire bytes"
+    );
+    assert_eq!(spend.total_amount().unwrap(), expected_amount);
+    check_standard_cashu_spend_for_offer(&spend, &verified_offer, now)
+        .expect("Chromium spend matches exact real provider offer");
+
+    let provider_root = root.join(format!("provider-{index}"));
+    let store_dir = provider_root.join("store-domain");
+    let rollback_dir = provider_root.join("rollback-domain");
+    fs::create_dir_all(&store_dir).unwrap();
+    fs::create_dir_all(&rollback_dir).unwrap();
+    chmod(&provider_root, 0o700);
+    chmod(&store_dir, 0o700);
+    chmod(&rollback_dir, 0o700);
+    let recovery_key_path = provider_root.join("cashu-recovery.key");
+    let custody_key_path = provider_root.join("cashu-custody.key");
+    write_private_file(&recovery_key_path, &[0x91u8.wrapping_add(index); 32]);
+    write_private_file(&custody_key_path, &[0xa1u8.wrapping_add(index); 32]);
+    let store_path = store_dir.join("provider.sqlite3");
+    let rollback_path = rollback_dir.join("floor.sqlite3");
+    let rollback =
+        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap();
+    let store = ProviderStore::create(
+        &store_path,
+        [0xc1u8.wrapping_add(index); 16],
+        provider_id,
+        StoreOptions {
+            busy_timeout: Duration::from_secs(1),
+        },
+        Arc::new(rollback),
+    )
+    .unwrap();
+    drop(store);
+    chmod(&store_path, 0o600);
+    chmod(&rollback_path, 0o600);
+
+    ProviderFixture {
+        index,
+        method: ProviderMethod::StandardCashu,
+        provider_id,
+        policy_verifying_key,
+        policy_path,
+        store_path,
+        rollback_path,
+        recovery_key_path: Some(recovery_key_path),
+        custody_key_path: Some(custody_key_path),
+        scope_id,
+        offer_id,
+        spend: Some(spend),
+        mint_id: Some(manifest.mint_id()),
+    }
 }
 
 fn build_provider(
@@ -643,7 +1115,7 @@ fn build_provider(
         index,
         method,
         provider_id,
-        policy_signing_key,
+        policy_verifying_key: policy_signing_key.verifying_key(),
         policy_path,
         store_path,
         rollback_path,
@@ -708,7 +1180,7 @@ fn spawn_server(
         "--service-provider-id-hex".to_owned(),
         hex::encode(fixture.provider_id),
         "--service-policy-key-hex".to_owned(),
-        hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
+        hex::encode(fixture.policy_verifying_key.to_bytes()),
         "--service-store".to_owned(),
         fixture.store_path.to_str().unwrap().to_owned(),
         "--service-rollback-authority".to_owned(),
@@ -849,6 +1321,50 @@ fn spawn_mint_helper(
     process
 }
 
+fn spawn_cdk_tls_proxy(
+    root: &Path,
+    port: u16,
+    upstream: std::net::SocketAddr,
+    material: &TlsMaterial,
+    state_path: &Path,
+) -> ChildProcess {
+    assert!(upstream.ip().is_loopback());
+    let label = "real-cdk-tls-proxy".to_owned();
+    let stdout_path = root.join("real-cdk-tls-proxy-stdout.log");
+    let stderr_path = root.join("real-cdk-tls-proxy-stderr.log");
+    let stdout = File::create(&stdout_path).unwrap();
+    let stderr = File::create(&stderr_path).unwrap();
+    let child = Command::new(env::current_exe().expect("current integration test executable"))
+        .args([
+            "--ignored",
+            "--exact",
+            "standard_cashu_cdk_tls_proxy_subprocess",
+            "--nocapture",
+        ])
+        .env(CDK_PROXY_HELPER_MARKER, "1")
+        .env(
+            "BITCOINPIR_TEST_CDK_PROXY_BIND",
+            format!("127.0.0.1:{port}"),
+        )
+        .env("BITCOINPIR_TEST_CDK_PROXY_UPSTREAM", upstream.to_string())
+        .env("BITCOINPIR_TEST_CDK_PROXY_CERT", &material.certificate)
+        .env("BITCOINPIR_TEST_CDK_PROXY_KEY", &material.private_key)
+        .env("BITCOINPIR_TEST_CDK_PROXY_STATE", state_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("spawn test-only real-CDK TLS proxy");
+    let mut process = ChildProcess {
+        label,
+        child,
+        stdout_path,
+        stderr_path,
+    };
+    process.wait_until_listening(port);
+    process
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MintSwapRequest {
@@ -927,6 +1443,100 @@ fn serve_cashu_mint(
             // The helper never logs peer, note, timing, or query information.
         }
     }
+}
+
+fn serve_cdk_tls_proxy(
+    bind: std::net::SocketAddr,
+    upstream: std::net::SocketAddr,
+    certificate_pem: &[u8],
+    private_key_pem: &[u8],
+    state_path: &Path,
+) -> io::Result<()> {
+    if !bind.ip().is_loopback() || !upstream.ip().is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "test CDK TLS proxy endpoints must be loopback",
+        ));
+    }
+    let certificate = CertificateDer::from_pem_slice(certificate_pem)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid test certificate"))?;
+    let private_key = PrivateKeyDer::from_pem_slice(private_key_pem)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid test private key"))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|_| io::Error::other("configure TLS versions"))?
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], private_key)
+        .map_err(|_| io::Error::other("configure TLS identity"))?;
+    let config = Arc::new(config);
+    let listener = TcpListener::bind(bind)?;
+    loop {
+        let (socket, _) = listener.accept()?;
+        if serve_one_cdk_tls_proxy_request(socket, Arc::clone(&config), upstream, state_path)
+            .is_err()
+        {
+            // Readiness probes, malformed TLS and invalid HTTP remain silent;
+            // the helper never logs a token, proof, peer, query or response.
+        }
+    }
+}
+
+fn serve_one_cdk_tls_proxy_request(
+    socket: TcpStream,
+    config: Arc<ServerConfig>,
+    upstream: std::net::SocketAddr,
+    state_path: &Path,
+) -> io::Result<()> {
+    let expected_host = format!("host: localhost:{}", socket.local_addr()?.port());
+    socket.set_read_timeout(Some(TLS_IO_TIMEOUT))?;
+    socket.set_write_timeout(Some(TLS_IO_TIMEOUT))?;
+    let connection = ServerConnection::new(config).map_err(io::Error::other)?;
+    let mut tls = StreamOwned::new(connection, socket);
+    let request = read_bounded_http_request(&mut tls)?;
+    let header_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP header end"))?;
+    let header = std::str::from_utf8(&request[..header_end])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-ASCII HTTP header"))?;
+    let mut lines = header.split("\r\n");
+    if lines.next() != Some("POST /v1/swap HTTP/1.1")
+        || !lines
+            .clone()
+            .any(|line| line.eq_ignore_ascii_case(&expected_host))
+        || !lines.any(|line| line.eq_ignore_ascii_case("content-type: application/json"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected CDK proxy request",
+        ));
+    }
+    let body = &request[header_end..];
+    let mut upstream_socket = TcpStream::connect_timeout(&upstream, TLS_IO_TIMEOUT)?;
+    upstream_socket.set_read_timeout(Some(TLS_IO_TIMEOUT))?;
+    upstream_socket.set_write_timeout(Some(TLS_IO_TIMEOUT))?;
+    let forwarded_header = format!(
+        "POST /v1/swap HTTP/1.1\r\nHost: {upstream}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    record_mint_swap_attempt(state_path)?;
+    upstream_socket.write_all(forwarded_header.as_bytes())?;
+    upstream_socket.write_all(body)?;
+    upstream_socket.flush()?;
+    let response = read_bounded_http_request(&mut upstream_socket)?;
+    if !response.starts_with(b"HTTP/1.1 200 ") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "real CDK swap did not return HTTP 200",
+        ));
+    }
+    tls.write_all(&response)?;
+    tls.flush()?;
+    tls.conn.send_close_notify();
+    let _ = tls.flush();
+    Ok(())
 }
 
 fn serve_one_mint_request(
@@ -1363,6 +1973,72 @@ fn required_env(name: &str) -> String {
     env::var(name).unwrap_or_else(|_| panic!("missing {name}"))
 }
 
+fn required_hex32_env(name: &str) -> [u8; 32] {
+    decode_exact_hex32(name, &required_env(name))
+}
+
+fn decode_exact_hex32(field: &str, value: &str) -> [u8; 32] {
+    assert_eq!(value.len(), 64, "{field} must be 32-byte hex");
+    assert!(is_lower_hex(value), "{field} must be lowercase hex");
+    let decoded: [u8; 32] = hex::decode(value)
+        .expect("decode exact hex")
+        .try_into()
+        .expect("exact 32-byte hex length");
+    assert!(
+        decoded.iter().any(|byte| *byte != 0),
+        "{field} must be nonzero"
+    );
+    decoded
+}
+
+fn parse_signed_localhost_endpoint(endpoint: &str) -> u16 {
+    let port = endpoint
+        .strip_prefix("https://localhost:")
+        .filter(|value| !value.is_empty() && !value.contains('/'))
+        .unwrap_or_else(|| {
+            panic!("signed CDK endpoint is not canonical localhost HTTPS: {endpoint}")
+        })
+        .parse::<u16>()
+        .expect("signed CDK endpoint port");
+    assert!(port >= 1024);
+    port
+}
+
+fn parse_actual_loopback_endpoint(endpoint: &str) -> std::net::SocketAddr {
+    let port = endpoint
+        .strip_prefix("http://127.0.0.1:")
+        .filter(|value| !value.is_empty() && !value.contains('/'))
+        .unwrap_or_else(|| {
+            panic!("actual CDK endpoint is not exact IPv4 loopback HTTP: {endpoint}")
+        })
+        .parse::<u16>()
+        .expect("actual CDK endpoint port");
+    assert!(port >= 1024);
+    format!("127.0.0.1:{port}")
+        .parse()
+        .expect("actual CDK loopback socket")
+}
+
+fn assert_no_cashu_bearer_or_proof_log<'a>(
+    spend: &StandardCashuSpendV1,
+    logs: impl IntoIterator<Item = &'a str>,
+) {
+    for log in logs {
+        for forbidden in ["cashuB", "payment_hash", "preimage", "invoice"] {
+            assert!(
+                !log.contains(forbidden),
+                "sensitive Cashu marker reached a process log"
+            );
+        }
+        for proof in &spend.proofs {
+            assert!(
+                !log.contains(&proof.secret),
+                "a Cashu proof secret reached a process log"
+            );
+        }
+    }
+}
+
 fn distinct_unused_port(excluded: &[u16]) -> u16 {
     loop {
         let port = unused_loopback_port();
@@ -1474,7 +2150,7 @@ async fn exercise_tls_failure_matrix(
                 0,
                 0,
                 cashu.provider_id,
-                &cashu.policy_signing_key.verifying_key(),
+                &cashu.policy_verifying_key,
                 now,
                 &ServicePolicyCheckpointV1::initial(),
             )

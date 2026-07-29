@@ -605,30 +605,28 @@ operator has activated the path with real money or public infrastructure.
       gate requires no network-installed fuzz tooling and retains explicit
       case-count/input-size bounds.
 - [x] An opt-in disposable CDK 0.17.3 fake-wallet runner starts only a random
-      loopback HTTP mint, obtains a real padded V4 `cashuB` token containing
-      NUT-12 wallet metadata, and proves the Rust logic used by the production
-      WASM importer accepts and normalizes it without forwarding DLEQ material.
-      That step is a native library test, not generated-JS/WASM browser-ABI
-      evidence. The runner then executes the
-      production provider-side NUT-03 state machine against that real CDK mint,
-      verifies the official full NUT-02 V2 keyset derivation and NUT-12 DLEQ,
-      atomically commits the grant plus custody notes, and proves resume does
-      not send a second swap. The current test source additionally reconstructs
-      a spend from authenticated custody in memory, submits it through a second
-      independent client, and expects the first custody lot to become `SPENT`
-      while successor custody remains `UNSPENT`, without placing the bearer in
-      process argv. After two earlier branch passes, a final 2026-07-28
-      current-tree default-mode run exited 0: current `bpir-admin` and WASM
-      builds succeeded, and the Chromium, native-WASM interop and provider
-      custody cases each passed 1/1. The complete run performed two real NUT-03
-      swaps and four exact NUT-07 observations against the disposable mint;
-      its owned CDK process and private runtime directory were absent after
-      cleanup. The gate first caught and then closed a missing required
-      synthetic leaf-SPKI pin plus an obsolete ignored-test import. The runner
-      uses no Lightning node or real funds and maps
-      only one synthetic test identity to loopback; the production WebPKI HTTPS
-      transport is unchanged. An unmodified provider-process/public-mint E2E
-      remains a staging gap.
+      loopback HTTP mint and creates two independent 8-sat padded V4 `cashuB`
+      notes. Current generated JS/WASM imports the first note in Chromium,
+      rejects its untouched HTTP identity, retires the accepted capability from
+      the encrypted vault, and emits owner-only canonical provider wire bytes.
+      A feature-gated private-CA TLS proxy exposes only the signed
+      `https://localhost:<port>` identity and fixed leaf-SPKI pin to a real
+      Standard Cashu `unified_server`; an independently configured Free server
+      completes the pair. The joined process test establishes both secure
+      channels, verifies exact manifest-root policies, runs proof-bound
+      preflight, DPF and Merkle absence verification, restarts both providers,
+      and rejects replay from provider-local durable state while the CDK proxy
+      request count remains one. The second note separately covers native
+      NUT-02/NUT-03/NUT-12 plus four NUT-07 custody observations, including
+      first custody `UNSPENT -> SPENT` and independent successor custody
+      `UNSPENT`, without placing a bearer in process argv. The 2026-07-29 Linux
+      run passed the Chromium, joined provider, native-WASM and native-custody
+      cells 1/1 each. CDK stdout/file logs contained no bearer, payment hash,
+      preimage or BOLT invoice value. The runner uses no Lightning node or real
+      funds; production WebPKI HTTPS is unchanged and release compilation with
+      the test root is forbidden. External public-mint interoperability,
+      independent production rollback authority and admin retirement remain
+      staging gaps.
 - [x] The product-owned wire-shape contract and compiled Rust conformance tests
       bind all five authorization methods and all five workload starts to one
       16,414-byte encrypted application request record. They separately admit

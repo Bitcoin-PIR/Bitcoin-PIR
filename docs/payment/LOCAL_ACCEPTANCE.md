@@ -63,7 +63,7 @@ Full local check:
 scripts/payment-v1-local-check.sh --full
 ```
 
-Optional real-CDK browser import and provider-side NUT-03/NUT-12
+Optional real-CDK browser import, real-provider query, and native custody
 interoperability (outside the default offline suite) requires exact
 `cdk-mintd` and `cdk-cli` 0.17.3 binaries. Apple-arm64 uses the recorded
 official hashes below by default; other platforms must also provide both
@@ -119,11 +119,17 @@ directory. It validates padded V4 `cashuB`, current `m,u,t` structure, local
 stripping of known NUT-12 wallet metadata, and either the freshly rebuilt
 default-mode or hash-pinned browser-only JS/WASM ABI. Chromium must reject the
 untouched HTTP token. Because the Cashu proofs do not bind wallet mint-URL
-metadata, the private test fixture relabels only
-that CBOR text to the exact synthetic HTTPS identity in the signed manifest;
-this is not a production transport bypass. The default mode also runs the
-native importer and exercises the provider's NUT-03/NUT-12 swap and custody
-path. The current ignored test expects four exact NUT-07 observations:
+metadata, the private test fixture relabels only that CBOR text. Default mode
+uses a signed `https://localhost:<port>` identity and a test-only strict-TLS
+proxy whose private CA and leaf SPKI are fixed in the feature-gated process
+test; browser-only mode uses a non-routable synthetic identity. Neither path
+adds a production plaintext or pinless fallback. Default mode mints two
+independent 8-sat notes. Chromium turns the first into canonical provider wire
+bytes, then a real Standard Cashu `unified_server` and an independent Free peer
+complete two secure channels, exact manifest-root policy checks, preflight,
+DPF, Merkle verification, provider restart and local replay rejection without
+a second CDK request. The second note is reserved for the native importer and
+custody lifecycle. That native ignored test expects four exact NUT-07 observations:
 original inputs become `SPENT`, first custody is initially `UNSPENT`, a second
 independent BitcoinPIR client spends that authenticated custody through NUT-03,
 and the first custody then becomes `SPENT` while successor custody is
@@ -135,9 +141,9 @@ test later passed a dedicated local branch run. The final 2026-07-28
 default-mode run repeated it against the current tree and is recorded below.
 The predecessor `--browser-only` case passed before the current
 acknowledgement-and-provenance guard was added; guarded browser-only mode still
-needs its own current-guard run. The runner does not
-execute the admin retirement command against CDK or an unmodified
-`unified_server` transport.
+needs its own current-guard run. The runner does not execute the admin
+retirement command against CDK, use a public-WebPKI mint, or establish a
+production rollback authority.
 
 Test-only heap limitation: JavaScript `String` values are immutable, so the
 temporary `cashuB` strings cannot be deterministically zeroized. The harness
@@ -323,6 +329,25 @@ from one to zero, and `localStorage` remained empty. The private runtime and
 bearer files were removed and no CDK process remained.
 This historical invocation predates the current mandatory prebuilt
 `bpir-admin`/WASM provenance pins and is not a pass record for that new guard.
+
+On 2026-07-29 the current same-run extension passed against locally built
+Linux-arm64 CDK 0.17.3 binaries. Their local build digests were
+`0421e150ac7d201c0211a6fea144f864d5f5ec081a2365b189720a5860237aa7`
+(`cdk-mintd`, fakewallet+SQLite) and
+`e894d9ce0696db34ba547ecd6cc50f9a760ec1cad77628388dd7e4c7acdb8243`
+(`cdk-cli`, no default features); these identify the tested local builds and
+are not official-release provenance. Mint, CLI, both providers and all Rust
+tests ran in one Linux container with CDK reachable only on container loopback.
+Chromium imported the first note through the Linux-built current-tree WASM and
+wrote the owner-only canonical spend. The ignored real-CDK process case passed
+1/1, including independent Free authorization, two secure channels, exact-root
+preflight, DPF/Merkle, two-provider restart and replay rejection with the TLS
+proxy attempt count still one. The second-note WASM parser and native
+NUT-03/NUT-07 custody cases each passed 1/1. CDK stdout and file logs contained
+no `cashuB` bearer, payment-hash/preimage field or BOLT invoice value. This used
+fakewallet notes only: no Lightning node, invoice payment, public mint, remote
+PIR service or real funds participated. Exact-commit CI remains authoritative
+before merge.
 
 ### 2026-07-28 current-tree CDK default-mode closeout
 
@@ -554,7 +579,7 @@ the complete vendor tree as an incidental Payment change.
 |---|---|---|---|
 | Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through the real provider process plus canonical Free authorization at every backend gate; the Chromium variant additionally joins an exact signed quota-1/window-3600 IP-rate-limited offer and leakage disclosure, zero invoice/issuer requests, durable same-provider rejection, independent provider-1 ARC admission and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | public-IP attribution behind a real proxy, a generated-browser PoW case, or production DDoS resistance |
 | Direct BOLT11 receipt | `cargo test --offline -p pir-lightning-backend`, issuer lifecycle tests, `direct_receipt_production_committer_spend_survives_store_restart`, and optional `scripts/payment-v1-cln-regtest-e2e.sh --acknowledge-local-regtest-only` | fake lifecycle/state tests, signed receipt admission and replay rejection across ProviderStore restart, plus a real local CLN socket and generated-WASM acquisition path; the final current-tree opt-in run passed the forced payer -> router -> issuer route and joined verified provider queries | a public-network or real-value wallet payment, production ingress, or production Lightning operations |
-| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated `payment_v1_standard_cashu_process_e2e` command below | exact swap/recovery/grant-to-custody state machine, finite exposure/export/NUT-07 boundaries, generated-JS/WASM import plus real-CDK NUT-03/NUT-12, and a strict-TLS mint with signed endpoint/pin through a real Cashu provider, independent Free peer, two secure channels, DPF/Merkle, restart/replay and wrong-CA/pin/offline failures; both the joined CDK boundary and provider-process cell passed final current-tree runs | one same-run browser-to-provider topology, an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
+| Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated `payment_v1_standard_cashu_process_e2e` command below | exact swap/recovery/grant-to-custody state machine, finite exposure/export/NUT-07 boundaries, generated-JS/WASM import plus real-CDK NUT-03/NUT-12, and one same-run first-note path through private-CA strict TLS, a real Cashu provider, independent Free peer, two secure channels, exact-root preflight, DPF/Merkle, restart and local replay rejection without a second CDK touch; a second independent note covers the native custody lifecycle | an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
 | Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, and `payment_v1_methods_process_e2e` | real blind/DLEQ/unblind proof through a real provider process and provider-local durable BAT spend/restart rejection | a public/shared Cashu service or production key custody |
 | ARC experimental | `cargo test --offline -p pir-arc-adapter --features provider-store`, the runtime matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | real draft-01 issuance/presentation through a real provider process plus nonce/tag persistence and restart rejection; the Chromium variant additionally joins generated-WASM local issuance, persist-before-release, real ProviderStore replay rejection and verified DPF/Merkle execution; the final isolated-target current-tree browser run passed 3/3 | independent cryptographic review, complete IETF protocol interoperability, browser-driven provider restart, or permission to advertise ARC as stable |
 
@@ -642,6 +667,30 @@ against their original stores, rejects bearer replay without a second NUT-03,
 then proves wrong CA, wrong signed pin and offline mint fail closed without
 another mint spend.
 
+The pinned-CDK runner additionally invokes the ignored same-run case after
+Chromium writes its owner-only canonical spend:
+
+```sh
+cargo test --locked --offline -p runtime \
+  --features standard-cashu-process-e2e \
+  --test payment_v1_standard_cashu_process_e2e \
+  standard_cashu_real_cdk_browser_provider_two_server_e2e \
+  -- --ignored --exact
+```
+
+The runner supplies only owner-only temporary database, policy, spend and
+endpoint bindings. The test recomputes the prepared manifest and bucket roots,
+requires an exact manifest-root DPF scope, terminates the fixed private-CA TLS
+identity at a loopback-only proxy to the actual CDK HTTP listener, and launches
+the Standard Cashu and Free providers with independent identities, policy keys,
+stores and rollback databases. It then performs secure-channel policy
+authorization on both sides, proof-bound tree-top preflight, a two-server DPF
+query and Merkle absence verification. After both providers restart, replay is
+rejected from provider-local state and the proxy's durable attempt count remains
+one. Provider/proxy logs are checked against bearer/proof/invoice material; the
+runner separately checks CDK stdout and file logs for bearer values, payment
+hash/preimage fields and BOLT invoice strings.
+
 The private CA hook exists only under the named debug-only feature. Its root
 must be an owner-only bounded file; normal WebPKI chain, hostname, time and the
 signed SPKI pin remain mandatory. Default `unified_server` builds reject the
@@ -714,13 +763,14 @@ encrypted browser vault. Default mode sends those exact canonical browser
 bytes to the real admission gate and standard-Cashu committer, executes the
 provider-side NUT-03 request and NUT-12 DLEQ verification, commits received
 notes to custody, and checks same-process and reopened-store replay rejection.
-That joined default-mode case passed the final 2026-07-28 current-tree CDK run
-recorded above. Its predecessor local branch run also spent authenticated
-custody through a second
-independently keyed client, observed the first custody lot become all-`SPENT`,
-and observed successor custody remain all-`UNSPENT`. Its test transport maps
-only the signed synthetic identity to the validated loopback mint; production
-HTTPS/WebPKI behavior is unchanged.
+The current same-run extension uses the first independent note for Chromium and
+the real `unified_server` provider, routes only its NUT-03 swap through the
+feature-gated private-CA TLS proxy, completes the independent Free peer plus
+DPF/Merkle query, and proves restart replay is rejected without another CDK
+touch. A second independent note is then spent by the native custody test,
+which observes the first custody lot become all-`SPENT` and successor custody
+remain all-`UNSPENT`. Production HTTPS/WebPKI behavior is unchanged; the
+private root feature is compile-rejected in release profiles.
 
 ## Fake Lightning and issuer checks
 
