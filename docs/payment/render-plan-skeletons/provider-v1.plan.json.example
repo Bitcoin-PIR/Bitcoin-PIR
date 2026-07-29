@@ -84,13 +84,31 @@
       "uid": 62931
     },
     {
-      "class": "config",
+      "class": "secret",
       "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
       "gid": 62932,
-      "mode": "0440",
+      "mode": "0400",
       "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/remote-rollback-authority.toml",
       "target_path": "/etc/bitcoinpir/payment-v1/provider/remote-rollback-authority.toml",
-      "uid": 0
+      "uid": 62931
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/remote-rollback-client-signing.seed",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/remote-rollback-client-signing.seed",
+      "uid": 62931
+    },
+    {
+      "class": "secret",
+      "expected_sha256": "INVALID_REPLACE_WITH_64_LOWER_HEX_SHA256",
+      "gid": 62932,
+      "mode": "0400",
+      "source_path": "INVALID-REPLACE-IN-PRIVATE-INPUT-ROOT/provider/remote-rollback-value-root.key",
+      "target_path": "/etc/bitcoinpir/payment-v1/provider/remote-rollback-value-root.key",
+      "uid": 62931
     },
     {
       "class": "policy",

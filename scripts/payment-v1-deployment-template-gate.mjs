@@ -77,6 +77,8 @@ export const REQUIRED_PREPARATION_FILES = Object.freeze([
   "deploy/payment-v1/systemd/payment-v1-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-public-edge.service.in",
   "deploy/payment-v1/systemd/payment-v1-source-fair-edge.service.in",
+  "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
+  "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
   "deploy/payment-v1/systemd/hetzner-provider.service.in",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in",
   "deploy/payment-v1/systemd/rollback-authority.service.in",
@@ -475,11 +477,55 @@ function validateProductionForbiddenFlags(text, label) {
   }
 }
 
-function validateHetznerProvider(text) {
-  const label = "Hetzner provider template";
+function validateHetznerProvider(
+  text,
+  { direct = false, noStandardCashu = false } = {},
+) {
+  if (direct && !noStandardCashu) {
+    fail("direct provider validator must also disable Standard Cashu");
+  }
+  const label = direct
+    ? "Hetzner direct provider template"
+    : noStandardCashu
+      ? "Hetzner provider without Standard Cashu template"
+      : "Hetzner provider template";
+  const configRoot = direct
+    ? "/etc/bitcoinpir/payment-v1/provider-direct"
+    : noStandardCashu
+      ? "/etc/bitcoinpir/payment-v1/provider-no-standard-cashu"
+      : "/etc/bitcoinpir/payment-v1/provider";
+  const serviceName = direct
+    ? "bitcoinpir-provider-direct"
+    : noStandardCashu
+      ? "bitcoinpir-provider-nocashu"
+      : "bitcoinpir-provider";
+  const stateDirectory = direct
+    ? "bitcoinpir-provider-direct-payment-v1"
+    : noStandardCashu
+      ? "bitcoinpir-provider-nocashu-payment-v1"
+      : "bitcoinpir-provider-payment-v1";
+  const activationConditions = direct
+    ? [
+      "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+      "/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+      "!/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+      "!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+    ]
+    : noStandardCashu
+      ? [
+        "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+        "/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+        "!/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+        "!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+      ]
+      : [
+        "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
+        "/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+        "!/etc/bitcoinpir/payment-v1/PROVIDER-DIRECT-ACTIVATION-APPROVED",
+        "!/etc/bitcoinpir/payment-v1/PROVIDER-NO-STANDARD-CASHU-ACTIVATION-APPROVED",
+      ];
   const unit = validateInactiveSystemdTemplate(text, label, [
-    "/etc/bitcoinpir/payment-v1/ACTIVATION-APPROVED",
-    "/etc/bitcoinpir/payment-v1/PROVIDER-ACTIVATION-APPROVED",
+    ...activationConditions,
   ]);
   exactDirectiveKeys(unit, "Unit", BASIC_UNIT_KEYS, label);
   exactDirectiveKeys(
@@ -500,20 +546,26 @@ function validateHetznerProvider(text) {
     label,
   );
   validateCommonServiceHardening(unit, label, true);
-  exactDirectiveValues(unit, "Unit", "Description", ["BitcoinPIR Hetzner Payment V1 provider (template only)"], label);
+  exactDirectiveValues(unit, "Unit", "Description", [
+    direct
+      ? "BitcoinPIR Hetzner Payment V1 direct provider (template only)"
+      : noStandardCashu
+      ? "BitcoinPIR Hetzner Payment V1 provider without Standard Cashu (template only)"
+      : "BitcoinPIR Hetzner Payment V1 provider (template only)",
+  ], label);
   exactDirectiveValues(unit, "Unit", "After", ["network-online.target"], label);
   exactDirectiveValues(unit, "Unit", "Wants", ["network-online.target"], label);
-  exactDirectiveValues(unit, "Service", "User", ["bitcoinpir-provider"], label);
-  exactDirectiveValues(unit, "Service", "Group", ["bitcoinpir-provider"], label);
-  exactDirectiveValues(unit, "Service", "StateDirectory", ["bitcoinpir-provider-payment-v1"], label);
-  exactDirectiveValues(unit, "Service", "WorkingDirectory", ["/var/lib/bitcoinpir-provider-payment-v1"], label);
+  exactDirectiveValues(unit, "Service", "User", [serviceName], label);
+  exactDirectiveValues(unit, "Service", "Group", [serviceName], label);
+  exactDirectiveValues(unit, "Service", "StateDirectory", [stateDirectory], label);
+  exactDirectiveValues(unit, "Service", "WorkingDirectory", [`/var/lib/${stateDirectory}`], label);
   exactDirectiveValues(unit, "Service", "Restart", ["on-failure"], label);
   exactDirectiveValues(unit, "Service", "RestartSec", ["5"], label);
   exactDirectiveValues(unit, "Service", "LimitNOFILE", ["65535"], label);
   exactDirectiveValues(unit, "Service", "ProtectClock", ["true"], label);
   exactDirectiveValues(unit, "Service", "ProtectHostname", ["true"], label);
-  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", ["/etc/bitcoinpir/payment-v1/provider"], label);
-  exactDirectiveValues(unit, "Service", "ReadWritePaths", ["/var/lib/bitcoinpir-provider-payment-v1"], label);
+  exactDirectiveValues(unit, "Service", "ReadOnlyPaths", [configRoot], label);
+  exactDirectiveValues(unit, "Service", "ReadWritePaths", [`/var/lib/${stateDirectory}`], label);
   exactDirectiveValues(unit, "Service", "InaccessiblePaths", ["/run/bitcoinpir-source-fair-edge"], label);
   exactDirectiveValues(
     unit,
@@ -521,11 +573,16 @@ function validateHetznerProvider(text) {
     "ExecStartPre",
     [
       "/usr/bin/test -x /opt/bitcoinpir/unified-server/@UNIFIED_SERVER_SHA256@/unified_server",
-      "/usr/bin/sha256sum --check /etc/bitcoinpir/payment-v1/provider/unified-server.sha256",
+      `/usr/bin/sha256sum --check ${configRoot}/unified-server.sha256`,
     ],
     label,
   );
   const command = onlyDirectiveValue(unit, "Service", "ExecStart", label);
+  if (/(?:^|\s)--service-retained-policy(?:\s|=|$)/mu.test(command)) {
+    fail(
+      `${label} is a zero-retained closed profile and must not configure --service-retained-policy`,
+    );
+  }
   validateProductionForbiddenFlags(command, label);
   validateExactCommand(
     command,
@@ -537,30 +594,34 @@ function validateHetznerProvider(text) {
       ["--serve-hints", null],
       ["--serve-queries", null],
       ["--pool-size", "8"],
-      ["--pool-dir", "/var/lib/bitcoinpir-provider-payment-v1/hint-pool"],
-      ["--config", "/etc/bitcoinpir/payment-v1/provider/databases.toml"],
-      ["--identity-key-path", "/etc/bitcoinpir/payment-v1/provider/provider-identity.key"],
-      ["--identity-cert-path", "/etc/bitcoinpir/payment-v1/provider/provider-identity.cert"],
+      ["--pool-dir", `/var/lib/${stateDirectory}/hint-pool`],
+      ["--config", `${configRoot}/databases.toml`],
+      ["--identity-key-path", `${configRoot}/provider-identity.key`],
+      ["--identity-cert-path", `${configRoot}/provider-identity.cert`],
       ["--identity-server-id", "@HETZNER_PROVIDER_SERVER_ID@"],
       ["--require-service-auth-v1", null],
-      ["--service-policy", "/etc/bitcoinpir/payment-v1/provider/service-policy.bin"],
+      ["--service-policy", `${configRoot}/service-policy.bin`],
       ["--service-provider-id-hex", "@HETZNER_PROVIDER_ID_HEX@"],
       ["--service-policy-key-hex", "@HETZNER_POLICY_PUBKEY_HEX@"],
-      ["--service-store", "/var/lib/bitcoinpir-provider-payment-v1/provider.sqlite3"],
-      ["--service-remote-rollback-authority-config", "/etc/bitcoinpir/payment-v1/provider/remote-rollback-authority.toml"],
-      ["--service-bat-key", "/etc/bitcoinpir/payment-v1/provider/cashu-bat.key"],
-      ["--service-cashu-recovery-key", "1=/etc/bitcoinpir/payment-v1/provider/cashu-recovery-epoch-1.key"],
-      ["--service-cashu-recovery-active-epoch", "1"],
-      ["--service-cashu-custody-key", "1=/etc/bitcoinpir/payment-v1/provider/cashu-custody-epoch-1.key"],
-      ["--service-cashu-custody-active-epoch", "1"],
-      ["--service-cashu-exposure-limit", "@CASHU_MINT_ID_HEX@:sat:@CASHU_MAX_UNSETTLED_VALUE@:@CASHU_MAX_UNSETTLED_NOTES@"],
-      ["--service-shared-authorization", "/etc/bitcoinpir/payment-v1/provider/shared-clearing-authorization.bin"],
-      ["--service-shared-issuer-approval", "/etc/bitcoinpir/payment-v1/provider/shared-clearing-approval.bin"],
-      ["--service-shared-operator-key-hex", "@HETZNER_OPERATOR_PUBKEY_HEX@"],
-      ["--service-shared-issuer-settlement-key-hex", "@ISSUER_SETTLEMENT_PUBKEY_HEX@"],
-      ["--service-shared-clearing-key", "/etc/bitcoinpir/payment-v1/provider/provider-clearing-signing.key"],
-      ["--service-shared-idempotency-key", "/etc/bitcoinpir/payment-v1/provider/shared-redeem-idempotency.key"],
-      ["--service-shared-minimum-authorization-epoch", "@SHARED_MINIMUM_AUTHORIZATION_EPOCH@"],
+      ["--service-store", `/var/lib/${stateDirectory}/provider.sqlite3`],
+      ["--service-remote-rollback-authority-config", `${configRoot}/remote-rollback-authority.toml`],
+      ...(!direct ? [["--service-bat-key", `${configRoot}/cashu-bat.key`]] : []),
+      ...(!noStandardCashu ? [
+        ["--service-cashu-recovery-key", `1=${configRoot}/cashu-recovery-epoch-1.key`],
+        ["--service-cashu-recovery-active-epoch", "1"],
+        ["--service-cashu-custody-key", `1=${configRoot}/cashu-custody-epoch-1.key`],
+        ["--service-cashu-custody-active-epoch", "1"],
+        ["--service-cashu-exposure-limit", "@CASHU_MINT_ID_HEX@:sat:@CASHU_MAX_UNSETTLED_VALUE@:@CASHU_MAX_UNSETTLED_NOTES@"],
+      ] : []),
+      ...(!direct ? [
+        ["--service-shared-authorization", `${configRoot}/shared-clearing-authorization.bin`],
+        ["--service-shared-issuer-approval", `${configRoot}/shared-clearing-approval.bin`],
+        ["--service-shared-operator-key-hex", "@HETZNER_OPERATOR_PUBKEY_HEX@"],
+        ["--service-shared-issuer-settlement-key-hex", "@ISSUER_SETTLEMENT_PUBKEY_HEX@"],
+        ["--service-shared-clearing-key", `${configRoot}/provider-clearing-signing.key`],
+        ["--service-shared-idempotency-key", `${configRoot}/shared-redeem-idempotency.key`],
+        ["--service-shared-minimum-authorization-epoch", "@SHARED_MINIMUM_AUTHORIZATION_EPOCH@"],
+      ] : []),
       ["--max-connections", "128"],
       ["--service-max-concurrent-auth", "16"],
       ["--service-max-concurrent-online-v2full-auth", "4"],
@@ -570,10 +631,12 @@ function validateHetznerProvider(text) {
     ],
     label,
   );
-  const recovery = /--service-cashu-recovery-key\s+1=(\S+)/.exec(command)?.[1];
-  const custody = /--service-cashu-custody-key\s+1=(\S+)/.exec(command)?.[1];
-  if (recovery === undefined || custody === undefined || recovery === custody) {
-    fail(`${label} must use distinct explicit Cashu recovery and custody keys`);
+  if (!noStandardCashu) {
+    const recovery = /--service-cashu-recovery-key\s+1=(\S+)/.exec(command)?.[1];
+    const custody = /--service-cashu-custody-key\s+1=(\S+)/.exec(command)?.[1];
+    if (recovery === undefined || custody === undefined || recovery === custody) {
+      fail(`${label} must use distinct explicit Cashu recovery and custody keys`);
+    }
   }
 }
 
@@ -2028,6 +2091,21 @@ export function validateDeploymentTree(rootInput) {
     "deploy/payment-v1/systemd/hetzner-provider.service.in",
   );
   validateHetznerProvider(provider.text);
+
+  const providerNoStandardCashu = readRequired(
+    root,
+    "deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in",
+  );
+  validateHetznerProvider(providerNoStandardCashu.text, { noStandardCashu: true });
+
+  const providerDirect = readRequired(
+    root,
+    "deploy/payment-v1/systemd/hetzner-provider-direct.service.in",
+  );
+  validateHetznerProvider(providerDirect.text, {
+    direct: true,
+    noStandardCashu: true,
+  });
 
   const issuer = readRequired(
     root,

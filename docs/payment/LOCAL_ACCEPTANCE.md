@@ -1362,10 +1362,48 @@ At minimum, a release candidate needs evidence for:
   `UNRESOLVED` relay state is an activation blocker, not a passing local test;
 - a production Standard Cashu mint. Until an exact mint, WebPKI/pins, unit,
   custody limits and recovery/outage plan are approved, every mint-dependent
-  Cashu offer must be omitted from current and retained signed policies. The
-  current closed `provider-v1` profile still has fixed Standard-Cashu inputs, so
-  it must remain unmaterialized and inactive; a mint-free provider requires a
-  separately reviewed profile and negative tests;
+  Standard Cashu offer in the current policy must be omitted. The checked-in
+  profiles reject retained-policy flags and payloads. The
+  complete `provider-v1` profile still has fixed Standard-Cashu inputs and must
+  remain unmaterialized and inactive without that mint approval. The distinct
+  `provider-no-standard-cashu-v1` profile may be used only after its own plan
+  approval: it binds a separate unit, NSS identity, state/configuration paths
+  and activation sentinel, and carries BAT/shared-issuer material but no
+  Standard-Cashu recovery, custody or exposure inputs. Its current acquisition
+  policy must omit Standard Cashu. This checked-in profile is zero-retained:
+  the gates reject retained-policy flags and payloads, so it has no old-policy
+  redemption route. Startup fails if current method coverage or Cashu
+  configuration checks fail. This does not establish a
+  production mint or authorize
+  external mint access. A
+  still smaller deployment may instead select `provider-direct-v1`, whose exact
+  nine-payload closure omits BAT and shared-issuer material as well and includes
+  an owner-only remote rollback config, client-signing seed and value-root key.
+  Its current
+  acquisition routes may use only Free open-best-effort, Free proof-of-work,
+  provider-local Free anonymous tickets and direct BOLT11 receipts. This is
+  also a zero-retained closed profile. The Cashu validator rejects Standard
+  Cashu in the current policy; current method coverage rejects BAT, shared
+  online, ARC and every other unavailable applicable route. The unit also
+  carries no Free-IP
+  adapter material. It has a
+  separate unit/account/paths/sentinel and makes no paid-QoS claim. Before any
+  provider-profile switch, stop and deauthorize the old unit, prove it inactive
+  with no `8191` listener, and create only the new profile sentinel. For the
+  same logical provider, first stop issuance/admission, wait through the
+  longest old policy/capability/grace horizon, fully retire/reconcile Standard
+  Cashu custody, and drain shared-issuer redeems to known outcomes. Static gates
+  cannot prove that drain, so separately reviewed transition evidence is
+  mandatory. Only then may a stopped-state migration preserve the
+  stable server ID, operator key and derived provider ID, policy-signing key,
+  provider identity certificate/key, ProviderStore/store-instance identity,
+  spend and replay history, remote authority instance/key, namespace, client-
+  verifying-key identity, client-signing seed, value-root key and floor. The
+  TOML may be re-rendered only with the new canonical secret paths. Rotating an
+  authority-identity field requires a separately reviewed migration ceremony
+  because V1 has no online rebind/reset; a blank
+  store in the new profile directory is forbidden. Otherwise the deployment
+  must use and publish a genuinely new provider/server identity;
 - a reviewed mainnet deployment preflight. The current Lightning preflight is
   default-Signet-specific and cannot authorize mainnet;
 - deployed-origin CSP/header enforcement, dependency closeout and manual
