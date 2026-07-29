@@ -872,12 +872,12 @@ unique aggregate count. Exact-head pushed CI remains a separate merge gate.
 ## Production release blockers and gates
 
 The previously reviewed gate/store implementation P1 findings, including
-initial payout persist-before-send, are closed. Two distinct P1 classes remain:
-an actually independent linearizable rollback authority is not deployed, and
-the shared-issuer production path still lacks operator-facing builders for its
-clearing authorization/approval plus a production balance client whose key
-model matches the registration. Tests currently construct those artifacts or
-envelopes directly; that is not a deployable operator workflow. The other
+initial payout persist-before-send, are closed. The shared-issuer operator
+workflow is also implemented: separate offline builders create the provider
+clearing authorization and issuer approval, production registration requires a
+distinct provider-request key, and `ProviderLedgerBalanceClientV1` uses the
+clearing key without inventing a payout registration or target. An actually
+independent linearizable rollback authority is still not deployed. The
 numbered items below are mandatory production release, operations,
 external-review or manual-acceptance gates; they are not all implementation P1
 findings and must not be collapsed into that count.
