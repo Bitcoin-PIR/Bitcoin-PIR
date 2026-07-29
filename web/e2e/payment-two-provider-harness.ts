@@ -335,20 +335,17 @@ async function preflightAndQuery(): Promise<{
   const activeClient = requireClient();
   const scriptHash = new Uint8Array(20);
   scriptHash.fill(QUERY_SCRIPT_HASH_BYTE);
-  let results: Awaited<ReturnType<WasmDpfClient['queryBatchRaw']>> = [];
-  const resultJson: unknown[] = [];
+  let results: Awaited<ReturnType<WasmDpfClient['queryBatchVerified']>> = [];
   try {
     // This deliberately runs only after both independent provider grants have
     // committed. It binds the server-supplied tree tops to the installed
     // synthetic proof root before either server performs the real DPF query.
     await activeClient.preflightDatabase(0);
-    results = await activeClient.queryBatchRaw(scriptHash, 0);
+    results = await activeClient.queryBatchVerified(scriptHash, 0);
     if (results.length !== 1 || !results[0]) {
       throw new Error(`real DPF query returned ${results.length} results instead of one`);
     }
-    for (const result of results) resultJson.push(result.toJson());
-    const verdicts = await activeClient.verifyMerkleBatch(resultJson, 0);
-    if (verdicts.length !== 1 || verdicts[0] !== true) {
+    if (!results[0].merkleVerified) {
       throw new Error('proof-bound bucket-Merkle verification rejected the DPF result');
     }
     const result = results[0];
@@ -369,7 +366,6 @@ async function preflightAndQuery(): Promise<{
     scriptHash.fill(0);
     for (const result of results) result.free();
     results.length = 0;
-    resultJson.length = 0;
   }
 }
 

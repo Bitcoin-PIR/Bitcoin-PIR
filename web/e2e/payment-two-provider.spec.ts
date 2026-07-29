@@ -183,7 +183,7 @@ test('browser buys independent direct/BAT capabilities and both real provider ga
       isWhale: false,
     });
 
-    // The actual 20-byte scripthash submitted to queryBatchRaw is a leakage
+    // The actual 20-byte scripthash submitted to queryBatchVerified is a leakage
     // needle. Both outgoing provider frames must be encrypted, and neither
     // provider's ordinary log may retain it, an invoice, or a payment hash.
     const queryScriptHash = Buffer.alloc(20, 0x42);
