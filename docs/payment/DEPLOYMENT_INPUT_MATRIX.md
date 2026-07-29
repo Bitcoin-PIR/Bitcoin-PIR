@@ -82,6 +82,15 @@ reboot and client-pin migration retain their separate ceremony. Do not place a
 Hetzner issuer, mint, relay or rollback authority into that failure domain just
 to simplify the plan.
 
+That VPSBG fragment selects only the exact-pinned storeless Free-PoW runtime.
+Record both the ordinary policy-file SHA-256 and the distinct
+`ServicePolicyV1::policy_digest()` over complete signed canonical bytes. The
+latter must be a literal measured launch input; policy renewal, expiry extension,
+difficulty, scope, dataset, limit or any signed-byte change requires a new UKI,
+fresh attestation measurement and client pin migration. No ProviderStore,
+rollback client, retained policy, Free-IP state or payment/credential input is
+valid in this profile.
+
 ## 4. Non-secret input register
 
 The following values are safe to review as public or operational metadata, but

@@ -86,7 +86,10 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
 31. Proof-level Cashu DLEQ fields and wallet blinding scalars never cross the
     PIR wire. Standard Cashu imports are normalized before authorization.
 32. Accepted policy, credential-keyset, Cashu-manifest, clearing-authorization,
-    and directory epochs have durable monotonic rollback floors.
+    and directory epochs have durable monotonic rollback floors. The only
+    provider-policy exception is the measured storeless Free-PoW profile in
+    invariant 71: its exact complete signed policy digest is the immutable
+    floor for one UKI measurement.
 33. Blind clearing commits to one issuer-approved settlement keyset and its
     recovery horizon before the provider reveals blinded outputs.
 34. A quote intent binds the exact issuer-root-signed quote-key delegation,
@@ -137,9 +140,11 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     signature and exact lowercase canonical encoding, reject amountless/zero
     invoices and simnet, and obtain the payee from `n` or signature recovery.
     Caller-asserted invoice facts are never a fallback.
-42. Both provider and issuer databases are checked against an authority stored
-    outside the SQLite backup domain. A missing or lower restore floor fails
-    closed; an operator cannot resume from a stale internally consistent copy.
+42. Every stateful provider database and every issuer database is checked
+    against an authority stored outside the SQLite backup domain. A missing or
+    lower restore floor fails closed; an operator cannot resume from a stale
+    internally consistent copy. Invariant 71's exact-pinned Free-PoW profile is
+    stateless and must not create either database.
 43. Directory clients retain monotonic per-provider state and compare signed
     catalog checkpoints across configured relays. A same-sequence fork is a
     split-view failure; silent first-seen-wins behavior is forbidden.
@@ -323,6 +328,20 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     binding. Product code must first freeze the independently selected DPF
     server pair or Harmony hint/query payment context. This rule does not apply
     to the genuinely single-provider Onion and TEE-ORAM backends.
+71. Storeless service admission is permitted only for a nonempty canonical
+    signed policy with no empty scope and only provider-local
+    `FreeV1`/`ProofOfWork`/zero-price offers with no issuer, key, credential,
+    Cashu manifest, endpoint, retained grace or privacy-leakage field. Startup
+    requires the exact nonzero domain-separated digest of the complete signed
+    policy and rejects every ProviderStore, rollback authority, retained policy,
+    Free-IP quota/key, payment/Cashu/BAT/ARC/shared-issuer, legacy credential or
+    test-root input. The digest argument and provider/policy-key pins MUST be in
+    the measured UKI. Each challenge is random, single-outstanding,
+    connection-local, short-lived and bound to the secure-channel exporter plus
+    exact provider/policy/scope/offer/operation. A policy-byte change, including
+    renewal or difficulty/limit change, requires a new UKI measurement and
+    client pin update; expiry or mismatch fails closed without a stateful or
+    legacy fallback.
 
 ## TLS revocation residual
 

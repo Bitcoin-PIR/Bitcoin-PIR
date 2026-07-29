@@ -1,6 +1,6 @@
 # Payment platform implementation status
 
-Status snapshot: 2026-07-29. This document describes repository code and local
+Status snapshot: 2026-07-30. This document describes repository code and local
 tests, not a production deployment. “Implemented” means that a code path exists;
 “tested” names the boundary actually exercised. It does not mean that an
 operator has activated the path with real money or public infrastructure.
@@ -56,6 +56,21 @@ operator has activated the path with real money or public infrastructure.
       pre-existing durable provider spend state.
 - [x] Signed policy activation with provider identity, policy epoch/fork,
       credential-keyset and Cashu-manifest rollback floors.
+- [x] A separate exact-digest storeless activation path is intended for a
+      measured Free-PoW provider. It rejects empty policies/scopes and every
+      non-provider-local Free proof-of-work or decorated issuer/credential
+      offer, and `unified_server` refuses retained policies, ProviderStore,
+      rollback, Free-IP, payment, Cashu/BAT/ARC/shared-issuer, legacy keyset and
+      test-root inputs in that mode. A real loopback child-process test performs
+      secure-channel challenge, PoW solution, AUTH and one protected DPF frame,
+      rejects the same solution on a second secure-channel exporter with no
+      outstanding challenge, and confirms that no provider/rollback
+      SQLite/WAL/SHM appears. This is source/test evidence, not proof that a
+      VPSBG UKI has been built, uploaded, or measured. A deployment may claim
+      measurement only after its exact policy digest and startup arguments are
+      covered by independently verified UKI/attestation evidence; any policy
+      renewal or signed-byte change then requires a new UKI and client pin
+      ceremony.
 - [x] ProviderStore schema v7 with global provider-local spend uniqueness,
       BAT raw-key lineage, durable Free IP quota state, standard-Cashu swap
       recovery intents, finite per-mint/unit custody exposure, encrypted
@@ -991,6 +1006,13 @@ findings and must not be collapsed into that count.
    empty private pool directory, and rollback must use the preserved old or a
    different empty directory. Old and new binaries must never share one
    pool-directory state domain.
+   The VPSBG storeless Free-PoW profile is not a shortcut for these stateful
+   roles: it is eligible only because it has no store or retained/payment
+   method. Its separate release gate is a newly built/uploaded measured UKI
+   containing the literal exact signed-policy digest, followed by fresh
+   attestation/binary/client-pin acceptance. Policy expiry/renewal, difficulty,
+   scope, limit or dataset changes all require another UKI; host-side edits fail
+   closed.
 5. **Reproducible network E2E.** A committed deterministic no-funds fixture
    assembles two independent providers, all five workloads/methods and issuer
    artifacts. The current acceptance additionally launches two independent

@@ -599,7 +599,7 @@ the complete vendor tree as an incidental Payment change.
 
 | Method | Focused command/boundary | What it proves | What it does not prove |
 |---|---|---|---|
-| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, the feature-gated non-receipt process matrix, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through real DPF, Harmony hint/query, Onion and TEE-ORAM provider processes, including wrong-operation non-burn and restart-persistent quota rejection; the Chromium variant additionally joins an exact signed quota-1/window-3600 IP-rate-limited offer and verified DPF/Merkle execution | public-IP attribution behind a real proxy, a generated-browser PoW case, or production DDoS resistance |
+| Free | `cargo test --offline -p pir-service-store free_ip_rate_limit`, the runtime matrix, the feature-gated non-receipt process matrix, `payment_v1_process_e2e`, `payment_v1_methods_process_e2e`, and `npm run test:e2e:payment-two-provider` | open and durable IP-quota authorization through real DPF, Harmony hint/query, Onion and TEE-ORAM provider processes, including wrong-operation non-burn and restart-persistent quota rejection; the default process test additionally boots exact-pinned storeless Free-PoW with no store/authority, completes challenge/solution/AUTH/real DPF and rejects cross-exporter replay; the Chromium variant joins an exact signed quota-1/window-3600 IP-rate-limited offer and verified DPF/Merkle execution | public-IP attribution behind a real proxy, a generated-browser PoW case, production SEV/UKI measurement, or production DDoS resistance |
 | Direct BOLT11 receipt | `cargo test --offline -p pir-lightning-backend`, issuer lifecycle tests, `direct_receipt_production_committer_spend_survives_store_restart`, and optional `scripts/payment-v1-cln-regtest-e2e.sh --acknowledge-local-regtest-only` | fake lifecycle/state tests, signed receipt admission and replay rejection across ProviderStore restart, plus a real local CLN socket and generated-WASM acquisition path; the final current-tree opt-in run passed the forced payer -> router -> issuer route and joined verified provider queries | a public-network or real-value wallet payment, production ingress, or production Lightning operations |
 | Standard Cashu eCash | `cargo test --offline -p pir-cashu-client`, `cargo test --offline -p pir-cashu-custody`, ProviderStore custody tests, the runtime matrix, optional `scripts/payment-v1-cdk-regtest-e2e.sh`, and the feature-gated Standard-Cashu/non-receipt process commands below | exact swap/recovery/grant-to-custody state machine, generated-JS/WASM plus real-CDK NUT-03/NUT-12, and strict-TLS NUT-03 swap through real DPF, Harmony hint/query, Onion and TEE-ORAM provider processes; wrong-operation and replay rejection do not make an extra mint request | an approved external public-WebPKI mint, an independent production rollback floor, admin retirement against real CDK, public-mint interoperability, real-value custody or payout |
 | Cashu BAT | `cargo test --offline -p pir-payment-crypto --features provider-store --test provider_store_bat_adapter`, the runtime matrix, `payment_v1_methods_process_e2e`, and the feature-gated non-receipt process matrix | real blind/DLEQ/unblind proofs through DPF, Harmony hint/query, Onion and TEE-ORAM provider processes, plus provider-local durable serial rejection after restart | a public/shared Cashu service or production key custody |
@@ -658,12 +658,13 @@ cargo test --locked --offline -p runtime --features cuckoo-oram \
   --test payment_v1_tee_oram_process_e2e
 ```
 
-The first two no-funds tests launch two independent logical providers as real
-OS child processes and communicate over real TCP/WebSocket connections. Each
-provider has a distinct provider ID, policy key, method keys, ProviderStore and rollback
-authority. Both listeners are explicitly `127.0.0.1`-only, and the first test
-also proves that a misspelled `--bind-addres` flag exits non-zero before opening
-a listener.
+The first two no-funds tests launch real OS child processes and communicate over
+real TCP/WebSocket connections. Their stateful two-provider fixtures give each
+provider a distinct provider ID, policy key, method keys, ProviderStore and
+rollback authority. The first test binary also has a distinct single-provider
+storeless Free-PoW fixture with no ProviderStore or authority. Every listener
+is explicitly `127.0.0.1`-only, and the first test also proves that a misspelled
+`--bind-addres` flag exits non-zero before opening a listener.
 
 The direct-receipt test covers cleartext backend rejection, ephemeral-bound
 attestation exchange, secure-channel upgrade, exact signed manifest-root
@@ -678,6 +679,20 @@ provider-1 DPF receipt is first rejected by provider 0 and then succeeds at
 provider 1, proving that the wrong-provider rejection neither burns it nor
 consults a shared cross-provider spent set. No hint server is configured or
 named by this query-provider test.
+
+The same process binary now exercises the narrow VPSBG-oriented storeless
+mode. It pins the exact domain-separated digest of one canonical signed policy
+containing only provider-local Free-PoW, starts `unified_server` without a
+ProviderStore or rollback argument, obtains a server-fresh challenge on the
+encrypted channel, solves it, receives `AUTH_GRANTED`, and reaches one real DPF
+handler frame. A second connection has a different secure-channel exporter and
+no outstanding challenge, so replaying the old solution is rejected. The
+temporary runtime tree is checked for provider/rollback SQLite, WAL and SHM
+files. Startup negatives cover the wrong digest, an otherwise valid Free-open
+policy, retained/store/rollback/Free-IP/BAT/shared inputs and legacy ARC/Cashu
+keys. This does not prove a measured UKI: the exact digest must be included in
+that UKI, and every signed policy update requires a new UKI/measurement/client
+pin ceremony.
 
 The method-adapter test repeats the real wire and DPF execution boundary for
 Free open, durable provider-local IP quota, provider-local Cashu BAT and
