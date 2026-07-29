@@ -167,22 +167,27 @@ describe('local independent-provider payment selection', () => {
     )).not.toThrow();
   });
 
-  it('rejects a shared delegated receipt key unless the one-shot override is explicit', () => {
+  it('rejects a shared delegated receipt key even with the issuer override', () => {
     const first = {
       trust: trust(1, 11, 21),
-      offer: offer({ keyIdHex: '41'.repeat(16) }),
+      offer: offer({
+        authorization: 'bolt11-direct-receipt',
+        keyIdHex: '41'.repeat(16),
+        batVerificationKeyFingerprintHex: '',
+      }),
     };
     const second = { trust: trust(2, 12, 22), offer: offer({
+      authorization: 'bolt11-direct-receipt',
       issuerIdHex: '32'.repeat(32),
       endpoint: 'https://issuer-b.example',
-      batVerificationKeyFingerprintHex: '52'.repeat(32),
+      batVerificationKeyFingerprintHex: '',
       keyIdHex: '41'.repeat(16),
     }) };
     expect(() => assertIndependentProviderOfferPairV1(first, second))
       .toThrow(/receipt verification key/);
     expect(() => assertIndependentProviderOfferPairV1(
       first, second, { allowSharedIssuerCorrelation: true },
-    )).not.toThrow();
+    )).toThrow(/receipt verification key/);
   });
 
   it('rejects one Lightning payee observing both purchases', () => {
@@ -200,7 +205,11 @@ describe('local independent-provider payment selection', () => {
       }),
       expectedLightningPayeePubkey: payee.slice(),
     };
-    expect(() => assertIndependentProviderOfferPairV1(first, second))
+    expect(() => assertIndependentProviderOfferPairV1(
+      first,
+      second,
+      { allowSharedIssuerCorrelation: true },
+    ))
       .toThrow(/Lightning payee/);
   });
 
@@ -218,7 +227,11 @@ describe('local independent-provider payment selection', () => {
       }),
       providerEndpoint: 'wss://pir.example/provider-b',
     };
-    expect(() => assertIndependentProviderOfferPairV1(first, second))
+    expect(() => assertIndependentProviderOfferPairV1(
+      first,
+      second,
+      { allowSharedIssuerCorrelation: true },
+    ))
       .toThrow(/WebSocket origin/);
   });
 });

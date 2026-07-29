@@ -1449,6 +1449,63 @@ impl HarmonyClient {
         verify_policy_transport_session_v1(transport.as_ref(), accepted)
     }
 
+    /// Freeze strict payment context from the exact endpoints held by the
+    /// connected Harmony hint and query transports.
+    pub fn bind_service_pair_payment_context_v1<'first, 'second>(
+        &self,
+        pair: crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
+        hint: crate::strict_pair::StrictProviderPaymentContextInputV1<'_>,
+        query: crate::strict_pair::StrictProviderPaymentContextInputV1<'_>,
+        now_unix: u64,
+    ) -> PirResult<
+        crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'first, 'second>,
+    > {
+        if self.hint_conn.is_none() || self.query_conn.is_none() {
+            return Err(PirError::NotConnected);
+        }
+        crate::strict_pair::verify_strict_two_provider_payment_context_v1(
+            pair,
+            &self.hint_server_url,
+            hint,
+            &self.query_server_url,
+            query,
+            now_unix,
+        )
+    }
+
+    fn verify_payment_context_side_ready_v1(
+        &self,
+        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
+        provider_index: u8,
+        now_unix: u64,
+    ) -> PirResult<()> {
+        let (actual_endpoint, frozen_endpoint) = match provider_index {
+            0 => (
+                &self.hint_server_url,
+                payment_context.first_provider_endpoint(),
+            ),
+            1 => (
+                &self.query_server_url,
+                payment_context.second_provider_endpoint(),
+            ),
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
+                )))
+            }
+        };
+        if actual_endpoint != frozen_endpoint {
+            return Err(PirError::VerificationFailed(
+                "Harmony transport endpoint differs from the frozen strict payment context".into(),
+            ));
+        }
+        match provider_index {
+            0 => self.verify_hint_service_pair_ready_v1(payment_context.pair(), now_unix),
+            1 => self.verify_query_service_pair_ready_v1(payment_context.pair(), now_unix),
+            _ => unreachable!("provider index was checked above"),
+        }
+    }
+
     /// Recheck strict-pair freshness and the live hint-provider channel. Call
     /// immediately before retiring the hint capability.
     pub fn verify_hint_service_pair_ready_v1(
@@ -1555,7 +1612,7 @@ impl HarmonyClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn authorize_hint_service_pair_v1<Producer, Produced>(
         &mut self,
-        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
         db_id: u8,
         now_unix: u64,
         produce_after_ready: Producer,
@@ -1567,8 +1624,9 @@ impl HarmonyClient {
         Producer: FnOnce() -> Produced,
         Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
     {
+        let pair = payment_context.pair();
         let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
-            || self.verify_hint_service_pair_ready_v1(pair, now_unix),
+            || self.verify_payment_context_side_ready_v1(payment_context, 0, now_unix),
             produce_after_ready,
         )
         .await?;
@@ -1639,7 +1697,7 @@ impl HarmonyClient {
     /// and live query-channel binding pass.
     pub async fn authorize_query_service_pair_v1<Producer, Produced>(
         &mut self,
-        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
         db_id: u8,
         now_unix: u64,
         produce_after_ready: Producer,
@@ -1648,8 +1706,9 @@ impl HarmonyClient {
         Producer: FnOnce() -> Produced,
         Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
     {
+        let pair = payment_context.pair();
         let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
-            || self.verify_query_service_pair_ready_v1(pair, now_unix),
+            || self.verify_payment_context_side_ready_v1(payment_context, 1, now_unix),
             produce_after_ready,
         )
         .await?;

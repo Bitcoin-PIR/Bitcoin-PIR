@@ -77,6 +77,15 @@ const HEX = {
   dataset: '51'.repeat(32),
 };
 
+const PROVIDER_ENDPOINT = {
+  first: 'wss://provider-a.example/v1',
+  second: 'wss://provider-b.example/v1',
+};
+const LIGHTNING_PAYEE = {
+  first: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+  second: new Uint8Array([2, ...new Uint8Array(32).fill(2)]),
+};
+
 const TEST_LIMITS = {
   maxLogicalInputs: 8,
   maxFrames: 64,
@@ -403,8 +412,15 @@ describe('product admission lifecycle', () => {
     });
     await controller.prepare(async () => ({
       legs: [
-        { role: 'server0', label: 'Server 0', session: first.session, ...target },
-        { role: 'server1', label: 'Server 1', session: second.session, ...target },
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+          expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+        },
       ],
       close: vi.fn(),
     }));
@@ -445,8 +461,15 @@ describe('product admission lifecycle', () => {
     });
     await controller.prepare(async () => ({
       legs: [
-        { role: 'server0', label: 'Server 0', session: first.session, ...target },
-        { role: 'server1', label: 'Server 1', session: second.session, ...target },
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+        },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+          expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+        },
       ],
       close: vi.fn(),
     }));
@@ -487,12 +510,16 @@ describe('product admission lifecycle', () => {
     await controller.prepareLeg(async () => ({
       leg: {
         role: 'server0', label: 'Server 0', session: first.session, ...target,
-        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
       },
       close: vi.fn(),
     }));
     const prematureSecondBootstrap = vi.fn(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+      },
       close: vi.fn(),
     }));
     await expect(controller.prepareLeg(prematureSecondBootstrap)).rejects.toMatchObject({
@@ -507,7 +534,10 @@ describe('product admission lifecycle', () => {
     expect(controller.snapshot().legs[0].invoice).toBeNull();
 
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+      },
       close: vi.fn(),
     }));
     await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: 22 });
@@ -559,9 +589,13 @@ describe('product admission lifecycle', () => {
       legs: [
         {
           role: 'server0', label: 'Server 0', session: first.session, ...target,
-          expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+          providerEndpoint: PROVIDER_ENDPOINT.first,
+          expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
         },
-        { role: 'server1', label: 'Server 1', session: second.session, ...target },
+        {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
       ],
       close: vi.fn(),
     }));
@@ -594,7 +628,10 @@ describe('product admission lifecycle', () => {
     const closeFirst = vi.fn(async () => {});
     const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
       close: closeFirst,
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 27 });
@@ -639,7 +676,10 @@ describe('product admission lifecycle', () => {
     const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
 
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
       close: async () => {},
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
@@ -651,7 +691,10 @@ describe('product admission lifecycle', () => {
     await controller.prepareLeg(async () => {
       await strictPairPreflight();
       return {
-        leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+        leg: {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
         close: async () => {},
       };
     });
@@ -693,14 +736,20 @@ describe('product admission lifecycle', () => {
     const strictPairPreflight = vi.fn(async () => {});
     const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
       close: async () => {},
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
     await controller.prepareLeg(async () => {
       await strictPairPreflight();
       return {
-        leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+        leg: {
+          role: 'server1', label: 'Server 1', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
         close: async () => {},
       };
     });
@@ -742,14 +791,20 @@ describe('product admission lifecycle', () => {
     });
     const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'hint', label: 'Hint', session: first.session, ...target },
+      leg: {
+        role: 'hint', label: 'Hint', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
       close: async () => {},
     }));
     await controller.selectOffer('hint', { scopeIdHex: HEX.scope0, offerId: offer0.offerId });
     await expect(controller.prepareLeg(async () => {
       await strictPairPreflight();
       return {
-        leg: { role: 'query', label: 'Query', session: second.session, ...target },
+        leg: {
+          role: 'query', label: 'Query', session: second.session, ...target,
+          providerEndpoint: PROVIDER_ENDPOINT.second,
+        },
         close: async () => {},
       };
     })).rejects.toMatchObject({ code: 'strict-bootstrap-failed' });
@@ -782,7 +837,8 @@ describe('product admission lifecycle', () => {
     await controller.prepareLeg(async () => ({
       leg: {
         role: 'server0', label: 'Server 0', session: first.session, ...target,
-        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
       }, close: vi.fn(),
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 23 });
@@ -790,7 +846,11 @@ describe('product admission lifecycle', () => {
       code: 'operation-failed',
     });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+        expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+      },
       close: vi.fn(),
     }));
     await expect(controller.selectOffer('server1', {
@@ -835,7 +895,11 @@ describe('product admission lifecycle', () => {
     );
     const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+        expectedLightningPayeePubkey: LIGHTNING_PAYEE.first,
+      },
       close: vi.fn(),
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 25 });
@@ -843,7 +907,11 @@ describe('product admission lifecycle', () => {
     expect(first.authorize).not.toHaveBeenCalled();
 
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+        expectedLightningPayeePubkey: LIGHTNING_PAYEE.second,
+      },
       close: vi.fn(),
     }));
     await expect(controller.selectOffer('server1', {
@@ -887,12 +955,18 @@ describe('product admission lifecycle', () => {
     const secondClose = vi.fn(async () => { throw new Error('second close failed'); });
     const controller = new ProductAdmissionControllerV1({ topology: 'independent-pair', vault });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server0', label: 'Server 0', session: first.session, ...target },
+      leg: {
+        role: 'server0', label: 'Server 0', session: first.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.first,
+      },
       close: firstClose,
     }));
     await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: 31 });
     await controller.prepareLeg(async () => ({
-      leg: { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      leg: {
+        role: 'server1', label: 'Server 1', session: second.session, ...target,
+        providerEndpoint: PROVIDER_ENDPOINT.second,
+      },
       close: secondClose,
     }));
 
@@ -916,9 +990,13 @@ describe('product admission lifecycle', () => {
         legs: [
           {
             role: 'hint', label: 'Hint', session: hint.session, ...hintTarget,
+            providerEndpoint: PROVIDER_ENDPOINT.first,
             resource: { restore, acquireAfterAuthorization: acquire, datasetIdHex: HEX.dataset, variant: 1 },
           },
-          { role: 'query', label: 'Query', session: query.session, ...queryTarget },
+          {
+            role: 'query', label: 'Query', session: query.session, ...queryTarget,
+            providerEndpoint: PROVIDER_ENDPOINT.second,
+          },
         ],
         close: vi.fn(),
       }));

@@ -601,7 +601,7 @@ export class ProductAdmissionControllerV1 {
         );
       }
       this.assertSelectionPrivacyIfComplete();
-      const frozen = leg.selected ? this.freezeLegSelection(leg) : null;
+      const frozen = leg.selected ? this.freezeSelection() : null;
       const binding = selectedCapabilityBinding(leg);
 
       if (leg.resource) {
@@ -635,7 +635,7 @@ export class ProductAdmissionControllerV1 {
       try {
         grant = leg.retainedSelected
           ? await leg.session.authorizeRetainedCapability(binding)
-          : await frozen!.authorize(options);
+          : await authorizeFrozen(frozen!, this.sideFor(role), options);
       } catch (cause) {
         if (cause instanceof AmbiguousCapabilitySpendErrorV1) {
           leg.status = 'ambiguous-spend';
@@ -685,14 +685,16 @@ export class ProductAdmissionControllerV1 {
           'BOLT11 is disabled without an independently trusted expected payee key',
         );
       }
-      const frozen = this.freezeLegSelection(leg);
+      const frozen = this.freezeSelection();
       const assertReady = () => this.assertBolt11StartReady(leg, lifecycleGeneration);
       assertReady();
       leg.status = 'acquiring';
       leg.credentialFlowStarted = true;
       let acquisition: Bolt11AcquisitionHandleV1 | null = null;
       try {
-        acquisition = await frozen.startBolt11Acquisition(
+        acquisition = await startBolt11Frozen(
+          frozen,
+          this.sideFor(role),
           {
             vault: this.options.vault,
             network: leg.network ?? 'bitcoin',
@@ -808,12 +810,14 @@ export class ProductAdmissionControllerV1 {
           'selected offer is not standard Cashu eCash',
         );
       }
-      const frozen = this.freezeLegSelection(leg);
+      const frozen = this.freezeSelection();
       leg.credentialFlowStarted = true;
-      await frozen.importStandardCashuToken({
-        vault: this.options.vault,
+      await importCashuFrozen(
+        frozen,
+        this.sideFor(role),
+        this.options.vault,
         serializedToken,
-      });
+      );
       leg.status = 'ready';
       leg.errorCode = null;
       await this.refreshLegInventory(leg);
@@ -1040,41 +1044,19 @@ export class ProductAdmissionControllerV1 {
           session: first.session,
           scopeIdHex: first.selected!.scopeIdHex,
           offerId: first.selected!.offerId,
+          providerEndpoint: first.providerEndpoint ?? '',
+          expectedLightningPayeePubkey: first.expectedLightningPayeePubkey?.slice(),
         },
         {
           session: second.session,
           scopeIdHex: second.selected!.scopeIdHex,
           offerId: second.selected!.offerId,
+          providerEndpoint: second.providerEndpoint ?? '',
+          expectedLightningPayeePubkey: second.expectedLightningPayeePubkey?.slice(),
         },
         { allowSharedIssuerCorrelation: this.allowSharedIssuerCorrelationOnce },
       ),
     };
-  }
-
-  /**
-   * Freeze one exact provider leg without requiring that the user has already
-   * selected this exact provider. Pair products call this only after both
-   * independently discovered legs and both exact offers are present, so the
-   * local correlation guard runs before either credential flow begins.
-   */
-  private freezeLegSelection(leg: LegStateV1): VerifiedSingleProviderOfferV1 {
-    this.requirePrepared();
-    if (!leg.selected) {
-      throw new ProductAdmissionErrorV1(
-        'offer-selection-invalidated',
-        'select one exact signed offer for this provider role',
-      );
-    }
-    if (this.options.topology === 'independent-pair'
-        && this.legs.length === 2
-        && this.legs.every((candidate) => hasAdmissionSelection(candidate))) {
-      this.assertCompleteSelectionPrivacy();
-    }
-    return VerifiedSingleProviderOfferV1.create({
-      session: leg.session,
-      scopeIdHex: leg.selected.scopeIdHex,
-      offerId: leg.selected.offerId,
-    });
   }
 
   private sideFor(role: string): ProviderPairSideV1 {

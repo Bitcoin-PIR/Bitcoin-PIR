@@ -346,8 +346,14 @@ describe('provider admission orchestration', () => {
     await session.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session, scopeIdHex: scopeHex, offerId: 1 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session, scopeIdHex: scopeHex, offerId: 1,
+        providerEndpoint: 'wss://provider-a.example/v1',
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
     await expect(pair.authorize('first')).resolves.toMatchObject({ enforcedProfile: 3 });
     expect((session as unknown as { authorize?: unknown }).authorize).toBeUndefined();
@@ -600,9 +606,21 @@ describe('provider admission orchestration', () => {
     await session.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session, scopeIdHex: scopeHex, offerId: 7 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session, scopeIdHex: scopeHex, offerId: 7,
+        providerEndpoint: 'wss://provider-a.example/v1',
+        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
+    expect(() => pair.startBolt11Acquisition('first', {
+      vault: {} as never,
+      network: 'bitcoin',
+      expectedPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(2)]),
+    })).toThrow(/differs from the independently frozen provider context/);
     await expect(pair.authorize('first')).rejects.toBeInstanceOf(
       AmbiguousCapabilitySpendErrorV1,
     );
@@ -657,8 +675,15 @@ describe('provider admission orchestration', () => {
     await first.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session: first, scopeIdHex: scopeHex, offerId: 9 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session: first, scopeIdHex: scopeHex, offerId: 9,
+        providerEndpoint: 'wss://provider-a.example/v1',
+        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
 
     await expect(pair.authorize('first')).rejects.toThrow(/different secure-channel session/);
@@ -708,8 +733,14 @@ describe('provider admission orchestration', () => {
     await first.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session: first, scopeIdHex: scopeHex, offerId: 5 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session: first, scopeIdHex: scopeHex, offerId: 5,
+        providerEndpoint: 'wss://provider-a.example/v1',
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
 
     await first.refreshPolicy();
@@ -769,8 +800,15 @@ describe('provider admission orchestration', () => {
     await first.refreshPolicy();
     const second = await independentFreeSession();
     const pair = VerifiedIndependentProviderPairV1.create(
-      { session: first, scopeIdHex: scopeHex, offerId: 8 },
-      { session: second, scopeIdHex: secondScopeHex, offerId: 91 },
+      {
+        session: first, scopeIdHex: scopeHex, offerId: 8,
+        providerEndpoint: 'wss://provider-a.example/v1',
+        expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+      },
+      {
+        session: second, scopeIdHex: secondScopeHex, offerId: 91,
+        providerEndpoint: 'wss://provider-b.example/v1',
+      },
     );
 
     const authorization = pair.authorize('first');

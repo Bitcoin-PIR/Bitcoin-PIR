@@ -1141,6 +1141,58 @@ impl DpfClient {
         verify_policy_transport_session_v1(transport.as_ref(), accepted)
     }
 
+    /// Freeze strict payment context from the exact endpoints held by the two
+    /// connected DPF transports. Application code cannot substitute arbitrary
+    /// origin strings to bypass the local independence guard.
+    pub fn bind_service_pair_payment_context_v1<'first, 'second>(
+        &self,
+        pair: crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
+        first: crate::strict_pair::StrictProviderPaymentContextInputV1<'_>,
+        second: crate::strict_pair::StrictProviderPaymentContextInputV1<'_>,
+        now_unix: u64,
+    ) -> PirResult<
+        crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'first, 'second>,
+    > {
+        if self.conn0.is_none() || self.conn1.is_none() {
+            return Err(PirError::NotConnected);
+        }
+        crate::strict_pair::verify_strict_two_provider_payment_context_v1(
+            pair,
+            &self.server0_url,
+            first,
+            &self.server1_url,
+            second,
+            now_unix,
+        )
+    }
+
+    fn verify_payment_context_side_ready_v1(
+        &self,
+        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
+        server_index: u8,
+        now_unix: u64,
+    ) -> PirResult<()> {
+        let (actual_endpoint, frozen_endpoint) = match server_index {
+            0 => (&self.server0_url, payment_context.first_provider_endpoint()),
+            1 => (&self.server1_url, payment_context.second_provider_endpoint()),
+            _ => {
+                return Err(PirError::InvalidState(format!(
+                    "DPF service provider index must be 0 or 1, got {server_index}"
+                )))
+            }
+        };
+        if actual_endpoint != frozen_endpoint {
+            return Err(PirError::VerificationFailed(
+                "DPF transport endpoint differs from the frozen strict payment context".into(),
+            ));
+        }
+        self.verify_service_pair_side_ready_v1(
+            payment_context.pair(),
+            server_index,
+            now_unix,
+        )
+    }
+
     /// Recheck both strict-pair freshness and the live DPF channel binding.
     /// Native vault code should call this immediately before durably retiring
     /// the selected side's one-shot capability.
@@ -1250,7 +1302,7 @@ impl DpfClient {
     /// policy is stale or belongs to another secure-channel session.
     pub async fn authorize_service_pair_side_v1<Producer, Produced>(
         &mut self,
-        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
+        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
         server_index: u8,
         db_id: u8,
         now_unix: u64,
@@ -1260,8 +1312,15 @@ impl DpfClient {
         Producer: FnOnce() -> Produced,
         Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
     {
+        let pair = payment_context.pair();
         let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
-            || self.verify_service_pair_side_ready_v1(pair, server_index, now_unix),
+            || {
+                self.verify_payment_context_side_ready_v1(
+                    payment_context,
+                    server_index,
+                    now_unix,
+                )
+            },
             produce_after_ready,
         )
         .await?;

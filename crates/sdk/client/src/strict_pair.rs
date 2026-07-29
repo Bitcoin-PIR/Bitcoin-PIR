@@ -8,9 +8,9 @@
 use pir_arc_adapter::{arc_public_key_fingerprint_v1, ARC_PUBLIC_KEY_LEN_V1};
 use pir_sdk::{PirError, PirResult};
 use pir_service_protocol::{
-    bat_verification_key_fingerprint_v1, AcquisitionMethod, AuthScheme, AuthorizationProofV1,
-    ProviderId, ServiceOfferV1, VerificationMode, VerifiedDirectoryOperatorAssertionV1,
-    VerifiedServiceOfferV1,
+    bat_verification_key_fingerprint_v1, is_canonical_public_wss_endpoint_v1, AcquisitionMethod,
+    AuthScheme, AuthorizationProofV1, ProviderId, ServiceOfferV1, VerificationMode,
+    VerifiedDirectoryOperatorAssertionV1, VerifiedServiceOfferV1,
 };
 
 use crate::service::AcceptedServicePolicyV1;
@@ -54,11 +54,12 @@ pub struct StrictProviderPairOptionsV1 {
 /// only with [`select_strict_provider_offer_v1`], which revalidates policy
 /// freshness and, when supplied, binds an already verified directory assertion
 /// to the same provider, policy key, epoch, and digest.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct StrictProviderOfferSelectionV1<'policy> {
     accepted_policy: &'policy AcceptedServicePolicyV1,
     verified_offer: VerifiedServiceOfferV1<'policy>,
     directory_operator_key: Option<[u8; 32]>,
+    directory_wss_endpoints: Option<Vec<String>>,
 }
 
 impl<'policy> StrictProviderOfferSelectionV1<'policy> {
@@ -81,6 +82,14 @@ impl<'policy> StrictProviderOfferSelectionV1<'policy> {
     pub const fn directory_operator_key(&self) -> Option<[u8; 32]> {
         self.directory_operator_key
     }
+
+    /// Canonical public WSS endpoints authenticated by the optional verified
+    /// directory assertion. `None` means the caller selected this provider
+    /// from a separately pinned bootstrap source and must supply the exact
+    /// endpoint used by the verified transport when binding payment context.
+    pub fn directory_wss_endpoints(&self) -> Option<&[String]> {
+        self.directory_wss_endpoints.as_deref()
+    }
 }
 
 /// A pair that passed every strict local independence check.
@@ -89,7 +98,7 @@ impl<'policy> StrictProviderOfferSelectionV1<'policy> {
 /// native clients can require it instead of separately accepting two offers.
 /// The object contains no pair identifier and is never serialized or sent.
 #[must_use]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
     first: StrictProviderOfferSelectionV1<'first>,
     second: StrictProviderOfferSelectionV1<'second>,
@@ -127,78 +136,250 @@ impl<'first, 'second> VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
     pub fn verify_second_offer_current_v1(&self, now_unix: u64) -> PirResult<()> {
         verify_pair_side_offer_current_v1(&self.second, now_unix)
     }
+}
 
-    /// Decode the first provider's capability using only the method selected
-    /// by this verified pair.
+/// Browser- or application-trusted network and quote-key context for one
+/// provider leg. BOLT11 fields must both be present for a BOLT11 offer and both
+/// absent for every other acquisition method.
+#[derive(Clone, Copy, Debug)]
+pub struct StrictProviderPaymentContextInputV1<'input> {
+    pub quote_delegation_bytes: Option<&'input [u8]>,
+    pub quote_key_checkpoint: Option<&'input crate::bolt11::Bolt11QuoteKeyCheckpointV1>,
+}
+
+#[derive(Clone, Debug)]
+struct FrozenProviderPaymentContextV1 {
+    provider_endpoint: String,
+    provider_origin: String,
+    quote_delegation_bytes: Option<Vec<u8>>,
+    quote_key_checkpoint: Option<crate::bolt11::Bolt11QuoteKeyCheckpointV1>,
+    expected_lightning_payee_pubkey: Option<[u8; 33]>,
+}
+
+/// A strict offer pair whose two independently trusted provider origins and
+/// BOLT11 quote-key streams have also been frozen and cross-checked locally.
+///
+/// This object is never serialized or sent. Safe quote preparation and
+/// capability retirement require it so a caller cannot defer payee/origin
+/// independence checks until after an invoice or one-shot token is consumed.
+#[must_use]
+#[derive(Clone, Debug)]
+pub struct VerifiedStrictTwoProviderPaymentContextV1<'first, 'second> {
+    pair: VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
+    first: FrozenProviderPaymentContextV1,
+    second: FrozenProviderPaymentContextV1,
+}
+
+impl<'first, 'second> VerifiedStrictTwoProviderPaymentContextV1<'first, 'second> {
+    pub const fn pair(&self) -> &VerifiedStrictTwoProviderOfferPairV1<'first, 'second> {
+        &self.pair
+    }
+
+    pub fn first_provider_origin(&self) -> &str {
+        &self.first.provider_origin
+    }
+
+    pub fn second_provider_origin(&self) -> &str {
+        &self.second.provider_origin
+    }
+
+    pub fn first_provider_endpoint(&self) -> &str {
+        &self.first.provider_endpoint
+    }
+
+    pub fn second_provider_endpoint(&self) -> &str {
+        &self.second.provider_endpoint
+    }
+
+    /// Decode the first provider's capability using only the exact method
+    /// selected by this payment-bound pair.
     pub fn build_first_authorization_proof(
         &self,
         proof_bytes: &[u8],
     ) -> PirResult<AuthorizationProofV1> {
-        crate::service::dangerous_unpaired_build_authorization_proof_v1(
-            self.first.accepted_policy,
-            &self.first.verified_offer.scope().scope_id(),
-            self.first.offer().offer_id,
-            proof_bytes,
-        )
+        build_pair_side_authorization_proof_v1(self.pair.first(), proof_bytes)
     }
 
-    /// Decode the second provider's capability using only the method selected
-    /// by this verified pair.
+    /// Decode the second provider's capability using only the exact method
+    /// selected by this payment-bound pair.
     pub fn build_second_authorization_proof(
         &self,
         proof_bytes: &[u8],
     ) -> PirResult<AuthorizationProofV1> {
-        crate::service::dangerous_unpaired_build_authorization_proof_v1(
-            self.second.accepted_policy,
-            &self.second.verified_offer.scope().scope_id(),
-            self.second.offer().offer_id,
-            proof_bytes,
-        )
+        build_pair_side_authorization_proof_v1(self.pair.second(), proof_bytes)
     }
 
-    /// Prepare a BOLT11 acquisition for the first provider using the exact
-    /// offer frozen into this verified pair. No peer identity or pair marker is
-    /// serialized into the quote intent.
-    #[allow(clippy::too_many_arguments)]
+    /// Prepare the first provider's independent BOLT11 quote from the
+    /// delegation, payee, and rollback stream frozen into this context.
     pub fn prepare_first_bolt11_quote_v1(
         &self,
-        quote_delegation_bytes: &[u8],
-        quote_key_checkpoint: &crate::bolt11::Bolt11QuoteKeyCheckpointV1,
         now_unix: u64,
         claim_pubkey_xonly: [u8; 32],
         idempotency_key: [u8; 32],
     ) -> PirResult<crate::bolt11::PreparedBolt11QuoteV1> {
-        prepare_pair_side_bolt11_quote_v1(
+        prepare_frozen_pair_side_bolt11_quote_v1(
+            self.pair.first(),
             &self.first,
-            quote_delegation_bytes,
-            quote_key_checkpoint,
             now_unix,
             claim_pubkey_xonly,
             idempotency_key,
         )
     }
 
-    /// Prepare a BOLT11 acquisition for the second provider using the exact
-    /// offer frozen into this verified pair. The two acquisitions remain
-    /// independent and carry no shared pair identifier.
-    #[allow(clippy::too_many_arguments)]
+    /// Prepare the second provider's independent BOLT11 quote from the
+    /// delegation, payee, and rollback stream frozen into this context.
     pub fn prepare_second_bolt11_quote_v1(
         &self,
-        quote_delegation_bytes: &[u8],
-        quote_key_checkpoint: &crate::bolt11::Bolt11QuoteKeyCheckpointV1,
         now_unix: u64,
         claim_pubkey_xonly: [u8; 32],
         idempotency_key: [u8; 32],
     ) -> PirResult<crate::bolt11::PreparedBolt11QuoteV1> {
-        prepare_pair_side_bolt11_quote_v1(
+        prepare_frozen_pair_side_bolt11_quote_v1(
+            self.pair.second(),
             &self.second,
-            quote_delegation_bytes,
-            quote_key_checkpoint,
             now_unix,
             claim_pubkey_xonly,
             idempotency_key,
         )
     }
+}
+
+/// Backend clients call this with the exact endpoints held by their connected
+/// transports. Keeping it crate-private prevents application code from
+/// inventing unrelated endpoint strings merely to satisfy the origin guard.
+pub(crate) fn verify_strict_two_provider_payment_context_v1<'first, 'second>(
+    pair: VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
+    first_provider_endpoint: &str,
+    first: StrictProviderPaymentContextInputV1<'_>,
+    second_provider_endpoint: &str,
+    second: StrictProviderPaymentContextInputV1<'_>,
+    now_unix: u64,
+) -> PirResult<VerifiedStrictTwoProviderPaymentContextV1<'first, 'second>> {
+    let first =
+        freeze_provider_payment_context_v1(pair.first(), first_provider_endpoint, first, now_unix)?;
+    let second = freeze_provider_payment_context_v1(
+        pair.second(),
+        second_provider_endpoint,
+        second,
+        now_unix,
+    )?;
+    if first.provider_origin == second.provider_origin {
+        return Err(pair_error(
+            "strict pair privacy rejects one WebSocket origin serving both PIR roles",
+        ));
+    }
+    if first.expected_lightning_payee_pubkey.is_some()
+        && first.expected_lightning_payee_pubkey == second.expected_lightning_payee_pubkey
+    {
+        return Err(pair_error(
+            "strict pair privacy rejects one Lightning payee observing both purchases",
+        ));
+    }
+    Ok(VerifiedStrictTwoProviderPaymentContextV1 {
+        pair,
+        first,
+        second,
+    })
+}
+
+fn freeze_provider_payment_context_v1(
+    selected: &StrictProviderOfferSelectionV1<'_>,
+    provider_endpoint: &str,
+    input: StrictProviderPaymentContextInputV1<'_>,
+    now_unix: u64,
+) -> PirResult<FrozenProviderPaymentContextV1> {
+    if !is_canonical_public_wss_endpoint_v1(provider_endpoint) {
+        return Err(pair_error(
+            "provider endpoint is not a canonical credential-free public wss:// URL",
+        ));
+    }
+    if let Some(directory_endpoints) = selected.directory_wss_endpoints() {
+        if !directory_endpoints
+            .iter()
+            .any(|endpoint| endpoint == provider_endpoint)
+        {
+            return Err(pair_error(
+                "provider endpoint is not authenticated by the verified directory assertion",
+            ));
+        }
+    }
+    let authority_end = provider_endpoint["wss://".len()..]
+        .find('/')
+        .map_or(provider_endpoint.len(), |offset| "wss://".len() + offset);
+    let provider_origin = provider_endpoint[..authority_end].to_owned();
+
+    let (quote_delegation_bytes, quote_key_checkpoint, expected_lightning_payee_pubkey) =
+        match selected.offer().acquisition {
+            AcquisitionMethod::Bolt11V1 => {
+                let delegation_bytes = input.quote_delegation_bytes.ok_or_else(|| {
+                    pair_error("BOLT11 offer is missing its trusted quote-key delegation")
+                })?;
+                let checkpoint = input.quote_key_checkpoint.ok_or_else(|| {
+                    pair_error("BOLT11 offer is missing its durable quote-key checkpoint")
+                })?;
+                let delegation = checkpoint.verify_delegation_for_issuer_v1(
+                    &selected.offer().issuer_id,
+                    delegation_bytes,
+                    now_unix,
+                )?;
+                (
+                    Some(delegation_bytes.to_vec()),
+                    Some(*checkpoint),
+                    Some(delegation.expected_payee_pubkey),
+                )
+            }
+            _ => {
+                if input.quote_delegation_bytes.is_some() || input.quote_key_checkpoint.is_some() {
+                    return Err(pair_error(
+                        "non-BOLT11 offer must not carry quote-key payment context",
+                    ));
+                }
+                (None, None, None)
+            }
+        };
+
+    Ok(FrozenProviderPaymentContextV1 {
+        provider_endpoint: provider_endpoint.to_owned(),
+        provider_origin,
+        quote_delegation_bytes,
+        quote_key_checkpoint,
+        expected_lightning_payee_pubkey,
+    })
+}
+
+fn build_pair_side_authorization_proof_v1(
+    selected: &StrictProviderOfferSelectionV1<'_>,
+    proof_bytes: &[u8],
+) -> PirResult<AuthorizationProofV1> {
+    crate::service::dangerous_unpaired_build_authorization_proof_v1(
+        selected.accepted_policy,
+        &selected.verified_offer.scope().scope_id(),
+        selected.offer().offer_id,
+        proof_bytes,
+    )
+}
+
+fn prepare_frozen_pair_side_bolt11_quote_v1(
+    selected: &StrictProviderOfferSelectionV1<'_>,
+    frozen: &FrozenProviderPaymentContextV1,
+    now_unix: u64,
+    claim_pubkey_xonly: [u8; 32],
+    idempotency_key: [u8; 32],
+) -> PirResult<crate::bolt11::PreparedBolt11QuoteV1> {
+    let delegation = frozen.quote_delegation_bytes.as_deref().ok_or_else(|| {
+        pair_error("selected payment context does not contain a BOLT11 delegation")
+    })?;
+    let checkpoint = frozen.quote_key_checkpoint.as_ref().ok_or_else(|| {
+        pair_error("selected payment context does not contain a BOLT11 checkpoint")
+    })?;
+    prepare_pair_side_bolt11_quote_v1(
+        selected,
+        delegation,
+        checkpoint,
+        now_unix,
+        claim_pubkey_xonly,
+        idempotency_key,
+    )
 }
 
 fn verify_pair_side_offer_current_v1(
@@ -245,7 +426,9 @@ pub fn select_strict_provider_offer_v1<'policy>(
 ) -> PirResult<StrictProviderOfferSelectionV1<'policy>> {
     let verified_offer =
         accepted_policy.verify_current_offer_for_pair_v1(scope_id, offer_id, now_unix)?;
-    let directory_operator_key = if let Some(verified) = directory_assertion {
+    let (directory_operator_key, directory_wss_endpoints) = if let Some(verified) =
+        directory_assertion
+    {
         let assertion = verified.assertion();
         if assertion.provider_id != accepted_policy.policy().provider_id
             || assertion.policy_signing_key_ed25519 != accepted_policy.policy_signing_key_ed25519()
@@ -256,15 +439,29 @@ pub fn select_strict_provider_offer_v1<'policy>(
                 "verified directory assertion does not bind the selected live provider policy",
             ));
         }
-        Some(assertion.operator_pubkey_ed25519)
+        let endpoints = assertion
+            .endpoints
+            .iter()
+            .filter(|endpoint| {
+                endpoint.transport == pir_service_protocol::DirectoryTransportV1::Wss
+            })
+            .map(|endpoint| endpoint.url.clone())
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            return Err(pair_error(
+                "verified directory assertion contains no canonical WSS provider endpoint",
+            ));
+        }
+        (Some(assertion.operator_pubkey_ed25519), Some(endpoints))
     } else {
-        None
+        (None, None)
     };
 
     Ok(StrictProviderOfferSelectionV1 {
         accepted_policy,
         verified_offer,
         directory_operator_key,
+        directory_wss_endpoints,
     })
 }
 
@@ -310,6 +507,22 @@ pub fn verify_strict_two_provider_offer_pair_v1<'first, 'second>(
         return Err(pair_error(
             "the two providers reuse one raw ARC verification key",
         ));
+    }
+    let first_receipt = direct_receipt_key(first.offer())?;
+    let second_receipt = direct_receipt_key(second.offer())?;
+    if let (Some((first_key_id, first_raw_key)), Some((second_key_id, second_raw_key))) =
+        (first_receipt, second_receipt)
+    {
+        if first_key_id == second_key_id {
+            return Err(pair_error(
+                "the two providers reuse one direct-receipt verification key ID",
+            ));
+        }
+        if first_raw_key == second_raw_key {
+            return Err(pair_error(
+                "the two providers reuse one raw direct-receipt verification key",
+            ));
+        }
     }
 
     let both_use_correlation_infrastructure = has_correlation_infrastructure(first.offer())
@@ -399,6 +612,25 @@ fn arc_fingerprint(offer: &ServiceOfferV1) -> PirResult<Option<[u8; 32]>> {
         .map_err(|error| pair_error(format!("ARC verification key is invalid: {error}")))
 }
 
+fn direct_receipt_key(offer: &ServiceOfferV1) -> PirResult<Option<(&[u8], &[u8])>> {
+    if offer.authorization != AuthScheme::Bolt11DirectReceiptV1 {
+        return Ok(None);
+    }
+    let binding = offer
+        .credential_binding
+        .as_ref()
+        .ok_or_else(|| pair_error("direct-receipt offer is missing its credential binding"))?;
+    if offer.key_id.is_empty() || binding.claims.verification_key.is_empty() {
+        return Err(pair_error(
+            "direct-receipt offer has an empty verification key identity",
+        ));
+    }
+    Ok(Some((
+        offer.key_id.as_slice(),
+        binding.claims.verification_key.as_slice(),
+    )))
+}
+
 fn pair_error(message: impl Into<String>) -> PirError {
     PirError::VerificationFailed(format!("strict provider pair: {}", message.into()))
 }
@@ -411,12 +643,13 @@ mod tests {
     use pir_arc_adapter::{ArcSecretKeyV1, ARC_SECRET_KEY_LEN_V1};
     use pir_service_protocol::{
         derive_bat_key_id_v1, derive_provider_id, free_anonymous_ticket_key_id,
-        paid_receipt_key_id, AuthPaddingClassV1, BackendId, CredentialKeyBindingClaimsV1,
-        CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
-        DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1, DirectoryOperatorAssertionV1,
-        DirectoryTransportV1, EntitlementLimitsV1, FreeAuthorizationProofV1, FreeModeV1, PriceV1,
-        PrivacyLeakageV1, ServiceOfferV1, ServicePolicyResponseV1, ServicePolicyV1,
-        ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId, RESP_SERVICE_POLICY_V1,
+        paid_receipt_key_id, AuthPaddingClassV1, BackendId, Bolt11QuoteKeyDelegationV1,
+        CredentialKeyBindingClaimsV1, CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1,
+        DeploymentStatus, DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1,
+        DirectoryOperatorAssertionV1, DirectoryTransportV1, EntitlementLimitsV1,
+        FreeAuthorizationProofV1, FreeModeV1, LightningNetworkV1, PriceV1, PrivacyLeakageV1,
+        ServiceOfferV1, ServicePolicyResponseV1, ServicePolicyV1, ServiceScopePolicyV1,
+        ServiceScopeV1, VerificationMode, WorkloadId, RESP_SERVICE_POLICY_V1,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use zeroize::Zeroizing;
@@ -462,6 +695,11 @@ mod tests {
         Receipt {
             issuer_seed: u8,
             endpoint: &'a str,
+        },
+        ReceiptWithVerificationSeed {
+            issuer_seed: u8,
+            endpoint: &'a str,
+            verification_seed: u8,
         },
         Bat {
             issuer_seed: u8,
@@ -533,6 +771,17 @@ mod tests {
                 issuer_seed,
                 endpoint,
             } => receipt_offer(provider_id, scope_id, issuer_seed, endpoint),
+            OfferFixture::ReceiptWithVerificationSeed {
+                issuer_seed,
+                endpoint,
+                verification_seed,
+            } => receipt_offer_with_verification_seed(
+                provider_id,
+                scope_id,
+                issuer_seed,
+                endpoint,
+                verification_seed,
+            ),
             OfferFixture::Bat {
                 issuer_seed,
                 endpoint,
@@ -592,7 +841,23 @@ mod tests {
         issuer_seed: u8,
         endpoint: &str,
     ) -> ServiceOfferV1 {
-        let receipt_key = SigningKey::from_bytes(&[provider_id[0].wrapping_add(90); 32]);
+        receipt_offer_with_verification_seed(
+            provider_id,
+            scope_id,
+            issuer_seed,
+            endpoint,
+            provider_id[0].wrapping_add(90),
+        )
+    }
+
+    fn receipt_offer_with_verification_seed(
+        provider_id: [u8; 32],
+        scope_id: [u8; 32],
+        issuer_seed: u8,
+        endpoint: &str,
+        verification_seed: u8,
+    ) -> ServiceOfferV1 {
+        let receipt_key = SigningKey::from_bytes(&[verification_seed; 32]);
         let credential_key_id = paid_receipt_key_id(&receipt_key.verifying_key()).to_vec();
         let binding = CredentialKeyBindingV1::sign(
             CredentialKeyBindingClaimsV1 {
@@ -868,6 +1133,66 @@ mod tests {
         hex::decode(hex_value).unwrap().try_into().unwrap()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn bolt_payment_context<'first, 'second>(
+        pair: VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
+        first_issuer_seed: u8,
+        first_payee: [u8; 33],
+        first_endpoint: &str,
+        second_issuer_seed: u8,
+        second_payee: [u8; 33],
+        second_endpoint: &str,
+    ) -> PirResult<VerifiedStrictTwoProviderPaymentContextV1<'first, 'second>> {
+        let first_delegation = Bolt11QuoteKeyDelegationV1::sign(
+            LightningNetworkV1::Regtest,
+            first_payee,
+            1,
+            100,
+            200,
+            SigningKey::from_bytes(&[81; 32]).verifying_key().to_bytes(),
+            &SigningKey::from_bytes(&[first_issuer_seed; 32]),
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let second_delegation = Bolt11QuoteKeyDelegationV1::sign(
+            LightningNetworkV1::Regtest,
+            second_payee,
+            1,
+            100,
+            200,
+            SigningKey::from_bytes(&[82; 32]).verifying_key().to_bytes(),
+            &SigningKey::from_bytes(&[second_issuer_seed; 32]),
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let first_checkpoint = crate::bolt11::Bolt11QuoteKeyCheckpointV1::initial(
+            pair.first().offer().issuer_id,
+            LightningNetworkV1::Regtest,
+            first_payee,
+        )?;
+        let second_checkpoint = crate::bolt11::Bolt11QuoteKeyCheckpointV1::initial(
+            pair.second().offer().issuer_id,
+            LightningNetworkV1::Regtest,
+            second_payee,
+        )?;
+        verify_strict_two_provider_payment_context_v1(
+            pair,
+            first_endpoint,
+            StrictProviderPaymentContextInputV1 {
+                quote_delegation_bytes: Some(&first_delegation),
+                quote_key_checkpoint: Some(&first_checkpoint),
+            },
+            second_endpoint,
+            StrictProviderPaymentContextInputV1 {
+                quote_delegation_bytes: Some(&second_delegation),
+                quote_key_checkpoint: Some(&second_checkpoint),
+            },
+            NOW,
+        )
+    }
+
     #[test]
     fn accepts_independent_paid_and_free_pairs() {
         let first = fixture(
@@ -908,11 +1233,49 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            free_pair.build_first_authorization_proof(&[]).unwrap(),
+            verify_strict_two_provider_payment_context_v1(
+                free_pair,
+                "wss://free-a.example/v1",
+                StrictProviderPaymentContextInputV1 {
+                    quote_delegation_bytes: None,
+                    quote_key_checkpoint: None,
+                },
+                "wss://free-b.example/v1",
+                StrictProviderPaymentContextInputV1 {
+                    quote_delegation_bytes: None,
+                    quote_key_checkpoint: None,
+                },
+                NOW,
+            )
+            .unwrap()
+            .build_first_authorization_proof(&[])
+            .unwrap(),
             AuthorizationProofV1::Free(FreeAuthorizationProofV1::OpenBestEffort)
         ));
+        let free_pair = verify_strict_two_provider_offer_pair_v1(
+            select(&free_first),
+            select(&free_second),
+            StrictProviderPairOptionsV1::default(),
+        )
+        .unwrap();
         assert!(matches!(
-            free_pair.build_second_authorization_proof(&[]).unwrap(),
+            verify_strict_two_provider_payment_context_v1(
+                free_pair,
+                "wss://free-a.example/v1",
+                StrictProviderPaymentContextInputV1 {
+                    quote_delegation_bytes: None,
+                    quote_key_checkpoint: None,
+                },
+                "wss://free-b.example/v1",
+                StrictProviderPaymentContextInputV1 {
+                    quote_delegation_bytes: None,
+                    quote_key_checkpoint: None,
+                },
+                NOW,
+            )
+            .unwrap()
+            .build_second_authorization_proof(&[])
+            .unwrap(),
             AuthorizationProofV1::Free(FreeAuthorizationProofV1::OpenBestEffort)
         ));
     }
@@ -1106,6 +1469,140 @@ mod tests {
             },
         )
         .contains("raw Cashu BAT verification key"));
+    }
+
+    #[test]
+    fn copied_direct_receipt_key_is_rejected_even_when_shared_issuer_is_allowed() {
+        let first = fixture(
+            [1; 32],
+            11,
+            OfferFixture::ReceiptWithVerificationSeed {
+                issuer_seed: 31,
+                endpoint: "https://issuer-a.example",
+                verification_seed: 91,
+            },
+        );
+        let second = fixture(
+            [2; 32],
+            12,
+            OfferFixture::ReceiptWithVerificationSeed {
+                issuer_seed: 32,
+                endpoint: "https://issuer-b.example",
+                verification_seed: 91,
+            },
+        );
+        assert!(verify_error(
+            select(&first),
+            select(&second),
+            StrictProviderPairOptionsV1 {
+                allow_shared_issuer_correlation: true,
+            },
+        )
+        .contains("direct-receipt verification key ID"));
+    }
+
+    #[test]
+    fn payment_context_rejects_shared_payee_and_provider_origin_even_with_issuer_opt_in() {
+        let first = fixture(
+            [1; 32],
+            11,
+            OfferFixture::Receipt {
+                issuer_seed: 31,
+                endpoint: "https://issuer-a.example",
+            },
+        );
+        let second = fixture(
+            [2; 32],
+            12,
+            OfferFixture::Receipt {
+                issuer_seed: 32,
+                endpoint: "https://issuer-b.example",
+            },
+        );
+        let generator = point("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+        let twice_generator =
+            point("02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5");
+        let pair = verify_strict_two_provider_offer_pair_v1(
+            select(&first),
+            select(&second),
+            StrictProviderPairOptionsV1 {
+                allow_shared_issuer_correlation: true,
+            },
+        )
+        .unwrap();
+        assert!(bolt_payment_context(
+            pair.clone(),
+            31,
+            generator,
+            "wss://provider-a.example/v1",
+            32,
+            generator,
+            "wss://provider-b.example/v1",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("Lightning payee"));
+
+        assert!(bolt_payment_context(
+            pair,
+            31,
+            generator,
+            "wss://shared-provider.example/first",
+            32,
+            twice_generator,
+            "wss://shared-provider.example/second",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("WebSocket origin"));
+    }
+
+    #[test]
+    fn independent_payment_context_prepares_quote_from_frozen_payee_stream() {
+        let first = fixture(
+            [1; 32],
+            11,
+            OfferFixture::Receipt {
+                issuer_seed: 31,
+                endpoint: "https://issuer-a.example",
+            },
+        );
+        let second = fixture(
+            [2; 32],
+            12,
+            OfferFixture::Receipt {
+                issuer_seed: 32,
+                endpoint: "https://issuer-b.example",
+            },
+        );
+        let first_payee =
+            point("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+        let second_payee =
+            point("02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5");
+        let pair = verify_strict_two_provider_offer_pair_v1(
+            select(&first),
+            select(&second),
+            StrictProviderPairOptionsV1::default(),
+        )
+        .unwrap();
+        let context = bolt_payment_context(
+            pair,
+            31,
+            first_payee,
+            "wss://provider-a.example/v1",
+            32,
+            second_payee,
+            "wss://provider-b.example/v1",
+        )
+        .unwrap();
+        assert_eq!(context.first_provider_origin(), "wss://provider-a.example");
+        assert_eq!(context.second_provider_origin(), "wss://provider-b.example");
+        let mut claim = [0u8; 32];
+        claim.copy_from_slice(&first_payee[1..]);
+        let prepared = context
+            .prepare_first_bolt11_quote_v1(NOW, claim, [9; 32])
+            .unwrap();
+        assert_eq!(prepared.intent().expected_payee_pubkey, first_payee);
     }
 
     #[test]
@@ -1329,7 +1826,7 @@ mod tests {
         )
         .unwrap();
         assert!(verify_error(
-            selected_first,
+            selected_first.clone(),
             selected_second,
             StrictProviderPairOptionsV1::default(),
         )
@@ -1341,6 +1838,52 @@ mod tests {
             StrictProviderPairOptionsV1::default(),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn payment_context_endpoint_must_be_authenticated_by_bound_directory_assertion() {
+        let first_operator = SigningKey::from_bytes(&[75; 32]);
+        let second_operator = SigningKey::from_bytes(&[76; 32]);
+        let first_provider =
+            derive_provider_id(&first_operator.verifying_key().to_bytes(), "provider-a");
+        let second_provider =
+            derive_provider_id(&second_operator.verifying_key().to_bytes(), "provider-b");
+        let first = fixture(first_provider, 11, OfferFixture::Free);
+        let second = fixture(second_provider, 12, OfferFixture::Free);
+        let pair = verify_strict_two_provider_offer_pair_v1(
+            select_with_operator(
+                &first,
+                &first_operator,
+                "provider-a",
+                "wss://provider-a.example/v1",
+            ),
+            select_with_operator(
+                &second,
+                &second_operator,
+                "provider-b",
+                "wss://provider-b.example/v1",
+            ),
+            StrictProviderPairOptionsV1::default(),
+        )
+        .unwrap();
+        let error = verify_strict_two_provider_payment_context_v1(
+            pair,
+            "wss://forged-a.example/v1",
+            StrictProviderPaymentContextInputV1 {
+                quote_delegation_bytes: None,
+                quote_key_checkpoint: None,
+            },
+            "wss://provider-b.example/v1",
+            StrictProviderPaymentContextInputV1 {
+                quote_delegation_bytes: None,
+                quote_key_checkpoint: None,
+            },
+            NOW,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not authenticated by the verified directory assertion"));
     }
 
     fn directory_assertion(

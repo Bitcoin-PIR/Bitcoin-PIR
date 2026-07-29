@@ -183,6 +183,18 @@ export interface ProviderAdmissionSelectionV1 {
   offerId: number;
 }
 
+/**
+ * One provider leg plus the independently trusted network context that must be
+ * frozen before a two-provider capability can be acquired or retired.
+ * `expectedLightningPayeePubkey` is mandatory for a BOLT11 offer and omitted
+ * for every non-BOLT11 offer.
+ */
+export interface IndependentProviderAdmissionSelectionV1
+  extends ProviderAdmissionSelectionV1 {
+  providerEndpoint: string;
+  expectedLightningPayeePubkey?: Uint8Array;
+}
+
 export type ProviderPairSideV1 = 'first' | 'second';
 
 export interface ProviderPairBolt11AcquisitionOptionsV1 {
@@ -841,7 +853,11 @@ interface SessionPairSelectionV1 extends SelectedProviderOfferV1 {
   offerFingerprint: string;
 }
 
-interface PairLegV1 extends ProviderAdmissionSelectionV1 {
+interface PairLegV1 extends IndependentProviderAdmissionSelectionV1 {
+  verified: SessionPairSelectionV1;
+}
+
+interface SingleLegV1 extends ProviderAdmissionSelectionV1 {
   verified: SessionPairSelectionV1;
 }
 
@@ -851,7 +867,7 @@ interface PairLegV1 extends ProviderAdmissionSelectionV1 {
  * but does not invent a peer provider or apply two-provider independence rules.
  */
 export class VerifiedSingleProviderOfferV1 {
-  private constructor(private readonly leg: PairLegV1) {}
+  private constructor(private readonly leg: SingleLegV1) {}
 
   static create(selection: ProviderAdmissionSelectionV1): VerifiedSingleProviderOfferV1 {
     validateAdmissionSelection('single provider', selection);
@@ -916,8 +932,8 @@ export class VerifiedIndependentProviderPairV1 {
   ) {}
 
   static create(
-    first: ProviderAdmissionSelectionV1,
-    second: ProviderAdmissionSelectionV1,
+    first: IndependentProviderAdmissionSelectionV1,
+    second: IndependentProviderAdmissionSelectionV1,
     options: IndependentProviderSelectionOptionsV1 = {},
   ): VerifiedIndependentProviderPairV1 {
     if (first.session === second.session) {
@@ -927,10 +943,26 @@ export class VerifiedIndependentProviderPairV1 {
     validateAdmissionSelection('second pair', second);
     const firstVerified = first.session[PAIR_SELECTION_V1](first.scopeIdHex, first.offerId);
     const secondVerified = second.session[PAIR_SELECTION_V1](second.scopeIdHex, second.offerId);
-    assertIndependentProviderOfferPairV1(firstVerified, secondVerified, options);
+    const firstPayment = freezeProviderPaymentContextV1('first pair', first, firstVerified.offer);
+    const secondPayment = freezeProviderPaymentContextV1('second pair', second, secondVerified.offer);
+    assertIndependentProviderOfferPairV1(
+      { ...firstVerified, ...firstPayment },
+      { ...secondVerified, ...secondPayment },
+      options,
+    );
     return new VerifiedIndependentProviderPairV1(
-      { ...first, scopeIdHex: canonicalHex32('first scopeIdHex', first.scopeIdHex), verified: firstVerified },
-      { ...second, scopeIdHex: canonicalHex32('second scopeIdHex', second.scopeIdHex), verified: secondVerified },
+      {
+        ...first,
+        ...firstPayment,
+        scopeIdHex: canonicalHex32('first scopeIdHex', first.scopeIdHex),
+        verified: firstVerified,
+      },
+      {
+        ...second,
+        ...secondPayment,
+        scopeIdHex: canonicalHex32('second scopeIdHex', second.scopeIdHex),
+        verified: secondVerified,
+      },
     );
   }
 
@@ -965,11 +997,18 @@ export class VerifiedIndependentProviderPairV1 {
     options: ProviderPairBolt11AcquisitionOptionsV1,
   ): Promise<Bolt11AcquisitionHandleV1> {
     const leg = this.leg(side);
+    const frozenPayee = leg.expectedLightningPayeePubkey;
+    if (leg.verified.offer.acquisition !== 'bolt11' || frozenPayee === undefined) {
+      throw new Error('selected provider payment context is not a frozen BOLT11 leg');
+    }
+    if (!equalBytes(frozenPayee, options.expectedPayeePubkey)) {
+      throw new Error('BOLT11 payee differs from the independently frozen provider context');
+    }
     return leg.session[PAIR_ACQUISITION_V1](
       leg.verified,
       leg.scopeIdHex,
       leg.offerId,
-      options,
+      { ...options, expectedPayeePubkey: frozenPayee.slice() },
     );
   }
 
@@ -1469,6 +1508,49 @@ function validateAdmissionSelection(label: string, value: ProviderAdmissionSelec
   if (!Number.isSafeInteger(value.offerId) || value.offerId <= 0) {
     throw new Error(`${label} selection has an invalid offer ID`);
   }
+}
+
+function freezeProviderPaymentContextV1(
+  label: string,
+  selection: IndependentProviderAdmissionSelectionV1,
+  offer: ServiceOfferViewV1,
+): Pick<PairLegV1, 'providerEndpoint' | 'expectedLightningPayeePubkey'> {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(selection.providerEndpoint);
+  } catch {
+    throw new Error(`${label} provider WebSocket endpoint is invalid`);
+  }
+  if ((endpoint.protocol !== 'wss:' && endpoint.protocol !== 'ws:')
+      || endpoint.username !== '' || endpoint.password !== '') {
+    throw new Error(`${label} provider endpoint must be a credential-free WebSocket URL`);
+  }
+
+  const payee = selection.expectedLightningPayeePubkey;
+  if (offer.acquisition === 'bolt11') {
+    if (!(payee instanceof Uint8Array) || payee.length !== 33
+        || (payee[0] !== 0x02 && payee[0] !== 0x03)
+        || payee.subarray(1).every((byte) => byte === 0)) {
+      throw new Error(`${label} BOLT11 offer requires one trusted compressed Lightning payee key`);
+    }
+    return {
+      providerEndpoint: endpoint.origin,
+      expectedLightningPayeePubkey: payee.slice(),
+    };
+  }
+  if (payee !== undefined) {
+    throw new Error(`${label} non-BOLT11 offer must not carry a Lightning payee context`);
+  }
+  return { providerEndpoint: endpoint.origin };
+}
+
+function equalBytes(first: Uint8Array, second: Uint8Array): boolean {
+  if (!(second instanceof Uint8Array) || first.length !== second.length) return false;
+  let difference = 0;
+  for (let index = 0; index < first.length; index += 1) {
+    difference |= first[index] ^ second[index];
+  }
+  return difference === 0;
 }
 
 function yieldToBrowser(): Promise<void> {
