@@ -266,6 +266,15 @@ same-event publisher-lane retry, and verifies both listeners return after each
 independent process restart. The test deliberately does not infer relay-operator
 or host independence from local process separation.
 
+Payment CI also runs the stopped-only artifact recipe itself in a dedicated
+Ubuntu job. The job pulls the exact digest-pinned Rust image, archives the
+checked-out commit, completes both clean builds, atomically publishes the
+owner-only temporary artifact, and then completes the gate's two independent
+rebuilds and final seal verification. The artifact stays under the ephemeral
+runner directory and is neither uploaded nor installed; a passing job does not
+resolve `relay-selection.toml`, replace `/usr/bin/false`, open a listener, or
+activate the relay.
+
 A separate non-default Standard Cashu process test is implemented and wired
 into Payment CI:
 
