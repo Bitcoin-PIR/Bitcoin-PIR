@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const acquisitionMock = vi.hoisted(() => ({
-  startMode: 'success' as 'success' | 'lost',
+  startMode: 'success' as 'success' | 'lost' | 'deferred',
+  deferredStart: null as null | ((assertReady: () => void) => Promise<void>),
   resume: vi.fn(),
 }));
 
@@ -31,8 +32,12 @@ vi.mock('../service-acquisition.js', () => {
   return {
     Bolt11RecoveryRequiredErrorV1: RecoveryRequired,
     Bolt11AcquisitionControllerV1: {
-      start: vi.fn(async () => {
+      start: vi.fn(async (options: { assertReady: () => void }) => {
         if (acquisitionMock.startMode === 'lost') throw new RecoveryRequired('88'.repeat(32));
+        if (acquisitionMock.startMode === 'deferred') {
+          if (!acquisitionMock.deferredStart) throw new Error('missing deferred start fixture');
+          await acquisitionMock.deferredStart(options.assertReady);
+        }
         return handle();
       }),
     },
@@ -306,9 +311,14 @@ function session(
     hasHarmonyAttach: target.workload === 'harmony-hint',
   }),
   retainedView?: RetainedServiceRedemptionViewV1,
-): { session: ProviderAdmissionSessionV1; authorize: ReturnType<typeof vi.fn> } {
+): {
+  session: ProviderAdmissionSessionV1;
+  authorize: ReturnType<typeof vi.fn>;
+  assertReady: ReturnType<typeof vi.fn>;
+} {
   let refresh = 0;
   const authorize = vi.fn(authorizeImpl);
+  const assertReady = vi.fn();
   const retainedHandle = (): WasmAcceptedRetainedServiceRedemptionV1 => {
     if (!retainedView) throw new Error('unused');
     return {
@@ -327,6 +337,7 @@ function session(
     fetchPolicy: async () => accepted(views[Math.min(refresh++, views.length - 1)]),
     fetchRetainedRedemption: async () => retainedHandle(),
     assertSessionBinding: vi.fn(),
+    captureReadinessGuard: () => assertReady,
     assertRetainedSessionBinding: vi.fn(),
     authorize,
     authorizeRetained: async () => {
@@ -352,6 +363,7 @@ function session(
       target,
     ),
     authorize,
+    assertReady,
   };
 }
 
@@ -374,6 +386,7 @@ function currentShapes(controller: ProductAdmissionControllerV1) {
 describe('product admission lifecycle', () => {
   beforeEach(() => {
     acquisitionMock.startMode = 'success';
+    acquisitionMock.deferredStart = null;
     acquisitionMock.resume.mockReset();
   });
 
@@ -501,6 +514,69 @@ describe('product admission lifecycle', () => {
     await controller.startBolt11('server0');
     expect(controller.snapshot().legs[0].invoice).toBe('lnbc1fixture');
     expect(controller.canQuery()).toBe(false);
+    await controller.close();
+  });
+
+  it('does not install an invoice when the strict pair is invalidated during acquisition', async () => {
+    const { vault } = fakeVault();
+    const target = testTarget('dpf-pir', 'dpf-query');
+    const paid = paidOffer(23, 'bolt11-direct-receipt');
+    const free = freeOffer(24);
+    const first = session(
+      vault,
+      [policy(HEX.provider0, HEX.policy0, HEX.scope0, target, [paid])],
+      HEX.provider0,
+      HEX.key0,
+      target,
+    );
+    const second = session(
+      vault,
+      [policy(HEX.provider1, HEX.policy1, HEX.scope1, target, [free])],
+      HEX.provider1,
+      HEX.key1,
+      target,
+    );
+    let pairReady = true;
+    first.assertReady.mockImplementation(() => {
+      if (!pairReady) throw new Error('DPF strict pair attempt was invalidated');
+    });
+    let releaseStart!: () => void;
+    let markStartEntered!: () => void;
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const startEntered = new Promise<void>((resolve) => { markStartEntered = resolve; });
+    acquisitionMock.startMode = 'deferred';
+    acquisitionMock.deferredStart = async (assertReady) => {
+      markStartEntered();
+      await startGate;
+      assertReady();
+    };
+
+    const controller = new ProductAdmissionControllerV1({
+      topology: 'independent-pair',
+      vault,
+    });
+    await controller.prepare(async () => ({
+      legs: [
+        {
+          role: 'server0', label: 'Server 0', session: first.session, ...target,
+          expectedLightningPayeePubkey: new Uint8Array([2, ...new Uint8Array(32).fill(1)]),
+        },
+        { role: 'server1', label: 'Server 1', session: second.session, ...target },
+      ],
+      close: vi.fn(),
+    }));
+    await controller.selectOffer('server0', { scopeIdHex: HEX.scope0, offerId: paid.offerId });
+    await controller.selectOffer('server1', { scopeIdHex: HEX.scope1, offerId: free.offerId });
+
+    const pending = controller.startBolt11('server0');
+    await startEntered;
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
+    // DPF/Harmony production ports bind this guard to both leg generations;
+    // flipping it models the peer disconnecting while issuer I/O is awaited.
+    pairReady = false;
+    releaseStart();
+    await expect(pending).rejects.toThrow(/strict pair attempt was invalidated/);
+    expect(controller.snapshot().legs[0].invoice).toBeNull();
     await controller.close();
   });
 

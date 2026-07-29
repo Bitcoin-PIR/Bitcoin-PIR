@@ -9,6 +9,7 @@ vi.mock('../sdk-bridge.js', () => ({
 import type { AdmissionCredentialVaultV1 } from '../admission-vault.js';
 import {
   Bolt11AcquisitionControllerV1,
+  Bolt11RecoveryRequiredErrorV1,
   fetchQuoteKeyDelegationV1,
 } from '../service-acquisition.js';
 import type {
@@ -114,6 +115,21 @@ function signedScope(offer: ServiceOfferViewV1): ServiceScopeViewV1 {
   };
 }
 
+function signedPolicy(acquisition: FakeAcquisition): WasmAcceptedServicePolicyV1 {
+  return {
+    free: vi.fn(),
+    providerIdHex: providerHex,
+    policyDigestHex: '77'.repeat(32),
+    policyEpoch: '1',
+    expiresAtUnix: '9999999999',
+    checkpointBytes: () => new Uint8Array([1]),
+    acknowledgeCheckpointPersisted: vi.fn(),
+    validateAuthorizationProof: vi.fn(),
+    offersJson: vi.fn(),
+    beginBolt11Acquisition: () => acquisition,
+  } as unknown as WasmAcceptedServicePolicyV1;
+}
+
 describe('BOLT11 acquisition HTTP and recovery ordering', () => {
   beforeEach(() => {
     issuedCapabilityPayloads.length = 0;
@@ -193,6 +209,212 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('rechecks readiness after a deferred delegation and sends no quote POST', async () => {
+    const acquisition = new FakeAcquisition();
+    const offer = signedOffer();
+    const scope = signedScope(offer);
+    const policy = signedPolicy(acquisition);
+    const advanceQuoteKeyCheckpoint = vi.fn();
+    const createBolt11Recovery = vi.fn();
+    const vault = {
+      advanceQuoteKeyCheckpoint,
+      createBolt11Recovery,
+    } as unknown as AdmissionCredentialVaultV1;
+    let ready = true;
+    let releaseDelegation!: (response: Response) => void;
+    let markDelegationEntered!: () => void;
+    const delegationGate = new Promise<Response>((resolve) => { releaseDelegation = resolve; });
+    const delegationEntered = new Promise<void>((resolve) => { markDelegationEntered = resolve; });
+    let quotePosts = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/quote-keys/current')) {
+        markDelegationEntered();
+        return delegationGate;
+      }
+      if (url.endsWith('/v1/quotes/bolt11')) quotePosts += 1;
+      throw new Error(`unexpected URL ${url}`);
+    }) as unknown as typeof fetch;
+
+    const pending = Bolt11AcquisitionControllerV1.start({
+      vault,
+      policy,
+      scope,
+      offer,
+      network: 'bitcoin',
+      expectedPayeePubkey: payee,
+      fetchImpl,
+      assertReady: () => {
+        if (!ready) throw new Error('strict pair invalidated during delegation');
+      },
+    });
+    await delegationEntered;
+    ready = false;
+    releaseDelegation(binaryResponse(
+      [1], 'application/vnd.bitcoinpir.bolt11-quote-key-delegation-v1',
+    ));
+
+    await expect(pending).rejects.toThrow(/invalidated during delegation/);
+    expect(advanceQuoteKeyCheckpoint).not.toHaveBeenCalled();
+    expect(createBolt11Recovery).not.toHaveBeenCalled();
+    expect(quotePosts).toBe(0);
+  });
+
+  it('rechecks readiness after a deferred vault checkpoint and sends no quote POST', async () => {
+    const acquisition = new FakeAcquisition();
+    const offer = signedOffer();
+    const scope = signedScope(offer);
+    const policy = signedPolicy(acquisition);
+    let releaseCheckpoint!: () => void;
+    let markCheckpointEntered!: () => void;
+    const checkpointGate = new Promise<void>((resolve) => { releaseCheckpoint = resolve; });
+    const checkpointEntered = new Promise<void>((resolve) => { markCheckpointEntered = resolve; });
+    const createBolt11Recovery = vi.fn();
+    const vault = {
+      advanceQuoteKeyCheckpoint: async (
+        _issuer: string,
+        _network: string,
+        _payee: string,
+        initial: Uint8Array,
+        advance: (checkpoint: Uint8Array) => {
+          nextCheckpoint: Uint8Array;
+          value: FakeAcquisition;
+        },
+      ) => {
+        const result = advance(initial);
+        markCheckpointEntered();
+        await checkpointGate;
+        return result.value;
+      },
+      createBolt11Recovery,
+    } as unknown as AdmissionCredentialVaultV1;
+    let ready = true;
+    let quotePosts = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/quote-keys/current')) {
+        return binaryResponse(
+          [1], 'application/vnd.bitcoinpir.bolt11-quote-key-delegation-v1',
+        );
+      }
+      if (url.endsWith('/v1/quotes/bolt11')) quotePosts += 1;
+      throw new Error(`unexpected URL ${url}`);
+    }) as unknown as typeof fetch;
+
+    const pending = Bolt11AcquisitionControllerV1.start({
+      vault,
+      policy,
+      scope,
+      offer,
+      network: 'bitcoin',
+      expectedPayeePubkey: payee,
+      fetchImpl,
+      assertReady: () => {
+        if (!ready) throw new Error('strict pair invalidated during vault checkpoint');
+      },
+    });
+    await checkpointEntered;
+    ready = false;
+    releaseCheckpoint();
+
+    await expect(pending).rejects.toThrow(/invalidated during vault checkpoint/);
+    expect(createBolt11Recovery).not.toHaveBeenCalled();
+    expect(acquisition.free).toHaveBeenCalledOnce();
+    expect(quotePosts).toBe(0);
+  });
+
+  it('persists a linearized quote but never exposes its invoice after invalidation', async () => {
+    let successfulInvoiceReads = 0;
+    const instrument = (state?: Uint8Array): FakeAcquisition => {
+      const value = new FakeAcquisition(state);
+      const readInvoice = value.invoice;
+      value.invoice = () => {
+        const invoice = readInvoice();
+        successfulInvoiceReads += 1;
+        return invoice;
+      };
+      return value;
+    };
+    const acquisition = instrument();
+    mocked.sdk.WasmBolt11AcquisitionV1 = {
+      restore: (state: Uint8Array) => instrument(state),
+    };
+    const offer = signedOffer();
+    const scope = signedScope(offer);
+    const policy = signedPolicy(acquisition);
+    let storedRecovery: Record<string, any> | null = null;
+    const persistState = vi.fn(async (state: Uint8Array) => {
+      storedRecovery!.state = state.slice();
+    });
+    const vault = {
+      advanceQuoteKeyCheckpoint: async (
+        _issuer: string,
+        _network: string,
+        _payee: string,
+        initial: Uint8Array,
+        advance: (checkpoint: Uint8Array) => {
+          nextCheckpoint: Uint8Array;
+          value: FakeAcquisition;
+        },
+      ) => advance(initial).value,
+      createBolt11Recovery: async (record: Record<string, unknown>) => {
+        storedRecovery = { ...record, id: recoveryId, state: (record.state as Uint8Array).slice() };
+        return { ...storedRecovery, state: storedRecovery.state.slice() };
+      },
+      withBolt11Recovery: async (_id: string, operation: Function) => {
+        const exposed = { ...storedRecovery, state: storedRecovery!.state.slice() };
+        return operation(exposed, {
+          persistState: async (state: Uint8Array) => {
+            exposed.state = state.slice();
+            await persistState(state);
+          },
+          complete: async () => { throw new Error('unused'); },
+        });
+      },
+    } as unknown as AdmissionCredentialVaultV1;
+    let ready = true;
+    let releaseQuote!: (response: Response) => void;
+    let markQuoteEntered!: () => void;
+    const quoteGate = new Promise<Response>((resolve) => { releaseQuote = resolve; });
+    const quoteEntered = new Promise<void>((resolve) => { markQuoteEntered = resolve; });
+    let quotePosts = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/v1/quote-keys/current')) {
+        return binaryResponse(
+          [1], 'application/vnd.bitcoinpir.bolt11-quote-key-delegation-v1',
+        );
+      }
+      if (url.endsWith('/v1/quotes/bolt11')) {
+        quotePosts += 1;
+        markQuoteEntered();
+        return quoteGate;
+      }
+      throw new Error(`unexpected URL ${url}`);
+    }) as unknown as typeof fetch;
+
+    const pending = Bolt11AcquisitionControllerV1.start({
+      vault,
+      policy,
+      scope,
+      offer,
+      network: 'bitcoin',
+      expectedPayeePubkey: payee,
+      fetchImpl,
+      assertReady: () => {
+        if (!ready) throw new Error('strict pair invalidated after quote POST');
+      },
+    });
+    await quoteEntered;
+    ready = false;
+    releaseQuote(binaryResponse([2], 'application/vnd.bitcoinpir.bolt11-quote-v1'));
+
+    const failure = await pending.then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Bolt11RecoveryRequiredErrorV1);
+    expect(failure).toMatchObject({ recoveryId });
+    expect(quotePosts).toBe(1);
+    expect(persistState).toHaveBeenCalledOnce();
+    expect(storedRecovery!.state).toEqual(new Uint8Array([2, 1, 0]));
+    expect(successfulInvoiceReads).toBe(0);
   });
 
   it('persists rollback/recovery before invoice and persists exact claim before POST', async () => {
@@ -297,6 +519,7 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
       network: 'bitcoin',
       expectedPayeePubkey: payee,
       fetchImpl,
+      assertReady: () => {},
     });
     expect(controller.invoice()).toBe('lnbc1verified');
     expect(events.indexOf('quote-key-checkpoint')).toBeLessThan(events.indexOf('post-quote'));
@@ -316,6 +539,7 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
       network: 'bitcoin',
       expectedPayeePubkey: payee,
       fetchImpl,
+      assertReady: () => {},
     });
     await expect(failedController.pollStatus()).resolves.toBe('payment-settled');
     await expect(failedController.claim()).rejects.toThrow(/vault write failed/);
@@ -421,6 +645,7 @@ describe('BOLT11 acquisition HTTP and recovery ordering', () => {
       network: 'bitcoin',
       expectedPayeePubkey: payee,
       fetchImpl,
+      assertReady: () => {},
     });
     await started.pollStatus();
     await expect(started.claim()).rejects.toThrow(/response lost/);

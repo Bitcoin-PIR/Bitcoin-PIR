@@ -82,6 +82,12 @@ export interface ServiceAdmissionPortV1 {
   ): Promise<WasmAcceptedRetainedServiceRedemptionV1>;
   /** Fail synchronously unless the policy came from this live channel session. */
   assertSessionBinding(policy: WasmAcceptedServicePolicyV1): void;
+  /**
+   * Fail synchronously unless the complete strict admission owner is still
+   * current. Pair adapters include both independently verified legs and the
+   * exact database/tree-top preflight in this guard.
+   */
+  captureReadinessGuard(): () => void;
   assertRetainedSessionBinding?(
     policy: WasmAcceptedRetainedServiceRedemptionV1,
     nowUnix: bigint,
@@ -187,6 +193,8 @@ export interface ProviderPairBolt11AcquisitionOptionsV1 {
   requestTimeoutMs?: number;
   /** Development-only support for the loopback fake issuer. */
   allowInsecureLoopback?: boolean;
+  /** Additional browser-local product generation/pair guard. */
+  assertReady?: () => void;
 }
 
 export interface StandardCashuImportOptionsV1 {
@@ -562,16 +570,23 @@ export class ProviderAdmissionSessionV1 {
       this.assertCurrentPairSelection(selection, scopeIdHex, offerId);
       const accepted = this.accepted;
       if (!accepted || !this.view) throw new Error('fetch and persist service policy first');
-      // Do not create or display an invoice for a policy accepted on a socket
-      // that has since reconnected. Authorization repeats this immediately
-      // before capability retirement and send.
-      this.port.assertSessionBinding(accepted);
-      if (BigInt(this.view.expiresAtUnix) < trustedNowUnix()) {
-        throw new Error('service policy expired; fetch a fresh verified policy');
-      }
       const scope = this.requireScope(scopeIdHex);
       const offer = scope.offers.find((candidate) => candidate.offerId === offerId);
       if (!offer) throw new Error('selected offer is not present in the verified service policy');
+      const assertStrictReady = this.port.captureReadinessGuard();
+      // This composite guard is passed into the BOLT11 controller and re-run
+      // after delegation/vault/recovery awaits, immediately before quote POST,
+      // and again before a verified invoice can escape to the UI.
+      const assertReady = () => {
+        options.assertReady?.();
+        this.assertCurrentPairSelection(selection, scopeIdHex, offerId);
+        assertStrictReady();
+        this.port.assertSessionBinding(accepted);
+        if (!this.view || BigInt(this.view.expiresAtUnix) < trustedNowUnix()) {
+          throw new Error('service policy expired; fetch a fresh verified policy');
+        }
+      };
+      assertReady();
       return await Bolt11AcquisitionControllerV1.start({
         vault: options.vault,
         policy: accepted,
@@ -582,6 +597,7 @@ export class ProviderAdmissionSessionV1 {
         fetchImpl: options.fetchImpl,
         requestTimeoutMs: options.requestTimeoutMs,
         allowInsecureLoopback: options.allowInsecureLoopback,
+        assertReady,
       });
     } finally {
       this.transitionInFlight = null;

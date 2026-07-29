@@ -15,6 +15,7 @@ import {
   VerifiedIndependentProviderPairV1,
   VerifiedSingleProviderOfferV1,
   type ServiceAdmissionPortV1,
+  type ServiceAdmissionTargetV1,
   type ServiceAdmissionVaultV1,
 } from '../service-admission.js';
 import type { AdmissionCapabilityV1 } from '../admission-vault.js';
@@ -184,6 +185,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => ({
         scopeIdHex: secondScopeHex,
@@ -209,11 +211,12 @@ describe('provider admission orchestration', () => {
 
   function sessionForPolicyView(
     view: ServicePolicyViewV1,
-    target = DPF_TARGET,
+    target: ServiceAdmissionTargetV1 = DPF_TARGET,
   ): ProviderAdmissionSessionV1 {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => { throw new Error('unused'); },
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -325,6 +328,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => handle,
       authorize: async (_policy, _scope, _offer, proof) => {
         expect(checkpointCommitted).toBe(true);
@@ -377,6 +381,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -423,6 +428,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding,
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => { throw new Error('unused'); },
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -478,6 +484,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => handle,
       authorize: async () => { throw new Error('unused'); },
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -579,6 +586,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -635,6 +643,7 @@ describe('provider admission orchestration', () => {
       assertSessionBinding: vi.fn(() => {
         throw new Error('accepted policy belongs to a different secure-channel session');
       }),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -685,6 +694,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize,
       requestPowChallenge: async () => { throw new Error('unused'); },
@@ -740,6 +750,7 @@ describe('provider admission orchestration', () => {
     const port: ServiceAdmissionPortV1 = {
       assertTrustAnchor: vi.fn(),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       fetchPolicy: async () => accepted(view),
       authorize: async () => ({
         scopeIdHex: scopeHex,
@@ -777,6 +788,7 @@ describe('provider admission orchestration', () => {
       fetchPolicy: async () => { throw new Error('unused'); },
       fetchRetainedRedemption: async () => retainedAccepted(offer),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       assertRetainedSessionBinding: vi.fn(),
       authorize: async () => { throw new Error('unused'); },
       authorizeRetained: async () => { throw new Error('must not send'); },
@@ -837,6 +849,7 @@ describe('provider admission orchestration', () => {
       fetchPolicy: async () => { throw new Error('current policy must not be fetched'); },
       fetchRetainedRedemption: async () => retained,
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       assertRetainedSessionBinding: vi.fn(),
       authorize: async () => { throw new Error('current authorization must not be used'); },
       authorizeRetained,
@@ -893,6 +906,7 @@ describe('provider admission orchestration', () => {
       fetchPolicy: async () => { throw new Error('unused'); },
       fetchRetainedRedemption: async () => retainedAccepted(offer),
       assertSessionBinding: vi.fn(),
+      captureReadinessGuard: () => vi.fn(),
       assertRetainedSessionBinding: vi.fn(),
       authorize: async () => { throw new Error('unused'); },
       authorizeRetained: async () => { throw new Error('must not send'); },

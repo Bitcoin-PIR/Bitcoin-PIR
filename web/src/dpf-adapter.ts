@@ -1061,6 +1061,19 @@ export class BatchPirClientAdapter {
       ),
       assertSessionBinding: (policy) =>
         client().verifyServicePolicySession(serverIndex, policy),
+      captureReadinessGuard: () => {
+        const expectedClient = authorizedClient();
+        const expectedGeneration = this.pairGeneration;
+        const assertReady = () => {
+          if (!expectedClient.isServerConnected(0) || !expectedClient.isServerConnected(1)) {
+            throw new Error('DPF strict pair transport is no longer connected');
+          }
+          this.assertCurrentStrictPair(expectedClient, expectedGeneration);
+          authorizedClient();
+        };
+        assertReady();
+        return assertReady;
+      },
       assertRetainedSessionBinding: (policy, nowUnix) =>
         client().verifyRetainedServiceSession(serverIndex, policy, nowUnix),
       authorize: (policy, scopeId, offerId, proof) =>

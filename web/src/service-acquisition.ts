@@ -69,6 +69,12 @@ export interface StartBolt11AcquisitionV1 {
   requestTimeoutMs?: number;
   /** Development-only support for apps/payment-issuer serve-fake. */
   allowInsecureLoopback?: boolean;
+  /**
+   * Browser-local strict-session/pair generation guard. The caller binds this
+   * closure to the exact verified provider selection; it is re-run around
+   * every asynchronous boundary that precedes first invoice exposure.
+   */
+  assertReady: () => void;
 }
 
 export interface ResumeBolt11AcquisitionV1 {
@@ -102,6 +108,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
     private readonly fetchImpl: typeof fetch,
     private readonly allowInsecureLoopback: boolean,
     private readonly requestTimeoutMs: number,
+    private readonly assertReadyForInvoice: () => void,
   ) {}
 
   /**
@@ -110,6 +117,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
    */
   static async start(options: StartBolt11AcquisitionV1): Promise<Bolt11AcquisitionControllerV1> {
     validateStart(options);
+    options.assertReady();
     const endpoint = canonicalIssuerEndpoint(
       options.offer.endpoint,
       options.allowInsecureLoopback ?? false,
@@ -122,6 +130,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       options.allowInsecureLoopback ?? false,
       requestTimeout(options.requestTimeoutMs),
     );
+    options.assertReady();
     const sdk = bolt11Sdk();
     const issuerId = hexToBytes32('offer.issuerIdHex', options.offer.issuerIdHex);
     const payee = fixedBytes('expectedPayeePubkey', options.expectedPayeePubkey, 33);
@@ -136,6 +145,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       bytesToHex(payee),
       initial,
       (checkpoint) => {
+        options.assertReady();
         const handle = options.policy.beginBolt11Acquisition(
           hexToBytes32('scope.scopeIdHex', options.scope.scopeIdHex),
           options.offer.offerId,
@@ -149,6 +159,12 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         };
       },
     );
+    try {
+      options.assertReady();
+    } catch (error) {
+      acquisition.free();
+      throw error;
+    }
     let recovery: Bolt11RecoveryRecordV1;
     try {
       recovery = await options.vault.createBolt11Recovery({
@@ -174,9 +190,11 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       fetchImpl,
       options.allowInsecureLoopback ?? false,
       requestTimeout(options.requestTimeoutMs),
+      options.assertReady,
     );
     try {
       await controller.ensureQuote();
+      options.assertReady();
       return controller;
     } catch (cause) {
       controller.close();
@@ -204,6 +222,7 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
       options.fetchImpl ?? fetch,
       options.allowInsecureLoopback ?? false,
       requestTimeout(options.requestTimeoutMs),
+      () => {},
     );
   }
 
@@ -213,13 +232,22 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
 
   /** One exact quote POST. Replays the intent's signed idempotency key. */
   async ensureQuote(): Promise<string> {
+    this.assertReadyForInvoice();
     return this.withLockedRecovery(async (wasm, recovery, locked) => {
+      this.assertReadyForInvoice();
+      let existing: string | null = null;
       try {
-        return wasm.invoice();
+        existing = wasm.invoice();
       } catch {
         // A pre-quote recovery is expected to have no invoice yet.
       }
+      if (existing !== null) {
+        this.assertReadyForInvoice();
+        return existing;
+      }
       const body = wasm.quote_intent_bytes();
+      // This is the final guard before the issuer can linearize a quote.
+      this.assertReadyForInvoice();
       const response = await requestBinary(
         this.fetchImpl,
         issuerUrl(recovery.issuerEndpoint, 'v1/quotes/bolt11', this.allowInsecureLoopback),
@@ -230,13 +258,27 @@ export class Bolt11AcquisitionControllerV1 implements Bolt11AcquisitionHandleV1 
         MAX_QUOTE_BYTES,
         this.requestTimeoutMs,
       );
+      // If the strict pair/session became stale after the POST linearized, we
+      // may still verify and durably save the issuer response for recovery,
+      // but the stale invoice must never escape this controller invocation.
+      let staleAfterPost: unknown = null;
+      try {
+        this.assertReadyForInvoice();
+      } catch (error) {
+        staleAfterPost = error;
+      }
       wasm.accept_initial_quote(response, trustedNowUnix());
       await locked.persistState(wasm.recovery_state_bytes());
-      return wasm.invoice();
+      if (staleAfterPost) throw staleAfterPost;
+      this.assertReadyForInvoice();
+      const invoice = wasm.invoice();
+      this.assertReadyForInvoice();
+      return invoice;
     });
   }
 
   invoice(): string {
+    this.assertReadyForInvoice();
     return this.requireHandle().invoice();
   }
 
@@ -511,6 +553,9 @@ async function readResponseBodyBoundedV1(
 
 function validateStart(options: StartBolt11AcquisitionV1): void {
   requestTimeout(options.requestTimeoutMs);
+  if (typeof options.assertReady !== 'function') {
+    throw new Error('BOLT11 acquisition requires a strict-session readiness guard');
+  }
   if (options.offer.acquisition !== 'bolt11') {
     throw new Error('selected signed offer is not acquired with BOLT11');
   }

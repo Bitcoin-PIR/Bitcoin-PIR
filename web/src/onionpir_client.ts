@@ -1104,6 +1104,22 @@ export class OnionPirWebClient {
           state.free();
         }
       },
+      captureReadinessGuard: () => {
+        const generation = this.sessionGeneration;
+        const socket = this.ws;
+        const channel = this.secureChannel;
+        const assertReady = () => {
+          if (generation !== this.sessionGeneration
+              || this.ws !== socket
+              || !socket?.isOpen()
+              || this.secureChannel !== channel) {
+            throw new Error('OnionPIR strict admission session was invalidated');
+          }
+          admission().free();
+        };
+        assertReady();
+        return assertReady;
+      },
       assertRetainedSessionBinding: (policy, nowUnix) => {
         const state = admission();
         try {

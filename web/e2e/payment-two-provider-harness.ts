@@ -123,6 +123,7 @@ async function acquireLeg(index: 0 | 1): Promise<{
         33,
       ),
       fetchImpl: (input, init) => issuerFetch(index, input, init),
+      assertReady: () => {},
     });
     const invoice = acquisition.invoice();
     await pollUntilSettled(acquisition);
@@ -158,6 +159,7 @@ async function startPaidLeg(index: 0 | 1): Promise<{
         33,
       ),
       fetchImpl: (input, init) => issuerFetch(index, input, init),
+      assertReady: () => {},
     });
     return {
       recoveryId: acquisition.recoveryId,

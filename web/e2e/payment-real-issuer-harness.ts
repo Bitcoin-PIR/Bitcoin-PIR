@@ -149,6 +149,7 @@ async function startAcquisition(): Promise<{
     network: 'regtest',
     expectedPayeePubkey: requirePayee(),
     fetchImpl: issuerFetch,
+    assertReady: () => {},
   });
   return {
     recoveryId: activeAcquisition.recoveryId,
